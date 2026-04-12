@@ -1,0 +1,50 @@
+@import "tailwindcss";
+
+@theme {
+  /* Paleta médica profesional */
+  --color-primary: #0f766e;
+  --color-primary-dark: #115e59;
+  --color-primary-light: #14b8a6;
+  --color-secondary: #0369a1;
+  --color-secondary-light: #38bdf8;
+  --color-accent: #0d9488;
+  --color-success: #059669;
+  --color-warning: #d97706;
+  --color-danger: #dc2626;
+  --color-sidebar: #064e3b;
+  --color-sidebar-hover: #065f46;
+  --color-sidebar-active: #0f766e;
+  --color-card: #ffffff;
+  --color-body: #f0fdf4;
+  --color-muted: #6b7280;
+}
+
+body {
+  font-family: 'Plus Jakarta Sans', system-ui, -apple-system, sans-serif;
+  background-color: var(--color-body);
+  margin: 0;
+  color: #1e293b;
+}
+
+::-webkit-scrollbar { width: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #a7f3d0; border-radius: 10px; }
+::-webkit-scrollbar-thumb:hover { background: #6ee7b7; }
+
+/* Inputs globales médicos */
+input:focus, select:focus, textarea:focus {
+  border-color: #14b8a6 !important;
+  box-shadow: 0 0 0 3px rgba(20, 184, 166, 0.1) !important;
+}
+
+/* Transiciones suaves */
+*, *::before, *::after {
+  transition-property: background-color, border-color, color, box-shadow;
+  transition-duration: 150ms;
+  transition-timing-function: ease;
+}
+
+#root {
+  width: 100%;
+  height: 100vh;
+}
