@@ -9,7 +9,9 @@ import {
 } from 'react-icons/hi2';
 
 export default function Dashboard() {
-  const { user } = useAuth();
+  const { user, hasRole } = useAuth();
+  const showSales = hasRole('admin', 'cajero', 'contabilidad');
+  const showStock = hasRole('admin', 'contabilidad', 'cajero');
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -43,21 +45,21 @@ export default function Dashboard() {
       color: 'bg-gradient-to-br from-teal-500 to-cyan-500',
       bgLight: 'bg-teal-50',
     },
-    {
+    showSales && {
       label: 'Ventas del Mes',
       value: `$${(data?.monthSales?.total || 0).toFixed(2)}`,
       icon: HiOutlineCurrencyDollar,
       color: 'bg-gradient-to-br from-cyan-500 to-blue-500',
       bgLight: 'bg-cyan-50',
     },
-    {
+    showStock && {
       label: 'Stock Bajo',
       value: data?.lowStockProducts?.length || 0,
       icon: HiOutlineExclamationTriangle,
       color: 'bg-gradient-to-br from-amber-400 to-orange-500',
       bgLight: 'bg-amber-50',
     },
-  ];
+  ].filter(Boolean);
 
   const statusColors = {
     programada: 'bg-blue-100 text-blue-700',
@@ -83,7 +85,7 @@ export default function Dashboard() {
         <h1 className="text-2xl font-bold text-slate-800">
           Hola, {user?.name} 👋
         </h1>
-        <p className="text-sm text-slate-500 mt-1">Resumen general de tu clínica</p>
+        <p className="text-sm text-slate-500 mt-1">Resumen general de Shiluv</p>
       </div>
 
       {/* Stats Cards */}
@@ -142,6 +144,7 @@ export default function Dashboard() {
         </div>
 
         {/* Stock bajo */}
+        {showStock && (
         <div className="bg-white rounded-2xl shadow-sm border border-emerald-100">
           <div className="px-6 py-4 border-b border-emerald-100">
             <h2 className="text-lg font-semibold text-slate-800">Productos con Stock Bajo</h2>
@@ -167,6 +170,7 @@ export default function Dashboard() {
             )}
           </div>
         </div>
+        )}
       </div>
     </div>
   );

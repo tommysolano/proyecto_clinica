@@ -1,23 +1,35 @@
 import { useState } from 'react';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
-import { HiOutlineHeart, HiOutlineShieldCheck } from 'react-icons/hi2';
+import { HiOutlineShieldCheck, HiOutlineBuildingOffice2 } from 'react-icons/hi2';
+import shiluvLogo from '../Shiluv-logo-4.png';
 
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [loading, setLoading] = useState(false);
-  const { login } = useAuth();
+  const [step, setStep] = useState('credentials');
+  const [availableClinics, setAvailableClinics] = useState([]);
+  const { login, selectClinic } = useAuth();
   const navigate = useNavigate();
 
-  const handleSubmit = async (e) => {
+  const handleCredentials = async (e) => {
     e.preventDefault();
     setLoading(true);
     try {
-      await login(email, password);
-      toast.success('Bienvenido');
-      navigate('/');
+      const data = await login(email, password);
+      if ((data.clinics || []).length === 0) {
+        toast.error('No tiene clínicas asignadas. Contacte al administrador.');
+        return;
+      }
+      if (data.clinics.length === 1) {
+        toast.success('Bienvenido');
+        navigate('/');
+        return;
+      }
+      setAvailableClinics(data.clinics);
+      setStep('clinic');
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al iniciar sesión');
     } finally {
@@ -25,9 +37,21 @@ export default function Login() {
     }
   };
 
+  const handleSelectClinic = async (clinicId) => {
+    setLoading(true);
+    try {
+      await selectClinic(clinicId);
+      toast.success('Bienvenido');
+      navigate('/');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al seleccionar clínica');
+    } finally {
+      setLoading(false);
+    }
+  };
+
   return (
     <div className="min-h-screen flex">
-      {/* Panel izquierdo decorativo */}
       <div className="hidden lg:flex lg:w-1/2 bg-gradient-to-br from-emerald-800 via-teal-700 to-cyan-800 relative overflow-hidden">
         <div className="absolute inset-0 opacity-10">
           <svg className="w-full h-full" viewBox="0 0 100 100" preserveAspectRatio="none">
@@ -37,15 +61,15 @@ export default function Login() {
           </svg>
         </div>
         <div className="relative z-10 flex flex-col justify-center px-16 text-white">
-          <div className="w-16 h-16 bg-white/20 backdrop-blur rounded-2xl flex items-center justify-center mb-8">
-            <HiOutlineHeart className="w-8 h-8 text-white" />
+          <div className="w-24 h-24 bg-white rounded-2xl flex items-center justify-center p-3 mb-8 shadow-xl">
+            <img src={shiluvLogo} alt="Shiluv" className="w-full h-full object-contain" />
           </div>
           <h1 className="text-4xl font-bold mb-4 leading-tight">
-            Sistema de Gestión<br />Clínica
+            Shiluv<br />Sistema de Gestión Médica
           </h1>
           <p className="text-emerald-100 text-lg leading-relaxed max-w-md">
-            Plataforma integral para la administración de su consultorio médico. 
-            Gestione pacientes, citas, inventario y facturación en un solo lugar.
+            Plataforma integral con facturación electrónica SRI Ecuador. Pacientes, citas,
+            inventario y facturación en un solo lugar.
           </p>
           <div className="flex items-center gap-3 mt-10 text-emerald-200 text-sm">
             <HiOutlineShieldCheck className="w-5 h-5" />
@@ -54,67 +78,96 @@ export default function Login() {
         </div>
       </div>
 
-      {/* Panel derecho - formulario */}
       <div className="flex-1 flex items-center justify-center bg-gradient-to-b from-green-50 to-white p-6">
         <div className="w-full max-w-md">
-          {/* Logo móvil */}
           <div className="lg:hidden text-center mb-8">
-            <div className="w-14 h-14 bg-gradient-to-br from-emerald-600 to-teal-600 rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-lg shadow-emerald-200">
-              <HiOutlineHeart className="w-7 h-7 text-white" />
+            <div className="w-16 h-16 bg-white rounded-2xl flex items-center justify-center mx-auto mb-3 shadow-lg shadow-emerald-200 p-2">
+              <img src={shiluvLogo} alt="Shiluv" className="w-full h-full object-contain" />
             </div>
-            <h1 className="text-xl font-bold text-slate-800">Sistema Clínico</h1>
+            <h1 className="text-xl font-bold text-slate-800">Shiluv</h1>
           </div>
 
           <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 p-8">
-            <div className="mb-6">
-              <h2 className="text-2xl font-bold text-slate-800">Bienvenido</h2>
-              <p className="text-muted mt-1 text-sm">Ingrese sus credenciales para acceder</p>
-            </div>
+            {step === 'credentials' && (
+              <>
+                <div className="mb-6">
+                  <h2 className="text-2xl font-bold text-slate-800">Bienvenido</h2>
+                  <p className="text-muted mt-1 text-sm">Ingrese sus credenciales para acceder</p>
+                </div>
+                <form onSubmit={handleCredentials} className="space-y-5">
+                  <div>
+                    <label className="block text-sm font-semibold text-slate-700 mb-1.5">Correo electrónico</label>
+                    <input
+                      type="email"
+                      value={email}
+                      onChange={(e) => setEmail(e.target.value)}
+                      required
+                      className="w-full px-4 py-3 border border-slate-200 rounded-xl outline-none text-sm bg-slate-50/50"
+                      placeholder="correo@shiluv.com"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-semibold text-slate-700 mb-1.5">Contraseña</label>
+                    <input
+                      type="password"
+                      value={password}
+                      onChange={(e) => setPassword(e.target.value)}
+                      required
+                      className="w-full px-4 py-3 border border-slate-200 rounded-xl outline-none text-sm bg-slate-50/50"
+                      placeholder="••••••••"
+                    />
+                  </div>
+                  <button
+                    type="submit"
+                    disabled={loading}
+                    className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-semibold py-3 rounded-xl disabled:opacity-50 cursor-pointer border-none text-sm shadow-lg shadow-emerald-200/50"
+                  >
+                    {loading ? 'Ingresando...' : 'Iniciar Sesión'}
+                  </button>
+                </form>
+              </>
+            )}
 
-            <form onSubmit={handleSubmit} className="space-y-5">
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Correo electrónico</label>
-                <input
-                  type="email"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
-                  required
-                  className="w-full px-4 py-3 border border-slate-200 rounded-xl outline-none text-sm bg-slate-50/50 placeholder:text-slate-400"
-                  placeholder="correo@clinica.com"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1.5">Contraseña</label>
-                <input
-                  type="password"
-                  value={password}
-                  onChange={(e) => setPassword(e.target.value)}
-                  required
-                  className="w-full px-4 py-3 border border-slate-200 rounded-xl outline-none text-sm bg-slate-50/50 placeholder:text-slate-400"
-                  placeholder="••••••••"
-                />
-              </div>
-              <button
-                type="submit"
-                disabled={loading}
-                className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-semibold py-3 rounded-xl disabled:opacity-50 cursor-pointer border-none text-sm shadow-lg shadow-emerald-200/50"
-              >
-                {loading ? 'Ingresando...' : 'Iniciar Sesión'}
-              </button>
-            </form>
-
-            <div className="mt-6 pt-6 border-t border-slate-100 text-center">
-              <p className="text-sm text-muted">
-                ¿No tienes cuenta?{' '}
-                <Link to="/register" className="text-emerald-600 font-semibold hover:text-emerald-700 no-underline">
-                  Crear cuenta
-                </Link>
-              </p>
-            </div>
+            {step === 'clinic' && (
+              <>
+                <div className="mb-6">
+                  <h2 className="text-2xl font-bold text-slate-800">Seleccione clínica</h2>
+                  <p className="text-muted mt-1 text-sm">
+                    Tiene acceso a múltiples clínicas. Elija con cuál desea trabajar.
+                  </p>
+                </div>
+                <div className="space-y-3">
+                  {availableClinics.map((c) => (
+                    <button
+                      key={c._id}
+                      onClick={() => handleSelectClinic(c._id)}
+                      disabled={loading}
+                      className="w-full flex items-center gap-3 p-4 border border-slate-200 hover:border-emerald-400 hover:bg-emerald-50 rounded-xl text-left disabled:opacity-50 cursor-pointer bg-white"
+                    >
+                      <div className="w-10 h-10 bg-emerald-100 rounded-xl flex items-center justify-center">
+                        <HiOutlineBuildingOffice2 className="w-5 h-5 text-emerald-600" />
+                      </div>
+                      <div className="flex-1">
+                        <p className="font-semibold text-slate-800">{c.name}</p>
+                        <p className="text-xs text-slate-500">
+                          {c.razonSocial} · Rol: <span className="capitalize">{c.role}</span>
+                        </p>
+                      </div>
+                    </button>
+                  ))}
+                </div>
+                <button
+                  onClick={() => setStep('credentials')}
+                  className="w-full mt-4 text-sm text-slate-500 hover:text-slate-700 cursor-pointer bg-transparent border-none"
+                >
+                  ← Volver
+                </button>
+              </>
+            )}
           </div>
 
           <p className="text-center text-xs text-slate-400 mt-6">
-            © 2026 Sistema Clínico · Todos los derechos reservados
+            © 2026 Shiluv · Todos los derechos reservados
           </p>
         </div>
       </div>

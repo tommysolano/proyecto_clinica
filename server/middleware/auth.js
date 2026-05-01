@@ -1,6 +1,10 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 
+/**
+ * Verifica el JWT y carga el usuario.
+ * Si el token incluye `clinicId`, lo expone en `req.clinicId` y resuelve `req.role`.
+ */
 const auth = async (req, res, next) => {
   try {
     const token = req.header('Authorization')?.replace('Bearer ', '');
@@ -15,19 +19,51 @@ const auth = async (req, res, next) => {
     }
 
     req.user = user;
+    req.tokenPayload = decoded;
+
+    if (decoded.clinicId) {
+      req.clinicId = decoded.clinicId;
+      const role = user.getRoleForClinic(decoded.clinicId);
+      if (!role && !user.isSuperAdmin) {
+        return res.status(403).json({ message: 'No tienes acceso a esta clínica' });
+      }
+      req.role = user.isSuperAdmin && !role ? 'admin' : role;
+    }
+
     next();
   } catch (error) {
     res.status(401).json({ message: 'Token inválido' });
   }
 };
 
-const authorize = (...roles) => {
-  return (req, res, next) => {
-    if (!roles.includes(req.user.role)) {
-      return res.status(403).json({ message: 'No tienes permisos para esta acción' });
-    }
-    next();
-  };
+/**
+ * Garantiza que el token incluya clinicId (para rutas tenant-scoped).
+ */
+const requireClinic = (req, res, next) => {
+  if (!req.clinicId) {
+    return res
+      .status(403)
+      .json({ message: 'Debe seleccionar una clínica', code: 'CLINIC_REQUIRED' });
+  }
+  next();
 };
 
-module.exports = { auth, authorize };
+/**
+ * Restringe el acceso a roles específicos dentro de la clínica activa.
+ */
+const requireRole = (...roles) => (req, res, next) => {
+  if (req.user?.isSuperAdmin) return next();
+  if (!req.role || !roles.includes(req.role)) {
+    return res.status(403).json({ message: 'No tienes permisos para esta acción' });
+  }
+  next();
+};
+
+const requireSuperAdmin = (req, res, next) => {
+  if (!req.user?.isSuperAdmin) {
+    return res.status(403).json({ message: 'Solo el super administrador puede realizar esta acción' });
+  }
+  next();
+};
+
+module.exports = { auth, requireClinic, requireRole, requireSuperAdmin };

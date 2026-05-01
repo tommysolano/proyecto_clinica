@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import api from '../api/axios';
 import Modal from '../components/Modal';
 import toast from 'react-hot-toast';
+import { useAuth } from '../context/AuthContext';
 import {
   HiOutlinePlus, HiOutlinePencil, HiOutlineTrash,
   HiOutlineMagnifyingGlass, HiOutlineArrowDown, HiOutlineArrowUp,
@@ -16,6 +17,8 @@ const emptyProduct = {
 const emptyMovement = { product: '', type: 'entrada', quantity: '', reason: '' };
 
 export default function Inventory() {
+  const { hasRole } = useAuth();
+  const canWrite = hasRole('admin', 'contabilidad');
   const [products, setProducts] = useState([]);
   const [movements, setMovements] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -146,20 +149,22 @@ export default function Inventory() {
           <h1 className="text-2xl font-bold text-slate-800">Inventario</h1>
           <p className="text-sm text-slate-500 mt-1">Gestión de productos y movimientos</p>
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={() => openNewMovement()}
-            className="flex items-center gap-2 bg-cyan-600 hover:bg-cyan-700 text-white px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border-none transition-colors"
-          >
-            <HiOutlineArrowDown className="w-4 h-4" /> Movimiento
-          </button>
-          <button
-            onClick={openNewProduct}
-            className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white px-5 py-2.5 rounded-xl text-sm font-medium cursor-pointer border-none shadow-lg shadow-emerald-200/50 transition-all"
-          >
-            <HiOutlinePlus className="w-5 h-5" /> Nuevo Producto
-          </button>
-        </div>
+        {canWrite && (
+          <div className="flex gap-2">
+            <button
+              onClick={() => openNewMovement()}
+              className="flex items-center gap-2 bg-cyan-600 hover:bg-cyan-700 text-white px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border-none transition-colors"
+            >
+              <HiOutlineArrowDown className="w-4 h-4" /> Movimiento
+            </button>
+            <button
+              onClick={openNewProduct}
+              className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white px-5 py-2.5 rounded-xl text-sm font-medium cursor-pointer border-none shadow-lg shadow-emerald-200/50 transition-all"
+            >
+              <HiOutlinePlus className="w-5 h-5" /> Nuevo Producto
+            </button>
+          </div>
+        )}
       </div>
 
       {/* Tabs */}
@@ -256,15 +261,20 @@ export default function Inventory() {
                           )}
                         </td>
                         <td className="px-6 py-3.5 text-right">
-                          <button onClick={() => openNewMovement(p._id)} className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors" title="Movimiento">
-                            <HiOutlineArrowUp className="w-4 h-4" />
-                          </button>
-                          <button onClick={() => openEditProduct(p)} className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors">
-                            <HiOutlinePencil className="w-4 h-4" />
-                          </button>
-                          <button onClick={() => handleDeleteProduct(p._id)} className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer transition-colors">
-                            <HiOutlineTrash className="w-4 h-4" />
-                          </button>
+                          {canWrite && (
+                            <>
+                              <button onClick={() => openNewMovement(p._id)} className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors" title="Movimiento">
+                                <HiOutlineArrowUp className="w-4 h-4" />
+                              </button>
+                              <button onClick={() => openEditProduct(p)} className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors">
+                                <HiOutlinePencil className="w-4 h-4" />
+                              </button>
+                              <button onClick={() => handleDeleteProduct(p._id)} className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer transition-colors">
+                                <HiOutlineTrash className="w-4 h-4" />
+                              </button>
+                            </>
+                          )}
+                          {!canWrite && <span className="text-xs text-slate-400">—</span>}
                         </td>
                       </tr>
                     ))

@@ -13,8 +13,12 @@ exports.getDashboard = async (req, res) => {
     const startOfMonth = new Date(today.getFullYear(), today.getMonth(), 1);
     const endOfMonth = new Date(today.getFullYear(), today.getMonth() + 1, 0, 23, 59, 59);
 
-    const appointmentQuery = { date: { $gte: today, $lt: tomorrow } };
-    if (req.user.role === 'doctor') {
+    const clinicId = req.clinicId;
+    const mongoose = require('mongoose');
+    const clinicObjId = new mongoose.Types.ObjectId(clinicId);
+
+    const appointmentQuery = { clinic: clinicId, date: { $gte: today, $lt: tomorrow } };
+    if (req.role === 'doctor') {
       appointmentQuery.doctor = req.user._id;
     }
 
@@ -29,27 +33,32 @@ exports.getDashboard = async (req, res) => {
         .populate('patient', 'firstName lastName')
         .populate('doctor', 'name specialty')
         .sort({ startTime: 1 }),
-      Patient.countDocuments({ active: true }),
-      Sale.aggregate([
-        {
-          $match: {
-            createdAt: { $gte: startOfMonth, $lte: endOfMonth },
-            status: 'completada',
-          },
-        },
-        {
-          $group: {
-            _id: null,
-            total: { $sum: '$total' },
-            count: { $sum: 1 },
-          },
-        },
-      ]),
-      Product.find({ active: true, $expr: { $lte: ['$stock', '$minStock'] } })
-        .select('name code stock minStock')
-        .limit(10),
+      Patient.countDocuments({ clinic: clinicId, active: true }),
+      req.role === 'doctor'
+        ? Promise.resolve([])
+        : Sale.aggregate([
+            {
+              $match: {
+                clinic: clinicObjId,
+                createdAt: { $gte: startOfMonth, $lte: endOfMonth },
+                status: 'completada',
+              },
+            },
+            {
+              $group: { _id: null, total: { $sum: '$total' }, count: { $sum: 1 } },
+            },
+          ]),
+      req.role === 'doctor'
+        ? Promise.resolve([])
+        : Product.find({
+            clinic: clinicId,
+            active: true,
+            $expr: { $lte: ['$stock', '$minStock'] },
+          })
+            .select('name code stock minStock')
+            .limit(10),
       Appointment.aggregate([
-        { $match: { date: { $gte: today, $lt: tomorrow } } },
+        { $match: { clinic: clinicObjId, date: { $gte: today, $lt: tomorrow } } },
         { $group: { _id: '$status', count: { $sum: 1 } } },
       ]),
     ]);

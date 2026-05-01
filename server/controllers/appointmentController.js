@@ -3,7 +3,7 @@ const Appointment = require('../models/Appointment');
 exports.getAppointments = async (req, res) => {
   try {
     const { startDate, endDate, doctor, status } = req.query;
-    const query = {};
+    const query = { clinic: req.clinicId };
 
     if (startDate && endDate) {
       query.date = { $gte: new Date(startDate), $lte: new Date(endDate) };
@@ -11,8 +11,7 @@ exports.getAppointments = async (req, res) => {
     if (doctor) query.doctor = doctor;
     if (status) query.status = status;
 
-    // Si es doctor, solo ver sus citas
-    if (req.user.role === 'doctor') {
+    if (req.role === 'doctor') {
       query.doctor = req.user._id;
     }
 
@@ -29,8 +28,8 @@ exports.getAppointments = async (req, res) => {
 
 exports.getAppointment = async (req, res) => {
   try {
-    const appointment = await Appointment.findById(req.params.id)
-      .populate('patient', 'firstName lastName cedula phone whatsapp email birthDate gender bloodType allergies')
+    const appointment = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId })
+      .populate('patient', 'firstName lastName cedula phone whatsapp email birthDate gender')
       .populate('doctor', 'name specialty');
 
     if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
@@ -42,16 +41,14 @@ exports.getAppointment = async (req, res) => {
 
 exports.createAppointment = async (req, res) => {
   try {
-    const { patient, doctor, date, startTime, endTime } = req.body;
+    const { doctor, date, startTime, endTime } = req.body;
 
-    // Verificar conflictos de horario
     const conflict = await Appointment.findOne({
+      clinic: req.clinicId,
       doctor,
       date: new Date(date),
       status: { $nin: ['cancelada', 'no_asistio'] },
-      $or: [
-        { startTime: { $lt: endTime }, endTime: { $gt: startTime } },
-      ],
+      $or: [{ startTime: { $lt: endTime }, endTime: { $gt: startTime } }],
     });
 
     if (conflict) {
@@ -60,12 +57,13 @@ exports.createAppointment = async (req, res) => {
 
     const appointment = await Appointment.create({
       ...req.body,
+      clinic: req.clinicId,
       createdBy: req.user._id,
     });
 
     const populated = await appointment
       .populate('patient', 'firstName lastName cedula phone')
-      .then(doc => doc.populate('doctor', 'name specialty'));
+      .then((doc) => doc.populate('doctor', 'name specialty'));
 
     res.status(201).json(populated);
   } catch (error) {
@@ -75,10 +73,11 @@ exports.createAppointment = async (req, res) => {
 
 exports.updateAppointment = async (req, res) => {
   try {
-    const appointment = await Appointment.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-      runValidators: true,
-    })
+    const appointment = await Appointment.findOneAndUpdate(
+      { _id: req.params.id, clinic: req.clinicId },
+      req.body,
+      { new: true, runValidators: true }
+    )
       .populate('patient', 'firstName lastName cedula phone')
       .populate('doctor', 'name specialty');
 
@@ -91,8 +90,8 @@ exports.updateAppointment = async (req, res) => {
 
 exports.deleteAppointment = async (req, res) => {
   try {
-    const appointment = await Appointment.findByIdAndUpdate(
-      req.params.id,
+    const appointment = await Appointment.findOneAndUpdate(
+      { _id: req.params.id, clinic: req.clinicId },
       { status: 'cancelada' },
       { new: true }
     );
@@ -111,10 +110,11 @@ exports.getTodayAppointments = async (req, res) => {
     tomorrow.setDate(tomorrow.getDate() + 1);
 
     const query = {
+      clinic: req.clinicId,
       date: { $gte: today, $lt: tomorrow },
     };
 
-    if (req.user.role === 'doctor') {
+    if (req.role === 'doctor') {
       query.doctor = req.user._id;
     }
 

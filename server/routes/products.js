@@ -5,17 +5,15 @@ const {
   createProduct,
   updateProduct,
   deleteProduct,
-  getMovements,
-  createMovement,
 } = require('../controllers/productController');
-const { auth, authorize } = require('../middleware/auth');
+const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
-router.use(auth);
+router.use(auth, requireClinic);
 
-router.get('/', getProducts);
-router.get('/:id', getProduct);
-router.post('/', authorize('admin', 'recepcionista'), createProduct);
-router.put('/:id', authorize('admin', 'recepcionista'), updateProduct);
-router.delete('/:id', authorize('admin'), deleteProduct);
+router.get('/', requireRole('admin', 'cajero', 'contabilidad'), getProducts);
+router.get('/:id', requireRole('admin', 'cajero', 'contabilidad'), getProduct);
+router.post('/', requireRole('admin', 'contabilidad'), createProduct);
+router.put('/:id', requireRole('admin', 'contabilidad'), updateProduct);
+router.delete('/:id', requireRole('admin'), deleteProduct);
 
 module.exports = router;

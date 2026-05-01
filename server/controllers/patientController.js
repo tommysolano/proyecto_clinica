@@ -3,7 +3,7 @@ const Patient = require('../models/Patient');
 exports.getPatients = async (req, res) => {
   try {
     const { search, page = 1, limit = 20 } = req.query;
-    const query = { active: true };
+    const query = { clinic: req.clinicId, active: true };
 
     if (search) {
       query.$or = [
@@ -34,7 +34,7 @@ exports.getPatients = async (req, res) => {
 
 exports.getPatient = async (req, res) => {
   try {
-    const patient = await Patient.findById(req.params.id);
+    const patient = await Patient.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!patient) return res.status(404).json({ message: 'Paciente no encontrado' });
     res.json(patient);
   } catch (error) {
@@ -44,12 +44,15 @@ exports.getPatient = async (req, res) => {
 
 exports.createPatient = async (req, res) => {
   try {
-    const existing = await Patient.findOne({ cedula: req.body.cedula });
+    const existing = await Patient.findOne({
+      clinic: req.clinicId,
+      cedula: req.body.cedula,
+    });
     if (existing) {
       return res.status(400).json({ message: 'Ya existe un paciente con esa cédula' });
     }
 
-    const patient = await Patient.create(req.body);
+    const patient = await Patient.create({ ...req.body, clinic: req.clinicId });
     res.status(201).json(patient);
   } catch (error) {
     res.status(500).json({ message: 'Error al crear paciente', error: error.message });
@@ -58,10 +61,11 @@ exports.createPatient = async (req, res) => {
 
 exports.updatePatient = async (req, res) => {
   try {
-    const patient = await Patient.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-      runValidators: true,
-    });
+    const patient = await Patient.findOneAndUpdate(
+      { _id: req.params.id, clinic: req.clinicId },
+      req.body,
+      { new: true, runValidators: true }
+    );
     if (!patient) return res.status(404).json({ message: 'Paciente no encontrado' });
     res.json(patient);
   } catch (error) {
@@ -71,8 +75,8 @@ exports.updatePatient = async (req, res) => {
 
 exports.deletePatient = async (req, res) => {
   try {
-    const patient = await Patient.findByIdAndUpdate(
-      req.params.id,
+    const patient = await Patient.findOneAndUpdate(
+      { _id: req.params.id, clinic: req.clinicId },
       { active: false },
       { new: true }
     );

@@ -4,7 +4,7 @@ const InventoryMovement = require('../models/InventoryMovement');
 exports.getProducts = async (req, res) => {
   try {
     const { search, category, lowStock } = req.query;
-    const query = { active: true };
+    const query = { clinic: req.clinicId, active: true };
 
     if (search) {
       query.$or = [
@@ -26,7 +26,7 @@ exports.getProducts = async (req, res) => {
 
 exports.getProduct = async (req, res) => {
   try {
-    const product = await Product.findById(req.params.id);
+    const product = await Product.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!product) return res.status(404).json({ message: 'Producto no encontrado' });
     res.json(product);
   } catch (error) {
@@ -36,12 +36,12 @@ exports.getProduct = async (req, res) => {
 
 exports.createProduct = async (req, res) => {
   try {
-    const existing = await Product.findOne({ code: req.body.code });
+    const existing = await Product.findOne({ clinic: req.clinicId, code: req.body.code });
     if (existing) {
       return res.status(400).json({ message: 'Ya existe un producto con ese código' });
     }
 
-    const product = await Product.create(req.body);
+    const product = await Product.create({ ...req.body, clinic: req.clinicId });
     res.status(201).json(product);
   } catch (error) {
     res.status(500).json({ message: 'Error al crear producto', error: error.message });
@@ -50,10 +50,11 @@ exports.createProduct = async (req, res) => {
 
 exports.updateProduct = async (req, res) => {
   try {
-    const product = await Product.findByIdAndUpdate(req.params.id, req.body, {
-      new: true,
-      runValidators: true,
-    });
+    const product = await Product.findOneAndUpdate(
+      { _id: req.params.id, clinic: req.clinicId },
+      req.body,
+      { new: true, runValidators: true }
+    );
     if (!product) return res.status(404).json({ message: 'Producto no encontrado' });
     res.json(product);
   } catch (error) {
@@ -63,8 +64,8 @@ exports.updateProduct = async (req, res) => {
 
 exports.deleteProduct = async (req, res) => {
   try {
-    const product = await Product.findByIdAndUpdate(
-      req.params.id,
+    const product = await Product.findOneAndUpdate(
+      { _id: req.params.id, clinic: req.clinicId },
       { active: false },
       { new: true }
     );
@@ -79,7 +80,7 @@ exports.deleteProduct = async (req, res) => {
 exports.getMovements = async (req, res) => {
   try {
     const { product, type, startDate, endDate } = req.query;
-    const query = {};
+    const query = { clinic: req.clinicId };
 
     if (product) query.product = product;
     if (type) query.type = type;
@@ -91,7 +92,7 @@ exports.getMovements = async (req, res) => {
       .populate('product', 'name code')
       .populate('createdBy', 'name')
       .sort({ createdAt: -1 })
-      .limit(100);
+      .limit(200);
 
     res.json(movements);
   } catch (error) {
@@ -102,28 +103,32 @@ exports.getMovements = async (req, res) => {
 exports.createMovement = async (req, res) => {
   try {
     const { product: productId, type, quantity, reason, reference } = req.body;
+    const qty = Number(quantity);
+    if (!qty || qty <= 0) {
+      return res.status(400).json({ message: 'Cantidad inválida' });
+    }
 
-    const product = await Product.findById(productId);
+    const product = await Product.findOne({ _id: productId, clinic: req.clinicId });
     if (!product) return res.status(404).json({ message: 'Producto no encontrado' });
 
-    if (type === 'salida' && product.stock < quantity) {
+    if (type === 'salida' && product.stock < qty) {
       return res.status(400).json({ message: 'Stock insuficiente' });
     }
 
-    // Actualizar stock
     if (type === 'entrada') {
-      product.stock += quantity;
+      product.stock += qty;
     } else if (type === 'salida') {
-      product.stock -= quantity;
+      product.stock -= qty;
     } else {
-      product.stock = quantity; // ajuste directo
+      product.stock = qty;
     }
     await product.save();
 
     const movement = await InventoryMovement.create({
+      clinic: req.clinicId,
       product: productId,
       type,
-      quantity,
+      quantity: qty,
       reason,
       reference,
       createdBy: req.user._id,
@@ -131,7 +136,7 @@ exports.createMovement = async (req, res) => {
 
     const populated = await movement
       .populate('product', 'name code stock')
-      .then(doc => doc.populate('createdBy', 'name'));
+      .then((doc) => doc.populate('createdBy', 'name'));
 
     res.status(201).json(populated);
   } catch (error) {

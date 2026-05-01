@@ -2,65 +2,36 @@ const bcrypt = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const { validationResult } = require('express-validator');
 const User = require('../models/User');
+const Clinic = require('../models/Clinic');
 
-const generateToken = (id) => {
-  return jwt.sign({ id }, process.env.JWT_SECRET, {
-    expiresIn: process.env.JWT_EXPIRES_IN || '7d',
-  });
-};
+const ACCESS_EXPIRES = process.env.JWT_EXPIRES_IN || '8h';
 
-exports.register = async (req, res) => {
-  try {
-    const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
-    }
+const signToken = (payload) =>
+  jwt.sign(payload, process.env.JWT_SECRET, { expiresIn: ACCESS_EXPIRES });
 
-    const { name, email, password, role, specialty, phone } = req.body;
+const buildPublicUser = (user, activeClinic = null, role = null) => ({
+  id: user._id,
+  name: user.name,
+  email: user.email,
+  isSuperAdmin: !!user.isSuperAdmin,
+  specialty: user.specialty,
+  cedula: user.cedula,
+  phone: user.phone,
+  clinics: user.clinics || [],
+  activeClinic,
+  role,
+});
 
-    const existingUser = await User.findOne({ email });
-    if (existingUser) {
-      return res.status(400).json({ message: 'El email ya está registrado' });
-    }
-
-    const salt = await bcrypt.genSalt(10);
-    const hashedPassword = await bcrypt.hash(password, salt);
-
-    const user = await User.create({
-      name,
-      email,
-      password: hashedPassword,
-      role,
-      specialty,
-      phone,
-    });
-
-    const token = generateToken(user._id);
-
-    res.status(201).json({
-      token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        specialty: user.specialty,
-      },
-    });
-  } catch (error) {
-    res.status(500).json({ message: 'Error en el servidor', error: error.message });
-  }
-};
-
+/**
+ * Login: devuelve token sin clínica + lista de clínicas disponibles.
+ * El cliente debe llamar a /auth/select-clinic para obtener un token con clinicId.
+ */
 exports.login = async (req, res) => {
   try {
     const errors = validationResult(req);
-    if (!errors.isEmpty()) {
-      return res.status(400).json({ errors: errors.array() });
-    }
+    if (!errors.isEmpty()) return res.status(400).json({ errors: errors.array() });
 
     const { email, password } = req.body;
-
     const user = await User.findOne({ email });
     if (!user || !user.active) {
       return res.status(400).json({ message: 'Credenciales inválidas' });
@@ -71,17 +42,76 @@ exports.login = async (req, res) => {
       return res.status(400).json({ message: 'Credenciales inválidas' });
     }
 
-    const token = generateToken(user._id);
+    const clinicIds = user.clinics.map((c) => c.clinic);
+    const clinics = await Clinic.find({ _id: { $in: clinicIds }, active: true }).select(
+      'name razonSocial nombreComercial'
+    );
+
+    // Mapear clínicas con su rol
+    const clinicsWithRole = user.clinics
+      .map((c) => {
+        const clinic = clinics.find((cl) => String(cl._id) === String(c.clinic));
+        return clinic ? { clinic, role: c.role } : null;
+      })
+      .filter(Boolean);
+
+    // Si super-admin sin clínicas asignadas, listar todas
+    let availableClinics = clinicsWithRole;
+    if (user.isSuperAdmin) {
+      const allClinics = await Clinic.find({ active: true }).select(
+        'name razonSocial nombreComercial'
+      );
+      availableClinics = allClinics.map((clinic) => {
+        const existing = clinicsWithRole.find((c) => String(c.clinic._id) === String(clinic._id));
+        return existing || { clinic, role: 'admin' };
+      });
+    }
+
+    // Token "preliminar" sin clinicId (solo permite seleccionar)
+    const token = signToken({ id: user._id });
+
+    // Aplanar lista para el frontend
+    const flatClinics = availableClinics.map(({ clinic, role }) => ({
+      _id: clinic._id,
+      name: clinic.name,
+      razonSocial: clinic.razonSocial,
+      nombreComercial: clinic.nombreComercial,
+      role,
+    }));
 
     res.json({
       token,
-      user: {
-        id: user._id,
-        name: user.name,
-        email: user.email,
-        role: user.role,
-        specialty: user.specialty,
-      },
+      user: buildPublicUser(user),
+      clinics: flatClinics,
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Error en el servidor', error: error.message });
+  }
+};
+
+/**
+ * Selecciona la clínica activa y devuelve un nuevo JWT con clinicId.
+ */
+exports.selectClinic = async (req, res) => {
+  try {
+    const { clinicId } = req.body;
+    if (!clinicId) return res.status(400).json({ message: 'clinicId requerido' });
+
+    const user = req.user;
+    let role = user.getRoleForClinic(clinicId);
+    if (!role && user.isSuperAdmin) role = 'admin';
+    if (!role) return res.status(403).json({ message: 'No tienes acceso a esta clínica' });
+
+    const clinic = await Clinic.findById(clinicId);
+    if (!clinic || !clinic.active) {
+      return res.status(404).json({ message: 'Clínica no encontrada o inactiva' });
+    }
+
+    const token = signToken({ id: user._id, clinicId, role });
+
+    res.json({
+      token,
+      user: buildPublicUser(user, clinic, role),
     });
   } catch (error) {
     res.status(500).json({ message: 'Error en el servidor', error: error.message });
@@ -90,8 +120,57 @@ exports.login = async (req, res) => {
 
 exports.getMe = async (req, res) => {
   try {
-    res.json(req.user);
+    let activeClinic = null;
+    if (req.clinicId) {
+      activeClinic = await Clinic.findById(req.clinicId).select(
+        'name razonSocial nombreComercial logoUrl'
+      );
+    }
+
+    // Lista plana de clínicas accesibles (igual que en login)
+    const clinicIds = req.user.clinics.map((c) => c.clinic);
+    let clinicsDocs = await Clinic.find({ _id: { $in: clinicIds }, active: true }).select(
+      'name razonSocial nombreComercial'
+    );
+    let flatClinics = req.user.clinics
+      .map((c) => {
+        const clinic = clinicsDocs.find((cl) => String(cl._id) === String(c.clinic));
+        return clinic
+          ? {
+              _id: clinic._id,
+              name: clinic.name,
+              razonSocial: clinic.razonSocial,
+              nombreComercial: clinic.nombreComercial,
+              role: c.role,
+            }
+          : null;
+      })
+      .filter(Boolean);
+    if (req.user.isSuperAdmin) {
+      const all = await Clinic.find({ active: true }).select(
+        'name razonSocial nombreComercial'
+      );
+      flatClinics = all.map((clinic) => {
+        const ex = flatClinics.find((c) => String(c._id) === String(clinic._id));
+        return (
+          ex || {
+            _id: clinic._id,
+            name: clinic.name,
+            razonSocial: clinic.razonSocial,
+            nombreComercial: clinic.nombreComercial,
+            role: 'admin',
+          }
+        );
+      });
+    }
+
+    res.json({
+      user: buildPublicUser(req.user, activeClinic, req.role),
+      activeClinic,
+      role: req.role || null,
+      clinics: flatClinics,
+    });
   } catch (error) {
-    res.status(500).json({ message: 'Error en el servidor' });
+    res.status(500).json({ message: 'Error en el servidor', error: error.message });
   }
 };

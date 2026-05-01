@@ -1,0 +1,140 @@
+const fs = require('fs');
+const path = require('path');
+const multer = require('multer');
+const InvoicingConfig = require('../models/InvoicingConfig');
+const { encrypt, decrypt } = require('../modules/invoicing/ec/crypto');
+const { loadP12 } = require('../modules/invoicing/ec/xadesSigner');
+
+const CERTS_DIR = path.join(__dirname, '..', 'storage', 'certs');
+if (!fs.existsSync(CERTS_DIR)) fs.mkdirSync(CERTS_DIR, { recursive: true });
+
+const storage = multer.memoryStorage();
+exports.uploadMiddleware = multer({
+  storage,
+  limits: { fileSize: 5 * 1024 * 1024 },
+  fileFilter: (req, file, cb) => {
+    if (
+      file.mimetype === 'application/x-pkcs12' ||
+      /\.p12$|\.pfx$/i.test(file.originalname)
+    ) {
+      return cb(null, true);
+    }
+    cb(new Error('Archivo debe ser .p12 o .pfx'));
+  },
+}).single('certificate');
+
+function sanitizeOutput(config) {
+  if (!config) return null;
+  const obj = config.toObject ? config.toObject({ virtuals: true }) : { ...config };
+  delete obj.certificatePassword;
+  return obj;
+}
+
+exports.getConfig = async (req, res) => {
+  try {
+    const config = await InvoicingConfig.findOne({ clinic: req.clinicId });
+    res.json(sanitizeOutput(config));
+  } catch (error) {
+    res.status(500).json({ message: 'Error al obtener configuración' });
+  }
+};
+
+exports.upsertConfig = async (req, res) => {
+  try {
+    const allowed = [
+      'ruc',
+      'razonSocial',
+      'nombreComercial',
+      'direccionMatriz',
+      'direccionEstablecimiento',
+      'establecimiento',
+      'puntoEmision',
+      'secuencial',
+      'ambiente',
+      'obligadoContabilidad',
+      'agenteRetencion',
+      'contribuyenteEspecial',
+      'smtp',
+    ];
+    const update = {};
+    for (const k of allowed) if (req.body[k] !== undefined) update[k] = req.body[k];
+
+    const config = await InvoicingConfig.findOneAndUpdate(
+      { clinic: req.clinicId },
+      { $set: update, $setOnInsert: { clinic: req.clinicId } },
+      { new: true, upsert: true, runValidators: true }
+    );
+    res.json(sanitizeOutput(config));
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: 'Error al guardar configuración', error: error.message });
+  }
+};
+
+exports.uploadCertificate = async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'Archivo requerido' });
+    const { password } = req.body;
+    if (!password) return res.status(400).json({ message: 'Contraseña requerida' });
+
+    // Validar el certificado antes de guardarlo
+    let info;
+    try {
+      info = loadP12(req.file.buffer, password);
+    } catch (e) {
+      return res
+        .status(400)
+        .json({ message: `Certificado inválido: ${e.message}` });
+    }
+
+    if (info.validTo < new Date()) {
+      return res.status(400).json({ message: 'El certificado está vencido' });
+    }
+
+    const filename = `${req.clinicId}.p12`;
+    const filepath = path.join(CERTS_DIR, filename);
+    fs.writeFileSync(filepath, req.file.buffer);
+
+    const config = await InvoicingConfig.findOneAndUpdate(
+      { clinic: req.clinicId },
+      {
+        $set: {
+          certificateFilename: filename,
+          certificatePassword: encrypt(password),
+          certificateInfo: {
+            validFrom: info.validFrom,
+            validTo: info.validTo,
+            issuer: info.issuerName,
+            subject: info.subject,
+            serialNumber: info.serialNumberDecimal,
+          },
+        },
+        $setOnInsert: { clinic: req.clinicId },
+      },
+      { new: true, upsert: true }
+    );
+
+    res.json(sanitizeOutput(config));
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: 'Error al subir certificado', error: error.message });
+  }
+};
+
+/**
+ * Helper interno: obtiene configuración con certificado decifrado y buffer P12.
+ */
+exports.loadForSigning = async (clinicId) => {
+  const config = await InvoicingConfig.findOne({ clinic: clinicId });
+  if (!config) throw new Error('Configuración de facturación no encontrada');
+  if (!config.isComplete()) throw new Error('Configuración de facturación incompleta');
+
+  const filepath = path.join(CERTS_DIR, config.certificateFilename);
+  if (!fs.existsSync(filepath)) throw new Error('Archivo de certificado no encontrado');
+
+  const p12Buffer = fs.readFileSync(filepath);
+  const password = decrypt(config.certificatePassword);
+  return { config, p12Buffer, password };
+};

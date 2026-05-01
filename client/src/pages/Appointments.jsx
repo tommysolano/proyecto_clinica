@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react';
 import api from '../api/axios';
 import Modal from '../components/Modal';
 import toast from 'react-hot-toast';
+import { useAuth } from '../context/AuthContext';
 import { HiOutlinePlus, HiOutlinePencil, HiOutlineTrash, HiOutlineEye } from 'react-icons/hi2';
 
 const statusColors = {
@@ -28,6 +29,8 @@ const emptyForm = {
 };
 
 export default function Appointments() {
+  const { hasRole } = useAuth();
+  const canWrite = hasRole('admin', 'cajero');
   const [appointments, setAppointments] = useState([]);
   const [doctors, setDoctors] = useState([]);
   const [patients, setPatients] = useState([]);
@@ -159,12 +162,14 @@ export default function Appointments() {
           >
             {view === 'today' ? 'Ver Todas' : 'Solo Hoy'}
           </button>
-          <button
-            onClick={openNew}
-            className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white px-5 py-2.5 rounded-xl text-sm font-medium cursor-pointer border-none shadow-lg shadow-emerald-200/50 transition-all"
-          >
-            <HiOutlinePlus className="w-5 h-5" /> Nueva Cita
-          </button>
+          {canWrite && (
+            <button
+              onClick={openNew}
+              className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white px-5 py-2.5 rounded-xl text-sm font-medium cursor-pointer border-none shadow-lg shadow-emerald-200/50 transition-all"
+            >
+              <HiOutlinePlus className="w-5 h-5" /> Nueva Cita
+            </button>
+          )}
         </div>
       </div>
 
@@ -243,9 +248,11 @@ export default function Appointments() {
                       <button onClick={() => openEdit(apt)} className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors">
                         <HiOutlinePencil className="w-4 h-4" />
                       </button>
-                      <button onClick={() => handleDelete(apt._id)} className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer transition-colors">
-                        <HiOutlineTrash className="w-4 h-4" />
-                      </button>
+                      {canWrite && (
+                        <button onClick={() => handleDelete(apt._id)} className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer transition-colors">
+                          <HiOutlineTrash className="w-4 h-4" />
+                        </button>
+                      )}
                     </td>
                   </tr>
                 ))
