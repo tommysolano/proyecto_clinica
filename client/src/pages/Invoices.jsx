@@ -114,6 +114,31 @@ export default function Invoices() {
           <HiOutlineDocumentText className="w-7 h-7 text-emerald-600" />
           Facturación electrónica SRI
         </h1>
+        <button
+          onClick={async () => {
+            try {
+              const params = {};
+              if (filter.startDate) params.startDate = filter.startDate;
+              if (filter.endDate) params.endDate = filter.endDate;
+              if (filter.estado) params.estado = filter.estado;
+              const res = await api.get('/reports/invoices.xlsx', {
+                params,
+                responseType: 'blob',
+              });
+              const url = URL.createObjectURL(res.data);
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = `facturas_${Date.now()}.xlsx`;
+              a.click();
+              URL.revokeObjectURL(url);
+            } catch {
+              toast.error('Error al exportar');
+            }
+          }}
+          className="px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50"
+        >
+          Exportar Excel
+        </button>
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 p-4 mb-6">
@@ -180,6 +205,16 @@ export default function Invoices() {
                     <td className="px-5 py-3 text-slate-800">
                       {inv.razonSocialComprador}
                       <p className="text-xs text-slate-400">{inv.identificacionComprador}</p>
+                      {inv.sale?.patient && (
+                        <p className="text-[11px] text-emerald-600 mt-0.5">
+                          Paciente: {inv.sale.patient.firstName} {inv.sale.patient.lastName}
+                          {inv.sale.isFirstVisit && (
+                            <span className="ml-1 px-1.5 py-0.5 rounded-full text-[9px] font-bold bg-amber-100 text-amber-700 uppercase">
+                              Nuevo
+                            </span>
+                          )}
+                        </p>
+                      )}
                     </td>
                     <td className="px-5 py-3 text-slate-600">
                       {new Date(inv.createdAt).toLocaleDateString('es-EC')}
@@ -271,6 +306,12 @@ export default function Invoices() {
               <Item label="Identificación" value={detail.identificacionComprador} />
               <Item label="Email" value={detail.emailComprador || '—'} />
               <Item label="Teléfono" value={detail.telefonoComprador || '—'} />
+              {detail.sale?.patient && (
+                <Item
+                  label="Paciente registrado"
+                  value={`${detail.sale.patient.firstName} ${detail.sale.patient.lastName} — ${detail.sale.patient.cedula}${detail.sale.isFirstVisit ? ' (Nuevo)' : ''}`}
+                />
+              )}
             </div>
             <div className="grid grid-cols-3 gap-3 pt-2 border-t border-slate-100">
               <Item

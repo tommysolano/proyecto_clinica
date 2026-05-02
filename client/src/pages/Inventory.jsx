@@ -13,6 +13,7 @@ const categories = { medicamento: 'Medicamento', insumo: 'Insumo', servicio: 'Se
 const emptyProduct = {
   code: '', name: '', description: '', category: 'otro',
   purchasePrice: '', salePrice: '', stock: '', minStock: '5', unit: 'unidad', taxRate: '15',
+  unlimited: false,
 };
 const emptyMovement = { product: '', type: 'entrada', quantity: '', reason: '' };
 
@@ -74,6 +75,7 @@ export default function Inventory() {
       category: p.category, purchasePrice: String(p.purchasePrice),
       salePrice: String(p.salePrice), stock: String(p.stock),
       minStock: String(p.minStock), unit: p.unit, taxRate: String(p.taxRate),
+      unlimited: !!p.unlimited,
     });
     setProductModal(true);
   };
@@ -89,6 +91,7 @@ export default function Inventory() {
         stock: parseInt(productForm.stock) || 0,
         minStock: parseInt(productForm.minStock) || 5,
         taxRate: parseFloat(productForm.taxRate) || 15,
+        unlimited: !!productForm.unlimited,
       };
       if (editingProduct) {
         await api.put(`/products/${editingProduct}`, data);
@@ -151,6 +154,24 @@ export default function Inventory() {
         </div>
         {canWrite && (
           <div className="flex gap-2">
+            <button
+              onClick={async () => {
+                try {
+                  const res = await api.get('/reports/inventory.xlsx', { responseType: 'blob' });
+                  const url = URL.createObjectURL(res.data);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `inventario_${Date.now()}.xlsx`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                } catch {
+                  toast.error('Error al exportar');
+                }
+              }}
+              className="flex items-center gap-2 bg-white border border-emerald-200 text-emerald-700 hover:bg-emerald-50 px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer"
+            >
+              Excel
+            </button>
             <button
               onClick={() => openNewMovement()}
               className="flex items-center gap-2 bg-cyan-600 hover:bg-cyan-700 text-white px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border-none transition-colors"
@@ -253,11 +274,17 @@ export default function Inventory() {
                         <td className="px-6 py-3.5 text-sm text-slate-600 hidden md:table-cell capitalize">{categories[p.category]}</td>
                         <td className="px-6 py-3.5 text-sm text-slate-800 text-right">${p.salePrice.toFixed(2)}</td>
                         <td className="px-6 py-3.5 text-right">
-                          <span className={`text-sm font-medium ${p.stock <= p.minStock ? 'text-red-500' : 'text-slate-800'}`}>
-                            {p.stock}
-                          </span>
-                          {p.stock <= p.minStock && (
-                            <HiOutlineExclamationTriangle className="inline-block w-4 h-4 text-amber-500 ml-1" />
+                          {p.unlimited ? (
+                            <span className="text-sm font-medium text-emerald-600">∞</span>
+                          ) : (
+                            <>
+                              <span className={`text-sm font-medium ${p.stock <= p.minStock ? 'text-red-500' : 'text-slate-800'}`}>
+                                {p.stock}
+                              </span>
+                              {p.stock <= p.minStock && (
+                                <HiOutlineExclamationTriangle className="inline-block w-4 h-4 text-amber-500 ml-1" />
+                              )}
+                            </>
                           )}
                         </td>
                         <td className="px-6 py-3.5 text-right">
@@ -376,6 +403,18 @@ export default function Inventory() {
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">IVA %</label>
               <input type="number" value={productForm.taxRate} onChange={(e) => setProductForm({...productForm, taxRate: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
+            </div>
+            <div className="sm:col-span-2 flex items-center gap-2 pt-2">
+              <input
+                id="unlimited"
+                type="checkbox"
+                checked={!!productForm.unlimited}
+                onChange={(e) => setProductForm({ ...productForm, unlimited: e.target.checked })}
+                className="w-4 h-4 accent-emerald-600 cursor-pointer"
+              />
+              <label htmlFor="unlimited" className="text-sm text-slate-700 cursor-pointer">
+                Producto/servicio <strong>ilimitado</strong> (no descuenta stock al facturar)
+              </label>
             </div>
           </div>
           <div className="flex justify-end gap-3 pt-2">

@@ -32,6 +32,9 @@ const productSchema = new mongoose.Schema(
     },
     stock: { type: Number, default: 0, min: 0 },
     minStock: { type: Number, default: 5, min: 0 },
+    // Si es true, el producto se considera de stock infinito (no se descuenta ni valida).
+    // Útil para servicios u otros ítems facturables sin inventario físico.
+    unlimited: { type: Boolean, default: false },
     unit: { type: String, default: 'unidad', trim: true },
     taxRate: { type: Number, default: 15 },
     active: { type: Boolean, default: true },

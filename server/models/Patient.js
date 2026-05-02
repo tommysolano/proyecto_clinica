@@ -27,6 +27,7 @@ const patientSchema = new mongoose.Schema(
     phone: { type: String, trim: true },
     whatsapp: { type: String, trim: true },
     birthDate: { type: Date },
+    age: { type: Number, min: 0, max: 150 },
     gender: { type: String, enum: ['masculino', 'femenino', 'otro'] },
     address: { type: String, trim: true },
     notes: { type: String, trim: true },
@@ -40,6 +41,16 @@ patientSchema.index({ clinic: 1, cedula: 1 }, { unique: true });
 
 patientSchema.virtual('fullName').get(function () {
   return `${this.firstName} ${this.lastName}`;
+});
+
+// Edad calculada (prioriza birthDate). Si no hay birthDate, usa el campo age guardado.
+patientSchema.virtual('computedAge').get(function () {
+  if (this.birthDate) {
+    const diff = Date.now() - new Date(this.birthDate).getTime();
+    const ageDate = new Date(diff);
+    return Math.abs(ageDate.getUTCFullYear() - 1970);
+  }
+  return this.age ?? null;
 });
 
 patientSchema.set('toJSON', { virtuals: true });

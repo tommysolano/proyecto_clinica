@@ -46,6 +46,8 @@ const saleSchema = new mongoose.Schema(
     },
     invoice: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
     notes: String,
+    // Marca si es la primera venta/servicio del paciente (paciente nuevo).
+    isFirstVisit: { type: Boolean, default: false },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }

@@ -1,7 +1,7 @@
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 
-const VALID_ROLES = ['admin', 'cajero', 'contabilidad', 'doctor'];
+const VALID_ROLES = ['admin', 'cajero', 'contabilidad', 'doctor', 'call_center'];
 
 const sanitizeClinics = (clinics, fallbackClinicId) => {
   if (!Array.isArray(clinics)) return [];

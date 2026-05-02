@@ -20,9 +20,9 @@ import {
 
 // Cada item declara qué roles pueden verlo. superOnly = solo isSuperAdmin.
 const ALL_ITEMS = [
-  { path: '/', label: 'Dashboard', icon: HiOutlineHome, roles: ['admin', 'cajero', 'contabilidad', 'doctor'] },
-  { path: '/patients', label: 'Pacientes', icon: HiOutlineUsers, roles: ['admin', 'cajero', 'doctor'] },
-  { path: '/appointments', label: 'Citas', icon: HiOutlineCalendar, roles: ['admin', 'cajero', 'doctor'] },
+  { path: '/', label: 'Dashboard', icon: HiOutlineHome, roles: ['admin', 'cajero', 'contabilidad', 'doctor', 'call_center'] },
+  { path: '/patients', label: 'Pacientes', icon: HiOutlineUsers, roles: ['admin', 'cajero', 'doctor', 'call_center'] },
+  { path: '/appointments', label: 'Citas', icon: HiOutlineCalendar, roles: ['admin', 'cajero', 'doctor', 'call_center'] },
   { path: '/inventory', label: 'Inventario', icon: HiOutlineCube, roles: ['admin', 'contabilidad'] },
   { path: '/sales', label: 'Ventas', icon: HiOutlineShoppingCart, roles: ['admin', 'cajero', 'contabilidad'] },
   { path: '/invoices', label: 'Facturación', icon: HiOutlineDocumentText, roles: ['admin', 'cajero', 'contabilidad'] },
@@ -152,7 +152,7 @@ export default function Layout({ children }) {
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold text-white truncate">{user?.name}</p>
               <p className="text-[11px] text-emerald-300/80 capitalize">
-                {user?.isSuperAdmin ? 'Super Admin' : role || ''}
+                {user?.isSuperAdmin ? 'Super Admin' : (role === 'call_center' ? 'Call Center' : role || '')}
               </p>
             </div>
           </div>

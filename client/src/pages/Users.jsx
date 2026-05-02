@@ -15,6 +15,7 @@ const ROLES = [
   { value: 'cajero', label: 'Cajero' },
   { value: 'contabilidad', label: 'Contabilidad' },
   { value: 'doctor', label: 'Doctor' },
+  { value: 'call_center', label: 'Call Center' },
 ];
 
 const EMPTY = {

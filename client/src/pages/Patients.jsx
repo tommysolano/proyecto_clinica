@@ -20,6 +20,7 @@ const emptyForm = {
   phone: '',
   whatsapp: '',
   birthDate: '',
+  age: '',
   gender: '',
   address: '',
   notes: '',
@@ -27,7 +28,7 @@ const emptyForm = {
 
 export default function Patients() {
   const { hasRole } = useAuth();
-  const canWrite = hasRole('admin', 'cajero');
+  const canWrite = hasRole('admin', 'cajero', 'call_center');
   const canDelete = hasRole('admin');
 
   const [patients, setPatients] = useState([]);
@@ -69,6 +70,7 @@ export default function Patients() {
       ...emptyForm,
       ...patient,
       birthDate: patient.birthDate ? patient.birthDate.split('T')[0] : '',
+      age: patient.age ?? '',
     });
     setModalOpen(true);
   };
@@ -77,11 +79,15 @@ export default function Patients() {
     e.preventDefault();
     setSaving(true);
     try {
+      const payload = {
+        ...form,
+        age: form.age === '' ? undefined : Number(form.age),
+      };
       if (editing) {
-        await api.put(`/patients/${editing}`, form);
+        await api.put(`/patients/${editing}`, payload);
         toast.success('Paciente actualizado');
       } else {
-        await api.post('/patients', form);
+        await api.post('/patients', payload);
         toast.success('Paciente creado');
       }
       setModalOpen(false);
@@ -114,12 +120,32 @@ export default function Patients() {
           <p className="text-sm text-slate-500 mt-1">Gestión de pacientes registrados</p>
         </div>
         {canWrite && (
-          <button
-            onClick={openNew}
-            className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white px-5 py-2.5 rounded-xl text-sm font-medium cursor-pointer border-none shadow-lg shadow-emerald-200/50"
-          >
-            <HiOutlinePlus className="w-5 h-5" /> Nuevo Paciente
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={async () => {
+                try {
+                  const res = await api.get('/reports/patients.xlsx', { responseType: 'blob' });
+                  const url = URL.createObjectURL(res.data);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `pacientes_${Date.now()}.xlsx`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                } catch {
+                  toast.error('Error al exportar');
+                }
+              }}
+              className="flex items-center gap-2 bg-white border border-emerald-200 text-emerald-700 hover:bg-emerald-50 px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer"
+            >
+              Excel
+            </button>
+            <button
+              onClick={openNew}
+              className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white px-5 py-2.5 rounded-xl text-sm font-medium cursor-pointer border-none shadow-lg shadow-emerald-200/50"
+            >
+              <HiOutlinePlus className="w-5 h-5" /> Nuevo Paciente
+            </button>
+          </div>
         )}
       </div>
 
@@ -314,6 +340,18 @@ export default function Patients() {
                 value={form.birthDate}
                 onChange={handleChange}
                 className="input"
+              />
+            </Field>
+            <Field label="Edad (si no tiene fecha)">
+              <input
+                name="age"
+                type="number"
+                min="0"
+                max="150"
+                value={form.age}
+                onChange={handleChange}
+                className="input"
+                placeholder="Ej: 35"
               />
             </Field>
           </div>

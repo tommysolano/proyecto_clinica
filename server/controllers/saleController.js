@@ -15,7 +15,7 @@ exports.getSales = async (req, res) => {
 
     const sales = await Sale.find(query)
       .populate('patient', 'firstName lastName cedula')
-      .populate('createdBy', 'name')
+      .populate('createdBy', 'name email')
       .populate('invoice', 'estado claveAcceso secuencial estab ptoEmi')
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
@@ -83,6 +83,8 @@ exports.createSale = async (req, res) => {
       return res.status(400).json({ message: 'Algún producto no existe en esta clínica' });
     }
 
+    const isUnlimited = (p) => p.unlimited === true || p.category === 'servicio';
+
     // Pre-validar stock antes de descontar
     for (const item of items) {
       const product = products.find((p) => String(p._id) === String(item.product));
@@ -90,7 +92,7 @@ exports.createSale = async (req, res) => {
       if (!qty || qty <= 0) {
         return res.status(400).json({ message: `Cantidad inválida para ${product.name}` });
       }
-      if (product.category !== 'servicio' && product.stock < qty) {
+      if (!isUnlimited(product) && product.stock < qty) {
         return res.status(400).json({
           message: `Stock insuficiente para "${product.name}". Disponible: ${product.stock}`,
         });
@@ -103,7 +105,7 @@ exports.createSale = async (req, res) => {
       for (const item of items) {
         const product = products.find((p) => String(p._id) === String(item.product));
         const qty = Number(item.quantity);
-        if (product.category === 'servicio') continue;
+        if (isUnlimited(product)) continue;
 
         const updated = await Product.findOneAndUpdate(
           {
@@ -153,6 +155,17 @@ exports.createSale = async (req, res) => {
     taxAmount = +taxAmount.toFixed(2);
     const total = +(subtotal + taxAmount).toFixed(2);
 
+    // ¿Es primera venta del paciente? (paciente nuevo)
+    let isFirstVisit = false;
+    if (patient) {
+      const previousCount = await Sale.countDocuments({
+        clinic: req.clinicId,
+        patient,
+        status: 'completada',
+      });
+      isFirstVisit = previousCount === 0;
+    }
+
     const sale = await Sale.create({
       clinic: req.clinicId,
       items: saleItems,
@@ -167,12 +180,14 @@ exports.createSale = async (req, res) => {
       total,
       paymentMethod,
       notes,
+      isFirstVisit,
       createdBy: req.user._id,
     });
 
-    // Registrar movimientos de inventario
+    // Registrar movimientos de inventario (omitir productos ilimitados/servicios)
     for (const it of saleItems) {
-      if (it.category === 'servicio') continue;
+      const prod = products.find((p) => String(p._id) === String(it.product));
+      if (prod && (prod.unlimited === true || prod.category === 'servicio')) continue;
       await InventoryMovement.create({
         clinic: req.clinicId,
         product: it.product,
@@ -216,9 +231,13 @@ exports.cancelSale = async (req, res) => {
       });
     }
 
-    // Restaurar stock
+    // Restaurar stock (saltar productos ilimitados / servicios)
     for (const item of sale.items) {
       if (item.category === 'servicio') continue;
+      const prod = await Product.findOne({ _id: item.product, clinic: req.clinicId }).select(
+        'unlimited category'
+      );
+      if (prod && prod.unlimited) continue;
       await Product.updateOne(
         { _id: item.product, clinic: req.clinicId },
         { $inc: { stock: item.quantity } }

@@ -45,6 +45,7 @@ export default function Sales() {
     items: [],
   });
   const [currentItem, setCurrentItem] = useState({ product: '', quantity: 1 });
+  const [patientSearch, setPatientSearch] = useState('');
 
   const fetchSales = async () => {
     try {
@@ -106,6 +107,7 @@ export default function Sales() {
       items: [],
     });
     setCurrentItem({ product: '', quantity: 1 });
+    setPatientSearch('');
     setModalOpen(true);
   };
 
@@ -114,7 +116,7 @@ export default function Sales() {
     const product = products.find((p) => p._id === currentItem.product);
     if (!product) return;
 
-    const isService = product.category === 'servicio';
+    const isService = product.category === 'servicio' || product.unlimited === true;
     if (!isService && product.stock <= 0) {
       return toast.error(`${product.name} sin stock disponible`);
     }
@@ -134,6 +136,7 @@ export default function Sales() {
           product: product._id,
           productName: product.name,
           category: product.category,
+          unlimited: product.unlimited === true,
           quantity: qty,
           unitPrice: product.salePrice,
           taxRate: product.taxRate,
@@ -152,7 +155,8 @@ export default function Sales() {
     const items = [...form.items];
     const newQty = parseInt(qty) || 1;
     const it = items[idx];
-    if (it.category !== 'servicio' && newQty > it.stock) {
+    const isService = it.category === 'servicio' || it.unlimited === true;
+    if (!isService && newQty > it.stock) {
       toast.error(`Stock máximo: ${it.stock}`);
       return;
     }
@@ -179,6 +183,7 @@ export default function Sales() {
         clientPhone: patient.phone || '',
         clientAddress: patient.address || '',
       }));
+      setPatientSearch(`${patient.firstName} ${patient.lastName} - ${patient.cedula}`);
     } else {
       setForm((f) => ({
         ...f,
@@ -189,6 +194,7 @@ export default function Sales() {
         clientPhone: '',
         clientAddress: '',
       }));
+      setPatientSearch('');
     }
   };
 
@@ -266,12 +272,38 @@ export default function Sales() {
           <p className="text-sm text-slate-500 mt-1">Registro y facturación electrónica</p>
         </div>
         {canCreate && (
-          <button
-            onClick={openNew}
-            className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white px-5 py-2.5 rounded-xl text-sm font-medium cursor-pointer border-none shadow-lg shadow-emerald-200/50"
-          >
-            <HiOutlinePlus className="w-5 h-5" /> Nueva Venta
-          </button>
+          <div className="flex gap-2">
+            <button
+              onClick={async () => {
+                try {
+                  const params = {};
+                  if (filter.startDate) params.startDate = filter.startDate;
+                  if (filter.endDate) params.endDate = filter.endDate;
+                  const res = await api.get('/reports/sales.xlsx', {
+                    params,
+                    responseType: 'blob',
+                  });
+                  const url = URL.createObjectURL(res.data);
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = `ventas_${Date.now()}.xlsx`;
+                  a.click();
+                  URL.revokeObjectURL(url);
+                } catch {
+                  toast.error('Error al exportar');
+                }
+              }}
+              className="px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50"
+            >
+              Excel
+            </button>
+            <button
+              onClick={openNew}
+              className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white px-5 py-2.5 rounded-xl text-sm font-medium cursor-pointer border-none shadow-lg shadow-emerald-200/50"
+            >
+              <HiOutlinePlus className="w-5 h-5" /> Nueva Venta
+            </button>
+          </div>
         )}
       </div>
 
@@ -326,7 +358,16 @@ export default function Sales() {
                     <td className="px-6 py-3 text-sm text-slate-600">
                       {new Date(s.createdAt).toLocaleString('es-EC')}
                     </td>
-                    <td className="px-6 py-3 text-sm text-slate-800">{s.clientName}</td>
+                    <td className="px-6 py-3 text-sm text-slate-800">
+                      <div className="flex items-center gap-2">
+                        <span>{s.clientName}</span>
+                        {s.isFirstVisit && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-700 uppercase">
+                            Nuevo
+                          </span>
+                        )}
+                      </div>
+                    </td>
                     <td className="px-6 py-3 text-sm font-bold text-slate-800 text-right">
                       ${s.total.toFixed(2)}
                     </td>
@@ -397,20 +438,71 @@ export default function Sales() {
       <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title="Nueva Venta" size="xl">
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-            <div>
-              <label className="lbl">Paciente (opcional)</label>
-              <select
-                value={form.patient}
-                onChange={(e) => handlePatientSelect(e.target.value)}
+            <div className="sm:col-span-3 relative">
+              <label className="lbl">Buscar paciente registrado (opcional)</label>
+              <input
+                type="text"
+                value={patientSearch}
+                onChange={(e) => {
+                  setPatientSearch(e.target.value);
+                  if (form.patient) {
+                    setForm((f) => ({ ...f, patient: '' }));
+                  }
+                }}
+                placeholder="Escribe nombre o cédula..."
                 className="input"
-              >
-                <option value="">Consumidor Final</option>
-                {patients.map((p) => (
-                  <option key={p._id} value={p._id}>
-                    {p.firstName} {p.lastName} - {p.cedula}
-                  </option>
-                ))}
-              </select>
+              />
+              {patientSearch && !form.patient && (
+                <div className="absolute z-10 left-0 right-0 mt-1 max-h-56 overflow-y-auto bg-white border border-emerald-100 rounded-xl shadow-lg">
+                  {patients
+                    .filter((p) => {
+                      const q = patientSearch.toLowerCase();
+                      return (
+                        p.firstName?.toLowerCase().includes(q) ||
+                        p.lastName?.toLowerCase().includes(q) ||
+                        p.cedula?.includes(q) ||
+                        p.phone?.includes(q)
+                      );
+                    })
+                    .slice(0, 20)
+                    .map((p) => (
+                      <button
+                        type="button"
+                        key={p._id}
+                        onClick={() => handlePatientSelect(p._id)}
+                        className="w-full text-left px-4 py-2 text-sm hover:bg-emerald-50 cursor-pointer bg-white border-none border-b border-emerald-50"
+                      >
+                        <span className="font-medium text-slate-800">
+                          {p.firstName} {p.lastName}
+                        </span>
+                        <span className="text-slate-400 ml-2">{p.cedula}</span>
+                        {p.phone && (
+                          <span className="text-slate-400 ml-2">• {p.phone}</span>
+                        )}
+                      </button>
+                    ))}
+                  {patients.filter((p) => {
+                    const q = patientSearch.toLowerCase();
+                    return (
+                      p.firstName?.toLowerCase().includes(q) ||
+                      p.lastName?.toLowerCase().includes(q) ||
+                      p.cedula?.includes(q) ||
+                      p.phone?.includes(q)
+                    );
+                  }).length === 0 && (
+                    <p className="px-4 py-2 text-xs text-slate-400">Sin coincidencias</p>
+                  )}
+                </div>
+              )}
+              {form.patient && (
+                <button
+                  type="button"
+                  onClick={() => handlePatientSelect('')}
+                  className="absolute right-3 top-9 text-xs text-emerald-600 hover:text-emerald-800 bg-transparent border-none cursor-pointer"
+                >
+                  Limpiar
+                </button>
+              )}
             </div>
             <div>
               <label className="lbl">Cliente</label>
@@ -483,12 +575,16 @@ export default function Sales() {
                 {products
                   .filter((p) => p.active)
                   .map((p) => {
-                    const isService = p.category === 'servicio';
+                    const isService = p.category === 'servicio' || p.unlimited === true;
                     const noStock = !isService && p.stock <= 0;
                     return (
                       <option key={p._id} value={p._id} disabled={noStock}>
                         {p.name} - ${p.salePrice.toFixed(2)}
-                        {isService ? ' (servicio)' : ` (Stock: ${p.stock})`}
+                        {isService
+                          ? p.unlimited && p.category !== 'servicio'
+                            ? ' (ilimitado)'
+                            : ' (servicio)'
+                          : ` (Stock: ${p.stock})`}
                         {noStock ? ' — SIN STOCK' : ''}
                       </option>
                     );
@@ -604,6 +700,11 @@ export default function Sales() {
       >
         {detailModal && (
           <div className="space-y-4">
+            {detailModal.isFirstVisit && (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2 text-amber-700 text-sm font-semibold uppercase tracking-wide">
+                ✨ Paciente Nuevo
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-4 text-sm">
               <div>
                 <p className="text-xs text-slate-500">Cliente</p>

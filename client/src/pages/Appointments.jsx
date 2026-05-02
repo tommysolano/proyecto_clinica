@@ -3,7 +3,7 @@ import api from '../api/axios';
 import Modal from '../components/Modal';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
-import { HiOutlinePlus, HiOutlinePencil, HiOutlineTrash, HiOutlineEye } from 'react-icons/hi2';
+import { HiOutlinePlus, HiOutlinePencil, HiOutlineTrash, HiOutlineEye, HiOutlineDocumentArrowDown } from 'react-icons/hi2';
 
 const statusColors = {
   programada: 'bg-blue-100 text-blue-700',
@@ -26,14 +26,38 @@ const statusLabels = {
 const emptyForm = {
   patient: '', doctor: '', date: '', startTime: '', endTime: '',
   status: 'programada', reason: '', notes: '', diagnosis: '', treatment: '',
+  services: [],
+};
+
+const roleLabels = {
+  admin: 'Administrador',
+  cajero: 'Cajero',
+  doctor: 'Doctor',
+  contabilidad: 'Contabilidad',
+  call_center: 'Call Center',
+};
+
+// Formatea una fecha ISO usando los componentes de fecha (sin convertir a UTC),
+// para que el día mostrado sea siempre el día guardado.
+const formatLocalDate = (iso) => {
+  if (!iso) return '';
+  const str = String(iso);
+  const m = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) {
+    const [, y, mo, d] = m;
+    return `${d}/${mo}/${y}`;
+  }
+  const dt = new Date(str);
+  return Number.isNaN(dt.getTime()) ? '' : dt.toLocaleDateString('es-EC');
 };
 
 export default function Appointments() {
   const { hasRole } = useAuth();
-  const canWrite = hasRole('admin', 'cajero');
+  const canWrite = hasRole('admin', 'cajero', 'call_center');
   const [appointments, setAppointments] = useState([]);
   const [doctors, setDoctors] = useState([]);
   const [patients, setPatients] = useState([]);
+  const [services, setServices] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [detailModal, setDetailModal] = useState(null);
@@ -78,7 +102,18 @@ export default function Appointments() {
     } catch {}
   };
 
-  useEffect(() => { fetchDoctors(); fetchPatients(); }, []);
+  const fetchServices = async () => {
+    try {
+      // Servicios = productos de categoría 'servicio' o ilimitados
+      const res = await api.get('/products', { params: { limit: 500 } });
+      const list = (res.data || []).filter(
+        (p) => p.active !== false && (p.category === 'servicio' || p.unlimited === true)
+      );
+      setServices(list);
+    } catch {}
+  };
+
+  useEffect(() => { fetchDoctors(); fetchPatients(); fetchServices(); }, []);
   useEffect(() => { fetchAppointments(); }, [view, filter]);
 
   const openNew = () => {
@@ -100,19 +135,29 @@ export default function Appointments() {
       notes: apt.notes || '',
       diagnosis: apt.diagnosis || '',
       treatment: apt.treatment || '',
+      services: (apt.services || []).map((s) => (s.product?._id || s.product || s._id)).filter(Boolean),
     });
     setModalOpen(true);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    // Validar horarios en cliente
+    if (form.startTime && form.endTime && form.endTime <= form.startTime) {
+      toast.error('La hora de fin debe ser posterior a la hora de inicio');
+      return;
+    }
     setSaving(true);
     try {
+      const payload = {
+        ...form,
+        services: (form.services || []).map((id) => ({ product: id })),
+      };
       if (editing) {
-        await api.put(`/appointments/${editing}`, form);
+        await api.put(`/appointments/${editing}`, payload);
         toast.success('Cita actualizada');
       } else {
-        await api.post('/appointments', form);
+        await api.post('/appointments', payload);
         toast.success('Cita creada');
       }
       setModalOpen(false);
@@ -137,6 +182,54 @@ export default function Appointments() {
 
   const handleChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
 
+  const toggleService = (id) => {
+    setForm((prev) => {
+      const exists = prev.services.includes(id);
+      return {
+        ...prev,
+        services: exists ? prev.services.filter((s) => s !== id) : [...prev.services, id],
+      };
+    });
+  };
+
+  const downloadPdf = async (id) => {
+    try {
+      const res = await api.get(`/appointments/${id}/pdf`, { responseType: 'blob' });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `cita_${id}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error('Error al descargar PDF');
+    }
+  };
+
+  const exportExcel = async () => {
+    try {
+      const params = {};
+      if (view === 'today') {
+        const today = new Date().toISOString().split('T')[0];
+        params.startDate = today;
+        params.endDate = today;
+      } else {
+        if (filter.startDate) params.startDate = filter.startDate;
+        if (filter.endDate) params.endDate = filter.endDate;
+        if (filter.status) params.status = filter.status;
+      }
+      const res = await api.get('/reports/appointments.xlsx', { params, responseType: 'blob' });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `citas_${Date.now()}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error('Error al exportar');
+    }
+  };
+
   const openDetail = async (id) => {
     try {
       const res = await api.get(`/appointments/${id}`);
@@ -160,7 +253,13 @@ export default function Appointments() {
               view === 'today' ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-slate-600 border-slate-200 hover:bg-emerald-50'
             }`}
           >
-            {view === 'today' ? 'Ver Todas' : 'Solo Hoy'}
+            {view === 'today' ? 'Solo Hoy' : 'Ver Todas'}
+          </button>
+          <button
+            onClick={exportExcel}
+            className="px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50"
+          >
+            Excel
           </button>
           {canWrite && (
             <button
@@ -227,11 +326,24 @@ export default function Appointments() {
                 appointments.map((apt) => (
                   <tr key={apt._id} className="border-b border-emerald-50 hover:bg-emerald-50/30 transition-colors">
                     <td className="px-6 py-3.5 text-sm text-slate-600">
-                      {new Date(apt.date).toLocaleDateString('es-EC')}
+                      {formatLocalDate(apt.date)}
                     </td>
                     <td className="px-6 py-3.5 text-sm text-slate-800 font-medium">{apt.startTime} - {apt.endTime}</td>
                     <td className="px-6 py-3.5 text-sm text-slate-800">
-                      {apt.patient?.firstName} {apt.patient?.lastName}
+                      <div className="flex items-center gap-2">
+                        <span>{apt.patient?.firstName} {apt.patient?.lastName}</span>
+                        {apt.isFirstVisit && (
+                          <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-700 uppercase">
+                            Nuevo
+                          </span>
+                        )}
+                      </div>
+                      {apt.createdBy && (
+                        <div className="text-[11px] text-slate-400 mt-0.5">
+                          Por: {apt.createdBy.name}
+                          {apt.createdByRole ? ` (${roleLabels[apt.createdByRole] || apt.createdByRole})` : ''}
+                        </div>
+                      )}
                     </td>
                     <td className="px-6 py-3.5 text-sm text-slate-600 hidden md:table-cell">
                       Dr. {apt.doctor?.name}
@@ -244,6 +356,9 @@ export default function Appointments() {
                     <td className="px-6 py-3.5 text-right">
                       <button onClick={() => openDetail(apt._id)} className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors">
                         <HiOutlineEye className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => downloadPdf(apt._id)} className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors" title="Descargar PDF">
+                        <HiOutlineDocumentArrowDown className="w-4 h-4" />
                       </button>
                       <button onClick={() => openEdit(apt)} className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors">
                         <HiOutlinePencil className="w-4 h-4" />
@@ -309,6 +424,48 @@ export default function Appointments() {
             <label className="block text-sm font-medium text-slate-700 mb-1.5">Motivo de consulta</label>
             <textarea name="reason" value={form.reason} onChange={handleChange} rows={2} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50 resize-none" />
           </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">Servicios</label>
+            <div className="border border-slate-200 rounded-xl bg-slate-50/50 max-h-48 overflow-y-auto p-2">
+              {services.length === 0 ? (
+                <p className="text-xs text-slate-400 text-center py-3">
+                  No hay servicios disponibles. Créalos en Inventario marcándolos como categoría "Servicio" o "ilimitado".
+                </p>
+              ) : (
+                services.map((s) => {
+                  const checked = form.services.includes(s._id);
+                  return (
+                    <label
+                      key={s._id}
+                      className={`flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer text-sm ${
+                        checked ? 'bg-emerald-100 text-emerald-800' : 'hover:bg-emerald-50'
+                      }`}
+                    >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleService(s._id)}
+                        className="w-4 h-4 accent-emerald-600"
+                      />
+                      <span className="flex-1">{s.name}</span>
+                      <span className="text-xs text-slate-500">${Number(s.salePrice).toFixed(2)}</span>
+                    </label>
+                  );
+                })
+              )}
+            </div>
+            {form.services.length > 0 && (
+              <p className="text-xs text-emerald-600 mt-1">
+                Total estimado: $
+                {form.services
+                  .reduce((sum, id) => {
+                    const s = services.find((x) => x._id === id);
+                    return sum + (s ? Number(s.salePrice) : 0);
+                  }, 0)
+                  .toFixed(2)}
+              </p>
+            )}
+          </div>
           {editing && (
             <>
               <div>
@@ -340,6 +497,11 @@ export default function Appointments() {
       <Modal isOpen={!!detailModal} onClose={() => setDetailModal(null)} title="Detalle de Cita" size="lg">
         {detailModal && (
           <div className="space-y-4">
+            {detailModal.isFirstVisit && (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl px-4 py-2 text-amber-700 text-sm font-semibold uppercase tracking-wide">
+                ✨ Paciente Nuevo
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-4">
               <div className="bg-emerald-50/50 rounded-xl p-3">
                 <p className="text-xs text-emerald-600 font-medium">Paciente</p>
@@ -359,7 +521,7 @@ export default function Appointments() {
               </div>
               <div className="bg-emerald-50/50 rounded-xl p-3">
                 <p className="text-xs text-emerald-600 font-medium">Fecha</p>
-                <p className="text-sm text-slate-800 mt-0.5">{new Date(detailModal.date).toLocaleDateString('es-EC')}</p>
+                <p className="text-sm text-slate-800 mt-0.5">{formatLocalDate(detailModal.date)}</p>
               </div>
               <div className="bg-emerald-50/50 rounded-xl p-3">
                 <p className="text-xs text-emerald-600 font-medium">Horario</p>
@@ -394,6 +556,47 @@ export default function Appointments() {
                 <p className="text-sm text-slate-800 mt-0.5">{detailModal.treatment}</p>
               </div>
             )}
+            {detailModal.services && detailModal.services.length > 0 && (
+              <div className="bg-emerald-50/50 rounded-xl p-3">
+                <p className="text-xs text-emerald-600 font-medium mb-1">Servicios</p>
+                <ul className="text-sm text-slate-800 space-y-1">
+                  {detailModal.services.map((s, i) => (
+                    <li key={i} className="flex justify-between">
+                      <span>{s.name}</span>
+                      <span className="font-medium">${Number(s.price || 0).toFixed(2)}</span>
+                    </li>
+                  ))}
+                  <li className="flex justify-between border-t border-emerald-200 pt-1 font-bold">
+                    <span>Total</span>
+                    <span>
+                      $
+                      {detailModal.services
+                        .reduce((s, x) => s + Number(x.price || 0), 0)
+                        .toFixed(2)}
+                    </span>
+                  </li>
+                </ul>
+              </div>
+            )}
+            {detailModal.createdBy && (
+              <div className="bg-emerald-50/50 rounded-xl p-3">
+                <p className="text-xs text-emerald-600 font-medium">Registrado por</p>
+                <p className="text-sm text-slate-800 mt-0.5">
+                  {detailModal.createdBy.name}
+                  {detailModal.createdByRole
+                    ? ` (${roleLabels[detailModal.createdByRole] || detailModal.createdByRole})`
+                    : ''}
+                </p>
+              </div>
+            )}
+            <div className="flex justify-end pt-2">
+              <button
+                onClick={() => downloadPdf(detailModal._id)}
+                className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm bg-emerald-600 hover:bg-emerald-700 text-white border-none cursor-pointer"
+              >
+                <HiOutlineDocumentArrowDown className="w-4 h-4" /> Descargar PDF
+              </button>
+            </div>
           </div>
         )}
       </Modal>

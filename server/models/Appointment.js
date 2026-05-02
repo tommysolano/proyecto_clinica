@@ -1,5 +1,14 @@
 const mongoose = require('mongoose');
 
+const appointmentServiceSchema = new mongoose.Schema(
+  {
+    product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+    name: String,
+    price: Number,
+  },
+  { _id: false }
+);
+
 const appointmentSchema = new mongoose.Schema(
   {
     clinic: {
@@ -30,7 +39,14 @@ const appointmentSchema = new mongoose.Schema(
     notes: { type: String, trim: true },
     diagnosis: { type: String, trim: true },
     treatment: { type: String, trim: true },
+    // Servicios solicitados / a facturar (referenciados desde inventario)
+    services: { type: [appointmentServiceSchema], default: [] },
+    // Marca si es la primera cita del paciente (registrado por primera vez).
+    // Se calcula al crear: true si el paciente no tenía citas previas.
+    isFirstVisit: { type: Boolean, default: false },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // Rol del usuario que creó la cita (snapshot, útil para comisiones de call_center)
+    createdByRole: { type: String },
   },
   { timestamps: true }
 );

@@ -25,6 +25,7 @@ app.use('/api/sales', require('./routes/sales'));
 app.use('/api/invoicing-config', require('./routes/invoicingConfig'));
 app.use('/api/invoices', require('./routes/invoices'));
 app.use('/api/dashboard', require('./routes/dashboard'));
+app.use('/api/reports', require('./routes/reports'));
 
 // Ruta de salud
 app.get('/api/health', (req, res) => {

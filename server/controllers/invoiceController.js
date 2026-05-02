@@ -308,7 +308,14 @@ exports.list = async (req, res) => {
       query.sale = { $in: saleIds };
     }
     const invoices = await Invoice.find(query)
-      .populate('sale', 'saleNumber total')
+      .populate({
+        path: 'sale',
+        select: 'saleNumber total isFirstVisit patient',
+        populate: {
+          path: 'patient',
+          select: 'firstName lastName cedula phone',
+        },
+      })
       .sort({ createdAt: -1 })
       .skip((page - 1) * limit)
       .limit(parseInt(limit));
@@ -329,7 +336,10 @@ exports.get = async (req, res) => {
     const invoice = await Invoice.findOne({ _id: req.params.id, clinic: req.clinicId })
       .populate({
         path: 'sale',
-        populate: { path: 'items.product', select: 'name code' },
+        populate: [
+          { path: 'items.product', select: 'name code' },
+          { path: 'patient', select: 'firstName lastName cedula phone email address' },
+        ],
       });
     if (!invoice) return res.status(404).json({ message: 'Factura no encontrada' });
     res.json(invoice);

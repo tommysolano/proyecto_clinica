@@ -38,7 +38,7 @@ function AppRoutes() {
                 <Route
                   path="/patients"
                   element={
-                    <RoleRoute roles={['admin', 'cajero', 'doctor']}>
+                    <RoleRoute roles={['admin', 'cajero', 'doctor', 'call_center']}>
                       <Patients />
                     </RoleRoute>
                   }
@@ -46,7 +46,7 @@ function AppRoutes() {
                 <Route
                   path="/patients/:id"
                   element={
-                    <RoleRoute roles={['admin', 'cajero', 'doctor']}>
+                    <RoleRoute roles={['admin', 'cajero', 'doctor', 'call_center']}>
                       <PatientDetail />
                     </RoleRoute>
                   }
@@ -55,7 +55,7 @@ function AppRoutes() {
                 <Route
                   path="/appointments"
                   element={
-                    <RoleRoute roles={['admin', 'cajero', 'doctor']}>
+                    <RoleRoute roles={['admin', 'cajero', 'doctor', 'call_center']}>
                       <Appointments />
                     </RoleRoute>
                   }

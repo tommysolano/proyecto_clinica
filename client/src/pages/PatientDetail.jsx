@@ -345,6 +345,7 @@ function YesNo({ label, item, onChange }) {
 function SeguimientosTab({ patientId }) {
   const { hasRole } = useAuth();
   const canDelete = hasRole('admin', 'doctor');
+  const showPayment = !hasRole('doctor');
   const [record, setRecord] = useState(null);
   const [loading, setLoading] = useState(true);
   const [form, setForm] = useState({
@@ -418,7 +419,7 @@ function SeguimientosTab({ patientId }) {
     <div className="space-y-6">
       <form
         onSubmit={submit}
-        className="bg-slate-50 rounded-xl p-4 grid grid-cols-1 md:grid-cols-5 gap-3"
+        className={`bg-slate-50 rounded-xl p-4 grid grid-cols-1 gap-3 ${showPayment ? 'md:grid-cols-5' : 'md:grid-cols-3'}`}
       >
         <Field label="Fecha">
           <input
@@ -437,29 +438,33 @@ function SeguimientosTab({ patientId }) {
             required
           />
         </Field>
-        <Field label="Valor">
-          <input
-            type="number"
-            min={0}
-            step="0.01"
-            value={form.valor}
-            onChange={(e) => setForm((f) => ({ ...f, valor: Number(e.target.value) }))}
-            className="input"
-          />
-        </Field>
-        <Field label="Método de pago">
-          <select
-            value={form.metodoPago}
-            onChange={(e) => setForm((f) => ({ ...f, metodoPago: e.target.value }))}
-            className="input"
-          >
-            <option value="efectivo">Efectivo</option>
-            <option value="tarjeta">Tarjeta</option>
-            <option value="transferencia">Transferencia</option>
-            <option value="otro">Otro</option>
-          </select>
-        </Field>
-        <div className="md:col-span-5 flex justify-end">
+        {showPayment && (
+          <>
+            <Field label="Valor">
+              <input
+                type="number"
+                min={0}
+                step="0.01"
+                value={form.valor}
+                onChange={(e) => setForm((f) => ({ ...f, valor: Number(e.target.value) }))}
+                className="input"
+              />
+            </Field>
+            <Field label="Método de pago">
+              <select
+                value={form.metodoPago}
+                onChange={(e) => setForm((f) => ({ ...f, metodoPago: e.target.value }))}
+                className="input"
+              >
+                <option value="efectivo">Efectivo</option>
+                <option value="tarjeta">Tarjeta</option>
+                <option value="transferencia">Transferencia</option>
+                <option value="otro">Otro</option>
+              </select>
+            </Field>
+          </>
+        )}
+        <div className={`${showPayment ? 'md:col-span-5' : 'md:col-span-3'} flex justify-end`}>
           <button
             type="submit"
             disabled={saving}
@@ -476,8 +481,8 @@ function SeguimientosTab({ patientId }) {
             <tr>
               <th className="text-left px-4 py-2.5 font-semibold">Fecha</th>
               <th className="text-left px-4 py-2.5 font-semibold">Descripción</th>
-              <th className="text-right px-4 py-2.5 font-semibold">Valor</th>
-              <th className="text-left px-4 py-2.5 font-semibold">Pago</th>
+              {showPayment && <th className="text-right px-4 py-2.5 font-semibold">Valor</th>}
+              {showPayment && <th className="text-left px-4 py-2.5 font-semibold">Pago</th>}
               {canDelete && <th className="px-4 py-2.5"></th>}
             </tr>
           </thead>
@@ -495,12 +500,16 @@ function SeguimientosTab({ patientId }) {
                   {new Date(fu.fecha).toLocaleDateString()}
                 </td>
                 <td className="px-4 py-2.5 text-slate-800">{fu.descripcion}</td>
-                <td className="px-4 py-2.5 text-right text-slate-700">
-                  ${Number(fu.valor || 0).toFixed(2)}
-                </td>
-                <td className="px-4 py-2.5 capitalize text-slate-600">
-                  {fu.metodoPago || '—'}
-                </td>
+                {showPayment && (
+                  <td className="px-4 py-2.5 text-right text-slate-700">
+                    ${Number(fu.valor || 0).toFixed(2)}
+                  </td>
+                )}
+                {showPayment && (
+                  <td className="px-4 py-2.5 capitalize text-slate-600">
+                    {fu.metodoPago || '—'}
+                  </td>
+                )}
                 {canDelete && (
                   <td className="px-4 py-2.5 text-right">
                     <button
