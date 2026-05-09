@@ -8,7 +8,7 @@ const Patient = require('../models/Patient');
 exports.getOrCreateByPatient = async (req, res) => {
   try {
     const { patientId } = req.params;
-    const patient = await Patient.findOne({ _id: patientId, clinic: req.clinicId });
+    const patient = await Patient.findById(patientId);
     if (!patient) return res.status(404).json({ message: 'Paciente no encontrado' });
 
     let record = await ClinicalRecord.findOne({
@@ -54,7 +54,7 @@ exports.getOrCreateByPatient = async (req, res) => {
 exports.updateByPatient = async (req, res) => {
   try {
     const { patientId } = req.params;
-    const patient = await Patient.findOne({ _id: patientId, clinic: req.clinicId });
+    const patient = await Patient.findById(patientId);
     if (!patient) return res.status(404).json({ message: 'Paciente no encontrado' });
 
     const allowed = [

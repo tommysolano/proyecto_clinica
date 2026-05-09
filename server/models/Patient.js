@@ -36,8 +36,9 @@ const patientSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Cédula única por clínica
-patientSchema.index({ clinic: 1, cedula: 1 }, { unique: true });
+// Cédula única globalmente: los datos del paciente se comparten entre clínicas.
+// El campo `clinic` se conserva como referencia de la clínica donde fue registrado por primera vez.
+patientSchema.index({ cedula: 1 }, { unique: true });
 
 patientSchema.virtual('fullName').get(function () {
   return `${this.firstName} ${this.lastName}`;

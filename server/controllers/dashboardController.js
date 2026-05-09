@@ -74,3 +74,46 @@ exports.getDashboard = async (req, res) => {
     res.status(500).json({ message: 'Error al obtener dashboard', error: error.message });
   }
 };
+
+/**
+ * Top productos / servicios más vendidos en la clínica activa.
+ * Acepta filtros opcionales `startDate`, `endDate` y `limit`.
+ */
+exports.getTopProducts = async (req, res) => {
+  try {
+    const mongoose = require('mongoose');
+    const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
+    const { startDate, endDate, limit = 10 } = req.query;
+
+    const match = { clinic: clinicObjId, status: 'completada' };
+    if (startDate && endDate) {
+      match.createdAt = {
+        $gte: new Date(startDate),
+        $lte: new Date(endDate + 'T23:59:59.999'),
+      };
+    }
+
+    const top = await Sale.aggregate([
+      { $match: match },
+      { $unwind: '$items' },
+      {
+        $group: {
+          _id: '$items.product',
+          name: { $first: '$items.productName' },
+          category: { $first: '$items.category' },
+          quantity: { $sum: '$items.quantity' },
+          revenue: { $sum: '$items.subtotal' },
+          salesCount: { $sum: 1 },
+        },
+      },
+      { $sort: { quantity: -1 } },
+      { $limit: Number(limit) || 10 },
+    ]);
+
+    res.json(top);
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: 'Error al obtener top productos', error: error.message });
+  }
+};

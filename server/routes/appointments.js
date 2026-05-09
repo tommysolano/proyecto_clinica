@@ -7,6 +7,8 @@ const {
   deleteAppointment,
   getTodayAppointments,
   getAppointmentPdf,
+  startConsultation,
+  endConsultation,
 } = require('../controllers/appointmentController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
@@ -22,6 +24,8 @@ router.get(
 );
 router.post('/', requireRole('admin', 'cajero', 'call_center'), createAppointment);
 router.put('/:id', requireRole('admin', 'cajero', 'doctor', 'call_center'), updateAppointment);
+router.post('/:id/start', requireRole('admin', 'doctor'), startConsultation);
+router.post('/:id/end', requireRole('admin', 'doctor'), endConsultation);
 router.delete('/:id', requireRole('admin', 'cajero', 'call_center'), deleteAppointment);
 
 module.exports = router;

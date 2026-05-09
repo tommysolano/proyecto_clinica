@@ -26,6 +26,16 @@ const emptyForm = {
   notes: '',
 };
 
+const emptyApt = {
+  enabled: false,
+  doctor: '',
+  date: '',
+  startTime: '',
+  endTime: '',
+  reason: '',
+  services: [],
+};
+
 export default function Patients() {
   const { hasRole } = useAuth();
   const canWrite = hasRole('admin', 'cajero', 'call_center');
@@ -40,6 +50,27 @@ export default function Patients() {
   const [saving, setSaving] = useState(false);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
+
+  // Para crear cita junto al paciente
+  const [doctors, setDoctors] = useState([]);
+  const [services, setServices] = useState([]);
+  const [aptForm, setAptForm] = useState(emptyApt);
+
+  useEffect(() => {
+    if (canWrite) {
+      api.get('/users/doctors').then((r) => setDoctors(r.data)).catch(() => {});
+      api
+        .get('/products', { params: { limit: 500 } })
+        .then((r) => {
+          const list = (r.data || []).filter(
+            (p) => p.active !== false && (p.category === 'servicio' || p.unlimited === true)
+          );
+          setServices(list);
+        })
+        .catch(() => {});
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const fetchPatients = async () => {
     try {
@@ -61,6 +92,7 @@ export default function Patients() {
   const openNew = () => {
     setEditing(null);
     setForm(emptyForm);
+    setAptForm(emptyApt);
     setModalOpen(true);
   };
 
@@ -72,23 +104,58 @@ export default function Patients() {
       birthDate: patient.birthDate ? patient.birthDate.split('T')[0] : '',
       age: patient.age ?? '',
     });
+    setAptForm(emptyApt);
     setModalOpen(true);
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    // Validaciones de cita inline si está habilitada
+    if (aptForm.enabled && !editing) {
+      if (!aptForm.doctor || !aptForm.date || !aptForm.startTime || !aptForm.endTime) {
+        toast.error('Completa los datos de la cita (doctor, fecha y horario)');
+        return;
+      }
+      if (aptForm.endTime <= aptForm.startTime) {
+        toast.error('La hora de fin debe ser posterior a la hora de inicio');
+        return;
+      }
+    }
     setSaving(true);
     try {
       const payload = {
         ...form,
         age: form.age === '' ? undefined : Number(form.age),
       };
+      let createdId = editing;
       if (editing) {
         await api.put(`/patients/${editing}`, payload);
         toast.success('Paciente actualizado');
       } else {
-        await api.post('/patients', payload);
+        const res = await api.post('/patients', payload);
+        createdId = res.data._id;
         toast.success('Paciente creado');
+      }
+      // Crear cita asociada si se solicitó
+      if (aptForm.enabled && !editing && createdId) {
+        try {
+          await api.post('/appointments', {
+            patient: createdId,
+            doctor: aptForm.doctor,
+            date: aptForm.date,
+            startTime: aptForm.startTime,
+            endTime: aptForm.endTime,
+            reason: aptForm.reason,
+            status: 'pendiente',
+            services: aptForm.services.map((id) => ({ product: id })),
+          });
+          toast.success('Cita agendada');
+        } catch (err) {
+          toast.error(
+            err.response?.data?.message ||
+              'Paciente creado pero no se pudo agendar la cita'
+          );
+        }
       }
       setModalOpen(false);
       fetchPatients();
@@ -367,6 +434,111 @@ export default function Patients() {
               className="input resize-none"
             />
           </Field>
+          {!editing && (
+            <div className="border-t border-emerald-100 pt-4">
+              <label className="flex items-center gap-2 cursor-pointer text-sm font-medium text-slate-700">
+                <input
+                  type="checkbox"
+                  checked={aptForm.enabled}
+                  onChange={(e) => setAptForm({ ...aptForm, enabled: e.target.checked })}
+                  className="w-4 h-4 accent-emerald-600"
+                />
+                Agendar cita inmediatamente para este paciente
+              </label>
+              {aptForm.enabled && (
+                <div className="mt-3 space-y-3 bg-emerald-50/40 rounded-xl p-3">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                    <Field label="Doctor" required>
+                      <select
+                        value={aptForm.doctor}
+                        onChange={(e) => setAptForm({ ...aptForm, doctor: e.target.value })}
+                        className="input"
+                      >
+                        <option value="">Seleccionar doctor</option>
+                        {doctors.map((d) => (
+                          <option key={d._id} value={d._id}>
+                            Dr. {d.name} - {d.specialty}
+                          </option>
+                        ))}
+                      </select>
+                    </Field>
+                    <Field label="Fecha" required>
+                      <input
+                        type="date"
+                        value={aptForm.date}
+                        onChange={(e) => setAptForm({ ...aptForm, date: e.target.value })}
+                        className="input"
+                      />
+                    </Field>
+                    <Field label="Hora inicio" required>
+                      <input
+                        type="time"
+                        value={aptForm.startTime}
+                        onChange={(e) => setAptForm({ ...aptForm, startTime: e.target.value })}
+                        className="input"
+                      />
+                    </Field>
+                    <Field label="Hora fin" required>
+                      <input
+                        type="time"
+                        value={aptForm.endTime}
+                        onChange={(e) => setAptForm({ ...aptForm, endTime: e.target.value })}
+                        className="input"
+                      />
+                    </Field>
+                  </div>
+                  <Field label="Motivo">
+                    <textarea
+                      value={aptForm.reason}
+                      onChange={(e) => setAptForm({ ...aptForm, reason: e.target.value })}
+                      rows={2}
+                      className="input resize-none"
+                    />
+                  </Field>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                      Servicios
+                    </label>
+                    <div className="max-h-36 overflow-y-auto bg-white rounded-lg border border-emerald-100 p-2">
+                      {services.length === 0 ? (
+                        <p className="text-xs text-slate-400 text-center py-2">Sin servicios</p>
+                      ) : (
+                        services.map((s) => {
+                          const checked = aptForm.services.includes(s._id);
+                          return (
+                            <label
+                              key={s._id}
+                              className={`flex items-center gap-2 px-2 py-1 rounded text-sm cursor-pointer ${
+                                checked ? 'bg-emerald-100' : 'hover:bg-emerald-50'
+                              }`}
+                            >
+                              <input
+                                type="checkbox"
+                                checked={checked}
+                                onChange={() =>
+                                  setAptForm((prev) => ({
+                                    ...prev,
+                                    services: prev.services.includes(s._id)
+                                      ? prev.services.filter((x) => x !== s._id)
+                                      : [...prev.services, s._id],
+                                  }))
+                                }
+                                className="w-4 h-4 accent-emerald-600"
+                              />
+                              <span className="flex-1">{s.name}</span>
+                              <span className="text-xs text-slate-500">
+                                ${Number(s.salePrice).toFixed(2)}
+                              </span>
+                            </label>
+                          );
+                        })
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           <div className="flex justify-end gap-3 pt-3">
             <button
               type="button"

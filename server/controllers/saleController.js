@@ -4,7 +4,7 @@ const InventoryMovement = require('../models/InventoryMovement');
 
 exports.getSales = async (req, res) => {
   try {
-    const { startDate, endDate, status, patient, page = 1, limit = 20 } = req.query;
+    const { startDate, endDate, status, patient, product, page = 1, limit = 20 } = req.query;
     const query = { clinic: req.clinicId };
 
     if (startDate && endDate) {
@@ -12,6 +12,8 @@ exports.getSales = async (req, res) => {
     }
     if (status) query.status = status;
     if (patient) query.patient = patient;
+    // Filtro por producto/servicio: solo trae ventas que contengan ese producto.
+    if (product) query['items.product'] = product;
 
     const sales = await Sale.find(query)
       .populate('patient', 'firstName lastName cedula')
@@ -156,6 +158,8 @@ exports.createSale = async (req, res) => {
     const total = +(subtotal + taxAmount).toFixed(2);
 
     // ¿Es primera venta del paciente? (paciente nuevo)
+    // No se considera "nuevo" si TODOS los productos de la venta tienen el flag
+    // excludeFromFirstVisit (servicios recurrentes que no deben marcar nuevo).
     let isFirstVisit = false;
     if (patient) {
       const previousCount = await Sale.countDocuments({
@@ -163,7 +167,10 @@ exports.createSale = async (req, res) => {
         patient,
         status: 'completada',
       });
-      isFirstVisit = previousCount === 0;
+      if (previousCount === 0) {
+        const someCounts = products.some((p) => !p.excludeFromFirstVisit);
+        isFirstVisit = someCounts;
+      }
     }
 
     const sale = await Sale.create({

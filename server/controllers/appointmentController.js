@@ -1,5 +1,6 @@
 const Appointment = require('../models/Appointment');
 const Product = require('../models/Product');
+const Patient = require('../models/Patient');
 
 const POPULATE_PATIENT = 'firstName lastName cedula phone whatsapp email birthDate age gender';
 const POPULATE_DOCTOR = 'name specialty';
@@ -32,7 +33,7 @@ const toMinutes = (hhmm) => {
 
 exports.getAppointments = async (req, res) => {
   try {
-    const { startDate, endDate, doctor, status, createdBy } = req.query;
+    const { startDate, endDate, doctor, status, createdBy, isFirstVisit } = req.query;
     const query = { clinic: req.clinicId };
 
     if (startDate && endDate) {
@@ -44,6 +45,8 @@ exports.getAppointments = async (req, res) => {
     if (doctor) query.doctor = doctor;
     if (status) query.status = status;
     if (createdBy) query.createdBy = createdBy;
+    if (isFirstVisit === 'true') query.isFirstVisit = true;
+    else if (isFirstVisit === 'false') query.isFirstVisit = { $ne: true };
 
     if (req.role === 'doctor') {
       query.doctor = req.user._id;
@@ -100,6 +103,21 @@ exports.createAppointment = async (req, res) => {
   try {
     const { doctor, date, startTime, endTime, patient, services } = req.body;
 
+    // El call_center puede operar para cualquiera de las clínicas a las que tiene acceso.
+    // Si envía un `clinic` distinto al activo, validamos que sea una clínica donde tiene rol.
+    let targetClinicId = req.clinicId;
+    if (req.body.clinic && String(req.body.clinic) !== String(req.clinicId)) {
+      const allowedClinic = (req.user.clinics || []).find(
+        (c) => String(c.clinic) === String(req.body.clinic)
+      );
+      if (!allowedClinic && !req.user.isSuperAdmin) {
+        return res
+          .status(403)
+          .json({ message: 'No tienes acceso a esa clínica para crear citas.' });
+      }
+      targetClinicId = req.body.clinic;
+    }
+
     // --- Validaciones de fecha y horario ---
     const localDate = parseLocalDate(date);
     if (!localDate || Number.isNaN(localDate.getTime())) {
@@ -119,10 +137,9 @@ exports.createAppointment = async (req, res) => {
     }
 
     const conflict = await Appointment.findOne({
-      clinic: req.clinicId,
+      clinic: targetClinicId,
       doctor,
       date: localDate,
-      status: { $nin: ['cancelada', 'no_asistio'] },
       $or: [{ startTime: { $lt: endTime }, endTime: { $gt: startTime } }],
     });
 
@@ -130,22 +147,59 @@ exports.createAppointment = async (req, res) => {
       return res.status(400).json({ message: 'El doctor ya tiene una cita en ese horario' });
     }
 
-    // ¿Es primera cita del paciente?
-    const previousCount = await Appointment.countDocuments({
-      clinic: req.clinicId,
-      patient,
-      status: { $nin: ['cancelada'] },
-    });
-    const isFirstVisit = previousCount === 0;
+    // Validar límite de citas por día para servicios con cupo
+    const serviceIds = (Array.isArray(services) ? services : [])
+      .map((s) => (typeof s === 'string' ? s : s.product))
+      .filter(Boolean);
+    if (serviceIds.length > 0) {
+      const limited = await Product.find({
+        _id: { $in: serviceIds },
+        clinic: targetClinicId,
+        maxAppointmentsPerDay: { $gt: 0 },
+      }).select('name maxAppointmentsPerDay');
+      for (const prod of limited) {
+        const used = await Appointment.countDocuments({
+          clinic: targetClinicId,
+          date: localDate,
+          'services.product': prod._id,
+        });
+        if (used >= prod.maxAppointmentsPerDay) {
+          return res.status(400).json({
+            message: `Cupo agotado para el servicio "${prod.name}" en esta fecha (máx. ${prod.maxAppointmentsPerDay} por día).`,
+          });
+        }
+      }
+    }
 
-    const servicesSnapshot = await buildServicesSnapshot(req.clinicId, services);
+    // ¿Es primera cita del paciente?
+    // Solo se considera "nuevo" si tiene servicios que NO estén marcados como
+    // excludeFromFirstVisit. Si todos los servicios son recurrentes, no es nuevo.
+    let isFirstVisit = false;
+    const previousCount = await Appointment.countDocuments({
+      clinic: targetClinicId,
+      patient,
+    });
+    if (previousCount === 0) {
+      if (serviceIds.length === 0) {
+        isFirstVisit = true;
+      } else {
+        const counted = await Product.countDocuments({
+          _id: { $in: serviceIds },
+          clinic: targetClinicId,
+          excludeFromFirstVisit: { $ne: true },
+        });
+        isFirstVisit = counted > 0;
+      }
+    }
+
+    const servicesSnapshot = await buildServicesSnapshot(targetClinicId, services);
 
     const appointment = await Appointment.create({
       ...req.body,
       date: localDate,
       services: servicesSnapshot,
       isFirstVisit,
-      clinic: req.clinicId,
+      clinic: targetClinicId,
       createdBy: req.user._id,
       createdByRole: req.role || null,
     });
@@ -163,6 +217,26 @@ exports.createAppointment = async (req, res) => {
 
 exports.updateAppointment = async (req, res) => {
   try {
+    // Permisos: solo admin puede editar cualquier cita.
+    // Otros roles solo pueden editar las citas que ellos mismos crearon.
+    // El doctor puede actualizar las suyas (diagnóstico, tratamiento, cronómetro, completar).
+    const existing = await Appointment.findOne({
+      _id: req.params.id,
+      clinic: req.clinicId,
+    });
+    if (!existing) return res.status(404).json({ message: 'Cita no encontrada' });
+
+    const isAdmin = req.user.isSuperAdmin || req.role === 'admin';
+    const isCreator = String(existing.createdBy || '') === String(req.user._id);
+    const isAssignedDoctor =
+      req.role === 'doctor' && String(existing.doctor || '') === String(req.user._id);
+    if (!isAdmin && !isCreator && !isAssignedDoctor) {
+      return res.status(403).json({
+        message:
+          'Solo los administradores o el creador de la cita pueden editarla.',
+      });
+    }
+
     const update = { ...req.body };
     // No permitir alterar isFirstVisit ni createdBy en updates
     delete update.isFirstVisit;
@@ -214,15 +288,84 @@ exports.updateAppointment = async (req, res) => {
 
 exports.deleteAppointment = async (req, res) => {
   try {
-    const appointment = await Appointment.findOneAndUpdate(
-      { _id: req.params.id, clinic: req.clinicId },
-      { status: 'cancelada' },
-      { new: true }
-    );
+    const appointment = await Appointment.findOne({
+      _id: req.params.id,
+      clinic: req.clinicId,
+    });
     if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
-    res.json({ message: 'Cita cancelada' });
+
+    const isAdmin = req.user.isSuperAdmin || req.role === 'admin';
+    const isCreator = String(appointment.createdBy || '') === String(req.user._id);
+    if (!isAdmin && !isCreator) {
+      return res.status(403).json({
+        message:
+          'Solo los administradores o el creador de la cita pueden eliminarla.',
+      });
+    }
+
+    // Cancelar = eliminar (con el esquema simplificado de 2 estados)
+    await Appointment.deleteOne({ _id: appointment._id });
+    res.json({ message: 'Cita eliminada' });
   } catch (error) {
-    res.status(500).json({ message: 'Error al cancelar cita' });
+    res.status(500).json({ message: 'Error al eliminar cita' });
+  }
+};
+
+/**
+ * Inicia el cronómetro de la cita (uso del doctor).
+ */
+exports.startConsultation = async (req, res) => {
+  try {
+    const appointment = await Appointment.findOne({
+      _id: req.params.id,
+      clinic: req.clinicId,
+    });
+    if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
+
+    const isAdmin = req.user.isSuperAdmin || req.role === 'admin';
+    const isAssignedDoctor =
+      req.role === 'doctor' && String(appointment.doctor) === String(req.user._id);
+    if (!isAdmin && !isAssignedDoctor) {
+      return res.status(403).json({
+        message: 'Solo el doctor asignado puede iniciar la consulta.',
+      });
+    }
+
+    appointment.consultationStartedAt = new Date();
+    appointment.consultationEndedAt = undefined;
+    await appointment.save();
+    res.json(appointment);
+  } catch (error) {
+    res.status(500).json({ message: 'Error al iniciar consulta', error: error.message });
+  }
+};
+
+/**
+ * Finaliza la consulta y la marca como completada.
+ */
+exports.endConsultation = async (req, res) => {
+  try {
+    const appointment = await Appointment.findOne({
+      _id: req.params.id,
+      clinic: req.clinicId,
+    });
+    if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
+
+    const isAdmin = req.user.isSuperAdmin || req.role === 'admin';
+    const isAssignedDoctor =
+      req.role === 'doctor' && String(appointment.doctor) === String(req.user._id);
+    if (!isAdmin && !isAssignedDoctor) {
+      return res.status(403).json({
+        message: 'Solo el doctor asignado puede finalizar la consulta.',
+      });
+    }
+
+    appointment.consultationEndedAt = new Date();
+    appointment.status = 'completada';
+    await appointment.save();
+    res.json(appointment);
+  } catch (error) {
+    res.status(500).json({ message: 'Error al finalizar consulta', error: error.message });
   }
 };
 
@@ -292,10 +435,12 @@ exports.getAppointmentPdf = async (req, res) => {
       .join('');
 
     const statusLabels = {
-      programada: 'Programada',
-      confirmada: 'Confirmada',
-      en_curso: 'En curso',
+      pendiente: 'Pendiente',
       completada: 'Completada',
+      // Compatibilidad con datos legacy
+      programada: 'Pendiente',
+      confirmada: 'Pendiente',
+      en_curso: 'Pendiente',
       cancelada: 'Cancelada',
       no_asistio: 'No asistió',
     };

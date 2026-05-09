@@ -1,9 +1,13 @@
 const Patient = require('../models/Patient');
 
+// NOTA: los DATOS de los pacientes se comparten entre todas las clínicas
+// (cédula única global). El campo `clinic` queda como referencia de la clínica
+// donde se registró inicialmente, pero las consultas no filtran por clínica.
+
 exports.getPatients = async (req, res) => {
   try {
     const { search, page = 1, limit = 20 } = req.query;
-    const query = { clinic: req.clinicId, active: true };
+    const query = { active: true };
 
     if (search) {
       query.$or = [
@@ -34,7 +38,7 @@ exports.getPatients = async (req, res) => {
 
 exports.getPatient = async (req, res) => {
   try {
-    const patient = await Patient.findOne({ _id: req.params.id, clinic: req.clinicId });
+    const patient = await Patient.findById(req.params.id);
     if (!patient) return res.status(404).json({ message: 'Paciente no encontrado' });
     res.json(patient);
   } catch (error) {
@@ -44,10 +48,7 @@ exports.getPatient = async (req, res) => {
 
 exports.createPatient = async (req, res) => {
   try {
-    const existing = await Patient.findOne({
-      clinic: req.clinicId,
-      cedula: req.body.cedula,
-    });
+    const existing = await Patient.findOne({ cedula: req.body.cedula });
     if (existing) {
       return res.status(400).json({ message: 'Ya existe un paciente con esa cédula' });
     }
@@ -61,11 +62,10 @@ exports.createPatient = async (req, res) => {
 
 exports.updatePatient = async (req, res) => {
   try {
-    const patient = await Patient.findOneAndUpdate(
-      { _id: req.params.id, clinic: req.clinicId },
-      req.body,
-      { new: true, runValidators: true }
-    );
+    const patient = await Patient.findByIdAndUpdate(req.params.id, req.body, {
+      new: true,
+      runValidators: true,
+    });
     if (!patient) return res.status(404).json({ message: 'Paciente no encontrado' });
     res.json(patient);
   } catch (error) {
@@ -75,8 +75,8 @@ exports.updatePatient = async (req, res) => {
 
 exports.deletePatient = async (req, res) => {
   try {
-    const patient = await Patient.findOneAndUpdate(
-      { _id: req.params.id, clinic: req.clinicId },
+    const patient = await Patient.findByIdAndUpdate(
+      req.params.id,
       { active: false },
       { new: true }
     );

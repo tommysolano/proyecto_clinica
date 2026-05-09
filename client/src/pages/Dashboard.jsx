@@ -62,22 +62,16 @@ export default function Dashboard() {
   ].filter(Boolean);
 
   const statusColors = {
-    programada: 'bg-blue-100 text-blue-700',
-    confirmada: 'bg-emerald-100 text-emerald-700',
-    en_curso: 'bg-amber-100 text-amber-700',
-    completada: 'bg-slate-100 text-slate-700',
-    cancelada: 'bg-red-100 text-red-700',
-    no_asistio: 'bg-orange-100 text-orange-700',
+    pendiente: 'bg-blue-100 text-blue-700',
+    completada: 'bg-emerald-100 text-emerald-700',
   };
 
   const statusLabels = {
-    programada: 'Programada',
-    confirmada: 'Confirmada',
-    en_curso: 'En curso',
+    pendiente: 'Pendiente',
     completada: 'Completada',
-    cancelada: 'Cancelada',
-    no_asistio: 'No asistió',
   };
+
+  const normalizeStatus = (s) => (s === 'completada' ? 'completada' : 'pendiente');
 
   return (
     <div>
@@ -133,8 +127,8 @@ export default function Dashboard() {
                         Dr. {apt.doctor?.name}
                       </p>
                     </div>
-                    <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${statusColors[apt.status]}`}>
-                      {statusLabels[apt.status]}
+                    <span className={`px-2.5 py-1 rounded-full text-xs font-medium ${statusColors[normalizeStatus(apt.status)]}`}>
+                      {statusLabels[normalizeStatus(apt.status)]}
                     </span>
                   </div>
                 ))}

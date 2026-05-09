@@ -31,7 +31,9 @@ export default function Sales() {
   const [detailModal, setDetailModal] = useState(null);
   const [saving, setSaving] = useState(false);
   const [invoicingId, setInvoicingId] = useState(null);
-  const [filter, setFilter] = useState({ startDate: '', endDate: '' });
+  const [filter, setFilter] = useState({ startDate: '', endDate: '', product: '' });
+  const [topProducts, setTopProducts] = useState([]);
+  const [showChart, setShowChart] = useState(false);
 
   const [form, setForm] = useState({
     clientName: 'Consumidor Final',
@@ -52,6 +54,7 @@ export default function Sales() {
       const params = {};
       if (filter.startDate) params.startDate = filter.startDate;
       if (filter.endDate) params.endDate = filter.endDate;
+      if (filter.product) params.product = filter.product;
       const res = await api.get('/sales', { params });
       setSales(res.data.sales);
     } catch {
@@ -60,6 +63,23 @@ export default function Sales() {
       setLoading(false);
     }
   };
+
+  const fetchTopProducts = async () => {
+    try {
+      const params = {};
+      if (filter.startDate) params.startDate = filter.startDate;
+      if (filter.endDate) params.endDate = filter.endDate;
+      const res = await api.get('/dashboard/top-products', { params });
+      setTopProducts(res.data || []);
+    } catch {
+      // silent
+    }
+  };
+
+  useEffect(() => {
+    if (showChart) fetchTopProducts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showChart, filter.startDate, filter.endDate]);
 
   const fetchProducts = async () => {
     try {
@@ -308,7 +328,7 @@ export default function Sales() {
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 mb-6 p-4">
-        <div className="flex flex-col sm:flex-row gap-3">
+        <div className="flex flex-col sm:flex-row gap-3 flex-wrap">
           <input
             type="date"
             value={filter.startDate}
@@ -321,8 +341,33 @@ export default function Sales() {
             onChange={(e) => setFilter({ ...filter, endDate: e.target.value })}
             className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50"
           />
+          <select
+            value={filter.product}
+            onChange={(e) => setFilter({ ...filter, product: e.target.value })}
+            className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50 flex-1 min-w-[200px]"
+          >
+            <option value="">Todos los productos/servicios</option>
+            {products.map((p) => (
+              <option key={p._id} value={p._id}>
+                {p.name} {p.category === 'servicio' ? '(Servicio)' : ''}
+              </option>
+            ))}
+          </select>
+          <button
+            type="button"
+            onClick={() => setShowChart((s) => !s)}
+            className={`px-4 py-2.5 rounded-xl text-sm font-medium border cursor-pointer ${
+              showChart
+                ? 'bg-emerald-600 text-white border-emerald-600'
+                : 'bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50'
+            }`}
+          >
+            {showChart ? 'Ocultar gráfico' : 'Top productos'}
+          </button>
         </div>
       </div>
+
+      {showChart && <TopProductsChart data={topProducts} />}
 
       <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden">
         <div className="overflow-x-auto">
@@ -774,6 +819,46 @@ export default function Sales() {
         }
         .input:focus { border-color: #10b981; background: white; }
       `}</style>
+    </div>
+  );
+}
+
+function TopProductsChart({ data }) {
+  if (!data || data.length === 0) {
+    return (
+      <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 p-6 mb-6 text-center text-slate-400 text-sm">
+        Sin datos para mostrar
+      </div>
+    );
+  }
+  const top = data.slice(0, 10);
+  const maxQty = Math.max(...top.map((d) => d.quantity || 0), 1);
+  return (
+    <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 p-6 mb-6">
+      <h3 className="text-lg font-bold text-slate-800 mb-4">Top productos/servicios vendidos</h3>
+      <div className="space-y-3">
+        {top.map((p) => {
+          const pct = ((p.quantity || 0) / maxQty) * 100;
+          return (
+            <div key={p._id} className="grid grid-cols-12 gap-2 items-center">
+              <div className="col-span-4 text-sm text-slate-700 truncate" title={p.name}>
+                {p.name}
+              </div>
+              <div className="col-span-6 bg-slate-100 rounded-full h-6 overflow-hidden relative">
+                <div
+                  className="h-full bg-gradient-to-r from-emerald-500 to-teal-500 rounded-full flex items-center justify-end pr-2 text-white text-xs font-bold"
+                  style={{ width: `${pct}%` }}
+                >
+                  {p.quantity}
+                </div>
+              </div>
+              <div className="col-span-2 text-right text-sm font-medium text-emerald-700">
+                ${Number(p.revenue || 0).toFixed(2)}
+              </div>
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
