@@ -12,6 +12,12 @@ const saleItemSchema = new mongoose.Schema({
   quantity: { type: Number, required: true, min: 1 },
   unitPrice: { type: Number, required: true },
   taxRate: { type: Number, default: 15 },
+  // Descuento aplicado al ítem (en valor absoluto, ya calculado).
+  discount: { type: Number, default: 0 },
+  // Referencia opcional al descuento maestro aplicado.
+  discountRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Discount' },
+  // Tratamiento al que aporta este ítem (avance automático).
+  treatment: { type: mongoose.Schema.Types.ObjectId, ref: 'Treatment' },
   subtotal: { type: Number, required: true },
 });
 
@@ -32,6 +38,7 @@ const saleSchema = new mongoose.Schema(
     clientAddress: { type: String, trim: true },
     items: [saleItemSchema],
     subtotal: { type: Number, required: true },
+    discountTotal: { type: Number, default: 0 },
     taxAmount: { type: Number, required: true },
     total: { type: Number, required: true },
     paymentMethod: {
@@ -48,6 +55,12 @@ const saleSchema = new mongoose.Schema(
     notes: String,
     // Marca si es la primera venta/servicio del paciente (paciente nuevo).
     isFirstVisit: { type: Boolean, default: false },
+    // Trazabilidad: quién atendió en cada eslabón del proceso.
+    callCenter: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    cashier: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    doctor: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    nurse: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    appointment: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment' },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }

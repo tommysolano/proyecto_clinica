@@ -24,6 +24,10 @@ const emptyForm = {
   gender: '',
   address: '',
   notes: '',
+  source: '',
+  sourceDetail: '',
+  antecedentesFamiliares: '',
+  antecedentesPatologicos: '',
 };
 
 const emptyApt = {
@@ -260,7 +264,7 @@ export default function Patients() {
               ) : (
                 patients.map((p) => (
                   <tr key={p._id} className="border-b border-emerald-50 hover:bg-emerald-50/30">
-                    <td className="px-6 py-3.5 text-sm text-slate-600">{p.cedula}</td>
+                    <td className="px-6 py-3.5 text-sm text-slate-600">{p.cedula || '—'}</td>
                     <td className="px-6 py-3.5 text-sm font-medium text-slate-800">
                       {p.firstName} {p.lastName}
                     </td>
@@ -335,13 +339,13 @@ export default function Patients() {
       >
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Field label="Cédula" required>
+            <Field label="Cédula">
               <input
                 name="cedula"
                 value={form.cedula}
                 onChange={handleChange}
-                required
                 className="input"
+                placeholder="Opcional"
               />
             </Field>
             <Field label="Género">
@@ -424,6 +428,49 @@ export default function Patients() {
           </div>
           <Field label="Dirección">
             <input name="address" value={form.address} onChange={handleChange} className="input" />
+          </Field>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <Field label="¿Cómo nos conoció?">
+              <select
+                name="source"
+                value={form.source}
+                onChange={handleChange}
+                className="input"
+              >
+                <option value="">Sin especificar</option>
+                <option value="anuncio">Anuncio</option>
+                <option value="referido">Referido</option>
+                <option value="recepcion">Recepción</option>
+                <option value="organico">Orgánico</option>
+              </select>
+            </Field>
+            <Field label="Detalle de procedencia">
+              <input
+                name="sourceDetail"
+                value={form.sourceDetail}
+                onChange={handleChange}
+                className="input"
+                placeholder="Ej: campaña Instagram, referido por María..."
+              />
+            </Field>
+          </div>
+          <Field label="Antecedentes familiares">
+            <textarea
+              name="antecedentesFamiliares"
+              value={form.antecedentesFamiliares}
+              onChange={handleChange}
+              rows={2}
+              className="input resize-none"
+            />
+          </Field>
+          <Field label="Antecedentes patológicos">
+            <textarea
+              name="antecedentesPatologicos"
+              value={form.antecedentesPatologicos}
+              onChange={handleChange}
+              rows={2}
+              className="input resize-none"
+            />
           </Field>
           <Field label="Notas">
             <textarea

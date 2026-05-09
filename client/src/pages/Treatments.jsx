@@ -1,0 +1,410 @@
+import { useEffect, useState } from 'react';
+import api from '../api/axios';
+import toast from 'react-hot-toast';
+import Modal from '../components/Modal';
+import { HiOutlinePlus, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineHeart } from 'react-icons/hi2';
+import { useAuth } from '../context/AuthContext';
+
+const STATUSES = [
+  { value: 'activo', label: 'Activo', color: 'bg-emerald-100 text-emerald-800' },
+  { value: 'completado', label: 'Completado', color: 'bg-sky-100 text-sky-800' },
+  { value: 'abandonado', label: 'Abandonado', color: 'bg-rose-100 text-rose-800' },
+];
+
+const EMPTY = {
+  patient: '',
+  name: '',
+  description: '',
+  prescribedBy: '',
+  startDate: new Date().toISOString().slice(0, 10),
+  targetEndDate: '',
+  notes: '',
+  items: [{ product: '', quantity: 1 }],
+};
+
+export default function Treatments() {
+  const { hasRole } = useAuth();
+  const canEdit = hasRole('admin', 'doctor');
+  const [list, setList] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState('');
+  const [showModal, setShowModal] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState(EMPTY);
+  const [patients, setPatients] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [doctors, setDoctors] = useState([]);
+  const [saving, setSaving] = useState(false);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const params = {};
+      if (statusFilter) params.status = statusFilter;
+      const res = await api.get('/treatments', { params });
+      setList(res.data || []);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al cargar tratamientos');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    Promise.all([
+      api.get('/patients').then((r) => setPatients(r.data.patients || r.data || [])),
+      api.get('/products').then((r) => setProducts((r.data.products || r.data || []).filter((p) => p.category === 'servicio' || p.category === 'programa'))),
+      api.get('/users').then((r) => setDoctors(r.data || [])),
+    ]).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    load();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [statusFilter]);
+
+  const openNew = () => {
+    setEditing(null);
+    setForm(EMPTY);
+    setShowModal(true);
+  };
+
+  const openEdit = (t) => {
+    setEditing(t);
+    setForm({
+      patient: t.patient?._id || '',
+      name: t.name || '',
+      description: t.description || '',
+      prescribedBy: t.prescribedBy?._id || '',
+      startDate: (t.startDate || '').slice(0, 10),
+      targetEndDate: (t.targetEndDate || '').slice(0, 10),
+      notes: t.notes || '',
+      items: (t.items || []).map((it) => ({
+        product: it.product?._id || it.product,
+        quantity: it.quantity,
+      })),
+    });
+    setShowModal(true);
+  };
+
+  const updateItem = (idx, field, value) => {
+    const items = [...form.items];
+    items[idx] = { ...items[idx], [field]: value };
+    setForm({ ...form, items });
+  };
+
+  const addItem = () =>
+    setForm({ ...form, items: [...form.items, { product: '', quantity: 1 }] });
+
+  const removeItem = (idx) =>
+    setForm({ ...form, items: form.items.filter((_, i) => i !== idx) });
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      const body = {
+        ...form,
+        items: form.items.filter((it) => it.product),
+      };
+      if (editing) {
+        await api.put(`/treatments/${editing._id}`, body);
+        toast.success('Tratamiento actualizado');
+      } else {
+        await api.post('/treatments', body);
+        toast.success('Tratamiento creado');
+      }
+      setShowModal(false);
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al guardar');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const remove = async (t) => {
+    if (!confirm(`¿Eliminar tratamiento "${t.name}"?`)) return;
+    try {
+      await api.delete(`/treatments/${t._id}`);
+      toast.success('Eliminado');
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error');
+    }
+  };
+
+  const completeItem = async (t, itemIndex) => {
+    try {
+      await api.post(`/treatments/${t._id}/complete-item`, { itemIndex });
+      toast.success('Cumplimiento registrado');
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error');
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+            <HiOutlineHeart className="text-emerald-600" /> Tratamientos
+          </h1>
+          <p className="text-sm text-slate-500">
+            Sigue el avance de los planes de tratamiento de cada paciente.
+          </p>
+        </div>
+        {canEdit && (
+          <button
+            onClick={openNew}
+            className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2 hover:bg-emerald-700"
+          >
+            <HiOutlinePlus className="w-4 h-4" /> Nuevo tratamiento
+          </button>
+        )}
+      </div>
+
+      <div className="flex gap-2">
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+        >
+          <option value="">Todos los estados</option>
+          {STATUSES.map((s) => (
+            <option key={s.value} value={s.value}>
+              {s.label}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="grid gap-3">
+        {loading && <div className="text-slate-500">Cargando...</div>}
+        {list.map((t) => {
+          const status = STATUSES.find((s) => s.value === t.status) || STATUSES[0];
+          return (
+            <div key={t._id} className="bg-white rounded-xl border border-slate-200 p-4">
+              <div className="flex items-start justify-between flex-wrap gap-2">
+                <div>
+                  <h3 className="font-bold text-slate-800">{t.name}</h3>
+                  <div className="text-sm text-slate-500">
+                    Paciente: {t.patient?.firstName} {t.patient?.lastName} ·
+                    Doctor: {t.prescribedBy?.name || '—'}
+                  </div>
+                  <div className="text-xs text-slate-400 mt-1">
+                    Inicio: {(t.startDate || '').slice(0, 10)}
+                    {t.targetEndDate ? ` · Meta: ${t.targetEndDate.slice(0, 10)}` : ''}
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className={`px-2 py-1 rounded-md text-xs font-semibold ${status.color}`}>
+                    {status.label}
+                  </span>
+                  <span className="px-2 py-1 rounded-md text-xs font-semibold bg-slate-100 text-slate-700">
+                    {t.progress}% completado
+                  </span>
+                  {canEdit && (
+                    <>
+                      <button
+                        onClick={() => openEdit(t)}
+                        className="p-2 text-sky-600 hover:bg-sky-50 rounded-lg"
+                      >
+                        <HiOutlinePencilSquare className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => remove(t)}
+                        className="p-2 text-rose-600 hover:bg-rose-50 rounded-lg"
+                      >
+                        <HiOutlineTrash className="w-4 h-4" />
+                      </button>
+                    </>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-3 h-2 rounded-full bg-slate-100 overflow-hidden">
+                <div
+                  className="h-full bg-emerald-500"
+                  style={{ width: `${Math.min(t.progress, 100)}%` }}
+                />
+              </div>
+
+              <div className="mt-3 grid sm:grid-cols-2 gap-2">
+                {(t.items || []).map((it, idx) => (
+                  <div
+                    key={idx}
+                    className="flex items-center justify-between bg-slate-50 rounded-lg px-3 py-2 text-sm"
+                  >
+                    <div>
+                      <div className="font-medium text-slate-700">
+                        {it.name || it.product?.name}
+                      </div>
+                      <div className="text-xs text-slate-500">
+                        {it.completed || 0} / {it.quantity}
+                      </div>
+                    </div>
+                    {canEdit && (it.completed || 0) < it.quantity && (
+                      <button
+                        onClick={() => completeItem(t, idx)}
+                        className="text-xs px-2 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700"
+                      >
+                        +1
+                      </button>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      <Modal isOpen={showModal} onClose={() => setShowModal(false)} title={editing ? 'Editar tratamiento' : 'Nuevo tratamiento'}>
+        <form onSubmit={submit} className="space-y-3">
+          <div className="grid sm:grid-cols-2 gap-3">
+            <label className="block">
+              <span className="text-xs font-medium text-slate-600">Paciente</span>
+              <select
+                required
+                value={form.patient}
+                onChange={(e) => setForm({ ...form, patient: e.target.value })}
+                className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+              >
+                <option value="">Seleccionar...</option>
+                {patients.map((p) => (
+                  <option key={p._id} value={p._id}>
+                    {p.firstName} {p.lastName}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="block">
+              <span className="text-xs font-medium text-slate-600">Doctor</span>
+              <select
+                value={form.prescribedBy}
+                onChange={(e) => setForm({ ...form, prescribedBy: e.target.value })}
+                className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+              >
+                <option value="">—</option>
+                {doctors.map((d) => (
+                  <option key={d._id} value={d._id}>
+                    {d.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <label className="block">
+            <span className="text-xs font-medium text-slate-600">Nombre del tratamiento</span>
+            <input
+              required
+              value={form.name}
+              onChange={(e) => setForm({ ...form, name: e.target.value })}
+              className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+            />
+          </label>
+          <label className="block">
+            <span className="text-xs font-medium text-slate-600">Descripción</span>
+            <textarea
+              rows={2}
+              value={form.description}
+              onChange={(e) => setForm({ ...form, description: e.target.value })}
+              className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+            />
+          </label>
+          <div className="grid sm:grid-cols-2 gap-3">
+            <label className="block">
+              <span className="text-xs font-medium text-slate-600">Inicio</span>
+              <input
+                type="date"
+                value={form.startDate}
+                onChange={(e) => setForm({ ...form, startDate: e.target.value })}
+                className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+              />
+            </label>
+            <label className="block">
+              <span className="text-xs font-medium text-slate-600">Fecha objetivo</span>
+              <input
+                type="date"
+                value={form.targetEndDate}
+                onChange={(e) => setForm({ ...form, targetEndDate: e.target.value })}
+                className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+              />
+            </label>
+          </div>
+
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs font-medium text-slate-600">
+                Servicios / programas (si eliges un programa, se expandirán sus servicios)
+              </span>
+              <button
+                type="button"
+                onClick={addItem}
+                className="text-xs text-emerald-600 hover:underline"
+              >
+                + Agregar
+              </button>
+            </div>
+            <div className="space-y-2">
+              {form.items.map((it, idx) => (
+                <div key={idx} className="flex gap-2">
+                  <select
+                    value={it.product}
+                    onChange={(e) => updateItem(idx, 'product', e.target.value)}
+                    className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                  >
+                    <option value="">Servicio o programa...</option>
+                    {products.map((p) => (
+                      <option key={p._id} value={p._id}>
+                        {p.name} {p.category === 'programa' ? '(programa)' : ''}
+                      </option>
+                    ))}
+                  </select>
+                  <input
+                    type="number"
+                    min="1"
+                    value={it.quantity}
+                    onChange={(e) => updateItem(idx, 'quantity', Number(e.target.value))}
+                    className="w-20 border border-slate-200 rounded-lg px-2 py-2 text-sm"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => removeItem(idx)}
+                    className="px-2 text-rose-600"
+                  >
+                    ×
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          <label className="block">
+            <span className="text-xs font-medium text-slate-600">Notas</span>
+            <textarea
+              rows={2}
+              value={form.notes}
+              onChange={(e) => setForm({ ...form, notes: e.target.value })}
+              className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+            />
+          </label>
+          <div className="flex justify-end gap-2 pt-2">
+            <button type="button" onClick={() => setShowModal(false)} className="px-4 py-2 rounded-lg border border-slate-200">
+              Cancelar
+            </button>
+            <button
+              type="submit"
+              disabled={saving}
+              className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60"
+            >
+              {saving ? 'Guardando...' : 'Guardar'}
+            </button>
+          </div>
+        </form>
+      </Modal>
+    </div>
+  );
+}

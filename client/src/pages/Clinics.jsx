@@ -32,7 +32,7 @@ export default function Clinics() {
       const res = await api.get('/clinics');
       setClinics(res.data);
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al cargar clínicas');
+      toast.error(err.response?.data?.message || 'Error al cargar consultorios médicos');
     } finally {
       setLoading(false);
     }
@@ -68,10 +68,10 @@ export default function Clinics() {
     try {
       if (editing) {
         await api.put(`/clinics/${editing._id}`, form);
-        toast.success('Clínica actualizada');
+        toast.success('Consultorio médico actualizado');
       } else {
         await api.post('/clinics', form);
-        toast.success('Clínica creada');
+        toast.success('Consultorio médico creado');
       }
       setModalOpen(false);
       await load();
@@ -87,7 +87,7 @@ export default function Clinics() {
     if (!window.confirm(`¿Desactivar "${c.name}"?`)) return;
     try {
       await api.delete(`/clinics/${c._id}`);
-      toast.success('Clínica desactivada');
+      toast.success('Consultorio médico desactivado');
       load();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al desactivar');
@@ -99,14 +99,14 @@ export default function Clinics() {
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
           <HiOutlineBuildingOffice2 className="w-7 h-7 text-emerald-600" />
-          Clínicas
+          Consultorios médicos
         </h1>
         {isSuper && (
           <button
             onClick={openNew}
             className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white px-5 py-2.5 rounded-xl text-sm font-medium cursor-pointer border-none shadow-lg shadow-emerald-200/50"
           >
-            <HiOutlinePlus className="w-5 h-5" /> Nueva clínica
+            <HiOutlinePlus className="w-5 h-5" /> Nuevo consultorio
           </button>
         )}
       </div>
@@ -127,7 +127,7 @@ export default function Clinics() {
             {loading ? (
               <tr><td colSpan={6} className="text-center py-10 text-slate-500">Cargando...</td></tr>
             ) : clinics.length === 0 ? (
-              <tr><td colSpan={6} className="text-center py-10 text-slate-500">Sin clínicas.</td></tr>
+              <tr><td colSpan={6} className="text-center py-10 text-slate-500">Sin consultorios médicos.</td></tr>
             ) : (
               clinics.map((c) => (
                 <tr key={c._id} className="border-t border-emerald-50 hover:bg-emerald-50/30">
@@ -168,7 +168,7 @@ export default function Clinics() {
       <Modal
         isOpen={modalOpen}
         onClose={() => setModalOpen(false)}
-        title={editing ? 'Editar clínica' : 'Nueva clínica'}
+        title={editing ? 'Editar consultorio médico' : 'Nuevo consultorio médico'}
         size="lg"
       >
         <form onSubmit={submit} className="space-y-3">

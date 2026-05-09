@@ -16,19 +16,35 @@ import {
   HiOutlineBuildingOffice2,
   HiOutlineUserGroup,
   HiOutlineCog6Tooth,
+  HiOutlineSparkles,
+  HiOutlineMegaphone,
+  HiOutlineArrowsRightLeft,
+  HiOutlineHeart,
+  HiOutlineDocumentDuplicate,
+  HiOutlineTag,
+  HiOutlineNoSymbol,
+  HiOutlineBuildingStorefront,
 } from 'react-icons/hi2';
 
 // Cada item declara qué roles pueden verlo. superOnly = solo isSuperAdmin.
 const ALL_ITEMS = [
-  { path: '/', label: 'Dashboard', icon: HiOutlineHome, roles: ['admin', 'cajero', 'contabilidad', 'doctor', 'call_center'] },
-  { path: '/patients', label: 'Pacientes', icon: HiOutlineUsers, roles: ['admin', 'cajero', 'doctor', 'call_center'] },
-  { path: '/appointments', label: 'Citas', icon: HiOutlineCalendar, roles: ['admin', 'cajero', 'doctor', 'call_center'] },
+  { path: '/', label: 'Dashboard', icon: HiOutlineHome, roles: ['admin', 'cajero', 'contabilidad', 'doctor', 'call_center', 'marketing', 'enfermero'] },
+  { path: '/patients', label: 'Pacientes', icon: HiOutlineUsers, roles: ['admin', 'cajero', 'doctor', 'call_center', 'marketing', 'enfermero'] },
+  { path: '/appointments', label: 'Citas', icon: HiOutlineCalendar, roles: ['admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'] },
+  { path: '/calendar', label: 'Calendario', icon: HiOutlineCalendar, roles: ['admin', 'cajero', 'doctor', 'call_center', 'enfermero'] },
+  { path: '/treatments', label: 'Tratamientos', icon: HiOutlineHeart, roles: ['admin', 'doctor', 'cajero', 'marketing', 'enfermero'] },
+  { path: '/referrals', label: 'Derivaciones', icon: HiOutlineArrowsRightLeft, roles: ['admin', 'doctor', 'marketing', 'cajero'] },
+  { path: '/quotations', label: 'Cotizaciones', icon: HiOutlineDocumentDuplicate, roles: ['admin', 'cajero', 'call_center', 'contabilidad'] },
   { path: '/inventory', label: 'Inventario', icon: HiOutlineCube, roles: ['admin', 'contabilidad'] },
-  { path: '/sales', label: 'Ventas', icon: HiOutlineShoppingCart, roles: ['admin', 'cajero', 'contabilidad'] },
+  { path: '/sales', label: 'Ventas', icon: HiOutlineShoppingCart, roles: ['admin', 'contabilidad'] },
   { path: '/invoices', label: 'Facturación', icon: HiOutlineDocumentText, roles: ['admin', 'cajero', 'contabilidad'] },
+  { path: '/marketing', label: 'Marketing', icon: HiOutlineMegaphone, roles: ['admin', 'marketing'] },
+  { path: '/discounts', label: 'Descuentos', icon: HiOutlineTag, roles: ['admin', 'cajero', 'contabilidad'] },
+  { path: '/rooms', label: 'Consultorios', icon: HiOutlineBuildingStorefront, roles: ['admin'] },
+  { path: '/blocks', label: 'Bloqueos', icon: HiOutlineNoSymbol, roles: ['admin'] },
   { path: '/users', label: 'Usuarios', icon: HiOutlineUserGroup, roles: ['admin'] },
   { path: '/invoicing-config', label: 'Config. SRI', icon: HiOutlineCog6Tooth, roles: ['admin', 'contabilidad'] },
-  { path: '/clinics', label: 'Clínicas', icon: HiOutlineBuildingOffice2, roles: [], superOnly: true },
+  { path: '/clinics', label: 'Consultorios médicos', icon: HiOutlineBuildingOffice2, roles: [], superOnly: true },
 ];
 
 export default function Layout({ children }) {
@@ -95,7 +111,7 @@ export default function Layout({ children }) {
         {clinics.length > 1 && (
           <div className="px-4 mb-3">
             <label className="text-[10px] uppercase tracking-wider text-emerald-400/70 font-semibold px-1 block mb-1">
-              Clínica activa
+              Consultorio médico activo
             </label>
             <select
               value={activeClinic?._id || ''}

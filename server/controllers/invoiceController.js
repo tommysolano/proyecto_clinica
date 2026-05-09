@@ -85,7 +85,8 @@ exports.emitFromSale = async (req, res) => {
     const detalles = sale.items.map((it) => {
       const cantidad = Number(it.quantity);
       const precioUnitario = Number(it.unitPrice);
-      const precioTotalSin = +(cantidad * precioUnitario).toFixed(2);
+      const descuento = +Number(it.discount || 0).toFixed(2);
+      const precioTotalSin = +(cantidad * precioUnitario - descuento).toFixed(2);
       const tarifa = Number(it.taxRate || 0);
       const valorIva = +(precioTotalSin * (tarifa / 100)).toFixed(2);
       // Códigos SRI IVA: 2 = IVA, codigoPorcentaje 0=0%, 2=12%, 3=14%, 4=15%
@@ -98,7 +99,7 @@ exports.emitFromSale = async (req, res) => {
         descripcion: it.productName,
         cantidad,
         precioUnitario,
-        descuento: 0,
+        descuento,
         precioTotalSinImpuesto: precioTotalSin,
         impuestos: [
           {
@@ -166,8 +167,8 @@ exports.emitFromSale = async (req, res) => {
         razonSocialComprador: compradorNombre,
         identificacionComprador: compradorIdent,
         direccionComprador: compradorDir || undefined,
-        totalSinImpuestos: sale.subtotal,
-        totalDescuento: 0,
+        totalSinImpuestos: +(sale.subtotal - (sale.discountTotal || 0)).toFixed(2),
+        totalDescuento: +Number(sale.discountTotal || 0).toFixed(2),
         totalConImpuestos,
         propina: 0,
         importeTotal: sale.total,
@@ -206,8 +207,8 @@ exports.emitFromSale = async (req, res) => {
       direccionComprador: compradorDir,
       emailComprador: compradorEmail,
       telefonoComprador: compradorTel,
-      totalSinImpuestos: sale.subtotal,
-      totalDescuento: 0,
+      totalSinImpuestos: +(sale.subtotal - (sale.discountTotal || 0)).toFixed(2),
+      totalDescuento: +Number(sale.discountTotal || 0).toFixed(2),
       totalImpuesto: sale.taxAmount,
       importeTotal: sale.total,
       createdBy: req.user._id,

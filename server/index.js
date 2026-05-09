@@ -26,6 +26,13 @@ app.use('/api/invoicing-config', require('./routes/invoicingConfig'));
 app.use('/api/invoices', require('./routes/invoices'));
 app.use('/api/dashboard', require('./routes/dashboard'));
 app.use('/api/reports', require('./routes/reports'));
+app.use('/api/rooms', require('./routes/rooms'));
+app.use('/api/time-blocks', require('./routes/timeBlocks'));
+app.use('/api/treatments', require('./routes/treatments'));
+app.use('/api/referrals', require('./routes/referrals'));
+app.use('/api/discounts', require('./routes/discounts'));
+app.use('/api/quotations', require('./routes/quotations'));
+app.use('/api/marketing', require('./routes/marketing'));
 
 // Ruta de salud
 app.get('/api/health', (req, res) => {

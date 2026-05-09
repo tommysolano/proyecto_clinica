@@ -9,13 +9,15 @@ import {
   HiOutlineExclamationTriangle,
 } from 'react-icons/hi2';
 
-const categories = { medicamento: 'Medicamento', insumo: 'Insumo', servicio: 'Servicio', otro: 'Otro' };
+const categories = { medicamento: 'Medicamento', insumo: 'Insumo', servicio: 'Servicio', programa: 'Programa', otro: 'Otro' };
 const emptyProduct = {
   code: '', name: '', description: '', category: 'otro',
   purchasePrice: '', salePrice: '', stock: '', minStock: '5', unit: 'unidad', taxRate: '15',
   unlimited: false,
   maxAppointmentsPerDay: '0',
   excludeFromFirstVisit: false,
+  programServices: [],
+  availableInClinics: [],
 };
 const emptyMovement = { product: '', type: 'entrada', quantity: '', reason: '' };
 
@@ -24,6 +26,7 @@ export default function Inventory() {
   const canWrite = hasRole('admin', 'contabilidad');
   const [products, setProducts] = useState([]);
   const [movements, setMovements] = useState([]);
+  const [clinicsList, setClinicsList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
@@ -62,6 +65,9 @@ export default function Inventory() {
 
   useEffect(() => { fetchProducts(); }, [search, categoryFilter, showLowStock]);
   useEffect(() => { if (tab === 'movements') fetchMovements(); }, [tab]);
+  useEffect(() => {
+    api.get('/clinics').then((r) => setClinicsList(r.data || [])).catch(() => {});
+  }, []);
 
   // Product CRUD
   const openNewProduct = () => {
@@ -80,6 +86,11 @@ export default function Inventory() {
       unlimited: !!p.unlimited,
       maxAppointmentsPerDay: String(p.maxAppointmentsPerDay ?? 0),
       excludeFromFirstVisit: !!p.excludeFromFirstVisit,
+      programServices: (p.programServices || []).map((s) => ({
+        product: s.product?._id || s.product || '',
+        quantity: s.quantity || 1,
+      })),
+      availableInClinics: (p.availableInClinics || []).map((c) => c?._id || c).filter(Boolean),
     });
     setProductModal(true);
   };
@@ -98,6 +109,10 @@ export default function Inventory() {
         unlimited: !!productForm.unlimited,
         maxAppointmentsPerDay: parseInt(productForm.maxAppointmentsPerDay) || 0,
         excludeFromFirstVisit: !!productForm.excludeFromFirstVisit,
+        programServices: (productForm.programServices || [])
+          .filter((s) => s.product && Number(s.quantity) > 0)
+          .map((s) => ({ product: s.product, quantity: parseInt(s.quantity) || 1 })),
+        availableInClinics: productForm.availableInClinics || [],
       };
       if (editingProduct) {
         await api.put(`/products/${editingProduct}`, data);
@@ -445,6 +460,99 @@ export default function Inventory() {
                 <strong>No marcar paciente como nuevo</strong> al usar este servicio
               </label>
             </div>
+
+            {/* Programa: items incluidos */}
+            {productForm.category === 'programa' && (
+              <div className="sm:col-span-2 bg-purple-50 border border-purple-200 rounded-xl p-3 space-y-2">
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-semibold text-purple-800">Servicios incluidos en el programa</p>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      setProductForm({
+                        ...productForm,
+                        programServices: [...(productForm.programServices || []), { product: '', quantity: 1 }],
+                      })
+                    }
+                    className="text-xs px-2 py-1 bg-purple-600 text-white rounded border-none cursor-pointer"
+                  >+ Agregar</button>
+                </div>
+                {(productForm.programServices || []).length === 0 && (
+                  <p className="text-xs text-slate-500">Sin servicios. Agrega los servicios incluidos.</p>
+                )}
+                {(productForm.programServices || []).map((row, idx) => (
+                  <div key={idx} className="grid grid-cols-12 gap-2 items-center">
+                    <select
+                      value={row.product}
+                      onChange={(e) => {
+                        const arr = [...productForm.programServices];
+                        arr[idx] = { ...arr[idx], product: e.target.value };
+                        setProductForm({ ...productForm, programServices: arr });
+                      }}
+                      className="col-span-8 px-2 py-1.5 border border-slate-200 rounded text-sm bg-white"
+                    >
+                      <option value="">— Seleccionar servicio —</option>
+                      {products
+                        .filter((p) => p._id !== editingProduct && (p.category === 'servicio' || p.unlimited))
+                        .map((p) => (
+                          <option key={p._id} value={p._id}>{p.name}</option>
+                        ))}
+                    </select>
+                    <input
+                      type="number"
+                      min={1}
+                      value={row.quantity}
+                      onChange={(e) => {
+                        const arr = [...productForm.programServices];
+                        arr[idx] = { ...arr[idx], quantity: e.target.value };
+                        setProductForm({ ...productForm, programServices: arr });
+                      }}
+                      className="col-span-3 px-2 py-1.5 border border-slate-200 rounded text-sm bg-white"
+                    />
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const arr = (productForm.programServices || []).filter((_, i) => i !== idx);
+                        setProductForm({ ...productForm, programServices: arr });
+                      }}
+                      className="col-span-1 text-rose-600 hover:bg-rose-50 rounded p-1 border-none bg-transparent cursor-pointer"
+                    ><HiOutlineTrash className="w-4 h-4" /></button>
+                  </div>
+                ))}
+              </div>
+            )}
+
+            {/* Disponibilidad por clínica (sucursal) */}
+            {clinicsList.length > 1 && (
+              <div className="sm:col-span-2 bg-sky-50 border border-sky-200 rounded-xl p-3">
+                <p className="text-sm font-semibold text-sky-800 mb-2">
+                  Disponible solo en estas clínicas
+                </p>
+                <p className="text-xs text-slate-500 mb-2">
+                  Si no marcas ninguna, estará disponible en todas.
+                </p>
+                <div className="grid grid-cols-2 gap-2">
+                  {clinicsList.map((c) => {
+                    const checked = (productForm.availableInClinics || []).includes(c._id);
+                    return (
+                      <label key={c._id} className="flex items-center gap-2 text-sm cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(e) => {
+                            const arr = new Set(productForm.availableInClinics || []);
+                            if (e.target.checked) arr.add(c._id); else arr.delete(c._id);
+                            setProductForm({ ...productForm, availableInClinics: Array.from(arr) });
+                          }}
+                          className="w-4 h-4 accent-emerald-600"
+                        />
+                        <span>{c.nombreComercial || c.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
           </div>
           <div className="flex justify-end gap-3 pt-2">
             <button type="button" onClick={() => setProductModal(false)} className="px-5 py-2.5 border border-slate-200 rounded-xl text-sm text-slate-600 hover:bg-slate-50 cursor-pointer bg-white transition-colors">Cancelar</button>

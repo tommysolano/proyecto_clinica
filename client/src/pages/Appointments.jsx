@@ -14,26 +14,34 @@ import {
   HiOutlineMagnifyingGlass,
 } from 'react-icons/hi2';
 
-// Solo 2 estados: pendiente y completada (cancelar = eliminar la cita).
+// 6 estados soportados por el backend.
 const statusColors = {
-  pendiente: 'bg-blue-100 text-blue-700',
-  completada: 'bg-emerald-100 text-emerald-700',
+  pendiente: 'bg-slate-100 text-slate-700',
+  confirmada: 'bg-blue-100 text-blue-700',
+  asistida: 'bg-emerald-100 text-emerald-700',
+  no_asistio: 'bg-rose-100 text-rose-700',
+  cancelada: 'bg-amber-100 text-amber-700',
+  completada: 'bg-teal-100 text-teal-700',
 };
 
 const statusLabels = {
   pendiente: 'Pendiente',
+  confirmada: 'Confirmada',
+  asistida: 'Asistida',
+  no_asistio: 'No asistió',
+  cancelada: 'Cancelada',
   completada: 'Completada',
 };
 
-// Mapeo de estados legacy a los nuevos (por si vienen datos antiguos del backend)
 const normalizeStatus = (s) => {
-  if (s === 'completada') return 'completada';
-  return 'pendiente';
+  const valid = ['pendiente', 'confirmada', 'asistida', 'no_asistio', 'cancelada', 'completada'];
+  return valid.includes(s) ? s : 'pendiente';
 };
 
 const emptyForm = {
   patient: '',
   doctor: '',
+  room: '',
   date: '',
   startTime: '',
   endTime: '',
@@ -44,6 +52,8 @@ const emptyForm = {
   treatment: '',
   services: [],
   clinic: '',
+  paidInAdvance: false,
+  advanceAmount: 0,
 };
 
 const roleLabels = {
@@ -86,6 +96,7 @@ export default function Appointments() {
   const [doctors, setDoctors] = useState([]);
   const [patients, setPatients] = useState([]);
   const [services, setServices] = useState([]);
+  const [rooms, setRooms] = useState([]);
   const [loading, setLoading] = useState(true);
   const [modalOpen, setModalOpen] = useState(false);
   const [detailModal, setDetailModal] = useState(null);
@@ -97,6 +108,10 @@ export default function Appointments() {
     endDate: '',
     status: '',
     isFirstVisit: '',
+    room: '',
+    service: '',
+    timeFrom: '',
+    timeTo: '',
   });
   const [view, setView] = useState('list'); // 'list' | 'today'
   const [patientSearch, setPatientSearch] = useState('');
@@ -164,10 +179,20 @@ export default function Appointments() {
     }
   };
 
+  const fetchRooms = async () => {
+    try {
+      const res = await api.get('/rooms');
+      setRooms(res.data || []);
+    } catch {
+      // silent
+    }
+  };
+
   useEffect(() => {
     fetchDoctors();
     fetchPatients();
     fetchServices();
+    fetchRooms();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
   useEffect(() => {
@@ -227,6 +252,7 @@ export default function Appointments() {
     setForm({
       patient: apt.patient?._id || '',
       doctor: apt.doctor?._id || '',
+      room: apt.room?._id || apt.room || '',
       date: apt.date ? apt.date.split('T')[0] : '',
       startTime: apt.startTime,
       endTime: apt.endTime,
@@ -239,6 +265,8 @@ export default function Appointments() {
         .map((s) => s.product?._id || s.product || s._id)
         .filter(Boolean),
       clinic: apt.clinic || activeClinic?._id || '',
+      paidInAdvance: !!apt.paidInAdvance,
+      advanceAmount: Number(apt.advanceAmount || 0),
     });
     setPatientSearch(
       apt.patient ? `${apt.patient.firstName} ${apt.patient.lastName} - ${apt.patient.cedula}` : ''
@@ -397,6 +425,25 @@ export default function Appointments() {
       .slice(0, 30);
   }, [patientSearch, patients]);
 
+  // Aplica filtros en el cliente para servicio/consultorio/rango horario.
+  const filteredAppointments = useMemo(() => {
+    return appointments.filter((apt) => {
+      if (filter.service) {
+        const has = (apt.services || []).some(
+          (s) => String(s.product?._id || s.product) === String(filter.service)
+        );
+        if (!has) return false;
+      }
+      if (filter.room) {
+        const r = apt.room?._id || apt.room;
+        if (String(r) !== String(filter.room)) return false;
+      }
+      if (filter.timeFrom && apt.startTime && apt.startTime < filter.timeFrom) return false;
+      if (filter.timeTo && apt.startTime && apt.startTime > filter.timeTo) return false;
+      return true;
+    });
+  }, [appointments, filter.service, filter.room, filter.timeFrom, filter.timeTo]);
+
   // Cronómetro de cita seleccionada
   const elapsedSeconds = (apt) => {
     if (!apt?.consultationStartedAt) return 0;
@@ -446,19 +493,21 @@ export default function Appointments() {
       </div>
 
       {view === 'list' && (
-        <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 mb-6 p-4">
+        <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 mb-6 p-4 space-y-3">
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
             <input
               type="date"
               value={filter.startDate}
               onChange={(e) => setFilter({ ...filter, startDate: e.target.value })}
               className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
+              placeholder="Desde"
             />
             <input
               type="date"
               value={filter.endDate}
               onChange={(e) => setFilter({ ...filter, endDate: e.target.value })}
               className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
+              placeholder="Hasta"
             />
             <select
               value={filter.status}
@@ -467,9 +516,7 @@ export default function Appointments() {
             >
               <option value="">Todos los estados</option>
               {Object.entries(statusLabels).map(([k, v]) => (
-                <option key={k} value={k}>
-                  {v}
-                </option>
+                <option key={k} value={k}>{v}</option>
               ))}
             </select>
             <select
@@ -481,6 +528,47 @@ export default function Appointments() {
               <option value="true">Solo pacientes nuevos</option>
               <option value="false">Solo pacientes recurrentes</option>
             </select>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+            <select
+              value={filter.service}
+              onChange={(e) => setFilter({ ...filter, service: e.target.value })}
+              className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
+            >
+              <option value="">Todos los servicios</option>
+              {services.map((s) => <option key={s._id} value={s._id}>{s.name}</option>)}
+            </select>
+            <select
+              value={filter.room}
+              onChange={(e) => setFilter({ ...filter, room: e.target.value })}
+              className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
+            >
+              <option value="">Todos los consultorios</option>
+              {rooms.map((r) => <option key={r._id} value={r._id}>{r.name}</option>)}
+            </select>
+            <input
+              type="time"
+              value={filter.timeFrom}
+              onChange={(e) => setFilter({ ...filter, timeFrom: e.target.value })}
+              className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
+              placeholder="Desde hora"
+            />
+            <input
+              type="time"
+              value={filter.timeTo}
+              onChange={(e) => setFilter({ ...filter, timeTo: e.target.value })}
+              className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
+              placeholder="Hasta hora"
+            />
+          </div>
+          <div className="flex items-center justify-between text-xs text-slate-500">
+            <span>Total filtrado: <strong className="text-slate-800">{filteredAppointments.length}</strong> citas</span>
+            {(filter.service || filter.room || filter.timeFrom || filter.timeTo || filter.status || filter.isFirstVisit) && (
+              <button
+                onClick={() => setFilter({ startDate: '', endDate: '', status: '', isFirstVisit: '', room: '', service: '', timeFrom: '', timeTo: '' })}
+                className="text-emerald-600 hover:underline border-none bg-transparent cursor-pointer"
+              >Limpiar filtros</button>
+            )}
           </div>
         </div>
       )}
@@ -517,14 +605,14 @@ export default function Appointments() {
                     Cargando...
                   </td>
                 </tr>
-              ) : appointments.length === 0 ? (
+              ) : filteredAppointments.length === 0 ? (
                 <tr>
                   <td colSpan="6" className="text-center py-10 text-slate-500">
                     No se encontraron citas
                   </td>
                 </tr>
               ) : (
-                appointments.map((apt) => {
+                filteredAppointments.map((apt) => {
                   const editable = canEdit(apt);
                   const showDoctorTimer =
                     isDoctor &&
@@ -646,11 +734,11 @@ export default function Appointments() {
         size="lg"
       >
         <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Selector de clínica para call_center con múltiples clínicas */}
+          {/* Selector de consultorio médico para call_center con múltiples consultorios */}
           {isCallCenter && (clinics?.length || 0) > 1 && (
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                Clínica destino *
+                Consultorio médico destino *
               </label>
               <select
                 name="clinic"
@@ -659,7 +747,7 @@ export default function Appointments() {
                 required
                 className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
               >
-                <option value="">Seleccionar clínica</option>
+                <option value="">Seleccionar consultorio médico</option>
                 {clinics.map((c) => (
                   <option key={c._id} value={c._id}>
                     {c.nombreComercial || c.name}
@@ -817,6 +905,47 @@ export default function Appointments() {
               rows={2}
               className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50 resize-none"
             />
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                Consultorio físico
+              </label>
+              <select
+                name="room"
+                value={form.room}
+                onChange={handleChange}
+                className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 bg-slate-50/50"
+              >
+                <option value="">— Sin asignar —</option>
+                {rooms.map((r) => (
+                  <option key={r._id} value={r._id}>{r.name}</option>
+                ))}
+              </select>
+            </div>
+            <div className="flex flex-col justify-end">
+              <label className="flex items-center gap-2 text-sm font-medium text-slate-700 mb-1.5 mt-6">
+                <input
+                  type="checkbox"
+                  checked={form.paidInAdvance}
+                  onChange={(e) => setForm({ ...form, paidInAdvance: e.target.checked })}
+                  className="w-4 h-4 accent-emerald-600"
+                />
+                Pagado por adelantado
+              </label>
+              {form.paidInAdvance && (
+                <input
+                  type="number"
+                  min={0}
+                  step="0.01"
+                  value={form.advanceAmount}
+                  onChange={(e) => setForm({ ...form, advanceAmount: Number(e.target.value) })}
+                  placeholder="Monto adelantado"
+                  className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
+                />
+              )}
+            </div>
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">
@@ -1052,6 +1181,55 @@ export default function Appointments() {
                     ? ` (${roleLabels[detailModal.createdByRole] || detailModal.createdByRole})`
                     : ''}
                 </p>
+              </div>
+            )}
+            {hasRole('admin', 'cajero', 'call_center', 'enfermero') && detailModal.status !== 'completada' && (
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2">
+                <p className="text-xs font-medium text-slate-600 uppercase tracking-wide">Cambiar estado</p>
+                <div className="flex flex-wrap gap-2">
+                  {detailModal.status !== 'confirmada' && detailModal.status !== 'asistida' && detailModal.status !== 'no_asistio' && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await api.post(`/appointments/${detailModal._id}/confirm`);
+                          toast.success('Cita confirmada');
+                          setDetailModal(null);
+                          fetchAppointments();
+                        } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+                      }}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-100 text-blue-700 hover:bg-blue-200 border-none cursor-pointer"
+                    >Confirmar</button>
+                  )}
+                  {detailModal.status !== 'asistida' && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await api.post(`/appointments/${detailModal._id}/attended`);
+                          toast.success('Marcada como asistida');
+                          setDetailModal(null);
+                          fetchAppointments();
+                        } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+                      }}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-100 text-emerald-700 hover:bg-emerald-200 border-none cursor-pointer"
+                    >Asistió</button>
+                  )}
+                  {detailModal.status !== 'no_asistio' && (
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        try {
+                          await api.post(`/appointments/${detailModal._id}/no-show`);
+                          toast.success('Marcada como no asistió');
+                          setDetailModal(null);
+                          fetchAppointments();
+                        } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+                      }}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium bg-rose-100 text-rose-700 hover:bg-rose-200 border-none cursor-pointer"
+                    >No asistió</button>
+                  )}
+                </div>
               </div>
             )}
             <div className="flex justify-end pt-2">

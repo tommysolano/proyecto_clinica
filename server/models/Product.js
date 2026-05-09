@@ -21,9 +21,22 @@ const productSchema = new mongoose.Schema(
     description: { type: String, trim: true },
     category: {
       type: String,
-      enum: ['medicamento', 'insumo', 'servicio', 'otro'],
+      enum: ['medicamento', 'insumo', 'servicio', 'programa', 'otro'],
       default: 'otro',
     },
+    // Para 'programa' (pack de servicios): lista de servicios incluidos.
+    programServices: [
+      {
+        product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+        quantity: { type: Number, default: 1, min: 1 },
+        _id: false,
+      },
+    ],
+    // Restricción: si está vacío, el servicio se atiende en cualquier clínica.
+    // Si tiene clínicas, solo en esas. Permite forzar selección automática al agendar.
+    availableInClinics: [
+      { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic' },
+    ],
     purchasePrice: { type: Number, default: 0, min: 0 },
     salePrice: {
       type: Number,

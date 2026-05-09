@@ -30,15 +30,23 @@ const appointmentSchema = new mongoose.Schema(
     date: { type: Date, required: [true, 'La fecha es requerida'] },
     startTime: { type: String, required: [true, 'La hora de inicio es requerida'] },
     endTime: { type: String, required: [true, 'La hora de fin es requerida'] },
-    // Estados simplificados: solo 2.
-    //   pendiente  - agendada / por atender
-    //   completada - ya atendida
-    // Cancelar una cita equivale a eliminarla (no es un estado).
+    // Consultorio (sala) físico donde se atenderá la cita
+    room: { type: mongoose.Schema.Types.ObjectId, ref: 'Room', default: null },
+    // Estados ampliados:
+    //   pendiente   - agendada / por confirmar
+    //   confirmada  - paciente confirmó que asistirá
+    //   asistida    - el paciente llegó (registrada por enfermería/recepción)
+    //   no_asistio  - no se presentó
+    //   cancelada   - cancelada por el paciente o la clínica
+    //   completada  - ya atendida por el doctor
     status: {
       type: String,
-      enum: ['pendiente', 'completada'],
+      enum: ['pendiente', 'confirmada', 'asistida', 'no_asistio', 'cancelada', 'completada'],
       default: 'pendiente',
     },
+    // Marca si abonó por adelantado (check al agendar)
+    paidInAdvance: { type: Boolean, default: false },
+    advanceAmount: { type: Number, default: 0, min: 0 },
     reason: { type: String, trim: true },
     notes: { type: String, trim: true },
     diagnosis: { type: String, trim: true },
@@ -58,13 +66,11 @@ const appointmentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Mapeo de estados legacy → nuevo esquema simplificado (compatibilidad con datos antiguos).
+// Mapeo de estados legacy. Mantenemos compatibilidad pero ahora preservamos
+// los estados detallados (cancelada / no_asistio) que antes se descartaban.
 const LEGACY_STATUS_MAP = {
   programada: 'pendiente',
-  confirmada: 'pendiente',
-  en_curso: 'pendiente',
-  cancelada: 'pendiente',
-  no_asistio: 'pendiente',
+  en_curso: 'confirmada',
 };
 
 const normalizeStatus = (doc) => {

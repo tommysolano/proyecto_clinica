@@ -122,21 +122,53 @@ export default function PatientDetail() {
 
 // ───────────────────────── Datos ─────────────────────────
 function DatosTab({ patient }) {
+  const sourceLabels = {
+    anuncio: 'Anuncio',
+    referido: 'Referido',
+    recepcion: 'Recepción',
+    organico: 'Orgánico',
+  };
   return (
-    <dl className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-      <Item label="Cédula" value={patient.cedula} />
-      <Item label="Nombre completo" value={`${patient.firstName} ${patient.lastName}`} />
-      <Item label="Email" value={patient.email} />
-      <Item label="Teléfono" value={patient.phone} />
-      <Item label="WhatsApp" value={patient.whatsapp} />
-      <Item
-        label="Fecha de nacimiento"
-        value={patient.birthDate ? new Date(patient.birthDate).toLocaleDateString() : '—'}
-      />
-      <Item label="Género" value={patient.gender} />
-      <Item label="Dirección" value={patient.address} />
-      <Item label="Notas" value={patient.notes} full />
-    </dl>
+    <div className="space-y-6">
+      <dl className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
+        <Item label="Cédula" value={patient.cedula} />
+        <Item label="Nombre completo" value={`${patient.firstName} ${patient.lastName}`} />
+        <Item label="Email" value={patient.email} />
+        <Item label="Teléfono" value={patient.phone} />
+        <Item label="WhatsApp" value={patient.whatsapp} />
+        <Item
+          label="Fecha de nacimiento"
+          value={patient.birthDate ? new Date(patient.birthDate).toLocaleDateString() : '—'}
+        />
+        <Item label="Edad" value={patient.computedAge ?? patient.age ?? '—'} />
+        <Item label="Género" value={patient.gender} />
+        <Item label="Dirección" value={patient.address} />
+        <Item
+          label="Origen del paciente"
+          value={
+            patient.source
+              ? `${sourceLabels[patient.source] || patient.source}${patient.sourceDetail ? ` (${patient.sourceDetail})` : ''}`
+              : '—'
+          }
+        />
+        <Item label="Notas" value={patient.notes} full />
+      </dl>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
+          <h3 className="text-sm font-semibold text-amber-800 mb-2">Antecedentes familiares</h3>
+          <p className="text-sm text-slate-700 whitespace-pre-wrap">
+            {patient.antecedentesFamiliares || '— Sin información registrada —'}
+          </p>
+        </div>
+        <div className="bg-rose-50 border border-rose-200 rounded-xl p-4">
+          <h3 className="text-sm font-semibold text-rose-800 mb-2">Antecedentes patológicos</h3>
+          <p className="text-sm text-slate-700 whitespace-pre-wrap">
+            {patient.antecedentesPatologicos || '— Sin información registrada —'}
+          </p>
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -348,9 +380,13 @@ function SeguimientosTab({ patientId }) {
   const showPayment = !hasRole('doctor');
   const [record, setRecord] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [treatments, setTreatments] = useState([]);
   const [form, setForm] = useState({
     fecha: new Date().toISOString().substring(0, 10),
     descripcion: '',
+    recomendaciones: '',
+    receta: '',
+    treatment: '',
     valor: 0,
     metodoPago: 'efectivo',
   });
@@ -370,13 +406,17 @@ function SeguimientosTab({ patientId }) {
 
   useEffect(() => {
     load();
+    api
+      .get('/treatments', { params: { patient: patientId } })
+      .then((r) => setTreatments(r.data || []))
+      .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [patientId]);
 
   const submit = async (e) => {
     e.preventDefault();
     if (!form.descripcion) {
-      toast.error('Descripción requerida');
+      toast.error('Motivo de consulta requerido');
       return;
     }
     setSaving(true);
@@ -386,6 +426,9 @@ function SeguimientosTab({ patientId }) {
       setForm({
         fecha: new Date().toISOString().substring(0, 10),
         descripcion: '',
+        recomendaciones: '',
+        receta: '',
+        treatment: '',
         valor: 0,
         metodoPago: 'efectivo',
       });
@@ -429,7 +472,7 @@ function SeguimientosTab({ patientId }) {
             className="input"
           />
         </Field>
-        <Field label="Descripción" className="md:col-span-2">
+        <Field label="Motivo de consulta" className="md:col-span-2">
           <input
             type="text"
             value={form.descripcion}
@@ -437,6 +480,36 @@ function SeguimientosTab({ patientId }) {
             className="input"
             required
           />
+        </Field>
+        <Field label="Recomendaciones" className={showPayment ? 'md:col-span-5' : 'md:col-span-3'}>
+          <textarea
+            rows={2}
+            value={form.recomendaciones}
+            onChange={(e) => setForm((f) => ({ ...f, recomendaciones: e.target.value }))}
+            className="input resize-none"
+          />
+        </Field>
+        <Field label="Receta" className={showPayment ? 'md:col-span-5' : 'md:col-span-3'}>
+          <textarea
+            rows={2}
+            value={form.receta}
+            onChange={(e) => setForm((f) => ({ ...f, receta: e.target.value }))}
+            className="input resize-none"
+          />
+        </Field>
+        <Field label="Tratamiento asociado" className={showPayment ? 'md:col-span-5' : 'md:col-span-3'}>
+          <select
+            value={form.treatment}
+            onChange={(e) => setForm((f) => ({ ...f, treatment: e.target.value }))}
+            className="input"
+          >
+            <option value="">— Sin tratamiento —</option>
+            {treatments.map((t) => (
+              <option key={t._id} value={t._id}>
+                {t.name} {t.status === 'completado' ? '(completado)' : ''}
+              </option>
+            ))}
+          </select>
         </Field>
         {showPayment && (
           <>
@@ -480,7 +553,7 @@ function SeguimientosTab({ patientId }) {
           <thead className="bg-slate-50 text-slate-600">
             <tr>
               <th className="text-left px-4 py-2.5 font-semibold">Fecha</th>
-              <th className="text-left px-4 py-2.5 font-semibold">Descripción</th>
+              <th className="text-left px-4 py-2.5 font-semibold">Motivo de consulta</th>
               {showPayment && <th className="text-right px-4 py-2.5 font-semibold">Valor</th>}
               {showPayment && <th className="text-left px-4 py-2.5 font-semibold">Pago</th>}
               {canDelete && <th className="px-4 py-2.5"></th>}
@@ -534,15 +607,20 @@ function SeguimientosTab({ patientId }) {
 // ───────────────────── Citas ─────────────────────
 function CitasTab({ patientId }) {
   const [appts, setAppts] = useState([]);
+  const [stats, setStats] = useState(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
       try {
-        const res = await api.get('/appointments');
+        const [aRes, sRes] = await Promise.all([
+          api.get('/appointments'),
+          api.get('/appointments/stats', { params: { patient: patientId } }).catch(() => ({ data: null })),
+        ]);
         setAppts(
-          res.data.filter((a) => String(a.patient?._id || a.patient) === String(patientId))
+          aRes.data.filter((a) => String(a.patient?._id || a.patient) === String(patientId))
         );
+        setStats(sRes.data);
       } catch (err) {
         toast.error(err.response?.data?.message || 'Error al cargar citas');
       } finally {
@@ -553,43 +631,70 @@ function CitasTab({ patientId }) {
 
   if (loading) return <div className="text-slate-500 text-sm">Cargando...</div>;
 
+  const attendancePct = stats?.attendanceRate ?? null;
+
   return (
-    <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-      <table className="w-full text-sm">
-        <thead className="bg-slate-50 text-slate-600">
-          <tr>
-            <th className="text-left px-4 py-2.5 font-semibold">Fecha</th>
-            <th className="text-left px-4 py-2.5 font-semibold">Horario</th>
-            <th className="text-left px-4 py-2.5 font-semibold">Doctor</th>
-            <th className="text-left px-4 py-2.5 font-semibold">Estado</th>
-          </tr>
-        </thead>
-        <tbody>
-          {appts.length === 0 && (
+    <div className="space-y-4">
+      {stats && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-3">
+            <p className="text-xs text-emerald-700 font-semibold uppercase">Asistencia</p>
+            <p className="text-2xl font-bold text-emerald-800">
+              {attendancePct != null ? `${Number(attendancePct).toFixed(0)}%` : '—'}
+            </p>
+          </div>
+          <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
+            <p className="text-xs text-blue-700 font-semibold uppercase">Asistidas</p>
+            <p className="text-2xl font-bold text-blue-800">{stats.byStatus?.asistida || 0}</p>
+          </div>
+          <div className="bg-rose-50 border border-rose-200 rounded-xl p-3">
+            <p className="text-xs text-rose-700 font-semibold uppercase">No asistió</p>
+            <p className="text-2xl font-bold text-rose-800">{stats.byStatus?.no_asistio || 0}</p>
+          </div>
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+            <p className="text-xs text-slate-700 font-semibold uppercase">Total</p>
+            <p className="text-2xl font-bold text-slate-800">{stats.total || appts.length}</p>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-slate-50 text-slate-600">
             <tr>
-              <td colSpan={4} className="text-center py-6 text-slate-400">
-                Sin citas registradas.
-              </td>
+              <th className="text-left px-4 py-2.5 font-semibold">Fecha</th>
+              <th className="text-left px-4 py-2.5 font-semibold">Horario</th>
+              <th className="text-left px-4 py-2.5 font-semibold">Doctor</th>
+              <th className="text-left px-4 py-2.5 font-semibold">Estado</th>
             </tr>
-          )}
-          {appts.map((a) => (
-            <tr key={a._id} className="border-t border-slate-100">
-              <td className="px-4 py-2.5 text-slate-600">
-                {new Date(a.date).toLocaleDateString()}
-              </td>
-              <td className="px-4 py-2.5 text-slate-600">
-                {a.startTime} - {a.endTime}
-              </td>
-              <td className="px-4 py-2.5 text-slate-700">{a.doctor?.name || '—'}</td>
-              <td className="px-4 py-2.5">
-                <span className="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded capitalize">
-                  {a.status}
-                </span>
-              </td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {appts.length === 0 && (
+              <tr>
+                <td colSpan={4} className="text-center py-6 text-slate-400">
+                  Sin citas registradas.
+                </td>
+              </tr>
+            )}
+            {appts.map((a) => (
+              <tr key={a._id} className="border-t border-slate-100">
+                <td className="px-4 py-2.5 text-slate-600">
+                  {new Date(a.date).toLocaleDateString()}
+                </td>
+                <td className="px-4 py-2.5 text-slate-600">
+                  {a.startTime} - {a.endTime}
+                </td>
+                <td className="px-4 py-2.5 text-slate-700">{a.doctor?.name || '—'}</td>
+                <td className="px-4 py-2.5">
+                  <span className="text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded capitalize">
+                    {a.status}
+                  </span>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

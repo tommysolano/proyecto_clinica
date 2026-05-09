@@ -11,7 +11,13 @@ const yesNoDetailSchema = new mongoose.Schema(
 const followUpSchema = new mongoose.Schema(
   {
     fecha: { type: Date, required: true, default: Date.now },
-    descripcion: { type: String, required: true, trim: true },
+    // "motivo de consulta" reemplaza al antiguo "descripcion".
+    // Mantenemos `descripcion` como alias por retrocompatibilidad de datos.
+    motivoConsulta: { type: String, trim: true },
+    descripcion: { type: String, trim: true },
+    recomendaciones: { type: String, trim: true },
+    receta: { type: String, trim: true },
+    treatment: { type: mongoose.Schema.Types.ObjectId, ref: 'Treatment', default: null },
     valor: { type: Number, default: 0, min: 0 },
     metodoPago: {
       type: String,
@@ -46,6 +52,9 @@ const clinicalRecordSchema = new mongoose.Schema(
     tomaMedicamentos: { type: yesNoDetailSchema, default: () => ({}) },
     tieneAlergias: { type: yesNoDetailSchema, default: () => ({}) },
     tieneCirugias: { type: yesNoDetailSchema, default: () => ({}) },
+    // Antecedentes ampliados
+    antecedentesFamiliares: { type: String, trim: true, default: '' },
+    antecedentesPatologicos: { type: String, trim: true, default: '' },
     // Seguimiento
     followUps: { type: [followUpSchema], default: [] },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

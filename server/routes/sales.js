@@ -4,8 +4,9 @@ const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
 router.use(auth, requireClinic);
 
-router.get('/', requireRole('admin', 'cajero', 'contabilidad'), getSales);
-router.get('/:id', requireRole('admin', 'cajero', 'contabilidad'), getSale);
+// Listado de ventas: solo admin y contabilidad. El cajero NO puede ver el historial.
+router.get('/', requireRole('admin', 'contabilidad'), getSales);
+router.get('/:id', requireRole('admin', 'contabilidad', 'cajero'), getSale);
 router.post('/', requireRole('admin', 'cajero'), createSale);
 router.put('/:id/cancel', requireRole('admin'), cancelSale);
 

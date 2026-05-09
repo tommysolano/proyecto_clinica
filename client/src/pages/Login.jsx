@@ -20,7 +20,7 @@ export default function Login() {
     try {
       const data = await login(email, password);
       if ((data.clinics || []).length === 0) {
-        toast.error('No tiene clínicas asignadas. Contacte al administrador.');
+        toast.error('No tiene consultorios médicos asignados. Contacte al administrador.');
         return;
       }
       if (data.clinics.length === 1) {
@@ -44,7 +44,7 @@ export default function Login() {
       toast.success('Bienvenido');
       navigate('/');
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al seleccionar clínica');
+      toast.error(err.response?.data?.message || 'Error al seleccionar consultorio médico');
     } finally {
       setLoading(false);
     }
@@ -131,9 +131,9 @@ export default function Login() {
             {step === 'clinic' && (
               <>
                 <div className="mb-6">
-                  <h2 className="text-2xl font-bold text-slate-800">Seleccione clínica</h2>
+                  <h2 className="text-2xl font-bold text-slate-800">Seleccione consultorio médico</h2>
                   <p className="text-muted mt-1 text-sm">
-                    Tiene acceso a múltiples clínicas. Elija con cuál desea trabajar.
+                    Tiene acceso a múltiples consultorios médicos. Elija con cuál desea trabajar.
                   </p>
                 </div>
                 <div className="space-y-3">

@@ -33,7 +33,18 @@ const toMinutes = (hhmm) => {
 
 exports.getAppointments = async (req, res) => {
   try {
-    const { startDate, endDate, doctor, status, createdBy, isFirstVisit } = req.query;
+    const {
+      startDate,
+      endDate,
+      doctor,
+      status,
+      createdBy,
+      isFirstVisit,
+      service,
+      fromTime,
+      toTime,
+      room,
+    } = req.query;
     const query = { clinic: req.clinicId };
 
     if (startDate && endDate) {
@@ -47,6 +58,16 @@ exports.getAppointments = async (req, res) => {
     if (createdBy) query.createdBy = createdBy;
     if (isFirstVisit === 'true') query.isFirstVisit = true;
     else if (isFirstVisit === 'false') query.isFirstVisit = { $ne: true };
+    if (service) query['services.product'] = service;
+    if (room) query.room = room;
+    // Filtro por rango de horario (HH:MM)
+    if (fromTime && toTime) {
+      query.startTime = { $gte: fromTime, $lte: toTime };
+    } else if (fromTime) {
+      query.startTime = { $gte: fromTime };
+    } else if (toTime) {
+      query.startTime = { $lte: toTime };
+    }
 
     if (req.role === 'doctor') {
       query.doctor = req.user._id;
@@ -55,11 +76,16 @@ exports.getAppointments = async (req, res) => {
       // Call center solo ve las citas que él mismo creó
       query.createdBy = req.user._id;
     }
+    if (req.role === 'enfermero') {
+      // Enfermería solo ve las citas confirmadas / asistidas (para guíar pacientes)
+      query.status = query.status || { $in: ['confirmada', 'asistida'] };
+    }
 
     const appointments = await Appointment.find(query)
       .populate('patient', POPULATE_PATIENT)
       .populate('doctor', POPULATE_DOCTOR)
       .populate('createdBy', POPULATE_CREATOR)
+      .populate('room', 'name code')
       .sort({ date: 1, startTime: 1 });
 
     res.json(appointments);
@@ -136,21 +162,56 @@ exports.createAppointment = async (req, res) => {
         .json({ message: 'La hora de fin debe ser posterior a la hora de inicio.' });
     }
 
-    const conflict = await Appointment.findOne({
+    // NOTA: Antes se rechazaba si el doctor tenía otra cita en el mismo horario.
+    // Por requerimiento del negocio se permite que un mismo doctor atienda a
+    // varios pacientes en la misma fecha y horario. Solo verificamos bloqueos
+    // de horario (TimeBlock) creados por el administrador.
+    const TimeBlock = require('../models/TimeBlock');
+    const block = await TimeBlock.findOne({
       clinic: targetClinicId,
-      doctor,
-      date: localDate,
-      $or: [{ startTime: { $lt: endTime }, endTime: { $gt: startTime } }],
+      $or: [
+        { doctor: null, room: null },
+        { doctor },
+        ...(req.body.room ? [{ room: req.body.room }] : []),
+      ],
+      startDate: { $lte: localDate },
+      endDate: { $gte: localDate },
     });
-
-    if (conflict) {
-      return res.status(400).json({ message: 'El doctor ya tiene una cita en ese horario' });
+    if (block) {
+      const inHours =
+        block.allDay ||
+        (!block.startTime || !block.endTime) ||
+        (startTime < block.endTime && endTime > block.startTime);
+      if (inHours) {
+        return res.status(400).json({
+          message: `Horario bloqueado por administración${block.reason ? `: ${block.reason}` : ''}`,
+        });
+      }
     }
 
-    // Validar límite de citas por día para servicios con cupo
+    // Validar que los servicios elegidos estén disponibles en la clínica destino.
+    // Si un servicio está restringido (availableInClinics) a otra clínica, se rechaza.
     const serviceIds = (Array.isArray(services) ? services : [])
       .map((s) => (typeof s === 'string' ? s : s.product))
       .filter(Boolean);
+    if (serviceIds.length > 0) {
+      const restricted = await Product.find({
+        _id: { $in: serviceIds },
+        availableInClinics: { $exists: true, $not: { $size: 0 } },
+      }).select('name availableInClinics');
+      for (const p of restricted) {
+        const allowed = (p.availableInClinics || []).some(
+          (c) => String(c) === String(targetClinicId)
+        );
+        if (!allowed) {
+          return res.status(400).json({
+            message: `El servicio "${p.name}" no está disponible en este consultorio médico.`,
+          });
+        }
+      }
+    }
+
+    // Validar límite de citas por día para servicios con cupo
     if (serviceIds.length > 0) {
       const limited = await Product.find({
         _id: { $in: serviceIds },
@@ -303,9 +364,15 @@ exports.deleteAppointment = async (req, res) => {
       });
     }
 
-    // Cancelar = eliminar (con el esquema simplificado de 2 estados)
-    await Appointment.deleteOne({ _id: appointment._id });
-    res.json({ message: 'Cita eliminada' });
+    // Cancelar = marcar como 'cancelada' (preserva historial para reportes de marketing).
+    // Solo el admin puede borrarla físicamente (con ?hard=true).
+    if (req.query.hard === 'true' && (req.user.isSuperAdmin || req.role === 'admin')) {
+      await Appointment.deleteOne({ _id: appointment._id });
+      return res.json({ message: 'Cita eliminada' });
+    }
+    appointment.status = 'cancelada';
+    await appointment.save();
+    res.json({ message: 'Cita cancelada', appointment });
   } catch (error) {
     res.status(500).json({ message: 'Error al eliminar cita' });
   }
@@ -363,6 +430,44 @@ exports.endConsultation = async (req, res) => {
     appointment.consultationEndedAt = new Date();
     appointment.status = 'completada';
     await appointment.save();
+
+    // Avance automático de tratamientos: si la cita tenía servicios y existe
+    // un tratamiento activo del paciente que los incluya, sumar avance.
+    try {
+      const Treatment = require('../models/Treatment');
+      const services = (appointment.services || []).map((s) => String(s.product));
+      if (services.length && appointment.patient) {
+        const treatments = await Treatment.find({
+          clinic: req.clinicId,
+          patient: appointment.patient,
+          status: 'activo',
+        });
+        for (const t of treatments) {
+          let changed = false;
+          for (const svcId of services) {
+            const idx = t.items.findIndex(
+              (it) => String(it.product) === svcId && (it.completed || 0) < it.quantity
+            );
+            if (idx >= 0) {
+              t.items[idx].completed += 1;
+              t.items[idx].completionRefs.push({
+                type: 'appointment',
+                ref: appointment._id,
+                date: new Date(),
+              });
+              changed = true;
+            }
+          }
+          if (changed) {
+            if (t.progress >= 100) t.status = 'completado';
+            await t.save();
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('No se pudo actualizar tratamientos por cita', e.message);
+    }
+
     res.json(appointment);
   } catch (error) {
     res.status(500).json({ message: 'Error al finalizar consulta', error: error.message });
@@ -517,5 +622,90 @@ exports.getAppointmentPdf = async (req, res) => {
   } catch (error) {
     console.error('Error generando PDF de cita:', error);
     res.status(500).json({ message: 'Error al generar PDF', error: error.message });
+  }
+};
+
+/**
+ * Estadísticas agregadas: total citas y porcentaje de asistencia.
+ * Retorna { total, byStatus, attendanceRate } o por paciente si llega ?patient.
+ */
+exports.getStats = async (req, res) => {
+  try {
+    const mongoose = require('mongoose');
+    const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
+    const match = { clinic: clinicObjId };
+    const { startDate, endDate, patient, doctor, service } = req.query;
+    if (startDate && endDate) {
+      match.date = { $gte: parseLocalDate(startDate), $lte: parseLocalDate(endDate) };
+      if (match.date.$lte) match.date.$lte.setHours(23, 59, 59, 999);
+    }
+    if (patient) match.patient = new mongoose.Types.ObjectId(patient);
+    if (doctor) match.doctor = new mongoose.Types.ObjectId(doctor);
+    if (service) match['services.product'] = new mongoose.Types.ObjectId(service);
+
+    const grouped = await Appointment.aggregate([
+      { $match: match },
+      { $group: { _id: '$status', count: { $sum: 1 } } },
+    ]);
+    const byStatus = grouped.reduce((acc, g) => {
+      acc[g._id || 'pendiente'] = g.count;
+      return acc;
+    }, {});
+    const total = grouped.reduce((s, g) => s + g.count, 0);
+
+    // Asistencia: asistida + completada / (asistida + completada + no_asistio + cancelada)
+    const attended = (byStatus.asistida || 0) + (byStatus.completada || 0);
+    const missed = (byStatus.no_asistio || 0) + (byStatus.cancelada || 0);
+    const denom = attended + missed;
+    const attendanceRate = denom === 0 ? null : Math.round((attended / denom) * 100);
+
+    res.json({ total, byStatus, attended, missed, attendanceRate });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al obtener estadísticas', error: error.message });
+  }
+};
+
+/**
+ * Marca asistencia (uso del enfermero/recepción): pendiente/confirmada → asistida.
+ */
+exports.markAttended = async (req, res) => {
+  try {
+    const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
+    apt.status = 'asistida';
+    await apt.save();
+    res.json(apt);
+  } catch (error) {
+    res.status(500).json({ message: 'Error al marcar asistencia' });
+  }
+};
+
+/**
+ * Marca no asistencia.
+ */
+exports.markNoShow = async (req, res) => {
+  try {
+    const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
+    apt.status = 'no_asistio';
+    await apt.save();
+    res.json(apt);
+  } catch (error) {
+    res.status(500).json({ message: 'Error al marcar no asistencia' });
+  }
+};
+
+/**
+ * Confirma una cita (paciente confirmó asistencia).
+ */
+exports.markConfirmed = async (req, res) => {
+  try {
+    const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
+    apt.status = 'confirmada';
+    await apt.save();
+    res.json(apt);
+  } catch (error) {
+    res.status(500).json({ message: 'Error al confirmar cita' });
   }
 };

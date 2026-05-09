@@ -116,13 +116,12 @@ exports.exportAppointments = async (req, res) => {
 
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Citas');
+    // El Excel de citas NO debe incluir teléfono, correo, cédula ni dirección del paciente.
     ws.columns = [
       { header: 'Fecha', key: 'date', width: 12 },
       { header: 'Hora inicio', key: 'start', width: 11 },
       { header: 'Hora fin', key: 'end', width: 11 },
       { header: 'Paciente', key: 'patient', width: 28 },
-      { header: 'Cédula', key: 'cedula', width: 14 },
-      { header: 'Teléfono', key: 'phone', width: 14 },
       { header: 'Paciente nuevo', key: 'isFirst', width: 14 },
       { header: 'Doctor', key: 'doctor', width: 24 },
       { header: 'Especialidad', key: 'specialty', width: 18 },
@@ -130,6 +129,7 @@ exports.exportAppointments = async (req, res) => {
       { header: 'Motivo', key: 'reason', width: 30 },
       { header: 'Servicios', key: 'services', width: 36 },
       { header: 'Total servicios', key: 'totalServ', width: 14 },
+      { header: 'Abonó adelanto', key: 'paid', width: 14 },
       { header: 'Registrado por', key: 'createdBy', width: 22 },
       { header: 'Rol creador', key: 'createdRole', width: 14 },
     ];
@@ -141,8 +141,6 @@ exports.exportAppointments = async (req, res) => {
         start: a.startTime,
         end: a.endTime,
         patient: `${a.patient?.firstName || ''} ${a.patient?.lastName || ''}`.trim(),
-        cedula: a.patient?.cedula || '',
-        phone: a.patient?.phone || '',
         isFirst: a.isFirstVisit ? 'SÍ' : '',
         doctor: a.doctor?.name || '',
         specialty: a.doctor?.specialty || '',
@@ -150,6 +148,7 @@ exports.exportAppointments = async (req, res) => {
         reason: a.reason || '',
         services: (a.services || []).map((s) => s.name).join(', '),
         totalServ,
+        paid: a.paidInAdvance ? 'SÍ' : '',
         createdBy: a.createdBy?.name || '',
         createdRole: a.createdByRole || '',
       });
@@ -357,3 +356,59 @@ exports.exportInventory = async (req, res) => {
     res.status(500).json({ message: 'Error al exportar inventario', error: error.message });
   }
 };
+
+/* ============================== VENTAS POR ÍTEM ============================== */
+exports.exportSalesByItem = async (req, res) => {
+  try {
+    const mongoose = require('mongoose');
+    const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
+    const match = { clinic: clinicObjId, status: 'completada' };
+    const range = buildDateRange(req);
+    if (range) match.createdAt = range;
+
+    const rows = await Sale.aggregate([
+      { $match: match },
+      { $unwind: '$items' },
+      {
+        $group: {
+          _id: '$items.product',
+          name: { $first: '$items.productName' },
+          code: { $first: '$items.productCode' },
+          category: { $first: '$items.category' },
+          quantity: { $sum: '$items.quantity' },
+          revenue: { $sum: '$items.subtotal' },
+          salesCount: { $sum: 1 },
+        },
+      },
+      { $sort: { revenue: -1 } },
+    ]);
+
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Ventas por ítem');
+    ws.columns = [
+      { header: 'Código', key: 'code', width: 14 },
+      { header: 'Producto / Servicio', key: 'name', width: 36 },
+      { header: 'Categoría', key: 'category', width: 14 },
+      { header: 'Cantidad vendida', key: 'qty', width: 16 },
+      { header: 'Veces en ventas', key: 'count', width: 16 },
+      { header: 'Total facturado', key: 'rev', width: 16 },
+    ];
+    rows.forEach((r) =>
+      ws.addRow({
+        code: r.code || '',
+        name: r.name || '',
+        category: r.category || '',
+        qty: r.quantity,
+        count: r.salesCount,
+        rev: Number(r.revenue || 0),
+      })
+    );
+    ws.getColumn('rev').numFmt = '"$"#,##0.00';
+    styleHeader(ws);
+    await sendWorkbook(res, wb, `ventas_por_item_${Date.now()}.xlsx`);
+  } catch (error) {
+    res.status(500).json({ message: 'Error al exportar reporte por ítem', error: error.message });
+  }
+};
+
+

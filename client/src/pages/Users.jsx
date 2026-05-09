@@ -16,6 +16,8 @@ const ROLES = [
   { value: 'contabilidad', label: 'Contabilidad' },
   { value: 'doctor', label: 'Doctor' },
   { value: 'call_center', label: 'Call Center' },
+  { value: 'marketing', label: 'Marketing' },
+  { value: 'enfermero', label: 'Enfermero/a' },
 ];
 
 const EMPTY = {
@@ -143,7 +145,7 @@ export default function Users() {
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
           <HiOutlineUsers className="w-7 h-7 text-emerald-600" />
-          Usuarios de la clínica
+          Usuarios del consultorio médico
         </h1>
         <button
           onClick={openNew}

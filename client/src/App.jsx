@@ -15,6 +15,14 @@ import Invoices from './pages/Invoices';
 import InvoicingConfig from './pages/InvoicingConfig';
 import Users from './pages/Users';
 import Clinics from './pages/Clinics';
+import Calendar from './pages/Calendar';
+import Treatments from './pages/Treatments';
+import Referrals from './pages/Referrals';
+import Quotations from './pages/Quotations';
+import Marketing from './pages/Marketing';
+import Discounts from './pages/Discounts';
+import Rooms from './pages/Rooms';
+import Blocks from './pages/Blocks';
 
 function SuperAdminRoute({ children }) {
   const { user, loading } = useAuth();
@@ -38,7 +46,7 @@ function AppRoutes() {
                 <Route
                   path="/patients"
                   element={
-                    <RoleRoute roles={['admin', 'cajero', 'doctor', 'call_center']}>
+                    <RoleRoute roles={['admin', 'cajero', 'doctor', 'call_center', 'marketing', 'enfermero']}>
                       <Patients />
                     </RoleRoute>
                   }
@@ -46,7 +54,7 @@ function AppRoutes() {
                 <Route
                   path="/patients/:id"
                   element={
-                    <RoleRoute roles={['admin', 'cajero', 'doctor', 'call_center']}>
+                    <RoleRoute roles={['admin', 'cajero', 'doctor', 'call_center', 'marketing', 'enfermero']}>
                       <PatientDetail />
                     </RoleRoute>
                   }
@@ -55,7 +63,7 @@ function AppRoutes() {
                 <Route
                   path="/appointments"
                   element={
-                    <RoleRoute roles={['admin', 'cajero', 'doctor', 'call_center']}>
+                    <RoleRoute roles={['admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing']}>
                       <Appointments />
                     </RoleRoute>
                   }
@@ -102,6 +110,71 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin']}>
                       <Users />
+                    </RoleRoute>
+                  }
+                />
+
+                <Route
+                  path="/calendar"
+                  element={
+                    <RoleRoute roles={['admin', 'cajero', 'doctor', 'call_center', 'enfermero']}>
+                      <Calendar />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/treatments"
+                  element={
+                    <RoleRoute roles={['admin', 'doctor', 'cajero', 'marketing', 'enfermero']}>
+                      <Treatments />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/referrals"
+                  element={
+                    <RoleRoute roles={['admin', 'doctor', 'marketing', 'cajero']}>
+                      <Referrals />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/quotations"
+                  element={
+                    <RoleRoute roles={['admin', 'cajero', 'call_center', 'contabilidad']}>
+                      <Quotations />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/marketing"
+                  element={
+                    <RoleRoute roles={['admin', 'marketing']}>
+                      <Marketing />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/discounts"
+                  element={
+                    <RoleRoute roles={['admin', 'cajero', 'contabilidad']}>
+                      <Discounts />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/rooms"
+                  element={
+                    <RoleRoute roles={['admin']}>
+                      <Rooms />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/blocks"
+                  element={
+                    <RoleRoute roles={['admin']}>
+                      <Blocks />
                     </RoleRoute>
                   }
                 />

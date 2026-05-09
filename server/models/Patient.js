@@ -10,8 +10,8 @@ const patientSchema = new mongoose.Schema(
     },
     cedula: {
       type: String,
-      required: [true, 'La cédula es requerida'],
       trim: true,
+      default: '',
     },
     firstName: {
       type: String,
@@ -31,14 +31,26 @@ const patientSchema = new mongoose.Schema(
     gender: { type: String, enum: ['masculino', 'femenino', 'otro'] },
     address: { type: String, trim: true },
     notes: { type: String, trim: true },
+    // De dónde viene el paciente: anuncio, referido, recepción, orgánico
+    source: {
+      type: String,
+      enum: ['anuncio', 'referido', 'recepcion', 'organico', ''],
+      default: '',
+    },
+    sourceDetail: { type: String, trim: true },
+    // Antecedentes
+    antecedentesFamiliares: { type: String, trim: true, default: '' },
+    antecedentesPatologicos: { type: String, trim: true, default: '' },
     active: { type: Boolean, default: true },
   },
   { timestamps: true }
 );
 
-// Cédula única globalmente: los datos del paciente se comparten entre clínicas.
-// El campo `clinic` se conserva como referencia de la clínica donde fue registrado por primera vez.
-patientSchema.index({ cedula: 1 }, { unique: true });
+// Cédula única solo cuando está presente (sparse permite varios documentos sin cédula).
+patientSchema.index(
+  { cedula: 1 },
+  { unique: true, partialFilterExpression: { cedula: { $type: 'string', $ne: '' } } }
+);
 
 patientSchema.virtual('fullName').get(function () {
   return `${this.firstName} ${this.lastName}`;

@@ -1,6 +1,8 @@
 const Sale = require('../models/Sale');
 const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
+const Discount = require('../models/Discount');
+const Treatment = require('../models/Treatment');
 
 exports.getSales = async (req, res) => {
   try {
@@ -132,15 +134,20 @@ exports.createSale = async (req, res) => {
     }
 
     // Construir items y totales (precio de venta interpretado como SIN IVA)
+    // Aplicar descuentos por ítem (compatibles con SRI: descuento sobre base imponible).
     let subtotal = 0;
+    let discountTotal = 0;
     let taxAmount = 0;
     const saleItems = items.map((item) => {
       const product = products.find((p) => String(p._id) === String(item.product));
       const qty = Number(item.quantity);
       const unitPrice = Number(item.unitPrice ?? product.salePrice);
-      const itemSubtotal = +(unitPrice * qty).toFixed(2);
+      const itemBase = +(unitPrice * qty).toFixed(2);
+      const itemDiscount = +Number(item.discount || 0).toFixed(2);
+      const itemSubtotal = +(itemBase - itemDiscount).toFixed(2);
       const itemTax = +(itemSubtotal * (product.taxRate / 100)).toFixed(2);
-      subtotal += itemSubtotal;
+      subtotal += itemBase;
+      discountTotal += itemDiscount;
       taxAmount += itemTax;
       return {
         product: product._id,
@@ -150,12 +157,16 @@ exports.createSale = async (req, res) => {
         quantity: qty,
         unitPrice,
         taxRate: product.taxRate,
+        discount: itemDiscount,
+        discountRef: item.discountRef || undefined,
+        treatment: item.treatment || undefined,
         subtotal: itemSubtotal,
       };
     });
     subtotal = +subtotal.toFixed(2);
+    discountTotal = +discountTotal.toFixed(2);
     taxAmount = +taxAmount.toFixed(2);
-    const total = +(subtotal + taxAmount).toFixed(2);
+    const total = +(subtotal - discountTotal + taxAmount).toFixed(2);
 
     // ¿Es primera venta del paciente? (paciente nuevo)
     // No se considera "nuevo" si TODOS los productos de la venta tienen el flag
@@ -183,13 +194,50 @@ exports.createSale = async (req, res) => {
       clientPhone,
       clientAddress,
       subtotal,
+      discountTotal,
       taxAmount,
       total,
       paymentMethod,
       notes,
       isFirstVisit,
+      callCenter: req.body.callCenter || undefined,
+      cashier: req.body.cashier || (req.role === 'cajero' ? req.user._id : undefined),
+      doctor: req.body.doctor || undefined,
+      nurse: req.body.nurse || undefined,
+      appointment: req.body.appointment || undefined,
       createdBy: req.user._id,
     });
+
+    // Avance automático de tratamientos: si un ítem está vinculado a un
+    // tratamiento del paciente, suma `quantity` cumplimientos.
+    for (const it of saleItems) {
+      if (!it.treatment) continue;
+      try {
+        const t = await Treatment.findOne({
+          _id: it.treatment,
+          clinic: req.clinicId,
+        });
+        if (!t) continue;
+        const idx = t.items.findIndex(
+          (x) => String(x.product) === String(it.product)
+        );
+        if (idx >= 0) {
+          t.items[idx].completed = Math.min(
+            (t.items[idx].completed || 0) + it.quantity,
+            t.items[idx].quantity
+          );
+          t.items[idx].completionRefs.push({
+            type: 'sale',
+            ref: sale._id,
+            date: new Date(),
+          });
+          if (t.progress >= 100) t.status = 'completado';
+          await t.save();
+        }
+      } catch (e) {
+        console.warn('No se pudo actualizar tratamiento', it.treatment, e.message);
+      }
+    }
 
     // Registrar movimientos de inventario (omitir productos ilimitados/servicios)
     for (const it of saleItems) {

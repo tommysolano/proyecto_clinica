@@ -27,6 +27,7 @@ export default function Sales() {
   const [loading, setLoading] = useState(true);
   const [products, setProducts] = useState([]);
   const [patients, setPatients] = useState([]);
+  const [treatments, setTreatments] = useState([]);
   const [modalOpen, setModalOpen] = useState(false);
   const [detailModal, setDetailModal] = useState(null);
   const [saving, setSaving] = useState(false);
@@ -161,6 +162,8 @@ export default function Sales() {
           unitPrice: product.salePrice,
           taxRate: product.taxRate,
           stock: product.stock,
+          discount: 0,
+          treatment: '',
         },
       ],
     }));
@@ -185,11 +188,12 @@ export default function Sales() {
   };
 
   const subtotal = form.items.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
+  const discountTotal = form.items.reduce((s, i) => s + (Number(i.discount) || 0), 0);
   const taxAmount = form.items.reduce(
-    (s, i) => s + (i.unitPrice * i.quantity * i.taxRate) / 100,
+    (s, i) => s + ((i.unitPrice * i.quantity - (Number(i.discount) || 0)) * i.taxRate) / 100,
     0
   );
-  const total = subtotal + taxAmount;
+  const total = subtotal - discountTotal + taxAmount;
 
   const handlePatientSelect = (patientId) => {
     const patient = patients.find((p) => p._id === patientId);
@@ -204,6 +208,11 @@ export default function Sales() {
         clientAddress: patient.address || '',
       }));
       setPatientSearch(`${patient.firstName} ${patient.lastName} - ${patient.cedula}`);
+      // cargar tratamientos activos del paciente
+      api
+        .get('/treatments', { params: { patient: patientId } })
+        .then((r) => setTreatments(r.data || []))
+        .catch(() => setTreatments([]));
     } else {
       setForm((f) => ({
         ...f,
@@ -215,6 +224,7 @@ export default function Sales() {
         clientAddress: '',
       }));
       setPatientSearch('');
+      setTreatments([]);
     }
   };
 
@@ -225,7 +235,12 @@ export default function Sales() {
     try {
       await api.post('/sales', {
         ...form,
-        items: form.items.map((i) => ({ product: i.product, quantity: i.quantity })),
+        items: form.items.map((i) => ({
+          product: i.product,
+          quantity: i.quantity,
+          discount: Number(i.discount) || 0,
+          treatment: i.treatment || null,
+        })),
       });
       toast.success('Venta registrada');
       setModalOpen(false);
@@ -662,6 +677,10 @@ export default function Sales() {
                     <th className="text-left py-2">Producto</th>
                     <th className="text-right py-2">Precio</th>
                     <th className="text-center py-2">Cant.</th>
+                    <th className="text-right py-2">Desc. $</th>
+                    {form.patient && treatments.length > 0 && (
+                      <th className="text-left py-2 pl-2">Tratamiento</th>
+                    )}
                     <th className="text-right py-2">IVA</th>
                     <th className="text-right py-2">Subtotal</th>
                     <th className="text-right py-2"></th>
@@ -681,9 +700,43 @@ export default function Sales() {
                           className="w-16 px-2 py-1 border border-slate-300 rounded text-center text-sm outline-none"
                         />
                       </td>
+                      <td className="py-2 text-right">
+                        <input
+                          type="number"
+                          min="0"
+                          step="0.01"
+                          value={item.discount ?? 0}
+                          onChange={(e) => {
+                            const items = [...form.items];
+                            items[idx].discount = parseFloat(e.target.value) || 0;
+                            setForm({ ...form, items });
+                          }}
+                          className="w-20 px-2 py-1 border border-slate-300 rounded text-right text-sm outline-none"
+                        />
+                      </td>
+                      {form.patient && treatments.length > 0 && (
+                        <td className="py-2 pl-2">
+                          <select
+                            value={item.treatment || ''}
+                            onChange={(e) => {
+                              const items = [...form.items];
+                              items[idx].treatment = e.target.value;
+                              setForm({ ...form, items });
+                            }}
+                            className="w-full px-2 py-1 border border-slate-300 rounded text-sm bg-white"
+                          >
+                            <option value="">— Ninguno —</option>
+                            {treatments.map((t) => (
+                              <option key={t._id} value={t._id}>
+                                {t.name || t.product?.name || 'Tratamiento'}
+                              </option>
+                            ))}
+                          </select>
+                        </td>
+                      )}
                       <td className="py-2 text-right text-slate-500">{item.taxRate}%</td>
                       <td className="py-2 text-right font-medium">
-                        ${(item.unitPrice * item.quantity).toFixed(2)}
+                        ${(item.unitPrice * item.quantity - (Number(item.discount) || 0)).toFixed(2)}
                       </td>
                       <td className="py-2 text-right">
                         <button
@@ -707,6 +760,12 @@ export default function Sales() {
                 <span className="text-slate-500">Subtotal:</span>
                 <span className="font-medium">${subtotal.toFixed(2)}</span>
               </div>
+              {discountTotal > 0 && (
+                <div className="flex justify-between text-sm">
+                  <span className="text-slate-500">Descuento:</span>
+                  <span className="font-medium text-rose-600">-${discountTotal.toFixed(2)}</span>
+                </div>
+              )}
               <div className="flex justify-between text-sm">
                 <span className="text-slate-500">IVA:</span>
                 <span className="font-medium">${taxAmount.toFixed(2)}</span>
@@ -768,21 +827,60 @@ export default function Sales() {
                 <p className="capitalize">{paymentMethods[detailModal.paymentMethod]}</p>
               </div>
             </div>
+            {(detailModal.cashier || detailModal.callCenter || detailModal.doctor || detailModal.nurse) && (
+              <div className="bg-indigo-50/60 border border-indigo-100 rounded-xl p-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                {detailModal.cashier && (
+                  <div>
+                    <p className="text-indigo-700 font-semibold">Cajero</p>
+                    <p className="text-slate-700">{detailModal.cashier.name}</p>
+                  </div>
+                )}
+                {detailModal.callCenter && (
+                  <div>
+                    <p className="text-indigo-700 font-semibold">Call Center</p>
+                    <p className="text-slate-700">{detailModal.callCenter.name}</p>
+                  </div>
+                )}
+                {detailModal.doctor && (
+                  <div>
+                    <p className="text-indigo-700 font-semibold">Doctor</p>
+                    <p className="text-slate-700">{detailModal.doctor.name}</p>
+                  </div>
+                )}
+                {detailModal.nurse && (
+                  <div>
+                    <p className="text-indigo-700 font-semibold">Enfermero/a</p>
+                    <p className="text-slate-700">{detailModal.nurse.name}</p>
+                  </div>
+                )}
+              </div>
+            )}
             <table className="w-full text-sm">
               <thead>
                 <tr className="border-b border-slate-200">
                   <th className="text-left py-2">Producto</th>
                   <th className="text-right py-2">Precio</th>
                   <th className="text-center py-2">Cant.</th>
+                  <th className="text-right py-2">Desc.</th>
                   <th className="text-right py-2">Subtotal</th>
                 </tr>
               </thead>
               <tbody>
                 {detailModal.items.map((item, idx) => (
                   <tr key={idx} className="border-b border-slate-100">
-                    <td className="py-2">{item.productName}</td>
+                    <td className="py-2">
+                      {item.productName}
+                      {item.treatment && (
+                        <span className="ml-2 text-[10px] uppercase tracking-wide bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded">
+                          tratamiento
+                        </span>
+                      )}
+                    </td>
                     <td className="py-2 text-right">${item.unitPrice.toFixed(2)}</td>
                     <td className="py-2 text-center">{item.quantity}</td>
+                    <td className="py-2 text-right text-rose-600">
+                      {item.discount ? `-$${Number(item.discount).toFixed(2)}` : '—'}
+                    </td>
                     <td className="py-2 text-right">${item.subtotal.toFixed(2)}</td>
                   </tr>
                 ))}
@@ -793,6 +891,12 @@ export default function Sales() {
                 <span className="text-slate-500">Subtotal:</span>
                 <span>${detailModal.subtotal.toFixed(2)}</span>
               </div>
+              {detailModal.discountTotal > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-slate-500">Descuento:</span>
+                  <span className="text-rose-600">-${detailModal.discountTotal.toFixed(2)}</span>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span className="text-slate-500">IVA:</span>
                 <span>${detailModal.taxAmount.toFixed(2)}</span>

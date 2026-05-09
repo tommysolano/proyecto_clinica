@@ -90,10 +90,10 @@ exports.updateByPatient = async (req, res) => {
 exports.addFollowUp = async (req, res) => {
   try {
     const { patientId } = req.params;
-    const { fecha, descripcion, valor, metodoPago } = req.body;
+    const { fecha, descripcion, valor, metodoPago, recomendaciones, receta, treatment } = req.body;
 
     if (!descripcion) {
-      return res.status(400).json({ message: 'La descripción es requerida' });
+      return res.status(400).json({ message: 'El motivo de consulta es requerido' });
     }
 
     const record = await ClinicalRecord.findOneAndUpdate(
@@ -103,6 +103,9 @@ exports.addFollowUp = async (req, res) => {
           followUps: {
             fecha: fecha ? new Date(fecha) : new Date(),
             descripcion,
+            recomendaciones: recomendaciones || '',
+            receta: receta || '',
+            treatment: treatment || null,
             valor: valor || 0,
             metodoPago: metodoPago || 'efectivo',
             createdBy: req.user._id,
