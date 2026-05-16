@@ -23,6 +23,30 @@ import Marketing from './pages/Marketing';
 import Discounts from './pages/Discounts';
 import Rooms from './pages/Rooms';
 import Blocks from './pages/Blocks';
+import ChartOfAccounts from './pages/accounting/ChartOfAccounts';
+import CostCenters from './pages/accounting/CostCenters';
+import FiscalPeriods from './pages/accounting/FiscalPeriods';
+import JournalEntries from './pages/accounting/JournalEntries';
+import Ledger from './pages/accounting/Ledger';
+import TrialBalance from './pages/accounting/TrialBalance';
+import BankAccounts from './pages/accounting/BankAccounts';
+import Reconciliations from './pages/accounting/Reconciliations';
+import Suppliers from './pages/accounting/Suppliers';
+import Payments from './pages/accounting/Payments';
+import PurchaseInvoices from './pages/accounting/PurchaseInvoices';
+import CreditDebitNotes from './pages/accounting/CreditDebitNotes';
+import Warehouses from './pages/accounting/Warehouses';
+import InventoryCategories from './pages/accounting/InventoryCategories';
+import PhysicalCounts from './pages/accounting/PhysicalCounts';
+import FixedAssets from './pages/accounting/FixedAssets';
+import FinancialReports from './pages/accounting/FinancialReports';
+import ManagementReports from './pages/accounting/ManagementReports';
+import SriReports from './pages/accounting/SriReports';
+import Employees from './pages/accounting/Employees';
+import EmployeeLoans from './pages/accounting/EmployeeLoans';
+import Payroll from './pages/accounting/Payroll';
+import CreditCardBatches from './pages/accounting/CreditCardBatches';
+import AuditLogs from './pages/accounting/AuditLogs';
 
 function SuperAdminRoute({ children }) {
   const { user, loading } = useAuth();
@@ -187,6 +211,44 @@ function AppRoutes() {
                     </SuperAdminRoute>
                   }
                 />
+
+                {/* Contabilidad */}
+                {[
+                  ['chart', ChartOfAccounts],
+                  ['cost-centers', CostCenters],
+                  ['periods', FiscalPeriods],
+                  ['journal', JournalEntries],
+                  ['ledger', Ledger],
+                  ['trial-balance', TrialBalance],
+                  ['banks', BankAccounts],
+                  ['reconciliations', Reconciliations],
+                  ['suppliers', Suppliers],
+                  ['payments', Payments],
+                  ['purchases', PurchaseInvoices],
+                  ['credit-debit-notes', CreditDebitNotes],
+                  ['warehouses', Warehouses],
+                  ['inv-categories', InventoryCategories],
+                  ['counts', PhysicalCounts],
+                  ['assets', FixedAssets],
+                  ['financial-reports', FinancialReports],
+                  ['management-reports', ManagementReports],
+                  ['sri-reports', SriReports],
+                  ['employees', Employees],
+                  ['loans', EmployeeLoans],
+                  ['payroll', Payroll],
+                  ['credit-card-batches', CreditCardBatches],
+                  ['audit-logs', AuditLogs],
+                ].map(([path, Comp]) => (
+                  <Route
+                    key={path}
+                    path={`/accounting/${path}`}
+                    element={
+                      <RoleRoute roles={['admin', 'contabilidad']}>
+                        <Comp />
+                      </RoleRoute>
+                    }
+                  />
+                ))}
 
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>

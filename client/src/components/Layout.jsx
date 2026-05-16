@@ -24,6 +24,23 @@ import {
   HiOutlineTag,
   HiOutlineNoSymbol,
   HiOutlineBuildingStorefront,
+  HiOutlineCalculator,
+  HiOutlineBookOpen,
+  HiOutlineBanknotes,
+  HiOutlineScale,
+  HiOutlineDocumentChartBar,
+  HiOutlineChartBar,
+  HiOutlineDocumentArrowDown,
+  HiOutlineShieldCheck,
+  HiOutlineCreditCard,
+  HiOutlineTruck,
+  HiOutlineCurrencyDollar,
+  HiOutlineDocumentMinus,
+  HiOutlineClipboardDocumentCheck,
+  HiOutlineBuildingLibrary,
+  HiOutlineSquares2X2,
+  HiOutlineChevronDown,
+  HiOutlineChevronRight,
 } from 'react-icons/hi2';
 
 // Cada item declara qué roles pueden verlo. superOnly = solo isSuperAdmin.
@@ -47,11 +64,39 @@ const ALL_ITEMS = [
   { path: '/clinics', label: 'Consultorios médicos', icon: HiOutlineBuildingOffice2, roles: [], superOnly: true },
 ];
 
+const ACCOUNTING_ITEMS = [
+  { path: '/accounting/chart', label: 'Plan de Cuentas', icon: HiOutlineBookOpen },
+  { path: '/accounting/cost-centers', label: 'Centros de Costo', icon: HiOutlineSquares2X2 },
+  { path: '/accounting/periods', label: 'Períodos Fiscales', icon: HiOutlineCalendar },
+  { path: '/accounting/journal', label: 'Asientos', icon: HiOutlineDocumentText },
+  { path: '/accounting/ledger', label: 'Libro Mayor', icon: HiOutlineBookOpen },
+  { path: '/accounting/trial-balance', label: 'Balance Comprobación', icon: HiOutlineScale },
+  { path: '/accounting/banks', label: 'Bancos', icon: HiOutlineBanknotes },
+  { path: '/accounting/reconciliations', label: 'Conciliaciones', icon: HiOutlineScale },
+  { path: '/accounting/suppliers', label: 'Proveedores', icon: HiOutlineTruck },
+  { path: '/accounting/purchases', label: 'Compras', icon: HiOutlineDocumentText },
+  { path: '/accounting/credit-debit-notes', label: 'NC / ND', icon: HiOutlineDocumentMinus },
+  { path: '/accounting/payments', label: 'Pagos/Cobros', icon: HiOutlineCurrencyDollar },
+  { path: '/accounting/credit-card-batches', label: 'Lotes Tarjetas', icon: HiOutlineCreditCard },
+  { path: '/accounting/warehouses', label: 'Bodegas', icon: HiOutlineCube },
+  { path: '/accounting/inv-categories', label: 'Categorías Inv.', icon: HiOutlineSquares2X2 },
+  { path: '/accounting/counts', label: 'Tomas Físicas', icon: HiOutlineClipboardDocumentCheck },
+  { path: '/accounting/assets', label: 'Activos Fijos', icon: HiOutlineBuildingLibrary },
+  { path: '/accounting/employees', label: 'Empleados', icon: HiOutlineUserGroup },
+  { path: '/accounting/loans', label: 'Préstamos', icon: HiOutlineBanknotes },
+  { path: '/accounting/payroll', label: 'Nómina', icon: HiOutlineCalculator },
+  { path: '/accounting/financial-reports', label: 'Rep. Financieros', icon: HiOutlineDocumentChartBar },
+  { path: '/accounting/management-reports', label: 'Rep. Gerenciales', icon: HiOutlineChartBar },
+  { path: '/accounting/sri-reports', label: 'Rep. SRI', icon: HiOutlineDocumentArrowDown },
+  { path: '/accounting/audit-logs', label: 'Auditoría', icon: HiOutlineShieldCheck },
+];
+
 export default function Layout({ children }) {
   const { user, role, activeClinic, clinics, selectClinic, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [accountingOpen, setAccountingOpen] = useState(false);
 
   const handleLogout = () => {
     logout();
@@ -73,6 +118,8 @@ export default function Layout({ children }) {
     if (item.superOnly) return user?.isSuperAdmin;
     return user?.isSuperAdmin || (role && item.roles.includes(role));
   });
+
+  const showAccounting = user?.isSuperAdmin || role === 'admin' || role === 'contabilidad';
 
   return (
     <div className="flex h-screen overflow-hidden bg-body">
@@ -158,6 +205,41 @@ export default function Layout({ children }) {
               </Link>
             );
           })}
+          {showAccounting && (
+            <div className="mt-4">
+              <button
+                onClick={() => setAccountingOpen((v) => !v)}
+                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-medium text-emerald-100/70 hover:bg-white/8 hover:text-white bg-transparent border-none cursor-pointer"
+              >
+                <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-white/8">
+                  <HiOutlineCalculator className="w-[18px] h-[18px]" />
+                </div>
+                <span className="flex-1 text-left">Contabilidad</span>
+                {accountingOpen ? <HiOutlineChevronDown className="w-4 h-4" /> : <HiOutlineChevronRight className="w-4 h-4" />}
+              </button>
+              {accountingOpen && (
+                <div className="ml-3 mt-1 space-y-0.5 border-l border-white/10 pl-2">
+                  {ACCOUNTING_ITEMS.map((it) => {
+                    const Icon = it.icon;
+                    const isActive = location.pathname === it.path;
+                    return (
+                      <Link
+                        key={it.path}
+                        to={it.path}
+                        onClick={() => setSidebarOpen(false)}
+                        className={`flex items-center gap-2 px-2 py-1.5 rounded-lg text-[12px] no-underline ${
+                          isActive ? 'bg-white/15 text-white' : 'text-emerald-100/60 hover:bg-white/8 hover:text-white'
+                        }`}
+                      >
+                        <Icon className="w-4 h-4 flex-shrink-0" />
+                        <span className="truncate">{it.label}</span>
+                      </Link>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
         </nav>
 
         <div className="px-4 py-4 border-t border-white/10 mx-2">

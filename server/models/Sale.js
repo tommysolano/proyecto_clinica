@@ -52,6 +52,8 @@ const saleSchema = new mongoose.Schema(
       default: 'completada',
     },
     invoice: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
+    // Asiento contable autogenerado
+    journalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
     notes: String,
     // Marca si es la primera venta/servicio del paciente (paciente nuevo).
     isFirstVisit: { type: Boolean, default: false },

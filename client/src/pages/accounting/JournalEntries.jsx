@@ -1,0 +1,165 @@
+import { useEffect, useState } from 'react';
+import api from '../../api/axios';
+import toast from 'react-hot-toast';
+import Modal from '../../components/Modal';
+import { HiOutlinePlus, HiOutlineArrowUturnLeft, HiOutlineEye, HiOutlineXMark } from 'react-icons/hi2';
+import { fmt, fmtDate, today, startOfMonth, endOfMonth } from './_utils';
+
+const EMPTY = { date: today(), description: '', source: 'MANUAL', lines: [{ account: '', debit: 0, credit: 0, description: '' }, { account: '', debit: 0, credit: 0, description: '' }] };
+
+export default function JournalEntries() {
+  const [list, setList] = useState([]);
+  const [accounts, setAccounts] = useState([]);
+  const [show, setShow] = useState(false);
+  const [form, setForm] = useState(EMPTY);
+  const [filters, setFilters] = useState({ startDate: startOfMonth(), endDate: endOfMonth(), status: '', q: '' });
+  const [viewing, setViewing] = useState(null);
+
+  const load = async () => {
+    try {
+      const r = await api.get('/journal-entries', { params: filters });
+      setList(r.data?.entries || r.data || []);
+    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+  };
+  useEffect(() => {
+    api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setAccounts((r.data || []).filter((a) => a.allowsMovement)));
+    load();
+    // eslint-disable-next-line
+  }, []);
+
+  const addLine = () => setForm({ ...form, lines: [...form.lines, { account: '', debit: 0, credit: 0, description: '' }] });
+  const setLine = (i, patch) => {
+    const lines = [...form.lines]; lines[i] = { ...lines[i], ...patch }; setForm({ ...form, lines });
+  };
+  const removeLine = (i) => setForm({ ...form, lines: form.lines.filter((_, idx) => idx !== i) });
+
+  const totalD = form.lines.reduce((s, l) => s + (+l.debit || 0), 0);
+  const totalC = form.lines.reduce((s, l) => s + (+l.credit || 0), 0);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    if (Math.abs(totalD - totalC) > 0.01) return toast.error('Asiento descuadrado');
+    try {
+      await api.post('/journal-entries', form);
+      toast.success('Asiento contabilizado');
+      setShow(false); setForm(EMPTY); load();
+    } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
+  };
+
+  const reverse = async (e) => {
+    const reason = prompt('Razón de la reversión:');
+    if (!reason) return;
+    try { await api.post(`/journal-entries/${e._id}/reverse`, { reason }); toast.success('Revertido'); load(); }
+    catch (err) { toast.error(err.response?.data?.message || 'Error'); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold text-slate-800">Asientos Contables</h1>
+        <button onClick={() => { setForm(EMPTY); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2"><HiOutlinePlus /> Nuevo asiento</button>
+      </div>
+
+      <div className="bg-white rounded-xl p-3 shadow-sm border border-emerald-100 flex flex-wrap gap-2 items-end">
+        <div><label className="text-xs">Desde</label><input type="date" value={filters.startDate} onChange={(e) => setFilters({ ...filters, startDate: e.target.value })} className="block px-3 py-2 border border-slate-200 rounded-lg" /></div>
+        <div><label className="text-xs">Hasta</label><input type="date" value={filters.endDate} onChange={(e) => setFilters({ ...filters, endDate: e.target.value })} className="block px-3 py-2 border border-slate-200 rounded-lg" /></div>
+        <div><label className="text-xs">Estado</label>
+          <select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })} className="block px-3 py-2 border border-slate-200 rounded-lg">
+            <option value="">Todos</option><option>CONTABILIZADO</option><option>ANULADO</option>
+          </select>
+        </div>
+        <input value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} placeholder="Buscar..." className="flex-1 px-3 py-2 border border-slate-200 rounded-lg" />
+        <button onClick={load} className="px-4 py-2 bg-slate-700 text-white rounded-lg">Filtrar</button>
+      </div>
+
+      <div className="bg-white rounded-xl shadow-sm border border-emerald-100 overflow-hidden">
+        <table className="w-full text-sm">
+          <thead className="bg-emerald-50 text-xs uppercase"><tr>
+            <th className="px-3 py-2 text-left">Número</th><th className="px-3 py-2 text-left">Fecha</th>
+            <th className="px-3 py-2 text-left">Origen</th><th className="px-3 py-2 text-left">Descripción</th>
+            <th className="px-3 py-2 text-right">Débito</th><th className="px-3 py-2 text-right">Crédito</th>
+            <th className="px-3 py-2 text-center">Estado</th><th></th>
+          </tr></thead>
+          <tbody>
+            {list.map((e) => (
+              <tr key={e._id} className={`border-t border-slate-100 ${e.status === 'ANULADO' ? 'text-slate-400 line-through' : ''}`}>
+                <td className="px-3 py-2 font-mono">{e.number}</td>
+                <td className="px-3 py-2">{fmtDate(e.date)}</td>
+                <td className="px-3 py-2 text-xs">{e.source}</td>
+                <td className="px-3 py-2">{e.description}</td>
+                <td className="px-3 py-2 text-right font-mono">{fmt(e.totalDebit)}</td>
+                <td className="px-3 py-2 text-right font-mono">{fmt(e.totalCredit)}</td>
+                <td className="px-3 py-2 text-center text-xs">{e.status}</td>
+                <td className="px-3 py-2 flex gap-1 justify-end">
+                  <button onClick={() => setViewing(e)} className="p-1.5 text-blue-600"><HiOutlineEye className="w-4 h-4" /></button>
+                  {e.status === 'CONTABILIZADO' && <button onClick={() => reverse(e)} className="p-1.5 text-rose-600"><HiOutlineArrowUturnLeft className="w-4 h-4" /></button>}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      <Modal isOpen={show} onClose={() => setShow(false)} title="Nuevo asiento manual" size="xl">
+        <form onSubmit={submit} className="space-y-3">
+          <div className="grid grid-cols-3 gap-3">
+            <div><label className="text-xs">Fecha</label><input type="date" required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2" /></div>
+            <div className="col-span-2"><label className="text-xs">Descripción</label><input required value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2" /></div>
+          </div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-100 text-xs"><tr>
+                <th className="px-2 py-1 text-left">Cuenta</th><th className="px-2 py-1">Descripción</th>
+                <th className="px-2 py-1 text-right">Débito</th><th className="px-2 py-1 text-right">Crédito</th><th></th>
+              </tr></thead>
+              <tbody>
+                {form.lines.map((l, i) => (
+                  <tr key={i}>
+                    <td className="p-1">
+                      <select required value={l.account} onChange={(e) => setLine(i, { account: e.target.value })} className="w-full border border-slate-200 rounded px-2 py-1">
+                        <option value="">--</option>
+                        {accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}
+                      </select>
+                    </td>
+                    <td className="p-1"><input value={l.description} onChange={(e) => setLine(i, { description: e.target.value })} className="w-full border border-slate-200 rounded px-2 py-1" /></td>
+                    <td className="p-1"><input type="number" step="0.01" value={l.debit} onChange={(e) => setLine(i, { debit: +e.target.value })} className="w-24 border border-slate-200 rounded px-2 py-1 text-right" /></td>
+                    <td className="p-1"><input type="number" step="0.01" value={l.credit} onChange={(e) => setLine(i, { credit: +e.target.value })} className="w-24 border border-slate-200 rounded px-2 py-1 text-right" /></td>
+                    <td className="p-1"><button type="button" onClick={() => removeLine(i)} className="text-rose-600"><HiOutlineXMark /></button></td>
+                  </tr>
+                ))}
+              </tbody>
+              <tfoot className="bg-slate-100 font-semibold"><tr>
+                <td colSpan={2} className="px-2 py-1 text-right">Totales</td>
+                <td className="px-2 py-1 text-right">{fmt(totalD)}</td>
+                <td className="px-2 py-1 text-right">{fmt(totalC)}</td><td></td>
+              </tr></tfoot>
+            </table>
+          </div>
+          <button type="button" onClick={addLine} className="text-emerald-600 text-sm flex items-center gap-1"><HiOutlinePlus /> Agregar línea</button>
+          <div className={`text-sm ${Math.abs(totalD - totalC) < 0.01 ? 'text-emerald-600' : 'text-rose-600'}`}>
+            Diferencia: {fmt(totalD - totalC)}
+          </div>
+          <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Contabilizar</button></div>
+        </form>
+      </Modal>
+
+      <Modal isOpen={!!viewing} onClose={() => setViewing(null)} title={`Asiento ${viewing?.number}`} size="xl">
+        {viewing && (
+          <div>
+            <p className="text-sm"><b>Fecha:</b> {fmtDate(viewing.date)} | <b>Origen:</b> {viewing.source}</p>
+            <p className="text-sm mb-3">{viewing.description}</p>
+            <table className="w-full text-sm border">
+              <thead className="bg-slate-100"><tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Cuenta</th><th className="p-2 text-right">Débito</th><th className="p-2 text-right">Crédito</th></tr></thead>
+              <tbody>
+                {(viewing.lines || []).map((l, i) => (
+                  <tr key={i} className="border-t"><td className="p-2 font-mono">{l.accountCode}</td><td className="p-2">{l.accountName} {l.description ? `- ${l.description}` : ''}</td><td className="p-2 text-right font-mono">{fmt(l.debit)}</td><td className="p-2 text-right font-mono">{fmt(l.credit)}</td></tr>
+                ))}
+                <tr className="font-bold bg-slate-50"><td colSpan={2} className="p-2 text-right">Totales</td><td className="p-2 text-right font-mono">{fmt(viewing.totalDebit)}</td><td className="p-2 text-right font-mono">{fmt(viewing.totalCredit)}</td></tr>
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Modal>
+    </div>
+  );
+}

@@ -3,6 +3,7 @@ const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
 const Discount = require('../models/Discount');
 const Treatment = require('../models/Treatment');
+const { createEntry, findAccount, reverseEntry } = require('../utils/accounting');
 
 exports.getSales = async (req, res) => {
   try {
@@ -254,6 +255,58 @@ exports.createSale = async (req, res) => {
       });
     }
 
+    // Asiento contable automático de la venta (best-effort: si falla no rompe la venta)
+    try {
+      const lines = [];
+      // Débito: cobro (caja/banco/tarjeta) o cuentas por cobrar
+      let debitCode = '1.1.02.01';
+      if (paymentMethod === 'efectivo') debitCode = '1.1.01.01';
+      else if (paymentMethod === 'tarjeta') debitCode = '1.1.02.02';
+      else if (paymentMethod === 'transferencia') debitCode = '1.1.01.03';
+      const debitAcc = await findAccount(req.clinicId, { code: debitCode });
+      lines.push({ account: debitAcc._id, debit: total, credit: 0, description: `Venta ${sale.saleNumber}` });
+
+      // Crédito: ingresos por producto/servicio
+      const productosVendidos = saleItems.filter((i) => i.category !== 'servicio');
+      const servicios = saleItems.filter((i) => i.category === 'servicio');
+      const baseProd = productosVendidos.reduce((s, i) => s + i.subtotal, 0);
+      const baseServ = servicios.reduce((s, i) => s + i.subtotal, 0);
+      if (baseProd > 0) {
+        const accProd = await findAccount(req.clinicId, { code: '4.1.02' });
+        lines.push({ account: accProd._id, debit: 0, credit: baseProd, description: 'Ingreso productos' });
+      }
+      if (baseServ > 0) {
+        const accServ = await findAccount(req.clinicId, { code: '4.1.01' });
+        lines.push({ account: accServ._id, debit: 0, credit: baseServ, description: 'Ingreso servicios' });
+      }
+      if (taxAmount > 0) {
+        const ivaV = await findAccount(req.clinicId, { taxCode: 'IVA_VENTAS' });
+        lines.push({ account: ivaV._id, debit: 0, credit: taxAmount, description: 'IVA en ventas' });
+      }
+      if (discountTotal > 0) {
+        const desc = await findAccount(req.clinicId, { code: '4.1.03' });
+        // El descuento es contra-ingreso: débito
+        lines.push({ account: desc._id, debit: discountTotal, credit: 0, description: 'Descuento en venta' });
+        // Ajustar el débito principal: caja recibió total real ya descontado.
+        // Para cuadrar, el bruto fue subtotal + iva; el descuento se aplica al ingreso.
+        // Sumamos descuento al ingreso bruto en crédito:
+        const accProd2 = lines.find((l) => l.description === 'Ingreso productos');
+        const accServ2 = lines.find((l) => l.description === 'Ingreso servicios');
+        if (accProd2) accProd2.credit += discountTotal; // simplificación
+        else if (accServ2) accServ2.credit += discountTotal;
+      }
+      const entry = await createEntry({
+        clinicId: req.clinicId, date: new Date(),
+        description: `Venta ${sale.saleNumber}`,
+        source: 'VENTA', sourceRef: sale._id, sourceModel: 'Sale',
+        lines, userId: req.user._id,
+      });
+      sale.journalEntry = entry._id;
+      await sale.save();
+    } catch (accErr) {
+      console.warn('No se pudo generar asiento contable de venta:', accErr.message);
+    }
+
     const populated = await sale
       .populate('patient', 'firstName lastName cedula')
       .then((doc) => doc.populate('createdBy', 'name'));
@@ -310,6 +363,13 @@ exports.cancelSale = async (req, res) => {
 
     sale.status = 'anulada';
     await sale.save();
+
+    // Reversar asiento contable si existe
+    if (sale.journalEntry) {
+      try {
+        await reverseEntry({ clinicId: req.clinicId, entryId: sale.journalEntry, userId: req.user._id, reason: 'Anulación venta' });
+      } catch (e) { console.warn('No se pudo reversar asiento:', e.message); }
+    }
 
     res.json({ message: 'Venta anulada exitosamente' });
   } catch (error) {

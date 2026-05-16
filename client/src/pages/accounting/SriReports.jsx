@@ -1,0 +1,60 @@
+import { useState } from 'react';
+import api from '../../api/axios';
+import toast from 'react-hot-toast';
+import { HiOutlineDocumentArrowDown } from 'react-icons/hi2';
+import { fmt, downloadBlob } from './_utils';
+
+export default function SriReports() {
+  const [tab, setTab] = useState('F104');
+  const [year, setYear] = useState(new Date().getFullYear());
+  const [month, setMonth] = useState(new Date().getMonth() + 1);
+  const [data, setData] = useState(null);
+
+  const URLS = { F104: '/accounting-reports/sri/form-104', F103: '/accounting-reports/sri/form-103', ATS: '/accounting-reports/sri/ats', VC: '/accounting-reports/sri/purchases-sales' };
+
+  const load = async () => {
+    try {
+      const params = { year, month };
+      if (tab === 'ATS') {
+        const r = await api.get(URLS[tab], { params, responseType: 'blob' });
+        downloadBlob(r.data, `ATS_${year}_${String(month).padStart(2, '0')}.xml`);
+        toast.success('ATS descargado');
+        return;
+      }
+      const r = await api.get(URLS[tab], { params }); setData(r.data);
+    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+  };
+
+  return (
+    <div className="space-y-4">
+      <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineDocumentArrowDown className="text-emerald-600" /> Reportes SRI</h1>
+      <div className="flex gap-2">
+        {[['F104', 'Formulario 104 (IVA)'], ['F103', 'Formulario 103 (Retenciones)'], ['ATS', 'Anexo Trans Simplif (XML)'], ['VC', 'Ventas/Compras']].map(([k, l]) =>
+          <button key={k} onClick={() => { setTab(k); setData(null); }} className={`px-3 py-2 rounded-lg text-xs ${tab === k ? 'bg-emerald-600 text-white' : 'bg-white border'}`}>{l}</button>)}
+      </div>
+      <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 items-end">
+        <div><label className="text-xs text-slate-500">Año</label><input type="number" value={year} onChange={(e) => setYear(+e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2 w-24" /></div>
+        <div><label className="text-xs text-slate-500">Mes</label><input type="number" min="1" max="12" value={month} onChange={(e) => setMonth(+e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2 w-20" /></div>
+        <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-lg">{tab === 'ATS' ? 'Descargar XML' : 'Generar'}</button>
+      </div>
+      {data && (
+        <div className="bg-white rounded-xl p-4 shadow-sm overflow-auto">
+          {Array.isArray(data) ? (
+            <table className="w-full text-sm">
+              <thead className="bg-emerald-50 text-xs uppercase"><tr>{Object.keys(data[0] || {}).map((k) => <th key={k} className="px-2 py-1 text-left">{k}</th>)}</tr></thead>
+              <tbody>
+                {data.map((row, i) => (
+                  <tr key={i} className="border-t">
+                    {Object.values(row).map((v, j) => <td key={j} className="px-2 py-1 text-xs">{typeof v === 'number' ? fmt(v) : String(v ?? '')}</td>)}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <pre className="text-xs whitespace-pre-wrap">{JSON.stringify(data, null, 2)}</pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
