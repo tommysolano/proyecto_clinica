@@ -157,6 +157,12 @@ const buildServicesSnapshot = async (clinicId, items) => {
 
 exports.createAppointment = async (req, res) => {
   try {
+    // supervisor_call_center es solo lectura: no puede crear citas.
+    if (req.role === 'supervisor_call_center' && !req.user.isSuperAdmin) {
+      return res
+        .status(403)
+        .json({ message: 'El supervisor de call center no puede crear citas.' });
+    }
     const { doctor, date, startTime, endTime, patient, services } = req.body;
 
     // El call_center puede operar para cualquiera de las clínicas a las que tiene acceso.
@@ -180,13 +186,13 @@ exports.createAppointment = async (req, res) => {
       return res.status(400).json({ message: 'Fecha inválida' });
     }
     const startMin = toMinutes(startTime);
-    const endMin = toMinutes(endTime);
-    if (startMin === null || endMin === null) {
+    const endMin = endTime ? toMinutes(endTime) : null;
+    if (startMin === null) {
       return res
         .status(400)
         .json({ message: 'Horario inválido. Usa el formato HH:MM (24h).' });
     }
-    if (endMin <= startMin) {
+    if (endMin !== null && endMin <= startMin) {
       return res
         .status(400)
         .json({ message: 'La hora de fin debe ser posterior a la hora de inicio.' });
@@ -211,7 +217,7 @@ exports.createAppointment = async (req, res) => {
       const inHours =
         block.allDay ||
         (!block.startTime || !block.endTime) ||
-        (startTime < block.endTime && endTime > block.startTime);
+        (startTime < block.endTime && (endTime || startTime) > block.startTime);
       if (inHours) {
         return res.status(400).json({
           message: `Horario bloqueado por administración${block.reason ? `: ${block.reason}` : ''}`,
@@ -357,13 +363,13 @@ exports.updateAppointment = async (req, res) => {
 
     if (update.startTime !== undefined || update.endTime !== undefined) {
       const startMin = toMinutes(update.startTime);
-      const endMin = toMinutes(update.endTime);
-      if (startMin === null || endMin === null) {
+      const endMin = update.endTime ? toMinutes(update.endTime) : null;
+      if (update.startTime !== undefined && startMin === null) {
         return res
           .status(400)
           .json({ message: 'Horario inválido. Usa el formato HH:MM (24h).' });
       }
-      if (endMin <= startMin) {
+      if (endMin !== null && startMin !== null && endMin <= startMin) {
         return res
           .status(400)
           .json({ message: 'La hora de fin debe ser posterior a la hora de inicio.' });

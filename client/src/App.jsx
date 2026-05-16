@@ -20,6 +20,8 @@ import Treatments from './pages/Treatments';
 import Referrals from './pages/Referrals';
 import Quotations from './pages/Quotations';
 import Marketing from './pages/Marketing';
+import Chats from './pages/Chats';
+import Commissions from './pages/Commissions';
 import Discounts from './pages/Discounts';
 import Rooms from './pages/Rooms';
 import Blocks from './pages/Blocks';
@@ -175,6 +177,22 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'marketing']}>
                       <Marketing />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/chats"
+                  element={
+                    <RoleRoute roles={['admin', 'call_center']}>
+                      <Chats />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/commissions"
+                  element={
+                    <RoleRoute roles={['admin', 'call_center']}>
+                      <Commissions />
                     </RoleRoute>
                   }
                 />

@@ -50,10 +50,15 @@ const requireClinic = (req, res, next) => {
 
 /**
  * Restringe el acceso a roles específicos dentro de la clínica activa.
+ * Regla especial: cualquier ruta que permita 'call_center' también acepta
+ * 'supervisor_call_center' (el supervisor es un superset del agente).
  */
 const requireRole = (...roles) => (req, res, next) => {
   if (req.user?.isSuperAdmin) return next();
-  if (!req.role || !roles.includes(req.role)) {
+  const expanded = roles.includes('call_center')
+    ? Array.from(new Set([...roles, 'supervisor_call_center']))
+    : roles;
+  if (!req.role || !expanded.includes(req.role)) {
     return res.status(403).json({ message: 'No tienes permisos para esta acción' });
   }
   next();

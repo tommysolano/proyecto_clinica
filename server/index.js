@@ -36,6 +36,8 @@ app.use('/api/referrals', require('./routes/referrals'));
 app.use('/api/discounts', require('./routes/discounts'));
 app.use('/api/quotations', require('./routes/quotations'));
 app.use('/api/marketing', require('./routes/marketing'));
+app.use('/api/chats', require('./routes/chats'));
+app.use('/api/call-center', require('./routes/callCenter'));
 
 // === Módulo contable ===
 app.use('/api/chart-of-accounts', require('./routes/chartOfAccounts'));

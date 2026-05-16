@@ -47,7 +47,7 @@ const appointmentSchema = new mongoose.Schema(
     },
     date: { type: Date, required: [true, 'La fecha es requerida'] },
     startTime: { type: String, required: [true, 'La hora de inicio es requerida'] },
-    endTime: { type: String, required: [true, 'La hora de fin es requerida'] },
+    endTime: { type: String },
     // Consultorio (sala) físico donde se atenderá la cita
     room: { type: mongoose.Schema.Types.ObjectId, ref: 'Room', default: null },
     // Estados ampliados:

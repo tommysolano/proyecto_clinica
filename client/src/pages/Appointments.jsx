@@ -278,10 +278,6 @@ export default function Appointments() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
-    if (form.startTime && form.endTime && form.endTime <= form.startTime) {
-      toast.error('La hora de fin debe ser posterior a la hora de inicio');
-      return;
-    }
     if (!form.patient) {
       toast.error('Selecciona un paciente');
       return;
@@ -292,6 +288,8 @@ export default function Appointments() {
         ...form,
         services: (form.services || []).map((id) => ({ product: id })),
       };
+      // No enviamos endTime: el campo fue removido del formulario
+      if (!payload.endTime) delete payload.endTime;
       if (editing) {
         await api.put(`/appointments/${editing}`, payload);
         toast.success('Cita actualizada');
@@ -641,7 +639,7 @@ export default function Appointments() {
                         {formatLocalDate(apt.date)}
                       </td>
                       <td className="px-6 py-3.5 text-sm text-slate-800 font-medium">
-                        {apt.startTime} - {apt.endTime}
+                        {apt.startTime}{apt.endTime ? ` - ${apt.endTime}` : ''}
                         {inProgress && (
                           <div className="text-[11px] text-amber-700 font-mono mt-0.5">
                             ⏱ {fmtSeconds(elapsedSeconds(apt))}
@@ -877,33 +875,18 @@ export default function Appointments() {
                 className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
               />
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                  Inicio *
-                </label>
-                <input
-                  name="startTime"
-                  type="time"
-                  value={form.startTime}
-                  onChange={handleChange}
-                  required
-                  className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                  Fin *
-                </label>
-                <input
-                  name="endTime"
-                  type="time"
-                  value={form.endTime}
-                  onChange={handleChange}
-                  required
-                  className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
-                />
-              </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                Hora *
+              </label>
+              <input
+                name="startTime"
+                type="time"
+                value={form.startTime}
+                onChange={handleChange}
+                required
+                className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
+              />
             </div>
           </div>
           <div>

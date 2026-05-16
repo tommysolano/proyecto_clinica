@@ -1,0 +1,39 @@
+const mongoose = require('mongoose');
+
+const messageSchema = new mongoose.Schema(
+  {
+    clinic: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Clinic',
+      required: true,
+      index: true,
+    },
+    conversation: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'Conversation',
+      required: true,
+      index: true,
+    },
+    direction: { type: String, enum: ['in', 'out'], required: true },
+    body: { type: String, trim: true },
+    mediaUrl: { type: String, trim: true },
+    mediaType: { type: String, enum: ['image', 'audio', 'video', 'document', null], default: null },
+    // Identificadores externos (WhatsApp message id)
+    externalId: { type: String, index: true },
+    // Estado: enviado, entregado, leído (para mensajes salientes)
+    deliveryStatus: {
+      type: String,
+      enum: ['queued', 'sent', 'delivered', 'read', 'failed'],
+      default: 'sent',
+    },
+    sentBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    sentByName: { type: String, trim: true },
+    isAutoReply: { type: Boolean, default: false },
+    isRead: { type: Boolean, default: false },
+  },
+  { timestamps: true }
+);
+
+messageSchema.index({ conversation: 1, createdAt: 1 });
+
+module.exports = mongoose.model('Message', messageSchema);

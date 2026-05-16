@@ -41,6 +41,8 @@ import {
   HiOutlineSquares2X2,
   HiOutlineChevronDown,
   HiOutlineChevronRight,
+  HiOutlineChatBubbleLeftRight,
+  HiOutlineTrophy,
 } from 'react-icons/hi2';
 
 // Cada item declara qué roles pueden verlo. superOnly = solo isSuperAdmin.
@@ -52,6 +54,8 @@ const ALL_ITEMS = [
   { path: '/treatments', label: 'Tratamientos', icon: HiOutlineHeart, roles: ['admin', 'doctor', 'cajero', 'marketing', 'enfermero'] },
   { path: '/referrals', label: 'Derivaciones', icon: HiOutlineArrowsRightLeft, roles: ['admin', 'doctor', 'marketing', 'cajero'] },
   { path: '/quotations', label: 'Cotizaciones', icon: HiOutlineDocumentDuplicate, roles: ['admin', 'cajero', 'call_center', 'contabilidad'] },
+  { path: '/chats', label: 'Chats / WhatsApp', icon: HiOutlineChatBubbleLeftRight, roles: ['admin', 'call_center'] },
+  { path: '/commissions', label: 'Comisiones', icon: HiOutlineTrophy, roles: ['admin', 'call_center'] },
   { path: '/inventory', label: 'Inventario', icon: HiOutlineCube, roles: ['admin', 'contabilidad'] },
   { path: '/sales', label: 'Ventas', icon: HiOutlineShoppingCart, roles: ['admin', 'contabilidad'] },
   { path: '/invoices', label: 'Facturación', icon: HiOutlineDocumentText, roles: ['admin', 'cajero', 'contabilidad'] },
@@ -116,7 +120,13 @@ export default function Layout({ children }) {
 
   const menuItems = ALL_ITEMS.filter((item) => {
     if (item.superOnly) return user?.isSuperAdmin;
-    return user?.isSuperAdmin || (role && item.roles.includes(role));
+    if (user?.isSuperAdmin) return true;
+    if (!role) return false;
+    // Regla: cualquier item visible para 'call_center' también para 'supervisor_call_center'.
+    const expanded = item.roles.includes('call_center')
+      ? [...item.roles, 'supervisor_call_center']
+      : item.roles;
+    return expanded.includes(role);
   });
 
   const showAccounting = user?.isSuperAdmin || role === 'admin' || role === 'contabilidad';
