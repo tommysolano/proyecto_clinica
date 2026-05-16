@@ -36,6 +36,10 @@ const saleSchema = new mongoose.Schema(
     clientEmail: { type: String, trim: true, lowercase: true },
     clientPhone: { type: String, trim: true },
     clientAddress: { type: String, trim: true },
+    // Ciudad del cliente (para análisis de procedencia/heatmap)
+    clientCity: { type: String, trim: true, default: 'Guayaquil' },
+    // Zona/sector dentro de la ciudad (zonas de Guayaquil pre-cargadas)
+    clientZone: { type: String, trim: true },
     items: [saleItemSchema],
     subtotal: { type: Number, required: true },
     discountTotal: { type: Number, default: 0 },

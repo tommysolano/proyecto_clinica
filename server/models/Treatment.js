@@ -52,6 +52,20 @@ const treatmentSchema = new mongoose.Schema(
     },
     notes: { type: String, trim: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // Origen del tratamiento: si nace de una derivación o de citas separadas
+    source: {
+      type: String,
+      enum: ['referral', 'appointment', 'manual'],
+      default: 'manual',
+    },
+    sourceRef: { type: mongoose.Schema.Types.ObjectId, refPath: 'sourceRefModel', default: null },
+    sourceRefModel: { type: String, enum: ['Referral', 'Appointment', null], default: null },
+    // Configuración de abandono automático
+    inactivityDaysToAbandon: { type: Number, default: 15 },
+    inactivityWarningDays: { type: Number, default: 4 },
+    lastActivityAt: { type: Date, default: Date.now },
+    abandonedAt: { type: Date },
+    abandonWarnedAt: { type: Date },
   },
   { timestamps: true }
 );
@@ -69,5 +83,25 @@ treatmentSchema.virtual('progress').get(function () {
 
 treatmentSchema.set('toJSON', { virtuals: true });
 treatmentSchema.set('toObject', { virtuals: true });
+
+// Días sin actividad (cita o avance) — virtual
+treatmentSchema.virtual('daysSinceLastActivity').get(function () {
+  const ref = this.lastActivityAt || this.startDate || this.createdAt;
+  if (!ref) return 0;
+  const ms = Date.now() - new Date(ref).getTime();
+  return Math.floor(ms / 86400000);
+});
+
+// Estado de alerta de abandono: 'ok' | 'warning' | 'abandoned'
+treatmentSchema.virtual('abandonAlert').get(function () {
+  if (this.status === 'abandonado') return 'abandoned';
+  if (this.status !== 'activo') return 'ok';
+  const days = this.daysSinceLastActivity;
+  const limit = this.inactivityDaysToAbandon || 15;
+  const warn = this.inactivityWarningDays || 4;
+  if (days >= limit) return 'abandoned';
+  if (days >= limit - warn) return 'warning';
+  return 'ok';
+});
 
 module.exports = mongoose.model('Treatment', treatmentSchema);

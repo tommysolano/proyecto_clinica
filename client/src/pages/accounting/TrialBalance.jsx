@@ -24,7 +24,7 @@ export default function TrialBalance() {
       <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 items-end">
         <div><label className="text-xs text-slate-500">Desde</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2" /></div>
         <div><label className="text-xs text-slate-500">Hasta</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2" /></div>
-        <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Consultar</button>
+        <button type="button" onClick={load} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg cursor-pointer">Consultar</button>
       </div>
       <div className="bg-white rounded-xl shadow-sm overflow-hidden">
         <table className="w-full text-sm">
@@ -40,9 +40,12 @@ export default function TrialBalance() {
                 <td className="px-3 py-2">{r.name}</td>
                 <td className="px-3 py-2 text-right font-mono">{fmt(r.debit)}</td>
                 <td className="px-3 py-2 text-right font-mono">{fmt(r.credit)}</td>
-                <td className="px-3 py-2 text-right font-mono font-semibold">{fmt(r.balance)}</td>
+                <td className="px-3 py-2 text-right font-mono font-semibold">{fmt(r.saldo)}</td>
               </tr>
             ))}
+            {rows.length === 0 && (
+              <tr><td colSpan={5} className="px-3 py-6 text-center text-slate-400 text-xs">Sin datos. Selecciona un rango y presiona Consultar.</td></tr>
+            )}
           </tbody>
           <tfoot className="bg-slate-100 font-bold">
             <tr><td colSpan={2} className="px-3 py-2 text-right">TOTALES</td>

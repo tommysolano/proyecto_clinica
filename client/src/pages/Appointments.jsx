@@ -112,6 +112,7 @@ export default function Appointments() {
     service: '',
     timeFrom: '',
     timeTo: '',
+    patientQuery: '',
   });
   const [view, setView] = useState('list'); // 'list' | 'today'
   const [patientSearch, setPatientSearch] = useState('');
@@ -136,6 +137,7 @@ export default function Appointments() {
         if (filter.status) params.status = filter.status;
       }
       if (filter.isFirstVisit) params.isFirstVisit = filter.isFirstVisit;
+      if (filter.patientQuery && filter.patientQuery.trim()) params.q = filter.patientQuery.trim();
       const res = await api.get('/appointments', { params });
       const list = (res.data || []).map((a) => ({
         ...a,
@@ -494,6 +496,16 @@ export default function Appointments() {
 
       {view === 'list' && (
         <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 mb-6 p-4 space-y-3">
+          <div className="relative">
+            <HiOutlineMagnifyingGlass className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+            <input
+              type="text"
+              value={filter.patientQuery}
+              onChange={(e) => setFilter({ ...filter, patientQuery: e.target.value })}
+              placeholder="Buscar paciente por nombre, cédula o teléfono..."
+              className="w-full pl-10 pr-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
+            />
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
             <input
               type="date"
@@ -563,9 +575,9 @@ export default function Appointments() {
           </div>
           <div className="flex items-center justify-between text-xs text-slate-500">
             <span>Total filtrado: <strong className="text-slate-800">{filteredAppointments.length}</strong> citas</span>
-            {(filter.service || filter.room || filter.timeFrom || filter.timeTo || filter.status || filter.isFirstVisit) && (
+            {(filter.service || filter.room || filter.timeFrom || filter.timeTo || filter.status || filter.isFirstVisit || filter.patientQuery) && (
               <button
-                onClick={() => setFilter({ startDate: '', endDate: '', status: '', isFirstVisit: '', room: '', service: '', timeFrom: '', timeTo: '' })}
+                onClick={() => setFilter({ startDate: '', endDate: '', status: '', isFirstVisit: '', room: '', service: '', timeFrom: '', timeTo: '', patientQuery: '' })}
                 className="text-emerald-600 hover:underline border-none bg-transparent cursor-pointer"
               >Limpiar filtros</button>
             )}
@@ -1181,6 +1193,47 @@ export default function Appointments() {
                     ? ` (${roleLabels[detailModal.createdByRole] || detailModal.createdByRole})`
                     : ''}
                 </p>
+              </div>
+            )}
+            {(detailModal.origin && detailModal.origin !== 'standalone') && (
+              <div className="bg-indigo-50 border border-indigo-200 rounded-xl p-3">
+                <p className="text-xs text-indigo-700 font-medium">Origen de la cita</p>
+                <p className="text-sm text-slate-800 mt-0.5">
+                  {detailModal.origin === 'referral' && (
+                    <>Generada por derivación{detailModal.referral?.specialty ? ` — ${detailModal.referral.specialty}` : ''}</>
+                  )}
+                  {detailModal.origin === 'treatment' && (
+                    <>Forma parte del tratamiento {detailModal.treatmentRef?.name ? `"${detailModal.treatmentRef.name}"` : ''}</>
+                  )}
+                </p>
+              </div>
+            )}
+            {Array.isArray(detailModal.rescheduleHistory) && detailModal.rescheduleHistory.length > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3">
+                <p className="text-xs text-amber-700 font-medium mb-2">
+                  Historial de reagendamientos ({detailModal.rescheduleHistory.length})
+                </p>
+                <ul className="space-y-2 text-xs text-slate-700">
+                  {detailModal.rescheduleHistory.map((h, i) => (
+                    <li key={i} className="border-l-2 border-amber-300 pl-2">
+                      <div>
+                        <span className="line-through text-slate-500">
+                          {formatLocalDate(h.previousDate)} {h.previousStartTime}–{h.previousEndTime}
+                        </span>{' '}
+                        →{' '}
+                        <span className="font-semibold">
+                          {formatLocalDate(h.newDate)} {h.newStartTime}–{h.newEndTime}
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        por {h.rescheduledBy?.name || h.rescheduledByName || '—'}
+                        {h.rescheduledByRole ? ` (${roleLabels[h.rescheduledByRole] || h.rescheduledByRole})` : ''}
+                        {' • '}{new Date(h.at).toLocaleString('es-EC')}
+                      </div>
+                      {h.reason && <div className="italic text-slate-600">"{h.reason}"</div>}
+                    </li>
+                  ))}
+                </ul>
               </div>
             )}
             {hasRole('admin', 'cajero', 'call_center', 'enfermero') && detailModal.status !== 'completada' && (

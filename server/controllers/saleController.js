@@ -76,6 +76,20 @@ exports.createSale = async (req, res) => {
       return res.status(400).json({ message: 'Debe agregar al menos un ítem' });
     }
 
+    // Validar dirección/zona si la ciudad es Guayaquil:
+    // En Guayaquil exigimos seleccionar una zona reconocida por la alcaldía.
+    const clientCity = (req.body.clientCity || 'Guayaquil').trim();
+    let clientZone = (req.body.clientZone || '').trim();
+    if (clientCity.toLowerCase() === 'guayaquil' && clientZone) {
+      const { isValidGuayaquilZone } = require('../utils/guayaquilZones');
+      if (!isValidGuayaquilZone(clientZone)) {
+        return res.status(400).json({
+          message:
+            'La zona de Guayaquil seleccionada no es válida. Debes elegirla del listado oficial.',
+        });
+      }
+    }
+
     // Validar y consolidar productos
     const productIds = items.map((i) => i.product);
     const products = await Product.find({
@@ -201,6 +215,8 @@ exports.createSale = async (req, res) => {
       paymentMethod,
       notes,
       isFirstVisit,
+      clientCity,
+      clientZone,
       callCenter: req.body.callCenter || undefined,
       cashier: req.body.cashier || (req.role === 'cajero' ? req.user._id : undefined),
       doctor: req.body.doctor || undefined,

@@ -9,6 +9,24 @@ const appointmentServiceSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Registro de cada reagendamiento (quien, cuando, fecha/horario anterior y razón).
+const rescheduleEntrySchema = new mongoose.Schema(
+  {
+    previousDate: { type: Date, required: true },
+    previousStartTime: { type: String },
+    previousEndTime: { type: String },
+    newDate: { type: Date, required: true },
+    newStartTime: { type: String },
+    newEndTime: { type: String },
+    rescheduledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    rescheduledByName: { type: String },
+    rescheduledByRole: { type: String },
+    reason: { type: String, trim: true },
+    at: { type: Date, default: Date.now },
+  },
+  { _id: false }
+);
+
 const appointmentSchema = new mongoose.Schema(
   {
     clinic: {
@@ -62,6 +80,16 @@ const appointmentSchema = new mongoose.Schema(
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     // Rol del usuario que creó la cita (snapshot, útil para comisiones de call_center)
     createdByRole: { type: String },
+    // Historial de reagendamientos
+    rescheduleHistory: { type: [rescheduleEntrySchema], default: [] },
+    // Origen de la cita: si nació de una derivación o se agendó suelta
+    origin: {
+      type: String,
+      enum: ['referral', 'standalone', 'treatment'],
+      default: 'standalone',
+    },
+    referral: { type: mongoose.Schema.Types.ObjectId, ref: 'Referral', default: null },
+    treatmentRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Treatment', default: null },
   },
   { timestamps: true }
 );

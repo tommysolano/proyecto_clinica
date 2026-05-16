@@ -38,11 +38,12 @@ export default function Ledger() {
       </div>
       {data && (
         <div className="bg-white rounded-xl shadow-sm overflow-hidden">
-          <div className="p-3 bg-slate-50 text-sm flex gap-4">
-            <span>Saldo inicial: <b>${fmt(data.openingBalance)}</b></span>
-            <span>Total débito: <b className="text-emerald-700">${fmt(data.totalDebit)}</b></span>
-            <span>Total crédito: <b className="text-rose-600">${fmt(data.totalCredit)}</b></span>
-            <span className="ml-auto">Saldo final: <b className="text-lg">${fmt(data.endingBalance)}</b></span>
+          <div className="p-3 bg-slate-50 text-sm flex gap-4 flex-wrap">
+            <span>Cuenta: <b>{data.account?.code} - {data.account?.name}</b></span>
+            <span>Saldo inicial: <b>${fmt(data.opening)}</b></span>
+            <span>Total débito: <b className="text-emerald-700">${fmt((data.rows || []).reduce((s, r) => s + (r.debit || 0), 0))}</b></span>
+            <span>Total crédito: <b className="text-rose-600">${fmt((data.rows || []).reduce((s, r) => s + (r.credit || 0), 0))}</b></span>
+            <span className="ml-auto">Saldo final: <b className="text-lg">${fmt((data.rows || []).length ? data.rows[data.rows.length - 1].saldo : data.opening)}</b></span>
           </div>
           <table className="w-full text-sm">
             <thead className="bg-slate-100 text-xs uppercase"><tr>
@@ -51,16 +52,19 @@ export default function Ledger() {
               <th className="px-2 py-1 text-right">Crédito</th><th className="px-2 py-1 text-right">Saldo</th>
             </tr></thead>
             <tbody>
-              {data.movements.map((m, i) => (
+              {(data.rows || []).map((m, i) => (
                 <tr key={i} className="border-t">
                   <td className="px-2 py-1">{fmtDate(m.date)}</td>
-                  <td className="px-2 py-1 font-mono text-xs">{m.entryNumber}</td>
+                  <td className="px-2 py-1 font-mono text-xs">{m.number}</td>
                   <td className="px-2 py-1 text-xs">{m.description}</td>
                   <td className="px-2 py-1 text-right font-mono">{m.debit ? fmt(m.debit) : ''}</td>
                   <td className="px-2 py-1 text-right font-mono">{m.credit ? fmt(m.credit) : ''}</td>
-                  <td className="px-2 py-1 text-right font-mono font-semibold">{fmt(m.balance)}</td>
+                  <td className="px-2 py-1 text-right font-mono font-semibold">{fmt(m.saldo)}</td>
                 </tr>
               ))}
+              {(data.rows || []).length === 0 && (
+                <tr><td colSpan={6} className="px-2 py-4 text-center text-slate-400 text-xs">Sin movimientos en el rango seleccionado.</td></tr>
+              )}
             </tbody>
           </table>
         </div>

@@ -44,6 +44,9 @@ exports.getAppointments = async (req, res) => {
       fromTime,
       toTime,
       room,
+      patient,
+      origin,
+      q,
     } = req.query;
     const query = { clinic: req.clinicId };
 
@@ -60,6 +63,8 @@ exports.getAppointments = async (req, res) => {
     else if (isFirstVisit === 'false') query.isFirstVisit = { $ne: true };
     if (service) query['services.product'] = service;
     if (room) query.room = room;
+    if (patient) query.patient = patient;
+    if (origin) query.origin = origin;
     // Filtro por rango de horario (HH:MM)
     if (fromTime && toTime) {
       query.startTime = { $gte: fromTime, $lte: toTime };
@@ -81,6 +86,28 @@ exports.getAppointments = async (req, res) => {
       query.status = query.status || { $in: ['confirmada', 'asistida'] };
     }
 
+    // Búsqueda libre por paciente (nombre, apellido, cédula o teléfono)
+    if (q && String(q).trim()) {
+      const term = String(q).trim();
+      const regex = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+      const matched = await Patient.find({
+        clinic: req.clinicId,
+        $or: [
+          { firstName: regex },
+          { lastName: regex },
+          { cedula: regex },
+          { phone: regex },
+          { whatsapp: regex },
+        ],
+      }).select('_id');
+      const ids = matched.map((p) => p._id);
+      if (query.patient) {
+        // Si ya filtró por paciente concreto, lo respetamos.
+      } else {
+        query.patient = { $in: ids };
+      }
+    }
+
     const appointments = await Appointment.find(query)
       .populate('patient', POPULATE_PATIENT)
       .populate('doctor', POPULATE_DOCTOR)
@@ -100,6 +127,9 @@ exports.getAppointment = async (req, res) => {
       .populate('patient', POPULATE_PATIENT + ' address')
       .populate('doctor', POPULATE_DOCTOR)
       .populate('createdBy', POPULATE_CREATOR)
+      .populate('rescheduleHistory.rescheduledBy', 'name email')
+      .populate('referral', 'fromDoctor toDoctor specialty reason status')
+      .populate('treatmentRef', 'name status')
       .populate('services.product', 'name code salePrice category');
 
     if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
@@ -265,6 +295,19 @@ exports.createAppointment = async (req, res) => {
       createdByRole: req.role || null,
     });
 
+    // Si la cita proviene de una derivación, sincronizar la derivación
+    if (req.body.referral) {
+      try {
+        const Referral = require('../models/Referral');
+        await Referral.findOneAndUpdate(
+          { _id: req.body.referral, clinic: targetClinicId },
+          { appointment: appointment._id, status: 'agendada' }
+        );
+      } catch (e) {
+        console.warn('No se pudo sincronizar derivación al crear cita:', e.message);
+      }
+    }
+
     const populated = await appointment
       .populate('patient', POPULATE_PATIENT)
       .then((doc) => doc.populate('doctor', POPULATE_DOCTOR))
@@ -329,6 +372,39 @@ exports.updateAppointment = async (req, res) => {
 
     if (Array.isArray(update.services)) {
       update.services = await buildServicesSnapshot(req.clinicId, update.services);
+    }
+
+    // Detectar reagendamiento: si cambia la fecha o el horario respecto al
+    // documento existente, registrar entrada en rescheduleHistory.
+    const newDate = update.date instanceof Date ? update.date : null;
+    const oldDateIso = existing.date instanceof Date ? existing.date.toISOString().slice(0, 10) : null;
+    const newDateIso = newDate ? newDate.toISOString().slice(0, 10) : null;
+    const dateChanged = newDateIso && oldDateIso && newDateIso !== oldDateIso;
+    const startChanged =
+      typeof update.startTime === 'string' && update.startTime !== existing.startTime;
+    const endChanged =
+      typeof update.endTime === 'string' && update.endTime !== existing.endTime;
+
+    if (dateChanged || startChanged || endChanged) {
+      const entry = {
+        previousDate: existing.date,
+        previousStartTime: existing.startTime,
+        previousEndTime: existing.endTime,
+        newDate: newDate || existing.date,
+        newStartTime: update.startTime || existing.startTime,
+        newEndTime: update.endTime || existing.endTime,
+        rescheduledBy: req.user._id,
+        rescheduledByName: req.user.name,
+        rescheduledByRole: req.role || null,
+        reason: req.body.rescheduleReason || req.body.reason || '',
+        at: new Date(),
+      };
+      update.$push = { ...(update.$push || {}), rescheduleHistory: entry };
+      // Si estaba completada/cancelada/no_asistio y se reagenda, volvemos a pendiente
+      // (a menos que el cliente envíe un status explícito).
+      if (!update.status && ['cancelada', 'no_asistio'].includes(existing.status)) {
+        update.status = 'pendiente';
+      }
     }
 
     const appointment = await Appointment.findOneAndUpdate(
@@ -431,6 +507,19 @@ exports.endConsultation = async (req, res) => {
     appointment.status = 'completada';
     await appointment.save();
 
+    // Sincronizar derivación asociada
+    if (appointment.referral) {
+      try {
+        const Referral = require('../models/Referral');
+        await Referral.findOneAndUpdate(
+          { _id: appointment.referral, clinic: req.clinicId },
+          { status: 'atendida' }
+        );
+      } catch (e) {
+        console.warn('No se pudo sincronizar derivación al completar cita:', e.message);
+      }
+    }
+
     // Avance automático de tratamientos: si la cita tenía servicios y existe
     // un tratamiento activo del paciente que los incluya, sumar avance.
     try {
@@ -459,6 +548,11 @@ exports.endConsultation = async (req, res) => {
             }
           }
           if (changed) {
+            t.lastActivityAt = new Date();
+            if (t.status === 'abandonado') {
+              t.status = 'activo';
+              t.abandonedAt = undefined;
+            }
             if (t.progress >= 100) t.status = 'completado';
             await t.save();
           }
@@ -659,7 +753,49 @@ exports.getStats = async (req, res) => {
     const denom = attended + missed;
     const attendanceRate = denom === 0 ? null : Math.round((attended / denom) * 100);
 
-    res.json({ total, byStatus, attended, missed, attendanceRate });
+    // Desglose por rol que creó la cita (agendado vs. call_center)
+    const byCreator = await Appointment.aggregate([
+      { $match: match },
+      { $group: { _id: '$createdByRole', count: { $sum: 1 } } },
+    ]);
+    const createdByRole = byCreator.reduce((acc, g) => {
+      acc[g._id || 'desconocido'] = g.count;
+      return acc;
+    }, {});
+
+    // Desglose por doctor que atendió (status asistida o completada)
+    const byDoctor = await Appointment.aggregate([
+      { $match: { ...match, status: { $in: ['asistida', 'completada'] } } },
+      { $group: { _id: '$doctor', count: { $sum: 1 } } },
+      {
+        $lookup: {
+          from: 'users',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'doctor',
+        },
+      },
+      { $unwind: { path: '$doctor', preserveNullAndEmptyArrays: true } },
+      {
+        $project: {
+          _id: 1,
+          count: 1,
+          name: '$doctor.name',
+          specialty: '$doctor.specialty',
+        },
+      },
+      { $sort: { count: -1 } },
+    ]);
+
+    res.json({
+      total,
+      byStatus,
+      attended,
+      missed,
+      attendanceRate,
+      createdByRole,
+      byDoctor,
+    });
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener estadísticas', error: error.message });
   }
@@ -674,6 +810,15 @@ exports.markAttended = async (req, res) => {
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
     apt.status = 'asistida';
     await apt.save();
+    if (apt.referral) {
+      try {
+        const Referral = require('../models/Referral');
+        await Referral.findOneAndUpdate(
+          { _id: apt.referral, clinic: req.clinicId },
+          { status: 'atendida' }
+        );
+      } catch (_) {}
+    }
     res.json(apt);
   } catch (error) {
     res.status(500).json({ message: 'Error al marcar asistencia' });

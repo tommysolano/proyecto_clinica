@@ -8,6 +8,23 @@ const POPULATE = [
   { path: 'createdBy', select: 'name email' },
 ];
 
+// Verifica y aplica el abandono automático si superó el umbral de días sin actividad.
+async function applyAbandonment(treatments) {
+  const now = Date.now();
+  for (const t of treatments) {
+    if (t.status !== 'activo') continue;
+    const ref = t.lastActivityAt || t.startDate || t.createdAt;
+    if (!ref) continue;
+    const days = Math.floor((now - new Date(ref).getTime()) / 86400000);
+    const limit = t.inactivityDaysToAbandon || 15;
+    if (days >= limit) {
+      t.status = 'abandonado';
+      t.abandonedAt = new Date();
+      await t.save();
+    }
+  }
+}
+
 exports.list = async (req, res) => {
   try {
     const { patient, status } = req.query;
@@ -26,6 +43,8 @@ exports.list = async (req, res) => {
         await t.save();
       }
     }
+    // Aplicar abandono automático según inactividad
+    await applyAbandonment(treatments);
     res.json(treatments);
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener tratamientos', error: error.message });
@@ -137,6 +156,12 @@ exports.completeItem = async (req, res) => {
     );
     if (refType && refId) {
       t.items[itemIndex].completionRefs.push({ type: refType, ref: refId, date: new Date() });
+    }
+    t.lastActivityAt = new Date();
+    // Si estaba marcado como abandonado y vuelve a avanzar, reactivarlo
+    if (t.status === 'abandonado') {
+      t.status = 'activo';
+      t.abandonedAt = undefined;
     }
     if (t.progress >= 100) t.status = 'completado';
     await t.save();

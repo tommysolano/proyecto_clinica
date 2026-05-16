@@ -42,6 +42,8 @@ export default function Sales() {
     clientEmail: '',
     clientPhone: '',
     clientAddress: '',
+    clientCity: 'Guayaquil',
+    clientZone: '',
     patient: '',
     paymentMethod: 'efectivo',
     notes: '',
@@ -49,6 +51,14 @@ export default function Sales() {
   });
   const [currentItem, setCurrentItem] = useState({ product: '', quantity: 1 });
   const [patientSearch, setPatientSearch] = useState('');
+  const [guayaquilZones, setGuayaquilZones] = useState([]);
+
+  useEffect(() => {
+    api
+      .get('/marketing/guayaquil-zones')
+      .then((r) => setGuayaquilZones(r.data || []))
+      .catch(() => setGuayaquilZones([]));
+  }, []);
 
   const fetchSales = async () => {
     try {
@@ -122,6 +132,8 @@ export default function Sales() {
       clientEmail: '',
       clientPhone: '',
       clientAddress: '',
+      clientCity: 'Guayaquil',
+      clientZone: '',
       patient: '',
       paymentMethod: 'efectivo',
       notes: '',
@@ -619,6 +631,67 @@ export default function Sales() {
               onChange={(e) => setForm({ ...form, clientAddress: e.target.value })}
               className="input"
             />
+          </div>
+          <div className="grid grid-cols-2 gap-2">
+            <div>
+              <label className="lbl">Ciudad</label>
+              <select
+                value={form.clientCity === 'Guayaquil' ? 'Guayaquil' : 'Otra'}
+                onChange={(e) => {
+                  if (e.target.value === 'Guayaquil') {
+                    setForm({ ...form, clientCity: 'Guayaquil' });
+                  } else {
+                    setForm({ ...form, clientCity: '', clientZone: '' });
+                  }
+                }}
+                className="input"
+              >
+                <option value="Guayaquil">Guayaquil</option>
+                <option value="Otra">Otra ciudad</option>
+              </select>
+              {form.clientCity !== 'Guayaquil' && (
+                <input
+                  value={form.clientCity}
+                  onChange={(e) => setForm({ ...form, clientCity: e.target.value })}
+                  placeholder="Nombre de la ciudad"
+                  className="input mt-1"
+                />
+              )}
+            </div>
+            <div>
+              <label className="lbl">
+                {form.clientCity === 'Guayaquil' ? 'Zona / Parroquia' : 'Sector'}
+              </label>
+              {form.clientCity === 'Guayaquil' ? (
+                <>
+                  <input
+                    list="guayaquil-zones-datalist"
+                    value={form.clientZone}
+                    onChange={(e) => setForm({ ...form, clientZone: e.target.value })}
+                    placeholder="Ej. Tarqui, Urdesa, Alborada..."
+                    className="input"
+                  />
+                  <datalist id="guayaquil-zones-datalist">
+                    {guayaquilZones.map((z) => (
+                      <option key={z.name} value={z.name}>
+                        {z.parroquia}
+                      </option>
+                    ))}
+                  </datalist>
+                  {form.clientZone && !guayaquilZones.some((z) => z.name.toLowerCase() === form.clientZone.toLowerCase()) && (
+                    <p className="text-[11px] text-amber-600 mt-1">
+                      Zona no reconocida. Selecciona una de la lista.
+                    </p>
+                  )}
+                </>
+              ) : (
+                <input
+                  value={form.clientZone}
+                  onChange={(e) => setForm({ ...form, clientZone: e.target.value })}
+                  className="input"
+                />
+              )}
+            </div>
           </div>
 
           <div className="bg-emerald-50/50 rounded-xl p-4">

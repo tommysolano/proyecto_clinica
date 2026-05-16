@@ -44,7 +44,11 @@ export default function Calendar() {
   const [appointments, setAppointments] = useState([]);
   const [blocks, setBlocks] = useState([]);
   const [doctors, setDoctors] = useState([]);
+  const [services, setServices] = useState([]);
+  const [programs, setPrograms] = useState([]);
   const [doctorFilter, setDoctorFilter] = useState('');
+  const [serviceFilter, setServiceFilter] = useState('');
+  const [programFilter, setProgramFilter] = useState('');
   const [loading, setLoading] = useState(true);
 
   const days = useMemo(() => {
@@ -62,11 +66,23 @@ export default function Calendar() {
       const end = ymd(days[6]);
       const params = { startDate: start, endDate: end };
       if (doctorFilter) params.doctor = doctorFilter;
+      if (serviceFilter) params.service = serviceFilter;
       const [aRes, bRes] = await Promise.all([
         api.get('/appointments', { params }),
         api.get('/time-blocks', { params: { startDate: start, endDate: end } }),
       ]);
-      setAppointments(aRes.data.appointments || aRes.data || []);
+      let list = aRes.data.appointments || aRes.data || [];
+      // Filtro por programa: cliente filtra si el programa contiene alguno de los servicios de la cita
+      if (programFilter) {
+        const prog = programs.find((p) => p._id === programFilter);
+        const progServiceIds = new Set(
+          (prog?.programServices || []).map((s) => String(s.product?._id || s.product))
+        );
+        list = list.filter((a) =>
+          (a.services || []).some((s) => progServiceIds.has(String(s.product?._id || s.product)))
+        );
+      }
+      setAppointments(list);
       setBlocks(bRes.data || []);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al cargar calendario');
@@ -80,12 +96,18 @@ export default function Calendar() {
       .get('/users', { params: { role: 'doctor' } })
       .then((r) => setDoctors((r.data || []).filter((u) => u.role === 'doctor' || (u.clinics || []).some((c) => c.role === 'doctor'))))
       .catch(() => setDoctors([]));
+    api.get('/products', { params: { category: 'servicio', active: true } })
+      .then((r) => setServices(Array.isArray(r.data) ? r.data : r.data?.items || []))
+      .catch(() => setServices([]));
+    api.get('/products', { params: { category: 'programa', active: true } })
+      .then((r) => setPrograms(Array.isArray(r.data) ? r.data : r.data?.items || []))
+      .catch(() => setPrograms([]));
   }, []);
 
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [weekStart, doctorFilter]);
+  }, [weekStart, doctorFilter, serviceFilter, programFilter, programs.length]);
 
   const moveWeek = (dir) => {
     const d = new Date(weekStart);
@@ -123,6 +145,31 @@ export default function Calendar() {
   const ROW_HEIGHT = 48; // px por hora
   const baseMin = HOURS[0] * 60;
 
+  // ¿La semana mostrada incluye hoy?
+  const todayKey = ymd(new Date());
+  const isCurrentWeek = days.some((d) => ymd(d) === todayKey);
+
+  // KPIs de la semana
+  const kpis = useMemo(() => {
+    const agendado = appointments.filter((a) => a.status !== 'cancelada').length;
+    const asistieron = appointments.filter((a) => ['asistida', 'completada'].includes(a.status)).length;
+    const callCenter = appointments.filter((a) => a.createdByRole === 'call_center').length;
+    const callCenterAsistieron = appointments.filter(
+      (a) => a.createdByRole === 'call_center' && ['asistida', 'completada'].includes(a.status)
+    ).length;
+    // Doctor que más atendió
+    const docCount = new Map();
+    appointments.forEach((a) => {
+      if (!['asistida', 'completada'].includes(a.status)) return;
+      const id = a.doctor?._id || a.doctor;
+      if (!id) return;
+      const name = a.doctor?.name || '—';
+      docCount.set(id, { name, count: (docCount.get(id)?.count || 0) + 1 });
+    });
+    const topDoctor = [...docCount.values()].sort((a, b) => b.count - a.count)[0];
+    return { agendado, asistieron, callCenter, callCenterAsistieron, topDoctor };
+  }, [appointments]);
+
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -141,9 +188,14 @@ export default function Calendar() {
           </button>
           <button
             onClick={goToday}
-            className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-sm hover:bg-emerald-700"
+            disabled={isCurrentWeek}
+            className={`px-3 py-2 rounded-lg text-sm border ${
+              isCurrentWeek
+                ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                : 'bg-emerald-600 text-white border-emerald-600 hover:bg-emerald-700 cursor-pointer'
+            }`}
           >
-            Hoy
+            {isCurrentWeek ? 'Semana actual' : 'Volver a hoy'}
           </button>
           <button
             onClick={() => moveWeek(1)}
@@ -168,7 +220,7 @@ export default function Calendar() {
         <select
           value={doctorFilter}
           onChange={(e) => setDoctorFilter(e.target.value)}
-          className="ml-auto border border-slate-200 rounded-lg px-3 py-1.5 text-sm"
+          className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm"
         >
           <option value="">Todos los doctores</option>
           {doctors.map((d) => (
@@ -177,7 +229,57 @@ export default function Calendar() {
             </option>
           ))}
         </select>
-        <span className="text-sm text-slate-500">{appointments.length} citas</span>
+        <select
+          value={serviceFilter}
+          onChange={(e) => { setServiceFilter(e.target.value); setProgramFilter(''); }}
+          className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm"
+        >
+          <option value="">Todos los servicios</option>
+          {services.map((s) => (
+            <option key={s._id} value={s._id}>{s.name}</option>
+          ))}
+        </select>
+        <select
+          value={programFilter}
+          onChange={(e) => { setProgramFilter(e.target.value); setServiceFilter(''); }}
+          className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm"
+        >
+          <option value="">Todos los programas</option>
+          {programs.map((p) => (
+            <option key={p._id} value={p._id}>{p.name}</option>
+          ))}
+        </select>
+        <span className="ml-auto text-sm text-slate-600 font-medium">
+          Total: <span className="text-emerald-700 font-bold">{appointments.length}</span> citas
+        </span>
+      </div>
+
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+        <div className="bg-white rounded-xl border border-emerald-100 p-3">
+          <p className="text-xs text-slate-500">Agendadas</p>
+          <p className="text-2xl font-bold text-slate-800">{kpis.agendado}</p>
+        </div>
+        <div className="bg-white rounded-xl border border-emerald-100 p-3">
+          <p className="text-xs text-slate-500">Asistieron</p>
+          <p className="text-2xl font-bold text-emerald-700">{kpis.asistieron}</p>
+        </div>
+        <div className="bg-white rounded-xl border border-emerald-100 p-3">
+          <p className="text-xs text-slate-500">Por Call Center</p>
+          <p className="text-2xl font-bold text-sky-700">{kpis.callCenter}</p>
+        </div>
+        <div className="bg-white rounded-xl border border-emerald-100 p-3">
+          <p className="text-xs text-slate-500">Asistieron de Call Center</p>
+          <p className="text-2xl font-bold text-indigo-700">{kpis.callCenterAsistieron}</p>
+        </div>
+        <div className="bg-white rounded-xl border border-emerald-100 p-3">
+          <p className="text-xs text-slate-500">Doctor con más consultas</p>
+          <p className="text-base font-bold text-slate-800 truncate">
+            {kpis.topDoctor ? kpis.topDoctor.name : '—'}
+          </p>
+          <p className="text-xs text-slate-500">
+            {kpis.topDoctor ? `${kpis.topDoctor.count} atendidas` : ''}
+          </p>
+        </div>
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">

@@ -184,12 +184,29 @@ export default function Treatments() {
         {loading && <div className="text-slate-500">Cargando...</div>}
         {list.map((t) => {
           const status = STATUSES.find((s) => s.value === t.status) || STATUSES[0];
+          const sourceMap = {
+            referral: { label: 'Por derivación', cls: 'bg-violet-100 text-violet-700' },
+            appointment: { label: 'Por cita', cls: 'bg-sky-100 text-sky-700' },
+            manual: { label: 'Manual', cls: 'bg-slate-100 text-slate-700' },
+          };
+          const src = sourceMap[t.source] || sourceMap.manual;
+          const alert = t.abandonAlert; // 'ok' | 'warning' | 'abandoned'
+          const daysIdle = t.daysSinceLastActivity || 0;
+          const limit = t.inactivityDaysToAbandon || 15;
           return (
             <div key={t._id} className="bg-white rounded-xl border border-slate-200 p-4">
               <div className="flex items-start justify-between flex-wrap gap-2">
-                <div>
-                  <h3 className="font-bold text-slate-800">{t.name}</h3>
-                  <div className="text-sm text-slate-500">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <h3 className="font-bold text-slate-800">{t.name}</h3>
+                    <span className={`px-2 py-0.5 rounded-md text-[11px] font-semibold ${src.cls}`}>
+                      {src.label}
+                    </span>
+                    <span className={`px-2 py-0.5 rounded-md text-[11px] font-semibold ${status.color}`}>
+                      {status.label}
+                    </span>
+                  </div>
+                  <div className="text-sm text-slate-500 mt-1">
                     Paciente: {t.patient?.firstName} {t.patient?.lastName} ·
                     Doctor: {t.prescribedBy?.name || '—'}
                   </div>
@@ -199,12 +216,6 @@ export default function Treatments() {
                   </div>
                 </div>
                 <div className="flex items-center gap-2">
-                  <span className={`px-2 py-1 rounded-md text-xs font-semibold ${status.color}`}>
-                    {status.label}
-                  </span>
-                  <span className="px-2 py-1 rounded-md text-xs font-semibold bg-slate-100 text-slate-700">
-                    {t.progress}% completado
-                  </span>
                   {canEdit && (
                     <>
                       <button
@@ -224,37 +235,64 @@ export default function Treatments() {
                 </div>
               </div>
 
-              <div className="mt-3 h-2 rounded-full bg-slate-100 overflow-hidden">
-                <div
-                  className="h-full bg-emerald-500"
-                  style={{ width: `${Math.min(t.progress, 100)}%` }}
-                />
+              {alert === 'warning' && t.status === 'activo' && (
+                <div className="mt-3 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-800">
+                  ⚠️ Sin actividad hace <strong>{daysIdle} días</strong>. Se marcará como abandonado al llegar a {limit} días.
+                </div>
+              )}
+              {alert === 'abandoned' && t.status === 'abandonado' && (
+                <div className="mt-3 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2 text-xs text-rose-800">
+                  ⛔ Tratamiento abandonado por inactividad ({daysIdle} días). Completa un servicio para reactivarlo.
+                </div>
+              )}
+
+              {/* Porcentaje grande */}
+              <div className="mt-4 flex items-baseline gap-3">
+                <div className="text-5xl font-extrabold text-emerald-600 leading-none">
+                  {Math.min(t.progress || 0, 100)}%
+                </div>
+                <div className="text-xs text-slate-500">
+                  completado · {(t.items || []).reduce((s, it) => s + (it.completed || 0), 0)} de{' '}
+                  {(t.items || []).reduce((s, it) => s + (it.quantity || 0), 0)} sesiones realizadas
+                </div>
               </div>
 
-              <div className="mt-3 grid sm:grid-cols-2 gap-2">
-                {(t.items || []).map((it, idx) => (
-                  <div
-                    key={idx}
-                    className="flex items-center justify-between bg-slate-50 rounded-lg px-3 py-2 text-sm"
-                  >
-                    <div>
-                      <div className="font-medium text-slate-700">
-                        {it.name || it.product?.name}
+              {/* Barras por servicio */}
+              <div className="mt-4 space-y-2">
+                {(t.items || []).map((it, idx) => {
+                  const done = it.completed || 0;
+                  const qty = it.quantity || 0;
+                  const pct = qty > 0 ? Math.min((done / qty) * 100, 100) : 0;
+                  const fullyDone = qty > 0 && done >= qty;
+                  return (
+                    <div key={idx} className="bg-slate-50 rounded-lg px-3 py-2">
+                      <div className="flex items-center justify-between text-sm">
+                        <div className="font-medium text-slate-700 truncate">
+                          {it.name || it.product?.name}
+                        </div>
+                        <div className="flex items-center gap-2">
+                          <span className={`text-xs font-semibold ${fullyDone ? 'text-emerald-700' : 'text-slate-600'}`}>
+                            {done} / {qty}
+                          </span>
+                          {canEdit && !fullyDone && (
+                            <button
+                              onClick={() => completeItem(t, idx)}
+                              className="text-xs px-2 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700"
+                            >
+                              +1
+                            </button>
+                          )}
+                        </div>
                       </div>
-                      <div className="text-xs text-slate-500">
-                        {it.completed || 0} / {it.quantity}
+                      <div className="mt-1 h-1.5 rounded-full bg-white border border-slate-200 overflow-hidden">
+                        <div
+                          className={`h-full ${fullyDone ? 'bg-emerald-500' : 'bg-teal-400'}`}
+                          style={{ width: `${pct}%` }}
+                        />
                       </div>
                     </div>
-                    {canEdit && (it.completed || 0) < it.quantity && (
-                      <button
-                        onClick={() => completeItem(t, idx)}
-                        className="text-xs px-2 py-1 rounded bg-emerald-600 text-white hover:bg-emerald-700"
-                      >
-                        +1
-                      </button>
-                    )}
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           );

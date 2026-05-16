@@ -27,6 +27,9 @@ export default function Referrals() {
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
+  const [toDoctorFilter, setToDoctorFilter] = useState('');
+  const [specialtyFilter, setSpecialtyFilter] = useState('');
+  const [qFilter, setQFilter] = useState('');
   const [showModal, setShowModal] = useState(false);
   const [form, setForm] = useState(EMPTY);
   const [patients, setPatients] = useState([]);
@@ -38,6 +41,9 @@ export default function Referrals() {
     try {
       const params = {};
       if (statusFilter) params.status = statusFilter;
+      if (toDoctorFilter) params.toDoctor = toDoctorFilter;
+      if (specialtyFilter) params.specialty = specialtyFilter;
+      if (qFilter.trim()) params.q = qFilter.trim();
       const [r, s] = await Promise.all([
         api.get('/referrals', { params }),
         hasRole('admin', 'doctor', 'marketing')
@@ -63,7 +69,7 @@ export default function Referrals() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [statusFilter]);
+  }, [statusFilter, toDoctorFilter, specialtyFilter, qFilter]);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -133,18 +139,44 @@ export default function Referrals() {
         </div>
       )}
 
-      <select
-        value={statusFilter}
-        onChange={(e) => setStatusFilter(e.target.value)}
-        className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
-      >
-        <option value="">Todos los estados</option>
-        {STATUSES.map((s) => (
-          <option key={s.value} value={s.value}>
-            {s.label}
-          </option>
-        ))}
-      </select>
+      <div className="bg-white rounded-xl border border-slate-200 p-3 grid sm:grid-cols-2 md:grid-cols-4 gap-2">
+        <input
+          type="text"
+          value={qFilter}
+          onChange={(e) => setQFilter(e.target.value)}
+          placeholder="Buscar paciente..."
+          className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+        />
+        <select
+          value={statusFilter}
+          onChange={(e) => setStatusFilter(e.target.value)}
+          className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+        >
+          <option value="">Todos los estados</option>
+          {STATUSES.map((s) => (
+            <option key={s.value} value={s.value}>
+              {s.label}
+            </option>
+          ))}
+        </select>
+        <select
+          value={toDoctorFilter}
+          onChange={(e) => setToDoctorFilter(e.target.value)}
+          className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+        >
+          <option value="">Todos los doctores destino</option>
+          {doctors.map((d) => (
+            <option key={d._id} value={d._id}>{d.name}</option>
+          ))}
+        </select>
+        <input
+          type="text"
+          value={specialtyFilter}
+          onChange={(e) => setSpecialtyFilter(e.target.value)}
+          placeholder="Especialidad..."
+          className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+        />
+      </div>
 
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         <table className="w-full text-sm">
@@ -181,17 +213,23 @@ export default function Referrals() {
                   <td className="px-3 py-2">{r.specialty || '—'}</td>
                   <td className="px-3 py-2 text-slate-600">{r.reason}</td>
                   <td className="px-3 py-2">
-                    <select
-                      value={r.status}
-                      onChange={(e) => updateStatus(r, e.target.value)}
-                      className={`text-xs rounded px-2 py-1 ${st.color}`}
-                    >
-                      {STATUSES.map((s) => (
-                        <option key={s.value} value={s.value}>
-                          {s.label}
-                        </option>
-                      ))}
-                    </select>
+                    {hasRole('admin', 'cajero') ? (
+                      <select
+                        value={r.status}
+                        onChange={(e) => updateStatus(r, e.target.value)}
+                        className={`text-xs rounded px-2 py-1 ${st.color}`}
+                      >
+                        {STATUSES.map((s) => (
+                          <option key={s.value} value={s.value}>
+                            {s.label}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <span className={`text-xs rounded px-2 py-1 ${st.color}`}>
+                        {st.label}
+                      </span>
+                    )}
                   </td>
                   <td className="px-3 py-2">
                     {hasRole('admin') && (
