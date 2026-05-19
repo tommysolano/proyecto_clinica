@@ -17,6 +17,7 @@ import {
 } from 'react-icons/hi2';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
+import { useSocketEvent } from '../context/SocketContext';
 
 const STAGES = [
   { value: 'nuevo', label: 'Nuevo', color: 'bg-slate-100 text-slate-700' },
@@ -59,6 +60,7 @@ export default function Chats() {
   const [newChatModal, setNewChatModal] = useState(false);
   const [simulateModal, setSimulateModal] = useState(false);
   const [opportunityModal, setOpportunityModal] = useState(false);
+  const [appointmentModal, setAppointmentModal] = useState(false);
   const messagesEndRef = useRef(null);
 
   const isSupervisor = role === 'supervisor_call_center';
@@ -119,6 +121,35 @@ export default function Chats() {
     if (activeId) loadMessages(activeId);
     else setMessages([]);
   }, [activeId]);
+
+  // Realtime — recargar al recibir cambios
+  useSocketEvent(
+    'chat:message',
+    (payload) => {
+      if (payload?.conversationId && String(payload.conversationId) === String(activeId)) {
+        loadMessages(activeId);
+      }
+      const params = {};
+      if (tab === 'mine') params.assigned = 'me';
+      if (tab === 'featured') params.featured = 'true';
+      if (tab === 'opportunities') params.opportunity = 'true';
+      if (search) params.q = search;
+      loadConversations(params);
+    },
+    [activeId, tab, search]
+  );
+  useSocketEvent(
+    'chat:updated',
+    () => {
+      const params = {};
+      if (tab === 'mine') params.assigned = 'me';
+      if (tab === 'featured') params.featured = 'true';
+      if (tab === 'opportunities') params.opportunity = 'true';
+      if (search) params.q = search;
+      loadConversations(params);
+    },
+    [tab, search]
+  );
 
   useEffect(() => {
     if (messagesEndRef.current) {
@@ -289,6 +320,7 @@ export default function Chats() {
                   onToggleFeatured={() => toggleFeatured(activeConv)}
                   onTake={() => takeChat(activeConv)}
                   onOpenOpportunity={() => setOpportunityModal(true)}
+                  onCreateAppointment={() => setAppointmentModal(true)}
                   meId={user?._id}
                 />
                 <div ref={messagesEndRef} className="flex-1 overflow-y-auto bg-slate-50 p-4 space-y-2">
@@ -369,6 +401,18 @@ export default function Chats() {
           }}
         />
       )}
+      {appointmentModal && activeConv && (
+        <AppointmentFromChatModal
+          conv={activeConv}
+          services={services}
+          onClose={() => setAppointmentModal(false)}
+          onCreated={(c) => {
+            setConversations((prev) => prev.map((x) => (x._id === c._id ? c : x)));
+            setAppointmentModal(false);
+            toast.success('Cita creada desde el chat');
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -446,7 +490,7 @@ function ConversationRow({ conv, active, onClick, onToggleFeatured }) {
   );
 }
 
-function ChatHeader({ conv, onToggleFeatured, onTake, onOpenOpportunity, meId }) {
+function ChatHeader({ conv, onToggleFeatured, onTake, onOpenOpportunity, onCreateAppointment, meId }) {
   const canTake = !conv.assignedTo || String(conv.assignedTo._id || conv.assignedTo) !== String(meId);
   return (
     <div className="border-b border-slate-100 p-3 flex items-center gap-3">
@@ -481,6 +525,14 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onOpenOpportunity, meId })
           <HiOutlineTag className="w-3.5 h-3.5" />
           {conv.opportunity?.isOpportunity ? 'Editar oportunidad' : 'Crear oportunidad'}
         </button>
+        {conv.patient && (
+          <button
+            onClick={onCreateAppointment}
+            className="text-xs px-2 py-1 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded-lg flex items-center gap-1"
+          >
+            <HiOutlineCalendarDays className="w-3.5 h-3.5" /> Crear cita
+          </button>
+        )}
         <button
           onClick={onToggleFeatured}
           className={`p-1.5 rounded-lg ${conv.isFeatured ? 'bg-amber-50' : 'hover:bg-slate-50'}`}
@@ -950,5 +1002,138 @@ function ModalShell({ title, onClose, children }) {
         <div className="p-4">{children}</div>
       </div>
     </div>
+  );
+}
+
+function AppointmentFromChatModal({ conv, services, onClose, onCreated }) {
+  const { clinics, activeClinic } = useAuth();
+  const today = new Date().toISOString().slice(0, 10);
+  const [date, setDate] = useState(today);
+  const [startTime, setStartTime] = useState('09:00');
+  const [clinicId, setClinicId] = useState(activeClinic?._id || conv.clinic || '');
+  const [reason, setReason] = useState(conv.opportunity?.notes || '');
+  const [selectedServices, setSelectedServices] = useState(
+    (conv.opportunity?.interestedIn || [])
+      .filter((i) => i.product)
+      .map((i) => ({ product: i.product, quantity: 1 }))
+  );
+  const [saving, setSaving] = useState(false);
+
+  const toggleService = (productId) => {
+    setSelectedServices((prev) =>
+      prev.some((s) => String(s.product) === String(productId))
+        ? prev.filter((s) => String(s.product) !== String(productId))
+        : [...prev, { product: productId, quantity: 1 }]
+    );
+  };
+
+  const submit = async () => {
+    if (!date || !startTime) return toast.error('Fecha y hora requeridas');
+    try {
+      setSaving(true);
+      const r = await api.post(`/chats/${conv._id}/appointment`, {
+        date,
+        startTime,
+        clinic: clinicId || undefined,
+        reason,
+        services: selectedServices,
+      });
+      onCreated(r.data.conversation);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al crear cita');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <ModalShell title="Crear cita desde chat" onClose={onClose}>
+      <div className="space-y-3 text-sm">
+        <div className="bg-emerald-50 border border-emerald-100 rounded-lg p-2 text-xs text-emerald-800">
+          Paciente: <strong>{conv.contactName || conv.phone}</strong>
+        </div>
+        {clinics?.length > 1 && (
+          <div>
+            <label className="text-xs font-medium text-slate-600">Clínica</label>
+            <select
+              value={clinicId}
+              onChange={(e) => setClinicId(e.target.value)}
+              className="w-full border border-slate-200 rounded-lg px-2 py-1.5 mt-1"
+            >
+              {clinics.map((c) => (
+                <option key={c._id} value={c._id}>
+                  {c.name}
+                </option>
+              ))}
+            </select>
+          </div>
+        )}
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-xs font-medium text-slate-600">Fecha</label>
+            <input
+              type="date"
+              value={date}
+              onChange={(e) => setDate(e.target.value)}
+              className="w-full border border-slate-200 rounded-lg px-2 py-1.5 mt-1"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-slate-600">Hora</label>
+            <input
+              type="time"
+              value={startTime}
+              onChange={(e) => setStartTime(e.target.value)}
+              className="w-full border border-slate-200 rounded-lg px-2 py-1.5 mt-1"
+            />
+          </div>
+        </div>
+        <div>
+          <label className="text-xs font-medium text-slate-600">Motivo</label>
+          <textarea
+            value={reason}
+            onChange={(e) => setReason(e.target.value)}
+            rows={2}
+            className="w-full border border-slate-200 rounded-lg px-2 py-1.5 mt-1"
+          />
+        </div>
+        {services?.length > 0 && (
+          <div>
+            <label className="text-xs font-medium text-slate-600">Servicios</label>
+            <div className="max-h-40 overflow-y-auto border border-slate-200 rounded-lg p-2 mt-1 space-y-1">
+              {services.map((s) => {
+                const checked = selectedServices.some((x) => String(x.product) === String(s._id));
+                return (
+                  <label key={s._id} className="flex items-center gap-2 text-xs cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      onChange={() => toggleService(s._id)}
+                    />
+                    <span className="flex-1">{s.name}</span>
+                    <span className="text-slate-400">${(s.price || 0).toFixed(2)}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
+        )}
+        <div className="flex justify-end gap-2 pt-2">
+          <button
+            onClick={onClose}
+            className="px-3 py-1.5 text-sm border border-slate-200 rounded-lg hover:bg-slate-50"
+          >
+            Cancelar
+          </button>
+          <button
+            onClick={submit}
+            disabled={saving}
+            className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50"
+          >
+            {saving ? 'Creando…' : 'Crear cita'}
+          </button>
+        </div>
+      </div>
+    </ModalShell>
   );
 }

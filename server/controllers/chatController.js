@@ -3,6 +3,9 @@ const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Patient = require('../models/Patient');
 const User = require('../models/User');
+const Appointment = require('../models/Appointment');
+const Product = require('../models/Product');
+const { emitToClinic } = require('../realtime');
 
 /**
  * Normaliza un número de teléfono a sólo dígitos (sin +, ni espacios).
@@ -298,6 +301,7 @@ exports.sendMessage = async (req, res) => {
     }
     await conv.save();
     // TODO: aquí se llamaría a la API de WhatsApp Business para enviar realmente el mensaje.
+    emitToClinic(req.clinicId, 'chat:message', { conversationId: conv._id, message: msg });
     res.status(201).json(msg);
   } catch (err) {
     res.status(500).json({ message: 'Error al enviar mensaje', error: err.message });
@@ -493,5 +497,83 @@ exports.getStats = async (req, res) => {
     res.json({ byStatus, opportunities, featuredCount, byAgent });
   } catch (err) {
     res.status(500).json({ message: 'Error al obtener estadísticas', error: err.message });
+  }
+};
+
+/**
+ * POST /api/chats/:id/appointment
+ * Crea una cita a partir de una conversación. Requiere que conv.patient esté vinculado.
+ * Body: { date, startTime, reason?, services?: [{product, quantity?}], clinic? }
+ */
+exports.createAppointmentFromChat = async (req, res) => {
+  try {
+    const conv = await Conversation.findOne({
+      _id: req.params.id,
+      clinic: req.clinicId,
+    }).populate('patient');
+    if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
+    if (!conv.patient) {
+      return res.status(400).json({
+        message: 'La conversación no está vinculada a un paciente. Vincula primero al paciente.',
+      });
+    }
+    const { date, startTime, reason, services = [], clinic } = req.body;
+    if (!date || !startTime) {
+      return res.status(400).json({ message: 'Fecha y hora de inicio requeridas' });
+    }
+
+    // Normaliza 'YYYY-MM-DD' a fecha local-noon para que el filtro por día coincida.
+    const parseLocalDate = (value) => {
+      if (!value) return null;
+      if (value instanceof Date) return value;
+      const m = String(value).match(/^(\d{4})-(\d{2})-(\d{2})/);
+      if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0, 0);
+      return new Date(value);
+    };
+    const localDate = parseLocalDate(date);
+
+    // Hydrate services snapshot
+    let serviceItems = [];
+    if (Array.isArray(services) && services.length) {
+      const ids = services.map((s) => s.product).filter(Boolean);
+      const products = ids.length ? await Product.find({ _id: { $in: ids } }) : [];
+      const map = new Map(products.map((p) => [String(p._id), p]));
+      serviceItems = services
+        .filter((s) => s.product)
+        .map((s) => {
+          const p = map.get(String(s.product));
+          return {
+            product: s.product,
+            name: p?.name || '',
+            quantity: Number(s.quantity) || 1,
+          };
+        });
+    }
+
+    const appointment = await Appointment.create({
+      clinic: clinic || req.clinicId,
+      patient: conv.patient._id,
+      date: localDate,
+      startTime,
+      reason: reason || conv.opportunity?.notes || `Cita desde chat ${conv.phone}`,
+      services: serviceItems,
+      status: 'pendiente',
+      createdBy: req.user._id,
+    });
+
+    // Link to opportunity
+    conv.opportunity = conv.opportunity || {};
+    conv.opportunity.isOpportunity = true;
+    conv.opportunity.stage = 'agendado';
+    conv.opportunity.appointment = appointment._id;
+    conv.opportunity.convertedAt = new Date();
+    await conv.save();
+
+    emitToClinic(req.clinicId, 'appointment:created', { id: appointment._id });
+    emitToClinic(req.clinicId, 'chat:updated', { id: conv._id });
+
+    res.status(201).json({ appointment, conversation: conv });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al crear cita desde chat', error: err.message });
   }
 };

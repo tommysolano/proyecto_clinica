@@ -8,6 +8,23 @@ const yesNoDetailSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const recetaItemSchema = new mongoose.Schema(
+  {
+    // Referencia al producto/medicamento del inventario (categoría 'medicamento' o 'servicio'/'programa').
+    product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+    name: { type: String, trim: true }, // snapshot del nombre por si el producto cambia
+    quantity: { type: Number, default: 1, min: 0 },
+    dose: { type: String, trim: true, default: '' },         // ej: 500mg
+    frequency: { type: String, trim: true, default: '' },    // ej: cada 8 horas
+    duration: { type: String, trim: true, default: '' },     // ej: 7 días
+    instructions: { type: String, trim: true, default: '' }, // ej: tomar después de comer
+    // Marca interna para identificar si este ítem corresponde a un servicio/programa
+    // y debe disparar la creación automática del tratamiento.
+    isService: { type: Boolean, default: false },
+  },
+  { _id: true }
+);
+
 const followUpSchema = new mongoose.Schema(
   {
     fecha: { type: Date, required: true, default: Date.now },
@@ -15,9 +32,19 @@ const followUpSchema = new mongoose.Schema(
     // Mantenemos `descripcion` como alias por retrocompatibilidad de datos.
     motivoConsulta: { type: String, trim: true },
     descripcion: { type: String, trim: true },
+    // Antes era "Recomendaciones"; ahora se llama "Estudio o síntomas".
+    // Mantenemos el campo `recomendaciones` por retrocompatibilidad pero
+    // exponemos también `estudioSintomas` (alias funcional en el cliente).
     recomendaciones: { type: String, trim: true },
-    receta: { type: String, trim: true },
+    estudioSintomas: { type: String, trim: true },
+    // Antes "receta" era texto libre; ahora soportamos items estructurados del inventario.
+    receta: { type: String, trim: true }, // legacy / texto libre opcional
+    recetaItems: { type: [recetaItemSchema], default: [] },
+    // Reemplaza al campo "treatment" (ref). Ahora se captura como texto.
+    observaciones: { type: String, trim: true },
+    // Mantenemos compat con tratamientos referenciados (auto-creados a partir de la receta).
     treatment: { type: mongoose.Schema.Types.ObjectId, ref: 'Treatment', default: null },
+    autoTreatmentCreated: { type: mongoose.Schema.Types.ObjectId, ref: 'Treatment' },
     valor: { type: Number, default: 0, min: 0 },
     metodoPago: {
       type: String,

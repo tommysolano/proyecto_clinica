@@ -40,11 +40,17 @@ const appointmentSchema = new mongoose.Schema(
       ref: 'Patient',
       required: [true, 'El paciente es requerido'],
     },
+    // Doctor: ya NO es requerido al crear la cita. Recepción lo asigna cuando el
+    // paciente llega y se marca el estado en 'asistida'. Esto deja el flujo:
+    //   crear -> (sin doctor) -> recepción 'asistida' + asignar doctor -> doctor atiende -> 'completada'
     doctor: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: [true, 'El doctor es requerido'],
+      default: null,
     },
+    // Cuándo y quién asignó al doctor
+    doctorAssignedAt: { type: Date },
+    doctorAssignedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     date: { type: Date, required: [true, 'La fecha es requerida'] },
     startTime: { type: String, required: [true, 'La hora de inicio es requerida'] },
     endTime: { type: String },

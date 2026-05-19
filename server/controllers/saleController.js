@@ -4,6 +4,7 @@ const InventoryMovement = require('../models/InventoryMovement');
 const Discount = require('../models/Discount');
 const Treatment = require('../models/Treatment');
 const { createEntry, findAccount, reverseEntry } = require('../utils/accounting');
+const { emitToClinic } = require('../realtime');
 
 exports.getSales = async (req, res) => {
   try {
@@ -327,6 +328,7 @@ exports.createSale = async (req, res) => {
       .populate('patient', 'firstName lastName cedula')
       .then((doc) => doc.populate('createdBy', 'name'));
 
+    emitToClinic(req.clinicId, 'sale:created', { id: sale._id });
     res.status(201).json(populated);
   } catch (error) {
     res.status(500).json({ message: 'Error al crear venta', error: error.message });

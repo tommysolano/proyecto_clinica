@@ -1,5 +1,6 @@
 const Treatment = require('../models/Treatment');
 const Product = require('../models/Product');
+const { emitToClinic } = require('../realtime');
 
 const POPULATE = [
   { path: 'patient', select: 'firstName lastName cedula phone email' },
@@ -106,6 +107,7 @@ exports.create = async (req, res) => {
       prescribedBy: req.body.prescribedBy || (req.role === 'doctor' ? req.user._id : undefined),
     });
     const populated = await Treatment.findById(treatment._id).populate(POPULATE);
+    emitToClinic(req.clinicId, 'treatment:created', { id: treatment._id });
     res.status(201).json(populated);
   } catch (error) {
     res.status(500).json({ message: 'Error al crear tratamiento', error: error.message });
@@ -120,6 +122,7 @@ exports.update = async (req, res) => {
       { new: true }
     ).populate(POPULATE);
     if (!t) return res.status(404).json({ message: 'Tratamiento no encontrado' });
+    emitToClinic(req.clinicId, 'treatment:updated', { id: t._id });
     res.json(t);
   } catch (error) {
     res.status(500).json({ message: 'Error al actualizar tratamiento' });
@@ -133,6 +136,7 @@ exports.remove = async (req, res) => {
       clinic: req.clinicId,
     });
     if (!t) return res.status(404).json({ message: 'Tratamiento no encontrado' });
+    emitToClinic(req.clinicId, 'treatment:deleted', { id: req.params.id });
     res.json({ message: 'Tratamiento eliminado' });
   } catch (error) {
     res.status(500).json({ message: 'Error al eliminar tratamiento' });
@@ -165,6 +169,7 @@ exports.completeItem = async (req, res) => {
     }
     if (t.progress >= 100) t.status = 'completado';
     await t.save();
+    emitToClinic(req.clinicId, 'treatment:updated', { id: t._id });
     res.json(t);
   } catch (error) {
     res.status(500).json({ message: 'Error al registrar cumplimiento' });

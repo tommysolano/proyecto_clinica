@@ -1,6 +1,7 @@
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { AuthProvider, useAuth } from './context/AuthContext';
+import { SocketProvider } from './context/SocketContext';
 import PrivateRoute from './components/PrivateRoute';
 import RoleRoute from './components/RoleRoute';
 import Layout from './components/Layout';
@@ -72,7 +73,7 @@ function AppRoutes() {
                 <Route
                   path="/patients"
                   element={
-                    <RoleRoute roles={['admin', 'cajero', 'doctor', 'call_center', 'marketing', 'enfermero']}>
+                    <RoleRoute roles={['admin', 'cajero', 'call_center', 'marketing', 'enfermero']}>
                       <Patients />
                     </RoleRoute>
                   }
@@ -151,7 +152,7 @@ function AppRoutes() {
                 <Route
                   path="/treatments"
                   element={
-                    <RoleRoute roles={['admin', 'doctor', 'cajero', 'marketing', 'enfermero']}>
+                    <RoleRoute roles={['admin', 'cajero', 'marketing', 'enfermero']}>
                       <Treatments />
                     </RoleRoute>
                   }
@@ -159,7 +160,7 @@ function AppRoutes() {
                 <Route
                   path="/referrals"
                   element={
-                    <RoleRoute roles={['admin', 'doctor', 'marketing', 'cajero']}>
+                    <RoleRoute roles={['admin', 'marketing', 'cajero']}>
                       <Referrals />
                     </RoleRoute>
                   }
@@ -282,8 +283,10 @@ export default function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <Toaster position="top-right" toastOptions={{ duration: 3000 }} />
-        <AppRoutes />
+        <SocketProvider>
+          <Toaster position="top-right" toastOptions={{ duration: 3000 }} />
+          <AppRoutes />
+        </SocketProvider>
       </AuthProvider>
     </BrowserRouter>
   );

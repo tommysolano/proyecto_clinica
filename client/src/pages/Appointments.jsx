@@ -1,8 +1,10 @@
 import { useState, useEffect, useRef, useMemo } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import Modal from '../components/Modal';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
+import { useSocketEvent } from '../context/SocketContext';
 import {
   HiOutlinePlus,
   HiOutlinePencil,
@@ -12,6 +14,8 @@ import {
   HiOutlinePlay,
   HiOutlineStop,
   HiOutlineMagnifyingGlass,
+  HiOutlineCheckCircle,
+  HiOutlineUserPlus,
 } from 'react-icons/hi2';
 
 // 6 estados soportados por el backend.
@@ -40,11 +44,12 @@ const normalizeStatus = (s) => {
 
 const emptyForm = {
   patient: '',
+  // El doctor YA NO se asigna al crear la cita; lo asigna recepción al marcar 'asistida'.
   doctor: '',
   room: '',
   date: '',
   startTime: '',
-  endTime: '',
+  // endTime eliminado del flujo de creación
   status: 'pendiente',
   reason: '',
   notes: '',
@@ -86,11 +91,15 @@ const hhmmToMin = (s) => {
 };
 
 export default function Appointments() {
+  const navigate = useNavigate();
   const { user, role, hasRole, activeClinic, clinics } = useAuth();
   const canWrite = hasRole('admin', 'cajero', 'call_center');
   const isAdmin = hasRole('admin') || user?.isSuperAdmin;
   const isDoctor = role === 'doctor';
   const isCallCenter = role === 'call_center';
+  const isReception = hasRole('admin', 'cajero', 'enfermero');
+  // Mostrar selector de clínica si el usuario tiene más de una asignada
+  const showClinicSelector = (clinics?.length || 0) > 1;
 
   const [appointments, setAppointments] = useState([]);
   const [doctors, setDoctors] = useState([]);
@@ -103,6 +112,8 @@ export default function Appointments() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
+  // Modal para asignar doctor al marcar 'asistida'
+  const [assignModal, setAssignModal] = useState(null); // { appointment, doctorId }
   const [filter, setFilter] = useState({
     startDate: '',
     endDate: '',
@@ -114,7 +125,7 @@ export default function Appointments() {
     timeTo: '',
     patientQuery: '',
   });
-  const [view, setView] = useState('list'); // 'list' | 'today'
+  const [view, setView] = useState(role === 'doctor' ? 'today' : 'list'); // 'list' | 'today'
   const [patientSearch, setPatientSearch] = useState('');
   const [showPatientList, setShowPatientList] = useState(false);
 
@@ -201,6 +212,11 @@ export default function Appointments() {
     fetchAppointments();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view, filter]);
+
+  // Tiempo real: cuando llega un cambio de cita, refrescar la lista.
+  useSocketEvent('appointment:created', () => fetchAppointments());
+  useSocketEvent('appointment:updated', () => fetchAppointments());
+  useSocketEvent('appointment:deleted', () => fetchAppointments());
 
   // Tick global del cronómetro (1s)
   useEffect(() => {
@@ -465,16 +481,18 @@ export default function Appointments() {
           <p className="text-sm text-slate-500 mt-1">Agenda y seguimiento de consultas</p>
         </div>
         <div className="flex gap-2">
-          <button
-            onClick={() => setView(view === 'today' ? 'list' : 'today')}
-            className={`px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border transition-colors ${
-              view === 'today'
-                ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                : 'bg-white text-slate-600 border-slate-200 hover:bg-emerald-50'
-            }`}
-          >
-            {view === 'today' ? 'Solo Hoy' : 'Ver Todas'}
-          </button>
+          {!isDoctor && (
+            <button
+              onClick={() => setView(view === 'today' ? 'list' : 'today')}
+              className={`px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border transition-colors ${
+                view === 'today'
+                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+                  : 'bg-white text-slate-600 border-slate-200 hover:bg-emerald-50'
+              }`}
+            >
+              {view === 'today' ? 'Solo Hoy' : 'Ver Todas'}
+            </button>
+          )}
           <button
             onClick={exportExcel}
             className="px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50"
@@ -540,22 +558,26 @@ export default function Appointments() {
             </select>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-            <select
-              value={filter.service}
-              onChange={(e) => setFilter({ ...filter, service: e.target.value })}
-              className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
-            >
-              <option value="">Todos los servicios</option>
-              {services.map((s) => <option key={s._id} value={s._id}>{s.name}</option>)}
-            </select>
-            <select
-              value={filter.room}
-              onChange={(e) => setFilter({ ...filter, room: e.target.value })}
-              className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
-            >
-              <option value="">Todos los consultorios</option>
-              {rooms.map((r) => <option key={r._id} value={r._id}>{r.name}</option>)}
-            </select>
+            {!isDoctor && (
+              <select
+                value={filter.service}
+                onChange={(e) => setFilter({ ...filter, service: e.target.value })}
+                className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
+              >
+                <option value="">Todos los servicios</option>
+                {services.map((s) => <option key={s._id} value={s._id}>{s.name}</option>)}
+              </select>
+            )}
+            {!isDoctor && (
+              <select
+                value={filter.room}
+                onChange={(e) => setFilter({ ...filter, room: e.target.value })}
+                className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
+              >
+                <option value="">Todos los consultorios</option>
+                {rooms.map((r) => <option key={r._id} value={r._id}>{r.name}</option>)}
+              </select>
+            )}
             <input
               type="time"
               value={filter.timeFrom}
@@ -598,7 +620,7 @@ export default function Appointments() {
                   Paciente
                 </th>
                 <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider hidden md:table-cell">
-                  Doctor
+                  Servicio / Programa
                 </th>
                 <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">
                   Estado
@@ -667,7 +689,14 @@ export default function Appointments() {
                         )}
                       </td>
                       <td className="px-6 py-3.5 text-sm text-slate-600 hidden md:table-cell">
-                        Dr. {apt.doctor?.name}
+                        {Array.isArray(apt.services) && apt.services.length > 0
+                          ? apt.services.map((s) => s.name || s.product?.name).filter(Boolean).join(', ')
+                          : <span className="text-slate-400 italic">Sin servicio</span>}
+                        {apt.doctor?.name && (
+                          <div className="text-[11px] text-emerald-700 mt-0.5">
+                            Dr. {apt.doctor.name}
+                          </div>
+                        )}
                       </td>
                       <td className="px-6 py-3.5">
                         <span
@@ -679,6 +708,28 @@ export default function Appointments() {
                         </span>
                       </td>
                       <td className="px-6 py-3.5 text-right">
+                        {/* Recepción: Marcar 'asistió' y asignar doctor */}
+                        {isReception && ['pendiente', 'confirmada'].includes(apt.status) && (
+                          <button
+                            onClick={() => setAssignModal({ appointment: apt, doctorId: apt.doctor?._id || '' })}
+                            className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors"
+                            title="Marcar asistencia + asignar doctor"
+                          >
+                            <HiOutlineUserPlus className="w-4 h-4" />
+                          </button>
+                        )}
+                        {/* Doctor: Abrir ficha del paciente cuando la cita ya fue marcada 'asistida' */}
+                        {isDoctor &&
+                          apt.status === 'asistida' &&
+                          String(apt.doctor?._id || apt.doctor) === String(user?.id) && (
+                            <button
+                              onClick={() => navigate(`/patients/${apt.patient?._id}?appointment=${apt._id}&tab=ficha`)}
+                              className="p-1.5 rounded-lg hover:bg-emerald-50 text-emerald-600 bg-transparent border border-emerald-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
+                              title="Atender ahora"
+                            >
+                              Atender
+                            </button>
+                          )}
                         {showDoctorTimer && !inProgress && apt.status !== 'completada' && (
                           <button
                             onClick={() => startConsultation(apt)}
@@ -744,8 +795,8 @@ export default function Appointments() {
         size="lg"
       >
         <form onSubmit={handleSubmit} className="space-y-4">
-          {/* Selector de consultorio médico para call_center con múltiples consultorios */}
-          {isCallCenter && (clinics?.length || 0) > 1 && (
+          {/* Selector de consultorio médico: visible para todos los roles con >1 clínica */}
+          {showClinicSelector && (
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">
                 Consultorio médico destino *
@@ -826,42 +877,46 @@ export default function Appointments() {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                Doctor *
-              </label>
-              <select
-                name="doctor"
-                value={form.doctor}
-                onChange={handleChange}
-                required
-                className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
-              >
-                <option value="">Seleccionar doctor</option>
-                {doctors.map((d) => (
-                  <option key={d._id} value={d._id}>
-                    Dr. {d.name} - {d.specialty}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                Estado
-              </label>
-              <select
-                name="status"
-                value={form.status}
-                onChange={handleChange}
-                className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
-              >
-                {Object.entries(statusLabels).map(([k, v]) => (
-                  <option key={k} value={k}>
-                    {v}
-                  </option>
-                ))}
-              </select>
-            </div>
+            {/* Doctor: solo se muestra al EDITAR (no al crear). Al crear, lo asigna recepción. */}
+            {editing && isAdmin && (
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                  Doctor asignado
+                </label>
+                <select
+                  name="doctor"
+                  value={form.doctor}
+                  onChange={handleChange}
+                  className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
+                >
+                  <option value="">Sin asignar</option>
+                  {doctors.map((d) => (
+                    <option key={d._id} value={d._id}>
+                      Dr. {d.name} - {d.specialty}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {editing && (
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                  Estado
+                </label>
+                <select
+                  name="status"
+                  value={form.status}
+                  onChange={handleChange}
+                  className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
+                >
+                  {Object.entries(statusLabels).map(([k, v]) => (
+                    <option key={k} value={k}>
+                      {v}
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">
                 Fecha *
@@ -1240,13 +1295,9 @@ export default function Appointments() {
                   {detailModal.status !== 'asistida' && (
                     <button
                       type="button"
-                      onClick={async () => {
-                        try {
-                          await api.post(`/appointments/${detailModal._id}/attended`);
-                          toast.success('Marcada como asistida');
-                          setDetailModal(null);
-                          fetchAppointments();
-                        } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+                      onClick={() => {
+                        setAssignModal({ appointment: detailModal, doctorId: detailModal.doctor?._id || '' });
+                        setDetailModal(null);
                       }}
                       className="px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-100 text-emerald-700 hover:bg-emerald-200 border-none cursor-pointer"
                     >Asistió</button>
@@ -1317,6 +1368,77 @@ export default function Appointments() {
                 className="px-4 py-2 rounded-xl text-sm bg-emerald-600 hover:bg-emerald-700 text-white border-none cursor-pointer"
               >
                 Finalizar y completar
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Modal: marcar 'asistida' y asignar doctor disponible (recepción) */}
+      <Modal
+        isOpen={!!assignModal}
+        onClose={() => setAssignModal(null)}
+        title="Marcar asistencia y asignar doctor"
+        size="md"
+      >
+        {assignModal && (
+          <div className="space-y-4">
+            <div className="bg-emerald-50 rounded-xl p-3 text-sm">
+              <div className="font-semibold text-slate-800">
+                {assignModal.appointment.patient?.firstName} {assignModal.appointment.patient?.lastName}
+              </div>
+              <div className="text-xs text-slate-600 mt-1">
+                {formatLocalDate(assignModal.appointment.date)} · {assignModal.appointment.startTime}
+              </div>
+              <div className="text-xs text-slate-600 mt-1">
+                Servicio: {(assignModal.appointment.services || []).map((s) => s.name || s.product?.name).filter(Boolean).join(', ') || '—'}
+              </div>
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                Asignar doctor disponible *
+              </label>
+              <select
+                value={assignModal.doctorId}
+                onChange={(e) => setAssignModal({ ...assignModal, doctorId: e.target.value })}
+                required
+                className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
+              >
+                <option value="">Seleccionar doctor</option>
+                {doctors.map((d) => (
+                  <option key={d._id} value={d._id}>
+                    Dr. {d.name}{d.specialty ? ` — ${d.specialty}` : ''}
+                  </option>
+                ))}
+              </select>
+            </div>
+            <div className="flex justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={() => setAssignModal(null)}
+                className="px-4 py-2 rounded-xl text-sm bg-slate-100 hover:bg-slate-200 border-none cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                disabled={!assignModal.doctorId}
+                onClick={async () => {
+                  try {
+                    await api.post(`/appointments/${assignModal.appointment._id}/attended`, {
+                      doctorId: assignModal.doctorId,
+                    });
+                    toast.success('Cita marcada como asistida. Doctor notificado.');
+                    setAssignModal(null);
+                    fetchAppointments();
+                  } catch (err) {
+                    toast.error(err.response?.data?.message || 'No se pudo guardar');
+                  }
+                }}
+                className="px-4 py-2 rounded-xl text-sm bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 border-none cursor-pointer flex items-center gap-2"
+              >
+                <HiOutlineCheckCircle className="w-4 h-4" />
+                Marcar asistencia
               </button>
             </div>
           </div>

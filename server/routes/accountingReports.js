@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 const c = require('../controllers/accountingReportsController');
+const ex = require('../controllers/sriSuperciasReportsController');
 
 router.use(auth, requireClinic, requireRole('admin', 'contabilidad'));
 
@@ -28,5 +29,13 @@ router.get('/sri/purchases-sales', c.purchaseSalesList);
 router.get('/sri/form-104', c.form104);
 router.get('/sri/form-103', c.form103);
 router.get('/sri/ats', c.ats);
+
+// SRI XML (DIMM Formularios)
+router.get('/sri/form-104.xml', ex.form104Xml);
+router.get('/sri/form-103.xml', ex.form103Xml);
+
+// SuperCías (archivos planos F.20)
+router.get('/supercias/balance-sheet.txt', ex.balanceSheetTxt);
+router.get('/supercias/income-statement.txt', ex.incomeStatementTxt);
 
 module.exports = router;

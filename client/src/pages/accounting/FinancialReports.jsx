@@ -2,7 +2,7 @@ import { useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlineDocumentChartBar } from 'react-icons/hi2';
-import { fmt, startOfMonth, today } from './_utils';
+import { fmt, startOfMonth, today, downloadBlob } from './_utils';
 
 export default function FinancialReports() {
   const [tab, setTab] = useState('PYG');
@@ -21,6 +21,25 @@ export default function FinancialReports() {
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
 
+  const downloadSupercias = async () => {
+    try {
+      const url =
+        tab === 'BG'
+          ? '/accounting-reports/supercias/balance-sheet.txt'
+          : '/accounting-reports/supercias/income-statement.txt';
+      const params = tab === 'BG' ? { date: endDate } : { startDate, endDate };
+      const r = await api.get(url, { params, responseType: 'blob' });
+      const fname =
+        tab === 'BG'
+          ? `supercias-balance-${endDate}.txt`
+          : `supercias-resultados-${startDate}_${endDate}.txt`;
+      downloadBlob(r.data, fname, 'text/plain');
+      toast.success('TXT SuperCías descargado');
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'Error al descargar TXT');
+    }
+  };
+
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineDocumentChartBar className="text-emerald-600" /> Reportes Financieros</h1>
@@ -32,6 +51,15 @@ export default function FinancialReports() {
         <div><label className="text-xs text-slate-500">Desde</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2" /></div>
         <div><label className="text-xs text-slate-500">Hasta</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2" /></div>
         <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Generar</button>
+        {(tab === 'BG' || tab === 'PYG') && (
+          <button
+            onClick={downloadSupercias}
+            className="px-4 py-2 bg-indigo-600 text-white rounded-lg text-sm"
+            title="Archivo plano para subir a SuperCías"
+          >
+            Descargar TXT (SuperCías)
+          </button>
+        )}
       </div>
       {data && (
         <div className="bg-white rounded-xl p-4 shadow-sm">

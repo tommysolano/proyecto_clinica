@@ -25,5 +25,10 @@ router.delete('/:id/opportunity', requireRole(...CALL_CENTER_ROLES), ctrl.remove
 
 router.get('/:id/messages', requireRole(...CALL_CENTER_ROLES), ctrl.listMessages);
 router.post('/:id/messages', requireRole(...CALL_CENTER_ROLES), ctrl.sendMessage);
+router.post(
+  '/:id/appointment',
+  requireRole(...CALL_CENTER_ROLES),
+  ctrl.createAppointmentFromChat
+);
 
 module.exports = router;

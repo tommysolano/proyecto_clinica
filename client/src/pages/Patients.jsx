@@ -4,6 +4,7 @@ import api from '../api/axios';
 import Modal from '../components/Modal';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
+import { useSocketEvent } from '../context/SocketContext';
 import {
   HiOutlinePlus,
   HiOutlinePencil,
@@ -48,6 +49,7 @@ export default function Patients() {
   const [patients, setPatients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const [onlyNew, setOnlyNew] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
@@ -78,7 +80,9 @@ export default function Patients() {
 
   const fetchPatients = async () => {
     try {
-      const res = await api.get('/patients', { params: { search, page, limit: 15 } });
+      const params = { search, page, limit: 15 };
+      if (onlyNew) params.isNew = 'true';
+      const res = await api.get('/patients', { params });
       setPatients(res.data.patients);
       setTotalPages(res.data.pages);
     } catch {
@@ -91,7 +95,10 @@ export default function Patients() {
   useEffect(() => {
     fetchPatients();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, page]);
+  }, [search, page, onlyNew]);
+
+  useSocketEvent('patient:created', () => fetchPatients(), [search, page, onlyNew]);
+  useSocketEvent('patient:updated', () => fetchPatients(), [search, page, onlyNew]);
 
   const openNew = () => {
     setEditing(null);
@@ -221,18 +228,33 @@ export default function Patients() {
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 mb-6 p-4">
-        <div className="relative">
-          <HiOutlineMagnifyingGlass className="absolute left-3.5 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
-          <input
-            type="text"
-            placeholder="Buscar por nombre, cédula o teléfono..."
-            value={search}
-            onChange={(e) => {
-              setSearch(e.target.value);
+        <div className="flex gap-3 items-center flex-wrap">
+          <div className="relative flex-1 min-w-[240px]">
+            <HiOutlineMagnifyingGlass className="absolute left-3.5 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
+            <input
+              type="text"
+              placeholder="Buscar por nombre, cédula o teléfono..."
+              value={search}
+              onChange={(e) => {
+                setSearch(e.target.value);
+                setPage(1);
+              }}
+              className="w-full pl-11 pr-4 py-3 border border-slate-200 rounded-xl bg-slate-50/50 outline-none text-sm"
+            />
+          </div>
+          <button
+            onClick={() => {
+              setOnlyNew((v) => !v);
               setPage(1);
             }}
-            className="w-full pl-11 pr-4 py-3 border border-slate-200 rounded-xl bg-slate-50/50 outline-none text-sm"
-          />
+            className={`px-4 py-3 rounded-xl text-sm font-medium border whitespace-nowrap cursor-pointer ${
+              onlyNew
+                ? 'bg-emerald-600 text-white border-emerald-600'
+                : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+            }`}
+          >
+            {onlyNew ? '✓ Pacientes nuevos (30d)' : 'Pacientes nuevos (30d)'}
+          </button>
         </div>
       </div>
 

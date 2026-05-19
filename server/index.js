@@ -1,7 +1,9 @@
 require('dotenv').config();
 const express = require('express');
+const http = require('http');
 const cors = require('cors');
 const connectDB = require('./config/db');
+const realtime = require('./realtime');
 
 const app = express();
 
@@ -61,6 +63,8 @@ app.get('/api/health', (req, res) => {
 });
 
 const PORT = process.env.PORT || 5000;
-app.listen(PORT, () => {
-  console.log(`Servidor corriendo en puerto ${PORT}`);
+const server = http.createServer(app);
+realtime.init(server);
+server.listen(PORT, () => {
+  console.log(`Servidor corriendo en puerto ${PORT} (HTTP + Socket.IO)`);
 });

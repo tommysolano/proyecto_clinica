@@ -13,6 +13,7 @@ const {
   markAttended,
   markNoShow,
   markConfirmed,
+  assignDoctor,
 } = require('../controllers/appointmentController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
@@ -33,6 +34,7 @@ router.post('/:id/start', requireRole('admin', 'doctor'), startConsultation);
 router.post('/:id/end', requireRole('admin', 'doctor'), endConsultation);
 router.post('/:id/confirm', requireRole('admin', 'cajero', 'call_center', 'enfermero'), markConfirmed);
 router.post('/:id/attended', requireRole('admin', 'cajero', 'enfermero'), markAttended);
+router.post('/:id/assign-doctor', requireRole('admin', 'cajero', 'enfermero'), assignDoctor);
 router.post('/:id/no-show', requireRole('admin', 'cajero', 'enfermero'), markNoShow);
 router.delete('/:id', requireRole('admin', 'cajero', 'call_center'), deleteAppointment);
 

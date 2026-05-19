@@ -25,6 +25,22 @@ export default function SriReports() {
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
 
+  const downloadXml = async () => {
+    try {
+      const url =
+        tab === 'F104'
+          ? '/accounting-reports/sri/form-104.xml'
+          : tab === 'F103'
+          ? '/accounting-reports/sri/form-103.xml'
+          : '/accounting-reports/sri/ats';
+      const r = await api.get(url, { params: { year, month }, responseType: 'blob' });
+      downloadBlob(r.data, `${tab}_${year}_${String(month).padStart(2, '0')}.xml`);
+      toast.success('XML descargado');
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'Error al descargar XML');
+    }
+  };
+
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineDocumentArrowDown className="text-emerald-600" /> Reportes SRI</h1>
@@ -36,6 +52,14 @@ export default function SriReports() {
         <div><label className="text-xs text-slate-500">Año</label><input type="number" value={year} onChange={(e) => setYear(+e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2 w-24" /></div>
         <div><label className="text-xs text-slate-500">Mes</label><input type="number" min="1" max="12" value={month} onChange={(e) => setMonth(+e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2 w-20" /></div>
         <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-lg">{tab === 'ATS' ? 'Descargar XML' : 'Generar'}</button>
+        {(tab === 'F103' || tab === 'F104') && (
+          <button
+            onClick={downloadXml}
+            className="px-4 py-2 bg-indigo-600 text-white rounded-lg flex items-center gap-1"
+          >
+            <HiOutlineDocumentArrowDown className="w-4 h-4" /> Descargar XML (DIMM)
+          </button>
+        )}
       </div>
       {data && (
         <div className="bg-white rounded-xl p-4 shadow-sm overflow-auto">

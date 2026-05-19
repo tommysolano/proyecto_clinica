@@ -1,4 +1,5 @@
 const Patient = require('../models/Patient');
+const { emitToClinic } = require('../realtime');
 
 // NOTA: los DATOS de los pacientes se comparten entre todas las clínicas
 // (cédula única global). El campo `clinic` queda como referencia de la clínica
@@ -18,7 +19,7 @@ const sanitizeForRole = (patient, role) => {
 
 exports.getPatients = async (req, res) => {
   try {
-    const { search, page = 1, limit = 20 } = req.query;
+    const { search, page = 1, limit = 20, isNew } = req.query;
     const query = { active: true };
 
     if (search) {
@@ -28,6 +29,11 @@ exports.getPatients = async (req, res) => {
         { cedula: { $regex: search, $options: 'i' } },
         { phone: { $regex: search, $options: 'i' } },
       ];
+    }
+
+    if (isNew === 'true' || isNew === '1') {
+      const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000);
+      query.createdAt = { $gte: thirtyDaysAgo };
     }
 
     const patients = await Patient.find(query)
@@ -73,6 +79,7 @@ exports.createPatient = async (req, res) => {
       cedula,
       clinic: req.clinicId,
     });
+    emitToClinic(req.clinicId, 'patient:created', { id: patient._id });
     res.status(201).json(patient);
   } catch (error) {
     res.status(500).json({ message: 'Error al crear paciente', error: error.message });
@@ -91,6 +98,7 @@ exports.updatePatient = async (req, res) => {
       runValidators: true,
     });
     if (!patient) return res.status(404).json({ message: 'Paciente no encontrado' });
+    emitToClinic(req.clinicId, 'patient:updated', { id: patient._id });
     res.json(sanitizeForRole(patient, req.role));
   } catch (error) {
     res.status(500).json({ message: 'Error al actualizar paciente' });

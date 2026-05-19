@@ -48,11 +48,11 @@ import {
 // Cada item declara qué roles pueden verlo. superOnly = solo isSuperAdmin.
 const ALL_ITEMS = [
   { path: '/', label: 'Dashboard', icon: HiOutlineHome, roles: ['admin', 'cajero', 'contabilidad', 'doctor', 'call_center', 'marketing', 'enfermero'] },
-  { path: '/patients', label: 'Pacientes', icon: HiOutlineUsers, roles: ['admin', 'cajero', 'doctor', 'call_center', 'marketing', 'enfermero'] },
+  { path: '/patients', label: 'Pacientes', icon: HiOutlineUsers, roles: ['admin', 'cajero', 'call_center', 'marketing', 'enfermero'] },
   { path: '/appointments', label: 'Citas', icon: HiOutlineCalendar, roles: ['admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'] },
   { path: '/calendar', label: 'Calendario', icon: HiOutlineCalendar, roles: ['admin', 'cajero', 'doctor', 'call_center', 'enfermero'] },
-  { path: '/treatments', label: 'Tratamientos', icon: HiOutlineHeart, roles: ['admin', 'doctor', 'cajero', 'marketing', 'enfermero'] },
-  { path: '/referrals', label: 'Derivaciones', icon: HiOutlineArrowsRightLeft, roles: ['admin', 'doctor', 'marketing', 'cajero'] },
+  { path: '/treatments', label: 'Tratamientos', icon: HiOutlineHeart, roles: ['admin', 'cajero', 'marketing', 'enfermero'] },
+  { path: '/referrals', label: 'Derivaciones', icon: HiOutlineArrowsRightLeft, roles: ['admin', 'marketing', 'cajero'] },
   { path: '/quotations', label: 'Cotizaciones', icon: HiOutlineDocumentDuplicate, roles: ['admin', 'cajero', 'call_center', 'contabilidad'] },
   { path: '/chats', label: 'Chats / WhatsApp', icon: HiOutlineChatBubbleLeftRight, roles: ['admin', 'call_center'] },
   { path: '/commissions', label: 'Comisiones', icon: HiOutlineTrophy, roles: ['admin', 'call_center'] },

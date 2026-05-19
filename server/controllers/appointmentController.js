@@ -1,6 +1,7 @@
 const Appointment = require('../models/Appointment');
 const Product = require('../models/Product');
 const Patient = require('../models/Patient');
+const { emitToClinic, emitToUser } = require('../realtime');
 
 const POPULATE_PATIENT = 'firstName lastName cedula phone whatsapp email birthDate age gender';
 const POPULATE_DOCTOR = 'name specialty';
@@ -117,7 +118,8 @@ exports.getAppointments = async (req, res) => {
 
     res.json(appointments);
   } catch (error) {
-    res.status(500).json({ message: 'Error al obtener citas', error: error.message });
+    console.error('[getAppointments] ERROR:', error);
+    res.status(500).json({ message: 'Error al obtener citas', error: error.message, stack: error.stack });
   }
 };
 
@@ -207,7 +209,7 @@ exports.createAppointment = async (req, res) => {
       clinic: targetClinicId,
       $or: [
         { doctor: null, room: null },
-        { doctor },
+        ...(doctor ? [{ doctor }] : []),
         ...(req.body.room ? [{ room: req.body.room }] : []),
       ],
       startDate: { $lte: localDate },
@@ -291,8 +293,15 @@ exports.createAppointment = async (req, res) => {
 
     const servicesSnapshot = await buildServicesSnapshot(targetClinicId, services);
 
+    // Normalizar ObjectId opcionales: convertir "" a undefined para evitar CastError
+    const cleanBody = { ...req.body };
+    if (cleanBody.doctor === '') delete cleanBody.doctor;
+    if (cleanBody.room === '') delete cleanBody.room;
+    if (cleanBody.referral === '') delete cleanBody.referral;
+    if (cleanBody.treatmentRef === '') delete cleanBody.treatmentRef;
+
     const appointment = await Appointment.create({
-      ...req.body,
+      ...cleanBody,
       date: localDate,
       services: servicesSnapshot,
       isFirstVisit,
@@ -317,11 +326,18 @@ exports.createAppointment = async (req, res) => {
     const populated = await appointment
       .populate('patient', POPULATE_PATIENT)
       .then((doc) => doc.populate('doctor', POPULATE_DOCTOR))
-      .then((doc) => doc.populate('createdBy', POPULATE_CREATOR));
+      .then((doc) => doc.populate('createdBy', POPULATE_CREATOR))
+      .then((doc) => doc.populate('services.product', 'name code salePrice category'));
+
+    emitToClinic(targetClinicId, 'appointment:created', populated);
+    if (populated.doctor?._id) {
+      emitToUser(populated.doctor._id, 'appointment:created', populated);
+    }
 
     res.status(201).json(populated);
   } catch (error) {
-    res.status(500).json({ message: 'Error al crear cita', error: error.message });
+    console.error('[createAppointment] ERROR:', error);
+    res.status(500).json({ message: 'Error al crear cita', error: error.message, stack: error.stack });
   }
 };
 
@@ -420,9 +436,12 @@ exports.updateAppointment = async (req, res) => {
     )
       .populate('patient', POPULATE_PATIENT)
       .populate('doctor', POPULATE_DOCTOR)
-      .populate('createdBy', POPULATE_CREATOR);
+      .populate('createdBy', POPULATE_CREATOR)
+      .populate('services.product', 'name code salePrice category');
 
     if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
+    emitToClinic(req.clinicId, 'appointment:updated', appointment);
+    if (appointment.doctor?._id) emitToUser(appointment.doctor._id, 'appointment:updated', appointment);
     res.json(appointment);
   } catch (error) {
     res.status(500).json({ message: 'Error al actualizar cita', error: error.message });
@@ -512,6 +531,7 @@ exports.endConsultation = async (req, res) => {
     appointment.consultationEndedAt = new Date();
     appointment.status = 'completada';
     await appointment.save();
+    emitToClinic(req.clinicId, 'appointment:updated', appointment);
 
     // Sincronizar derivación asociada
     if (appointment.referral) {
@@ -809,12 +829,20 @@ exports.getStats = async (req, res) => {
 
 /**
  * Marca asistencia (uso del enfermero/recepción): pendiente/confirmada → asistida.
+ * Puede recibir `doctorId` en el body para asignar al doctor al mismo tiempo,
+ * que es el flujo nuevo (la cita se crea sin doctor y al llegar el paciente,
+ * recepción lo asigna según disponibilidad).
  */
 exports.markAttended = async (req, res) => {
   try {
     const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
     apt.status = 'asistida';
+    if (req.body.doctorId) {
+      apt.doctor = req.body.doctorId;
+      apt.doctorAssignedAt = new Date();
+      apt.doctorAssignedBy = req.user._id;
+    }
     await apt.save();
     if (apt.referral) {
       try {
@@ -825,9 +853,41 @@ exports.markAttended = async (req, res) => {
         );
       } catch (_) {}
     }
-    res.json(apt);
+    const populated = await Appointment.findById(apt._id)
+      .populate('patient', POPULATE_PATIENT)
+      .populate('doctor', POPULATE_DOCTOR)
+      .populate('services.product', 'name code salePrice category');
+    emitToClinic(req.clinicId, 'appointment:updated', populated);
+    if (populated.doctor?._id) emitToUser(populated.doctor._id, 'appointment:updated', populated);
+    res.json(populated);
   } catch (error) {
     res.status(500).json({ message: 'Error al marcar asistencia' });
+  }
+};
+
+/**
+ * Asigna o reasigna un doctor a la cita (recepción/admin).
+ * No cambia el estado por sí mismo.
+ */
+exports.assignDoctor = async (req, res) => {
+  try {
+    const { doctorId } = req.body;
+    if (!doctorId) return res.status(400).json({ message: 'doctorId requerido' });
+    const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
+    apt.doctor = doctorId;
+    apt.doctorAssignedAt = new Date();
+    apt.doctorAssignedBy = req.user._id;
+    await apt.save();
+    const populated = await Appointment.findById(apt._id)
+      .populate('patient', POPULATE_PATIENT)
+      .populate('doctor', POPULATE_DOCTOR)
+      .populate('services.product', 'name code salePrice category');
+    emitToClinic(req.clinicId, 'appointment:updated', populated);
+    emitToUser(doctorId, 'appointment:assigned', populated);
+    res.json(populated);
+  } catch (error) {
+    res.status(500).json({ message: 'Error al asignar doctor', error: error.message });
   }
 };
 
@@ -840,6 +900,7 @@ exports.markNoShow = async (req, res) => {
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
     apt.status = 'no_asistio';
     await apt.save();
+    emitToClinic(req.clinicId, 'appointment:updated', apt);
     res.json(apt);
   } catch (error) {
     res.status(500).json({ message: 'Error al marcar no asistencia' });
@@ -855,6 +916,7 @@ exports.markConfirmed = async (req, res) => {
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
     apt.status = 'confirmada';
     await apt.save();
+    emitToClinic(req.clinicId, 'appointment:updated', apt);
     res.json(apt);
   } catch (error) {
     res.status(500).json({ message: 'Error al confirmar cita' });

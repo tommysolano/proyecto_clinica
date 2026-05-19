@@ -1,9 +1,17 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
-import { HiOutlinePlus, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineHeart } from 'react-icons/hi2';
+import {
+  HiOutlinePlus,
+  HiOutlinePencilSquare,
+  HiOutlineTrash,
+  HiOutlineHeart,
+  HiOutlineChatBubbleLeftRight,
+  HiOutlineArrowDownTray,
+} from 'react-icons/hi2';
 import { useAuth } from '../context/AuthContext';
+import { useSocketEvent } from '../context/SocketContext';
 
 const STATUSES = [
   { value: 'activo', label: 'Activo', color: 'bg-emerald-100 text-emerald-800' },
@@ -28,6 +36,13 @@ export default function Treatments() {
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
+  const [alertFilter, setAlertFilter] = useState(''); // '', 'completed', 'warning', 'abandoned'
+  const [selectedIds, setSelectedIds] = useState([]);
+  const [waModal, setWaModal] = useState(false);
+  const [waMessage, setWaMessage] = useState(
+    'Hola {{name}}, queremos recordarte que tu tratamiento "{{treatment}}" está pendiente. ¡Te esperamos en la clínica!'
+  );
+  const [waSending, setWaSending] = useState(false);
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY);
@@ -62,6 +77,73 @@ export default function Treatments() {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [statusFilter]);
+
+  // Realtime
+  useSocketEvent('treatment:created', () => load(), []);
+  useSocketEvent('treatment:updated', () => load(), []);
+  useSocketEvent('treatment:deleted', () => load(), []);
+
+  // Apply alert filter client-side using the virtual `abandonAlert`
+  const filteredList = useMemo(() => {
+    if (!alertFilter) return list;
+    if (alertFilter === 'completed') return list.filter((t) => t.status === 'completado');
+    return list.filter((t) => t.abandonAlert === alertFilter);
+  }, [list, alertFilter]);
+
+  const toggleSelect = (id) => {
+    setSelectedIds((prev) =>
+      prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+    );
+  };
+  const toggleSelectAll = () => {
+    if (selectedIds.length === filteredList.length) setSelectedIds([]);
+    else setSelectedIds(filteredList.map((t) => t._id));
+  };
+
+  const downloadExcel = async () => {
+    try {
+      const res = await api.get('/treatments/reminders.xlsx', {
+        params: { alert: alertFilter || 'abandoned' },
+        responseType: 'blob',
+      });
+      const url = URL.createObjectURL(
+        new Blob([res.data], {
+          type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        })
+      );
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `recordatorios-${alertFilter || 'abandoned'}.xlsx`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al descargar Excel');
+    }
+  };
+
+  const sendBroadcast = async () => {
+    if (!waMessage.trim()) {
+      toast.error('El mensaje es requerido');
+      return;
+    }
+    setWaSending(true);
+    try {
+      const body = { message: waMessage };
+      if (selectedIds.length) body.treatmentIds = selectedIds;
+      else body.alert = alertFilter || 'abandoned';
+      const res = await api.post('/treatments/whatsapp-broadcast', body);
+      const msg = res.data.simulated
+        ? `Simulado (sin WhatsApp configurado): ${res.data.sent}/${res.data.total}`
+        : `Enviados ${res.data.sent}/${res.data.total} (fallidos: ${res.data.failed})`;
+      toast.success(msg);
+      setWaModal(false);
+      setSelectedIds([]);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al enviar WhatsApp');
+    } finally {
+      setWaSending(false);
+    }
+  };
 
   const openNew = () => {
     setEditing(null);
@@ -165,7 +247,7 @@ export default function Treatments() {
         )}
       </div>
 
-      <div className="flex gap-2">
+      <div className="flex gap-2 flex-wrap items-center">
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
@@ -178,11 +260,48 @@ export default function Treatments() {
             </option>
           ))}
         </select>
+        <select
+          value={alertFilter}
+          onChange={(e) => setAlertFilter(e.target.value)}
+          className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+        >
+          <option value="">Todas las alertas</option>
+          <option value="completed">Completados</option>
+          <option value="warning">Aviso antes de 15 días</option>
+          <option value="abandoned">Abandonados (+15 días)</option>
+        </select>
+        {canEdit && (
+          <>
+            <button
+              onClick={() => setWaModal(true)}
+              className="px-3 py-2 bg-green-600 text-white rounded-lg flex items-center gap-1 text-sm hover:bg-green-700"
+            >
+              <HiOutlineChatBubbleLeftRight className="w-4 h-4" /> WhatsApp masivo
+              {selectedIds.length > 0 ? ` (${selectedIds.length})` : ''}
+            </button>
+            <button
+              onClick={downloadExcel}
+              className="px-3 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-1 text-sm hover:bg-slate-800"
+            >
+              <HiOutlineArrowDownTray className="w-4 h-4" /> Excel ausentes
+            </button>
+            {filteredList.length > 0 && (
+              <button
+                onClick={toggleSelectAll}
+                className="px-3 py-2 border border-slate-300 text-slate-700 rounded-lg text-sm hover:bg-slate-50"
+              >
+                {selectedIds.length === filteredList.length
+                  ? 'Deseleccionar todos'
+                  : 'Seleccionar todos'}
+              </button>
+            )}
+          </>
+        )}
       </div>
 
       <div className="grid gap-3">
         {loading && <div className="text-slate-500">Cargando...</div>}
-        {list.map((t) => {
+        {filteredList.map((t) => {
           const status = STATUSES.find((s) => s.value === t.status) || STATUSES[0];
           const sourceMap = {
             referral: { label: 'Por derivación', cls: 'bg-violet-100 text-violet-700' },
@@ -196,7 +315,16 @@ export default function Treatments() {
           return (
             <div key={t._id} className="bg-white rounded-xl border border-slate-200 p-4">
               <div className="flex items-start justify-between flex-wrap gap-2">
-                <div className="flex-1 min-w-0">
+                <div className="flex items-start gap-2 flex-1 min-w-0">
+                  {canEdit && (
+                    <input
+                      type="checkbox"
+                      checked={selectedIds.includes(t._id)}
+                      onChange={() => toggleSelect(t._id)}
+                      className="mt-1.5 cursor-pointer"
+                    />
+                  )}
+                  <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <h3 className="font-bold text-slate-800">{t.name}</h3>
                     <span className={`px-2 py-0.5 rounded-md text-[11px] font-semibold ${src.cls}`}>
@@ -214,6 +342,7 @@ export default function Treatments() {
                     Inicio: {(t.startDate || '').slice(0, 10)}
                     {t.targetEndDate ? ` · Meta: ${t.targetEndDate.slice(0, 10)}` : ''}
                   </div>
+                </div>
                 </div>
                 <div className="flex items-center gap-2">
                   {canEdit && (
@@ -442,6 +571,46 @@ export default function Treatments() {
             </button>
           </div>
         </form>
+      </Modal>
+
+      <Modal
+        isOpen={waModal}
+        onClose={() => setWaModal(false)}
+        title="Enviar WhatsApp masivo"
+      >
+        <div className="space-y-3 text-sm">
+          <p className="text-slate-600">
+            {selectedIds.length > 0
+              ? `Se enviará a los pacientes de ${selectedIds.length} tratamiento(s) seleccionado(s).`
+              : `Se enviará a los pacientes según el filtro actual: ${
+                  alertFilter || 'abandoned'
+                }.`}
+          </p>
+          <p className="text-xs text-slate-500">
+            Puedes usar <code>{'{{name}}'}</code> y <code>{'{{treatment}}'}</code> en el mensaje.
+          </p>
+          <textarea
+            rows={5}
+            value={waMessage}
+            onChange={(e) => setWaMessage(e.target.value)}
+            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+          />
+          <div className="flex justify-end gap-2">
+            <button
+              onClick={() => setWaModal(false)}
+              className="px-4 py-2 rounded-lg border border-slate-200 text-slate-700"
+            >
+              Cancelar
+            </button>
+            <button
+              onClick={sendBroadcast}
+              disabled={waSending}
+              className="px-4 py-2 rounded-lg bg-green-600 text-white hover:bg-green-700 disabled:opacity-60"
+            >
+              {waSending ? 'Enviando...' : 'Enviar'}
+            </button>
+          </div>
+        </div>
       </Modal>
     </div>
   );

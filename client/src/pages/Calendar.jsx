@@ -93,8 +93,8 @@ export default function Calendar() {
 
   useEffect(() => {
     api
-      .get('/users', { params: { role: 'doctor' } })
-      .then((r) => setDoctors((r.data || []).filter((u) => u.role === 'doctor' || (u.clinics || []).some((c) => c.role === 'doctor'))))
+      .get('/users/doctors')
+      .then((r) => setDoctors(r.data || []))
       .catch(() => setDoctors([]));
     api.get('/products', { params: { category: 'servicio', active: true } })
       .then((r) => setServices(Array.isArray(r.data) ? r.data : r.data?.items || []))

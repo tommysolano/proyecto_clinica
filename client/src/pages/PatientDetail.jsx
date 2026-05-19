@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { useParams, Link } from 'react-router-dom';
+import { useParams, useSearchParams, Link } from 'react-router-dom';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
@@ -12,6 +12,7 @@ import {
   HiOutlineDocumentText,
   HiOutlinePlus,
   HiOutlineTrash,
+  HiOutlinePrinter,
 } from 'react-icons/hi2';
 
 const TABS = [
@@ -24,8 +25,16 @@ const TABS = [
 
 export default function PatientDetail() {
   const { id } = useParams();
+  const [searchParams] = useSearchParams();
+  const appointmentId = searchParams.get('appointment') || null;
+  const tabParam = searchParams.get('tab') || null;
   const { hasRole } = useAuth();
-  const [tab, setTab] = useState('datos');
+  const initialTab = tabParam
+    ? tabParam
+    : appointmentId
+      ? (hasRole('doctor') ? 'ficha' : 'seguimientos')
+      : 'datos';
+  const [tab, setTab] = useState(initialTab);
   const [patient, setPatient] = useState(null);
   const [loading, setLoading] = useState(true);
 
@@ -80,8 +89,14 @@ export default function PatientDetail() {
               {patient.firstName} {patient.lastName}
             </h1>
             <p className="text-sm text-slate-500 mt-1">
-              CI: {patient.cedula} {patient.phone ? ` · ${patient.phone}` : ''}
-              {patient.email ? ` · ${patient.email}` : ''}
+              {hasRole('doctor') ? (
+                <>Edad: {patient.computedAge ?? patient.age ?? '—'}</>
+              ) : (
+                <>
+                  CI: {patient.cedula} {patient.phone ? ` · ${patient.phone}` : ''}
+                  {patient.email ? ` · ${patient.email}` : ''}
+                </>
+              )}
             </p>
           </div>
         </div>
@@ -111,7 +126,7 @@ export default function PatientDetail() {
         <div className="p-6">
           {tab === 'datos' && <DatosTab patient={patient} />}
           {tab === 'ficha' && <FichaTab patientId={id} />}
-          {tab === 'seguimientos' && <SeguimientosTab patientId={id} />}
+          {tab === 'seguimientos' && <SeguimientosTab patientId={id} appointmentId={appointmentId} />}
           {tab === 'citas' && <CitasTab patientId={id} />}
           {tab === 'facturas' && <FacturasTab patientId={id} />}
         </div>
@@ -122,6 +137,8 @@ export default function PatientDetail() {
 
 // ───────────────────────── Datos ─────────────────────────
 function DatosTab({ patient }) {
+  const { hasRole } = useAuth();
+  const isDoctor = hasRole('doctor');
   const sourceLabels = {
     anuncio: 'Anuncio',
     referido: 'Referido',
@@ -131,10 +148,10 @@ function DatosTab({ patient }) {
   return (
     <div className="space-y-6">
       <dl className="grid grid-cols-1 md:grid-cols-2 gap-4 text-sm">
-        <Item label="Cédula" value={patient.cedula} />
+        {!isDoctor && <Item label="Cédula" value={patient.cedula} />}
         <Item label="Nombre completo" value={`${patient.firstName} ${patient.lastName}`} />
         <Item label="Email" value={patient.email} />
-        <Item label="Teléfono" value={patient.phone} />
+        {!isDoctor && <Item label="Teléfono" value={patient.phone} />}
         <Item label="WhatsApp" value={patient.whatsapp} />
         <Item
           label="Fecha de nacimiento"
@@ -142,7 +159,7 @@ function DatosTab({ patient }) {
         />
         <Item label="Edad" value={patient.computedAge ?? patient.age ?? '—'} />
         <Item label="Género" value={patient.gender} />
-        <Item label="Dirección" value={patient.address} />
+        {!isDoctor && <Item label="Dirección" value={patient.address} />}
         <Item
           label="Origen del paciente"
           value={
@@ -183,6 +200,7 @@ function Item({ label, value, full }) {
 
 // ───────────────────── Ficha clínica ─────────────────────
 function FichaTab({ patientId }) {
+  const { hasRole } = useAuth();
   const [record, setRecord] = useState(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -272,46 +290,52 @@ function FichaTab({ patientId }) {
             className="input"
           />
         </Field>
-        <Field label="Cédula">
-          <input
-            type="text"
-            value={record.cedula || ''}
-            onChange={(e) => update('cedula', e.target.value)}
-            className="input"
-          />
-        </Field>
-        <Field label="Dirección">
-          <input
-            type="text"
-            value={record.direccion || ''}
-            onChange={(e) => update('direccion', e.target.value)}
-            className="input"
-          />
-        </Field>
-        <Field label="Celular">
-          <input
-            type="text"
-            value={record.celular || ''}
-            onChange={(e) => update('celular', e.target.value)}
-            className="input"
-          />
-        </Field>
+        {!hasRole('doctor') && (
+          <Field label="Cédula">
+            <input
+              type="text"
+              value={record.cedula || ''}
+              onChange={(e) => update('cedula', e.target.value)}
+              className="input"
+            />
+          </Field>
+        )}
+        {!hasRole('doctor') && (
+          <Field label="Dirección">
+            <input
+              type="text"
+              value={record.direccion || ''}
+              onChange={(e) => update('direccion', e.target.value)}
+              className="input"
+            />
+          </Field>
+        )}
+        {!hasRole('doctor') && (
+          <Field label="Celular">
+            <input
+              type="text"
+              value={record.celular || ''}
+              onChange={(e) => update('celular', e.target.value)}
+              className="input"
+            />
+          </Field>
+        )}
       </div>
 
       <div className="space-y-4 pt-2 border-t border-slate-100">
         <h3 className="font-semibold text-slate-800">Antecedentes</h3>
         <YesNo
-          label="¿Toma medicamentos?"
+          label="Medicamentos"
           item={record.tomaMedicamentos}
           onChange={(v) => update('tomaMedicamentos', v)}
         />
         <YesNo
-          label="¿Tiene alergias?"
+          label="Alergias"
           item={record.tieneAlergias}
           onChange={(v) => update('tieneAlergias', v)}
         />
         <YesNo
-          label="¿Ha tenido cirugías?"
+          label="Cirugías"
           item={record.tieneCirugias}
           onChange={(v) => update('tieneCirugias', v)}
         />
@@ -374,22 +398,32 @@ function YesNo({ label, item, onChange }) {
 }
 
 // ──────────────────── Seguimientos ────────────────────
-function SeguimientosTab({ patientId }) {
+function SeguimientosTab({ patientId, appointmentId }) {
   const { hasRole } = useAuth();
   const canDelete = hasRole('admin', 'doctor');
   const showPayment = !hasRole('doctor');
   const [record, setRecord] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [treatments, setTreatments] = useState([]);
-  const [form, setForm] = useState({
+  const [products, setProducts] = useState([]);
+  const emptyRow = () => ({
+    product: '',
+    name: '',
+    quantity: 1,
+    dose: '',
+    frequency: '',
+    duration: '',
+    instructions: '',
+  });
+  const emptyForm = () => ({
     fecha: new Date().toISOString().substring(0, 10),
     descripcion: '',
-    recomendaciones: '',
-    receta: '',
-    treatment: '',
+    estudioSintomas: '',
+    observaciones: '',
+    recetaItems: [],
     valor: 0,
     metodoPago: 'efectivo',
   });
+  const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
 
   const load = async () => {
@@ -407,11 +441,38 @@ function SeguimientosTab({ patientId }) {
   useEffect(() => {
     load();
     api
-      .get('/treatments', { params: { patient: patientId } })
-      .then((r) => setTreatments(r.data || []))
+      .get('/products')
+      .then((r) => {
+        const list = Array.isArray(r.data) ? r.data : r.data?.items || [];
+        setProducts(
+          list.filter((p) =>
+            ['medicamento', 'servicio', 'programa'].includes(String(p.category || '').toLowerCase())
+          )
+        );
+      })
       .catch(() => {});
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [patientId]);
+
+  const updateRow = (idx, key, val) => {
+    setForm((f) => {
+      const items = [...f.recetaItems];
+      items[idx] = { ...items[idx], [key]: val };
+      if (key === 'product') {
+        const p = products.find((x) => x._id === val);
+        if (p) items[idx].name = p.name;
+      }
+      return { ...f, recetaItems: items };
+    });
+  };
+
+  const addRow = () =>
+    setForm((f) => ({ ...f, recetaItems: [...f.recetaItems, emptyRow()] }));
+  const removeRow = (idx) =>
+    setForm((f) => ({
+      ...f,
+      recetaItems: f.recetaItems.filter((_, i) => i !== idx),
+    }));
 
   const submit = async (e) => {
     e.preventDefault();
@@ -421,18 +482,19 @@ function SeguimientosTab({ patientId }) {
     }
     setSaving(true);
     try {
-      const res = await api.post(`/clinical-records/${patientId}/follow-ups`, form);
+      const payload = {
+        ...form,
+        recomendaciones: form.estudioSintomas, // legacy alias
+      };
+      if (appointmentId) payload.appointmentId = appointmentId;
+      const res = await api.post(`/clinical-records/${patientId}/follow-ups`, payload);
       setRecord(res.data);
-      setForm({
-        fecha: new Date().toISOString().substring(0, 10),
-        descripcion: '',
-        recomendaciones: '',
-        receta: '',
-        treatment: '',
-        valor: 0,
-        metodoPago: 'efectivo',
-      });
-      toast.success('Seguimiento agregado');
+      setForm(emptyForm());
+      toast.success(
+        appointmentId
+          ? 'Seguimiento guardado. Cita finalizada.'
+          : 'Seguimiento agregado'
+      );
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al agregar');
     } finally {
@@ -451,6 +513,19 @@ function SeguimientosTab({ patientId }) {
     }
   };
 
+  const printFollowUp = async (fuId) => {
+    try {
+      const res = await api.get(
+        `/clinical-records/${patientId}/follow-ups/${fuId}/print`,
+        { responseType: 'blob' }
+      );
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      window.open(url, '_blank');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al imprimir');
+    }
+  };
+
   if (loading) return <div className="text-slate-500 text-sm">Cargando...</div>;
   if (!record) return null;
 
@@ -460,6 +535,12 @@ function SeguimientosTab({ patientId }) {
 
   return (
     <div className="space-y-6">
+      {appointmentId && (
+        <div className="bg-amber-50 border border-amber-200 text-amber-800 text-sm rounded-xl p-3">
+          Al guardar este seguimiento, la cita se marcará como <b>completada</b> y quedarás disponible.
+        </div>
+      )}
+
       <form
         onSubmit={submit}
         className={`bg-slate-50 rounded-xl p-4 grid grid-cols-1 gap-3 ${showPayment ? 'md:grid-cols-5' : 'md:grid-cols-3'}`}
@@ -481,35 +562,128 @@ function SeguimientosTab({ patientId }) {
             required
           />
         </Field>
-        <Field label="Recomendaciones" className={showPayment ? 'md:col-span-5' : 'md:col-span-3'}>
+        <Field label="Estudio o síntomas" className={showPayment ? 'md:col-span-5' : 'md:col-span-3'}>
           <textarea
             rows={2}
-            value={form.recomendaciones}
-            onChange={(e) => setForm((f) => ({ ...f, recomendaciones: e.target.value }))}
+            value={form.estudioSintomas}
+            onChange={(e) => setForm((f) => ({ ...f, estudioSintomas: e.target.value }))}
             className="input resize-none"
           />
         </Field>
-        <Field label="Receta" className={showPayment ? 'md:col-span-5' : 'md:col-span-3'}>
+
+        <div className={showPayment ? 'md:col-span-5' : 'md:col-span-3'}>
+          <div className="flex items-center justify-between mb-2">
+            <label className="text-sm font-medium text-slate-700">Receta</label>
+            <button
+              type="button"
+              onClick={addRow}
+              className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-emerald-600 text-white border-none cursor-pointer"
+            >
+              <HiOutlinePlus className="w-3 h-3" /> Agregar ítem
+            </button>
+          </div>
+          {form.recetaItems.length === 0 && (
+            <p className="text-xs text-slate-400 italic">Sin ítems. Agrega medicamentos o servicios.</p>
+          )}
+          {form.recetaItems.length > 0 && (
+            <div className="overflow-x-auto bg-white rounded-lg border border-slate-200">
+              <table className="w-full text-xs">
+                <thead className="bg-slate-100 text-slate-600">
+                  <tr>
+                    <th className="text-left px-2 py-1.5">Producto / Servicio</th>
+                    <th className="text-left px-2 py-1.5 w-16">Cant.</th>
+                    <th className="text-left px-2 py-1.5">Dosis</th>
+                    <th className="text-left px-2 py-1.5">Frecuencia</th>
+                    <th className="text-left px-2 py-1.5">Duración</th>
+                    <th className="text-left px-2 py-1.5">Indicaciones</th>
+                    <th className="px-2 py-1.5 w-8"></th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {form.recetaItems.map((row, idx) => (
+                    <tr key={idx} className="border-t border-slate-100">
+                      <td className="px-2 py-1">
+                        <select
+                          value={row.product}
+                          onChange={(e) => updateRow(idx, 'product', e.target.value)}
+                          className="input text-xs py-1"
+                        >
+                          <option value="">— Seleccionar —</option>
+                          {products.map((p) => (
+                            <option key={p._id} value={p._id}>
+                              {p.name} ({p.category})
+                            </option>
+                          ))}
+                        </select>
+                      </td>
+                      <td className="px-2 py-1">
+                        <input
+                          type="number"
+                          min={1}
+                          value={row.quantity}
+                          onChange={(e) => updateRow(idx, 'quantity', Number(e.target.value))}
+                          className="input text-xs py-1"
+                        />
+                      </td>
+                      <td className="px-2 py-1">
+                        <input
+                          type="text"
+                          value={row.dose}
+                          onChange={(e) => updateRow(idx, 'dose', e.target.value)}
+                          className="input text-xs py-1"
+                          placeholder="500mg"
+                        />
+                      </td>
+                      <td className="px-2 py-1">
+                        <input
+                          type="text"
+                          value={row.frequency}
+                          onChange={(e) => updateRow(idx, 'frequency', e.target.value)}
+                          className="input text-xs py-1"
+                          placeholder="c/8h"
+                        />
+                      </td>
+                      <td className="px-2 py-1">
+                        <input
+                          type="text"
+                          value={row.duration}
+                          onChange={(e) => updateRow(idx, 'duration', e.target.value)}
+                          className="input text-xs py-1"
+                          placeholder="7 días"
+                        />
+                      </td>
+                      <td className="px-2 py-1">
+                        <input
+                          type="text"
+                          value={row.instructions}
+                          onChange={(e) => updateRow(idx, 'instructions', e.target.value)}
+                          className="input text-xs py-1"
+                        />
+                      </td>
+                      <td className="px-2 py-1 text-right">
+                        <button
+                          type="button"
+                          onClick={() => removeRow(idx)}
+                          className="p-1 text-red-500 bg-transparent border-none cursor-pointer"
+                        >
+                          <HiOutlineTrash className="w-3 h-3" />
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+
+        <Field label="Observaciones" className={showPayment ? 'md:col-span-5' : 'md:col-span-3'}>
           <textarea
             rows={2}
-            value={form.receta}
-            onChange={(e) => setForm((f) => ({ ...f, receta: e.target.value }))}
+            value={form.observaciones}
+            onChange={(e) => setForm((f) => ({ ...f, observaciones: e.target.value }))}
             className="input resize-none"
           />
-        </Field>
-        <Field label="Tratamiento asociado" className={showPayment ? 'md:col-span-5' : 'md:col-span-3'}>
-          <select
-            value={form.treatment}
-            onChange={(e) => setForm((f) => ({ ...f, treatment: e.target.value }))}
-            className="input"
-          >
-            <option value="">— Sin tratamiento —</option>
-            {treatments.map((t) => (
-              <option key={t._id} value={t._id}>
-                {t.name} {t.status === 'completado' ? '(completado)' : ''}
-              </option>
-            ))}
-          </select>
         </Field>
         {showPayment && (
           <>
@@ -543,7 +717,7 @@ function SeguimientosTab({ patientId }) {
             disabled={saving}
             className="flex items-center gap-1 px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium disabled:opacity-50 cursor-pointer border-none"
           >
-            <HiOutlinePlus className="w-4 h-4" /> Agregar
+            <HiOutlinePlus className="w-4 h-4" /> {appointmentId ? 'Guardar y finalizar' : 'Agregar'}
           </button>
         </div>
       </form>
@@ -556,13 +730,13 @@ function SeguimientosTab({ patientId }) {
               <th className="text-left px-4 py-2.5 font-semibold">Motivo de consulta</th>
               {showPayment && <th className="text-right px-4 py-2.5 font-semibold">Valor</th>}
               {showPayment && <th className="text-left px-4 py-2.5 font-semibold">Pago</th>}
-              {canDelete && <th className="px-4 py-2.5"></th>}
+              <th className="px-4 py-2.5"></th>
             </tr>
           </thead>
           <tbody>
             {followUps.length === 0 && (
               <tr>
-                <td colSpan={5} className="text-center py-6 text-slate-400">
+                <td colSpan={6} className="text-center py-6 text-slate-400">
                   No hay seguimientos.
                 </td>
               </tr>
@@ -583,16 +757,25 @@ function SeguimientosTab({ patientId }) {
                     {fu.metodoPago || '—'}
                   </td>
                 )}
-                {canDelete && (
-                  <td className="px-4 py-2.5 text-right">
+                <td className="px-4 py-2.5 text-right">
+                  <div className="flex items-center justify-end gap-1">
                     <button
-                      onClick={() => remove(fu._id)}
-                      className="p-1 text-slate-400 hover:text-red-600 cursor-pointer bg-transparent border-none"
+                      onClick={() => printFollowUp(fu._id)}
+                      title="Imprimir receta"
+                      className="p-1 text-slate-500 hover:text-emerald-600 cursor-pointer bg-transparent border-none"
                     >
-                      <HiOutlineTrash className="w-4 h-4" />
+                      <HiOutlinePrinter className="w-4 h-4" />
                     </button>
-                  </td>
-                )}
+                    {canDelete && (
+                      <button
+                        onClick={() => remove(fu._id)}
+                        className="p-1 text-slate-400 hover:text-red-600 cursor-pointer bg-transparent border-none"
+                      >
+                        <HiOutlineTrash className="w-4 h-4" />
+                      </button>
+                    )}
+                  </div>
+                </td>
               </tr>
             ))}
           </tbody>

@@ -1,6 +1,7 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useCallback } from 'react';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
+import { useSocketEvent } from '../context/SocketContext';
 import {
   HiOutlineUsers,
   HiOutlineCalendar,
@@ -15,12 +16,21 @@ export default function Dashboard() {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const reload = useCallback(() => {
     api.get('/dashboard')
       .then(res => setData(res.data))
-      .catch(() => {})
-      .finally(() => setLoading(false));
+      .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    reload();
+    setLoading(false);
+  }, [reload]);
+
+  useSocketEvent('appointment:created', reload, [reload]);
+  useSocketEvent('appointment:updated', reload, [reload]);
+  useSocketEvent('sale:created', reload, [reload]);
+  useSocketEvent('patient:created', reload, [reload]);
 
   if (loading) {
     return (
