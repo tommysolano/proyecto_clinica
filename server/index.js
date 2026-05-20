@@ -78,6 +78,13 @@ app.get('/api/health', (req, res) => {
 const PORT = process.env.PORT || 5000;
 const server = http.createServer(app);
 realtime.init(server);
-server.listen(PORT, () => {
-  console.log(`Servidor corriendo en puerto ${PORT} (HTTP + Socket.IO)`);
+
+// Conectar a MongoDB primero, luego arrancar el servidor
+connectDB().then(() => {
+  server.listen(PORT, () => {
+    console.log(`Servidor corriendo en puerto ${PORT} (HTTP + Socket.IO)`);
+  });
+}).catch((err) => {
+  console.error('No se pudo conectar a MongoDB, abortando:', err.message);
+  process.exit(1);
 });
