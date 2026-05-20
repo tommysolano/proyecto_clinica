@@ -18,8 +18,10 @@ export function SocketProvider({ children }) {
     const token = localStorage.getItem('token');
     if (!user || !token) return undefined;
 
-    // Conecta al mismo origin: en dev Vite proxea /socket.io al backend (ver vite.config.js).
-    const socket = io({
+    // En producción VITE_API_URL apunta al backend de Render.
+    // En dev Vite proxea /socket.io al backend (vite.config.js).
+    const SOCKET_URL = import.meta.env.VITE_API_URL || undefined;
+    const socket = io(SOCKET_URL, {
       auth: { token },
       transports: ['websocket', 'polling'],
       reconnection: true,

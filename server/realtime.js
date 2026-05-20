@@ -21,8 +21,18 @@ const User = require('./models/User');
 let io = null;
 
 function init(httpServer) {
+  const allowedOrigins = process.env.ALLOWED_ORIGINS
+    ? process.env.ALLOWED_ORIGINS.split(',').map((o) => o.trim())
+    : ['http://localhost:5173', 'http://localhost:4173'];
+
   io = new Server(httpServer, {
-    cors: { origin: true, credentials: true },
+    cors: {
+      origin: (origin, cb) => {
+        if (!origin || allowedOrigins.includes(origin)) return cb(null, true);
+        cb(new Error(`CORS: origin no permitido: ${origin}`));
+      },
+      credentials: true,
+    },
     transports: ['websocket', 'polling'],
   });
 
