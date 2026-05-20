@@ -96,6 +96,7 @@ export default function Appointments() {
   const canWrite = hasRole('admin', 'cajero', 'call_center');
   const isAdmin = hasRole('admin') || user?.isSuperAdmin;
   const isDoctor = role === 'doctor';
+  const isNurse = role === 'enfermero';
   const isCallCenter = role === 'call_center';
   const isReception = hasRole('admin', 'cajero', 'enfermero');
   // Mostrar selector de clínica si el usuario tiene más de una asignada
@@ -125,7 +126,11 @@ export default function Appointments() {
     timeTo: '',
     patientQuery: '',
   });
-  const [view, setView] = useState(role === 'doctor' ? 'today' : 'list'); // 'list' | 'today'
+  const [view, setView] = useState(
+    role === 'doctor' || role === 'call_center' || role === 'supervisor_call_center'
+      ? 'today'
+      : 'list'
+  ); // 'list' | 'today'
   const [patientSearch, setPatientSearch] = useState('');
   const [showPatientList, setShowPatientList] = useState(false);
 
@@ -421,6 +426,17 @@ export default function Appointments() {
     }
   };
 
+  const nurseAttend = async (apt) => {
+    if (!window.confirm(`¿Confirmas que vas a atender a ${apt.patient?.firstName || ''} ${apt.patient?.lastName || ''}?`)) return;
+    try {
+      await api.post(`/appointments/${apt._id}/nurse-attend`);
+      toast.success('Cita atendida');
+      fetchAppointments();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al atender la cita');
+    }
+  };
+
   const handlePatientSelect = (p) => {
     setForm((f) => ({ ...f, patient: p._id }));
     setPatientSearch(`${p.firstName} ${p.lastName} - ${p.cedula}`);
@@ -493,12 +509,14 @@ export default function Appointments() {
               {view === 'today' ? 'Solo Hoy' : 'Ver Todas'}
             </button>
           )}
-          <button
-            onClick={exportExcel}
-            className="px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50"
-          >
-            Excel
-          </button>
+          {role !== 'call_center' && role !== 'supervisor_call_center' && (
+            <button
+              onClick={exportExcel}
+              className="px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50"
+            >
+              Excel
+            </button>
+          )}
           {canWrite && (
             <button
               onClick={openNew}
@@ -697,6 +715,11 @@ export default function Appointments() {
                             Dr. {apt.doctor.name}
                           </div>
                         )}
+                        {apt.attendedByNurse?.name && (
+                          <div className="text-[11px] text-sky-700 mt-0.5">
+                            Enf. {apt.attendedByNurse.name}
+                          </div>
+                        )}
                       </td>
                       <td className="px-6 py-3.5">
                         <span
@@ -730,6 +753,16 @@ export default function Appointments() {
                               Atender
                             </button>
                           )}
+                        {/* Enfermero: reclamar atención de servicios de enfermería */}
+                        {isNurse && apt.status === 'asistida' && !apt.attendedByNurse && (
+                          <button
+                            onClick={() => nurseAttend(apt)}
+                            className="p-1.5 rounded-lg hover:bg-sky-50 text-sky-700 bg-transparent border border-sky-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
+                            title="Marcar como atendida por mí"
+                          >
+                            Atender
+                          </button>
+                        )}
                         {showDoctorTimer && !inProgress && apt.status !== 'completada' && (
                           <button
                             onClick={() => startConsultation(apt)}

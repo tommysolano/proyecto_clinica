@@ -16,6 +16,7 @@ const emptyProduct = {
   unlimited: false,
   maxAppointmentsPerDay: '0',
   excludeFromFirstVisit: false,
+  nursingService: false,
   programServices: [],
   availableInClinics: [],
 };
@@ -86,6 +87,7 @@ export default function Inventory() {
       unlimited: !!p.unlimited,
       maxAppointmentsPerDay: String(p.maxAppointmentsPerDay ?? 0),
       excludeFromFirstVisit: !!p.excludeFromFirstVisit,
+      nursingService: !!p.nursingService,
       programServices: (p.programServices || []).map((s) => ({
         product: s.product?._id || s.product || '',
         quantity: s.quantity || 1,
@@ -109,6 +111,7 @@ export default function Inventory() {
         unlimited: !!productForm.unlimited,
         maxAppointmentsPerDay: parseInt(productForm.maxAppointmentsPerDay) || 0,
         excludeFromFirstVisit: !!productForm.excludeFromFirstVisit,
+        nursingService: !!productForm.nursingService,
         programServices: (productForm.programServices || [])
           .filter((s) => s.product && Number(s.quantity) > 0)
           .map((s) => ({ product: s.product, quantity: parseInt(s.quantity) || 1 })),
@@ -458,6 +461,18 @@ export default function Inventory() {
               />
               <label htmlFor="excludeFromFirstVisit" className="text-sm text-slate-700 cursor-pointer">
                 <strong>No marcar paciente como nuevo</strong> al usar este servicio
+              </label>
+            </div>
+            <div className="flex items-center gap-2 pt-7">
+              <input
+                id="nursingService"
+                type="checkbox"
+                checked={!!productForm.nursingService}
+                onChange={(e) => setProductForm({ ...productForm, nursingService: e.target.checked })}
+                className="w-4 h-4 accent-emerald-600 cursor-pointer"
+              />
+              <label htmlFor="nursingService" className="text-sm text-slate-700 cursor-pointer">
+                Servicio atendido por <strong>enfermería</strong> (p.ej. sueroterapia)
               </label>
             </div>
 

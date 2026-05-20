@@ -33,6 +33,7 @@ import JournalEntries from './pages/accounting/JournalEntries';
 import Ledger from './pages/accounting/Ledger';
 import TrialBalance from './pages/accounting/TrialBalance';
 import BankAccounts from './pages/accounting/BankAccounts';
+import CashBox from './pages/accounting/CashBox';
 import Reconciliations from './pages/accounting/Reconciliations';
 import Suppliers from './pages/accounting/Suppliers';
 import Payments from './pages/accounting/Payments';
@@ -240,6 +241,7 @@ function AppRoutes() {
                   ['ledger', Ledger],
                   ['trial-balance', TrialBalance],
                   ['banks', BankAccounts],
+                  ['cash', CashBox],
                   ['reconciliations', Reconciliations],
                   ['suppliers', Suppliers],
                   ['payments', Payments],

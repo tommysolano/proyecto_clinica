@@ -1,5 +1,6 @@
 const Payment = require('../models/Payment');
 const Invoice = require('../models/Invoice');
+const PurchaseInvoice = require('../models/PurchaseInvoice');
 const BankAccount = require('../models/BankAccount');
 const BankTransaction = require('../models/BankTransaction');
 const { createEntry, findAccount, reverseEntry } = require('../utils/accounting');
@@ -159,6 +160,33 @@ exports.create = async (req, res) => {
     });
     if (bankTx) { bankTx.sourceRef = payment._id; await bankTx.save(); }
 
+    // Actualizar saldos de los documentos aplicados
+    for (const a of apps) {
+      if (!a.docRef || !a.amount) continue;
+      if (type === 'PAGO' && a.docModel === 'PurchaseInvoice') {
+        const pi = await PurchaseInvoice.findOne({ _id: a.docRef, clinic: req.clinicId });
+        if (pi) {
+          pi.balance = Math.max(0, Number(pi.balance || pi.total || 0) - Number(a.amount));
+          if (pi.balance <= 0.005) {
+            pi.balance = 0;
+            pi.paid = true;
+            if (pi.status !== 'ANULADA') pi.status = 'PAGADA';
+          }
+          await pi.save();
+        }
+      } else if (type === 'COBRO' && a.docModel === 'Invoice') {
+        const inv = await Invoice.findOne({ _id: a.docRef, clinic: req.clinicId });
+        if (inv && typeof inv.balance !== 'undefined') {
+          inv.balance = Math.max(0, Number(inv.balance || inv.total || 0) - Number(a.amount));
+          if (inv.balance <= 0.005) {
+            inv.balance = 0;
+            if (typeof inv.paid !== 'undefined') inv.paid = true;
+          }
+          await inv.save();
+        }
+      }
+    }
+
     res.status(201).json(payment);
   } catch (e) {
     res.status(e.status || 400).json({ message: e.message });
@@ -181,6 +209,28 @@ exports.void = async (req, res) => {
     }
     p.status = 'ANULADO';
     await p.save();
+    // Revertir saldos en documentos aplicados
+    for (const a of p.applications || []) {
+      if (!a.docRef || !a.amount) continue;
+      if (p.type === 'PAGO' && a.docModel === 'PurchaseInvoice') {
+        const pi = await PurchaseInvoice.findOne({ _id: a.docRef, clinic: req.clinicId });
+        if (pi) {
+          pi.balance = Number(pi.balance || 0) + Number(a.amount);
+          if (pi.balance > 0.005 && pi.status === 'PAGADA') {
+            pi.paid = false;
+            pi.status = 'REGISTRADA';
+          }
+          await pi.save();
+        }
+      } else if (p.type === 'COBRO' && a.docModel === 'Invoice') {
+        const inv = await Invoice.findOne({ _id: a.docRef, clinic: req.clinicId });
+        if (inv && typeof inv.balance !== 'undefined') {
+          inv.balance = Number(inv.balance || 0) + Number(a.amount);
+          if (inv.balance > 0.005 && inv.paid) inv.paid = false;
+          await inv.save();
+        }
+      }
+    }
     res.json({ message: 'Anulado' });
   } catch (e) { res.status(400).json({ message: e.message }); }
 };

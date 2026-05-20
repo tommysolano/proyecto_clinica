@@ -145,7 +145,7 @@ exports.void = async (req, res) => {
  */
 exports.importTxt = async (req, res) => {
   try {
-    const raw = req.body?.content;
+    const raw = req.body?.content || req.body?.text;
     if (!raw) return res.status(400).json({ message: 'content vacío' });
     const lines = raw.split(/\r?\n/).filter(Boolean);
     let created = 0;

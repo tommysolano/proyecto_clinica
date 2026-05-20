@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
+import { Link } from 'react-router-dom';
 import { HiOutlinePlus, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineBanknotes, HiOutlineArrowsRightLeft } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 
@@ -17,7 +18,6 @@ export default function BankAccounts() {
   const [selected, setSelected] = useState(null);
   const [movements, setMovements] = useState([]);
   const [showMov, setShowMov] = useState(false);
-  const [showTransfer, setShowTransfer] = useState(false);
   const [movForm, setMovForm] = useState({ bankAccount: '', date: today(), type: 'DEPOSITO', amount: 0, counterpartAccount: '', description: '', reference: '' });
 
   const load = async () => {
@@ -68,10 +68,12 @@ export default function BankAccounts() {
     try {
       await api.post('/banks/cash-to-transfer', movForm);
       toast.success('Conversión a transferencia aplicada');
-      setShowTransfer(false);
       load();
     } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
   };
+
+  // submitTransfer reservado para compatibilidad — la lógica completa está en /accounting/cash.
+  void submitTransfer;
 
   const balanceOf = (id) => balances.find((b) => String(b.bankAccount) === String(id))?.balance || 0;
 
@@ -80,7 +82,7 @@ export default function BankAccounts() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineBanknotes className="text-emerald-600" /> Bancos</h1>
         <div className="flex gap-2">
-          <button onClick={() => { setMovForm({ bankAccount: accounts[0]?._id, date: today(), description: 'Convertir efectivo a transferencia', reference: '' }); setShowTransfer(true); }} className="px-4 py-2 bg-amber-500 text-white rounded-lg flex items-center gap-2"><HiOutlineArrowsRightLeft /> Efectivo→Transferencia</button>
+          <Link to="/accounting/cash" className="px-4 py-2 bg-amber-500 text-white rounded-lg flex items-center gap-2 no-underline"><HiOutlineArrowsRightLeft /> Caja → Banco</Link>
           <button onClick={() => { setEditing(null); setForm(EMPTY); setShowAcc(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2"><HiOutlinePlus /> Nueva cuenta</button>
         </div>
       </div>
@@ -174,18 +176,6 @@ export default function BankAccounts() {
           </div>
           <input placeholder="Descripción" value={movForm.description} onChange={(e) => setMovForm({ ...movForm, description: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2" />
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShowMov(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Registrar</button></div>
-        </form>
-      </Modal>
-
-      <Modal isOpen={showTransfer} onClose={() => setShowTransfer(false)} title="Convertir efectivo en transferencia" size="lg">
-        <p className="text-sm text-slate-600 mb-3">Selecciona la cuenta destino y la referencia del voucher. Se tomarán todas las ventas en efectivo y se reclasificarán a transferencia bancaria.</p>
-        <form onSubmit={submitTransfer} className="space-y-3">
-          <select required value={movForm.bankAccount} onChange={(e) => setMovForm({ ...movForm, bankAccount: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2">
-            <option value="">Cuenta destino...</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
-          </select>
-          <input type="date" required value={movForm.date} onChange={(e) => setMovForm({ ...movForm, date: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2" />
-          <input required placeholder="Nro voucher" value={movForm.reference} onChange={(e) => setMovForm({ ...movForm, reference: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2" />
-          <div className="flex justify-end gap-2"><button type="button" onClick={() => setShowTransfer(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button><button className="px-4 py-2 bg-amber-500 text-white rounded-lg">Aplicar</button></div>
         </form>
       </Modal>
     </div>

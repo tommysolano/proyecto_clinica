@@ -422,9 +422,21 @@ function SeguimientosTab({ patientId, appointmentId }) {
     recetaItems: [],
     valor: 0,
     metodoPago: 'efectivo',
+    vitalSigns: {
+      temperature: '',
+      bloodPressure: '',
+      heartRate: '',
+      respiratoryRate: '',
+      oxygenSaturation: '',
+      weight: '',
+      height: '',
+      glucose: '',
+    },
   });
   const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
+  const [productSearch, setProductSearch] = useState('');
+  const [uploadingFuId, setUploadingFuId] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -474,22 +486,111 @@ function SeguimientosTab({ patientId, appointmentId }) {
       recetaItems: f.recetaItems.filter((_, i) => i !== idx),
     }));
 
+  // Productos filtrados por búsqueda (nombre o código)
+  const filteredProducts = productSearch.trim()
+    ? products.filter((p) => {
+        const q = productSearch.trim().toLowerCase();
+        return (
+          String(p.name || '').toLowerCase().includes(q) ||
+          String(p.code || '').toLowerCase().includes(q) ||
+          String(p.category || '').toLowerCase().includes(q)
+        );
+      })
+    : products;
+
+  // Subida de PDFs adjuntos a un seguimiento existente
+  const uploadAttachment = async (fuId, file) => {
+    if (!file) return;
+    if (file.type !== 'application/pdf') {
+      toast.error('Solo se permiten archivos PDF');
+      return;
+    }
+    setUploadingFuId(fuId);
+    try {
+      const fd = new FormData();
+      fd.append('file', file);
+      await api.post(
+        `/clinical-records/${patientId}/follow-ups/${fuId}/attachments`,
+        fd,
+        { headers: { 'Content-Type': 'multipart/form-data' } }
+      );
+      await load();
+      toast.success('Archivo adjuntado');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al subir archivo');
+    } finally {
+      setUploadingFuId(null);
+    }
+  };
+
+  const downloadAttachment = async (fuId, attId, originalName) => {
+    try {
+      const res = await api.get(
+        `/clinical-records/${patientId}/follow-ups/${fuId}/attachments/${attId}`,
+        { responseType: 'blob' }
+      );
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = originalName || 'archivo.pdf';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al descargar');
+    }
+  };
+
+  const deleteAttachment = async (fuId, attId) => {
+    if (!confirm('¿Eliminar este archivo?')) return;
+    try {
+      await api.delete(
+        `/clinical-records/${patientId}/follow-ups/${fuId}/attachments/${attId}`
+      );
+      await load();
+      toast.success('Archivo eliminado');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error');
+    }
+  };
+
   const submit = async (e) => {
     e.preventDefault();
     if (!form.descripcion) {
       toast.error('Motivo de consulta requerido');
       return;
     }
+    if (
+      !form.recetaItems.length ||
+      form.recetaItems.some((it) => !it.product)
+    ) {
+      toast.error('Debe agregar al menos un ítem de receta (medicamento/servicio)');
+      return;
+    }
     setSaving(true);
     try {
+      const vs = form.vitalSigns || {};
+      const vitalSigns = {
+        temperature: vs.temperature === '' ? null : Number(vs.temperature),
+        bloodPressure: vs.bloodPressure || '',
+        heartRate: vs.heartRate === '' ? null : Number(vs.heartRate),
+        respiratoryRate: vs.respiratoryRate === '' ? null : Number(vs.respiratoryRate),
+        oxygenSaturation: vs.oxygenSaturation === '' ? null : Number(vs.oxygenSaturation),
+        weight: vs.weight === '' ? null : Number(vs.weight),
+        height: vs.height === '' ? null : Number(vs.height),
+        glucose: vs.glucose === '' ? null : Number(vs.glucose),
+      };
       const payload = {
         ...form,
         recomendaciones: form.estudioSintomas, // legacy alias
+        vitalSigns,
       };
       if (appointmentId) payload.appointmentId = appointmentId;
       const res = await api.post(`/clinical-records/${patientId}/follow-ups`, payload);
       setRecord(res.data);
       setForm(emptyForm());
+      setProductSearch('');
       toast.success(
         appointmentId
           ? 'Seguimiento guardado. Cita finalizada.'
@@ -571,19 +672,157 @@ function SeguimientosTab({ patientId, appointmentId }) {
           />
         </Field>
 
+        {/* Signos vitales */}
         <div className={showPayment ? 'md:col-span-5' : 'md:col-span-3'}>
-          <div className="flex items-center justify-between mb-2">
-            <label className="text-sm font-medium text-slate-700">Receta</label>
-            <button
-              type="button"
-              onClick={addRow}
-              className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-emerald-600 text-white border-none cursor-pointer"
-            >
-              <HiOutlinePlus className="w-3 h-3" /> Agregar ítem
-            </button>
+          <label className="text-sm font-medium text-slate-700 block mb-2">
+            Signos vitales
+          </label>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 bg-white rounded-lg border border-slate-200 p-3">
+            <Field label="T. Arterial">
+              <input
+                type="text"
+                value={form.vitalSigns.bloodPressure}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    vitalSigns: { ...f.vitalSigns, bloodPressure: e.target.value },
+                  }))
+                }
+                placeholder="120/80"
+                className="input text-sm"
+              />
+            </Field>
+            <Field label="F. Cardíaca (lpm)">
+              <input
+                type="number"
+                min={0}
+                value={form.vitalSigns.heartRate}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    vitalSigns: { ...f.vitalSigns, heartRate: e.target.value },
+                  }))
+                }
+                className="input text-sm"
+              />
+            </Field>
+            <Field label="F. Respiratoria (rpm)">
+              <input
+                type="number"
+                min={0}
+                value={form.vitalSigns.respiratoryRate}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    vitalSigns: { ...f.vitalSigns, respiratoryRate: e.target.value },
+                  }))
+                }
+                className="input text-sm"
+              />
+            </Field>
+            <Field label="Temperatura (°C)">
+              <input
+                type="number"
+                step="0.1"
+                value={form.vitalSigns.temperature}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    vitalSigns: { ...f.vitalSigns, temperature: e.target.value },
+                  }))
+                }
+                className="input text-sm"
+              />
+            </Field>
+            <Field label="Sat. O₂ (%)">
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={form.vitalSigns.oxygenSaturation}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    vitalSigns: { ...f.vitalSigns, oxygenSaturation: e.target.value },
+                  }))
+                }
+                className="input text-sm"
+              />
+            </Field>
+            <Field label="Peso (kg)">
+              <input
+                type="number"
+                step="0.1"
+                min={0}
+                value={form.vitalSigns.weight}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    vitalSigns: { ...f.vitalSigns, weight: e.target.value },
+                  }))
+                }
+                className="input text-sm"
+              />
+            </Field>
+            <Field label="Talla (cm)">
+              <input
+                type="number"
+                step="0.1"
+                min={0}
+                value={form.vitalSigns.height}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    vitalSigns: { ...f.vitalSigns, height: e.target.value },
+                  }))
+                }
+                className="input text-sm"
+              />
+            </Field>
+            <Field label="Glucosa (mg/dL)">
+              <input
+                type="number"
+                min={0}
+                value={form.vitalSigns.glucose}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    vitalSigns: { ...f.vitalSigns, glucose: e.target.value },
+                  }))
+                }
+                className="input text-sm"
+              />
+            </Field>
+          </div>
+        </div>
+
+        <div className={showPayment ? 'md:col-span-5' : 'md:col-span-3'}>
+          <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+            <label className="text-sm font-medium text-slate-700">Receta *</label>
+            <div className="flex items-center gap-2 flex-1 max-w-md ml-auto">
+              <input
+                type="search"
+                value={productSearch}
+                onChange={(e) => setProductSearch(e.target.value)}
+                placeholder="Buscar medicamento o servicio..."
+                className="input text-xs py-1.5 flex-1"
+              />
+              <button
+                type="button"
+                onClick={addRow}
+                className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-emerald-600 text-white border-none cursor-pointer whitespace-nowrap"
+              >
+                <HiOutlinePlus className="w-3 h-3" /> Agregar ítem
+              </button>
+            </div>
           </div>
           {form.recetaItems.length === 0 && (
             <p className="text-xs text-slate-400 italic">Sin ítems. Agrega medicamentos o servicios.</p>
+          )}
+          {productSearch.trim() && (
+            <p className="text-[11px] text-slate-500 mb-1">
+              {filteredProducts.length} resultado(s) para "{productSearch}"
+            </p>
           )}
           {form.recetaItems.length > 0 && (
             <div className="overflow-x-auto bg-white rounded-lg border border-slate-200">
@@ -609,11 +848,19 @@ function SeguimientosTab({ patientId, appointmentId }) {
                           className="input text-xs py-1"
                         >
                           <option value="">— Seleccionar —</option>
-                          {products.map((p) => (
+                          {filteredProducts.map((p) => (
                             <option key={p._id} value={p._id}>
                               {p.name} ({p.category})
                             </option>
                           ))}
+                          {/* Si la fila ya tiene un producto que quedó fuera del filtro, lo conservamos */}
+                          {row.product &&
+                            !filteredProducts.some((p) => p._id === row.product) &&
+                            products.find((p) => p._id === row.product) && (
+                              <option value={row.product}>
+                                {products.find((p) => p._id === row.product).name}
+                              </option>
+                            )}
                         </select>
                       </td>
                       <td className="px-2 py-1">
@@ -742,11 +989,58 @@ function SeguimientosTab({ patientId, appointmentId }) {
               </tr>
             )}
             {followUps.map((fu) => (
-              <tr key={fu._id} className="border-t border-slate-100">
-                <td className="px-4 py-2.5 text-slate-600">
+              <tr key={fu._id} className="border-t border-slate-100 align-top">
+                <td className="px-4 py-2.5 text-slate-600 whitespace-nowrap">
                   {new Date(fu.fecha).toLocaleDateString()}
                 </td>
-                <td className="px-4 py-2.5 text-slate-800">{fu.descripcion}</td>
+                <td className="px-4 py-2.5 text-slate-800">
+                  <div>{fu.descripcion}</div>
+                  {/* Adjuntos PDF */}
+                  <div className="mt-2 space-y-1">
+                    {(fu.attachments || []).map((att) => (
+                      <div key={att._id} className="flex items-center gap-2 text-xs text-slate-600">
+                        <span>📎</span>
+                        <button
+                          type="button"
+                          onClick={() => downloadAttachment(fu._id, att._id, att.originalName)}
+                          className="underline text-emerald-700 hover:text-emerald-800 bg-transparent border-none cursor-pointer p-0"
+                        >
+                          {att.originalName}
+                        </button>
+                        <span className="text-slate-400">
+                          ({Math.round((att.size || 0) / 1024)} KB)
+                        </span>
+                        {canDelete && (
+                          <button
+                            type="button"
+                            onClick={() => deleteAttachment(fu._id, att._id)}
+                            className="text-red-500 bg-transparent border-none cursor-pointer p-0"
+                            title="Eliminar"
+                          >
+                            <HiOutlineTrash className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                    {canDelete && (
+                      <label className="inline-flex items-center gap-1 text-xs text-emerald-700 cursor-pointer mt-1">
+                        <HiOutlinePlus className="w-3 h-3" />
+                        {uploadingFuId === fu._id ? 'Subiendo...' : 'Adjuntar PDF'}
+                        <input
+                          type="file"
+                          accept="application/pdf"
+                          className="hidden"
+                          disabled={uploadingFuId === fu._id}
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            e.target.value = '';
+                            if (file) uploadAttachment(fu._id, file);
+                          }}
+                        />
+                      </label>
+                    )}
+                  </div>
+                </td>
                 {showPayment && (
                   <td className="px-4 py-2.5 text-right text-slate-700">
                     ${Number(fu.valor || 0).toFixed(2)}

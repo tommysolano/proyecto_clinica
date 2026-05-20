@@ -56,6 +56,10 @@ const productSchema = new mongoose.Schema(
     // Si true, este servicio NO marca al paciente como "nuevo" cuando se agenda
     // o se vende (útil para servicios recurrentes que no son una primera consulta).
     excludeFromFirstVisit: { type: Boolean, default: false },
+    // Si true, este servicio es atendido por enfermería (p.ej. sueroterapia).
+    // Cuando una cita con este servicio se marca 'asistida', aparece en la
+    // bandeja de TODOS los enfermeros del consultorio para que uno la reclame.
+    nursingService: { type: Boolean, default: false },
     active: { type: Boolean, default: true },
   },
   { timestamps: true }

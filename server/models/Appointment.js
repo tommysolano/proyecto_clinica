@@ -83,6 +83,10 @@ const appointmentSchema = new mongoose.Schema(
     // Cronómetro de consulta (lo arranca el doctor desde la UI).
     consultationStartedAt: { type: Date },
     consultationEndedAt: { type: Date },
+    // Enfermero/a que atendió la cita (servicios tipo sueroterapia). Cualquier
+    // enfermero del consultorio puede reclamarla; al hacerlo queda asignado.
+    attendedByNurse: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    nurseAttendedAt: { type: Date },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     // Rol del usuario que creó la cita (snapshot, útil para comisiones de call_center)
     createdByRole: { type: String },

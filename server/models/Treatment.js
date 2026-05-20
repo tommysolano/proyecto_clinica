@@ -61,7 +61,7 @@ const treatmentSchema = new mongoose.Schema(
     sourceRef: { type: mongoose.Schema.Types.ObjectId, refPath: 'sourceRefModel', default: null },
     sourceRefModel: { type: String, enum: ['Referral', 'Appointment', null], default: null },
     // Configuración de abandono automático
-    inactivityDaysToAbandon: { type: Number, default: 15 },
+    inactivityDaysToAbandon: { type: Number, default: 30 },
     inactivityWarningDays: { type: Number, default: 4 },
     lastActivityAt: { type: Date, default: Date.now },
     abandonedAt: { type: Date },
@@ -97,7 +97,7 @@ treatmentSchema.virtual('abandonAlert').get(function () {
   if (this.status === 'abandonado') return 'abandoned';
   if (this.status !== 'activo') return 'ok';
   const days = this.daysSinceLastActivity;
-  const limit = this.inactivityDaysToAbandon || 15;
+  const limit = this.inactivityDaysToAbandon || 30;
   const warn = this.inactivityWarningDays || 4;
   if (days >= limit) return 'abandoned';
   if (days >= limit - warn) return 'warning';

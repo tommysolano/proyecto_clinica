@@ -3,6 +3,40 @@ const Patient = require('../models/Patient');
 const Product = require('../models/Product');
 const Treatment = require('../models/Treatment');
 const { emitToClinic } = require('../realtime');
+const path = require('path');
+const fs = require('fs');
+const multer = require('multer');
+const crypto = require('crypto');
+
+// --- Almacenamiento en disco para adjuntos de seguimientos (PDFs) ---
+const FOLLOWUPS_DIR = path.join(__dirname, '..', 'storage', 'followups');
+try {
+  fs.mkdirSync(FOLLOWUPS_DIR, { recursive: true });
+} catch (_) {}
+
+const followupStorage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    const dir = path.join(FOLLOWUPS_DIR, String(req.clinicId || 'default'));
+    try { fs.mkdirSync(dir, { recursive: true }); } catch (_) {}
+    cb(null, dir);
+  },
+  filename: (req, file, cb) => {
+    const ts = Date.now();
+    const rand = crypto.randomBytes(6).toString('hex');
+    const ext = path.extname(file.originalname || '') || '.pdf';
+    cb(null, `${ts}-${rand}${ext}`);
+  },
+});
+
+exports.uploadAttachmentMiddleware = multer({
+  storage: followupStorage,
+  limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
+  fileFilter: (req, file, cb) => {
+    const okTypes = ['application/pdf'];
+    if (okTypes.includes(file.mimetype)) cb(null, true);
+    else cb(new Error('Solo se aceptan archivos PDF'));
+  },
+}).single('file');
 
 /**
  * Obtiene la ficha clínica de un paciente. Si no existe la crea con datos
@@ -104,14 +138,26 @@ exports.addFollowUp = async (req, res) => {
       recetaItems,       // array estructurado de items (medicamentos/servicios) desde inventario
       observaciones,     // reemplaza el antiguo "tratamiento asociado"
       treatment,         // legacy: id de tratamiento manual (sigue soportado)
+      vitalSigns,        // signos vitales (opcional)
     } = req.body;
 
     if (!descripcion && !req.body.motivoConsulta) {
       return res.status(400).json({ message: 'El motivo de consulta es requerido' });
     }
 
+    // Validación: la receta es obligatoria para guardar el seguimiento.
+    const itemsRaw = Array.isArray(recetaItems) ? recetaItems : [];
+    const hasReceta =
+      itemsRaw.some((it) => (it.product || (it.name && it.name.trim()))) ||
+      (typeof receta === 'string' && receta.trim().length > 0);
+    if (!hasReceta) {
+      return res
+        .status(400)
+        .json({ message: 'Debe registrar al menos un ítem en la receta antes de guardar el seguimiento' });
+    }
+
     // --- Hidratar recetaItems con snapshot de nombre/categoría y marcar servicios ---
-    const items = Array.isArray(recetaItems) ? recetaItems : [];
+    const items = itemsRaw;
     const productIds = items.map((it) => it.product).filter(Boolean);
     let productsById = {};
     if (productIds.length) {
@@ -176,6 +222,16 @@ exports.addFollowUp = async (req, res) => {
             receta: receta || '',
             recetaItems: hydratedItems,
             observaciones: observaciones || '',
+            vitalSigns: vitalSigns && typeof vitalSigns === 'object' ? {
+              temperature: vitalSigns.temperature ?? null,
+              bloodPressure: vitalSigns.bloodPressure || '',
+              heartRate: vitalSigns.heartRate ?? null,
+              respiratoryRate: vitalSigns.respiratoryRate ?? null,
+              oxygenSaturation: vitalSigns.oxygenSaturation ?? null,
+              weight: vitalSigns.weight ?? null,
+              height: vitalSigns.height ?? null,
+              glucose: vitalSigns.glucose ?? null,
+            } : undefined,
             treatment: autoTreatmentId,
             autoTreatmentCreated: autoTreatmentId && !treatment ? autoTreatmentId : undefined,
             valor: valor || 0,
@@ -235,6 +291,107 @@ exports.deleteFollowUp = async (req, res) => {
     res.json(record);
   } catch (error) {
     res.status(500).json({ message: 'Error al eliminar seguimiento' });
+  }
+};
+
+/**
+ * Sube un adjunto PDF a un seguimiento específico.
+ * Espera multipart/form-data con campo "file" (single).
+ */
+exports.uploadFollowUpAttachment = async (req, res) => {
+  try {
+    const { patientId, followUpId } = req.params;
+    if (!req.file) return res.status(400).json({ message: 'No se recibió archivo' });
+
+    const record = await ClinicalRecord.findOne({
+      clinic: req.clinicId,
+      patient: patientId,
+    });
+    if (!record) {
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+      return res.status(404).json({ message: 'Ficha clínica no encontrada' });
+    }
+    const fu = record.followUps.id(followUpId);
+    if (!fu) {
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+      return res.status(404).json({ message: 'Seguimiento no encontrado' });
+    }
+
+    const attachment = {
+      filename: req.file.filename,
+      originalName: req.file.originalname,
+      mimeType: req.file.mimetype,
+      size: req.file.size,
+      uploadedAt: new Date(),
+      uploadedBy: req.user._id,
+    };
+    fu.attachments.push(attachment);
+    await record.save();
+
+    const saved = fu.attachments[fu.attachments.length - 1];
+    res.status(201).json({ message: 'Archivo subido', attachment: saved });
+  } catch (error) {
+    if (req.file) {
+      try { fs.unlinkSync(req.file.path); } catch (_) {}
+    }
+    res.status(500).json({ message: 'Error al subir archivo', error: error.message });
+  }
+};
+
+/**
+ * Descarga un adjunto PDF de un seguimiento.
+ */
+exports.downloadFollowUpAttachment = async (req, res) => {
+  try {
+    const { patientId, followUpId, attachmentId } = req.params;
+    const record = await ClinicalRecord.findOne({
+      clinic: req.clinicId,
+      patient: patientId,
+    });
+    if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
+    const fu = record.followUps.id(followUpId);
+    if (!fu) return res.status(404).json({ message: 'Seguimiento no encontrado' });
+    const att = fu.attachments.id(attachmentId);
+    if (!att) return res.status(404).json({ message: 'Archivo no encontrado' });
+
+    const filePath = path.join(FOLLOWUPS_DIR, String(req.clinicId), att.filename);
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ message: 'Archivo no existe en disco' });
+    }
+    res.setHeader('Content-Type', att.mimeType || 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `inline; filename="${encodeURIComponent(att.originalName)}"`
+    );
+    fs.createReadStream(filePath).pipe(res);
+  } catch (error) {
+    res.status(500).json({ message: 'Error al descargar archivo', error: error.message });
+  }
+};
+
+/**
+ * Elimina un adjunto PDF de un seguimiento.
+ */
+exports.deleteFollowUpAttachment = async (req, res) => {
+  try {
+    const { patientId, followUpId, attachmentId } = req.params;
+    const record = await ClinicalRecord.findOne({
+      clinic: req.clinicId,
+      patient: patientId,
+    });
+    if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
+    const fu = record.followUps.id(followUpId);
+    if (!fu) return res.status(404).json({ message: 'Seguimiento no encontrado' });
+    const att = fu.attachments.id(attachmentId);
+    if (!att) return res.status(404).json({ message: 'Archivo no encontrado' });
+
+    const filePath = path.join(FOLLOWUPS_DIR, String(req.clinicId), att.filename);
+    try { fs.unlinkSync(filePath); } catch (_) {}
+    att.deleteOne();
+    await record.save();
+    res.json({ message: 'Archivo eliminado' });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al eliminar archivo', error: error.message });
   }
 };
 

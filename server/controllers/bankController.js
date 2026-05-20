@@ -195,6 +195,32 @@ exports.voidMovement = async (req, res) => {
 };
 
 // ---------- Convertir ventas en efectivo a depósito en cuenta bancaria ----------
+
+// Lista las ventas en efectivo pendientes de depósito (caja) y el total acumulado.
+exports.getCashPending = async (req, res) => {
+  try {
+    const filter = {
+      clinic: req.clinicId,
+      paymentMethod: 'efectivo',
+      status: 'completada',
+    };
+    if (req.query.startDate && req.query.endDate) {
+      filter.createdAt = {
+        $gte: new Date(req.query.startDate),
+        $lte: new Date(req.query.endDate),
+      };
+    }
+    const sales = await Sale.find(filter)
+      .populate('patient', 'firstName lastName cedula')
+      .populate('createdBy', 'name')
+      .sort({ createdAt: -1 });
+    const total = sales.reduce((s, v) => s + (v.total || 0), 0);
+    res.json({ sales, total, count: sales.length });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 exports.cashToTransfer = async (req, res) => {
   try {
     const { saleIds, bankAccount, voucher, date, description } = req.body;

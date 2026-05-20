@@ -267,8 +267,8 @@ export default function Treatments() {
         >
           <option value="">Todas las alertas</option>
           <option value="completed">Completados</option>
-          <option value="warning">Aviso antes de 15 días</option>
-          <option value="abandoned">Abandonados (+15 días)</option>
+          <option value="warning">Aviso antes de 30 días</option>
+          <option value="abandoned">Abandonados (+30 días)</option>
         </select>
         {canEdit && (
           <>
@@ -311,7 +311,7 @@ export default function Treatments() {
           const src = sourceMap[t.source] || sourceMap.manual;
           const alert = t.abandonAlert; // 'ok' | 'warning' | 'abandoned'
           const daysIdle = t.daysSinceLastActivity || 0;
-          const limit = t.inactivityDaysToAbandon || 15;
+          const limit = t.inactivityDaysToAbandon || 30;
           return (
             <div key={t._id} className="bg-white rounded-xl border border-slate-200 p-4">
               <div className="flex items-start justify-between flex-wrap gap-2">

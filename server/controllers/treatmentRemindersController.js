@@ -10,7 +10,7 @@ async function applyAbandonment(treatments) {
     const ref = t.lastActivityAt || t.startDate || t.createdAt;
     if (!ref) continue;
     const days = Math.floor((now - new Date(ref).getTime()) / 86400000);
-    const limit = t.inactivityDaysToAbandon || 15;
+    const limit = t.inactivityDaysToAbandon || 30;
     if (days >= limit) {
       t.status = 'abandonado';
       t.abandonedAt = new Date();

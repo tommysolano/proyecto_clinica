@@ -48,7 +48,7 @@ import {
 // Cada item declara qué roles pueden verlo. superOnly = solo isSuperAdmin.
 const ALL_ITEMS = [
   { path: '/', label: 'Dashboard', icon: HiOutlineHome, roles: ['admin', 'cajero', 'contabilidad', 'doctor', 'call_center', 'marketing', 'enfermero'] },
-  { path: '/patients', label: 'Pacientes', icon: HiOutlineUsers, roles: ['admin', 'cajero', 'call_center', 'marketing', 'enfermero'] },
+  { path: '/patients', label: 'Pacientes', icon: HiOutlineUsers, roles: ['admin', 'cajero', 'marketing', 'enfermero'] },
   { path: '/appointments', label: 'Citas', icon: HiOutlineCalendar, roles: ['admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'] },
   { path: '/calendar', label: 'Calendario', icon: HiOutlineCalendar, roles: ['admin', 'cajero', 'doctor', 'call_center', 'enfermero'] },
   { path: '/treatments', label: 'Tratamientos', icon: HiOutlineHeart, roles: ['admin', 'cajero', 'marketing', 'enfermero'] },
@@ -76,6 +76,7 @@ const ACCOUNTING_ITEMS = [
   { path: '/accounting/ledger', label: 'Libro Mayor', icon: HiOutlineBookOpen },
   { path: '/accounting/trial-balance', label: 'Balance Comprobación', icon: HiOutlineScale },
   { path: '/accounting/banks', label: 'Bancos', icon: HiOutlineBanknotes },
+  { path: '/accounting/cash', label: 'Caja', icon: HiOutlineCurrencyDollar },
   { path: '/accounting/reconciliations', label: 'Conciliaciones', icon: HiOutlineScale },
   { path: '/accounting/suppliers', label: 'Proveedores', icon: HiOutlineTruck },
   { path: '/accounting/purchases', label: 'Compras', icon: HiOutlineDocumentText },

@@ -16,6 +16,7 @@ router.get('/transactions', requireRole('admin', 'contabilidad'), c.listMovement
 router.post('/transactions', requireRole('admin', 'contabilidad'), c.createMovement);
 router.post('/transactions/:id/void', requireRole('admin', 'contabilidad'), c.voidMovement);
 router.post('/cash-to-transfer', requireRole('admin', 'contabilidad'), c.cashToTransfer);
+router.get('/cash-pending', requireRole('admin', 'contabilidad'), c.getCashPending);
 
 // Conciliación
 router.get('/reconciliations', requireRole('admin', 'contabilidad'), c.listReconciliations);

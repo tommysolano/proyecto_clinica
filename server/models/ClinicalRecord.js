@@ -42,6 +42,28 @@ const followUpSchema = new mongoose.Schema(
     recetaItems: { type: [recetaItemSchema], default: [] },
     // Reemplaza al campo "treatment" (ref). Ahora se captura como texto.
     observaciones: { type: String, trim: true },
+    // Signos vitales del paciente
+    vitalSigns: {
+      temperature: { type: Number, default: null },        // °C
+      bloodPressure: { type: String, trim: true, default: '' }, // "120/80"
+      heartRate: { type: Number, default: null },          // lpm
+      respiratoryRate: { type: Number, default: null },    // rpm
+      oxygenSaturation: { type: Number, default: null },   // %
+      weight: { type: Number, default: null },             // kg
+      height: { type: Number, default: null },             // cm
+      glucose: { type: Number, default: null },            // mg/dL
+    },
+    // Archivos PDF subidos por el doctor (ecografías, bioresonancias, etc.)
+    attachments: [
+      {
+        filename: { type: String, required: true },
+        originalName: { type: String, required: true },
+        mimeType: { type: String, default: 'application/pdf' },
+        size: { type: Number, default: 0 },
+        uploadedAt: { type: Date, default: Date.now },
+        uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      },
+    ],
     // Mantenemos compat con tratamientos referenciados (auto-creados a partir de la receta).
     treatment: { type: mongoose.Schema.Types.ObjectId, ref: 'Treatment', default: null },
     autoTreatmentCreated: { type: mongoose.Schema.Types.ObjectId, ref: 'Treatment' },

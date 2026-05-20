@@ -83,8 +83,16 @@ exports.getAppointments = async (req, res) => {
       query.createdBy = req.user._id;
     }
     if (req.role === 'enfermero') {
-      // Enfermería solo ve las citas confirmadas / asistidas (para guíar pacientes)
-      query.status = query.status || { $in: ['confirmada', 'asistida'] };
+      // Enfermería ve las citas asistidas/completadas que tengan al menos un
+      // servicio marcado como `nursingService` (p.ej. sueroterapia). La cita
+      // aparece para TODOS los enfermeros del consultorio hasta que uno la
+      // reclame con POST /:id/nurse-attend.
+      const nursingProductIds = await Product.find({
+        clinic: req.clinicId,
+        nursingService: true,
+      }).distinct('_id');
+      query['services.product'] = { $in: nursingProductIds };
+      query.status = query.status || { $in: ['asistida', 'completada'] };
     }
 
     // Búsqueda libre por paciente (nombre, apellido, cédula o teléfono)
@@ -112,8 +120,10 @@ exports.getAppointments = async (req, res) => {
     const appointments = await Appointment.find(query)
       .populate('patient', POPULATE_PATIENT)
       .populate('doctor', POPULATE_DOCTOR)
+      .populate('attendedByNurse', POPULATE_DOCTOR)
       .populate('createdBy', POPULATE_CREATOR)
       .populate('room', 'name code')
+      .populate('services.product', 'name code salePrice category nursingService')
       .sort({ date: 1, startTime: 1 });
 
     res.json(appointments);
@@ -612,11 +622,21 @@ exports.getTodayAppointments = async (req, res) => {
     if (req.role === 'call_center') {
       query.createdBy = req.user._id;
     }
+    if (req.role === 'enfermero') {
+      const nursingProductIds = await Product.find({
+        clinic: req.clinicId,
+        nursingService: true,
+      }).distinct('_id');
+      query['services.product'] = { $in: nursingProductIds };
+      query.status = { $in: ['asistida', 'completada'] };
+    }
 
     const appointments = await Appointment.find(query)
       .populate('patient', POPULATE_PATIENT)
       .populate('doctor', POPULATE_DOCTOR)
+      .populate('attendedByNurse', POPULATE_DOCTOR)
       .populate('createdBy', POPULATE_CREATOR)
+      .populate('services.product', 'name code salePrice category nursingService')
       .sort({ startTime: 1 });
 
     res.json(appointments);
@@ -920,5 +940,85 @@ exports.markConfirmed = async (req, res) => {
     res.json(apt);
   } catch (error) {
     res.status(500).json({ message: 'Error al confirmar cita' });
+  }
+};
+
+/**
+ * Enfermero/a reclama y marca como atendida una cita de servicios de enfermería
+ * (p.ej. sueroterapia). Cualquier enfermero del consultorio puede reclamarla
+ * mientras `attendedByNurse` esté vacío. Una vez reclamada queda fija a ese
+ * enfermero y la cita pasa a 'completada'.
+ */
+exports.nurseAttend = async (req, res) => {
+  try {
+    const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
+    if (apt.attendedByNurse) {
+      return res
+        .status(409)
+        .json({ message: 'Esta cita ya fue atendida por otro enfermero/a.' });
+    }
+    if (apt.status !== 'asistida') {
+      return res
+        .status(400)
+        .json({ message: 'La cita debe estar en estado "asistida" para ser atendida por enfermería.' });
+    }
+    apt.attendedByNurse = req.user._id;
+    apt.nurseAttendedAt = new Date();
+    apt.status = 'completada';
+    if (!apt.consultationStartedAt) apt.consultationStartedAt = new Date();
+    apt.consultationEndedAt = new Date();
+    await apt.save();
+
+    // Avance de tratamientos (mismo comportamiento que endConsultation del doctor)
+    try {
+      const Treatment = require('../models/Treatment');
+      const services = (apt.services || []).map((s) => String(s.product));
+      if (services.length && apt.patient) {
+        const treatments = await Treatment.find({
+          clinic: req.clinicId,
+          patient: apt.patient,
+          status: { $in: ['activo', 'abandonado'] },
+        });
+        for (const t of treatments) {
+          let changed = false;
+          for (const svcId of services) {
+            const idx = t.items.findIndex(
+              (it) => String(it.product) === svcId && (it.completed || 0) < it.quantity
+            );
+            if (idx >= 0) {
+              t.items[idx].completed += 1;
+              t.items[idx].completionRefs.push({
+                type: 'appointment',
+                ref: apt._id,
+                date: new Date(),
+              });
+              changed = true;
+            }
+          }
+          if (changed) {
+            t.lastActivityAt = new Date();
+            if (t.status === 'abandonado') {
+              t.status = 'activo';
+              t.abandonedAt = undefined;
+            }
+            if (t.progress >= 100) t.status = 'completado';
+            await t.save();
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('No se pudo actualizar tratamientos en nurseAttend:', e.message);
+    }
+
+    const populated = await Appointment.findById(apt._id)
+      .populate('patient', POPULATE_PATIENT)
+      .populate('doctor', POPULATE_DOCTOR)
+      .populate('attendedByNurse', POPULATE_DOCTOR)
+      .populate('services.product', 'name code salePrice category nursingService');
+    emitToClinic(req.clinicId, 'appointment:updated', populated);
+    res.json(populated);
+  } catch (error) {
+    res.status(500).json({ message: 'Error al atender la cita', error: error.message });
   }
 };
