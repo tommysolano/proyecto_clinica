@@ -13,6 +13,29 @@ const RATES = {
   SBU_2024: 460, // Salario Básico Unificado
 };
 
+/**
+ * Gross-up: dado un sueldo NETO deseado, calcula el bruto que hay que asignar
+ * para que netoPagar == netDesired luego de descontar el aporte personal IESS (9.45%).
+ * No incluye IR porque el IR es retención que también afecta al neto; el usuario
+ * que pacta neto suele asumir IR como parte del costo (se recalcula al cerrar rol).
+ * Si se requiere absorber IR también, se puede iterar.
+ */
+function grossUpFromNet(netDesired) {
+  if (!netDesired || netDesired <= 0) return 0;
+  return +(netDesired / (1 - RATES.IESS_PERSONAL)).toFixed(2);
+}
+
+/**
+ * Devuelve el sueldo bruto efectivo a usar para cálculos de nómina,
+ * respetando el tipo (NET o GROSS) configurado en el empleado.
+ */
+function effectiveBaseSalary(emp) {
+  if (emp.salaryType === 'NET' && emp.netSalary > 0) {
+    return grossUpFromNet(emp.netSalary);
+  }
+  return emp.baseSalary || 0;
+}
+
 // ----- Empleados -----
 exports.listEmployees = async (req, res) => {
   const filter = { clinic: req.clinicId };
@@ -26,14 +49,57 @@ exports.getEmployee = async (req, res) => {
   res.json(e);
 };
 exports.createEmployee = async (req, res) => {
-  try { const e = await Employee.create({ ...req.body, clinic: req.clinicId }); res.status(201).json(e); }
+  try {
+    const data = { ...req.body, clinic: req.clinicId };
+    // Si vienen datos de tipo NET pero no baseSalary, calcular el bruto inicial.
+    if (data.salaryType === 'NET' && data.netSalary > 0 && !data.baseSalary) {
+      data.baseSalary = grossUpFromNet(Number(data.netSalary));
+    }
+    if (!data.baseSalary || data.baseSalary <= 0) {
+      return res.status(400).json({ message: 'baseSalary es requerido (o netSalary si salaryType=NET)' });
+    }
+    data.salaryHistory = [{
+      date: new Date(),
+      newType: data.salaryType || 'GROSS',
+      newSalary: data.baseSalary,
+      newNet: data.netSalary || 0,
+      reason: 'Alta del empleado',
+      changedBy: req.user._id,
+    }];
+    const e = await Employee.create(data);
+    res.status(201).json(e);
+  }
   catch (err) { res.status(400).json({ message: err.message }); }
 };
 exports.updateEmployee = async (req, res) => {
   try {
     const e = await Employee.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!e) return res.status(404).json({ message: 'No encontrado' });
-    Object.assign(e, req.body); await e.save(); res.json(e);
+    const patch = { ...req.body };
+    // Si se cambia a NET, recalcular baseSalary a partir de netSalary
+    if (patch.salaryType === 'NET' && patch.netSalary && patch.netSalary > 0) {
+      patch.baseSalary = grossUpFromNet(Number(patch.netSalary));
+    }
+    const salaryChanged =
+      (patch.baseSalary !== undefined && Number(patch.baseSalary) !== Number(e.baseSalary)) ||
+      (patch.netSalary !== undefined && Number(patch.netSalary || 0) !== Number(e.netSalary || 0)) ||
+      (patch.salaryType !== undefined && patch.salaryType !== e.salaryType);
+    if (salaryChanged) {
+      e.salaryHistory.push({
+        date: new Date(),
+        previousType: e.salaryType,
+        previousSalary: e.baseSalary,
+        previousNet: e.netSalary,
+        newType: patch.salaryType || e.salaryType,
+        newSalary: patch.baseSalary !== undefined ? Number(patch.baseSalary) : e.baseSalary,
+        newNet: patch.netSalary !== undefined ? Number(patch.netSalary || 0) : e.netSalary,
+        reason: patch.salaryChangeReason || 'Modificación de sueldo',
+        changedBy: req.user._id,
+      });
+    }
+    delete patch.salaryChangeReason;
+    delete patch.salaryHistory; // no permitir sobrescribir el historial desde el body
+    Object.assign(e, patch); await e.save(); res.json(e);
   } catch (err) { res.status(400).json({ message: err.message }); }
 };
 exports.deleteEmployee = async (req, res) => {
@@ -132,7 +198,7 @@ exports.generatePayroll = async (req, res) => {
       const yearsWorked = (endOfMonth - new Date(emp.hireDate)) / (1000 * 60 * 60 * 24 * 365);
       const eligibleFondos = emp.receivesFondosReserva || yearsWorked >= 1;
 
-      const base = emp.baseSalary || 0;
+      const base = effectiveBaseSalary(emp);
       const decimoTercero = emp.receivesDecimoTercero && emp.decimoTerceroAcumulado === 'MENSUALIZADO' ? +(base / 12).toFixed(2) : 0;
       const decimoCuarto = emp.receivesDecimoCuarto && emp.decimoCuartoAcumulado === 'MENSUALIZADO' ? +(RATES.SBU_2024 / 12).toFixed(2) : 0;
       const fondosReserva = eligibleFondos && emp.fondosReservaAcumulado === 'MENSUALIZADO' ? +(base * RATES.FONDOS_RESERVA).toFixed(2) : 0;

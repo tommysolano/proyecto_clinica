@@ -1,6 +1,9 @@
 const router = require('express').Router();
-const { getMovements, createMovement } = require('../controllers/productController');
+const { getMovements, createMovement, getConsolidated } = require('../controllers/productController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
+
+// Endpoint multi-clínica: no requiere clinic context (agrega todas las clínicas a las que pertenece el usuario)
+router.get('/consolidated', auth, requireRole('admin', 'contabilidad'), getConsolidated);
 
 router.use(auth, requireClinic);
 

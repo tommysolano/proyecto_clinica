@@ -23,6 +23,11 @@ const bankTransactionSchema = new mongoose.Schema(
     direction: { type: Number, enum: [1, -1], required: true },
     description: { type: String, default: '' },
     reference: { type: String, default: '' }, // nº papeleta, nº cheque, etc.
+    // Comprobante del depósito o transferencia (obligatorio en DEPOSITO/TRANSFERENCIA_IN
+    // y al pagar a proveedores desde cuenta bancaria). Puede ser una URL al archivo
+    // subido o una referencia/secuencial entregado por el banco.
+    voucherUrl: { type: String, default: '' },
+    voucherNumber: { type: String, default: '' },
     checkNumber: { type: String, default: null },
     voided: { type: Boolean, default: false },
     voidReason: { type: String, default: '' },

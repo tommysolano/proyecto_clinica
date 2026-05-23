@@ -85,6 +85,7 @@ const ACCOUNTING_ITEMS = [
   { path: '/accounting/credit-card-batches', label: 'Lotes Tarjetas', icon: HiOutlineCreditCard },
   { path: '/accounting/warehouses', label: 'Bodegas', icon: HiOutlineCube },
   { path: '/accounting/inv-categories', label: 'Categorías Inv.', icon: HiOutlineSquares2X2 },
+  { path: '/accounting/inv-consolidated', label: 'Inv. Consolidado', icon: HiOutlineCube },
   { path: '/accounting/counts', label: 'Tomas Físicas', icon: HiOutlineClipboardDocumentCheck },
   { path: '/accounting/assets', label: 'Activos Fijos', icon: HiOutlineBuildingLibrary },
   { path: '/accounting/employees', label: 'Empleados', icon: HiOutlineUserGroup },

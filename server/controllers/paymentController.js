@@ -54,7 +54,7 @@ exports.create = async (req, res) => {
   try {
     const { type, date, partyModel, partyRef, partyName, partyId,
             method, bankAccount, checkNumber, reference, applications = [],
-            advanceAmount = 0, description } = req.body;
+            advanceAmount = 0, description, voucherUrl, voucherNumber } = req.body;
     if (!['COBRO', 'PAGO'].includes(type)) return res.status(400).json({ message: 'type inválido' });
     if (!method) return res.status(400).json({ message: 'method requerido' });
     if (!['EFECTIVO'].includes(method) && !bankAccount && method !== 'TARJETA') {
@@ -72,6 +72,24 @@ exports.create = async (req, res) => {
           const inv = await Invoice.findOne({ _id: a.docRef, clinic: req.clinicId });
           if (!inv) return res.status(400).json({ message: `Factura no encontrada` });
         }
+      }
+    }
+    // Para PAGO desde banco, exigir comprobante y validar saldo disponible
+    if (type === 'PAGO' && method !== 'EFECTIVO' && bankAccount) {
+      if (!voucherNumber && !voucherUrl && !reference && !checkNumber) {
+        return res.status(400).json({
+          message: 'Comprobante requerido para pagos bancarios (voucherNumber, voucherUrl, reference o checkNumber)',
+        });
+      }
+      const bankPre = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId });
+      if (!bankPre) return res.status(404).json({ message: 'Cuenta bancaria no encontrada' });
+      const agg = await BankTransaction.aggregate([
+        { $match: { clinic: bankPre.clinic, bankAccount: bankPre._id, voided: false } },
+        { $group: { _id: null, total: { $sum: { $multiply: ['$amount', '$direction'] } } } },
+      ]);
+      const balance = (bankPre.initialBalance || 0) + (agg[0]?.total || 0);
+      if (balance < total) {
+        return res.status(400).json({ message: `Saldo insuficiente en ${bankPre.name} (disponible $${balance.toFixed(2)})` });
       }
     }
 
@@ -145,6 +163,7 @@ exports.create = async (req, res) => {
         clinic: req.clinicId, bankAccount: bank._id, date: txDate, type: txType,
         amount: total, direction: type === 'COBRO' ? 1 : -1,
         description: description || `${type} ${number}`, reference,
+        voucherUrl: voucherUrl || '', voucherNumber: voucherNumber || '',
         checkNumber, journalEntry: entry._id, sourceModel: 'Payment', createdBy: req.user._id,
       });
     }

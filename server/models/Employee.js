@@ -18,7 +18,28 @@ const employeeSchema = new mongoose.Schema(
     department: String,
     contractType: { type: String, enum: ['INDEFINIDO', 'FIJO', 'EVENTUAL', 'PRACTICAS', 'TIEMPO_PARCIAL'], default: 'INDEFINIDO' },
     paymentFrequency: { type: String, enum: ['MENSUAL', 'QUINCENAL', 'SEMANAL'], default: 'MENSUAL' },
-    baseSalary: { type: Number, required: true },
+    // Tipo de sueldo pactado en el contrato.
+    // - GROSS: baseSalary es el sueldo bruto (ingreso afecto a IESS/IR). Es el caso estándar.
+    // - NET: el contrato es por sueldo neto a recibir; baseSalary representa el bruto
+    //   calculado (gross-up) para asegurar que netoPagar == netSalary cada mes.
+    salaryType: { type: String, enum: ['GROSS', 'NET'], default: 'GROSS' },
+    baseSalary: { type: Number, required: true }, // bruto mensual a usar en cálculos
+    netSalary: { type: Number, default: 0 },      // neto pactado cuando salaryType === 'NET'
+    // Historial de cambios de sueldo (auditoría)
+    salaryHistory: {
+      type: [{
+        date: { type: Date, default: Date.now },
+        previousType: { type: String, enum: ['GROSS', 'NET'] },
+        previousSalary: Number,
+        previousNet: Number,
+        newType: { type: String, enum: ['GROSS', 'NET'] },
+        newSalary: Number,
+        newNet: Number,
+        reason: String,
+        changedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      }],
+      default: [],
+    },
     sectoralCode: String, // código comisión sectorial
     bankAccount: String,
     bankName: String,

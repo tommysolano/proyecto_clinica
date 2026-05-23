@@ -1,6 +1,8 @@
 const PurchaseInvoice = require('../models/PurchaseInvoice');
 const Supplier = require('../models/Supplier');
 const ChartOfAccount = require('../models/ChartOfAccount');
+const Product = require('../models/Product');
+const InventoryMovement = require('../models/InventoryMovement');
 const { createEntry, findAccount, reverseEntry } = require('../utils/accounting');
 
 function calcTotals(invoice) {
@@ -72,6 +74,8 @@ exports.create = async (req, res) => {
     }
     // Asiento de compra: DB Gasto/Inventario por cada item + DB IVA en compras / CR Proveedores
     await postPurchaseJournal(inv, req);
+    // Actualizar inventario: stock + costo promedio + movimiento
+    await postInventoryEntries(inv, req);
     res.status(201).json(inv);
   } catch (e) {
     res.status(e.status || 400).json({ message: e.message });
@@ -80,9 +84,26 @@ exports.create = async (req, res) => {
 
 async function postPurchaseJournal(inv, req) {
   const lines = [];
+  // Resolver cuenta de inventario por defecto (1.1.04.01) una sola vez
+  let inventoryDefault = null;
   for (const it of inv.items || []) {
-    if (!it.account) continue;
-    lines.push({ account: it.account, debit: it.subtotal, credit: 0, description: it.description });
+    let accountId = it.account;
+    // Si el ítem está ligado a un producto físico (no servicio/ilimitado), debitar cuenta de inventario (activo)
+    if (it.product) {
+      const prod = await Product.findOne({ _id: it.product, clinic: req.clinicId });
+      if (prod && !prod.unlimited && prod.category !== 'servicio') {
+        if (prod.inventoryAccount) {
+          accountId = prod.inventoryAccount;
+        } else {
+          if (!inventoryDefault) inventoryDefault = await findAccount(req.clinicId, { code: '1.1.04.01' });
+          if (inventoryDefault) accountId = inventoryDefault._id;
+        }
+        // Persistir el account decidido para que el ítem refleje la cuenta usada
+        it.account = accountId;
+      }
+    }
+    if (!accountId) continue;
+    lines.push({ account: accountId, debit: it.subtotal, credit: 0, description: it.description });
   }
   if (inv.iva > 0) {
     const ivaAcc = await findAccount(req.clinicId, { taxCode: 'IVA_COMPRAS' });
@@ -112,16 +133,66 @@ async function postPurchaseJournal(inv, req) {
   await inv.save();
 }
 
+/**
+ * Procesa la entrada de inventario para cada ítem de la factura que apunte a un
+ * producto físico: actualiza stock, recalcula costo promedio ponderado y registra
+ * un InventoryMovement de tipo entrada. Idempotente por (sourceModel, sourceRef).
+ */
+async function postInventoryEntries(inv, req) {
+  // Evita duplicar entradas si ya fueron registradas (p.ej. en una edición)
+  await InventoryMovement.deleteMany({
+    clinic: req.clinicId,
+    sourceModel: 'PurchaseInvoice',
+    sourceRef: inv._id,
+  });
+  for (const it of inv.items || []) {
+    if (!it.product || !it.quantity || it.quantity <= 0) continue;
+    const prod = await Product.findOne({ _id: it.product, clinic: req.clinicId });
+    if (!prod || prod.unlimited || prod.category === 'servicio') continue;
+    const qty = Number(it.quantity);
+    const unitCost = Number(it.unitPrice) || 0;
+    const prevStock = Number(prod.stock || 0);
+    const prevAvg = Number(prod.averageCost || prod.purchasePrice || 0);
+    const newStock = prevStock + qty;
+    // Costo promedio ponderado
+    const newAvg = newStock > 0
+      ? +(((prevStock * prevAvg) + (qty * unitCost)) / newStock).toFixed(4)
+      : unitCost;
+    prod.stock = newStock;
+    prod.averageCost = newAvg;
+    // Actualiza precio de compra para reflejar el último costo
+    if (unitCost > 0) prod.purchasePrice = unitCost;
+    await prod.save();
+    await InventoryMovement.create({
+      clinic: req.clinicId,
+      product: prod._id,
+      type: 'entrada',
+      quantity: qty,
+      unitCost,
+      totalCost: +(qty * unitCost).toFixed(2),
+      balanceAfter: newStock,
+      reason: `Compra ${inv.serie || ''}`.trim(),
+      reference: inv.serie || '',
+      sourceModel: 'PurchaseInvoice',
+      sourceRef: inv._id,
+      createdBy: req.user._id,
+    });
+  }
+}
+
 exports.update = async (req, res) => {
   try {
     const inv = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!inv) return res.status(404).json({ message: 'No encontrada' });
     if (inv.status !== 'REGISTRADA') return res.status(400).json({ message: 'No editable en su estado' });
     if (inv.journalEntry) await reverseEntry({ clinicId: req.clinicId, entryId: inv.journalEntry, userId: req.user._id, reason: 'Edición de compra' });
+    // Revertir entradas previas de inventario (stock)
+    await revertInventoryEntries(inv, req);
     Object.assign(inv, req.body);
     calcTotals(inv);
     await inv.save();
     await postPurchaseJournal(inv, req);
+    await postInventoryEntries(inv, req);
     res.json(inv);
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
@@ -132,11 +203,39 @@ exports.void = async (req, res) => {
     if (!inv) return res.status(404).json({ message: 'No encontrada' });
     if (inv.status === 'ANULADA') return res.status(400).json({ message: 'Ya anulada' });
     if (inv.journalEntry) await reverseEntry({ clinicId: req.clinicId, entryId: inv.journalEntry, userId: req.user._id, reason: 'Anulación' });
+    // Revertir las entradas de inventario asociadas
+    await revertInventoryEntries(inv, req);
     inv.status = 'ANULADA';
     await inv.save();
     res.json({ message: 'Anulada' });
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
+
+/**
+ * Revierte las entradas de inventario provocadas por esta factura: descuenta el
+ * stock que se había sumado y elimina los movimientos. No restaura el costo
+ * promedio histórico (sigue siendo conservador y suficiente para anulación).
+ */
+async function revertInventoryEntries(inv, req) {
+  const movs = await InventoryMovement.find({
+    clinic: req.clinicId,
+    sourceModel: 'PurchaseInvoice',
+    sourceRef: inv._id,
+    type: 'entrada',
+  });
+  for (const m of movs) {
+    const prod = await Product.findOne({ _id: m.product, clinic: req.clinicId });
+    if (prod) {
+      prod.stock = Math.max(0, Number(prod.stock || 0) - Number(m.quantity || 0));
+      await prod.save();
+    }
+  }
+  await InventoryMovement.deleteMany({
+    clinic: req.clinicId,
+    sourceModel: 'PurchaseInvoice',
+    sourceRef: inv._id,
+  });
+}
 
 /**
  * Importa archivo TXT del SRI (consulta de comprobantes recibidos).

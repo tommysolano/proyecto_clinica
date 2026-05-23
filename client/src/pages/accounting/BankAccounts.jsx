@@ -18,7 +18,7 @@ export default function BankAccounts() {
   const [selected, setSelected] = useState(null);
   const [movements, setMovements] = useState([]);
   const [showMov, setShowMov] = useState(false);
-  const [movForm, setMovForm] = useState({ bankAccount: '', date: today(), type: 'DEPOSITO', amount: 0, counterpartAccount: '', description: '', reference: '' });
+  const [movForm, setMovForm] = useState({ bankAccount: '', date: today(), type: 'DEPOSITO', amount: 0, counterpartAccount: '', description: '', reference: '', voucherNumber: '', voucherUrl: '' });
 
   const load = async () => {
     try {
@@ -110,7 +110,7 @@ export default function BankAccounts() {
         <div className="bg-white rounded-xl p-4 shadow-sm border border-emerald-100">
           <div className="flex justify-between items-center mb-3">
             <h2 className="font-semibold">Movimientos · {selected.name}</h2>
-            <button onClick={() => { setMovForm({ bankAccount: selected._id, date: today(), type: 'DEPOSITO', amount: 0, counterpartAccount: '', description: '', reference: '' }); setShowMov(true); }} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-sm">+ Movimiento</button>
+            <button onClick={() => { setMovForm({ bankAccount: selected._id, date: today(), type: 'DEPOSITO', amount: 0, counterpartAccount: '', description: '', reference: '', voucherNumber: '', voucherUrl: '' }); setShowMov(true); }} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-sm">+ Movimiento</button>
           </div>
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-xs uppercase"><tr>
@@ -168,12 +168,25 @@ export default function BankAccounts() {
             </select>
             <input type="date" required value={movForm.date} onChange={(e) => setMovForm({ ...movForm, date: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
             <input type="number" step="0.01" required placeholder="Monto" value={movForm.amount} onChange={(e) => setMovForm({ ...movForm, amount: +e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <input placeholder="Referencia/Voucher" value={movForm.reference} onChange={(e) => setMovForm({ ...movForm, reference: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
+            <input
+              placeholder={['DEPOSITO', 'TRANSFERENCIA_IN', 'TRANSFERENCIA_OUT', 'CHEQUE_EMITIDO'].includes(movForm.type) ? 'N° Comprobante (requerido)' : 'N° Comprobante'}
+              required={['DEPOSITO', 'TRANSFERENCIA_IN', 'TRANSFERENCIA_OUT', 'CHEQUE_EMITIDO'].includes(movForm.type)}
+              value={movForm.voucherNumber}
+              onChange={(e) => setMovForm({ ...movForm, voucherNumber: e.target.value })}
+              className="border border-slate-200 rounded-lg px-3 py-2"
+            />
+            <input placeholder="URL comprobante (opcional)" value={movForm.voucherUrl} onChange={(e) => setMovForm({ ...movForm, voucherUrl: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
+            <input placeholder="Referencia adicional" value={movForm.reference} onChange={(e) => setMovForm({ ...movForm, reference: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
             {(movForm.type === 'TRANSFERENCIA_OUT' || movForm.type === 'TRANSFERENCIA_IN') &&
-              <select value={movForm.counterpartBank || ''} onChange={(e) => setMovForm({ ...movForm, counterpartBank: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2">
+              <select required value={movForm.counterpartAccount || ''} onChange={(e) => setMovForm({ ...movForm, counterpartAccount: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2">
                 <option value="">Banco contraparte...</option>{accounts.filter((a) => a._id !== movForm.bankAccount).map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
               </select>}
           </div>
+          {['DEPOSITO', 'TRANSFERENCIA_IN', 'TRANSFERENCIA_OUT', 'CHEQUE_EMITIDO'].includes(movForm.type) && (
+            <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              ⚠ Este tipo de movimiento requiere número de comprobante (papeleta de depósito, transferencia o cheque).
+            </div>
+          )}
           <input placeholder="Descripción" value={movForm.description} onChange={(e) => setMovForm({ ...movForm, description: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2" />
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShowMov(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Registrar</button></div>
         </form>

@@ -78,7 +78,8 @@ async function postBankJournal({ clinicId, userId, date, description, bank, coun
 exports.createMovement = async (req, res) => {
   try {
     const { bankAccount, type, amount, date, description, reference,
-            counterAccountCode, checkNumber, counterpartAccount } = req.body;
+            counterAccountCode, checkNumber, counterpartAccount,
+            voucherUrl, voucherNumber } = req.body;
     if (!bankAccount || !type || !amount) return res.status(400).json({ message: 'bankAccount, type y amount requeridos' });
     const bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId });
     if (!bank) return res.status(404).json({ message: 'Cuenta bancaria no encontrada' });
@@ -86,6 +87,25 @@ exports.createMovement = async (req, res) => {
     const inflow = ['DEPOSITO', 'TRANSFERENCIA_IN', 'INTERES', 'COBRO'].includes(type);
     const direction = inflow ? 1 : -1;
     const txDate = date ? new Date(date) : new Date();
+
+    // Comprobante obligatorio para depósitos, transferencias y cheques
+    const requiresVoucher = ['DEPOSITO', 'TRANSFERENCIA_IN', 'TRANSFERENCIA_OUT', 'CHEQUE_EMITIDO'].includes(type);
+    if (requiresVoucher && !voucherNumber && !voucherUrl && !reference) {
+      return res.status(400).json({
+        message: 'Comprobante de depósito requerido (voucherNumber, voucherUrl o reference)',
+      });
+    }
+    // Para salidas, validar saldo disponible
+    if (direction < 0) {
+      const agg = await BankTransaction.aggregate([
+        { $match: { clinic: bank.clinic, bankAccount: bank._id, voided: false } },
+        { $group: { _id: null, total: { $sum: { $multiply: ['$amount', '$direction'] } } } },
+      ]);
+      const balance = (bank.initialBalance || 0) + (agg[0]?.total || 0);
+      if (balance < Number(amount)) {
+        return res.status(400).json({ message: `Saldo insuficiente en ${bank.name} (disponible $${balance.toFixed(2)})` });
+      }
+    }
 
     // Contracuenta por defecto según tipo
     const defaultCounter = {
@@ -120,6 +140,7 @@ exports.createMovement = async (req, res) => {
         clinic: req.clinicId, bankAccount: other._id, date: txDate,
         type: direction > 0 ? 'TRANSFERENCIA_OUT' : 'TRANSFERENCIA_IN',
         amount, direction: -direction, description, reference,
+        voucherUrl: voucherUrl || '', voucherNumber: voucherNumber || '',
         counterpartAccount: bank._id, journalEntry: entry._id, createdBy: req.user._id,
       });
     } else {
@@ -141,6 +162,7 @@ exports.createMovement = async (req, res) => {
     const tx = await BankTransaction.create({
       clinic: req.clinicId, bankAccount: bank._id, date: txDate, type,
       amount, direction, description, reference, checkNumber: realCheckNumber,
+      voucherUrl: voucherUrl || '', voucherNumber: voucherNumber || '',
       counterpartAccount: counterpartTx ? counterpartTx.bankAccount : null,
       journalEntry: entry._id, createdBy: req.user._id,
     });
@@ -245,6 +267,7 @@ exports.cashToTransfer = async (req, res) => {
       clinic: req.clinicId, bankAccount: bank._id, date: date ? new Date(date) : new Date(),
       type: 'DEPOSITO', amount: total, direction: 1,
       description: description || `Depósito ventas efectivo`, reference: voucher,
+      voucherNumber: voucher,
       journalEntry: entry._id, createdBy: req.user._id,
     });
     // Marcar ventas como transferidas (se cambia método y se asocia)

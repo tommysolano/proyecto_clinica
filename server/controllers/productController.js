@@ -129,6 +129,7 @@ exports.createMovement = async (req, res) => {
       product: productId,
       type,
       quantity: qty,
+      balanceAfter: product.stock,
       reason,
       reference,
       createdBy: req.user._id,
@@ -141,5 +142,63 @@ exports.createMovement = async (req, res) => {
     res.status(201).json(populated);
   } catch (error) {
     res.status(500).json({ message: 'Error al crear movimiento', error: error.message });
+  }
+};
+
+/**
+ * Inventario consolidado: agrupa por código de producto el stock de TODAS las
+ * clínicas a las que el usuario tiene acceso (o todas las activas si es superadmin).
+ * Devuelve también el desglose por clínica para cada producto.
+ */
+exports.getConsolidated = async (req, res) => {
+  try {
+    const Clinic = require('../models/Clinic');
+    let clinicIds;
+    if (req.user.isSuperAdmin) {
+      clinicIds = (await Clinic.find({ active: true }).select('_id')).map((c) => c._id);
+    } else {
+      clinicIds = (req.user.clinics || []).map((c) => c.clinic);
+    }
+    if (!clinicIds.length) return res.json([]);
+
+    const rows = await Product.aggregate([
+      { $match: { clinic: { $in: clinicIds }, active: true } },
+      {
+        $group: {
+          _id: '$code',
+          name: { $first: '$name' },
+          category: { $first: '$category' },
+          unit: { $first: '$unit' },
+          unlimited: { $first: '$unlimited' },
+          totalStock: { $sum: '$stock' },
+          minStockSum: { $sum: '$minStock' },
+          avgSalePrice: { $avg: '$salePrice' },
+          avgPurchasePrice: { $avg: '$purchasePrice' },
+          totalValue: { $sum: { $multiply: ['$stock', { $ifNull: ['$averageCost', '$purchasePrice'] }] } },
+          byClinic: {
+            $push: {
+              clinic: '$clinic',
+              productId: '$_id',
+              stock: '$stock',
+              minStock: '$minStock',
+              salePrice: '$salePrice',
+              purchasePrice: '$purchasePrice',
+              averageCost: '$averageCost',
+            },
+          },
+        },
+      },
+      { $sort: { name: 1 } },
+    ]);
+
+    // Resolver nombres de clínicas (una sola consulta)
+    const clinics = await Clinic.find({ _id: { $in: clinicIds } }).select('name');
+    const cmap = Object.fromEntries(clinics.map((c) => [String(c._id), c.name]));
+    for (const r of rows) {
+      r.byClinic = r.byClinic.map((x) => ({ ...x, clinicName: cmap[String(x.clinic)] || '—' }));
+    }
+    res.json(rows);
+  } catch (e) {
+    res.status(500).json({ message: 'Error al obtener inventario consolidado', error: e.message });
   }
 };

@@ -13,7 +13,7 @@ export default function Payments() {
   const [banks, setBanks] = useState([]);
   const [purchases, setPurchases] = useState([]);
   const [invoices, setInvoices] = useState([]);
-  const [form, setForm] = useState({ type: 'PAGO', date: today(), partyModel: 'Supplier', party: '', method: 'TRANSFERENCIA', bankAccount: '', applications: [], advanceAmount: 0, notes: '' });
+  const [form, setForm] = useState({ type: 'PAGO', date: today(), partyModel: 'Supplier', party: '', method: 'TRANSFERENCIA', bankAccount: '', applications: [], advanceAmount: 0, notes: '', voucherNumber: '', voucherUrl: '' });
 
   const load = async () => {
     try { const r = await api.get('/payments', { params: { type } }); setList(r.data?.items || r.data || []); }
@@ -27,7 +27,7 @@ export default function Payments() {
   }, [type]);
 
   const openNew = (t) => {
-    setForm({ type: t, date: today(), partyModel: t === 'PAGO' ? 'Supplier' : 'Patient', party: '', method: 'TRANSFERENCIA', bankAccount: '', applications: [], advanceAmount: 0, notes: '' });
+    setForm({ type: t, date: today(), partyModel: t === 'PAGO' ? 'Supplier' : 'Patient', party: '', method: 'TRANSFERENCIA', bankAccount: '', applications: [], advanceAmount: 0, notes: '', voucherNumber: '', voucherUrl: '' });
     setShow(true);
   };
 
@@ -105,10 +105,21 @@ export default function Payments() {
               <option>EFECTIVO</option><option>TRANSFERENCIA</option><option>CHEQUE</option><option>TARJETA</option><option>DEPOSITO</option>
             </select>
             {form.method !== 'EFECTIVO' &&
-              <select value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2 col-span-2">
-                <option value="">Banco...</option>{banks.map((b) => <option key={b._id} value={b._id}>{b.name}</option>)}
+              <select required value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2 col-span-2">
+                <option value="">Banco...</option>{banks.map((b) => <option key={b._id} value={b._id}>{b.name} {b.initialBalance != null ? `(saldo inicial $${fmt(b.initialBalance)})` : ''}</option>)}
               </select>}
+            {form.type === 'PAGO' && form.method !== 'EFECTIVO' && (
+              <>
+                <input required placeholder="N° Comprobante (requerido)" value={form.voucherNumber} onChange={(e) => setForm({ ...form, voucherNumber: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
+                <input placeholder="URL comprobante (opcional)" value={form.voucherUrl} onChange={(e) => setForm({ ...form, voucherUrl: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2 col-span-2" />
+              </>
+            )}
           </div>
+          {form.type === 'PAGO' && form.method !== 'EFECTIVO' && (
+            <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              ⚠ Para pagos a proveedor por medios no efectivo se requiere número de comprobante (transferencia/cheque/depósito). El sistema validará que el banco seleccionado tenga saldo suficiente.
+            </div>
+          )}
           <div className="border rounded-lg p-3">
             <p className="text-sm font-semibold mb-2">Documentos a aplicar</p>
             {(form.type === 'PAGO' ? purchases : invoices).map((d) => {

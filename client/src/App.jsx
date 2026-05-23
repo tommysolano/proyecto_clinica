@@ -41,6 +41,7 @@ import PurchaseInvoices from './pages/accounting/PurchaseInvoices';
 import CreditDebitNotes from './pages/accounting/CreditDebitNotes';
 import Warehouses from './pages/accounting/Warehouses';
 import InventoryCategories from './pages/accounting/InventoryCategories';
+import ConsolidatedInventory from './pages/accounting/ConsolidatedInventory';
 import PhysicalCounts from './pages/accounting/PhysicalCounts';
 import FixedAssets from './pages/accounting/FixedAssets';
 import FinancialReports from './pages/accounting/FinancialReports';
@@ -249,6 +250,7 @@ function AppRoutes() {
                   ['credit-debit-notes', CreditDebitNotes],
                   ['warehouses', Warehouses],
                   ['inv-categories', InventoryCategories],
+                  ['inv-consolidated', ConsolidatedInventory],
                   ['counts', PhysicalCounts],
                   ['assets', FixedAssets],
                   ['financial-reports', FinancialReports],

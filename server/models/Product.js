@@ -45,6 +45,14 @@ const productSchema = new mongoose.Schema(
     },
     stock: { type: Number, default: 0, min: 0 },
     minStock: { type: Number, default: 5, min: 0 },
+    // Costo unitario promedio ponderado (se recalcula con cada compra/entrada).
+    averageCost: { type: Number, default: 0, min: 0 },
+    // Cuentas contables vinculadas. Si no se setean, el sistema usa los códigos
+    // por defecto del plan (1.1.04.01 inventario, 6.x gasto, 4.x ingreso, según corresponda).
+    inventoryAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null }, // Activo: inventario
+    expenseAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },   // Gasto/COGS
+    incomeAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },    // Ingreso por venta
+    inventoryCategory: { type: mongoose.Schema.Types.ObjectId, ref: 'InventoryCategory', default: null },
     // Si es true, el producto se considera de stock infinito (no se descuenta ni valida).
     // Útil para servicios u otros ítems facturables sin inventario físico.
     unlimited: { type: Boolean, default: false },
