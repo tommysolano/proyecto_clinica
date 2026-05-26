@@ -14,6 +14,7 @@ exports.getProducts = async (req, res) => {
     }
     if (category) query.category = category;
     if (lowStock === 'true') {
+      query.unlimited = { $ne: true };
       query.$expr = { $lte: ['$stock', '$minStock'] };
     }
 

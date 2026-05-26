@@ -53,6 +53,7 @@ exports.getDashboard = async (req, res) => {
         : Product.find({
             clinic: clinicId,
             active: true,
+            unlimited: { $ne: true },
             $expr: { $lte: ['$stock', '$minStock'] },
           })
             .select('name code stock minStock')
