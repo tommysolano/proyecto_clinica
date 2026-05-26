@@ -139,6 +139,7 @@ exports.addFollowUp = async (req, res) => {
       observaciones,     // reemplaza el antiguo "tratamiento asociado"
       treatment,         // legacy: id de tratamiento manual (sigue soportado)
       vitalSigns,        // signos vitales (opcional)
+      opticaRx,          // datos ópticos (rol optica): { od:{...}, oi:{...} }
     } = req.body;
 
     if (!descripcion && !req.body.motivoConsulta) {
@@ -170,6 +171,15 @@ exports.addFollowUp = async (req, res) => {
     const hydratedItems = items.map((it) => {
       const p = it.product ? productsById[String(it.product)] : null;
       const isService = p && ['servicio', 'programa'].includes(p.category);
+      const isComposite = Boolean(p?.isComposite);
+      // Componentes elegidos por el doctor para un item compuesto.
+      let componentsUsed = [];
+      if (isComposite && Array.isArray(it.componentsUsed)) {
+        const allowed = new Set((p.components || []).map((c) => String(c.product)));
+        componentsUsed = it.componentsUsed
+          .filter((c) => c.product && allowed.has(String(c.product)) && Number(c.quantity) > 0)
+          .map((c) => ({ product: c.product, name: c.name || '', quantity: Number(c.quantity) }));
+      }
       return {
         product: it.product || undefined,
         name: it.name || p?.name || '',
@@ -179,8 +189,36 @@ exports.addFollowUp = async (req, res) => {
         duration: it.duration || '',
         instructions: it.instructions || '',
         isService: Boolean(isService),
+        isComposite,
+        componentsUsed,
       };
     });
+
+    // Descontar del inventario los componentes de los items compuestos recetados.
+    try {
+      const InventoryMovement = require('../models/InventoryMovement');
+      for (const it of hydratedItems) {
+        if (!it.isComposite || !it.componentsUsed.length) continue;
+        for (const comp of it.componentsUsed) {
+          const compProduct = await Product.findOne({ _id: comp.product, clinic: req.clinicId });
+          if (!compProduct || compProduct.unlimited) continue;
+          const qty = comp.quantity * Number(it.quantity || 1);
+          compProduct.stock = Math.max(0, (compProduct.stock || 0) - qty);
+          await compProduct.save();
+          await InventoryMovement.create({
+            clinic: req.clinicId,
+            product: comp.product,
+            type: 'salida',
+            quantity: qty,
+            balanceAfter: compProduct.stock,
+            reason: `Componente de ${it.name} (receta)`,
+            createdBy: req.user._id,
+          });
+        }
+      }
+    } catch (e) {
+      console.warn('No se pudo descontar componentes del inventario:', e.message);
+    }
 
     // --- Crear automáticamente un Tratamiento si la receta tiene items de tipo servicio/programa ---
     let autoTreatmentId = treatment || null;
@@ -234,6 +272,7 @@ exports.addFollowUp = async (req, res) => {
             } : undefined,
             treatment: autoTreatmentId,
             autoTreatmentCreated: autoTreatmentId && !treatment ? autoTreatmentId : undefined,
+            opticaRx: opticaRx && typeof opticaRx === 'object' ? opticaRx : undefined,
             valor: valor || 0,
             metodoPago: metodoPago || 'efectivo',
             createdBy: req.user._id,

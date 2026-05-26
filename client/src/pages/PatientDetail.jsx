@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, Fragment } from 'react';
 import { useParams, useSearchParams, Link } from 'react-router-dom';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
@@ -32,7 +32,7 @@ export default function PatientDetail() {
   const initialTab = tabParam
     ? tabParam
     : appointmentId
-      ? (hasRole('doctor') ? 'ficha' : 'seguimientos')
+      ? (hasRole('doctor', 'optica') ? 'ficha' : 'seguimientos')
       : 'datos';
   const [tab, setTab] = useState(initialTab);
   const [patient, setPatient] = useState(null);
@@ -89,7 +89,7 @@ export default function PatientDetail() {
               {patient.firstName} {patient.lastName}
             </h1>
             <p className="text-sm text-slate-500 mt-1">
-              {hasRole('doctor') ? (
+              {hasRole('doctor', 'optica') ? (
                 <>Edad: {patient.computedAge ?? patient.age ?? '—'}</>
               ) : (
                 <>
@@ -138,7 +138,7 @@ export default function PatientDetail() {
 // ───────────────────────── Datos ─────────────────────────
 function DatosTab({ patient }) {
   const { hasRole } = useAuth();
-  const isDoctor = hasRole('doctor');
+  const isDoctor = hasRole('doctor', 'optica');
   const sourceLabels = {
     anuncio: 'Anuncio',
     referido: 'Referido',
@@ -164,27 +164,11 @@ function DatosTab({ patient }) {
           label="Origen del paciente"
           value={
             patient.source
-              ? `${sourceLabels[patient.source] || patient.source}${patient.sourceDetail ? ` (${patient.sourceDetail})` : ''}`
+              ? `${sourceLabels[patient.source] || patient.source}${patient.referredByName ? ` (${patient.referredByName})` : ''}`
               : '—'
           }
         />
-        <Item label="Notas" value={patient.notes} full />
       </dl>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-        <div className="bg-amber-50 border border-amber-200 rounded-xl p-4">
-          <h3 className="text-sm font-semibold text-amber-800 mb-2">Antecedentes familiares</h3>
-          <p className="text-sm text-slate-700 whitespace-pre-wrap">
-            {patient.antecedentesFamiliares || '— Sin información registrada —'}
-          </p>
-        </div>
-        <div className="bg-rose-50 border border-rose-200 rounded-xl p-4">
-          <h3 className="text-sm font-semibold text-rose-800 mb-2">Antecedentes patológicos</h3>
-          <p className="text-sm text-slate-700 whitespace-pre-wrap">
-            {patient.antecedentesPatologicos || '— Sin información registrada —'}
-          </p>
-        </div>
-      </div>
     </div>
   );
 }
@@ -400,8 +384,9 @@ function YesNo({ label, item, onChange }) {
 // ──────────────────── Seguimientos ────────────────────
 function SeguimientosTab({ patientId, appointmentId }) {
   const { hasRole } = useAuth();
-  const canDelete = hasRole('admin', 'doctor');
-  const showPayment = !hasRole('doctor');
+  const isOptica = hasRole('optica');
+  const canDelete = hasRole('admin', 'doctor', 'optica');
+  const canUpload = hasRole('admin', 'cajero', 'doctor', 'optica');
   const [record, setRecord] = useState(null);
   const [loading, setLoading] = useState(true);
   const [products, setProducts] = useState([]);
@@ -414,14 +399,17 @@ function SeguimientosTab({ patientId, appointmentId }) {
     duration: '',
     instructions: '',
   });
+  const emptyOpticaRx = () => ({
+    od: { sph: '', cyl: '', ax: '', add: '', dnp: '', alt: '' },
+    oi: { sph: '', cyl: '', ax: '', add: '', dnp: '', alt: '' },
+  });
   const emptyForm = () => ({
     fecha: new Date().toISOString().substring(0, 10),
     descripcion: '',
     estudioSintomas: '',
     observaciones: '',
     recetaItems: [],
-    valor: 0,
-    metodoPago: 'efectivo',
+    opticaRx: emptyOpticaRx(),
     vitalSigns: {
       temperature: '',
       bloodPressure: '',
@@ -458,7 +446,8 @@ function SeguimientosTab({ patientId, appointmentId }) {
         const list = Array.isArray(r.data) ? r.data : r.data?.items || [];
         setProducts(
           list.filter((p) =>
-            ['medicamento', 'servicio', 'programa'].includes(String(p.category || '').toLowerCase())
+            p.isComposite ||
+            ['medicamento', 'insumo', 'servicio', 'programa'].includes(String(p.category || '').toLowerCase())
           )
         );
       })
@@ -472,8 +461,34 @@ function SeguimientosTab({ patientId, appointmentId }) {
       items[idx] = { ...items[idx], [key]: val };
       if (key === 'product') {
         const p = products.find((x) => x._id === val);
-        if (p) items[idx].name = p.name;
+        items[idx].name = p?.name || '';
+        items[idx].isComposite = !!p?.isComposite;
+        items[idx].componentsUsed = [];
       }
+      return { ...f, recetaItems: items };
+    });
+  };
+
+  // Alterna un componente de un item compuesto en la receta.
+  const toggleComponent = (idx, comp, checked) => {
+    setForm((f) => {
+      const items = [...f.recetaItems];
+      const used = [...(items[idx].componentsUsed || [])];
+      const pos = used.findIndex((c) => String(c.product) === String(comp.product));
+      if (checked && pos < 0) used.push({ product: comp.product, name: comp.name, quantity: comp.quantity || 1 });
+      if (!checked && pos >= 0) used.splice(pos, 1);
+      items[idx] = { ...items[idx], componentsUsed: used };
+      return { ...f, recetaItems: items };
+    });
+  };
+
+  const setComponentQty = (idx, productId, qty) => {
+    setForm((f) => {
+      const items = [...f.recetaItems];
+      const used = (items[idx].componentsUsed || []).map((c) =>
+        String(c.product) === String(productId) ? { ...c, quantity: Number(qty) } : c
+      );
+      items[idx] = { ...items[idx], componentsUsed: used };
       return { ...f, recetaItems: items };
     });
   };
@@ -644,7 +659,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
 
       <form
         onSubmit={submit}
-        className={`bg-slate-50 rounded-xl p-4 grid grid-cols-1 gap-3 ${showPayment ? 'md:grid-cols-5' : 'md:grid-cols-3'}`}
+        className="bg-slate-50 rounded-xl p-4 grid grid-cols-1 gap-3 md:grid-cols-3"
       >
         <Field label="Fecha">
           <input
@@ -663,7 +678,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
             required
           />
         </Field>
-        <Field label="Estudio o síntomas" className={showPayment ? 'md:col-span-5' : 'md:col-span-3'}>
+        <Field label="Estudio o síntomas" className="md:col-span-3">
           <textarea
             rows={2}
             value={form.estudioSintomas}
@@ -673,7 +688,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
         </Field>
 
         {/* Signos vitales */}
-        <div className={showPayment ? 'md:col-span-5' : 'md:col-span-3'}>
+        <div className="md:col-span-3">
           <label className="text-sm font-medium text-slate-700 block mb-2">
             Signos vitales
           </label>
@@ -796,7 +811,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
           </div>
         </div>
 
-        <div className={showPayment ? 'md:col-span-5' : 'md:col-span-3'}>
+        <div className="md:col-span-3">
           <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
             <label className="text-sm font-medium text-slate-700">Receta *</label>
             <div className="flex items-center gap-2 flex-1 max-w-md ml-auto">
@@ -840,7 +855,8 @@ function SeguimientosTab({ patientId, appointmentId }) {
                 </thead>
                 <tbody>
                   {form.recetaItems.map((row, idx) => (
-                    <tr key={idx} className="border-t border-slate-100">
+                    <Fragment key={idx}>
+                    <tr className="border-t border-slate-100">
                       <td className="px-2 py-1">
                         <select
                           value={row.product}
@@ -917,6 +933,52 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         </button>
                       </td>
                     </tr>
+                    {row.isComposite && (() => {
+                      const prod = products.find((p) => p._id === row.product);
+                      const comps = prod?.components || [];
+                      return (
+                        <tr key={`${idx}-comp`} className="bg-amber-50/60">
+                          <td colSpan={7} className="px-3 py-2">
+                            <p className="text-[11px] font-semibold text-amber-800 mb-1">
+                              Componentes de "{row.name}" — elige cuáles recetar:
+                            </p>
+                            {comps.length === 0 && (
+                              <p className="text-[11px] text-slate-500">Este producto compuesto no tiene componentes configurados.</p>
+                            )}
+                            <div className="flex flex-wrap gap-2">
+                              {comps.map((c) => {
+                                const cp = products.find((p) => p._id === (c.product?._id || c.product));
+                                const cid = c.product?._id || c.product;
+                                const used = (row.componentsUsed || []).find((u) => String(u.product) === String(cid));
+                                return (
+                                  <label key={cid} className="flex items-center gap-1 bg-white border border-amber-200 rounded px-2 py-1 text-[11px] cursor-pointer">
+                                    <input
+                                      type="checkbox"
+                                      checked={!!used}
+                                      onChange={(e) =>
+                                        toggleComponent(idx, { product: cid, name: cp?.name || '', quantity: c.quantity || 1 }, e.target.checked)
+                                      }
+                                      className="w-3 h-3 accent-amber-600"
+                                    />
+                                    <span>{cp?.name || 'Componente'}</span>
+                                    {used && (
+                                      <input
+                                        type="number"
+                                        min={1}
+                                        value={used.quantity}
+                                        onChange={(e) => setComponentQty(idx, cid, e.target.value)}
+                                        className="w-12 px-1 py-0.5 border border-slate-200 rounded text-[11px]"
+                                      />
+                                    )}
+                                  </label>
+                                );
+                              })}
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })()}
+                    </Fragment>
                   ))}
                 </tbody>
               </table>
@@ -924,7 +986,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
           )}
         </div>
 
-        <Field label="Observaciones" className={showPayment ? 'md:col-span-5' : 'md:col-span-3'}>
+        <Field label="Observaciones" className="md:col-span-3">
           <textarea
             rows={2}
             value={form.observaciones}
@@ -932,33 +994,8 @@ function SeguimientosTab({ patientId, appointmentId }) {
             className="input resize-none"
           />
         </Field>
-        {showPayment && (
-          <>
-            <Field label="Valor">
-              <input
-                type="number"
-                min={0}
-                step="0.01"
-                value={form.valor}
-                onChange={(e) => setForm((f) => ({ ...f, valor: Number(e.target.value) }))}
-                className="input"
-              />
-            </Field>
-            <Field label="Método de pago">
-              <select
-                value={form.metodoPago}
-                onChange={(e) => setForm((f) => ({ ...f, metodoPago: e.target.value }))}
-                className="input"
-              >
-                <option value="efectivo">Efectivo</option>
-                <option value="tarjeta">Tarjeta</option>
-                <option value="transferencia">Transferencia</option>
-                <option value="otro">Otro</option>
-              </select>
-            </Field>
-          </>
-        )}
-        <div className={`${showPayment ? 'md:col-span-5' : 'md:col-span-3'} flex justify-end`}>
+        {isOptica && <OpticaRxTable value={form.opticaRx} onChange={(rx) => setForm((f) => ({ ...f, opticaRx: rx }))} />}
+        <div className="md:col-span-3 flex justify-end">
           <button
             type="submit"
             disabled={saving}
@@ -975,15 +1012,13 @@ function SeguimientosTab({ patientId, appointmentId }) {
             <tr>
               <th className="text-left px-4 py-2.5 font-semibold">Fecha</th>
               <th className="text-left px-4 py-2.5 font-semibold">Motivo de consulta</th>
-              {showPayment && <th className="text-right px-4 py-2.5 font-semibold">Valor</th>}
-              {showPayment && <th className="text-left px-4 py-2.5 font-semibold">Pago</th>}
               <th className="px-4 py-2.5"></th>
             </tr>
           </thead>
           <tbody>
             {followUps.length === 0 && (
               <tr>
-                <td colSpan={6} className="text-center py-6 text-slate-400">
+                <td colSpan={3} className="text-center py-6 text-slate-400">
                   No hay seguimientos.
                 </td>
               </tr>
@@ -1022,7 +1057,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         )}
                       </div>
                     ))}
-                    {canDelete && (
+                    {canUpload && (
                       <label className="inline-flex items-center gap-1 text-xs text-emerald-700 cursor-pointer mt-1">
                         <HiOutlinePlus className="w-3 h-3" />
                         {uploadingFuId === fu._id ? 'Subiendo...' : 'Adjuntar PDF'}
@@ -1040,17 +1075,8 @@ function SeguimientosTab({ patientId, appointmentId }) {
                       </label>
                     )}
                   </div>
+                  {fu.opticaRx && (fu.opticaRx.od || fu.opticaRx.oi) && <OpticaRxSummary rx={fu.opticaRx} />}
                 </td>
-                {showPayment && (
-                  <td className="px-4 py-2.5 text-right text-slate-700">
-                    ${Number(fu.valor || 0).toFixed(2)}
-                  </td>
-                )}
-                {showPayment && (
-                  <td className="px-4 py-2.5 capitalize text-slate-600">
-                    {fu.metodoPago || '—'}
-                  </td>
-                )}
                 <td className="px-4 py-2.5 text-right">
                   <div className="flex items-center justify-end gap-1">
                     <button
@@ -1077,6 +1103,61 @@ function SeguimientosTab({ patientId, appointmentId }) {
       </div>
 
       <FichaStyles />
+    </div>
+  );
+}
+
+// ──────────────── Tabla óptica (rol optica) ────────────────
+const OPTICA_COLS = ['sph', 'cyl', 'ax', 'add', 'dnp', 'alt'];
+const OPTICA_COL_LABELS = { sph: 'SPH', cyl: 'CYL', ax: 'AX', add: 'ADD', dnp: 'DNP', alt: 'ALT' };
+
+function OpticaRxTable({ value, onChange }) {
+  const rx = value || { od: {}, oi: {} };
+  const setCell = (row, col, val) =>
+    onChange({ ...rx, [row]: { ...(rx[row] || {}), [col]: val } });
+  return (
+    <div className="md:col-span-3">
+      <label className="text-sm font-medium text-slate-700 block mb-2">Receta óptica (RX)</label>
+      <div className="overflow-x-auto bg-white rounded-lg border border-slate-200">
+        <table className="w-full text-xs">
+          <thead className="bg-slate-100 text-slate-600">
+            <tr>
+              <th className="text-left px-2 py-1.5 w-16">RX</th>
+              {OPTICA_COLS.map((c) => (
+                <th key={c} className="text-left px-2 py-1.5">{OPTICA_COL_LABELS[c]}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {['od', 'oi'].map((row) => (
+              <tr key={row} className="border-t border-slate-100">
+                <td className="px-2 py-1 font-semibold text-slate-700 uppercase">{row}</td>
+                {OPTICA_COLS.map((c) => (
+                  <td key={c} className="px-2 py-1">
+                    <input
+                      type="text"
+                      value={rx[row]?.[c] || ''}
+                      onChange={(e) => setCell(row, c, e.target.value)}
+                      className="input text-xs py-1"
+                    />
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function OpticaRxSummary({ rx }) {
+  const fmtRow = (row) =>
+    OPTICA_COLS.map((c) => `${OPTICA_COL_LABELS[c]}:${row?.[c] || '—'}`).join('  ');
+  return (
+    <div className="mt-2 text-[11px] text-slate-500 bg-indigo-50 border border-indigo-100 rounded p-2">
+      <div><b>OD</b> {fmtRow(rx.od)}</div>
+      <div><b>OI</b> {fmtRow(rx.oi)}</div>
     </div>
   );
 }

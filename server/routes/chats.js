@@ -9,7 +9,7 @@ router.post('/webhook', ctrl.webhookReceive);
 // El resto requiere auth + clínica
 router.use(auth, requireClinic);
 
-const CALL_CENTER_ROLES = ['admin', 'call_center', 'supervisor_call_center'];
+const CALL_CENTER_ROLES = ['admin', 'call_center', 'marketing'];
 
 router.get('/stats', requireRole(...CALL_CENTER_ROLES), ctrl.getStats);
 router.get('/', requireRole(...CALL_CENTER_ROLES), ctrl.listConversations);
@@ -25,6 +25,11 @@ router.delete('/:id/opportunity', requireRole(...CALL_CENTER_ROLES), ctrl.remove
 
 router.get('/:id/messages', requireRole(...CALL_CENTER_ROLES), ctrl.listMessages);
 router.post('/:id/messages', requireRole(...CALL_CENTER_ROLES), ctrl.sendMessage);
+router.post(
+  '/:id/register-patient',
+  requireRole(...CALL_CENTER_ROLES),
+  ctrl.registerPatientFromChat
+);
 router.post(
   '/:id/appointment',
   requireRole(...CALL_CENTER_ROLES),

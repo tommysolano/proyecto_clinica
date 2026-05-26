@@ -75,13 +75,10 @@ exports.getAppointments = async (req, res) => {
       query.startTime = { $lte: toTime };
     }
 
-    if (req.role === 'doctor') {
+    if (req.role === 'doctor' || req.role === 'optica') {
       query.doctor = req.user._id;
     }
-    if (req.role === 'call_center') {
-      // Call center solo ve las citas que él mismo creó
-      query.createdBy = req.user._id;
-    }
+    // El call center puede ver TODAS las citas agendadas (no solo las suyas).
     if (req.role === 'enfermero') {
       // Enfermería ve las citas asistidas/completadas que tengan al menos un
       // servicio marcado como `nursingService` (p.ej. sueroterapia). La cita
@@ -169,12 +166,6 @@ const buildServicesSnapshot = async (clinicId, items) => {
 
 exports.createAppointment = async (req, res) => {
   try {
-    // supervisor_call_center es solo lectura: no puede crear citas.
-    if (req.role === 'supervisor_call_center' && !req.user.isSuperAdmin) {
-      return res
-        .status(403)
-        .json({ message: 'El supervisor de call center no puede crear citas.' });
-    }
     const { doctor, date, startTime, endTime, patient, services } = req.body;
 
     // El call_center puede operar para cualquiera de las clínicas a las que tiene acceso.
@@ -365,8 +356,11 @@ exports.updateAppointment = async (req, res) => {
     const isAdmin = req.user.isSuperAdmin || req.role === 'admin';
     const isCreator = String(existing.createdBy || '') === String(req.user._id);
     const isAssignedDoctor =
-      req.role === 'doctor' && String(existing.doctor || '') === String(req.user._id);
-    if (!isAdmin && !isCreator && !isAssignedDoctor) {
+      (req.role === 'doctor' || req.role === 'optica') && String(existing.doctor || '') === String(req.user._id);
+    // Recepción (cajero/call_center) puede reagendar/editar cualquier cita.
+    // La comisión NO cambia: queda con el creador original (createdBy se preserva).
+    const isFrontDesk = ['cajero', 'call_center'].includes(req.role);
+    if (!isAdmin && !isCreator && !isAssignedDoctor && !isFrontDesk) {
       return res.status(403).json({
         message:
           'Solo los administradores o el creador de la cita pueden editarla.',
@@ -502,7 +496,7 @@ exports.startConsultation = async (req, res) => {
 
     const isAdmin = req.user.isSuperAdmin || req.role === 'admin';
     const isAssignedDoctor =
-      req.role === 'doctor' && String(appointment.doctor) === String(req.user._id);
+      (req.role === 'doctor' || req.role === 'optica') && String(appointment.doctor) === String(req.user._id);
     if (!isAdmin && !isAssignedDoctor) {
       return res.status(403).json({
         message: 'Solo el doctor asignado puede iniciar la consulta.',
@@ -531,7 +525,7 @@ exports.endConsultation = async (req, res) => {
 
     const isAdmin = req.user.isSuperAdmin || req.role === 'admin';
     const isAssignedDoctor =
-      req.role === 'doctor' && String(appointment.doctor) === String(req.user._id);
+      (req.role === 'doctor' || req.role === 'optica') && String(appointment.doctor) === String(req.user._id);
     if (!isAdmin && !isAssignedDoctor) {
       return res.status(403).json({
         message: 'Solo el doctor asignado puede finalizar la consulta.',
@@ -616,12 +610,10 @@ exports.getTodayAppointments = async (req, res) => {
       date: { $gte: today, $lt: tomorrow },
     };
 
-    if (req.role === 'doctor') {
+    if (req.role === 'doctor' || req.role === 'optica') {
       query.doctor = req.user._id;
     }
-    if (req.role === 'call_center') {
-      query.createdBy = req.user._id;
-    }
+    // El call center puede ver TODAS las citas del día.
     if (req.role === 'enfermero') {
       const nursingProductIds = await Product.find({
         clinic: req.clinicId,

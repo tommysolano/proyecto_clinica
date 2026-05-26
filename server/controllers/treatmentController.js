@@ -104,7 +104,7 @@ exports.create = async (req, res) => {
         completed: 0,
       })),
       createdBy: req.user._id,
-      prescribedBy: req.body.prescribedBy || (req.role === 'doctor' ? req.user._id : undefined),
+      prescribedBy: req.body.prescribedBy || (req.role === 'doctor' || req.role === 'optica' ? req.user._id : undefined),
     });
     const populated = await Treatment.findById(treatment._id).populate(POPULATE);
     emitToClinic(req.clinicId, 'treatment:created', { id: treatment._id });

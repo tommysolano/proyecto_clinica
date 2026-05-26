@@ -149,8 +149,9 @@ exports.createSale = async (req, res) => {
       return res.status(400).json({ message: err.message });
     }
 
-    // Construir items y totales (precio de venta interpretado como SIN IVA)
-    // Aplicar descuentos por ítem (compatibles con SRI: descuento sobre base imponible).
+    // Construir items y totales. NO se cobra IVA en la venta: el precio del
+    // inventario ya contempla el impuesto, así que no se aplica nuevamente
+    // (evita cobrar el IVA dos veces). taxAmount queda en 0.
     let subtotal = 0;
     let discountTotal = 0;
     let taxAmount = 0;
@@ -161,10 +162,8 @@ exports.createSale = async (req, res) => {
       const itemBase = +(unitPrice * qty).toFixed(2);
       const itemDiscount = +Number(item.discount || 0).toFixed(2);
       const itemSubtotal = +(itemBase - itemDiscount).toFixed(2);
-      const itemTax = +(itemSubtotal * (product.taxRate / 100)).toFixed(2);
       subtotal += itemBase;
       discountTotal += itemDiscount;
-      taxAmount += itemTax;
       return {
         product: product._id,
         productCode: product.code,
@@ -172,7 +171,7 @@ exports.createSale = async (req, res) => {
         category: product.category,
         quantity: qty,
         unitPrice,
-        taxRate: product.taxRate,
+        taxRate: 0,
         discount: itemDiscount,
         discountRef: item.discountRef || undefined,
         treatment: item.treatment || undefined,
@@ -181,8 +180,8 @@ exports.createSale = async (req, res) => {
     });
     subtotal = +subtotal.toFixed(2);
     discountTotal = +discountTotal.toFixed(2);
-    taxAmount = +taxAmount.toFixed(2);
-    const total = +(subtotal - discountTotal + taxAmount).toFixed(2);
+    taxAmount = 0;
+    const total = +(subtotal - discountTotal).toFixed(2);
 
     // ¿Es primera venta del paciente? (paciente nuevo)
     // No se considera "nuevo" si TODOS los productos de la venta tienen el flag

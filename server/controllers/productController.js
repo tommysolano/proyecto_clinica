@@ -35,6 +35,13 @@ exports.getProduct = async (req, res) => {
   }
 };
 
+// Si se envía stockByClinic, el stock total del producto es la suma por clínica.
+const syncStockFromClinics = (body) => {
+  if (Array.isArray(body.stockByClinic) && body.stockByClinic.length > 0) {
+    body.stock = body.stockByClinic.reduce((a, s) => a + (Number(s.stock) || 0), 0);
+  }
+};
+
 exports.createProduct = async (req, res) => {
   try {
     const existing = await Product.findOne({ clinic: req.clinicId, code: req.body.code });
@@ -42,6 +49,7 @@ exports.createProduct = async (req, res) => {
       return res.status(400).json({ message: 'Ya existe un producto con ese código' });
     }
 
+    syncStockFromClinics(req.body);
     const product = await Product.create({ ...req.body, clinic: req.clinicId });
     res.status(201).json(product);
   } catch (error) {
@@ -51,6 +59,7 @@ exports.createProduct = async (req, res) => {
 
 exports.updateProduct = async (req, res) => {
   try {
+    syncStockFromClinics(req.body);
     const product = await Product.findOneAndUpdate(
       { _id: req.params.id, clinic: req.clinicId },
       req.body,

@@ -5,10 +5,14 @@ const {
   createPatient,
   updatePatient,
   deletePatient,
+  searchReferralCandidates,
 } = require('../controllers/patientController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
 router.use(auth, requireClinic);
+
+// Buscador de referidores (pacientes + personal) — usado al crear un paciente.
+router.get('/referral-options', requireRole('admin', 'cajero', 'call_center', 'marketing'), searchReferralCandidates);
 
 // Cajeros, admins, doctores, call_center, enfermero y marketing ven pacientes
 router.get('/', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'), getPatients);

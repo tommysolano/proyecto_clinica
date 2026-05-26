@@ -9,12 +9,59 @@ const { emitToClinic } = require('../realtime');
 const SENSITIVE_FIELDS_FOR_DOCTOR = ['cedula', 'address', 'phone', 'whatsapp', 'email'];
 
 const sanitizeForRole = (patient, role) => {
-  if (!patient || role !== 'doctor') return patient;
+  if (!patient || (role !== 'doctor' && role !== 'optica')) return patient;
   const obj = patient.toObject ? patient.toObject() : { ...patient };
   SENSITIVE_FIELDS_FOR_DOCTOR.forEach((f) => {
     obj[f] = undefined;
   });
   return obj;
+};
+
+/**
+ * Busca posibles "referidores": pacientes y personal (usuarios) registrados.
+ * Usado por el selector "¿Quién lo refirió?" al crear un paciente.
+ */
+exports.searchReferralCandidates = async (req, res) => {
+  try {
+    const User = require('./../models/User');
+    const q = (req.query.q || '').trim();
+    const regex = q ? new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i') : null;
+
+    const patientFilter = { active: true };
+    if (regex) {
+      patientFilter.$or = [
+        { firstName: regex },
+        { lastName: regex },
+        { cedula: regex },
+        { phone: regex },
+      ];
+    }
+    const patients = await Patient.find(patientFilter)
+      .select('firstName lastName cedula')
+      .limit(15);
+
+    const userFilter = { active: true, 'clinics.clinic': req.clinicId };
+    if (regex) userFilter.$or = [{ name: regex }, { cedula: regex }, { email: regex }];
+    const users = await User.find(userFilter).select('name cedula').limit(15);
+
+    const results = [
+      ...patients.map((p) => ({
+        id: p._id,
+        type: 'patient',
+        name: `${p.firstName} ${p.lastName}`.trim(),
+        detail: p.cedula || '',
+      })),
+      ...users.map((u) => ({
+        id: u._id,
+        type: 'user',
+        name: u.name,
+        detail: 'Personal',
+      })),
+    ];
+    res.json(results);
+  } catch (error) {
+    res.status(500).json({ message: 'Error al buscar referidores', error: error.message });
+  }
 };
 
 exports.getPatients = async (req, res) => {
@@ -90,7 +137,7 @@ exports.updatePatient = async (req, res) => {
   try {
     const update = { ...req.body };
     // El doctor NO puede editar cédula, dirección, teléfono, whatsapp ni email.
-    if (req.role === 'doctor') {
+    if (req.role === 'doctor' || req.role === 'optica') {
       SENSITIVE_FIELDS_FOR_DOCTOR.forEach((f) => delete update[f]);
     }
     const patient = await Patient.findByIdAndUpdate(req.params.id, update, {

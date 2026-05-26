@@ -20,4 +20,9 @@ router.get(
 router.get('/inventory.xlsx', requireRole('admin', 'contabilidad'), ctrl.exportInventory);
 router.get('/sales-by-item.xlsx', requireRole('admin', 'contabilidad'), ctrl.exportSalesByItem);
 
+// Reportes de atención (admin, marketing, super-admin). Pacientes atendidos por
+// doctor/enfermero por fecha y adherencia a tratamientos recetados.
+router.get('/attention', requireRole('admin', 'marketing'), ctrl.attentionReport);
+router.get('/patient-adherence/:patientId', requireRole('admin', 'marketing'), ctrl.patientAdherence);
+
 module.exports = router;

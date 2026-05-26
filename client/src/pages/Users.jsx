@@ -15,8 +15,8 @@ const ROLES = [
   { value: 'cajero', label: 'Cajero' },
   { value: 'contabilidad', label: 'Contabilidad' },
   { value: 'doctor', label: 'Doctor' },
+  { value: 'optica', label: 'Óptica' },
   { value: 'call_center', label: 'Call Center' },
-  { value: 'supervisor_call_center', label: 'Supervisor Call Center' },
   { value: 'marketing', label: 'Marketing' },
   { value: 'enfermero', label: 'Enfermero/a' },
 ];

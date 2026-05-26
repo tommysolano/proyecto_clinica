@@ -3,9 +3,9 @@ import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import { useAuth } from '../context/AuthContext';
-import { HiOutlinePlus, HiOutlineDocumentDuplicate, HiOutlineArrowDownTray } from 'react-icons/hi2';
+import { HiOutlinePlus, HiOutlineDocumentDuplicate, HiOutlineArrowDownTray, HiOutlineChatBubbleLeftRight } from 'react-icons/hi2';
 
-const EMPTY_ITEM = { product: '', productName: '', quantity: 1, unitPrice: 0, taxRate: 15, discount: 0 };
+const EMPTY_ITEM = { product: '', productName: '', quantity: 1, unitPrice: 0, discount: 0 };
 const EMPTY = {
   patient: '',
   clientName: '',
@@ -19,7 +19,7 @@ const EMPTY = {
 
 export default function Quotations() {
   const { hasRole } = useAuth();
-  const canEdit = hasRole('admin', 'cajero', 'call_center');
+  const canEdit = hasRole('admin', 'cajero', 'call_center', 'marketing');
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
@@ -55,29 +55,25 @@ export default function Quotations() {
       if (p) {
         items[idx].productName = p.name;
         items[idx].unitPrice = p.salePrice;
-        items[idx].taxRate = p.taxRate ?? 15;
       }
     }
     setForm({ ...form, items });
   };
 
+  // Sin IVA. El descuento es un porcentaje aplicado al subtotal de cada ítem.
   const totals = () => {
     let subtotal = 0;
     let discountTotal = 0;
-    let taxAmount = 0;
     form.items.forEach((it) => {
       const base = Number(it.unitPrice || 0) * Number(it.quantity || 0);
-      const disc = Number(it.discount || 0);
-      const sub = base - disc;
+      const discPct = Math.min(Math.max(Number(it.discount || 0), 0), 100);
       subtotal += base;
-      discountTotal += disc;
-      taxAmount += sub * (Number(it.taxRate || 0) / 100);
+      discountTotal += base * (discPct / 100);
     });
     return {
       subtotal: subtotal.toFixed(2),
       discountTotal: discountTotal.toFixed(2),
-      taxAmount: taxAmount.toFixed(2),
-      total: (subtotal - discountTotal + taxAmount).toFixed(2),
+      total: (subtotal - discountTotal).toFixed(2),
     };
   };
 
@@ -106,6 +102,16 @@ export default function Quotations() {
       window.URL.revokeObjectURL(url);
     } catch (err) {
       toast.error('No se pudo generar PDF');
+    }
+  };
+
+  const sendWhatsapp = async (q) => {
+    try {
+      const phone = q.clientPhone || q.patient?.phone || '';
+      const res = await api.get(`/quotations/${q._id}/whatsapp`, { params: { phone } });
+      window.open(res.data.waUrl, '_blank');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo generar el enlace de WhatsApp');
     }
   };
 
@@ -153,9 +159,14 @@ export default function Quotations() {
                 <td className="px-3 py-2"><span className="text-xs px-2 py-1 rounded bg-slate-100">{q.status}</span></td>
                 <td className="px-3 py-2 text-slate-500">{new Date(q.createdAt).toLocaleDateString('es-EC')}</td>
                 <td className="px-3 py-2">
-                  <button onClick={() => downloadPdf(q)} className="px-2 py-1 text-xs bg-sky-50 text-sky-700 rounded hover:bg-sky-100 flex items-center gap-1">
-                    <HiOutlineArrowDownTray className="w-3 h-3" /> PDF
-                  </button>
+                  <div className="flex items-center gap-1">
+                    <button onClick={() => downloadPdf(q)} className="px-2 py-1 text-xs bg-sky-50 text-sky-700 rounded hover:bg-sky-100 flex items-center gap-1">
+                      <HiOutlineArrowDownTray className="w-3 h-3" /> PDF
+                    </button>
+                    <button onClick={() => sendWhatsapp(q)} className="px-2 py-1 text-xs bg-emerald-50 text-emerald-700 rounded hover:bg-emerald-100 flex items-center gap-1">
+                      <HiOutlineChatBubbleLeftRight className="w-3 h-3" /> WhatsApp
+                    </button>
+                  </div>
                 </td>
               </tr>
             ))}
@@ -217,17 +228,23 @@ export default function Quotations() {
                 + Agregar
               </button>
             </div>
+            <div className="grid grid-cols-12 gap-2 px-1 mb-1">
+              <span className="col-span-6 text-[11px] font-medium text-slate-500 uppercase">Producto / Servicio</span>
+              <span className="col-span-1 text-[11px] font-medium text-slate-500 uppercase text-center">Cant.</span>
+              <span className="col-span-2 text-[11px] font-medium text-slate-500 uppercase text-right">P. Unit.</span>
+              <span className="col-span-2 text-[11px] font-medium text-slate-500 uppercase text-right">Desc. (%)</span>
+              <span className="col-span-1"></span>
+            </div>
             <div className="space-y-2">
               {form.items.map((it, idx) => (
-                <div key={idx} className="grid grid-cols-12 gap-2">
-                  <select value={it.product} onChange={(e) => updateItem(idx, 'product', e.target.value)} className="col-span-5 border border-slate-200 rounded-lg px-2 py-2 text-sm">
+                <div key={idx} className="grid grid-cols-12 gap-2 items-center">
+                  <select value={it.product} onChange={(e) => updateItem(idx, 'product', e.target.value)} className="col-span-6 border border-slate-200 rounded-lg px-2 py-2 text-sm">
                     <option value="">Producto/servicio...</option>
                     {products.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
                   </select>
-                  <input type="number" min="1" value={it.quantity} onChange={(e) => updateItem(idx, 'quantity', Number(e.target.value))} className="col-span-1 border border-slate-200 rounded-lg px-2 py-2 text-sm" placeholder="Cant" />
-                  <input type="number" step="0.01" value={it.unitPrice} onChange={(e) => updateItem(idx, 'unitPrice', Number(e.target.value))} className="col-span-2 border border-slate-200 rounded-lg px-2 py-2 text-sm" placeholder="P. Unit" />
-                  <input type="number" step="0.01" value={it.discount} onChange={(e) => updateItem(idx, 'discount', Number(e.target.value))} className="col-span-2 border border-slate-200 rounded-lg px-2 py-2 text-sm" placeholder="Desc" />
-                  <input type="number" step="0.01" value={it.taxRate} onChange={(e) => updateItem(idx, 'taxRate', Number(e.target.value))} className="col-span-1 border border-slate-200 rounded-lg px-2 py-2 text-sm" placeholder="%IVA" />
+                  <input type="number" min="1" value={it.quantity} onChange={(e) => updateItem(idx, 'quantity', Number(e.target.value))} className="col-span-1 border border-slate-200 rounded-lg px-2 py-2 text-sm" />
+                  <input type="number" step="0.01" value={it.unitPrice} onChange={(e) => updateItem(idx, 'unitPrice', Number(e.target.value))} className="col-span-2 border border-slate-200 rounded-lg px-2 py-2 text-sm text-right" />
+                  <input type="number" min="0" max="100" step="1" value={it.discount} onChange={(e) => updateItem(idx, 'discount', Number(e.target.value))} className="col-span-2 border border-slate-200 rounded-lg px-2 py-2 text-sm text-right" />
                   <button type="button" onClick={() => setForm({ ...form, items: form.items.filter((_, i) => i !== idx) })} className="col-span-1 text-rose-600">×</button>
                 </div>
               ))}
@@ -237,7 +254,6 @@ export default function Quotations() {
           <div className="bg-slate-50 rounded-lg p-3 text-sm">
             <div className="flex justify-between"><span>Subtotal:</span><span>${t.subtotal}</span></div>
             <div className="flex justify-between"><span>Descuento:</span><span>${t.discountTotal}</span></div>
-            <div className="flex justify-between"><span>IVA:</span><span>${t.taxAmount}</span></div>
             <div className="flex justify-between font-bold text-emerald-700 text-base"><span>Total:</span><span>${t.total}</span></div>
           </div>
 

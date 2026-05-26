@@ -23,6 +23,9 @@ import Quotations from './pages/Quotations';
 import Marketing from './pages/Marketing';
 import Chats from './pages/Chats';
 import Commissions from './pages/Commissions';
+import CommissionRules from './pages/CommissionRules';
+import Settings from './pages/Settings';
+import Reports from './pages/Reports';
 import Discounts from './pages/Discounts';
 import Rooms from './pages/Rooms';
 import Blocks from './pages/Blocks';
@@ -83,7 +86,7 @@ function AppRoutes() {
                 <Route
                   path="/patients/:id"
                   element={
-                    <RoleRoute roles={['admin', 'cajero', 'doctor', 'call_center', 'marketing', 'enfermero']}>
+                    <RoleRoute roles={['admin', 'cajero', 'doctor', 'optica', 'call_center', 'marketing', 'enfermero']}>
                       <PatientDetail />
                     </RoleRoute>
                   }
@@ -92,7 +95,7 @@ function AppRoutes() {
                 <Route
                   path="/appointments"
                   element={
-                    <RoleRoute roles={['admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing']}>
+                    <RoleRoute roles={['admin', 'cajero', 'doctor', 'optica', 'call_center', 'enfermero', 'marketing']}>
                       <Appointments />
                     </RoleRoute>
                   }
@@ -146,7 +149,7 @@ function AppRoutes() {
                 <Route
                   path="/calendar"
                   element={
-                    <RoleRoute roles={['admin', 'cajero', 'doctor', 'call_center', 'enfermero']}>
+                    <RoleRoute roles={['admin', 'cajero', 'doctor', 'optica', 'call_center', 'enfermero', 'marketing']}>
                       <Calendar />
                     </RoleRoute>
                   }
@@ -170,7 +173,7 @@ function AppRoutes() {
                 <Route
                   path="/quotations"
                   element={
-                    <RoleRoute roles={['admin', 'cajero', 'call_center', 'contabilidad']}>
+                    <RoleRoute roles={['admin', 'cajero', 'call_center', 'contabilidad', 'marketing']}>
                       <Quotations />
                     </RoleRoute>
                   }
@@ -186,7 +189,7 @@ function AppRoutes() {
                 <Route
                   path="/chats"
                   element={
-                    <RoleRoute roles={['admin', 'call_center']}>
+                    <RoleRoute roles={['admin', 'call_center', 'marketing']}>
                       <Chats />
                     </RoleRoute>
                   }
@@ -194,8 +197,16 @@ function AppRoutes() {
                 <Route
                   path="/commissions"
                   element={
-                    <RoleRoute roles={['admin', 'call_center']}>
+                    <RoleRoute roles={['admin', 'call_center', 'marketing']}>
                       <Commissions />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/commission-rules"
+                  element={
+                    <RoleRoute roles={['admin']}>
+                      <CommissionRules />
                     </RoleRoute>
                   }
                 />
@@ -272,6 +283,16 @@ function AppRoutes() {
                     }
                   />
                 ))}
+
+                <Route path="/settings" element={<Settings />} />
+                <Route
+                  path="/reports"
+                  element={
+                    <RoleRoute roles={['admin', 'marketing']}>
+                      <Reports />
+                    </RoleRoute>
+                  }
+                />
 
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>

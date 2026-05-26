@@ -22,10 +22,11 @@ router.post('/:patientId/follow-ups', allRoles, addFollowUp);
 router.get('/:patientId/follow-ups/:followUpId/print', allRoles, printFollowUp);
 router.delete('/:patientId/follow-ups/:followUpId', requireRole('admin', 'doctor'), deleteFollowUp);
 
-// Adjuntos PDF (ecografías, bioresonancias, etc.) por seguimiento
+// Adjuntos PDF (ecografías, bioresonancias, etc.) por seguimiento.
+// Disponible para todos los usuarios con acceso a seguimientos (admin, cajero, doctor, optica).
 router.post(
   '/:patientId/follow-ups/:followUpId/attachments',
-  requireRole('admin', 'doctor'),
+  allRoles,
   uploadAttachmentMiddleware,
   uploadFollowUpAttachment
 );
@@ -36,7 +37,7 @@ router.get(
 );
 router.delete(
   '/:patientId/follow-ups/:followUpId/attachments/:attachmentId',
-  requireRole('admin', 'doctor'),
+  allRoles,
   deleteFollowUpAttachment
 );
 

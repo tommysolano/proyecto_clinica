@@ -22,6 +22,8 @@ export default function Sales() {
   const canCreate = hasRole('admin', 'cajero');
   const canCancel = hasRole('admin');
   const canInvoice = hasRole('admin', 'cajero');
+  // El cajero crea ventas pero NO ve el historial (solo admin/contabilidad).
+  const canViewHistory = hasRole('admin', 'contabilidad');
 
   const [sales, setSales] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -61,6 +63,7 @@ export default function Sales() {
   }, []);
 
   const fetchSales = async () => {
+    if (!canViewHistory) { setLoading(false); return; }
     try {
       const params = {};
       if (filter.startDate) params.startDate = filter.startDate;
@@ -201,11 +204,9 @@ export default function Sales() {
 
   const subtotal = form.items.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
   const discountTotal = form.items.reduce((s, i) => s + (Number(i.discount) || 0), 0);
-  const taxAmount = form.items.reduce(
-    (s, i) => s + ((i.unitPrice * i.quantity - (Number(i.discount) || 0)) * i.taxRate) / 100,
-    0
-  );
-  const total = subtotal - discountTotal + taxAmount;
+  // No se cobra IVA en la venta (el precio del inventario ya lo contempla).
+  const taxAmount = 0;
+  const total = subtotal - discountTotal;
 
   const handlePatientSelect = (patientId) => {
     const patient = patients.find((p) => p._id === patientId);
@@ -754,7 +755,6 @@ export default function Sales() {
                     {form.patient && treatments.length > 0 && (
                       <th className="text-left py-2 pl-2">Tratamiento</th>
                     )}
-                    <th className="text-right py-2">IVA</th>
                     <th className="text-right py-2">Subtotal</th>
                     <th className="text-right py-2"></th>
                   </tr>
@@ -807,7 +807,6 @@ export default function Sales() {
                           </select>
                         </td>
                       )}
-                      <td className="py-2 text-right text-slate-500">{item.taxRate}%</td>
                       <td className="py-2 text-right font-medium">
                         ${(item.unitPrice * item.quantity - (Number(item.discount) || 0)).toFixed(2)}
                       </td>
@@ -839,10 +838,6 @@ export default function Sales() {
                   <span className="font-medium text-rose-600">-${discountTotal.toFixed(2)}</span>
                 </div>
               )}
-              <div className="flex justify-between text-sm">
-                <span className="text-slate-500">IVA:</span>
-                <span className="font-medium">${taxAmount.toFixed(2)}</span>
-              </div>
               <div className="flex justify-between text-base font-bold border-t border-emerald-200 pt-2">
                 <span>Total:</span>
                 <span className="text-emerald-700">${total.toFixed(2)}</span>
@@ -970,10 +965,12 @@ export default function Sales() {
                   <span className="text-rose-600">-${detailModal.discountTotal.toFixed(2)}</span>
                 </div>
               )}
-              <div className="flex justify-between">
-                <span className="text-slate-500">IVA:</span>
-                <span>${detailModal.taxAmount.toFixed(2)}</span>
-              </div>
+              {detailModal.taxAmount > 0 && (
+                <div className="flex justify-between">
+                  <span className="text-slate-500">IVA:</span>
+                  <span>${detailModal.taxAmount.toFixed(2)}</span>
+                </div>
+              )}
               <div className="flex justify-between font-bold border-t border-emerald-200 pt-2">
                 <span>Total:</span>
                 <span className="text-emerald-700">${detailModal.total.toFixed(2)}</span>

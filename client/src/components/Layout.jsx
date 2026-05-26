@@ -47,25 +47,28 @@ import {
 
 // Cada item declara qué roles pueden verlo. superOnly = solo isSuperAdmin.
 const ALL_ITEMS = [
-  { path: '/', label: 'Dashboard', icon: HiOutlineHome, roles: ['admin', 'cajero', 'contabilidad', 'doctor', 'call_center', 'marketing', 'enfermero'] },
-  { path: '/patients', label: 'Pacientes', icon: HiOutlineUsers, roles: ['admin', 'cajero', 'marketing', 'enfermero'] },
-  { path: '/appointments', label: 'Citas', icon: HiOutlineCalendar, roles: ['admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'] },
-  { path: '/calendar', label: 'Calendario', icon: HiOutlineCalendar, roles: ['admin', 'cajero', 'doctor', 'call_center', 'enfermero'] },
+  { path: '/', label: 'Dashboard', icon: HiOutlineHome, roles: ['admin', 'cajero', 'contabilidad', 'doctor', 'optica', 'call_center', 'marketing', 'enfermero'] },
+  { path: '/patients', label: 'Pacientes', icon: HiOutlineUsers, roles: ['admin', 'cajero', 'marketing', 'enfermero', 'call_center'] },
+  { path: '/appointments', label: 'Citas', icon: HiOutlineCalendar, roles: ['admin', 'cajero', 'doctor', 'optica', 'call_center', 'enfermero', 'marketing'] },
+  { path: '/calendar', label: 'Calendario', icon: HiOutlineCalendar, roles: ['admin', 'cajero', 'doctor', 'optica', 'call_center', 'enfermero', 'marketing'] },
   { path: '/treatments', label: 'Tratamientos', icon: HiOutlineHeart, roles: ['admin', 'cajero', 'marketing', 'enfermero'] },
   { path: '/referrals', label: 'Derivaciones', icon: HiOutlineArrowsRightLeft, roles: ['admin', 'marketing', 'cajero'] },
-  { path: '/quotations', label: 'Cotizaciones', icon: HiOutlineDocumentDuplicate, roles: ['admin', 'cajero', 'call_center', 'contabilidad'] },
-  { path: '/chats', label: 'Chats / WhatsApp', icon: HiOutlineChatBubbleLeftRight, roles: ['admin', 'call_center'] },
-  { path: '/commissions', label: 'Comisiones', icon: HiOutlineTrophy, roles: ['admin', 'call_center'] },
+  { path: '/quotations', label: 'Cotizaciones', icon: HiOutlineDocumentDuplicate, roles: ['admin', 'cajero', 'call_center', 'contabilidad', 'marketing'] },
+  { path: '/chats', label: 'Chats / WhatsApp', icon: HiOutlineChatBubbleLeftRight, roles: ['admin', 'call_center', 'marketing'] },
+  { path: '/commissions', label: 'Comisiones', icon: HiOutlineTrophy, roles: ['admin', 'call_center', 'marketing'] },
+  { path: '/commission-rules', label: 'Reglas de Comisión', icon: HiOutlineTrophy, roles: ['admin'] },
   { path: '/inventory', label: 'Inventario', icon: HiOutlineCube, roles: ['admin', 'contabilidad'] },
-  { path: '/sales', label: 'Ventas', icon: HiOutlineShoppingCart, roles: ['admin', 'contabilidad'] },
+  { path: '/sales', label: 'Ventas', icon: HiOutlineShoppingCart, roles: ['admin', 'contabilidad', 'cajero'] },
   { path: '/invoices', label: 'Facturación', icon: HiOutlineDocumentText, roles: ['admin', 'cajero', 'contabilidad'] },
   { path: '/marketing', label: 'Marketing', icon: HiOutlineMegaphone, roles: ['admin', 'marketing'] },
+  { path: '/reports', label: 'Reportes de atención', icon: HiOutlineChartBar, roles: ['admin', 'marketing'] },
   { path: '/discounts', label: 'Descuentos', icon: HiOutlineTag, roles: ['admin', 'cajero', 'contabilidad'] },
   { path: '/rooms', label: 'Consultorios', icon: HiOutlineBuildingStorefront, roles: ['admin'] },
   { path: '/blocks', label: 'Bloqueos', icon: HiOutlineNoSymbol, roles: ['admin'] },
   { path: '/users', label: 'Usuarios', icon: HiOutlineUserGroup, roles: ['admin'] },
   { path: '/invoicing-config', label: 'Config. SRI', icon: HiOutlineCog6Tooth, roles: ['admin', 'contabilidad'] },
   { path: '/clinics', label: 'Consultorios médicos', icon: HiOutlineBuildingOffice2, roles: [], superOnly: true },
+  { path: '/settings', label: 'Configuración', icon: HiOutlineCog6Tooth, roles: ['admin', 'cajero', 'contabilidad', 'doctor', 'optica', 'call_center', 'marketing', 'enfermero'] },
 ];
 
 const ACCOUNTING_ITEMS = [
@@ -124,11 +127,7 @@ export default function Layout({ children }) {
     if (item.superOnly) return user?.isSuperAdmin;
     if (user?.isSuperAdmin) return true;
     if (!role) return false;
-    // Regla: cualquier item visible para 'call_center' también para 'supervisor_call_center'.
-    const expanded = item.roles.includes('call_center')
-      ? [...item.roles, 'supervisor_call_center']
-      : item.roles;
-    return expanded.includes(role);
+    return item.roles.includes(role);
   });
 
   const showAccounting = user?.isSuperAdmin || role === 'admin' || role === 'contabilidad';
@@ -262,7 +261,7 @@ export default function Layout({ children }) {
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold text-white truncate">{user?.name}</p>
               <p className="text-[11px] text-emerald-300/80 capitalize">
-                {user?.isSuperAdmin ? 'Super Admin' : (role === 'call_center' ? 'Call Center' : role || '')}
+                {user?.isSuperAdmin ? 'Super Admin' : (role === 'call_center' ? 'Call Center' : role === 'optica' ? 'Óptica' : role || '')}
               </p>
             </div>
           </div>

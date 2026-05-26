@@ -21,6 +21,18 @@ const recetaItemSchema = new mongoose.Schema(
     // Marca interna para identificar si este ítem corresponde a un servicio/programa
     // y debe disparar la creación automática del tratamiento.
     isService: { type: Boolean, default: false },
+    // Si el producto es compuesto (ej. suero), aquí van los componentes que el
+    // doctor eligió recetar (ej. las ampollas). Se descuentan del inventario; el
+    // costo cobrado es el del item compuesto, no la suma de los componentes.
+    isComposite: { type: Boolean, default: false },
+    componentsUsed: [
+      {
+        product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+        name: { type: String, trim: true },
+        quantity: { type: Number, default: 1, min: 0 },
+        _id: false,
+      },
+    ],
   },
   { _id: true }
 );
@@ -64,6 +76,25 @@ const followUpSchema = new mongoose.Schema(
         uploadedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
       },
     ],
+    // Datos ópticos (rol 'optica'). Columnas: SPH CYL AX ADD DNP ALT. Filas OD / OI.
+    opticaRx: {
+      od: {
+        sph: { type: String, trim: true, default: '' },
+        cyl: { type: String, trim: true, default: '' },
+        ax: { type: String, trim: true, default: '' },
+        add: { type: String, trim: true, default: '' },
+        dnp: { type: String, trim: true, default: '' },
+        alt: { type: String, trim: true, default: '' },
+      },
+      oi: {
+        sph: { type: String, trim: true, default: '' },
+        cyl: { type: String, trim: true, default: '' },
+        ax: { type: String, trim: true, default: '' },
+        add: { type: String, trim: true, default: '' },
+        dnp: { type: String, trim: true, default: '' },
+        alt: { type: String, trim: true, default: '' },
+      },
+    },
     // Mantenemos compat con tratamientos referenciados (auto-creados a partir de la receta).
     treatment: { type: mongoose.Schema.Types.ObjectId, ref: 'Treatment', default: null },
     autoTreatmentCreated: { type: mongoose.Schema.Types.ObjectId, ref: 'Treatment' },

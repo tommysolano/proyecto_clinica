@@ -9,11 +9,7 @@ export default function RoleRoute({ roles, children }) {
   const { role, user } = useAuth();
   // El super-admin puede entrar a cualquier vista de cualquier clínica
   if (user?.isSuperAdmin) return children;
-  // Regla: cualquier vista permitida a 'call_center' también la ve 'supervisor_call_center'.
-  const expanded = roles.includes('call_center')
-    ? Array.from(new Set([...roles, 'supervisor_call_center']))
-    : roles;
-  if (!role || !expanded.includes(role)) {
+  if (!role || !roles.includes(role)) {
     return <Navigate to="/" replace />;
   }
   return children;

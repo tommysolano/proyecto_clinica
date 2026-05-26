@@ -13,12 +13,15 @@ const categories = { medicamento: 'Medicamento', insumo: 'Insumo', servicio: 'Se
 const emptyProduct = {
   code: '', name: '', description: '', category: 'otro',
   purchasePrice: '', salePrice: '', stock: '', minStock: '5', unit: 'unidad', taxRate: '15',
-  unlimited: false,
   maxAppointmentsPerDay: '0',
   excludeFromFirstVisit: false,
   nursingService: false,
   programServices: [],
+  serviceItems: [],
+  isComposite: false,
+  components: [],
   availableInClinics: [],
+  stockByClinic: [],
 };
 const emptyMovement = { product: '', type: 'entrada', quantity: '', reason: '' };
 
@@ -84,7 +87,6 @@ export default function Inventory() {
       category: p.category, purchasePrice: String(p.purchasePrice),
       salePrice: String(p.salePrice), stock: String(p.stock),
       minStock: String(p.minStock), unit: p.unit, taxRate: String(p.taxRate),
-      unlimited: !!p.unlimited,
       maxAppointmentsPerDay: String(p.maxAppointmentsPerDay ?? 0),
       excludeFromFirstVisit: !!p.excludeFromFirstVisit,
       nursingService: !!p.nursingService,
@@ -92,7 +94,20 @@ export default function Inventory() {
         product: s.product?._id || s.product || '',
         quantity: s.quantity || 1,
       })),
+      serviceItems: (p.serviceItems || []).map((s) => ({
+        product: s.product?._id || s.product || '',
+        quantity: s.quantity || 1,
+      })),
+      isComposite: !!p.isComposite,
+      components: (p.components || []).map((s) => ({
+        product: s.product?._id || s.product || '',
+        quantity: s.quantity || 1,
+      })),
       availableInClinics: (p.availableInClinics || []).map((c) => c?._id || c).filter(Boolean),
+      stockByClinic: (p.stockByClinic || []).map((s) => ({
+        clinic: s.clinic?._id || s.clinic || '',
+        stock: s.stock ?? 0,
+      })),
     });
     setProductModal(true);
   };
@@ -101,21 +116,41 @@ export default function Inventory() {
     e.preventDefault();
     setSaving(true);
     try {
+      const isService = productForm.category === 'servicio';
+      // Un servicio (o programa) se considera ilimitado: no maneja stock físico.
+      const unlimited = isService || productForm.category === 'programa';
       const data = {
         ...productForm,
-        purchasePrice: parseFloat(productForm.purchasePrice) || 0,
+        purchasePrice: isService ? 0 : parseFloat(productForm.purchasePrice) || 0,
         salePrice: parseFloat(productForm.salePrice),
-        stock: parseInt(productForm.stock) || 0,
-        minStock: parseInt(productForm.minStock) || 5,
+        stock: isService ? 0 : parseInt(productForm.stock) || 0,
+        minStock: isService ? 0 : parseInt(productForm.minStock) || 5,
+        unit: isService ? 'servicio' : productForm.unit,
         taxRate: parseFloat(productForm.taxRate) || 15,
-        unlimited: !!productForm.unlimited,
+        unlimited,
         maxAppointmentsPerDay: parseInt(productForm.maxAppointmentsPerDay) || 0,
         excludeFromFirstVisit: !!productForm.excludeFromFirstVisit,
         nursingService: !!productForm.nursingService,
         programServices: (productForm.programServices || [])
           .filter((s) => s.product && Number(s.quantity) > 0)
           .map((s) => ({ product: s.product, quantity: parseInt(s.quantity) || 1 })),
+        serviceItems: isService
+          ? (productForm.serviceItems || [])
+              .filter((s) => s.product)
+              .map((s) => ({ product: s.product, quantity: parseInt(s.quantity) || 1 }))
+          : [],
+        isComposite: !isService && !!productForm.isComposite,
+        components: !isService && productForm.isComposite
+          ? (productForm.components || [])
+              .filter((s) => s.product)
+              .map((s) => ({ product: s.product, quantity: parseInt(s.quantity) || 1 }))
+          : [],
         availableInClinics: productForm.availableInClinics || [],
+        stockByClinic: isService
+          ? []
+          : (productForm.stockByClinic || [])
+              .filter((s) => s.clinic)
+              .map((s) => ({ clinic: s.clinic, stock: parseInt(s.stock) || 0 })),
       };
       if (editingProduct) {
         await api.put(`/products/${editingProduct}`, data);
@@ -404,42 +439,55 @@ export default function Inventory() {
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Descripción</label>
               <input value={productForm.description} onChange={(e) => setProductForm({...productForm, description: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
             </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">Precio compra</label>
-              <input type="number" step="0.01" value={productForm.purchasePrice} onChange={(e) => setProductForm({...productForm, purchasePrice: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
-            </div>
+            {productForm.category !== 'servicio' && (
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">Precio compra</label>
+                <input type="number" step="0.01" value={productForm.purchasePrice} onChange={(e) => setProductForm({...productForm, purchasePrice: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
+              </div>
+            )}
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Precio venta *</label>
               <input type="number" step="0.01" value={productForm.salePrice} onChange={(e) => setProductForm({...productForm, salePrice: e.target.value})} required className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
             </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">Stock actual</label>
-              <input type="number" value={productForm.stock} onChange={(e) => setProductForm({...productForm, stock: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">Stock mínimo</label>
-              <input type="number" value={productForm.minStock} onChange={(e) => setProductForm({...productForm, minStock: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">Unidad</label>
-              <input value={productForm.unit} onChange={(e) => setProductForm({...productForm, unit: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
-            </div>
+            {productForm.category !== 'servicio' && (
+              <>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">Stock actual</label>
+                  <input type="number" value={productForm.stock} onChange={(e) => setProductForm({...productForm, stock: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">Stock mínimo</label>
+                  <input type="number" value={productForm.minStock} onChange={(e) => setProductForm({...productForm, minStock: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1.5">Unidad</label>
+                  <input value={productForm.unit} onChange={(e) => setProductForm({...productForm, unit: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
+                </div>
+              </>
+            )}
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">IVA %</label>
               <input type="number" value={productForm.taxRate} onChange={(e) => setProductForm({...productForm, taxRate: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
             </div>
-            <div className="sm:col-span-2 flex items-center gap-2 pt-2">
-              <input
-                id="unlimited"
-                type="checkbox"
-                checked={!!productForm.unlimited}
-                onChange={(e) => setProductForm({ ...productForm, unlimited: e.target.checked })}
-                className="w-4 h-4 accent-emerald-600 cursor-pointer"
-              />
-              <label htmlFor="unlimited" className="text-sm text-slate-700 cursor-pointer">
-                Producto/servicio <strong>ilimitado</strong> (no descuenta stock al facturar)
-              </label>
-            </div>
+            {productForm.category === 'servicio' && (
+              <div className="sm:col-span-2 bg-emerald-50 border border-emerald-200 rounded-xl p-2 text-xs text-emerald-700">
+                Los servicios son <strong>ilimitados</strong>: no manejan stock, precio de compra ni unidad.
+              </div>
+            )}
+            {productForm.category !== 'servicio' && productForm.category !== 'programa' && (
+              <div className="sm:col-span-2 flex items-center gap-2 pt-2">
+                <input
+                  id="isComposite"
+                  type="checkbox"
+                  checked={!!productForm.isComposite}
+                  onChange={(e) => setProductForm({ ...productForm, isComposite: e.target.checked })}
+                  className="w-4 h-4 accent-emerald-600 cursor-pointer"
+                />
+                <label htmlFor="isComposite" className="text-sm text-slate-700 cursor-pointer">
+                  Producto <strong>compuesto</strong> (formado por otros productos, ej. un suero con ampollas)
+                </label>
+              </div>
+            )}
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Cupo máximo de citas/día</label>
               <input
@@ -537,6 +585,71 @@ export default function Inventory() {
               </div>
             )}
 
+            {/* Servicio: items/insumos relacionados */}
+            {productForm.category === 'servicio' && (
+              <div className="sm:col-span-2">
+                <ProductItemPicker
+                  label="Items relacionados al servicio (insumos que se utilizan)"
+                  color="emerald"
+                  products={products.filter((p) => p._id !== editingProduct && p.category !== 'servicio' && p.category !== 'programa')}
+                  rows={productForm.serviceItems}
+                  onChange={(rows) => setProductForm({ ...productForm, serviceItems: rows })}
+                />
+              </div>
+            )}
+
+            {/* Producto compuesto: componentes posibles */}
+            {productForm.category !== 'servicio' && productForm.category !== 'programa' && productForm.isComposite && (
+              <div className="sm:col-span-2">
+                <ProductItemPicker
+                  label="Componentes posibles (ej. ampollas que pueden ir en este suero)"
+                  color="amber"
+                  products={products.filter((p) => p._id !== editingProduct && !p.isComposite)}
+                  rows={productForm.components}
+                  onChange={(rows) => setProductForm({ ...productForm, components: rows })}
+                />
+              </div>
+            )}
+
+            {/* Stock por clínica (inventario por sucursal; el general es la suma) */}
+            {productForm.category !== 'servicio' && clinicsList.length > 0 && (
+              <div className="sm:col-span-2 bg-indigo-50 border border-indigo-200 rounded-xl p-3">
+                <p className="text-sm font-semibold text-indigo-800 mb-1">Stock por clínica</p>
+                <p className="text-xs text-slate-500 mb-2">
+                  El inventario general es la suma del stock de todas las clínicas.
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                  {clinicsList.map((c) => {
+                    const row = (productForm.stockByClinic || []).find((s) => s.clinic === c._id);
+                    return (
+                      <div key={c._id} className="flex items-center gap-2">
+                        <span className="text-sm text-slate-700 flex-1 truncate">{c.nombreComercial || c.name}</span>
+                        <input
+                          type="number"
+                          min="0"
+                          value={row?.stock ?? ''}
+                          placeholder="0"
+                          onChange={(e) => {
+                            const arr = [...(productForm.stockByClinic || [])];
+                            const idx = arr.findIndex((s) => s.clinic === c._id);
+                            const val = e.target.value;
+                            if (idx >= 0) arr[idx] = { ...arr[idx], stock: val };
+                            else arr.push({ clinic: c._id, stock: val });
+                            setProductForm({ ...productForm, stockByClinic: arr });
+                          }}
+                          className="w-24 px-2 py-1.5 border border-slate-200 rounded text-sm bg-white"
+                        />
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="text-[11px] text-indigo-700 mt-2 font-medium">
+                  Total general:{' '}
+                  {(productForm.stockByClinic || []).reduce((a, s) => a + (parseInt(s.stock) || 0), 0)}
+                </p>
+              </div>
+            )}
+
             {/* Disponibilidad por clínica (sucursal) */}
             {clinicsList.length > 1 && (
               <div className="sm:col-span-2 bg-sky-50 border border-sky-200 rounded-xl p-3">
@@ -616,6 +729,86 @@ export default function Inventory() {
           </div>
         </form>
       </Modal>
+    </div>
+  );
+}
+
+// Selector de productos con buscador, para items relacionados (servicio) y componentes (compuesto).
+function ProductItemPicker({ label, products, rows, onChange, color = 'emerald' }) {
+  const [query, setQuery] = useState('');
+  const list = rows || [];
+  const filtered = query.trim()
+    ? products.filter((p) => {
+        const q = query.trim().toLowerCase();
+        return (
+          String(p.name || '').toLowerCase().includes(q) ||
+          String(p.code || '').toLowerCase().includes(q)
+        );
+      })
+    : products;
+  const addProduct = (id) => {
+    if (!id || list.some((r) => r.product === id)) return;
+    onChange([...list, { product: id, quantity: 1 }]);
+    setQuery('');
+  };
+  const bg = color === 'amber' ? 'bg-amber-50 border-amber-200' : 'bg-emerald-50 border-emerald-200';
+  return (
+    <div className={`${bg} border rounded-xl p-3 space-y-2`}>
+      <p className="text-sm font-semibold text-slate-800">{label}</p>
+      <input
+        type="search"
+        value={query}
+        onChange={(e) => setQuery(e.target.value)}
+        placeholder="Buscar producto por nombre o código..."
+        className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white"
+      />
+      {query.trim() && (
+        <div className="max-h-32 overflow-y-auto bg-white rounded-lg border border-slate-200">
+          {filtered.length === 0 ? (
+            <p className="text-xs text-slate-400 px-2 py-1">Sin resultados</p>
+          ) : (
+            filtered.slice(0, 30).map((p) => (
+              <button
+                key={p._id}
+                type="button"
+                onClick={() => addProduct(p._id)}
+                className="w-full text-left px-2 py-1.5 text-sm hover:bg-emerald-50 bg-transparent border-none cursor-pointer flex justify-between"
+              >
+                <span>{p.name}</span>
+                <span className="text-xs text-slate-400">{p.code}</span>
+              </button>
+            ))
+          )}
+        </div>
+      )}
+      {list.length === 0 && <p className="text-xs text-slate-500">Sin items seleccionados.</p>}
+      {list.map((row, idx) => {
+        const p = products.find((x) => x._id === row.product);
+        return (
+          <div key={row.product || idx} className="flex items-center gap-2 bg-white rounded-lg px-2 py-1.5 border border-slate-200">
+            <span className="flex-1 text-sm text-slate-700">{p?.name || 'Producto'}</span>
+            <input
+              type="number"
+              min={1}
+              value={row.quantity}
+              onChange={(e) => {
+                const arr = [...list];
+                arr[idx] = { ...arr[idx], quantity: e.target.value };
+                onChange(arr);
+              }}
+              className="w-16 px-2 py-1 border border-slate-200 rounded text-sm"
+              title="Cantidad"
+            />
+            <button
+              type="button"
+              onClick={() => onChange(list.filter((_, i) => i !== idx))}
+              className="text-rose-600 bg-transparent border-none cursor-pointer p-1"
+            >
+              <HiOutlineTrash className="w-4 h-4" />
+            </button>
+          </div>
+        );
+      })}
     </div>
   );
 }

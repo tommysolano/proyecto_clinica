@@ -32,6 +32,35 @@ const productSchema = new mongoose.Schema(
         _id: false,
       },
     ],
+    // Para 'servicio': insumos/items relacionados que se utilizan al ofrecer el servicio.
+    serviceItems: [
+      {
+        product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+        quantity: { type: Number, default: 1, min: 0 },
+        _id: false,
+      },
+    ],
+    // Producto compuesto (ej. un suero compuesto por ampollas). Tiene precio de
+    // venta fijo. `components` lista los productos que PUEDEN componerlo; al
+    // recetarlo, el doctor elige cuáles usar. Se descuenta el stock de los
+    // componentes elegidos pero se cobra el precio del compuesto (no de las partes).
+    isComposite: { type: Boolean, default: false },
+    components: [
+      {
+        product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product' },
+        quantity: { type: Number, default: 1, min: 0 },
+        _id: false,
+      },
+    ],
+    // Stock por clínica. El inventario general es la suma de todas las clínicas.
+    // [{ clinic, stock }]
+    stockByClinic: [
+      {
+        clinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic' },
+        stock: { type: Number, default: 0, min: 0 },
+        _id: false,
+      },
+    ],
     // Restricción: si está vacío, el servicio se atiende en cualquier clínica.
     // Si tiene clínicas, solo en esas. Permite forzar selección automática al agendar.
     availableInClinics: [

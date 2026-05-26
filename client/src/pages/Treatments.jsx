@@ -87,6 +87,7 @@ export default function Treatments() {
   const filteredList = useMemo(() => {
     if (!alertFilter) return list;
     if (alertFilter === 'completed') return list.filter((t) => t.status === 'completado');
+    if (alertFilter === 'zero') return list.filter((t) => (t.progress || 0) === 0);
     return list.filter((t) => t.abandonAlert === alertFilter);
   }, [list, alertFilter]);
 
@@ -266,6 +267,7 @@ export default function Treatments() {
           className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
         >
           <option value="">Todas las alertas</option>
+          <option value="zero">Sin avance (0%)</option>
           <option value="completed">Completados</option>
           <option value="warning">Aviso antes de 30 días</option>
           <option value="abandoned">Abandonados (+30 días)</option>

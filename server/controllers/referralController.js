@@ -21,7 +21,7 @@ exports.list = async (req, res) => {
     }
 
     // Si el rol es doctor, solo ve las que él emitió o recibió
-    if (req.role === 'doctor') {
+    if (req.role === 'doctor' || req.role === 'optica') {
       query.$or = [{ fromDoctor: req.user._id }, { toDoctor: req.user._id }];
     }
 
@@ -51,7 +51,7 @@ exports.create = async (req, res) => {
     const referral = await Referral.create({
       ...req.body,
       clinic: req.clinicId,
-      fromDoctor: req.body.fromDoctor || (req.role === 'doctor' ? req.user._id : undefined),
+      fromDoctor: req.body.fromDoctor || (req.role === 'doctor' || req.role === 'optica' ? req.user._id : undefined),
     });
     const populated = await Referral.findById(referral._id).populate(POPULATE);
     res.status(201).json(populated);

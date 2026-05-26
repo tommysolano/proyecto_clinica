@@ -22,7 +22,7 @@ const RANGES = [
 export default function Commissions() {
   const { role, user } = useAuth();
   const isAgent = role === 'call_center' && !user?.isSuperAdmin;
-  const isSupervisor = role === 'supervisor_call_center' || role === 'admin' || user?.isSuperAdmin;
+  const isSupervisor = role === 'marketing' || role === 'admin' || user?.isSuperAdmin;
 
   const [range, setRange] = useState('month');
   const [agent, setAgent] = useState('');

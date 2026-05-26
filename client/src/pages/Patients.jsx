@@ -24,19 +24,17 @@ const emptyForm = {
   age: '',
   gender: '',
   address: '',
-  notes: '',
   source: '',
-  sourceDetail: '',
-  antecedentesFamiliares: '',
-  antecedentesPatologicos: '',
+  referredByName: '',
+  referredById: '',
+  referredByType: '',
 };
 
 const emptyApt = {
   enabled: false,
-  doctor: '',
   date: '',
   startTime: '',
-  endTime: '',
+  room: '',
   reason: '',
   services: [],
 };
@@ -58,18 +56,18 @@ export default function Patients() {
   const [totalPages, setTotalPages] = useState(1);
 
   // Para crear cita junto al paciente
-  const [doctors, setDoctors] = useState([]);
+  const [rooms, setRooms] = useState([]);
   const [services, setServices] = useState([]);
   const [aptForm, setAptForm] = useState(emptyApt);
 
   useEffect(() => {
     if (canWrite) {
-      api.get('/users/doctors').then((r) => setDoctors(r.data)).catch(() => {});
+      api.get('/rooms').then((r) => setRooms(r.data || [])).catch(() => {});
       api
         .get('/products', { params: { limit: 500 } })
         .then((r) => {
           const list = (r.data || []).filter(
-            (p) => p.active !== false && (p.category === 'servicio' || p.unlimited === true)
+            (p) => p.active !== false && (p.category === 'servicio' || p.category === 'programa' || p.unlimited === true)
           );
           setServices(list);
         })
@@ -121,14 +119,14 @@ export default function Patients() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!form.gender) {
+      toast.error('El género es obligatorio');
+      return;
+    }
     // Validaciones de cita inline si está habilitada
     if (aptForm.enabled && !editing) {
-      if (!aptForm.doctor || !aptForm.date || !aptForm.startTime || !aptForm.endTime) {
-        toast.error('Completa los datos de la cita (doctor, fecha y horario)');
-        return;
-      }
-      if (aptForm.endTime <= aptForm.startTime) {
-        toast.error('La hora de fin debe ser posterior a la hora de inicio');
+      if (!aptForm.date || !aptForm.startTime) {
+        toast.error('Completa los datos de la cita (fecha y hora)');
         return;
       }
     }
@@ -152,10 +150,9 @@ export default function Patients() {
         try {
           await api.post('/appointments', {
             patient: createdId,
-            doctor: aptForm.doctor,
             date: aptForm.date,
             startTime: aptForm.startTime,
-            endTime: aptForm.endTime,
+            room: aptForm.room || undefined,
             reason: aptForm.reason,
             status: 'pendiente',
             services: aptForm.services.map((id) => ({ product: id })),
@@ -370,11 +367,12 @@ export default function Patients() {
                 placeholder="Opcional"
               />
             </Field>
-            <Field label="Género">
+            <Field label="Género" required>
               <select
                 name="gender"
                 value={form.gender}
                 onChange={handleChange}
+                required
                 className="input"
               >
                 <option value="">Seleccionar</option>
@@ -466,43 +464,23 @@ export default function Patients() {
                 <option value="organico">Orgánico</option>
               </select>
             </Field>
-            <Field label="Detalle de procedencia">
-              <input
-                name="sourceDetail"
-                value={form.sourceDetail}
-                onChange={handleChange}
-                className="input"
-                placeholder="Ej: campaña Instagram, referido por María..."
+            {form.source === 'referido' && (
+              <ReferralPicker
+                value={form.referredByName}
+                onSelect={(sel) =>
+                  setForm((f) => ({
+                    ...f,
+                    referredByName: sel.name,
+                    referredById: sel.id || '',
+                    referredByType: sel.type || '',
+                  }))
+                }
+                onClear={() =>
+                  setForm((f) => ({ ...f, referredByName: '', referredById: '', referredByType: '' }))
+                }
               />
-            </Field>
+            )}
           </div>
-          <Field label="Antecedentes familiares">
-            <textarea
-              name="antecedentesFamiliares"
-              value={form.antecedentesFamiliares}
-              onChange={handleChange}
-              rows={2}
-              className="input resize-none"
-            />
-          </Field>
-          <Field label="Antecedentes patológicos">
-            <textarea
-              name="antecedentesPatologicos"
-              value={form.antecedentesPatologicos}
-              onChange={handleChange}
-              rows={2}
-              className="input resize-none"
-            />
-          </Field>
-          <Field label="Notas">
-            <textarea
-              name="notes"
-              value={form.notes}
-              onChange={handleChange}
-              rows={2}
-              className="input resize-none"
-            />
-          </Field>
           {!editing && (
             <div className="border-t border-emerald-100 pt-4">
               <label className="flex items-center gap-2 cursor-pointer text-sm font-medium text-slate-700">
@@ -517,20 +495,6 @@ export default function Patients() {
               {aptForm.enabled && (
                 <div className="mt-3 space-y-3 bg-emerald-50/40 rounded-xl p-3">
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                    <Field label="Doctor" required>
-                      <select
-                        value={aptForm.doctor}
-                        onChange={(e) => setAptForm({ ...aptForm, doctor: e.target.value })}
-                        className="input"
-                      >
-                        <option value="">Seleccionar doctor</option>
-                        {doctors.map((d) => (
-                          <option key={d._id} value={d._id}>
-                            Dr. {d.name} - {d.specialty}
-                          </option>
-                        ))}
-                      </select>
-                    </Field>
                     <Field label="Fecha" required>
                       <input
                         type="date"
@@ -539,7 +503,7 @@ export default function Patients() {
                         className="input"
                       />
                     </Field>
-                    <Field label="Hora inicio" required>
+                    <Field label="Hora" required>
                       <input
                         type="time"
                         value={aptForm.startTime}
@@ -547,13 +511,17 @@ export default function Patients() {
                         className="input"
                       />
                     </Field>
-                    <Field label="Hora fin" required>
-                      <input
-                        type="time"
-                        value={aptForm.endTime}
-                        onChange={(e) => setAptForm({ ...aptForm, endTime: e.target.value })}
+                    <Field label="Consultorio">
+                      <select
+                        value={aptForm.room}
+                        onChange={(e) => setAptForm({ ...aptForm, room: e.target.value })}
                         className="input"
-                      />
+                      >
+                        <option value="">— Sin asignar —</option>
+                        {rooms.map((r) => (
+                          <option key={r._id} value={r._id}>{r.name}</option>
+                        ))}
+                      </select>
                     </Field>
                   </div>
                   <Field label="Motivo">
@@ -651,5 +619,79 @@ function Field({ label, required, children }) {
       </label>
       {children}
     </div>
+  );
+}
+
+// Buscador de "¿Quién lo refirió?" — pacientes y personal registrados.
+function ReferralPicker({ value, onSelect, onClear }) {
+  const [query, setQuery] = useState(value || '');
+  const [results, setResults] = useState([]);
+  const [open, setOpen] = useState(false);
+  const [selected, setSelected] = useState(!!value);
+
+  useEffect(() => {
+    if (selected || query.trim().length < 2) {
+      setResults([]);
+      return;
+    }
+    const t = setTimeout(async () => {
+      try {
+        const res = await api.get('/patients/referral-options', { params: { q: query } });
+        setResults(res.data || []);
+        setOpen(true);
+      } catch {
+        setResults([]);
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [query, selected]);
+
+  return (
+    <Field label="¿Quién lo refirió?">
+      <div className="relative">
+        <input
+          value={query}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            setSelected(false);
+          }}
+          className="input"
+          placeholder="Buscar paciente o personal..."
+        />
+        {selected && query && (
+          <button
+            type="button"
+            onClick={() => {
+              setQuery('');
+              setSelected(false);
+              onClear();
+            }}
+            className="absolute right-2 top-1/2 -translate-y-1/2 text-xs text-slate-400 hover:text-red-500 bg-transparent border-none cursor-pointer"
+          >
+            ✕
+          </button>
+        )}
+        {open && !selected && results.length > 0 && (
+          <div className="absolute z-10 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-lg max-h-48 overflow-y-auto">
+            {results.map((r) => (
+              <button
+                key={`${r.type}-${r.id}`}
+                type="button"
+                onClick={() => {
+                  onSelect(r);
+                  setQuery(r.name);
+                  setSelected(true);
+                  setOpen(false);
+                }}
+                className="w-full text-left px-3 py-2 text-sm hover:bg-emerald-50 bg-transparent border-none cursor-pointer flex justify-between gap-2"
+              >
+                <span>{r.name}</span>
+                <span className="text-xs text-slate-400">{r.type === 'user' ? 'Personal' : r.detail}</span>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+    </Field>
   );
 }

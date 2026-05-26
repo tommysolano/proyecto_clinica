@@ -46,7 +46,7 @@ function resolveRange(query) {
  * una cita creada por ese agente.
  *
  * Si req.role === 'call_center' devuelve sólo SUS comisiones.
- * Si es admin / supervisor_call_center: agrupado por agente.
+ * Si es admin / marketing: agrupado por agente (marketing supervisa al call center).
  */
 exports.getCommissions = async (req, res) => {
   try {

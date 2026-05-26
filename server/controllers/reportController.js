@@ -5,6 +5,80 @@ const Invoice = require('../models/Invoice');
 const Patient = require('../models/Patient');
 const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
+const Treatment = require('../models/Treatment');
+
+/**
+ * Reporte de atenciones por proveedor (doctor/enfermero) en un rango de fechas.
+ * Cuenta pacientes atendidos (citas completadas) por cada doctor/enfermero.
+ */
+exports.attentionReport = async (req, res) => {
+  try {
+    const { start, end } = req.query;
+    const startDate = start ? new Date(start) : new Date(Date.now() - 30 * 86400000);
+    startDate.setHours(0, 0, 0, 0);
+    const endDate = end ? new Date(end) : new Date();
+    endDate.setHours(23, 59, 59, 999);
+
+    const appts = await Appointment.find({
+      clinic: req.clinicId,
+      status: 'completada',
+      date: { $gte: startDate, $lte: endDate },
+    })
+      .populate('doctor', 'name')
+      .populate('attendedByNurse', 'name')
+      .populate('patient', 'firstName lastName');
+
+    const providers = {};
+    const addAttention = (id, name, type, apt) => {
+      if (!id) return;
+      const key = String(id);
+      if (!providers[key]) providers[key] = { id: key, name, type, count: 0, patients: new Set(), list: [] };
+      providers[key].count += 1;
+      if (apt.patient) providers[key].patients.add(String(apt.patient._id));
+      providers[key].list.push({
+        date: apt.date,
+        patient: apt.patient ? `${apt.patient.firstName} ${apt.patient.lastName}` : '—',
+        patientId: apt.patient?._id || null,
+      });
+    };
+
+    for (const apt of appts) {
+      if (apt.doctor) addAttention(apt.doctor._id, apt.doctor.name, 'doctor', apt);
+      if (apt.attendedByNurse) addAttention(apt.attendedByNurse._id, apt.attendedByNurse.name, 'enfermero', apt);
+    }
+
+    const result = Object.values(providers)
+      .map((p) => ({ id: p.id, name: p.name, type: p.type, attentions: p.count, uniquePatients: p.patients.size, list: p.list }))
+      .sort((a, b) => b.attentions - a.attentions);
+
+    res.json({ providers: result, total: appts.length });
+  } catch (e) {
+    res.status(500).json({ message: 'Error al generar reporte de atenciones', error: e.message });
+  }
+};
+
+/**
+ * Adherencia de un paciente: tratamientos recetados y su progreso (si los siguió).
+ */
+exports.patientAdherence = async (req, res) => {
+  try {
+    const treatments = await Treatment.find({ clinic: req.clinicId, patient: req.params.patientId })
+      .populate('prescribedBy', 'name')
+      .sort({ createdAt: -1 });
+    const data = treatments.map((t) => ({
+      id: t._id,
+      name: t.name,
+      status: t.status,
+      progress: t.progress ?? 0,
+      prescribedBy: t.prescribedBy?.name || '—',
+      startDate: t.startDate,
+      items: (t.items || []).map((it) => ({ name: it.name, quantity: it.quantity, completed: it.completed || 0 })),
+    }));
+    res.json({ treatments: data });
+  } catch (e) {
+    res.status(500).json({ message: 'Error al obtener adherencia', error: e.message });
+  }
+};
 
 const sendWorkbook = async (res, workbook, filename) => {
   res.setHeader(

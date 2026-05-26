@@ -8,8 +8,9 @@ const quotationItemSchema = new mongoose.Schema(
     category: String,
     quantity: { type: Number, required: true, min: 1 },
     unitPrice: { type: Number, required: true, min: 0 },
-    taxRate: { type: Number, default: 15 },
-    discount: { type: Number, default: 0, min: 0 },
+    taxRate: { type: Number, default: 0 },
+    // El descuento ahora es un PORCENTAJE (0-100) aplicado al subtotal del ítem.
+    discount: { type: Number, default: 0, min: 0, max: 100 },
     subtotal: { type: Number, required: true },
   },
   { _id: false }
@@ -41,6 +42,8 @@ const quotationSchema = new mongoose.Schema(
       enum: ['borrador', 'enviada', 'aceptada', 'rechazada', 'expirada'],
       default: 'borrador',
     },
+    // Token público para compartir el PDF por WhatsApp (enlace sin autenticación).
+    shareToken: { type: String, index: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }

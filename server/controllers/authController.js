@@ -23,6 +23,29 @@ const buildPublicUser = (user, activeClinic = null, role = null) => ({
 });
 
 /**
+ * Cambia la contraseña del usuario autenticado.
+ */
+exports.changePassword = async (req, res) => {
+  try {
+    const { currentPassword, newPassword } = req.body;
+    if (!newPassword || newPassword.length < 6) {
+      return res.status(400).json({ message: 'La nueva contraseña debe tener al menos 6 caracteres' });
+    }
+    const user = await User.findById(req.user._id);
+    if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+
+    const ok = await bcrypt.compare(currentPassword || '', user.password);
+    if (!ok) return res.status(400).json({ message: 'La contraseña actual es incorrecta' });
+
+    user.password = await bcrypt.hash(newPassword, 12);
+    await user.save();
+    res.json({ message: 'Contraseña actualizada correctamente' });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al cambiar contraseña', error: error.message });
+  }
+};
+
+/**
  * Login: devuelve token sin clínica + lista de clínicas disponibles.
  * El cliente debe llamar a /auth/select-clinic para obtener un token con clinicId.
  */

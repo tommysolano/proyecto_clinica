@@ -4,10 +4,10 @@ const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
 router.use(auth, requireClinic);
 
-const VIEW_ROLES = ['admin', 'call_center', 'supervisor_call_center'];
+const VIEW_ROLES = ['admin', 'call_center', 'marketing'];
 
 router.get('/commissions', requireRole(...VIEW_ROLES), ctrl.getCommissions);
 router.get('/summary', requireRole(...VIEW_ROLES), ctrl.getAgentSummary);
-router.get('/agents', requireRole('admin', 'supervisor_call_center'), ctrl.listAgents);
+router.get('/agents', requireRole('admin', 'marketing'), ctrl.listAgents);
 
 module.exports = router;

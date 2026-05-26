@@ -63,7 +63,7 @@ export default function Chats() {
   const [appointmentModal, setAppointmentModal] = useState(false);
   const messagesEndRef = useRef(null);
 
-  const isSupervisor = role === 'supervisor_call_center';
+  const isSupervisor = role === 'marketing';
   const isAdmin = role === 'admin' || user?.isSuperAdmin;
 
   const loadConversations = async (params = {}) => {
@@ -363,6 +363,7 @@ export default function Chats() {
                   setConversations((prev) => prev.map((x) => (x._id === c._id ? c : x)));
                 }}
                 onEditOpportunity={() => setOpportunityModal(true)}
+                onScheduleAppointment={() => setAppointmentModal(true)}
               />
             ) : (
               <div className="text-sm text-slate-400">Sin chat seleccionado</div>
@@ -569,9 +570,10 @@ function MessageBubble({ msg }) {
   );
 }
 
-function SidePanel({ conv, onUpdated, onEditOpportunity }) {
+function SidePanel({ conv, onUpdated, onEditOpportunity, onScheduleAppointment }) {
   const op = conv.opportunity || {};
   const meta = op.isOpportunity ? stageMeta(op.stage) : null;
+  const [registerModal, setRegisterModal] = useState(false);
   return (
     <div className="space-y-3">
       <div>
@@ -587,7 +589,34 @@ function SidePanel({ conv, onUpdated, onEditOpportunity }) {
             {conv.patient.cedula && <span className="text-emerald-600/70 ml-1">· {conv.patient.cedula}</span>}
           </div>
         )}
+        <div className="mt-2 flex flex-col gap-1.5">
+          {!conv.patient && (
+            <button
+              onClick={() => setRegisterModal(true)}
+              className="w-full text-xs px-2 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 border-none cursor-pointer"
+            >
+              + Agregar al sistema
+            </button>
+          )}
+          <button
+            onClick={() => {
+              if (!conv.patient) { toast.error('Primero agrega al paciente al sistema'); return; }
+              onScheduleAppointment?.();
+            }}
+            className="w-full text-xs px-2 py-1.5 bg-sky-50 text-sky-700 rounded-lg hover:bg-sky-100 border border-sky-200 cursor-pointer"
+          >
+            Agendar cita
+          </button>
+        </div>
       </div>
+
+      {registerModal && (
+        <RegisterPatientModal
+          conv={conv}
+          onClose={() => setRegisterModal(false)}
+          onRegistered={(c) => { setRegisterModal(false); onUpdated?.(c); toast.success('Paciente agregado al sistema'); }}
+        />
+      )}
 
       <div>
         <div className="flex items-center justify-between mb-1">
@@ -643,6 +672,68 @@ function SidePanel({ conv, onUpdated, onEditOpportunity }) {
         </div>
       </div>
     </div>
+  );
+}
+
+function RegisterPatientModal({ conv, onClose, onRegistered }) {
+  const guessName = (conv.contactName || '').trim().split(/\s+/);
+  const [form, setForm] = useState({
+    firstName: guessName[0] || '',
+    lastName: guessName.slice(1).join(' ') || '',
+    cedula: '',
+    gender: '',
+  });
+  const [saving, setSaving] = useState(false);
+
+  const submit = async () => {
+    if (!form.firstName || !form.lastName) return toast.error('Nombres y apellidos requeridos');
+    if (!form.gender) return toast.error('El género es obligatorio');
+    setSaving(true);
+    try {
+      const r = await api.post(`/chats/${conv._id}/register-patient`, form);
+      onRegistered(r.data.conversation);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al registrar');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <ModalShell title="Agregar paciente al sistema" onClose={onClose}>
+      <div className="space-y-3">
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-xs font-semibold text-slate-600 block mb-1">Nombres</label>
+            <input value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-slate-600 block mb-1">Apellidos</label>
+            <input value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-slate-600 block mb-1">Cédula (opcional)</label>
+            <input value={form.cedula} onChange={(e) => setForm({ ...form, cedula: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+          </div>
+          <div>
+            <label className="text-xs font-semibold text-slate-600 block mb-1">Género *</label>
+            <select value={form.gender} onChange={(e) => setForm({ ...form, gender: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm">
+              <option value="">Seleccionar</option>
+              <option value="masculino">Masculino</option>
+              <option value="femenino">Femenino</option>
+              <option value="otro">Otro</option>
+            </select>
+          </div>
+        </div>
+        <p className="text-xs text-slate-500">Teléfono: {conv.phone}</p>
+        <div className="flex justify-end gap-2">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-700">Cancelar</button>
+          <button onClick={submit} disabled={saving} className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 border-none cursor-pointer">
+            {saving ? 'Guardando...' : 'Agregar paciente'}
+          </button>
+        </div>
+      </div>
+    </ModalShell>
   );
 }
 

@@ -17,8 +17,9 @@ exports.getDashboard = async (req, res) => {
     const mongoose = require('mongoose');
     const clinicObjId = new mongoose.Types.ObjectId(clinicId);
 
+    const isClinician = req.role === 'doctor' || req.role === 'optica';
     const appointmentQuery = { clinic: clinicId, date: { $gte: today, $lt: tomorrow } };
-    if (req.role === 'doctor') {
+    if (isClinician) {
       appointmentQuery.doctor = req.user._id;
     }
 
@@ -34,7 +35,7 @@ exports.getDashboard = async (req, res) => {
         .populate('doctor', 'name specialty')
         .sort({ startTime: 1 }),
       Patient.countDocuments({ clinic: clinicId, active: true }),
-      req.role === 'doctor'
+      isClinician
         ? Promise.resolve([])
         : Sale.aggregate([
             {
@@ -48,7 +49,7 @@ exports.getDashboard = async (req, res) => {
               $group: { _id: null, total: { $sum: '$total' }, count: { $sum: 1 } },
             },
           ]),
-      req.role === 'doctor'
+      isClinician
         ? Promise.resolve([])
         : Product.find({
             clinic: clinicId,

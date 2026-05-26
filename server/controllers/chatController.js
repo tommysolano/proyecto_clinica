@@ -19,7 +19,7 @@ function normalizePhone(raw) {
 
 /**
  * Filtro de visibilidad para conversaciones según rol.
- * - admin / supervisor_call_center: ven todas las conversaciones de la clínica.
+ * - admin / marketing: ven todas las conversaciones de la clínica (marketing supervisa al call center).
  * - call_center: ve todas, pero podrá actuar (responder, marcar destacado, etc.)
  *   sólo en aquellas que tenga asignadas o aún sin asignar (se enforcing en endpoints de mutación).
  */
@@ -31,7 +31,7 @@ function buildVisibilityFilter(req) {
 
 function canMutateConversation(req, conv) {
   if (req.user?.isSuperAdmin) return true;
-  if (req.role === 'admin' || req.role === 'supervisor_call_center') return true;
+  if (req.role === 'admin' || req.role === 'marketing') return true;
   if (req.role === 'call_center') {
     // Puede mutar si está asignado a él o si todavía no tiene asignación.
     return !conv.assignedTo || String(conv.assignedTo) === String(req.user._id);
@@ -155,7 +155,7 @@ exports.assignConversation = async (req, res) => {
     // (asignársela a sí mismo) si está libre.
     const target = req.body.userId || req.user._id;
     const isSelfTake = String(target) === String(req.user._id);
-    if (!isSelfTake && req.role !== 'admin' && req.role !== 'supervisor_call_center' && !req.user.isSuperAdmin) {
+    if (!isSelfTake && req.role !== 'admin' && req.role !== 'marketing' && !req.user.isSuperAdmin) {
       return res.status(403).json({ message: 'Solo supervisor/admin pueden reasignar' });
     }
     if (!isSelfTake) {
@@ -505,6 +505,57 @@ exports.getStats = async (req, res) => {
  * Crea una cita a partir de una conversación. Requiere que conv.patient esté vinculado.
  * Body: { date, startTime, reason?, services?: [{product, quantity?}], clinic? }
  */
+/**
+ * Registra un paciente en el sistema a partir del contacto de la conversación
+ * y lo vincula a la conversación. Si ya existe un paciente con la misma cédula
+ * o teléfono, lo reutiliza.
+ */
+exports.registerPatientFromChat = async (req, res) => {
+  try {
+    const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
+    if (conv.patient) {
+      const existing = await Patient.findById(conv.patient);
+      if (existing) return res.json({ patient: existing, conversation: conv });
+    }
+
+    const { firstName, lastName, cedula, gender } = req.body;
+    if (!firstName || !lastName) {
+      return res.status(400).json({ message: 'Nombres y apellidos son requeridos' });
+    }
+    if (!gender) {
+      return res.status(400).json({ message: 'El género es obligatorio' });
+    }
+
+    const phone = conv.phone || req.body.phone || '';
+    let patient = null;
+    if (cedula) patient = await Patient.findOne({ cedula });
+    if (!patient && phone) {
+      patient = await Patient.findOne({ phone: { $regex: phone.slice(-9) + '$' } });
+    }
+    if (!patient) {
+      patient = await Patient.create({
+        clinic: req.clinicId,
+        firstName,
+        lastName,
+        cedula: cedula || '',
+        gender,
+        phone,
+        whatsapp: phone,
+        source: 'anuncio',
+      });
+    }
+    conv.patient = patient._id;
+    if (!conv.contactName) conv.contactName = `${patient.firstName} ${patient.lastName}`;
+    await conv.save();
+    emitToClinic(req.clinicId, 'patient:created', { id: patient._id });
+    emitToClinic(req.clinicId, 'chat:updated', { id: conv._id });
+    res.status(201).json({ patient, conversation: conv });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al registrar paciente', error: err.message });
+  }
+};
+
 exports.createAppointmentFromChat = async (req, res) => {
   try {
     const conv = await Conversation.findOne({
@@ -550,15 +601,19 @@ exports.createAppointmentFromChat = async (req, res) => {
         });
     }
 
+    const targetClinic = clinic || req.clinicId;
+    const previousCount = await Appointment.countDocuments({ clinic: targetClinic, patient: conv.patient._id });
     const appointment = await Appointment.create({
-      clinic: clinic || req.clinicId,
+      clinic: targetClinic,
       patient: conv.patient._id,
       date: localDate,
       startTime,
       reason: reason || conv.opportunity?.notes || `Cita desde chat ${conv.phone}`,
       services: serviceItems,
       status: 'pendiente',
+      isFirstVisit: previousCount === 0,
       createdBy: req.user._id,
+      createdByRole: req.role || null,
     });
 
     // Link to opportunity

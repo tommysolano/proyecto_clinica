@@ -38,6 +38,11 @@ const patientSchema = new mongoose.Schema(
       default: '',
     },
     sourceDetail: { type: String, trim: true },
+    // Persona que refirió al paciente (cuando source === 'referido').
+    // Puede ser un paciente o un miembro del personal; guardamos snapshot del nombre.
+    referredByName: { type: String, trim: true, default: '' },
+    referredById: { type: mongoose.Schema.Types.ObjectId, default: null },
+    referredByType: { type: String, enum: ['patient', 'user', ''], default: '' },
     // Antecedentes
     antecedentesFamiliares: { type: String, trim: true, default: '' },
     antecedentesPatologicos: { type: String, trim: true, default: '' },

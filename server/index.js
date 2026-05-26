@@ -53,6 +53,7 @@ app.use('/api/quotations', require('./routes/quotations'));
 app.use('/api/marketing', require('./routes/marketing'));
 app.use('/api/chats', require('./routes/chats'));
 app.use('/api/call-center', require('./routes/callCenter'));
+app.use('/api/commissions', require('./routes/commissions'));
 
 // === Módulo contable ===
 app.use('/api/chart-of-accounts', require('./routes/chartOfAccounts'));

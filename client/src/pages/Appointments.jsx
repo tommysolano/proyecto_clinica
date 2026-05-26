@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import Modal from '../components/Modal';
@@ -65,8 +65,11 @@ const roleLabels = {
   admin: 'Administrador',
   cajero: 'Cajero',
   doctor: 'Doctor',
+  optica: 'Óptica',
   contabilidad: 'Contabilidad',
   call_center: 'Call Center',
+  marketing: 'Marketing',
+  enfermero: 'Enfermero/a',
 };
 
 // Formatea una fecha ISO usando los componentes de fecha (sin convertir a UTC).
@@ -95,7 +98,7 @@ export default function Appointments() {
   const { user, role, hasRole, activeClinic, clinics } = useAuth();
   const canWrite = hasRole('admin', 'cajero', 'call_center');
   const isAdmin = hasRole('admin') || user?.isSuperAdmin;
-  const isDoctor = role === 'doctor';
+  const isDoctor = role === 'doctor' || role === 'optica';
   const isNurse = role === 'enfermero';
   const isCallCenter = role === 'call_center';
   const isReception = hasRole('admin', 'cajero', 'enfermero');
@@ -127,7 +130,7 @@ export default function Appointments() {
     patientQuery: '',
   });
   const [view, setView] = useState(
-    role === 'doctor' || role === 'call_center' || role === 'supervisor_call_center'
+    role === 'doctor' || role === 'optica' || role === 'call_center'
       ? 'today'
       : 'list'
   ); // 'list' | 'today'
@@ -188,8 +191,9 @@ export default function Appointments() {
   const fetchServices = async () => {
     try {
       const res = await api.get('/products', { params: { limit: 500 } });
+      // Incluir también los programas (paquetes de varios servicios) al agendar.
       const list = (res.data || []).filter(
-        (p) => p.active !== false && (p.category === 'servicio' || p.unlimited === true)
+        (p) => p.active !== false && (p.category === 'servicio' || p.category === 'programa' || p.unlimited === true)
       );
       setServices(list);
     } catch {
@@ -458,22 +462,31 @@ export default function Appointments() {
   }, [patientSearch, patients]);
 
   // Aplica filtros en el cliente para servicio/consultorio/rango horario.
+  // Ordena cronológicamente (por fecha y hora) para verlas en forma de HORARIO,
+  // no en el orden en que se agendaron.
   const filteredAppointments = useMemo(() => {
-    return appointments.filter((apt) => {
-      if (filter.service) {
-        const has = (apt.services || []).some(
-          (s) => String(s.product?._id || s.product) === String(filter.service)
-        );
-        if (!has) return false;
-      }
-      if (filter.room) {
-        const r = apt.room?._id || apt.room;
-        if (String(r) !== String(filter.room)) return false;
-      }
-      if (filter.timeFrom && apt.startTime && apt.startTime < filter.timeFrom) return false;
-      if (filter.timeTo && apt.startTime && apt.startTime > filter.timeTo) return false;
-      return true;
-    });
+    return appointments
+      .filter((apt) => {
+        if (filter.service) {
+          const has = (apt.services || []).some(
+            (s) => String(s.product?._id || s.product) === String(filter.service)
+          );
+          if (!has) return false;
+        }
+        if (filter.room) {
+          const r = apt.room?._id || apt.room;
+          if (String(r) !== String(filter.room)) return false;
+        }
+        if (filter.timeFrom && apt.startTime && apt.startTime < filter.timeFrom) return false;
+        if (filter.timeTo && apt.startTime && apt.startTime > filter.timeTo) return false;
+        return true;
+      })
+      .sort((a, b) => {
+        const da = new Date(a.date).getTime();
+        const db = new Date(b.date).getTime();
+        if (da !== db) return da - db;
+        return String(a.startTime || '').localeCompare(String(b.startTime || ''));
+      });
   }, [appointments, filter.service, filter.room, filter.timeFrom, filter.timeTo]);
 
   // Cronómetro de cita seleccionada
@@ -509,7 +522,7 @@ export default function Appointments() {
               {view === 'today' ? 'Solo Hoy' : 'Ver Todas'}
             </button>
           )}
-          {role !== 'call_center' && role !== 'supervisor_call_center' && (
+          {role !== 'call_center' && (
             <button
               onClick={exportExcel}
               className="px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50"
@@ -662,7 +675,7 @@ export default function Appointments() {
                   </td>
                 </tr>
               ) : (
-                filteredAppointments.map((apt) => {
+                filteredAppointments.map((apt, aptIdx) => {
                   const editable = canEdit(apt);
                   const showDoctorTimer =
                     isDoctor &&
@@ -670,9 +683,20 @@ export default function Appointments() {
                     apt.status !== 'completada';
                   const inProgress =
                     apt.consultationStartedAt && !apt.consultationEndedAt;
+                  // Separador de fecha: cabecera cuando cambia el día (vista de agenda).
+                  const prev = filteredAppointments[aptIdx - 1];
+                  const dayKey = formatLocalDate(apt.date);
+                  const showDayHeader = !prev || formatLocalDate(prev.date) !== dayKey;
                   return (
+                    <Fragment key={apt._id}>
+                    {showDayHeader && (
+                      <tr className="bg-emerald-50/70">
+                        <td colSpan="6" className="px-6 py-2 text-xs font-bold text-emerald-800 uppercase tracking-wide">
+                          📅 {dayKey}
+                        </td>
+                      </tr>
+                    )}
                     <tr
-                      key={apt._id}
                       className="border-b border-emerald-50 hover:bg-emerald-50/30 transition-colors"
                     >
                       <td className="px-6 py-3.5 text-sm text-slate-600">
@@ -812,6 +836,7 @@ export default function Appointments() {
                         )}
                       </td>
                     </tr>
+                    </Fragment>
                   );
                 })
               )}
@@ -1057,6 +1082,9 @@ export default function Appointments() {
                       />
                       <span className="flex-1">
                         {s.name}
+                        {s.category === 'programa' && (
+                          <span className="ml-1 text-[10px] text-purple-600 font-semibold">(programa)</span>
+                        )}
                         {s.maxAppointmentsPerDay > 0 && (
                           <span className="ml-1 text-[10px] text-amber-600">
                             (cupo {s.maxAppointmentsPerDay}/día)
