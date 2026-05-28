@@ -132,8 +132,50 @@ exports.remove = async (req, res) => {
 };
 
 /**
- * Genera el PDF de la cotización con pdfkit (sin navegador headless), de modo
- * que funcione de forma confiable en cualquier entorno de despliegue.
+ * Resuelve el buffer de imagen para usar como logo en el PDF.
+ *  1. Si la clínica tiene logo configurado (data URL base64), se usa ese.
+ *  2. Si no, se usa el logo por defecto del sistema (server/assets/Shiluv-logo-4.png).
+ *  3. Si ninguno está disponible, devuelve null.
+ */
+function resolveLogoBuffer(clinic) {
+  if (clinic?.logoUrl && typeof clinic.logoUrl === 'string') {
+    const m = clinic.logoUrl.match(/^data:image\/(png|jpe?g|webp);base64,(.+)$/i);
+    if (m) {
+      try {
+        return Buffer.from(m[2], 'base64');
+      } catch (_) {
+        /* ignore */
+      }
+    }
+  }
+  try {
+    const fs = require('fs');
+    const path = require('path');
+    const fallback = path.join(__dirname, '..', 'assets', 'Shiluv-logo-4.png');
+    if (fs.existsSync(fallback)) {
+      return fs.readFileSync(fallback);
+    }
+  } catch (_) {
+    /* ignore */
+  }
+  return null;
+}
+
+const fmtLocalDate = (value) => {
+  if (!value) return '';
+  const d = new Date(value);
+  if (Number.isNaN(d.getTime())) return '';
+  const dd = String(d.getDate()).padStart(2, '0');
+  const mo = String(d.getMonth() + 1).padStart(2, '0');
+  const yyyy = d.getFullYear();
+  return `${dd}/${mo}/${yyyy}`;
+};
+
+/**
+ * Genera el PDF de la cotización con pdfkit. Diseño 2.0: encabezado con banda
+ * de marca, logo a la izquierda, panel de cotización a la derecha, sección de
+ * paciente con tarjeta, tabla de ítems con cabecera marcada, totales
+ * destacados y pie de página con marca del sistema.
  */
 async function buildQuotationPdf(q, clinic, res, filename) {
   const PDFDocument = require('pdfkit');
@@ -142,124 +184,219 @@ async function buildQuotationPdf(q, clinic, res, filename) {
   res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
   doc.pipe(res);
 
+  // --- Paleta ---
   const fmtMoney = (n) => `$${Number(n || 0).toFixed(2)}`;
-  const GREEN = '#047857';
-  const LIGHT = '#ecfdf5';
-  const BORDER = '#d1fae5';
-  const SLATE = '#1e293b';
-  const MUTED = '#64748b';
+  const GREEN = '#047857';       // verde principal
+  const GREEN_DARK = '#065f46';
+  const TEAL = '#0d9488';
+  const LIGHT = '#ecfdf5';       // verde muy claro
+  const BORDER = '#d1fae5';      // borde verde
+  const SLATE = '#0f172a';       // texto principal
+  const SLATE_SOFT = '#334155';
+  const MUTED = '#64748b';       // texto secundario
+  const PAGE_W = doc.page.width; // 595
+  const M = 40;                  // margen
+  const CONTENT_W = PAGE_W - M * 2; // 515
 
-  // ========== Banda superior con logo + nombre ==========
-  doc.rect(0, 0, doc.page.width, 110).fill(LIGHT);
+  // ========== Encabezado con banda decorativa ==========
+  // Banda principal
+  doc.rect(0, 0, PAGE_W, 130).fill(LIGHT);
+  // Franja inferior de acento (degradado simulado con dos rectángulos)
+  doc.rect(0, 126, PAGE_W, 3).fill(GREEN);
+  doc.rect(0, 129, PAGE_W, 2).fill(TEAL);
 
-  // Intento de pintar el logo (data URL base64). Si falla, se ignora.
-  let logoBuffer = null;
-  if (clinic?.logoUrl && typeof clinic.logoUrl === 'string') {
-    const m = clinic.logoUrl.match(/^data:image\/(png|jpe?g|webp);base64,(.+)$/i);
-    if (m) {
-      try { logoBuffer = Buffer.from(m[2], 'base64'); } catch (_) { logoBuffer = null; }
+  // Logo a la izquierda con fondo blanco redondeado
+  const logoBuffer = resolveLogoBuffer(clinic);
+  if (logoBuffer) {
+    // Caja blanca para que el logo siempre se vea bien sobre el verde claro.
+    doc.roundedRect(M, 22, 80, 80, 10).fill('#ffffff').stroke(BORDER);
+    try {
+      doc.image(logoBuffer, M + 6, 28, { fit: [68, 68], align: 'center', valign: 'center' });
+    } catch (_) {
+      /* ignore */
     }
   }
-  if (logoBuffer) {
-    try { doc.image(logoBuffer, 40, 22, { fit: [70, 70] }); } catch (_) { /* ignore */ }
-  }
+  const textX = logoBuffer ? M + 92 : M;
 
-  const textX = logoBuffer ? 125 : 40;
-  doc.fillColor(GREEN).font('Helvetica-Bold').fontSize(20)
-    .text(clinic?.nombreComercial || clinic?.name || 'Consultorio Médico', textX, 28, { width: 350 });
-  doc.fillColor(MUTED).font('Helvetica').fontSize(9);
-  if (clinic?.ruc) doc.text(`RUC: ${clinic.ruc}`, textX, 54);
-  if (clinic?.address) doc.text(clinic.address, textX, 68, { width: 350 });
+  doc.fillColor(GREEN_DARK).font('Helvetica-Bold').fontSize(19)
+    .text(clinic?.nombreComercial || clinic?.name || 'Consultorio Médico', textX, 28, {
+      width: 310,
+      lineBreak: false,
+      ellipsis: true,
+    });
+
+  doc.fillColor(MUTED).font('Helvetica').fontSize(8.5);
+  let infoY = 52;
+  if (clinic?.razonSocial && clinic.razonSocial !== clinic.nombreComercial) {
+    doc.text(clinic.razonSocial, textX, infoY, { width: 310 });
+    infoY += 11;
+  }
+  if (clinic?.ruc) {
+    doc.text(`RUC: ${clinic.ruc}`, textX, infoY, { width: 310 });
+    infoY += 11;
+  }
+  if (clinic?.address) {
+    doc.text(clinic.address, textX, infoY, { width: 310 });
+    infoY += 11;
+  }
   if (clinic?.phone || clinic?.email) {
-    doc.text(`${clinic?.phone || ''}${clinic?.phone && clinic?.email ? ' · ' : ''}${clinic?.email || ''}`, textX, 82, { width: 350 });
+    doc.text(
+      `${clinic?.phone || ''}${clinic?.phone && clinic?.email ? ' · ' : ''}${clinic?.email || ''}`,
+      textX,
+      infoY,
+      { width: 310 }
+    );
   }
 
-  // Caja "Cotización N°" a la derecha
-  doc.roundedRect(420, 25, 140, 70, 6).fill('#ffffff').stroke(BORDER);
-  doc.fillColor(GREEN).font('Helvetica-Bold').fontSize(11).text('COTIZACIÓN', 432, 34);
-  doc.fillColor(SLATE).font('Helvetica-Bold').fontSize(14).text(q.quotationNumber || '—', 432, 50);
-  doc.fillColor(MUTED).font('Helvetica').fontSize(8.5)
-    .text(`Emitida: ${new Date(q.createdAt).toLocaleDateString('es-EC')}`, 432, 70);
+  // Caja "Cotización" a la derecha
+  const boxX = PAGE_W - M - 160;
+  doc.roundedRect(boxX, 22, 160, 84, 10).fill('#ffffff').stroke(BORDER);
+  doc.fillColor(GREEN).font('Helvetica-Bold').fontSize(9).text('COTIZACIÓN', boxX + 14, 32, {
+    width: 132,
+    characterSpacing: 1.2,
+  });
+  doc.fillColor(SLATE).font('Helvetica-Bold').fontSize(16)
+    .text(q.quotationNumber || '—', boxX + 14, 48, { width: 132 });
+  doc.fillColor(MUTED).font('Helvetica').fontSize(8.5);
+  doc.text(`Emitida: ${fmtLocalDate(q.createdAt)}`, boxX + 14, 74, { width: 132 });
   if (q.validUntil) {
-    doc.text(`Válida hasta: ${new Date(q.validUntil).toLocaleDateString('es-EC')}`, 432, 82);
+    doc.text(`Válida hasta: ${fmtLocalDate(q.validUntil)}`, boxX + 14, 88, { width: 132 });
   }
 
   // ========== Datos del paciente ==========
-  let y = 130;
-  doc.fillColor(GREEN).font('Helvetica-Bold').fontSize(10).text('PACIENTE', 40, y);
+  let y = 150;
+  doc.fillColor(GREEN).font('Helvetica-Bold').fontSize(9)
+    .text('PACIENTE', M, y, { characterSpacing: 1.2 });
   y += 14;
-  doc.roundedRect(40, y, 520, 60, 6).fillAndStroke('#f8fafc', '#e2e8f0');
-  doc.fillColor(SLATE).font('Helvetica-Bold').fontSize(12)
-    .text(q.clientName || 'Sin nombre', 52, y + 8);
-  doc.font('Helvetica').fillColor(MUTED).fontSize(9);
-  if (q.clientCedula) doc.text(`Cédula/RUC: ${q.clientCedula}`, 52, y + 26);
-  if (q.clientEmail) doc.text(`Email: ${q.clientEmail}`, 52, y + 38);
-  if (q.clientPhone) doc.text(`Teléfono: ${q.clientPhone}`, 280, y + 38);
-  y += 75;
+
+  // Tarjeta del paciente con borde lateral verde
+  const cardH = 64;
+  doc.roundedRect(M, y, CONTENT_W, cardH, 8).fillAndStroke('#f8fafc', '#e2e8f0');
+  // Acento lateral
+  doc.rect(M, y, 4, cardH).fill(GREEN);
+
+  doc.fillColor(SLATE).font('Helvetica-Bold').fontSize(13)
+    .text(q.clientName || 'Sin nombre', M + 16, y + 10, { width: CONTENT_W - 32 });
+
+  doc.font('Helvetica').fontSize(9).fillColor(MUTED);
+  const col1X = M + 16;
+  const col2X = M + 16 + (CONTENT_W - 32) / 2;
+  let detY = y + 32;
+  if (q.clientCedula) {
+    doc.fillColor(MUTED).text('Cédula / RUC:', col1X, detY);
+    doc.fillColor(SLATE_SOFT).text(q.clientCedula, col1X + 60, detY);
+  }
+  if (q.clientPhone) {
+    doc.fillColor(MUTED).text('Teléfono:', col2X, detY);
+    doc.fillColor(SLATE_SOFT).text(q.clientPhone, col2X + 50, detY);
+  }
+  detY += 13;
+  if (q.clientEmail) {
+    doc.fillColor(MUTED).text('Email:', col1X, detY);
+    doc.fillColor(SLATE_SOFT).text(q.clientEmail, col1X + 60, detY);
+  }
+  y += cardH + 18;
 
   // ========== Tabla de ítems ==========
-  const startX = 40;
-  const colX = { desc: startX + 8, qty: 320, price: 370, disc: 450, sub: 500 };
+  const tableX = M;
+  const tableW = CONTENT_W;
+  // Columnas (suman tableW)
+  const cols = {
+    desc:  { x: tableX + 10, w: 250, align: 'left' },
+    qty:   { x: tableX + 270, w: 40, align: 'center' },
+    price: { x: tableX + 318, w: 70, align: 'right' },
+    disc:  { x: tableX + 392, w: 50, align: 'right' },
+    sub:   { x: tableX + 448, w: 60, align: 'right' },
+  };
 
-  // Cabecera con fondo
-  doc.rect(startX, y, 520, 22).fill(GREEN);
-  doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(9);
-  doc.text('DESCRIPCIÓN', colX.desc, y + 7, { width: 260 });
-  doc.text('CANT.', colX.qty, y + 7, { width: 40, align: 'center' });
-  doc.text('P. UNIT.', colX.price, y + 7, { width: 70, align: 'right' });
-  doc.text('DESC.', colX.disc, y + 7, { width: 40, align: 'right' });
-  doc.text('SUBTOTAL', colX.sub, y + 7, { width: 60, align: 'right' });
-  y += 22;
+  // Cabecera con esquinas redondeadas
+  doc.roundedRect(tableX, y, tableW, 24, 6).fill(GREEN);
+  doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(8.5);
+  doc.text('DESCRIPCIÓN', cols.desc.x, y + 8, { width: cols.desc.w, characterSpacing: 1 });
+  doc.text('CANT.',       cols.qty.x,  y + 8, { width: cols.qty.w, align: 'center', characterSpacing: 1 });
+  doc.text('P. UNIT.',    cols.price.x,y + 8, { width: cols.price.w, align: 'right', characterSpacing: 1 });
+  doc.text('DESC.',       cols.disc.x, y + 8, { width: cols.disc.w, align: 'right', characterSpacing: 1 });
+  doc.text('SUBTOTAL',    cols.sub.x,  y + 8, { width: cols.sub.w, align: 'right', characterSpacing: 1 });
+  y += 24;
 
-  // Filas
-  doc.font('Helvetica').fontSize(9.5).fillColor(SLATE);
+  // Filas con zebra
   let zebra = false;
-  (q.items || []).forEach((it) => {
-    if (zebra) doc.rect(startX, y, 520, 20).fill('#fafbfc');
+  for (const it of (q.items || [])) {
+    if (y > 720) {
+      doc.addPage();
+      y = M;
+    }
+    const rowH = 22;
+    if (zebra) doc.rect(tableX, y, tableW, rowH).fill('#fafbfc');
     zebra = !zebra;
-    doc.fillColor(SLATE);
-    doc.text(it.productName || '', colX.desc, y + 6, { width: 260 });
-    doc.text(String(it.quantity || 0), colX.qty, y + 6, { width: 40, align: 'center' });
-    doc.text(fmtMoney(it.unitPrice), colX.price, y + 6, { width: 70, align: 'right' });
-    doc.text(`${Number(it.discount || 0)}%`, colX.disc, y + 6, { width: 40, align: 'right' });
-    doc.font('Helvetica-Bold').text(fmtMoney(it.subtotal), colX.sub, y + 6, { width: 60, align: 'right' });
-    doc.font('Helvetica');
-    y += 20;
-    if (y > 700) { doc.addPage(); y = 50; }
-  });
+    doc.fillColor(SLATE).font('Helvetica').fontSize(9.5);
+    doc.text(it.productName || '', cols.desc.x, y + 7, { width: cols.desc.w, lineBreak: false, ellipsis: true });
+    doc.text(String(it.quantity || 0), cols.qty.x, y + 7, { width: cols.qty.w, align: 'center' });
+    doc.text(fmtMoney(it.unitPrice), cols.price.x, y + 7, { width: cols.price.w, align: 'right' });
+    doc.text(`${Number(it.discount || 0)}%`, cols.disc.x, y + 7, { width: cols.disc.w, align: 'right' });
+    doc.font('Helvetica-Bold').fillColor(GREEN_DARK)
+      .text(fmtMoney(it.subtotal), cols.sub.x, y + 7, { width: cols.sub.w, align: 'right' });
+    y += rowH;
+  }
 
   // Línea divisoria
-  doc.moveTo(startX, y).lineTo(startX + 520, y).strokeColor('#cbd5e1').lineWidth(0.5).stroke();
-  y += 12;
+  doc.moveTo(tableX, y).lineTo(tableX + tableW, y).strokeColor(BORDER).lineWidth(1).stroke();
+  y += 14;
 
   // ========== Totales ==========
-  const totalsX = 340;
-  doc.font('Helvetica').fontSize(10).fillColor(MUTED);
-  doc.text('Subtotal:', totalsX, y, { width: 130, align: 'right' });
-  doc.fillColor(SLATE).text(fmtMoney(q.subtotal), totalsX + 135, y, { width: 80, align: 'right' });
+  const totalsW = 230;
+  const totalsX = tableX + tableW - totalsW;
+  // Subtotal
+  doc.font('Helvetica').fontSize(10).fillColor(MUTED)
+    .text('Subtotal', totalsX, y, { width: 110, align: 'left' });
+  doc.fillColor(SLATE).font('Helvetica-Bold')
+    .text(fmtMoney(q.subtotal), totalsX + 110, y, { width: 120, align: 'right' });
   y += 16;
-  doc.fillColor(MUTED).text('Descuento:', totalsX, y, { width: 130, align: 'right' });
-  doc.fillColor(SLATE).text(`- ${fmtMoney(q.discountTotal)}`, totalsX + 135, y, { width: 80, align: 'right' });
-  y += 22;
-  doc.roundedRect(totalsX, y - 6, 220, 30, 4).fill(GREEN);
-  doc.font('Helvetica-Bold').fontSize(13).fillColor('#ffffff')
-    .text('TOTAL', totalsX + 10, y + 2);
-  doc.text(fmtMoney(q.total), totalsX + 135, y + 2, { width: 75, align: 'right' });
-
-  y += 50;
+  // Descuento
+  doc.fillColor(MUTED).font('Helvetica')
+    .text('Descuento', totalsX, y, { width: 110, align: 'left' });
+  doc.fillColor(SLATE).font('Helvetica-Bold')
+    .text(`− ${fmtMoney(q.discountTotal)}`, totalsX + 110, y, { width: 120, align: 'right' });
+  y += 20;
+  // Total destacado
+  doc.roundedRect(totalsX, y, totalsW, 38, 8).fill(GREEN);
+  doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(11)
+    .text('TOTAL', totalsX + 16, y + 13, { characterSpacing: 1.5 });
+  doc.fontSize(16).text(fmtMoney(q.total), totalsX + 110, y + 11, { width: 110, align: 'right' });
+  y += 56;
 
   // ========== Notas y términos ==========
   if (q.notes) {
-    doc.fillColor(GREEN).font('Helvetica-Bold').fontSize(10).text('NOTAS / TÉRMINOS', 40, y);
+    if (y > 700) {
+      doc.addPage();
+      y = M;
+    }
+    doc.fillColor(GREEN).font('Helvetica-Bold').fontSize(9)
+      .text('NOTAS / TÉRMINOS', M, y, { characterSpacing: 1.2 });
     y += 14;
-    doc.roundedRect(40, y, 520, 50, 4).fillAndStroke('#fffbeb', '#fde68a');
-    doc.fillColor(SLATE).font('Helvetica').fontSize(9).text(q.notes, 52, y + 8, { width: 500 });
-    y += 60;
+    const notesH = 60;
+    doc.roundedRect(M, y, CONTENT_W, notesH, 8).fillAndStroke('#fffbeb', '#fde68a');
+    doc.fillColor(SLATE_SOFT).font('Helvetica').fontSize(9.5)
+      .text(q.notes, M + 14, y + 10, { width: CONTENT_W - 28, height: notesH - 16 });
+    y += notesH + 14;
   }
 
   // ========== Pie de página ==========
-  doc.fillColor('#94a3b8').font('Helvetica').fontSize(8)
-    .text(`Documento generado el ${new Date().toLocaleString('es-EC')}`, 40, 800, { width: 520, align: 'center' });
+  const footerY = doc.page.height - 50;
+  doc.moveTo(M, footerY).lineTo(PAGE_W - M, footerY).strokeColor(BORDER).lineWidth(0.5).stroke();
+  doc.fillColor(MUTED).font('Helvetica').fontSize(8)
+    .text(
+      `${clinic?.nombreComercial || clinic?.name || ''}  ·  Cotización ${q.quotationNumber || ''}  ·  ${fmtLocalDate(q.createdAt)}`,
+      M,
+      footerY + 6,
+      { width: CONTENT_W, align: 'left' }
+    );
+  doc.text('Página 1', M, footerY + 6, { width: CONTENT_W, align: 'right' });
+  doc.fillColor('#94a3b8').fontSize(7.5)
+    .text('Documento generado por el sistema · Gracias por su preferencia', M, footerY + 22, {
+      width: CONTENT_W,
+      align: 'center',
+    });
 
   doc.end();
 }
