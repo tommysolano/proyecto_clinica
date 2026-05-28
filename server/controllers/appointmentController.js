@@ -180,6 +180,16 @@ exports.createAppointment = async (req, res) => {
   try {
     const { doctor, date, startTime, endTime, patient, services } = req.body;
 
+    // El servicio es obligatorio para toda cita nueva (regla de negocio).
+    const incomingServiceIds = (Array.isArray(services) ? services : [])
+      .map((s) => (typeof s === 'string' ? s : s?.product))
+      .filter(Boolean);
+    if (incomingServiceIds.length === 0) {
+      return res
+        .status(400)
+        .json({ message: 'Debes seleccionar al menos un servicio para la cita.' });
+    }
+
     // El call_center puede operar para cualquiera de las clínicas a las que tiene acceso.
     // Si envía un `clinic` distinto al activo, validamos que sea una clínica donde tiene rol.
     let targetClinicId = req.clinicId;

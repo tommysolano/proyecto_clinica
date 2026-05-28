@@ -1609,8 +1609,14 @@ function AppointmentFromChatModal({ conv, services, onClose, onCreated }) {
   };
 
   const submit = async () => {
-    for (const it of items) {
-      if (!it.date || !it.startTime) return toast.error('Cada cita requiere fecha y hora');
+    for (let i = 0; i < items.length; i++) {
+      const it = items[i];
+      if (!it.date || !it.startTime) {
+        return toast.error(`La cita #${i + 1} requiere fecha y hora`);
+      }
+      if (!Array.isArray(it.services) || it.services.length === 0) {
+        return toast.error(`La cita #${i + 1} requiere al menos un servicio`);
+      }
     }
     try {
       setSaving(true);
@@ -1682,13 +1688,16 @@ function AppointmentFromChatModal({ conv, services, onClose, onCreated }) {
                 <input value={it.reason} onChange={(e) => updateItem(idx, { reason: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 mt-1 bg-white" />
               </div>
               <div>
-                <label className="text-xs font-medium text-slate-600">Servicios</label>
+                <label className="text-xs font-medium text-slate-600">Servicios *</label>
                 <ChatServicePicker
                   services={services}
                   selectedIds={it.services.map((s) => s.product)}
                   onAdd={(pid) => addService(idx, pid)}
                   onRemove={(pid) => removeService(idx, pid)}
                 />
+                {(!it.services || it.services.length === 0) && (
+                  <p className="text-[11px] text-rose-600 mt-1">Selecciona al menos un servicio.</p>
+                )}
               </div>
               {/* Disponibilidad de horario para esta cita */}
               <SameSlotPanel

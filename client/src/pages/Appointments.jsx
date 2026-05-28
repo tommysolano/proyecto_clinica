@@ -314,6 +314,22 @@ export default function Appointments() {
       toast.error('Selecciona un paciente');
       return;
     }
+    // El servicio es obligatorio para la cita principal.
+    if (!Array.isArray(form.services) || form.services.length === 0) {
+      toast.error('Selecciona al menos un servicio para la cita');
+      return;
+    }
+    // Y también para cada cita adicional (cuando se crean varias).
+    if (!editing) {
+      const extras = (form.extraAppointments || []).filter((it) => it.date && it.startTime);
+      const extraSinServicio = extras.findIndex(
+        (it) => !Array.isArray(it.services) || it.services.length === 0
+      );
+      if (extraSinServicio >= 0) {
+        toast.error(`La cita adicional #${extraSinServicio + 2} requiere al menos un servicio`);
+        return;
+      }
+    }
     setSaving(true);
     try {
       const basePayload = {
@@ -1073,7 +1089,7 @@ export default function Appointments() {
           </div>
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">
-              Servicios
+              Servicios *
             </label>
             <ServiceAutocomplete
               services={services}
@@ -1081,6 +1097,9 @@ export default function Appointments() {
               onAdd={(id) => setForm((f) => f.services.includes(id) ? f : { ...f, services: [...f.services, id] })}
               onRemove={(id) => setForm((f) => ({ ...f, services: f.services.filter((s) => s !== id) }))}
             />
+            {form.services.length === 0 && (
+              <p className="text-[11px] text-rose-600 mt-1">Debes seleccionar al menos un servicio.</p>
+            )}
             {form.services.length > 0 && (
               <p className="text-xs text-emerald-600 mt-1">
                 Total estimado: $
@@ -1142,22 +1161,28 @@ export default function Appointments() {
                     }))}
                     className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white"
                   />
-                  <ServiceAutocomplete
-                    services={services}
-                    selectedIds={it.services || []}
-                    onAdd={(id) => setForm((f) => ({
-                      ...f,
-                      extraAppointments: f.extraAppointments.map((x, i) =>
-                        i === idx ? { ...x, services: (x.services || []).includes(id) ? x.services : [...(x.services || []), id] } : x
-                      ),
-                    }))}
-                    onRemove={(id) => setForm((f) => ({
-                      ...f,
-                      extraAppointments: f.extraAppointments.map((x, i) =>
-                        i === idx ? { ...x, services: (x.services || []).filter((s) => s !== id) } : x
-                      ),
-                    }))}
-                  />
+                  <div>
+                    <label className="text-xs font-medium text-slate-600 block mb-1">Servicios *</label>
+                    <ServiceAutocomplete
+                      services={services}
+                      selectedIds={it.services || []}
+                      onAdd={(id) => setForm((f) => ({
+                        ...f,
+                        extraAppointments: f.extraAppointments.map((x, i) =>
+                          i === idx ? { ...x, services: (x.services || []).includes(id) ? x.services : [...(x.services || []), id] } : x
+                        ),
+                      }))}
+                      onRemove={(id) => setForm((f) => ({
+                        ...f,
+                        extraAppointments: f.extraAppointments.map((x, i) =>
+                          i === idx ? { ...x, services: (x.services || []).filter((s) => s !== id) } : x
+                        ),
+                      }))}
+                    />
+                    {(!it.services || it.services.length === 0) && (
+                      <p className="text-[11px] text-rose-600 mt-1">Selecciona al menos un servicio.</p>
+                    )}
+                  </div>
                 </div>
               ))}
               <button

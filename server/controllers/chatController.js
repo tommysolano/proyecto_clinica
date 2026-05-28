@@ -1054,9 +1054,19 @@ exports.createAppointmentFromChat = async (req, res) => {
           clinic: req.body.clinic,
         }];
 
-    for (const a of requested) {
+    for (let i = 0; i < requested.length; i++) {
+      const a = requested[i];
       if (!a.date || !a.startTime) {
-        return res.status(400).json({ message: 'Cada cita requiere fecha y hora de inicio.' });
+        return res.status(400).json({ message: `La cita #${i + 1} requiere fecha y hora de inicio.` });
+      }
+      // El servicio es obligatorio para toda cita nueva.
+      const svcIds = (a.services || [])
+        .map((s) => (typeof s === 'string' ? s : s?.product))
+        .filter(Boolean);
+      if (svcIds.length === 0) {
+        return res
+          .status(400)
+          .json({ message: `La cita #${i + 1} requiere al menos un servicio.` });
       }
     }
 
