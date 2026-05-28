@@ -47,14 +47,17 @@ export default function ManagementReports() {
 
   const renderTable = () => {
     if (!data) return null;
+    const arr = Array.isArray(data) ? data : [];
+    const rows = Array.isArray(data?.rows) ? data.rows : [];
+    const totals = data?.totals || {};
     if (tab === 'PERIODO') return (
-      <Table head={['Período', 'N° ventas', 'Subtotal', 'IVA', 'Total']} rows={data.map((r) => [r._id, r.count, `$${fmt(r.subtotal)}`, `$${fmt(r.tax)}`, `$${fmt(r.total)}`])} />
+      <Table head={['Período', 'N° ventas', 'Subtotal', 'IVA', 'Total']} rows={arr.map((r) => [r._id, r.count, `$${fmt(r.subtotal)}`, `$${fmt(r.tax)}`, `$${fmt(r.total)}`])} />
     );
     if (tab === 'PRODUCTO') return (
-      <Table head={['Producto', 'Cantidad', 'Total']} rows={data.map((r) => [r._id?.name || '—', r.qty, `$${fmt(r.subtotal)}`])} />
+      <Table head={['Producto', 'Cantidad', 'Total']} rows={arr.map((r) => [r._id?.name || '—', r.qty, `$${fmt(r.subtotal)}`])} />
     );
     if (tab === 'VENDEDOR' || tab === 'CAJERO') return (
-      <Table head={['Usuario', 'N° ventas', 'Total']} rows={data.map((r) => [r._id?.name || 'Sin asignar', r.count, `$${fmt(r.total)}`])} />
+      <Table head={['Usuario', 'N° ventas', 'Total']} rows={arr.map((r) => [r._id?.name || 'Sin asignar', r.count, `$${fmt(r.total)}`])} />
     );
     if (tab === 'COSTO') return (
       <div className="grid grid-cols-3 gap-3">
@@ -64,20 +67,20 @@ export default function ManagementReports() {
       </div>
     );
     if (tab === 'COSTO_CAT') return (
-      <Table head={['Categoría', 'Cantidad', 'Ingresos', 'Costo', 'Utilidad', 'Margen']} rows={data.rows.map((r) => [r.category, r.qty, `$${fmt(r.revenue)}`, `$${fmt(r.cost)}`, `$${fmt(r.grossProfit)}`, `${r.margin}%`])} />
+      <Table head={['Categoría', 'Cantidad', 'Ingresos', 'Costo', 'Utilidad', 'Margen']} rows={rows.map((r) => [r.category, r.qty, `$${fmt(r.revenue)}`, `$${fmt(r.cost)}`, `$${fmt(r.grossProfit)}`, `${r.margin}%`])} />
     );
     if (tab === 'AR' || tab === 'AP') return (
       <div className="space-y-3">
         <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
-          {Object.keys(AGING_LABELS).map((k) => <Stat key={k} title={AGING_LABELS[k]} value={`$${fmt(data.totals[k] || 0)}`} small />)}
+          {Object.keys(AGING_LABELS).map((k) => <Stat key={k} title={AGING_LABELS[k]} value={`$${fmt(totals[k] || 0)}`} small />)}
         </div>
-        <Table head={[tab === 'AR' ? 'Cliente' : 'Proveedor', 'Documento', 'Fecha', 'Antigüedad', 'Saldo']} rows={data.rows.map((r) => [r.client || r.supplier || '—', r.number, fmtDate(r.date), AGING_LABELS[r.bucket], `$${fmt(r.balance)}`])} />
+        <Table head={[tab === 'AR' ? 'Cliente' : 'Proveedor', 'Documento', 'Fecha', 'Antigüedad', 'Saldo']} rows={rows.map((r) => [r.client || r.supplier || '—', r.number, fmtDate(r.date), AGING_LABELS[r.bucket], `$${fmt(r.balance)}`])} />
       </div>
     );
     if (tab === 'INV') return (
       <div className="space-y-2">
-        <div className="grid grid-cols-3 gap-3"><Stat title="Unidades" value={data.totals.units} /><Stat title="Valor al costo" value={`$${fmt(data.totals.valueAtCost)}`} /><Stat title="Valor a venta" value={`$${fmt(data.totals.valueAtSale)}`} /></div>
-        <Table head={['Código', 'Producto', 'Stock', 'Costo', 'Valor costo']} rows={data.rows.map((r) => [r.code, r.name, r.stock, `$${fmt(r.purchasePrice)}`, `$${fmt(r.valueAtCost)}`])} />
+        <div className="grid grid-cols-3 gap-3"><Stat title="Unidades" value={totals.units} /><Stat title="Valor al costo" value={`$${fmt(totals.valueAtCost)}`} /><Stat title="Valor a venta" value={`$${fmt(totals.valueAtSale)}`} /></div>
+        <Table head={['Código', 'Producto', 'Stock', 'Costo', 'Valor costo']} rows={rows.map((r) => [r.code, r.name, r.stock, `$${fmt(r.purchasePrice)}`, `$${fmt(r.valueAtCost)}`])} />
       </div>
     );
     return <pre className="text-xs overflow-auto">{JSON.stringify(data, null, 2)}</pre>;

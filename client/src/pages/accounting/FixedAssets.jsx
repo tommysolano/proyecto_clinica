@@ -13,6 +13,12 @@ const EMPTY = {
   assetAccount: '', depreciationAccount: '', accumDepreciationAccount: '',
 };
 
+const asList = (data) => {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.items)) return data.items;
+  return [];
+};
+
 export default function FixedAssets() {
   const [list, setList] = useState([]);
   const [categories, setCategories] = useState([]);
@@ -27,14 +33,14 @@ export default function FixedAssets() {
   const [showDep, setShowDep] = useState(false);
 
   const load = async () => {
-    try { const r = await api.get('/inventory-advanced/assets'); setList(r.data || []); }
+    try { const r = await api.get('/inventory-advanced/assets'); setList(asList(r.data)); }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
   useEffect(() => {
-    api.get('/inventory-advanced/categories', { params: { kind: 'ACTIVO_FIJO' } }).then((r) => setCategories(r.data || [])).catch(() => {});
-    api.get('/clinics').then((r) => setClinics(r.data || [])).catch(() => {});
-    api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setAccounts((r.data || []).filter((a) => a.allowsMovement))).catch(() => {});
-    api.get('/purchase-invoices').then((r) => setPurchases(r.data || [])).catch(() => {});
+    api.get('/inventory-advanced/categories', { params: { kind: 'ACTIVO_FIJO' } }).then((r) => setCategories(asList(r.data))).catch(() => {});
+    api.get('/clinics').then((r) => setClinics(asList(r.data))).catch(() => {});
+    api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setAccounts(asList(r.data).filter((a) => a.allowsMovement))).catch(() => {});
+    api.get('/purchase-invoices').then((r) => setPurchases(asList(r.data))).catch(() => {});
     load();
   }, []);
 
