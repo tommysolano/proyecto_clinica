@@ -70,6 +70,15 @@ function SuperAdminRoute({ children }) {
   return children;
 }
 
+function RootRoute() {
+  const { role, user, loading } = useAuth();
+  if (loading) return null;
+  if (!user?.isSuperAdmin && role === 'contabilidad') {
+    return <Navigate to="/accounting/dashboard" replace />;
+  }
+  return <Dashboard />;
+}
+
 function AppRoutes() {
   return (
     <Routes>
@@ -80,7 +89,7 @@ function AppRoutes() {
           <PrivateRoute>
             <Layout>
               <Routes>
-                <Route path="/" element={<Dashboard />} />
+                <Route path="/" element={<RootRoute />} />
 
                 <Route
                   path="/patients"
@@ -138,7 +147,7 @@ function AppRoutes() {
                 <Route
                   path="/invoicing-config"
                   element={
-                    <RoleRoute roles={['admin', 'contabilidad']}>
+                    <RoleRoute roles={['admin']}>
                       <InvoicingConfig />
                     </RoleRoute>
                   }

@@ -66,7 +66,7 @@ const ALL_ITEMS = [
   { path: '/rooms', label: 'Consultorios', icon: HiOutlineBuildingStorefront, roles: ['admin'] },
   { path: '/blocks', label: 'Bloqueos', icon: HiOutlineNoSymbol, roles: ['admin'] },
   { path: '/users', label: 'Usuarios', icon: HiOutlineUserGroup, roles: ['admin'] },
-  { path: '/invoicing-config', label: 'Config. SRI', icon: HiOutlineCog6Tooth, roles: ['admin', 'contabilidad'] },
+  { path: '/invoicing-config', label: 'Config. SRI', icon: HiOutlineCog6Tooth, roles: ['admin'] },
   { path: '/clinics', label: 'Consultorios médicos', icon: HiOutlineBuildingOffice2, roles: [], superOnly: true },
   { path: '/settings', label: 'Configuración', icon: HiOutlineCog6Tooth, roles: ['admin', 'cajero', 'contabilidad', 'doctor', 'optica', 'call_center', 'marketing', 'enfermero'] },
 ];
@@ -168,8 +168,9 @@ export default function Layout({ children }) {
   const showAccounting = user?.isSuperAdmin || role === 'admin' || role === 'contabilidad';
 
   const menuItems = ALL_ITEMS.filter((item) => {
-    // Para usuarios con menú contable, ocultar los items que ya viven en los grupos.
-    if (showAccounting && GROUPED_PATHS.has(item.path)) return false;
+    // Para usuarios con menú contable, ocultar los items que ya viven en los grupos
+    // y Settings (que aparece en sección separada al final del sidebar).
+    if (showAccounting && (GROUPED_PATHS.has(item.path) || item.path === '/settings')) return false;
     if (item.superOnly) return user?.isSuperAdmin;
     if (user?.isSuperAdmin) return true;
     if (!role) return false;
@@ -305,6 +306,27 @@ export default function Layout({ children }) {
                   </div>
                 );
               })}
+            </div>
+          )}
+          {showAccounting && (
+            <div className="mt-4 space-y-1">
+              <p className="text-[10px] uppercase tracking-wider text-emerald-400/70 font-semibold px-3 mb-1">
+                Mi Cuenta
+              </p>
+              <Link
+                to="/settings"
+                onClick={() => setSidebarOpen(false)}
+                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-medium no-underline ${
+                  location.pathname === '/settings'
+                    ? 'bg-white/15 text-white shadow-lg shadow-black/10'
+                    : 'text-emerald-100/70 hover:bg-white/8 hover:text-white'
+                }`}
+              >
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${location.pathname === '/settings' ? 'bg-emerald-500' : 'bg-white/8'}`}>
+                  <HiOutlineCog6Tooth className="w-[18px] h-[18px]" />
+                </div>
+                Configuración de Cuenta
+              </Link>
             </div>
           )}
         </nav>
