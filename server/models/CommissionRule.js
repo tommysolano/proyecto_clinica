@@ -31,6 +31,9 @@ const commissionRuleSchema = new mongoose.Schema(
     // Monto de la comisión (valor fijo en dinero por servicio realizado).
     amount: { type: Number, required: true, min: 0 },
 
+    // Cuenta contable a la que se asigna el gasto de comisión.
+    account: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },
+
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }

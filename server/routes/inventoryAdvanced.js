@@ -16,6 +16,10 @@ router.post('/categories', requireRole('admin', 'contabilidad'), c.createCategor
 router.put('/categories/:id', requireRole('admin', 'contabilidad'), c.updateCategory);
 router.delete('/categories/:id', requireRole('admin'), c.deleteCategory);
 
+// Kardex y traslados
+router.get('/kardex', requireRole('admin', 'contabilidad'), c.getKardex);
+router.post('/transfer', requireRole('admin', 'contabilidad'), c.transferStock);
+
 // Toma física
 router.get('/counts', requireRole('admin', 'contabilidad'), c.listCounts);
 router.post('/counts', requireRole('admin', 'contabilidad'), c.startCount);
@@ -24,6 +28,7 @@ router.post('/counts/:id/confirm', requireRole('admin', 'contabilidad'), c.confi
 
 // Activos fijos
 router.get('/assets', requireRole('admin', 'contabilidad'), c.listAssets);
+router.get('/assets/:id', requireRole('admin', 'contabilidad'), c.getAsset);
 router.post('/assets', requireRole('admin', 'contabilidad'), c.createAsset);
 router.put('/assets/:id', requireRole('admin', 'contabilidad'), c.updateAsset);
 router.delete('/assets/:id', requireRole('admin'), c.deleteAsset);
@@ -32,5 +37,8 @@ router.post('/assets/run-depreciation', requireRole('admin', 'contabilidad'), c.
 // Importación
 router.post('/import/products', requireRole('admin', 'contabilidad'), c.importProducts);
 router.post('/import/assets', requireRole('admin', 'contabilidad'), c.importAssets);
+// Carga masiva por plantilla Excel
+router.get('/template/products', requireRole('admin', 'contabilidad'), c.downloadProductTemplate);
+router.post('/import/products-excel', requireRole('admin', 'contabilidad'), c.uploadMiddleware, c.importProductsExcel);
 
 module.exports = router;

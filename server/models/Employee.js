@@ -43,6 +43,12 @@ const employeeSchema = new mongoose.Schema(
     sectoralCode: String, // código comisión sectorial
     bankAccount: String,
     bankName: String,
+    bankAccountType: { type: String, enum: ['', 'AHORROS', 'CORRIENTE'], default: '' },
+    // De dónde sale el sueldo (sede/clínica que asume el costo) y centro de costo
+    salaryOriginClinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', default: null },
+    costCenter: { type: mongoose.Schema.Types.ObjectId, ref: 'CostCenter', default: null },
+    // Si el gasto de sueldo es deducible para impuesto a la renta
+    deductible: { type: Boolean, default: true },
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, // si tiene login
     // Cargas familiares y beneficios
     chargesFamily: { type: Number, default: 0 },

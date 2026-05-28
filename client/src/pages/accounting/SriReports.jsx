@@ -60,6 +60,17 @@ export default function SriReports() {
             <HiOutlineDocumentArrowDown className="w-4 h-4" /> Descargar XML (DIMM)
           </button>
         )}
+        {tab === 'VC' && (
+          <button
+            onClick={async () => {
+              try { const r = await api.get('/accounting-reports/sri/purchases-sales.xlsx', { params: { year, month }, responseType: 'blob' }); downloadBlob(r.data, `compras_ventas_${year}_${String(month).padStart(2, '0')}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); }
+              catch (e) { toast.error('Error al exportar'); }
+            }}
+            className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-1"
+          >
+            <HiOutlineDocumentArrowDown className="w-4 h-4" /> Excel
+          </button>
+        )}
       </div>
       {data && (
         <div className="bg-white rounded-xl p-4 shadow-sm overflow-auto">

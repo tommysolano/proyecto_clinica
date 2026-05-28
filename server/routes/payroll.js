@@ -14,6 +14,10 @@ router.get('/loans', requireRole('admin', 'contabilidad'), c.listLoans);
 router.post('/loans', requireRole('admin', 'contabilidad'), c.createLoan);
 router.put('/loans/:id', requireRole('admin', 'contabilidad'), c.updateLoan);
 
+router.get('/config', requireRole('admin', 'contabilidad'), c.getConfig);
+router.put('/config', requireRole('admin', 'contabilidad'), c.updateConfig);
+router.get('/decimos', requireRole('admin', 'contabilidad'), c.generateDecimos);
+
 router.get('/', requireRole('admin', 'contabilidad'), c.listPayrolls);
 router.get('/:id', requireRole('admin', 'contabilidad'), c.getPayroll);
 router.post('/generate', requireRole('admin', 'contabilidad'), c.generatePayroll);

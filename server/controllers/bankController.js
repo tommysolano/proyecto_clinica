@@ -1,6 +1,8 @@
 const BankAccount = require('../models/BankAccount');
 const BankTransaction = require('../models/BankTransaction');
 const Reconciliation = require('../models/Reconciliation');
+const BankCheck = require('../models/BankCheck');
+const CreditCard = require('../models/CreditCard');
 const Sale = require('../models/Sale');
 const ChartOfAccount = require('../models/ChartOfAccount');
 const { createEntry, findAccount } = require('../utils/accounting');
@@ -170,6 +172,13 @@ exports.createMovement = async (req, res) => {
       counterpartTx.counterpartAccount = bank._id;
       await counterpartTx.save();
     }
+    // Marcar el cheque como GIRADO en el registro de chequera (si existe)
+    if (type === 'CHEQUE_EMITIDO' && realCheckNumber) {
+      await BankCheck.findOneAndUpdate(
+        { clinic: req.clinicId, bankAccount: bank._id, number: parseInt(realCheckNumber, 10) },
+        { status: 'GIRADO', beneficiary: description || '', amount: Number(amount), date: txDate, transaction: tx._id },
+      );
+    }
     res.status(201).json({ transaction: tx, journalEntry: entry, counterpartTx });
   } catch (e) {
     res.status(e.status || 400).json({ message: e.message });
@@ -336,4 +345,66 @@ exports.listReconciliations = async (req, res) => {
   if (req.query.bankAccount) filter.bankAccount = req.query.bankAccount;
   const items = await Reconciliation.find(filter).populate('bankAccount', 'name bank').sort({ periodEnd: -1 });
   res.json(items);
+};
+
+// ---------- Chequera / secuencias de cheques ----------
+exports.listChecks = async (req, res) => {
+  const filter = { clinic: req.clinicId };
+  if (req.query.bankAccount) filter.bankAccount = req.query.bankAccount;
+  if (req.query.status) filter.status = req.query.status;
+  const items = await BankCheck.find(filter).sort({ number: 1 });
+  res.json(items);
+};
+
+/** Genera un rango de cheques (chequera) para una cuenta. body: { bankAccount, from, to } */
+exports.generateChecks = async (req, res) => {
+  try {
+    const { bankAccount, from, to } = req.body;
+    const bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId });
+    if (!bank) return res.status(404).json({ message: 'Cuenta no encontrada' });
+    const start = parseInt(from, 10), end = parseInt(to, 10);
+    if (!start || !end || end < start) return res.status(400).json({ message: 'Rango inválido' });
+    if (end - start > 1000) return res.status(400).json({ message: 'Rango demasiado grande (máx 1000)' });
+    let created = 0;
+    for (let n = start; n <= end; n++) {
+      try { await BankCheck.create({ clinic: req.clinicId, bankAccount: bank._id, number: n }); created++; }
+      catch { /* duplicado, ignorar */ }
+    }
+    res.json({ created });
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
+
+exports.voidCheck = async (req, res) => {
+  try {
+    const chk = await BankCheck.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!chk) return res.status(404).json({ message: 'Cheque no encontrado' });
+    if (chk.status === 'COBRADO') return res.status(400).json({ message: 'Cheque ya cobrado' });
+    chk.status = 'ANULADO';
+    chk.voidReason = req.body?.reason || '';
+    await chk.save();
+    res.json(chk);
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
+
+// ---------- Tarjetas de crédito + POS ----------
+exports.listCards = async (req, res) => {
+  const items = await CreditCard.find({ clinic: req.clinicId }).populate('chartAccount', 'code name').sort({ name: 1 });
+  res.json(items);
+};
+exports.createCard = async (req, res) => {
+  try { const card = await CreditCard.create({ ...req.body, clinic: req.clinicId }); res.status(201).json(card); }
+  catch (e) { res.status(400).json({ message: e.message }); }
+};
+exports.updateCard = async (req, res) => {
+  try {
+    const card = await CreditCard.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!card) return res.status(404).json({ message: 'No encontrada' });
+    const patch = { ...req.body }; delete patch.clinic;
+    Object.assign(card, patch); await card.save(); res.json(card);
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
+exports.deleteCard = async (req, res) => {
+  const card = await CreditCard.findOne({ _id: req.params.id, clinic: req.clinicId });
+  if (!card) return res.status(404).json({ message: 'No encontrada' });
+  await card.deleteOne(); res.json({ message: 'Eliminada' });
 };

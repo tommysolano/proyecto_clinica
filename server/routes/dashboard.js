@@ -1,5 +1,5 @@
 const router = require('express').Router();
-const { getDashboard, getTopProducts } = require('../controllers/dashboardController');
+const { getDashboard, getTopProducts, getAccountingDashboard } = require('../controllers/dashboardController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
 router.get('/', auth, requireClinic, getDashboard);
@@ -9,6 +9,13 @@ router.get(
   requireClinic,
   requireRole('admin', 'cajero', 'contabilidad'),
   getTopProducts
+);
+router.get(
+  '/accounting',
+  auth,
+  requireClinic,
+  requireRole('admin', 'contabilidad'),
+  getAccountingDashboard
 );
 
 module.exports = router;

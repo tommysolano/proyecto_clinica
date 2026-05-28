@@ -5,7 +5,7 @@ import Modal from '../../components/Modal';
 import { HiOutlinePlus, HiOutlineUserGroup, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineClock } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 
-const EMPTY = { code: '', identificacion: '', tipoIdentificacion: 'CEDULA', firstName: '', lastName: '', email: '', phone: '', position: '', department: '', contractType: 'INDEFINIDO', paymentFrequency: 'MENSUAL', salaryType: 'GROSS', baseSalary: 460, netSalary: 0, salaryChangeReason: '', hireDate: today(), chargesFamily: 0, receivesDecimoTercero: 'MENSUALIZADO', receivesDecimoCuarto: 'MENSUALIZADO', receivesFondosReserva: 'MENSUALIZADO' };
+const EMPTY = { code: '', identificacion: '', tipoIdentificacion: 'CEDULA', firstName: '', lastName: '', email: '', phone: '', position: '', department: '', contractType: 'INDEFINIDO', paymentFrequency: 'MENSUAL', salaryType: 'GROSS', baseSalary: 460, netSalary: 0, salaryChangeReason: '', hireDate: today(), chargesFamily: 0, deductible: true, salaryOriginClinic: '', bankName: '', bankAccount: '', bankAccountType: '', receivesDecimoTercero: true, receivesDecimoCuarto: true, receivesFondosReserva: false, decimoTerceroAcumulado: 'MENSUALIZADO', decimoCuartoAcumulado: 'MENSUALIZADO', fondosReservaAcumulado: 'MENSUALIZADO' };
 
 // Estimación cliente del bruto a partir del neto (solo IESS 9.45%).
 const IESS_PERSONAL = 0.0945;
@@ -17,17 +17,19 @@ export default function Employees() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY);
   const [history, setHistory] = useState(null);
+  const [clinics, setClinics] = useState([]);
 
   const load = async () => {
     try { const r = await api.get('/payroll/employees'); setList(r.data || []); }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
-  useEffect(() => { load(); }, []);
+  useEffect(() => { load(); api.get('/clinics').then((r) => setClinics(r.data || [])).catch(() => {}); }, []);
 
   const submit = async (e) => {
     e.preventDefault();
     try {
       const payload = { ...form };
+      if (!payload.salaryOriginClinic) payload.salaryOriginClinic = null;
       if (payload.salaryType === 'NET') {
         payload.baseSalary = grossUp(Number(payload.netSalary || 0));
       } else {
@@ -146,10 +148,27 @@ export default function Employees() {
               <input placeholder="Razón del cambio (auditoría)" value={form.salaryChangeReason} onChange={(e) => setForm({ ...form, salaryChangeReason: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
             )}
           </div>
+          <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 space-y-3">
+            <div className="text-sm font-semibold text-slate-700">Beneficios sociales</div>
+            <div className="flex gap-4 flex-wrap">
+              <label className="text-sm flex items-center gap-1"><input type="checkbox" checked={form.receivesDecimoTercero} onChange={(e) => setForm({ ...form, receivesDecimoTercero: e.target.checked })} /> Décimo tercero</label>
+              <label className="text-sm flex items-center gap-1"><input type="checkbox" checked={form.receivesDecimoCuarto} onChange={(e) => setForm({ ...form, receivesDecimoCuarto: e.target.checked })} /> Décimo cuarto</label>
+              <label className="text-sm flex items-center gap-1"><input type="checkbox" checked={form.receivesFondosReserva} onChange={(e) => setForm({ ...form, receivesFondosReserva: e.target.checked })} /> Fondos de reserva</label>
+              <label className="text-sm flex items-center gap-1"><input type="checkbox" checked={form.deductible} onChange={(e) => setForm({ ...form, deductible: e.target.checked })} /> Gasto deducible</label>
+            </div>
+            <div className="grid grid-cols-3 gap-3">
+              <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Décimo 13ro</span><select value={form.decimoTerceroAcumulado} onChange={(e) => setForm({ ...form, decimoTerceroAcumulado: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2"><option>MENSUALIZADO</option><option>ACUMULADO</option></select></label>
+              <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Décimo 14to</span><select value={form.decimoCuartoAcumulado} onChange={(e) => setForm({ ...form, decimoCuartoAcumulado: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2"><option>MENSUALIZADO</option><option>ACUMULADO</option></select></label>
+              <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Fondos reserva</span><select value={form.fondosReservaAcumulado} onChange={(e) => setForm({ ...form, fondosReservaAcumulado: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2"><option>MENSUALIZADO</option><option>ACUMULADO</option></select></label>
+            </div>
+          </div>
           <div className="grid grid-cols-2 gap-3">
-            <select value={form.receivesDecimoTercero} onChange={(e) => setForm({ ...form, receivesDecimoTercero: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2"><option>MENSUALIZADO</option><option>ACUMULADO</option></select>
-            <select value={form.receivesDecimoCuarto} onChange={(e) => setForm({ ...form, receivesDecimoCuarto: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2"><option>MENSUALIZADO</option><option>ACUMULADO</option></select>
-            <select value={form.receivesFondosReserva} onChange={(e) => setForm({ ...form, receivesFondosReserva: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2"><option>MENSUALIZADO</option><option>ACUMULADO</option></select>
+            <select value={form.salaryOriginClinic} onChange={(e) => setForm({ ...form, salaryOriginClinic: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2">
+              <option value="">Origen del sueldo (sede)...</option>{clinics.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}
+            </select>
+            <input placeholder="Banco" value={form.bankName} onChange={(e) => setForm({ ...form, bankName: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
+            <input placeholder="Nº cuenta bancaria" value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
+            <select value={form.bankAccountType} onChange={(e) => setForm({ ...form, bankAccountType: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2"><option value="">Tipo de cuenta...</option><option value="AHORROS">Ahorros</option><option value="CORRIENTE">Corriente</option></select>
           </div>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Guardar</button></div>
         </form>

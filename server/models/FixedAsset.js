@@ -19,12 +19,23 @@ const fixedAssetSchema = new mongoose.Schema(
     name: { type: String, required: true },
     description: String,
     category: { type: mongoose.Schema.Types.ObjectId, ref: 'InventoryCategory' },
+    // Tipo de activo: subcategoría (InventoryCategory con parent = category)
+    assetType: { type: mongoose.Schema.Types.ObjectId, ref: 'InventoryCategory', default: null },
     serial: String,
-    location: String,
+    location: String, // ubicación específica (área/consultorio) en texto libre
+    // Sede/clínica donde está físicamente el activo
+    locationClinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', default: null },
     responsible: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // Cuentas contables ligadas al activo (si no se setean, se usan las de la categoría)
+    assetAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },
+    depreciationAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },
+    accumDepreciationAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },
+    // Factura de compra de la que proviene el activo
+    purchaseInvoice: { type: mongoose.Schema.Types.ObjectId, ref: 'PurchaseInvoice', default: null },
     acquisitionDate: { type: Date, required: true },
     acquisitionCost: { type: Number, required: true },
     residualValue: { type: Number, default: 0 },
+    residualPercent: { type: Number, default: 0 }, // % usado para calcular residual
     depreciationRate: { type: Number, required: true },
     usefulLifeMonths: { type: Number, required: true },
     startDate: { type: Date, required: true }, // inicio depreciación

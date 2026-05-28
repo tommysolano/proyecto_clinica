@@ -71,41 +71,83 @@ const ALL_ITEMS = [
   { path: '/settings', label: 'Configuración', icon: HiOutlineCog6Tooth, roles: ['admin', 'cajero', 'contabilidad', 'doctor', 'optica', 'call_center', 'marketing', 'enfermero'] },
 ];
 
-const ACCOUNTING_ITEMS = [
-  { path: '/accounting/chart', label: 'Plan de Cuentas', icon: HiOutlineBookOpen },
-  { path: '/accounting/cost-centers', label: 'Centros de Costo', icon: HiOutlineSquares2X2 },
-  { path: '/accounting/periods', label: 'Períodos Fiscales', icon: HiOutlineCalendar },
-  { path: '/accounting/journal', label: 'Asientos', icon: HiOutlineDocumentText },
-  { path: '/accounting/ledger', label: 'Libro Mayor', icon: HiOutlineBookOpen },
-  { path: '/accounting/trial-balance', label: 'Balance Comprobación', icon: HiOutlineScale },
-  { path: '/accounting/banks', label: 'Bancos', icon: HiOutlineBanknotes },
-  { path: '/accounting/cash', label: 'Caja', icon: HiOutlineCurrencyDollar },
-  { path: '/accounting/reconciliations', label: 'Conciliaciones', icon: HiOutlineScale },
-  { path: '/accounting/suppliers', label: 'Proveedores', icon: HiOutlineTruck },
-  { path: '/accounting/purchases', label: 'Compras', icon: HiOutlineDocumentText },
-  { path: '/accounting/credit-debit-notes', label: 'NC / ND', icon: HiOutlineDocumentMinus },
-  { path: '/accounting/payments', label: 'Pagos/Cobros', icon: HiOutlineCurrencyDollar },
-  { path: '/accounting/credit-card-batches', label: 'Lotes Tarjetas', icon: HiOutlineCreditCard },
-  { path: '/accounting/warehouses', label: 'Bodegas', icon: HiOutlineCube },
-  { path: '/accounting/inv-categories', label: 'Categorías Inv.', icon: HiOutlineSquares2X2 },
-  { path: '/accounting/inv-consolidated', label: 'Inv. Consolidado', icon: HiOutlineCube },
-  { path: '/accounting/counts', label: 'Tomas Físicas', icon: HiOutlineClipboardDocumentCheck },
-  { path: '/accounting/assets', label: 'Activos Fijos', icon: HiOutlineBuildingLibrary },
-  { path: '/accounting/employees', label: 'Empleados', icon: HiOutlineUserGroup },
-  { path: '/accounting/loans', label: 'Préstamos', icon: HiOutlineBanknotes },
-  { path: '/accounting/payroll', label: 'Nómina', icon: HiOutlineCalculator },
-  { path: '/accounting/financial-reports', label: 'Rep. Financieros', icon: HiOutlineDocumentChartBar },
-  { path: '/accounting/management-reports', label: 'Rep. Gerenciales', icon: HiOutlineChartBar },
-  { path: '/accounting/sri-reports', label: 'Rep. SRI', icon: HiOutlineDocumentArrowDown },
-  { path: '/accounting/audit-logs', label: 'Auditoría', icon: HiOutlineShieldCheck },
+// Menú contable agrupado (visible para admin/contabilidad).
+const ACCT_GROUPS = [
+  {
+    key: 'ventas', label: 'Ventas', icon: HiOutlineShoppingCart, items: [
+      { path: '/sales', label: 'Ventas' },
+      { path: '/quotations', label: 'Cotizaciones' },
+      { path: '/invoices', label: 'Facturación' },
+      { path: '/discounts', label: 'Descuentos' },
+    ],
+  },
+  {
+    key: 'inventario', label: 'Inventario', icon: HiOutlineCube, items: [
+      { path: '/inventory', label: 'Productos' },
+      { path: '/accounting/warehouses', label: 'Bodegas' },
+      { path: '/accounting/inv-categories', label: 'Categorías Inv.' },
+      { path: '/accounting/inv-consolidated', label: 'Inv. Consolidado' },
+      { path: '/accounting/counts', label: 'Tomas Físicas' },
+      { path: '/accounting/assets', label: 'Activos Fijos' },
+      { path: '/accounting/kardex', label: 'Kardex' },
+    ],
+  },
+  {
+    key: 'bancos', label: 'Bancos', icon: HiOutlineBanknotes, items: [
+      { path: '/accounting/banks', label: 'Cuentas Bancarias' },
+      { path: '/accounting/cash', label: 'Caja' },
+      { path: '/accounting/reconciliations', label: 'Conciliaciones' },
+      { path: '/accounting/cards', label: 'Tarjetas / POS' },
+      { path: '/accounting/checks', label: 'Cheques' },
+      { path: '/accounting/credit-card-batches', label: 'Lotes Tarjetas' },
+      { path: '/accounting/payments', label: 'Pagos / Cobros' },
+    ],
+  },
+  {
+    key: 'rrhh', label: 'Recursos Humanos', icon: HiOutlineUserGroup, items: [
+      { path: '/accounting/employees', label: 'Empleados' },
+      { path: '/accounting/payroll', label: 'Nómina' },
+      { path: '/accounting/loans', label: 'Préstamos' },
+      { path: '/accounting/decimos', label: 'Plantillas Décimos' },
+      { path: '/accounting/payroll-config', label: 'Configuración' },
+    ],
+  },
+  {
+    key: 'contabilidad', label: 'Contabilidad', icon: HiOutlineCalculator, items: [
+      { path: '/accounting/dashboard', label: 'Dashboard Contable' },
+      { path: '/accounting/chart', label: 'Plan de Cuentas' },
+      { path: '/accounting/cost-centers', label: 'Centros de Costo' },
+      { path: '/accounting/periods', label: 'Períodos Fiscales' },
+      { path: '/accounting/journal', label: 'Asientos' },
+      { path: '/accounting/ledger', label: 'Consultas Mayor' },
+      { path: '/accounting/trial-balance', label: 'Balance Comprobación' },
+      { path: '/accounting/suppliers', label: 'Personas' },
+      { path: '/accounting/purchases', label: 'Compras' },
+      { path: '/accounting/credit-debit-notes', label: 'NC / ND' },
+    ],
+  },
+  {
+    key: 'reporteria', label: 'Reportería', icon: HiOutlineDocumentChartBar, items: [
+      { path: '/accounting/financial-reports', label: 'Rep. Financieros' },
+      { path: '/accounting/management-reports', label: 'Rep. Gerenciales' },
+      { path: '/accounting/cash-flow', label: 'Flujo de Caja' },
+      { path: '/accounting/sri-reports', label: 'Rep. SRI' },
+      { path: '/accounting/audit-logs', label: 'Auditoría' },
+    ],
+  },
 ];
+
+// Rutas que viven dentro de los grupos contables (se ocultan del menú plano
+// para admin/contabilidad y así evitar duplicados).
+const GROUPED_PATHS = new Set(ACCT_GROUPS.flatMap((g) => g.items.map((i) => i.path)));
 
 export default function Layout({ children }) {
   const { user, role, activeClinic, clinics, selectClinic, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
-  const [accountingOpen, setAccountingOpen] = useState(false);
+  const [openGroups, setOpenGroups] = useState({});
+  const toggleGroup = (key) => setOpenGroups((g) => ({ ...g, [key]: !g[key] }));
 
   const handleLogout = () => {
     logout();
@@ -123,14 +165,16 @@ export default function Layout({ children }) {
     }
   };
 
+  const showAccounting = user?.isSuperAdmin || role === 'admin' || role === 'contabilidad';
+
   const menuItems = ALL_ITEMS.filter((item) => {
+    // Para usuarios con menú contable, ocultar los items que ya viven en los grupos.
+    if (showAccounting && GROUPED_PATHS.has(item.path)) return false;
     if (item.superOnly) return user?.isSuperAdmin;
     if (user?.isSuperAdmin) return true;
     if (!role) return false;
     return item.roles.includes(role);
   });
-
-  const showAccounting = user?.isSuperAdmin || role === 'admin' || role === 'contabilidad';
 
   return (
     <div className="flex h-screen overflow-hidden bg-body">
@@ -217,38 +261,50 @@ export default function Layout({ children }) {
             );
           })}
           {showAccounting && (
-            <div className="mt-4">
-              <button
-                onClick={() => setAccountingOpen((v) => !v)}
-                className="w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-medium text-emerald-100/70 hover:bg-white/8 hover:text-white bg-transparent border-none cursor-pointer"
-              >
-                <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-white/8">
-                  <HiOutlineCalculator className="w-[18px] h-[18px]" />
-                </div>
-                <span className="flex-1 text-left">Contabilidad</span>
-                {accountingOpen ? <HiOutlineChevronDown className="w-4 h-4" /> : <HiOutlineChevronRight className="w-4 h-4" />}
-              </button>
-              {accountingOpen && (
-                <div className="ml-3 mt-1 space-y-0.5 border-l border-white/10 pl-2">
-                  {ACCOUNTING_ITEMS.map((it) => {
-                    const Icon = it.icon;
-                    const isActive = location.pathname === it.path;
-                    return (
-                      <Link
-                        key={it.path}
-                        to={it.path}
-                        onClick={() => setSidebarOpen(false)}
-                        className={`flex items-center gap-2 px-2 py-1.5 rounded-lg text-[12px] no-underline ${
-                          isActive ? 'bg-white/15 text-white' : 'text-emerald-100/60 hover:bg-white/8 hover:text-white'
-                        }`}
-                      >
-                        <Icon className="w-4 h-4 flex-shrink-0" />
-                        <span className="truncate">{it.label}</span>
-                      </Link>
-                    );
-                  })}
-                </div>
-              )}
+            <div className="mt-4 space-y-1">
+              <p className="text-[10px] uppercase tracking-wider text-emerald-400/70 font-semibold px-3 mb-1">
+                Contabilidad
+              </p>
+              {ACCT_GROUPS.map((group) => {
+                const GroupIcon = group.icon;
+                const isOpen = !!openGroups[group.key];
+                const groupActive = group.items.some((it) => location.pathname === it.path);
+                return (
+                  <div key={group.key}>
+                    <button
+                      onClick={() => toggleGroup(group.key)}
+                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-medium bg-transparent border-none cursor-pointer ${
+                        groupActive ? 'text-white' : 'text-emerald-100/70 hover:bg-white/8 hover:text-white'
+                      }`}
+                    >
+                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${groupActive ? 'bg-emerald-500' : 'bg-white/8'}`}>
+                        <GroupIcon className="w-[18px] h-[18px]" />
+                      </div>
+                      <span className="flex-1 text-left">{group.label}</span>
+                      {isOpen ? <HiOutlineChevronDown className="w-4 h-4" /> : <HiOutlineChevronRight className="w-4 h-4" />}
+                    </button>
+                    {isOpen && (
+                      <div className="ml-3 mt-1 space-y-0.5 border-l border-white/10 pl-2">
+                        {group.items.map((it) => {
+                          const isActive = location.pathname === it.path;
+                          return (
+                            <Link
+                              key={it.path}
+                              to={it.path}
+                              onClick={() => setSidebarOpen(false)}
+                              className={`flex items-center gap-2 px-2 py-1.5 rounded-lg text-[12px] no-underline ${
+                                isActive ? 'bg-white/15 text-white' : 'text-emerald-100/60 hover:bg-white/8 hover:text-white'
+                              }`}
+                            >
+                              <span className="truncate">{it.label}</span>
+                            </Link>
+                          );
+                        })}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
             </div>
           )}
         </nav>

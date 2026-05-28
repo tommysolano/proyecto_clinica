@@ -55,6 +55,13 @@ import EmployeeLoans from './pages/accounting/EmployeeLoans';
 import Payroll from './pages/accounting/Payroll';
 import CreditCardBatches from './pages/accounting/CreditCardBatches';
 import AuditLogs from './pages/accounting/AuditLogs';
+import AccountingDashboard from './pages/accounting/AccountingDashboard';
+import Kardex from './pages/accounting/Kardex';
+import CashFlow from './pages/accounting/CashFlow';
+import PayrollConfig from './pages/accounting/PayrollConfig';
+import Decimos from './pages/accounting/Decimos';
+import Checks from './pages/accounting/Checks';
+import CreditCards from './pages/accounting/CreditCards';
 
 function SuperAdminRoute({ children }) {
   const { user, loading } = useAuth();
@@ -246,6 +253,13 @@ function AppRoutes() {
 
                 {/* Contabilidad */}
                 {[
+                  ['dashboard', AccountingDashboard],
+                  ['kardex', Kardex],
+                  ['cash-flow', CashFlow],
+                  ['payroll-config', PayrollConfig],
+                  ['decimos', Decimos],
+                  ['checks', Checks],
+                  ['cards', CreditCards],
                   ['chart', ChartOfAccounts],
                   ['cost-centers', CostCenters],
                   ['periods', FiscalPeriods],

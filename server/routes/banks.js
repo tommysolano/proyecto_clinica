@@ -24,4 +24,15 @@ router.post('/reconciliations', requireRole('admin', 'contabilidad'), c.startRec
 router.put('/reconciliations/:id', requireRole('admin', 'contabilidad'), c.updateReconciliation);
 router.post('/reconciliations/:id/close', requireRole('admin', 'contabilidad'), c.closeReconciliation);
 
+// Cheques (chequera)
+router.get('/checks', requireRole('admin', 'contabilidad'), c.listChecks);
+router.post('/checks/generate', requireRole('admin', 'contabilidad'), c.generateChecks);
+router.post('/checks/:id/void', requireRole('admin', 'contabilidad'), c.voidCheck);
+
+// Tarjetas de crédito + POS
+router.get('/cards', requireRole('admin', 'contabilidad'), c.listCards);
+router.post('/cards', requireRole('admin', 'contabilidad'), c.createCard);
+router.put('/cards/:id', requireRole('admin', 'contabilidad'), c.updateCard);
+router.delete('/cards/:id', requireRole('admin'), c.deleteCard);
+
 module.exports = router;

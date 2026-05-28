@@ -7,6 +7,11 @@ const supplierSchema = new mongoose.Schema(
     tipoIdentificacion: { type: String, enum: ['RUC', 'CEDULA', 'PASAPORTE'], default: 'RUC' },
     razonSocial: { type: String, required: true, trim: true },
     nombreComercial: { type: String, default: '', trim: true },
+    // Roles de la persona/entidad (un mismo registro puede ser varios a la vez)
+    roles: {
+      type: [{ type: String, enum: ['CLIENTE', 'PROVEEDOR', 'EMPLEADO', 'VENDEDOR'] }],
+      default: ['PROVEEDOR'],
+    },
     address: { type: String, default: '' },
     phone: { type: String, default: '' },
     email: { type: String, default: '', lowercase: true, trim: true },

@@ -6,6 +6,31 @@ const Invoice = require('../models/Invoice');
 const Payment = require('../models/Payment');
 const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
+const ExcelJS = require('exceljs');
+
+const sendWorkbook = async (res, wb, filename) => {
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+  await wb.xlsx.write(res);
+  res.end();
+};
+
+function dateMatch(req, field = 'createdAt') {
+  const { startDate, endDate } = req.query;
+  const m = {};
+  if (startDate) m.$gte = new Date(startDate);
+  if (endDate) m.$lte = new Date(endDate + 'T23:59:59.999');
+  return Object.keys(m).length ? { [field]: m } : {};
+}
+
+function periodFormat(granularity) {
+  switch (granularity) {
+    case 'day': return '%Y-%m-%d';
+    case 'week': return '%G-S%V';
+    case 'year': return '%Y';
+    default: return '%Y-%m';
+  }
+}
 
 // ---------- Helpers ----------
 async function getAccountBalances(clinicId, { startDate, endDate } = {}) {
@@ -165,6 +190,63 @@ exports.salesWeekly = async (req, res) => {
   res.json(rows);
 };
 
+/** Ventas agrupadas por período (granularity: day/week/month/quarter/year). */
+exports.salesByPeriod = async (req, res) => {
+  try {
+    const mongoose = require('mongoose');
+    const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
+    const granularity = req.query.granularity || 'month';
+    const match = { clinic: clinicObjId, status: 'completada', ...dateMatch(req) };
+    let groupId;
+    if (granularity === 'quarter') {
+      groupId = { $concat: [{ $dateToString: { format: '%Y', date: '$createdAt' } }, '-T', { $toString: { $ceil: { $divide: [{ $month: '$createdAt' }, 3] } } }] };
+    } else {
+      groupId = { $dateToString: { format: periodFormat(granularity), date: '$createdAt' } };
+    }
+    const rows = await Sale.aggregate([
+      { $match: match },
+      { $group: { _id: groupId, count: { $sum: 1 }, subtotal: { $sum: '$subtotal' }, tax: { $sum: '$taxAmount' }, total: { $sum: '$total' } } },
+      { $sort: { _id: 1 } },
+    ]);
+    res.json(rows);
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+/** Ventas por vendedor (createdBy). */
+exports.salesBySeller = async (req, res) => {
+  try {
+    const match = { clinic: req.clinicId, status: 'completada', ...dateMatch(req) };
+    const rows = await Sale.aggregate([
+      { $match: match },
+      { $group: { _id: '$createdBy', count: { $sum: 1 }, total: { $sum: '$total' } } },
+      { $sort: { total: -1 } },
+    ]);
+    await Sale.populate(rows, { path: '_id', model: 'User', select: 'name email' });
+    res.json(rows);
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+/** Costo de venta por categoría de producto. */
+exports.costOfSalesByCategory = async (req, res) => {
+  try {
+    const match = { clinic: req.clinicId, status: 'completada', ...dateMatch(req) };
+    const sales = await Sale.find(match).populate('items.product', 'purchasePrice category');
+    const byCat = {};
+    for (const s of sales) {
+      for (const it of s.items) {
+        const cat = it.product?.category || it.category || 'otro';
+        const cost = (it.product?.purchasePrice || 0) * it.quantity;
+        if (!byCat[cat]) byCat[cat] = { category: cat, revenue: 0, cost: 0, qty: 0 };
+        byCat[cat].revenue += it.subtotal || 0;
+        byCat[cat].cost += cost;
+        byCat[cat].qty += it.quantity;
+      }
+    }
+    const rows = Object.values(byCat).map((r) => ({ ...r, grossProfit: +(r.revenue - r.cost).toFixed(2), margin: r.revenue > 0 ? +(((r.revenue - r.cost) / r.revenue) * 100).toFixed(2) : 0 }));
+    res.json({ rows, totals: rows.reduce((a, r) => ({ revenue: a.revenue + r.revenue, cost: a.cost + r.cost, grossProfit: a.grossProfit + r.grossProfit }), { revenue: 0, cost: 0, grossProfit: 0 }) });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
 exports.costOfSales = async (req, res) => {
   const { startDate, endDate } = req.query;
   const match = { clinic: req.clinicId, status: 'completada' };
@@ -236,9 +318,11 @@ exports.accountsReceivableAging = async (req, res) => {
       if (balance <= 0.01) continue;
       const emitido = new Date(inv.fechaEmision.split('/').reverse().join('-'));
       const days = Math.floor((today - emitido) / (1000 * 60 * 60 * 24)) - 30; // crédito 30 días por defecto
+      const dueDate = new Date(emitido.getTime() + 30 * 86400000);
       rows.push({
         docId: inv._id, type: 'Factura', number: `${inv.estab}-${inv.ptoEmi}-${inv.secuencial}`,
-        client: inv.razonSocialComprador, date: inv.fechaEmision,
+        client: inv.razonSocialComprador, date: inv.fechaEmision, dueDate,
+        description: inv.notes || '', retentions: 0,
         total: inv.importeTotal || inv.total, paid, balance, days,
         bucket: bucket(days),
       });
@@ -268,7 +352,9 @@ exports.accountsPayableAging = async (req, res) => {
       const days = Math.floor((today - dueDate) / (1000 * 60 * 60 * 24));
       rows.push({
         docId: inv._id, type: 'Compra', number: inv.serie,
-        supplier: inv.supplier, date: inv.fechaEmision, total: inv.total, paid, balance, days,
+        supplier: inv.supplier, date: inv.fechaEmision, dueDate,
+        description: inv.notes || '', retentions: inv.retentionTotal || 0,
+        total: inv.total, paid, balance, days,
         bucket: bucket(days),
       });
     }
@@ -310,6 +396,152 @@ exports.inventoryReport = async (req, res) => {
     units: acc.units + r.stock,
   }), { valueAtCost: 0, valueAtSale: 0, units: 0 });
   res.json({ rows, totals });
+};
+
+// ---------- Exportaciones Excel de cartera ----------
+const AGING_COLS = [
+  { header: 'Nombre', key: 'name', width: 32 },
+  { header: 'Tipo documento', key: 'type', width: 14 },
+  { header: 'N° documento', key: 'number', width: 20 },
+  { header: 'Fecha emisión', key: 'emision', width: 14 },
+  { header: 'Fecha vencimiento', key: 'vence', width: 16 },
+  { header: 'Centro de costo', key: 'costCenter', width: 18 },
+  { header: 'Por vencer', key: 'porVencer', width: 12 },
+  { header: '1-30', key: 'd30', width: 12 },
+  { header: '31-60', key: 'd60', width: 12 },
+  { header: '61-120', key: 'd120', width: 12 },
+  { header: '> 120', key: 'd120plus', width: 12 },
+  { header: 'Total', key: 'total', width: 12 },
+  { header: 'Descripción', key: 'description', width: 30 },
+  { header: 'Valor documento', key: 'docValue', width: 14 },
+  { header: 'Retenciones', key: 'retentions', width: 12 },
+  { header: 'Pagos', key: 'payments', width: 12 },
+];
+
+function agingRowToExcel(r, name) {
+  const b = r.bucket;
+  return {
+    name,
+    type: r.type,
+    number: r.number,
+    emision: typeof r.date === 'string' ? r.date : (r.date ? new Date(r.date).toLocaleDateString('es-EC') : ''),
+    vence: r.dueDate ? new Date(r.dueDate).toLocaleDateString('es-EC') : '',
+    costCenter: r.costCenter || '',
+    porVencer: b === 'POR_VENCER' ? r.balance : 0,
+    d30: b === 'VENCIDO_30' ? r.balance : 0,
+    d60: b === 'VENCIDO_60' ? r.balance : 0,
+    d120: (b === 'VENCIDO_90' || b === 'VENCIDO_120') ? r.balance : 0,
+    d120plus: b === 'VENCIDO_MAS_120' ? r.balance : 0,
+    total: r.balance,
+    description: r.description || '',
+    docValue: r.total || 0,
+    retentions: r.retentions || 0,
+    payments: r.paid || 0,
+  };
+}
+
+async function buildAgingWorkbook(rows, title) {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet(title);
+  ws.columns = AGING_COLS;
+  ws.getRow(1).font = { bold: true };
+  ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } };
+  rows.forEach((r) => ws.addRow(r));
+  ['porVencer', 'd30', 'd60', 'd120', 'd120plus', 'total', 'docValue', 'retentions', 'payments'].forEach((k) => { ws.getColumn(k).numFmt = '"$"#,##0.00'; });
+  return wb;
+}
+
+exports.arAgingExcel = async (req, res) => {
+  try {
+    const data = await new Promise((resolve) => { exports.accountsReceivableAging(req, { json: resolve, status: () => ({ json: resolve }) }); });
+    const rows = (data.rows || []).map((r) => agingRowToExcel(r, r.client));
+    const wb = await buildAgingWorkbook(rows, 'Cuentas por cobrar');
+    await sendWorkbook(res, wb, `cartera_cobrar_${Date.now()}.xlsx`);
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+exports.apAgingExcel = async (req, res) => {
+  try {
+    const data = await new Promise((resolve) => { exports.accountsPayableAging(req, { json: resolve, status: () => ({ json: resolve }) }); });
+    // Resolver nombre de proveedor
+    const Supplier = require('../models/Supplier');
+    const rows = [];
+    for (const r of (data.rows || [])) {
+      let name = '';
+      if (r.supplier) { const s = await Supplier.findById(r.supplier).select('razonSocial'); name = s?.razonSocial || ''; }
+      rows.push(agingRowToExcel(r, name));
+    }
+    const wb = await buildAgingWorkbook(rows, 'Cuentas por pagar');
+    await sendWorkbook(res, wb, `cartera_pagar_${Date.now()}.xlsx`);
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+/** Flujo de caja en Excel con alertas de color (rojo si saldo negativo). */
+exports.cashFlowExcel = async (req, res) => {
+  try {
+    const data = await new Promise((resolve) => { exports.cashFlow(req, { json: resolve, status: () => ({ json: resolve }) }); });
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Flujo de caja');
+    ws.columns = [
+      { header: 'Fecha', key: 'date', width: 14 },
+      { header: 'Asiento', key: 'number', width: 14 },
+      { header: 'Descripción', key: 'description', width: 40 },
+      { header: 'Ingreso', key: 'in', width: 14 },
+      { header: 'Egreso', key: 'out', width: 14 },
+      { header: 'Saldo', key: 'saldo', width: 14 },
+    ];
+    ws.getRow(1).font = { bold: true };
+    ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } };
+    (data.flows || []).forEach((f) => {
+      const row = ws.addRow({ date: new Date(f.date).toLocaleDateString('es-EC'), number: f.number, description: f.description, in: f.in, out: f.out, saldo: f.saldo });
+      if (f.saldo < 0) {
+        row.getCell('saldo').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
+        row.getCell('saldo').font = { color: { argb: 'FFB91C1C' }, bold: true };
+      } else if (f.saldo < 500) {
+        row.getCell('saldo').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEF3C7' } };
+      }
+    });
+    ['in', 'out', 'saldo'].forEach((k) => { ws.getColumn(k).numFmt = '"$"#,##0.00'; });
+    // Fila de totales
+    const totalRow = ws.addRow({ description: 'TOTALES', in: data.totalIn, out: data.totalOut, saldo: data.saldoFinal });
+    totalRow.font = { bold: true };
+    await sendWorkbook(res, wb, `flujo_caja_${Date.now()}.xlsx`);
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+/** Compras y ventas (esquema SRI) en Excel. */
+exports.purchaseSalesExcel = async (req, res) => {
+  try {
+    const data = await new Promise((resolve) => { exports.purchaseSalesList(req, { json: resolve, status: () => ({ json: resolve }) }); });
+    const wb = new ExcelJS.Workbook();
+    const wv = wb.addWorksheet('Ventas');
+    wv.columns = [
+      { header: 'Fecha', key: 'date', width: 14 }, { header: 'Comprobante', key: 'doc', width: 22 },
+      { header: 'RUC/CI Cliente', key: 'id', width: 16 }, { header: 'Cliente', key: 'name', width: 30 },
+      { header: 'Base imponible', key: 'base', width: 14 }, { header: 'IVA', key: 'iva', width: 12 }, { header: 'Total', key: 'total', width: 14 },
+    ];
+    wv.getRow(1).font = { bold: true };
+    (data.ventas || []).forEach((v) => wv.addRow({
+      date: v.fechaEmision || (v.createdAt ? new Date(v.createdAt).toLocaleDateString('es-EC') : ''),
+      doc: `${v.estab || ''}-${v.ptoEmi || ''}-${v.secuencial || ''}`,
+      id: v.identificacionComprador, name: v.razonSocialComprador,
+      base: v.totalSinImpuestos || 0, iva: v.totalImpuesto || 0, total: v.importeTotal || 0,
+    }));
+    const wc = wb.addWorksheet('Compras');
+    wc.columns = [
+      { header: 'Fecha', key: 'date', width: 14 }, { header: 'Serie', key: 'serie', width: 20 },
+      { header: 'RUC Proveedor', key: 'ruc', width: 16 }, { header: 'Proveedor', key: 'name', width: 30 },
+      { header: 'Subtotal', key: 'sub', width: 14 }, { header: 'IVA', key: 'iva', width: 12 }, { header: 'Total', key: 'total', width: 14 },
+    ];
+    wc.getRow(1).font = { bold: true };
+    (data.compras || []).forEach((c) => wc.addRow({
+      date: c.fechaEmision ? new Date(c.fechaEmision).toLocaleDateString('es-EC') : '',
+      serie: c.serie, ruc: c.supplier?.ruc, name: c.supplier?.razonSocial,
+      sub: c.subtotal || 0, iva: c.iva || 0, total: c.total || 0,
+    }));
+    [wv, wc].forEach((ws) => ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } });
+    await sendWorkbook(res, wb, `compras_ventas_${Date.now()}.xlsx`);
+  } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
 // ---------- Reportes SRI ----------

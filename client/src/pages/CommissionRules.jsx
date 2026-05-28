@@ -20,7 +20,7 @@ const DAYS = [
 const EMPTY = {
   name: '', active: true, targetType: 'role', user: '', role: 'doctor',
   service: '', patientScope: 'all', scheduleEnabled: false, daysOfWeek: [],
-  startTime: '', endTime: '', amount: '',
+  startTime: '', endTime: '', amount: '', account: '',
 };
 
 export default function CommissionRules() {
@@ -28,6 +28,7 @@ export default function CommissionRules() {
   const [rules, setRules] = useState([]);
   const [users, setUsers] = useState([]);
   const [services, setServices] = useState([]);
+  const [accounts, setAccounts] = useState([]);
   const [modal, setModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY);
@@ -52,6 +53,7 @@ export default function CommissionRules() {
       setUsers(u.data || []);
       const list = Array.isArray(p.data) ? p.data : p.data?.products || [];
       setServices(list.filter((x) => x.category === 'servicio' || x.category === 'programa' || x.unlimited));
+      api.get('/chart-of-accounts', { params: { active: true } }).then((a) => setAccounts((a.data || []).filter((x) => x.allowsMovement))).catch(() => {});
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al cargar');
     }
@@ -77,6 +79,7 @@ export default function CommissionRules() {
       service: r.service?._id || r.service || '', patientScope: r.patientScope,
       scheduleEnabled: r.scheduleEnabled, daysOfWeek: r.daysOfWeek || [],
       startTime: r.startTime || '', endTime: r.endTime || '', amount: String(r.amount),
+      account: r.account?._id || r.account || '',
     });
     setModal(true);
   };
@@ -92,6 +95,7 @@ export default function CommissionRules() {
         user: form.targetType === 'user' ? form.user : null,
         role: form.targetType === 'role' ? form.role : '',
         service: form.service || null,
+        account: form.account || null,
       };
       if (editing) await api.put(`/commissions/rules/${editing}`, body);
       else await api.post('/commissions/rules', body);
@@ -253,9 +257,17 @@ export default function CommissionRules() {
               </select>
             </label>
           </div>
-          <label className="block text-sm">Monto de la comisión ($)
-            <input type="number" step="0.01" min="0" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" required />
-          </label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="block text-sm">Monto de la comisión ($)
+              <input type="number" step="0.01" min="0" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" required />
+            </label>
+            <label className="block text-sm">Cuenta contable (gasto comisión)
+              <select value={form.account} onChange={(e) => setForm({ ...form, account: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm">
+                <option value="">Sin asignar</option>
+                {accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}
+              </select>
+            </label>
+          </div>
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={form.scheduleEnabled} onChange={(e) => setForm({ ...form, scheduleEnabled: e.target.checked })} className="w-4 h-4 accent-emerald-600" />
             Aplicar solo en un horario específico

@@ -5,6 +5,102 @@ const FixedAsset = require('../models/FixedAsset');
 const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
 const { createEntry, findAccount } = require('../utils/accounting');
+const ExcelJS = require('exceljs');
+const multer = require('multer');
+
+exports.uploadMiddleware = multer({ storage: multer.memoryStorage(), limits: { fileSize: 5 * 1024 * 1024 } }).single('file');
+
+// Columnas de la plantilla de productos
+const PRODUCT_TEMPLATE_COLUMNS = [
+  { header: 'codigo', key: 'code', width: 16 },
+  { header: 'nombre', key: 'name', width: 32 },
+  { header: 'categoria', key: 'category', width: 16 },
+  { header: 'unidad', key: 'unit', width: 12 },
+  { header: 'precio_compra', key: 'purchasePrice', width: 14 },
+  { header: 'precio_venta', key: 'salePrice', width: 14 },
+  { header: 'stock', key: 'stock', width: 10 },
+  { header: 'stock_minimo', key: 'minStock', width: 12 },
+  { header: 'iva', key: 'taxRate', width: 8 },
+  { header: 'ilimitado', key: 'unlimited', width: 10 },
+];
+
+/** Descarga la plantilla Excel para carga masiva de productos. */
+exports.downloadProductTemplate = async (req, res) => {
+  try {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Productos');
+    ws.columns = PRODUCT_TEMPLATE_COLUMNS;
+    ws.getRow(1).font = { bold: true };
+    ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } };
+    // Fila de ejemplo
+    ws.addRow({ code: 'P001', name: 'Producto ejemplo', category: 'insumo', unit: 'unidad', purchasePrice: 5, salePrice: 10, stock: 100, minStock: 10, taxRate: 15, unlimited: 'NO' });
+    // Hoja de ayuda
+    const help = wb.addWorksheet('Instrucciones');
+    help.addRow(['categoria: medicamento, insumo, servicio, programa, otro']);
+    help.addRow(['ilimitado: SI (servicios sin stock) o NO']);
+    help.addRow(['iva: 0, 12 o 15']);
+    help.addRow(['No borre la fila de encabezados. Puede borrar la fila de ejemplo.']);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="plantilla_productos.xlsx"');
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+/** Importa productos desde un archivo Excel subido (multipart, campo `file`). */
+exports.importProductsExcel = async (req, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ message: 'Archivo requerido' });
+    const wb = new ExcelJS.Workbook();
+    await wb.xlsx.load(req.file.buffer);
+    const ws = wb.worksheets[0];
+    if (!ws) return res.status(400).json({ message: 'El archivo no tiene hojas' });
+
+    // Mapear encabezados (fila 1) a claves
+    const headerMap = {};
+    ws.getRow(1).eachCell((cell, col) => {
+      const h = String(cell.value || '').trim().toLowerCase();
+      const def = PRODUCT_TEMPLATE_COLUMNS.find((c) => c.header === h);
+      if (def) headerMap[col] = def.key;
+    });
+    if (!Object.values(headerMap).includes('code') || !Object.values(headerMap).includes('name')) {
+      return res.status(400).json({ message: 'La plantilla debe tener al menos las columnas codigo y nombre' });
+    }
+
+    const validCats = ['medicamento', 'insumo', 'servicio', 'programa', 'otro'];
+    let created = 0, updated = 0;
+    const errors = [];
+    for (let r = 2; r <= ws.rowCount; r++) {
+      const row = ws.getRow(r);
+      const data = {};
+      Object.entries(headerMap).forEach(([col, key]) => {
+        let v = row.getCell(parseInt(col)).value;
+        if (v && typeof v === 'object' && 'result' in v) v = v.result; // fórmula
+        if (v && typeof v === 'object' && 'text' in v) v = v.text; // rich text
+        data[key] = v;
+      });
+      if (!data.code || !data.name) continue;
+      const product = {
+        code: String(data.code).trim(),
+        name: String(data.name).trim(),
+        category: validCats.includes(String(data.category || '').toLowerCase()) ? String(data.category).toLowerCase() : 'otro',
+        unit: data.unit ? String(data.unit).trim() : 'unidad',
+        purchasePrice: Number(data.purchasePrice) || 0,
+        salePrice: Number(data.salePrice) || 0,
+        stock: Number(data.stock) || 0,
+        minStock: Number(data.minStock) || 0,
+        taxRate: data.taxRate !== undefined && data.taxRate !== null && data.taxRate !== '' ? Number(data.taxRate) : 15,
+        unlimited: ['SI', 'SÍ', 'TRUE', '1', 'X'].includes(String(data.unlimited || '').trim().toUpperCase()),
+      };
+      try {
+        const exists = await Product.findOne({ clinic: req.clinicId, code: product.code });
+        if (exists) { Object.assign(exists, product); await exists.save(); updated++; }
+        else { await Product.create({ ...product, clinic: req.clinicId }); created++; }
+      } catch (e) { errors.push(`Fila ${r}: ${e.message}`); }
+    }
+    res.json({ created, updated, errors });
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
 
 // ----- Bodegas -----
 exports.listWarehouses = async (req, res) => {
@@ -52,6 +148,66 @@ exports.deleteCategory = async (req, res) => {
   const c = await InventoryCategory.findOne({ _id: req.params.id, clinic: req.clinicId });
   if (!c) return res.status(404).json({ message: 'No encontrada' });
   await c.deleteOne(); res.json({ message: 'Eliminada' });
+};
+
+// ----- Kardex -----
+/**
+ * Kardex de un producto: movimientos con saldo acumulado, filtrable por bodega/fecha/tipo.
+ * query: { product (req), warehouse, type, startDate, endDate }
+ */
+exports.getKardex = async (req, res) => {
+  try {
+    const { product, warehouse, type, startDate, endDate } = req.query;
+    if (!product) return res.status(400).json({ message: 'product requerido' });
+    const filter = { clinic: req.clinicId, product };
+    if (warehouse) filter.$or = [{ warehouse }, { toWarehouse: warehouse }];
+    if (type) filter.type = type;
+    if (startDate || endDate) {
+      filter.createdAt = {};
+      if (startDate) filter.createdAt.$gte = new Date(startDate);
+      if (endDate) filter.createdAt.$lte = new Date(endDate + 'T23:59:59.999');
+    }
+    const movements = await InventoryMovement.find(filter)
+      .populate('warehouse toWarehouse', 'code name')
+      .populate('createdBy', 'name')
+      .sort({ createdAt: 1 });
+    const prod = await Product.findOne({ _id: product, clinic: req.clinicId }).select('code name unit stock averageCost');
+    // Saldo acumulado
+    let balance = 0;
+    const rows = movements.map((m) => {
+      const sign = m.type === 'salida' ? -1 : (m.type === 'entrada' ? 1 : (m.type === 'ajuste' ? 1 : 0));
+      // traslado no cambia stock total (sale de una bodega y entra a otra)
+      const qty = m.quantity * sign;
+      balance += qty;
+      return {
+        _id: m._id, date: m.createdAt, type: m.type,
+        warehouse: m.warehouse, toWarehouse: m.toWarehouse,
+        quantity: m.quantity, signedQuantity: qty,
+        unitCost: m.unitCost, balance,
+        reason: m.reason, reference: m.reference,
+        sourceModel: m.sourceModel, createdBy: m.createdBy,
+      };
+    });
+    res.json({ product: prod, movements: rows, currentBalance: prod?.stock ?? balance });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+/** Traslado de stock entre bodegas. body: { product, fromWarehouse, toWarehouse, quantity, reason } */
+exports.transferStock = async (req, res) => {
+  try {
+    const { product, fromWarehouse, toWarehouse, quantity, reason } = req.body;
+    if (!product || !fromWarehouse || !toWarehouse || !quantity) return res.status(400).json({ message: 'product, fromWarehouse, toWarehouse y quantity requeridos' });
+    if (fromWarehouse === toWarehouse) return res.status(400).json({ message: 'Las bodegas deben ser distintas' });
+    const prod = await Product.findOne({ _id: product, clinic: req.clinicId });
+    if (!prod) return res.status(404).json({ message: 'Producto no encontrado' });
+    const mov = await InventoryMovement.create({
+      clinic: req.clinicId, product, type: 'traslado',
+      warehouse: fromWarehouse, toWarehouse, quantity: Number(quantity),
+      reason: reason || 'Traslado entre bodegas', balanceAfter: prod.stock,
+      createdBy: req.user._id,
+    });
+    res.status(201).json(mov);
+  } catch (e) { res.status(400).json({ message: e.message }); }
 };
 
 // ----- Toma física -----
@@ -149,8 +305,24 @@ exports.confirmCount = async (req, res) => {
 exports.listAssets = async (req, res) => {
   const filter = { clinic: req.clinicId };
   if (req.query.status) filter.status = req.query.status;
-  const items = await FixedAsset.find(filter).populate('category', 'code name').sort({ code: 1 });
+  if (req.query.category) filter.category = req.query.category;
+  if (req.query.locationClinic) filter.locationClinic = req.query.locationClinic;
+  const items = await FixedAsset.find(filter)
+    .populate('category assetType', 'code name')
+    .populate('locationClinic', 'name nombreComercial')
+    .sort({ code: 1 });
   res.json(items);
+};
+
+exports.getAsset = async (req, res) => {
+  const a = await FixedAsset.findOne({ _id: req.params.id, clinic: req.clinicId })
+    .populate('category assetType', 'code name depreciationRate')
+    .populate('locationClinic', 'name nombreComercial')
+    .populate('assetAccount depreciationAccount accumDepreciationAccount', 'code name')
+    .populate('responsible', 'name')
+    .populate('purchaseInvoice', 'serie fechaEmision total');
+  if (!a) return res.status(404).json({ message: 'No encontrado' });
+  res.json(a);
 };
 
 exports.createAsset = async (req, res) => {
@@ -159,6 +331,10 @@ exports.createAsset = async (req, res) => {
     if (data.acquisitionDate) data.acquisitionDate = new Date(data.acquisitionDate);
     if (data.startDate) data.startDate = new Date(data.startDate);
     else data.startDate = data.acquisitionDate;
+    // Si llega residualPercent, calcular residualValue a partir del costo
+    if (data.residualPercent && !data.residualValue) {
+      data.residualValue = +(data.acquisitionCost * (data.residualPercent / 100)).toFixed(2);
+    }
     const depreciableBase = data.acquisitionCost - (data.residualValue || 0);
     data.usefulLifeMonths = data.usefulLifeMonths || Math.round(12 / ((data.depreciationRate || 1) / 100));
     data.monthlyDepreciation = +(depreciableBase / data.usefulLifeMonths).toFixed(2);
@@ -173,6 +349,15 @@ exports.updateAsset = async (req, res) => {
     const a = await FixedAsset.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!a) return res.status(404).json({ message: 'No encontrado' });
     Object.assign(a, req.body);
+    if (a.residualPercent && req.body.residualPercent !== undefined) {
+      a.residualValue = +(a.acquisitionCost * (a.residualPercent / 100)).toFixed(2);
+    }
+    // Recalcular depreciación mensual si cambian parámetros base
+    if (['acquisitionCost', 'residualValue', 'residualPercent', 'usefulLifeMonths', 'depreciationRate'].some((k) => req.body[k] !== undefined)) {
+      a.usefulLifeMonths = a.usefulLifeMonths || Math.round(1200 / (a.depreciationRate || 10));
+      const base = a.acquisitionCost - (a.residualValue || 0);
+      a.monthlyDepreciation = +(base / a.usefulLifeMonths).toFixed(2);
+    }
     await a.save();
     res.json(a);
   } catch (e) { res.status(400).json({ message: e.message }); }
@@ -216,11 +401,13 @@ exports.runDepreciation = async (req, res) => {
       });
       await a.save();
       totalDep += dep;
-      if (a.category?.depreciationAccount) {
-        lines.push({ account: a.category.depreciationAccount, debit: dep, credit: 0, description: `Depreciación ${a.code} ${period}` });
+      const depAccount = a.depreciationAccount || a.category?.depreciationAccount;
+      const accumAccount = a.accumDepreciationAccount || a.category?.accumDepreciationAccount;
+      if (depAccount) {
+        lines.push({ account: depAccount, debit: dep, credit: 0, description: `Depreciación ${a.code} ${period}` });
       }
-      if (a.category?.accumDepreciationAccount) {
-        lines.push({ account: a.category.accumDepreciationAccount, debit: 0, credit: dep, description: `Depreciación acumulada ${a.code}` });
+      if (accumAccount) {
+        lines.push({ account: accumAccount, debit: 0, credit: dep, description: `Depreciación acumulada ${a.code}` });
       }
     }
     let entry = null;

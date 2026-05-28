@@ -8,6 +8,7 @@ exports.list = async (req, res) => {
     { nombreComercial: new RegExp(req.query.q, 'i') },
   ];
   if (req.query.active !== undefined) filter.active = req.query.active === 'true';
+  if (req.query.role) filter.roles = req.query.role;
   const items = await Supplier.find(filter).populate('defaultExpenseAccount defaultPayableAccount', 'code name').sort({ razonSocial: 1 });
   res.json(items);
 };

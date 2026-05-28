@@ -14,18 +14,25 @@ router.get('/cash-flow', c.cashFlow);
 router.get('/sales/summary', c.salesSummary);
 router.get('/sales/by-product', c.salesByProduct);
 router.get('/sales/by-cashier', c.salesByCashier);
+router.get('/sales/by-seller', c.salesBySeller);
+router.get('/sales/by-period', c.salesByPeriod);
 router.get('/sales/weekly', c.salesWeekly);
 router.get('/sales/cost', c.costOfSales);
+router.get('/sales/cost-by-category', c.costOfSalesByCategory);
 
 // Gestión
 router.get('/non-deductible', c.nonDeductibleExpenses);
 router.get('/ar-aging', c.accountsReceivableAging);
 router.get('/ap-aging', c.accountsPayableAging);
+router.get('/ar-aging.xlsx', c.arAgingExcel);
+router.get('/ap-aging.xlsx', c.apAgingExcel);
+router.get('/cash-flow.xlsx', c.cashFlowExcel);
 router.get('/advances', c.advancesControl);
 router.get('/inventory', c.inventoryReport);
 
 // SRI
 router.get('/sri/purchases-sales', c.purchaseSalesList);
+router.get('/sri/purchases-sales.xlsx', c.purchaseSalesExcel);
 router.get('/sri/form-104', c.form104);
 router.get('/sri/form-103', c.form103);
 router.get('/sri/ats', c.ats);

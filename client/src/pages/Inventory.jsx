@@ -47,6 +47,36 @@ export default function Inventory() {
   const [movementModal, setMovementModal] = useState(false);
   const [movementForm, setMovementForm] = useState(emptyMovement);
 
+  // Bulk upload modal
+  const [bulkModal, setBulkModal] = useState(false);
+  const [bulkFile, setBulkFile] = useState(null);
+  const [bulkResult, setBulkResult] = useState(null);
+  const [bulkUploading, setBulkUploading] = useState(false);
+
+  const downloadTemplate = async () => {
+    try {
+      const res = await api.get('/inventory-advanced/template/products', { responseType: 'blob' });
+      const url = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      a.href = url; a.download = 'plantilla_productos.xlsx'; a.click();
+      URL.revokeObjectURL(url);
+    } catch { toast.error('Error al descargar plantilla'); }
+  };
+
+  const uploadBulk = async () => {
+    if (!bulkFile) return;
+    setBulkUploading(true); setBulkResult(null);
+    try {
+      const fd = new FormData();
+      fd.append('file', bulkFile);
+      const res = await api.post('/inventory-advanced/import/products-excel', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+      setBulkResult(res.data);
+      toast.success(`${res.data.created} creados, ${res.data.updated} actualizados`);
+      fetchProducts();
+    } catch (e) { toast.error(e.response?.data?.message || 'Error al importar'); }
+    finally { setBulkUploading(false); }
+  };
+
   const fetchProducts = async () => {
     try {
       const res = await api.get('/products', {
@@ -232,6 +262,12 @@ export default function Inventory() {
               Excel
             </button>
             <button
+              onClick={() => { setBulkResult(null); setBulkFile(null); setBulkModal(true); }}
+              className="flex items-center gap-2 bg-white border border-emerald-200 text-emerald-700 hover:bg-emerald-50 px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer"
+            >
+              Carga masiva
+            </button>
+            <button
               onClick={() => openNewMovement()}
               className="flex items-center gap-2 bg-cyan-600 hover:bg-cyan-700 text-white px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border-none transition-colors"
             >
@@ -414,6 +450,31 @@ export default function Inventory() {
           </div>
         </div>
       )}
+
+      {/* Bulk upload Modal */}
+      <Modal isOpen={bulkModal} onClose={() => setBulkModal(false)} title="Carga masiva de productos">
+        <div className="space-y-4">
+          <div className="bg-emerald-50 rounded-lg p-3 text-sm text-slate-600">
+            <p className="font-semibold text-emerald-800 mb-1">1. Descarga la plantilla</p>
+            <p>Descarga el Excel, llénalo con tus productos (no borres los encabezados) y vuelve a subirlo aquí.</p>
+            <button onClick={downloadTemplate} className="mt-2 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-sm">Descargar plantilla Excel</button>
+          </div>
+          <div>
+            <p className="font-semibold text-slate-700 mb-1 text-sm">2. Sube el archivo lleno</p>
+            <input type="file" accept=".xlsx,.xls" onChange={(e) => setBulkFile(e.target.files[0])} className="block w-full text-sm border border-slate-200 rounded-lg p-2" />
+          </div>
+          {bulkResult && (
+            <div className="text-sm bg-slate-50 rounded-lg p-3">
+              <p className="text-emerald-700 font-semibold">{bulkResult.created} creados · {bulkResult.updated} actualizados</p>
+              {bulkResult.errors?.length > 0 && <ul className="text-rose-600 text-xs mt-1 list-disc pl-4">{bulkResult.errors.map((er, i) => <li key={i}>{er}</li>)}</ul>}
+            </div>
+          )}
+          <div className="flex justify-end gap-2">
+            <button onClick={() => setBulkModal(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cerrar</button>
+            <button onClick={uploadBulk} disabled={!bulkFile || bulkUploading} className="px-4 py-2 bg-emerald-600 text-white rounded-lg disabled:opacity-50">{bulkUploading ? 'Subiendo...' : 'Importar'}</button>
+          </div>
+        </div>
+      </Modal>
 
       {/* Product Modal */}
       <Modal isOpen={productModal} onClose={() => setProductModal(false)} title={editingProduct ? 'Editar Producto' : 'Nuevo Producto'} size="lg">

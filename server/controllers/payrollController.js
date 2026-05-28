@@ -1,9 +1,10 @@
 const Employee = require('../models/Employee');
 const EmployeeLoan = require('../models/EmployeeLoan');
 const Payroll = require('../models/Payroll');
+const PayrollConfig = require('../models/PayrollConfig');
 const { createEntry, findAccount } = require('../utils/accounting');
 
-// Tasas legales Ecuador 2024 (configurables)
+// Tasas legales Ecuador por defecto (se sobrescriben con PayrollConfig)
 const RATES = {
   IESS_PERSONAL: 0.0945,
   IESS_PATRONAL: 0.1115,
@@ -11,6 +12,38 @@ const RATES = {
   SECAP: 0.005,
   FONDOS_RESERVA: 0.0833,
   SBU_2024: 460, // Salario Básico Unificado
+};
+
+/** Devuelve las tasas efectivas para una clínica (config o defaults). */
+async function getRates(clinicId) {
+  const cfg = await PayrollConfig.findOne({ clinic: clinicId });
+  if (!cfg) return { ...RATES, _config: null };
+  return {
+    IESS_PERSONAL: cfg.iessPersonal / 100,
+    IESS_PATRONAL: cfg.iessPatronal / 100,
+    IECE: cfg.iece / 100,
+    SECAP: cfg.secap / 100,
+    FONDOS_RESERVA: cfg.fondosReserva / 100,
+    SBU_2024: cfg.sbu,
+    _config: cfg,
+  };
+}
+
+// ----- Configuración de nómina -----
+exports.getConfig = async (req, res) => {
+  let cfg = await PayrollConfig.findOne({ clinic: req.clinicId });
+  if (!cfg) cfg = await PayrollConfig.create({ clinic: req.clinicId });
+  res.json(cfg);
+};
+exports.updateConfig = async (req, res) => {
+  try {
+    let cfg = await PayrollConfig.findOne({ clinic: req.clinicId });
+    if (!cfg) cfg = new PayrollConfig({ clinic: req.clinicId });
+    const patch = { ...req.body }; delete patch.clinic;
+    Object.assign(cfg, patch);
+    await cfg.save();
+    res.json(cfg);
+  } catch (e) { res.status(400).json({ message: e.message }); }
 };
 
 /**
@@ -192,6 +225,7 @@ exports.generatePayroll = async (req, res) => {
       return res.status(400).json({ message: 'El rol ya está cerrado o pagado' });
     }
     const employees = await Employee.find({ clinic: req.clinicId, active: true, hireDate: { $lte: endOfMonth } });
+    const R = await getRates(req.clinicId);
 
     const items = [];
     for (const emp of employees) {
@@ -200,17 +234,17 @@ exports.generatePayroll = async (req, res) => {
 
       const base = effectiveBaseSalary(emp);
       const decimoTercero = emp.receivesDecimoTercero && emp.decimoTerceroAcumulado === 'MENSUALIZADO' ? +(base / 12).toFixed(2) : 0;
-      const decimoCuarto = emp.receivesDecimoCuarto && emp.decimoCuartoAcumulado === 'MENSUALIZADO' ? +(RATES.SBU_2024 / 12).toFixed(2) : 0;
-      const fondosReserva = eligibleFondos && emp.fondosReservaAcumulado === 'MENSUALIZADO' ? +(base * RATES.FONDOS_RESERVA).toFixed(2) : 0;
+      const decimoCuarto = emp.receivesDecimoCuarto && emp.decimoCuartoAcumulado === 'MENSUALIZADO' ? +(R.SBU_2024 / 12).toFixed(2) : 0;
+      const fondosReserva = eligibleFondos && emp.fondosReservaAcumulado === 'MENSUALIZADO' ? +(base * R.FONDOS_RESERVA).toFixed(2) : 0;
 
       const totalIngresos = +(base + decimoTercero + decimoCuarto + fondosReserva).toFixed(2);
 
       // Aporte IESS sobre ingreso afecto (no incluye décimos ni fondos)
       const iessBase = base;
-      const iessPersonal = computeIESS(iessBase);
-      const iessPatronal = computeIESSPatronal(iessBase);
-      const iece = +(iessBase * RATES.IECE).toFixed(2);
-      const secap = +(iessBase * RATES.SECAP).toFixed(2);
+      const iessPersonal = +(iessBase * R.IESS_PERSONAL).toFixed(2);
+      const iessPatronal = +(iessBase * R.IESS_PATRONAL).toFixed(2);
+      const iece = +(iessBase * R.IECE).toFixed(2);
+      const secap = +(iessBase * R.SECAP).toFixed(2);
 
       // Préstamos vigentes
       const loans = await EmployeeLoan.find({ clinic: req.clinicId, employee: emp._id, status: 'ACTIVO' });
@@ -227,9 +261,9 @@ exports.generatePayroll = async (req, res) => {
       const totalEgresos = +(iessPersonal + impuestoRenta + prestamoEmpresa).toFixed(2);
       const netoPagar = +(totalIngresos - totalEgresos).toFixed(2);
       const provDecimoTercero = emp.decimoTerceroAcumulado === 'ACUMULADO' ? +(base / 12).toFixed(2) : 0;
-      const provDecimoCuarto = emp.decimoCuartoAcumulado === 'ACUMULADO' ? +(RATES.SBU_2024 / 12).toFixed(2) : 0;
+      const provDecimoCuarto = emp.decimoCuartoAcumulado === 'ACUMULADO' ? +(R.SBU_2024 / 12).toFixed(2) : 0;
       const provVacaciones = +(base / 24).toFixed(2);
-      const provFondosReserva = eligibleFondos && emp.fondosReservaAcumulado === 'ACUMULADO' ? +(base * RATES.FONDOS_RESERVA).toFixed(2) : 0;
+      const provFondosReserva = eligibleFondos && emp.fondosReservaAcumulado === 'ACUMULADO' ? +(base * R.FONDOS_RESERVA).toFixed(2) : 0;
       const totalProvisiones = +(iessPatronal + iece + secap + provDecimoTercero + provDecimoCuarto + provVacaciones + provFondosReserva).toFixed(2);
 
       items.push({
@@ -305,15 +339,17 @@ exports.closePayroll = async (req, res) => {
     if (!p) return res.status(404).json({ message: 'No encontrado' });
     if (p.status !== 'BORRADOR') return res.status(400).json({ message: 'No es borrador' });
 
-    // Cuentas
-    const sueldos = await findAccount(req.clinicId, { code: '6.1.01' });
-    const beneficios = await findAccount(req.clinicId, { code: '6.1.02' });
-    const iessPat = await findAccount(req.clinicId, { code: '6.1.03' });
-    const iessXpagar = await findAccount(req.clinicId, { code: '2.1.03.02' });
-    const sueldosXpagar = await findAccount(req.clinicId, { code: '2.1.03.01' });
-    const irXpagar = await findAccount(req.clinicId, { code: '2.1.02.05' });
-    const prestEmpresaXcobrar = await findAccount(req.clinicId, { code: '1.1.02.04' });
-    const provisiones = await findAccount(req.clinicId, { code: '2.1.03.03' });
+    // Cuentas (desde configuración, con fallback a códigos por defecto)
+    const cfg = await PayrollConfig.findOne({ clinic: req.clinicId });
+    const acc = cfg?.accounts || {};
+    const sueldos = await findAccount(req.clinicId, { code: acc.sueldos || '6.1.01' });
+    const beneficios = await findAccount(req.clinicId, { code: acc.beneficios || '6.1.02' });
+    const iessPat = await findAccount(req.clinicId, { code: acc.iessPatronal || '6.1.03' });
+    const iessXpagar = await findAccount(req.clinicId, { code: acc.iessPorPagar || '2.1.03.02' });
+    const sueldosXpagar = await findAccount(req.clinicId, { code: acc.sueldosPorPagar || '2.1.03.01' });
+    const irXpagar = await findAccount(req.clinicId, { code: acc.irPorPagar || '2.1.02.05' });
+    const prestEmpresaXcobrar = await findAccount(req.clinicId, { code: acc.prestamosPorCobrar || '1.1.02.04' });
+    const provisiones = await findAccount(req.clinicId, { code: acc.provisionesPorPagar || '2.1.03.03' });
 
     const lines = [];
     if (p.totalIngresos > 0) lines.push({ account: sueldos._id, debit: p.totalIngresos, credit: 0, description: 'Sueldos y beneficios' });
@@ -367,6 +403,47 @@ exports.closePayroll = async (req, res) => {
     await p.save();
     res.json(p);
   } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+};
+
+/**
+ * Plantilla de décimos (13ro / 14to) para todos los empleados de un año.
+ * query: { year, type: 'DECIMO_TERCERO' | 'DECIMO_CUARTO' }
+ * - Décimo tercero: equivale a un sueldo mensual promedio (remuneración anual / 12).
+ * - Décimo cuarto: un SBU completo (proporcional a meses trabajados).
+ */
+exports.generateDecimos = async (req, res) => {
+  try {
+    const year = parseInt(req.query.year) || new Date().getFullYear();
+    const type = req.query.type === 'DECIMO_CUARTO' ? 'DECIMO_CUARTO' : 'DECIMO_TERCERO';
+    const R = await getRates(req.clinicId);
+    // Período de cálculo del décimo
+    const periodStart = type === 'DECIMO_TERCERO' ? new Date(year - 1, 11, 1) : new Date(year - 1, 7, 1);
+    const periodEnd = type === 'DECIMO_TERCERO' ? new Date(year, 10, 30) : new Date(year, 6, 31);
+    const employees = await Employee.find({ clinic: req.clinicId, active: true });
+    const rows = [];
+    let total = 0;
+    for (const emp of employees) {
+      const hire = new Date(emp.hireDate);
+      const effStart = hire > periodStart ? hire : periodStart;
+      const monthsWorked = Math.max(0, Math.min(12, Math.round((periodEnd - effStart) / (1000 * 60 * 60 * 24 * 30))));
+      const base = effectiveBaseSalary(emp);
+      let amount;
+      if (type === 'DECIMO_TERCERO') {
+        if (!emp.receivesDecimoTercero) continue;
+        amount = +((base * monthsWorked) / 12).toFixed(2);
+      } else {
+        if (!emp.receivesDecimoCuarto) continue;
+        amount = +((R.SBU_2024 * monthsWorked) / 12).toFixed(2);
+      }
+      total += amount;
+      rows.push({
+        employee: emp._id, employeeName: `${emp.firstName} ${emp.lastName}`,
+        identificacion: emp.identificacion, baseSalary: base,
+        monthsWorked, amount,
+      });
+    }
+    res.json({ year, type, periodStart, periodEnd, total: +total.toFixed(2), rows });
+  } catch (e) { res.status(400).json({ message: e.message }); }
 };
 
 exports.markPaid = async (req, res) => {

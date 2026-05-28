@@ -15,9 +15,12 @@ const inventoryMovementSchema = new mongoose.Schema(
     },
     type: {
       type: String,
-      enum: ['entrada', 'salida', 'ajuste'],
+      enum: ['entrada', 'salida', 'ajuste', 'traslado'],
       required: true,
     },
+    // Bodega de origen (y destino para traslados)
+    warehouse: { type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse', default: null },
+    toWarehouse: { type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse', default: null },
     quantity: { type: Number, required: true },
     unitCost: { type: Number, default: 0 },     // costo unitario de la entrada (compra/ajuste)
     totalCost: { type: Number, default: 0 },    // qty * unitCost
