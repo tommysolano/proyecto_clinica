@@ -58,6 +58,7 @@ const ALL_ITEMS = [
   { path: '/chats', label: 'Chats / WhatsApp', icon: HiOutlineChatBubbleLeftRight, roles: ['admin', 'call_center', 'marketing'] },
   { path: '/opportunities', label: 'Oportunidades', icon: HiOutlineMegaphone, roles: ['admin', 'call_center', 'marketing'] },
   { path: '/auto-messages', label: 'Mensajes automáticos', icon: HiOutlineBolt, roles: ['admin', 'call_center', 'marketing'] },
+  { path: '/call-center-config', label: 'Configuración Call Center', icon: HiOutlineCog6Tooth, roles: ['admin', 'marketing'] },
   { path: '/analytics', label: 'Analíticas', icon: HiOutlineChartBar, roles: ['admin', 'marketing'] },
   { path: '/commissions', label: 'Comisiones', icon: HiOutlineTrophy, roles: ['admin', 'call_center', 'marketing'] },
   { path: '/commission-rules', label: 'Reglas de Comisión', icon: HiOutlineTrophy, roles: ['admin'] },

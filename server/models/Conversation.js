@@ -48,7 +48,13 @@ const conversationSchema = new mongoose.Schema(
     phone: { type: String, required: true, trim: true, index: true },
     contactName: { type: String, trim: true },
     patient: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', default: null },
-    channel: { type: String, enum: ['whatsapp', 'sms', 'web'], default: 'whatsapp' },
+    channel: {
+      type: String,
+      enum: ['whatsapp', 'sms', 'web', 'messenger', 'instagram', 'tiktok'],
+      default: 'whatsapp',
+    },
+    // Identificador del usuario en el canal externo (ej: PSID de Messenger, IGSID, etc.)
+    externalUserId: { type: String, trim: true, default: '' },
     // Asignación
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     assignedToName: { type: String, trim: true },

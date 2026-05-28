@@ -748,13 +748,93 @@ exports.sendMessage = async (req, res) => {
       conv.assignedAt = new Date();
     }
     await conv.save();
-    // TODO: aquí se llamaría a la API de WhatsApp Business para enviar realmente el mensaje.
+
+    // Envío real al proveedor externo según el canal de la conversación.
+    // Si falla, dejamos el mensaje guardado pero marcamos deliveryStatus='failed'.
+    try {
+      await sendToExternalChannel({ conv, msg, clinicId: req.clinicId });
+    } catch (sendErr) {
+      console.warn('[external send]', sendErr.message);
+      msg.deliveryStatus = 'failed';
+      await msg.save();
+    }
+
     emitToClinic(req.clinicId, 'chat:message', { conversationId: conv._id, message: msg });
     res.status(201).json(msg);
   } catch (err) {
     res.status(500).json({ message: 'Error al enviar mensaje', error: err.message });
   }
 };
+
+/**
+ * Envía un mensaje saliente usando la API del proveedor del canal.
+ * Si el canal es 'web' o 'sms' (legacy) no hace nada.
+ */
+async function sendToExternalChannel({ conv, msg, clinicId }) {
+  const CallCenterConfigModel = require('../models/CallCenterConfig');
+  const cfg = await CallCenterConfigModel.findOne({ clinic: clinicId });
+  if (!cfg) return;
+  const channel = conv.channel;
+  if (channel === 'whatsapp' && cfg.whatsapp?.enabled) {
+    const { phoneNumberId, accessToken } = cfg.whatsapp;
+    if (!phoneNumberId || !accessToken) return;
+    const r = await fetch(`https://graph.facebook.com/v20.0/${phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        to: conv.phone,
+        type: 'text',
+        text: { body: msg.body || '' },
+      }),
+    });
+    if (!r.ok) throw new Error(`whatsapp api ${r.status}`);
+    return;
+  }
+  if (channel === 'messenger' && cfg.messenger?.enabled) {
+    const { pageAccessToken } = cfg.messenger;
+    if (!pageAccessToken) return;
+    const r = await fetch(
+      `https://graph.facebook.com/v20.0/me/messages?access_token=${pageAccessToken}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recipient: { id: conv.externalUserId || conv.phone },
+          message: { text: msg.body || '' },
+          messaging_type: 'RESPONSE',
+        }),
+      }
+    );
+    if (!r.ok) throw new Error(`messenger api ${r.status}`);
+    return;
+  }
+  if (channel === 'instagram' && cfg.instagram?.enabled) {
+    const { pageAccessToken } = cfg.instagram;
+    if (!pageAccessToken) return;
+    const r = await fetch(
+      `https://graph.facebook.com/v20.0/me/messages?access_token=${pageAccessToken}`,
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          recipient: { id: conv.externalUserId || conv.phone },
+          message: { text: msg.body || '' },
+        }),
+      }
+    );
+    if (!r.ok) throw new Error(`instagram api ${r.status}`);
+    return;
+  }
+  // TikTok: la API de mensajería es específica del producto. Dejamos un stub.
+  if (channel === 'tiktok' && cfg.tiktok?.enabled) {
+    // Sin SDK público estable: el llamado real va aquí cuando se defina el endpoint del producto.
+    return;
+  }
+}
 
 // =================== Webhook / Simulación entrada ===================
 
@@ -919,6 +999,204 @@ exports.simulateIncoming = async (req, res) => {
     res.status(201).json({ conversation: conv, message: msg });
   } catch (err) {
     res.status(500).json({ message: 'Error al simular mensaje', error: err.message });
+  }
+};
+
+// =================== Webhooks por canal (Meta/TikTok) ===================
+//
+// Cada webhook se identifica por clinicId en la URL (/chats/webhook/<canal>/<clinicId>).
+// El verifyToken se valida contra CallCenterConfig por clínica + canal.
+// El endpoint NO requiere auth (lo invoca el proveedor externo).
+
+const CallCenterConfig = require('../models/CallCenterConfig');
+
+const getChannelConfig = async (clinicId, channel) => {
+  const cfg = await CallCenterConfig.findOne({ clinic: clinicId });
+  if (!cfg) return null;
+  return cfg[channel] || null;
+};
+
+// Procesa un evento "normalizado" (externalUserId, body, contactName) creando/
+// actualizando la conversación correspondiente.
+async function ingestExternalMessage({ clinicId, channel, externalUserId, body, contactName, externalId, phone }) {
+  if (!externalUserId && !phone) return;
+  const findKey = phone
+    ? { clinic: clinicId, channel, phone }
+    : { clinic: clinicId, channel, externalUserId };
+  let conv = await Conversation.findOne(findKey);
+  let isNew = false;
+  if (!conv) {
+    conv = await Conversation.create({
+      clinic: clinicId,
+      phone: phone || externalUserId, // unique constraint en (clinic, phone)
+      externalUserId: externalUserId || '',
+      contactName: contactName || '',
+      channel,
+    });
+    isNew = true;
+  }
+  if (conv.blocked) return;
+  await Message.create({
+    clinic: clinicId,
+    conversation: conv._id,
+    direction: 'in',
+    body: body || '',
+    externalId,
+    deliveryStatus: 'delivered',
+  });
+  conv.lastMessageAt = new Date();
+  conv.lastMessagePreview = String(body || '').slice(0, 140);
+  conv.lastMessageDirection = 'in';
+  conv.unreadCount = (conv.unreadCount || 0) + 1;
+  if (conv.status === 'closed') conv.status = 'open';
+  await conv.save();
+  await fireAutoMessages({ conv, clinicId, isNewConversation: isNew });
+  emitToClinic(clinicId, 'chat:message', { conversationId: conv._id });
+}
+
+// Verificación GET para canales Meta (whatsapp/messenger/instagram).
+// El proveedor envía hub.mode/hub.verify_token/hub.challenge.
+const metaVerify = (channel) => async (req, res) => {
+  const { clinicId } = req.params;
+  try {
+    const c = await getChannelConfig(clinicId, channel);
+    const expected = c?.verifyToken;
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+    if (mode === 'subscribe' && token && token === expected) {
+      return res.status(200).send(challenge);
+    }
+    return res.status(403).send('Verification failed');
+  } catch {
+    return res.status(500).send('Error');
+  }
+};
+
+exports.webhookWhatsappVerify = metaVerify('whatsapp');
+exports.webhookMessengerVerify = metaVerify('messenger');
+exports.webhookInstagramVerify = metaVerify('instagram');
+
+exports.webhookWhatsappReceive = async (req, res) => {
+  try {
+    const { clinicId } = req.params;
+    const entries = Array.isArray(req.body.entry) ? req.body.entry : [];
+    for (const entry of entries) {
+      for (const change of entry.changes || []) {
+        const value = change.value || {};
+        const contact = (value.contacts || [])[0] || {};
+        for (const m of value.messages || []) {
+          // eslint-disable-next-line no-await-in-loop
+          await ingestExternalMessage({
+            clinicId,
+            channel: 'whatsapp',
+            phone: m.from,
+            externalUserId: m.from,
+            body: m.text?.body || m.button?.text || m.interactive?.button_reply?.title || '',
+            contactName: contact.profile?.name || '',
+            externalId: m.id,
+          });
+        }
+      }
+    }
+    res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error('[whatsapp webhook]', err);
+    res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
+exports.webhookMessengerReceive = async (req, res) => {
+  try {
+    const { clinicId } = req.params;
+    const entries = Array.isArray(req.body.entry) ? req.body.entry : [];
+    for (const entry of entries) {
+      for (const event of entry.messaging || []) {
+        const senderId = event.sender?.id;
+        if (!senderId) continue;
+        if (event.message?.text) {
+          // eslint-disable-next-line no-await-in-loop
+          await ingestExternalMessage({
+            clinicId,
+            channel: 'messenger',
+            externalUserId: senderId,
+            body: event.message.text,
+            externalId: event.message.mid,
+          });
+        }
+      }
+    }
+    res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error('[messenger webhook]', err);
+    res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
+exports.webhookInstagramReceive = async (req, res) => {
+  try {
+    const { clinicId } = req.params;
+    const entries = Array.isArray(req.body.entry) ? req.body.entry : [];
+    for (const entry of entries) {
+      for (const event of entry.messaging || []) {
+        const senderId = event.sender?.id;
+        if (!senderId) continue;
+        if (event.message?.text) {
+          // eslint-disable-next-line no-await-in-loop
+          await ingestExternalMessage({
+            clinicId,
+            channel: 'instagram',
+            externalUserId: senderId,
+            body: event.message.text,
+            externalId: event.message.mid,
+          });
+        }
+      }
+    }
+    res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error('[instagram webhook]', err);
+    res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
+// TikTok: verificación + recepción.
+exports.webhookTiktokVerify = async (req, res) => {
+  const { clinicId } = req.params;
+  try {
+    const c = await getChannelConfig(clinicId, 'tiktok');
+    const expected = c?.verifyToken;
+    const challenge = req.query.challenge || req.body?.challenge;
+    const token = req.query.verify_token || req.body?.verify_token;
+    if (token && token === expected) return res.status(200).send(challenge || 'ok');
+    return res.status(403).send('Verification failed');
+  } catch {
+    return res.status(500).send('Error');
+  }
+};
+
+exports.webhookTiktokReceive = async (req, res) => {
+  try {
+    const { clinicId } = req.params;
+    // El formato exacto depende del producto TikTok; soportamos un payload genérico:
+    // { user_id, message, name }
+    const userId = req.body.user_id || req.body.openId;
+    const body = req.body.message || req.body.content || '';
+    const name = req.body.name || req.body.nickname || '';
+    if (userId) {
+      await ingestExternalMessage({
+        clinicId,
+        channel: 'tiktok',
+        externalUserId: String(userId),
+        body,
+        contactName: name,
+        externalId: req.body.message_id || req.body.id,
+      });
+    }
+    res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error('[tiktok webhook]', err);
+    res.status(500).json({ message: 'Error', error: err.message });
   }
 };
 

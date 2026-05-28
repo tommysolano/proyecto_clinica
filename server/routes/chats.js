@@ -2,9 +2,19 @@ const router = require('express').Router();
 const ctrl = require('../controllers/chatController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
-// Webhook público (sin auth) — WhatsApp Business API
+// Webhook público (sin auth) — WhatsApp Business API (legacy / dev)
 router.get('/webhook', ctrl.webhookVerify);
 router.post('/webhook', ctrl.webhookReceive);
+
+// Webhooks por canal con clinicId en URL (sin auth — los invoca Meta/TikTok).
+router.get('/webhook/whatsapp/:clinicId', ctrl.webhookWhatsappVerify);
+router.post('/webhook/whatsapp/:clinicId', ctrl.webhookWhatsappReceive);
+router.get('/webhook/messenger/:clinicId', ctrl.webhookMessengerVerify);
+router.post('/webhook/messenger/:clinicId', ctrl.webhookMessengerReceive);
+router.get('/webhook/instagram/:clinicId', ctrl.webhookInstagramVerify);
+router.post('/webhook/instagram/:clinicId', ctrl.webhookInstagramReceive);
+router.get('/webhook/tiktok/:clinicId', ctrl.webhookTiktokVerify);
+router.post('/webhook/tiktok/:clinicId', ctrl.webhookTiktokReceive);
 
 // El resto requiere auth + clínica
 router.use(auth, requireClinic);
