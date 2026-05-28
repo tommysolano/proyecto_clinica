@@ -144,63 +144,122 @@ async function buildQuotationPdf(q, clinic, res, filename) {
 
   const fmtMoney = (n) => `$${Number(n || 0).toFixed(2)}`;
   const GREEN = '#047857';
+  const LIGHT = '#ecfdf5';
+  const BORDER = '#d1fae5';
+  const SLATE = '#1e293b';
+  const MUTED = '#64748b';
 
-  doc.fillColor(GREEN).fontSize(20).text(clinic?.nombreComercial || clinic?.name || 'Consultorio Médico');
-  doc.moveDown(0.2);
-  doc.fillColor('#64748b').fontSize(10).text(`Cotización ${q.quotationNumber || ''}`);
-  if (clinic?.direccion || clinic?.telefono) {
-    doc.text(`${clinic?.direccion || ''}${clinic?.telefono ? ' · ' + clinic.telefono : ''}`);
+  // ========== Banda superior con logo + nombre ==========
+  doc.rect(0, 0, doc.page.width, 110).fill(LIGHT);
+
+  // Intento de pintar el logo (data URL base64). Si falla, se ignora.
+  let logoBuffer = null;
+  if (clinic?.logoUrl && typeof clinic.logoUrl === 'string') {
+    const m = clinic.logoUrl.match(/^data:image\/(png|jpe?g|webp);base64,(.+)$/i);
+    if (m) {
+      try { logoBuffer = Buffer.from(m[2], 'base64'); } catch (_) { logoBuffer = null; }
+    }
   }
-  doc.moveDown(0.8);
+  if (logoBuffer) {
+    try { doc.image(logoBuffer, 40, 22, { fit: [70, 70] }); } catch (_) { /* ignore */ }
+  }
 
-  doc.fillColor('#1e293b').fontSize(11);
-  doc.text(`Cliente: ${q.clientName || ''}${q.clientCedula ? ` (${q.clientCedula})` : ''}`);
-  doc.text(`Fecha: ${new Date(q.createdAt).toLocaleDateString('es-EC')}`);
-  if (q.validUntil) doc.text(`Válida hasta: ${new Date(q.validUntil).toLocaleDateString('es-EC')}`);
-  doc.moveDown(0.8);
+  const textX = logoBuffer ? 125 : 40;
+  doc.fillColor(GREEN).font('Helvetica-Bold').fontSize(20)
+    .text(clinic?.nombreComercial || clinic?.name || 'Consultorio Médico', textX, 28, { width: 350 });
+  doc.fillColor(MUTED).font('Helvetica').fontSize(9);
+  if (clinic?.ruc) doc.text(`RUC: ${clinic.ruc}`, textX, 54);
+  if (clinic?.address) doc.text(clinic.address, textX, 68, { width: 350 });
+  if (clinic?.phone || clinic?.email) {
+    doc.text(`${clinic?.phone || ''}${clinic?.phone && clinic?.email ? ' · ' : ''}${clinic?.email || ''}`, textX, 82, { width: 350 });
+  }
 
-  // Cabecera de tabla
+  // Caja "Cotización N°" a la derecha
+  doc.roundedRect(420, 25, 140, 70, 6).fill('#ffffff').stroke(BORDER);
+  doc.fillColor(GREEN).font('Helvetica-Bold').fontSize(11).text('COTIZACIÓN', 432, 34);
+  doc.fillColor(SLATE).font('Helvetica-Bold').fontSize(14).text(q.quotationNumber || '—', 432, 50);
+  doc.fillColor(MUTED).font('Helvetica').fontSize(8.5)
+    .text(`Emitida: ${new Date(q.createdAt).toLocaleDateString('es-EC')}`, 432, 70);
+  if (q.validUntil) {
+    doc.text(`Válida hasta: ${new Date(q.validUntil).toLocaleDateString('es-EC')}`, 432, 82);
+  }
+
+  // ========== Datos del cliente ==========
+  let y = 130;
+  doc.fillColor(GREEN).font('Helvetica-Bold').fontSize(10).text('CLIENTE', 40, y);
+  y += 14;
+  doc.roundedRect(40, y, 520, 60, 6).fillAndStroke('#f8fafc', '#e2e8f0');
+  doc.fillColor(SLATE).font('Helvetica-Bold').fontSize(12)
+    .text(q.clientName || 'Sin nombre', 52, y + 8);
+  doc.font('Helvetica').fillColor(MUTED).fontSize(9);
+  if (q.clientCedula) doc.text(`Cédula/RUC: ${q.clientCedula}`, 52, y + 26);
+  if (q.clientEmail) doc.text(`Email: ${q.clientEmail}`, 52, y + 38);
+  if (q.clientPhone) doc.text(`Teléfono: ${q.clientPhone}`, 280, y + 38);
+  y += 75;
+
+  // ========== Tabla de ítems ==========
   const startX = 40;
-  const colX = { desc: startX, qty: 300, price: 350, disc: 430, sub: 490 };
-  const drawRow = (y, c, bold) => {
-    doc.fontSize(9).fillColor(bold ? GREEN : '#1e293b');
-    if (bold) doc.font('Helvetica-Bold'); else doc.font('Helvetica');
-    doc.text(c.desc, colX.desc, y, { width: 250 });
-    doc.text(c.qty, colX.qty, y, { width: 40, align: 'center' });
-    doc.text(c.price, colX.price, y, { width: 70, align: 'right' });
-    doc.text(c.disc, colX.disc, y, { width: 50, align: 'right' });
-    doc.text(c.sub, colX.sub, y, { width: 70, align: 'right' });
-  };
-  let y = doc.y;
-  drawRow(y, { desc: 'Descripción', qty: 'Cant.', price: 'P. Unit.', disc: 'Desc.', sub: 'Subtotal' }, true);
-  y += 16;
-  doc.moveTo(startX, y - 3).lineTo(560, y - 3).strokeColor('#e2e8f0').stroke();
+  const colX = { desc: startX + 8, qty: 320, price: 370, disc: 450, sub: 500 };
 
+  // Cabecera con fondo
+  doc.rect(startX, y, 520, 22).fill(GREEN);
+  doc.fillColor('#ffffff').font('Helvetica-Bold').fontSize(9);
+  doc.text('DESCRIPCIÓN', colX.desc, y + 7, { width: 260 });
+  doc.text('CANT.', colX.qty, y + 7, { width: 40, align: 'center' });
+  doc.text('P. UNIT.', colX.price, y + 7, { width: 70, align: 'right' });
+  doc.text('DESC.', colX.disc, y + 7, { width: 40, align: 'right' });
+  doc.text('SUBTOTAL', colX.sub, y + 7, { width: 60, align: 'right' });
+  y += 22;
+
+  // Filas
+  doc.font('Helvetica').fontSize(9.5).fillColor(SLATE);
+  let zebra = false;
   (q.items || []).forEach((it) => {
-    drawRow(y, {
-      desc: it.productName || '',
-      qty: String(it.quantity),
-      price: fmtMoney(it.unitPrice),
-      disc: `${Number(it.discount || 0)}%`,
-      sub: fmtMoney(it.subtotal),
-    }, false);
-    y += 16;
-    if (y > 720) { doc.addPage(); y = 50; }
+    if (zebra) doc.rect(startX, y, 520, 20).fill('#fafbfc');
+    zebra = !zebra;
+    doc.fillColor(SLATE);
+    doc.text(it.productName || '', colX.desc, y + 6, { width: 260 });
+    doc.text(String(it.quantity || 0), colX.qty, y + 6, { width: 40, align: 'center' });
+    doc.text(fmtMoney(it.unitPrice), colX.price, y + 6, { width: 70, align: 'right' });
+    doc.text(`${Number(it.discount || 0)}%`, colX.disc, y + 6, { width: 40, align: 'right' });
+    doc.font('Helvetica-Bold').text(fmtMoney(it.subtotal), colX.sub, y + 6, { width: 60, align: 'right' });
+    doc.font('Helvetica');
+    y += 20;
+    if (y > 700) { doc.addPage(); y = 50; }
   });
 
-  doc.font('Helvetica').fontSize(11).fillColor('#1e293b');
-  doc.moveDown(2);
-  let ty = Math.max(y + 14, doc.y);
-  doc.text(`Subtotal: ${fmtMoney(q.subtotal)}`, 350, ty, { width: 210, align: 'right' }); ty += 16;
-  doc.text(`Descuento: ${fmtMoney(q.discountTotal)}`, 350, ty, { width: 210, align: 'right' }); ty += 18;
-  doc.font('Helvetica-Bold').fillColor(GREEN).fontSize(15)
-    .text(`Total: ${fmtMoney(q.total)}`, 350, ty, { width: 210, align: 'right' });
+  // Línea divisoria
+  doc.moveTo(startX, y).lineTo(startX + 520, y).strokeColor('#cbd5e1').lineWidth(0.5).stroke();
+  y += 12;
 
+  // ========== Totales ==========
+  const totalsX = 340;
+  doc.font('Helvetica').fontSize(10).fillColor(MUTED);
+  doc.text('Subtotal:', totalsX, y, { width: 130, align: 'right' });
+  doc.fillColor(SLATE).text(fmtMoney(q.subtotal), totalsX + 135, y, { width: 80, align: 'right' });
+  y += 16;
+  doc.fillColor(MUTED).text('Descuento:', totalsX, y, { width: 130, align: 'right' });
+  doc.fillColor(SLATE).text(`- ${fmtMoney(q.discountTotal)}`, totalsX + 135, y, { width: 80, align: 'right' });
+  y += 22;
+  doc.roundedRect(totalsX, y - 6, 220, 30, 4).fill(GREEN);
+  doc.font('Helvetica-Bold').fontSize(13).fillColor('#ffffff')
+    .text('TOTAL', totalsX + 10, y + 2);
+  doc.text(fmtMoney(q.total), totalsX + 135, y + 2, { width: 75, align: 'right' });
+
+  y += 50;
+
+  // ========== Notas y términos ==========
   if (q.notes) {
-    doc.font('Helvetica').fillColor('#475569').fontSize(10).text(`Notas: ${q.notes}`, 40, ty + 30, { width: 520 });
+    doc.fillColor(GREEN).font('Helvetica-Bold').fontSize(10).text('NOTAS / TÉRMINOS', 40, y);
+    y += 14;
+    doc.roundedRect(40, y, 520, 50, 4).fillAndStroke('#fffbeb', '#fde68a');
+    doc.fillColor(SLATE).font('Helvetica').fontSize(9).text(q.notes, 52, y + 8, { width: 500 });
+    y += 60;
   }
-  doc.font('Helvetica').fillColor('#94a3b8').fontSize(8)
-    .text(`Generado el ${new Date().toLocaleString('es-EC')}`, 40, 800, { width: 520 });
+
+  // ========== Pie de página ==========
+  doc.fillColor('#94a3b8').font('Helvetica').fontSize(8)
+    .text(`Documento generado el ${new Date().toLocaleString('es-EC')}`, 40, 800, { width: 520, align: 'center' });
 
   doc.end();
 }

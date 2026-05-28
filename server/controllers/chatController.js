@@ -5,6 +5,7 @@ const Patient = require('../models/Patient');
 const User = require('../models/User');
 const Appointment = require('../models/Appointment');
 const Product = require('../models/Product');
+const Quotation = require('../models/Quotation');
 const { emitToClinic } = require('../realtime');
 
 /**
@@ -568,9 +569,24 @@ exports.createAppointmentFromChat = async (req, res) => {
         message: 'La conversación no está vinculada a un paciente. Vincula primero al paciente.',
       });
     }
-    const { date, startTime, reason, services = [], clinic } = req.body;
-    if (!date || !startTime) {
-      return res.status(400).json({ message: 'Fecha y hora de inicio requeridas' });
+
+    // Acepta dos formatos:
+    //  - { appointments: [{ date, startTime, reason?, services?, clinic? }, ...] }  → múltiples citas
+    //  - { date, startTime, reason?, services?, clinic? }                            → una sola cita (legacy)
+    const requested = Array.isArray(req.body.appointments) && req.body.appointments.length
+      ? req.body.appointments
+      : [{
+          date: req.body.date,
+          startTime: req.body.startTime,
+          reason: req.body.reason,
+          services: req.body.services || [],
+          clinic: req.body.clinic,
+        }];
+
+    for (const a of requested) {
+      if (!a.date || !a.startTime) {
+        return res.status(400).json({ message: 'Cada cita requiere fecha y hora de inicio.' });
+      }
     }
 
     // Normaliza 'YYYY-MM-DD' a fecha local-noon para que el filtro por día coincida.
@@ -581,54 +597,175 @@ exports.createAppointmentFromChat = async (req, res) => {
       if (m) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]), 12, 0, 0, 0);
       return new Date(value);
     };
-    const localDate = parseLocalDate(date);
 
-    // Hydrate services snapshot
-    let serviceItems = [];
-    if (Array.isArray(services) && services.length) {
-      const ids = services.map((s) => s.product).filter(Boolean);
-      const products = ids.length ? await Product.find({ _id: { $in: ids } }) : [];
-      const map = new Map(products.map((p) => [String(p._id), p]));
-      serviceItems = services
+    // Recoge todos los IDs de servicios para snapshot en una sola consulta
+    const allIds = new Set();
+    requested.forEach((a) => (a.services || []).forEach((s) => s.product && allIds.add(String(s.product))));
+    const productsMap = new Map();
+    if (allIds.size) {
+      const products = await Product.find({ _id: { $in: [...allIds] } });
+      products.forEach((p) => productsMap.set(String(p._id), p));
+    }
+
+    const previousCount = await Appointment.countDocuments({
+      clinic: req.clinicId,
+      patient: conv.patient._id,
+    });
+
+    const created = [];
+    let first = previousCount === 0;
+    for (const a of requested) {
+      const localDate = parseLocalDate(a.date);
+      const serviceItems = (a.services || [])
         .filter((s) => s.product)
         .map((s) => {
-          const p = map.get(String(s.product));
+          const p = productsMap.get(String(s.product));
           return {
             product: s.product,
             name: p?.name || '',
             quantity: Number(s.quantity) || 1,
           };
         });
+
+      const targetClinic = a.clinic || req.clinicId;
+      const appointment = await Appointment.create({
+        clinic: targetClinic,
+        patient: conv.patient._id,
+        date: localDate,
+        startTime: a.startTime,
+        reason: a.reason || conv.opportunity?.notes || `Cita desde chat ${conv.phone}`,
+        services: serviceItems,
+        status: 'pendiente',
+        isFirstVisit: first,
+        createdBy: req.user._id,
+        createdByRole: req.role || null,
+      });
+      first = false; // solo la primera puede ser "primera visita"
+      created.push(appointment);
+      emitToClinic(req.clinicId, 'appointment:created', { id: appointment._id });
     }
 
-    const targetClinic = clinic || req.clinicId;
-    const previousCount = await Appointment.countDocuments({ clinic: targetClinic, patient: conv.patient._id });
-    const appointment = await Appointment.create({
-      clinic: targetClinic,
-      patient: conv.patient._id,
-      date: localDate,
-      startTime,
-      reason: reason || conv.opportunity?.notes || `Cita desde chat ${conv.phone}`,
-      services: serviceItems,
-      status: 'pendiente',
-      isFirstVisit: previousCount === 0,
-      createdBy: req.user._id,
-      createdByRole: req.role || null,
-    });
-
-    // Link to opportunity
+    // Link primera cita a la oportunidad
     conv.opportunity = conv.opportunity || {};
     conv.opportunity.isOpportunity = true;
     conv.opportunity.stage = 'agendado';
-    conv.opportunity.appointment = appointment._id;
+    conv.opportunity.appointment = created[0]?._id;
     conv.opportunity.convertedAt = new Date();
     await conv.save();
-
-    emitToClinic(req.clinicId, 'appointment:created', { id: appointment._id });
     emitToClinic(req.clinicId, 'chat:updated', { id: conv._id });
 
-    res.status(201).json({ appointment, conversation: conv });
+    res.status(201).json({
+      appointment: created[0],
+      appointments: created,
+      conversation: conv,
+    });
   } catch (err) {
     res.status(500).json({ message: 'Error al crear cita desde chat', error: err.message });
+  }
+};
+
+/**
+ * POST /api/chats/:id/quotation
+ * Crea una cotización a partir de una conversación y envía el enlace por el chat.
+ * Body: { items: [{ product, quantity?, unitPrice?, discount? }], validUntil?, notes?, send? }
+ */
+exports.createQuotationFromChat = async (req, res) => {
+  try {
+    const conv = await Conversation.findOne({
+      _id: req.params.id,
+      clinic: req.clinicId,
+    }).populate('patient', 'firstName lastName cedula email phone');
+    if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
+
+    const items = Array.isArray(req.body.items) ? req.body.items : [];
+    if (items.length === 0) {
+      return res.status(400).json({ message: 'Agrega al menos un ítem' });
+    }
+
+    const ids = items.map((i) => i.product).filter(Boolean);
+    const products = ids.length
+      ? await Product.find({ _id: { $in: ids }, clinic: req.clinicId })
+      : [];
+    const byId = new Map(products.map((p) => [String(p._id), p]));
+
+    let subtotal = 0;
+    let discountTotal = 0;
+    const enriched = items.map((it) => {
+      const p = byId.get(String(it.product));
+      const qty = Number(it.quantity || 1);
+      const unit = Number(it.unitPrice ?? p?.salePrice ?? 0);
+      const discPct = Math.min(Math.max(Number(it.discount || 0), 0), 100);
+      const baseSub = unit * qty;
+      const discAmount = +(baseSub * (discPct / 100)).toFixed(2);
+      const sub = +(baseSub - discAmount).toFixed(2);
+      subtotal += baseSub;
+      discountTotal += discAmount;
+      return {
+        product: it.product,
+        productCode: p?.code,
+        productName: p?.name || it.productName || '',
+        category: p?.category,
+        quantity: qty,
+        unitPrice: unit,
+        taxRate: 0,
+        discount: discPct,
+        subtotal: sub,
+      };
+    });
+    const total = +(subtotal - discountTotal).toFixed(2);
+
+    const patient = conv.patient;
+    const quotation = await Quotation.create({
+      clinic: req.clinicId,
+      patient: patient?._id,
+      clientName:
+        req.body.clientName ||
+        (patient ? `${patient.firstName} ${patient.lastName}` : conv.contactName) ||
+        '',
+      clientCedula: req.body.clientCedula || patient?.cedula || '',
+      clientEmail: req.body.clientEmail || patient?.email || '',
+      clientPhone: req.body.clientPhone || patient?.phone || conv.phone || '',
+      notes: req.body.notes || '',
+      validUntil: req.body.validUntil || undefined,
+      items: enriched,
+      subtotal: +subtotal.toFixed(2),
+      discountTotal: +discountTotal.toFixed(2),
+      taxAmount: 0,
+      total,
+      createdBy: req.user._id,
+    });
+
+    // Enviar mensaje al chat con enlace
+    const crypto = require('crypto');
+    if (!quotation.shareToken) {
+      quotation.shareToken = crypto.randomBytes(16).toString('hex');
+      quotation.status = 'enviada';
+      await quotation.save();
+    }
+    const base = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}`;
+    const pdfUrl = `${base}/api/quotations/public/${quotation.shareToken}/pdf`;
+    const body =
+      `Hola ${quotation.clientName || ''}, te enviamos la cotización ${quotation.quotationNumber} ` +
+      `por un total de $${Number(quotation.total || 0).toFixed(2)}.\n${pdfUrl}`;
+
+    const msg = await Message.create({
+      clinic: req.clinicId,
+      conversation: conv._id,
+      direction: 'out',
+      body,
+      deliveryStatus: 'sent',
+      sentBy: req.user._id,
+      sentByName: req.user.name,
+    });
+    conv.lastMessageAt = msg.createdAt;
+    conv.lastMessagePreview = body.slice(0, 140);
+    conv.lastMessageDirection = 'out';
+    await conv.save();
+    emitToClinic(req.clinicId, 'chat:message', { conversationId: conv._id, message: msg });
+    emitToClinic(req.clinicId, 'chat:updated', { id: conv._id });
+
+    res.status(201).json({ quotation, pdfUrl, message: msg, conversation: conv });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al crear cotización desde chat', error: err.message });
   }
 };

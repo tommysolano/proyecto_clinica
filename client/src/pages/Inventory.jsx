@@ -549,17 +549,19 @@ export default function Inventory() {
                 </label>
               </div>
             )}
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">Cupo máximo de citas/día</label>
-              <input
-                type="number"
-                min="0"
-                value={productForm.maxAppointmentsPerDay}
-                onChange={(e) => setProductForm({ ...productForm, maxAppointmentsPerDay: e.target.value })}
-                className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
-              />
-              <p className="text-[11px] text-slate-400 mt-1">0 = sin límite. Aplica al agendar citas con este servicio.</p>
-            </div>
+            {(productForm.category === 'servicio' || productForm.category === 'programa') && (
+              <div>
+                <label className="block text-sm font-medium text-slate-700 mb-1.5">Cupo máximo de citas por horario</label>
+                <input
+                  type="number"
+                  min="0"
+                  value={productForm.maxAppointmentsPerDay}
+                  onChange={(e) => setProductForm({ ...productForm, maxAppointmentsPerDay: e.target.value })}
+                  className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
+                />
+                <p className="text-[11px] text-slate-400 mt-1">0 = sin límite. Es el máximo de citas que pueden coincidir en el mismo horario (hora de inicio).</p>
+              </div>
+            )}
             <div className="flex items-center gap-2 pt-7">
               <input
                 id="excludeFromFirstVisit"

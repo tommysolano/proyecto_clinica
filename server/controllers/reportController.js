@@ -13,32 +13,51 @@ const Treatment = require('../models/Treatment');
  */
 exports.attentionReport = async (req, res) => {
   try {
-    const { start, end } = req.query;
+    const { start, end, doctor } = req.query;
     const startDate = start ? new Date(start) : new Date(Date.now() - 30 * 86400000);
     startDate.setHours(0, 0, 0, 0);
     const endDate = end ? new Date(end) : new Date();
     endDate.setHours(23, 59, 59, 999);
 
-    const appts = await Appointment.find({
+    const query = {
       clinic: req.clinicId,
       status: 'completada',
       date: { $gte: startDate, $lte: endDate },
-    })
+    };
+    if (doctor) query.doctor = doctor;
+
+    const appts = await Appointment.find(query)
       .populate('doctor', 'name')
       .populate('attendedByNurse', 'name')
-      .populate('patient', 'firstName lastName');
+      .populate('patient', 'firstName lastName')
+      .populate('services.product', 'name');
 
     const providers = {};
     const addAttention = (id, name, type, apt) => {
       if (!id) return;
       const key = String(id);
-      if (!providers[key]) providers[key] = { id: key, name, type, count: 0, patients: new Set(), list: [] };
+      if (!providers[key]) {
+        providers[key] = {
+          id: key,
+          name,
+          type,
+          count: 0,
+          patients: new Set(),
+          list: [],
+          treatments: {},
+        };
+      }
       providers[key].count += 1;
       if (apt.patient) providers[key].patients.add(String(apt.patient._id));
+      const services = (apt.services || []).map((s) => s.name || s.product?.name).filter(Boolean);
       providers[key].list.push({
         date: apt.date,
         patient: apt.patient ? `${apt.patient.firstName} ${apt.patient.lastName}` : '—',
         patientId: apt.patient?._id || null,
+        services,
+      });
+      services.forEach((sname) => {
+        providers[key].treatments[sname] = (providers[key].treatments[sname] || 0) + 1;
       });
     };
 
@@ -48,7 +67,17 @@ exports.attentionReport = async (req, res) => {
     }
 
     const result = Object.values(providers)
-      .map((p) => ({ id: p.id, name: p.name, type: p.type, attentions: p.count, uniquePatients: p.patients.size, list: p.list }))
+      .map((p) => ({
+        id: p.id,
+        name: p.name,
+        type: p.type,
+        attentions: p.count,
+        uniquePatients: p.patients.size,
+        list: p.list,
+        treatments: Object.entries(p.treatments)
+          .map(([name, count]) => ({ name, count }))
+          .sort((a, b) => b.count - a.count),
+      }))
       .sort((a, b) => b.attentions - a.attentions);
 
     res.json({ providers: result, total: appts.length });

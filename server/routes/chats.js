@@ -35,5 +35,10 @@ router.post(
   requireRole(...CALL_CENTER_ROLES),
   ctrl.createAppointmentFromChat
 );
+router.post(
+  '/:id/quotation',
+  requireRole(...CALL_CENTER_ROLES),
+  ctrl.createQuotationFromChat
+);
 
 module.exports = router;

@@ -348,16 +348,6 @@ export default function Appointments() {
 
   const handleChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
 
-  const toggleService = (id) => {
-    setForm((prev) => {
-      const exists = prev.services.includes(id);
-      return {
-        ...prev,
-        services: exists ? prev.services.filter((s) => s !== id) : [...prev.services, id],
-      };
-    });
-  };
-
   const downloadPdf = async (id) => {
     try {
       const res = await api.get(`/appointments/${id}/pdf`, { responseType: 'blob' });
@@ -850,9 +840,10 @@ export default function Appointments() {
         isOpen={modalOpen}
         onClose={() => setModalOpen(false)}
         title={editing ? 'Editar Cita' : 'Nueva Cita'}
-        size="lg"
+        size="2xl"
       >
-        <form onSubmit={handleSubmit} className="space-y-4">
+        <div className="grid grid-cols-1 lg:grid-cols-[1fr_320px] gap-5">
+          <form onSubmit={handleSubmit} className="space-y-4 min-w-0">
           {/* Selector de consultorio médico: visible para todos los roles con >1 clínica */}
           {showClinicSelector && (
             <div>
@@ -1059,51 +1050,12 @@ export default function Appointments() {
             <label className="block text-sm font-medium text-slate-700 mb-1.5">
               Servicios
             </label>
-            <div className="border border-slate-200 rounded-xl bg-slate-50/50 max-h-48 overflow-y-auto p-2">
-              {services.length === 0 ? (
-                <p className="text-xs text-slate-400 text-center py-3">
-                  No hay servicios disponibles. Créalos en Inventario.
-                </p>
-              ) : (
-                services.map((s) => {
-                  const checked = form.services.includes(s._id);
-                  return (
-                    <label
-                      key={s._id}
-                      className={`flex items-center gap-2 px-2 py-1.5 rounded-lg cursor-pointer text-sm ${
-                        checked ? 'bg-emerald-100 text-emerald-800' : 'hover:bg-emerald-50'
-                      }`}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={checked}
-                        onChange={() => toggleService(s._id)}
-                        className="w-4 h-4 accent-emerald-600"
-                      />
-                      <span className="flex-1">
-                        {s.name}
-                        {s.category === 'programa' && (
-                          <span className="ml-1 text-[10px] text-purple-600 font-semibold">(programa)</span>
-                        )}
-                        {s.maxAppointmentsPerDay > 0 && (
-                          <span className="ml-1 text-[10px] text-amber-600">
-                            (cupo {s.maxAppointmentsPerDay}/día)
-                          </span>
-                        )}
-                        {s.excludeFromFirstVisit && (
-                          <span className="ml-1 text-[10px] text-slate-400">
-                            (recurrente)
-                          </span>
-                        )}
-                      </span>
-                      <span className="text-xs text-slate-500">
-                        ${Number(s.salePrice).toFixed(2)}
-                      </span>
-                    </label>
-                  );
-                })
-              )}
-            </div>
+            <ServiceAutocomplete
+              services={services}
+              selectedIds={form.services}
+              onAdd={(id) => setForm((f) => f.services.includes(id) ? f : { ...f, services: [...f.services, id] })}
+              onRemove={(id) => setForm((f) => ({ ...f, services: f.services.filter((s) => s !== id) }))}
+            />
             {form.services.length > 0 && (
               <p className="text-xs text-emerald-600 mt-1">
                 Total estimado: $
@@ -1115,44 +1067,6 @@ export default function Appointments() {
                   .toFixed(2)}
               </p>
             )}
-          </div>
-          {editing && (
-            <>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                  Diagnóstico
-                </label>
-                <textarea
-                  name="diagnosis"
-                  value={form.diagnosis}
-                  onChange={handleChange}
-                  rows={2}
-                  className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50 resize-none"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                  Tratamiento
-                </label>
-                <textarea
-                  name="treatment"
-                  value={form.treatment}
-                  onChange={handleChange}
-                  rows={2}
-                  className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50 resize-none"
-                />
-              </div>
-            </>
-          )}
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">Notas</label>
-            <textarea
-              name="notes"
-              value={form.notes}
-              onChange={handleChange}
-              rows={2}
-              className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50 resize-none"
-            />
           </div>
           <div className="flex justify-end gap-3 pt-3">
             <button
@@ -1170,7 +1084,15 @@ export default function Appointments() {
               {saving ? 'Guardando...' : editing ? 'Actualizar' : 'Crear Cita'}
             </button>
           </div>
-        </form>
+          </form>
+
+          {/* Panel lateral: citas agendadas en el horario seleccionado */}
+          <SameSlotPanel
+            date={form.date}
+            startTime={form.startTime}
+            excludeId={editing}
+          />
+        </div>
       </Modal>
 
       {/* Detail Modal */}
@@ -1506,5 +1428,180 @@ export default function Appointments() {
         )}
       </Modal>
     </div>
+  );
+}
+
+// Buscador autocompletable de servicios. Permite escribir y elegir entre coincidencias,
+// y muestra las ya seleccionadas como chips removibles.
+function ServiceAutocomplete({ services, selectedIds, onAdd, onRemove }) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+
+  const matches = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    const available = services.filter((s) => !selectedIds.includes(s._id));
+    if (!q) return available.slice(0, 15);
+    return available
+      .filter((s) =>
+        (s.name || '').toLowerCase().includes(q) ||
+        (s.code || '').toLowerCase().includes(q)
+      )
+      .slice(0, 15);
+  }, [query, services, selectedIds]);
+
+  const selectedServices = selectedIds
+    .map((id) => services.find((s) => s._id === id))
+    .filter(Boolean);
+
+  return (
+    <div className="space-y-2">
+      <div className="relative">
+        <HiOutlineMagnifyingGlass className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+        <input
+          type="text"
+          value={query}
+          onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+          onFocus={() => setOpen(true)}
+          onBlur={() => setTimeout(() => setOpen(false), 180)}
+          placeholder={services.length === 0 ? 'No hay servicios disponibles. Créalos en Inventario.' : 'Buscar servicio por nombre o código...'}
+          className="w-full pl-10 pr-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
+        />
+        {open && matches.length > 0 && (
+          <div className="absolute z-30 left-0 right-0 mt-1 max-h-56 overflow-y-auto bg-white border border-emerald-100 rounded-xl shadow-lg">
+            {matches.map((s) => (
+              <button
+                type="button"
+                key={s._id}
+                onMouseDown={(e) => { e.preventDefault(); onAdd(s._id); setQuery(''); setOpen(false); }}
+                className="w-full text-left px-4 py-2 text-sm hover:bg-emerald-50 cursor-pointer bg-white border-none border-b border-emerald-50 flex items-center justify-between"
+              >
+                <span className="flex-1">
+                  <span className="font-medium text-slate-800">{s.name}</span>
+                  {s.category === 'programa' && (
+                    <span className="ml-2 text-[10px] text-purple-600 font-semibold">(programa)</span>
+                  )}
+                  {s.excludeFromFirstVisit && (
+                    <span className="ml-2 text-[10px] text-slate-400">(recurrente)</span>
+                  )}
+                </span>
+                <span className="text-xs text-slate-500">${Number(s.salePrice).toFixed(2)}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {open && query.trim() && matches.length === 0 && (
+          <div className="absolute z-30 left-0 right-0 mt-1 bg-white border border-emerald-100 rounded-xl shadow-lg px-4 py-2 text-xs text-slate-400">
+            Sin coincidencias
+          </div>
+        )}
+      </div>
+      {selectedServices.length > 0 && (
+        <div className="flex flex-wrap gap-1.5">
+          {selectedServices.map((s) => (
+            <span
+              key={s._id}
+              className="inline-flex items-center gap-1.5 bg-emerald-100 text-emerald-800 text-xs px-2.5 py-1 rounded-full"
+            >
+              {s.name}
+              <span className="text-emerald-600">${Number(s.salePrice).toFixed(2)}</span>
+              <button
+                type="button"
+                onClick={() => onRemove(s._id)}
+                className="text-emerald-700 hover:text-emerald-900 bg-transparent border-none cursor-pointer text-base leading-none"
+                title="Quitar"
+              >×</button>
+            </span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Panel lateral que muestra las citas existentes en el mismo horario (date + startTime)
+// para que quien agenda pueda ver qué tan saturado está ese momento.
+function SameSlotPanel({ date, startTime, excludeId }) {
+  const [list, setList] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!date || !startTime) return undefined;
+    let cancel = false;
+    setLoading(true);
+    api.get('/appointments', { params: { startDate: date, endDate: date, fromTime: startTime, toTime: startTime } })
+      .then((r) => {
+        if (cancel) return;
+        const items = (r.data || []).filter((a) => String(a._id) !== String(excludeId || ''));
+        setList(items);
+      })
+      .catch(() => { if (!cancel) setList([]); })
+      .finally(() => { if (!cancel) setLoading(false); });
+    return () => { cancel = true; };
+  }, [date, startTime, excludeId]);
+
+  useEffect(() => {
+    if (!date || !startTime) setList([]);
+  }, [date, startTime]);
+
+  const fmtDateTitle = (d) => {
+    if (!d) return '';
+    const [y, mo, da] = d.split('-');
+    return `${da}/${mo}/${y}`;
+  };
+
+  return (
+    <aside className="border-l border-slate-200 lg:pl-5">
+      <div className="sticky top-0 space-y-3">
+        <div>
+          <h3 className="text-sm font-semibold text-slate-800">Citas en este horario</h3>
+          <p className="text-xs text-slate-500">
+            {date && startTime
+              ? <>Para <b>{fmtDateTitle(date)}</b> a las <b>{startTime}</b></>
+              : 'Selecciona fecha y hora para ver el horario'}
+          </p>
+        </div>
+        <div className="rounded-xl border border-slate-200 bg-slate-50/40 p-3 min-h-[200px] max-h-[420px] overflow-y-auto">
+          {!date || !startTime ? (
+            <p className="text-xs text-slate-400 text-center py-6">Sin fecha/hora seleccionada</p>
+          ) : loading ? (
+            <p className="text-xs text-slate-400 text-center py-6">Cargando...</p>
+          ) : list.length === 0 ? (
+            <div className="text-center py-6">
+              <p className="text-xs text-emerald-700 font-medium">✓ Horario libre</p>
+              <p className="text-[11px] text-slate-400 mt-1">No hay otras citas a esta hora.</p>
+            </div>
+          ) : (
+            <>
+              <p className="text-[11px] text-amber-700 font-semibold uppercase mb-2">
+                {list.length} cita{list.length === 1 ? '' : 's'} agendada{list.length === 1 ? '' : 's'}
+              </p>
+              <ul className="space-y-2">
+                {list.map((a) => (
+                  <li key={a._id} className="bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="font-medium text-slate-800 truncate">
+                        {a.patient?.firstName} {a.patient?.lastName}
+                      </span>
+                      <span className="text-[10px] text-slate-500 flex-shrink-0">{a.startTime}</span>
+                    </div>
+                    {a.doctor?.name && (
+                      <div className="text-[11px] text-emerald-700 mt-0.5">Dr. {a.doctor.name}</div>
+                    )}
+                    {Array.isArray(a.services) && a.services.length > 0 && (
+                      <div className="text-[11px] text-slate-500 mt-0.5 truncate">
+                        {a.services.map((s) => s.name).filter(Boolean).join(', ')}
+                      </div>
+                    )}
+                    {a.room?.name && (
+                      <div className="text-[11px] text-slate-400 mt-0.5">{a.room.name}</div>
+                    )}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </div>
+      </div>
+    </aside>
   );
 }

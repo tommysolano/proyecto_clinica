@@ -250,22 +250,26 @@ exports.createAppointment = async (req, res) => {
       }
     }
 
-    // Validar límite de citas por día para servicios con cupo
+    // Validar límite de citas por horario para servicios con cupo.
+    // Aplica únicamente a productos de categoría 'servicio' o 'programa'.
+    // El cupo limita cuántas citas pueden coincidir en el mismo día + hora de inicio.
     if (serviceIds.length > 0) {
       const limited = await Product.find({
         _id: { $in: serviceIds },
         clinic: targetClinicId,
+        category: { $in: ['servicio', 'programa'] },
         maxAppointmentsPerDay: { $gt: 0 },
       }).select('name maxAppointmentsPerDay');
       for (const prod of limited) {
         const used = await Appointment.countDocuments({
           clinic: targetClinicId,
           date: localDate,
+          startTime,
           'services.product': prod._id,
         });
         if (used >= prod.maxAppointmentsPerDay) {
           return res.status(400).json({
-            message: `Cupo agotado para el servicio "${prod.name}" en esta fecha (máx. ${prod.maxAppointmentsPerDay} por día).`,
+            message: `Cupo agotado para el servicio "${prod.name}" en este horario (${startTime}). Máx. ${prod.maxAppointmentsPerDay} cita(s) simultáneas.`,
           });
         }
       }
