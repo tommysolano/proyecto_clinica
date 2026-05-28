@@ -40,8 +40,8 @@ export default function AccountingDashboard() {
 
   // Combinar series ventas/gastos por período para gráfico comparativo
   const periodMap = {};
-  data.salesSeries.forEach((s) => { periodMap[s._id] = { period: s._id, ventas: s.total, gastos: 0 }; });
-  data.expenseSeries.forEach((e) => { periodMap[e._id] = { ...(periodMap[e._id] || { period: e._id, ventas: 0 }), gastos: e.total }; });
+  (data.salesSeries || []).forEach((s) => { periodMap[s._id] = { period: s._id, ventas: s.total, gastos: 0 }; });
+  (data.expenseSeries || []).forEach((e) => { periodMap[e._id] = { ...(periodMap[e._id] || { period: e._id, ventas: 0 }), gastos: e.total }; });
   const combined = Object.values(periodMap).sort((a, b) => a.period.localeCompare(b.period));
 
   return (
@@ -68,7 +68,7 @@ export default function AccountingDashboard() {
       </div>
 
       {/* Stock bajo - clicable */}
-      {data.lowStock.length > 0 && (
+      {(data.lowStock || []).length > 0 && (
         <button onClick={() => setShowLowStock(true)} className="w-full bg-amber-50 border border-amber-200 rounded-xl p-4 flex items-center justify-between hover:bg-amber-100 text-left">
           <div className="flex items-center gap-3"><HiOutlineExclamationTriangle className="w-6 h-6 text-amber-600" /><div><p className="font-semibold text-amber-800">{data.lowStock.length} productos con stock bajo</p><p className="text-xs text-amber-600">Clic para ver el detalle</p></div></div>
           <span className="text-amber-700 text-sm font-semibold">Ver resumen →</span>
@@ -94,7 +94,7 @@ export default function AccountingDashboard() {
         <div className="bg-white rounded-xl shadow-sm p-4">
           <h2 className="font-semibold text-slate-700 mb-2">Lo que más se vende (mes)</h2>
           <ResponsiveContainer width="100%" height={280}>
-            <BarChart data={data.topSold} layout="vertical" margin={{ left: 20 }}>
+            <BarChart data={data.topSold || []} layout="vertical" margin={{ left: 20 }}>
               <XAxis type="number" fontSize={11} /><YAxis type="category" dataKey="_id" width={120} fontSize={10} />
               <Tooltip formatter={(v) => `$${fmt(v)}`} /><Bar dataKey="revenue" fill="#10b981" radius={[0, 4, 4, 0]} />
             </BarChart>
@@ -105,8 +105,8 @@ export default function AccountingDashboard() {
           <h2 className="font-semibold text-slate-700 mb-2">En lo que más se gasta (mes)</h2>
           <ResponsiveContainer width="100%" height={280}>
             <PieChart>
-              <Pie data={data.topSpent} dataKey="total" nameKey="_id" cx="50%" cy="50%" outerRadius={100} label={(e) => `$${fmt(e.total)}`}>
-                {data.topSpent.map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
+              <Pie data={data.topSpent || []} dataKey="total" nameKey="_id" cx="50%" cy="50%" outerRadius={100} label={(e) => `$${fmt(e.total)}`}>
+                {(data.topSpent || []).map((_, i) => <Cell key={i} fill={PIE_COLORS[i % PIE_COLORS.length]} />)}
               </Pie>
               <Tooltip formatter={(v) => `$${fmt(v)}`} /><Legend />
             </PieChart>
@@ -119,7 +119,7 @@ export default function AccountingDashboard() {
           <table className="w-full text-sm">
             <thead className="bg-slate-50 sticky top-0"><tr><th className="px-3 py-2 text-left">Código</th><th className="px-3 py-2 text-left">Producto</th><th className="px-3 py-2 text-right">Stock</th><th className="px-3 py-2 text-right">Mínimo</th></tr></thead>
             <tbody>
-              {data.lowStock.map((p) => (
+              {(data.lowStock || []).map((p) => (
                 <tr key={p._id} className="border-t"><td className="px-3 py-2 font-mono text-xs">{p.code}</td><td className="px-3 py-2">{p.name}</td><td className={`px-3 py-2 text-right font-mono ${p.stock === 0 ? 'text-rose-600 font-bold' : 'text-amber-600'}`}>{p.stock}</td><td className="px-3 py-2 text-right font-mono text-slate-400">{p.minStock}</td></tr>
               ))}
             </tbody>

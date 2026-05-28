@@ -23,8 +23,8 @@ export default function Suppliers() {
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [roleFilter]);
 
-  const toggleRole = (r) => {
-    setForm((f) => ({ ...f, roles: f.roles.includes(r) ? f.roles.filter((x) => x !== r) : [...f.roles, r] }));
+  const selectRole = (r) => {
+    setForm((f) => ({ ...f, roles: [r] }));
   };
 
   const submit = async (e) => {
@@ -87,8 +87,8 @@ export default function Suppliers() {
             <p className="text-xs font-semibold text-slate-500 mb-1">Roles</p>
             <div className="flex gap-3 flex-wrap">
               {ROLES.map((r) => (
-                <label key={r} className={`px-3 py-1.5 rounded-lg text-sm cursor-pointer border ${form.roles.includes(r) ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white border-slate-200'}`}>
-                  <input type="checkbox" className="hidden" checked={form.roles.includes(r)} onChange={() => toggleRole(r)} />{ROLE_LABEL[r]}
+                <label key={r} className={`px-3 py-1.5 rounded-lg text-sm cursor-pointer border ${form.roles[0] === r ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white border-slate-200'}`}>
+                  <input type="radio" name="persona-rol" className="hidden" checked={form.roles[0] === r} onChange={() => selectRole(r)} />{ROLE_LABEL[r]}
                 </label>
               ))}
             </div>
