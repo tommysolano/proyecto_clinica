@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
+import ProductAutocomplete from '../components/ProductAutocomplete';
 import { useAuth } from '../context/AuthContext';
 import {
   HiOutlinePlus,
@@ -337,10 +338,14 @@ export default function Quotations() {
               </div>
               {form.items.map((it, idx) => (
                 <div key={idx} className="grid grid-cols-12 gap-2 items-center">
-                  <select value={it.product} onChange={(e) => updateItem(idx, 'product', e.target.value)} className="col-span-12 sm:col-span-6 border border-slate-200 rounded-lg px-2 py-2 text-sm bg-white">
-                    <option value="">Producto/servicio...</option>
-                    {products.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
-                  </select>
+                  <div className="col-span-12 sm:col-span-6">
+                    <ProductAutocomplete
+                      products={products}
+                      value={it.product}
+                      onSelect={(p) => updateItem(idx, 'product', p?._id || '')}
+                      placeholder="Buscar producto/servicio..."
+                    />
+                  </div>
                   <input type="number" min="1" value={it.quantity} onChange={(e) => updateItem(idx, 'quantity', Number(e.target.value))} className="col-span-3 sm:col-span-1 border border-slate-200 rounded-lg px-2 py-2 text-sm bg-white text-center" />
                   <input type="number" step="0.01" value={it.unitPrice} onChange={(e) => updateItem(idx, 'unitPrice', Number(e.target.value))} className="col-span-4 sm:col-span-2 border border-slate-200 rounded-lg px-2 py-2 text-sm bg-white text-right" />
                   <input type="number" min="0" max="100" step="1" value={it.discount} onChange={(e) => updateItem(idx, 'discount', Number(e.target.value))} className="col-span-4 sm:col-span-2 border border-slate-200 rounded-lg px-2 py-2 text-sm bg-white text-right" />

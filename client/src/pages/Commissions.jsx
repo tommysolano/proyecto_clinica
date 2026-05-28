@@ -10,6 +10,7 @@ import {
 import { BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, LineChart, Line } from 'recharts';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
+import { fmtDate } from '../utils/date';
 
 const RANGES = [
   { value: 'today', label: 'Hoy' },
@@ -235,7 +236,7 @@ export default function Commissions() {
                   {(data?.details || []).map((d) => (
                     <tr key={d._id} className="border-t border-slate-100">
                       <td className="px-3 py-2 text-slate-600 text-xs">
-                        {d.date ? new Date(d.date).toLocaleDateString() : ''} {d.startTime}
+                        {d.date ? fmtDate(d.date) : ''} {d.startTime}
                       </td>
                       <td className="px-3 py-2">
                         <div className="font-medium">

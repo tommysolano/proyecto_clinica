@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
-import { HiOutlineCog6Tooth, HiOutlineKey, HiOutlineSwatch } from 'react-icons/hi2';
+import { HiOutlineCog6Tooth, HiOutlineKey, HiOutlineSwatch, HiOutlinePencilSquare } from 'react-icons/hi2';
 
 const THEMES = [
   { value: 'green', label: 'Verde (por defecto)', swatch: '#0f766e' },
@@ -21,10 +21,62 @@ function applyTheme(theme) {
 }
 
 export default function Settings() {
-  const { user } = useAuth();
+  const { user, hasRole } = useAuth();
   const [theme, setTheme] = useState(localStorage.getItem('theme') || 'green');
   const [pwd, setPwd] = useState({ currentPassword: '', newPassword: '', confirm: '' });
   const [saving, setSaving] = useState(false);
+  // Firma digital (doctor / óptica)
+  const showSignature = hasRole('doctor', 'optica') || user?.isSuperAdmin;
+  const [signature, setSignature] = useState('');
+  const [savingSig, setSavingSig] = useState(false);
+  const fileRef = useRef(null);
+
+  useEffect(() => {
+    if (!showSignature) return;
+    api.get('/users/me/signature').then((r) => setSignature(r.data?.signatureImage || '')).catch(() => {});
+  }, [showSignature]);
+
+  const onPickSignature = (e) => {
+    const f = e.target.files?.[0];
+    if (!f) return;
+    if (!/^image\/(png|jpe?g|webp)$/.test(f.type)) {
+      toast.error('Solo PNG, JPG o WEBP');
+      return;
+    }
+    if (f.size > 300 * 1024) {
+      toast.error('Máximo 300KB');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (ev) => setSignature(ev.target.result);
+    reader.readAsDataURL(f);
+  };
+
+  const saveSignature = async () => {
+    setSavingSig(true);
+    try {
+      await api.put('/users/me/signature', { signatureImage: signature });
+      toast.success('Firma actualizada');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al guardar firma');
+    } finally {
+      setSavingSig(false);
+    }
+  };
+
+  const removeSignature = async () => {
+    if (!window.confirm('¿Eliminar tu firma actual?')) return;
+    setSavingSig(true);
+    try {
+      await api.put('/users/me/signature', { signatureImage: '' });
+      setSignature('');
+      toast.success('Firma eliminada');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error');
+    } finally {
+      setSavingSig(false);
+    }
+  };
 
   const chooseTheme = (t) => {
     setTheme(t);
@@ -86,6 +138,62 @@ export default function Settings() {
           ))}
         </div>
       </div>
+
+      {/* Firma digital (doctor / óptica) */}
+      {showSignature && (
+        <div className="bg-white rounded-2xl border border-emerald-100 p-6">
+          <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2 mb-1">
+            <HiOutlinePencilSquare className="text-emerald-600" /> Firma digital
+          </h2>
+          <p className="text-sm text-slate-500 mb-4">
+            Esta imagen aparecerá al final de las recetas que emitas (PDF).
+          </p>
+          <div className="space-y-3 max-w-md">
+            <div className="border-2 border-dashed border-slate-300 rounded-xl p-4 flex flex-col items-center gap-2 bg-slate-50/50 min-h-[120px]">
+              {signature ? (
+                <img src={signature} alt="Firma" className="max-h-24 max-w-full object-contain" />
+              ) : (
+                <p className="text-slate-400 text-sm">Sin firma configurada</p>
+              )}
+            </div>
+            <input
+              ref={fileRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              onChange={onPickSignature}
+              className="hidden"
+            />
+            <div className="flex gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => fileRef.current?.click()}
+                className="px-4 py-2 rounded-lg bg-emerald-600 text-white text-sm hover:bg-emerald-700 cursor-pointer border-none"
+              >
+                {signature ? 'Cambiar imagen' : 'Elegir imagen'}
+              </button>
+              <button
+                type="button"
+                onClick={saveSignature}
+                disabled={!signature || savingSig}
+                className="px-4 py-2 rounded-lg bg-slate-700 text-white text-sm hover:bg-slate-800 cursor-pointer border-none disabled:opacity-50"
+              >
+                {savingSig ? 'Guardando…' : 'Guardar firma'}
+              </button>
+              {signature && (
+                <button
+                  type="button"
+                  onClick={removeSignature}
+                  disabled={savingSig}
+                  className="px-4 py-2 rounded-lg bg-white text-rose-700 border border-rose-200 hover:bg-rose-50 text-sm cursor-pointer"
+                >
+                  Quitar
+                </button>
+              )}
+            </div>
+            <p className="text-[11px] text-slate-400">PNG/JPG/WEBP · Máx. 300KB · Recomendado fondo transparente.</p>
+          </div>
+        </div>
+      )}
 
       {/* Cambiar contraseña */}
       <div className="bg-white rounded-2xl border border-emerald-100 p-6">

@@ -3,6 +3,7 @@ import { useParams, useSearchParams, Link } from 'react-router-dom';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
+import { fmtDate } from '../utils/date';
 import {
   HiOutlineArrowLeft,
   HiOutlineUser,
@@ -13,6 +14,7 @@ import {
   HiOutlinePlus,
   HiOutlineTrash,
   HiOutlinePrinter,
+  HiOutlineArrowDownTray,
 } from 'react-icons/hi2';
 
 const TABS = [
@@ -155,7 +157,7 @@ function DatosTab({ patient }) {
         <Item label="WhatsApp" value={patient.whatsapp} />
         <Item
           label="Fecha de nacimiento"
-          value={patient.birthDate ? new Date(patient.birthDate).toLocaleDateString() : '—'}
+          value={patient.birthDate ? fmtDate(patient.birthDate) : '—'}
         />
         <Item label="Edad" value={patient.computedAge ?? patient.age ?? '—'} />
         <Item label="Género" value={patient.gender} />
@@ -383,9 +385,11 @@ function YesNo({ label, item, onChange }) {
 
 // ──────────────────── Seguimientos ────────────────────
 function SeguimientosTab({ patientId, appointmentId }) {
-  const { hasRole } = useAuth();
+  const { hasRole, user } = useAuth();
   const isOptica = hasRole('optica');
-  const canDelete = hasRole('admin', 'doctor', 'optica');
+  const isAdmin = hasRole('admin') || user?.isSuperAdmin;
+  // Una vez guardado, solo administradores pueden eliminar/editar seguimientos.
+  const canDelete = isAdmin;
   const canUpload = hasRole('admin', 'cajero', 'doctor', 'optica');
   const [record, setRecord] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -425,6 +429,9 @@ function SeguimientosTab({ patientId, appointmentId }) {
   const [saving, setSaving] = useState(false);
   const [productSearch, setProductSearch] = useState('');
   const [uploadingFuId, setUploadingFuId] = useState(null);
+  // PDFs seleccionados ANTES de guardar el seguimiento. Se subirán automáticamente
+  // tras crear el seguimiento.
+  const [pendingFiles, setPendingFiles] = useState([]);
 
   const load = async () => {
     setLoading(true);
@@ -576,12 +583,19 @@ function SeguimientosTab({ patientId, appointmentId }) {
       toast.error('Motivo de consulta requerido');
       return;
     }
-    if (
-      !form.recetaItems.length ||
-      form.recetaItems.some((it) => !it.product)
-    ) {
-      toast.error('Debe agregar al menos un ítem de receta (medicamento/servicio)');
-      return;
+    // Óptica puede guardar sin receta de medicamentos si llenó la RX óptica.
+    const hasOpticaRx = isOptica && (
+      Object.values(form.opticaRx?.od || {}).some((v) => String(v).trim()) ||
+      Object.values(form.opticaRx?.oi || {}).some((v) => String(v).trim())
+    );
+    if (!isOptica || !hasOpticaRx) {
+      if (
+        !form.recetaItems.length ||
+        form.recetaItems.some((it) => !it.product)
+      ) {
+        toast.error('Debe agregar al menos un ítem de receta (medicamento/servicio)');
+        return;
+      }
     }
     setSaving(true);
     try {
@@ -603,8 +617,27 @@ function SeguimientosTab({ patientId, appointmentId }) {
       };
       if (appointmentId) payload.appointmentId = appointmentId;
       const res = await api.post(`/clinical-records/${patientId}/follow-ups`, payload);
-      setRecord(res.data);
+      // Subir PDFs pendientes (seleccionados ANTES de guardar) al seguimiento recién creado.
+      let updated = res.data;
+      const newFu = (updated.followUps || []).slice(-1)[0];
+      if (newFu && pendingFiles.length > 0) {
+        for (const f of pendingFiles) {
+          const fd = new FormData();
+          fd.append('file', f);
+          // eslint-disable-next-line no-await-in-loop
+          const r = await api.post(
+            `/clinical-records/${patientId}/follow-ups/${newFu._id}/attachments`,
+            fd,
+            { headers: { 'Content-Type': 'multipart/form-data' } }
+          );
+          updated = r.data;
+        }
+        setRecord(updated);
+      } else {
+        setRecord(updated);
+      }
       setForm(emptyForm());
+      setPendingFiles([]);
       setProductSearch('');
       toast.success(
         appointmentId
@@ -639,6 +672,25 @@ function SeguimientosTab({ patientId, appointmentId }) {
       window.open(url, '_blank');
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al imprimir');
+    }
+  };
+
+  const downloadFollowUpPdf = async (fuId) => {
+    try {
+      const res = await api.get(
+        `/clinical-records/${patientId}/follow-ups/${fuId}/print`,
+        { responseType: 'blob' }
+      );
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `receta_${fuId}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al descargar');
     }
   };
 
@@ -995,6 +1047,49 @@ function SeguimientosTab({ patientId, appointmentId }) {
           />
         </Field>
         {isOptica && <OpticaRxTable value={form.opticaRx} onChange={(rx) => setForm((f) => ({ ...f, opticaRx: rx }))} />}
+
+        {/* PDFs antes de guardar el seguimiento */}
+        <div className="md:col-span-3">
+          <label className="text-sm font-medium text-slate-700 block mb-2">
+            Archivos PDF a adjuntar
+          </label>
+          <div className="bg-white rounded-lg border border-slate-200 p-3 space-y-2">
+            <input
+              type="file"
+              accept="application/pdf"
+              multiple
+              onChange={(e) => {
+                const files = Array.from(e.target.files || []).filter(
+                  (f) => f.type === 'application/pdf'
+                );
+                setPendingFiles((prev) => [...prev, ...files]);
+                e.target.value = '';
+              }}
+              className="text-xs"
+            />
+            {pendingFiles.length > 0 && (
+              <ul className="space-y-1">
+                {pendingFiles.map((f, i) => (
+                  <li key={i} className="text-xs text-slate-600 flex items-center gap-2">
+                    <span>📎 {f.name}</span>
+                    <span className="text-slate-400">({Math.round(f.size / 1024)} KB)</span>
+                    <button
+                      type="button"
+                      onClick={() => setPendingFiles((prev) => prev.filter((_, idx) => idx !== i))}
+                      className="text-red-500 bg-transparent border-none cursor-pointer p-0"
+                    >
+                      <HiOutlineTrash className="w-3 h-3" />
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <p className="text-[11px] text-slate-400">
+              Se subirán al guardar. También podrás adjuntar más después.
+            </p>
+          </div>
+        </div>
+
         <div className="md:col-span-3 flex justify-end">
           <button
             type="submit"
@@ -1023,81 +1118,137 @@ function SeguimientosTab({ patientId, appointmentId }) {
                 </td>
               </tr>
             )}
-            {followUps.map((fu) => (
-              <tr key={fu._id} className="border-t border-slate-100 align-top">
-                <td className="px-4 py-2.5 text-slate-600 whitespace-nowrap">
-                  {new Date(fu.fecha).toLocaleDateString()}
-                </td>
-                <td className="px-4 py-2.5 text-slate-800">
-                  <div>{fu.descripcion}</div>
-                  {/* Adjuntos PDF */}
-                  <div className="mt-2 space-y-1">
-                    {(fu.attachments || []).map((att) => (
-                      <div key={att._id} className="flex items-center gap-2 text-xs text-slate-600">
-                        <span>📎</span>
-                        <button
-                          type="button"
-                          onClick={() => downloadAttachment(fu._id, att._id, att.originalName)}
-                          className="underline text-emerald-700 hover:text-emerald-800 bg-transparent border-none cursor-pointer p-0"
-                        >
-                          {att.originalName}
-                        </button>
-                        <span className="text-slate-400">
-                          ({Math.round((att.size || 0) / 1024)} KB)
-                        </span>
-                        {canDelete && (
+            {followUps.map((fu) => {
+              const hasOpticaData =
+                fu.opticaRx &&
+                (Object.values(fu.opticaRx.od || {}).some((v) => String(v).trim()) ||
+                  Object.values(fu.opticaRx.oi || {}).some((v) => String(v).trim()));
+              const vs = fu.vitalSigns || {};
+              const hasVitals = ['temperature', 'bloodPressure', 'heartRate', 'respiratoryRate', 'oxygenSaturation', 'weight', 'height', 'glucose']
+                .some((k) => vs[k] != null && vs[k] !== '');
+              return (
+                <tr key={fu._id} className="border-t border-slate-100 align-top">
+                  <td className="px-4 py-2.5 text-slate-600 whitespace-nowrap">
+                    {new Date(fu.fecha).toLocaleDateString('es-EC')}
+                  </td>
+                  <td className="px-4 py-2.5 text-slate-800">
+                    <div className="font-medium">{fu.descripcion}</div>
+                    {fu.estudioSintomas && (
+                      <div className="mt-1 text-xs text-slate-600">
+                        <b>Estudio/síntomas:</b> {fu.estudioSintomas}
+                      </div>
+                    )}
+                    {Array.isArray(fu.recetaItems) && fu.recetaItems.length > 0 && (
+                      <div className="mt-2 bg-slate-50 border border-slate-200 rounded p-2">
+                        <p className="text-[11px] font-semibold text-slate-600 uppercase mb-1">Receta</p>
+                        <ul className="text-xs text-slate-700 space-y-0.5">
+                          {fu.recetaItems.map((it, i) => (
+                            <li key={i}>
+                              <b>{it.name}</b>
+                              {it.dose ? ` · ${it.dose}` : ''}
+                              {it.frequency ? ` · ${it.frequency}` : ''}
+                              {it.duration ? ` · ${it.duration}` : ''}
+                              {it.instructions ? ` — ${it.instructions}` : ''}
+                              {it.quantity ? ` (x${it.quantity})` : ''}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    )}
+                    {hasVitals && (
+                      <div className="mt-2 text-[11px] text-slate-600 bg-emerald-50 border border-emerald-100 rounded p-2 flex flex-wrap gap-x-3 gap-y-0.5">
+                        {vs.bloodPressure && <span>TA: {vs.bloodPressure}</span>}
+                        {vs.heartRate && <span>FC: {vs.heartRate}lpm</span>}
+                        {vs.respiratoryRate && <span>FR: {vs.respiratoryRate}rpm</span>}
+                        {vs.temperature != null && <span>T°: {vs.temperature}°C</span>}
+                        {vs.oxygenSaturation && <span>SatO₂: {vs.oxygenSaturation}%</span>}
+                        {vs.weight && <span>Peso: {vs.weight}kg</span>}
+                        {vs.height && <span>Talla: {vs.height}cm</span>}
+                        {vs.glucose && <span>Glu: {vs.glucose}mg/dL</span>}
+                      </div>
+                    )}
+                    {fu.observaciones && (
+                      <div className="mt-2 text-xs text-slate-600 italic">
+                        <b>Observaciones:</b> {fu.observaciones}
+                      </div>
+                    )}
+                    {/* Adjuntos PDF */}
+                    <div className="mt-2 space-y-1">
+                      {(fu.attachments || []).map((att) => (
+                        <div key={att._id} className="flex items-center gap-2 text-xs text-slate-600">
+                          <span>📎</span>
                           <button
                             type="button"
-                            onClick={() => deleteAttachment(fu._id, att._id)}
-                            className="text-red-500 bg-transparent border-none cursor-pointer p-0"
-                            title="Eliminar"
+                            onClick={() => downloadAttachment(fu._id, att._id, att.originalName)}
+                            className="underline text-emerald-700 hover:text-emerald-800 bg-transparent border-none cursor-pointer p-0"
                           >
-                            <HiOutlineTrash className="w-3 h-3" />
+                            {att.originalName}
                           </button>
-                        )}
-                      </div>
-                    ))}
-                    {canUpload && (
-                      <label className="inline-flex items-center gap-1 text-xs text-emerald-700 cursor-pointer mt-1">
-                        <HiOutlinePlus className="w-3 h-3" />
-                        {uploadingFuId === fu._id ? 'Subiendo...' : 'Adjuntar PDF'}
-                        <input
-                          type="file"
-                          accept="application/pdf"
-                          className="hidden"
-                          disabled={uploadingFuId === fu._id}
-                          onChange={(e) => {
-                            const file = e.target.files?.[0];
-                            e.target.value = '';
-                            if (file) uploadAttachment(fu._id, file);
-                          }}
-                        />
-                      </label>
-                    )}
-                  </div>
-                  {fu.opticaRx && (fu.opticaRx.od || fu.opticaRx.oi) && <OpticaRxSummary rx={fu.opticaRx} />}
-                </td>
-                <td className="px-4 py-2.5 text-right">
-                  <div className="flex items-center justify-end gap-1">
-                    <button
-                      onClick={() => printFollowUp(fu._id)}
-                      title="Imprimir receta"
-                      className="p-1 text-slate-500 hover:text-emerald-600 cursor-pointer bg-transparent border-none"
-                    >
-                      <HiOutlinePrinter className="w-4 h-4" />
-                    </button>
-                    {canDelete && (
+                          <span className="text-slate-400">
+                            ({Math.round((att.size || 0) / 1024)} KB)
+                          </span>
+                          {canDelete && (
+                            <button
+                              type="button"
+                              onClick={() => deleteAttachment(fu._id, att._id)}
+                              className="text-red-500 bg-transparent border-none cursor-pointer p-0"
+                              title="Eliminar"
+                            >
+                              <HiOutlineTrash className="w-3 h-3" />
+                            </button>
+                          )}
+                        </div>
+                      ))}
+                      {canUpload && (
+                        <label className="inline-flex items-center gap-1 text-xs text-emerald-700 cursor-pointer mt-1">
+                          <HiOutlinePlus className="w-3 h-3" />
+                          {uploadingFuId === fu._id ? 'Subiendo...' : 'Adjuntar PDF'}
+                          <input
+                            type="file"
+                            accept="application/pdf"
+                            className="hidden"
+                            disabled={uploadingFuId === fu._id}
+                            onChange={(e) => {
+                              const file = e.target.files?.[0];
+                              e.target.value = '';
+                              if (file) uploadAttachment(fu._id, file);
+                            }}
+                          />
+                        </label>
+                      )}
+                    </div>
+                    {hasOpticaData && <OpticaRxSummary rx={fu.opticaRx} />}
+                  </td>
+                  <td className="px-4 py-2.5 text-right">
+                    <div className="flex items-center justify-end gap-1">
                       <button
-                        onClick={() => remove(fu._id)}
-                        className="p-1 text-slate-400 hover:text-red-600 cursor-pointer bg-transparent border-none"
+                        onClick={() => downloadFollowUpPdf(fu._id)}
+                        title="Descargar PDF"
+                        className="p-1 text-slate-500 hover:text-emerald-600 cursor-pointer bg-transparent border-none"
                       >
-                        <HiOutlineTrash className="w-4 h-4" />
+                        <HiOutlineArrowDownTray className="w-4 h-4" />
                       </button>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))}
+                      <button
+                        onClick={() => printFollowUp(fu._id)}
+                        title="Imprimir receta"
+                        className="p-1 text-slate-500 hover:text-emerald-600 cursor-pointer bg-transparent border-none"
+                      >
+                        <HiOutlinePrinter className="w-4 h-4" />
+                      </button>
+                      {canDelete && (
+                        <button
+                          onClick={() => remove(fu._id)}
+                          className="p-1 text-slate-400 hover:text-red-600 cursor-pointer bg-transparent border-none"
+                          title="Eliminar (solo admin)"
+                        >
+                          <HiOutlineTrash className="w-4 h-4" />
+                        </button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
@@ -1237,7 +1388,7 @@ function CitasTab({ patientId }) {
             {appts.map((a) => (
               <tr key={a._id} className="border-t border-slate-100">
                 <td className="px-4 py-2.5 text-slate-600">
-                  {new Date(a.date).toLocaleDateString()}
+                  {fmtDate(a.date)}
                 </td>
                 <td className="px-4 py-2.5 text-slate-600">
                   {a.startTime} - {a.endTime}
@@ -1303,7 +1454,7 @@ function FacturasTab({ patientId }) {
                 {inv.estab}-{inv.ptoEmi}-{String(inv.secuencial).padStart(9, '0')}
               </td>
               <td className="px-4 py-2.5 text-slate-600">
-                {new Date(inv.createdAt).toLocaleDateString()}
+                {fmtDate(inv.createdAt)}
               </td>
               <td className="px-4 py-2.5 text-right text-slate-700">
                 ${Number(inv.importeTotal || 0).toFixed(2)}

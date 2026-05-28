@@ -1,5 +1,30 @@
 const TimeBlock = require('../models/TimeBlock');
 
+// Normaliza una fecha 'YYYY-MM-DD' al inicio del día local (12:00 para evitar TZ).
+const startOfLocalDay = (value) => {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  const str = String(value);
+  const m = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) {
+    const [, y, mo, d] = m;
+    return new Date(Number(y), Number(mo) - 1, Number(d), 0, 0, 0, 0);
+  }
+  return new Date(str);
+};
+// Para endDate: fin del día local para que cualquier hora del último día caiga dentro.
+const endOfLocalDay = (value) => {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  const str = String(value);
+  const m = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) {
+    const [, y, mo, d] = m;
+    return new Date(Number(y), Number(mo) - 1, Number(d), 23, 59, 59, 999);
+  }
+  return new Date(str);
+};
+
 exports.list = async (req, res) => {
   try {
     const { startDate, endDate, doctor } = req.query;
@@ -32,6 +57,8 @@ exports.create = async (req, res) => {
       clinic: req.clinicId,
       doctor: req.body.doctor || null,
       room: req.body.room || null,
+      startDate: startOfLocalDay(startDate),
+      endDate: endOfLocalDay(endDate),
       allDay: !!allDay,
       startTime: allDay ? null : startTime || null,
       endTime: allDay ? null : endTime || null,
@@ -45,9 +72,12 @@ exports.create = async (req, res) => {
 
 exports.update = async (req, res) => {
   try {
+    const update = { ...req.body };
+    if (update.startDate) update.startDate = startOfLocalDay(update.startDate);
+    if (update.endDate) update.endDate = endOfLocalDay(update.endDate);
     const block = await TimeBlock.findOneAndUpdate(
       { _id: req.params.id, clinic: req.clinicId },
-      req.body,
+      update,
       { new: true }
     );
     if (!block) return res.status(404).json({ message: 'Bloqueo no encontrado' });

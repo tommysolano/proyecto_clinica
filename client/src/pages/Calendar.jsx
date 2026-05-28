@@ -7,6 +7,7 @@ import {
   HiOutlineChevronRight,
   HiOutlinePlus,
   HiOutlineFunnel,
+  HiOutlineMagnifyingGlass,
 } from 'react-icons/hi2';
 
 // Calendario semanal estilo Google Calendar.
@@ -49,6 +50,7 @@ export default function Calendar() {
   const [doctorFilter, setDoctorFilter] = useState('');
   const [serviceFilter, setServiceFilter] = useState('');
   const [programFilter, setProgramFilter] = useState('');
+  const [patientSearch, setPatientSearch] = useState('');
   const [loading, setLoading] = useState(true);
 
   const days = useMemo(() => {
@@ -117,15 +119,26 @@ export default function Calendar() {
 
   const goToday = () => setWeekStart(startOfWeek(new Date()));
 
+  const filteredAppointments = useMemo(() => {
+    const q = patientSearch.trim().toLowerCase();
+    if (!q) return appointments;
+    return appointments.filter((a) => {
+      const name = `${a.patient?.firstName || ''} ${a.patient?.lastName || ''}`.toLowerCase();
+      const cedula = String(a.patient?.cedula || '').toLowerCase();
+      const phone = String(a.patient?.phone || '').toLowerCase();
+      return name.includes(q) || cedula.includes(q) || phone.includes(q);
+    });
+  }, [appointments, patientSearch]);
+
   const apptsByDay = useMemo(() => {
     const map = new Map();
     days.forEach((d) => map.set(ymd(d), []));
-    appointments.forEach((a) => {
+    filteredAppointments.forEach((a) => {
       const k = (a.date || '').slice(0, 10);
       if (map.has(k)) map.get(k).push(a);
     });
     return map;
-  }, [appointments, days]);
+  }, [filteredAppointments, days]);
 
   const blocksByDay = useMemo(() => {
     const map = new Map();
@@ -249,8 +262,18 @@ export default function Calendar() {
             <option key={p._id} value={p._id}>{p.name}</option>
           ))}
         </select>
+        <div className="relative flex-1 min-w-[180px] max-w-xs">
+          <HiOutlineMagnifyingGlass className="absolute left-2.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+          <input
+            type="text"
+            value={patientSearch}
+            onChange={(e) => setPatientSearch(e.target.value)}
+            placeholder="Buscar paciente (nombre/cédula/tel)…"
+            className="w-full pl-8 pr-2 py-1.5 border border-slate-200 rounded-lg text-sm outline-none focus:ring-2 focus:ring-emerald-500"
+          />
+        </div>
         <span className="ml-auto text-sm text-slate-600 font-medium">
-          Total: <span className="text-emerald-700 font-bold">{appointments.length}</span> citas
+          Total: <span className="text-emerald-700 font-bold">{filteredAppointments.length}</span> citas
         </span>
       </div>
 

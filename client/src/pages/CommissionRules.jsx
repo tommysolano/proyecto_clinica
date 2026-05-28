@@ -52,7 +52,8 @@ export default function CommissionRules() {
       setRules(r.data || []);
       setUsers(u.data || []);
       const list = Array.isArray(p.data) ? p.data : p.data?.products || [];
-      setServices(list.filter((x) => x.category === 'servicio' || x.category === 'programa' || x.unlimited));
+      // Aceptamos servicios, programas, items (medicamento, insumo) — todos pueden tener comisión.
+      setServices(list.filter((x) => x.active !== false));
       api.get('/chart-of-accounts', { params: { active: true } }).then((a) => setAccounts((a.data || []).filter((x) => x.allowsMovement))).catch(() => {});
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al cargar');
@@ -244,10 +245,14 @@ export default function CommissionRules() {
             )}
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <label className="block text-sm">Servicio
+            <label className="block text-sm">Producto / Servicio / Ítem
               <select value={form.service} onChange={(e) => setForm({ ...form, service: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm">
-                <option value="">Cualquier servicio</option>
-                {services.map((s) => <option key={s._id} value={s._id}>{s.name}</option>)}
+                <option value="">Cualquier producto/servicio</option>
+                {services.map((s) => (
+                  <option key={s._id} value={s._id}>
+                    {s.name} {s.category ? `(${s.category})` : ''}
+                  </option>
+                ))}
               </select>
             </label>
             <label className="block text-sm">Pacientes

@@ -128,6 +128,48 @@ exports.report = async (req, res) => {
       }
     }
 
+    // ─── Comisiones por ÍTEM vendido en ventas ───
+    // Por cada venta no anulada en el rango, por cada item vendido, evaluamos las
+    // reglas (target = createdBy de la venta) y aplicamos rule.amount * quantity.
+    const Sale = require('../models/Sale');
+    const User = require('../models/User');
+    const sales = await Sale.find({
+      clinic: req.clinicId,
+      status: { $ne: 'anulada' },
+      createdAt: { $gte: startDate, $lte: endDate },
+    })
+      .populate('createdBy', 'name clinics')
+      .populate('patient', 'firstName lastName');
+    for (const sale of sales) {
+      const performer = sale.createdBy;
+      if (!performer) continue;
+      const performerRole = roleFor(performer);
+      for (const it of sale.items || []) {
+        for (const rule of rules) {
+          if (rule.targetType === 'user') {
+            if (String(rule.user) !== String(performer._id)) continue;
+          } else if (rule.role !== performerRole) {
+            continue;
+          }
+          // Si rule.service está definido, debe coincidir con el producto vendido.
+          if (rule.service && String(rule.service) !== String(it.product)) continue;
+          const qty = Number(it.quantity || 1);
+          detail.push({
+            userId: String(performer._id),
+            userName: performer.name,
+            ruleName: rule.name,
+            amount: Number(rule.amount) * qty,
+            date: sale.createdAt,
+            service: it.productName || '—',
+            patient: sale.patient
+              ? `${sale.patient.firstName || ''} ${sale.patient.lastName || ''}`.trim()
+              : sale.clientName || '—',
+            source: 'venta',
+          });
+        }
+      }
+    }
+
     const filtered = user ? detail.filter((d) => d.userId === String(user)) : detail;
 
     const byUserMap = {};

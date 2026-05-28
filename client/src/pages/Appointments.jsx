@@ -2,6 +2,8 @@ import { useState, useEffect, useRef, useMemo, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import Modal from '../components/Modal';
+import ProductAutocomplete from '../components/ProductAutocomplete';
+import SameSlotPanel from '../components/SameSlotPanel';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
@@ -59,6 +61,9 @@ const emptyForm = {
   clinic: '',
   paidInAdvance: false,
   advanceAmount: 0,
+  // Citas adicionales para agendar en una sola operación (solo al crear).
+  // Cada entrada: { date, startTime, reason, services: [productId] }
+  extraAppointments: [],
 };
 
 const roleLabels = {
@@ -255,6 +260,8 @@ export default function Appointments() {
   }, [now, appointments, isDoctor]);
 
   const canEdit = (apt) => {
+    // Una cita completada solo puede ser editada por administradores
+    if (apt.status === 'completada' && !isAdmin) return false;
     if (isAdmin) return true;
     if (isDoctor && String(apt.doctor?._id || apt.doctor) === String(user?.id)) return true;
     return String(apt.createdBy?._id || apt.createdBy) === String(user?.id);
@@ -309,18 +316,33 @@ export default function Appointments() {
     }
     setSaving(true);
     try {
-      const payload = {
+      const basePayload = {
         ...form,
         services: (form.services || []).map((id) => ({ product: id })),
       };
-      // No enviamos endTime: el campo fue removido del formulario
-      if (!payload.endTime) delete payload.endTime;
+      delete basePayload.extraAppointments;
+      if (!basePayload.endTime) delete basePayload.endTime;
       if (editing) {
-        await api.put(`/appointments/${editing}`, payload);
+        await api.put(`/appointments/${editing}`, basePayload);
         toast.success('Cita actualizada');
       } else {
-        await api.post('/appointments', payload);
-        toast.success('Cita creada');
+        // Primero la cita principal
+        await api.post('/appointments', basePayload);
+        // Luego cada cita adicional con los mismos datos compartidos
+        const extras = (form.extraAppointments || []).filter((it) => it.date && it.startTime);
+        for (const it of extras) {
+          const extraPayload = {
+            ...basePayload,
+            date: it.date,
+            startTime: it.startTime,
+            reason: it.reason || basePayload.reason,
+            services: (it.services || []).map((id) => ({ product: id })),
+          };
+          // eslint-disable-next-line no-await-in-loop
+          await api.post('/appointments', extraPayload);
+        }
+        const totalCreated = 1 + extras.length;
+        toast.success(totalCreated > 1 ? `${totalCreated} citas creadas` : 'Cita creada');
       }
       setModalOpen(false);
       fetchAppointments();
@@ -580,14 +602,12 @@ export default function Appointments() {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
             {!isDoctor && (
-              <select
+              <ProductAutocomplete
+                products={services}
                 value={filter.service}
-                onChange={(e) => setFilter({ ...filter, service: e.target.value })}
-                className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
-              >
-                <option value="">Todos los servicios</option>
-                {services.map((s) => <option key={s._id} value={s._id}>{s.name}</option>)}
-              </select>
+                onSelect={(p) => setFilter({ ...filter, service: p?._id || '' })}
+                placeholder="Filtrar por servicio..."
+              />
             )}
             {!isDoctor && (
               <select
@@ -724,6 +744,11 @@ export default function Appointments() {
                         {Array.isArray(apt.services) && apt.services.length > 0
                           ? apt.services.map((s) => s.name || s.product?.name).filter(Boolean).join(', ')
                           : <span className="text-slate-400 italic">Sin servicio</span>}
+                        {apt.reason && (
+                          <div className="text-[11px] text-slate-500 mt-0.5 italic" title={apt.reason}>
+                            Motivo: {apt.reason.length > 60 ? apt.reason.slice(0, 60) + '…' : apt.reason}
+                          </div>
+                        )}
                         {apt.doctor?.name && (
                           <div className="text-[11px] text-emerald-700 mt-0.5">
                             Dr. {apt.doctor.name}
@@ -1068,6 +1093,86 @@ export default function Appointments() {
               </p>
             )}
           </div>
+
+          {/* Citas adicionales: solo al crear (no al editar). */}
+          {!editing && (
+            <div className="space-y-2">
+              {(form.extraAppointments || []).map((it, idx) => (
+                <div key={idx} className="border border-emerald-200 rounded-xl p-3 bg-emerald-50/40 space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-xs font-bold text-emerald-700">Cita adicional #{idx + 2}</span>
+                    <button
+                      type="button"
+                      onClick={() => setForm((f) => ({
+                        ...f,
+                        extraAppointments: f.extraAppointments.filter((_, i) => i !== idx),
+                      }))}
+                      className="text-rose-600 text-xs bg-transparent border-none cursor-pointer hover:underline"
+                    >
+                      Quitar
+                    </button>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <input
+                      type="date"
+                      value={it.date}
+                      onChange={(e) => setForm((f) => ({
+                        ...f,
+                        extraAppointments: f.extraAppointments.map((x, i) => i === idx ? { ...x, date: e.target.value } : x),
+                      }))}
+                      className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white"
+                    />
+                    <input
+                      type="time"
+                      value={it.startTime}
+                      onChange={(e) => setForm((f) => ({
+                        ...f,
+                        extraAppointments: f.extraAppointments.map((x, i) => i === idx ? { ...x, startTime: e.target.value } : x),
+                      }))}
+                      className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white"
+                    />
+                  </div>
+                  <input
+                    type="text"
+                    placeholder="Motivo (opcional)"
+                    value={it.reason}
+                    onChange={(e) => setForm((f) => ({
+                      ...f,
+                      extraAppointments: f.extraAppointments.map((x, i) => i === idx ? { ...x, reason: e.target.value } : x),
+                    }))}
+                    className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white"
+                  />
+                  <ServiceAutocomplete
+                    services={services}
+                    selectedIds={it.services || []}
+                    onAdd={(id) => setForm((f) => ({
+                      ...f,
+                      extraAppointments: f.extraAppointments.map((x, i) =>
+                        i === idx ? { ...x, services: (x.services || []).includes(id) ? x.services : [...(x.services || []), id] } : x
+                      ),
+                    }))}
+                    onRemove={(id) => setForm((f) => ({
+                      ...f,
+                      extraAppointments: f.extraAppointments.map((x, i) =>
+                        i === idx ? { ...x, services: (x.services || []).filter((s) => s !== id) } : x
+                      ),
+                    }))}
+                  />
+                </div>
+              ))}
+              <button
+                type="button"
+                onClick={() => setForm((f) => ({
+                  ...f,
+                  extraAppointments: [...(f.extraAppointments || []), { date: '', startTime: '', reason: '', services: [] }],
+                }))}
+                className="w-full text-xs py-2 rounded-lg border border-dashed border-emerald-300 text-emerald-700 bg-emerald-50/40 hover:bg-emerald-100 cursor-pointer"
+              >
+                + Agregar otra cita (mismo paciente)
+              </button>
+            </div>
+          )}
+
           <div className="flex justify-end gap-3 pt-3">
             <button
               type="button"
@@ -1257,7 +1362,7 @@ export default function Appointments() {
                 </ul>
               </div>
             )}
-            {hasRole('admin', 'cajero', 'call_center', 'enfermero') && detailModal.status !== 'completada' && (
+            {hasRole('admin', 'cajero', 'enfermero') && detailModal.status !== 'completada' && (
               <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-2">
                 <p className="text-xs font-medium text-slate-600 uppercase tracking-wide">Cambiar estado</p>
                 <div className="flex flex-wrap gap-2">
@@ -1302,14 +1407,16 @@ export default function Appointments() {
                 </div>
               </div>
             )}
-            <div className="flex justify-end pt-2">
-              <button
-                onClick={() => downloadPdf(detailModal._id)}
-                className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm bg-emerald-600 hover:bg-emerald-700 text-white border-none cursor-pointer"
-              >
-                <HiOutlineDocumentArrowDown className="w-4 h-4" /> Descargar PDF
-              </button>
-            </div>
+            {!isCallCenter && (
+              <div className="flex justify-end pt-2">
+                <button
+                  onClick={() => downloadPdf(detailModal._id)}
+                  className="flex items-center gap-2 px-4 py-2 rounded-xl text-sm bg-emerald-600 hover:bg-emerald-700 text-white border-none cursor-pointer"
+                >
+                  <HiOutlineDocumentArrowDown className="w-4 h-4" /> Descargar PDF
+                </button>
+              </div>
+            )}
           </div>
         )}
       </Modal>
@@ -1518,90 +1625,5 @@ function ServiceAutocomplete({ services, selectedIds, onAdd, onRemove }) {
   );
 }
 
-// Panel lateral que muestra las citas existentes en el mismo horario (date + startTime)
-// para que quien agenda pueda ver qué tan saturado está ese momento.
-function SameSlotPanel({ date, startTime, excludeId }) {
-  const [list, setList] = useState([]);
-  const [loading, setLoading] = useState(false);
-
-  useEffect(() => {
-    if (!date || !startTime) return undefined;
-    let cancel = false;
-    setLoading(true);
-    api.get('/appointments', { params: { startDate: date, endDate: date, fromTime: startTime, toTime: startTime } })
-      .then((r) => {
-        if (cancel) return;
-        const items = (r.data || []).filter((a) => String(a._id) !== String(excludeId || ''));
-        setList(items);
-      })
-      .catch(() => { if (!cancel) setList([]); })
-      .finally(() => { if (!cancel) setLoading(false); });
-    return () => { cancel = true; };
-  }, [date, startTime, excludeId]);
-
-  useEffect(() => {
-    if (!date || !startTime) setList([]);
-  }, [date, startTime]);
-
-  const fmtDateTitle = (d) => {
-    if (!d) return '';
-    const [y, mo, da] = d.split('-');
-    return `${da}/${mo}/${y}`;
-  };
-
-  return (
-    <aside className="border-l border-slate-200 lg:pl-5">
-      <div className="sticky top-0 space-y-3">
-        <div>
-          <h3 className="text-sm font-semibold text-slate-800">Citas en este horario</h3>
-          <p className="text-xs text-slate-500">
-            {date && startTime
-              ? <>Para <b>{fmtDateTitle(date)}</b> a las <b>{startTime}</b></>
-              : 'Selecciona fecha y hora para ver el horario'}
-          </p>
-        </div>
-        <div className="rounded-xl border border-slate-200 bg-slate-50/40 p-3 min-h-[200px] max-h-[420px] overflow-y-auto">
-          {!date || !startTime ? (
-            <p className="text-xs text-slate-400 text-center py-6">Sin fecha/hora seleccionada</p>
-          ) : loading ? (
-            <p className="text-xs text-slate-400 text-center py-6">Cargando...</p>
-          ) : list.length === 0 ? (
-            <div className="text-center py-6">
-              <p className="text-xs text-emerald-700 font-medium">✓ Horario libre</p>
-              <p className="text-[11px] text-slate-400 mt-1">No hay otras citas a esta hora.</p>
-            </div>
-          ) : (
-            <>
-              <p className="text-[11px] text-amber-700 font-semibold uppercase mb-2">
-                {list.length} cita{list.length === 1 ? '' : 's'} agendada{list.length === 1 ? '' : 's'}
-              </p>
-              <ul className="space-y-2">
-                {list.map((a) => (
-                  <li key={a._id} className="bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="font-medium text-slate-800 truncate">
-                        {a.patient?.firstName} {a.patient?.lastName}
-                      </span>
-                      <span className="text-[10px] text-slate-500 flex-shrink-0">{a.startTime}</span>
-                    </div>
-                    {a.doctor?.name && (
-                      <div className="text-[11px] text-emerald-700 mt-0.5">Dr. {a.doctor.name}</div>
-                    )}
-                    {Array.isArray(a.services) && a.services.length > 0 && (
-                      <div className="text-[11px] text-slate-500 mt-0.5 truncate">
-                        {a.services.map((s) => s.name).filter(Boolean).join(', ')}
-                      </div>
-                    )}
-                    {a.room?.name && (
-                      <div className="text-[11px] text-slate-400 mt-0.5">{a.room.name}</div>
-                    )}
-                  </li>
-                ))}
-              </ul>
-            </>
-          )}
-        </div>
-      </div>
-    </aside>
-  );
-}
+// SameSlotPanel ahora vive en components/SameSlotPanel.jsx y se reutiliza también
+// desde el modal de citas del chat.

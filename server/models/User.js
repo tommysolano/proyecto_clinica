@@ -32,6 +32,8 @@ const userSchema = new mongoose.Schema(
     specialty: { type: String, trim: true },
     phone: { type: String, trim: true },
     cedula: { type: String, trim: true },
+    // Firma digital del doctor (data URL base64 — imagen). Aparece en las recetas.
+    signatureImage: { type: String, default: '' },
     active: { type: Boolean, default: true },
   },
   { timestamps: true }

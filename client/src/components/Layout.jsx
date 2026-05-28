@@ -43,6 +43,7 @@ import {
   HiOutlineChevronRight,
   HiOutlineChatBubbleLeftRight,
   HiOutlineTrophy,
+  HiOutlineBolt,
 } from 'react-icons/hi2';
 
 // Cada item declara qué roles pueden verlo. superOnly = solo isSuperAdmin.
@@ -55,6 +56,9 @@ const ALL_ITEMS = [
   { path: '/referrals', label: 'Derivaciones', icon: HiOutlineArrowsRightLeft, roles: ['admin', 'marketing', 'cajero'] },
   { path: '/quotations', label: 'Cotizaciones', icon: HiOutlineDocumentDuplicate, roles: ['admin', 'cajero', 'call_center', 'contabilidad', 'marketing'] },
   { path: '/chats', label: 'Chats / WhatsApp', icon: HiOutlineChatBubbleLeftRight, roles: ['admin', 'call_center', 'marketing'] },
+  { path: '/opportunities', label: 'Oportunidades', icon: HiOutlineMegaphone, roles: ['admin', 'call_center', 'marketing'] },
+  { path: '/auto-messages', label: 'Mensajes automáticos', icon: HiOutlineBolt, roles: ['admin', 'call_center', 'marketing'] },
+  { path: '/analytics', label: 'Analíticas', icon: HiOutlineChartBar, roles: ['admin', 'marketing'] },
   { path: '/commissions', label: 'Comisiones', icon: HiOutlineTrophy, roles: ['admin', 'call_center', 'marketing'] },
   { path: '/commission-rules', label: 'Reglas de Comisión', icon: HiOutlineTrophy, roles: ['admin'] },
   { path: '/inventory', label: 'Inventario', icon: HiOutlineCube, roles: ['admin', 'contabilidad'] },

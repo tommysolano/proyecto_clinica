@@ -184,9 +184,9 @@ async function buildQuotationPdf(q, clinic, res, filename) {
     doc.text(`Válida hasta: ${new Date(q.validUntil).toLocaleDateString('es-EC')}`, 432, 82);
   }
 
-  // ========== Datos del cliente ==========
+  // ========== Datos del paciente ==========
   let y = 130;
-  doc.fillColor(GREEN).font('Helvetica-Bold').fontSize(10).text('CLIENTE', 40, y);
+  doc.fillColor(GREEN).font('Helvetica-Bold').fontSize(10).text('PACIENTE', 40, y);
   y += 14;
   doc.roundedRect(40, y, 520, 60, 6).fillAndStroke('#f8fafc', '#e2e8f0');
   doc.fillColor(SLATE).font('Helvetica-Bold').fontSize(12)

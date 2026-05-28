@@ -22,6 +22,9 @@ import Referrals from './pages/Referrals';
 import Quotations from './pages/Quotations';
 import Marketing from './pages/Marketing';
 import Chats from './pages/Chats';
+import OpportunitiesGlobal from './pages/OpportunitiesGlobal';
+import Analytics from './pages/Analytics';
+import AutoMessages from './pages/AutoMessages';
 import Commissions from './pages/Commissions';
 import CommissionRules from './pages/CommissionRules';
 import Settings from './pages/Settings';
@@ -207,6 +210,30 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'call_center', 'marketing']}>
                       <Chats />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/opportunities"
+                  element={
+                    <RoleRoute roles={['admin', 'call_center', 'marketing']}>
+                      <OpportunitiesGlobal />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/analytics"
+                  element={
+                    <RoleRoute roles={['admin', 'marketing']}>
+                      <Analytics />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/auto-messages"
+                  element={
+                    <RoleRoute roles={['admin', 'call_center', 'marketing']}>
+                      <AutoMessages />
                     </RoleRoute>
                   }
                 />

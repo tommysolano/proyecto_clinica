@@ -444,7 +444,7 @@ exports.printFollowUp = async (req, res) => {
     const record = await ClinicalRecord.findOne({
       clinic: req.clinicId,
       patient: patientId,
-    }).populate('followUps.createdBy', 'name specialty');
+    }).populate('followUps.createdBy', 'name specialty signatureImage');
     if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
 
     const fu = record.followUps.id(followUpId);
@@ -453,8 +453,49 @@ exports.printFollowUp = async (req, res) => {
     const patient = await Patient.findById(patientId);
     const Clinic = require('../models/Clinic');
     const clinic = await Clinic.findById(req.clinicId);
+    const doctorSignature = fu.createdBy?.signatureImage || '';
+    const doctorName = fu.createdBy?.name || '';
+    const doctorSpecialty = fu.createdBy?.specialty || '';
 
-    const fmtDate = new Date(fu.fecha).toLocaleDateString('es-EC');
+    // Fecha en formato dd/mm/aaaa para Ecuador
+    const fmtDate = (() => {
+      const d = new Date(fu.fecha);
+      const dd = String(d.getDate()).padStart(2, '0');
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const yyyy = d.getFullYear();
+      return `${dd}/${mm}/${yyyy}`;
+    })();
+    // Signos vitales
+    const vs = fu.vitalSigns || {};
+    const vitalsParts = [];
+    if (vs.bloodPressure) vitalsParts.push(`TA: ${vs.bloodPressure}`);
+    if (vs.heartRate) vitalsParts.push(`FC: ${vs.heartRate} lpm`);
+    if (vs.respiratoryRate) vitalsParts.push(`FR: ${vs.respiratoryRate} rpm`);
+    if (vs.temperature != null) vitalsParts.push(`T°: ${vs.temperature}°C`);
+    if (vs.oxygenSaturation) vitalsParts.push(`SatO₂: ${vs.oxygenSaturation}%`);
+    if (vs.weight) vitalsParts.push(`Peso: ${vs.weight} kg`);
+    if (vs.height) vitalsParts.push(`Talla: ${vs.height} cm`);
+    if (vs.glucose) vitalsParts.push(`Glucosa: ${vs.glucose} mg/dL`);
+    const vitalsHtml = vitalsParts.length
+      ? `<div class="box"><div class="label">Signos vitales</div><div>${vitalsParts.join(' &nbsp;·&nbsp; ')}</div></div>`
+      : '';
+    // Receta óptica
+    const rxOd = fu.opticaRx?.od || {};
+    const rxOi = fu.opticaRx?.oi || {};
+    const hasOptica = ['sph','cyl','ax','add','dnp','alt'].some((c) => (rxOd[c] || rxOi[c]));
+    const opticaHtml = hasOptica ? `
+      <div class="label" style="margin-top:8px">Receta óptica (RX)</div>
+      <table>
+        <thead><tr><th>RX</th><th>SPH</th><th>CYL</th><th>AX</th><th>ADD</th><th>DNP</th><th>ALT</th></tr></thead>
+        <tbody>
+          <tr><td style="padding:6px 8px;border:1px solid #e2e8f0"><b>OD</b></td>
+            ${['sph','cyl','ax','add','dnp','alt'].map((c) => `<td style="padding:6px 8px;border:1px solid #e2e8f0">${rxOd[c] || '—'}</td>`).join('')}
+          </tr>
+          <tr><td style="padding:6px 8px;border:1px solid #e2e8f0"><b>OI</b></td>
+            ${['sph','cyl','ax','add','dnp','alt'].map((c) => `<td style="padding:6px 8px;border:1px solid #e2e8f0">${rxOi[c] || '—'}</td>`).join('')}
+          </tr>
+        </tbody>
+      </table>` : '';
     const items = (fu.recetaItems || [])
       .map(
         (it) => `
@@ -513,7 +554,14 @@ exports.printFollowUp = async (req, res) => {
 
   ${fu.observaciones ? `<div class="box"><div class="label">Observaciones</div><div style="white-space:pre-wrap">${fu.observaciones}</div></div>` : ''}
 
-  <div class="sign">${fu.createdBy?.name ? `Dr. ${fu.createdBy.name}` : ''}<br/><span style="color:#94a3b8">Médico tratante</span></div>
+  ${vitalsHtml}
+  ${opticaHtml}
+
+  <div class="sign">
+    ${doctorSignature ? `<img src="${doctorSignature}" alt="Firma" style="max-height:60px;display:block;margin:0 auto 4px;" />` : ''}
+    ${doctorName ? `Dr. ${doctorName}` : ''}
+    <br/><span style="color:#94a3b8">${doctorSpecialty || 'Médico tratante'}</span>
+  </div>
 
   <div class="footer">Documento generado el ${new Date().toLocaleString('es-EC')}</div>
 </body></html>`;

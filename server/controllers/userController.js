@@ -147,6 +147,47 @@ exports.deleteUser = async (req, res) => {
 };
 
 /**
+ * Permite al usuario actual actualizar su propia firma digital.
+ * Recibe `signatureImage` como dataURL (image/png o image/jpeg) en base64.
+ */
+exports.updateMySignature = async (req, res) => {
+  try {
+    const { signatureImage } = req.body;
+    if (typeof signatureImage !== 'string') {
+      return res.status(400).json({ message: 'Firma inválida' });
+    }
+    if (signatureImage && !/^data:image\/(png|jpe?g|webp);base64,/.test(signatureImage)) {
+      return res.status(400).json({ message: 'Formato de imagen no soportado' });
+    }
+    // Limitar tamaño: ~300KB en base64
+    if (signatureImage && signatureImage.length > 400_000) {
+      return res.status(400).json({ message: 'La firma es demasiado grande (máx ~300KB)' });
+    }
+    const user = await User.findByIdAndUpdate(
+      req.user._id,
+      { signatureImage },
+      { new: true }
+    ).select('-password');
+    if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+    res.json({ message: 'Firma actualizada', signatureImage: user.signatureImage });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al actualizar firma', error: error.message });
+  }
+};
+
+/**
+ * Devuelve la firma del usuario actual.
+ */
+exports.getMySignature = async (req, res) => {
+  try {
+    const user = await User.findById(req.user._id).select('signatureImage');
+    res.json({ signatureImage: user?.signatureImage || '' });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al obtener firma' });
+  }
+};
+
+/**
  * Lista doctores de la clínica activa.
  */
 exports.getDoctors = async (req, res) => {

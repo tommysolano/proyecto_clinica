@@ -44,7 +44,7 @@ function canMutateConversation(req, conv) {
 
 exports.listConversations = async (req, res) => {
   try {
-    const { status, featured, opportunity, assigned, q, stage, agent } = req.query;
+    const { status, featured, opportunity, assigned, q, stage, agent, unread } = req.query;
     const filter = buildVisibilityFilter(req);
 
     if (status) filter.status = status;
@@ -54,6 +54,7 @@ exports.listConversations = async (req, res) => {
     if (assigned === 'me') filter.assignedTo = req.user._id;
     if (assigned === 'unassigned') filter.assignedTo = null;
     if (agent && mongoose.isValidObjectId(agent)) filter.assignedTo = agent;
+    if (unread === 'true') filter.unreadCount = { $gt: 0 };
 
     if (q) {
       const regex = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
@@ -245,6 +246,449 @@ exports.removeOpportunity = async (req, res) => {
   }
 };
 
+// =================== Múltiples oportunidades por chat ===================
+
+// Para cada item interestedIn intentamos resolver el precio actual desde el inventario.
+const enrichInterested = async (clinicId, items) => {
+  if (!Array.isArray(items)) return [];
+  const ids = items.map((i) => i.product).filter(Boolean);
+  if (ids.length === 0) return items.map((i) => ({ product: i.product, name: i.name }));
+  const products = await Product.find({ _id: { $in: ids }, clinic: clinicId }).select('name salePrice');
+  const byId = new Map(products.map((p) => [String(p._id), p]));
+  return items
+    .filter((i) => i.product)
+    .map((i) => {
+      const p = byId.get(String(i.product));
+      return { product: i.product, name: p?.name || i.name };
+    });
+};
+
+const sumInterestedValue = async (clinicId, items) => {
+  if (!Array.isArray(items)) return 0;
+  const ids = items.map((i) => i.product).filter(Boolean);
+  if (ids.length === 0) return 0;
+  const products = await Product.find({ _id: { $in: ids }, clinic: clinicId }).select('salePrice');
+  return products.reduce((s, p) => s + Number(p.salePrice || 0), 0);
+};
+
+exports.addOpportunity = async (req, res) => {
+  try {
+    const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
+    if (!canMutateConversation(req, conv)) {
+      return res.status(403).json({ message: 'No autorizado' });
+    }
+    const interestedIn = await enrichInterested(req.clinicId, req.body.interestedIn || []);
+    // El valor esperado se calcula desde el inventario; ignoramos cualquier precio que envíe el cliente.
+    const expectedValue = await sumInterestedValue(req.clinicId, interestedIn);
+    const opp = {
+      isOpportunity: true,
+      stage: req.body.stage || 'nuevo',
+      interestedIn,
+      expectedValue,
+      notes: req.body.notes || '',
+      createdAt: new Date(),
+    };
+    conv.opportunities = [...(conv.opportunities || []), opp];
+    // Mantener compat: opportunity principal = primera/última creada.
+    conv.opportunity = opp;
+    await conv.save();
+    res.status(201).json(conv);
+  } catch (err) {
+    res.status(500).json({ message: 'Error al crear oportunidad', error: err.message });
+  }
+};
+
+exports.updateOpportunityAt = async (req, res) => {
+  try {
+    const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
+    if (!canMutateConversation(req, conv)) return res.status(403).json({ message: 'No autorizado' });
+    const idx = Number(req.params.idx);
+    if (!Array.isArray(conv.opportunities) || !conv.opportunities[idx]) {
+      return res.status(404).json({ message: 'Oportunidad no encontrada' });
+    }
+    const current = conv.opportunities[idx];
+    if (Array.isArray(req.body.interestedIn)) {
+      current.interestedIn = await enrichInterested(req.clinicId, req.body.interestedIn);
+      current.expectedValue = await sumInterestedValue(req.clinicId, current.interestedIn);
+    }
+    if (req.body.stage) current.stage = req.body.stage;
+    if (req.body.notes !== undefined) current.notes = req.body.notes;
+    if (req.body.lostReason !== undefined) current.lostReason = req.body.lostReason;
+    if (req.body.stage === 'ganado' && !current.convertedAt) current.convertedAt = new Date();
+    conv.opportunities[idx] = current;
+    conv.markModified('opportunities');
+    await conv.save();
+    res.json(conv);
+  } catch (err) {
+    res.status(500).json({ message: 'Error al actualizar oportunidad', error: err.message });
+  }
+};
+
+exports.removeOpportunityAt = async (req, res) => {
+  try {
+    const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
+    if (!canMutateConversation(req, conv)) return res.status(403).json({ message: 'No autorizado' });
+    const idx = Number(req.params.idx);
+    conv.opportunities = (conv.opportunities || []).filter((_, i) => i !== idx);
+    await conv.save();
+    res.json(conv);
+  } catch (err) {
+    res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
+// =================== Bloquear contacto ===================
+
+exports.toggleBlocked = async (req, res) => {
+  try {
+    const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
+    if (!canMutateConversation(req, conv)) return res.status(403).json({ message: 'No autorizado' });
+    const next = req.body.blocked !== undefined ? !!req.body.blocked : !conv.blocked;
+    conv.blocked = next;
+    conv.blockedAt = next ? new Date() : null;
+    conv.blockedBy = next ? req.user._id : null;
+    await conv.save();
+    res.json(conv);
+  } catch (err) {
+    res.status(500).json({ message: 'Error al bloquear', error: err.message });
+  }
+};
+
+// =================== Saved Replies ===================
+
+const SavedReply = require('../models/SavedReply');
+
+exports.listSavedReplies = async (req, res) => {
+  try {
+    const list = await SavedReply.find({ clinic: req.clinicId }).sort({ shortcut: 1 });
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
+exports.createSavedReply = async (req, res) => {
+  try {
+    const { shortcut, title, body, shared } = req.body;
+    if (!shortcut || !body) return res.status(400).json({ message: 'shortcut y body requeridos' });
+    const reply = await SavedReply.create({
+      clinic: req.clinicId,
+      shortcut: String(shortcut).trim().toLowerCase().replace(/[^a-z0-9_-]/g, ''),
+      title: title || '',
+      body,
+      shared: shared !== false,
+      createdBy: req.user._id,
+    });
+    res.status(201).json(reply);
+  } catch (err) {
+    res.status(500).json({ message: 'Error al crear mensaje guardado', error: err.message });
+  }
+};
+
+exports.updateSavedReply = async (req, res) => {
+  try {
+    const r = await SavedReply.findOneAndUpdate(
+      { _id: req.params.id, clinic: req.clinicId },
+      req.body,
+      { new: true }
+    );
+    if (!r) return res.status(404).json({ message: 'No encontrado' });
+    res.json(r);
+  } catch (err) {
+    res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
+exports.deleteSavedReply = async (req, res) => {
+  try {
+    const r = await SavedReply.findOneAndDelete({ _id: req.params.id, clinic: req.clinicId });
+    if (!r) return res.status(404).json({ message: 'No encontrado' });
+    res.json({ message: 'Eliminado' });
+  } catch (err) {
+    res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
+// =================== Auto Messages ===================
+
+const AutoMessage = require('../models/AutoMessage');
+
+/**
+ * Evalúa las reglas de mensajes automáticos activas para una conversación recién
+ * tocada por un mensaje entrante. Envía como mensaje saliente automatizado los
+ * que coincidan, respetando trigger / audiencia / días / horario.
+ *
+ * - isNewConversation: true cuando la conversación se acaba de crear.
+ * - now: Date opcional para tests; por defecto Date.now().
+ */
+async function fireAutoMessages({ conv, clinicId, isNewConversation, now = new Date() }) {
+  try {
+    const rules = await AutoMessage.find({ clinic: clinicId, active: true });
+    if (rules.length === 0) return;
+
+    const dayOfWeek = now.getDay(); // 0=dom..6=sáb
+    const hh = String(now.getHours()).padStart(2, '0');
+    const mm = String(now.getMinutes()).padStart(2, '0');
+    const hhmm = `${hh}:${mm}`;
+
+    const audienceMatches = (rule) => {
+      if (rule.audience === 'new') return !conv.patient;
+      if (rule.audience === 'existing') return !!conv.patient;
+      return true;
+    };
+
+    for (const rule of rules) {
+      if (!audienceMatches(rule)) continue;
+      if (Array.isArray(rule.days) && rule.days.length && !rule.days.includes(dayOfWeek)) continue;
+
+      let shouldFire = false;
+      const inHours = (!rule.hourFrom || hhmm >= rule.hourFrom) && (!rule.hourTo || hhmm <= rule.hourTo);
+
+      if (rule.trigger === 'welcome' && isNewConversation && inHours) {
+        shouldFire = true;
+      } else if (rule.trigger === 'incoming' && inHours) {
+        shouldFire = true;
+      } else if (rule.trigger === 'out_of_hours' && !inHours) {
+        // Fuera del horario laboral — útil para "estamos cerrados, te respondemos mañana"
+        shouldFire = true;
+      }
+      // 'scheduled' lo dispara un cron, no este flujo de entrada.
+
+      if (!shouldFire) continue;
+      // eslint-disable-next-line no-await-in-loop
+      const msg = await Message.create({
+        clinic: clinicId,
+        conversation: conv._id,
+        direction: 'out',
+        body: rule.body,
+        deliveryStatus: 'sent',
+        isAutoReply: true,
+      });
+      conv.lastMessageAt = msg.createdAt;
+      conv.lastMessagePreview = String(rule.body || '').slice(0, 140);
+      conv.lastMessageDirection = 'out';
+    }
+    await conv.save();
+  } catch (err) {
+    console.error('[fireAutoMessages]', err);
+  }
+}
+
+exports.listAutoMessages = async (req, res) => {
+  try {
+    const list = await AutoMessage.find({ clinic: req.clinicId }).sort({ name: 1 });
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
+exports.createAutoMessage = async (req, res) => {
+  try {
+    const am = await AutoMessage.create({
+      ...req.body,
+      clinic: req.clinicId,
+      createdBy: req.user._id,
+    });
+    res.status(201).json(am);
+  } catch (err) {
+    res.status(500).json({ message: 'Error al crear', error: err.message });
+  }
+};
+
+exports.updateAutoMessage = async (req, res) => {
+  try {
+    const am = await AutoMessage.findOneAndUpdate(
+      { _id: req.params.id, clinic: req.clinicId },
+      req.body,
+      { new: true }
+    );
+    if (!am) return res.status(404).json({ message: 'No encontrado' });
+    res.json(am);
+  } catch (err) {
+    res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
+exports.deleteAutoMessage = async (req, res) => {
+  try {
+    const am = await AutoMessage.findOneAndDelete({ _id: req.params.id, clinic: req.clinicId });
+    if (!am) return res.status(404).json({ message: 'No encontrado' });
+    res.json({ message: 'Eliminado' });
+  } catch (err) {
+    res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
+// =================== Galería de imágenes ===================
+
+const ChatGalleryImage = require('../models/ChatGalleryImage');
+
+exports.listGallery = async (req, res) => {
+  try {
+    const list = await ChatGalleryImage.find({ clinic: req.clinicId })
+      .select('name mimeType size createdAt')
+      .sort({ createdAt: -1 });
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
+exports.uploadGallery = async (req, res) => {
+  try {
+    const { name, dataUrl } = req.body;
+    if (!dataUrl || !/^data:image\/(png|jpe?g|webp|gif);base64,/.test(dataUrl)) {
+      return res.status(400).json({ message: 'Imagen inválida' });
+    }
+    if (dataUrl.length > 2_500_000) {
+      return res.status(400).json({ message: 'Imagen demasiado grande (máx ~1.8MB)' });
+    }
+    const mimeMatch = dataUrl.match(/^data:(image\/[a-zA-Z0-9+]+);/);
+    const img = await ChatGalleryImage.create({
+      clinic: req.clinicId,
+      name: name || `imagen_${Date.now()}`,
+      dataUrl,
+      mimeType: mimeMatch ? mimeMatch[1] : 'image/png',
+      size: dataUrl.length,
+      createdBy: req.user._id,
+    });
+    res.status(201).json({ _id: img._id, name: img.name, mimeType: img.mimeType, size: img.size });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al subir', error: err.message });
+  }
+};
+
+exports.deleteGalleryItem = async (req, res) => {
+  try {
+    const r = await ChatGalleryImage.findOneAndDelete({ _id: req.params.id, clinic: req.clinicId });
+    if (!r) return res.status(404).json({ message: 'No encontrado' });
+    res.json({ message: 'Eliminado' });
+  } catch (err) {
+    res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
+exports.sendGalleryImage = async (req, res) => {
+  try {
+    const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
+    if (conv.blocked) return res.status(403).json({ message: 'Contacto bloqueado' });
+    const img = await ChatGalleryImage.findOne({ _id: req.body.imageId, clinic: req.clinicId });
+    if (!img) return res.status(404).json({ message: 'Imagen no encontrada' });
+    const msg = await Message.create({
+      clinic: req.clinicId,
+      conversation: conv._id,
+      direction: 'out',
+      body: req.body.caption || `[imagen: ${img.name}]`,
+      mediaUrl: img.dataUrl,
+      mediaType: 'image',
+      sentBy: req.user._id,
+      sentByName: req.user.name,
+    });
+    conv.lastMessagePreview = `[imagen]`;
+    conv.lastMessageAt = new Date();
+    conv.lastMessageDirection = 'out';
+    await conv.save();
+    res.status(201).json(msg);
+  } catch (err) {
+    res.status(500).json({ message: 'Error al enviar imagen', error: err.message });
+  }
+};
+
+// =================== Vista global de oportunidades ===================
+
+exports.listAllOpportunities = async (req, res) => {
+  try {
+    const { from, to, patient, service } = req.query;
+    const query = { clinic: req.clinicId };
+    const orFilters = [
+      { 'opportunity.isOpportunity': true },
+      { 'opportunities.0': { $exists: true } },
+    ];
+    query.$or = orFilters;
+    const list = await Conversation.find(query)
+      .populate('patient', 'firstName lastName cedula phone')
+      .sort({ lastMessageAt: -1 })
+      .limit(500);
+
+    // Aplanar para devolver una oportunidad por fila.
+    const rows = [];
+    for (const c of list) {
+      const opps = [];
+      if (c.opportunity?.isOpportunity) opps.push(c.opportunity);
+      if (Array.isArray(c.opportunities)) opps.push(...c.opportunities);
+      for (const op of opps) {
+        const created = op.createdAt ? new Date(op.createdAt) : null;
+        if (from && created && created < new Date(from)) continue;
+        if (to && created && created > new Date(`${to}T23:59:59`)) continue;
+        if (
+          service &&
+          !(op.interestedIn || []).some((i) => String(i.product) === String(service))
+        ) continue;
+        const fullName = `${c.patient?.firstName || ''} ${c.patient?.lastName || ''} ${c.contactName || ''}`.toLowerCase();
+        if (patient && !fullName.includes(String(patient).toLowerCase())) continue;
+        rows.push({
+          conversationId: c._id,
+          phone: c.phone,
+          contactName: c.contactName,
+          patient: c.patient,
+          stage: op.stage,
+          notes: op.notes,
+          expectedValue: op.expectedValue,
+          interestedIn: op.interestedIn,
+          createdAt: op.createdAt,
+        });
+      }
+    }
+    res.json(rows);
+  } catch (err) {
+    res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
+exports.bulkWhatsappOpportunities = async (req, res) => {
+  try {
+    const { conversationIds, body } = req.body;
+    if (!Array.isArray(conversationIds) || conversationIds.length === 0) {
+      return res.status(400).json({ message: 'Selecciona al menos una conversación' });
+    }
+    if (!body || !String(body).trim()) {
+      return res.status(400).json({ message: 'Mensaje vacío' });
+    }
+    const convs = await Conversation.find({
+      _id: { $in: conversationIds },
+      clinic: req.clinicId,
+      blocked: { $ne: true },
+    });
+    let sent = 0;
+    for (const c of convs) {
+      // eslint-disable-next-line no-await-in-loop
+      await Message.create({
+        clinic: req.clinicId,
+        conversation: c._id,
+        direction: 'out',
+        body: String(body).trim(),
+        sentBy: req.user._id,
+        sentByName: req.user.name,
+      });
+      c.lastMessagePreview = String(body).slice(0, 140);
+      c.lastMessageAt = new Date();
+      c.lastMessageDirection = 'out';
+      // eslint-disable-next-line no-await-in-loop
+      await c.save();
+      sent++;
+    }
+    res.json({ sent, total: conversationIds.length });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al enviar masivo', error: err.message });
+  }
+};
+
 // =================== Mensajes ===================
 
 exports.listMessages = async (req, res) => {
@@ -276,6 +720,9 @@ exports.sendMessage = async (req, res) => {
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
     if (!canMutateConversation(req, conv)) {
       return res.status(403).json({ message: 'No puedes enviar mensajes en esta conversación' });
+    }
+    if (conv.blocked) {
+      return res.status(403).json({ message: 'Este contacto está bloqueado.' });
     }
     const body = (req.body.body || '').toString().trim();
     if (!body && !req.body.mediaUrl) {
@@ -369,6 +816,7 @@ exports.webhookReceive = async (req, res) => {
       const phone = normalizePhone(ev.phone);
       if (!phone) continue;
       let conv = await Conversation.findOne({ clinic: clinicId, phone });
+      let isNewConversation = false;
       if (!conv) {
         const patient = await Patient.findOne({
           clinic: clinicId,
@@ -381,7 +829,10 @@ exports.webhookReceive = async (req, res) => {
           patient: patient?._id || null,
           channel: 'whatsapp',
         });
+        isNewConversation = true;
       }
+      // Si el contacto está bloqueado, descartamos el mensaje silenciosamente.
+      if (conv.blocked) continue;
       await Message.create({
         clinic: clinicId,
         conversation: conv._id,
@@ -396,6 +847,13 @@ exports.webhookReceive = async (req, res) => {
       conv.unreadCount = (conv.unreadCount || 0) + 1;
       if (conv.status === 'closed') conv.status = 'open';
       await conv.save();
+
+      // Disparar mensajes automáticos configurados
+      await fireAutoMessages({
+        conv,
+        clinicId,
+        isNewConversation,
+      });
     }
     res.status(200).json({ received: events.length });
   } catch (err) {
@@ -417,6 +875,7 @@ exports.simulateIncoming = async (req, res) => {
     if (!body) return res.status(400).json({ message: 'Mensaje vacío' });
 
     let conv = await Conversation.findOne({ clinic: req.clinicId, phone });
+    let isNewConversation = false;
     if (!conv) {
       const patient = await Patient.findOne({
         clinic: req.clinicId,
@@ -431,6 +890,10 @@ exports.simulateIncoming = async (req, res) => {
         patient: patient?._id || null,
         channel: 'whatsapp',
       });
+      isNewConversation = true;
+    }
+    if (conv.blocked) {
+      return res.status(403).json({ message: 'Este contacto está bloqueado.' });
     }
     const msg = await Message.create({
       clinic: req.clinicId,
@@ -445,6 +908,14 @@ exports.simulateIncoming = async (req, res) => {
     conv.unreadCount = (conv.unreadCount || 0) + 1;
     if (conv.status === 'closed') conv.status = 'open';
     await conv.save();
+
+    // Disparar mensajes automáticos configurados
+    await fireAutoMessages({
+      conv,
+      clinicId: req.clinicId,
+      isNewConversation,
+    });
+
     res.status(201).json({ conversation: conv, message: msg });
   } catch (err) {
     res.status(500).json({ message: 'Error al simular mensaje', error: err.message });

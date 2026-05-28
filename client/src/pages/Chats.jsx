@@ -20,6 +20,7 @@ import {
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
+import SameSlotPanel from '../components/SameSlotPanel';
 
 const STAGES = [
   { value: 'nuevo', label: 'Nuevo', color: 'bg-slate-100 text-slate-700' },
@@ -59,6 +60,13 @@ export default function Chats() {
   const [services, setServices] = useState([]);
   const [loading, setLoading] = useState(false);
   const [draft, setDraft] = useState('');
+  // Mensajes guardados y galería
+  const [savedReplies, setSavedReplies] = useState([]);
+  const [slashOpen, setSlashOpen] = useState(false);
+  const [slashQuery, setSlashQuery] = useState('');
+  const [gallery, setGallery] = useState([]);
+  const [galleryOpen, setGalleryOpen] = useState(false);
+  const [savedRepliesModal, setSavedRepliesModal] = useState(false);
   const [newChatModal, setNewChatModal] = useState(false);
   const [simulateModal, setSimulateModal] = useState(false);
   const [opportunityModal, setOpportunityModal] = useState(false);
@@ -115,6 +123,8 @@ export default function Chats() {
         );
       })
       .catch(() => {});
+    api.get('/chats/saved-replies').then((r) => setSavedReplies(r.data || [])).catch(() => {});
+    api.get('/chats/gallery').then((r) => setGallery(r.data || [])).catch(() => {});
     loadStats();
   }, []);
 
@@ -123,6 +133,7 @@ export default function Chats() {
     if (tab === 'mine') params.assigned = 'me';
     if (tab === 'featured') params.featured = 'true';
     if (tab === 'opportunities') params.opportunity = 'true';
+    if (tab === 'unread') params.unread = 'true';
     if (search) params.q = search;
     loadConversations(params);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -251,6 +262,7 @@ export default function Chats() {
       <div className="flex gap-1 mb-2 border-b border-slate-200">
         {[
           { id: 'all', label: 'Todos' },
+          { id: 'unread', label: 'No leídos' },
           { id: 'mine', label: 'Mis chats' },
           { id: 'featured', label: 'Destacados' },
           { id: 'opportunities', label: 'Oportunidades' },
@@ -292,7 +304,13 @@ export default function Chats() {
                 />
               </div>
               <button
-                onClick={() => loadConversations(tab === 'mine' ? { assigned: 'me' } : tab === 'featured' ? { featured: 'true' } : tab === 'opportunities' ? { opportunity: 'true' } : {})}
+                onClick={() => loadConversations(
+                  tab === 'mine' ? { assigned: 'me' }
+                    : tab === 'featured' ? { featured: 'true' }
+                    : tab === 'opportunities' ? { opportunity: 'true' }
+                    : tab === 'unread' ? { unread: 'true' }
+                    : {}
+                )}
                 className="p-1.5 text-slate-500 hover:bg-slate-50 rounded-lg"
                 title="Recargar"
               >
@@ -340,27 +358,99 @@ export default function Chats() {
                     <MessageBubble key={m._id} msg={m} />
                   ))}
                 </div>
-                <div className="border-t border-slate-100 p-2 flex gap-2">
-                  <textarea
-                    value={draft}
-                    onChange={(e) => setDraft(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === 'Enter' && !e.shiftKey) {
-                        e.preventDefault();
-                        sendMessage();
-                      }
-                    }}
-                    placeholder="Escribe un mensaje..."
-                    rows={2}
-                    className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm resize-none"
-                  />
-                  <button
-                    onClick={sendMessage}
-                    disabled={!draft.trim()}
-                    className="px-3 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1"
-                  >
-                    <HiOutlinePaperAirplane className="w-4 h-4" /> Enviar
-                  </button>
+                <div className="border-t border-slate-100 p-2">
+                  {activeConv?.blocked && (
+                    <div className="mb-2 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded px-2 py-1">
+                      Contacto bloqueado. Desbloquéalo desde el panel lateral para enviar mensajes.
+                    </div>
+                  )}
+                  <div className="relative flex gap-2 items-end">
+                    {slashOpen && (
+                      <div className="absolute bottom-full left-0 mb-1 w-72 max-h-64 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg z-30">
+                        {savedReplies
+                          .filter((r) => !slashQuery || r.shortcut.includes(slashQuery) || (r.title || '').toLowerCase().includes(slashQuery))
+                          .slice(0, 20)
+                          .map((r) => (
+                            <button
+                              key={r._id}
+                              type="button"
+                              onMouseDown={(e) => {
+                                e.preventDefault();
+                                setDraft(r.body);
+                                setSlashOpen(false);
+                                setSlashQuery('');
+                              }}
+                              className="w-full text-left px-3 py-2 hover:bg-emerald-50 border-b border-slate-50 text-sm bg-white cursor-pointer"
+                            >
+                              <div className="font-semibold text-emerald-700 text-xs">/{r.shortcut}</div>
+                              <div className="text-slate-600 text-xs truncate">{r.body}</div>
+                            </button>
+                          ))}
+                        {savedReplies.length === 0 && (
+                          <div className="px-3 py-2 text-xs text-slate-400">
+                            Sin mensajes guardados. Configúralos en{' '}
+                            <button
+                              type="button"
+                              onMouseDown={(e) => { e.preventDefault(); setSavedRepliesModal(true); setSlashOpen(false); }}
+                              className="underline text-emerald-700 bg-transparent border-none cursor-pointer p-0"
+                            >ajustes</button>.
+                          </div>
+                        )}
+                      </div>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setGalleryOpen(true)}
+                      className="px-2 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 cursor-pointer"
+                      title="Galería de imágenes"
+                    >
+                      🖼
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSavedRepliesModal(true)}
+                      className="px-2 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 cursor-pointer text-xs"
+                      title="Mensajes guardados"
+                    >
+                      /
+                    </button>
+                    <textarea
+                      value={draft}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setDraft(v);
+                        // Detectar comando "/" al inicio del último token
+                        const lastSlashAt = v.lastIndexOf('/');
+                        if (lastSlashAt >= 0 && (lastSlashAt === 0 || /\s/.test(v[lastSlashAt - 1]))) {
+                          const q = v.slice(lastSlashAt + 1).toLowerCase();
+                          if (!q.includes(' ')) {
+                            setSlashQuery(q);
+                            setSlashOpen(true);
+                            return;
+                          }
+                        }
+                        setSlashOpen(false);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape') setSlashOpen(false);
+                        if (e.key === 'Enter' && !e.shiftKey) {
+                          e.preventDefault();
+                          sendMessage();
+                        }
+                      }}
+                      placeholder="Escribe un mensaje... (usa / para mensajes guardados)"
+                      rows={2}
+                      disabled={!!activeConv?.blocked}
+                      className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm resize-none disabled:bg-slate-100"
+                    />
+                    <button
+                      onClick={sendMessage}
+                      disabled={!draft.trim() || !!activeConv?.blocked}
+                      className="px-3 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1"
+                    >
+                      <HiOutlinePaperAirplane className="w-4 h-4" /> Enviar
+                    </button>
+                  </div>
                 </div>
               </>
             )}
@@ -438,7 +528,244 @@ export default function Chats() {
           }}
         />
       )}
+      {savedRepliesModal && (
+        <SavedRepliesModal
+          replies={savedReplies}
+          onClose={() => setSavedRepliesModal(false)}
+          onChange={(list) => setSavedReplies(list)}
+        />
+      )}
+      {galleryOpen && (
+        <GalleryModal
+          images={gallery}
+          onClose={() => setGalleryOpen(false)}
+          onChange={(list) => setGallery(list)}
+          onSend={async (imgId, caption) => {
+            if (!activeId) {
+              toast.error('Selecciona un chat');
+              return;
+            }
+            try {
+              await api.post(`/chats/${activeId}/send-image`, { imageId: imgId, caption });
+              toast.success('Imagen enviada');
+              setGalleryOpen(false);
+              loadMessages(activeId);
+            } catch (err) {
+              toast.error(err.response?.data?.message || 'Error al enviar');
+            }
+          }}
+        />
+      )}
     </div>
+  );
+}
+
+// ============= Modales nuevos =============
+
+function SavedRepliesModal({ replies, onClose, onChange }) {
+  const [list, setList] = useState(replies);
+  const [editing, setEditing] = useState(null);
+  const [form, setForm] = useState({ shortcut: '', title: '', body: '' });
+
+  const save = async () => {
+    if (!form.shortcut || !form.body) {
+      toast.error('Atajo y mensaje requeridos');
+      return;
+    }
+    try {
+      if (editing) {
+        const r = await api.put(`/chats/saved-replies/${editing}`, form);
+        const next = list.map((x) => (x._id === editing ? r.data : x));
+        setList(next);
+        onChange?.(next);
+      } else {
+        const r = await api.post('/chats/saved-replies', form);
+        const next = [...list, r.data];
+        setList(next);
+        onChange?.(next);
+      }
+      setEditing(null);
+      setForm({ shortcut: '', title: '', body: '' });
+      toast.success('Guardado');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error');
+    }
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm('¿Eliminar este mensaje guardado?')) return;
+    try {
+      await api.delete(`/chats/saved-replies/${id}`);
+      const next = list.filter((x) => x._id !== id);
+      setList(next);
+      onChange?.(next);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error');
+    }
+  };
+
+  return (
+    <ModalShell title="Mensajes guardados" onClose={onClose} size="lg">
+      <div className="space-y-3">
+        <div className="bg-emerald-50 border border-emerald-100 rounded p-2 text-xs text-emerald-800">
+          Usa <code className="font-mono bg-white px-1 py-0.5 rounded">/atajo</code> en el chat para insertarlos rápidamente.
+        </div>
+        <div className="grid grid-cols-12 gap-2">
+          <input
+            placeholder="atajo (ej. saludo)"
+            value={form.shortcut}
+            onChange={(e) => setForm({ ...form, shortcut: e.target.value.toLowerCase().replace(/\s/g, '') })}
+            className="col-span-3 border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+          />
+          <input
+            placeholder="título (opcional)"
+            value={form.title}
+            onChange={(e) => setForm({ ...form, title: e.target.value })}
+            className="col-span-4 border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+          />
+          <input
+            placeholder="mensaje"
+            value={form.body}
+            onChange={(e) => setForm({ ...form, body: e.target.value })}
+            className="col-span-5 border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+          />
+        </div>
+        <div className="flex justify-end gap-2">
+          {editing && (
+            <button
+              type="button"
+              onClick={() => { setEditing(null); setForm({ shortcut: '', title: '', body: '' }); }}
+              className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-white"
+            >
+              Cancelar
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={save}
+            className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 border-none cursor-pointer"
+          >
+            {editing ? 'Actualizar' : 'Agregar'}
+          </button>
+        </div>
+        <ul className="space-y-1 max-h-80 overflow-y-auto">
+          {list.length === 0 && <li className="text-xs text-slate-400 text-center py-4">Sin mensajes guardados.</li>}
+          {list.map((r) => (
+            <li key={r._id} className="flex items-start gap-2 border border-slate-100 rounded p-2 bg-slate-50/40">
+              <span className="text-xs font-mono bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded">/{r.shortcut}</span>
+              <div className="flex-1 min-w-0">
+                {r.title && <div className="text-xs font-semibold text-slate-700">{r.title}</div>}
+                <div className="text-xs text-slate-600 truncate">{r.body}</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => { setEditing(r._id); setForm({ shortcut: r.shortcut, title: r.title || '', body: r.body }); }}
+                className="text-emerald-700 text-xs bg-transparent border-none cursor-pointer"
+              >Editar</button>
+              <button
+                type="button"
+                onClick={() => remove(r._id)}
+                className="text-rose-600 text-xs bg-transparent border-none cursor-pointer"
+              >Eliminar</button>
+            </li>
+          ))}
+        </ul>
+      </div>
+    </ModalShell>
+  );
+}
+
+function GalleryModal({ images, onClose, onChange, onSend }) {
+  const [list, setList] = useState(images);
+  const [caption, setCaption] = useState('');
+  const [selected, setSelected] = useState('');
+  const fileRef = useRef(null);
+
+  const upload = async (file) => {
+    if (!file) return;
+    if (!file.type.startsWith('image/')) return toast.error('Solo imágenes');
+    if (file.size > 1.8 * 1024 * 1024) return toast.error('Máximo 1.8MB');
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        const r = await api.post('/chats/gallery', { name: file.name, dataUrl: ev.target.result });
+        const next = [r.data, ...list];
+        setList(next);
+        onChange?.(next);
+        toast.success('Imagen subida');
+      } catch (err) {
+        toast.error(err.response?.data?.message || 'Error');
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  const remove = async (id) => {
+    if (!window.confirm('¿Eliminar imagen?')) return;
+    try {
+      await api.delete(`/chats/gallery/${id}`);
+      const next = list.filter((x) => x._id !== id);
+      setList(next);
+      onChange?.(next);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error');
+    }
+  };
+
+  return (
+    <ModalShell title="Galería de imágenes" onClose={onClose} size="lg">
+      <div className="space-y-3">
+        <input
+          ref={fileRef}
+          type="file"
+          accept="image/*"
+          className="hidden"
+          onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; if (f) upload(f); }}
+        />
+        <button
+          type="button"
+          onClick={() => fileRef.current?.click()}
+          className="w-full text-xs py-2 rounded-lg border border-dashed border-emerald-300 text-emerald-700 bg-emerald-50/40 hover:bg-emerald-100 cursor-pointer"
+        >
+          + Subir nueva imagen
+        </button>
+        <div className="grid grid-cols-3 gap-2 max-h-80 overflow-y-auto">
+          {list.map((img) => (
+            <div key={img._id} className={`border rounded p-1 cursor-pointer ${selected === img._id ? 'border-emerald-500 ring-2 ring-emerald-200' : 'border-slate-200'}`}
+              onClick={() => setSelected(img._id)}>
+              <div className="aspect-square bg-slate-100 rounded flex items-center justify-center text-3xl">
+                🖼
+              </div>
+              <div className="text-[10px] text-slate-500 truncate mt-1">{img.name}</div>
+              <button
+                type="button"
+                onClick={(e) => { e.stopPropagation(); remove(img._id); }}
+                className="text-[10px] text-rose-600 bg-transparent border-none cursor-pointer mt-1"
+              >Eliminar</button>
+            </div>
+          ))}
+        </div>
+        <input
+          placeholder="Caption (opcional)"
+          value={caption}
+          onChange={(e) => setCaption(e.target.value)}
+          className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+        />
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-white"
+          >Cancelar</button>
+          <button
+            type="button"
+            disabled={!selected}
+            onClick={() => onSend(selected, caption)}
+            className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded-lg disabled:opacity-50 border-none cursor-pointer"
+          >Enviar</button>
+        </div>
+      </div>
+    </ModalShell>
   );
 }
 
@@ -604,6 +931,21 @@ function SidePanel({ conv, onUpdated, onEditOpportunity, onScheduleAppointment, 
   const op = conv.opportunity || {};
   const meta = op.isOpportunity ? stageMeta(op.stage) : null;
   const [registerModal, setRegisterModal] = useState(false);
+  const [appts, setAppts] = useState([]);
+
+  // Cargar citas del paciente vinculado para mostrar cuántas tiene y sus fechas.
+  useEffect(() => {
+    if (!conv.patient?._id && !conv.patient) {
+      setAppts([]);
+      return;
+    }
+    const pid = conv.patient?._id || conv.patient;
+    api
+      .get('/appointments', { params: { patient: pid, limit: 100 } })
+      .then((r) => setAppts(Array.isArray(r.data) ? r.data : r.data?.appointments || []))
+      .catch(() => setAppts([]));
+  }, [conv.patient]);
+
   return (
     <div className="space-y-3">
       <div>
@@ -699,13 +1041,76 @@ function SidePanel({ conv, onUpdated, onEditOpportunity, onScheduleAppointment, 
         </div>
       )}
 
+      {conv.patient && (
+        <div>
+          <div className="text-xs font-semibold text-slate-500 mb-1 flex items-center justify-between">
+            <span>Citas del paciente</span>
+            <span className="bg-emerald-100 text-emerald-700 text-[10px] px-1.5 rounded-full">
+              {appts.length}
+            </span>
+          </div>
+          {appts.length === 0 ? (
+            <div className="text-xs text-slate-400">Sin citas registradas.</div>
+          ) : (
+            <ul className="space-y-1 max-h-44 overflow-y-auto pr-1">
+              {appts
+                .sort((a, b) => new Date(b.date) - new Date(a.date))
+                .slice(0, 10)
+                .map((a) => {
+                  const dt = new Date(a.date);
+                  const dd = String(dt.getDate()).padStart(2, '0');
+                  const mm = String(dt.getMonth() + 1).padStart(2, '0');
+                  return (
+                    <li key={a._id} className="text-xs text-slate-600 flex items-center justify-between bg-slate-50 rounded px-2 py-1">
+                      <span>
+                        {dd}/{mm}/{dt.getFullYear()} · {a.startTime}
+                      </span>
+                      <span className="text-[10px] uppercase tracking-wide text-slate-400">
+                        {a.status}
+                      </span>
+                    </li>
+                  );
+                })}
+            </ul>
+          )}
+        </div>
+      )}
+
       <div>
         <div className="text-xs font-semibold text-slate-500 mb-1">Detalles</div>
         <div className="text-xs text-slate-600 space-y-0.5">
           <div>Canal: <span className="text-slate-800">{conv.channel}</span></div>
           <div>Estado: <span className="text-slate-800">{conv.status}</span></div>
-          <div>Creado: {new Date(conv.createdAt).toLocaleDateString()}</div>
+          <div>Creado: {(() => {
+            const d = new Date(conv.createdAt);
+            const dd = String(d.getDate()).padStart(2, '0');
+            const mm = String(d.getMonth() + 1).padStart(2, '0');
+            return `${dd}/${mm}/${d.getFullYear()}`;
+          })()}</div>
+          {conv.blocked && (
+            <div className="text-rose-600 font-semibold">⛔ Contacto bloqueado</div>
+          )}
         </div>
+        <button
+          onClick={async () => {
+            const action = conv.blocked ? 'desbloquear' : 'bloquear';
+            if (!window.confirm(`¿${action} este contacto?`)) return;
+            try {
+              const r = await api.post(`/chats/${conv._id}/block`, { blocked: !conv.blocked });
+              onUpdated?.(r.data);
+              toast.success(conv.blocked ? 'Contacto desbloqueado' : 'Contacto bloqueado');
+            } catch (err) {
+              toast.error(err.response?.data?.message || 'Error');
+            }
+          }}
+          className={`w-full mt-2 text-xs px-2 py-1.5 rounded-lg border cursor-pointer ${
+            conv.blocked
+              ? 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100'
+              : 'bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100'
+          }`}
+        >
+          {conv.blocked ? 'Desbloquear contacto' : 'Bloquear contacto'}
+        </button>
       </div>
     </div>
   );
@@ -883,34 +1288,59 @@ function SimulateModal({ onClose, onSimulated }) {
 }
 
 function OpportunityModal({ conv, services, onClose, onSaved }) {
-  const op = conv.opportunity || {};
-  const [stage, setStage] = useState(op.stage || 'nuevo');
-  const [expectedValue, setExpectedValue] = useState(op.expectedValue || 0);
-  const [notes, setNotes] = useState(op.notes || '');
-  const [lostReason, setLostReason] = useState(op.lostReason || '');
-  const [interested, setInterested] = useState(
-    (op.interestedIn || []).map((s) => s.product?._id || s.product || '')
-  );
+  // Soporta MÚLTIPLES oportunidades por chat. Para compatibilidad, si solo existe
+  // la oportunidad legacy `opportunity`, la convertimos al array en pantalla.
+  const initial = useMemo(() => {
+    const list = Array.isArray(conv.opportunities) && conv.opportunities.length > 0
+      ? conv.opportunities
+      : (conv.opportunity?.isOpportunity ? [conv.opportunity] : []);
+    return list.map((op) => ({
+      _existingIdx: list === conv.opportunities ? list.indexOf(op) : -1,
+      stage: op.stage || 'nuevo',
+      notes: op.notes || '',
+      lostReason: op.lostReason || '',
+      interested: (op.interestedIn || []).map((s) => s.product?._id || s.product || '').filter(Boolean),
+    }));
+  }, [conv]);
+  const [items, setItems] = useState(initial.length > 0 ? initial : [{ stage: 'nuevo', notes: '', lostReason: '', interested: [] }]);
   const [saving, setSaving] = useState(false);
+
+  // Calcular valor esperado desde inventario (precio del producto).
+  const valueOf = (interested) =>
+    interested
+      .filter(Boolean)
+      .reduce((sum, id) => {
+        const s = services.find((x) => x._id === id);
+        return sum + (s ? Number(s.salePrice || 0) : 0);
+      }, 0);
 
   const submit = async () => {
     setSaving(true);
     try {
-      const payload = {
-        stage,
-        expectedValue: Number(expectedValue) || 0,
-        notes,
-        lostReason: stage === 'perdido' ? lostReason : '',
-        interestedIn: interested
-          .filter(Boolean)
-          .map((id) => {
+      let nextConv = conv;
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        const payload = {
+          stage: it.stage,
+          notes: it.notes,
+          lostReason: it.stage === 'perdido' ? it.lostReason : '',
+          interestedIn: it.interested.filter(Boolean).map((id) => {
             const s = services.find((x) => x._id === id);
             return { product: id, name: s?.name };
           }),
-      };
-      const r = await api.post(`/chats/${conv._id}/opportunity`, payload);
-      onSaved(r.data);
-      toast.success('Oportunidad guardada');
+        };
+        if (it._existingIdx >= 0) {
+          // eslint-disable-next-line no-await-in-loop
+          const r = await api.put(`/chats/${conv._id}/opportunities/${it._existingIdx}`, payload);
+          nextConv = r.data;
+        } else {
+          // eslint-disable-next-line no-await-in-loop
+          const r = await api.post(`/chats/${conv._id}/opportunities`, payload);
+          nextConv = r.data;
+        }
+      }
+      onSaved(nextConv);
+      toast.success('Oportunidades guardadas');
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error');
     } finally {
@@ -918,97 +1348,105 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
     }
   };
 
-  const removeOpportunity = async () => {
-    if (!window.confirm('¿Quitar el estado de oportunidad?')) return;
-    try {
-      const r = await api.delete(`/chats/${conv._id}/opportunity`);
-      onSaved(r.data);
-      toast.success('Removido');
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Error');
+  const removeOne = async (idx, existingIdx) => {
+    if (existingIdx >= 0) {
+      if (!window.confirm('¿Eliminar esta oportunidad?')) return;
+      try {
+        const r = await api.delete(`/chats/${conv._id}/opportunities/${existingIdx}`);
+        onSaved(r.data);
+        toast.success('Eliminada');
+      } catch (err) {
+        toast.error(err.response?.data?.message || 'Error');
+      }
     }
+    setItems((prev) => prev.filter((_, i) => i !== idx));
   };
 
   return (
-    <ModalShell title="Oportunidad" onClose={onClose}>
-      <div className="space-y-3 text-sm">
-        <div>
-          <label className="text-xs font-semibold text-slate-600 block mb-1">Etapa</label>
-          <div className="flex flex-wrap gap-1">
-            {STAGES.map((s) => (
+    <ModalShell title="Oportunidades" onClose={onClose} size="lg">
+      <div className="space-y-4 text-sm">
+        {items.map((it, idx) => (
+          <div key={idx} className="border border-emerald-200 rounded-xl p-3 bg-emerald-50/40 space-y-3">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-bold text-emerald-700">Oportunidad #{idx + 1}</span>
               <button
-                key={s.value}
-                onClick={() => setStage(s.value)}
-                className={`text-xs px-2 py-1 rounded ${
-                  stage === s.value ? s.color + ' ring-2 ring-emerald-400' : 'bg-slate-50 text-slate-500'
-                }`}
+                type="button"
+                onClick={() => removeOne(idx, it._existingIdx)}
+                className="text-rose-600 text-xs bg-transparent border-none cursor-pointer"
               >
-                {s.label}
+                Quitar
               </button>
-            ))}
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-600 block mb-1">Etapa</label>
+              <div className="flex flex-wrap gap-1">
+                {STAGES.map((s) => (
+                  <button
+                    key={s.value}
+                    type="button"
+                    onClick={() => setItems((prev) => prev.map((x, i) => i === idx ? { ...x, stage: s.value } : x))}
+                    className={`text-xs px-2 py-1 rounded ${
+                      it.stage === s.value ? s.color + ' ring-2 ring-emerald-400' : 'bg-slate-50 text-slate-500'
+                    }`}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-600 block mb-1">Servicios de interés</label>
+              <ChatServicePicker
+                services={services}
+                selectedIds={it.interested}
+                onAdd={(pid) => setItems((prev) => prev.map((x, i) => i === idx ? { ...x, interested: x.interested.includes(pid) ? x.interested : [...x.interested, pid] } : x))}
+                onRemove={(pid) => setItems((prev) => prev.map((x, i) => i === idx ? { ...x, interested: x.interested.filter((y) => y !== pid) } : x))}
+              />
+              <div className="text-[11px] text-emerald-700 mt-1">
+                Valor esperado (desde inventario): <b>${valueOf(it.interested).toFixed(2)}</b>
+              </div>
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-600 block mb-1">Notas</label>
+              <textarea
+                value={it.notes}
+                onChange={(e) => setItems((prev) => prev.map((x, i) => i === idx ? { ...x, notes: e.target.value } : x))}
+                rows={2}
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm resize-none bg-white"
+              />
+            </div>
+            {it.stage === 'perdido' && (
+              <div>
+                <label className="text-xs font-semibold text-slate-600 block mb-1">Motivo (perdido)</label>
+                <input
+                  value={it.lostReason}
+                  onChange={(e) => setItems((prev) => prev.map((x, i) => i === idx ? { ...x, lostReason: e.target.value } : x))}
+                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white"
+                />
+              </div>
+            )}
           </div>
-        </div>
-        <div>
-          <label className="text-xs font-semibold text-slate-600 block mb-1">
-            Servicios de interés
-          </label>
-          <select
-            multiple
-            value={interested}
-            onChange={(e) =>
-              setInterested(Array.from(e.target.selectedOptions).map((o) => o.value))
-            }
-            className="w-full border border-slate-200 rounded-lg px-2 py-1 text-sm h-32"
-          >
-            {services.map((s) => (
-              <option key={s._id} value={s._id}>
-                {s.name}
-              </option>
-            ))}
-          </select>
-          <div className="text-[10px] text-slate-400 mt-1">Ctrl+clic para seleccionar varios</div>
-        </div>
-        <div>
-          <label className="text-xs font-semibold text-slate-600 block mb-1">Valor esperado (USD)</label>
-          <input
-            type="number"
-            value={expectedValue}
-            onChange={(e) => setExpectedValue(e.target.value)}
-            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
-          />
-        </div>
-        <div>
-          <label className="text-xs font-semibold text-slate-600 block mb-1">Notas</label>
-          <textarea
-            value={notes}
-            onChange={(e) => setNotes(e.target.value)}
-            rows={2}
-            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm resize-none"
-          />
-        </div>
-        {stage === 'perdido' && (
-          <div>
-            <label className="text-xs font-semibold text-slate-600 block mb-1">Motivo (perdido)</label>
-            <input
-              value={lostReason}
-              onChange={(e) => setLostReason(e.target.value)}
-              className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
-            />
-          </div>
-        )}
-        <div className="flex justify-between gap-2 pt-1">
-          {op.isOpportunity && (
-            <button
-              onClick={removeOpportunity}
-              className="text-xs text-red-600 hover:underline"
-            >
-              Quitar oportunidad
-            </button>
-          )}
+        ))}
+        <button
+          type="button"
+          onClick={() => setItems((prev) => [...prev, { stage: 'nuevo', notes: '', lostReason: '', interested: [] }])}
+          className="w-full text-xs py-2 rounded-lg border border-dashed border-emerald-300 text-emerald-700 bg-emerald-50/40 hover:bg-emerald-100 cursor-pointer"
+        >
+          + Agregar otra oportunidad
+        </button>
+        <div className="flex justify-end gap-2 pt-1">
           <button
+            type="button"
+            onClick={onClose}
+            className="px-3 py-1.5 text-sm border border-slate-200 rounded-lg bg-white"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
             disabled={saving}
             onClick={submit}
-            className="ml-auto px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm"
+            className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm border-none cursor-pointer"
           >
             Guardar
           </button>
@@ -1252,6 +1690,13 @@ function AppointmentFromChatModal({ conv, services, onClose, onCreated }) {
                   onRemove={(pid) => removeService(idx, pid)}
                 />
               </div>
+              {/* Disponibilidad de horario para esta cita */}
+              <SameSlotPanel
+                date={it.date}
+                startTime={it.startTime}
+                clinicId={clinicId}
+                compact
+              />
             </div>
           ))}
         </div>

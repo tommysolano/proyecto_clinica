@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import api from '../api/axios';
 import Modal from '../components/Modal';
+import ProductAutocomplete from '../components/ProductAutocomplete';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -369,18 +370,14 @@ export default function Sales() {
             onChange={(e) => setFilter({ ...filter, endDate: e.target.value })}
             className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50"
           />
-          <select
-            value={filter.product}
-            onChange={(e) => setFilter({ ...filter, product: e.target.value })}
-            className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50 flex-1 min-w-[200px]"
-          >
-            <option value="">Todos los productos/servicios</option>
-            {products.map((p) => (
-              <option key={p._id} value={p._id}>
-                {p.name} {p.category === 'servicio' ? '(Servicio)' : ''}
-              </option>
-            ))}
-          </select>
+          <div className="flex-1 min-w-[200px]">
+            <ProductAutocomplete
+              products={products}
+              value={filter.product}
+              onSelect={(p) => setFilter({ ...filter, product: p?._id || '' })}
+              placeholder="Filtrar por producto/servicio..."
+            />
+          </div>
           <button
             type="button"
             onClick={() => setShowChart((s) => !s)}
@@ -698,32 +695,17 @@ export default function Sales() {
           <div className="bg-emerald-50/50 rounded-xl p-4">
             <p className="text-sm font-medium text-emerald-700 mb-3">Agregar productos</p>
             <div className="flex gap-2">
-              <select
-                value={currentItem.product}
-                onChange={(e) =>
-                  setCurrentItem({ ...currentItem, product: e.target.value })
-                }
-                className="input flex-1 bg-white"
-              >
-                <option value="">Seleccionar producto</option>
-                {products
-                  .filter((p) => p.active)
-                  .map((p) => {
-                    const isService = p.category === 'servicio' || p.unlimited === true;
-                    const noStock = !isService && p.stock <= 0;
-                    return (
-                      <option key={p._id} value={p._id} disabled={noStock}>
-                        {p.name} - ${p.salePrice.toFixed(2)}
-                        {isService
-                          ? p.unlimited && p.category !== 'servicio'
-                            ? ' (ilimitado)'
-                            : ' (servicio)'
-                          : ` (Stock: ${p.stock})`}
-                        {noStock ? ' — SIN STOCK' : ''}
-                      </option>
-                    );
-                  })}
-              </select>
+              <div className="flex-1">
+                <ProductAutocomplete
+                  products={products}
+                  value={currentItem.product}
+                  onSelect={(p) =>
+                    setCurrentItem({ ...currentItem, product: p?._id || '' })
+                  }
+                  placeholder="Buscar producto o servicio..."
+                  filter={(p) => p.active !== false}
+                />
+              </div>
               <input
                 type="number"
                 min="1"

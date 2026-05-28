@@ -48,8 +48,20 @@ exports.getAppointments = async (req, res) => {
       patient,
       origin,
       q,
+      clinic: clinicParam,
     } = req.query;
-    const query = { clinic: req.clinicId };
+    // Por defecto consultamos la clínica activa del usuario, pero si el cliente
+    // envía un `clinic` distinto y el usuario tiene acceso a esa clínica (típico
+    // call_center que opera para varias), respetamos esa clínica destino.
+    // Esto permite mostrar disponibilidad correcta al agendar para otra sede.
+    let queryClinicId = req.clinicId;
+    if (clinicParam && String(clinicParam) !== String(req.clinicId)) {
+      const allowed =
+        req.user.isSuperAdmin ||
+        (req.user.clinics || []).some((c) => String(c.clinic) === String(clinicParam));
+      if (allowed) queryClinicId = clinicParam;
+    }
+    const query = { clinic: queryClinicId };
 
     if (startDate && endDate) {
       const start = parseLocalDate(startDate);
@@ -206,7 +218,7 @@ exports.createAppointment = async (req, res) => {
     // varios pacientes en la misma fecha y horario. Solo verificamos bloqueos
     // de horario (TimeBlock) creados por el administrador.
     const TimeBlock = require('../models/TimeBlock');
-    const block = await TimeBlock.findOne({
+    const blocks = await TimeBlock.find({
       clinic: targetClinicId,
       $or: [
         { doctor: null, room: null },
@@ -216,11 +228,15 @@ exports.createAppointment = async (req, res) => {
       startDate: { $lte: localDate },
       endDate: { $gte: localDate },
     });
-    if (block) {
+    for (const block of blocks) {
+      // Determinar si el rango de la cita se solapa con el bloqueo.
+      // Caso allDay o sin horario explícito → bloqueo aplica a todo el día.
+      // De lo contrario: startTime < block.endTime && (endTime || startTime) >= block.startTime
+      // Se usa >= en el límite inferior para incluir el caso "cita inicia justo cuando inicia el bloqueo".
       const inHours =
         block.allDay ||
         (!block.startTime || !block.endTime) ||
-        (startTime < block.endTime && (endTime || startTime) > block.startTime);
+        (startTime < block.endTime && (endTime || startTime) >= block.startTime);
       if (inHours) {
         return res.status(400).json({
           message: `Horario bloqueado por administración${block.reason ? `: ${block.reason}` : ''}`,
@@ -371,6 +387,13 @@ exports.updateAppointment = async (req, res) => {
       });
     }
 
+    // Una cita completada solo puede ser editada por administradores
+    if (existing.status === 'completada' && !isAdmin) {
+      return res.status(403).json({
+        message: 'Una cita completada no puede editarse. Contacta a un administrador.',
+      });
+    }
+
     const update = { ...req.body };
     // No permitir alterar isFirstVisit ni createdBy en updates
     delete update.isFirstVisit;
@@ -402,6 +425,37 @@ exports.updateAppointment = async (req, res) => {
 
     if (Array.isArray(update.services)) {
       update.services = await buildServicesSnapshot(req.clinicId, update.services);
+    }
+
+    // Verificar bloqueos de horario si la fecha u hora cambió (no admin).
+    const finalDate = update.date instanceof Date ? update.date : existing.date;
+    const finalStart = update.startTime !== undefined ? update.startTime : existing.startTime;
+    const finalEnd = update.endTime !== undefined ? update.endTime : existing.endTime;
+    const finalDoctor = update.doctor !== undefined ? update.doctor : existing.doctor;
+    const finalRoom = update.room !== undefined ? update.room : existing.room;
+    if (!isAdmin && finalDate && finalStart) {
+      const TimeBlock = require('../models/TimeBlock');
+      const blocks = await TimeBlock.find({
+        clinic: req.clinicId,
+        $or: [
+          { doctor: null, room: null },
+          ...(finalDoctor ? [{ doctor: finalDoctor }] : []),
+          ...(finalRoom ? [{ room: finalRoom }] : []),
+        ],
+        startDate: { $lte: finalDate },
+        endDate: { $gte: finalDate },
+      });
+      for (const block of blocks) {
+        const inHours =
+          block.allDay ||
+          (!block.startTime || !block.endTime) ||
+          (finalStart < block.endTime && (finalEnd || finalStart) >= block.startTime);
+        if (inHours) {
+          return res.status(400).json({
+            message: `Horario bloqueado por administración${block.reason ? `: ${block.reason}` : ''}`,
+          });
+        }
+      }
     }
 
     // Detectar reagendamiento: si cambia la fecha o el horario respecto al

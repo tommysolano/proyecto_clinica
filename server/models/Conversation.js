@@ -64,8 +64,13 @@ const conversationSchema = new mongoose.Schema(
     featuredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     featuredAt: { type: Date },
     featuredNote: { type: String, trim: true },
-    // Oportunidad
+    // Bloqueo de contacto: no se podrán enviar/recibir mensajes mientras esté bloqueado.
+    blocked: { type: Boolean, default: false, index: true },
+    blockedAt: { type: Date },
+    blockedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // Oportunidad principal (compatibilidad). El array `opportunities` permite tener varias por chat.
     opportunity: { type: opportunitySchema, default: () => ({}) },
+    opportunities: { type: [opportunitySchema], default: [] },
     // Snapshot último mensaje
     lastMessageAt: { type: Date, default: Date.now, index: true },
     lastMessagePreview: { type: String, trim: true },
