@@ -1,6 +1,6 @@
 const ExcelJS = require('exceljs');
 const Treatment = require('../models/Treatment');
-const { sendBulk } = require('../utils/whatsappCloud');
+const { sendBulk, loadCreds } = require('../utils/whatsappCloud');
 
 // Replicates the abandonment-application used by treatmentController.list
 async function applyAbandonment(treatments) {
@@ -117,7 +117,11 @@ exports.whatsappBroadcast = async (req, res) => {
       recipients.push({ phone, patient: p, treatment: t });
     }
 
-    const result = await sendBulk(recipients, (r) => {
+    const { ok, creds, reason } = await loadCreds(req.clinicId);
+    if (!ok) {
+      return res.status(400).json({ message: `WhatsApp no disponible: ${reason}` });
+    }
+    const result = await sendBulk(creds, recipients, (r) => {
       const name = `${r.patient.firstName || ''} ${r.patient.lastName || ''}`.trim();
       return String(message)
         .replace(/\{\{\s*name\s*\}\}/gi, name)
