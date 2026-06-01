@@ -624,23 +624,33 @@ async function executeFlowRun(run) {
 /**
  * Dispara los flujos activos que coinciden con un mensaje entrante / nueva conversación.
  */
+function flowInSchedule(flow, now = new Date()) {
+  const day = now.getDay();
+  if (Array.isArray(flow.days) && flow.days.length && !flow.days.includes(day)) return false;
+  const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  if (flow.hourFrom && hhmm < flow.hourFrom) return false;
+  if (flow.hourTo && hhmm > flow.hourTo) return false;
+  return true;
+}
+
+// Un disparador coincide con el evento entrante.
+function triggerMatches(tr, { conv, incomingText, isNewConversation }) {
+  if (!flowAudienceOk(tr, conv)) return false;
+  if (tr.type === 'welcome') return !!isNewConversation;
+  if (tr.type === 'incoming') return true;
+  if (tr.type === 'keyword') return flowKeywordMatches(tr, incomingText);
+  return false;
+}
+
 async function triggerFlows({ conv, clinicId, incomingText = '', isNewConversation }) {
   try {
     const flows = await MessageFlow.find({ clinic: clinicId, active: true }).sort({ updatedAt: -1 });
     if (!flows.length) return;
-    let keywordStarted = false;
+    const now = new Date();
     for (const flow of flows) {
-      const tr = flow.trigger || {};
-      if (!flowAudienceOk(tr, conv)) continue;
-      let matched = false;
-      if (tr.type === 'welcome') matched = !!isNewConversation;
-      else if (tr.type === 'incoming') matched = true;
-      else if (tr.type === 'keyword') {
-        if (!keywordStarted && flowKeywordMatches(tr, incomingText)) {
-          matched = true;
-          keywordStarted = true;
-        }
-      }
+      if (!flowInSchedule(flow, now)) continue;
+      const triggers = (flow.triggers && flow.triggers.length) ? flow.triggers : [flow.trigger || {}];
+      const matched = triggers.some((tr) => triggerMatches(tr, { conv, incomingText, isNewConversation }));
       if (!matched) continue;
       // No relanzar un flujo que ya está en curso para esta conversación.
       // eslint-disable-next-line no-await-in-loop

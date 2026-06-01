@@ -1,4 +1,5 @@
 const Patient = require('../models/Patient');
+const Appointment = require('../models/Appointment');
 const { emitToClinic } = require('../realtime');
 
 // NOTA: los DATOS de los pacientes se comparten entre todas las clínicas
@@ -79,8 +80,12 @@ exports.getPatients = async (req, res) => {
     }
 
     if (isNew === 'true' || isNew === '1') {
-      const thirtyDaysAgo = new Date(Date.now() - 30 * 86400000);
-      query.createdAt = { $gte: thirtyDaysAgo };
+      // "Nuevo" = paciente que aún NO ha sido atendido (sin cita asistida/completada).
+      // Coincide con el concepto de "primera visita" usado en el resto del sistema.
+      const attendedIds = await Appointment.distinct('patient', {
+        status: { $in: ['asistida', 'completada'] },
+      });
+      query._id = { $nin: attendedIds.filter(Boolean) };
     }
 
     const patients = await Patient.find(query)

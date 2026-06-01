@@ -252,7 +252,7 @@ export default function Patients() {
                 : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
             }`}
           >
-            {onlyNew ? '✓ Pacientes nuevos (30d)' : 'Pacientes nuevos (30d)'}
+            {onlyNew ? '✓ Solo pacientes nuevos' : 'Solo pacientes nuevos'}
           </button>
         </div>
       </div>

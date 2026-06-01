@@ -23,9 +23,21 @@ const flowStepSchema = new mongoose.Schema(
   { _id: true }
 );
 
+// Un disparador (activador) del flujo. Un flujo puede tener VARIOS.
+const flowTriggerSchema = new mongoose.Schema(
+  {
+    type: { type: String, enum: ['keyword', 'welcome', 'incoming'], default: 'keyword' },
+    keywords: { type: [String], default: [] },
+    matchType: { type: String, enum: ['contains', 'exact', 'starts'], default: 'contains' },
+    audience: { type: String, enum: ['all', 'new', 'existing'], default: 'all' },
+    label: { type: String, default: '' }, // nombre opcional del activador
+  },
+  { _id: true }
+);
+
 /**
- * Flujo de mensajes automáticos (estilo Daplox): un disparador + una secuencia
- * ordenada de pasos. Vive dentro de una carpeta.
+ * Flujo de mensajes automáticos (estilo Daplox): uno o varios disparadores +
+ * una secuencia ordenada de pasos. Vive dentro de una carpeta.
  */
 const messageFlowSchema = new mongoose.Schema(
   {
@@ -34,6 +46,9 @@ const messageFlowSchema = new mongoose.Schema(
     name: { type: String, required: true, trim: true },
     active: { type: Boolean, default: false }, // borrador por defecto
 
+    // Varios disparadores: el flujo se ejecuta si CUALQUIERA coincide.
+    triggers: { type: [flowTriggerSchema], default: [] },
+    // Compatibilidad: disparador único antiguo (si triggers está vacío se usa este).
     trigger: {
       type: {
         type: String,
@@ -44,6 +59,11 @@ const messageFlowSchema = new mongoose.Schema(
       matchType: { type: String, enum: ['contains', 'exact', 'starts'], default: 'contains' },
       audience: { type: String, enum: ['all', 'new', 'existing'], default: 'all' },
     },
+
+    // Horario en el que el flujo puede ejecutarse.
+    days: { type: [Number], default: [0, 1, 2, 3, 4, 5, 6] }, // 0=dom..6=sáb
+    hourFrom: { type: String, default: '00:00' },
+    hourTo: { type: String, default: '23:59' },
 
     steps: { type: [flowStepSchema], default: [] },
 
