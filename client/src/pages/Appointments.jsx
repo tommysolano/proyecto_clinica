@@ -159,6 +159,11 @@ export default function Appointments() {
     const d = new Date();
     return new Date(d.getFullYear(), d.getMonth(), 1);
   });
+  // Día seleccionado en la vista lista (YYYY-MM-DD). La lista muestra solo ese día.
+  const [listDay, setListDay] = useState(() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  });
   const [patientSearch, setPatientSearch] = useState('');
   const [showPatientList, setShowPatientList] = useState(false);
 
@@ -183,8 +188,9 @@ export default function Appointments() {
         params.endDate = toYmd(last);
         if (filter.status) params.status = filter.status;
       } else {
-        if (filter.startDate) params.startDate = filter.startDate;
-        if (filter.endDate) params.endDate = filter.endDate;
+        // Lista = un solo día (navegable por flechas).
+        params.startDate = listDay;
+        params.endDate = listDay;
         if (filter.status) params.status = filter.status;
       }
       if (filter.isFirstVisit) params.isFirstVisit = filter.isFirstVisit;
@@ -252,7 +258,7 @@ export default function Appointments() {
   useEffect(() => {
     fetchAppointments();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, filter, calMonth]);
+  }, [view, filter, calMonth, listDay]);
 
   // Tiempo real: cuando llega un cambio de cita, refrescar la lista.
   useSocketEvent('appointment:created', () => fetchAppointments());
@@ -435,8 +441,8 @@ export default function Appointments() {
         params.endDate = toYmd(last);
         if (filter.status) params.status = filter.status;
       } else {
-        if (filter.startDate) params.startDate = filter.startDate;
-        if (filter.endDate) params.endDate = filter.endDate;
+        params.startDate = listDay;
+        params.endDate = listDay;
         if (filter.status) params.status = filter.status;
       }
       await downloadFile('/reports/appointments.xlsx', { params, filename: `citas_${Date.now()}.xlsx` });
@@ -566,9 +572,17 @@ export default function Appointments() {
 
   // Click en un día del calendario → ver la tabla de ese día (orden por horario).
   const openDay = (d) => {
-    const ymd = toYmd(d);
-    setFilter((f) => ({ ...f, startDate: ymd, endDate: ymd }));
+    setListDay(toYmd(d));
     setView('list');
+  };
+
+  // Navegación de día (vista lista): ±1 día.
+  const moveDay = (delta) => {
+    setListDay((cur) => {
+      const [y, m, d] = cur.split('-').map(Number);
+      const nd = new Date(y, m - 1, d + delta);
+      return toYmd(nd);
+    });
   };
 
   // Cronómetro de cita seleccionada
@@ -640,21 +654,36 @@ export default function Appointments() {
               className="w-full pl-10 pr-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
             />
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
-            <input
-              type="date"
-              value={filter.startDate}
-              onChange={(e) => setFilter({ ...filter, startDate: e.target.value })}
-              className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
-              placeholder="Desde"
-            />
-            <input
-              type="date"
-              value={filter.endDate}
-              onChange={(e) => setFilter({ ...filter, endDate: e.target.value })}
-              className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
-              placeholder="Hasta"
-            />
+          {/* Navegación de día (solo lista): la lista muestra un único día. */}
+          {view === 'list' && (
+            <div className="flex flex-wrap items-center justify-center gap-2">
+              <button
+                onClick={() => moveDay(-1)}
+                className="px-3 py-2 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 cursor-pointer text-sm"
+              >
+                ‹ Día anterior
+              </button>
+              <input
+                type="date"
+                value={listDay}
+                onChange={(e) => setListDay(e.target.value)}
+                className="px-4 py-2 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
+              />
+              <button
+                onClick={() => moveDay(1)}
+                className="px-3 py-2 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 cursor-pointer text-sm"
+              >
+                Día siguiente ›
+              </button>
+              <button
+                onClick={() => setListDay(toYmd(new Date()))}
+                className="px-3 py-2 rounded-lg bg-emerald-600 text-white border-none cursor-pointer text-sm"
+              >
+                Hoy
+              </button>
+            </div>
+          )}
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <select
               value={filter.status}
               onChange={(e) => setFilter({ ...filter, status: e.target.value })}
@@ -694,20 +723,25 @@ export default function Appointments() {
                 {rooms.map((r) => <option key={r._id} value={r._id}>{r.name}</option>)}
               </select>
             )}
-            <input
-              type="time"
-              value={filter.timeFrom}
-              onChange={(e) => setFilter({ ...filter, timeFrom: e.target.value })}
-              className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
-              placeholder="Desde hora"
-            />
-            <input
-              type="time"
-              value={filter.timeTo}
-              onChange={(e) => setFilter({ ...filter, timeTo: e.target.value })}
-              className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
-              placeholder="Hasta hora"
-            />
+            {/* Filtros por hora: solo tienen sentido en la lista (un día). */}
+            {view === 'list' && (
+              <>
+                <input
+                  type="time"
+                  value={filter.timeFrom}
+                  onChange={(e) => setFilter({ ...filter, timeFrom: e.target.value })}
+                  className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
+                  placeholder="Desde hora"
+                />
+                <input
+                  type="time"
+                  value={filter.timeTo}
+                  onChange={(e) => setFilter({ ...filter, timeTo: e.target.value })}
+                  className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
+                  placeholder="Hasta hora"
+                />
+              </>
+            )}
           </div>
           <div className="flex items-center justify-between text-xs text-slate-500">
             <span>Total filtrado: <strong className="text-slate-800">{filteredAppointments.length}</strong> citas</span>

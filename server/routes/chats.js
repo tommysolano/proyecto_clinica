@@ -30,11 +30,23 @@ router.post('/saved-replies', requireRole(...CALL_CENTER_ROLES), ctrl.createSave
 router.put('/saved-replies/:id', requireRole(...CALL_CENTER_ROLES), ctrl.updateSavedReply);
 router.delete('/saved-replies/:id', requireRole(...CALL_CENTER_ROLES), ctrl.deleteSavedReply);
 
-// Mensajes automáticos
+// Mensajes automáticos (legacy)
 router.get('/auto-messages', requireRole(...CALL_CENTER_ROLES), ctrl.listAutoMessages);
 router.post('/auto-messages', requireRole(...CALL_CENTER_ROLES), ctrl.createAutoMessage);
 router.put('/auto-messages/:id', requireRole(...CALL_CENTER_ROLES), ctrl.updateAutoMessage);
 router.delete('/auto-messages/:id', requireRole(...CALL_CENTER_ROLES), ctrl.deleteAutoMessage);
+
+// Flujos de mensajes (carpetas + flujos con pasos)
+const flowCtrl = require('../controllers/flowController');
+router.get('/flow-folders', requireRole(...CALL_CENTER_ROLES), flowCtrl.listFolders);
+router.post('/flow-folders', requireRole(...CALL_CENTER_ROLES), flowCtrl.createFolder);
+router.put('/flow-folders/:id', requireRole(...CALL_CENTER_ROLES), flowCtrl.renameFolder);
+router.delete('/flow-folders/:id', requireRole(...CALL_CENTER_ROLES), flowCtrl.deleteFolder);
+router.get('/flows', requireRole(...CALL_CENTER_ROLES), flowCtrl.listFlows);
+router.post('/flows', requireRole(...CALL_CENTER_ROLES), flowCtrl.createFlow);
+router.get('/flows/:id', requireRole(...CALL_CENTER_ROLES), flowCtrl.getFlow);
+router.put('/flows/:id', requireRole(...CALL_CENTER_ROLES), flowCtrl.updateFlow);
+router.delete('/flows/:id', requireRole(...CALL_CENTER_ROLES), flowCtrl.deleteFlow);
 
 // Galería de imágenes
 router.get('/gallery', requireRole(...CALL_CENTER_ROLES), ctrl.listGallery);

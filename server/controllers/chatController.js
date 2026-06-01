@@ -416,6 +416,8 @@ exports.deleteSavedReply = async (req, res) => {
 // =================== Auto Messages ===================
 
 const AutoMessage = require('../models/AutoMessage');
+const MessageFlow = require('../models/MessageFlow');
+const FlowRun = require('../models/FlowRun');
 
 /**
  * Evalúa las reglas de mensajes automáticos activas para una conversación recién
@@ -519,6 +521,167 @@ async function fireAutoMessages({ conv, clinicId, isNewConversation, incomingTex
     console.error('[fireAutoMessages]', err);
   }
 }
+
+// ============================================================================
+// MOTOR DE FLUJOS (estilo Daplox): disparador + secuencia de pasos
+// (mensaje / espera / crear oportunidad). Las esperas se reanudan con un job.
+// ============================================================================
+function flowKeywordMatches(trigger, text) {
+  const kws = (trigger.keywords || []).map((k) => String(k || '').trim().toLowerCase()).filter(Boolean);
+  if (!kws.length) return false;
+  const t = String(text || '').trim().toLowerCase();
+  if (!t) return false;
+  return kws.some((kw) => {
+    if (trigger.matchType === 'exact') return t === kw;
+    if (trigger.matchType === 'starts') return t.startsWith(kw);
+    return t.includes(kw);
+  });
+}
+
+function flowAudienceOk(trigger, conv) {
+  if (trigger.audience === 'new') return !conv.patient;
+  if (trigger.audience === 'existing') return !!conv.patient;
+  return true;
+}
+
+async function sendFlowMessage(conv, clinicId, body) {
+  const msg = await Message.create({
+    clinic: clinicId,
+    conversation: conv._id,
+    direction: 'out',
+    body,
+    deliveryStatus: 'sent',
+    isAutoReply: true,
+  });
+  conv.lastMessageAt = msg.createdAt;
+  conv.lastMessagePreview = String(body || '').slice(0, 140);
+  conv.lastMessageDirection = 'out';
+  await conv.save();
+  try {
+    await sendToExternalChannel({ conv, msg, clinicId });
+  } catch (e) {
+    msg.deliveryStatus = 'failed';
+    await msg.save();
+  }
+  emitToClinic(clinicId, 'chat:message', { conversationId: conv._id, message: msg });
+}
+
+async function applyFlowOpportunity(conv, stage) {
+  if (!conv.opportunity?.isOpportunity) {
+    conv.opportunity = {
+      ...(conv.opportunity?.toObject ? conv.opportunity.toObject() : conv.opportunity || {}),
+      isOpportunity: true,
+      stage: stage || 'nuevo',
+      notes: 'Creada automáticamente por flujo',
+      createdAt: new Date(),
+    };
+  } else if (stage) {
+    conv.opportunity.stage = stage;
+  }
+  if (Array.isArray(conv.opportunities)) {
+    conv.opportunities.push({ isOpportunity: true, stage: stage || 'nuevo', createdAt: new Date() });
+  }
+  await conv.save();
+  emitToClinic(conv.clinic, 'chat:opportunity', { conversationId: conv._id });
+}
+
+/**
+ * Ejecuta los pasos de un FlowRun desde su stepIndex hasta encontrar una espera
+ * pendiente (la agenda) o terminar el flujo.
+ */
+async function executeFlowRun(run) {
+  const flow = await MessageFlow.findById(run.flow);
+  if (!flow || !flow.active) { run.status = 'cancelled'; await run.save(); return; }
+  const conv = await Conversation.findById(run.conversation);
+  if (!conv || conv.blocked) { run.status = 'cancelled'; await run.save(); return; }
+
+  for (let i = run.stepIndex; i < flow.steps.length; i++) {
+    const step = flow.steps[i];
+    if (step.type === 'wait') {
+      const mins = Number(step.waitMinutes || 0);
+      if (mins > 0) {
+        run.stepIndex = i + 1;
+        run.nextRunAt = new Date(Date.now() + mins * 60000);
+        run.status = 'pending';
+        await run.save();
+        return;
+      }
+      continue; // espera 0 → seguir
+    }
+    if (step.type === 'message') {
+      // eslint-disable-next-line no-await-in-loop
+      await sendFlowMessage(conv, run.clinic, step.body || '');
+    } else if (step.type === 'opportunity') {
+      // eslint-disable-next-line no-await-in-loop
+      await applyFlowOpportunity(conv, step.opportunityStage);
+    }
+  }
+  run.stepIndex = flow.steps.length;
+  run.status = 'done';
+  await run.save();
+}
+
+/**
+ * Dispara los flujos activos que coinciden con un mensaje entrante / nueva conversación.
+ */
+async function triggerFlows({ conv, clinicId, incomingText = '', isNewConversation }) {
+  try {
+    const flows = await MessageFlow.find({ clinic: clinicId, active: true }).sort({ updatedAt: -1 });
+    if (!flows.length) return;
+    let keywordStarted = false;
+    for (const flow of flows) {
+      const tr = flow.trigger || {};
+      if (!flowAudienceOk(tr, conv)) continue;
+      let matched = false;
+      if (tr.type === 'welcome') matched = !!isNewConversation;
+      else if (tr.type === 'incoming') matched = true;
+      else if (tr.type === 'keyword') {
+        if (!keywordStarted && flowKeywordMatches(tr, incomingText)) {
+          matched = true;
+          keywordStarted = true;
+        }
+      }
+      if (!matched) continue;
+      // No relanzar un flujo que ya está en curso para esta conversación.
+      // eslint-disable-next-line no-await-in-loop
+      const existing = await FlowRun.findOne({ flow: flow._id, conversation: conv._id, status: 'pending' });
+      if (existing) continue;
+      // eslint-disable-next-line no-await-in-loop
+      const run = await FlowRun.create({
+        clinic: clinicId,
+        flow: flow._id,
+        conversation: conv._id,
+        stepIndex: 0,
+        status: 'pending',
+        nextRunAt: new Date(),
+      });
+      // eslint-disable-next-line no-await-in-loop
+      await executeFlowRun(run);
+    }
+  } catch (e) {
+    console.error('[triggerFlows]', e);
+  }
+}
+
+/**
+ * Job: reanuda los flujos cuyas esperas ya vencieron.
+ */
+async function processDueFlowRuns() {
+  try {
+    const due = await FlowRun.find({ status: 'pending', nextRunAt: { $lte: new Date() } })
+      .sort({ nextRunAt: 1 })
+      .limit(100);
+    for (const run of due) {
+      // eslint-disable-next-line no-await-in-loop
+      await executeFlowRun(run);
+    }
+  } catch (e) {
+    console.error('[processDueFlowRuns]', e);
+  }
+}
+
+exports.triggerFlows = triggerFlows;
+exports.processDueFlowRuns = processDueFlowRuns;
 
 exports.listAutoMessages = async (req, res) => {
   try {
@@ -970,8 +1133,8 @@ exports.webhookReceive = async (req, res) => {
       if (conv.status === 'closed') conv.status = 'open';
       await conv.save();
 
-      // Disparar mensajes automáticos configurados
-      await fireAutoMessages({
+      // Disparar flujos de mensajes automáticos
+      await triggerFlows({
         conv,
         clinicId,
         isNewConversation,
@@ -1032,8 +1195,8 @@ exports.simulateIncoming = async (req, res) => {
     if (conv.status === 'closed') conv.status = 'open';
     await conv.save();
 
-    // Disparar mensajes automáticos configurados
-    await fireAutoMessages({
+    // Disparar flujos de mensajes automáticos
+    await triggerFlows({
       conv,
       clinicId: req.clinicId,
       isNewConversation,
@@ -1094,7 +1257,7 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   conv.unreadCount = (conv.unreadCount || 0) + 1;
   if (conv.status === 'closed') conv.status = 'open';
   await conv.save();
-  await fireAutoMessages({ conv, clinicId, isNewConversation: isNew, incomingText: body || '' });
+  await triggerFlows({ conv, clinicId, isNewConversation: isNew, incomingText: body || '' });
   emitToClinic(clinicId, 'chat:message', { conversationId: conv._id });
 }
 

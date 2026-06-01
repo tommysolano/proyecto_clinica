@@ -88,6 +88,9 @@ connectDB().then(() => {
   });
   // Job: marcar automáticamente como "no asistió" las citas de días pasados.
   require('./utils/autoNoShow').startAutoNoShowJob();
+  // Job: reanudar flujos de mensajes con pasos de espera vencidos (cada 60s).
+  const { processDueFlowRuns } = require('./controllers/chatController');
+  setInterval(() => { processDueFlowRuns().catch(() => {}); }, 60 * 1000);
 }).catch((err) => {
   console.error('No se pudo conectar a MongoDB, abortando:', err.message);
   process.exit(1);

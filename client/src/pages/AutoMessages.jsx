@@ -1,33 +1,37 @@
 import { useEffect, useMemo, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
-import Modal from '../components/Modal';
 import {
   HiOutlinePlus,
   HiOutlinePencil,
   HiOutlineTrash,
   HiOutlineBolt,
-  HiOutlineCheckCircle,
-  HiOutlineXCircle,
   HiOutlineFolder,
   HiOutlineFolderPlus,
   HiOutlineChatBubbleLeftRight,
+  HiOutlineClock,
+  HiOutlineMegaphone,
+  HiOutlineArrowLeft,
+  HiOutlineArrowUp,
+  HiOutlineArrowDown,
+  HiOutlineBoltSlash,
 } from 'react-icons/hi2';
 
-const TRIGGERS = [
-  { value: 'keyword', label: 'Según lo que escribe el cliente (palabras clave)' },
-  { value: 'welcome', label: 'Bienvenida (nuevo chat)' },
-  { value: 'incoming', label: 'Cuando llega cualquier mensaje' },
-  { value: 'out_of_hours', label: 'Fuera de horario' },
-  { value: 'scheduled', label: 'Programado a una hora del día' },
+const TRIGGER_TYPES = [
+  { value: 'keyword', label: 'Cuando el cliente escribe (palabras clave)' },
+  { value: 'welcome', label: 'Al iniciar una conversación nueva' },
+  { value: 'incoming', label: 'Con cualquier mensaje entrante' },
 ];
-
 const MATCH_TYPES = [
-  { value: 'contains', label: 'Contiene la palabra' },
-  { value: 'exact', label: 'Es exactamente igual' },
+  { value: 'contains', label: 'Contiene' },
+  { value: 'exact', label: 'Es exactamente' },
   { value: 'starts', label: 'Empieza con' },
 ];
-
+const AUDIENCES = [
+  { value: 'all', label: 'Todos los contactos' },
+  { value: 'new', label: 'Solo contactos nuevos' },
+  { value: 'existing', label: 'Solo pacientes registrados' },
+];
 const STAGES = [
   { value: 'nuevo', label: 'Nuevo' },
   { value: 'contactado', label: 'Contactado' },
@@ -35,54 +39,34 @@ const STAGES = [
   { value: 'agendado', label: 'Agendado' },
 ];
 
-const AUDIENCES = [
-  { value: 'all', label: 'Todos los contactos' },
-  { value: 'new', label: 'Solo contactos nuevos (sin paciente)' },
-  { value: 'existing', label: 'Solo pacientes registrados' },
-];
-
-const DAYS = [
-  { v: 1, l: 'Lun' },
-  { v: 2, l: 'Mar' },
-  { v: 3, l: 'Mié' },
-  { v: 4, l: 'Jue' },
-  { v: 5, l: 'Vie' },
-  { v: 6, l: 'Sáb' },
-  { v: 0, l: 'Dom' },
-];
-
-const EMPTY = {
+const blankFlow = (folder) => ({
   name: '',
-  body: '',
-  folder: 'General',
-  trigger: 'keyword',
-  keywords: [],
-  matchType: 'contains',
-  audience: 'all',
-  createOpportunity: false,
-  opportunityStage: 'nuevo',
-  active: true,
-  days: [0, 1, 2, 3, 4, 5, 6],
-  hourFrom: '08:00',
-  hourTo: '18:00',
-  scheduledAt: '',
-};
+  folder: folder || 'General',
+  active: false,
+  trigger: { type: 'keyword', keywords: [], matchType: 'contains', audience: 'all' },
+  steps: [{ type: 'message', body: '', waitMinutes: 0, opportunityStage: 'nuevo' }],
+});
 
 export default function AutoMessages() {
-  const [list, setList] = useState([]);
+  const [folders, setFolders] = useState([]);
+  const [flows, setFlows] = useState([]);
+  const [selectedFolder, setSelectedFolder] = useState('__all__');
   const [loading, setLoading] = useState(true);
-  const [modalOpen, setModalOpen] = useState(false);
-  const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState(EMPTY);
+
+  // Editor de flujo (null = vista de lista)
+  const [editor, setEditor] = useState(null); // { _id?, name, folder, active, trigger, steps }
   const [keywordsText, setKeywordsText] = useState('');
   const [saving, setSaving] = useState(false);
-  const [selectedFolder, setSelectedFolder] = useState('__all__');
 
-  const load = async () => {
+  const loadAll = async () => {
     setLoading(true);
     try {
-      const r = await api.get('/chats/auto-messages');
-      setList(r.data || []);
+      const [f, fl] = await Promise.all([
+        api.get('/chats/flow-folders'),
+        api.get('/chats/flows'),
+      ]);
+      setFolders(f.data || []);
+      setFlows(fl.data || []);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al cargar');
     } finally {
@@ -91,88 +75,106 @@ export default function AutoMessages() {
   };
 
   useEffect(() => {
-    load();
+    loadAll();
   }, []);
 
-  // Carpetas (derivadas de los flujos existentes).
-  const folders = useMemo(() => {
-    const set = new Set(list.map((m) => (m.folder || 'General').trim() || 'General'));
+  const folderNames = useMemo(() => {
+    const set = new Set(folders.map((f) => f.name));
+    flows.forEach((fl) => set.add(fl.folder || 'General'));
     return [...set].sort();
-  }, [list]);
+  }, [folders, flows]);
 
-  const filtered = useMemo(
-    () =>
-      selectedFolder === '__all__'
-        ? list
-        : list.filter((m) => (m.folder || 'General') === selectedFolder),
-    [list, selectedFolder]
+  const visibleFlows = useMemo(
+    () => (selectedFolder === '__all__' ? flows : flows.filter((f) => (f.folder || 'General') === selectedFolder)),
+    [flows, selectedFolder]
   );
 
-  const openNew = () => {
-    setEditing(null);
-    setForm({ ...EMPTY, folder: selectedFolder === '__all__' ? 'General' : selectedFolder });
-    setKeywordsText('');
-    setModalOpen(true);
-  };
-
-  const openEdit = (m) => {
-    setEditing(m._id);
-    setForm({
-      name: m.name || '',
-      body: m.body || '',
-      folder: m.folder || 'General',
-      trigger: m.trigger || 'keyword',
-      keywords: Array.isArray(m.keywords) ? m.keywords : [],
-      matchType: m.matchType || 'contains',
-      audience: m.audience || 'all',
-      createOpportunity: !!m.createOpportunity,
-      opportunityStage: m.opportunityStage || 'nuevo',
-      active: !!m.active,
-      days: Array.isArray(m.days) ? m.days : [0, 1, 2, 3, 4, 5, 6],
-      hourFrom: m.hourFrom || '08:00',
-      hourTo: m.hourTo || '18:00',
-      scheduledAt: m.scheduledAt || '',
-    });
-    setKeywordsText((m.keywords || []).join(', '));
-    setModalOpen(true);
-  };
-
-  const createFolder = () => {
+  // ─── Carpetas ───
+  const createFolder = async () => {
     const name = window.prompt('Nombre de la nueva carpeta:');
     if (!name || !name.trim()) return;
-    setSelectedFolder(name.trim());
-    setEditing(null);
-    setForm({ ...EMPTY, folder: name.trim() });
-    setKeywordsText('');
-    setModalOpen(true);
+    try {
+      await api.post('/chats/flow-folders', { name: name.trim() });
+      toast.success('Carpeta creada');
+      setSelectedFolder(name.trim());
+      loadAll();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al crear carpeta');
+    }
   };
 
-  const submit = async (e) => {
-    e.preventDefault();
-    if (!form.name.trim() || !form.body.trim()) {
-      toast.error('Nombre y mensaje son obligatorios');
-      return;
+  const deleteFolder = async (folder) => {
+    if (!window.confirm(`¿Eliminar la carpeta "${folder.name}"?`)) return;
+    try {
+      await api.delete(`/chats/flow-folders/${folder._id}`);
+      toast.success('Carpeta eliminada');
+      if (selectedFolder === folder.name) setSelectedFolder('__all__');
+      loadAll();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al eliminar carpeta');
     }
-    const keywords = keywordsText
-      .split(',')
-      .map((k) => k.trim())
-      .filter(Boolean);
-    if (form.trigger === 'keyword' && keywords.length === 0) {
-      toast.error('Agrega al menos una palabra clave');
-      return;
+  };
+
+  // ─── Flujos ───
+  const newFlow = () => {
+    const folder = selectedFolder === '__all__' ? (folderNames[0] || 'General') : selectedFolder;
+    setEditor(blankFlow(folder));
+    setKeywordsText('');
+  };
+
+  const openFlow = async (id) => {
+    try {
+      const r = await api.get(`/chats/flows/${id}`);
+      const fl = r.data;
+      setEditor({
+        _id: fl._id,
+        name: fl.name || '',
+        folder: fl.folder || 'General',
+        active: !!fl.active,
+        trigger: {
+          type: fl.trigger?.type || 'keyword',
+          keywords: fl.trigger?.keywords || [],
+          matchType: fl.trigger?.matchType || 'contains',
+          audience: fl.trigger?.audience || 'all',
+        },
+        steps: (fl.steps || []).length ? fl.steps : [{ type: 'message', body: '', waitMinutes: 0, opportunityStage: 'nuevo' }],
+      });
+      setKeywordsText((fl.trigger?.keywords || []).join(', '));
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al abrir flujo');
     }
+  };
+
+  const deleteFlow = async (fl) => {
+    if (!window.confirm(`¿Eliminar el flujo "${fl.name}"?`)) return;
+    try {
+      await api.delete(`/chats/flows/${fl._id}`);
+      toast.success('Flujo eliminado');
+      loadAll();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error');
+    }
+  };
+
+  const saveFlow = async () => {
+    if (!editor.name.trim()) return toast.error('Ponle un nombre al flujo');
+    const keywords = keywordsText.split(',').map((k) => k.trim()).filter(Boolean);
+    if (editor.trigger.type === 'keyword' && keywords.length === 0) {
+      return toast.error('Agrega al menos una palabra clave para el disparador');
+    }
+    if (editor.steps.length === 0) return toast.error('Agrega al menos un paso');
     setSaving(true);
     try {
-      const payload = { ...form, keywords, folder: form.folder.trim() || 'General' };
-      if (editing) {
-        await api.put(`/chats/auto-messages/${editing}`, payload);
-        toast.success('Flujo actualizado');
+      const payload = { ...editor, trigger: { ...editor.trigger, keywords } };
+      if (editor._id) {
+        await api.put(`/chats/flows/${editor._id}`, payload);
+        toast.success('Flujo guardado');
       } else {
-        await api.post('/chats/auto-messages', payload);
+        await api.post('/chats/flows', payload);
         toast.success('Flujo creado');
       }
-      setModalOpen(false);
-      load();
+      setEditor(null);
+      loadAll();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al guardar');
     } finally {
@@ -180,27 +182,160 @@ export default function AutoMessages() {
     }
   };
 
-  const remove = async (id) => {
-    if (!window.confirm('¿Eliminar este flujo?')) return;
-    try {
-      await api.delete(`/chats/auto-messages/${id}`);
-      toast.success('Eliminado');
-      load();
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Error');
-    }
-  };
-
-  const toggleDay = (d) => {
-    setForm((f) => ({
-      ...f,
-      days: f.days.includes(d) ? f.days.filter((x) => x !== d) : [...f.days, d].sort(),
+  // ─── Pasos ───
+  const addStep = (type) => {
+    setEditor((e) => ({
+      ...e,
+      steps: [...e.steps, { type, body: '', waitMinutes: type === 'wait' ? 60 : 0, opportunityStage: 'nuevo' }],
     }));
   };
+  const updateStep = (idx, patch) => {
+    setEditor((e) => ({ ...e, steps: e.steps.map((s, i) => (i === idx ? { ...s, ...patch } : s)) }));
+  };
+  const removeStep = (idx) => {
+    setEditor((e) => ({ ...e, steps: e.steps.filter((_, i) => i !== idx) }));
+  };
+  const moveStep = (idx, dir) => {
+    setEditor((e) => {
+      const steps = [...e.steps];
+      const j = idx + dir;
+      if (j < 0 || j >= steps.length) return e;
+      [steps[idx], steps[j]] = [steps[j], steps[idx]];
+      return { ...e, steps };
+    });
+  };
 
-  const triggerLabel = (v) => TRIGGERS.find((t) => t.value === v)?.label || v;
-  const audienceLabel = (v) => AUDIENCES.find((a) => a.value === v)?.label || v;
+  // ============================ EDITOR DE FLUJO ============================
+  if (editor) {
+    return (
+      <div className="space-y-5 max-w-3xl mx-auto">
+        <div className="flex items-center justify-between gap-3">
+          <button
+            onClick={() => setEditor(null)}
+            className="flex items-center gap-1 text-sm text-slate-600 hover:text-slate-900 bg-transparent border-none cursor-pointer"
+          >
+            <HiOutlineArrowLeft className="w-4 h-4" /> Volver
+          </button>
+          <div className="flex items-center gap-2">
+            <label className="flex items-center gap-2 text-sm text-slate-600">
+              <input
+                type="checkbox"
+                checked={editor.active}
+                onChange={(e) => setEditor({ ...editor, active: e.target.checked })}
+                className="w-4 h-4 accent-emerald-600"
+              />
+              {editor.active ? 'Activo' : 'Borrador'}
+            </label>
+            <button
+              onClick={saveFlow}
+              disabled={saving}
+              className="px-5 py-2 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 text-white text-sm font-medium border-none cursor-pointer disabled:opacity-50"
+            >
+              {saving ? 'Guardando...' : 'Guardar flujo'}
+            </button>
+          </div>
+        </div>
 
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label className="block text-sm">
+            Nombre del flujo
+            <input
+              value={editor.name}
+              onChange={(e) => setEditor({ ...editor, name: e.target.value })}
+              className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+              placeholder="Ej: Bienvenida colesterol"
+            />
+          </label>
+          <label className="block text-sm">
+            Carpeta
+            <input
+              list="flow-folders"
+              value={editor.folder}
+              onChange={(e) => setEditor({ ...editor, folder: e.target.value })}
+              className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+            />
+            <datalist id="flow-folders">
+              {folderNames.map((f) => <option key={f} value={f} />)}
+            </datalist>
+          </label>
+        </div>
+
+        {/* Diagrama de flujo vertical */}
+        <div className="bg-slate-50 rounded-2xl border border-slate-200 p-4">
+          {/* Nodo disparador */}
+          <div className="bg-violet-50 border border-violet-200 rounded-xl p-4">
+            <div className="flex items-center gap-2 text-violet-700 font-semibold text-sm mb-2">
+              <HiOutlineBolt className="w-4 h-4" /> Disparador
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <select
+                value={editor.trigger.type}
+                onChange={(e) => setEditor({ ...editor, trigger: { ...editor.trigger, type: e.target.value } })}
+                className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+              >
+                {TRIGGER_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+              <select
+                value={editor.trigger.audience}
+                onChange={(e) => setEditor({ ...editor, trigger: { ...editor.trigger, audience: e.target.value } })}
+                className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+              >
+                {AUDIENCES.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
+              </select>
+            </div>
+            {editor.trigger.type === 'keyword' && (
+              <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 mt-2">
+                <input
+                  value={keywordsText}
+                  onChange={(e) => setKeywordsText(e.target.value)}
+                  placeholder="precio, costo, cuánto cuesta"
+                  className="sm:col-span-2 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                />
+                <select
+                  value={editor.trigger.matchType}
+                  onChange={(e) => setEditor({ ...editor, trigger: { ...editor.trigger, matchType: e.target.value } })}
+                  className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                >
+                  {MATCH_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                </select>
+              </div>
+            )}
+          </div>
+
+          {/* Pasos */}
+          {editor.steps.map((step, idx) => (
+            <div key={idx}>
+              <div className="flex justify-center"><div className="w-px h-5 bg-slate-300" /></div>
+              <StepCard
+                step={step}
+                idx={idx}
+                total={editor.steps.length}
+                onChange={(patch) => updateStep(idx, patch)}
+                onRemove={() => removeStep(idx)}
+                onMove={(dir) => moveStep(idx, dir)}
+              />
+            </div>
+          ))}
+
+          {/* Añadir paso */}
+          <div className="flex justify-center"><div className="w-px h-5 bg-slate-300" /></div>
+          <div className="flex flex-wrap justify-center gap-2">
+            <button onClick={() => addStep('message')} className="flex items-center gap-1 px-3 py-2 rounded-lg bg-white border border-emerald-200 text-emerald-700 text-sm cursor-pointer hover:bg-emerald-50">
+              <HiOutlineChatBubbleLeftRight className="w-4 h-4" /> Mensaje
+            </button>
+            <button onClick={() => addStep('wait')} className="flex items-center gap-1 px-3 py-2 rounded-lg bg-white border border-amber-200 text-amber-700 text-sm cursor-pointer hover:bg-amber-50">
+              <HiOutlineClock className="w-4 h-4" /> Espera
+            </button>
+            <button onClick={() => addStep('opportunity')} className="flex items-center gap-1 px-3 py-2 rounded-lg bg-white border border-sky-200 text-sky-700 text-sm cursor-pointer hover:bg-sky-50">
+              <HiOutlineMegaphone className="w-4 h-4" /> Crear oportunidad
+            </button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ============================ LISTA (carpetas + flujos) ============================
   return (
     <div className="space-y-5">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
@@ -212,28 +347,24 @@ export default function AutoMessages() {
             Flujos de mensajes automáticos
           </h1>
           <p className="text-sm text-slate-500 mt-1">
-            Responde automáticamente según lo que escribe el cliente, crea oportunidades y organiza
-            tus flujos en carpetas.
+            Organiza flujos en carpetas. Cada flujo define un disparador y una secuencia de pasos
+            (mensaje, espera, crear oportunidad).
           </p>
         </div>
         <button
-          onClick={openNew}
+          onClick={newFlow}
           className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-sm font-medium cursor-pointer border-none shadow-lg shadow-emerald-200/50 flex items-center gap-2"
         >
           <HiOutlinePlus className="w-4 h-4" /> Nuevo flujo
         </button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-[230px_1fr] gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-[240px_1fr] gap-4">
         {/* Carpetas */}
         <aside className="bg-white rounded-2xl border border-slate-200 shadow-sm p-3 h-max">
           <div className="flex items-center justify-between mb-2">
             <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Carpetas</span>
-            <button
-              onClick={createFolder}
-              title="Nueva carpeta"
-              className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-lg bg-transparent border-none cursor-pointer"
-            >
+            <button onClick={createFolder} title="Nueva carpeta" className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-lg bg-transparent border-none cursor-pointer">
               <HiOutlineFolderPlus className="w-5 h-5" />
             </button>
           </div>
@@ -244,275 +375,163 @@ export default function AutoMessages() {
             }`}
           >
             <span>Todos los flujos</span>
-            <span className="text-xs opacity-70">{list.length}</span>
+            <span className="text-xs opacity-70">{flows.length}</span>
           </button>
-          {folders.map((f) => {
-            const count = list.filter((m) => (m.folder || 'General') === f).length;
+          {folderNames.map((name) => {
+            const folderDoc = folders.find((f) => f.name === name);
+            const count = flows.filter((fl) => (fl.folder || 'General') === name).length;
             return (
-              <button
-                key={f}
-                onClick={() => setSelectedFolder(f)}
-                className={`w-full text-left px-3 py-2 rounded-lg text-sm mb-1 cursor-pointer border-none flex items-center justify-between gap-2 ${
-                  selectedFolder === f ? 'bg-emerald-600 text-white' : 'bg-transparent text-slate-700 hover:bg-slate-50'
-                }`}
-              >
-                <span className="flex items-center gap-2 truncate">
-                  <HiOutlineFolder className="w-4 h-4 shrink-0" /> {f}
-                </span>
-                <span className="text-xs opacity-70">{count}</span>
-              </button>
+              <div key={name} className="group flex items-center">
+                <button
+                  onClick={() => setSelectedFolder(name)}
+                  className={`flex-1 text-left px-3 py-2 rounded-lg text-sm mb-1 cursor-pointer border-none flex items-center justify-between gap-2 ${
+                    selectedFolder === name ? 'bg-emerald-600 text-white' : 'bg-transparent text-slate-700 hover:bg-slate-50'
+                  }`}
+                >
+                  <span className="flex items-center gap-2 truncate"><HiOutlineFolder className="w-4 h-4 shrink-0" /> {name}</span>
+                  <span className="text-xs opacity-70">{count}</span>
+                </button>
+                {folderDoc && (
+                  <button
+                    onClick={() => deleteFolder(folderDoc)}
+                    title="Eliminar carpeta"
+                    className="p-1 text-slate-300 hover:text-red-500 bg-transparent border-none cursor-pointer opacity-0 group-hover:opacity-100"
+                  >
+                    <HiOutlineTrash className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
             );
           })}
+          {folderNames.length === 0 && (
+            <p className="text-xs text-slate-400 px-2 py-3">Crea una carpeta para organizar tus flujos.</p>
+          )}
         </aside>
 
-        {/* Tabla de flujos */}
+        {/* Flujos */}
         <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-emerald-50/60 border-b border-emerald-100">
-              <tr>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Flujo</th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Disparador</th>
-                <th className="text-left px-4 py-3 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Acción</th>
-                <th className="text-center px-4 py-3 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Activo</th>
-                <th className="text-right px-4 py-3 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Acciones</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading && (
-                <tr><td colSpan={5} className="text-center py-6 text-slate-400">Cargando...</td></tr>
-              )}
-              {!loading && filtered.length === 0 && (
-                <tr><td colSpan={5} className="text-center py-10 text-slate-400">Sin flujos en esta carpeta. Crea el primero arriba.</td></tr>
-              )}
-              {filtered.map((m) => (
-                <tr key={m._id} className="border-t border-slate-100 hover:bg-emerald-50/30">
-                  <td className="px-4 py-3">
-                    <div className="font-semibold text-slate-800">{m.name}</div>
-                    <div className="text-xs text-slate-500 truncate max-w-xs">{m.body}</div>
-                    {m.trigger === 'keyword' && (m.keywords || []).length > 0 && (
-                      <div className="flex flex-wrap gap-1 mt-1">
-                        {m.keywords.slice(0, 6).map((k, i) => (
-                          <span key={i} className="text-[10px] bg-sky-50 text-sky-700 px-1.5 py-0.5 rounded-full">{k}</span>
-                        ))}
-                      </div>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-xs text-slate-600">
-                    {triggerLabel(m.trigger)}
-                    {m.trigger === 'scheduled' && m.scheduledAt && (
-                      <div className="text-emerald-700 font-semibold mt-0.5">a las {m.scheduledAt}</div>
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-xs text-slate-600">
-                    <div className="flex items-center gap-1 text-slate-500">
-                      <HiOutlineChatBubbleLeftRight className="w-3.5 h-3.5" /> Responde mensaje
-                    </div>
-                    {m.createOpportunity && (
-                      <div className="text-emerald-700 font-medium mt-0.5">+ Crea oportunidad ({m.opportunityStage})</div>
-                    )}
-                    <div className="text-[10px] text-slate-400 mt-0.5">{audienceLabel(m.audience)}</div>
-                  </td>
-                  <td className="px-4 py-3 text-center">
-                    {m.active ? (
-                      <HiOutlineCheckCircle className="w-5 h-5 text-emerald-600 inline" />
-                    ) : (
-                      <HiOutlineXCircle className="w-5 h-5 text-slate-300 inline" />
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-right whitespace-nowrap">
-                    <button onClick={() => openEdit(m)} className="p-1.5 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer" title="Editar">
-                      <HiOutlinePencil className="w-4 h-4" />
-                    </button>
-                    <button onClick={() => remove(m._id)} className="p-1.5 text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer" title="Eliminar">
-                      <HiOutlineTrash className="w-4 h-4" />
-                    </button>
-                  </td>
+          {loading ? (
+            <div className="text-center py-10 text-slate-400">Cargando...</div>
+          ) : visibleFlows.length === 0 ? (
+            <div className="text-center py-12 text-slate-400">
+              Sin flujos {selectedFolder !== '__all__' ? 'en esta carpeta' : ''}. Crea el primero con “Nuevo flujo”.
+            </div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-emerald-50/60 border-b border-emerald-100">
+                <tr>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Flujo</th>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Carpeta</th>
+                  <th className="text-left px-4 py-3 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Pasos</th>
+                  <th className="text-center px-4 py-3 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Estado</th>
+                  <th className="text-right px-4 py-3 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Acciones</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
+              </thead>
+              <tbody>
+                {visibleFlows.map((fl) => (
+                  <tr key={fl._id} className="border-t border-slate-100 hover:bg-emerald-50/30">
+                    <td className="px-4 py-3">
+                      <div className="font-semibold text-slate-800">{fl.name}</div>
+                      <div className="text-xs text-slate-500">
+                        {fl.trigger?.type === 'keyword'
+                          ? `Palabras: ${(fl.trigger.keywords || []).join(', ') || '—'}`
+                          : fl.trigger?.type === 'welcome'
+                          ? 'Al iniciar conversación'
+                          : 'Cualquier mensaje'}
+                      </div>
+                    </td>
+                    <td className="px-4 py-3 text-xs text-slate-600">{fl.folder || 'General'}</td>
+                    <td className="px-4 py-3 text-xs text-slate-600">
+                      {(fl.steps || []).length} paso(s)
+                    </td>
+                    <td className="px-4 py-3 text-center">
+                      {fl.active ? (
+                        <span className="text-[11px] px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-full">Activo</span>
+                      ) : (
+                        <span className="text-[11px] px-2 py-0.5 bg-slate-100 text-slate-500 rounded-full inline-flex items-center gap-1">
+                          <HiOutlineBoltSlash className="w-3 h-3" /> Borrador
+                        </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right whitespace-nowrap">
+                      <button onClick={() => openFlow(fl._id)} className="p-1.5 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer" title="Editar">
+                        <HiOutlinePencil className="w-4 h-4" />
+                      </button>
+                      <button onClick={() => deleteFlow(fl)} className="p-1.5 text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer" title="Eliminar">
+                        <HiOutlineTrash className="w-4 h-4" />
+                      </button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function StepCard({ step, idx, total, onChange, onRemove, onMove }) {
+  const meta = {
+    message: { border: 'border-emerald-200', text: 'text-emerald-700', icon: HiOutlineChatBubbleLeftRight, label: 'Enviar mensaje' },
+    wait: { border: 'border-amber-200', text: 'text-amber-700', icon: HiOutlineClock, label: 'Esperar' },
+    opportunity: { border: 'border-sky-200', text: 'text-sky-700', icon: HiOutlineMegaphone, label: 'Crear oportunidad' },
+  }[step.type] || { border: 'border-slate-200', text: 'text-slate-700', icon: HiOutlineChatBubbleLeftRight, label: step.type };
+  const Icon = meta.icon;
+  return (
+    <div className={`bg-white border rounded-xl p-3 ${meta.border}`}>
+      <div className="flex items-center justify-between mb-2">
+        <div className={`flex items-center gap-2 ${meta.text} font-semibold text-sm`}>
+          <Icon className="w-4 h-4" /> {idx + 1}. {meta.label}
+        </div>
+        <div className="flex items-center gap-1">
+          <button onClick={() => onMove(-1)} disabled={idx === 0} className="p-1 text-slate-400 hover:text-slate-700 bg-transparent border-none cursor-pointer disabled:opacity-30" title="Subir">
+            <HiOutlineArrowUp className="w-4 h-4" />
+          </button>
+          <button onClick={() => onMove(1)} disabled={idx === total - 1} className="p-1 text-slate-400 hover:text-slate-700 bg-transparent border-none cursor-pointer disabled:opacity-30" title="Bajar">
+            <HiOutlineArrowDown className="w-4 h-4" />
+          </button>
+          <button onClick={onRemove} className="p-1 text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer" title="Eliminar paso">
+            <HiOutlineTrash className="w-4 h-4" />
+          </button>
         </div>
       </div>
 
-      <Modal
-        isOpen={modalOpen}
-        onClose={() => setModalOpen(false)}
-        title={editing ? 'Editar flujo' : 'Nuevo flujo'}
-        size="lg"
-      >
-        <form onSubmit={submit} className="space-y-4">
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <label className="block text-sm">
-              Nombre del flujo
-              <input
-                value={form.name}
-                onChange={(e) => setForm({ ...form, name: e.target.value })}
-                className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
-                required
-              />
-            </label>
-            <label className="block text-sm">
-              Carpeta
-              <input
-                list="am-folders"
-                value={form.folder}
-                onChange={(e) => setForm({ ...form, folder: e.target.value })}
-                className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
-                placeholder="General"
-              />
-              <datalist id="am-folders">
-                {folders.map((f) => <option key={f} value={f} />)}
-              </datalist>
-            </label>
-          </div>
-
-          <label className="block text-sm">
-            Disparador
-            <select
-              value={form.trigger}
-              onChange={(e) => setForm({ ...form, trigger: e.target.value })}
-              className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
-            >
-              {TRIGGERS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-            </select>
-          </label>
-
-          {form.trigger === 'keyword' && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 bg-sky-50/50 border border-sky-100 rounded-lg p-3">
-              <label className="block text-sm sm:col-span-2">
-                Palabras clave (separadas por coma)
-                <input
-                  value={keywordsText}
-                  onChange={(e) => setKeywordsText(e.target.value)}
-                  placeholder="precio, costo, cuánto cuesta"
-                  className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
-                />
-              </label>
-              <label className="block text-sm">
-                Tipo de coincidencia
-                <select
-                  value={form.matchType}
-                  onChange={(e) => setForm({ ...form, matchType: e.target.value })}
-                  className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
-                >
-                  {MATCH_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
-                </select>
-              </label>
-            </div>
-          )}
-
-          <label className="block text-sm">
-            Mensaje que se enviará al cliente
-            <textarea
-              value={form.body}
-              onChange={(e) => setForm({ ...form, body: e.target.value })}
-              rows={4}
-              className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm resize-none"
-              required
-            />
-          </label>
-
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <label className="block text-sm">
-              Aplicar a
-              <select
-                value={form.audience}
-                onChange={(e) => setForm({ ...form, audience: e.target.value })}
-                className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
-              >
-                {AUDIENCES.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
-              </select>
-            </label>
-            {form.trigger === 'scheduled' && (
-              <label className="block text-sm">
-                Hora del envío (HH:MM)
-                <input
-                  type="time"
-                  value={form.scheduledAt}
-                  onChange={(e) => setForm({ ...form, scheduledAt: e.target.value })}
-                  className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
-                />
-              </label>
-            )}
-          </div>
-
-          {/* Acción: crear oportunidad */}
-          <div className="bg-emerald-50/50 border border-emerald-100 rounded-lg p-3 space-y-2">
-            <label className="flex items-center gap-2 text-sm font-medium text-slate-700">
-              <input
-                type="checkbox"
-                checked={form.createOpportunity}
-                onChange={(e) => setForm({ ...form, createOpportunity: e.target.checked })}
-                className="w-4 h-4 accent-emerald-600"
-              />
-              Crear una oportunidad automáticamente cuando se dispare este flujo
-            </label>
-            {form.createOpportunity && (
-              <label className="block text-sm">
-                Etapa inicial de la oportunidad
-                <select
-                  value={form.opportunityStage}
-                  onChange={(e) => setForm({ ...form, opportunityStage: e.target.value })}
-                  className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
-                >
-                  {STAGES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
-                </select>
-              </label>
-            )}
-          </div>
-
-          <div>
-            <p className="text-sm font-medium text-slate-700 mb-1">Días en los que se activa</p>
-            <div className="flex flex-wrap gap-1">
-              {DAYS.map((d) => {
-                const on = form.days.includes(d.v);
-                return (
-                  <button
-                    key={d.v}
-                    type="button"
-                    onClick={() => toggleDay(d.v)}
-                    className={`px-3 py-1.5 rounded-lg text-xs border cursor-pointer ${
-                      on ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200'
-                    }`}
-                  >
-                    {d.l}
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 gap-3">
-            <label className="block text-sm">
-              Desde
-              <input type="time" value={form.hourFrom} onChange={(e) => setForm({ ...form, hourFrom: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
-            </label>
-            <label className="block text-sm">
-              Hasta
-              <input type="time" value={form.hourTo} onChange={(e) => setForm({ ...form, hourTo: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
-            </label>
-          </div>
-
-          <label className="flex items-center gap-2 text-sm">
-            <input
-              type="checkbox"
-              checked={form.active}
-              onChange={(e) => setForm({ ...form, active: e.target.checked })}
-              className="w-4 h-4 accent-emerald-600"
-            />
-            Activo (se ejecutará cuando se cumplan las condiciones)
-          </label>
-
-          <div className="flex justify-end gap-2 pt-2">
-            <button type="button" onClick={() => setModalOpen(false)} className="px-5 py-2.5 rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-50 bg-white cursor-pointer">
-              Cancelar
-            </button>
-            <button type="submit" disabled={saving} className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white font-medium border-none cursor-pointer disabled:opacity-50">
-              {saving ? 'Guardando...' : editing ? 'Actualizar' : 'Crear'}
-            </button>
-          </div>
-        </form>
-      </Modal>
+      {step.type === 'message' && (
+        <textarea
+          value={step.body}
+          onChange={(e) => onChange({ body: e.target.value })}
+          rows={3}
+          placeholder="Mensaje que se enviará al cliente. Usa {{nombre}} para personalizar."
+          className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm resize-none"
+        />
+      )}
+      {step.type === 'wait' && (
+        <label className="flex items-center gap-2 text-sm text-slate-600">
+          Esperar
+          <input
+            type="number"
+            min="0"
+            value={step.waitMinutes}
+            onChange={(e) => onChange({ waitMinutes: Number(e.target.value) })}
+            className="w-24 border border-slate-200 rounded-lg px-3 py-1.5 text-sm"
+          />
+          minutos antes del siguiente paso
+        </label>
+      )}
+      {step.type === 'opportunity' && (
+        <label className="flex items-center gap-2 text-sm text-slate-600">
+          Crear oportunidad en etapa
+          <select
+            value={step.opportunityStage}
+            onChange={(e) => onChange({ opportunityStage: e.target.value })}
+            className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm"
+          >
+            {STAGES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+          </select>
+        </label>
+      )}
     </div>
   );
 }
