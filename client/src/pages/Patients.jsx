@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../api/axios';
+import { downloadFile } from '../utils/download';
 import Modal from '../components/Modal';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
@@ -32,6 +33,7 @@ const emptyForm = {
 
 const emptyApt = {
   enabled: false,
+  clinic: '',
   date: '',
   startTime: '',
   room: '',
@@ -40,7 +42,8 @@ const emptyApt = {
 };
 
 export default function Patients() {
-  const { hasRole } = useAuth();
+  const { hasRole, clinics, activeClinic } = useAuth();
+  const showClinicSelector = (clinics?.length || 0) > 1;
   const canWrite = hasRole('admin', 'cajero', 'call_center');
   const canDelete = hasRole('admin');
 
@@ -148,14 +151,19 @@ export default function Patients() {
       // Crear cita asociada si se solicitó
       if (aptForm.enabled && !editing && createdId) {
         try {
+          const aptClinic = aptForm.clinic || activeClinic?._id;
+          // Sala y servicios pertenecen a la sucursal activa; si se agenda en otra
+          // sucursal, se omiten para evitar referencias cruzadas inválidas.
+          const sameClinic = !aptForm.clinic || String(aptForm.clinic) === String(activeClinic?._id);
           await api.post('/appointments', {
             patient: createdId,
+            clinic: aptClinic,
             date: aptForm.date,
             startTime: aptForm.startTime,
-            room: aptForm.room || undefined,
+            room: sameClinic ? aptForm.room || undefined : undefined,
             reason: aptForm.reason,
             status: 'pendiente',
-            services: aptForm.services.map((id) => ({ product: id })),
+            services: sameClinic ? aptForm.services.map((id) => ({ product: id })) : [],
           });
           toast.success('Cita agendada');
         } catch (err) {
@@ -199,15 +207,9 @@ export default function Patients() {
             <button
               onClick={async () => {
                 try {
-                  const res = await api.get('/reports/patients.xlsx', { responseType: 'blob' });
-                  const url = URL.createObjectURL(res.data);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = `pacientes_${Date.now()}.xlsx`;
-                  a.click();
-                  URL.revokeObjectURL(url);
-                } catch {
-                  toast.error('Error al exportar');
+                  await downloadFile('/reports/patients.xlsx', { filename: `pacientes_${Date.now()}.xlsx` });
+                } catch (err) {
+                  toast.error(err.message || 'Error al exportar');
                 }
               }}
               className="flex items-center gap-2 bg-white border border-emerald-200 text-emerald-700 hover:bg-emerald-50 px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer"
@@ -494,6 +496,19 @@ export default function Patients() {
               </label>
               {aptForm.enabled && (
                 <div className="mt-3 space-y-3 bg-emerald-50/40 rounded-xl p-3">
+                  {showClinicSelector && (
+                    <Field label="Sucursal destino *">
+                      <select
+                        value={aptForm.clinic || activeClinic?._id || ''}
+                        onChange={(e) => setAptForm({ ...aptForm, clinic: e.target.value, room: '' })}
+                        className="input"
+                      >
+                        {clinics.map((c) => (
+                          <option key={c._id} value={c._id}>{c.nombreComercial || c.name}</option>
+                        ))}
+                      </select>
+                    </Field>
+                  )}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <Field label="Fecha" required>
                       <input
@@ -511,18 +526,20 @@ export default function Patients() {
                         className="input"
                       />
                     </Field>
-                    <Field label="Consultorio">
-                      <select
-                        value={aptForm.room}
-                        onChange={(e) => setAptForm({ ...aptForm, room: e.target.value })}
-                        className="input"
-                      >
-                        <option value="">— Sin asignar —</option>
-                        {rooms.map((r) => (
-                          <option key={r._id} value={r._id}>{r.name}</option>
-                        ))}
-                      </select>
-                    </Field>
+                    {(!aptForm.clinic || String(aptForm.clinic) === String(activeClinic?._id)) && (
+                      <Field label="Consultorio">
+                        <select
+                          value={aptForm.room}
+                          onChange={(e) => setAptForm({ ...aptForm, room: e.target.value })}
+                          className="input"
+                        >
+                          <option value="">— Sin asignar —</option>
+                          {rooms.map((r) => (
+                            <option key={r._id} value={r._id}>{r.name}</option>
+                          ))}
+                        </select>
+                      </Field>
+                    )}
                   </div>
                   <Field label="Motivo">
                     <textarea
@@ -532,6 +549,7 @@ export default function Patients() {
                       className="input resize-none"
                     />
                   </Field>
+                  {(!aptForm.clinic || String(aptForm.clinic) === String(activeClinic?._id)) ? (
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1.5">
                       Servicios
@@ -572,6 +590,11 @@ export default function Patients() {
                       )}
                     </div>
                   </div>
+                  ) : (
+                    <p className="text-xs text-slate-500 bg-white rounded-lg border border-emerald-100 p-2">
+                      La sala y los servicios se asignan en la sucursal de destino al gestionar la cita.
+                    </p>
+                  )}
                 </div>
               )}
             </div>

@@ -26,21 +26,50 @@ export default function Clinics() {
   const [form, setForm] = useState(empty);
   const [saving, setSaving] = useState(false);
 
+  // Consolidado por sucursal
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const firstOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+    .toISOString()
+    .slice(0, 10);
+  const [overview, setOverview] = useState(null);
+  const [range, setRange] = useState({ startDate: firstOfMonth, endDate: todayStr });
+  const [loadingOverview, setLoadingOverview] = useState(true);
+
   const load = async () => {
     setLoading(true);
     try {
       const res = await api.get('/clinics');
       setClinics(res.data);
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al cargar consultorios médicos');
+      toast.error(err.response?.data?.message || 'Error al cargar sucursales');
     } finally {
       setLoading(false);
+    }
+  };
+
+  const loadOverview = async () => {
+    setLoadingOverview(true);
+    try {
+      const res = await api.get('/clinics/overview', { params: range });
+      setOverview(res.data);
+    } catch {
+      setOverview(null);
+    } finally {
+      setLoadingOverview(false);
     }
   };
 
   useEffect(() => {
     load();
   }, []);
+
+  useEffect(() => {
+    loadOverview();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [range.startDate, range.endDate]);
+
+  const money = (n) =>
+    `$${Number(n || 0).toLocaleString('es-EC', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
 
   const openNew = () => {
     setEditing(null);
@@ -68,10 +97,10 @@ export default function Clinics() {
     try {
       if (editing) {
         await api.put(`/clinics/${editing._id}`, form);
-        toast.success('Consultorio médico actualizado');
+        toast.success('Sucursal actualizada');
       } else {
         await api.post('/clinics', form);
-        toast.success('Consultorio médico creado');
+        toast.success('Sucursal creada');
       }
       setModalOpen(false);
       await load();
@@ -87,7 +116,7 @@ export default function Clinics() {
     if (!window.confirm(`¿Desactivar "${c.name}"?`)) return;
     try {
       await api.delete(`/clinics/${c._id}`);
-      toast.success('Consultorio médico desactivado');
+      toast.success('Sucursal desactivada');
       load();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al desactivar');
@@ -99,16 +128,88 @@ export default function Clinics() {
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
           <HiOutlineBuildingOffice2 className="w-7 h-7 text-emerald-600" />
-          Consultorios médicos
+          Sucursales
         </h1>
         {isSuper && (
           <button
             onClick={openNew}
             className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white px-5 py-2.5 rounded-xl text-sm font-medium cursor-pointer border-none shadow-lg shadow-emerald-200/50"
           >
-            <HiOutlinePlus className="w-5 h-5" /> Nuevo consultorio
+            <HiOutlinePlus className="w-5 h-5" /> Nueva sucursal
           </button>
         )}
+      </div>
+
+      {/* Consolidado por sucursal */}
+      <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden mb-6">
+        <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 border-b border-emerald-50">
+          <h2 className="text-base font-semibold text-slate-800">Consolidado por sucursal</h2>
+          <div className="flex items-center gap-2 text-sm">
+            <input
+              type="date"
+              value={range.startDate}
+              onChange={(e) => setRange((r) => ({ ...r, startDate: e.target.value }))}
+              className="px-3 py-1.5 border border-slate-200 rounded-lg text-sm bg-slate-50/50"
+            />
+            <span className="text-slate-400">—</span>
+            <input
+              type="date"
+              value={range.endDate}
+              onChange={(e) => setRange((r) => ({ ...r, endDate: e.target.value }))}
+              className="px-3 py-1.5 border border-slate-200 rounded-lg text-sm bg-slate-50/50"
+            />
+          </div>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="bg-emerald-50/50 text-emerald-700">
+              <tr>
+                <th className="text-left px-5 py-3 text-xs font-semibold uppercase">Sucursal</th>
+                <th className="text-right px-3 py-3 text-xs font-semibold uppercase"># Ventas</th>
+                <th className="text-right px-3 py-3 text-xs font-semibold uppercase">Vendido</th>
+                <th className="text-right px-3 py-3 text-xs font-semibold uppercase">Citas</th>
+                <th className="text-right px-3 py-3 text-xs font-semibold uppercase">Pend.</th>
+                <th className="text-right px-3 py-3 text-xs font-semibold uppercase">Asist.</th>
+                <th className="text-right px-3 py-3 text-xs font-semibold uppercase">No asist.</th>
+                <th className="text-right px-3 py-3 text-xs font-semibold uppercase">Inventario (u/valor)</th>
+              </tr>
+            </thead>
+            <tbody>
+              {loadingOverview ? (
+                <tr><td colSpan={8} className="text-center py-8 text-slate-500">Cargando consolidado...</td></tr>
+              ) : !overview || overview.clinics.length === 0 ? (
+                <tr><td colSpan={8} className="text-center py-8 text-slate-400">Sin datos en el rango.</td></tr>
+              ) : (
+                <>
+                  {overview.clinics.map((c) => (
+                    <tr key={c._id} className="border-t border-emerald-50 hover:bg-emerald-50/30">
+                      <td className="px-5 py-3 text-slate-800 font-medium">{c.name}</td>
+                      <td className="px-3 py-3 text-right text-slate-600">{c.sales.count}</td>
+                      <td className="px-3 py-3 text-right font-semibold text-emerald-700">{money(c.sales.total)}</td>
+                      <td className="px-3 py-3 text-right text-slate-600">{c.appointments.total}</td>
+                      <td className="px-3 py-3 text-right text-amber-600">{c.appointments.pendiente}</td>
+                      <td className="px-3 py-3 text-right text-emerald-600">{c.appointments.asistida}</td>
+                      <td className="px-3 py-3 text-right text-red-500">{c.appointments.no_asistio}</td>
+                      <td className="px-3 py-3 text-right text-slate-600">
+                        {c.inventory.units} u · {money(c.inventory.value)}
+                      </td>
+                    </tr>
+                  ))}
+                  <tr className="border-t-2 border-emerald-100 bg-emerald-50/40 font-semibold text-slate-800">
+                    <td className="px-5 py-3">TOTAL EMPRESA</td>
+                    <td className="px-3 py-3 text-right">{overview.totals.sales.count}</td>
+                    <td className="px-3 py-3 text-right text-emerald-700">{money(overview.totals.sales.total)}</td>
+                    <td className="px-3 py-3 text-right">{overview.totals.appointments.total}</td>
+                    <td className="px-3 py-3 text-right text-amber-600">{overview.totals.appointments.pendiente}</td>
+                    <td className="px-3 py-3 text-right text-emerald-600">{overview.totals.appointments.asistida}</td>
+                    <td className="px-3 py-3 text-right text-red-500">{overview.totals.appointments.no_asistio}</td>
+                    <td className="px-3 py-3 text-right">{overview.totals.inventory.units} u · {money(overview.totals.inventory.value)}</td>
+                  </tr>
+                </>
+              )}
+            </tbody>
+          </table>
+        </div>
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden">
@@ -127,7 +228,7 @@ export default function Clinics() {
             {loading ? (
               <tr><td colSpan={6} className="text-center py-10 text-slate-500">Cargando...</td></tr>
             ) : clinics.length === 0 ? (
-              <tr><td colSpan={6} className="text-center py-10 text-slate-500">Sin consultorios médicos.</td></tr>
+              <tr><td colSpan={6} className="text-center py-10 text-slate-500">Sin sucursales.</td></tr>
             ) : (
               clinics.map((c) => (
                 <tr key={c._id} className="border-t border-emerald-50 hover:bg-emerald-50/30">
@@ -168,7 +269,7 @@ export default function Clinics() {
       <Modal
         isOpen={modalOpen}
         onClose={() => setModalOpen(false)}
-        title={editing ? 'Editar consultorio médico' : 'Nuevo consultorio médico'}
+        title={editing ? 'Editar sucursal' : 'Nueva sucursal'}
         size="lg"
       >
         <form onSubmit={submit} className="space-y-3">

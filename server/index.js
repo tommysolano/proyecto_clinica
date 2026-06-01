@@ -86,6 +86,8 @@ connectDB().then(() => {
   server.listen(PORT, () => {
     console.log(`Servidor corriendo en puerto ${PORT} (HTTP + Socket.IO)`);
   });
+  // Job: marcar automáticamente como "no asistió" las citas de días pasados.
+  require('./utils/autoNoShow').startAutoNoShowJob();
 }).catch((err) => {
   console.error('No se pudo conectar a MongoDB, abortando:', err.message);
   process.exit(1);

@@ -146,7 +146,7 @@ export default function Users() {
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
           <HiOutlineUsers className="w-7 h-7 text-emerald-600" />
-          Usuarios del consultorio médico
+          Usuarios de la sucursal
         </h1>
         <button
           onClick={openNew}

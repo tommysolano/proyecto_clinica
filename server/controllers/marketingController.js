@@ -5,6 +5,7 @@ const Appointment = require('../models/Appointment');
 const Sale = require('../models/Sale');
 const Product = require('../models/Product');
 const Referral = require('../models/Referral');
+const wa = require('../utils/whatsappCloud');
 
 /**
  * Dashboard global para el rol de marketing:
@@ -115,13 +116,26 @@ exports.reminders = async (req, res) => {
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - days);
 
-    const treatments = await Treatment.find({
-      clinic: clinicObjId,
-      status: 'activo',
-    })
+    // Filtros opcionales por servicio o programa.
+    const { service, program } = req.query;
+    let serviceIds = null;
+    if (program) {
+      const prog = await Product.findById(program).select('programServices');
+      const ids = (prog?.programServices || []).map((p) => p.product);
+      if (ids.length) serviceIds = ids;
+    } else if (service) {
+      serviceIds = [new mongoose.Types.ObjectId(service)];
+    }
+
+    const treatmentMatch = { clinic: clinicObjId, status: 'activo' };
+    if (serviceIds && serviceIds.length) {
+      treatmentMatch['items.product'] = { $in: serviceIds };
+    }
+
+    const treatments = await Treatment.find(treatmentMatch)
       .populate('patient', 'firstName lastName phone email whatsapp source')
       .sort({ updatedAt: 1 })
-      .limit(200);
+      .limit(300);
 
     const reminders = [];
     for (const t of treatments) {
@@ -158,6 +172,47 @@ exports.reminders = async (req, res) => {
     res.json({ cutoff, reminders });
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener recordatorios', error: error.message });
+  }
+};
+
+/**
+ * Envío masivo de WhatsApp a pacientes ausentes (o cualquier lista).
+ * Usa las credenciales de WhatsApp Cloud configuradas para la clínica.
+ * Soporta el placeholder {{nombre}} en el mensaje.
+ * POST /api/marketing/reminders/whatsapp
+ * body: { recipients: [{ name, phone, whatsapp }], message }
+ */
+exports.sendBulkWhatsapp = async (req, res) => {
+  try {
+    const { recipients, message } = req.body;
+    if (!Array.isArray(recipients) || recipients.length === 0) {
+      return res.status(400).json({ message: 'No hay destinatarios seleccionados' });
+    }
+    if (!message || !String(message).trim()) {
+      return res.status(400).json({ message: 'El mensaje es requerido' });
+    }
+    const { ok, creds, reason } = await wa.loadCreds(req.clinicId);
+    if (!ok) {
+      return res.status(400).json({ message: reason || 'WhatsApp no está configurado para esta sucursal' });
+    }
+
+    const valid = recipients.filter((r) => r && (r.phone || r.whatsapp));
+    if (valid.length === 0) {
+      return res.status(400).json({ message: 'Ningún destinatario tiene teléfono/WhatsApp' });
+    }
+    const personalize = (tpl, r) =>
+      String(tpl)
+        .replace(/\{\{\s*nombre\s*\}\}/gi, r.name || '')
+        .replace(/\{\{\s*name\s*\}\}/gi, r.name || '');
+
+    const results = await wa.sendBulk(creds, valid, (r) => ({
+      to: r.whatsapp || r.phone,
+      body: personalize(message, r),
+    }));
+    const sent = results.filter((x) => x.ok).length;
+    res.json({ total: results.length, sent, failed: results.length - sent });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al enviar WhatsApp masivo', error: error.message });
   }
 };
 
@@ -310,6 +365,8 @@ exports.incompleteServices = async (req, res) => {
       {
         $project: {
           status: 1,
+          patient: 1,
+          treatmentName: '$name',
           product: '$items.product',
           name: '$items.name',
           missing: {
@@ -318,38 +375,44 @@ exports.incompleteServices = async (req, res) => {
         },
       },
       { $match: { missing: { $gt: 0 } } },
+      { $lookup: { from: 'patients', localField: 'patient', foreignField: '_id', as: 'pat' } },
+      { $unwind: { path: '$pat', preserveNullAndEmptyArrays: true } },
       {
         $group: {
-          _id: { product: '$product', status: '$status' },
+          _id: '$product',
           name: { $first: '$name' },
-          missing: { $sum: '$missing' },
+          totalMissing: { $sum: '$missing' },
           treatments: { $sum: 1 },
+          abandoned: { $sum: { $cond: [{ $eq: ['$status', 'abandonado'] }, '$missing', 0] } },
+          completed: { $sum: { $cond: [{ $eq: ['$status', 'completado'] }, '$missing', 0] } },
+          activeMissing: { $sum: { $cond: [{ $eq: ['$status', 'activo'] }, '$missing', 0] } },
+          patients: {
+            $push: {
+              _id: '$pat._id',
+              name: { $trim: { input: { $concat: [{ $ifNull: ['$pat.firstName', ''] }, ' ', { $ifNull: ['$pat.lastName', ''] }] } } },
+              phone: '$pat.phone',
+              whatsapp: '$pat.whatsapp',
+              cedula: '$pat.cedula',
+              missing: '$missing',
+              status: '$status',
+              treatmentName: '$treatmentName',
+            },
+          },
         },
       },
-      { $sort: { missing: -1 } },
+      { $sort: { totalMissing: -1 } },
     ]);
 
-    // Reagrupar por producto con desglose por estado
-    const map = new Map();
-    for (const row of data) {
-      const id = String(row._id.product);
-      if (!map.has(id)) {
-        map.set(id, {
-          product: id,
-          name: row.name,
-          totalMissing: 0,
-          abandoned: 0,
-          completed: 0,
-          activeMissing: 0,
-        });
-      }
-      const entry = map.get(id);
-      entry.totalMissing += row.missing;
-      if (row._id.status === 'abandonado') entry.abandoned += row.missing;
-      else if (row._id.status === 'completado') entry.completed += row.missing;
-      else entry.activeMissing += row.missing;
-    }
-    const list = [...map.values()].sort((a, b) => b.totalMissing - a.totalMissing);
+    const list = data.map((d) => ({
+      product: String(d._id),
+      name: d.name,
+      totalMissing: d.totalMissing,
+      treatments: d.treatments,
+      abandoned: d.abandoned,
+      completed: d.completed,
+      activeMissing: d.activeMissing,
+      patients: (d.patients || []).filter((p) => p._id),
+    }));
     res.json(list);
   } catch (error) {
     res.status(500).json({ message: 'Error en servicios no completados', error: error.message });
@@ -723,15 +786,28 @@ exports.appointmentsBreakdown = async (req, res) => {
       if (ids.length) match['services.product'] = { $in: ids };
     }
 
-    const total = await Appointment.countDocuments(match);
-    const agendadas = await Appointment.countDocuments({
+    // Conteo por estado en una sola pasada (evita descuadres por consultas separadas).
+    const statusAgg = await Appointment.aggregate([
+      { $match: match },
+      { $group: { _id: '$status', count: { $sum: 1 } } },
+    ]);
+    const byStatus = {};
+    statusAgg.forEach((s) => { byStatus[s._id || 'pendiente'] = s.count; });
+
+    const total = Object.values(byStatus).reduce((a, b) => a + b, 0);
+    const pendientes = (byStatus.pendiente || 0) + (byStatus.confirmada || 0);
+    const asistidos = (byStatus.asistida || 0) + (byStatus.completada || 0);
+    const noAsistidos = byStatus.no_asistio || 0;
+    const canceladas = byStatus.cancelada || 0;
+
+    // Pacientes nuevos (primera visita) dentro del rango/filtros.
+    const nuevos = await Appointment.countDocuments({ ...match, isFirstVisit: true });
+    const nuevosAsistidos = await Appointment.countDocuments({
       ...match,
-      status: { $nin: ['cancelada'] },
-    });
-    const asistieron = await Appointment.countDocuments({
-      ...match,
+      isFirstVisit: true,
       status: { $in: ['asistida', 'completada'] },
     });
+
     const porCallCenter = await Appointment.countDocuments({
       ...match,
       createdByRole: 'call_center',
@@ -757,7 +833,22 @@ exports.appointmentsBreakdown = async (req, res) => {
       { $sort: { count: -1 } },
     ]);
 
-    res.json({ total, agendadas, asistieron, porCallCenter, asistieronCallCenter, byDoctor });
+    res.json({
+      total,
+      pendientes,
+      asistidos,
+      noAsistidos,
+      canceladas,
+      nuevos,
+      nuevosAsistidos,
+      // 'agendadas' = total sin canceladas (compatibilidad hacia atrás)
+      agendadas: total - canceladas,
+      asistieron: asistidos,
+      porCallCenter,
+      asistieronCallCenter,
+      byStatus,
+      byDoctor,
+    });
   } catch (error) {
     res.status(500).json({ message: 'Error en breakdown', error: error.message });
   }

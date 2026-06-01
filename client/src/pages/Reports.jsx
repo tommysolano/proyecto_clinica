@@ -86,7 +86,7 @@ export default function Reports() {
                   <span className="text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-600 capitalize">{p.type}</span>
                 </div>
                 <div className="text-sm text-slate-600">
-                  <b>{p.attentions}</b> atenciones · <b>{p.uniquePatients}</b> pacientes únicos
+                  <b>{p.attentions}</b> atenciones · <b>{p.uniquePatients}</b> pacientes
                 </div>
               </div>
 

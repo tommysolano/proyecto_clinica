@@ -425,9 +425,22 @@ const AutoMessage = require('../models/AutoMessage');
  * - isNewConversation: true cuando la conversación se acaba de crear.
  * - now: Date opcional para tests; por defecto Date.now().
  */
-async function fireAutoMessages({ conv, clinicId, isNewConversation, now = new Date() }) {
+// ¿El texto entrante coincide con las palabras clave de la regla?
+function keywordMatches(rule, text) {
+  const kws = (rule.keywords || []).map((k) => String(k || '').trim().toLowerCase()).filter(Boolean);
+  if (kws.length === 0) return false;
+  const t = String(text || '').trim().toLowerCase();
+  if (!t) return false;
+  return kws.some((kw) => {
+    if (rule.matchType === 'exact') return t === kw;
+    if (rule.matchType === 'starts') return t.startsWith(kw);
+    return t.includes(kw); // contains (default)
+  });
+}
+
+async function fireAutoMessages({ conv, clinicId, isNewConversation, incomingText = '', now = new Date() }) {
   try {
-    const rules = await AutoMessage.find({ clinic: clinicId, active: true });
+    const rules = await AutoMessage.find({ clinic: clinicId, active: true }).sort({ order: 1, createdAt: 1 });
     if (rules.length === 0) return;
 
     const dayOfWeek = now.getDay(); // 0=dom..6=sáb
@@ -441,6 +454,9 @@ async function fireAutoMessages({ conv, clinicId, isNewConversation, now = new D
       return true;
     };
 
+    let createdOpportunity = false;
+    let keywordFired = false;
+
     for (const rule of rules) {
       if (!audienceMatches(rule)) continue;
       if (Array.isArray(rule.days) && rule.days.length && !rule.days.includes(dayOfWeek)) continue;
@@ -450,6 +466,12 @@ async function fireAutoMessages({ conv, clinicId, isNewConversation, now = new D
 
       if (rule.trigger === 'welcome' && isNewConversation && inHours) {
         shouldFire = true;
+      } else if (rule.trigger === 'keyword') {
+        // Solo la primera regla de palabra clave que coincida (comportamiento de flujo).
+        if (!keywordFired && keywordMatches(rule, incomingText)) {
+          shouldFire = true;
+          keywordFired = true;
+        }
       } else if (rule.trigger === 'incoming' && inHours) {
         shouldFire = true;
       } else if (rule.trigger === 'out_of_hours' && !inHours) {
@@ -471,6 +493,26 @@ async function fireAutoMessages({ conv, clinicId, isNewConversation, now = new D
       conv.lastMessageAt = msg.createdAt;
       conv.lastMessagePreview = String(rule.body || '').slice(0, 140);
       conv.lastMessageDirection = 'out';
+
+      // Acción: crear oportunidad automáticamente (una sola vez por mensaje entrante).
+      if (rule.createOpportunity && !createdOpportunity && !conv.opportunity?.isOpportunity) {
+        conv.opportunity = {
+          ...(conv.opportunity?.toObject ? conv.opportunity.toObject() : conv.opportunity || {}),
+          isOpportunity: true,
+          stage: rule.opportunityStage || 'nuevo',
+          notes: `Creada automáticamente por flujo "${rule.name}"`,
+          createdAt: new Date(),
+        };
+        if (Array.isArray(conv.opportunities)) {
+          conv.opportunities.push({
+            isOpportunity: true,
+            stage: rule.opportunityStage || 'nuevo',
+            notes: `Flujo: ${rule.name}`,
+            createdAt: new Date(),
+          });
+        }
+        createdOpportunity = true;
+      }
     }
     await conv.save();
   } catch (err) {
@@ -933,6 +975,7 @@ exports.webhookReceive = async (req, res) => {
         conv,
         clinicId,
         isNewConversation,
+        incomingText: ev.body || '',
       });
     }
     res.status(200).json({ received: events.length });
@@ -994,6 +1037,7 @@ exports.simulateIncoming = async (req, res) => {
       conv,
       clinicId: req.clinicId,
       isNewConversation,
+      incomingText: body,
     });
 
     res.status(201).json({ conversation: conv, message: msg });
@@ -1050,7 +1094,7 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   conv.unreadCount = (conv.unreadCount || 0) + 1;
   if (conv.status === 'closed') conv.status = 'open';
   await conv.save();
-  await fireAutoMessages({ conv, clinicId, isNewConversation: isNew });
+  await fireAutoMessages({ conv, clinicId, isNewConversation: isNew, incomingText: body || '' });
   emitToClinic(clinicId, 'chat:message', { conversationId: conv._id });
 }
 

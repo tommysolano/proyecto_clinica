@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import api from '../api/axios';
+import { downloadFile } from '../utils/download';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import { useAuth } from '../context/AuthContext';
@@ -121,18 +122,9 @@ export default function Invoices() {
               if (filter.startDate) params.startDate = filter.startDate;
               if (filter.endDate) params.endDate = filter.endDate;
               if (filter.estado) params.estado = filter.estado;
-              const res = await api.get('/reports/invoices.xlsx', {
-                params,
-                responseType: 'blob',
-              });
-              const url = URL.createObjectURL(res.data);
-              const a = document.createElement('a');
-              a.href = url;
-              a.download = `facturas_${Date.now()}.xlsx`;
-              a.click();
-              URL.revokeObjectURL(url);
-            } catch {
-              toast.error('Error al exportar');
+              await downloadFile('/reports/invoices.xlsx', { params, filename: `facturas_${Date.now()}.xlsx` });
+            } catch (err) {
+              toast.error(err.message || 'Error al exportar');
             }
           }}
           className="px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50"

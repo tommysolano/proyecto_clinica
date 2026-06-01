@@ -50,8 +50,7 @@ import {
 const ALL_ITEMS = [
   { path: '/', label: 'Dashboard', icon: HiOutlineHome, roles: ['admin', 'cajero', 'contabilidad', 'doctor', 'optica', 'call_center', 'marketing', 'enfermero'] },
   { path: '/patients', label: 'Pacientes', icon: HiOutlineUsers, roles: ['admin', 'cajero', 'marketing', 'enfermero', 'call_center'] },
-  { path: '/appointments', label: 'Citas', icon: HiOutlineCalendar, roles: ['admin', 'cajero', 'doctor', 'optica', 'call_center', 'enfermero', 'marketing'] },
-  { path: '/calendar', label: 'Calendario', icon: HiOutlineCalendar, roles: ['admin', 'cajero', 'doctor', 'optica', 'call_center', 'enfermero', 'marketing'] },
+  { path: '/appointments', label: 'Citas y Calendario', icon: HiOutlineCalendar, roles: ['admin', 'cajero', 'doctor', 'optica', 'call_center', 'enfermero', 'marketing'] },
   { path: '/treatments', label: 'Tratamientos', icon: HiOutlineHeart, roles: ['admin', 'cajero', 'marketing', 'enfermero'] },
   { path: '/referrals', label: 'Derivaciones', icon: HiOutlineArrowsRightLeft, roles: ['admin', 'marketing', 'cajero'] },
   { path: '/quotations', label: 'Cotizaciones', icon: HiOutlineDocumentDuplicate, roles: ['admin', 'cajero', 'call_center', 'contabilidad', 'marketing'] },
@@ -72,7 +71,7 @@ const ALL_ITEMS = [
   { path: '/blocks', label: 'Bloqueos', icon: HiOutlineNoSymbol, roles: ['admin'] },
   { path: '/users', label: 'Usuarios', icon: HiOutlineUserGroup, roles: ['admin'] },
   { path: '/invoicing-config', label: 'Config. SRI', icon: HiOutlineCog6Tooth, roles: ['admin'] },
-  { path: '/clinics', label: 'Consultorios médicos', icon: HiOutlineBuildingOffice2, roles: [], superOnly: true },
+  { path: '/clinics', label: 'Sucursales', icon: HiOutlineBuildingOffice2, roles: [], superOnly: true },
   { path: '/settings', label: 'Configuración', icon: HiOutlineCog6Tooth, roles: ['admin', 'cajero', 'contabilidad', 'doctor', 'optica', 'call_center', 'marketing', 'enfermero'] },
 ];
 
@@ -219,7 +218,7 @@ export default function Layout({ children }) {
         {clinics.length > 1 && (
           <div className="px-4 mb-3">
             <label className="text-[10px] uppercase tracking-wider text-emerald-400/70 font-semibold px-1 block mb-1">
-              Consultorio médico activo
+              Sucursal activa
             </label>
             <select
               value={activeClinic?._id || ''}

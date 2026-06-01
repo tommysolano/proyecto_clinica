@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import api from '../api/axios';
+import { downloadFile } from '../utils/download';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import {
@@ -103,22 +104,12 @@ export default function Treatments() {
 
   const downloadExcel = async () => {
     try {
-      const res = await api.get('/treatments/reminders.xlsx', {
+      await downloadFile('/treatments/reminders.xlsx', {
         params: { alert: alertFilter || 'abandoned' },
-        responseType: 'blob',
+        filename: `recordatorios-${alertFilter || 'abandoned'}.xlsx`,
       });
-      const url = URL.createObjectURL(
-        new Blob([res.data], {
-          type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        })
-      );
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `recordatorios-${alertFilter || 'abandoned'}.xlsx`;
-      a.click();
-      URL.revokeObjectURL(url);
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al descargar Excel');
+      toast.error(err.message || 'Error al descargar Excel');
     }
   };
 

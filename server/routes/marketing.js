@@ -6,6 +6,7 @@ router.use(auth, requireClinic);
 
 router.get('/dashboard', requireRole('admin', 'marketing'), ctrl.dashboard);
 router.get('/reminders', requireRole('admin', 'marketing'), ctrl.reminders);
+router.post('/reminders/whatsapp', requireRole('admin', 'marketing'), ctrl.sendBulkWhatsapp);
 router.get('/predictions', requireRole('admin', 'marketing'), ctrl.predictions);
 router.get('/incomplete-services', requireRole('admin', 'marketing'), ctrl.incompleteServices);
 router.get('/service-evolution', requireRole('admin', 'marketing'), ctrl.serviceEvolution);

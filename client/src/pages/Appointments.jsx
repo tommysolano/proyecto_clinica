@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useMemo, Fragment } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import Modal from '../components/Modal';
+import { downloadFile } from '../utils/download';
 import ProductAutocomplete from '../components/ProductAutocomplete';
 import SameSlotPanel from '../components/SameSlotPanel';
 import toast from 'react-hot-toast';
@@ -90,6 +91,20 @@ const formatLocalDate = (iso) => {
   return Number.isNaN(dt.getTime()) ? '' : dt.toLocaleDateString('es-EC');
 };
 
+// YYYY-MM-DD a partir de componentes locales (sin desfase UTC).
+const toYmd = (d) => {
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
+};
+
+const MONTH_NAMES = [
+  'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio',
+  'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre',
+];
+const WEEKDAY_NAMES = ['Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb', 'Dom'];
+
 // Convierte HH:MM a minutos
 const hhmmToMin = (s) => {
   if (!s) return null;
@@ -135,10 +150,15 @@ export default function Appointments() {
     patientQuery: '',
   });
   const [view, setView] = useState(
-    role === 'doctor' || role === 'optica' || role === 'call_center'
+    role === 'doctor' || role === 'optica'
       ? 'today'
-      : 'list'
-  ); // 'list' | 'today'
+      : 'calendar'
+  ); // 'calendar' | 'list' | 'today'
+  // Mes visible en la vista calendario
+  const [calMonth, setCalMonth] = useState(() => {
+    const d = new Date();
+    return new Date(d.getFullYear(), d.getMonth(), 1);
+  });
   const [patientSearch, setPatientSearch] = useState('');
   const [showPatientList, setShowPatientList] = useState(false);
 
@@ -155,6 +175,13 @@ export default function Appointments() {
         const today = new Date().toISOString().split('T')[0];
         params.startDate = today;
         params.endDate = today;
+      } else if (view === 'calendar') {
+        // Trae todas las citas del mes visible para pintarlas en la cuadrícula.
+        const first = new Date(calMonth.getFullYear(), calMonth.getMonth(), 1);
+        const last = new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 0);
+        params.startDate = toYmd(first);
+        params.endDate = toYmd(last);
+        if (filter.status) params.status = filter.status;
       } else {
         if (filter.startDate) params.startDate = filter.startDate;
         if (filter.endDate) params.endDate = filter.endDate;
@@ -225,7 +252,7 @@ export default function Appointments() {
   useEffect(() => {
     fetchAppointments();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [view, filter]);
+  }, [view, filter, calMonth]);
 
   // Tiempo real: cuando llega un cambio de cita, refrescar la lista.
   useSocketEvent('appointment:created', () => fetchAppointments());
@@ -388,15 +415,9 @@ export default function Appointments() {
 
   const downloadPdf = async (id) => {
     try {
-      const res = await api.get(`/appointments/${id}/pdf`, { responseType: 'blob' });
-      const url = URL.createObjectURL(res.data);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `cita_${id}.pdf`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch {
-      toast.error('Error al descargar PDF');
+      await downloadFile(`/appointments/${id}/pdf`, { filename: `cita_${id}.pdf` });
+    } catch (err) {
+      toast.error(err.message || 'Error al descargar PDF');
     }
   };
 
@@ -407,23 +428,20 @@ export default function Appointments() {
         const today = new Date().toISOString().split('T')[0];
         params.startDate = today;
         params.endDate = today;
+      } else if (view === 'calendar') {
+        const first = new Date(calMonth.getFullYear(), calMonth.getMonth(), 1);
+        const last = new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 0);
+        params.startDate = toYmd(first);
+        params.endDate = toYmd(last);
+        if (filter.status) params.status = filter.status;
       } else {
         if (filter.startDate) params.startDate = filter.startDate;
         if (filter.endDate) params.endDate = filter.endDate;
         if (filter.status) params.status = filter.status;
       }
-      const res = await api.get('/reports/appointments.xlsx', {
-        params,
-        responseType: 'blob',
-      });
-      const url = URL.createObjectURL(res.data);
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `citas_${Date.now()}.xlsx`;
-      a.click();
-      URL.revokeObjectURL(url);
-    } catch {
-      toast.error('Error al exportar');
+      await downloadFile('/reports/appointments.xlsx', { params, filename: `citas_${Date.now()}.xlsx` });
+    } catch (err) {
+      toast.error(err.message || 'Error al exportar');
     }
   };
 
@@ -517,6 +535,42 @@ export default function Appointments() {
       });
   }, [appointments, filter.service, filter.room, filter.timeFrom, filter.timeTo]);
 
+  // Agrupa las citas (ya filtradas) por día YYYY-MM-DD para pintar la cuadrícula.
+  const calApptsByDay = useMemo(() => {
+    const map = new Map();
+    filteredAppointments.forEach((a) => {
+      const k = String(a.date || '').slice(0, 10);
+      if (!map.has(k)) map.set(k, []);
+      map.get(k).push(a);
+    });
+    return map;
+  }, [filteredAppointments]);
+
+  // Celdas del mes (con relleno para alinear a lunes). null = celda vacía.
+  const calendarCells = useMemo(() => {
+    const year = calMonth.getFullYear();
+    const month = calMonth.getMonth();
+    const first = new Date(year, month, 1);
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const leading = (first.getDay() + 6) % 7; // lunes = 0
+    const cells = [];
+    for (let i = 0; i < leading; i++) cells.push(null);
+    for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(year, month, d));
+    while (cells.length % 7 !== 0) cells.push(null);
+    return cells;
+  }, [calMonth]);
+
+  const moveMonth = (dir) => {
+    setCalMonth((m) => new Date(m.getFullYear(), m.getMonth() + dir, 1));
+  };
+
+  // Click en un día del calendario → ver la tabla de ese día (orden por horario).
+  const openDay = (d) => {
+    const ymd = toYmd(d);
+    setFilter((f) => ({ ...f, startDate: ymd, endDate: ymd }));
+    setView('list');
+  };
+
   // Cronómetro de cita seleccionada
   const elapsedSeconds = (apt) => {
     if (!apt?.consultationStartedAt) return 0;
@@ -534,23 +588,28 @@ export default function Appointments() {
     <div>
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">Citas Médicas</h1>
+          <h1 className="text-2xl font-bold text-slate-800">Citas y Calendario</h1>
           <p className="text-sm text-slate-500 mt-1">Agenda y seguimiento de consultas</p>
         </div>
         <div className="flex gap-2">
           {!isDoctor && (
-            <button
-              onClick={() => setView(view === 'today' ? 'list' : 'today')}
-              className={`px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border transition-colors ${
-                view === 'today'
-                  ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-                  : 'bg-white text-slate-600 border-slate-200 hover:bg-emerald-50'
-              }`}
-            >
-              {view === 'today' ? 'Solo Hoy' : 'Ver Todas'}
-            </button>
+            <div className="inline-flex rounded-xl border border-slate-200 overflow-hidden bg-white">
+              {[['calendar', 'Calendario'], ['list', 'Lista'], ['today', 'Hoy']].map(([v, label]) => (
+                <button
+                  key={v}
+                  onClick={() => setView(v)}
+                  className={`px-4 py-2.5 text-sm font-medium cursor-pointer border-none transition-colors ${
+                    view === v
+                      ? 'bg-emerald-600 text-white'
+                      : 'bg-white text-slate-600 hover:bg-emerald-50'
+                  }`}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
           )}
-          {role !== 'call_center' && (
+          {isAdmin && (
             <button
               onClick={exportExcel}
               className="px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50"
@@ -569,7 +628,7 @@ export default function Appointments() {
         </div>
       </div>
 
-      {view === 'list' && (
+      {(view === 'list' || view === 'calendar') && (
         <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 mb-6 p-4 space-y-3">
           <div className="relative">
             <HiOutlineMagnifyingGlass className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
@@ -662,6 +721,91 @@ export default function Appointments() {
         </div>
       )}
 
+      {view === 'calendar' && (
+        <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden mb-6">
+          {/* Navegación de mes */}
+          <div className="flex items-center justify-between px-5 py-3 border-b border-emerald-50">
+            <button
+              onClick={() => moveMonth(-1)}
+              className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 cursor-pointer"
+            >
+              ‹
+            </button>
+            <h2 className="text-base font-semibold text-slate-800">
+              {MONTH_NAMES[calMonth.getMonth()]} {calMonth.getFullYear()}
+            </h2>
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setCalMonth(new Date(new Date().getFullYear(), new Date().getMonth(), 1))}
+                className="px-3 py-1.5 rounded-lg text-sm bg-white border border-slate-200 hover:bg-slate-50 cursor-pointer"
+              >
+                Hoy
+              </button>
+              <button
+                onClick={() => moveMonth(1)}
+                className="px-3 py-1.5 rounded-lg bg-white border border-slate-200 hover:bg-slate-50 cursor-pointer"
+              >
+                ›
+              </button>
+            </div>
+          </div>
+          {/* Cabecera de días */}
+          <div className="grid grid-cols-7 bg-emerald-50/40 text-emerald-700 text-xs font-semibold">
+            {WEEKDAY_NAMES.map((w) => (
+              <div key={w} className="text-center py-2">{w}</div>
+            ))}
+          </div>
+          {/* Cuadrícula del mes */}
+          <div className="grid grid-cols-7">
+            {calendarCells.map((d, idx) => {
+              if (!d) return <div key={`e${idx}`} className="border-t border-l border-slate-100 min-h-[92px] bg-slate-50/30" />;
+              const ymd = toYmd(d);
+              const dayAppts = calApptsByDay.get(ymd) || [];
+              const isToday = ymd === toYmd(new Date());
+              const counts = dayAppts.reduce((acc, a) => {
+                if (['asistida', 'completada'].includes(a.status)) acc.asistida += 1;
+                else if (a.status === 'no_asistio') acc.no_asistio += 1;
+                else if (a.status !== 'cancelada') acc.pendiente += 1;
+                return acc;
+              }, { pendiente: 0, asistida: 0, no_asistio: 0 });
+              return (
+                <button
+                  key={ymd}
+                  onClick={() => openDay(d)}
+                  className={`text-left border-t border-l border-slate-100 min-h-[92px] p-1.5 cursor-pointer hover:bg-emerald-50/60 transition-colors bg-transparent ${
+                    isToday ? 'ring-2 ring-inset ring-emerald-400' : ''
+                  }`}
+                >
+                  <div className={`text-xs font-semibold mb-1 ${isToday ? 'text-emerald-700' : 'text-slate-600'}`}>
+                    {d.getDate()}
+                  </div>
+                  {dayAppts.length > 0 ? (
+                    <div className="space-y-0.5">
+                      <div className="text-[11px] font-bold text-slate-700">{dayAppts.length} cita{dayAppts.length !== 1 ? 's' : ''}</div>
+                      <div className="flex flex-wrap gap-1">
+                        {counts.pendiente > 0 && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-700">{counts.pendiente} pend.</span>
+                        )}
+                        {counts.asistida > 0 && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">{counts.asistida} asist.</span>
+                        )}
+                        {counts.no_asistio > 0 && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-700">{counts.no_asistio} no</span>
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
+                </button>
+              );
+            })}
+          </div>
+          <div className="px-5 py-2 text-xs text-slate-400 border-t border-slate-100">
+            Haz clic en un día para ver sus citas en forma de tabla, ordenadas por horario.
+          </div>
+        </div>
+      )}
+
+      {view !== 'calendar' && (
       <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full">
@@ -875,6 +1019,7 @@ export default function Appointments() {
           </table>
         </div>
       </div>
+      )}
 
       {/* Create/Edit Modal */}
       <Modal
@@ -889,7 +1034,7 @@ export default function Appointments() {
           {showClinicSelector && (
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                Consultorio médico destino *
+                Sucursal destino *
               </label>
               <select
                 name="clinic"
@@ -898,7 +1043,7 @@ export default function Appointments() {
                 required
                 className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
               >
-                <option value="">Seleccionar consultorio médico</option>
+                <option value="">Seleccionar sucursal</option>
                 {clinics.map((c) => (
                   <option key={c._id} value={c._id}>
                     {c.nombreComercial || c.name}
@@ -967,8 +1112,9 @@ export default function Appointments() {
           </div>
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            {/* Doctor: solo se muestra al EDITAR (no al crear). Al crear, lo asigna recepción. */}
-            {editing && isAdmin && (
+            {/* Doctor: visible al EDITAR para admin y para quienes asignan doctores
+                (cajero / recepción). La comisión se atribuye al doctor asignado. */}
+            {editing && (isAdmin || isReception) && (
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1.5">
                   Doctor asignado
@@ -986,6 +1132,9 @@ export default function Appointments() {
                     </option>
                   ))}
                 </select>
+                <p className="text-[11px] text-slate-400 mt-1">
+                  La comisión por el servicio se asigna al doctor seleccionado.
+                </p>
               </div>
             )}
             {editing && (

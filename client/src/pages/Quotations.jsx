@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import api from '../api/axios';
+import { downloadFile } from '../utils/download';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import ProductAutocomplete from '../components/ProductAutocomplete';
@@ -116,15 +117,9 @@ export default function Quotations() {
 
   const downloadPdf = async (q) => {
     try {
-      const res = await api.get(`/quotations/${q._id}/pdf`, { responseType: 'blob' });
-      const url = window.URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `cotizacion_${q.quotationNumber}.pdf`;
-      a.click();
-      window.URL.revokeObjectURL(url);
-    } catch {
-      toast.error('No se pudo generar PDF');
+      await downloadFile(`/quotations/${q._id}/pdf`, { filename: `cotizacion_${q.quotationNumber}.pdf` });
+    } catch (err) {
+      toast.error(err.message || 'No se pudo generar PDF');
     }
   };
 

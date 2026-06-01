@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
+import Modal from '../components/Modal';
 import {
   HiOutlineMegaphone,
   HiOutlineSparkles,
@@ -82,13 +83,23 @@ export default function Marketing() {
   const [breakdownFilter, setBreakdownFilter] = useState({ service: '', program: '', range: 'month' });
   const [referrers, setReferrers] = useState([]);
   const [programsList, setProgramsList] = useState([]);
+  // Servicios no completados: expandir lista de pacientes
+  const [expandedService, setExpandedService] = useState(null);
+  // Recordatorios ausentes: filtros + selección + envío WhatsApp masivo
+  const [reminderFilter, setReminderFilter] = useState({ service: '', program: '' });
+  const [selectedReminders, setSelectedReminders] = useState({}); // { treatmentId: true }
+  const [waModal, setWaModal] = useState(null); // { recipients, message } | null
+  const [waSending, setWaSending] = useState(false);
 
   const load = async () => {
     setLoading(true);
     try {
+      const reminderParams = { daysSinceLastVisit: reminderDays };
+      if (reminderFilter.service) reminderParams.service = reminderFilter.service;
+      if (reminderFilter.program) reminderParams.program = reminderFilter.program;
       const [d, r, p, inc, svc, prgList, hm, prog, nw, ref] = await Promise.all([
         api.get('/marketing/dashboard'),
-        api.get('/marketing/reminders', { params: { daysSinceLastVisit: reminderDays } }),
+        api.get('/marketing/reminders', { params: reminderParams }),
         api.get('/marketing/predictions').catch(() => ({ data: { predictions: [] } })),
         api.get('/marketing/incomplete-services').catch(() => ({ data: [] })),
         api.get('/products', { params: { category: 'servicio', active: true } }).catch(() => ({ data: [] })),
@@ -183,6 +194,54 @@ export default function Marketing() {
     [sources]
   );
 
+  // Construye los destinatarios (seleccionados, o todos los que tengan teléfono).
+  const buildRecipients = () => {
+    const chosen = reminders.filter((r) =>
+      Object.keys(selectedReminders).length > 0
+        ? selectedReminders[r.treatmentId]
+        : r.patient?.phone || r.patient?.whatsapp
+    );
+    return chosen
+      .map((r) => ({
+        name: `${r.patient?.firstName || ''} ${r.patient?.lastName || ''}`.trim(),
+        phone: r.patient?.phone,
+        whatsapp: r.patient?.whatsapp,
+      }))
+      .filter((r) => r.phone || r.whatsapp);
+  };
+
+  const openWhatsappModal = () => {
+    const recipients = buildRecipients();
+    if (recipients.length === 0) {
+      toast.error('No hay pacientes con teléfono/WhatsApp para enviar.');
+      return;
+    }
+    setWaModal({
+      recipients,
+      message:
+        'Hola {{nombre}}, te recordamos que tienes un tratamiento pendiente en la clínica. ¡Te esperamos para continuar! 😊',
+    });
+  };
+
+  const sendWhatsapp = async () => {
+    if (!waModal) return;
+    setWaSending(true);
+    try {
+      const res = await api.post('/marketing/reminders/whatsapp', {
+        recipients: waModal.recipients,
+        message: waModal.message,
+      });
+      const { sent = 0, failed = 0 } = res.data || {};
+      toast.success(`Enviados: ${sent}${failed ? ` · Fallaron: ${failed}` : ''}`);
+      setWaModal(null);
+      setSelectedReminders({});
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al enviar WhatsApp');
+    } finally {
+      setWaSending(false);
+    }
+  };
+
   return (
     <div className="space-y-5">
       <div>
@@ -202,18 +261,6 @@ export default function Marketing() {
         <Card title="Tratamientos abandonados" value={tStatus.abandonado || 0} color="rose" />
         <Card title="Recordatorios pendientes" value={reminders.length} color="amber" />
       </div>
-
-      <section className="bg-white rounded-xl border border-slate-200 p-4">
-        <h2 className="font-semibold text-slate-800 mb-2">Estadísticas de citas</h2>
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-2">
-          {Object.keys(STATUS_LABELS).map((k) => (
-            <div key={k} className="bg-slate-50 rounded-lg p-2 text-center">
-              <div className="text-xs text-slate-500">{STATUS_LABELS[k]}</div>
-              <div className="text-xl font-bold text-slate-800">{apptTotals[k] || 0}</div>
-            </div>
-          ))}
-        </div>
-      </section>
 
       <section className="grid lg:grid-cols-2 gap-4">
         <div className="bg-white rounded-xl border border-slate-200 p-4">
@@ -271,20 +318,49 @@ export default function Marketing() {
           <p className="text-xs text-slate-500 mb-2">
             Productos / servicios prescritos pero no realizados (tratamientos activos, completados parcialmente o abandonados).
           </p>
-          <div className="space-y-1 max-h-72 overflow-y-auto">
-            {incompleteServices.map((s) => (
-              <div key={s.productId} className="py-1.5 border-b border-slate-100">
-                <div className="flex justify-between text-sm">
-                  <span className="font-medium">{s.name}</span>
-                  <span className="font-bold text-rose-600">{s.totalMissing} faltantes</span>
+          <div className="space-y-1 max-h-80 overflow-y-auto">
+            {incompleteServices.map((s) => {
+              const open = expandedService === s.product;
+              return (
+                <div key={s.product} className="py-1.5 border-b border-slate-100">
+                  <button
+                    onClick={() => setExpandedService(open ? null : s.product)}
+                    className="w-full text-left bg-transparent border-none cursor-pointer p-0"
+                  >
+                    <div className="flex justify-between text-sm items-center">
+                      <span className="font-medium flex items-center gap-1">
+                        <span className="text-slate-400">{open ? '▾' : '▸'}</span>
+                        {s.name}
+                      </span>
+                      <span className="font-bold text-rose-600">{s.totalMissing} faltantes</span>
+                    </div>
+                    <div className="flex gap-3 text-[11px] text-slate-500 mt-0.5 pl-4">
+                      <span>Activos: {s.activeMissing}</span>
+                      <span className="text-rose-500">Abandonados: {s.abandoned}</span>
+                      <span className="text-emerald-600">Completados: {s.completed}</span>
+                      <span className="text-slate-400">{(s.patients || []).length} paciente(s)</span>
+                    </div>
+                  </button>
+                  {open && (
+                    <div className="mt-1 pl-4 space-y-0.5">
+                      {(s.patients || []).length === 0 ? (
+                        <div className="text-[11px] text-slate-400">Sin pacientes</div>
+                      ) : (
+                        s.patients.map((p, i) => (
+                          <div key={(p._id || '') + i} className="flex justify-between text-[11px] text-slate-600 bg-slate-50 rounded px-2 py-1">
+                            <span>{p.name || 'Paciente'}</span>
+                            <span className="flex gap-2">
+                              {p.phone && <span>📞 {p.phone}</span>}
+                              <span className="text-rose-500">faltan {p.missing}</span>
+                            </span>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  )}
                 </div>
-                <div className="flex gap-3 text-[11px] text-slate-500 mt-0.5">
-                  <span>Activos: {s.activeMissing}</span>
-                  <span className="text-rose-500">Abandonados: {s.abandoned}</span>
-                  <span className="text-emerald-600">Completados: {s.completed}</span>
-                </div>
-              </div>
-            ))}
+              );
+            })}
             {incompleteServices.length === 0 && (
               <div className="text-sm text-slate-400">Sin pendientes</div>
             )}
@@ -372,22 +448,54 @@ export default function Marketing() {
       </section>
 
       <section className="bg-white rounded-xl border border-slate-200 p-4">
-        <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center justify-between mb-2 flex-wrap gap-2">
           <h2 className="font-semibold text-slate-800">
             Recordatorios de pacientes ausentes{' '}
             <span className="text-xs text-slate-400 font-normal">({reminders.length} total)</span>
           </h2>
-          <div className="flex items-center gap-2 text-sm">
+          <div className="flex items-center gap-2 text-sm flex-wrap">
+            <select
+              value={reminderFilter.service}
+              onChange={(e) => setReminderFilter((p) => ({ ...p, service: e.target.value, program: '' }))}
+              className="border border-slate-200 rounded px-2 py-1 text-sm"
+            >
+              <option value="">Todos los servicios</option>
+              {services.map((s) => <option key={s._id} value={s._id}>{s.name}</option>)}
+            </select>
+            <select
+              value={reminderFilter.program}
+              onChange={(e) => setReminderFilter((p) => ({ ...p, program: e.target.value, service: '' }))}
+              className="border border-slate-200 rounded px-2 py-1 text-sm"
+            >
+              <option value="">Todos los programas</option>
+              {programsList.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
+            </select>
             <span>Sin venir hace</span>
             <input type="number" min="1" value={reminderDays} onChange={(e) => setReminderDays(Number(e.target.value))} className="w-16 border border-slate-200 rounded px-2 py-1 text-sm" />
             <span>días</span>
-            <button onClick={load} className="px-3 py-1 bg-emerald-600 text-white rounded text-sm">Actualizar</button>
+            <button onClick={load} className="px-3 py-1 bg-emerald-600 text-white rounded text-sm cursor-pointer border-none">Actualizar</button>
+            <button onClick={openWhatsappModal} className="px-3 py-1 bg-green-600 text-white rounded text-sm cursor-pointer border-none">
+              WhatsApp masivo
+            </button>
           </div>
         </div>
         <div className="max-h-[420px] overflow-y-auto rounded border border-slate-100">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-slate-600 sticky top-0 z-10">
               <tr>
+                <th className="px-2 py-2 w-8">
+                  <input
+                    type="checkbox"
+                    checked={reminders.length > 0 && reminders.every((r) => selectedReminders[r.treatmentId])}
+                    onChange={(e) => {
+                      if (e.target.checked) {
+                        const all = {};
+                        reminders.forEach((r) => { if (r.patient?.phone || r.patient?.whatsapp) all[r.treatmentId] = true; });
+                        setSelectedReminders(all);
+                      } else setSelectedReminders({});
+                    }}
+                  />
+                </th>
                 <th className="text-left px-2 py-2">Paciente</th>
                 <th className="text-left px-2 py-2">Tratamiento</th>
                 <th className="text-left px-2 py-2">Avance</th>
@@ -399,6 +507,21 @@ export default function Marketing() {
             <tbody>
               {reminders.slice(0, reminderLimit).map((r) => (
                 <tr key={r.treatmentId} className="border-t border-slate-100">
+                  <td className="px-2 py-1 text-center">
+                    <input
+                      type="checkbox"
+                      checked={!!selectedReminders[r.treatmentId]}
+                      disabled={!r.patient?.phone && !r.patient?.whatsapp}
+                      onChange={(e) =>
+                        setSelectedReminders((prev) => {
+                          const next = { ...prev };
+                          if (e.target.checked) next[r.treatmentId] = true;
+                          else delete next[r.treatmentId];
+                          return next;
+                        })
+                      }
+                    />
+                  </td>
                   <td className="px-2 py-1">{r.patient?.firstName} {r.patient?.lastName}</td>
                   <td className="px-2 py-1">{r.treatmentName}</td>
                   <td className="px-2 py-1">{r.progress}%</td>
@@ -413,7 +536,7 @@ export default function Marketing() {
                 </tr>
               ))}
               {reminders.length === 0 && (
-                <tr><td colSpan={6} className="text-center py-4 text-slate-400">Sin recordatorios</td></tr>
+                <tr><td colSpan={7} className="text-center py-4 text-slate-400">Sin recordatorios</td></tr>
               )}
             </tbody>
           </table>
@@ -516,10 +639,10 @@ export default function Marketing() {
         </section>
       )}
 
-      {/* Desglose de citas */}
+      {/* Estadísticas de citas (unificadas con desglose) */}
       <section className="bg-white rounded-xl border border-slate-200 p-4">
         <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
-          <h2 className="font-semibold text-slate-800">Desglose de citas</h2>
+          <h2 className="font-semibold text-slate-800">Estadísticas de citas</h2>
           <div className="flex flex-wrap gap-2 text-sm">
             <select
               value={breakdownFilter.range}
@@ -553,27 +676,37 @@ export default function Marketing() {
           </div>
         </div>
         {breakdown ? (
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
-            <KPI label="Total" value={breakdown.total} color="slate" />
-            <KPI label="Agendadas" value={breakdown.agendadas} color="sky" />
-            <KPI label="Asistieron" value={breakdown.asistieron} color="emerald" />
-            <KPI label="Por Call Center" value={breakdown.porCallCenter} color="indigo" />
-            <KPI label="Asist. Call Center" value={breakdown.asistieronCallCenter} color="violet" />
+          <>
+            {/* Principales: solo lo solicitado */}
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+              <KPI label="Total de citas" value={breakdown.total} color="slate" />
+              <KPI label="Pendientes" value={breakdown.pendientes} color="amber" />
+              <KPI label="Asistidos" value={breakdown.asistidos} color="emerald" />
+              <KPI label="No asistidos" value={breakdown.noAsistidos} color="rose" />
+              <KPI label="Nuevos" value={breakdown.nuevos} color="sky" />
+            </div>
+            {/* Desglose adicional */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mt-2">
+              <KPI label="Nuevos que asistieron" value={breakdown.nuevosAsistidos} color="emerald" />
+              <KPI label="Canceladas" value={breakdown.canceladas} color="slate" />
+              <KPI label="Por Call Center" value={breakdown.porCallCenter} color="indigo" />
+              <KPI label="Asist. Call Center" value={breakdown.asistieronCallCenter} color="violet" />
+            </div>
             {breakdown.byDoctor?.length > 0 && (
-              <div className="col-span-2 md:col-span-5 mt-2">
-                <div className="text-xs font-semibold text-slate-600 mb-1">Por doctor</div>
+              <div className="mt-3">
+                <div className="text-xs font-semibold text-slate-600 mb-1">Atendidas por doctor</div>
                 <div className="flex flex-wrap gap-2">
                   {breakdown.byDoctor.map((d) => (
-                    <span key={d._id} className="bg-slate-100 text-slate-700 text-xs px-2 py-1 rounded-full">
-                      {d.name} <strong className="text-emerald-700">×{d.count}</strong>
+                    <span key={d._id || d.name} className="bg-slate-100 text-slate-700 text-xs px-2 py-1 rounded-full">
+                      {d.name || 'Sin doctor'} <strong className="text-emerald-700">×{d.count}</strong>
                     </span>
                   ))}
                 </div>
               </div>
             )}
-          </div>
+          </>
         ) : (
-          <div className="text-sm text-slate-400">Cargando desglose...</div>
+          <div className="text-sm text-slate-400">Cargando estadísticas...</div>
         )}
       </section>
 
@@ -601,7 +734,6 @@ export default function Marketing() {
                   <thead className="bg-slate-50 text-slate-600">
                     <tr>
                       <th className="text-left px-3 py-2 sticky left-0 bg-slate-50">Programa</th>
-                      <th className="text-left px-3 py-2">Servicios incluidos</th>
                       {months.map((m) => (
                         <th key={m} className="text-center px-2 py-2 text-[11px] whitespace-nowrap">{monthLabel(m)}</th>
                       ))}
@@ -616,16 +748,6 @@ export default function Marketing() {
                           <td className="px-3 py-2 font-medium sticky left-0 bg-white">
                             <div>{p.name}</div>
                             {p.code && <div className="text-[11px] text-slate-400">{p.code}</div>}
-                          </td>
-                          <td className="px-3 py-2">
-                            <div className="flex flex-wrap gap-1 max-w-xs">
-                              {(p.services || []).map((s, i) => (
-                                <span key={i} className="bg-emerald-50 text-emerald-700 text-[11px] px-2 py-0.5 rounded-full">
-                                  {s.name} × {s.quantity || 1}
-                                </span>
-                              ))}
-                              {(p.services || []).length === 0 && <span className="text-xs text-slate-400">Sin servicios</span>}
-                            </div>
                           </td>
                           {months.map((m) => {
                             const cell = byMonth.get(m);
@@ -899,6 +1021,38 @@ export default function Marketing() {
           ))}
         </div>
       </section>
+
+      {/* Modal de WhatsApp masivo */}
+      <Modal isOpen={!!waModal} onClose={() => setWaModal(null)} title="Enviar WhatsApp masivo" size="lg">
+        {waModal && (
+          <div className="space-y-3">
+            <div className="text-sm text-slate-600">
+              Se enviará a <strong>{waModal.recipients.length}</strong> paciente(s) con teléfono/WhatsApp.
+            </div>
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1">Mensaje</label>
+              <textarea
+                rows={5}
+                value={waModal.message}
+                onChange={(e) => setWaModal((m) => ({ ...m, message: e.target.value }))}
+                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500"
+              />
+              <p className="text-xs text-slate-400 mt-1">
+                Usa <code>{'{{nombre}}'}</code> para personalizar con el nombre del paciente.
+              </p>
+            </div>
+            <div className="text-xs text-slate-500 bg-amber-50 border border-amber-100 rounded-lg p-2">
+              Nota: WhatsApp solo permite mensajes de texto libre dentro de la ventana de 24h tras el último mensaje del paciente. Fuera de esa ventana se requiere una plantilla aprobada.
+            </div>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setWaModal(null)} className="px-4 py-2 border border-slate-200 rounded-lg text-sm cursor-pointer bg-white">Cancelar</button>
+              <button onClick={sendWhatsapp} disabled={waSending} className="px-5 py-2 bg-green-600 text-white rounded-lg text-sm font-medium cursor-pointer border-none disabled:opacity-50">
+                {waSending ? 'Enviando...' : 'Enviar'}
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }
@@ -925,6 +1079,8 @@ function KPI({ label, value, color }) {
     indigo: 'bg-indigo-50 text-indigo-700',
     violet: 'bg-violet-50 text-violet-700',
     slate: 'bg-slate-50 text-slate-700',
+    amber: 'bg-amber-50 text-amber-700',
+    rose: 'bg-rose-50 text-rose-700',
   };
   return (
     <div className={`rounded-lg p-3 ${colors[color] || colors.slate}`}>

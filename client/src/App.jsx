@@ -16,7 +16,6 @@ import Invoices from './pages/Invoices';
 import InvoicingConfig from './pages/InvoicingConfig';
 import Users from './pages/Users';
 import Clinics from './pages/Clinics';
-import Calendar from './pages/Calendar';
 import Treatments from './pages/Treatments';
 import Referrals from './pages/Referrals';
 import Quotations from './pages/Quotations';
@@ -166,14 +165,8 @@ function AppRoutes() {
                   }
                 />
 
-                <Route
-                  path="/calendar"
-                  element={
-                    <RoleRoute roles={['admin', 'cajero', 'doctor', 'optica', 'call_center', 'enfermero', 'marketing']}>
-                      <Calendar />
-                    </RoleRoute>
-                  }
-                />
+                {/* Calendario y Citas unificados en /appointments */}
+                <Route path="/calendar" element={<Navigate to="/appointments" replace />} />
                 <Route
                   path="/treatments"
                   element={

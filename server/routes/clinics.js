@@ -1,6 +1,7 @@
 const router = require('express').Router();
 const {
   getClinics,
+  getClinicsOverview,
   getClinic,
   createClinic,
   updateClinic,
@@ -14,6 +15,7 @@ const { auth, requireSuperAdmin } = require('../middleware/auth');
 router.use(auth);
 
 router.get('/', getClinics);
+router.get('/overview', getClinicsOverview);
 router.get('/:id', getClinic);
 router.post('/', requireSuperAdmin, createClinic);
 router.put('/:id', updateClinic);

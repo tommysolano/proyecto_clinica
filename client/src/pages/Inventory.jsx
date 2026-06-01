@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import api from '../api/axios';
+import { downloadFile } from '../utils/download';
 import Modal from '../components/Modal';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
@@ -55,12 +56,8 @@ export default function Inventory() {
 
   const downloadTemplate = async () => {
     try {
-      const res = await api.get('/inventory-advanced/template/products', { responseType: 'blob' });
-      const url = URL.createObjectURL(res.data);
-      const a = document.createElement('a');
-      a.href = url; a.download = 'plantilla_productos.xlsx'; a.click();
-      URL.revokeObjectURL(url);
-    } catch { toast.error('Error al descargar plantilla'); }
+      await downloadFile('/inventory-advanced/template/products', { filename: 'plantilla_productos.xlsx' });
+    } catch (err) { toast.error(err.message || 'Error al descargar plantilla'); }
   };
 
   const uploadBulk = async () => {
@@ -246,15 +243,9 @@ export default function Inventory() {
             <button
               onClick={async () => {
                 try {
-                  const res = await api.get('/reports/inventory.xlsx', { responseType: 'blob' });
-                  const url = URL.createObjectURL(res.data);
-                  const a = document.createElement('a');
-                  a.href = url;
-                  a.download = `inventario_${Date.now()}.xlsx`;
-                  a.click();
-                  URL.revokeObjectURL(url);
-                } catch {
-                  toast.error('Error al exportar');
+                  await downloadFile('/reports/inventory.xlsx', { filename: `inventario_${Date.now()}.xlsx` });
+                } catch (err) {
+                  toast.error(err.message || 'Error al exportar');
                 }
               }}
               className="flex items-center gap-2 bg-white border border-emerald-200 text-emerald-700 hover:bg-emerald-50 px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer"

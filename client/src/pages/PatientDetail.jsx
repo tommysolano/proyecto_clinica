@@ -1,6 +1,7 @@
 import { useEffect, useState, Fragment } from 'react';
 import { useParams, useSearchParams, Link } from 'react-router-dom';
 import api from '../api/axios';
+import { downloadFile } from '../utils/download';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { fmtDate } from '../utils/date';
@@ -547,20 +548,12 @@ function SeguimientosTab({ patientId, appointmentId }) {
 
   const downloadAttachment = async (fuId, attId, originalName) => {
     try {
-      const res = await api.get(
+      await downloadFile(
         `/clinical-records/${patientId}/follow-ups/${fuId}/attachments/${attId}`,
-        { responseType: 'blob' }
+        { filename: originalName || 'archivo' }
       );
-      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = originalName || 'archivo.pdf';
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al descargar');
+      toast.error(err.message || 'Error al descargar');
     }
   };
 
@@ -677,20 +670,12 @@ function SeguimientosTab({ patientId, appointmentId }) {
 
   const downloadFollowUpPdf = async (fuId) => {
     try {
-      const res = await api.get(
+      await downloadFile(
         `/clinical-records/${patientId}/follow-ups/${fuId}/print`,
-        { responseType: 'blob' }
+        { filename: `receta_${fuId}.pdf` }
       );
-      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
-      const a = document.createElement('a');
-      a.href = url;
-      a.download = `receta_${fuId}.pdf`;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-      URL.revokeObjectURL(url);
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al descargar');
+      toast.error(err.message || 'Error al descargar');
     }
   };
 

@@ -1,6 +1,17 @@
 const mongoose = require('mongoose');
 const Appointment = require('../models/Appointment');
 const User = require('../models/User');
+const CommissionRule = require('../models/CommissionRule');
+
+// ¿La cita cae dentro del horario configurado en la regla?
+const inSchedule = (rule, appt) => {
+  if (!rule.scheduleEnabled) return true;
+  const weekday = new Date(appt.date).getDay();
+  if (rule.daysOfWeek?.length && !rule.daysOfWeek.includes(weekday)) return false;
+  if (rule.startTime && appt.startTime < rule.startTime) return false;
+  if (rule.endTime && appt.startTime > rule.endTime) return false;
+  return true;
+};
 
 /**
  * Resolución de rango temporal (mismo patrón que marketing).
@@ -40,13 +51,17 @@ function resolveRange(query) {
 }
 
 /**
- * Comisiones del call center.
- * Definición: el call center gana 1 comisión por cada paciente NUEVO
- * (isFirstVisit=true) que ASISTIÓ (status in ['asistida','completada']) a
- * una cita creada por ese agente.
+ * Comisiones del call center — calculadas a partir de las REGLAS DE COMISIÓN.
  *
- * Si req.role === 'call_center' devuelve sólo SUS comisiones.
- * Si es admin / marketing: agrupado por agente (marketing supervisa al call center).
+ * El admin configura en "Reglas de Comisión" una o varias reglas que apliquen al
+ * call center (targetType='role' role='call_center', o targetType='user' apuntando
+ * a un agente). Cada regla define el monto ($), el servicio (opcional), el horario
+ * (opcional) y el alcance de paciente (nuevo / todos).
+ *
+ * Una comisión se devenga cuando una cita CREADA por el agente es ASISTIDA y cumple
+ * la regla (p. ej. "paciente nuevo asiste a una cita" → patientScope='new').
+ *
+ * Si req.role === 'call_center' devuelve sólo SUS comisiones; admin/marketing ven todo.
  */
 exports.getCommissions = async (req, res) => {
   try {
@@ -54,89 +69,119 @@ exports.getCommissions = async (req, res) => {
     const clinicId = new mongoose.Types.ObjectId(req.clinicId);
     const ATTENDED = ['asistida', 'completada'];
 
-    const baseMatch = {
+    // Reglas activas que apliquen al call center.
+    const rules = await CommissionRule.find({
+      clinic: clinicId,
+      active: true,
+      $or: [
+        { targetType: 'role', role: 'call_center' },
+        { targetType: 'user' },
+      ],
+    }).lean();
+    const callCenterRules = rules.filter(
+      (r) => (r.targetType === 'role' && r.role === 'call_center') || r.targetType === 'user'
+    );
+
+    const apptMatch = {
       clinic: clinicId,
       createdByRole: 'call_center',
-      isFirstVisit: true,
       status: { $in: ATTENDED },
       date: { $gte: start, $lte: end },
     };
-
-    // Si el rol es call_center => solo sus comisiones
-    let targetAgent = null;
     if (req.role === 'call_center' && !req.user.isSuperAdmin) {
-      targetAgent = req.user._id;
-      baseMatch.createdBy = targetAgent;
+      apptMatch.createdBy = req.user._id;
     } else if (req.query.agent && mongoose.isValidObjectId(req.query.agent)) {
-      baseMatch.createdBy = new mongoose.Types.ObjectId(req.query.agent);
-      targetAgent = baseMatch.createdBy;
+      apptMatch.createdBy = new mongoose.Types.ObjectId(req.query.agent);
     }
 
-    // Agrupado por agente
-    const byAgent = await Appointment.aggregate([
-      { $match: baseMatch },
-      {
-        $group: {
-          _id: '$createdBy',
-          commissions: { $sum: 1 },
-          patients: { $addToSet: '$patient' },
-        },
-      },
-      {
-        $project: {
-          _id: 1,
-          commissions: 1,
-          uniquePatients: { $size: '$patients' },
-        },
-      },
-      { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'agent' } },
-      { $unwind: { path: '$agent', preserveNullAndEmptyArrays: true } },
-      {
-        $project: {
-          _id: 1,
-          commissions: 1,
-          uniquePatients: 1,
-          name: '$agent.name',
-          email: '$agent.email',
-        },
-      },
-      { $sort: { commissions: -1 } },
-    ]);
-
-    // Evolución diaria/mensual (de TODO el conjunto filtrado)
-    const useMonthly = (end - start) / (1000 * 60 * 60 * 24) > 90;
-    const timeline = await Appointment.aggregate([
-      { $match: baseMatch },
-      {
-        $group: {
-          _id: useMonthly
-            ? { $dateToString: { format: '%Y-%m', date: '$date' } }
-            : { $dateToString: { format: '%Y-%m-%d', date: '$date' } },
-          commissions: { $sum: 1 },
-        },
-      },
-      { $sort: { _id: 1 } },
-    ]);
-
-    // Detalle por cita (limitado) — útil para el agente
-    const detailFilter = { ...baseMatch };
-    const details = await Appointment.find(detailFilter)
+    const appts = await Appointment.find(apptMatch)
       .populate('patient', 'firstName lastName cedula')
-      .populate('createdBy', 'name')
+      .populate('createdBy', 'name email')
       .sort({ date: -1 })
-      .limit(200)
       .select('date startTime status patient createdBy services isFirstVisit');
 
-    const total = byAgent.reduce((acc, a) => acc + (a.commissions || 0), 0);
+    const useMonthly = (end - start) / (1000 * 60 * 60 * 24) > 90;
+    const agentMap = new Map();
+    const timelineMap = new Map();
+    const details = [];
+
+    for (const appt of appts) {
+      const agentId = String(appt.createdBy?._id || appt.createdBy || 'sin-agente');
+      const svcIds = (appt.services || []).map((s) => String(s.product?._id || s.product));
+      // Buscar la primera regla que aplique (evita doble conteo de la misma cita).
+      const rule = callCenterRules.find((r) => {
+        if (r.targetType === 'user') {
+          if (String(r.user) !== agentId) return false;
+        } else if (r.role !== 'call_center') {
+          return false;
+        }
+        if (r.service && !svcIds.includes(String(r.service))) return false;
+        if (r.patientScope === 'new' && !appt.isFirstVisit) return false;
+        if (!inSchedule(r, appt)) return false;
+        return true;
+      });
+      if (!rule) continue;
+
+      const amount = Number(rule.amount) || 0;
+      if (!agentMap.has(agentId)) {
+        agentMap.set(agentId, {
+          _id: agentId,
+          name: appt.createdBy?.name || 'Agente',
+          email: appt.createdBy?.email || '',
+          commissions: 0,
+          total: 0,
+          patients: new Set(),
+        });
+      }
+      const a = agentMap.get(agentId);
+      a.commissions += 1;
+      a.total += amount;
+      a.patients.add(String(appt.patient?._id || appt.patient));
+
+      const key = useMonthly
+        ? new Date(appt.date).toISOString().slice(0, 7)
+        : new Date(appt.date).toISOString().slice(0, 10);
+      timelineMap.set(key, (timelineMap.get(key) || 0) + amount);
+
+      details.push({
+        _id: appt._id,
+        date: appt.date,
+        startTime: appt.startTime,
+        status: appt.status,
+        isFirstVisit: appt.isFirstVisit,
+        patient: appt.patient,
+        createdBy: appt.createdBy,
+        ruleName: rule.name,
+        amount,
+      });
+    }
+
+    const byAgent = [...agentMap.values()]
+      .map((a) => ({
+        _id: a._id,
+        name: a.name,
+        email: a.email,
+        commissions: a.commissions,
+        total: +a.total.toFixed(2),
+        uniquePatients: a.patients.size,
+      }))
+      .sort((x, y) => y.total - x.total);
+
+    const timeline = [...timelineMap.entries()]
+      .map(([k, v]) => ({ _id: k, total: +v.toFixed(2) }))
+      .sort((x, y) => (x._id < y._id ? -1 : 1));
+
+    const total = +byAgent.reduce((acc, a) => acc + a.total, 0).toFixed(2);
 
     res.json({
       from: start,
       to: end,
       range,
       total,
+      rulesCount: callCenterRules.length,
       byAgent,
       timeline,
-      details,
+      details: details.slice(0, 200),
       scope: req.role === 'call_center' ? 'self' : 'all',
     });
   } catch (err) {
