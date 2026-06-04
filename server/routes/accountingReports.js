@@ -16,6 +16,7 @@ router.post('/recompute-balances', c.recomputeBalances);
 router.get('/indicators', c.financialIndicators);
 
 // Financieros
+router.get('/account-flow/:accountId', c.accountFlow);
 router.get('/income-statement', c.incomeStatement);
 router.get('/balance-sheet', c.balanceSheet);
 router.get('/cash-flow', c.cashFlow);

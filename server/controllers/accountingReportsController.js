@@ -9,6 +9,7 @@ const InventoryMovement = require('../models/InventoryMovement');
 const AccountBalance = require('../models/AccountBalance');
 const { recomputeBalances } = require('../utils/accounting');
 const ExcelJS = require('exceljs');
+const mongoose = require('mongoose');
 
 const sendWorkbook = async (res, wb, filename) => {
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -34,26 +35,99 @@ function periodFormat(granularity) {
   }
 }
 
+function asObjectId(value) {
+  if (!value || !mongoose.Types.ObjectId.isValid(value)) return value;
+  return new mongoose.Types.ObjectId(value);
+}
+
+function startOfDay(value) {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  return new Date(`${value}T00:00:00.000`);
+}
+
+function endOfDay(value) {
+  if (!value) return null;
+  if (value instanceof Date) return value;
+  return new Date(`${value}T23:59:59.999`);
+}
+
+function accountBalanceFromNature(account, debit, credit) {
+  return account.nature === 'DEBITO' ? debit - credit : credit - debit;
+}
+
+function compactAccount(account) {
+  return {
+    _id: account._id,
+    code: account.code,
+    name: account.name,
+    type: account.type,
+    nature: account.nature,
+    level: account.level,
+    allowsMovement: account.allowsMovement,
+    taxCode: account.taxCode,
+    description: account.description,
+    active: account.active,
+  };
+}
+
+function lineAccount(line) {
+  const accountRef = line.account || {};
+  return {
+    accountId: accountRef._id || line.account,
+    accountCode: line.accountCode || accountRef.code || '',
+    accountName: line.accountName || accountRef.name || '',
+    description: line.description || '',
+    debit: Number(line.debit) || 0,
+    credit: Number(line.credit) || 0,
+  };
+}
+
+function relatedReportsForAccount(account) {
+  const reports = [
+    { key: 'ledger', label: 'Libro Mayor', description: 'Movimientos y saldo acumulado de esta cuenta.' },
+    { key: 'journal', label: 'Libro Diario', description: 'Asientos donde participa la cuenta y sus contrapartidas.' },
+    { key: 'trial-balance', label: 'Balance de Comprobacion', description: 'Debitos, creditos y saldo comparados con el resto de cuentas.' },
+    { key: 'period-balances', label: 'Saldos por Periodo', description: 'Apertura, movimiento y cierre mensual.' },
+  ];
+  if (['INGRESO', 'GASTO', 'COSTO'].includes(account.type)) {
+    reports.push({ key: 'income-statement', label: 'Estado de Resultados', description: 'Aporta a utilidad bruta u operacional.' });
+  }
+  if (['ACTIVO', 'PASIVO', 'PATRIMONIO'].includes(account.type)) {
+    reports.push({ key: 'balance-sheet', label: 'Balance General', description: 'Aporta a la posicion financiera acumulada.' });
+  }
+  if (account.code?.startsWith('1.1.01.')) {
+    reports.push({ key: 'cash-flow', label: 'Flujo de Caja', description: 'Cuenta de efectivo o banco usada para entradas y salidas.' });
+  }
+  if (account.code?.startsWith('1.1.02.')) {
+    reports.push({ key: 'ar-aging', label: 'Cartera por Cobrar', description: 'Puede relacionarse con clientes, tarjetas o anticipos.' });
+  }
+  if (account.code?.startsWith('2.1.01.')) {
+    reports.push({ key: 'ap-aging', label: 'Cartera por Pagar', description: 'Puede relacionarse con proveedores, empleados o anticipos.' });
+  }
+  return reports;
+}
+
 // ---------- Helpers ----------
 async function getAccountBalances(clinicId, { startDate, endDate } = {}) {
-  const match = { clinic: clinicId, status: 'CONTABILIZADO' };
+  const match = { clinic: asObjectId(clinicId), status: 'CONTABILIZADO' };
   if (startDate || endDate) {
     match.date = {};
-    if (startDate) match.date.$gte = new Date(startDate);
-    if (endDate) match.date.$lte = new Date(endDate);
+    if (startDate) match.date.$gte = startOfDay(startDate);
+    if (endDate) match.date.$lte = endOfDay(endDate);
   }
   const agg = await JournalEntry.aggregate([
     { $match: match },
     { $unwind: '$lines' },
     { $group: { _id: '$lines.account', debit: { $sum: '$lines.debit' }, credit: { $sum: '$lines.credit' } } },
   ]);
-  const accounts = await ChartOfAccount.find({ clinic: clinicId });
-  const map = new Map(accounts.map((a) => [String(a._id), { ...a.toObject(), debit: 0, credit: 0, balance: 0 }]));
+  const accounts = await ChartOfAccount.find({ clinic: clinicId }).lean();
+  const map = new Map(accounts.map((a) => [String(a._id), { ...a, debit: 0, credit: 0, balance: 0 }]));
   for (const r of agg) {
     const a = map.get(String(r._id));
     if (!a) continue;
     a.debit = r.debit; a.credit = r.credit;
-    a.balance = a.nature === 'DEBITO' ? r.debit - r.credit : r.credit - r.debit;
+    a.balance = accountBalanceFromNature(a, r.debit, r.credit);
   }
   return Array.from(map.values());
 }
@@ -73,7 +147,9 @@ exports.incomeStatement = async (req, res) => {
     const utilidadOperacional = utilidadBruta - totalGastos;
     res.json({
       ingresos, costos, gastos,
-      totales: { totalIngresos, totalCostos, totalGastos, utilidadBruta, utilidadOperacional },
+      totalIngresos, totalCostos, totalGastos,
+      utilidadBruta, utilidadOperacional, utilidadNeta: utilidadOperacional,
+      totales: { totalIngresos, totalCostos, totalGastos, utilidadBruta, utilidadOperacional, utilidadNeta: utilidadOperacional },
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
@@ -95,6 +171,8 @@ exports.balanceSheet = async (req, res) => {
     res.json({
       activos, pasivos, patrimonio,
       utilidadEjercicio: utilidad,
+      totalActivos, totalPasivos, totalPatrimonio,
+      totalPasivoPatrimonio: totalPasivos + totalPatrimonio,
       totales: { totalActivos, totalPasivos, totalPatrimonio, totalPasivoPatrimonio: totalPasivos + totalPatrimonio },
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
@@ -104,26 +182,207 @@ exports.balanceSheet = async (req, res) => {
 exports.cashFlow = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
-    const cashAccs = await ChartOfAccount.find({ clinic: req.clinicId, code: /^1\.1\.01\./ });
+    const start = startOfDay(startDate);
+    const end = endOfDay(endDate);
+    const cashAccs = await ChartOfAccount.find({ clinic: req.clinicId, code: /^1\.1\.01\./ }).lean();
     const ids = cashAccs.map((a) => a._id);
+    const accountMap = new Map(cashAccs.map((a) => [String(a._id), {
+      ...compactAccount(a), opening: 0, debit: 0, credit: 0, closing: 0, balance: 0,
+    }]));
+    if (!ids.length) {
+      return res.json({ flows: [], accounts: [], opening: 0, totalIn: 0, totalOut: 0, saldoFinal: 0 });
+    }
+
+    if (start) {
+      const openingAgg = await JournalEntry.aggregate([
+        { $match: { clinic: asObjectId(req.clinicId), status: 'CONTABILIZADO', date: { $lt: start }, 'lines.account': { $in: ids } } },
+        { $unwind: '$lines' },
+        { $match: { 'lines.account': { $in: ids } } },
+        { $group: { _id: '$lines.account', debit: { $sum: '$lines.debit' }, credit: { $sum: '$lines.credit' } } },
+      ]);
+      for (const r of openingAgg) {
+        const acc = accountMap.get(String(r._id));
+        if (!acc) continue;
+        acc.opening = (r.debit || 0) - (r.credit || 0);
+        acc.closing = acc.opening;
+        acc.balance = acc.closing;
+      }
+    }
+
     const match = { clinic: req.clinicId, status: 'CONTABILIZADO', 'lines.account': { $in: ids } };
     if (startDate || endDate) {
       match.date = {};
-      if (startDate) match.date.$gte = new Date(startDate);
-      if (endDate) match.date.$lte = new Date(endDate);
+      if (start) match.date.$gte = start;
+      if (end) match.date.$lte = end;
     }
-    const entries = await JournalEntry.find(match).sort({ date: 1 });
+    const entries = await JournalEntry.find(match).sort({ date: 1, number: 1 }).lean();
     const flows = [];
-    let saldo = 0;
+    let saldo = [...accountMap.values()].reduce((s, a) => s + (a.opening || 0), 0);
     for (const e of entries) {
       for (const l of e.lines) {
-        if (!ids.some((id) => String(id) === String(l.account))) continue;
+        const acc = accountMap.get(String(l.account));
+        if (!acc) continue;
         const movement = l.debit - l.credit;
         saldo += movement;
-        flows.push({ date: e.date, number: e.number, description: e.description, in: l.debit, out: l.credit, saldo });
+        acc.debit += Number(l.debit) || 0;
+        acc.credit += Number(l.credit) || 0;
+        acc.closing += movement;
+        acc.balance = acc.closing;
+        flows.push({
+          entryId: e._id,
+          date: e.date,
+          number: e.number,
+          description: l.description || e.description,
+          entryDescription: e.description,
+          accountId: l.account,
+          accountCode: l.accountCode,
+          accountName: l.accountName,
+          source: e.source,
+          sourceModel: e.sourceModel,
+          sourceRef: e.sourceRef,
+          in: Number(l.debit) || 0,
+          out: Number(l.credit) || 0,
+          saldo,
+        });
       }
     }
-    res.json({ flows, totalIn: flows.reduce((s, f) => s + f.in, 0), totalOut: flows.reduce((s, f) => s + f.out, 0), saldoFinal: saldo });
+    const accounts = [...accountMap.values()].sort((a, b) => a.code.localeCompare(b.code));
+    res.json({
+      flows,
+      accounts,
+      opening: accounts.reduce((s, a) => s + (a.opening || 0), 0),
+      totalIn: flows.reduce((s, f) => s + f.in, 0),
+      totalOut: flows.reduce((s, f) => s + f.out, 0),
+      saldoFinal: saldo,
+    });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+// ---------- Trazabilidad de una cuenta (mayor + diario + contrapartidas) ----------
+exports.accountFlow = async (req, res) => {
+  try {
+    const accountId = req.params.accountId || req.query.account;
+    if (!accountId || !mongoose.Types.ObjectId.isValid(accountId)) {
+      return res.status(400).json({ message: 'Cuenta requerida' });
+    }
+
+    const account = await ChartOfAccount.findOne({ _id: accountId, clinic: req.clinicId }).lean();
+    if (!account) return res.status(404).json({ message: 'Cuenta no encontrada' });
+
+    const { startDate, endDate } = req.query;
+    const start = startOfDay(startDate);
+    const end = endOfDay(endDate);
+    const accountObjId = asObjectId(account._id);
+    const clinicObjId = asObjectId(req.clinicId);
+
+    let opening = 0;
+    if (start) {
+      const openingAgg = await JournalEntry.aggregate([
+        { $match: { clinic: clinicObjId, status: 'CONTABILIZADO', date: { $lt: start }, 'lines.account': accountObjId } },
+        { $unwind: '$lines' },
+        { $match: { 'lines.account': accountObjId } },
+        { $group: { _id: null, debit: { $sum: '$lines.debit' }, credit: { $sum: '$lines.credit' } } },
+      ]);
+      opening = accountBalanceFromNature(account, openingAgg[0]?.debit || 0, openingAgg[0]?.credit || 0);
+    }
+
+    const match = { clinic: req.clinicId, status: 'CONTABILIZADO', 'lines.account': account._id };
+    if (start || end) {
+      match.date = {};
+      if (start) match.date.$gte = start;
+      if (end) match.date.$lte = end;
+    }
+
+    const entries = await JournalEntry.find(match).sort({ date: 1, number: 1 }).lean();
+    const ledger = [];
+    const journal = [];
+    const counterpartMap = new Map();
+    let saldo = opening;
+    let debit = 0;
+    let credit = 0;
+
+    for (const entry of entries) {
+      const lines = (entry.lines || []).map((line) => {
+        const base = lineAccount(line);
+        return { ...base, accountId: String(base.accountId || ''), isSelected: String(base.accountId) === String(account._id) };
+      });
+      journal.push({
+        _id: entry._id,
+        number: entry.number,
+        date: entry.date,
+        description: entry.description,
+        source: entry.source,
+        sourceModel: entry.sourceModel,
+        sourceRef: entry.sourceRef,
+        totalDebit: entry.totalDebit,
+        totalCredit: entry.totalCredit,
+        lines,
+      });
+
+      const selectedLines = lines.filter((line) => line.isSelected);
+      for (const selected of selectedLines) {
+        const counterparts = lines.filter((line) => !line.isSelected);
+        const selectedDebit = Number(selected.debit) || 0;
+        const selectedCredit = Number(selected.credit) || 0;
+        debit += selectedDebit;
+        credit += selectedCredit;
+        saldo += account.nature === 'DEBITO' ? selectedDebit - selectedCredit : selectedCredit - selectedDebit;
+
+        for (const cp of counterparts) {
+          const key = cp.accountId || `${cp.accountCode}-${cp.accountName}`;
+          if (!counterpartMap.has(key)) {
+            counterpartMap.set(key, {
+              accountId: cp.accountId,
+              accountCode: cp.accountCode,
+              accountName: cp.accountName,
+              debit: 0,
+              credit: 0,
+              count: 0,
+            });
+          }
+          const row = counterpartMap.get(key);
+          row.debit += Number(cp.debit) || 0;
+          row.credit += Number(cp.credit) || 0;
+          row.count += 1;
+        }
+
+        ledger.push({
+          entryId: entry._id,
+          date: entry.date,
+          number: entry.number,
+          source: entry.source,
+          sourceModel: entry.sourceModel,
+          sourceRef: entry.sourceRef,
+          description: selected.description || entry.description,
+          entryDescription: entry.description,
+          debit: selectedDebit,
+          credit: selectedCredit,
+          saldo,
+          counterparts,
+        });
+      }
+    }
+
+    const closing = opening + accountBalanceFromNature(account, debit, credit);
+    res.json({
+      account: compactAccount(account),
+      period: { startDate: startDate || null, endDate: endDate || null },
+      summary: {
+        opening,
+        debit,
+        credit,
+        movement: accountBalanceFromNature(account, debit, credit),
+        closing,
+        entries: journal.length,
+        movements: ledger.length,
+        firstMovement: ledger[0]?.date || null,
+        lastMovement: ledger[ledger.length - 1]?.date || null,
+      },
+      ledger,
+      journal,
+      counterpartSummary: [...counterpartMap.values()].sort((a, b) => (Math.abs(b.debit - b.credit) - Math.abs(a.debit - a.credit))),
+      relatedReports: relatedReportsForAccount(account),
+    });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
