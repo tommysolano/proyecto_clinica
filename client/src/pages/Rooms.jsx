@@ -3,6 +3,7 @@ import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import { HiOutlinePlus, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineBuildingStorefront } from 'react-icons/hi2';
+import PageHeader, { EmptyState } from '../components/PageHeader';
 
 const EMPTY = { name: '', code: '', description: '', manager: '', active: true };
 
@@ -69,22 +70,14 @@ export default function Rooms() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
-            <HiOutlineBuildingStorefront className="text-emerald-600" /> Consultorios físicos
-          </h1>
-          <p className="text-sm text-slate-500">
-            Salas/consultorios donde se atienden citas. Cada consultorio puede tener un encargado.
-          </p>
-        </div>
-        <button onClick={openNew} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 hover:bg-emerald-700">
+    <div className="space-y-6">
+      <PageHeader icon={HiOutlineBuildingStorefront} title="Consultorios físicos" subtitle="Salas donde se atienden citas. Cada consultorio puede tener un encargado.">
+        <button onClick={openNew} className="btn-primary">
           <HiOutlinePlus className="w-4 h-4" /> Nuevo consultorio
         </button>
-      </div>
+      </PageHeader>
 
-      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-slate-200 overflow-hidden">
         <table className="tbl">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
@@ -96,7 +89,10 @@ export default function Rooms() {
             </tr>
           </thead>
           <tbody>
-            {loading && <tr><td colSpan={5} className="text-center py-4 text-slate-400">Cargando...</td></tr>}
+            {loading && <tr><td colSpan={5} className="text-center py-6 text-slate-400">Cargando...</td></tr>}
+            {!loading && list.length === 0 && (
+              <tr><td colSpan={5}><EmptyState icon={HiOutlineBuildingStorefront} title="Sin consultorios" hint="Crea el primer consultorio." /></td></tr>
+            )}
             {list.map((r) => (
               <tr key={r._id} className="border-t border-slate-100">
                 <td className="px-3 py-2 font-medium">{r.name}</td>

@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import { useAuth } from '../context/AuthContext';
 import { HiOutlinePlus, HiOutlineTag, HiOutlineTrash, HiOutlinePencilSquare } from 'react-icons/hi2';
+import PageHeader, { EmptyState } from '../components/PageHeader';
 
 const DAYS = [['Dom', 0], ['Lun', 1], ['Mar', 2], ['Mié', 3], ['Jue', 4], ['Vie', 5], ['Sáb', 6]];
 const AUDIENCES = [['todos', 'Todos'], ['nuevos', 'Pacientes nuevos'], ['recurrentes', 'Pacientes recurrentes'], ['cumpleanos', 'Cumpleañeros']];
@@ -107,22 +108,14 @@ export default function Discounts() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
-            <HiOutlineTag className="text-emerald-600" /> Descuentos
-          </h1>
-          <p className="text-sm text-slate-500">
-            Cumple con la normativa SRI: los descuentos se aplican por ítem y se reportan en la factura electrónica.
-          </p>
-        </div>
-        <button onClick={() => { setEditing(null); setForm(EMPTY); setShowModal(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 hover:bg-emerald-700">
+    <div className="space-y-6">
+      <PageHeader icon={HiOutlineTag} title="Descuentos" subtitle="Se aplican por ítem y se reportan en la factura electrónica (SRI).">
+        <button onClick={() => { setEditing(null); setForm(EMPTY); setShowModal(true); }} className="btn-primary">
           <HiOutlinePlus className="w-4 h-4" /> Nuevo descuento
         </button>
-      </div>
+      </PageHeader>
 
-      <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-slate-200 overflow-hidden">
         <table className="tbl">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
@@ -136,7 +129,10 @@ export default function Discounts() {
             </tr>
           </thead>
           <tbody>
-            {loading && <tr><td colSpan={7} className="text-center py-4 text-slate-400">Cargando...</td></tr>}
+            {loading && <tr><td colSpan={7} className="text-center py-6 text-slate-400">Cargando...</td></tr>}
+            {!loading && list.length === 0 && (
+              <tr><td colSpan={7}><EmptyState icon={HiOutlineTag} title="Sin descuentos" hint="Crea tu primer descuento." /></td></tr>
+            )}
             {list.map((d) => (
               <tr key={d._id} className="border-t border-slate-100">
                 <td className="px-3 py-2 font-medium">{d.name}</td>

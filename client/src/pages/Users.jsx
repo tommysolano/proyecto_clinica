@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
+import PageHeader, { EmptyState } from '../components/PageHeader';
 import { useAuth } from '../context/AuthContext';
 import {
   HiOutlineUserPlus,
@@ -142,20 +143,12 @@ export default function Users() {
   }
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
-          <HiOutlineUsers className="w-7 h-7 text-emerald-600" />
-          Usuarios de la sucursal
-        </h1>
-        <button
-          onClick={openNew}
-          className="flex items-center gap-2 px-4 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium cursor-pointer border-none text-sm"
-        >
-          <HiOutlineUserPlus className="w-4 h-4" />
-          Nuevo usuario
+    <div className="space-y-6 max-w-6xl mx-auto">
+      <PageHeader icon={HiOutlineUsers} title="Usuarios de la sucursal" subtitle="Gestiona el personal y sus roles">
+        <button onClick={openNew} className="btn-primary">
+          <HiOutlineUserPlus className="w-4 h-4" /> Nuevo usuario
         </button>
-      </div>
+      </PageHeader>
 
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-slate-200 overflow-hidden">
         <table className="tbl">
@@ -173,8 +166,8 @@ export default function Users() {
           <tbody>
             {users.length === 0 && (
               <tr>
-                <td colSpan={7} className="text-center py-8 text-slate-400">
-                  No hay usuarios.
+                <td colSpan={7}>
+                  <EmptyState icon={HiOutlineUsers} title="No hay usuarios" hint="Crea el primer usuario de la sucursal." />
                 </td>
               </tr>
             )}

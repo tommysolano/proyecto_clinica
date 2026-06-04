@@ -4,6 +4,7 @@ import { downloadFile } from '../utils/download';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import ProductAutocomplete from '../components/ProductAutocomplete';
+import PageHeader from '../components/PageHeader';
 import { useAuth } from '../context/AuthContext';
 import {
   HiOutlinePlus,
@@ -159,38 +160,19 @@ export default function Quotations() {
   );
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
-            <span className="inline-flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-md">
-              <HiOutlineDocumentDuplicate className="w-5 h-5" />
-            </span>
-            Cotizaciones
-          </h1>
-          <p className="text-sm text-slate-500 mt-1">
-            Genera, descarga y comparte cotizaciones profesionales con tus pacientes.
-          </p>
-        </div>
-        <div className="flex gap-2">
-          {canManageLogo && (
-            <button
-              onClick={() => setShowLogoModal(true)}
-              className="px-4 py-2.5 rounded-xl border border-emerald-200 bg-white text-emerald-700 hover:bg-emerald-50 text-sm font-medium cursor-pointer flex items-center gap-2"
-            >
-              <HiOutlinePhoto className="w-4 h-4" /> Logo de cotización
-            </button>
-          )}
-          {canEdit && (
-            <button
-              onClick={() => setShowModal(true)}
-              className="px-5 py-2.5 rounded-xl bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white text-sm font-medium cursor-pointer border-none shadow-lg shadow-emerald-200/50 flex items-center gap-2"
-            >
-              <HiOutlinePlus className="w-4 h-4" /> Nueva cotización
-            </button>
-          )}
-        </div>
-      </div>
+    <div className="space-y-6">
+      <PageHeader icon={HiOutlineDocumentDuplicate} title="Cotizaciones" subtitle="Genera, descarga y comparte cotizaciones profesionales con tus pacientes.">
+        {canManageLogo && (
+          <button onClick={() => setShowLogoModal(true)} className="btn-secondary">
+            <HiOutlinePhoto className="w-4 h-4" /> Logo de cotización
+          </button>
+        )}
+        {canEdit && (
+          <button onClick={() => setShowModal(true)} className="btn-primary">
+            <HiOutlinePlus className="w-4 h-4" /> Nueva cotización
+          </button>
+        )}
+      </PageHeader>
 
       {/* KPIs */}
       <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">

@@ -2,12 +2,13 @@ import { useState, useEffect } from 'react';
 import api from '../api/axios';
 import { downloadFile } from '../utils/download';
 import Modal from '../components/Modal';
+import PageHeader, { EmptyState } from '../components/PageHeader';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import {
   HiOutlinePlus, HiOutlinePencil, HiOutlineTrash,
   HiOutlineMagnifyingGlass, HiOutlineArrowDown, HiOutlineArrowUp,
-  HiOutlineExclamationTriangle,
+  HiOutlineExclamationTriangle, HiOutlineCube, HiOutlineArrowDownTray,
 } from 'react-icons/hi2';
 
 const categories = { medicamento: 'Medicamento', insumo: 'Insumo', servicio: 'Servicio', programa: 'Programa', otro: 'Otro' };
@@ -232,14 +233,10 @@ export default function Inventory() {
   };
 
   return (
-    <div>
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Inventario</h1>
-          <p className="text-sm text-slate-500 mt-1">Gestión de productos y movimientos</p>
-        </div>
+    <div className="space-y-6">
+      <PageHeader icon={HiOutlineCube} title="Inventario" subtitle="Gestión de productos y movimientos">
         {canWrite && (
-          <div className="flex gap-2">
+          <>
             <button
               onClick={async () => {
                 try {
@@ -248,34 +245,25 @@ export default function Inventory() {
                   toast.error(err.message || 'Error al exportar');
                 }
               }}
-              className="flex items-center gap-2 bg-white border border-emerald-200 text-emerald-700 hover:bg-emerald-50 px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer"
+              className="btn-secondary"
             >
-              Excel
+              <HiOutlineArrowDownTray className="w-4 h-4" /> Excel
             </button>
-            <button
-              onClick={() => { setBulkResult(null); setBulkFile(null); setBulkModal(true); }}
-              className="flex items-center gap-2 bg-white border border-emerald-200 text-emerald-700 hover:bg-emerald-50 px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer"
-            >
+            <button onClick={() => { setBulkResult(null); setBulkFile(null); setBulkModal(true); }} className="btn-secondary">
               Carga masiva
             </button>
-            <button
-              onClick={() => openNewMovement()}
-              className="flex items-center gap-2 bg-cyan-600 hover:bg-cyan-700 text-white px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border-none transition-colors"
-            >
+            <button onClick={() => openNewMovement()} className="btn-secondary">
               <HiOutlineArrowDown className="w-4 h-4" /> Movimiento
             </button>
-            <button
-              onClick={openNewProduct}
-              className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white px-5 py-2.5 rounded-xl text-sm font-medium cursor-pointer border-none shadow-lg shadow-emerald-200/50 transition-all"
-            >
+            <button onClick={openNewProduct} className="btn-primary">
               <HiOutlinePlus className="w-5 h-5" /> Nuevo Producto
             </button>
-          </div>
+          </>
         )}
-      </div>
+      </PageHeader>
 
       {/* Tabs */}
-      <div className="flex gap-1 bg-emerald-50 rounded-xl p-1 mb-6 w-fit">
+      <div className="flex gap-1 bg-emerald-50 rounded-xl p-1 w-fit">
         <button
           onClick={() => setTab('products')}
           className={`px-5 py-2.5 rounded-lg text-sm font-medium cursor-pointer border-none transition-colors ${
@@ -351,7 +339,7 @@ export default function Inventory() {
                   {loading ? (
                     <tr><td colSpan="6" className="text-center py-10 text-slate-500">Cargando...</td></tr>
                   ) : products.length === 0 ? (
-                    <tr><td colSpan="6" className="text-center py-10 text-slate-500">No se encontraron productos</td></tr>
+                    <tr><td colSpan="6"><EmptyState icon={HiOutlineCube} title="No se encontraron productos" hint="Ajusta la búsqueda o crea un nuevo producto." /></td></tr>
                   ) : (
                     products.map((p) => (
                       <tr key={p._id} className="border-b border-emerald-50 hover:bg-emerald-50/30 transition-colors">
@@ -415,7 +403,7 @@ export default function Inventory() {
               </thead>
               <tbody>
                 {movements.length === 0 ? (
-                  <tr><td colSpan="6" className="text-center py-10 text-slate-500">No hay movimientos</td></tr>
+                  <tr><td colSpan="6"><EmptyState icon={HiOutlineArrowDown} title="No hay movimientos" hint="Los movimientos de inventario aparecerán aquí." /></td></tr>
                 ) : (
                   movements.map((m) => (
                     <tr key={m._id} className="border-b border-emerald-50 hover:bg-emerald-50/30 transition-colors">

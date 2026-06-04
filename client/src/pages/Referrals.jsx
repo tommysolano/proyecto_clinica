@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import { useAuth } from '../context/AuthContext';
 import { HiOutlinePlus, HiOutlineArrowsRightLeft, HiOutlineTrash } from 'react-icons/hi2';
+import PageHeader from '../components/PageHeader';
 
 const STATUSES = [
   { value: 'pendiente', label: 'Pendiente', color: 'bg-amber-100 text-amber-800' },
@@ -106,25 +107,14 @@ export default function Referrals() {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
-            <HiOutlineArrowsRightLeft className="text-emerald-600" /> Derivaciones
-          </h1>
-          <p className="text-sm text-slate-500">
-            Pacientes derivados entre doctores y especialidades.
-          </p>
-        </div>
+    <div className="space-y-6">
+      <PageHeader icon={HiOutlineArrowsRightLeft} title="Derivaciones" subtitle="Pacientes derivados entre doctores y especialidades.">
         {canCreate && (
-          <button
-            onClick={() => setShowModal(true)}
-            className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 hover:bg-emerald-700"
-          >
+          <button onClick={() => setShowModal(true)} className="btn-primary">
             <HiOutlinePlus className="w-4 h-4" /> Nueva derivación
           </button>
         )}
-      </div>
+      </PageHeader>
 
       {stats?.byDoctor?.length > 0 && (
         <div className="grid sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">

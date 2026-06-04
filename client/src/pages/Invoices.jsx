@@ -3,6 +3,7 @@ import api from '../api/axios';
 import { downloadFile } from '../utils/download';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
+import PageHeader, { EmptyState } from '../components/PageHeader';
 import { useAuth } from '../context/AuthContext';
 import {
   HiOutlineDocumentText,
@@ -10,6 +11,7 @@ import {
   HiOutlineXMark,
   HiOutlineEye,
   HiOutlineDocumentArrowDown,
+  HiOutlineArrowDownTray,
 } from 'react-icons/hi2';
 
 const ESTADO_STYLES = {
@@ -109,12 +111,8 @@ export default function Invoices() {
   };
 
   return (
-    <div className="p-6 max-w-6xl mx-auto">
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
-          <HiOutlineDocumentText className="w-7 h-7 text-emerald-600" />
-          Facturación electrónica SRI
-        </h1>
+    <div className="space-y-6 max-w-6xl mx-auto">
+      <PageHeader icon={HiOutlineDocumentText} title="Facturación electrónica" subtitle="Emisión y seguimiento de comprobantes SRI">
         <button
           onClick={async () => {
             try {
@@ -127,13 +125,13 @@ export default function Invoices() {
               toast.error(err.message || 'Error al exportar');
             }
           }}
-          className="px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50"
+          className="btn-secondary"
         >
-          Exportar Excel
+          <HiOutlineArrowDownTray className="w-4 h-4" /> Exportar Excel
         </button>
-      </div>
+      </PageHeader>
 
-      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-4 mb-6">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-4">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <input
             type="date"
@@ -183,8 +181,8 @@ export default function Invoices() {
               </tr>
             ) : invoices.length === 0 ? (
               <tr>
-                <td colSpan={6} className="text-center py-10 text-slate-500">
-                  No hay facturas.
+                <td colSpan={6}>
+                  <EmptyState icon={HiOutlineDocumentText} title="No hay facturas" hint="Emite una factura desde una venta." />
                 </td>
               </tr>
             ) : (

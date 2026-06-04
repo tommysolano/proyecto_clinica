@@ -3,6 +3,7 @@ import api from '../api/axios';
 import Modal from '../components/Modal';
 import { downloadFile } from '../utils/download';
 import ProductAutocomplete from '../components/ProductAutocomplete';
+import PageHeader, { EmptyState } from '../components/PageHeader';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import {
@@ -12,6 +13,7 @@ import {
   HiOutlineTrash,
   HiOutlineDocumentText,
   HiOutlineBanknotes,
+  HiOutlineArrowDownTray,
 } from 'react-icons/hi2';
 
 const paymentMethods = {
@@ -358,14 +360,10 @@ export default function Sales() {
   };
 
   return (
-    <div className="p-6">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Ventas</h1>
-          <p className="text-sm text-slate-500 mt-1">Registro y facturación electrónica</p>
-        </div>
+    <div className="space-y-6">
+      <PageHeader icon={HiOutlineBanknotes} title="Ventas" subtitle="Registro y facturación electrónica">
         {canCreate && (
-          <div className="flex gap-2">
+          <>
             <button
               onClick={async () => {
                 try {
@@ -377,21 +375,18 @@ export default function Sales() {
                   toast.error(err.message || 'Error al exportar');
                 }
               }}
-              className="px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50"
+              className="btn-secondary"
             >
-              Excel
+              <HiOutlineArrowDownTray className="w-4 h-4" /> Excel
             </button>
-            <button
-              onClick={openNew}
-              className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white px-5 py-2.5 rounded-xl text-sm font-medium cursor-pointer border-none shadow-lg shadow-emerald-200/50"
-            >
+            <button onClick={openNew} className="btn-primary">
               <HiOutlinePlus className="w-5 h-5" /> Nueva Venta
             </button>
-          </div>
+          </>
         )}
-      </div>
+      </PageHeader>
 
-      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 mb-6 p-4">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-4">
         <div className="flex flex-col sm:flex-row gap-3 flex-wrap">
           <input
             type="date"
@@ -445,15 +440,17 @@ export default function Sales() {
             </thead>
             <tbody>
               {loading ? (
-                <tr>
-                  <td colSpan="7" className="text-center py-10 text-slate-500">
-                    Cargando...
-                  </td>
-                </tr>
+                Array.from({ length: 6 }).map((_, i) => (
+                  <tr key={`sk-${i}`} className="border-b border-emerald-50">
+                    {Array.from({ length: 7 }).map((__, j) => (
+                      <td key={j} className="px-6 py-3.5"><div className="skeleton h-4 w-full max-w-[140px]" /></td>
+                    ))}
+                  </tr>
+                ))
               ) : sales.length === 0 ? (
                 <tr>
-                  <td colSpan="7" className="text-center py-10 text-slate-500">
-                    No se encontraron ventas
+                  <td colSpan="7">
+                    <EmptyState icon={HiOutlineBanknotes} title="No se encontraron ventas" hint="Registra una venta o ajusta los filtros." />
                   </td>
                 </tr>
               ) : (
