@@ -13,6 +13,7 @@ const PIE_COLORS = ['#10b981', '#0ea5e9', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4
 
 export default function AccountingDashboard() {
   const [data, setData] = useState(null);
+  const [bankBalances, setBankBalances] = useState([]);
   const [granularity, setGranularity] = useState('month');
   const [showLowStock, setShowLowStock] = useState(false);
 
@@ -21,6 +22,7 @@ export default function AccountingDashboard() {
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [granularity]);
+  useEffect(() => { api.get('/banks/balances').then((r) => setBankBalances(r.data || [])).catch(() => {}); }, []);
 
   if (!data) return <div className="p-8 text-slate-400">Cargando dashboard...</div>;
 
@@ -62,10 +64,26 @@ export default function AccountingDashboard() {
       </div>
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card title="Ventas del año" value={`$${fmt(data.comparison.year.current)}`} sub={<>vs año ant. <Trend pct={data.comparison.year.pct} /></>} />
-        <Card title="Saldo en bancos" value={`$${fmt(data.cash.bankTotal)}`} icon={HiOutlineBanknotes} />
+        <Card title="Saldo total en bancos" value={`$${fmt(data.cash.bankTotal)}`} icon={HiOutlineBanknotes} />
         <Card title="Ventas efectivo hoy" value={`$${fmt(data.cash.todayCashSales)}`} />
         <Card title="Cuentas por pagar" value={`$${fmt(data.ratios.accountsPayable)}`} color="text-amber-600" />
       </div>
+
+      {/* Saldo por banco (no general) */}
+      {bankBalances.length > 0 && (
+        <div className="bg-white rounded-xl shadow-sm p-4">
+          <h2 className="font-semibold text-slate-700 mb-3 flex items-center gap-2"><HiOutlineBanknotes className="w-5 h-5 text-emerald-500" /> Saldo por banco</h2>
+          <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+            {bankBalances.map((b) => (
+              <div key={b._id} className="border border-slate-100 rounded-lg p-3">
+                <p className="text-sm font-medium text-slate-700 truncate">{b.name}</p>
+                <p className="text-xs text-slate-400">{b.bank} {b.accountNumber ? `· ${b.accountNumber}` : ''}</p>
+                <p className={`text-xl font-bold mt-1 ${b.bookBalance >= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>${fmt(b.bookBalance)}</p>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* Stock bajo - clicable */}
       {(data.lowStock || []).length > 0 && (

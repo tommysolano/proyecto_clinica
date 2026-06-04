@@ -4,6 +4,7 @@ const ChartOfAccount = require('../models/ChartOfAccount');
 const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
 const { createEntry, findAccount, reverseEntry } = require('../utils/accounting');
+const { parsePurchaseInvoiceXml } = require('../utils/sriXmlParser');
 
 function calcTotals(invoice) {
   let s0 = 0, s12 = 0, s15 = 0, sNo = 0, sEx = 0, iva = 0;
@@ -31,16 +32,25 @@ function calcTotals(invoice) {
 }
 
 exports.list = async (req, res) => {
-  const { startDate, endDate, supplier, status, q, page = 1, limit = 20 } = req.query;
+  const { startDate, endDate, supplier, status, docType, q, page = 1, limit = 20 } = req.query;
   const filter = { clinic: req.clinicId };
   if (supplier) filter.supplier = supplier;
   if (status) filter.status = status;
+  if (docType) filter.docType = docType;
   if (startDate || endDate) {
     filter.fechaEmision = {};
     if (startDate) filter.fechaEmision.$gte = new Date(startDate);
     if (endDate) filter.fechaEmision.$lte = new Date(endDate);
   }
-  if (q) filter.$or = [{ serie: new RegExp(q, 'i') }, { autorizacion: new RegExp(q, 'i') }];
+  if (q) {
+    const rx = new RegExp(q.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
+    // Buscar también por proveedor (razón social / RUC / nombre comercial)
+    const sups = await Supplier.find({ clinic: req.clinicId, $or: [{ razonSocial: rx }, { ruc: rx }, { nombreComercial: rx }] }).select('_id');
+    filter.$or = [
+      { serie: rx }, { autorizacion: rx }, { claveAcceso: rx }, { secuencial: rx }, { retentionNumber: rx },
+      ...(sups.length ? [{ supplier: { $in: sups.map((s) => s._id) } }] : []),
+    ];
+  }
   const total = await PurchaseInvoice.countDocuments(filter);
   const items = await PurchaseInvoice.find(filter)
     .populate('supplier', 'ruc razonSocial')
@@ -87,9 +97,22 @@ async function postPurchaseJournal(inv, req) {
   // Resolver cuenta de inventario por defecto (1.1.04.01) una sola vez
   let inventoryDefault = null;
   for (const it of inv.items || []) {
+    // Distribución en varias cuentas: una línea por cada split (la suma debe igualar el subtotal)
+    if (Array.isArray(it.accountSplits) && it.accountSplits.length) {
+      const splitSum = it.accountSplits.reduce((s, sp) => s + (Number(sp.amount) || 0), 0);
+      if (Math.abs(splitSum - it.subtotal) > 0.01) {
+        throw Object.assign(new Error(`La distribución de cuentas del ítem "${it.description}" (${splitSum.toFixed(2)}) no cuadra con su subtotal (${it.subtotal.toFixed(2)})`), { status: 400 });
+      }
+      for (const sp of it.accountSplits) {
+        if (!sp.account || !(Number(sp.amount) > 0)) continue;
+        lines.push({ account: sp.account, debit: +(Number(sp.amount)).toFixed(2), credit: 0, description: sp.description || it.description });
+      }
+      continue;
+    }
     let accountId = it.account;
-    // Si el ítem está ligado a un producto físico (no servicio/ilimitado), debitar cuenta de inventario (activo)
-    if (it.product) {
+    // Si el ítem está ligado a un producto físico (no servicio/ilimitado) y NO se eligió
+    // una cuenta manualmente, debitar la cuenta de inventario (activo).
+    if (it.product && !it.account) {
       const prod = await Product.findOne({ _id: it.product, clinic: req.clinicId });
       if (prod && !prod.unlimited && prod.category !== 'servicio') {
         if (prod.inventoryAccount) {
@@ -291,4 +314,69 @@ exports.importTxt = async (req, res) => {
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
+};
+
+/**
+ * Importa facturas de compra desde XML del SRI (factura electrónica).
+ * Body: { xmls: [string] } o { content: string } (un solo XML).
+ * Las facturas se crean en estado POR_AUTORIZAR (carga automática): NO se
+ * contabilizan hasta que el personal contable las verifique y autorice.
+ */
+exports.importXml = async (req, res) => {
+  try {
+    const xmls = Array.isArray(req.body?.xmls) ? req.body.xmls : (req.body?.content ? [req.body.content] : []);
+    if (!xmls.length) return res.status(400).json({ message: 'No se recibieron XML' });
+    let created = 0, skipped = 0;
+    const errors = [];
+    for (let i = 0; i < xmls.length; i++) {
+      try {
+        const p = parsePurchaseInvoiceXml(xmls[i]);
+        if (!p.ruc) { errors.push({ index: i + 1, error: 'XML sin RUC' }); continue; }
+        let sup = await Supplier.findOne({ clinic: req.clinicId, ruc: p.ruc });
+        if (!sup) sup = await Supplier.create({ clinic: req.clinicId, ruc: p.ruc, razonSocial: p.razonSocial || p.ruc });
+        // Evitar duplicados por clave de acceso o serie
+        const dup = await PurchaseInvoice.findOne({ clinic: req.clinicId, $or: [{ claveAcceso: p.claveAcceso }, { supplier: sup._id, serie: p.serie }] });
+        if (dup) { skipped++; continue; }
+        const data = {
+          clinic: req.clinicId, supplier: sup._id, docType: 'FACTURA',
+          estab: p.estab, ptoEmi: p.ptoEmi, secuencial: p.secuencial, serie: p.serie,
+          claveAcceso: p.claveAcceso, xmlClaveAcceso: p.claveAcceso, autorizacion: p.autorizacion,
+          fechaEmision: p.fechaEmision,
+          items: p.items.map((it) => ({ ...it, account: sup.defaultExpenseAccount || null })),
+          status: 'POR_AUTORIZAR', importedFromXml: true, createdBy: req.user._id,
+        };
+        calcTotals(data);
+        await PurchaseInvoice.create(data);
+        created++;
+      } catch (err) { errors.push({ index: i + 1, error: err.message }); }
+    }
+    res.json({ created, skipped, errors });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+/**
+ * Autoriza una factura cargada automáticamente (POR_AUTORIZAR): valida que tenga
+ * cuentas contables asignadas, la contabiliza y registra el inventario.
+ */
+exports.authorize = async (req, res) => {
+  try {
+    const inv = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!inv) return res.status(404).json({ message: 'No encontrada' });
+    if (inv.status !== 'POR_AUTORIZAR') return res.status(400).json({ message: 'La factura no está pendiente de autorización' });
+    // Permite ajustar datos antes de autorizar (cuentas, ítems, retenciones)
+    if (req.body && Object.keys(req.body).length) {
+      const { status, clinic, journalEntry, ...rest } = req.body;
+      Object.assign(inv, rest);
+      calcTotals(inv);
+    }
+    const sinCuenta = (inv.items || []).some((it) => !it.account && !(it.accountSplits || []).length && !it.product);
+    if (sinCuenta) return res.status(400).json({ message: 'Asigna una cuenta contable a cada ítem antes de autorizar' });
+    inv.status = 'REGISTRADA';
+    inv.authorizedBy = req.user._id;
+    inv.authorizedAt = new Date();
+    await inv.save();
+    await postPurchaseJournal(inv, req);
+    await postInventoryEntries(inv, req);
+    res.json(inv);
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };

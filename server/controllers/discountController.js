@@ -57,8 +57,8 @@ exports.remove = async (req, res) => {
  */
 exports.applicable = async (req, res) => {
   try {
-    const { productIds = [] } = req.body || {};
-    const now = new Date();
+    const { productIds = [], audience, amount, atDate } = req.body || {};
+    const now = atDate ? new Date(atDate) : new Date();
     const list = await Discount.find({
       clinic: req.clinicId,
       active: true,
@@ -67,14 +67,36 @@ exports.applicable = async (req, res) => {
         { $or: [{ endDate: null }, { endDate: { $gte: now } }] },
       ],
     });
-    const filtered = list.filter((d) => {
-      if (d.scope === 'all') return true;
-      return (d.products || []).some((p) =>
-        productIds.map(String).includes(String(p))
-      );
-    });
+    const dow = now.getDay();
+    const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    const filtered = list.filter((d) => isDiscountApplicable(d, { productIds, audience, amount, dow, hhmm, clinicId: req.clinicId }));
     res.json(filtered);
   } catch (error) {
     res.status(500).json({ message: 'Error al consultar descuentos' });
   }
 };
+
+/** Evalúa si un descuento aplica según sus parametrizaciones. */
+function isDiscountApplicable(d, { productIds = [], audience, amount, dow, hhmm, clinicId }) {
+  // Productos
+  if (d.scope !== 'all') {
+    const ok = (d.products || []).some((p) => productIds.map(String).includes(String(p)));
+    if (!ok) return false;
+  }
+  // Sucursales
+  if ((d.clinics || []).length && clinicId && !d.clinics.map(String).includes(String(clinicId))) return false;
+  // Días de la semana
+  if ((d.daysOfWeek || []).length && dow != null && !d.daysOfWeek.includes(dow)) return false;
+  // Franja horaria
+  if (d.startTime && hhmm && hhmm < d.startTime) return false;
+  if (d.endTime && hhmm && hhmm > d.endTime) return false;
+  // Público objetivo
+  if (d.audience && d.audience !== 'todos' && audience && audience !== d.audience) return false;
+  // Compra mínima
+  if (d.minAmount && amount != null && amount < d.minAmount) return false;
+  // Límite de usos
+  if (d.maxUses && d.usedCount >= d.maxUses) return false;
+  return true;
+}
+
+exports.isDiscountApplicable = isDiscountApplicable;

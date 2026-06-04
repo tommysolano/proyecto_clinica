@@ -70,6 +70,9 @@ app.use('/api/inventory-advanced', require('./routes/inventoryAdvanced'));
 app.use('/api/accounting-reports', require('./routes/accountingReports'));
 app.use('/api/payroll', require('./routes/payroll'));
 app.use('/api/credit-card-batches', require('./routes/creditCardBatches'));
+app.use('/api/card-settlements', require('./routes/cardSettlements'));
+app.use('/api/sales-reports', require('./routes/salesReports'));
+app.use('/api/cash-closings', require('./routes/cashClosings'));
 app.use('/api/audit-logs', require('./routes/auditLogs'));
 
 // Ruta de salud

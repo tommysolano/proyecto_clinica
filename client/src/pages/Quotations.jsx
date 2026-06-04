@@ -13,6 +13,7 @@ import {
   HiOutlineMagnifyingGlass,
   HiOutlinePhoto,
   HiOutlineTrash,
+  HiOutlineEye,
 } from 'react-icons/hi2';
 
 const EMPTY_ITEM = { product: '', productName: '', quantity: 1, unitPrice: 0, discount: 0 };
@@ -47,6 +48,7 @@ export default function Quotations() {
   const [products, setProducts] = useState([]);
   const [patients, setPatients] = useState([]);
   const [search, setSearch] = useState('');
+  const [viewItem, setViewItem] = useState(null);
 
   const load = async () => {
     setLoading(true);
@@ -121,6 +123,12 @@ export default function Quotations() {
     } catch (err) {
       toast.error(err.message || 'No se pudo generar PDF');
     }
+  };
+
+  const openView = async (q) => {
+    setViewItem(q); // muestra de inmediato lo que ya tenemos
+    try { const r = await api.get(`/quotations/${q._id}`); setViewItem(r.data); }
+    catch { /* se queda con los datos de la fila */ }
   };
 
   const sendWhatsapp = async (q) => {
@@ -249,6 +257,9 @@ export default function Quotations() {
                 <td className="px-4 py-3 text-slate-500 text-xs">{new Date(q.createdAt).toLocaleDateString('es-EC')}</td>
                 <td className="px-4 py-3">
                   <div className="flex items-center justify-end gap-1">
+                    <button onClick={() => openView(q)} className="px-2.5 py-1.5 text-xs bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 border-none cursor-pointer flex items-center gap-1">
+                      <HiOutlineEye className="w-3.5 h-3.5" /> Ver
+                    </button>
                     <button onClick={() => downloadPdf(q)} className="px-2.5 py-1.5 text-xs bg-sky-50 text-sky-700 rounded-lg hover:bg-sky-100 border-none cursor-pointer flex items-center gap-1">
                       <HiOutlineArrowDownTray className="w-3.5 h-3.5" /> PDF
                     </button>
@@ -265,6 +276,41 @@ export default function Quotations() {
           </tbody>
         </table>
       </div>
+
+      {/* Modal ver cotización */}
+      <Modal isOpen={!!viewItem} onClose={() => setViewItem(null)} title={`Cotización ${viewItem?.quotationNumber || ''}`} size="lg">
+        {viewItem && (
+          <div className="space-y-3 text-sm">
+            <div className="grid grid-cols-2 gap-2">
+              <div><span className="text-slate-500">Cliente:</span> {viewItem.clientName || `${viewItem.patient?.firstName || ''} ${viewItem.patient?.lastName || ''}`.trim() || '—'}</div>
+              <div><span className="text-slate-500">Cédula/RUC:</span> {viewItem.clientCedula || '—'}</div>
+              <div><span className="text-slate-500">Teléfono:</span> {viewItem.clientPhone || viewItem.patient?.phone || '—'}</div>
+              <div><span className="text-slate-500">Estado:</span> <span className={`px-2 py-0.5 rounded-full text-xs capitalize ${STATUS_STYLES[viewItem.status] || STATUS_STYLES.borrador}`}>{viewItem.status}</span></div>
+              <div><span className="text-slate-500">Creado:</span> {new Date(viewItem.createdAt).toLocaleDateString('es-EC')}</div>
+              {viewItem.validUntil && <div><span className="text-slate-500">Válida hasta:</span> {new Date(viewItem.validUntil).toLocaleDateString('es-EC')}</div>}
+            </div>
+            <table className="w-full text-xs border-t">
+              <thead className="bg-slate-50"><tr><th className="px-2 py-1 text-left">Descripción</th><th className="px-2 py-1 text-right">Cant.</th><th className="px-2 py-1 text-right">P. Unit.</th><th className="px-2 py-1 text-right">Desc.</th><th className="px-2 py-1 text-right">Subtotal</th></tr></thead>
+              <tbody>
+                {(viewItem.items || []).map((it, i) => (
+                  <tr key={i} className="border-t">
+                    <td className="px-2 py-1">{it.productName || it.product?.name || '—'}</td>
+                    <td className="px-2 py-1 text-right">{it.quantity}</td>
+                    <td className="px-2 py-1 text-right font-mono">${Number(it.unitPrice || 0).toFixed(2)}</td>
+                    <td className="px-2 py-1 text-right font-mono">${Number(it.discount || 0).toFixed(2)}</td>
+                    <td className="px-2 py-1 text-right font-mono">${Number((it.subtotal != null ? it.subtotal : (it.quantity * it.unitPrice - (it.discount || 0)))).toFixed(2)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            {viewItem.notes && <p className="text-slate-600 bg-slate-50 rounded-lg p-2">{viewItem.notes}</p>}
+            <div className="flex justify-between items-center border-t pt-2">
+              <button onClick={() => downloadPdf(viewItem)} className="px-3 py-1.5 text-xs bg-sky-50 text-sky-700 rounded-lg flex items-center gap-1"><HiOutlineArrowDownTray className="w-3.5 h-3.5" /> Descargar PDF</button>
+              <div className="text-right"><span className="text-slate-500 text-xs">Total</span><p className="text-xl font-bold text-emerald-700">${Number(viewItem.total || 0).toFixed(2)}</p></div>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       {/* Modal nueva cotización */}
       <Modal isOpen={showModal} onClose={() => setShowModal(false)} title="Nueva cotización" size="xl">

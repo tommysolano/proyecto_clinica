@@ -70,7 +70,7 @@ const ALL_ITEMS = [
   { path: '/rooms', label: 'Consultorios', icon: HiOutlineBuildingStorefront, roles: ['admin'] },
   { path: '/blocks', label: 'Bloqueos', icon: HiOutlineNoSymbol, roles: ['admin'] },
   { path: '/users', label: 'Usuarios', icon: HiOutlineUserGroup, roles: ['admin'] },
-  { path: '/invoicing-config', label: 'Config. SRI', icon: HiOutlineCog6Tooth, roles: ['admin'] },
+  { path: '/invoicing-config', label: 'Config. SRI', icon: HiOutlineCog6Tooth, roles: ['admin', 'contabilidad'] },
   { path: '/clinics', label: 'Sucursales', icon: HiOutlineBuildingOffice2, roles: [], superOnly: true },
   { path: '/settings', label: 'Configuración', icon: HiOutlineCog6Tooth, roles: ['admin', 'cajero', 'contabilidad', 'doctor', 'optica', 'call_center', 'marketing', 'enfermero'] },
 ];
@@ -100,11 +100,17 @@ const ACCT_GROUPS = [
     key: 'bancos', label: 'Bancos', icon: HiOutlineBanknotes, items: [
       { path: '/accounting/banks', label: 'Cuentas Bancarias' },
       { path: '/accounting/cash', label: 'Caja' },
+      { path: '/accounting/cash-closing', label: 'Cierre de Caja' },
       { path: '/accounting/reconciliations', label: 'Conciliaciones' },
-      { path: '/accounting/cards', label: 'Tarjetas / POS' },
       { path: '/accounting/checks', label: 'Cheques' },
-      { path: '/accounting/credit-card-batches', label: 'Lotes Tarjetas' },
       { path: '/accounting/payments', label: 'Pagos / Cobros' },
+    ],
+  },
+  {
+    key: 'tarjetas', label: 'Tarjetas de Crédito', icon: HiOutlineCreditCard, items: [
+      { path: '/accounting/cards', label: 'Tarjetas / POS' },
+      { path: '/accounting/credit-card-batches', label: 'Lotes' },
+      { path: '/accounting/card-settlements', label: 'Liquidaciones' },
     ],
   },
   {
@@ -132,6 +138,7 @@ const ACCT_GROUPS = [
   },
   {
     key: 'reporteria', label: 'Reportería', icon: HiOutlineDocumentChartBar, items: [
+      { path: '/accounting/sales-reports', label: 'Rep. Ventas' },
       { path: '/accounting/financial-reports', label: 'Rep. Financieros' },
       { path: '/accounting/management-reports', label: 'Rep. Gerenciales' },
       { path: '/accounting/cash-flow', label: 'Flujo de Caja' },

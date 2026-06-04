@@ -65,6 +65,9 @@ import PayrollConfig from './pages/accounting/PayrollConfig';
 import Decimos from './pages/accounting/Decimos';
 import Checks from './pages/accounting/Checks';
 import CreditCards from './pages/accounting/CreditCards';
+import CardSettlements from './pages/accounting/CardSettlements';
+import SalesReports from './pages/accounting/SalesReports';
+import CashClosing from './pages/accounting/CashClosing';
 
 function SuperAdminRoute({ children }) {
   const { user, loading } = useAuth();
@@ -150,7 +153,7 @@ function AppRoutes() {
                 <Route
                   path="/invoicing-config"
                   element={
-                    <RoleRoute roles={['admin']}>
+                    <RoleRoute roles={['admin', 'contabilidad']}>
                       <InvoicingConfig />
                     </RoleRoute>
                   }
@@ -306,6 +309,7 @@ function AppRoutes() {
                   ['trial-balance', TrialBalance],
                   ['banks', BankAccounts],
                   ['cash', CashBox],
+                  ['cash-closing', CashClosing],
                   ['reconciliations', Reconciliations],
                   ['suppliers', Suppliers],
                   ['payments', Payments],
@@ -323,6 +327,8 @@ function AppRoutes() {
                   ['loans', EmployeeLoans],
                   ['payroll', Payroll],
                   ['credit-card-batches', CreditCardBatches],
+                  ['card-settlements', CardSettlements],
+                  ['sales-reports', SalesReports],
                   ['audit-logs', AuditLogs],
                 ].map(([path, Comp]) => (
                   <Route

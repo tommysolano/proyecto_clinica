@@ -132,7 +132,7 @@ export default function Payments() {
                     else setForm({ ...form, applications: form.applications.filter((a) => a.docRef !== docId) });
                   }} />
                   <span className="flex-1">{d.serie || `${d.estab}-${d.ptoEmi}-${d.secuencial}`} - {fmtDate(d.fechaEmision || d.createdAt)} - Total ${fmt(d.total || d.importeTotal)}</span>
-                  {app && <input type="number" step="0.01" value={app.amount} onChange={(e) => setForm({ ...form, applications: form.applications.map((a) => a.docRef === docId ? { ...a, amount: +e.target.value } : a) })} className="w-28 border border-slate-200 rounded px-2 py-1 text-right" />}
+                  {app && <input type="number" step="0.01" placeholder="Monto a aplicar" title="Monto a aplicar a este documento" value={app.amount} onChange={(e) => setForm({ ...form, applications: form.applications.map((a) => a.docRef === docId ? { ...a, amount: +e.target.value } : a) })} className="w-28 border border-slate-200 rounded px-2 py-1 text-right" />}
                 </div>
               );
             })}

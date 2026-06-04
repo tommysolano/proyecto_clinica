@@ -1,5 +1,15 @@
 const mongoose = require('mongoose');
 
+// Distribución de un ítem de compra en varias cuentas contables.
+const accountSplitSchema = new mongoose.Schema(
+  {
+    account: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', required: true },
+    amount: { type: Number, default: 0 },
+    description: { type: String, default: '' },
+  },
+  { _id: false }
+);
+
 const purchaseItemSchema = new mongoose.Schema(
   {
     description: { type: String, required: true },
@@ -10,6 +20,9 @@ const purchaseItemSchema = new mongoose.Schema(
     ivaRate: { type: Number, default: 15 },
     ivaAmount: { type: Number, default: 0 },
     account: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount' },
+    // Permite distribuir el ítem en varias cuentas contables. Si tiene elementos,
+    // se usa en lugar de `account` y la suma de los montos debe igualar el subtotal.
+    accountSplits: { type: [accountSplitSchema], default: [] },
     product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null },
     warehouse: { type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse', default: null },
   },
@@ -62,13 +75,18 @@ const purchaseInvoiceSchema = new mongoose.Schema(
     retentionNumber: String, // nº comprobante retención emitida
     balance: { type: Number, default: 0 }, // saldo por pagar
     paid: { type: Boolean, default: false },
-    status: { type: String, enum: ['REGISTRADA', 'PAGADA', 'ANULADA'], default: 'REGISTRADA' },
+    status: { type: String, enum: ['POR_AUTORIZAR', 'REGISTRADA', 'PAGADA', 'ANULADA'], default: 'REGISTRADA' },
     paymentMethodSri: { type: String, default: '' },
     notes: { type: String, default: '' },
     deductible: { type: Boolean, default: true },
     journalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
     retentionJournalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
     importedFromTxt: { type: Boolean, default: false },
+    importedFromXml: { type: Boolean, default: false },
+    // Datos crudos del XML del SRI para auditoría/verificación
+    xmlClaveAcceso: { type: String, default: '' },
+    authorizedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    authorizedAt: { type: Date, default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }

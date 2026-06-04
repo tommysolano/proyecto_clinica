@@ -2,7 +2,11 @@ import { useEffect, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
+import { useAuth } from '../context/AuthContext';
 import { HiOutlinePlus, HiOutlineTag, HiOutlineTrash, HiOutlinePencilSquare } from 'react-icons/hi2';
+
+const DAYS = [['Dom', 0], ['Lun', 1], ['Mar', 2], ['Mié', 3], ['Jue', 4], ['Vie', 5], ['Sáb', 6]];
+const AUDIENCES = [['todos', 'Todos'], ['nuevos', 'Pacientes nuevos'], ['recurrentes', 'Pacientes recurrentes'], ['cumpleanos', 'Cumpleañeros']];
 
 const EMPTY = {
   name: '',
@@ -12,16 +16,27 @@ const EMPTY = {
   products: [],
   startDate: '',
   endDate: '',
+  daysOfWeek: [],
+  startTime: '',
+  endTime: '',
+  clinics: [],
+  audience: 'todos',
+  minAmount: 0,
+  maxUses: 0,
   active: true,
 };
 
 export default function Discounts() {
+  const { clinics = [] } = useAuth();
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showModal, setShowModal] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY);
   const [products, setProducts] = useState([]);
+
+  const toggleDay = (d) => setForm((f) => ({ ...f, daysOfWeek: f.daysOfWeek.includes(d) ? f.daysOfWeek.filter((x) => x !== d) : [...f.daysOfWeek, d] }));
+  const toggleClinic = (id) => setForm((f) => ({ ...f, clinics: f.clinics.includes(id) ? f.clinics.filter((x) => x !== id) : [...f.clinics, id] }));
 
   const load = async () => {
     setLoading(true);
@@ -69,6 +84,13 @@ export default function Discounts() {
       products: (d.products || []).map((p) => p._id || p),
       startDate: (d.startDate || '').slice(0, 10),
       endDate: (d.endDate || '').slice(0, 10),
+      daysOfWeek: d.daysOfWeek || [],
+      startTime: d.startTime || '',
+      endTime: d.endTime || '',
+      clinics: (d.clinics || []).map((c) => c._id || c),
+      audience: d.audience || 'todos',
+      minAmount: d.minAmount || 0,
+      maxUses: d.maxUses || 0,
       active: d.active,
     });
     setShowModal(true);
@@ -184,6 +206,54 @@ export default function Discounts() {
               <input type="date" value={form.endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
             </label>
           </div>
+          {/* Parametrizaciones */}
+          <div className="border-t pt-3 space-y-3">
+            <p className="text-xs font-semibold text-slate-600 uppercase tracking-wide">Parametrizaciones</p>
+
+            <div>
+              <span className="text-xs font-medium text-slate-600">Días de la semana <span className="text-slate-400">(vacío = todos)</span></span>
+              <div className="flex flex-wrap gap-1.5 mt-1">
+                {DAYS.map(([label, n]) => (
+                  <button type="button" key={n} onClick={() => toggleDay(n)} className={`px-2.5 py-1 rounded-lg text-xs border ${form.daysOfWeek.includes(n) ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200'}`}>{label}</button>
+                ))}
+              </div>
+            </div>
+
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block"><span className="text-xs font-medium text-slate-600">Hora desde</span>
+                <input type="time" value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+              </label>
+              <label className="block"><span className="text-xs font-medium text-slate-600">Hora hasta</span>
+                <input type="time" value={form.endTime} onChange={(e) => setForm({ ...form, endTime: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+              </label>
+            </div>
+
+            {clinics.length > 1 && (
+              <div>
+                <span className="text-xs font-medium text-slate-600">Sucursales <span className="text-slate-400">(vacío = todas)</span></span>
+                <div className="flex flex-wrap gap-1.5 mt-1">
+                  {clinics.map((c) => (
+                    <button type="button" key={c._id} onClick={() => toggleClinic(c._id)} className={`px-2.5 py-1 rounded-lg text-xs border ${form.clinics.includes(c._id) ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200'}`}>{c.name}</button>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            <div className="grid grid-cols-3 gap-3">
+              <label className="block"><span className="text-xs font-medium text-slate-600">Público objetivo</span>
+                <select value={form.audience} onChange={(e) => setForm({ ...form, audience: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm">
+                  {AUDIENCES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                </select>
+              </label>
+              <label className="block"><span className="text-xs font-medium text-slate-600">Compra mínima ($)</span>
+                <input type="number" step="0.01" value={form.minAmount} onChange={(e) => setForm({ ...form, minAmount: Number(e.target.value) })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-right" />
+              </label>
+              <label className="block"><span className="text-xs font-medium text-slate-600">Límite de usos <span className="text-slate-400">(0=∞)</span></span>
+                <input type="number" value={form.maxUses} onChange={(e) => setForm({ ...form, maxUses: Number(e.target.value) })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-right" />
+              </label>
+            </div>
+          </div>
+
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} />
             Activo

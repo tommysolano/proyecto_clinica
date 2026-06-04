@@ -398,6 +398,95 @@ exports.inventoryReport = async (req, res) => {
   res.json({ rows, totals });
 };
 
+/**
+ * Reporte gerencial GENERAL: consolida los indicadores clave en una sola
+ * respuesta, respetando los mismos filtros de fecha de los demás reportes
+ * gerenciales (startDate/endDate).
+ */
+exports.generalReport = async (req, res) => {
+  try {
+    const mongoose = require('mongoose');
+    const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
+    const salesMatch = { clinic: clinicObjId, status: 'completada', ...dateMatch(req) };
+
+    // Ventas
+    const [salesAgg] = await Sale.aggregate([
+      { $match: salesMatch },
+      { $group: { _id: null, count: { $sum: 1 }, subtotal: { $sum: '$subtotal' }, tax: { $sum: '$taxAmount' }, discount: { $sum: '$discountTotal' }, total: { $sum: '$total' } } },
+    ]);
+    const sales = salesAgg || { count: 0, subtotal: 0, tax: 0, discount: 0, total: 0 };
+
+    // Ventas anuladas
+    const [voidedAgg] = await Sale.aggregate([
+      { $match: { clinic: clinicObjId, status: 'anulada', ...dateMatch(req) } },
+      { $group: { _id: null, count: { $sum: 1 }, total: { $sum: '$total' } } },
+    ]);
+
+    // Cobros por método
+    const collections = await Sale.aggregate([
+      { $match: salesMatch },
+      { $group: { _id: '$paymentMethod', count: { $sum: 1 }, total: { $sum: '$total' } } },
+      { $sort: { total: -1 } },
+    ]);
+
+    // Ventas por período (mensual)
+    const byPeriod = await Sale.aggregate([
+      { $match: salesMatch },
+      { $group: { _id: { $dateToString: { format: '%Y-%m', date: '$createdAt' } }, total: { $sum: '$total' }, count: { $sum: 1 } } },
+      { $sort: { _id: 1 } },
+    ]);
+
+    // Top productos
+    const topProducts = await Sale.aggregate([
+      { $match: salesMatch }, { $unwind: '$items' },
+      { $group: { _id: '$items.productName', qty: { $sum: '$items.quantity' }, total: { $sum: '$items.subtotal' } } },
+      { $sort: { total: -1 } }, { $limit: 8 },
+    ]);
+
+    // Costo de venta / utilidad bruta
+    const salesDocs = await Sale.find(salesMatch).populate('items.product', 'purchasePrice');
+    let cost = 0;
+    for (const s of salesDocs) for (const it of s.items) cost += (it.product?.purchasePrice || 0) * it.quantity;
+    const grossProfit = +(sales.total - cost).toFixed(2);
+
+    // Compras
+    const purchaseMatch = { clinic: clinicObjId, status: { $ne: 'ANULADA' }, ...dateMatch(req, 'fechaEmision') };
+    const [purchasesAgg] = await PurchaseInvoice.aggregate([
+      { $match: purchaseMatch },
+      { $group: { _id: null, count: { $sum: 1 }, subtotal: { $sum: '$subtotal' }, iva: { $sum: '$iva' }, total: { $sum: '$total' }, retentions: { $sum: '$retentionTotal' } } },
+    ]);
+    const purchases = purchasesAgg || { count: 0, subtotal: 0, iva: 0, total: 0, retentions: 0 };
+
+    // Cuentas por pagar (saldo pendiente de proveedores)
+    const [apAgg] = await PurchaseInvoice.aggregate([
+      { $match: { clinic: clinicObjId, status: 'REGISTRADA', balance: { $gt: 0 } } },
+      { $group: { _id: null, total: { $sum: '$balance' }, count: { $sum: 1 } } },
+    ]);
+
+    // Inventario valorizado
+    const products = await Product.find({ clinic: req.clinicId, active: true }).select('stock purchasePrice salePrice');
+    const inventory = products.reduce((acc, p) => ({
+      valueAtCost: acc.valueAtCost + (p.stock || 0) * (p.purchasePrice || 0),
+      valueAtSale: acc.valueAtSale + (p.stock || 0) * (p.salePrice || 0),
+      units: acc.units + (p.stock || 0),
+    }), { valueAtCost: 0, valueAtSale: 0, units: 0 });
+
+    res.json({
+      sales,
+      voided: voidedAgg || { count: 0, total: 0 },
+      collections,
+      byPeriod: byPeriod.map((p) => ({ period: p._id, total: p.total, count: p.count })),
+      topProducts: topProducts.map((p) => ({ name: p._id || '—', qty: p.qty, total: p.total })),
+      cost: +cost.toFixed(2),
+      grossProfit,
+      margin: sales.total > 0 ? +((grossProfit / sales.total) * 100).toFixed(2) : 0,
+      purchases,
+      accountsPayable: apAgg || { total: 0, count: 0 },
+      inventory,
+    });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
 // ---------- Exportaciones Excel de cartera ----------
 const AGING_COLS = [
   { header: 'Nombre', key: 'name', width: 32 },

@@ -24,6 +24,23 @@ const discountSchema = new mongoose.Schema(
     products: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
     startDate: { type: Date, default: null },
     endDate: { type: Date, default: null },
+
+    // --- Parametrizaciones adicionales ---
+    // Días de la semana en que aplica (0=Dom ... 6=Sáb). Vacío = todos los días.
+    daysOfWeek: { type: [Number], default: [] },
+    // Franja horaria en que aplica (formato 'HH:MM'). Vacío = todo el día.
+    startTime: { type: String, default: '' },
+    endTime: { type: String, default: '' },
+    // Sucursales donde aplica. Vacío = todas las sucursales.
+    clinics: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Clinic' }],
+    // Público objetivo
+    audience: { type: String, enum: ['todos', 'nuevos', 'recurrentes', 'cumpleanos'], default: 'todos' },
+    // Compra mínima para que aplique el descuento
+    minAmount: { type: Number, default: 0 },
+    // Límite de usos (0 = ilimitado) y contador
+    maxUses: { type: Number, default: 0 },
+    usedCount: { type: Number, default: 0 },
+
     active: { type: Boolean, default: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },

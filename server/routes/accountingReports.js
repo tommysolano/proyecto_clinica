@@ -5,6 +5,9 @@ const ex = require('../controllers/sriSuperciasReportsController');
 
 router.use(auth, requireClinic, requireRole('admin', 'contabilidad'));
 
+// General consolidado
+router.get('/general', c.generalReport);
+
 // Financieros
 router.get('/income-statement', c.incomeStatement);
 router.get('/balance-sheet', c.balanceSheet);

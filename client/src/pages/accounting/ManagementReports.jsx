@@ -2,9 +2,14 @@ import { useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlineChartBar, HiOutlineArrowDownTray } from 'react-icons/hi2';
+import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { fmt, fmtDate, startOfMonth, today } from './_utils';
 
+const CHART_COLORS = ['#10b981', '#0ea5e9', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
+const METHOD_LABELS = { efectivo: 'Efectivo', tarjeta: 'Tarjeta', transferencia: 'Transferencia' };
+
 const TABS = [
+  { key: 'GENERAL', label: 'General', url: '/accounting-reports/general' },
   { key: 'PERIODO', label: 'Ventas por período', url: '/accounting-reports/sales/by-period' },
   { key: 'PRODUCTO', label: 'Ventas por producto', url: '/accounting-reports/sales/by-product' },
   { key: 'VENDEDOR', label: 'Ventas por vendedor', url: '/accounting-reports/sales/by-seller' },
@@ -21,7 +26,7 @@ const TABS = [
 const AGING_LABELS = { POR_VENCER: 'Por vencer', VENCIDO_30: '1-30', VENCIDO_60: '31-60', VENCIDO_90: '61-90', VENCIDO_120: '91-120', VENCIDO_MAS_120: '> 120' };
 
 export default function ManagementReports() {
-  const [tab, setTab] = useState('PERIODO');
+  const [tab, setTab] = useState('GENERAL');
   const [granularity, setGranularity] = useState('month');
   const [startDate, setStart] = useState(startOfMonth());
   const [endDate, setEnd] = useState(today());
@@ -50,6 +55,49 @@ export default function ManagementReports() {
     const arr = Array.isArray(data) ? data : [];
     const rows = Array.isArray(data?.rows) ? data.rows : [];
     const totals = data?.totals || {};
+    if (tab === 'GENERAL') {
+      const collections = (data.collections || []).map((c) => ({ name: METHOD_LABELS[c._id] || c._id || 'Otro', value: c.total }));
+      const period = (data.byPeriod || []).map((p) => ({ period: p.period, total: p.total }));
+      const top = (data.topProducts || []).map((p) => ({ name: p.name, total: p.total }));
+      return (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+            <Stat title="Ventas" value={`$${fmt(data.sales?.total)}`} color="text-emerald-700" />
+            <Stat title="Costo de venta" value={`$${fmt(data.cost)}`} color="text-rose-600" />
+            <Stat title="Utilidad bruta" value={`$${fmt(data.grossProfit)}`} color="text-emerald-700" />
+            <Stat title="Margen" value={`${fmt(data.margin)}%`} />
+            <Stat title="N° ventas" value={data.sales?.count || 0} />
+            <Stat title="Ventas anuladas" value={data.voided?.count || 0} color="text-rose-600" />
+            <Stat title="Compras" value={`$${fmt(data.purchases?.total)}`} />
+            <Stat title="IVA compras" value={`$${fmt(data.purchases?.iva)}`} />
+            <Stat title="Cuentas por pagar" value={`$${fmt(data.accountsPayable?.total)}`} color="text-amber-600" />
+            <Stat title="Inventario (costo)" value={`$${fmt(data.inventory?.valueAtCost)}`} />
+            <Stat title="Inventario (venta)" value={`$${fmt(data.inventory?.valueAtSale)}`} />
+            <Stat title="Descuentos" value={`$${fmt(data.sales?.discount)}`} color="text-amber-600" />
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div className="bg-slate-50 rounded-lg p-3">
+              <h3 className="text-sm font-semibold text-slate-700 mb-2">Ventas por mes</h3>
+              <ResponsiveContainer width="100%" height={240}>
+                <LineChart data={period}><CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" /><XAxis dataKey="period" tick={{ fontSize: 11 }} /><YAxis tick={{ fontSize: 11 }} /><Tooltip formatter={(v) => `$${fmt(v)}`} /><Line type="monotone" dataKey="total" stroke="#10b981" strokeWidth={2} /></LineChart>
+              </ResponsiveContainer>
+            </div>
+            <div className="bg-slate-50 rounded-lg p-3">
+              <h3 className="text-sm font-semibold text-slate-700 mb-2">Cobros por método</h3>
+              <ResponsiveContainer width="100%" height={240}>
+                <PieChart><Pie data={collections} dataKey="value" nameKey="name" cx="50%" cy="50%" outerRadius={80} label={(e) => `${e.name}: $${fmt(e.value)}`}>{collections.map((_, i) => <Cell key={i} fill={CHART_COLORS[i % CHART_COLORS.length]} />)}</Pie><Tooltip formatter={(v) => `$${fmt(v)}`} /><Legend /></PieChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+          <div className="bg-slate-50 rounded-lg p-3">
+            <h3 className="text-sm font-semibold text-slate-700 mb-2">Top productos</h3>
+            <ResponsiveContainer width="100%" height={280}>
+              <BarChart data={top} layout="vertical" margin={{ left: 30 }}><CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" /><XAxis type="number" tick={{ fontSize: 11 }} /><YAxis type="category" dataKey="name" width={140} tick={{ fontSize: 10 }} /><Tooltip formatter={(v) => `$${fmt(v)}`} /><Bar dataKey="total" fill="#10b981" radius={[0, 4, 4, 0]} /></BarChart>
+            </ResponsiveContainer>
+          </div>
+        </div>
+      );
+    }
     if (tab === 'PERIODO') return (
       <Table head={['Período', 'N° ventas', 'Subtotal', 'IVA', 'Total']} rows={arr.map((r) => [r._id, r.count, `$${fmt(r.subtotal)}`, `$${fmt(r.tax)}`, `$${fmt(r.total)}`])} />
     );
