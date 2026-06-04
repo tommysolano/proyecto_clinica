@@ -257,7 +257,7 @@ function AppRoutes() {
                 <Route
                   path="/commission-rules"
                   element={
-                    <RoleRoute roles={['admin']}>
+                    <RoleRoute roles={['admin', 'contabilidad']}>
                       <CommissionRules />
                     </RoleRoute>
                   }

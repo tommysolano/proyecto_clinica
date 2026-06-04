@@ -60,7 +60,7 @@ const ALL_ITEMS = [
   { path: '/call-center-config', label: 'Configuración Call Center', icon: HiOutlineCog6Tooth, roles: ['admin', 'marketing'] },
   { path: '/analytics', label: 'Analíticas', icon: HiOutlineChartBar, roles: ['admin', 'marketing'] },
   { path: '/commissions', label: 'Comisiones', icon: HiOutlineTrophy, roles: ['admin', 'call_center', 'marketing'] },
-  { path: '/commission-rules', label: 'Reglas de Comisión', icon: HiOutlineTrophy, roles: ['admin'] },
+  { path: '/commission-rules', label: 'Reglas de Comisión', icon: HiOutlineTrophy, roles: ['admin', 'contabilidad'] },
   { path: '/inventory', label: 'Inventario', icon: HiOutlineCube, roles: ['admin', 'contabilidad'] },
   { path: '/sales', label: 'Ventas', icon: HiOutlineShoppingCart, roles: ['admin', 'contabilidad', 'cajero'] },
   { path: '/cash-register', label: 'Caja (Apertura/Cierre)', icon: HiOutlineCalculator, roles: ['admin', 'cajero', 'contabilidad'] },

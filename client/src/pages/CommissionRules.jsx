@@ -102,15 +102,21 @@ export default function CommissionRules() {
       trigger: r.trigger || 'appointment_performed',
       service: r.service?._id || r.service || '', patientScope: r.patientScope,
       scheduleEnabled: r.scheduleEnabled, daysOfWeek: r.daysOfWeek || [],
-      startTime: r.startTime || '', endTime: r.endTime || '', amount: String(r.amount),
+      startTime: r.startTime || '', endTime: r.endTime || '', amount: r.amount ? String(r.amount) : '',
       account: r.account?._id || r.account || '',
     });
     setModal(true);
   };
 
+  // ¿La regla aplica al call center? (por rol o por el usuario elegido).
+  // Para el call center NO se filtra por producto/servicio.
+  const selectedUser = users.find((u) => u._id === form.user);
+  const userIsCallCenter = (selectedUser?.clinics || []).some((c) => c.role === 'call_center');
+  const isCallCenter = form.targetType === 'role' ? form.role === 'call_center' : userIsCallCenter;
+
   const submit = async (e) => {
     e.preventDefault();
-    if (!form.name || !form.amount) { toast.error('Nombre y monto son obligatorios'); return; }
+    if (!form.name) { toast.error('El nombre es obligatorio'); return; }
     setSaving(true);
     try {
       const body = {
@@ -118,7 +124,7 @@ export default function CommissionRules() {
         amount: parseFloat(form.amount) || 0,
         user: form.targetType === 'user' ? form.user : null,
         role: form.targetType === 'role' ? form.role : '',
-        service: form.service || null,
+        service: isCallCenter ? null : (form.service || null),
         account: form.account || null,
       };
       if (editing) await api.put(`/commissions/rules/${editing}`, body);
@@ -186,7 +192,7 @@ export default function CommissionRules() {
                   </td>
                   <td className="px-3 py-2">{r.service?.name || 'Cualquier servicio'}</td>
                   <td className="px-3 py-2">{r.patientScope === 'new' ? 'Solo nuevos' : 'Todos'}</td>
-                  <td className="px-3 py-2 text-right">${Number(r.amount).toFixed(2)}</td>
+                  <td className="px-3 py-2 text-right">{Number(r.amount) > 0 ? `$${Number(r.amount).toFixed(2)}` : <span className="text-slate-400">Por conteo</span>}</td>
                   <td className="px-3 py-2 text-center">{r.active ? '✓' : '—'}</td>
                   <td className="px-3 py-2 text-right whitespace-nowrap">
                     <button onClick={() => openEdit(r)} className="p-1 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer"><HiOutlinePencil className="w-4 h-4" /></button>
@@ -213,33 +219,47 @@ export default function CommissionRules() {
             <button onClick={loadReport} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm border-none cursor-pointer hover:bg-emerald-700">Calcular</button>
           </div>
 
-          {report && (
-            <>
-              <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
-                <p className="text-xs text-emerald-700 uppercase font-semibold">Total comisiones</p>
-                <p className="text-3xl font-bold text-emerald-800">${Number(report.total).toFixed(2)}</p>
-              </div>
-              <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-50 text-slate-600"><tr>
-                    <th className="text-left px-3 py-2">Usuario</th>
-                    <th className="text-right px-3 py-2">Servicios</th>
-                    <th className="text-right px-3 py-2">Comisión</th>
-                  </tr></thead>
-                  <tbody>
-                    {report.byUser.length === 0 && <tr><td colSpan={3} className="text-center py-6 text-slate-400">Sin comisiones en el período</td></tr>}
-                    {report.byUser.map((u) => (
-                      <tr key={u.userId} className="border-t border-slate-100">
-                        <td className="px-3 py-2">{u.userName}</td>
-                        <td className="px-3 py-2 text-right">{u.count}</td>
-                        <td className="px-3 py-2 text-right font-semibold text-emerald-700">${Number(u.total).toFixed(2)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </>
-          )}
+          {report && (() => {
+            // Si no hay montos asignados ($0 en total), mostramos solo el conteo
+            // de comisiones generadas; si hay valores, también mostramos los $.
+            const hasValues = Number(report.total) > 0;
+            const totalCount = (report.byUser || []).reduce((a, u) => a + (u.count || 0), 0);
+            return (
+              <>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                  <div className="bg-sky-50 border border-sky-200 rounded-xl p-4">
+                    <p className="text-xs text-sky-700 uppercase font-semibold">Comisiones generadas</p>
+                    <p className="text-3xl font-bold text-sky-800">{totalCount}</p>
+                  </div>
+                  {hasValues && (
+                    <div className="bg-emerald-50 border border-emerald-200 rounded-xl p-4">
+                      <p className="text-xs text-emerald-700 uppercase font-semibold">Total comisiones</p>
+                      <p className="text-3xl font-bold text-emerald-800">${Number(report.total).toFixed(2)}</p>
+                    </div>
+                  )}
+                </div>
+                <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-50 text-slate-600"><tr>
+                      <th className="text-left px-3 py-2">Usuario</th>
+                      <th className="text-right px-3 py-2">Comisiones</th>
+                      {hasValues && <th className="text-right px-3 py-2">Valor</th>}
+                    </tr></thead>
+                    <tbody>
+                      {report.byUser.length === 0 && <tr><td colSpan={hasValues ? 3 : 2} className="text-center py-6 text-slate-400">Sin comisiones en el período</td></tr>}
+                      {report.byUser.map((u) => (
+                        <tr key={u.userId} className="border-t border-slate-100">
+                          <td className="px-3 py-2">{u.userName}</td>
+                          <td className="px-3 py-2 text-right">{u.count}</td>
+                          {hasValues && <td className="px-3 py-2 text-right font-semibold text-emerald-700">${Number(u.total).toFixed(2)}</td>}
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </>
+            );
+          })()}
         </div>
       )}
 
@@ -301,16 +321,19 @@ export default function CommissionRules() {
             </span>
           </label>
           <div className="grid grid-cols-2 gap-3">
-            <label className="block text-sm">Producto / Servicio / Ítem
-              <select value={form.service} onChange={(e) => setForm({ ...form, service: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm">
-                <option value="">Cualquier producto/servicio</option>
-                {services.map((s) => (
-                  <option key={s._id} value={s._id}>
-                    {s.name} {s.category ? `(${s.category})` : ''}
-                  </option>
-                ))}
-              </select>
-            </label>
+            {/* El call center no se filtra por producto/servicio (comisiona por la cita agendada). */}
+            {!isCallCenter && (
+              <label className="block text-sm">Producto / Servicio / Ítem
+                <select value={form.service} onChange={(e) => setForm({ ...form, service: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm">
+                  <option value="">Cualquier producto/servicio</option>
+                  {services.map((s) => (
+                    <option key={s._id} value={s._id}>
+                      {s.name} {s.category ? `(${s.category})` : ''}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <label className="block text-sm">Pacientes
               <select value={form.patientScope} onChange={(e) => setForm({ ...form, patientScope: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm">
                 <option value="all">Todos los pacientes</option>
@@ -319,8 +342,8 @@ export default function CommissionRules() {
             </label>
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <label className="block text-sm">Monto de la comisión ($)
-              <input type="number" step="0.01" min="0" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" required />
+            <label className="block text-sm">Monto de la comisión ($) <span className="text-slate-400 font-normal">(opcional)</span>
+              <input type="number" step="0.01" min="0" placeholder="0.00 — déjalo vacío para contar sin valor" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
             </label>
             <label className="block text-sm">Cuenta contable (gasto comisión)
               <select value={form.account} onChange={(e) => setForm({ ...form, account: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm">
