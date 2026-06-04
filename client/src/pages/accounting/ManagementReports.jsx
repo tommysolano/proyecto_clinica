@@ -60,6 +60,19 @@ export default function ManagementReports() {
       const collections = (data.collections || []).map((c) => ({ name: METHOD_LABELS[c._id] || c._id || 'Otro', value: c.total }));
       const period = (data.byPeriod || []).map((p) => ({ period: p.period, total: p.total }));
       const top = (data.topProducts || []).map((p) => ({ name: p.name, total: p.total }));
+      const summaryRows = [
+        ['Ventas', data.sales?.count || 0, `$${fmt(data.sales?.total)}`, `Subtotal $${fmt(data.sales?.subtotal)} - IVA $${fmt(data.sales?.tax)}`],
+        ['Costo de venta', '', `$${fmt(data.cost)}`, 'Costo estimado de productos vendidos'],
+        ['Utilidad bruta', '', `$${fmt(data.grossProfit)}`, `Margen ${fmt(data.margin)}%`],
+        ['Compras', data.purchases?.count || 0, `$${fmt(data.purchases?.total)}`, `IVA $${fmt(data.purchases?.iva)} - Retenciones $${fmt(data.purchases?.retentions)}`],
+        ['Cuentas por pagar', data.accountsPayable?.count || 0, `$${fmt(data.accountsPayable?.total)}`, 'Saldo pendiente de proveedores'],
+        ['Inventario al costo', data.inventory?.units || 0, `$${fmt(data.inventory?.valueAtCost)}`, `Valor venta $${fmt(data.inventory?.valueAtSale)}`],
+        ['Descuentos', '', `$${fmt(data.sales?.discount)}`, 'Descuentos aplicados a ventas'],
+        ['Ventas anuladas', data.voided?.count || 0, `$${fmt(data.voided?.total)}`, 'Ventas anuladas en el periodo'],
+      ];
+      const collectionRows = (data.collections || []).map((c) => [METHOD_LABELS[c._id] || c._id || 'Otro', c.count || 0, `$${fmt(c.total)}`]);
+      const periodRows = (data.byPeriod || []).map((p) => [p.period, p.count || 0, `$${fmt(p.total)}`]);
+      const productRows = (data.topProducts || []).map((p) => [p.name || '-', p.qty || 0, `$${fmt(p.total)}`]);
       return (
         <div className="space-y-4">
           <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
@@ -95,6 +108,22 @@ export default function ManagementReports() {
             <ResponsiveContainer width="100%" height={280}>
               <BarChart data={top} layout="vertical" margin={{ left: 30 }}><CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" /><XAxis type="number" tick={{ fontSize: 11 }} /><YAxis type="category" dataKey="name" width={140} tick={{ fontSize: 10 }} /><Tooltip formatter={(v) => `$${fmt(v)}`} /><Bar dataKey="total" fill="#10b981" radius={[0, 4, 4, 0]} /></BarChart>
             </ResponsiveContainer>
+          </div>
+          <div className="space-y-4">
+            <ReportBlock title="Resumen general">
+              <Table head={['Indicador', 'Cantidad', 'Valor', 'Detalle']} rows={summaryRows} />
+            </ReportBlock>
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-4">
+              <ReportBlock title="Cobros por metodo">
+                <Table head={['Metodo', 'Cantidad', 'Total']} rows={collectionRows} />
+              </ReportBlock>
+              <ReportBlock title="Ventas por periodo">
+                <Table head={['Periodo', 'Ventas', 'Total']} rows={periodRows} />
+              </ReportBlock>
+            </div>
+            <ReportBlock title="Top productos">
+              <Table head={['Producto', 'Cantidad', 'Total']} rows={productRows} />
+            </ReportBlock>
           </div>
         </div>
       );
@@ -203,6 +232,15 @@ function Table({ head, rows }) {
         {rows.length === 0 && <tr><td colSpan={head.length} className="px-3 py-6 text-center text-slate-400">Sin datos</td></tr>}
       </tbody>
     </table>
+  );
+}
+
+function ReportBlock({ title, children }) {
+  return (
+    <div className="rounded-lg border border-slate-100 overflow-hidden">
+      <div className="px-3 py-2 bg-slate-50 text-sm font-semibold text-slate-700">{title}</div>
+      <div className="overflow-x-auto">{children}</div>
+    </div>
   );
 }
 
