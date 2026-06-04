@@ -10,6 +10,7 @@ const METHOD_LABELS = { efectivo: 'Efectivo', tarjeta: 'Tarjeta', transferencia:
 
 const TABS = [
   { key: 'GENERAL', label: 'General', url: '/accounting-reports/general' },
+  { key: 'INDICADORES', label: 'Indicadores / Punto equilibrio', url: '/accounting-reports/indicators' },
   { key: 'PERIODO', label: 'Ventas por período', url: '/accounting-reports/sales/by-period' },
   { key: 'PRODUCTO', label: 'Ventas por producto', url: '/accounting-reports/sales/by-product' },
   { key: 'VENDEDOR', label: 'Ventas por vendedor', url: '/accounting-reports/sales/by-seller' },
@@ -95,6 +96,42 @@ export default function ManagementReports() {
               <BarChart data={top} layout="vertical" margin={{ left: 30 }}><CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" /><XAxis type="number" tick={{ fontSize: 11 }} /><YAxis type="category" dataKey="name" width={140} tick={{ fontSize: 10 }} /><Tooltip formatter={(v) => `$${fmt(v)}`} /><Bar dataKey="total" fill="#10b981" radius={[0, 4, 4, 0]} /></BarChart>
             </ResponsiveContainer>
           </div>
+        </div>
+      );
+    }
+    if (tab === 'INDICADORES') {
+      const r = data.ratios || {}; const pe = data.puntoEquilibrio || {}; const bal = data.balance || {}; const rs = data.resultados || {};
+      const Ratio = ({ t, v, hint }) => <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-500">{t}</p><p className="text-xl font-bold text-slate-800">{v}</p>{hint && <p className="text-[11px] text-slate-400">{hint}</p>}</div>;
+      return (
+        <div className="space-y-4">
+          <div>
+            <h3 className="text-sm font-semibold text-slate-700 mb-2">Liquidez y endeudamiento</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <Ratio t="Razón corriente" v={r.razonCorriente} hint="AC / PC" />
+              <Ratio t="Prueba ácida" v={r.pruebaAcida} hint="(AC - Inv) / PC" />
+              <Ratio t="Capital de trabajo" v={`$${fmt(r.capitalTrabajo)}`} hint="AC - PC" />
+              <Ratio t="Endeudamiento" v={`${fmt((r.endeudamiento || 0) * 100)}%`} hint="Pasivo / Activo" />
+            </div>
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-slate-700 mb-2">Rentabilidad</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <Ratio t="Margen neto" v={`${fmt((r.margenNeto || 0) * 100)}%`} hint="Utilidad / Ventas" />
+              <Ratio t="ROA" v={`${fmt((r.roa || 0) * 100)}%`} hint="Utilidad / Activo" />
+              <Ratio t="ROE" v={`${fmt((r.roe || 0) * 100)}%`} hint="Utilidad / Patrimonio" />
+              <Ratio t="Utilidad del período" v={`$${fmt(rs.utilidad)}`} color="text-emerald-700" />
+            </div>
+          </div>
+          <div>
+            <h3 className="text-sm font-semibold text-slate-700 mb-2">Punto de equilibrio</h3>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+              <Ratio t="Ventas actuales" v={`$${fmt(pe.ventasActuales)}`} />
+              <Ratio t="Ventas en equilibrio" v={`$${fmt(pe.ventasEquilibrio)}`} hint="Gastos / margen contribución" />
+              <Ratio t="Margen contribución" v={`${fmt((pe.contributionRatio || 0) * 100)}%`} />
+              <Ratio t="Margen de seguridad" v={`${fmt(pe.margenSeguridad)}%`} />
+            </div>
+          </div>
+          <p className="text-xs text-slate-400">Balance: Activo ${fmt(bal.activoTotal)} · Pasivo ${fmt(bal.pasivoTotal)} · Patrimonio ${fmt(bal.patrimonio)} — Resultados del período: Ingresos ${fmt(rs.ingresos)}, Costos ${fmt(rs.costos)}, Gastos ${fmt(rs.gastos)}.</p>
         </div>
       );
     }

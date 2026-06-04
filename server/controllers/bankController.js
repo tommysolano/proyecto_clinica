@@ -347,6 +347,106 @@ exports.listReconciliations = async (req, res) => {
   res.json(items);
 };
 
+// ---------- Importación de estado de cuenta bancario + matching ----------
+/**
+ * Recibe líneas del estado de cuenta (parseadas del CSV en el cliente) y sugiere
+ * conciliación contra las transacciones del libro no conciliadas.
+ * Body: { bankAccount, lines: [{ date, description, reference, amount }] }
+ *   amount: positivo = crédito/depósito, negativo = débito/retiro.
+ */
+exports.statementMatch = async (req, res) => {
+  try {
+    const { bankAccount, lines = [] } = req.body;
+    const bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId });
+    if (!bank) return res.status(404).json({ message: 'Cuenta no encontrada' });
+
+    const book = await BankTransaction.find({ clinic: req.clinicId, bankAccount: bank._id, voided: false, reconciled: false }).sort({ date: 1 });
+    const used = new Set();
+    const result = lines.map((ln, idx) => {
+      const amt = Number(ln.amount) || 0;
+      const ref = String(ln.reference || '').trim().toLowerCase();
+      const lineDate = ln.date ? new Date(ln.date) : null;
+      let best = null, bestScore = -1;
+      for (const t of book) {
+        if (used.has(String(t._id))) continue;
+        const signed = t.amount * t.direction;
+        if (Math.abs(signed - amt) > 0.01) continue;
+        let score = 1;
+        if (ref && (String(t.reference || '').toLowerCase() === ref || String(t.voucherNumber || '').toLowerCase() === ref)) score += 3;
+        if (lineDate) { const days = Math.abs((t.date - lineDate) / 86400000); if (days <= 1) score += 2; else if (days <= 5) score += 1; else score -= Math.min(2, Math.floor(days / 5)); }
+        if (score > bestScore) { bestScore = score; best = t; }
+      }
+      if (best) used.add(String(best._id));
+      return {
+        index: idx, line: { date: ln.date, description: ln.description, reference: ln.reference, amount: amt },
+        match: best ? { _id: best._id, date: best.date, description: best.description, amount: best.amount, direction: best.direction, reference: best.reference } : null,
+      };
+    });
+    const matched = result.filter((r) => r.match).length;
+    res.json({ rows: result, matched, unmatched: result.length - matched });
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
+
+/**
+ * Aplica la conciliación: marca como conciliadas las transacciones emparejadas y
+ * crea transacciones nuevas (con asiento) para las líneas sin match (comisiones,
+ * intereses, notas de débito del banco, etc.).
+ * Body: { bankAccount, matchTransactionIds: [], creates: [{ date, amount, type, description, counterAccountCode }] }
+ */
+exports.statementApply = async (req, res) => {
+  try {
+    const { bankAccount, matchTransactionIds = [], creates = [] } = req.body;
+    const bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId });
+    if (!bank) return res.status(404).json({ message: 'Cuenta no encontrada' });
+
+    if (matchTransactionIds.length) {
+      await BankTransaction.updateMany(
+        { _id: { $in: matchTransactionIds }, clinic: req.clinicId, bankAccount: bank._id },
+        { reconciled: true }
+      );
+    }
+
+    const created = [];
+    for (const c of creates) {
+      const amount = Math.abs(Number(c.amount) || 0);
+      if (!amount) continue;
+      const direction = (Number(c.amount) || 0) >= 0 ? 1 : -1;
+      // Cuenta de contrapartida: comisión bancaria, interés ganado, etc.
+      const counterCode = c.counterAccountCode || (direction > 0 ? '4.2.01' : '6.1.16');
+      const entry = await postBankJournal({
+        clinicId: req.clinicId, userId: req.user._id,
+        date: c.date ? new Date(c.date) : new Date(),
+        description: c.description || 'Movimiento de estado de cuenta',
+        bank, counterAccountCode: counterCode, amount, direction,
+      });
+      const tx = await BankTransaction.create({
+        clinic: req.clinicId, bankAccount: bank._id, date: c.date ? new Date(c.date) : new Date(),
+        type: c.type || (direction > 0 ? 'DEPOSITO' : 'COMISION'), amount, direction,
+        description: c.description || 'Movimiento de estado de cuenta', reference: c.reference || '',
+        reconciled: true, journalEntry: entry._id, createdBy: req.user._id,
+      });
+      created.push(tx);
+    }
+    res.json({ ok: true, matched: matchTransactionIds.length, created: created.length });
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+};
+
+/** Recalcula el bookBalance almacenado de una cuenta (o todas) desde sus transacciones. */
+exports.recomputeBankBalances = async (req, res) => {
+  try {
+    const accounts = await BankAccount.find({ clinic: req.clinicId });
+    for (const a of accounts) {
+      const agg = await BankTransaction.aggregate([
+        { $match: { clinic: a.clinic, bankAccount: a._id, voided: false } },
+        { $group: { _id: null, total: { $sum: { $multiply: ['$amount', '$direction'] } } } },
+      ]);
+      a.bookBalance = +((a.initialBalance || 0) + (agg[0]?.total || 0)).toFixed(2);
+      await a.save();
+    }
+    res.json({ ok: true, cuentas: accounts.length });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
 // ---------- Chequera / secuencias de cheques ----------
 exports.listChecks = async (req, res) => {
   const filter = { clinic: req.clinicId };

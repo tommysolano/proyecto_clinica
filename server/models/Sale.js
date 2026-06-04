@@ -47,9 +47,13 @@ const saleSchema = new mongoose.Schema(
     total: { type: Number, required: true },
     paymentMethod: {
       type: String,
-      enum: ['efectivo', 'tarjeta', 'transferencia'],
+      enum: ['efectivo', 'tarjeta', 'transferencia', 'credito'],
       default: 'efectivo',
     },
+    // Ventas a crédito (CxC): vencimiento y saldo pendiente de cobro.
+    dueDate: { type: Date, default: null },
+    balance: { type: Number, default: 0 },
+    paid: { type: Boolean, default: true },
     status: {
       type: String,
       enum: ['completada', 'anulada'],

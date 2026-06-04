@@ -43,4 +43,22 @@ const bankTransactionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Mantener el bookBalance de la cuenta al crear una transacción nueva (no anulada).
+bankTransactionSchema.pre('save', function (next) {
+  this.$locals.wasNew = this.isNew;
+  next();
+});
+
+bankTransactionSchema.post('save', async function (doc) {
+  try {
+    if (doc.$locals.wasNew && !doc.voided) {
+      const BankAccount = mongoose.model('BankAccount');
+      await BankAccount.updateOne(
+        { _id: doc.bankAccount },
+        { $inc: { bookBalance: doc.amount * doc.direction } }
+      );
+    }
+  } catch (e) { /* el saldo agregado (endpoint balances) sigue siendo la fuente de verdad */ }
+});
+
 module.exports = mongoose.model('BankTransaction', bankTransactionSchema);

@@ -6,6 +6,8 @@ const Invoice = require('../models/Invoice');
 const Payment = require('../models/Payment');
 const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
+const AccountBalance = require('../models/AccountBalance');
+const { recomputeBalances } = require('../utils/accounting');
 const ExcelJS = require('exceljs');
 
 const sendWorkbook = async (res, wb, filename) => {
@@ -327,6 +329,20 @@ exports.accountsReceivableAging = async (req, res) => {
         bucket: bucket(days),
       });
     }
+    // Ventas a crédito con saldo pendiente (CxC directa, sin factura electrónica)
+    const creditSales = await Sale.find({ clinic: req.clinicId, status: 'completada', paymentMethod: 'credito', balance: { $gt: 0.01 } });
+    for (const s of creditSales) {
+      const emitido = new Date(s.createdAt);
+      const dueDate = s.dueDate ? new Date(s.dueDate) : new Date(emitido.getTime() + 30 * 86400000);
+      const days = Math.floor((today - dueDate) / 86400000);
+      rows.push({
+        docId: s._id, type: 'Venta crédito', number: s.saleNumber,
+        client: s.clientName, date: emitido.toLocaleDateString('es-EC'), dueDate,
+        description: s.notes || '', retentions: 0,
+        total: s.total, paid: +(s.total - s.balance).toFixed(2), balance: s.balance, days,
+        bucket: bucket(days),
+      });
+    }
     const totals = rows.reduce((acc, r) => { acc[r.bucket] = (acc[r.bucket] || 0) + r.balance; acc.total += r.balance; return acc; }, { total: 0 });
     res.json({ rows, totals });
   } catch (e) { res.status(500).json({ message: e.message }); }
@@ -484,6 +500,103 @@ exports.generalReport = async (req, res) => {
       accountsPayable: apAgg || { total: 0, count: 0 },
       inventory,
     });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+/**
+ * Saldos por período (mes/año) usando los saldos materializados (AccountBalance):
+ * saldo de apertura (acumulado de períodos previos), débito/crédito del período y
+ * saldo de cierre, respetando la naturaleza de cada cuenta.
+ */
+exports.periodBalances = async (req, res) => {
+  try {
+    const year = parseInt(req.query.year) || new Date().getFullYear();
+    const month = parseInt(req.query.month) || (new Date().getMonth() + 1);
+    const accounts = await ChartOfAccount.find({ clinic: req.clinicId });
+    const accMap = new Map(accounts.map((a) => [String(a._id), a]));
+
+    const rows = await AccountBalance.find({ clinic: req.clinicId });
+    const data = new Map(); // accId -> { opening, debit, credit }
+    for (const b of rows) {
+      const before = (b.year < year) || (b.year === year && b.month < month);
+      const inPeriod = (b.year === year && b.month === month);
+      if (!before && !inPeriod) continue;
+      const key = String(b.account);
+      if (!data.has(key)) data.set(key, { openingDebit: 0, openingCredit: 0, debit: 0, credit: 0 });
+      const d = data.get(key);
+      if (before) { d.openingDebit += b.debit; d.openingCredit += b.credit; }
+      if (inPeriod) { d.debit += b.debit; d.credit += b.credit; }
+    }
+
+    const out = [];
+    for (const [key, d] of data.entries()) {
+      const acc = accMap.get(key);
+      if (!acc) continue;
+      const isDebit = acc.nature === 'DEBITO';
+      const opening = +(isDebit ? d.openingDebit - d.openingCredit : d.openingCredit - d.openingDebit).toFixed(2);
+      const movement = +(isDebit ? d.debit - d.credit : d.credit - d.debit).toFixed(2);
+      const closing = +(opening + movement).toFixed(2);
+      if (Math.abs(opening) < 0.005 && Math.abs(d.debit) < 0.005 && Math.abs(d.credit) < 0.005) continue;
+      out.push({ account: { _id: acc._id, code: acc.code, name: acc.name, type: acc.type, nature: acc.nature },
+        opening, debit: +d.debit.toFixed(2), credit: +d.credit.toFixed(2), closing });
+    }
+    out.sort((a, b) => a.account.code.localeCompare(b.account.code));
+    res.json({ year, month, rows: out });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+/**
+ * Indicadores financieros NIIF: razones de liquidez, endeudamiento, rentabilidad
+ * y punto de equilibrio, para el rango de fechas indicado.
+ */
+exports.financialIndicators = async (req, res) => {
+  try {
+    const { startDate, endDate } = req.query;
+    // Balance (acumulado a la fecha de corte = endDate o ahora)
+    const cutoff = endDate ? new Date(endDate + 'T23:59:59.999') : new Date();
+    const balAccounts = await getAccountBalances(req.clinicId, { endDate: cutoff });
+    const sumBy = (pred) => balAccounts.filter(pred).reduce((s, a) => s + (a.balance || 0), 0);
+    const activoTotal = sumBy((a) => a.type === 'ACTIVO');
+    const activoCorriente = sumBy((a) => a.code?.startsWith('1.1'));
+    const inventarios = sumBy((a) => a.code?.startsWith('1.1.04'));
+    const pasivoTotal = sumBy((a) => a.type === 'PASIVO');
+    const pasivoCorriente = sumBy((a) => a.code?.startsWith('2.1'));
+    const patrimonio = sumBy((a) => a.type === 'PATRIMONIO');
+
+    // Estado de resultados (en el período)
+    const periodAccounts = await getAccountBalances(req.clinicId, { startDate: startDate ? new Date(startDate) : undefined, endDate: cutoff });
+    const ingresos = periodAccounts.filter((a) => a.type === 'INGRESO').reduce((s, a) => s + (a.balance || 0), 0);
+    const costos = periodAccounts.filter((a) => a.type === 'COSTO').reduce((s, a) => s + (a.balance || 0), 0);
+    const gastos = periodAccounts.filter((a) => a.type === 'GASTO').reduce((s, a) => s + (a.balance || 0), 0);
+    const utilidad = +(ingresos - costos - gastos).toFixed(2);
+
+    const safe = (n, d) => (d && Math.abs(d) > 0.001 ? +(n / d).toFixed(4) : 0);
+    const contributionRatio = ingresos > 0 ? safe(ingresos - costos, ingresos) : 0;
+    const breakEven = contributionRatio > 0 ? +(gastos / contributionRatio).toFixed(2) : 0;
+
+    res.json({
+      balance: { activoTotal, activoCorriente, inventarios, pasivoTotal, pasivoCorriente, patrimonio },
+      resultados: { ingresos: +ingresos.toFixed(2), costos: +costos.toFixed(2), gastos: +gastos.toFixed(2), utilidad },
+      ratios: {
+        razonCorriente: safe(activoCorriente, pasivoCorriente),
+        pruebaAcida: safe(activoCorriente - inventarios, pasivoCorriente),
+        capitalTrabajo: +(activoCorriente - pasivoCorriente).toFixed(2),
+        endeudamiento: safe(pasivoTotal, activoTotal),
+        apalancamiento: safe(pasivoTotal, patrimonio),
+        margenNeto: safe(utilidad, ingresos),
+        roa: safe(utilidad, activoTotal),
+        roe: safe(utilidad, patrimonio),
+      },
+      puntoEquilibrio: { contributionRatio, ventasEquilibrio: breakEven, ventasActuales: +ingresos.toFixed(2), margenSeguridad: breakEven > 0 ? +(((ingresos - breakEven) / ingresos) * 100).toFixed(2) : 0 },
+    });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+/** Reconstruye los saldos materializados desde los asientos. */
+exports.recomputeBalances = async (req, res) => {
+  try {
+    const n = await recomputeBalances(req.clinicId);
+    res.json({ ok: true, periodos: n });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
@@ -704,6 +817,87 @@ exports.form103 = async (req, res) => {
 };
 
 /**
+ * RDEP - Anexo de Retenciones en Relación de Dependencia (anual).
+ * Agrega los roles de pago del año por empleado: ingreso gravado, aporte IESS
+ * personal e impuesto a la renta retenido.
+ */
+exports.rdep = async (req, res) => {
+  try {
+    const Payroll = require('../models/Payroll');
+    const Clinic = require('../models/Clinic');
+    const year = parseInt(req.query.year) || new Date().getFullYear();
+    const clinic = await Clinic.findById(req.clinicId);
+    const rolls = await Payroll.find({ clinic: req.clinicId, year, status: { $in: ['CERRADO', 'PAGADO'] } });
+
+    const byEmp = new Map();
+    for (const p of rolls) {
+      for (const it of p.items || []) {
+        const key = it.identificacion || String(it.employee);
+        if (!byEmp.has(key)) byEmp.set(key, { identificacion: it.identificacion || '', nombre: it.employeeName || '', sueldo: 0, iess: 0, impuestoRenta: 0, exento: 0 });
+        const e = byEmp.get(key);
+        const exento = (it.decimoTercero || 0) + (it.decimoCuarto || 0) + (it.fondosReserva || 0);
+        e.sueldo += (it.totalIngresos || 0) - exento;
+        e.exento += exento;
+        e.iess += it.iessPersonal || 0;
+        e.impuestoRenta += it.impuestoRenta || 0;
+      }
+    }
+    const empleados = [...byEmp.values()].map((e) => ({
+      identificacion: e.identificacion, nombre: e.nombre,
+      sueldo: +e.sueldo.toFixed(2), ingresoExento: +e.exento.toFixed(2),
+      aporteIess: +e.iess.toFixed(2), impuestoRenta: +e.impuestoRenta.toFixed(2),
+    }));
+
+    if (req.query.format === 'xml') {
+      const esc = (s) => String(s || '').replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
+      let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<rdep>\n';
+      xml += `  <Anio>${year}</Anio>\n  <IdInformante>${esc(clinic?.ruc)}</IdInformante>\n  <razonSocial>${esc(clinic?.razonSocial || clinic?.name)}</razonSocial>\n`;
+      xml += '  <empleados>\n';
+      for (const e of empleados) {
+        xml += '    <empleado>\n';
+        xml += `      <tipoIdentificacion>C</tipoIdentificacion>\n      <identificacion>${esc(e.identificacion)}</identificacion>\n      <nombre>${esc(e.nombre)}</nombre>\n`;
+        xml += `      <sueldos>${e.sueldo.toFixed(2)}</sueldos>\n      <ingresoExento>${e.ingresoExento.toFixed(2)}</ingresoExento>\n`;
+        xml += `      <aporteIess>${e.aporteIess.toFixed(2)}</aporteIess>\n      <impuestoRentaRetenido>${e.impuestoRenta.toFixed(2)}</impuestoRentaRetenido>\n`;
+        xml += '    </empleado>\n';
+      }
+      xml += '  </empleados>\n</rdep>\n';
+      res.setHeader('Content-Type', 'application/xml');
+      res.setHeader('Content-Disposition', `attachment; filename="RDEP-${year}.xml"`);
+      return res.send(xml);
+    }
+    res.json({ year, empleados, total: empleados.reduce((s, e) => s + e.impuestoRenta, 0) });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+/**
+ * Retenciones que nos efectúan terceros (recibidas): consolida las retenciones
+ * de las liquidaciones de tarjeta de crédito por tipo y código SRI.
+ */
+exports.retentionsReceived = async (req, res) => {
+  try {
+    const CardSettlement = require('../models/CardSettlement');
+    const { year, month } = req.query;
+    const y = parseInt(year) || new Date().getFullYear();
+    const start = month ? new Date(y, parseInt(month) - 1, 1) : new Date(y, 0, 1);
+    const end = month ? new Date(y, parseInt(month), 0, 23, 59, 59) : new Date(y, 11, 31, 23, 59, 59);
+    const settlements = await CardSettlement.find({ clinic: req.clinicId, status: 'CONTABILIZADO', issueDate: { $gte: start, $lte: end } });
+    const byCode = {};
+    let total = 0;
+    for (const s of settlements) {
+      for (const r of s.retentions || []) {
+        const key = `${r.type}-${r.sriCode || ''}`;
+        if (!byCode[key]) byCode[key] = { type: r.type, sriCode: r.sriCode || '', base: 0, value: 0, count: 0 };
+        byCode[key].base += r.base || 0;
+        byCode[key].value += r.value || 0;
+        byCode[key].count += 1;
+        total += r.value || 0;
+      }
+    }
+    res.json({ periodo: month ? `${y}-${String(month).padStart(2, '0')}` : `${y}`, rows: Object.values(byCode), total: +total.toFixed(2) });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+/**
  * ATS - Anexo Transaccional Simplificado.
  * Genera XML simplificado (estructura básica del SRI v2.0.0).
  */
@@ -738,10 +932,42 @@ exports.ats = async (req, res) => {
       xml += `      <puntoEmision>${esc(c.ptoEmi || '001')}</puntoEmision>\n`;
       xml += `      <secuencial>${esc(c.secuencial || '')}</secuencial>\n`;
       xml += `      <autorizacion>${esc(c.autorizacion || '')}</autorizacion>\n`;
+      xml += `      <fechaEmision>${c.fechaEmision.toISOString().slice(0, 10).split('-').reverse().join('/')}</fechaEmision>\n`;
       xml += `      <baseNoGraIva>${(c.subtotalNoObjeto || 0).toFixed(2)}</baseNoGraIva>\n`;
       xml += `      <baseImponible>${(c.subtotal0 || 0).toFixed(2)}</baseImponible>\n`;
       xml += `      <baseImpGrav>${((c.subtotal12 || 0) + (c.subtotal15 || 0)).toFixed(2)}</baseImpGrav>\n`;
       xml += `      <montoIva>${(c.iva || 0).toFixed(2)}</montoIva>\n`;
+      const retIvaC = (c.retentions || []).filter((r) => r.type === 'IVA').reduce((s, r) => s + (r.amount || 0), 0);
+      const retRentaC = (c.retentions || []).filter((r) => r.type === 'RENTA');
+      const retRentaTotal = retRentaC.reduce((s, r) => s + (r.amount || 0), 0);
+      xml += `      <valRetBien10>0.00</valRetBien10>\n`;
+      xml += `      <valRetServ20>0.00</valRetServ20>\n`;
+      xml += `      <valorRetBienes>0.00</valorRetBienes>\n`;
+      xml += `      <valRetServ50>0.00</valRetServ50>\n`;
+      xml += `      <valorRetServicios>0.00</valorRetServicios>\n`;
+      xml += `      <valRetServ100>${retIvaC.toFixed(2)}</valRetServ100>\n`;
+      xml += `      <totbasesImpReembolso>0.00</totbasesImpReembolso>\n`;
+      xml += `      <pagoLocExt>01</pagoLocExt>\n`;
+      xml += `      <parteRel>NO</parteRel>\n`;
+      // Detalle de retenciones en la fuente (renta)
+      if (retRentaC.length) {
+        xml += '      <air>\n';
+        for (const r of retRentaC) {
+          xml += '        <detalleAir>\n';
+          xml += `          <codRetAir>${esc(r.code || '')}</codRetAir>\n`;
+          xml += `          <baseImpAir>${(r.baseAmount || 0).toFixed(2)}</baseImpAir>\n`;
+          xml += `          <porcentajeAir>${(r.percentage || 0).toFixed(2)}</porcentajeAir>\n`;
+          xml += `          <valRetAir>${(r.amount || 0).toFixed(2)}</valRetAir>\n`;
+          xml += '        </detalleAir>\n';
+        }
+        xml += '      </air>\n';
+      }
+      // Formas de pago (cuando el total supera el umbral SRI se reporta)
+      xml += '      <formasDePago>\n';
+      xml += `        <formaPago>${esc(c.paymentMethodSri || '01')}</formaPago>\n`;
+      xml += '      </formasDePago>\n';
+      xml += `      <valorRetIva>${retIvaC.toFixed(2)}</valorRetIva>\n`;
+      xml += `      <valorRetRenta>${retRentaTotal.toFixed(2)}</valorRetRenta>\n`;
       xml += `      <total>${(c.total || 0).toFixed(2)}</total>\n`;
       xml += '    </detalleCompras>\n';
     }
@@ -769,6 +995,9 @@ exports.ats = async (req, res) => {
       xml += `      <montoIva>${v.iva.toFixed(2)}</montoIva>\n`;
       xml += `      <valorRetIva>0.00</valorRetIva>\n`;
       xml += `      <valorRetRenta>0.00</valorRetRenta>\n`;
+      xml += '      <formasDePago>\n';
+      xml += '        <formaPago>01</formaPago>\n';
+      xml += '      </formasDePago>\n';
       xml += '    </detalleVentas>\n';
     }
     xml += '  </ventas>\n';

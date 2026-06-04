@@ -3,6 +3,7 @@ const BankAccount = require('../models/BankAccount');
 const BankTransaction = require('../models/BankTransaction');
 const ChartOfAccount = require('../models/ChartOfAccount');
 const { createEntry, findAccount, reverseEntry } = require('../utils/accounting');
+const { getAccount } = require('../utils/accountMap');
 
 const round = (n) => +(Number(n) || 0).toFixed(2);
 
@@ -36,13 +37,13 @@ function computeTotals(doc) {
   doc.totalToPay = round(totalToPay);
 }
 
-/** Resuelve una cuenta: usa la seleccionada, o cae a un código por defecto. */
-async function resolveAccount(clinicId, selectedId, fallback) {
+/** Resuelve una cuenta: usa la seleccionada, o el rol del mapa de cuentas configurable. */
+async function resolveAccount(clinicId, selectedId, role) {
   if (selectedId) {
     const acc = await ChartOfAccount.findOne({ _id: selectedId, clinic: clinicId });
     if (acc) return acc;
   }
-  return findAccount(clinicId, fallback);
+  return getAccount(clinicId, role);
 }
 
 exports.list = async (req, res) => {
@@ -107,11 +108,11 @@ exports.accredit = async (req, res) => {
 
     const bankAcc = await ChartOfAccount.findOne({ _id: bank.chartAccount, clinic: req.clinicId });
     if (!bankAcc) return res.status(400).json({ message: 'La cuenta bancaria no tiene cuenta contable asociada' });
-    const receivable = await resolveAccount(req.clinicId, s.receivableAccount, { code: '1.1.02.02' });
-    const commissionAcc = await resolveAccount(req.clinicId, s.commissionAccount, { code: '6.1.17' });
-    const ivaAcc = s.totalIva > 0 ? await resolveAccount(req.clinicId, s.ivaAccount, { taxCode: 'IVA_COMPRAS' }) : null;
-    const retIvaAcc = s.totalRetIva > 0 ? await resolveAccount(req.clinicId, s.retIvaAccount, { code: '1.1.02.05' }) : null;
-    const retIrAcc = s.totalRetIr > 0 ? await resolveAccount(req.clinicId, s.retIrAccount, { code: '1.1.02.05' }) : null;
+    const receivable = await resolveAccount(req.clinicId, s.receivableAccount, 'tarjetasPorLiquidar');
+    const commissionAcc = await resolveAccount(req.clinicId, s.commissionAccount, 'comisionTarjeta');
+    const ivaAcc = s.totalIva > 0 ? await resolveAccount(req.clinicId, s.ivaAccount, 'ivaCompras') : null;
+    const retIvaAcc = s.totalRetIva > 0 ? await resolveAccount(req.clinicId, s.retIvaAccount, 'retIvaPorCobrar') : null;
+    const retIrAcc = s.totalRetIr > 0 ? await resolveAccount(req.clinicId, s.retIrAccount, 'retRentaPorCobrar') : null;
 
     const netToBank = round(s.totalToPay - s.totalRetIr);
     const lines = [];

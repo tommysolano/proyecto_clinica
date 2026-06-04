@@ -10,7 +10,7 @@ export default function SriReports() {
   const [month, setMonth] = useState(new Date().getMonth() + 1);
   const [data, setData] = useState(null);
 
-  const URLS = { F104: '/accounting-reports/sri/form-104', F103: '/accounting-reports/sri/form-103', ATS: '/accounting-reports/sri/ats', VC: '/accounting-reports/sri/purchases-sales' };
+  const URLS = { F104: '/accounting-reports/sri/form-104', F103: '/accounting-reports/sri/form-103', ATS: '/accounting-reports/sri/ats', VC: '/accounting-reports/sri/purchases-sales', RDEP: '/accounting-reports/sri/rdep', RET: '/accounting-reports/sri/retentions-received' };
 
   const load = async () => {
     try {
@@ -21,8 +21,15 @@ export default function SriReports() {
         toast.success('ATS descargado');
         return;
       }
+      if (tab === 'RDEP') { const r = await api.get(URLS[tab], { params: { year } }); setData(r.data); return; }
+      if (tab === 'RET') { const r = await api.get(URLS[tab], { params }); setData(r.data); return; }
       const r = await api.get(URLS[tab], { params }); setData(r.data);
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+  };
+
+  const downloadRdepXml = async () => {
+    try { const r = await api.get('/accounting-reports/sri/rdep', { params: { year, format: 'xml' }, responseType: 'blob' }); downloadBlob(r.data, `RDEP_${year}.xml`); toast.success('RDEP descargado'); }
+    catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
 
   const downloadXml = async () => {
@@ -45,13 +52,14 @@ export default function SriReports() {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineDocumentArrowDown className="text-emerald-600" /> Reportes SRI</h1>
       <div className="flex gap-2">
-        {[['F104', 'Formulario 104 (IVA)'], ['F103', 'Formulario 103 (Retenciones)'], ['ATS', 'Anexo Trans Simplif (XML)'], ['VC', 'Ventas/Compras']].map(([k, l]) =>
+        {[['F104', 'Formulario 104 (IVA)'], ['F103', 'Formulario 103 (Retenciones)'], ['ATS', 'Anexo Trans Simplif (XML)'], ['RDEP', 'RDEP (Rel. dependencia)'], ['RET', 'Retenciones recibidas'], ['VC', 'Ventas/Compras']].map(([k, l]) =>
           <button key={k} onClick={() => { setTab(k); setData(null); }} className={`px-3 py-2 rounded-lg text-xs ${tab === k ? 'bg-emerald-600 text-white' : 'bg-white border'}`}>{l}</button>)}
       </div>
       <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 items-end">
         <div><label className="text-xs text-slate-500">Año</label><input type="number" value={year} onChange={(e) => setYear(+e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2 w-24" /></div>
         <div><label className="text-xs text-slate-500">Mes</label><input type="number" min="1" max="12" value={month} onChange={(e) => setMonth(+e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2 w-20" /></div>
         <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-lg">{tab === 'ATS' ? 'Descargar XML' : 'Generar'}</button>
+        {tab === 'RDEP' && <button onClick={downloadRdepXml} className="px-4 py-2 bg-indigo-600 text-white rounded-lg flex items-center gap-1"><HiOutlineDocumentArrowDown className="w-4 h-4" /> Descargar XML</button>}
         {(tab === 'F103' || tab === 'F104') && (
           <button
             onClick={downloadXml}

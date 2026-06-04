@@ -22,7 +22,8 @@ export default function FiscalPeriods() {
   const close = async (p) => { if (!confirm('¿Cerrar período?')) return; try { await api.post(`/fiscal-periods/${p._id}/close`); load(); } catch (e) { toast.error(e.response?.data?.message || 'Error'); } };
   const reopen = async (p) => { if (!confirm('¿Reabrir?')) return; try { await api.post(`/fiscal-periods/${p._id}/reopen`); load(); } catch (e) { toast.error(e.response?.data?.message || 'Error'); } };
   const lock = async (p) => { if (!confirm('¿Bloquear definitivamente?')) return; try { await api.post(`/fiscal-periods/${p._id}/lock`); load(); } catch (e) { toast.error(e.response?.data?.message || 'Error'); } };
-  const closeYear = async () => { if (!confirm(`¿Realizar cierre del año ${year}? Generará asiento de utilidad/pérdida.`)) return; try { const r = await api.post('/fiscal-periods/close-year', { year }); toast.success(`Cierre OK. Asiento ${r.data.entry?.number}`); load(); } catch (e) { toast.error(e.response?.data?.message || 'Error'); } };
+  const closeYear = async () => { if (!confirm(`¿Realizar cierre del año ${year}? Generará asiento de utilidad/pérdida.`)) return; try { const r = await api.post('/fiscal-periods/close-year', { year }); toast.success(`Cierre OK. Asiento ${r.data.asiento?.number || '—'}`); load(); } catch (e) { toast.error(e.response?.data?.message || 'Error'); } };
+  const openYear = async () => { if (!confirm(`¿Generar asiento de apertura del año ${year} con los saldos al cierre de ${year - 1}?`)) return; try { const r = await api.post('/fiscal-periods/open-year', { year }); toast.success(`Apertura OK. Asiento ${r.data.asiento?.number || '—'}`); load(); } catch (e) { toast.error(e.response?.data?.message || 'Error'); } };
 
   const byMonth = (m) => list.find((p) => p.year === year && p.month === m);
 
@@ -32,6 +33,7 @@ export default function FiscalPeriods() {
         <h1 className="text-2xl font-bold text-slate-800">Períodos Fiscales</h1>
         <div className="flex gap-2">
           <input type="number" value={year} onChange={(e) => setYear(+e.target.value)} className="w-28 px-3 py-2 border border-slate-200 rounded-lg" />
+          <button onClick={openYear} className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Apertura de año</button>
           <button onClick={closeYear} className="px-4 py-2 bg-rose-600 text-white rounded-lg">Cierre anual</button>
         </div>
       </div>

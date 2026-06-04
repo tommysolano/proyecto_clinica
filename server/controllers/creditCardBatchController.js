@@ -68,7 +68,8 @@ exports.liquidate = async (req, res) => {
     const tarjetasXliq = await findAccount(req.clinicId, { code: '1.1.02.02' });
     const comision = await findAccount(req.clinicId, { code: '6.1.17' });
     const ivaCompras = await findAccount(req.clinicId, { taxCode: 'IVA_COMPRAS' });
-    const retXcobrar = await findAccount(req.clinicId, { code: '1.1.02.05' });
+    // Retención que el adquirente nos efectúa (renta) → crédito tributario, no provisión incobrables
+    const retXcobrar = await findAccount(req.clinicId, { code: '1.1.03.03' });
 
     const lines = [];
     if (b.netAmount > 0) lines.push({ account: bankAcc._id, debit: b.netAmount, credit: 0, description: `Depósito liquidación ${b.code}` });

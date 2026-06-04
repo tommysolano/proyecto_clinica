@@ -73,6 +73,8 @@ app.use('/api/credit-card-batches', require('./routes/creditCardBatches'));
 app.use('/api/card-settlements', require('./routes/cardSettlements'));
 app.use('/api/sales-reports', require('./routes/salesReports'));
 app.use('/api/cash-closings', require('./routes/cashClosings'));
+app.use('/api/accounting-config', require('./routes/accountingConfig'));
+app.use('/api/budgets', require('./routes/budgets'));
 app.use('/api/audit-logs', require('./routes/auditLogs'));
 
 // Ruta de salud

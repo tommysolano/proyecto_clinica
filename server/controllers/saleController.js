@@ -213,6 +213,9 @@ exports.createSale = async (req, res) => {
       taxAmount,
       total,
       paymentMethod,
+      dueDate: paymentMethod === 'credito' ? (req.body.dueDate ? new Date(req.body.dueDate) : null) : null,
+      balance: paymentMethod === 'credito' ? total : 0,
+      paid: paymentMethod !== 'credito',
       notes,
       isFirstVisit,
       clientCity,
@@ -392,4 +395,57 @@ exports.cancelSale = async (req, res) => {
   } catch (error) {
     res.status(500).json({ message: 'Error al anular venta', error: error.message });
   }
+};
+
+/**
+ * Registra el cobro (total o parcial) de una venta a crédito (CxC):
+ * Débito caja/banco, crédito Clientes; reduce el saldo de la venta.
+ * Body: { amount, paymentMethod: 'efectivo'|'transferencia', bankAccount?, date? }
+ */
+exports.collectSale = async (req, res) => {
+  try {
+    const BankAccount = require('../models/BankAccount');
+    const BankTransaction = require('../models/BankTransaction');
+    const { getAccount } = require('../utils/accountMap');
+    const sale = await Sale.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!sale) return res.status(404).json({ message: 'Venta no encontrada' });
+    if (sale.status !== 'completada') return res.status(400).json({ message: 'La venta no está activa' });
+    if (sale.paymentMethod !== 'credito') return res.status(400).json({ message: 'La venta no es a crédito' });
+    const amount = +(Number(req.body.amount) || 0).toFixed(2);
+    if (amount <= 0) return res.status(400).json({ message: 'Monto inválido' });
+    if (amount > sale.balance + 0.01) return res.status(400).json({ message: `El monto excede el saldo (${sale.balance.toFixed(2)})` });
+
+    const method = req.body.paymentMethod || 'efectivo';
+    const date = req.body.date ? new Date(req.body.date) : new Date();
+    const clientes = await getAccount(req.clinicId, 'clientes');
+    let debitAcc, bank = null;
+    if (method === 'transferencia' && req.body.bankAccount) {
+      bank = await BankAccount.findOne({ _id: req.body.bankAccount, clinic: req.clinicId });
+      if (!bank) return res.status(404).json({ message: 'Cuenta bancaria no encontrada' });
+      const ChartOfAccount = require('../models/ChartOfAccount');
+      debitAcc = await ChartOfAccount.findById(bank.chartAccount);
+    } else {
+      debitAcc = await getAccount(req.clinicId, 'caja');
+    }
+
+    const entry = await createEntry({
+      clinicId: req.clinicId, date,
+      description: `Cobro venta ${sale.saleNumber}`, source: 'COBRO', sourceRef: sale._id, sourceModel: 'Sale',
+      lines: [
+        { account: debitAcc._id, debit: amount, credit: 0, description: `Cobro ${sale.saleNumber}` },
+        { account: clientes._id, debit: 0, credit: amount, description: `Cobro ${sale.saleNumber}` },
+      ],
+      userId: req.user._id,
+    });
+    if (bank) {
+      await BankTransaction.create({
+        clinic: req.clinicId, bankAccount: bank._id, date, type: 'COBRO', amount, direction: 1,
+        description: `Cobro venta ${sale.saleNumber}`, reference: sale.saleNumber, journalEntry: entry._id, createdBy: req.user._id,
+      });
+    }
+    sale.balance = +(sale.balance - amount).toFixed(2);
+    sale.paid = sale.balance <= 0.01;
+    await sale.save();
+    res.json({ ok: true, balance: sale.balance, paid: sale.paid });
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };

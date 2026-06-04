@@ -11,12 +11,14 @@ import {
   HiOutlineXCircle,
   HiOutlineTrash,
   HiOutlineDocumentText,
+  HiOutlineBanknotes,
 } from 'react-icons/hi2';
 
 const paymentMethods = {
   efectivo: 'Efectivo',
   tarjeta: 'Tarjeta',
   transferencia: 'Transferencia',
+  credito: 'Crédito (CxC)',
 };
 
 export default function Sales() {
@@ -314,6 +316,18 @@ export default function Sales() {
     }
   };
 
+  const collectSale = async (s) => {
+    const input = window.prompt(`Saldo pendiente: $${(s.balance || 0).toFixed(2)}\nMonto a cobrar (efectivo):`, (s.balance || 0).toFixed(2));
+    if (input == null) return;
+    const amount = parseFloat(input);
+    if (!amount || amount <= 0) return toast.error('Monto inválido');
+    try {
+      const r = await api.post(`/sales/${s._id}/collect`, { amount, paymentMethod: 'efectivo' });
+      toast.success(r.data.paid ? 'Cobro completado (saldado)' : `Cobro registrado. Saldo: $${r.data.balance.toFixed(2)}`);
+      fetchSales();
+    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+  };
+
   return (
     <div className="p-6">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
@@ -432,6 +446,9 @@ export default function Sales() {
                     </td>
                     <td className="px-6 py-3 text-sm font-bold text-slate-800 text-right">
                       ${s.total.toFixed(2)}
+                      {s.paymentMethod === 'credito' && s.balance > 0.01 && (
+                        <span className="block text-[10px] font-medium text-amber-600">Saldo ${s.balance.toFixed(2)}</span>
+                      )}
                     </td>
                     <td className="px-6 py-3">
                       <span
@@ -477,6 +494,15 @@ export default function Sales() {
                           title="Facturar electrónicamente"
                         >
                           <HiOutlineDocumentText className="w-4 h-4" />
+                        </button>
+                      )}
+                      {s.status === 'completada' && s.paymentMethod === 'credito' && s.balance > 0.01 && (
+                        <button
+                          onClick={() => collectSale(s)}
+                          className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer"
+                          title="Registrar cobro"
+                        >
+                          <HiOutlineBanknotes className="w-4 h-4" />
                         </button>
                       )}
                       {canCancel && s.status === 'completada' && (
@@ -613,6 +639,12 @@ export default function Sales() {
                 ))}
               </select>
             </div>
+            {form.paymentMethod === 'credito' && (
+              <div>
+                <label className="lbl">Vence (crédito)</label>
+                <input type="date" value={form.dueDate || ''} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="input" />
+              </div>
+            )}
           </div>
           <div>
             <label className="lbl">Dirección cliente</label>

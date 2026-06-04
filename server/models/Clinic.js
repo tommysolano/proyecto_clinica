@@ -18,6 +18,10 @@ const clinicSchema = new mongoose.Schema(
     email: { type: String, trim: true, lowercase: true },
     logoUrl: { type: String, trim: true },
     owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // Datos fiscales (cada sucursal puede ser su propia empresa / RUC).
+    obligadoContabilidad: { type: Boolean, default: true },
+    contribuyenteEspecial: { type: String, trim: true, default: '' }, // nº resolución, vacío si no aplica
+    agenteRetencion: { type: String, trim: true, default: '' },
     active: { type: Boolean, default: true },
   },
   { timestamps: true }

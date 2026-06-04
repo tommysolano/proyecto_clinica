@@ -9,5 +9,6 @@ router.post('/:id/close', requireRole('admin', 'contabilidad'), c.close);
 router.post('/:id/reopen', requireRole('admin'), c.reopen);
 router.post('/:id/lock', requireRole('admin'), c.lock);
 router.post('/close-year', requireRole('admin'), c.closeYear);
+router.post('/open-year', requireRole('admin'), c.openYear);
 
 module.exports = router;

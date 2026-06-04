@@ -1,5 +1,5 @@
 const router = require('express').Router();
-const { getSales, getSale, createSale, cancelSale } = require('../controllers/saleController');
+const { getSales, getSale, createSale, cancelSale, collectSale } = require('../controllers/saleController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
 router.use(auth, requireClinic);
@@ -8,6 +8,7 @@ router.use(auth, requireClinic);
 router.get('/', requireRole('admin', 'contabilidad'), getSales);
 router.get('/:id', requireRole('admin', 'contabilidad', 'cajero'), getSale);
 router.post('/', requireRole('admin', 'cajero'), createSale);
+router.post('/:id/collect', requireRole('admin', 'contabilidad', 'cajero'), collectSale);
 router.put('/:id/cancel', requireRole('admin'), cancelSale);
 
 module.exports = router;

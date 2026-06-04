@@ -24,6 +24,11 @@ router.post('/reconciliations', requireRole('admin', 'contabilidad'), c.startRec
 router.put('/reconciliations/:id', requireRole('admin', 'contabilidad'), c.updateReconciliation);
 router.post('/reconciliations/:id/close', requireRole('admin', 'contabilidad'), c.closeReconciliation);
 
+// Importación de estado de cuenta bancario + matching automático
+router.post('/statement/match', requireRole('admin', 'contabilidad'), c.statementMatch);
+router.post('/statement/apply', requireRole('admin', 'contabilidad'), c.statementApply);
+router.post('/recompute-balances', requireRole('admin', 'contabilidad'), c.recomputeBankBalances);
+
 // Cheques (chequera)
 router.get('/checks', requireRole('admin', 'contabilidad'), c.listChecks);
 router.post('/checks/generate', requireRole('admin', 'contabilidad'), c.generateChecks);

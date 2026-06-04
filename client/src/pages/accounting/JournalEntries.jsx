@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
-import { HiOutlinePlus, HiOutlineArrowUturnLeft, HiOutlineEye, HiOutlineXMark } from 'react-icons/hi2';
+import { HiOutlinePlus, HiOutlineArrowUturnLeft, HiOutlineEye, HiOutlineXMark, HiOutlineCheckCircle, HiOutlineTrash } from 'react-icons/hi2';
 import { fmt, fmtDate, today, startOfMonth, endOfMonth } from './_utils';
 
 const EMPTY = { date: today(), description: '', source: 'MANUAL', lines: [{ account: '', debit: 0, credit: 0, description: '' }, { account: '', debit: 0, credit: 0, description: '' }] };
@@ -36,12 +36,12 @@ export default function JournalEntries() {
   const totalD = form.lines.reduce((s, l) => s + (+l.debit || 0), 0);
   const totalC = form.lines.reduce((s, l) => s + (+l.credit || 0), 0);
 
-  const submit = async (e) => {
+  const submit = async (e, draft = false) => {
     e.preventDefault();
     if (Math.abs(totalD - totalC) > 0.01) return toast.error('Asiento descuadrado');
     try {
-      await api.post('/journal-entries', form);
-      toast.success('Asiento contabilizado');
+      await api.post('/journal-entries', { ...form, draft });
+      toast.success(draft ? 'Borrador guardado' : 'Asiento contabilizado');
       setShow(false); setForm(EMPTY); load();
     } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
   };
@@ -50,6 +50,17 @@ export default function JournalEntries() {
     const reason = prompt('Razón de la reversión:');
     if (!reason) return;
     try { await api.post(`/journal-entries/${e._id}/reverse`, { reason }); toast.success('Revertido'); load(); }
+    catch (err) { toast.error(err.response?.data?.message || 'Error'); }
+  };
+
+  const approve = async (e) => {
+    if (!confirm('¿Aprobar y contabilizar este asiento?')) return;
+    try { await api.post(`/journal-entries/${e._id}/approve`); toast.success('Asiento contabilizado'); load(); }
+    catch (err) { toast.error(err.response?.data?.message || 'Error'); }
+  };
+  const removeDraft = async (e) => {
+    if (!confirm('¿Eliminar este borrador?')) return;
+    try { await api.delete(`/journal-entries/${e._id}`); toast.success('Eliminado'); load(); }
     catch (err) { toast.error(err.response?.data?.message || 'Error'); }
   };
 
@@ -65,7 +76,7 @@ export default function JournalEntries() {
         <div><label className="text-xs">Hasta</label><input type="date" value={filters.endDate} onChange={(e) => setFilters({ ...filters, endDate: e.target.value })} className="block px-3 py-2 border border-slate-200 rounded-lg" /></div>
         <div><label className="text-xs">Estado</label>
           <select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })} className="block px-3 py-2 border border-slate-200 rounded-lg">
-            <option value="">Todos</option><option>CONTABILIZADO</option><option>ANULADO</option>
+            <option value="">Todos</option><option>BORRADOR</option><option>CONTABILIZADO</option><option>ANULADO</option>
           </select>
         </div>
         <input value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} placeholder="Buscar..." className="flex-1 px-3 py-2 border border-slate-200 rounded-lg" />
@@ -89,10 +100,14 @@ export default function JournalEntries() {
                 <td className="px-3 py-2">{e.description}</td>
                 <td className="px-3 py-2 text-right font-mono">{fmt(e.totalDebit)}</td>
                 <td className="px-3 py-2 text-right font-mono">{fmt(e.totalCredit)}</td>
-                <td className="px-3 py-2 text-center text-xs">{e.status}</td>
+                <td className="px-3 py-2 text-center text-xs">
+                  <span className={`px-2 py-0.5 rounded-full text-[11px] ${e.status === 'BORRADOR' ? 'bg-amber-100 text-amber-700' : e.status === 'CONTABILIZADO' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{e.status}</span>
+                </td>
                 <td className="px-3 py-2 flex gap-1 justify-end">
-                  <button onClick={() => setViewing(e)} className="p-1.5 text-blue-600"><HiOutlineEye className="w-4 h-4" /></button>
-                  {e.status === 'CONTABILIZADO' && <button onClick={() => reverse(e)} className="p-1.5 text-rose-600"><HiOutlineArrowUturnLeft className="w-4 h-4" /></button>}
+                  <button onClick={() => setViewing(e)} className="p-1.5 text-blue-600" title="Ver"><HiOutlineEye className="w-4 h-4" /></button>
+                  {e.status === 'BORRADOR' && <button onClick={() => approve(e)} className="p-1.5 text-emerald-600" title="Aprobar/contabilizar"><HiOutlineCheckCircle className="w-4 h-4" /></button>}
+                  {e.status === 'BORRADOR' && <button onClick={() => removeDraft(e)} className="p-1.5 text-rose-500" title="Eliminar borrador"><HiOutlineTrash className="w-4 h-4" /></button>}
+                  {e.status === 'CONTABILIZADO' && <button onClick={() => reverse(e)} className="p-1.5 text-rose-600" title="Reversar"><HiOutlineArrowUturnLeft className="w-4 h-4" /></button>}
                 </td>
               </tr>
             ))}
@@ -139,7 +154,11 @@ export default function JournalEntries() {
           <div className={`text-sm ${Math.abs(totalD - totalC) < 0.01 ? 'text-emerald-600' : 'text-rose-600'}`}>
             Diferencia: {fmt(totalD - totalC)}
           </div>
-          <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Contabilizar</button></div>
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button>
+            <button type="button" onClick={(e) => submit(e, true)} className="px-4 py-2 bg-amber-500 text-white rounded-lg">Guardar borrador</button>
+            <button className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Contabilizar</button>
+          </div>
         </form>
       </Modal>
 

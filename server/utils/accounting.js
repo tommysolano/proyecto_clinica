@@ -1,7 +1,31 @@
 const ChartOfAccount = require('../models/ChartOfAccount');
 const FiscalPeriod = require('../models/FiscalPeriod');
 const JournalEntry = require('../models/JournalEntry');
+const Counter = require('../models/Counter');
+const AccountBalance = require('../models/AccountBalance');
 const defaultPlan = require('./defaultChartOfAccounts');
+
+/**
+ * Aplica los movimientos de un asiento a los saldos materializados por período.
+ * sign = +1 al contabilizar, -1 si se necesitara revertir el efecto.
+ */
+async function applyToBalances(clinicId, date, lines, sign = 1) {
+  const d = new Date(date);
+  const year = d.getFullYear();
+  const month = d.getMonth() + 1;
+  const ops = (lines || [])
+    .filter((l) => l.account)
+    .map((l) => ({
+      updateOne: {
+        filter: { clinic: clinicId, account: l.account, year, month },
+        update: { $inc: { debit: sign * (Number(l.debit) || 0), credit: sign * (Number(l.credit) || 0) } },
+        upsert: true,
+      },
+    }));
+  if (ops.length) {
+    try { await AccountBalance.bulkWrite(ops); } catch (e) { /* no bloquear el asiento por el cache de saldos */ }
+  }
+}
 
 /**
  * Obtiene/crea el período fiscal correspondiente a la fecha indicada.
@@ -77,19 +101,38 @@ async function findAccount(clinicId, { code, taxCode }) {
   return acc;
 }
 
-/** Genera número correlativo de asiento por clínica y año. */
+/**
+ * Genera número correlativo de asiento por clínica y año de forma ATÓMICA
+ * usando un contador (evita duplicados/huecos bajo concurrencia).
+ * La primera vez para un año se inicializa con el máximo existente.
+ */
 async function nextEntryNumber(clinicId, date = new Date()) {
   const year = new Date(date).getFullYear();
+  const key = `journal-${year}`;
   const prefix = `AS-${year}-`;
-  const last = await JournalEntry.findOne({ clinic: clinicId, number: new RegExp(`^${prefix}`) })
-    .sort({ createdAt: -1 })
-    .select('number');
-  let n = 1;
-  if (last) {
-    const m = last.number.match(/(\d+)$/);
-    if (m) n = parseInt(m[1]) + 1;
+  let counter = await Counter.findOne({ clinic: clinicId, key });
+  if (!counter) {
+    // Inicializar con el máximo número existente (migración suave de datos previos)
+    const last = await JournalEntry.findOne({ clinic: clinicId, number: new RegExp(`^${prefix}`) })
+      .sort({ number: -1 })
+      .select('number');
+    let start = 0;
+    if (last) {
+      const m = last.number.match(/(\d+)$/);
+      if (m) start = parseInt(m[1]);
+    }
+    try {
+      await Counter.create({ clinic: clinicId, key, seq: start });
+    } catch (e) {
+      // creado en paralelo por otra petición; se ignora
+    }
   }
-  return `${prefix}${String(n).padStart(6, '0')}`;
+  const updated = await Counter.findOneAndUpdate(
+    { clinic: clinicId, key },
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true }
+  );
+  return `${prefix}${String(updated.seq).padStart(6, '0')}`;
 }
 
 /**
@@ -160,6 +203,7 @@ async function createEntry({ clinicId, date, description, source, sourceRef, sou
     status: 'CONTABILIZADO',
     createdBy: userId || null,
   });
+  await applyToBalances(clinicId, date, entry.lines, 1);
   return entry;
 }
 
@@ -198,7 +242,24 @@ async function reverseEntry({ clinicId, entryId, userId, reason }) {
   orig.status = 'ANULADO';
   orig.reversedBy = rev._id;
   await orig.save();
+  await applyToBalances(clinicId, rev.date, rev.lines, 1);
   return rev;
+}
+
+/** Reconstruye AccountBalance desde cero a partir de los asientos contabilizados. */
+async function recomputeBalances(clinicId) {
+  await AccountBalance.deleteMany({ clinic: clinicId });
+  const agg = await JournalEntry.aggregate([
+    { $match: { clinic: new (require('mongoose').Types.ObjectId)(clinicId), status: 'CONTABILIZADO' } },
+    { $unwind: '$lines' },
+    { $group: {
+      _id: { account: '$lines.account', year: { $year: '$date' }, month: { $month: '$date' } },
+      debit: { $sum: '$lines.debit' }, credit: { $sum: '$lines.credit' },
+    } },
+  ]);
+  const docs = agg.map((r) => ({ clinic: clinicId, account: r._id.account, year: r._id.year, month: r._id.month, debit: r.debit, credit: r.credit }));
+  if (docs.length) await AccountBalance.insertMany(docs);
+  return docs.length;
 }
 
 module.exports = {
@@ -209,4 +270,6 @@ module.exports = {
   createEntry,
   reverseEntry,
   nextEntryNumber,
+  applyToBalances,
+  recomputeBalances,
 };

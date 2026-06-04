@@ -66,14 +66,11 @@ exports.closeYear = async (req, res) => {
     const ChartOfAccount = require('../models/ChartOfAccount');
     const { createEntry, findAccount } = require('../utils/accounting');
 
-    // Asegurar que todos los meses estén creados y cerrarlos
+    // Asegurar que todos los meses estén creados (sin cerrar todavía: el asiento
+    // de cierre debe registrarse con el período de diciembre aún ABIERTO).
     for (let m = 1; m <= 12; m++) {
       await getOrCreatePeriod(req.clinicId, new Date(year, m - 1, 15));
     }
-    await FiscalPeriod.updateMany(
-      { clinic: req.clinicId, year, status: 'ABIERTO' },
-      { status: 'CERRADO', closedAt: new Date(), closedBy: req.user._id }
-    );
 
     // Calcular saldos de cuentas de ingreso/gasto/costo del año
     const start = new Date(year, 0, 1);
@@ -127,8 +124,75 @@ exports.closeYear = async (req, res) => {
         userId: req.user._id,
       });
     }
+
+    // Ahora sí: cerrar todos los meses del año.
+    await FiscalPeriod.updateMany(
+      { clinic: req.clinicId, year, status: 'ABIERTO' },
+      { status: 'CERRADO', closedAt: new Date(), closedBy: req.user._id }
+    );
+
     res.json({ message: 'Cierre anual ejecutado', utilidad, asiento: entry });
   } catch (e) {
     res.status(400).json({ message: e.message });
+  }
+};
+
+/**
+ * Apertura de año: genera el asiento de APERTURA del 1‑ene con los saldos de
+ * cuentas de balance (Activo/Pasivo/Patrimonio) al cierre del año anterior.
+ * Las cuentas de resultado no se arrastran (van a resultados acumulados).
+ */
+exports.openYear = async (req, res) => {
+  try {
+    const { year } = req.body;
+    if (!year) return res.status(400).json({ message: 'year requerido' });
+    const ChartOfAccount = require('../models/ChartOfAccount');
+    const { createEntry } = require('../utils/accounting');
+    const { getAccount } = require('../utils/accountMap');
+
+    // Evitar duplicar la apertura
+    const dup = await JournalEntry.findOne({ clinic: req.clinicId, source: 'APERTURA', date: { $gte: new Date(year, 0, 1), $lte: new Date(year, 0, 2) } });
+    if (dup) return res.status(400).json({ message: `Ya existe asiento de apertura para ${year} (${dup.number})` });
+
+    // Saldos acumulados hasta el 31‑dic del año anterior
+    const cutoff = new Date(year - 1, 11, 31, 23, 59, 59);
+    const agg = await JournalEntry.aggregate([
+      { $match: { clinic: new (require('mongoose').Types.ObjectId)(req.clinicId), date: { $lte: cutoff }, status: 'CONTABILIZADO' } },
+      { $unwind: '$lines' },
+      { $group: { _id: '$lines.account', debit: { $sum: '$lines.debit' }, credit: { $sum: '$lines.credit' } } },
+    ]);
+    const accounts = await ChartOfAccount.find({ clinic: req.clinicId });
+    const accMap = new Map(accounts.map((a) => [String(a._id), a]));
+
+    const lines = [];
+    let totalDebit = 0, totalCredit = 0;
+    for (const row of agg) {
+      const acc = accMap.get(String(row._id));
+      if (!acc) continue;
+      if (!['ACTIVO', 'PASIVO', 'PATRIMONIO'].includes(acc.type)) continue;
+      const net = +(row.debit - row.credit).toFixed(2);
+      if (Math.abs(net) < 0.005) continue;
+      if (net > 0) { lines.push({ account: acc._id, debit: net, credit: 0, description: `Saldo inicial ${acc.code}` }); totalDebit += net; }
+      else { lines.push({ account: acc._id, debit: 0, credit: -net, description: `Saldo inicial ${acc.code}` }); totalCredit += -net; }
+    }
+    if (!lines.length) return res.status(400).json({ message: 'No hay saldos de balance para aperturar' });
+
+    // Cuadrar contra resultados acumulados si hay diferencia (utilidad/pérdida no distribuida)
+    const diff = +(totalDebit - totalCredit).toFixed(2);
+    if (Math.abs(diff) >= 0.01) {
+      const acumulados = await getAccount(req.clinicId, 'resultadosAcumulados');
+      if (diff > 0) lines.push({ account: acumulados._id, debit: 0, credit: diff, description: 'Resultados acumulados (apertura)' });
+      else lines.push({ account: acumulados._id, debit: -diff, credit: 0, description: 'Resultados acumulados (apertura)' });
+    }
+
+    await getOrCreatePeriod(req.clinicId, new Date(year, 0, 1));
+    const entry = await createEntry({
+      clinicId: req.clinicId, date: new Date(year, 0, 1),
+      description: `Apertura ejercicio ${year}`, source: 'APERTURA',
+      lines, userId: req.user._id,
+    });
+    res.json({ message: 'Apertura generada', asiento: entry });
+  } catch (e) {
+    res.status(e.status || 400).json({ message: e.message });
   }
 };

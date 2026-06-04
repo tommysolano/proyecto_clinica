@@ -68,6 +68,10 @@ import CreditCards from './pages/accounting/CreditCards';
 import CardSettlements from './pages/accounting/CardSettlements';
 import SalesReports from './pages/accounting/SalesReports';
 import CashClosing from './pages/accounting/CashClosing';
+import AccountMapping from './pages/accounting/AccountMapping';
+import PeriodBalances from './pages/accounting/PeriodBalances';
+import BankImport from './pages/accounting/BankImport';
+import Budgets from './pages/accounting/Budgets';
 
 function SuperAdminRoute({ children }) {
   const { user, loading } = useAuth();
@@ -302,15 +306,18 @@ function AppRoutes() {
                   ['checks', Checks],
                   ['cards', CreditCards],
                   ['chart', ChartOfAccounts],
+                  ['account-mapping', AccountMapping],
                   ['cost-centers', CostCenters],
                   ['periods', FiscalPeriods],
                   ['journal', JournalEntries],
                   ['ledger', Ledger],
                   ['trial-balance', TrialBalance],
+                  ['period-balances', PeriodBalances],
                   ['banks', BankAccounts],
                   ['cash', CashBox],
                   ['cash-closing', CashClosing],
                   ['reconciliations', Reconciliations],
+                  ['bank-import', BankImport],
                   ['suppliers', Suppliers],
                   ['payments', Payments],
                   ['purchases', PurchaseInvoices],
@@ -322,6 +329,7 @@ function AppRoutes() {
                   ['assets', FixedAssets],
                   ['financial-reports', FinancialReports],
                   ['management-reports', ManagementReports],
+                  ['budgets', Budgets],
                   ['sri-reports', SriReports],
                   ['employees', Employees],
                   ['loans', EmployeeLoans],

@@ -1,6 +1,26 @@
 const JournalEntry = require('../models/JournalEntry');
 const ChartOfAccount = require('../models/ChartOfAccount');
-const { createEntry, reverseEntry } = require('../utils/accounting');
+const { createEntry, reverseEntry, applyToBalances, nextEntryNumber, assertPeriodOpen, getOrCreatePeriod } = require('../utils/accounting');
+
+/** Hidrata y valida líneas de un asiento (para borradores). */
+async function hydrateLines(clinicId, lines) {
+  if (!Array.isArray(lines) || lines.length < 2) throw Object.assign(new Error('El asiento debe tener al menos 2 líneas'), { status: 400 });
+  const resolved = [];
+  for (const l of lines) {
+    let acc = null;
+    if (l.account) acc = await ChartOfAccount.findOne({ _id: l.account, clinic: clinicId });
+    else if (l.accountCode) acc = await ChartOfAccount.findOne({ code: l.accountCode, clinic: clinicId });
+    if (!acc) throw Object.assign(new Error(`Cuenta no encontrada: ${l.accountCode || l.account}`), { status: 400 });
+    if (!acc.allowsMovement) throw Object.assign(new Error(`Cuenta ${acc.code} no admite movimientos`), { status: 400 });
+    const debit = Number(l.debit) || 0, credit = Number(l.credit) || 0;
+    if (debit > 0 && credit > 0) throw Object.assign(new Error('Una línea no puede tener débito y crédito'), { status: 400 });
+    resolved.push({ account: acc._id, accountCode: acc.code, accountName: acc.name, costCenter: l.costCenter || null, description: l.description || '', debit, credit });
+  }
+  const totalDebit = resolved.reduce((s, l) => s + l.debit, 0);
+  const totalCredit = resolved.reduce((s, l) => s + l.credit, 0);
+  if (Math.abs(totalDebit - totalCredit) > 0.01) throw Object.assign(new Error(`Asiento descuadrado: ${totalDebit.toFixed(2)} ≠ ${totalCredit.toFixed(2)}`), { status: 400 });
+  return { resolved, totalDebit, totalCredit };
+}
 
 exports.list = async (req, res) => {
   try {
@@ -40,19 +60,70 @@ exports.get = async (req, res) => {
 
 exports.create = async (req, res) => {
   try {
-    const { date, description, lines } = req.body;
+    const { date, description, lines, draft } = req.body;
+    const entryDate = date ? new Date(date) : new Date();
+
+    // Borrador: se guarda sin contabilizar ni afectar saldos, para revisión/aprobación.
+    if (draft) {
+      const { resolved, totalDebit, totalCredit } = await hydrateLines(req.clinicId, lines);
+      const period = await getOrCreatePeriod(req.clinicId, entryDate);
+      const number = `BOR-${Date.now()}`;
+      const entry = await JournalEntry.create({
+        clinic: req.clinicId, number, date: entryDate, period: period._id,
+        description, source: 'MANUAL', lines: resolved, totalDebit, totalCredit,
+        status: 'BORRADOR', createdBy: req.user._id,
+      });
+      return res.status(201).json(entry);
+    }
+
     const entry = await createEntry({
-      clinicId: req.clinicId,
-      date: date ? new Date(date) : new Date(),
-      description,
-      source: 'MANUAL',
-      lines,
-      userId: req.user._id,
+      clinicId: req.clinicId, date: entryDate, description, source: 'MANUAL', lines, userId: req.user._id,
     });
     res.status(201).json(entry);
   } catch (e) {
     res.status(e.status || 400).json({ message: e.message });
   }
+};
+
+/** Aprueba (contabiliza) un asiento en BORRADOR: asigna número y afecta saldos. */
+exports.approve = async (req, res) => {
+  try {
+    const entry = await JournalEntry.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!entry) return res.status(404).json({ message: 'No encontrado' });
+    if (entry.status !== 'BORRADOR') return res.status(400).json({ message: 'El asiento no está en borrador' });
+    await assertPeriodOpen(req.clinicId, entry.date);
+    entry.number = await nextEntryNumber(req.clinicId, entry.date);
+    entry.status = 'CONTABILIZADO';
+    await entry.save();
+    await applyToBalances(req.clinicId, entry.date, entry.lines, 1);
+    res.json(entry);
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+};
+
+/** Actualiza un asiento en BORRADOR (antes de aprobar). */
+exports.updateDraft = async (req, res) => {
+  try {
+    const entry = await JournalEntry.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!entry) return res.status(404).json({ message: 'No encontrado' });
+    if (entry.status !== 'BORRADOR') return res.status(400).json({ message: 'Solo se editan borradores' });
+    const { date, description, lines } = req.body;
+    if (lines) { const { resolved, totalDebit, totalCredit } = await hydrateLines(req.clinicId, lines); entry.lines = resolved; entry.totalDebit = totalDebit; entry.totalCredit = totalCredit; }
+    if (date) entry.date = new Date(date);
+    if (description !== undefined) entry.description = description;
+    await entry.save();
+    res.json(entry);
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+};
+
+/** Elimina un asiento en BORRADOR. */
+exports.removeDraft = async (req, res) => {
+  try {
+    const entry = await JournalEntry.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!entry) return res.status(404).json({ message: 'No encontrado' });
+    if (entry.status !== 'BORRADOR') return res.status(400).json({ message: 'Solo se eliminan borradores (usa reversa para contabilizados)' });
+    await entry.deleteOne();
+    res.json({ ok: true });
+  } catch (e) { res.status(400).json({ message: e.message }); }
 };
 
 exports.reverse = async (req, res) => {
