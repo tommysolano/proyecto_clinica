@@ -30,7 +30,7 @@ export default function Kardex() {
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineArchiveBox className="text-emerald-600" /> Kardex</h1>
-      <div className="bg-white rounded-2xl shadow-sm p-3 grid grid-cols-1 md:grid-cols-6 gap-2">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-3 grid grid-cols-1 md:grid-cols-6 gap-2">
         <select value={filters.product} onChange={(e) => setFilters({ ...filters, product: e.target.value })} className="md:col-span-2 px-3 py-2 border border-slate-200 rounded-lg">
           <option value="">Producto...</option>{products.map((p) => <option key={p._id} value={p._id}>{p.code} - {p.name}</option>)}
         </select>
@@ -46,7 +46,7 @@ export default function Kardex() {
       </div>
 
       {data && (
-        <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
           <div className="p-3 border-b text-sm flex justify-between"><span className="font-semibold text-slate-700">{data.product?.code} — {data.product?.name}</span><span className="text-slate-500">Saldo actual: <span className="font-bold text-slate-800">{data.currentBalance} {data.product?.unit}</span></span></div>
           <table className="w-full text-sm">
             <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Fecha</th><th className="px-3 py-2 text-left">Tipo</th><th className="px-3 py-2 text-left">Bodega</th><th className="px-3 py-2 text-right">Cantidad</th><th className="px-3 py-2 text-right">Costo unit.</th><th className="px-3 py-2 text-right">Saldo</th><th className="px-3 py-2 text-left">Referencia</th></tr></thead>

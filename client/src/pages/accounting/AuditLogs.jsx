@@ -27,7 +27,7 @@ export default function AuditLogs() {
         <input type="date" value={filters.endDate} onChange={(e) => setFilters({ ...filters, endDate: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
         <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Filtrar</button>
       </div>
-      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
         <table className="w-full text-xs">
           <thead className="bg-emerald-50 uppercase"><tr>
             <th className="px-2 py-2 text-left">Fecha</th>

@@ -27,7 +27,7 @@ export default function AccountingDashboard() {
   if (!data) return <div className="p-8 text-slate-400">Cargando dashboard...</div>;
 
   const Card = ({ title, value, sub, color = 'text-slate-800', icon: Icon }) => (
-    <div className="bg-white rounded-2xl shadow-sm p-4">
+    <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4">
       <div className="flex items-center justify-between"><p className="text-xs text-slate-500">{title}</p>{Icon && <Icon className="w-5 h-5 text-emerald-500" />}</div>
       <p className={`text-2xl font-bold ${color}`}>{value}</p>
       {sub && <p className="text-xs text-slate-400 mt-1">{sub}</p>}
@@ -71,7 +71,7 @@ export default function AccountingDashboard() {
 
       {/* Saldo por banco (no general) */}
       {bankBalances.length > 0 && (
-        <div className="bg-white rounded-2xl shadow-sm p-4">
+        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4">
           <h2 className="font-semibold text-slate-700 mb-3 flex items-center gap-2"><HiOutlineBanknotes className="w-5 h-5 text-emerald-500" /> Saldo por banco</h2>
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
             {bankBalances.map((b) => (
@@ -94,7 +94,7 @@ export default function AccountingDashboard() {
       )}
 
       {/* Ventas vs Gastos */}
-      <div className="bg-white rounded-2xl shadow-sm p-4">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4">
         <h2 className="font-semibold text-slate-700 mb-2">Ventas vs Gastos por período</h2>
         <ResponsiveContainer width="100%" height={300}>
           <LineChart data={combined}>
@@ -109,7 +109,7 @@ export default function AccountingDashboard() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-3">
         {/* Más vendido - barras */}
-        <div className="bg-white rounded-2xl shadow-sm p-4">
+        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4">
           <h2 className="font-semibold text-slate-700 mb-2">Lo que más se vende (mes)</h2>
           <ResponsiveContainer width="100%" height={280}>
             <BarChart data={data.topSold || []} layout="vertical" margin={{ left: 20 }}>
@@ -119,7 +119,7 @@ export default function AccountingDashboard() {
           </ResponsiveContainer>
         </div>
         {/* Más gastado - pie */}
-        <div className="bg-white rounded-2xl shadow-sm p-4">
+        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4">
           <h2 className="font-semibold text-slate-700 mb-2">En lo que más se gasta (mes)</h2>
           <ResponsiveContainer width="100%" height={280}>
             <PieChart>

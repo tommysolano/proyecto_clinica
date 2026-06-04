@@ -226,7 +226,7 @@ export default function Patients() {
         )}
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 mb-6 p-4">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 mb-6 p-4">
         <div className="flex gap-3 items-center flex-wrap">
           <div className="relative flex-1 min-w-[240px]">
             <HiOutlineMagnifyingGlass className="absolute left-3.5 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
@@ -257,7 +257,7 @@ export default function Patients() {
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>

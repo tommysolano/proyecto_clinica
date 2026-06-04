@@ -80,7 +80,7 @@ export default function ChartOfAccounts() {
         <button onClick={load} className="px-4 py-2 bg-slate-700 text-white rounded-lg text-sm">Buscar</button>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-emerald-900 text-xs uppercase">
             <tr>

@@ -115,7 +115,7 @@ export default function Dashboard() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         {/* Citas de hoy */}
-        <div className="bg-white rounded-2xl shadow-sm border border-emerald-100">
+        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100">
           <div className="px-6 py-4 border-b border-emerald-100">
             <h2 className="text-lg font-semibold text-slate-800">Citas de Hoy</h2>
           </div>
@@ -150,7 +150,7 @@ export default function Dashboard() {
 
         {/* Stock bajo */}
         {showStock && (
-        <div className="bg-white rounded-2xl shadow-sm border border-emerald-100">
+        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100">
           <div className="px-6 py-4 border-b border-emerald-100">
             <h2 className="text-lg font-semibold text-slate-800">Productos con Stock Bajo</h2>
           </div>

@@ -648,7 +648,7 @@ export default function Appointments() {
       </div>
 
       {(view === 'list' || view === 'calendar') && (
-        <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 mb-6 p-4 space-y-3">
+        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 mb-6 p-4 space-y-3">
           <div className="relative">
             <HiOutlineMagnifyingGlass className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
             <input
@@ -761,7 +761,7 @@ export default function Appointments() {
       )}
 
       {view === 'calendar' && (
-        <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden mb-6">
+        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden mb-6">
           {/* Navegación de mes */}
           <div className="flex items-center justify-between px-5 py-3 border-b border-emerald-50">
             <button
@@ -845,7 +845,7 @@ export default function Appointments() {
       )}
 
       {view !== 'calendar' && (
-      <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>

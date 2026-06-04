@@ -141,7 +141,7 @@ export default function Clinics() {
       </div>
 
       {/* Consolidado por sucursal */}
-      <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden mb-6">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden mb-6">
         <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 border-b border-emerald-50">
           <h2 className="text-base font-semibold text-slate-800">Consolidado por sucursal</h2>
           <div className="flex items-center gap-2 text-sm">
@@ -212,7 +212,7 @@ export default function Clinics() {
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50/50 text-emerald-700">
             <tr>

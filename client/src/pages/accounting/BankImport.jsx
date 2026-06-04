@@ -64,7 +64,7 @@ export default function BankImport() {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineArrowDownTray className="text-emerald-600" /> Importar Estado de Cuenta</h1>
 
-      <div className="bg-white rounded-2xl shadow-sm p-4 space-y-3">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4 space-y-3">
         <div className="flex flex-wrap gap-3 items-end">
           <label className="text-xs text-slate-500">Cuenta bancaria
             <select value={bankAccount} onChange={(e) => setBankAccount(e.target.value)} className="mt-1 block border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm min-w-[220px]">
@@ -81,7 +81,7 @@ export default function BankImport() {
       </div>
 
       {rows && (
-        <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-emerald-50 text-xs uppercase"><tr>
               <th className="px-3 py-2 text-left">Fecha</th><th className="px-3 py-2 text-left">Descripción (banco)</th>

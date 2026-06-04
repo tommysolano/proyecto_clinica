@@ -50,7 +50,7 @@ export default function AccountMapping() {
       </div>
 
       {groups.map((g) => (
-        <div key={g} className="bg-white rounded-2xl shadow-sm overflow-hidden">
+        <div key={g} className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
           <div className="px-4 py-2 bg-emerald-50 text-sm font-semibold text-emerald-700">{g}</div>
           <table className="w-full text-sm">
             <thead className="text-xs text-slate-500"><tr><th className="px-4 py-2 text-left">Concepto</th><th className="px-4 py-2 text-left">Cuenta a usar</th><th className="px-4 py-2 text-left">Efectiva actual</th></tr></thead>

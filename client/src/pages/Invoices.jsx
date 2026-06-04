@@ -133,7 +133,7 @@ export default function Invoices() {
         </button>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 p-4 mb-6">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-4 mb-6">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
           <input
             type="date"
@@ -162,7 +162,7 @@ export default function Invoices() {
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50/50 text-emerald-700">
             <tr>

@@ -82,7 +82,7 @@ export default function PatientDetail() {
         <HiOutlineArrowLeft className="w-4 h-4" /> Volver a pacientes
       </Link>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 p-6 mb-6">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-6 mb-6">
         <div className="flex items-start gap-4">
           <div className="w-14 h-14 rounded-2xl bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center text-white font-bold text-xl">
             {patient.firstName?.[0]}
@@ -106,7 +106,7 @@ export default function PatientDetail() {
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
         <div className="flex border-b border-slate-200 overflow-x-auto">
           {visibleTabs.map((t) => {
             const Icon = t.icon;

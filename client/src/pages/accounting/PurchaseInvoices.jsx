@@ -137,7 +137,7 @@ export default function PurchaseInvoices() {
       </div>
 
       {/* Buscador */}
-      <div className="bg-white rounded-2xl shadow-sm p-3 flex flex-wrap items-center gap-3">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-3 flex flex-wrap items-center gap-3">
         <input placeholder="Buscar por proveedor, RUC, serie, autorización, clave de acceso..." value={search} onChange={(e) => setSearch(e.target.value)} className="flex-1 min-w-[260px] border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
         <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
           <option value="">Todos los estados</option>
@@ -147,7 +147,7 @@ export default function PurchaseInvoices() {
           <option value="ANULADA">Anulada</option>
         </select>
       </div>
-      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Serie</th><th className="px-3 py-2 text-left">Fecha</th>

@@ -41,7 +41,7 @@ export default function PeriodBalances() {
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Código</th><th className="px-3 py-2 text-left">Cuenta</th>

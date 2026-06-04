@@ -47,7 +47,7 @@ export default function Checks() {
           <option value="">Todos</option><option value="DISPONIBLE">Disponibles</option><option value="GIRADO">Girados</option><option value="COBRADO">Cobrados</option><option value="ANULADO">Anulados</option>
         </select>
       </div>
-      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Nº Cheque</th><th className="px-3 py-2 text-center">Estado</th><th className="px-3 py-2 text-left">Beneficiario</th><th className="px-3 py-2 text-right">Monto</th><th className="px-3 py-2 text-left">Fecha</th><th></th></tr></thead>
           <tbody>

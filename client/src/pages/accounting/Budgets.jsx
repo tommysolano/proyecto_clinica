@@ -65,7 +65,7 @@ export default function Budgets() {
       </div>
 
       {tab === 'edit' && (
-        <div className="bg-white rounded-2xl shadow-sm p-4 space-y-2">
+        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4 space-y-2">
           <p className="text-xs text-slate-500">Define el monto anual presupuestado por cuenta de ingreso/gasto/costo (se distribuye en 12 meses).</p>
           {lines.map((l, i) => (
             <div key={i} className="flex gap-2 items-center">
@@ -85,7 +85,7 @@ export default function Budgets() {
       )}
 
       {tab === 'exec' && (
-        <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-emerald-50 text-xs uppercase"><tr>
               <th className="px-3 py-2 text-left">Cuenta</th><th className="px-3 py-2 text-right">Presupuesto</th>

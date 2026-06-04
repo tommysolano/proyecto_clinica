@@ -297,7 +297,7 @@ export default function Inventory() {
       {tab === 'products' && (
         <>
           {/* Filters */}
-          <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 mb-6 p-4">
+          <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 mb-6 p-4">
             <div className="flex flex-col sm:flex-row gap-3">
               <div className="relative flex-1">
                 <HiOutlineMagnifyingGlass className="absolute left-3.5 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
@@ -334,7 +334,7 @@ export default function Inventory() {
           </div>
 
           {/* Products Table */}
-          <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden">
+          <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full">
                 <thead>
@@ -400,7 +400,7 @@ export default function Inventory() {
       )}
 
       {tab === 'movements' && (
-        <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden">
+        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full">
               <thead>

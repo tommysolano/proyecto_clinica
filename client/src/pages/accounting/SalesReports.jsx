@@ -74,7 +74,7 @@ export default function SalesReports() {
   const topServices = (data?.byService || []).slice(0, 12).map((s) => ({ name: s.name || s.code || '—', total: s.total, quantity: s.quantity }));
 
   const KPI = ({ label, value, sub, color = 'text-slate-800' }) => (
-    <div className="bg-white rounded-2xl shadow-sm p-4">
+    <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4">
       <p className="text-xs text-slate-500">{label}</p>
       <p className={`text-2xl font-bold ${color}`}>{value}</p>
       {sub && <p className="text-xs text-slate-400 mt-0.5">{sub}</p>}
@@ -92,7 +92,7 @@ export default function SalesReports() {
       </div>
 
       {/* Filtros */}
-      <div className="bg-white rounded-2xl shadow-sm p-4 space-y-3">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4 space-y-3">
         <div className="flex flex-wrap items-end gap-3">
           <label className="text-xs text-slate-500">Desde
             <input type="date" value={filters.startDate} onChange={(e) => setFilters({ ...filters, startDate: e.target.value })} className="mt-1 block border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
@@ -137,7 +137,7 @@ export default function SalesReports() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Ventas en el tiempo */}
-        <div className="bg-white rounded-2xl shadow-sm p-4">
+        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4">
           <h3 className="text-sm font-semibold text-slate-700 mb-2">Ventas en el período</h3>
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={data?.timeSeries || []}>
@@ -151,7 +151,7 @@ export default function SalesReports() {
         </div>
 
         {/* Resumen de cobros */}
-        <div className="bg-white rounded-2xl shadow-sm p-4">
+        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4">
           <h3 className="text-sm font-semibold text-slate-700 mb-2">Resumen de cobros (cómo se cobró)</h3>
           <ResponsiveContainer width="100%" height={260}>
             <PieChart>
@@ -166,7 +166,7 @@ export default function SalesReports() {
       </div>
 
       {/* Top servicios */}
-      <div className="bg-white rounded-2xl shadow-sm p-4">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4">
         <h3 className="text-sm font-semibold text-slate-700 mb-2">Ventas por servicio (top 12)</h3>
         <ResponsiveContainer width="100%" height={320}>
           <BarChart data={topServices} layout="vertical" margin={{ left: 40 }}>
@@ -180,7 +180,7 @@ export default function SalesReports() {
       </div>
 
       {/* Tabla detalle por servicio */}
-      <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Servicio</th><th className="px-3 py-2 text-left">Código</th>

@@ -44,7 +44,7 @@ export default function CashFlow() {
             <Stat title="Total egresos" value={`$${fmt(data.totalOut)}`} color="text-rose-600" />
             <Stat title="Saldo final" value={`$${fmt(data.saldoFinal)}`} color={data.saldoFinal < 0 ? 'text-rose-600' : 'text-slate-800'} />
           </div>
-          <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+          <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
             <table className="w-full text-sm">
               <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Fecha</th><th className="px-3 py-2 text-left">Asiento</th><th className="px-3 py-2 text-left">Descripción</th><th className="px-3 py-2 text-right">Ingreso</th><th className="px-3 py-2 text-right">Egreso</th><th className="px-3 py-2 text-right">Saldo</th></tr></thead>
               <tbody>
@@ -69,5 +69,5 @@ export default function CashFlow() {
 }
 
 function Stat({ title, value, color = 'text-slate-800' }) {
-  return <div className="bg-white rounded-2xl shadow-sm p-4"><p className="text-xs text-slate-500">{title}</p><p className={`text-2xl font-bold ${color}`}>{value}</p></div>;
+  return <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4"><p className="text-xs text-slate-500">{title}</p><p className={`text-2xl font-bold ${color}`}>{value}</p></div>;
 }

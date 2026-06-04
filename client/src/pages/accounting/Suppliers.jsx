@@ -56,7 +56,7 @@ export default function Suppliers() {
         </select>
         <button onClick={load} className="px-4 py-2 bg-slate-700 text-white rounded-lg">Buscar</button>
       </div>
-      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">RUC/CI</th><th className="px-3 py-2 text-left">Nombre</th>

@@ -195,6 +195,16 @@ export default function Layout({ children }) {
 
   const showAccounting = user?.isSuperAdmin || role === 'admin' || role === 'contabilidad';
 
+  // Título de la página actual (derivado de la ruta) para mostrarlo en el header.
+  const TITLE_MAP = [
+    ...ALL_ITEMS.map((i) => ({ path: i.path, label: i.label })),
+    ...ACCT_GROUPS.flatMap((g) => g.items.map((it) => ({ path: it.path, label: it.label }))),
+  ];
+  const matchedTitle = TITLE_MAP
+    .filter((p) => p.path !== '/' && location.pathname.startsWith(p.path))
+    .sort((a, b) => b.path.length - a.path.length)[0];
+  const pageTitle = location.pathname === '/' ? 'Inicio' : (matchedTitle?.label || 'Shiluv');
+
   const menuItems = ALL_ITEMS.filter((item) => {
     // Para usuarios con menú contable, ocultar los items que ya viven en los grupos
     // y Settings (que aparece en sección separada al final del sidebar).
@@ -382,35 +392,40 @@ export default function Layout({ children }) {
       </aside>
 
       <div className="flex-1 flex flex-col overflow-hidden">
-        <header className="bg-white/80 backdrop-blur-md border-b border-emerald-100 px-4 lg:px-8 py-4 flex items-center justify-between">
-          {/* Móvil: abre la barra como overlay */}
-          <button
-            className="lg:hidden p-2 rounded-xl hover:bg-emerald-50 bg-transparent border-none cursor-pointer"
-            onClick={() => setSidebarOpen(true)}
-            title="Menú"
-          >
-            <HiOutlineBars3 className="w-6 h-6 text-slate-600" />
-          </button>
-          {/* Escritorio: colapsa/expande la barra reclamando el espacio */}
-          <button
-            className="hidden lg:inline-flex p-2 rounded-xl hover:bg-emerald-50 bg-transparent border-none cursor-pointer text-slate-600"
-            onClick={toggleDesktop}
-            title={desktopCollapsed ? 'Mostrar menú' : 'Ocultar menú'}
-          >
-            <HiOutlineBars3 className="w-6 h-6" />
-          </button>
-          <div className="flex-1" />
-          <div className="flex items-center gap-4">
-            <div className="hidden sm:flex items-center gap-2 bg-emerald-50 px-4 py-2 rounded-xl">
+        <header className="sticky top-0 z-10 bg-white/85 backdrop-blur-md border-b border-slate-200/70 px-4 lg:px-8 h-16 flex items-center justify-between gap-3 shadow-sm shadow-slate-900/[0.03]">
+          <div className="flex items-center gap-3 min-w-0">
+            {/* Móvil: abre la barra como overlay */}
+            <button
+              className="lg:hidden p-2 rounded-xl hover:bg-emerald-50 bg-transparent border-none cursor-pointer"
+              onClick={() => setSidebarOpen(true)}
+              title="Menú"
+            >
+              <HiOutlineBars3 className="w-6 h-6 text-slate-600" />
+            </button>
+            {/* Escritorio: colapsa/expande la barra reclamando el espacio */}
+            <button
+              className="hidden lg:inline-flex p-2 rounded-xl hover:bg-emerald-50 bg-transparent border-none cursor-pointer text-slate-500 hover:text-emerald-600"
+              onClick={toggleDesktop}
+              title={desktopCollapsed ? 'Mostrar menú' : 'Ocultar menú'}
+            >
+              <HiOutlineBars3 className="w-6 h-6" />
+            </button>
+            <div className="min-w-0">
+              <h1 className="text-base sm:text-lg font-bold text-slate-800 tracking-tight truncate leading-tight">{pageTitle}</h1>
+              <p className="hidden sm:block text-[11px] text-slate-400 leading-tight">
+                {activeClinic?.nombreComercial || activeClinic?.name || 'Shiluv'}
+              </p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="hidden md:flex items-center gap-2 bg-emerald-50 px-3.5 py-2 rounded-xl border border-emerald-100">
               <div className="w-2 h-2 bg-emerald-500 rounded-full animate-pulse"></div>
-              <span className="text-sm text-emerald-700 font-medium">
-                {new Date().toLocaleDateString('es-EC', {
-                  weekday: 'long',
-                  year: 'numeric',
-                  month: 'long',
-                  day: 'numeric',
-                })}
+              <span className="text-xs font-medium text-emerald-700 capitalize">
+                {new Date().toLocaleDateString('es-EC', { weekday: 'long', day: 'numeric', month: 'long' })}
               </span>
+            </div>
+            <div className="w-9 h-9 rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center text-white text-sm font-bold shadow-sm" title={user?.name}>
+              {(user?.name || '?').trim().charAt(0).toUpperCase()}
             </div>
           </div>
         </header>

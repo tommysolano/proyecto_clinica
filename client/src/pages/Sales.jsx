@@ -391,7 +391,7 @@ export default function Sales() {
         )}
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 mb-6 p-4">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 mb-6 p-4">
         <div className="flex flex-col sm:flex-row gap-3 flex-wrap">
           <input
             type="date"
@@ -429,7 +429,7 @@ export default function Sales() {
 
       {showChart && <TopProductsChart data={topProducts} />}
 
-      <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full">
             <thead>
@@ -1109,7 +1109,7 @@ export default function Sales() {
 function TopProductsChart({ data }) {
   if (!data || data.length === 0) {
     return (
-      <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 p-6 mb-6 text-center text-slate-400 text-sm">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-6 mb-6 text-center text-slate-400 text-sm">
         Sin datos para mostrar
       </div>
     );
@@ -1117,7 +1117,7 @@ function TopProductsChart({ data }) {
   const top = data.slice(0, 10);
   const maxQty = Math.max(...top.map((d) => d.quantity || 0), 1);
   return (
-    <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 p-6 mb-6">
+    <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-6 mb-6">
       <h3 className="text-lg font-bold text-slate-800 mb-4">Top productos/servicios vendidos</h3>
       <div className="space-y-3">
         {top.map((p) => {

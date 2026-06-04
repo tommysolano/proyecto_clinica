@@ -140,7 +140,7 @@ export default function InvoicingConfig() {
       {/* Datos de empresa */}
       <form
         onSubmit={handleSubmit}
-        className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-5"
+        className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-slate-200 p-6 space-y-5"
       >
         <h2 className="text-lg font-semibold text-slate-800">Datos del emisor</h2>
 
@@ -283,7 +283,7 @@ export default function InvoicingConfig() {
       </form>
 
       {/* Certificado digital */}
-      <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-5">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-slate-200 p-6 space-y-5">
         <h2 className="text-lg font-semibold text-slate-800 flex items-center gap-2">
           <HiOutlineLockClosed className="w-5 h-5 text-emerald-600" />
           Certificado digital (.p12 / .pfx)

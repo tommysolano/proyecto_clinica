@@ -71,7 +71,7 @@ export default function CashClosing() {
 
       {/* Estado de la caja actual */}
       {open ? (
-        <div className="bg-white rounded-2xl shadow-sm border border-emerald-200 p-4">
+        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-200 p-4">
           <div className="flex items-center gap-2 mb-3">
             <span className="px-2 py-0.5 rounded-full text-[11px] bg-emerald-100 text-emerald-700 font-semibold">CAJA ABIERTA</span>
             <span className="text-xs text-slate-500">desde {fmtDate(open.openedAt)} · {open.openedBy?.name || ''}</span>
@@ -85,13 +85,13 @@ export default function CashClosing() {
           </div>
         </div>
       ) : (
-        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 text-center text-slate-400 text-sm">
+        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-slate-200 p-6 text-center text-slate-400 text-sm">
           No hay una caja abierta. Abre la caja para empezar a registrar ventas del turno.
         </div>
       )}
 
       {/* Historial */}
-      <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Fecha</th><th className="px-3 py-2 text-right">Fondo inicial</th>

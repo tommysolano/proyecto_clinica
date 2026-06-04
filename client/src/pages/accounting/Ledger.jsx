@@ -37,7 +37,7 @@ export default function Ledger() {
         <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Consultar</button>
       </div>
       {data && (
-        <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
+        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
           <div className="p-3 bg-slate-50 text-sm flex gap-4 flex-wrap">
             <span>Cuenta: <b>{data.account?.code} - {data.account?.name}</b></span>
             <span>Saldo inicial: <b>${fmt(data.opening)}</b></span>

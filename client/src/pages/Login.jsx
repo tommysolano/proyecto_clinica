@@ -87,7 +87,7 @@ export default function Login() {
             <h1 className="text-xl font-bold text-slate-800">Shiluv</h1>
           </div>
 
-          <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 p-8">
+          <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-8">
             {step === 'credentials' && (
               <>
                 <div className="mb-6">
