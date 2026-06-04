@@ -894,7 +894,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
           )}
           {form.recetaItems.length > 0 && (
             <div className="overflow-x-auto bg-white rounded-lg border border-slate-200">
-              <table className="w-full text-xs">
+              <table className="tbl text-xs">
                 <thead className="bg-slate-100 text-slate-600">
                   <tr>
                     <th className="text-left px-2 py-1.5">Producto / Servicio</th>
@@ -1161,7 +1161,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
       )}
 
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="tbl">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
               <th className="text-left px-4 py-2.5 font-semibold">Fecha</th>
@@ -1332,7 +1332,7 @@ function OpticaRxTable({ value, onChange }) {
     <div className="md:col-span-3">
       <label className="text-sm font-medium text-slate-700 block mb-2">Receta óptica (RX)</label>
       <div className="overflow-x-auto bg-white rounded-lg border border-slate-200">
-        <table className="w-full text-xs">
+        <table className="tbl text-xs">
           <thead className="bg-slate-100 text-slate-600">
             <tr>
               <th className="text-left px-2 py-1.5 w-16">RX</th>
@@ -1430,7 +1430,7 @@ function CitasTab({ patientId }) {
       )}
 
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="tbl">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
               <th className="text-left px-4 py-2.5 font-semibold">Fecha</th>
@@ -1492,7 +1492,7 @@ function FacturasTab({ patientId }) {
 
   return (
     <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-      <table className="w-full text-sm">
+      <table className="tbl">
         <thead className="bg-slate-50 text-slate-600">
           <tr>
             <th className="text-left px-4 py-2.5 font-semibold">N° Factura</th>

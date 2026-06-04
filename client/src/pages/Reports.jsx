@@ -56,10 +56,10 @@ export default function Reports() {
       </h1>
 
       <div className="bg-white rounded-xl border border-slate-200 p-3 flex flex-wrap gap-3 items-end">
-        <label className="text-sm">Desde<input type="date" value={start} onChange={(e) => setStart(e.target.value)} className="block mt-1 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" /></label>
-        <label className="text-sm">Hasta<input type="date" value={end} onChange={(e) => setEnd(e.target.value)} className="block mt-1 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" /></label>
+        <label className="text-sm">Desde<input type="date" value={start} onChange={(e) => setStart(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
+        <label className="text-sm">Hasta<input type="date" value={end} onChange={(e) => setEnd(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
         <label className="text-sm">Doctor
-          <select value={doctorFilter} onChange={(e) => setDoctorFilter(e.target.value)} className="block mt-1 border border-slate-200 rounded-lg px-2 py-1.5 text-sm min-w-[200px]">
+          <select value={doctorFilter} onChange={(e) => setDoctorFilter(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm min-w-[200px]">
             <option value="">Todos los doctores</option>
             {doctors.map((d) => (
               <option key={d._id} value={d._id}>Dr. {d.name}{d.specialty ? ` — ${d.specialty}` : ''}</option>
@@ -116,7 +116,7 @@ export default function Reports() {
               </div>
 
               {expanded[p.id] && (
-                <table className="w-full text-sm">
+                <table className="tbl">
                   <thead className="bg-white text-slate-500"><tr>
                     <th className="text-left px-4 py-1.5">Fecha</th>
                     <th className="text-left px-4 py-1.5">Paciente</th>

@@ -55,7 +55,7 @@ export default function PhysicalCounts() {
       </div>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
-          <table className="w-full text-sm">
+          <table className="tbl">
             <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-2 py-2 text-left">Código</th><th className="px-2 py-2 text-left">Fecha</th><th className="px-2 py-2 text-center">Estado</th></tr></thead>
             <tbody>
               {list.map((c) => (
@@ -79,7 +79,7 @@ export default function PhysicalCounts() {
                 </div>
               )}
             </div>
-            <table className="w-full text-sm">
+            <table className="tbl">
               <thead className="bg-slate-100 text-xs"><tr>
                 <th className="px-2 py-1 text-left">Cód.</th><th className="px-2 py-1 text-left">Producto</th>
                 <th className="px-2 py-1 text-right">Sistema</th><th className="px-2 py-1 text-right">Contado</th>
@@ -103,10 +103,10 @@ export default function PhysicalCounts() {
       </div>
       <Modal isOpen={show} onClose={() => setShow(false)} title="Nueva toma física">
         <form onSubmit={start} className="space-y-3">
-          <select value={form.warehouse} onChange={(e) => setForm({ ...form, warehouse: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2">
+          <select value={form.warehouse} onChange={(e) => setForm({ ...form, warehouse: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
             <option value="">Bodega (opcional)...</option>{warehouses.map((w) => <option key={w._id} value={w._id}>{w.name}</option>)}
           </select>
-          <input placeholder="Descripción" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2" />
+          <input placeholder="Descripción" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Iniciar</button></div>
         </form>
       </Modal>

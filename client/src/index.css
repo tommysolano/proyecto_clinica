@@ -125,6 +125,27 @@ a:focus-visible, button:focus-visible, [role="button"]:focus-visible {
   .table-wrap {
     @apply w-full overflow-x-auto -mx-4 px-4 sm:mx-0 sm:px-0;
   }
+
+  /* ───── Sistema de tablas "premium" (aplicar por página a mano) ─────
+     Uso: <div class="tbl-wrap"><table class="tbl"> ... </table></div>
+     El contenedor da borde/elevación + scroll horizontal; .tbl estiliza
+     encabezado (sticky, mayúsculas finas), filas (hover) y celdas. */
+  .tbl-wrap {
+    @apply bg-white rounded-2xl border border-slate-200/80 shadow-md shadow-slate-200/60 overflow-hidden;
+  }
+  .tbl { @apply w-full text-sm border-collapse; }
+  .tbl thead th {
+    @apply sticky top-0 z-[1] bg-slate-50/95 backdrop-blur text-left px-4 py-3 text-[11px] font-semibold uppercase tracking-wider text-slate-500 border-b border-slate-200 whitespace-nowrap;
+  }
+  .tbl tbody td { @apply px-4 py-3 text-slate-700 border-t border-slate-100 align-middle; }
+  .tbl tbody tr { @apply transition-colors; }
+  .tbl tbody tr:hover { @apply bg-emerald-50/40; }
+  /* Celdas numéricas: alineadas y con cifras tabulares */
+  .tbl .num { @apply text-right tabular-nums font-mono; }
+  /* Scroll horizontal cuando la tabla es muy ancha */
+  .tbl-scroll { @apply w-full overflow-x-auto; }
+  /* Estado vacío estándar dentro de una tabla/sección */
+  .empty-state { @apply flex flex-col items-center justify-center gap-2 py-12 text-center text-slate-400; }
 }
 
 /* ───────────────── Animaciones (micro-interacciones) ───────────────── */

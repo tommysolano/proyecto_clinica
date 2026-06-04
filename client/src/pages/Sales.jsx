@@ -431,7 +431,7 @@ export default function Sales() {
 
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full">
+          <table className="tbl">
             <thead>
               <tr className="bg-emerald-50/50 border-b border-emerald-100">
                 <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">N° Venta</th>
@@ -844,7 +844,7 @@ export default function Sales() {
 
           {form.items.length > 0 && (
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="tbl">
                 <thead>
                   <tr className="border-b border-slate-200">
                     <th className="text-left py-2">Producto</th>
@@ -1032,7 +1032,7 @@ export default function Sales() {
                 )}
               </div>
             )}
-            <table className="w-full text-sm">
+            <table className="tbl">
               <thead>
                 <tr className="border-b border-slate-200">
                   <th className="text-left py-2">Producto</th>

@@ -378,7 +378,7 @@ export default function Marketing() {
             <select
               value={evolutionService}
               onChange={(e) => setEvolutionService(e.target.value)}
-              className="border border-slate-200 rounded-lg px-2 py-1"
+              className="border border-slate-200 rounded-xl px-2 py-1"
             >
               <option value="">Selecciona un servicio...</option>
               {services.map((s) => (
@@ -388,7 +388,7 @@ export default function Marketing() {
             <select
               value={evolutionRange}
               onChange={(e) => setEvolutionRange(e.target.value)}
-              className="border border-slate-200 rounded-lg px-2 py-1"
+              className="border border-slate-200 rounded-xl px-2 py-1"
             >
               {RANGE_OPTIONS.filter((o) => o.value !== 'next7days').map((o) => (
                 <option key={o.value} value={o.value}>{o.label}</option>
@@ -400,13 +400,13 @@ export default function Marketing() {
                   type="date"
                   value={evolutionCustom.startDate}
                   onChange={(e) => setEvolutionCustom((p) => ({ ...p, startDate: e.target.value }))}
-                  className="border border-slate-200 rounded-lg px-2 py-1"
+                  className="border border-slate-200 rounded-xl px-2 py-1"
                 />
                 <input
                   type="date"
                   value={evolutionCustom.endDate}
                   onChange={(e) => setEvolutionCustom((p) => ({ ...p, endDate: e.target.value }))}
-                  className="border border-slate-200 rounded-lg px-2 py-1"
+                  className="border border-slate-200 rounded-xl px-2 py-1"
                 />
               </>
             )}
@@ -480,7 +480,7 @@ export default function Marketing() {
           </div>
         </div>
         <div className="max-h-[420px] overflow-y-auto rounded border border-slate-100">
-          <table className="w-full text-sm">
+          <table className="tbl">
             <thead className="bg-slate-50 text-slate-600 sticky top-0 z-10">
               <tr>
                 <th className="px-2 py-2 w-8">
@@ -647,7 +647,7 @@ export default function Marketing() {
             <select
               value={breakdownFilter.range}
               onChange={(e) => setBreakdownFilter((p) => ({ ...p, range: e.target.value }))}
-              className="border border-slate-200 rounded-lg px-2 py-1"
+              className="border border-slate-200 rounded-xl px-2 py-1"
             >
               {RANGE_OPTIONS.filter((o) => o.value !== 'custom').map((o) => (
                 <option key={o.value} value={o.value}>{o.label}</option>
@@ -656,7 +656,7 @@ export default function Marketing() {
             <select
               value={breakdownFilter.service}
               onChange={(e) => setBreakdownFilter((p) => ({ ...p, service: e.target.value, program: '' }))}
-              className="border border-slate-200 rounded-lg px-2 py-1"
+              className="border border-slate-200 rounded-xl px-2 py-1"
             >
               <option value="">Todos los servicios</option>
               {services.map((s) => (
@@ -666,7 +666,7 @@ export default function Marketing() {
             <select
               value={breakdownFilter.program}
               onChange={(e) => setBreakdownFilter((p) => ({ ...p, program: e.target.value, service: '' }))}
-              className="border border-slate-200 rounded-lg px-2 py-1"
+              className="border border-slate-200 rounded-xl px-2 py-1"
             >
               <option value="">Todos los programas</option>
               {programsList.map((p) => (
@@ -730,7 +730,7 @@ export default function Marketing() {
             };
             return (
               <div className="overflow-x-auto">
-                <table className="w-full text-sm">
+                <table className="tbl">
                   <thead className="bg-slate-50 text-slate-600">
                     <tr>
                       <th className="text-left px-3 py-2 sticky left-0 bg-slate-50">Programa</th>
@@ -787,7 +787,7 @@ export default function Marketing() {
               <select
                 value={heatmapFilter.program}
                 onChange={(e) => setHeatmapFilter({ program: e.target.value, service: '' })}
-                className="border border-slate-200 rounded-lg px-2 py-1"
+                className="border border-slate-200 rounded-xl px-2 py-1"
               >
                 <option value="">Todos los programas</option>
                 {programsList.map((p) => (
@@ -797,7 +797,7 @@ export default function Marketing() {
               <select
                 value={heatmapFilter.service}
                 onChange={(e) => setHeatmapFilter({ service: e.target.value, program: '' })}
-                className="border border-slate-200 rounded-lg px-2 py-1"
+                className="border border-slate-200 rounded-xl px-2 py-1"
                 disabled={!!heatmapFilter.program}
               >
                 <option value="">Todos los servicios</option>

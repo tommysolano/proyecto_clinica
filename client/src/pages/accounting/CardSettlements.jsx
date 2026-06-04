@@ -125,7 +125,7 @@ export default function CardSettlements() {
       </div>
 
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-x-auto">
-        <table className="w-full text-sm">
+        <table className="tbl">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Código</th><th className="px-3 py-2 text-left">F. Emisión</th>
             <th className="px-3 py-2 text-left">Proveedor</th><th className="px-3 py-2 text-left"># Doc.</th>
@@ -200,7 +200,7 @@ export default function CardSettlements() {
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mt-3">
               {[['receivableAccount', 'Tarjetas por cobrar'], ['commissionAccount', 'Gasto comisión'], ['ivaAccount', 'IVA en compras'], ['retIvaAccount', 'Retención IVA por cobrar'], ['retIrAccount', 'Retención IR por cobrar']].map(([key, label]) => (
                 <label key={key} className="text-xs text-slate-500">{label}
-                  <select value={form[key] || ''} onChange={(e) => setForm({ ...form, [key]: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-2 py-2 text-sm">
+                  <select value={form[key] || ''} onChange={(e) => setForm({ ...form, [key]: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-2 py-2 text-sm">
                     <option value="">Predeterminada</option>{accounts.map((a) => <option key={a._id} value={a._id}>{accountLabel(a)}</option>)}
                   </select>
                 </label>
@@ -212,7 +212,7 @@ export default function CardSettlements() {
           <div className="border rounded-lg p-3">
             <div className="flex justify-between items-center mb-2"><p className="font-semibold text-sm">Transacciones</p><button type="button" onClick={addTxn} className="text-emerald-600 text-sm flex items-center gap-1"><HiOutlinePlus /> Transacción</button></div>
             <div className="overflow-x-auto">
-              <table className="text-xs w-full min-w-[1100px]">
+              <table className="tbl text-xs min-w-[1100px]">
                 <thead><tr className="text-slate-500 text-left">
                   <th className="px-1 py-1">Fecha</th><th className="px-1 py-1">#Recap</th><th className="px-1 py-1">Cuenta</th><th className="px-1 py-1">Centro de costo</th>
                   <th className="px-1 py-1 text-right">Depósito</th><th className="px-1 py-1 text-right">Comisión</th><th className="px-1 py-1 text-right">IVA</th>
@@ -304,7 +304,7 @@ export default function CardSettlements() {
               <div><span className="text-slate-500">Estado:</span> {statusBadge(viewItem.status)}</div>
             </div>
             <div className="overflow-x-auto">
-              <table className="text-xs w-full">
+              <table className="tbl text-xs">
                 <thead className="bg-slate-50"><tr>
                   <th className="px-2 py-1 text-left">Fecha</th><th className="px-2 py-1 text-left">#Recap</th><th className="px-2 py-1 text-right">Depósito</th>
                   <th className="px-2 py-1 text-right">Comisión</th><th className="px-2 py-1 text-right">IVA</th><th className="px-2 py-1 text-right">Ret IVA</th><th className="px-2 py-1 text-right">A pagar</th>
@@ -324,7 +324,7 @@ export default function CardSettlements() {
             {!!(viewItem.retentions || []).length && (
               <div>
                 <p className="font-semibold mb-1">Retenciones</p>
-                <table className="text-xs w-full">
+                <table className="tbl text-xs">
                   <thead className="bg-slate-50"><tr><th className="px-2 py-1 text-left">N°</th><th className="px-2 py-1 text-left">Tipo</th><th className="px-2 py-1 text-left">Cód SRI</th><th className="px-2 py-1 text-right">Base</th><th className="px-2 py-1 text-right">%</th><th className="px-2 py-1 text-right">Valor</th></tr></thead>
                   <tbody>{viewItem.retentions.map((r, i) => (<tr key={i} className="border-t"><td className="px-2 py-1">{r.retentionNumber}</td><td className="px-2 py-1">{r.type}</td><td className="px-2 py-1">{r.sriCode}</td><td className="px-2 py-1 text-right font-mono">{fmt(r.base)}</td><td className="px-2 py-1 text-right">{r.percentage}</td><td className="px-2 py-1 text-right font-mono">{fmt(r.value)}</td></tr>))}</tbody>
                 </table>

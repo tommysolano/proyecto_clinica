@@ -80,7 +80,7 @@ export default function Commissions() {
           <select
             value={range}
             onChange={(e) => setRange(e.target.value)}
-            className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+            className="border border-slate-200 rounded-xl px-2 py-1.5 text-sm"
           >
             {RANGES.map((r) => (
               <option key={r.value} value={r.value}>
@@ -92,7 +92,7 @@ export default function Commissions() {
             <select
               value={agent}
               onChange={(e) => setAgent(e.target.value)}
-              className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+              className="border border-slate-200 rounded-xl px-2 py-1.5 text-sm"
             >
               <option value="">Todos los agentes</option>
               {agents.map((a) => (
@@ -194,7 +194,7 @@ export default function Commissions() {
                     </ResponsiveContainer>
                   </div>
                   <div className="overflow-x-auto mt-3">
-                    <table className="w-full text-sm">
+                    <table className="tbl">
                       <thead className="bg-slate-50 text-slate-600">
                         <tr>
                           <th className="text-left px-3 py-2">#</th>
@@ -230,7 +230,7 @@ export default function Commissions() {
               Detalle ({data?.details?.length || 0} citas)
             </h2>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm">
+              <table className="tbl">
                 <thead className="bg-slate-50 text-slate-600">
                   <tr>
                     <th className="text-left px-3 py-2">Fecha</th>

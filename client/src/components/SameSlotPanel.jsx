@@ -146,7 +146,7 @@ export default function SameSlotPanel({ date, startTime, excludeId, clinicId, co
                 {list.map((a) => (
                   <li
                     key={a._id}
-                    className="bg-white border border-slate-200 rounded-lg px-3 py-2 text-xs"
+                    className="bg-white border border-slate-200 rounded-xl px-3.5 py-2.5 text-xs"
                   >
                     <div className="flex items-center justify-between gap-2">
                       <span className="font-medium text-slate-800 truncate">

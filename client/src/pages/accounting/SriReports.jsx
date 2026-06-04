@@ -56,8 +56,8 @@ export default function SriReports() {
           <button key={k} onClick={() => { setTab(k); setData(null); }} className={`px-3 py-2 rounded-lg text-xs ${tab === k ? 'bg-emerald-600 text-white' : 'bg-white border'}`}>{l}</button>)}
       </div>
       <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 items-end">
-        <div><label className="text-xs text-slate-500">Año</label><input type="number" value={year} onChange={(e) => setYear(+e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2 w-24" /></div>
-        <div><label className="text-xs text-slate-500">Mes</label><input type="number" min="1" max="12" value={month} onChange={(e) => setMonth(+e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2 w-20" /></div>
+        <div><label className="text-xs text-slate-500">Año</label><input type="number" value={year} onChange={(e) => setYear(+e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5 w-24" /></div>
+        <div><label className="text-xs text-slate-500">Mes</label><input type="number" min="1" max="12" value={month} onChange={(e) => setMonth(+e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5 w-20" /></div>
         <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">{tab === 'ATS' ? 'Descargar XML' : 'Generar'}</button>
         {tab === 'RDEP' && <button onClick={downloadRdepXml} className="px-4 py-2 bg-indigo-600 text-white rounded-lg flex items-center gap-1"><HiOutlineDocumentArrowDown className="w-4 h-4" /> Descargar XML</button>}
         {(tab === 'F103' || tab === 'F104') && (
@@ -83,7 +83,7 @@ export default function SriReports() {
       {data && (
         <div className="bg-white rounded-xl p-4 shadow-sm overflow-auto">
           {Array.isArray(data) ? (
-            <table className="w-full text-sm">
+            <table className="tbl">
               <thead className="bg-emerald-50 text-xs uppercase"><tr>{Object.keys(data[0] || {}).map((k) => <th key={k} className="px-2 py-1 text-left">{k}</th>)}</tr></thead>
               <tbody>
                 {data.map((row, i) => (

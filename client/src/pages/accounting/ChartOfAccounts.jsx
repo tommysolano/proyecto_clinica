@@ -81,7 +81,7 @@ export default function ChartOfAccounts() {
       </div>
 
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="tbl">
           <thead className="bg-emerald-50 text-emerald-900 text-xs uppercase">
             <tr>
               <th className="px-3 py-2 text-left">Código</th>
@@ -116,21 +116,21 @@ export default function ChartOfAccounts() {
       <Modal isOpen={show} onClose={() => setShow(false)} title={editing ? 'Editar cuenta' : 'Nueva cuenta'}>
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <div><label className="text-xs text-slate-600">Código *</label><input required value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2" /></div>
-            <div><label className="text-xs text-slate-600">Nivel</label><input type="number" min="1" max="6" value={form.level} onChange={(e) => setForm({ ...form, level: +e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2" /></div>
+            <div><label className="text-xs text-slate-600">Código *</label><input required value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
+            <div><label className="text-xs text-slate-600">Nivel</label><input type="number" min="1" max="6" value={form.level} onChange={(e) => setForm({ ...form, level: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
           </div>
-          <div><label className="text-xs text-slate-600">Nombre *</label><input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2" /></div>
+          <div><label className="text-xs text-slate-600">Nombre *</label><input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="text-xs text-slate-600">Tipo</label>
-              <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2">
+              <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
                 <option>ACTIVO</option><option>PASIVO</option><option>PATRIMONIO</option>
                 <option>INGRESO</option><option>GASTO</option><option>COSTO</option><option>ORDEN</option>
               </select>
             </div>
             <div>
               <label className="text-xs text-slate-600">Naturaleza</label>
-              <select value={form.nature} onChange={(e) => setForm({ ...form, nature: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2">
+              <select value={form.nature} onChange={(e) => setForm({ ...form, nature: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
                 <option>DEBITO</option><option>CREDITO</option>
               </select>
             </div>

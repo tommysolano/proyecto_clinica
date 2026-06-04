@@ -291,9 +291,9 @@ export default function AutoMessages() {
           </div>
           <div className="flex items-center gap-2 text-sm text-slate-600">
             <span>De</span>
-            <input type="time" value={editor.hourFrom} onChange={(e) => setEditor({ ...editor, hourFrom: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm" />
+            <input type="time" value={editor.hourFrom} onChange={(e) => setEditor({ ...editor, hourFrom: e.target.value })} className="border border-slate-200 rounded-xl px-3 py-1.5 text-sm" />
             <span>a</span>
-            <input type="time" value={editor.hourTo} onChange={(e) => setEditor({ ...editor, hourTo: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm" />
+            <input type="time" value={editor.hourTo} onChange={(e) => setEditor({ ...editor, hourTo: e.target.value })} className="border border-slate-200 rounded-xl px-3 py-1.5 text-sm" />
           </div>
         </div>
 
@@ -441,7 +441,7 @@ export default function AutoMessages() {
           ) : visibleFlows.length === 0 ? (
             <div className="text-center py-12 text-slate-400">Sin flujos {selectedFolder !== '__all__' ? 'en esta carpeta' : ''}. Crea el primero con “Nuevo flujo”.</div>
           ) : (
-            <table className="w-full text-sm">
+            <table className="tbl">
               <thead className="bg-emerald-50/60 border-b border-emerald-100">
                 <tr>
                   <th className="text-left px-4 py-3 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Flujo</th>
@@ -526,14 +526,14 @@ function StepCard({ step, idx, total, onChange, onRemove, onMove }) {
       {step.type === 'wait' && (
         <label className="flex items-center gap-2 text-sm text-slate-600">
           Esperar
-          <input type="number" min="0" value={step.waitMinutes} onChange={(e) => onChange({ waitMinutes: Number(e.target.value) })} className="w-24 border border-slate-200 rounded-lg px-3 py-1.5 text-sm" />
+          <input type="number" min="0" value={step.waitMinutes} onChange={(e) => onChange({ waitMinutes: Number(e.target.value) })} className="w-24 border border-slate-200 rounded-xl px-3 py-1.5 text-sm" />
           minutos antes del siguiente paso
         </label>
       )}
       {step.type === 'opportunity' && (
         <label className="flex items-center gap-2 text-sm text-slate-600">
           Crear oportunidad en etapa
-          <select value={step.opportunityStage} onChange={(e) => onChange({ opportunityStage: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm">
+          <select value={step.opportunityStage} onChange={(e) => onChange({ opportunityStage: e.target.value })} className="border border-slate-200 rounded-xl px-3 py-1.5 text-sm">
             {STAGES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
           </select>
         </label>

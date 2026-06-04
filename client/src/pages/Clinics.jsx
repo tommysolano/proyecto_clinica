@@ -161,7 +161,7 @@ export default function Clinics() {
           </div>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="tbl">
             <thead className="bg-emerald-50/50 text-emerald-700">
               <tr>
                 <th className="text-left px-5 py-3 text-xs font-semibold uppercase">Sucursal</th>
@@ -213,7 +213,7 @@ export default function Clinics() {
       </div>
 
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="tbl">
           <thead className="bg-emerald-50/50 text-emerald-700">
             <tr>
               <th className="text-left px-5 py-3 text-xs font-semibold uppercase">Nombre</th>

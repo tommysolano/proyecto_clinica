@@ -224,7 +224,7 @@ export default function Quotations() {
       </div>
 
       <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="tbl">
           <thead className="bg-emerald-50/60 border-b border-emerald-100">
             <tr>
               <th className="text-left px-4 py-3 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Número</th>
@@ -289,7 +289,7 @@ export default function Quotations() {
               <div><span className="text-slate-500">Creado:</span> {new Date(viewItem.createdAt).toLocaleDateString('es-EC')}</div>
               {viewItem.validUntil && <div><span className="text-slate-500">Válida hasta:</span> {new Date(viewItem.validUntil).toLocaleDateString('es-EC')}</div>}
             </div>
-            <table className="w-full text-xs border-t">
+            <table className="tbl text-xs border-t">
               <thead className="bg-slate-50"><tr><th className="px-2 py-1 text-left">Descripción</th><th className="px-2 py-1 text-right">Cant.</th><th className="px-2 py-1 text-right">P. Unit.</th><th className="px-2 py-1 text-right">Desc.</th><th className="px-2 py-1 text-right">Subtotal</th></tr></thead>
               <tbody>
                 {(viewItem.items || []).map((it, i) => (
@@ -331,7 +331,7 @@ export default function Quotations() {
                     clientEmail: p?.email || form.clientEmail,
                     clientPhone: p?.phone || form.clientPhone,
                   });
-                }} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm bg-slate-50/50">
+                }} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50">
                   <option value="">—</option>
                   {patients.map((p) => (
                     <option key={p._id} value={p._id}>{p.firstName} {p.lastName}</option>
@@ -340,23 +340,23 @@ export default function Quotations() {
               </label>
               <label className="block">
                 <span className="text-xs font-medium text-slate-600">Válida hasta</span>
-                <input type="date" value={form.validUntil} onChange={(e) => setForm({ ...form, validUntil: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm bg-slate-50/50" />
+                <input type="date" value={form.validUntil} onChange={(e) => setForm({ ...form, validUntil: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50" />
               </label>
               <label className="block">
                 <span className="text-xs font-medium text-slate-600">Cliente *</span>
-                <input value={form.clientName} onChange={(e) => setForm({ ...form, clientName: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm bg-slate-50/50" />
+                <input value={form.clientName} onChange={(e) => setForm({ ...form, clientName: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50" />
               </label>
               <label className="block">
                 <span className="text-xs font-medium text-slate-600">Cédula/RUC</span>
-                <input value={form.clientCedula} onChange={(e) => setForm({ ...form, clientCedula: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm bg-slate-50/50" />
+                <input value={form.clientCedula} onChange={(e) => setForm({ ...form, clientCedula: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50" />
               </label>
               <label className="block">
                 <span className="text-xs font-medium text-slate-600">Email</span>
-                <input type="email" value={form.clientEmail} onChange={(e) => setForm({ ...form, clientEmail: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm bg-slate-50/50" />
+                <input type="email" value={form.clientEmail} onChange={(e) => setForm({ ...form, clientEmail: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50" />
               </label>
               <label className="block">
                 <span className="text-xs font-medium text-slate-600">Teléfono</span>
-                <input value={form.clientPhone} onChange={(e) => setForm({ ...form, clientPhone: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm bg-slate-50/50" />
+                <input value={form.clientPhone} onChange={(e) => setForm({ ...form, clientPhone: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50" />
               </label>
             </div>
           </section>
@@ -387,9 +387,9 @@ export default function Quotations() {
                       placeholder="Buscar producto/servicio..."
                     />
                   </div>
-                  <input type="number" min="1" value={it.quantity} onChange={(e) => updateItem(idx, 'quantity', Number(e.target.value))} className="col-span-3 sm:col-span-1 border border-slate-200 rounded-lg px-2 py-2 text-sm bg-white text-center" />
-                  <input type="number" step="0.01" value={it.unitPrice} onChange={(e) => updateItem(idx, 'unitPrice', Number(e.target.value))} className="col-span-4 sm:col-span-2 border border-slate-200 rounded-lg px-2 py-2 text-sm bg-white text-right" />
-                  <input type="number" min="0" max="100" step="1" value={it.discount} onChange={(e) => updateItem(idx, 'discount', Number(e.target.value))} className="col-span-4 sm:col-span-2 border border-slate-200 rounded-lg px-2 py-2 text-sm bg-white text-right" />
+                  <input type="number" min="1" value={it.quantity} onChange={(e) => updateItem(idx, 'quantity', Number(e.target.value))} className="col-span-3 sm:col-span-1 border border-slate-200 rounded-xl px-2 py-2 text-sm bg-white text-center" />
+                  <input type="number" step="0.01" value={it.unitPrice} onChange={(e) => updateItem(idx, 'unitPrice', Number(e.target.value))} className="col-span-4 sm:col-span-2 border border-slate-200 rounded-xl px-2 py-2 text-sm bg-white text-right" />
+                  <input type="number" min="0" max="100" step="1" value={it.discount} onChange={(e) => updateItem(idx, 'discount', Number(e.target.value))} className="col-span-4 sm:col-span-2 border border-slate-200 rounded-xl px-2 py-2 text-sm bg-white text-right" />
                   <button type="button" onClick={() => setForm({ ...form, items: form.items.filter((_, i) => i !== idx) })} className="col-span-1 text-rose-600 hover:text-rose-800 bg-transparent border-none cursor-pointer text-lg">×</button>
                 </div>
               ))}
@@ -406,7 +406,7 @@ export default function Quotations() {
           {/* Notas */}
           <div>
             <label className="text-xs font-bold text-emerald-700 uppercase tracking-wider">Notas / términos</label>
-            <textarea rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Condiciones de pago, términos, etc." className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm bg-slate-50/50" />
+            <textarea rows={2} value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} placeholder="Condiciones de pago, términos, etc." className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50" />
           </div>
 
           <div className="flex justify-end gap-2 pt-2">

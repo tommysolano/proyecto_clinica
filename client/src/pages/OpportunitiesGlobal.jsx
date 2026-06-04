@@ -104,11 +104,11 @@ export default function OpportunitiesGlobal() {
         <HiOutlineFunnel className="w-5 h-5 text-slate-500" />
         <label className="text-sm">Desde
           <input type="date" value={filter.from} onChange={(e) => setFilter({ ...filter, from: e.target.value })}
-            className="block mt-1 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+            className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
         </label>
         <label className="text-sm">Hasta
           <input type="date" value={filter.to} onChange={(e) => setFilter({ ...filter, to: e.target.value })}
-            className="block mt-1 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+            className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
         </label>
         <label className="text-sm flex-1 min-w-[180px]">Paciente
           <div className="relative mt-1">
@@ -172,7 +172,7 @@ export default function OpportunitiesGlobal() {
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="tbl">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
               <th className="px-3 py-2 w-8"></th>

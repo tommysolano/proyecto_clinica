@@ -207,11 +207,11 @@ export default function ManagementReports() {
         {TABS.map((t) => <button key={t.key} onClick={() => { setTab(t.key); setData(null); }} className={`px-3 py-2 rounded-lg text-xs ${tab === t.key ? 'bg-emerald-600 text-white' : 'bg-white border'}`}>{t.label}</button>)}
       </div>
       <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 items-end flex-wrap">
-        <div><label className="text-xs text-slate-500 block">Desde</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2" /></div>
-        <div><label className="text-xs text-slate-500 block">Hasta</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2" /></div>
+        <div><label className="text-xs text-slate-500 block">Desde</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
+        <div><label className="text-xs text-slate-500 block">Hasta</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
         {tab === 'PERIODO' && (
           <div><label className="text-xs text-slate-500 block">Agrupar</label>
-            <select value={granularity} onChange={(e) => setGranularity(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2"><option value="day">Diario</option><option value="week">Semanal</option><option value="month">Mensual</option><option value="quarter">Trimestral</option><option value="year">Anual</option></select>
+            <select value={granularity} onChange={(e) => setGranularity(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option value="day">Diario</option><option value="week">Semanal</option><option value="month">Mensual</option><option value="quarter">Trimestral</option><option value="year">Anual</option></select>
           </div>
         )}
         <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Generar</button>
@@ -225,7 +225,7 @@ export default function ManagementReports() {
 
 function Table({ head, rows }) {
   return (
-    <table className="w-full text-sm">
+    <table className="tbl">
       <thead className="bg-emerald-50 text-xs uppercase"><tr>{head.map((h, i) => <th key={i} className={`px-3 py-2 ${i === 0 ? 'text-left' : 'text-right'}`}>{h}</th>)}</tr></thead>
       <tbody>
         {rows.map((r, i) => <tr key={i} className="border-t">{r.map((c, j) => <td key={j} className={`px-3 py-2 ${j === 0 ? 'text-left' : 'text-right font-mono'}`}>{c}</td>)}</tr>)}

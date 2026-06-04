@@ -39,7 +39,7 @@ export default function CreditCards() {
   const addPos = () => setForm((f) => ({ ...f, pos: [...f.pos, { code: '', name: '', terminal: '', commissionRate: 0, active: true }] }));
   const updatePos = (i, k, v) => setForm((f) => ({ ...f, pos: f.pos.map((p, idx) => idx === i ? { ...p, [k]: v } : p) }));
   const removePos = (i) => setForm((f) => ({ ...f, pos: f.pos.filter((_, idx) => idx !== i) }));
-  const inputCls = 'border border-slate-200 rounded-lg px-3 py-2';
+  const inputCls = 'border border-slate-200 rounded-xl px-3.5 py-2.5';
 
   return (
     <div className="space-y-4">
@@ -48,7 +48,7 @@ export default function CreditCards() {
         <button onClick={() => { setEditing(null); setForm(EMPTY); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
       </div>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="tbl">
           <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Nombre</th><th className="px-3 py-2 text-left">Marca</th><th className="px-3 py-2 text-left">Adquiriente</th><th className="px-3 py-2 text-left">Tipo</th><th className="px-3 py-2 text-right">% Comisión</th><th className="px-3 py-2 text-center">POS</th><th></th></tr></thead>
           <tbody>
             {list.map((c) => (
@@ -85,10 +85,10 @@ export default function CreditCards() {
             <div className="space-y-2">
               {form.pos.map((p, i) => (
                 <div key={i} className="grid grid-cols-12 gap-2 items-center">
-                  <input placeholder="Código" value={p.code} onChange={(e) => updatePos(i, 'code', e.target.value)} className="col-span-3 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-                  <input placeholder="Nombre" value={p.name} onChange={(e) => updatePos(i, 'name', e.target.value)} className="col-span-3 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-                  <input placeholder="Terminal" value={p.terminal} onChange={(e) => updatePos(i, 'terminal', e.target.value)} className="col-span-3 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-                  <input type="number" step="0.01" placeholder="% Com." value={p.commissionRate} onChange={(e) => updatePos(i, 'commissionRate', +e.target.value)} className="col-span-2 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+                  <input placeholder="Código" value={p.code} onChange={(e) => updatePos(i, 'code', e.target.value)} className="col-span-3 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
+                  <input placeholder="Nombre" value={p.name} onChange={(e) => updatePos(i, 'name', e.target.value)} className="col-span-3 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
+                  <input placeholder="Terminal" value={p.terminal} onChange={(e) => updatePos(i, 'terminal', e.target.value)} className="col-span-3 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
+                  <input type="number" step="0.01" placeholder="% Com." value={p.commissionRate} onChange={(e) => updatePos(i, 'commissionRate', +e.target.value)} className="col-span-2 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
                   <button type="button" onClick={() => removePos(i)} className="col-span-1 text-rose-600"><HiOutlineTrash className="w-4 h-4" /></button>
                 </div>
               ))}

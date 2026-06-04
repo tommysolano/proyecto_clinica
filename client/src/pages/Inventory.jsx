@@ -336,7 +336,7 @@ export default function Inventory() {
           {/* Products Table */}
           <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
             <div className="overflow-x-auto">
-              <table className="w-full">
+              <table className="tbl">
                 <thead>
                   <tr className="bg-emerald-50/50 border-b border-emerald-100">
                     <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Código</th>
@@ -402,7 +402,7 @@ export default function Inventory() {
       {tab === 'movements' && (
         <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full">
+            <table className="tbl">
               <thead>
                 <tr className="bg-emerald-50/50 border-b border-emerald-100">
                   <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Fecha</th>

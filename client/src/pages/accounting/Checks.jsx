@@ -48,7 +48,7 @@ export default function Checks() {
         </select>
       </div>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="tbl">
           <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Nº Cheque</th><th className="px-3 py-2 text-center">Estado</th><th className="px-3 py-2 text-left">Beneficiario</th><th className="px-3 py-2 text-right">Monto</th><th className="px-3 py-2 text-left">Fecha</th><th></th></tr></thead>
           <tbody>
             {list.map((chk) => (
@@ -69,8 +69,8 @@ export default function Checks() {
         <div className="space-y-3">
           <p className="text-sm text-slate-500">Crea un rango de cheques disponibles para la cuenta seleccionada.</p>
           <div className="grid grid-cols-2 gap-3">
-            <input type="number" placeholder="Desde Nº" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <input type="number" placeholder="Hasta Nº" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
+            <input type="number" placeholder="Desde Nº" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input type="number" placeholder="Hasta Nº" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
           </div>
           <div className="flex justify-end gap-2"><button onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button onClick={generate} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Generar</button></div>
         </div>

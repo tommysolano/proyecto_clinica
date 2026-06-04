@@ -179,7 +179,7 @@ export default function Referrals() {
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="tbl">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
               <th className="text-left px-3 py-2">Fecha</th>

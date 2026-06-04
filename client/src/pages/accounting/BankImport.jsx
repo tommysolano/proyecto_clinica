@@ -76,13 +76,13 @@ export default function BankImport() {
           </label>
         </div>
         <p className="text-xs text-slate-400">Formato por línea: <code>fecha,descripción,referencia,monto</code> · monto negativo = débito/retiro.</p>
-        <textarea value={raw} onChange={(e) => setRaw(e.target.value)} rows={6} placeholder="01/06/2026,Depósito cliente,REF123,1500.00&#10;03/06/2026,Comisión mantenimiento,,-8.50" className="w-full border border-slate-200 rounded-lg px-3 py-2 font-mono text-xs" />
+        <textarea value={raw} onChange={(e) => setRaw(e.target.value)} rows={6} placeholder="01/06/2026,Depósito cliente,REF123,1500.00&#10;03/06/2026,Comisión mantenimiento,,-8.50" className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 font-mono text-xs" />
         <button onClick={match} disabled={loading} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm flex items-center gap-2"><HiOutlineArrowPath /> {loading ? 'Conciliando...' : 'Conciliar'}</button>
       </div>
 
       {rows && (
         <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="tbl">
             <thead className="bg-emerald-50 text-xs uppercase"><tr>
               <th className="px-3 py-2 text-left">Fecha</th><th className="px-3 py-2 text-left">Descripción (banco)</th>
               <th className="px-3 py-2 text-right">Monto</th><th className="px-3 py-2 text-left">Estado</th><th className="px-3 py-2 text-left">Acción</th>

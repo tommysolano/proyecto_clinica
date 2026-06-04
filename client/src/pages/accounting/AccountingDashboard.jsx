@@ -134,7 +134,7 @@ export default function AccountingDashboard() {
 
       <Modal isOpen={showLowStock} onClose={() => setShowLowStock(false)} title="Productos con stock bajo" size="lg">
         <div className="max-h-96 overflow-y-auto">
-          <table className="w-full text-sm">
+          <table className="tbl">
             <thead className="bg-slate-50 sticky top-0"><tr><th className="px-3 py-2 text-left">Código</th><th className="px-3 py-2 text-left">Producto</th><th className="px-3 py-2 text-right">Stock</th><th className="px-3 py-2 text-right">Mínimo</th></tr></thead>
             <tbody>
               {(data.lowStock || []).map((p) => (

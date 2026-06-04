@@ -49,7 +49,7 @@ export default function Reconciliations() {
       </div>
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
-          <table className="w-full text-sm">
+          <table className="tbl">
             <thead className="bg-emerald-50 text-xs"><tr><th className="px-2 py-2 text-left">Banco</th><th className="px-2 py-2 text-left">Período</th><th className="px-2 py-2 text-center">Estado</th></tr></thead>
             <tbody>
               {list.map((c) => (
@@ -72,7 +72,7 @@ export default function Reconciliations() {
                 <button onClick={close} className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm flex items-center gap-1"><HiOutlineCheck /> Cerrar</button>
               </div>}
             </div>
-            <table className="w-full text-sm">
+            <table className="tbl">
               <thead className="bg-slate-100 text-xs"><tr>
                 <th className="px-2 py-1 text-left">Fecha</th><th className="px-2 py-1 text-left">Tipo</th>
                 <th className="px-2 py-1 text-left">Desc</th><th className="px-2 py-1 text-right">Monto</th>
@@ -95,14 +95,14 @@ export default function Reconciliations() {
       </div>
       <Modal isOpen={show} onClose={() => setShow(false)} title="Nueva conciliación">
         <form onSubmit={start} className="space-y-3">
-          <select required value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2">
+          <select required value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
             <option value="">Cuenta...</option>{banks.map((b) => <option key={b._id} value={b._id}>{b.name}</option>)}
           </select>
           <div className="grid grid-cols-2 gap-3">
-            <input type="date" required value={form.periodStart} onChange={(e) => setForm({ ...form, periodStart: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <input type="date" required value={form.periodEnd} onChange={(e) => setForm({ ...form, periodEnd: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
+            <input type="date" required value={form.periodStart} onChange={(e) => setForm({ ...form, periodStart: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input type="date" required value={form.periodEnd} onChange={(e) => setForm({ ...form, periodEnd: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
           </div>
-          <input type="number" step="0.01" placeholder="Saldo extracto" value={form.statementBalance} onChange={(e) => setForm({ ...form, statementBalance: +e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2" />
+          <input type="number" step="0.01" placeholder="Saldo extracto" value={form.statementBalance} onChange={(e) => setForm({ ...form, statementBalance: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Iniciar</button></div>
         </form>
       </Modal>

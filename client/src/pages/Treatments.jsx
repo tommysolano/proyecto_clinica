@@ -528,7 +528,7 @@ export default function Treatments() {
                     min="1"
                     value={it.quantity}
                     onChange={(e) => updateItem(idx, 'quantity', Number(e.target.value))}
-                    className="w-20 border border-slate-200 rounded-lg px-2 py-2 text-sm"
+                    className="w-20 border border-slate-200 rounded-xl px-2 py-2 text-sm"
                   />
                   <button
                     type="button"

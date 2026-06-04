@@ -25,18 +25,18 @@ export default function Decimos() {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineGift className="text-emerald-600" /> Plantillas de Décimos</h1>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-3 flex gap-2 items-center flex-wrap">
-        <select value={type} onChange={(e) => setType(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2">
+        <select value={type} onChange={(e) => setType(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5">
           <option value="DECIMO_TERCERO">Décimo Tercero (13ro)</option>
           <option value="DECIMO_CUARTO">Décimo Cuarto (14to)</option>
         </select>
-        <input type="number" value={year} onChange={(e) => setYear(+e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2 w-28" />
+        <input type="number" value={year} onChange={(e) => setYear(+e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5 w-28" />
         <button onClick={generate} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Generar</button>
         {data && <button onClick={exportCsv} className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2"><HiOutlineArrowDownTray /> Excel/CSV</button>}
       </div>
       {data && (
         <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
           <div className="p-3 text-sm text-slate-500 border-b">Período: {fmtDate(data.periodStart)} — {fmtDate(data.periodEnd)} · Total: <span className="font-semibold text-slate-800">${fmt(data.total)}</span></div>
-          <table className="w-full text-sm">
+          <table className="tbl">
             <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Cédula</th><th className="px-3 py-2 text-left">Empleado</th><th className="px-3 py-2 text-right">Sueldo base</th><th className="px-3 py-2 text-right">Meses</th><th className="px-3 py-2 text-right">Valor décimo</th></tr></thead>
             <tbody>
               {data.rows.map((r) => (

@@ -92,7 +92,7 @@ export default function CashClosing() {
 
       {/* Historial */}
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-x-auto">
-        <table className="w-full text-sm">
+        <table className="tbl">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Fecha</th><th className="px-3 py-2 text-right">Fondo inicial</th>
             <th className="px-3 py-2 text-right">Efectivo ventas</th><th className="px-3 py-2 text-right">Esperado</th>

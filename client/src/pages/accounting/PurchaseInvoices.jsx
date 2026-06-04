@@ -148,7 +148,7 @@ export default function PurchaseInvoices() {
         </select>
       </div>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="tbl">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Serie</th><th className="px-3 py-2 text-left">Fecha</th>
             <th className="px-3 py-2 text-left">Tipo</th><th className="px-3 py-2 text-left">Proveedor</th>
@@ -186,20 +186,20 @@ export default function PurchaseInvoices() {
         <form onSubmit={submit} className="space-y-3">
           {authorizeId && <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2">Factura cargada automáticamente. Verifica los datos y asigna la cuenta contable de cada ítem antes de autorizar; al autorizar se contabilizará.</div>}
           <div className="grid grid-cols-4 gap-3">
-            <select required value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2 col-span-2">
+            <select required value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5 col-span-2">
               <option value="">Proveedor...</option>
               {suppliers.map((s) => <option key={s._id} value={s._id}>{s.ruc} - {s.razonSocial}</option>)}
             </select>
-            <select value={form.docType} onChange={(e) => setForm({ ...form, docType: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2">
+            <select value={form.docType} onChange={(e) => setForm({ ...form, docType: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5">
               <option>FACTURA</option><option>NOTA_VENTA</option><option>LIQUIDACION</option><option>NOTA_DEBITO_REC</option><option>NOTA_CREDITO_REC</option>
             </select>
-            <input type="date" required value={form.fechaEmision} onChange={(e) => setForm({ ...form, fechaEmision: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <input placeholder="Estab" value={form.estab} onChange={(e) => setForm({ ...form, estab: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <input placeholder="Pto Emi" value={form.ptoEmi} onChange={(e) => setForm({ ...form, ptoEmi: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <input required placeholder="Secuencial" value={form.secuencial} onChange={(e) => setForm({ ...form, secuencial: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <input placeholder="Autorización" value={form.autorizacion} onChange={(e) => setForm({ ...form, autorizacion: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
+            <input type="date" required value={form.fechaEmision} onChange={(e) => setForm({ ...form, fechaEmision: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input placeholder="Estab" value={form.estab} onChange={(e) => setForm({ ...form, estab: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input placeholder="Pto Emi" value={form.ptoEmi} onChange={(e) => setForm({ ...form, ptoEmi: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input required placeholder="Secuencial" value={form.secuencial} onChange={(e) => setForm({ ...form, secuencial: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input placeholder="Autorización" value={form.autorizacion} onChange={(e) => setForm({ ...form, autorizacion: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
           </div>
-          <table className="w-full text-sm">
+          <table className="tbl">
             <thead className="bg-slate-100 text-xs"><tr>
               <th className="px-2 py-1">Descripción</th><th>Cant.</th><th>P.U.</th><th>Desc.</th><th>IVA%</th><th>Cuenta gasto</th><th></th>
             </tr></thead>
@@ -284,7 +284,7 @@ export default function PurchaseInvoices() {
               </div>
             ))}
             <button type="button" onClick={() => setForm({ ...form, retentions: [...form.retentions, { type: 'RENTA', code: '', baseAmount: 0, percentage: 0, amount: 0 }] })} className="text-emerald-600 text-xs mt-1">+ Retención</button>
-            <input placeholder="Nro comprobante retención" value={form.retentionNumber} onChange={(e) => setForm({ ...form, retentionNumber: e.target.value })} className="block mt-1 w-full border border-slate-200 rounded-lg px-3 py-2" />
+            <input placeholder="Nro comprobante retención" value={form.retentionNumber} onChange={(e) => setForm({ ...form, retentionNumber: e.target.value })} className="block mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
           </div>
 
           <div className="flex justify-end gap-2"><button type="button" onClick={() => { setShow(false); setAuthorizeId(null); }} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">{authorizeId ? 'Autorizar y contabilizar' : 'Registrar'}</button></div>
@@ -321,7 +321,7 @@ export default function PurchaseInvoices() {
               className="block w-full text-sm text-slate-600 file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border-0 file:bg-emerald-600 file:text-white file:cursor-pointer"
             />
             <p className="text-xs text-slate-500 mb-1 mt-2">O pega el contenido aquí:</p>
-            <textarea value={importTxt} onChange={(e) => setImportTxt(e.target.value)} rows={8} className="w-full border border-slate-200 rounded-lg px-3 py-2 font-mono text-xs" />
+            <textarea value={importTxt} onChange={(e) => setImportTxt(e.target.value)} rows={8} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 font-mono text-xs" />
           </div>
         )}
         <div className="flex justify-end gap-2 mt-3"><button onClick={() => setShowImport(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button onClick={submitImport} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Importar</button></div>

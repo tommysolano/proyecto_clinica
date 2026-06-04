@@ -48,7 +48,7 @@ export default function Kardex() {
       {data && (
         <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
           <div className="p-3 border-b text-sm flex justify-between"><span className="font-semibold text-slate-700">{data.product?.code} — {data.product?.name}</span><span className="text-slate-500">Saldo actual: <span className="font-bold text-slate-800">{data.currentBalance} {data.product?.unit}</span></span></div>
-          <table className="w-full text-sm">
+          <table className="tbl">
             <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Fecha</th><th className="px-3 py-2 text-left">Tipo</th><th className="px-3 py-2 text-left">Bodega</th><th className="px-3 py-2 text-right">Cantidad</th><th className="px-3 py-2 text-right">Costo unit.</th><th className="px-3 py-2 text-right">Saldo</th><th className="px-3 py-2 text-left">Referencia</th></tr></thead>
             <tbody>
               {data.movements.map((m) => (

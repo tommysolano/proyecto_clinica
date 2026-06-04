@@ -46,7 +46,7 @@ export default function CreditCardBatches() {
         <button onClick={() => { setForm(EMPTY); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nuevo lote</button>
       </div>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="tbl">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Código</th><th className="px-3 py-2 text-left">Fecha</th>
             <th className="px-3 py-2 text-left">Adquirente</th><th className="px-3 py-2 text-right">Bruto</th>
@@ -74,13 +74,13 @@ export default function CreditCardBatches() {
       <Modal isOpen={show} onClose={() => setShow(false)} title="Nuevo lote de tarjetas" size="xl">
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-4 gap-3">
-            <input type="date" required value={form.closeDate} onChange={(e) => setForm({ ...form, closeDate: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <select value={form.cardType} onChange={(e) => setForm({ ...form, cardType: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2"><option>CREDITO</option><option>DEBITO</option></select>
-            <input required placeholder="Adquirente (Datafast/Medianet)" value={form.acquirer} onChange={(e) => setForm({ ...form, acquirer: e.target.value })} className="col-span-2 border border-slate-200 rounded-lg px-3 py-2" />
-            <input type="number" step="0.01" placeholder="% comisión" value={form.commissionRate} onChange={(e) => setForm({ ...form, commissionRate: +e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <input type="number" step="0.01" placeholder="% retención" value={form.retentionRate} onChange={(e) => setForm({ ...form, retentionRate: +e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <input type="number" step="0.01" placeholder="% IVA com." value={form.ivaCommissionRate} onChange={(e) => setForm({ ...form, ivaCommissionRate: +e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <select required value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2"><option value="">Banco...</option>{banks.map((b) => <option key={b._id} value={b._id}>{b.name}</option>)}</select>
+            <input type="date" required value={form.closeDate} onChange={(e) => setForm({ ...form, closeDate: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <select value={form.cardType} onChange={(e) => setForm({ ...form, cardType: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option>CREDITO</option><option>DEBITO</option></select>
+            <input required placeholder="Adquirente (Datafast/Medianet)" value={form.acquirer} onChange={(e) => setForm({ ...form, acquirer: e.target.value })} className="col-span-2 border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input type="number" step="0.01" placeholder="% comisión" value={form.commissionRate} onChange={(e) => setForm({ ...form, commissionRate: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input type="number" step="0.01" placeholder="% retención" value={form.retentionRate} onChange={(e) => setForm({ ...form, retentionRate: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input type="number" step="0.01" placeholder="% IVA com." value={form.ivaCommissionRate} onChange={(e) => setForm({ ...form, ivaCommissionRate: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <select required value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option value="">Banco...</option>{banks.map((b) => <option key={b._id} value={b._id}>{b.name}</option>)}</select>
           </div>
           <div className="border rounded-lg p-3">
             <div className="flex justify-between items-center mb-2"><p className="font-semibold text-sm">Vouchers</p><button type="button" onClick={addVoucher} className="text-emerald-600 text-sm flex items-center gap-1"><HiOutlinePlus /> Voucher</button></div>

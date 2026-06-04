@@ -219,7 +219,7 @@ export default function CallCenterConfig() {
         {webhookUrls && (
           <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs space-y-2">
             <p className="font-semibold text-slate-700">URL del webhook (cópiala al panel del proveedor)</p>
-            <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-lg px-2 py-1.5">
+            <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-xl px-2 py-1.5">
               <code className="flex-1 text-slate-700 break-all">{webhookUrls[tab]}</code>
               <button
                 type="button"

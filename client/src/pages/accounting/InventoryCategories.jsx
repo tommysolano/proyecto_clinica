@@ -44,7 +44,7 @@ export default function InventoryCategories() {
 
   const parentOptions = list.filter((c) => c.kind === form.kind && !c.parent && c._id !== editing?._id);
   const nameById = (id) => list.find((c) => c._id === id)?.name || '';
-  const inputCls = 'border border-slate-200 rounded-lg px-3 py-2';
+  const inputCls = 'border border-slate-200 rounded-xl px-3.5 py-2.5';
 
   return (
     <div className="space-y-4">
@@ -53,7 +53,7 @@ export default function InventoryCategories() {
         <button onClick={() => { setEditing(null); setForm(EMPTY); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
       </div>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="tbl">
           <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Cód.</th><th className="px-3 py-2 text-left">Nombre</th><th className="px-3 py-2 text-left">Tipo</th><th className="px-3 py-2 text-left">Categoría padre</th><th className="px-3 py-2 text-right">% Dep.</th><th className="px-3 py-2 text-right">Vida útil</th><th></th></tr></thead>
           <tbody>
             {list.map((c) => (
@@ -78,7 +78,7 @@ export default function InventoryCategories() {
           <div className="grid grid-cols-2 gap-3">
             <input required placeholder="Código" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className={inputCls} />
             <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value, parent: '' })} className={inputCls}><option>INVENTARIO</option><option>ACTIVO_FIJO</option></select>
-            <input required placeholder="Nombre" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="col-span-2 border border-slate-200 rounded-lg px-3 py-2" />
+            <input required placeholder="Nombre" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="col-span-2 border border-slate-200 rounded-xl px-3.5 py-2.5" />
             <select value={form.parent} onChange={(e) => setForm({ ...form, parent: e.target.value })} className={`${inputCls} col-span-2`}>
               <option value="">Categoría raíz (sin padre)</option>
               {parentOptions.map((c) => <option key={c._id} value={c._id}>{c.code} - {c.name}</option>)}

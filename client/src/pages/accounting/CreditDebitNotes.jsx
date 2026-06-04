@@ -43,7 +43,7 @@ export default function CreditDebitNotes() {
         <button onClick={() => { setForm(EMPTY); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
       </div>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="tbl">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Tipo</th><th className="px-3 py-2 text-left">Sentido</th>
             <th className="px-3 py-2 text-left">Serie</th><th className="px-3 py-2 text-left">Afecta</th>
@@ -69,14 +69,14 @@ export default function CreditDebitNotes() {
       <Modal isOpen={show} onClose={() => setShow(false)} title="Nueva nota" size="xl">
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-4 gap-3">
-            <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2"><option>NC</option><option>ND</option></select>
-            <select value={form.direction} onChange={(e) => setForm({ ...form, direction: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2"><option>EMITIDA</option><option>RECIBIDA</option></select>
-            <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <input placeholder="Serie" value={form.serie} onChange={(e) => setForm({ ...form, serie: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <input placeholder="Serie que afecta" value={form.serieAfecta} onChange={(e) => setForm({ ...form, serieAfecta: e.target.value })} className="col-span-2 border border-slate-200 rounded-lg px-3 py-2" />
-            <input placeholder="Motivo" value={form.motivo} onChange={(e) => setForm({ ...form, motivo: e.target.value })} className="col-span-2 border border-slate-200 rounded-lg px-3 py-2" />
+            <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option>NC</option><option>ND</option></select>
+            <select value={form.direction} onChange={(e) => setForm({ ...form, direction: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option>EMITIDA</option><option>RECIBIDA</option></select>
+            <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input placeholder="Serie" value={form.serie} onChange={(e) => setForm({ ...form, serie: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input placeholder="Serie que afecta" value={form.serieAfecta} onChange={(e) => setForm({ ...form, serieAfecta: e.target.value })} className="col-span-2 border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input placeholder="Motivo" value={form.motivo} onChange={(e) => setForm({ ...form, motivo: e.target.value })} className="col-span-2 border border-slate-200 rounded-xl px-3.5 py-2.5" />
           </div>
-          <table className="w-full text-sm">
+          <table className="tbl">
             <thead className="bg-slate-100 text-xs"><tr><th>Descripción</th><th>Cant.</th><th>P.U.</th><th>IVA%</th><th></th></tr></thead>
             <tbody>
               {form.items.map((it, i) => (

@@ -12,6 +12,8 @@ import {
   HiOutlineTrash,
   HiOutlineMagnifyingGlass,
   HiOutlineEye,
+  HiOutlineUsers,
+  HiOutlineArrowDownTray,
 } from 'react-icons/hi2';
 
 const emptyForm = {
@@ -196,11 +198,16 @@ export default function Patients() {
   const handleChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
 
   return (
-    <div className="p-6">
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Pacientes</h1>
-          <p className="text-sm text-slate-500 mt-1">Gestión de pacientes registrados</p>
+    <div className="space-y-6">
+      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+        <div className="flex items-center gap-3">
+          <div className="w-11 h-11 rounded-2xl bg-emerald-100 text-emerald-700 flex items-center justify-center shadow-sm">
+            <HiOutlineUsers className="w-6 h-6" />
+          </div>
+          <div>
+            <h1 className="page-title">Pacientes</h1>
+            <p className="page-subtitle">Gestión de pacientes registrados</p>
+          </div>
         </div>
         {canWrite && (
           <div className="flex gap-2">
@@ -212,21 +219,18 @@ export default function Patients() {
                   toast.error(err.message || 'Error al exportar');
                 }
               }}
-              className="flex items-center gap-2 bg-white border border-emerald-200 text-emerald-700 hover:bg-emerald-50 px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer"
+              className="btn-secondary"
             >
-              Excel
+              <HiOutlineArrowDownTray className="w-4 h-4" /> Excel
             </button>
-            <button
-              onClick={openNew}
-              className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white px-5 py-2.5 rounded-xl text-sm font-medium cursor-pointer border-none shadow-lg shadow-emerald-200/50"
-            >
+            <button onClick={openNew} className="btn-primary">
               <HiOutlinePlus className="w-5 h-5" /> Nuevo Paciente
             </button>
           </div>
         )}
       </div>
 
-      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 mb-6 p-4">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-4">
         <div className="flex gap-3 items-center flex-wrap">
           <div className="relative flex-1 min-w-[240px]">
             <HiOutlineMagnifyingGlass className="absolute left-3.5 top-1/2 -translate-y-1/2 w-5 h-5 text-slate-400" />
@@ -259,7 +263,7 @@ export default function Patients() {
 
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
         <div className="overflow-x-auto">
-          <table className="w-full">
+          <table className="tbl">
             <thead>
               <tr className="bg-emerald-50/50 border-b border-emerald-100">
                 <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Cédula</th>
@@ -271,15 +275,21 @@ export default function Patients() {
             </thead>
             <tbody>
               {loading ? (
-                <tr>
-                  <td colSpan="5" className="text-center py-10 text-slate-500">
-                    Cargando...
-                  </td>
-                </tr>
+                Array.from({ length: 6 }).map((_, i) => (
+                  <tr key={`sk-${i}`} className="border-b border-emerald-50">
+                    {Array.from({ length: 5 }).map((__, j) => (
+                      <td key={j} className="px-6 py-3.5"><div className="skeleton h-4 w-full max-w-[160px]" /></td>
+                    ))}
+                  </tr>
+                ))
               ) : patients.length === 0 ? (
                 <tr>
-                  <td colSpan="5" className="text-center py-10 text-slate-500">
-                    No se encontraron pacientes
+                  <td colSpan="5">
+                    <div className="empty-state">
+                      <HiOutlineUsers className="w-10 h-10 text-slate-300" />
+                      <p className="font-medium text-slate-500">No se encontraron pacientes</p>
+                      <p className="text-xs text-slate-400">Ajusta la búsqueda o registra un nuevo paciente.</p>
+                    </div>
                   </td>
                 </tr>
               ) : (

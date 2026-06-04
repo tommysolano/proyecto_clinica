@@ -169,7 +169,7 @@ export default function CommissionRules() {
 
       {tab === 'rules' && (
         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-          <table className="w-full text-sm">
+          <table className="tbl">
             <thead className="bg-slate-50 text-slate-600">
               <tr>
                 <th className="text-left px-3 py-2">Nombre</th>
@@ -208,10 +208,10 @@ export default function CommissionRules() {
       {tab === 'report' && (
         <div className="space-y-3">
           <div className="bg-white rounded-xl border border-slate-200 p-3 flex flex-wrap gap-3 items-end">
-            <label className="text-sm">Desde<input type="date" value={start} onChange={(e) => setStart(e.target.value)} className="block mt-1 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" /></label>
-            <label className="text-sm">Hasta<input type="date" value={end} onChange={(e) => setEnd(e.target.value)} className="block mt-1 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" /></label>
+            <label className="text-sm">Desde<input type="date" value={start} onChange={(e) => setStart(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
+            <label className="text-sm">Hasta<input type="date" value={end} onChange={(e) => setEnd(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
             <label className="text-sm">Usuario
-              <select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} className="block mt-1 border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+              <select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm">
                 <option value="">Todos</option>
                 {users.map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
               </select>
@@ -239,7 +239,7 @@ export default function CommissionRules() {
                   )}
                 </div>
                 <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-                  <table className="w-full text-sm">
+                  <table className="tbl">
                     <thead className="bg-slate-50 text-slate-600"><tr>
                       <th className="text-left px-3 py-2">Usuario</th>
                       <th className="text-right px-3 py-2">Comisiones</th>

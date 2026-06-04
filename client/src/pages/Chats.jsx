@@ -615,19 +615,19 @@ function SavedRepliesModal({ replies, onClose, onChange }) {
             placeholder="atajo (ej. saludo)"
             value={form.shortcut}
             onChange={(e) => setForm({ ...form, shortcut: e.target.value.toLowerCase().replace(/\s/g, '') })}
-            className="col-span-3 border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+            className="col-span-3 border border-slate-200 rounded-xl px-2 py-1.5 text-sm"
           />
           <input
             placeholder="título (opcional)"
             value={form.title}
             onChange={(e) => setForm({ ...form, title: e.target.value })}
-            className="col-span-4 border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+            className="col-span-4 border border-slate-200 rounded-xl px-2 py-1.5 text-sm"
           />
           <input
             placeholder="mensaje"
             value={form.body}
             onChange={(e) => setForm({ ...form, body: e.target.value })}
-            className="col-span-5 border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+            className="col-span-5 border border-slate-200 rounded-xl px-2 py-1.5 text-sm"
           />
         </div>
         <div className="flex justify-end gap-2">
@@ -749,7 +749,7 @@ function GalleryModal({ images, onClose, onChange, onSend }) {
           placeholder="Caption (opcional)"
           value={caption}
           onChange={(e) => setCaption(e.target.value)}
-          className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+          className="w-full border border-slate-200 rounded-xl px-2 py-1.5 text-sm"
         />
         <div className="flex justify-end gap-2">
           <button
@@ -1482,7 +1482,7 @@ function SupervisorBoard({ stats, reload }) {
           </button>
         </div>
         <div className="overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="tbl">
             <thead className="bg-slate-50 text-slate-600">
               <tr>
                 <th className="text-left px-3 py-2">Agente</th>
@@ -1649,7 +1649,7 @@ function AppointmentFromChatModal({ conv, services, onClose, onCreated }) {
             <select
               value={clinicId}
               onChange={(e) => setClinicId(e.target.value)}
-              className="w-full border border-slate-200 rounded-lg px-2 py-1.5 mt-1"
+              className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1"
             >
               {clinics.map((c) => (
                 <option key={c._id} value={c._id}>{c.name}</option>
@@ -1676,16 +1676,16 @@ function AppointmentFromChatModal({ conv, services, onClose, onCreated }) {
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-xs font-medium text-slate-600">Fecha</label>
-                  <input type="date" value={it.date} onChange={(e) => updateItem(idx, { date: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 mt-1 bg-white" />
+                  <input type="date" value={it.date} onChange={(e) => updateItem(idx, { date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
                 </div>
                 <div>
                   <label className="text-xs font-medium text-slate-600">Hora</label>
-                  <input type="time" value={it.startTime} onChange={(e) => updateItem(idx, { startTime: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 mt-1 bg-white" />
+                  <input type="time" value={it.startTime} onChange={(e) => updateItem(idx, { startTime: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
                 </div>
               </div>
               <div>
                 <label className="text-xs font-medium text-slate-600">Motivo (opcional)</label>
-                <input value={it.reason} onChange={(e) => updateItem(idx, { reason: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 mt-1 bg-white" />
+                <input value={it.reason} onChange={(e) => updateItem(idx, { reason: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
               </div>
               <div>
                 <label className="text-xs font-medium text-slate-600">Servicios *</label>
@@ -1765,7 +1765,7 @@ function ChatServicePicker({ services, selectedIds, onAdd, onRemove }) {
           onFocus={() => setOpen(true)}
           onBlur={() => setTimeout(() => setOpen(false), 180)}
           placeholder="Buscar servicio..."
-          className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white"
+          className="w-full border border-slate-200 rounded-xl px-2 py-1.5 text-xs bg-white"
         />
         {open && matches.length > 0 && (
           <div className="absolute z-20 left-0 right-0 mt-1 max-h-40 overflow-y-auto bg-white border border-emerald-100 rounded-lg shadow-md">
@@ -1881,7 +1881,7 @@ function QuotationFromChatModal({ conv, services, onClose, onCreated }) {
 
         {items.length > 0 && (
           <div className="border border-slate-200 rounded-xl overflow-hidden">
-            <table className="w-full text-xs">
+            <table className="tbl text-xs">
               <thead className="bg-slate-50 text-slate-600">
                 <tr>
                   <th className="text-left px-2 py-1.5">Ítem</th>
@@ -1930,12 +1930,12 @@ function QuotationFromChatModal({ conv, services, onClose, onCreated }) {
         <div className="grid grid-cols-2 gap-2">
           <div>
             <label className="text-xs font-medium text-slate-600">Válida hasta</label>
-            <input type="date" value={validUntil} min={today} onChange={(e) => setValidUntil(e.target.value)} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 mt-1 bg-white" />
+            <input type="date" value={validUntil} min={today} onChange={(e) => setValidUntil(e.target.value)} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
           </div>
         </div>
         <div>
           <label className="text-xs font-medium text-slate-600">Notas (opcional)</label>
-          <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 mt-1 bg-white" />
+          <textarea rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
         </div>
 
         <div className="flex justify-end gap-2 pt-2">

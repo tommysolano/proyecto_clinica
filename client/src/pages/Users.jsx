@@ -158,7 +158,7 @@ export default function Users() {
       </div>
 
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-slate-200 overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="tbl">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
               <th className="text-left px-4 py-3 font-semibold">Nombre</th>

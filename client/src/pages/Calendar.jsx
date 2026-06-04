@@ -233,7 +233,7 @@ export default function Calendar() {
         <select
           value={doctorFilter}
           onChange={(e) => setDoctorFilter(e.target.value)}
-          className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm"
+          className="border border-slate-200 rounded-xl px-3 py-1.5 text-sm"
         >
           <option value="">Todos los doctores</option>
           {doctors.map((d) => (
@@ -245,7 +245,7 @@ export default function Calendar() {
         <select
           value={serviceFilter}
           onChange={(e) => { setServiceFilter(e.target.value); setProgramFilter(''); }}
-          className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm"
+          className="border border-slate-200 rounded-xl px-3 py-1.5 text-sm"
         >
           <option value="">Todos los servicios</option>
           {services.map((s) => (
@@ -255,7 +255,7 @@ export default function Calendar() {
         <select
           value={programFilter}
           onChange={(e) => { setProgramFilter(e.target.value); setServiceFilter(''); }}
-          className="border border-slate-200 rounded-lg px-3 py-1.5 text-sm"
+          className="border border-slate-200 rounded-xl px-3 py-1.5 text-sm"
         >
           <option value="">Todos los programas</option>
           {programs.map((p) => (

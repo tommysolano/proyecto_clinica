@@ -115,8 +115,8 @@ export default function FinancialReports() {
           <button key={k} onClick={() => { setTab(k); setData(null); }} className={`px-4 py-2 rounded-lg text-sm ${tab === k ? 'bg-emerald-600 text-white' : 'bg-white border'}`}>{l}</button>)}
       </div>
       <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 items-end flex-wrap">
-        <div><label className="text-xs text-slate-500 block">Desde</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2" /></div>
-        <div><label className="text-xs text-slate-500 block">Hasta</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2" /></div>
+        <div><label className="text-xs text-slate-500 block">Desde</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
+        <div><label className="text-xs text-slate-500 block">Hasta</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
         <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Generar</button>
         {(tab === 'BG' || tab === 'PYG') && (
           <button
@@ -224,7 +224,7 @@ function FinancialTable({ title, rows = [], total: totalValue = 0, totalClass = 
     <section className="space-y-2">
       <h3 className="font-semibold text-emerald-700 border-b pb-1">{title}</h3>
       <div className="overflow-x-auto rounded-lg border border-slate-100">
-        <table className="w-full min-w-[840px] text-sm">
+        <table className="tbl min-w-[840px]">
           <thead className="bg-emerald-50 text-xs uppercase text-slate-600">
             <tr>
               <th className="px-3 py-2 text-left">Codigo</th>
@@ -277,7 +277,7 @@ function CashFlowTable({ flows = [], onAccountClick }) {
     <section className="space-y-2">
       <h3 className="font-semibold text-emerald-700 border-b pb-1">Movimientos de caja</h3>
       <div className="overflow-x-auto rounded-lg border border-slate-100">
-        <table className="w-full min-w-[920px] text-sm">
+        <table className="tbl min-w-[920px]">
           <thead className="bg-emerald-50 text-xs uppercase text-slate-600">
             <tr>
               <th className="px-3 py-2 text-left">Fecha</th>
@@ -395,7 +395,7 @@ function DetailSummary({ detail }) {
 function LedgerDetail({ rows = [], opening }) {
   return (
     <div className="overflow-x-auto rounded-lg border border-slate-100">
-      <table className="w-full min-w-[860px] text-sm">
+      <table className="tbl min-w-[860px]">
         <thead className="bg-emerald-50 text-xs uppercase text-slate-600">
           <tr>
             <th className="px-3 py-2 text-left">Fecha</th>
@@ -445,7 +445,7 @@ function JournalDetail({ entries = [], onAccountClick }) {
             <span className="text-slate-600">{entry.description}</span>
           </div>
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[760px] text-sm">
+            <table className="tbl min-w-[760px]">
               <thead className="bg-emerald-50 text-xs uppercase text-slate-600">
                 <tr>
                   <th className="px-3 py-2 text-left">Codigo</th>
@@ -489,7 +489,7 @@ function FlowDetail({ detail, onAccountClick }) {
   return (
     <div className="space-y-4">
       <div className="overflow-x-auto rounded-lg border border-slate-100">
-        <table className="w-full min-w-[760px] text-sm">
+        <table className="tbl min-w-[760px]">
           <thead className="bg-emerald-50 text-xs uppercase text-slate-600">
             <tr>
               <th className="px-3 py-2 text-left">Cuenta relacionada</th>
@@ -521,7 +521,7 @@ function FlowDetail({ detail, onAccountClick }) {
       </div>
 
       <div className="overflow-x-auto rounded-lg border border-slate-100">
-        <table className="w-full min-w-[980px] text-sm">
+        <table className="tbl min-w-[980px]">
           <thead className="bg-emerald-50 text-xs uppercase text-slate-600">
             <tr>
               <th className="px-3 py-2 text-left">Fecha</th>

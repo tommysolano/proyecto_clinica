@@ -47,14 +47,14 @@ export default function Payroll() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineCalculator className="text-emerald-600" /> Nómina</h1>
         <div className="flex gap-2 items-center">
-          <input type="number" value={year} onChange={(e) => setYear(+e.target.value)} className="w-24 border border-slate-200 rounded-lg px-3 py-2" />
+          <input type="number" value={year} onChange={(e) => setYear(+e.target.value)} className="w-24 border border-slate-200 rounded-xl px-3.5 py-2.5" />
           <button onClick={() => setShow(true)} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Generar período</button>
         </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
-          <table className="w-full text-sm">
+          <table className="tbl">
             <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-2 py-2 text-left">Período</th><th className="px-2 py-2 text-right">Neto</th><th className="px-2 py-2 text-center">Estado</th></tr></thead>
             <tbody>
               {list.map((p) => (
@@ -77,7 +77,7 @@ export default function Payroll() {
                 {selected.status === 'CERRADO' && <button onClick={markPaid} className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm flex items-center gap-1"><HiOutlineCheck /> Marcar pagado</button>}
               </div>
             </div>
-            <table className="w-full text-xs">
+            <table className="tbl text-xs">
               <thead className="bg-slate-100"><tr>
                 <th className="px-1 py-1 text-left">Empleado</th>
                 <th className="px-1 py-1 text-right">Sueldo</th>
@@ -116,8 +116,8 @@ export default function Payroll() {
       <Modal isOpen={show} onClose={() => setShow(false)} title="Generar nómina">
         <form onSubmit={generate} className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <input type="number" required value={form.year} onChange={(e) => setForm({ ...form, year: +e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <input type="number" min="1" max="12" required value={form.month} onChange={(e) => setForm({ ...form, month: +e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
+            <input type="number" required value={form.year} onChange={(e) => setForm({ ...form, year: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input type="number" min="1" max="12" required value={form.month} onChange={(e) => setForm({ ...form, month: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
           </div>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Generar</button></div>
         </form>

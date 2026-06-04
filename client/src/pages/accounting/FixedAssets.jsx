@@ -111,7 +111,7 @@ export default function FixedAssets() {
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
 
-  const inputCls = 'border border-slate-200 rounded-lg px-3 py-2';
+  const inputCls = 'border border-slate-200 rounded-xl px-3.5 py-2.5';
 
   return (
     <div className="space-y-4">
@@ -123,7 +123,7 @@ export default function FixedAssets() {
         </div>
       </div>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="tbl">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Código</th><th className="px-3 py-2 text-left">Nombre</th>
             <th className="px-3 py-2 text-left">Categoría</th><th className="px-3 py-2 text-left">Sede</th>
@@ -221,7 +221,7 @@ export default function FixedAssets() {
             <div>
               <p className="text-sm font-semibold text-slate-700 mb-1">Historial de depreciación</p>
               <div className="max-h-48 overflow-y-auto border rounded-lg">
-                <table className="w-full text-xs">
+                <table className="tbl text-xs">
                   <thead className="bg-slate-50"><tr><th className="px-2 py-1 text-left">Período</th><th className="px-2 py-1 text-right">Depreciación</th><th className="px-2 py-1 text-right">Acumulado</th><th className="px-2 py-1 text-right">Valor libros</th></tr></thead>
                   <tbody>
                     {(detail.history || []).map((h, i) => (

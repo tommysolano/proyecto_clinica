@@ -203,12 +203,12 @@ export default function AttendChargeModal({ appointment, doctors = [], onClose, 
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="block text-sm">Método de pago
-                  <select value={pay.paymentMethod} onChange={(e) => setPay({ ...pay, paymentMethod: e.target.value, bankAccount: '', creditCard: '', cardPos: '' })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3 py-2 text-sm bg-slate-50/50">
+                  <select value={pay.paymentMethod} onChange={(e) => setPay({ ...pay, paymentMethod: e.target.value, bankAccount: '', creditCard: '', cardPos: '' })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50">
                     {Object.entries(PAYMENT_METHODS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                   </select>
                 </label>
                 <label className="block text-sm">Recomendado por
-                  <select value={pay.recommendedBy} onChange={(e) => setPay({ ...pay, recommendedBy: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3 py-2 text-sm bg-slate-50/50">
+                  <select value={pay.recommendedBy} onChange={(e) => setPay({ ...pay, recommendedBy: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50">
                     <option value="">— Nadie —</option>
                     {staff.map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
                   </select>
@@ -217,7 +217,7 @@ export default function AttendChargeModal({ appointment, doctors = [], onClose, 
 
               {pay.paymentMethod === 'transferencia' && (
                 <label className="block text-sm">Cuenta bancaria
-                  <select value={pay.bankAccount} onChange={(e) => setPay({ ...pay, bankAccount: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3 py-2 text-sm bg-slate-50/50">
+                  <select value={pay.bankAccount} onChange={(e) => setPay({ ...pay, bankAccount: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50">
                     <option value="">{payOptions.accounts.length ? 'Seleccionar cuenta…' : 'No hay cuentas configuradas'}</option>
                     {payOptions.accounts.map((a) => <option key={a._id} value={a._id}>{a.name} — {a.bank}</option>)}
                   </select>
@@ -226,14 +226,14 @@ export default function AttendChargeModal({ appointment, doctors = [], onClose, 
               {pay.paymentMethod === 'tarjeta' && (
                 <div className="grid grid-cols-2 gap-3">
                   <label className="block text-sm">Tarjeta
-                    <select value={pay.creditCard} onChange={(e) => setPay({ ...pay, creditCard: e.target.value, cardPos: '' })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3 py-2 text-sm bg-slate-50/50">
+                    <select value={pay.creditCard} onChange={(e) => setPay({ ...pay, creditCard: e.target.value, cardPos: '' })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50">
                       <option value="">{payOptions.cards.length ? 'Seleccionar…' : 'No hay tarjetas'}</option>
                       {payOptions.cards.map((c) => <option key={c._id} value={c._id}>{c.name} ({c.brand})</option>)}
                     </select>
                   </label>
                   {card?.pos?.length > 0 && (
                     <label className="block text-sm">POS / Terminal
-                      <select value={pay.cardPos} onChange={(e) => setPay({ ...pay, cardPos: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3 py-2 text-sm bg-slate-50/50">
+                      <select value={pay.cardPos} onChange={(e) => setPay({ ...pay, cardPos: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50">
                         <option value="">Seleccionar POS…</option>
                         {card.pos.map((p) => <option key={p.code} value={p.code}>{p.name || p.code}</option>)}
                       </select>

@@ -56,7 +56,7 @@ export default function Employees() {
         <button onClick={() => { setEditing(null); setForm(EMPTY); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nuevo</button>
       </div>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="tbl">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Código</th><th className="px-3 py-2 text-left">Cédula</th>
             <th className="px-3 py-2 text-left">Nombre</th><th className="px-3 py-2 text-left">Cargo</th>
@@ -94,19 +94,19 @@ export default function Employees() {
       <Modal isOpen={show} onClose={() => setShow(false)} title={editing ? 'Editar empleado' : 'Nuevo empleado'} size="lg">
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <input required placeholder="Código" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <select value={form.tipoIdentificacion} onChange={(e) => setForm({ ...form, tipoIdentificacion: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2"><option>CEDULA</option><option>RUC</option><option>PASAPORTE</option></select>
-            <input required placeholder="Identificación" value={form.identificacion} onChange={(e) => setForm({ ...form, identificacion: e.target.value })} className="col-span-2 border border-slate-200 rounded-lg px-3 py-2" />
-            <input required placeholder="Nombres" value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <input required placeholder="Apellidos" value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <input placeholder="Email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <input placeholder="Teléfono" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <input placeholder="Cargo" value={form.position} onChange={(e) => setForm({ ...form, position: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <input placeholder="Departamento" value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <select value={form.contractType} onChange={(e) => setForm({ ...form, contractType: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2"><option>INDEFINIDO</option><option>FIJO</option><option>EVENTUAL</option><option>JUVENIL</option></select>
-            <select value={form.paymentFrequency} onChange={(e) => setForm({ ...form, paymentFrequency: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2"><option>MENSUAL</option><option>QUINCENAL</option></select>
-            <input type="date" required value={form.hireDate} onChange={(e) => setForm({ ...form, hireDate: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <input type="number" placeholder="Cargas familiares" value={form.chargesFamily} onChange={(e) => setForm({ ...form, chargesFamily: +e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
+            <input required placeholder="Código" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <select value={form.tipoIdentificacion} onChange={(e) => setForm({ ...form, tipoIdentificacion: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option>CEDULA</option><option>RUC</option><option>PASAPORTE</option></select>
+            <input required placeholder="Identificación" value={form.identificacion} onChange={(e) => setForm({ ...form, identificacion: e.target.value })} className="col-span-2 border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input required placeholder="Nombres" value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input required placeholder="Apellidos" value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input placeholder="Email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input placeholder="Teléfono" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input placeholder="Cargo" value={form.position} onChange={(e) => setForm({ ...form, position: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input placeholder="Departamento" value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <select value={form.contractType} onChange={(e) => setForm({ ...form, contractType: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option>INDEFINIDO</option><option>FIJO</option><option>EVENTUAL</option><option>JUVENIL</option></select>
+            <select value={form.paymentFrequency} onChange={(e) => setForm({ ...form, paymentFrequency: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option>MENSUAL</option><option>QUINCENAL</option></select>
+            <input type="date" required value={form.hireDate} onChange={(e) => setForm({ ...form, hireDate: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input type="number" placeholder="Cargas familiares" value={form.chargesFamily} onChange={(e) => setForm({ ...form, chargesFamily: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
           </div>
           {/* Sección de sueldo (NET/GROSS) */}
           <div className="bg-emerald-50/60 border border-emerald-100 rounded-xl p-3 space-y-3">
@@ -114,7 +114,7 @@ export default function Employees() {
             <div className="grid grid-cols-3 gap-3 items-end">
               <label className="text-xs flex flex-col gap-1">
                 <span className="text-slate-600">Tipo de sueldo</span>
-                <select value={form.salaryType} onChange={(e) => setForm({ ...form, salaryType: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2">
+                <select value={form.salaryType} onChange={(e) => setForm({ ...form, salaryType: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5">
                   <option value="GROSS">Bruto (estándar)</option>
                   <option value="NET">Neto pactado (gross-up)</option>
                 </select>
@@ -122,12 +122,12 @@ export default function Employees() {
               {form.salaryType === 'GROSS' ? (
                 <label className="text-xs flex flex-col gap-1">
                   <span className="text-slate-600">Sueldo bruto mensual</span>
-                  <input type="number" step="0.01" required value={form.baseSalary} onChange={(e) => setForm({ ...form, baseSalary: +e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
+                  <input type="number" step="0.01" required value={form.baseSalary} onChange={(e) => setForm({ ...form, baseSalary: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
                 </label>
               ) : (
                 <label className="text-xs flex flex-col gap-1">
                   <span className="text-slate-600">Neto a recibir</span>
-                  <input type="number" step="0.01" required value={form.netSalary} onChange={(e) => setForm({ ...form, netSalary: +e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
+                  <input type="number" step="0.01" required value={form.netSalary} onChange={(e) => setForm({ ...form, netSalary: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
                 </label>
               )}
               <div className="text-xs text-slate-600">
@@ -157,18 +157,18 @@ export default function Employees() {
               <label className="text-sm flex items-center gap-1"><input type="checkbox" checked={form.deductible} onChange={(e) => setForm({ ...form, deductible: e.target.checked })} /> Gasto deducible</label>
             </div>
             <div className="grid grid-cols-3 gap-3">
-              <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Décimo 13ro</span><select value={form.decimoTerceroAcumulado} onChange={(e) => setForm({ ...form, decimoTerceroAcumulado: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2"><option>MENSUALIZADO</option><option>ACUMULADO</option></select></label>
-              <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Décimo 14to</span><select value={form.decimoCuartoAcumulado} onChange={(e) => setForm({ ...form, decimoCuartoAcumulado: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2"><option>MENSUALIZADO</option><option>ACUMULADO</option></select></label>
-              <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Fondos reserva</span><select value={form.fondosReservaAcumulado} onChange={(e) => setForm({ ...form, fondosReservaAcumulado: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2"><option>MENSUALIZADO</option><option>ACUMULADO</option></select></label>
+              <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Décimo 13ro</span><select value={form.decimoTerceroAcumulado} onChange={(e) => setForm({ ...form, decimoTerceroAcumulado: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option>MENSUALIZADO</option><option>ACUMULADO</option></select></label>
+              <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Décimo 14to</span><select value={form.decimoCuartoAcumulado} onChange={(e) => setForm({ ...form, decimoCuartoAcumulado: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option>MENSUALIZADO</option><option>ACUMULADO</option></select></label>
+              <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Fondos reserva</span><select value={form.fondosReservaAcumulado} onChange={(e) => setForm({ ...form, fondosReservaAcumulado: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option>MENSUALIZADO</option><option>ACUMULADO</option></select></label>
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <select value={form.salaryOriginClinic} onChange={(e) => setForm({ ...form, salaryOriginClinic: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2">
+            <select value={form.salaryOriginClinic} onChange={(e) => setForm({ ...form, salaryOriginClinic: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5">
               <option value="">Origen del sueldo (sede)...</option>{clinics.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}
             </select>
-            <input placeholder="Banco" value={form.bankName} onChange={(e) => setForm({ ...form, bankName: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <input placeholder="Nº cuenta bancaria" value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
-            <select value={form.bankAccountType} onChange={(e) => setForm({ ...form, bankAccountType: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2"><option value="">Tipo de cuenta...</option><option value="AHORROS">Ahorros</option><option value="CORRIENTE">Corriente</option></select>
+            <input placeholder="Banco" value={form.bankName} onChange={(e) => setForm({ ...form, bankName: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <input placeholder="Nº cuenta bancaria" value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <select value={form.bankAccountType} onChange={(e) => setForm({ ...form, bankAccountType: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option value="">Tipo de cuenta...</option><option value="AHORROS">Ahorros</option><option value="CORRIENTE">Corriente</option></select>
           </div>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button></div>
         </form>
@@ -177,7 +177,7 @@ export default function Employees() {
         {history && (
           <div className="space-y-2">
             {(history.salaryHistory || []).length === 0 && <div className="text-sm text-slate-500">Sin cambios registrados.</div>}
-            <table className="w-full text-xs">
+            <table className="tbl text-xs">
               <thead className="bg-slate-100"><tr>
                 <th className="px-2 py-1 text-left">Fecha</th>
                 <th className="px-2 py-1 text-center">De</th>

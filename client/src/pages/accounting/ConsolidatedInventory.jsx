@@ -77,7 +77,7 @@ export default function ConsolidatedInventory() {
       </div>
 
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
-        <table className="w-full text-sm">
+        <table className="tbl">
           <thead className="bg-emerald-50 text-xs uppercase">
             <tr>
               <th className="w-8"></th>
@@ -128,7 +128,7 @@ export default function ConsolidatedInventory() {
                     <tr className="bg-slate-50/70">
                       <td></td>
                       <td colSpan={8} className="px-3 py-3">
-                        <table className="w-full text-xs">
+                        <table className="tbl text-xs">
                           <thead className="text-slate-500">
                             <tr>
                               <th className="px-2 py-1 text-left">Clínica</th>

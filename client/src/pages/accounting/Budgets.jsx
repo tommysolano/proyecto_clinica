@@ -69,11 +69,11 @@ export default function Budgets() {
           <p className="text-xs text-slate-500">Define el monto anual presupuestado por cuenta de ingreso/gasto/costo (se distribuye en 12 meses).</p>
           {lines.map((l, i) => (
             <div key={i} className="flex gap-2 items-center">
-              <select value={l.account} onChange={(e) => setLine(i, { account: e.target.value })} className="flex-1 border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+              <select value={l.account} onChange={(e) => setLine(i, { account: e.target.value })} className="flex-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm">
                 <option value="">Cuenta...</option>
                 {accounts.map((a) => <option key={a._id} value={a._id}>{a.code} — {a.name}</option>)}
               </select>
-              <input type="number" step="0.01" placeholder="Monto anual" value={l.annual} onChange={(e) => setLine(i, { annual: +e.target.value })} className="w-40 border border-slate-200 rounded-lg px-2 py-1.5 text-sm text-right" />
+              <input type="number" step="0.01" placeholder="Monto anual" value={l.annual} onChange={(e) => setLine(i, { annual: +e.target.value })} className="w-40 border border-slate-200 rounded-xl px-2 py-1.5 text-sm text-right" />
               <button onClick={() => delLine(i)} className="text-rose-600"><HiOutlineTrash className="w-5 h-5" /></button>
             </div>
           ))}
@@ -86,7 +86,7 @@ export default function Budgets() {
 
       {tab === 'exec' && (
         <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-x-auto">
-          <table className="w-full text-sm">
+          <table className="tbl">
             <thead className="bg-emerald-50 text-xs uppercase"><tr>
               <th className="px-3 py-2 text-left">Cuenta</th><th className="px-3 py-2 text-right">Presupuesto</th>
               <th className="px-3 py-2 text-right">Real</th><th className="px-3 py-2 text-right">Variación</th><th className="px-3 py-2 text-right">% Cumpl.</th>
