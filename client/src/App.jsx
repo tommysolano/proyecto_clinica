@@ -350,6 +350,16 @@ function AppRoutes() {
                   />
                 ))}
 
+                {/* Caja (apertura/cierre) accesible también al cajero */}
+                <Route
+                  path="/cash-register"
+                  element={
+                    <RoleRoute roles={['admin', 'contabilidad', 'cajero']}>
+                      <CashClosing />
+                    </RoleRoute>
+                  }
+                />
+
                 <Route path="/settings" element={<Settings />} />
                 <Route
                   path="/reports"

@@ -82,89 +82,96 @@ exports.report = async (req, res) => {
       clinic: req.clinicId,
       status: 'completada',
       date: { $gte: startDate, $lte: endDate },
-      doctor: { $ne: null },
     })
       .populate('doctor', 'name clinics')
+      .populate('attendedByNurse', 'name clinics')
+      .populate('createdBy', 'name clinics')
       .populate('patient', 'firstName lastName');
 
-    // Resolver rol del performer por clínica
-    const roleFor = (doctor) => {
-      if (!doctor?.clinics) return null;
-      const f = doctor.clinics.find((c) => String(c.clinic) === String(req.clinicId));
+    // Resolver rol de un usuario en esta clínica
+    const roleFor = (u) => {
+      if (!u?.clinics) return null;
+      const f = u.clinics.find((c) => String(c.clinic) === String(req.clinicId));
       return f ? f.role : null;
+    };
+
+    // Coincidencia de target (usuario o rol) entre una regla y un performer.
+    const matchTarget = (rule, performer, performerRole) => {
+      if (!performer) return false;
+      if (rule.targetType === 'user') return String(rule.user) === String(performer._id);
+      return rule.role === performerRole;
     };
 
     const detail = [];
     for (const appt of appts) {
-      const performer = appt.doctor;
-      if (!performer) continue;
-      const performerRole = roleFor(performer);
       const services = appt.services?.length ? appt.services : [{ product: null, name: '—' }];
+      // Candidatos según el evento de cada regla:
+      //  - appointment_performed: doctor o enfermero que atendió
+      //  - appointment_created: quien agendó la cita
+      const performers = [appt.doctor, appt.attendedByNurse].filter(Boolean);
+      const creator = appt.createdBy;
       for (const svc of services) {
         for (const rule of rules) {
-          // target
-          if (rule.targetType === 'user') {
-            if (String(rule.user) !== String(performer._id)) continue;
-          } else {
-            if (rule.role !== performerRole) continue;
-          }
-          // service
           if (rule.service && String(rule.service) !== String(svc.product)) continue;
-          // patient scope
           if (rule.patientScope === 'new' && !appt.isFirstVisit) continue;
-          // schedule
           if (!inSchedule(rule, appt)) continue;
 
-          detail.push({
-            userId: String(performer._id),
-            userName: performer.name,
-            ruleName: rule.name,
-            amount: rule.amount,
-            date: appt.date,
-            service: svc.name || '—',
-            patient: appt.patient ? `${appt.patient.firstName} ${appt.patient.lastName}` : '—',
-          });
+          if (rule.trigger === 'appointment_created') {
+            if (!matchTarget(rule, creator, roleFor(creator))) continue;
+            detail.push({
+              userId: String(creator._id), userName: creator.name,
+              ruleName: rule.name, amount: rule.amount, date: appt.date,
+              service: svc.name || '—',
+              patient: appt.patient ? `${appt.patient.firstName} ${appt.patient.lastName}` : '—',
+              source: 'cita agendada',
+            });
+          } else if (!rule.trigger || rule.trigger === 'appointment_performed') {
+            for (const performer of performers) {
+              if (!matchTarget(rule, performer, roleFor(performer))) continue;
+              detail.push({
+                userId: String(performer._id), userName: performer.name,
+                ruleName: rule.name, amount: rule.amount, date: appt.date,
+                service: svc.name || '—',
+                patient: appt.patient ? `${appt.patient.firstName} ${appt.patient.lastName}` : '—',
+                source: 'cita atendida',
+              });
+            }
+          }
         }
       }
     }
 
-    // ─── Comisiones por ÍTEM vendido en ventas ───
-    // Por cada venta no anulada en el rango, por cada item vendido, evaluamos las
-    // reglas (target = createdBy de la venta) y aplicamos rule.amount * quantity.
+    // ─── Comisiones sobre ventas ───
+    // trigger 'sale'           -> performer = quien registró la venta (cajero)
+    // trigger 'recommendation' -> performer = recomendado por (doctor/enfermero/otro)
     const Sale = require('../models/Sale');
-    const User = require('../models/User');
     const sales = await Sale.find({
       clinic: req.clinicId,
       status: { $ne: 'anulada' },
       createdAt: { $gte: startDate, $lte: endDate },
     })
       .populate('createdBy', 'name clinics')
+      .populate('recommendedBy', 'name clinics')
       .populate('patient', 'firstName lastName');
     for (const sale of sales) {
-      const performer = sale.createdBy;
-      if (!performer) continue;
-      const performerRole = roleFor(performer);
+      const patientName = sale.patient
+        ? `${sale.patient.firstName || ''} ${sale.patient.lastName || ''}`.trim()
+        : sale.clientName || '—';
       for (const it of sale.items || []) {
         for (const rule of rules) {
-          if (rule.targetType === 'user') {
-            if (String(rule.user) !== String(performer._id)) continue;
-          } else if (rule.role !== performerRole) {
-            continue;
-          }
-          // Si rule.service está definido, debe coincidir con el producto vendido.
           if (rule.service && String(rule.service) !== String(it.product)) continue;
           const qty = Number(it.quantity || 1);
+          let performer = null;
+          let source = '';
+          if (rule.trigger === 'sale') { performer = sale.createdBy; source = 'venta'; }
+          else if (rule.trigger === 'recommendation') { performer = sale.recommendedBy; source = 'recomendación'; }
+          else continue;
+          if (!matchTarget(rule, performer, roleFor(performer))) continue;
           detail.push({
-            userId: String(performer._id),
-            userName: performer.name,
-            ruleName: rule.name,
-            amount: Number(rule.amount) * qty,
-            date: sale.createdAt,
-            service: it.productName || '—',
-            patient: sale.patient
-              ? `${sale.patient.firstName || ''} ${sale.patient.lastName || ''}`.trim()
-              : sale.clientName || '—',
-            source: 'venta',
+            userId: String(performer._id), userName: performer.name,
+            ruleName: rule.name, amount: Number(rule.amount) * qty,
+            date: sale.createdAt, service: it.productName || '—',
+            patient: patientName, source,
           });
         }
       }

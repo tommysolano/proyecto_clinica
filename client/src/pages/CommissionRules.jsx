@@ -12,6 +12,27 @@ const ROLES = [
   { value: 'call_center', label: 'Call Center' },
   { value: 'marketing', label: 'Marketing' },
 ];
+
+// Eventos que devengan la comisión.
+const TRIGGERS = {
+  appointment_performed: 'Cuando atiende una cita (pasa a completada)',
+  appointment_created: 'Cuando una cita que agendó pasa a completada',
+  sale: 'Cuando registra una venta',
+  recommendation: 'Cuando recomienda un producto/servicio vendido',
+};
+
+// Triggers sugeridos según el rol seleccionado (el modal se adapta al rol).
+const TRIGGERS_BY_ROLE = {
+  doctor: ['appointment_performed', 'recommendation'],
+  optica: ['appointment_performed', 'recommendation'],
+  enfermero: ['appointment_performed', 'recommendation'],
+  cajero: ['sale', 'recommendation'],
+  call_center: ['appointment_created', 'recommendation'],
+  marketing: ['appointment_created', 'sale', 'recommendation'],
+};
+const ALL_TRIGGERS = Object.keys(TRIGGERS);
+
+const triggersForRole = (role) => TRIGGERS_BY_ROLE[role] || ALL_TRIGGERS;
 const DAYS = [
   { v: 1, l: 'Lun' }, { v: 2, l: 'Mar' }, { v: 3, l: 'Mié' }, { v: 4, l: 'Jue' },
   { v: 5, l: 'Vie' }, { v: 6, l: 'Sáb' }, { v: 0, l: 'Dom' },
@@ -19,6 +40,7 @@ const DAYS = [
 
 const EMPTY = {
   name: '', active: true, targetType: 'role', user: '', role: 'doctor',
+  trigger: 'appointment_performed',
   service: '', patientScope: 'all', scheduleEnabled: false, daysOfWeek: [],
   startTime: '', endTime: '', amount: '', account: '',
 };
@@ -77,6 +99,7 @@ export default function CommissionRules() {
     setForm({
       name: r.name, active: r.active, targetType: r.targetType,
       user: r.user?._id || r.user || '', role: r.role || 'doctor',
+      trigger: r.trigger || 'appointment_performed',
       service: r.service?._id || r.service || '', patientScope: r.patientScope,
       scheduleEnabled: r.scheduleEnabled, daysOfWeek: r.daysOfWeek || [],
       startTime: r.startTime || '', endTime: r.endTime || '', amount: String(r.amount),
@@ -157,7 +180,10 @@ export default function CommissionRules() {
               {rules.map((r) => (
                 <tr key={r._id} className="border-t border-slate-100">
                   <td className="px-3 py-2 font-medium">{r.name}</td>
-                  <td className="px-3 py-2">{r.targetType === 'user' ? (r.user?.name || 'Usuario') : `Rol: ${r.role}`}</td>
+                  <td className="px-3 py-2">
+                    <div>{r.targetType === 'user' ? (r.user?.name || 'Usuario') : `Rol: ${r.role}`}</div>
+                    <div className="text-[11px] text-slate-400">{TRIGGERS[r.trigger] || TRIGGERS.appointment_performed}</div>
+                  </td>
                   <td className="px-3 py-2">{r.service?.name || 'Cualquier servicio'}</td>
                   <td className="px-3 py-2">{r.patientScope === 'new' ? 'Solo nuevos' : 'Todos'}</td>
                   <td className="px-3 py-2 text-right">${Number(r.amount).toFixed(2)}</td>
@@ -231,7 +257,15 @@ export default function CommissionRules() {
             </label>
             {form.targetType === 'role' ? (
               <label className="block text-sm">Rol
-                <select value={form.role} onChange={(e) => setForm({ ...form, role: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm">
+                <select
+                  value={form.role}
+                  onChange={(e) => {
+                    const role = e.target.value;
+                    const opts = triggersForRole(role);
+                    setForm({ ...form, role, trigger: opts.includes(form.trigger) ? form.trigger : opts[0] });
+                  }}
+                  className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                >
                   {ROLES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
                 </select>
               </label>
@@ -244,6 +278,28 @@ export default function CommissionRules() {
               </label>
             )}
           </div>
+
+          {/* Evento que devenga la comisión — se adapta al rol elegido */}
+          <label className="block text-sm">¿Cuándo se gana la comisión?
+            <select
+              value={form.trigger}
+              onChange={(e) => setForm({ ...form, trigger: e.target.value })}
+              className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+            >
+              {(form.targetType === 'role' ? triggersForRole(form.role) : ALL_TRIGGERS).map((t) => (
+                <option key={t} value={t}>{TRIGGERS[t]}</option>
+              ))}
+            </select>
+            <span className="block mt-1 text-xs text-slate-400">
+              {form.trigger === 'appointment_created'
+                ? 'Ej.: el call center gana esta comisión cuando una cita que agendó se completa.'
+                : form.trigger === 'recommendation'
+                ? 'Se atribuye a quien figure como "recomendado por" en la venta.'
+                : form.trigger === 'sale'
+                ? 'Se gana al registrar la venta del producto/servicio.'
+                : 'Se gana al atender (doctor/enfermero) la cita que se completa.'}
+            </span>
+          </label>
           <div className="grid grid-cols-2 gap-3">
             <label className="block text-sm">Producto / Servicio / Ítem
               <select value={form.service} onChange={(e) => setForm({ ...form, service: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm">

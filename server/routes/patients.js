@@ -6,6 +6,7 @@ const {
   updatePatient,
   deletePatient,
   searchReferralCandidates,
+  getPatientPurchases,
 } = require('../controllers/patientController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
@@ -17,6 +18,8 @@ router.get('/referral-options', requireRole('admin', 'cajero', 'call_center', 'm
 // Cajeros, admins, doctores, call_center, enfermero y marketing ven pacientes
 router.get('/', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'), getPatients);
 router.get('/:id', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'), getPatient);
+// Compras y aplicaciones del paciente (para el seguimiento)
+router.get('/:id/purchases', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'), getPatientPurchases);
 // Crear / editar: incluye doctor (con restricción de campos sensibles en el controller)
 router.post('/', requireRole('admin', 'cajero', 'call_center'), createPatient);
 router.put('/:id', requireRole('admin', 'cajero', 'call_center', 'doctor'), updatePatient);

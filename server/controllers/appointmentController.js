@@ -95,13 +95,16 @@ exports.getAppointments = async (req, res) => {
       // Enfermería ve las citas asistidas/completadas que tengan al menos un
       // servicio marcado como `nursingService` (p.ej. sueroterapia). La cita
       // aparece para TODOS los enfermeros del consultorio hasta que uno la
-      // reclame con POST /:id/nurse-attend.
+      // reclame con POST /:id/nurse-claim.
       const nursingProductIds = await Product.find({
         clinic: req.clinicId,
         nursingService: true,
       }).distinct('_id');
       query['services.product'] = { $in: nursingProductIds };
       query.status = query.status || { $in: ['asistida', 'completada'] };
+      // Una cita reclamada por un enfermero desaparece para los demás: cada
+      // enfermero solo ve las libres (sin reclamar) y las que él mismo reclamó.
+      query.$or = [{ attendedByNurse: null }, { attendedByNurse: req.user._id }];
     }
 
     // Búsqueda libre por paciente (nombre, apellido, cédula o teléfono)
@@ -151,7 +154,7 @@ exports.getAppointment = async (req, res) => {
       .populate('rescheduleHistory.rescheduledBy', 'name email')
       .populate('referral', 'fromDoctor toDoctor specialty reason status')
       .populate('treatmentRef', 'name status')
-      .populate('services.product', 'name code salePrice category');
+      .populate('services.product', 'name code salePrice category nursingService');
 
     if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
     res.json(appointment);
@@ -689,6 +692,8 @@ exports.getTodayAppointments = async (req, res) => {
       }).distinct('_id');
       query['services.product'] = { $in: nursingProductIds };
       query.status = { $in: ['asistida', 'completada'] };
+      // Solo citas libres o reclamadas por este enfermero.
+      query.$or = [{ attendedByNurse: null }, { attendedByNurse: req.user._id }];
     }
 
     const appointments = await Appointment.find(query)
@@ -1003,72 +1008,126 @@ exports.markConfirmed = async (req, res) => {
   }
 };
 
+/** Avanza los tratamientos del paciente al completar una cita de enfermería. */
+const advanceTreatmentsForAppointment = async (clinicId, apt) => {
+  try {
+    const Treatment = require('../models/Treatment');
+    const services = (apt.services || []).map((s) => String(s.product));
+    if (!services.length || !apt.patient) return;
+    const treatments = await Treatment.find({
+      clinic: clinicId,
+      patient: apt.patient,
+      status: { $in: ['activo', 'abandonado'] },
+    });
+    for (const t of treatments) {
+      let changed = false;
+      for (const svcId of services) {
+        const idx = t.items.findIndex(
+          (it) => String(it.product) === svcId && (it.completed || 0) < it.quantity
+        );
+        if (idx >= 0) {
+          t.items[idx].completed += 1;
+          t.items[idx].completionRefs.push({ type: 'appointment', ref: apt._id, date: new Date() });
+          changed = true;
+        }
+      }
+      if (changed) {
+        t.lastActivityAt = new Date();
+        if (t.status === 'abandonado') { t.status = 'activo'; t.abandonedAt = undefined; }
+        if (t.progress >= 100) t.status = 'completado';
+        await t.save();
+      }
+    }
+  } catch (e) {
+    console.warn('No se pudo actualizar tratamientos (enfermería):', e.message);
+  }
+};
+
 /**
- * Enfermero/a reclama y marca como atendida una cita de servicios de enfermería
- * (p.ej. sueroterapia). Cualquier enfermero del consultorio puede reclamarla
- * mientras `attendedByNurse` esté vacío. Una vez reclamada queda fija a ese
- * enfermero y la cita pasa a 'completada'.
+ * Enfermero/a RECLAMA una cita de servicios de enfermería (p.ej. sueroterapia).
+ * Cualquier enfermero puede reclamarla mientras `attendedByNurse` esté vacío.
+ * Al reclamarla queda asignada a ese enfermero y desaparece para los demás; la
+ * cita sigue en 'asistida' (en atención) hasta que el enfermero la finalice.
  */
-exports.nurseAttend = async (req, res) => {
+exports.nurseClaim = async (req, res) => {
   try {
     const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
-    if (apt.attendedByNurse) {
-      return res
-        .status(409)
-        .json({ message: 'Esta cita ya fue atendida por otro enfermero/a.' });
+    if (apt.attendedByNurse && String(apt.attendedByNurse) !== String(req.user._id)) {
+      return res.status(409).json({ message: 'Esta cita ya fue reclamada por otro enfermero/a.' });
     }
     if (apt.status !== 'asistida') {
-      return res
-        .status(400)
-        .json({ message: 'La cita debe estar en estado "asistida" para ser atendida por enfermería.' });
+      return res.status(400).json({ message: 'La cita debe estar en estado "asistida" para ser atendida por enfermería.' });
     }
     apt.attendedByNurse = req.user._id;
-    apt.nurseAttendedAt = new Date();
+    if (!apt.consultationStartedAt) apt.consultationStartedAt = new Date();
+    await apt.save();
+    const populated = await Appointment.findById(apt._id)
+      .populate('patient', POPULATE_PATIENT)
+      .populate('doctor', POPULATE_DOCTOR)
+      .populate('attendedByNurse', POPULATE_DOCTOR)
+      .populate('services.product', 'name code salePrice category nursingService');
+    emitToClinic(req.clinicId, 'appointment:updated', populated);
+    res.json(populated);
+  } catch (error) {
+    res.status(500).json({ message: 'Error al reclamar la cita', error: error.message });
+  }
+};
+
+/**
+ * Enfermero/a FINALIZA la cita que reclamó: pasa a 'completada' y registra
+ * automáticamente en el seguimiento del paciente que se aplicó el servicio,
+ * con el enfermero y los signos vitales (sin que el enfermero llene el formulario).
+ */
+exports.nurseComplete = async (req, res) => {
+  try {
+    const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
+    const isAdmin = req.user.isSuperAdmin || req.role === 'admin';
+    if (!apt.attendedByNurse) {
+      return res.status(400).json({ message: 'Primero reclama la cita para poder finalizarla.' });
+    }
+    if (String(apt.attendedByNurse) !== String(req.user._id) && !isAdmin) {
+      return res.status(403).json({ message: 'Solo el enfermero/a que reclamó la cita puede finalizarla.' });
+    }
     apt.status = 'completada';
+    apt.nurseAttendedAt = new Date();
     if (!apt.consultationStartedAt) apt.consultationStartedAt = new Date();
     apt.consultationEndedAt = new Date();
     await apt.save();
 
-    // Avance de tratamientos (mismo comportamiento que endConsultation del doctor)
+    await advanceTreatmentsForAppointment(req.clinicId, apt);
+
+    // Auto-registro en el seguimiento del paciente (no lo llena el enfermero).
     try {
-      const Treatment = require('../models/Treatment');
-      const services = (apt.services || []).map((s) => String(s.product));
-      if (services.length && apt.patient) {
-        const treatments = await Treatment.find({
-          clinic: req.clinicId,
-          patient: apt.patient,
-          status: { $in: ['activo', 'abandonado'] },
-        });
-        for (const t of treatments) {
-          let changed = false;
-          for (const svcId of services) {
-            const idx = t.items.findIndex(
-              (it) => String(it.product) === svcId && (it.completed || 0) < it.quantity
-            );
-            if (idx >= 0) {
-              t.items[idx].completed += 1;
-              t.items[idx].completionRefs.push({
-                type: 'appointment',
-                ref: apt._id,
-                date: new Date(),
-              });
-              changed = true;
-            }
-          }
-          if (changed) {
-            t.lastActivityAt = new Date();
-            if (t.status === 'abandonado') {
-              t.status = 'activo';
-              t.abandonedAt = undefined;
-            }
-            if (t.progress >= 100) t.status = 'completado';
-            await t.save();
-          }
-        }
+      const ClinicalRecord = require('../models/ClinicalRecord');
+      const serviceNames = (apt.services || []).map((s) => s.name).filter(Boolean).join(', ') || 'Servicio de enfermería';
+      let record = await ClinicalRecord.findOne({ clinic: req.clinicId, patient: apt.patient });
+      if (!record) {
+        record = await ClinicalRecord.create({ clinic: req.clinicId, patient: apt.patient, createdBy: req.user._id });
       }
+      const vs = req.body.vitalSigns || {};
+      record.followUps.push({
+        fecha: new Date(),
+        kind: 'enfermeria',
+        motivoConsulta: `Aplicación de enfermería: ${serviceNames}`,
+        observaciones: req.body.note || `Servicio aplicado por enfermería.`,
+        vitalSigns: {
+          temperature: vs.temperature ?? null,
+          bloodPressure: vs.bloodPressure || '',
+          heartRate: vs.heartRate ?? null,
+          respiratoryRate: vs.respiratoryRate ?? null,
+          oxygenSaturation: vs.oxygenSaturation ?? null,
+          weight: vs.weight ?? null,
+          height: vs.height ?? null,
+          glucose: vs.glucose ?? null,
+        },
+        createdBy: req.user._id,
+      });
+      record.updatedBy = req.user._id;
+      await record.save();
     } catch (e) {
-      console.warn('No se pudo actualizar tratamientos en nurseAttend:', e.message);
+      console.warn('No se pudo registrar el seguimiento automático de enfermería:', e.message);
     }
 
     const populated = await Appointment.findById(apt._id)
@@ -1079,6 +1138,6 @@ exports.nurseAttend = async (req, res) => {
     emitToClinic(req.clinicId, 'appointment:updated', populated);
     res.json(populated);
   } catch (error) {
-    res.status(500).json({ message: 'Error al atender la cita', error: error.message });
+    res.status(500).json({ message: 'Error al finalizar la cita', error: error.message });
   }
 };

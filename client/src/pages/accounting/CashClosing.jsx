@@ -2,45 +2,95 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
-import { HiOutlineCalculator, HiOutlinePlus, HiOutlineEye } from 'react-icons/hi2';
-import { fmt, fmtDate, today } from './_utils';
+import { HiOutlineCalculator, HiOutlineLockOpen, HiOutlineLockClosed, HiOutlineEye } from 'react-icons/hi2';
+import { fmt, fmtDate } from './_utils';
 
 export default function CashClosing() {
   const [list, setList] = useState([]);
-  const [show, setShow] = useState(false);
-  const [summary, setSummary] = useState(null);
+  const [session, setSession] = useState({ open: null, live: null });
   const [view, setView] = useState(null);
-  const [form, setForm] = useState({ date: today(), openingBalance: 0, countedCash: 0, notes: '' });
+  const [openModal, setOpenModal] = useState(false);
+  const [closeModal, setCloseModal] = useState(false);
+  const [openForm, setOpenForm] = useState({ openingBalance: 0, notes: '' });
+  const [closeForm, setCloseForm] = useState({ countedCash: 0, notes: '' });
+  const [busy, setBusy] = useState(false);
 
   const load = async () => {
-    try { const r = await api.get('/cash-closings'); setList(r.data || []); }
-    catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+    try {
+      const [l, s] = await Promise.all([
+        api.get('/cash-closings'),
+        api.get('/cash-closings/current'),
+      ]);
+      setList(l.data || []);
+      setSession(s.data || { open: null, live: null });
+    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
   useEffect(() => { load(); }, []);
 
-  const loadSummary = async (date) => {
-    try { const r = await api.get('/cash-closings/summary', { params: { date } }); setSummary(r.data); setForm((f) => ({ ...f, openingBalance: r.data.suggestedOpening || 0 })); }
-    catch { setSummary(null); }
+  const live = session.live;
+  const open = session.open;
+  const expectedCash = live?.expectedCash || 0;
+  const closeDiff = (+closeForm.countedCash || 0) - expectedCash;
+
+  const doOpen = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api.post('/cash-closings/open', openForm);
+      toast.success('Caja abierta');
+      setOpenModal(false);
+      setOpenForm({ openingBalance: 0, notes: '' });
+      load();
+    } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
+    finally { setBusy(false); }
   };
 
-  const openNew = () => { setForm({ date: today(), openingBalance: 0, countedCash: 0, notes: '' }); setShow(true); loadSummary(today()); };
-
-  const expectedCash = (summary?.byMethod?.efectivo || 0) + (+form.openingBalance || 0);
-  const difference = (+form.countedCash || 0) - expectedCash;
-
-  const submit = async (e) => {
+  const doClose = async (e) => {
     e.preventDefault();
-    try { await api.post('/cash-closings', form); toast.success('Cierre de caja registrado'); setShow(false); load(); }
-    catch (err) { toast.error(err.response?.data?.message || 'Error'); }
+    setBusy(true);
+    try {
+      await api.post(`/cash-closings/${open._id}/close`, closeForm);
+      toast.success('Caja cerrada y contabilizada');
+      setCloseModal(false);
+      setCloseForm({ countedCash: 0, notes: '' });
+      load();
+    } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
+    finally { setBusy(false); }
   };
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineCalculator className="text-emerald-600" /> Cierre de Caja</h1>
-        <button onClick={openNew} className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2"><HiOutlinePlus /> Nuevo cierre</button>
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineCalculator className="text-emerald-600" /> Caja</h1>
+        {open ? (
+          <button onClick={() => { setCloseForm({ countedCash: expectedCash, notes: '' }); setCloseModal(true); }} className="px-4 py-2 bg-rose-600 text-white rounded-lg flex items-center gap-2 border-none cursor-pointer hover:bg-rose-700"><HiOutlineLockClosed /> Cerrar caja</button>
+        ) : (
+          <button onClick={() => setOpenModal(true)} className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2 border-none cursor-pointer hover:bg-emerald-700"><HiOutlineLockOpen /> Abrir caja</button>
+        )}
       </div>
 
+      {/* Estado de la caja actual */}
+      {open ? (
+        <div className="bg-white rounded-xl shadow-sm border border-emerald-200 p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="px-2 py-0.5 rounded-full text-[11px] bg-emerald-100 text-emerald-700 font-semibold">CAJA ABIERTA</span>
+            <span className="text-xs text-slate-500">desde {fmtDate(open.openedAt)} · {open.openedBy?.name || ''}</span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-5 gap-2 text-sm">
+            <div className="bg-slate-50 rounded-lg p-2"><p className="text-xs text-slate-500">Fondo inicial</p><p className="font-bold">${fmt(open.openingBalance)}</p></div>
+            <div className="bg-emerald-50 rounded-lg p-2"><p className="text-xs text-emerald-700">Efectivo ventas</p><p className="font-bold text-emerald-800">${fmt(live?.byMethod?.efectivo)}</p></div>
+            <div className="bg-sky-50 rounded-lg p-2"><p className="text-xs text-sky-700">Tarjeta</p><p className="font-bold text-sky-800">${fmt(live?.byMethod?.tarjeta)}</p></div>
+            <div className="bg-violet-50 rounded-lg p-2"><p className="text-xs text-violet-700">Transferencia</p><p className="font-bold text-violet-800">${fmt(live?.byMethod?.transferencia)}</p></div>
+            <div className="bg-amber-50 rounded-lg p-2"><p className="text-xs text-amber-700">Efectivo esperado</p><p className="font-bold text-amber-800">${fmt(expectedCash)}</p></div>
+          </div>
+        </div>
+      ) : (
+        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 text-center text-slate-400 text-sm">
+          No hay una caja abierta. Abre la caja para empezar a registrar ventas del turno.
+        </div>
+      )}
+
+      {/* Historial */}
       <div className="bg-white rounded-xl shadow-sm overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
@@ -50,7 +100,7 @@ export default function CashClosing() {
             <th className="px-3 py-2 text-left">Cajero</th><th className="px-3 py-2 text-center">Estado</th><th></th>
           </tr></thead>
           <tbody>
-            {list.map((c) => (
+            {list.filter((c) => c.status !== 'ABIERTA').map((c) => (
               <tr key={c._id} className="border-t hover:bg-slate-50">
                 <td className="px-3 py-2">{fmtDate(c.date)}</td>
                 <td className="px-3 py-2 text-right font-mono">{fmt(c.openingBalance)}</td>
@@ -60,49 +110,51 @@ export default function CashClosing() {
                 <td className={`px-3 py-2 text-right font-mono font-semibold ${c.difference < 0 ? 'text-rose-600' : c.difference > 0 ? 'text-amber-600' : 'text-emerald-700'}`}>{fmt(c.difference)}</td>
                 <td className="px-3 py-2 text-xs">{c.closedBy?.name || '—'}</td>
                 <td className="px-3 py-2 text-center"><span className={`px-2 py-0.5 rounded-full text-[11px] ${c.status === 'CERRADO' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{c.status}</span></td>
-                <td className="px-3 py-2 text-right"><button onClick={() => setView(c)} className="text-slate-500"><HiOutlineEye className="w-5 h-5" /></button></td>
+                <td className="px-3 py-2 text-right"><button onClick={() => setView(c)} className="text-slate-500 bg-transparent border-none cursor-pointer"><HiOutlineEye className="w-5 h-5" /></button></td>
               </tr>
             ))}
-            {!list.length && <tr><td colSpan={9} className="px-3 py-8 text-center text-slate-400">Sin cierres registrados</td></tr>}
+            {!list.filter((c) => c.status !== 'ABIERTA').length && <tr><td colSpan={9} className="px-3 py-8 text-center text-slate-400">Sin cierres registrados</td></tr>}
           </tbody>
         </table>
       </div>
 
-      {/* Modal nuevo cierre */}
-      <Modal isOpen={show} onClose={() => setShow(false)} title="Nuevo cierre de caja" size="lg">
-        <form onSubmit={submit} className="space-y-3">
-          <label className="text-xs text-slate-500 block">Fecha del cierre
-            <input type="date" value={form.date} onChange={(e) => { setForm({ ...form, date: e.target.value }); loadSummary(e.target.value); }} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+      {/* Modal abrir caja */}
+      <Modal isOpen={openModal} onClose={() => setOpenModal(false)} title="Abrir caja" size="sm">
+        <form onSubmit={doOpen} className="space-y-3">
+          <label className="text-xs text-slate-500 block">Fondo de caja inicial ($)
+            <input type="number" step="0.01" value={openForm.openingBalance} onChange={(e) => setOpenForm({ ...openForm, openingBalance: +e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-right" autoFocus />
           </label>
+          <label className="text-xs text-slate-500 block">Observaciones
+            <textarea value={openForm.notes} onChange={(e) => setOpenForm({ ...openForm, notes: e.target.value })} rows={2} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+          </label>
+          <div className="flex justify-end gap-2"><button type="button" onClick={() => setOpenModal(false)} className="px-4 py-2 bg-slate-200 rounded-lg border-none cursor-pointer">Cancelar</button><button disabled={busy} className="px-4 py-2 bg-emerald-600 text-white rounded-lg border-none cursor-pointer disabled:opacity-50">Abrir caja</button></div>
+        </form>
+      </Modal>
 
-          {summary && (
-            <div className="grid grid-cols-3 gap-2 text-sm">
-              <div className="bg-emerald-50 rounded-lg p-2"><p className="text-xs text-emerald-700">Efectivo</p><p className="font-bold text-emerald-800">${fmt(summary.byMethod.efectivo)}</p></div>
-              <div className="bg-sky-50 rounded-lg p-2"><p className="text-xs text-sky-700">Tarjeta</p><p className="font-bold text-sky-800">${fmt(summary.byMethod.tarjeta)}</p></div>
-              <div className="bg-violet-50 rounded-lg p-2"><p className="text-xs text-violet-700">Transferencia</p><p className="font-bold text-violet-800">${fmt(summary.byMethod.transferencia)}</p></div>
+      {/* Modal cerrar caja */}
+      <Modal isOpen={closeModal} onClose={() => setCloseModal(false)} title="Cerrar caja" size="lg">
+        <form onSubmit={doClose} className="space-y-3">
+          {live && (
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
+              <div className="bg-slate-50 rounded-lg p-2"><p className="text-xs text-slate-500">Fondo inicial</p><p className="font-bold">${fmt(open?.openingBalance)}</p></div>
+              <div className="bg-emerald-50 rounded-lg p-2"><p className="text-xs text-emerald-700">Efectivo ventas</p><p className="font-bold text-emerald-800">${fmt(live.byMethod.efectivo)}</p></div>
+              <div className="bg-sky-50 rounded-lg p-2"><p className="text-xs text-sky-700">Tarjeta</p><p className="font-bold text-sky-800">${fmt(live.byMethod.tarjeta)}</p></div>
+              <div className="bg-violet-50 rounded-lg p-2"><p className="text-xs text-violet-700">Transferencia</p><p className="font-bold text-violet-800">${fmt(live.byMethod.transferencia)}</p></div>
             </div>
           )}
-
-          <div className="grid grid-cols-2 gap-3">
-            <label className="text-xs text-slate-500 block">Fondo de caja inicial ($)
-              <input type="number" step="0.01" value={form.openingBalance} onChange={(e) => setForm({ ...form, openingBalance: +e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-right" />
-            </label>
-            <label className="text-xs text-slate-500 block">Efectivo físico contado ($)
-              <input type="number" step="0.01" value={form.countedCash} onChange={(e) => setForm({ ...form, countedCash: +e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-right" />
-            </label>
-          </div>
-
+          <label className="text-xs text-slate-500 block">Efectivo físico contado ($)
+            <input type="number" step="0.01" value={closeForm.countedCash} onChange={(e) => setCloseForm({ ...closeForm, countedCash: +e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-right" autoFocus />
+          </label>
           <div className="bg-slate-50 rounded-lg p-3 flex flex-wrap justify-between gap-3 text-sm">
             <span>Efectivo esperado: <b className="font-mono">${fmt(expectedCash)}</b></span>
-            <span>Contado: <b className="font-mono">${fmt(form.countedCash)}</b></span>
-            <span>Diferencia: <b className={`font-mono ${difference < 0 ? 'text-rose-600' : difference > 0 ? 'text-amber-600' : 'text-emerald-700'}`}>${fmt(difference)} {difference < 0 ? '(faltante)' : difference > 0 ? '(sobrante)' : '(cuadrado)'}</b></span>
+            <span>Contado: <b className="font-mono">${fmt(closeForm.countedCash)}</b></span>
+            <span>Diferencia: <b className={`font-mono ${closeDiff < 0 ? 'text-rose-600' : closeDiff > 0 ? 'text-amber-600' : 'text-emerald-700'}`}>${fmt(closeDiff)} {closeDiff < 0 ? '(faltante)' : closeDiff > 0 ? '(sobrante)' : '(cuadrado)'}</b></span>
           </div>
-
+          <p className="text-[11px] text-slate-400">La diferencia genera automáticamente un asiento contable (faltante = gasto, sobrante = ingreso).</p>
           <label className="text-xs text-slate-500 block">Observaciones
-            <textarea value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} rows={2} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+            <textarea value={closeForm.notes} onChange={(e) => setCloseForm({ ...closeForm, notes: e.target.value })} rows={2} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
           </label>
-
-          <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Registrar cierre</button></div>
+          <div className="flex justify-end gap-2"><button type="button" onClick={() => setCloseModal(false)} className="px-4 py-2 bg-slate-200 rounded-lg border-none cursor-pointer">Cancelar</button><button disabled={busy} className="px-4 py-2 bg-rose-600 text-white rounded-lg border-none cursor-pointer disabled:opacity-50">Cerrar caja</button></div>
         </form>
       </Modal>
 
@@ -120,6 +172,7 @@ export default function CashClosing() {
               <div><span className="text-slate-500">Tarjeta:</span> ${fmt(view.byMethod?.tarjeta)}</div>
               <div><span className="text-slate-500">Transferencia:</span> ${fmt(view.byMethod?.transferencia)}</div>
             </div>
+            {view.journalEntry && <p className="text-[11px] text-emerald-700">✓ Asiento contable de diferencia generado</p>}
             {view.notes && <p className="text-slate-600 border-t pt-2">{view.notes}</p>}
           </div>
         )}

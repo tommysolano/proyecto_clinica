@@ -52,12 +52,19 @@ export default function Sales() {
     clientZone: '',
     patient: '',
     paymentMethod: 'efectivo',
+    bankAccount: '',
+    creditCard: '',
+    cardPos: '',
+    recommendedBy: '',
     notes: '',
     items: [],
   });
   const [currentItem, setCurrentItem] = useState({ product: '', quantity: 1 });
   const [patientSearch, setPatientSearch] = useState('');
   const [guayaquilZones, setGuayaquilZones] = useState([]);
+  // Medios de pago (cuentas bancarias / tarjetas) y personal para recomendación
+  const [payOptions, setPayOptions] = useState({ accounts: [], cards: [] });
+  const [staff, setStaff] = useState([]);
 
   useEffect(() => {
     api
@@ -123,6 +130,12 @@ export default function Sales() {
     if (canCreate) {
       fetchProducts();
       fetchPatients();
+      api.get('/banks/payment-options')
+        .then((r) => setPayOptions({ accounts: r.data?.accounts || [], cards: r.data?.cards || [] }))
+        .catch(() => setPayOptions({ accounts: [], cards: [] }));
+      api.get('/users')
+        .then((r) => setStaff(r.data || []))
+        .catch(() => setStaff([]));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -143,6 +156,10 @@ export default function Sales() {
       clientZone: '',
       patient: '',
       paymentMethod: 'efectivo',
+      bankAccount: '',
+      creditCard: '',
+      cardPos: '',
+      recommendedBy: '',
       notes: '',
       items: [],
     });
@@ -250,8 +267,20 @@ export default function Sales() {
     if (form.items.length === 0) return toast.error('Agrega al menos un producto');
     setSaving(true);
     try {
+      if (form.paymentMethod === 'transferencia' && payOptions.accounts.length && !form.bankAccount) {
+        setSaving(false);
+        return toast.error('Selecciona la cuenta bancaria de destino');
+      }
+      if (form.paymentMethod === 'tarjeta' && payOptions.cards.length && !form.creditCard) {
+        setSaving(false);
+        return toast.error('Selecciona la tarjeta / POS');
+      }
       await api.post('/sales', {
         ...form,
+        bankAccount: form.paymentMethod === 'transferencia' ? form.bankAccount || null : null,
+        creditCard: form.paymentMethod === 'tarjeta' ? form.creditCard || null : null,
+        cardPos: form.paymentMethod === 'tarjeta' ? form.cardPos || '' : '',
+        recommendedBy: form.recommendedBy || null,
         items: form.items.map((i) => ({
           product: i.product,
           quantity: i.quantity,
@@ -629,7 +658,7 @@ export default function Sales() {
               <label className="lbl">Método de pago</label>
               <select
                 value={form.paymentMethod}
-                onChange={(e) => setForm({ ...form, paymentMethod: e.target.value })}
+                onChange={(e) => setForm({ ...form, paymentMethod: e.target.value, bankAccount: '', creditCard: '', cardPos: '' })}
                 className="input"
               >
                 {Object.entries(paymentMethods).map(([k, v]) => (
@@ -639,12 +668,76 @@ export default function Sales() {
                 ))}
               </select>
             </div>
+            {form.paymentMethod === 'transferencia' && (
+              <div>
+                <label className="lbl">Cuenta bancaria de destino</label>
+                <select
+                  value={form.bankAccount || ''}
+                  onChange={(e) => setForm({ ...form, bankAccount: e.target.value })}
+                  className="input"
+                >
+                  <option value="">{payOptions.accounts.length ? 'Seleccionar cuenta…' : 'No hay cuentas configuradas'}</option>
+                  {payOptions.accounts.map((a) => (
+                    <option key={a._id} value={a._id}>{a.name} — {a.bank} ({a.accountNumber})</option>
+                  ))}
+                </select>
+              </div>
+            )}
+            {form.paymentMethod === 'tarjeta' && (
+              <>
+                <div>
+                  <label className="lbl">Tarjeta / Adquirente</label>
+                  <select
+                    value={form.creditCard || ''}
+                    onChange={(e) => setForm({ ...form, creditCard: e.target.value, cardPos: '' })}
+                    className="input"
+                  >
+                    <option value="">{payOptions.cards.length ? 'Seleccionar tarjeta…' : 'No hay tarjetas configuradas'}</option>
+                    {payOptions.cards.map((c) => (
+                      <option key={c._id} value={c._id}>{c.name} ({c.brand}{c.acquirer ? ` · ${c.acquirer}` : ''})</option>
+                    ))}
+                  </select>
+                </div>
+                {(() => {
+                  const card = payOptions.cards.find((c) => c._id === form.creditCard);
+                  if (!card || !card.pos?.length) return null;
+                  return (
+                    <div>
+                      <label className="lbl">POS / Terminal</label>
+                      <select
+                        value={form.cardPos || ''}
+                        onChange={(e) => setForm({ ...form, cardPos: e.target.value })}
+                        className="input"
+                      >
+                        <option value="">Seleccionar POS…</option>
+                        {card.pos.map((p) => (
+                          <option key={p.code} value={p.code}>{p.name || p.code}{p.terminal ? ` · ${p.terminal}` : ''}</option>
+                        ))}
+                      </select>
+                    </div>
+                  );
+                })()}
+              </>
+            )}
             {form.paymentMethod === 'credito' && (
               <div>
                 <label className="lbl">Vence (crédito)</label>
                 <input type="date" value={form.dueDate || ''} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="input" />
               </div>
             )}
+            <div>
+              <label className="lbl">Recomendado por (comisión)</label>
+              <select
+                value={form.recommendedBy || ''}
+                onChange={(e) => setForm({ ...form, recommendedBy: e.target.value })}
+                className="input"
+              >
+                <option value="">— Nadie / No aplica —</option>
+                {staff.map((u) => (
+                  <option key={u._id} value={u._id}>{u.name}</option>
+                ))}
+              </select>
+            </div>
           </div>
           <div>
             <label className="lbl">Dirección cliente</label>
@@ -898,11 +991,21 @@ export default function Sales() {
               </div>
               <div>
                 <p className="text-xs text-slate-500">Método de pago</p>
-                <p className="capitalize">{paymentMethods[detailModal.paymentMethod]}</p>
+                <p className="capitalize">
+                  {paymentMethods[detailModal.paymentMethod]}
+                  {detailModal.bankAccount && ` · ${detailModal.bankAccount.name}`}
+                  {detailModal.creditCard && ` · ${detailModal.creditCard.name}${detailModal.cardPos ? ` (POS ${detailModal.cardPos})` : ''}`}
+                </p>
               </div>
             </div>
-            {(detailModal.cashier || detailModal.callCenter || detailModal.doctor || detailModal.nurse) && (
+            {(detailModal.cashier || detailModal.callCenter || detailModal.doctor || detailModal.nurse || detailModal.recommendedBy) && (
               <div className="bg-indigo-50/60 border border-indigo-100 rounded-xl p-3 grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                {detailModal.recommendedBy && (
+                  <div>
+                    <p className="text-indigo-700 font-semibold">Recomendado por</p>
+                    <p className="text-slate-700">{detailModal.recommendedBy.name}</p>
+                  </div>
+                )}
                 {detailModal.cashier && (
                   <div>
                     <p className="text-indigo-700 font-semibold">Cajero</p>

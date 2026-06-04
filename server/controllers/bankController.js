@@ -7,6 +7,34 @@ const Sale = require('../models/Sale');
 const ChartOfAccount = require('../models/ChartOfAccount');
 const { createEntry, findAccount } = require('../utils/accounting');
 
+/**
+ * Opciones de medios de pago para el punto de cobro (cajero / recepción).
+ * Devuelve solo lo necesario para los selectores: cuentas bancarias y
+ * tarjetas/POS activos. No expone saldos ni datos sensibles.
+ */
+exports.paymentOptions = async (req, res) => {
+  try {
+    const [accounts, cards] = await Promise.all([
+      BankAccount.find({ clinic: req.clinicId, active: true })
+        .select('name bank accountNumber accountType')
+        .sort({ name: 1 }),
+      CreditCard.find({ clinic: req.clinicId, active: true })
+        .select('name brand acquirer pos')
+        .sort({ name: 1 }),
+    ]);
+    const cardsOut = cards.map((c) => ({
+      _id: c._id,
+      name: c.name,
+      brand: c.brand,
+      acquirer: c.acquirer,
+      pos: (c.pos || []).filter((p) => p.active !== false).map((p) => ({ code: p.code, name: p.name, terminal: p.terminal })),
+    }));
+    res.json({ accounts, cards: cardsOut });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
 // ---------- Cuentas bancarias ----------
 exports.listAccounts = async (req, res) => {
   const filter = { clinic: req.clinicId };

@@ -5,7 +5,10 @@ const c = require('../controllers/cashClosingController');
 router.use(auth, requireClinic, requireRole('admin', 'contabilidad', 'cajero'));
 
 router.get('/summary', c.summary);
+router.get('/current', c.current);
 router.get('/', c.list);
+router.post('/open', c.open);
+router.post('/:id/close', c.close);
 router.post('/', c.create);
 router.post('/:id/cancel', c.cancel);
 

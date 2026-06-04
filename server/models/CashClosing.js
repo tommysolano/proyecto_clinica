@@ -9,6 +9,10 @@ const cashClosingSchema = new mongoose.Schema(
   {
     clinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', required: true, index: true },
     date: { type: Date, required: true },
+    // Ciclo de la caja: se ABRE (apertura) con un fondo inicial y luego se CIERRA.
+    openedAt: { type: Date },
+    openedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    closedAt: { type: Date },
     openingBalance: { type: Number, default: 0 },   // fondo de caja inicial
     expectedCash: { type: Number, default: 0 },      // esperado = fondo + ventas efectivo
     countedCash: { type: Number, default: 0 },       // efectivo físico contado
@@ -23,9 +27,12 @@ const cashClosingSchema = new mongoose.Schema(
     totalSales: { type: Number, default: 0 },
     // Desglose de denominaciones (opcional)
     denominations: [{ value: Number, count: Number }],
-    status: { type: String, enum: ['CERRADO', 'ANULADO'], default: 'CERRADO' },
+    // ABIERTA = caja en curso; CERRADO = cerrada/cuadrada; ANULADO = anulada
+    status: { type: String, enum: ['ABIERTA', 'CERRADO', 'ANULADO'], default: 'CERRADO' },
     notes: { type: String, default: '' },
     closedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // Asiento contable del ajuste por diferencia (sobrante/faltante) al cerrar.
+    journalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
   },
   { timestamps: true }
 );

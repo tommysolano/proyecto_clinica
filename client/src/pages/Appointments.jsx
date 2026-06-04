@@ -5,6 +5,8 @@ import Modal from '../components/Modal';
 import { downloadFile } from '../utils/download';
 import ProductAutocomplete from '../components/ProductAutocomplete';
 import SameSlotPanel from '../components/SameSlotPanel';
+import AttendChargeModal from '../components/AttendChargeModal';
+import NurseFinishModal from '../components/NurseFinishModal';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
@@ -17,7 +19,6 @@ import {
   HiOutlinePlay,
   HiOutlineStop,
   HiOutlineMagnifyingGlass,
-  HiOutlineCheckCircle,
   HiOutlineUserPlus,
 } from 'react-icons/hi2';
 
@@ -122,6 +123,8 @@ export default function Appointments() {
   const isNurse = role === 'enfermero';
   const isCallCenter = role === 'call_center';
   const isReception = hasRole('admin', 'cajero', 'enfermero');
+  // Quién puede ejecutar el flujo asistir → cobrar → derivar (requiere cobrar).
+  const canCharge = hasRole('admin', 'cajero');
   // Mostrar selector de clínica si el usuario tiene más de una asignada
   const showClinicSelector = (clinics?.length || 0) > 1;
 
@@ -137,7 +140,9 @@ export default function Appointments() {
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   // Modal para asignar doctor al marcar 'asistida'
-  const [assignModal, setAssignModal] = useState(null); // { appointment, doctorId }
+  const [assignModal, setAssignModal] = useState(null); // { appointment }
+  // Modal de finalización de enfermería (cita reclamada por el enfermero)
+  const [nurseFinish, setNurseFinish] = useState(null); // appointment
   const [filter, setFilter] = useState({
     startDate: '',
     endDate: '',
@@ -482,14 +487,14 @@ export default function Appointments() {
     }
   };
 
-  const nurseAttend = async (apt) => {
+  const nurseClaim = async (apt) => {
     if (!window.confirm(`¿Confirmas que vas a atender a ${apt.patient?.firstName || ''} ${apt.patient?.lastName || ''}?`)) return;
     try {
-      await api.post(`/appointments/${apt._id}/nurse-attend`);
-      toast.success('Cita atendida');
+      await api.post(`/appointments/${apt._id}/nurse-claim`);
+      toast.success('Cita asignada a ti. Finalízala cuando termines.');
       fetchAppointments();
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al atender la cita');
+      toast.error(err.response?.data?.message || 'No se pudo reclamar la cita');
     }
   };
 
@@ -964,12 +969,12 @@ export default function Appointments() {
                         </span>
                       </td>
                       <td className="px-6 py-3.5 text-right">
-                        {/* Recepción: Marcar 'asistió' y asignar doctor */}
-                        {isReception && ['pendiente', 'confirmada'].includes(apt.status) && (
+                        {/* Recepción/cajero: marcar asistencia → cobrar → derivar */}
+                        {canCharge && ['pendiente', 'confirmada'].includes(apt.status) && (
                           <button
-                            onClick={() => setAssignModal({ appointment: apt, doctorId: apt.doctor?._id || '' })}
+                            onClick={() => setAssignModal({ appointment: apt })}
                             className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer transition-colors"
-                            title="Marcar asistencia + asignar doctor"
+                            title="Recibir paciente: asistencia + cobro + derivación"
                           >
                             <HiOutlineUserPlus className="w-4 h-4" />
                           </button>
@@ -986,14 +991,24 @@ export default function Appointments() {
                               Atender
                             </button>
                           )}
-                        {/* Enfermero: reclamar atención de servicios de enfermería */}
+                        {/* Enfermero: reclamar una cita de enfermería libre */}
                         {isNurse && apt.status === 'asistida' && !apt.attendedByNurse && (
                           <button
-                            onClick={() => nurseAttend(apt)}
+                            onClick={() => nurseClaim(apt)}
                             className="p-1.5 rounded-lg hover:bg-sky-50 text-sky-700 bg-transparent border border-sky-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
-                            title="Marcar como atendida por mí"
+                            title="Atender: marcar que la estoy atendiendo"
                           >
                             Atender
+                          </button>
+                        )}
+                        {/* Enfermero: finalizar la cita que reclamó */}
+                        {isNurse && apt.status === 'asistida' && String(apt.attendedByNurse?._id || apt.attendedByNurse) === String(user?.id) && (
+                          <button
+                            onClick={() => setNurseFinish(apt)}
+                            className="p-1.5 rounded-lg hover:bg-emerald-50 text-emerald-700 bg-transparent border border-emerald-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
+                            title="Terminar y registrar"
+                          >
+                            Terminar
                           </button>
                         )}
                         {showDoctorTimer && !inProgress && apt.status !== 'completada' && (
@@ -1588,15 +1603,15 @@ export default function Appointments() {
                       className="px-3 py-1.5 rounded-lg text-xs font-medium bg-blue-100 text-blue-700 hover:bg-blue-200 border-none cursor-pointer"
                     >Confirmar</button>
                   )}
-                  {detailModal.status !== 'asistida' && (
+                  {canCharge && detailModal.status !== 'asistida' && (
                     <button
                       type="button"
                       onClick={() => {
-                        setAssignModal({ appointment: detailModal, doctorId: detailModal.doctor?._id || '' });
+                        setAssignModal({ appointment: detailModal });
                         setDetailModal(null);
                       }}
                       className="px-3 py-1.5 rounded-lg text-xs font-medium bg-emerald-100 text-emerald-700 hover:bg-emerald-200 border-none cursor-pointer"
-                    >Asistió</button>
+                    >Recibir (asistió + cobro)</button>
                   )}
                   {detailModal.status !== 'no_asistio' && (
                     <button
@@ -1672,76 +1687,23 @@ export default function Appointments() {
         )}
       </Modal>
 
-      {/* Modal: marcar 'asistida' y asignar doctor disponible (recepción) */}
-      <Modal
-        isOpen={!!assignModal}
-        onClose={() => setAssignModal(null)}
-        title="Marcar asistencia y asignar doctor"
-        size="md"
-      >
-        {assignModal && (
-          <div className="space-y-4">
-            <div className="bg-emerald-50 rounded-xl p-3 text-sm">
-              <div className="font-semibold text-slate-800">
-                {assignModal.appointment.patient?.firstName} {assignModal.appointment.patient?.lastName}
-              </div>
-              <div className="text-xs text-slate-600 mt-1">
-                {formatLocalDate(assignModal.appointment.date)} · {assignModal.appointment.startTime}
-              </div>
-              <div className="text-xs text-slate-600 mt-1">
-                Servicio: {(assignModal.appointment.services || []).map((s) => s.name || s.product?.name).filter(Boolean).join(', ') || '—'}
-              </div>
-            </div>
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">
-                Asignar doctor disponible *
-              </label>
-              <select
-                value={assignModal.doctorId}
-                onChange={(e) => setAssignModal({ ...assignModal, doctorId: e.target.value })}
-                required
-                className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
-              >
-                <option value="">Seleccionar doctor</option>
-                {doctors.map((d) => (
-                  <option key={d._id} value={d._id}>
-                    Dr. {d.name}{d.specialty ? ` — ${d.specialty}` : ''}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div className="flex justify-end gap-2 pt-2">
-              <button
-                type="button"
-                onClick={() => setAssignModal(null)}
-                className="px-4 py-2 rounded-xl text-sm bg-slate-100 hover:bg-slate-200 border-none cursor-pointer"
-              >
-                Cancelar
-              </button>
-              <button
-                type="button"
-                disabled={!assignModal.doctorId}
-                onClick={async () => {
-                  try {
-                    await api.post(`/appointments/${assignModal.appointment._id}/attended`, {
-                      doctorId: assignModal.doctorId,
-                    });
-                    toast.success('Cita marcada como asistida. Doctor notificado.');
-                    setAssignModal(null);
-                    fetchAppointments();
-                  } catch (err) {
-                    toast.error(err.response?.data?.message || 'No se pudo guardar');
-                  }
-                }}
-                className="px-4 py-2 rounded-xl text-sm bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 border-none cursor-pointer flex items-center gap-2"
-              >
-                <HiOutlineCheckCircle className="w-4 h-4" />
-                Marcar asistencia
-              </button>
-            </div>
-          </div>
-        )}
-      </Modal>
+      {/* Flujo de recepción: asistencia → cobro → derivación (doctor o enfermería) */}
+      {assignModal && (
+        <AttendChargeModal
+          appointment={assignModal.appointment}
+          doctors={doctors}
+          onClose={() => setAssignModal(null)}
+          onDone={fetchAppointments}
+        />
+      )}
+
+      {nurseFinish && (
+        <NurseFinishModal
+          appointment={nurseFinish}
+          onClose={() => setNurseFinish(null)}
+          onDone={fetchAppointments}
+        />
+      )}
     </div>
   );
 }

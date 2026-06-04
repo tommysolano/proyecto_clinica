@@ -50,6 +50,12 @@ const saleSchema = new mongoose.Schema(
       enum: ['efectivo', 'tarjeta', 'transferencia', 'credito'],
       default: 'efectivo',
     },
+    // Detalle del medio de pago según configuración contable:
+    //  - transferencia/deposito -> cuenta bancaria destino
+    //  - tarjeta -> tarjeta/POS configurado en bancos
+    bankAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'BankAccount', default: null },
+    creditCard: { type: mongoose.Schema.Types.ObjectId, ref: 'CreditCard', default: null },
+    cardPos: { type: String, default: '' },
     // Ventas a crédito (CxC): vencimiento y saldo pendiente de cobro.
     dueDate: { type: Date, default: null },
     balance: { type: Number, default: 0 },
@@ -70,6 +76,9 @@ const saleSchema = new mongoose.Schema(
     cashier: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     doctor: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     nurse: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // Personal (doctor/enfermero/otro) que recomendó la compra al paciente.
+    // Sirve para atribuir comisiones por recomendación.
+    recommendedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     appointment: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment' },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },

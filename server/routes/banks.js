@@ -4,6 +4,9 @@ const c = require('../controllers/bankController');
 
 router.use(auth, requireClinic);
 
+// Opciones de medios de pago para el cobro (cajero/recepción/admin/contabilidad)
+router.get('/payment-options', requireRole('admin', 'contabilidad', 'cajero', 'enfermero'), c.paymentOptions);
+
 // Cuentas
 router.get('/accounts', requireRole('admin', 'contabilidad'), c.listAccounts);
 router.post('/accounts', requireRole('admin', 'contabilidad'), c.createAccount);

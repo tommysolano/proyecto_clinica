@@ -16,6 +16,7 @@ import {
   HiOutlineTrash,
   HiOutlinePrinter,
   HiOutlineArrowDownTray,
+  HiOutlineShoppingBag,
 } from 'react-icons/hi2';
 
 const TABS = [
@@ -433,12 +434,27 @@ function SeguimientosTab({ patientId, appointmentId }) {
   // PDFs seleccionados ANTES de guardar el seguimiento. Se subirán automáticamente
   // tras crear el seguimiento.
   const [pendingFiles, setPendingFiles] = useState([]);
+  // Compras y avance de tratamientos del paciente (para el seguimiento).
+  const [purchases, setPurchases] = useState([]);
+  const [treatmentProgress, setTreatmentProgress] = useState([]);
+
+  const loadPurchases = async () => {
+    try {
+      const r = await api.get(`/patients/${patientId}/purchases`);
+      setPurchases(r.data?.purchases || []);
+      setTreatmentProgress(r.data?.treatments || []);
+    } catch {
+      setPurchases([]);
+      setTreatmentProgress([]);
+    }
+  };
 
   const load = async () => {
     setLoading(true);
     try {
       const res = await api.get(`/clinical-records/${patientId}`);
       setRecord(res.data);
+      loadPurchases();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error');
     } finally {
@@ -1086,6 +1102,64 @@ function SeguimientosTab({ patientId, appointmentId }) {
         </div>
       </form>
 
+      {/* Compras y aplicaciones: avance de tratamientos + historial de compras */}
+      {(treatmentProgress.length > 0 || purchases.length > 0) && (
+        <div className="bg-white rounded-xl border border-slate-200 p-4 space-y-4">
+          <h3 className="text-sm font-bold text-slate-700 flex items-center gap-2">
+            <HiOutlineShoppingBag className="w-4 h-4 text-emerald-600" /> Compras y aplicaciones
+          </h3>
+
+          {treatmentProgress.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-[11px] font-semibold text-slate-500 uppercase">Avance de tratamientos</p>
+              <div className="grid gap-2 sm:grid-cols-2">
+                {treatmentProgress.map((t) => (
+                  <div key={t._id} className="border border-slate-200 rounded-lg p-2">
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm font-medium text-slate-800">{t.name}</span>
+                      <span className={`text-[10px] px-1.5 py-0.5 rounded-full ${t.status === 'completado' ? 'bg-emerald-100 text-emerald-700' : t.status === 'activo' ? 'bg-sky-100 text-sky-700' : 'bg-slate-100 text-slate-500'}`}>{t.status}</span>
+                    </div>
+                    <ul className="mt-1 space-y-1">
+                      {t.items.map((it, i) => (
+                        <li key={i} className="text-xs text-slate-600 flex items-center justify-between gap-2">
+                          <span className="truncate">{it.name}</span>
+                          <span className="whitespace-nowrap">
+                            <b className="text-emerald-700">{it.applied}</b>/{it.prescribed} aplicados
+                            {it.remaining > 0 && <span className="text-amber-600"> · faltan {it.remaining}</span>}
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {purchases.length > 0 && (
+            <div className="space-y-2">
+              <p className="text-[11px] font-semibold text-slate-500 uppercase">Compras</p>
+              <div className="space-y-1.5 max-h-64 overflow-y-auto">
+                {purchases.map((p) => (
+                  <div key={p._id} className="border border-slate-200 rounded-lg p-2 text-xs">
+                    <div className="flex items-center justify-between">
+                      <span className="font-medium text-slate-700">{new Date(p.date).toLocaleDateString('es-EC')} · {p.saleNumber}</span>
+                      <span className="font-mono text-emerald-700">${Number(p.total).toFixed(2)}</span>
+                    </div>
+                    <div className="text-slate-600 mt-0.5">
+                      {p.items.map((i) => `${i.name} (x${i.quantity})`).join(', ')}
+                    </div>
+                    {p.recommendedBy && (
+                      <div className="text-[11px] text-indigo-600 mt-0.5">Recomendado por: {p.recommendedBy}</div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-slate-50 text-slate-600">
@@ -1117,7 +1191,10 @@ function SeguimientosTab({ patientId, appointmentId }) {
                     {new Date(fu.fecha).toLocaleDateString('es-EC')}
                   </td>
                   <td className="px-4 py-2.5 text-slate-800">
-                    <div className="font-medium">{fu.descripcion}</div>
+                    {fu.kind === 'enfermeria' && (
+                      <span className="inline-block mb-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-700">Enfermería</span>
+                    )}
+                    <div className="font-medium">{fu.descripcion || fu.motivoConsulta}</div>
                     {fu.estudioSintomas && (
                       <div className="mt-1 text-xs text-slate-600">
                         <b>Estudio/síntomas:</b> {fu.estudioSintomas}

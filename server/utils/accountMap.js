@@ -37,6 +37,9 @@ const ACCOUNT_ROLES = {
 
   comisionBancaria:     { group: 'Gasto',   label: 'Comisiones bancarias',      code: '6.1.16' },
   comisionTarjeta:      { group: 'Gasto',   label: 'Comisiones tarjeta',        code: '6.1.17' },
+  faltanteCaja:         { group: 'Gasto',   label: 'Faltantes de caja',         code: '6.1.18' },
+
+  sobranteCaja:         { group: 'Ingreso', label: 'Sobrantes de caja',         code: '4.1.04' },
 };
 
 /**

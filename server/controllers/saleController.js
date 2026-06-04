@@ -46,6 +46,12 @@ exports.getSale = async (req, res) => {
       .populate('patient', 'firstName lastName cedula address phone email')
       .populate('items.product', 'name code')
       .populate('createdBy', 'name')
+      .populate('callCenter', 'name')
+      .populate('doctor', 'name')
+      .populate('nurse', 'name')
+      .populate('recommendedBy', 'name')
+      .populate('bankAccount', 'name bank')
+      .populate('creditCard', 'name brand')
       .populate('invoice');
 
     if (!sale) return res.status(404).json({ message: 'Venta no encontrada' });
@@ -224,6 +230,10 @@ exports.createSale = async (req, res) => {
       cashier: req.body.cashier || (req.role === 'cajero' ? req.user._id : undefined),
       doctor: req.body.doctor || undefined,
       nurse: req.body.nurse || undefined,
+      recommendedBy: req.body.recommendedBy || undefined,
+      bankAccount: paymentMethod === 'transferencia' ? (req.body.bankAccount || undefined) : undefined,
+      creditCard: paymentMethod === 'tarjeta' ? (req.body.creditCard || undefined) : undefined,
+      cardPos: paymentMethod === 'tarjeta' ? (req.body.cardPos || '') : '',
       appointment: req.body.appointment || undefined,
       createdBy: req.user._id,
     });
@@ -277,12 +287,28 @@ exports.createSale = async (req, res) => {
     // Asiento contable automático de la venta (best-effort: si falla no rompe la venta)
     try {
       const lines = [];
-      // Débito: cobro (caja/banco/tarjeta) o cuentas por cobrar
-      let debitCode = '1.1.02.01';
-      if (paymentMethod === 'efectivo') debitCode = '1.1.01.01';
-      else if (paymentMethod === 'tarjeta') debitCode = '1.1.02.02';
-      else if (paymentMethod === 'transferencia') debitCode = '1.1.01.03';
-      const debitAcc = await findAccount(req.clinicId, { code: debitCode });
+      // Débito: cobro (caja/banco/tarjeta) o cuentas por cobrar.
+      // Si el cobro indica una cuenta bancaria o tarjeta configurada en
+      // contabilidad, usamos SU cuenta contable en vez del código fijo.
+      let debitAcc = null;
+      if (paymentMethod === 'transferencia' && sale.bankAccount) {
+        const BankAccount = require('../models/BankAccount');
+        const ChartOfAccount = require('../models/ChartOfAccount');
+        const bank = await BankAccount.findOne({ _id: sale.bankAccount, clinic: req.clinicId });
+        if (bank?.chartAccount) debitAcc = await ChartOfAccount.findById(bank.chartAccount);
+      } else if (paymentMethod === 'tarjeta' && sale.creditCard) {
+        const CreditCard = require('../models/CreditCard');
+        const ChartOfAccount = require('../models/ChartOfAccount');
+        const card = await CreditCard.findOne({ _id: sale.creditCard, clinic: req.clinicId });
+        if (card?.chartAccount) debitAcc = await ChartOfAccount.findById(card.chartAccount);
+      }
+      if (!debitAcc) {
+        let debitCode = '1.1.02.01';
+        if (paymentMethod === 'efectivo') debitCode = '1.1.01.01';
+        else if (paymentMethod === 'tarjeta') debitCode = '1.1.02.02';
+        else if (paymentMethod === 'transferencia') debitCode = '1.1.01.03';
+        debitAcc = await findAccount(req.clinicId, { code: debitCode });
+      }
       lines.push({ account: debitAcc._id, debit: total, credit: 0, description: `Venta ${sale.saleNumber}` });
 
       // Crédito: ingresos por producto/servicio

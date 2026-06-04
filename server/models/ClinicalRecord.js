@@ -40,6 +40,9 @@ const recetaItemSchema = new mongoose.Schema(
 const followUpSchema = new mongoose.Schema(
   {
     fecha: { type: Date, required: true, default: Date.now },
+    // Tipo de entrada de seguimiento: '' (consulta normal del doctor) o
+    // 'enfermeria' (aplicación de servicio registrada automáticamente por enfermería).
+    kind: { type: String, default: '' },
     // "motivo de consulta" reemplaza al antiguo "descripcion".
     // Mantenemos `descripcion` como alias por retrocompatibilidad de datos.
     motivoConsulta: { type: String, trim: true },

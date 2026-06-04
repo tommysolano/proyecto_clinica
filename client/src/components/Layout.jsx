@@ -63,6 +63,7 @@ const ALL_ITEMS = [
   { path: '/commission-rules', label: 'Reglas de Comisión', icon: HiOutlineTrophy, roles: ['admin'] },
   { path: '/inventory', label: 'Inventario', icon: HiOutlineCube, roles: ['admin', 'contabilidad'] },
   { path: '/sales', label: 'Ventas', icon: HiOutlineShoppingCart, roles: ['admin', 'contabilidad', 'cajero'] },
+  { path: '/cash-register', label: 'Caja (Apertura/Cierre)', icon: HiOutlineCalculator, roles: ['admin', 'cajero', 'contabilidad'] },
   { path: '/invoices', label: 'Facturación', icon: HiOutlineDocumentText, roles: ['admin', 'cajero', 'contabilidad'] },
   { path: '/marketing', label: 'Marketing', icon: HiOutlineMegaphone, roles: ['admin', 'marketing'] },
   { path: '/reports', label: 'Reportes de atención', icon: HiOutlineChartBar, roles: ['admin', 'marketing'] },
@@ -161,6 +162,18 @@ export default function Layout({ children }) {
   const location = useLocation();
   const navigate = useNavigate();
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  // Colapso de la barra lateral en escritorio. En escritorio la barra divide el
+  // espacio con el contenido; al colapsarla, el contenido ocupa todo el ancho.
+  const [desktopCollapsed, setDesktopCollapsed] = useState(
+    () => localStorage.getItem('sidebarCollapsed') === '1'
+  );
+  const toggleDesktop = () => {
+    setDesktopCollapsed((v) => {
+      const next = !v;
+      localStorage.setItem('sidebarCollapsed', next ? '1' : '0');
+      return next;
+    });
+  };
   const [openGroups, setOpenGroups] = useState({});
   const toggleGroup = (key) => setOpenGroups((g) => ({ ...g, [key]: !g[key] }));
 
@@ -204,7 +217,7 @@ export default function Layout({ children }) {
       <aside
         className={`fixed lg:static inset-y-0 left-0 z-30 w-[270px] bg-gradient-to-b from-emerald-900 via-emerald-900 to-teal-900 text-white transform transition-transform duration-200 ease-in-out ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
-        } flex flex-col shadow-2xl`}
+        } ${desktopCollapsed ? 'lg:hidden' : ''} flex flex-col shadow-2xl`}
       >
         <div className="flex items-center justify-between px-6 py-6">
           <Link to="/" className="flex items-center gap-3 no-underline">
@@ -370,11 +383,21 @@ export default function Layout({ children }) {
 
       <div className="flex-1 flex flex-col overflow-hidden">
         <header className="bg-white/80 backdrop-blur-md border-b border-emerald-100 px-4 lg:px-8 py-4 flex items-center justify-between">
+          {/* Móvil: abre la barra como overlay */}
           <button
             className="lg:hidden p-2 rounded-xl hover:bg-emerald-50 bg-transparent border-none cursor-pointer"
             onClick={() => setSidebarOpen(true)}
+            title="Menú"
           >
             <HiOutlineBars3 className="w-6 h-6 text-slate-600" />
+          </button>
+          {/* Escritorio: colapsa/expande la barra reclamando el espacio */}
+          <button
+            className="hidden lg:inline-flex p-2 rounded-xl hover:bg-emerald-50 bg-transparent border-none cursor-pointer text-slate-600"
+            onClick={toggleDesktop}
+            title={desktopCollapsed ? 'Mostrar menú' : 'Ocultar menú'}
+          >
+            <HiOutlineBars3 className="w-6 h-6" />
           </button>
           <div className="flex-1" />
           <div className="flex items-center gap-4">

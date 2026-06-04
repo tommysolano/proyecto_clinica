@@ -116,6 +116,59 @@ exports.getPatient = async (req, res) => {
   }
 };
 
+/**
+ * Historial de compras y aplicaciones del paciente, para el seguimiento.
+ * Devuelve las ventas (qué compró, cuándo, quién lo recomendó) y el avance de
+ * tratamientos (comprado vs aplicado vs restante — p.ej. cuántos sueros lleva).
+ */
+exports.getPatientPurchases = async (req, res) => {
+  try {
+    const Sale = require('../models/Sale');
+    const Treatment = require('../models/Treatment');
+    const patientId = req.params.id;
+
+    const [sales, treatments] = await Promise.all([
+      Sale.find({ clinic: req.clinicId, patient: patientId, status: { $ne: 'anulada' } })
+        .populate('recommendedBy', 'name')
+        .sort({ createdAt: -1 })
+        .limit(200),
+      Treatment.find({ clinic: req.clinicId, patient: patientId })
+        .sort({ createdAt: -1 }),
+    ]);
+
+    const purchases = sales.map((s) => ({
+      _id: s._id,
+      saleNumber: s.saleNumber,
+      date: s.createdAt,
+      total: s.total,
+      paymentMethod: s.paymentMethod,
+      recommendedBy: s.recommendedBy ? s.recommendedBy.name : null,
+      items: (s.items || []).map((i) => ({
+        name: i.productName,
+        quantity: i.quantity,
+        category: i.category,
+        subtotal: i.subtotal,
+      })),
+    }));
+
+    const treatmentProgress = treatments.map((t) => ({
+      _id: t._id,
+      name: t.name,
+      status: t.status,
+      items: (t.items || []).map((it) => ({
+        name: it.name || '',
+        prescribed: it.quantity,
+        applied: it.completed || 0,
+        remaining: Math.max(0, (it.quantity || 0) - (it.completed || 0)),
+      })),
+    }));
+
+    res.json({ purchases, treatments: treatmentProgress });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al obtener compras del paciente', error: error.message });
+  }
+};
+
 exports.createPatient = async (req, res) => {
   try {
     const cedula = (req.body.cedula || '').trim();

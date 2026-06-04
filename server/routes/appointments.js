@@ -14,7 +14,8 @@ const {
   markNoShow,
   markConfirmed,
   assignDoctor,
-  nurseAttend,
+  nurseClaim,
+  nurseComplete,
 } = require('../controllers/appointmentController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
@@ -37,7 +38,8 @@ router.post('/:id/confirm', requireRole('admin', 'cajero', 'call_center', 'enfer
 router.post('/:id/attended', requireRole('admin', 'cajero', 'enfermero'), markAttended);
 router.post('/:id/assign-doctor', requireRole('admin', 'cajero', 'enfermero'), assignDoctor);
 router.post('/:id/no-show', requireRole('admin', 'cajero', 'enfermero'), markNoShow);
-router.post('/:id/nurse-attend', requireRole('admin', 'enfermero'), nurseAttend);
+router.post('/:id/nurse-claim', requireRole('admin', 'enfermero'), nurseClaim);
+router.post('/:id/nurse-complete', requireRole('admin', 'enfermero'), nurseComplete);
 router.delete('/:id', requireRole('admin', 'cajero', 'call_center'), deleteAppointment);
 
 module.exports = router;
