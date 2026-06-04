@@ -225,7 +225,7 @@ export default function Layout({ children }) {
       )}
 
       <aside
-        className={`fixed lg:static inset-y-0 left-0 z-30 w-[270px] bg-gradient-to-b from-emerald-900 via-emerald-900 to-teal-900 text-white transform transition-transform duration-200 ease-in-out ${
+        className={`fixed lg:static inset-y-0 left-0 z-30 w-[270px] bg-gradient-to-b from-slate-900 via-slate-900 to-slate-950 border-r border-slate-800/60 text-white transform transition-transform duration-200 ease-in-out ${
           sidebarOpen ? 'translate-x-0' : '-translate-x-full lg:translate-x-0'
         } ${desktopCollapsed ? 'lg:hidden' : ''} flex flex-col shadow-2xl`}
       >
@@ -251,7 +251,7 @@ export default function Layout({ children }) {
 
         {clinics.length > 1 && (
           <div className="px-4 mb-3">
-            <label className="text-[10px] uppercase tracking-wider text-emerald-400/70 font-semibold px-1 block mb-1">
+            <label className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold px-1 block mb-1">
               Sucursal activa
             </label>
             <select
@@ -269,7 +269,7 @@ export default function Layout({ children }) {
         )}
 
         <nav className="flex-1 px-4 py-2 space-y-1 overflow-y-auto">
-          <p className="text-[10px] uppercase tracking-wider text-emerald-400/70 font-semibold px-3 mb-2">
+          <p className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold px-3 mb-2">
             Menú principal
           </p>
           {menuItems.map((item) => {
@@ -284,13 +284,13 @@ export default function Layout({ children }) {
                 onClick={() => setSidebarOpen(false)}
                 className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-medium no-underline ${
                   isActive
-                    ? 'bg-white/15 text-white shadow-lg shadow-black/10'
-                    : 'text-emerald-100/70 hover:bg-white/8 hover:text-white'
+                    ? 'bg-emerald-500/15 text-white shadow-lg shadow-black/10'
+                    : 'text-slate-300 hover:bg-white/10 hover:text-white'
                 }`}
               >
                 <div
                   className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                    isActive ? 'bg-emerald-500' : 'bg-white/8'
+                    isActive ? 'bg-emerald-500' : 'bg-white/5'
                   }`}
                 >
                   <Icon className="w-[18px] h-[18px]" />
@@ -301,7 +301,7 @@ export default function Layout({ children }) {
           })}
           {showAccounting && (
             <div className="mt-4 space-y-1">
-              <p className="text-[10px] uppercase tracking-wider text-emerald-400/70 font-semibold px-3 mb-1">
+              <p className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold px-3 mb-1">
                 Contabilidad
               </p>
               {ACCT_GROUPS.map((group) => {
@@ -313,10 +313,10 @@ export default function Layout({ children }) {
                     <button
                       onClick={() => toggleGroup(group.key)}
                       className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-medium bg-transparent border-none cursor-pointer ${
-                        groupActive ? 'text-white' : 'text-emerald-100/70 hover:bg-white/8 hover:text-white'
+                        groupActive ? 'text-white' : 'text-slate-300 hover:bg-white/10 hover:text-white'
                       }`}
                     >
-                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${groupActive ? 'bg-emerald-500' : 'bg-white/8'}`}>
+                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${groupActive ? 'bg-emerald-500' : 'bg-white/5'}`}>
                         <GroupIcon className="w-[18px] h-[18px]" />
                       </div>
                       <span className="flex-1 text-left">{group.label}</span>
@@ -332,7 +332,7 @@ export default function Layout({ children }) {
                               to={it.path}
                               onClick={() => setSidebarOpen(false)}
                               className={`flex items-center gap-2 px-2 py-1.5 rounded-lg text-[12px] no-underline ${
-                                isActive ? 'bg-white/15 text-white' : 'text-emerald-100/60 hover:bg-white/8 hover:text-white'
+                                isActive ? 'bg-emerald-500/15 text-white' : 'text-slate-400 hover:bg-white/10 hover:text-white'
                               }`}
                             >
                               <span className="truncate">{it.label}</span>
@@ -348,7 +348,7 @@ export default function Layout({ children }) {
           )}
           {showAccounting && (
             <div className="mt-4 space-y-1">
-              <p className="text-[10px] uppercase tracking-wider text-emerald-400/70 font-semibold px-3 mb-1">
+              <p className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold px-3 mb-1">
                 Mi Cuenta
               </p>
               <Link
@@ -356,11 +356,11 @@ export default function Layout({ children }) {
                 onClick={() => setSidebarOpen(false)}
                 className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-medium no-underline ${
                   location.pathname === '/settings'
-                    ? 'bg-white/15 text-white shadow-lg shadow-black/10'
-                    : 'text-emerald-100/70 hover:bg-white/8 hover:text-white'
+                    ? 'bg-emerald-500/15 text-white shadow-lg shadow-black/10'
+                    : 'text-slate-300 hover:bg-white/10 hover:text-white'
                 }`}
               >
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${location.pathname === '/settings' ? 'bg-emerald-500' : 'bg-white/8'}`}>
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${location.pathname === '/settings' ? 'bg-emerald-500' : 'bg-white/5'}`}>
                   <HiOutlineCog6Tooth className="w-[18px] h-[18px]" />
                 </div>
                 Configuración de Cuenta
@@ -383,7 +383,7 @@ export default function Layout({ children }) {
           </div>
           <button
             onClick={handleLogout}
-            className="flex items-center gap-3 px-3 py-2 mt-1 w-full rounded-xl text-[13px] font-medium text-emerald-200/60 hover:bg-white/8 hover:text-white cursor-pointer bg-transparent border-none"
+            className="flex items-center gap-3 px-3 py-2 mt-1 w-full rounded-xl text-[13px] font-medium text-emerald-200/60 hover:bg-white/10 hover:text-white cursor-pointer bg-transparent border-none"
           >
             <HiOutlineArrowRightOnRectangle className="w-4 h-4" />
             Cerrar Sesión
