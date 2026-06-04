@@ -109,7 +109,7 @@ export default function Analytics() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
           <HiOutlinePresentationChartLine className="text-emerald-600" /> Analíticas
         </h1>
         <div className="flex items-end gap-2">
@@ -119,7 +119,7 @@ export default function Analytics() {
           <label className="text-sm">Hasta
             <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} className="block mt-1 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
           </label>
-          <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm border-none cursor-pointer hover:bg-emerald-700">
+          <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm border-none cursor-pointer hover:bg-emerald-700">
             {loading ? 'Cargando...' : 'Actualizar'}
           </button>
         </div>

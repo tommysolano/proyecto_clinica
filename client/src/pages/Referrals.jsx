@@ -109,7 +109,7 @@ export default function Referrals() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
             <HiOutlineArrowsRightLeft className="text-emerald-600" /> Derivaciones
           </h1>
           <p className="text-sm text-slate-500">
@@ -119,7 +119,7 @@ export default function Referrals() {
         {canCreate && (
           <button
             onClick={() => setShowModal(true)}
-            className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2 hover:bg-emerald-700"
+            className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 hover:bg-emerald-700"
           >
             <HiOutlinePlus className="w-4 h-4" /> Nueva derivación
           </button>
@@ -145,12 +145,12 @@ export default function Referrals() {
           value={qFilter}
           onChange={(e) => setQFilter(e.target.value)}
           placeholder="Buscar paciente..."
-          className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+          className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
         />
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+          className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
         >
           <option value="">Todos los estados</option>
           {STATUSES.map((s) => (
@@ -162,7 +162,7 @@ export default function Referrals() {
         <select
           value={toDoctorFilter}
           onChange={(e) => setToDoctorFilter(e.target.value)}
-          className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+          className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
         >
           <option value="">Todos los doctores destino</option>
           {doctors.map((d) => (
@@ -174,7 +174,7 @@ export default function Referrals() {
           value={specialtyFilter}
           onChange={(e) => setSpecialtyFilter(e.target.value)}
           placeholder="Especialidad..."
-          className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+          className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
         />
       </div>
 
@@ -260,7 +260,7 @@ export default function Referrals() {
               required
               value={form.patient}
               onChange={(e) => setForm({ ...form, patient: e.target.value })}
-              className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+              className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
             >
               <option value="">Seleccionar...</option>
               {patients.map((p) => (
@@ -276,7 +276,7 @@ export default function Referrals() {
               <select
                 value={form.toDoctor}
                 onChange={(e) => setForm({ ...form, toDoctor: e.target.value })}
-                className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
               >
                 <option value="">—</option>
                 {doctors.map((d) => (
@@ -291,7 +291,7 @@ export default function Referrals() {
               <input
                 value={form.specialty}
                 onChange={(e) => setForm({ ...form, specialty: e.target.value })}
-                className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
               />
             </label>
           </div>
@@ -301,7 +301,7 @@ export default function Referrals() {
               required
               value={form.reason}
               onChange={(e) => setForm({ ...form, reason: e.target.value })}
-              className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+              className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
             />
           </label>
           <label className="block">
@@ -310,7 +310,7 @@ export default function Referrals() {
               rows={2}
               value={form.notes}
               onChange={(e) => setForm({ ...form, notes: e.target.value })}
-              className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+              className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
             />
           </label>
           <div className="flex justify-end gap-2 pt-2">

@@ -68,7 +68,7 @@ export default function Commissions() {
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
             <HiOutlineTrophy className="text-emerald-600" /> Comisiones del call center
           </h1>
           <p className="text-xs text-slate-500">

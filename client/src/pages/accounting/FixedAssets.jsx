@@ -116,13 +116,13 @@ export default function FixedAssets() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineBuildingLibrary className="text-emerald-600" /> Activos Fijos</h1>
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineBuildingLibrary className="text-emerald-600" /> Activos Fijos</h1>
         <div className="flex gap-2">
           <button onClick={() => setShowDep(true)} className="px-4 py-2 bg-amber-500 text-white rounded-lg flex items-center gap-2"><HiOutlineCalculator /> Correr depreciación</button>
-          <button onClick={openNew} className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2"><HiOutlinePlus /> Nuevo</button>
+          <button onClick={openNew} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nuevo</button>
         </div>
       </div>
-      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Código</th><th className="px-3 py-2 text-left">Nombre</th>
@@ -194,7 +194,7 @@ export default function FixedAssets() {
               <option value="">Dep. acumulada...</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}
             </select>
           </div>
-          <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Guardar</button></div>
+          <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button></div>
         </form>
       </Modal>
 
@@ -242,7 +242,7 @@ export default function FixedAssets() {
           <input type="number" placeholder="Año" value={depForm.year} onChange={(e) => setDepForm({ ...depForm, year: +e.target.value })} className={inputCls} />
           <input type="number" min="1" max="12" placeholder="Mes" value={depForm.month} onChange={(e) => setDepForm({ ...depForm, month: +e.target.value })} className={inputCls} />
         </div>
-        <div className="flex justify-end gap-2"><button onClick={() => setShowDep(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button><button onClick={runDep} className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Procesar</button></div>
+        <div className="flex justify-end gap-2"><button onClick={() => setShowDep(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button onClick={runDep} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Procesar</button></div>
       </Modal>
     </div>
   );

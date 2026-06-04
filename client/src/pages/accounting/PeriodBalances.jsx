@@ -31,17 +31,17 @@ export default function PeriodBalances() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineTableCells className="text-emerald-600" /> Saldos por Período</h1>
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineTableCells className="text-emerald-600" /> Saldos por Período</h1>
         <div className="flex gap-2 items-center">
-          <select value={month} onChange={(e) => setMonth(+e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2 text-sm">
+          <select value={month} onChange={(e) => setMonth(+e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
             {MESES.map((m, i) => <option key={i} value={i + 1}>{m}</option>)}
           </select>
-          <input type="number" value={year} onChange={(e) => setYear(+e.target.value)} className="w-24 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+          <input type="number" value={year} onChange={(e) => setYear(+e.target.value)} className="w-24 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
           <button onClick={recompute} className="px-3 py-2 bg-slate-700 text-white rounded-lg text-sm flex items-center gap-1" title="Reconstruir saldos desde los asientos"><HiOutlineArrowPath /> Recalcular</button>
         </div>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm overflow-x-auto">
+      <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Código</th><th className="px-3 py-2 text-left">Cuenta</th>

@@ -235,7 +235,7 @@ export default function Inventory() {
     <div>
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">Inventario</h1>
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Inventario</h1>
           <p className="text-sm text-slate-500 mt-1">Gestión de productos y movimientos</p>
         </div>
         {canWrite && (
@@ -448,7 +448,7 @@ export default function Inventory() {
           <div className="bg-emerald-50 rounded-lg p-3 text-sm text-slate-600">
             <p className="font-semibold text-emerald-800 mb-1">1. Descarga la plantilla</p>
             <p>Descarga el Excel, llénalo con tus productos (no borres los encabezados) y vuelve a subirlo aquí.</p>
-            <button onClick={downloadTemplate} className="mt-2 px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-sm">Descargar plantilla Excel</button>
+            <button onClick={downloadTemplate} className="mt-2 px-3 py-1.5 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm">Descargar plantilla Excel</button>
           </div>
           <div>
             <p className="font-semibold text-slate-700 mb-1 text-sm">2. Sube el archivo lleno</p>
@@ -461,8 +461,8 @@ export default function Inventory() {
             </div>
           )}
           <div className="flex justify-end gap-2">
-            <button onClick={() => setBulkModal(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cerrar</button>
-            <button onClick={uploadBulk} disabled={!bulkFile || bulkUploading} className="px-4 py-2 bg-emerald-600 text-white rounded-lg disabled:opacity-50">{bulkUploading ? 'Subiendo...' : 'Importar'}</button>
+            <button onClick={() => setBulkModal(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cerrar</button>
+            <button onClick={uploadBulk} disabled={!bulkFile || bulkUploading} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 disabled:opacity-50">{bulkUploading ? 'Subiendo...' : 'Importar'}</button>
           </div>
         </div>
       </Modal>

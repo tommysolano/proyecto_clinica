@@ -144,7 +144,7 @@ export default function Users() {
   return (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
           <HiOutlineUsers className="w-7 h-7 text-emerald-600" />
           Usuarios de la sucursal
         </h1>
@@ -310,7 +310,7 @@ export default function Users() {
             <button
               type="button"
               onClick={() => setShowModal(false)}
-              className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-lg cursor-pointer bg-transparent border-none text-sm"
+              className="px-4 py-2 text-slate-600 hover:bg-slate-100 rounded-xl cursor-pointer bg-transparent border-none text-sm"
             >
               Cancelar
             </button>

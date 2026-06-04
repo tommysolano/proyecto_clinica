@@ -86,24 +86,25 @@ export default function Dashboard() {
   return (
     <div>
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-slate-800">
+        <h1 className="page-title text-2xl sm:text-3xl">
           Hola, {user?.name} 👋
         </h1>
-        <p className="text-sm text-slate-500 mt-1">Resumen general de Shiluv</p>
+        <p className="page-subtitle">Resumen general de Shiluv</p>
       </div>
 
       {/* Stats Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-5 mb-8">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 sm:gap-5 mb-8">
         {stats.map((stat) => {
           const Icon = stat.icon;
           return (
-            <div key={stat.label} className="bg-white rounded-2xl p-5 shadow-sm border border-emerald-100 hover:shadow-md hover:shadow-emerald-100/50 transition-shadow">
+            <div key={stat.label} className="card card-hover relative overflow-hidden p-5">
+              <div className={`${stat.color} pointer-events-none absolute -right-6 -top-6 w-24 h-24 rounded-full opacity-10`} />
               <div className="flex items-center justify-between">
                 <div>
                   <p className="text-[13px] text-slate-500 font-medium">{stat.label}</p>
-                  <p className="text-2xl font-bold text-slate-800 mt-1">{stat.value}</p>
+                  <p className="text-2xl sm:text-3xl font-bold text-slate-800 mt-1 tracking-tight">{stat.value}</p>
                 </div>
-                <div className={`${stat.color} p-3 rounded-xl shadow-lg shadow-emerald-200/30`}>
+                <div className={`${stat.color} p-3 rounded-2xl shadow-lg shadow-emerald-200/40`}>
                   <Icon className="w-6 h-6 text-white" />
                 </div>
               </div>

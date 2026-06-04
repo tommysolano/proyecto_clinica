@@ -39,10 +39,10 @@ export default function CreditDebitNotes() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineDocumentMinus className="text-emerald-600" /> Notas de Crédito / Débito</h1>
-        <button onClick={() => { setForm(EMPTY); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineDocumentMinus className="text-emerald-600" /> Notas de Crédito / Débito</h1>
+        <button onClick={() => { setForm(EMPTY); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
       </div>
-      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Tipo</th><th className="px-3 py-2 text-left">Sentido</th>
@@ -92,7 +92,7 @@ export default function CreditDebitNotes() {
           </table>
           <button type="button" onClick={() => setForm({ ...form, items: [...form.items, { description: '', quantity: 1, unitPrice: 0, ivaRate: 15 }] })} className="text-emerald-600 text-sm">+ Línea</button>
           <div className="text-right text-sm">Subt: <b>{fmt(totals.subtotal)}</b> | IVA: <b>{fmt(totals.iva)}</b> | Total: <b className="text-lg">${fmt(totals.total)}</b></div>
-          <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Registrar</button></div>
+          <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Registrar</button></div>
         </form>
       </Modal>
     </div>

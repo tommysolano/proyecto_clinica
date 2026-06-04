@@ -24,11 +24,11 @@ export default function CashFlow() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineArrowsRightLeft className="text-emerald-600" /> Flujo de Caja</h1>
+      <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineArrowsRightLeft className="text-emerald-600" /> Flujo de Caja</h1>
       <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 items-end flex-wrap">
         <div><label className="text-xs text-slate-500 block">Desde</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2" /></div>
         <div><label className="text-xs text-slate-500 block">Hasta</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2" /></div>
-        <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Generar</button>
+        <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Generar</button>
         {data && <button onClick={downloadXlsx} className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2"><HiOutlineArrowDownTray /> Excel</button>}
       </div>
 
@@ -44,7 +44,7 @@ export default function CashFlow() {
             <Stat title="Total egresos" value={`$${fmt(data.totalOut)}`} color="text-rose-600" />
             <Stat title="Saldo final" value={`$${fmt(data.saldoFinal)}`} color={data.saldoFinal < 0 ? 'text-rose-600' : 'text-slate-800'} />
           </div>
-          <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+          <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
             <table className="w-full text-sm">
               <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Fecha</th><th className="px-3 py-2 text-left">Asiento</th><th className="px-3 py-2 text-left">Descripción</th><th className="px-3 py-2 text-right">Ingreso</th><th className="px-3 py-2 text-right">Egreso</th><th className="px-3 py-2 text-right">Saldo</th></tr></thead>
               <tbody>
@@ -69,5 +69,5 @@ export default function CashFlow() {
 }
 
 function Stat({ title, value, color = 'text-slate-800' }) {
-  return <div className="bg-white rounded-xl shadow-sm p-4"><p className="text-xs text-slate-500">{title}</p><p className={`text-2xl font-bold ${color}`}>{value}</p></div>;
+  return <div className="bg-white rounded-2xl shadow-sm p-4"><p className="text-xs text-slate-500">{title}</p><p className={`text-2xl font-bold ${color}`}>{value}</p></div>;
 }

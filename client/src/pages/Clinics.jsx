@@ -126,7 +126,7 @@ export default function Clinics() {
   return (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
           <HiOutlineBuildingOffice2 className="w-7 h-7 text-emerald-600" />
           Sucursales
         </h1>

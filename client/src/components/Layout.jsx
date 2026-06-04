@@ -415,8 +415,8 @@ export default function Layout({ children }) {
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto p-4 lg:p-8">
-          <div className="mx-auto w-full max-w-screen-xl">{children}</div>
+        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
+          <div key={location.pathname} className="page-enter mx-auto w-full max-w-screen-xl">{children}</div>
         </main>
       </div>
     </div>

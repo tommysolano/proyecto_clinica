@@ -44,7 +44,7 @@ export default function ConsolidatedInventory() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3 flex-wrap">
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
           <HiOutlineCube className="text-emerald-600" /> Inventario consolidado (todas las clínicas)
         </h1>
         <div className="flex items-center gap-2">
@@ -57,26 +57,26 @@ export default function ConsolidatedInventory() {
               className="pl-8 pr-3 py-2 border border-slate-200 rounded-lg text-sm w-72"
             />
           </div>
-          <button onClick={load} className="px-3 py-2 bg-emerald-600 text-white rounded-lg text-sm">Recargar</button>
+          <button onClick={load} className="px-3 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm">Recargar</button>
         </div>
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-        <div className="bg-white rounded-xl shadow-sm p-4">
+        <div className="bg-white rounded-2xl shadow-sm p-4">
           <div className="text-xs text-slate-500">SKUs totales</div>
-          <div className="text-2xl font-bold text-slate-800">{filtered.length}</div>
+          <div className="text-2xl font-bold text-slate-800 tracking-tight">{filtered.length}</div>
         </div>
-        <div className="bg-white rounded-xl shadow-sm p-4">
+        <div className="bg-white rounded-2xl shadow-sm p-4">
           <div className="text-xs text-slate-500">Stock total (unidades)</div>
-          <div className="text-2xl font-bold text-slate-800">{fmt(totals.stock)}</div>
+          <div className="text-2xl font-bold text-slate-800 tracking-tight">{fmt(totals.stock)}</div>
         </div>
-        <div className="bg-white rounded-xl shadow-sm p-4">
+        <div className="bg-white rounded-2xl shadow-sm p-4">
           <div className="text-xs text-slate-500">Valor total inventario</div>
           <div className="text-2xl font-bold text-emerald-700">${fmt(totals.value)}</div>
         </div>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase">
             <tr>

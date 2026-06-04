@@ -30,10 +30,10 @@ export default function FiscalPeriods() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-800">Períodos Fiscales</h1>
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Períodos Fiscales</h1>
         <div className="flex gap-2">
           <input type="number" value={year} onChange={(e) => setYear(+e.target.value)} className="w-28 px-3 py-2 border border-slate-200 rounded-lg" />
-          <button onClick={openYear} className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Apertura de año</button>
+          <button onClick={openYear} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Apertura de año</button>
           <button onClick={closeYear} className="px-4 py-2 bg-rose-600 text-white rounded-lg">Cierre anual</button>
         </div>
       </div>

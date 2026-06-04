@@ -128,7 +128,7 @@ export default function InvoicingConfig() {
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-6">
       <div>
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
           <HiOutlineDocumentText className="w-7 h-7 text-emerald-600" />
           Configuración de facturación SRI
         </h1>

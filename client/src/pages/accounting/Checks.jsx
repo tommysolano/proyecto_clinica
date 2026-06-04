@@ -36,8 +36,8 @@ export default function Checks() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineDocumentText className="text-emerald-600" /> Cheques</h1>
-        <button onClick={() => setShow(true)} disabled={!account} className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2 disabled:opacity-50"><HiOutlinePlus /> Generar chequera</button>
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineDocumentText className="text-emerald-600" /> Cheques</h1>
+        <button onClick={() => setShow(true)} disabled={!account} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 disabled:opacity-50"><HiOutlinePlus /> Generar chequera</button>
       </div>
       <div className="bg-white rounded-xl p-3 shadow-sm flex gap-2 flex-wrap">
         <select value={account} onChange={(e) => setAccount(e.target.value)} className="px-3 py-2 border border-slate-200 rounded-lg">
@@ -47,7 +47,7 @@ export default function Checks() {
           <option value="">Todos</option><option value="DISPONIBLE">Disponibles</option><option value="GIRADO">Girados</option><option value="COBRADO">Cobrados</option><option value="ANULADO">Anulados</option>
         </select>
       </div>
-      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Nº Cheque</th><th className="px-3 py-2 text-center">Estado</th><th className="px-3 py-2 text-left">Beneficiario</th><th className="px-3 py-2 text-right">Monto</th><th className="px-3 py-2 text-left">Fecha</th><th></th></tr></thead>
           <tbody>
@@ -72,7 +72,7 @@ export default function Checks() {
             <input type="number" placeholder="Desde Nº" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
             <input type="number" placeholder="Hasta Nº" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
           </div>
-          <div className="flex justify-end gap-2"><button onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button><button onClick={generate} className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Generar</button></div>
+          <div className="flex justify-end gap-2"><button onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button onClick={generate} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Generar</button></div>
         </div>
       </Modal>
     </div>

@@ -202,7 +202,7 @@ export default function ManagementReports() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineChartBar className="text-emerald-600" /> Reportes Gerenciales</h1>
+      <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineChartBar className="text-emerald-600" /> Reportes Gerenciales</h1>
       <div className="flex gap-2 flex-wrap">
         {TABS.map((t) => <button key={t.key} onClick={() => { setTab(t.key); setData(null); }} className={`px-3 py-2 rounded-lg text-xs ${tab === t.key ? 'bg-emerald-600 text-white' : 'bg-white border'}`}>{t.label}</button>)}
       </div>
@@ -214,7 +214,7 @@ export default function ManagementReports() {
             <select value={granularity} onChange={(e) => setGranularity(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2"><option value="day">Diario</option><option value="week">Semanal</option><option value="month">Mensual</option><option value="quarter">Trimestral</option><option value="year">Anual</option></select>
           </div>
         )}
-        <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Generar</button>
+        <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Generar</button>
         {tab === 'AR' && <button onClick={() => downloadXlsx('/accounting-reports/ar-aging.xlsx', 'cartera_cobrar.xlsx')} className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2"><HiOutlineArrowDownTray /> Excel</button>}
         {tab === 'AP' && <button onClick={() => downloadXlsx('/accounting-reports/ap-aging.xlsx', 'cartera_pagar.xlsx')} className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2"><HiOutlineArrowDownTray /> Excel</button>}
       </div>

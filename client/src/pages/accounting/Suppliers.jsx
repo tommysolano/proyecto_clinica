@@ -45,8 +45,8 @@ export default function Suppliers() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineUserGroup className="text-emerald-600" /> Personas</h1>
-        <button onClick={() => { setEditing(null); setForm(EMPTY); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineUserGroup className="text-emerald-600" /> Personas</h1>
+        <button onClick={() => { setEditing(null); setForm(EMPTY); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
       </div>
       <div className="bg-white rounded-xl p-3 shadow-sm flex gap-2 flex-wrap items-center">
         <input placeholder="Buscar por RUC o nombre" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load()} className="flex-1 min-w-[200px] px-3 py-2 border border-slate-200 rounded-lg" />
@@ -56,7 +56,7 @@ export default function Suppliers() {
         </select>
         <button onClick={load} className="px-4 py-2 bg-slate-700 text-white rounded-lg">Buscar</button>
       </div>
-      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">RUC/CI</th><th className="px-3 py-2 text-left">Nombre</th>
@@ -107,7 +107,7 @@ export default function Suppliers() {
               <label className="text-sm flex items-center gap-1"><input type="checkbox" checked={form.isWithholdingAgent} onChange={(e) => setForm({ ...form, isWithholdingAgent: e.target.checked })} /> Ag. retención</label>
             </div>
           </div>
-          <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Guardar</button></div>
+          <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button></div>
         </form>
       </Modal>
     </div>

@@ -187,7 +187,7 @@ export default function Calendar() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">Calendario de citas</h1>
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Calendario de citas</h1>
           <p className="text-sm text-slate-500">
             Vista semanal estilo Google Calendar.
           </p>
@@ -280,7 +280,7 @@ export default function Calendar() {
       <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
         <div className="bg-white rounded-xl border border-emerald-100 p-3">
           <p className="text-xs text-slate-500">Agendadas</p>
-          <p className="text-2xl font-bold text-slate-800">{kpis.agendado}</p>
+          <p className="text-2xl font-bold text-slate-800 tracking-tight">{kpis.agendado}</p>
         </div>
         <div className="bg-white rounded-xl border border-emerald-100 p-3">
           <p className="text-xs text-slate-500">Asistieron</p>

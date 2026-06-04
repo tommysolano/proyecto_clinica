@@ -67,8 +67,8 @@ export default function JournalEntries() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-800">Asientos Contables</h1>
-        <button onClick={() => { setForm(EMPTY); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2"><HiOutlinePlus /> Nuevo asiento</button>
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Asientos Contables</h1>
+        <button onClick={() => { setForm(EMPTY); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nuevo asiento</button>
       </div>
 
       <div className="bg-white rounded-xl p-3 shadow-sm border border-emerald-100 flex flex-wrap gap-2 items-end">
@@ -83,7 +83,7 @@ export default function JournalEntries() {
         <button onClick={load} className="px-4 py-2 bg-slate-700 text-white rounded-lg">Filtrar</button>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm border border-emerald-100 overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Número</th><th className="px-3 py-2 text-left">Fecha</th>
@@ -155,9 +155,9 @@ export default function JournalEntries() {
             Diferencia: {fmt(totalD - totalC)}
           </div>
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button>
+            <button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button>
             <button type="button" onClick={(e) => submit(e, true)} className="px-4 py-2 bg-amber-500 text-white rounded-lg">Guardar borrador</button>
-            <button className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Contabilizar</button>
+            <button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Contabilizar</button>
           </div>
         </form>
       </Modal>

@@ -110,14 +110,14 @@ export default function Discounts() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
             <HiOutlineTag className="text-emerald-600" /> Descuentos
           </h1>
           <p className="text-sm text-slate-500">
             Cumple con la normativa SRI: los descuentos se aplican por ítem y se reportan en la factura electrónica.
           </p>
         </div>
-        <button onClick={() => { setEditing(null); setForm(EMPTY); setShowModal(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2 hover:bg-emerald-700">
+        <button onClick={() => { setEditing(null); setForm(EMPTY); setShowModal(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 hover:bg-emerald-700">
           <HiOutlinePlus className="w-4 h-4" /> Nuevo descuento
         </button>
       </div>
@@ -166,24 +166,24 @@ export default function Discounts() {
         <form onSubmit={submit} className="space-y-3">
           <label className="block">
             <span className="text-xs font-medium text-slate-600">Nombre</span>
-            <input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+            <input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
           </label>
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
               <span className="text-xs font-medium text-slate-600">Tipo</span>
-              <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm">
+              <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
                 <option value="percentage">Porcentaje (%)</option>
                 <option value="amount">Valor ($)</option>
               </select>
             </label>
             <label className="block">
               <span className="text-xs font-medium text-slate-600">Valor</span>
-              <input type="number" step="0.01" required value={form.value} onChange={(e) => setForm({ ...form, value: Number(e.target.value) })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+              <input type="number" step="0.01" required value={form.value} onChange={(e) => setForm({ ...form, value: Number(e.target.value) })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
             </label>
           </div>
           <label className="block">
             <span className="text-xs font-medium text-slate-600">Alcance</span>
-            <select value={form.scope} onChange={(e) => setForm({ ...form, scope: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm">
+            <select value={form.scope} onChange={(e) => setForm({ ...form, scope: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
               <option value="all">Todos los productos</option>
               <option value="specific">Productos específicos</option>
             </select>
@@ -191,7 +191,7 @@ export default function Discounts() {
           {form.scope === 'specific' && (
             <label className="block">
               <span className="text-xs font-medium text-slate-600">Productos aplicables</span>
-              <select multiple value={form.products} onChange={(e) => setForm({ ...form, products: Array.from(e.target.selectedOptions, (o) => o.value) })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm h-32">
+              <select multiple value={form.products} onChange={(e) => setForm({ ...form, products: Array.from(e.target.selectedOptions, (o) => o.value) })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm h-32">
                 {products.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
               </select>
             </label>
@@ -199,11 +199,11 @@ export default function Discounts() {
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
               <span className="text-xs font-medium text-slate-600">Inicio</span>
-              <input type="date" value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+              <input type="date" value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
             </label>
             <label className="block">
               <span className="text-xs font-medium text-slate-600">Fin</span>
-              <input type="date" value={form.endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+              <input type="date" value={form.endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
             </label>
           </div>
           {/* Parametrizaciones */}
@@ -221,10 +221,10 @@ export default function Discounts() {
 
             <div className="grid grid-cols-2 gap-3">
               <label className="block"><span className="text-xs font-medium text-slate-600">Hora desde</span>
-                <input type="time" value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                <input type="time" value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
               </label>
               <label className="block"><span className="text-xs font-medium text-slate-600">Hora hasta</span>
-                <input type="time" value={form.endTime} onChange={(e) => setForm({ ...form, endTime: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                <input type="time" value={form.endTime} onChange={(e) => setForm({ ...form, endTime: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
               </label>
             </div>
 
@@ -241,15 +241,15 @@ export default function Discounts() {
 
             <div className="grid grid-cols-3 gap-3">
               <label className="block"><span className="text-xs font-medium text-slate-600">Público objetivo</span>
-                <select value={form.audience} onChange={(e) => setForm({ ...form, audience: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm">
+                <select value={form.audience} onChange={(e) => setForm({ ...form, audience: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
                   {AUDIENCES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
                 </select>
               </label>
               <label className="block"><span className="text-xs font-medium text-slate-600">Compra mínima ($)</span>
-                <input type="number" step="0.01" value={form.minAmount} onChange={(e) => setForm({ ...form, minAmount: Number(e.target.value) })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-right" />
+                <input type="number" step="0.01" value={form.minAmount} onChange={(e) => setForm({ ...form, minAmount: Number(e.target.value) })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-right" />
               </label>
               <label className="block"><span className="text-xs font-medium text-slate-600">Límite de usos <span className="text-slate-400">(0=∞)</span></span>
-                <input type="number" value={form.maxUses} onChange={(e) => setForm({ ...form, maxUses: Number(e.target.value) })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-right" />
+                <input type="number" value={form.maxUses} onChange={(e) => setForm({ ...form, maxUses: Number(e.target.value) })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-right" />
               </label>
             </div>
           </div>

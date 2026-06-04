@@ -52,10 +52,10 @@ export default function Employees() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineUserGroup className="text-emerald-600" /> Empleados</h1>
-        <button onClick={() => { setEditing(null); setForm(EMPTY); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2"><HiOutlinePlus /> Nuevo</button>
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineUserGroup className="text-emerald-600" /> Empleados</h1>
+        <button onClick={() => { setEditing(null); setForm(EMPTY); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nuevo</button>
       </div>
-      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Código</th><th className="px-3 py-2 text-left">Cédula</th>
@@ -145,7 +145,7 @@ export default function Employees() {
               </div>
             </div>
             {editing && (
-              <input placeholder="Razón del cambio (auditoría)" value={form.salaryChangeReason} onChange={(e) => setForm({ ...form, salaryChangeReason: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+              <input placeholder="Razón del cambio (auditoría)" value={form.salaryChangeReason} onChange={(e) => setForm({ ...form, salaryChangeReason: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
             )}
           </div>
           <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 space-y-3">
@@ -170,7 +170,7 @@ export default function Employees() {
             <input placeholder="Nº cuenta bancaria" value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2" />
             <select value={form.bankAccountType} onChange={(e) => setForm({ ...form, bankAccountType: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2"><option value="">Tipo de cuenta...</option><option value="AHORROS">Ahorros</option><option value="CORRIENTE">Corriente</option></select>
           </div>
-          <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Guardar</button></div>
+          <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button></div>
         </form>
       </Modal>
       <Modal isOpen={!!history} onClose={() => setHistory(null)} title={`Historial de sueldo - ${history?.firstName || ''} ${history?.lastName || ''}`} size="lg">

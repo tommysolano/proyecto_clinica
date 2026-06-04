@@ -23,7 +23,7 @@ export default function Ledger() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineBookOpen className="text-emerald-600" /> Libro Mayor</h1>
+      <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineBookOpen className="text-emerald-600" /> Libro Mayor</h1>
       <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 flex-wrap items-end">
         <div className="flex-1 min-w-64">
           <label className="text-xs text-slate-500">Cuenta</label>
@@ -34,10 +34,10 @@ export default function Ledger() {
         </div>
         <div><label className="text-xs text-slate-500">Desde</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2" /></div>
         <div><label className="text-xs text-slate-500">Hasta</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2" /></div>
-        <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Consultar</button>
+        <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Consultar</button>
       </div>
       {data && (
-        <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+        <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
           <div className="p-3 bg-slate-50 text-sm flex gap-4 flex-wrap">
             <span>Cuenta: <b>{data.account?.code} - {data.account?.name}</b></span>
             <span>Saldo inicial: <b>${fmt(data.opening)}</b></span>

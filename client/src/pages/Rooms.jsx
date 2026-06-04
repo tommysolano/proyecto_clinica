@@ -72,14 +72,14 @@ export default function Rooms() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
             <HiOutlineBuildingStorefront className="text-emerald-600" /> Consultorios físicos
           </h1>
           <p className="text-sm text-slate-500">
             Salas/consultorios donde se atienden citas. Cada consultorio puede tener un encargado.
           </p>
         </div>
-        <button onClick={openNew} className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2 hover:bg-emerald-700">
+        <button onClick={openNew} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 hover:bg-emerald-700">
           <HiOutlinePlus className="w-4 h-4" /> Nuevo consultorio
         </button>
       </div>
@@ -118,22 +118,22 @@ export default function Rooms() {
         <form onSubmit={submit} className="space-y-3">
           <label className="block">
             <span className="text-xs font-medium text-slate-600">Nombre</span>
-            <input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+            <input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
           </label>
           <label className="block">
             <span className="text-xs font-medium text-slate-600">Código</span>
-            <input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+            <input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
           </label>
           <label className="block">
             <span className="text-xs font-medium text-slate-600">Encargado</span>
-            <select value={form.manager} onChange={(e) => setForm({ ...form, manager: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm">
+            <select value={form.manager} onChange={(e) => setForm({ ...form, manager: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
               <option value="">— Sin encargado —</option>
               {users.map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
             </select>
           </label>
           <label className="block">
             <span className="text-xs font-medium text-slate-600">Descripción</span>
-            <textarea rows={2} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+            <textarea rows={2} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
           </label>
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" onClick={() => setShowModal(false)} className="px-4 py-2 rounded-lg border border-slate-200">Cancelar</button>

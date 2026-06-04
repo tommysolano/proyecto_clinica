@@ -222,7 +222,7 @@ export default function Treatments() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
             <HiOutlineHeart className="text-emerald-600" /> Tratamientos
           </h1>
           <p className="text-sm text-slate-500">
@@ -232,7 +232,7 @@ export default function Treatments() {
         {canEdit && (
           <button
             onClick={openNew}
-            className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2 hover:bg-emerald-700"
+            className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 hover:bg-emerald-700"
           >
             <HiOutlinePlus className="w-4 h-4" /> Nuevo tratamiento
           </button>
@@ -243,7 +243,7 @@ export default function Treatments() {
         <select
           value={statusFilter}
           onChange={(e) => setStatusFilter(e.target.value)}
-          className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+          className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
         >
           <option value="">Todos los estados</option>
           {STATUSES.map((s) => (
@@ -255,7 +255,7 @@ export default function Treatments() {
         <select
           value={alertFilter}
           onChange={(e) => setAlertFilter(e.target.value)}
-          className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+          className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
         >
           <option value="">Todas las alertas</option>
           <option value="zero">Sin avance (0%)</option>
@@ -430,7 +430,7 @@ export default function Treatments() {
                 required
                 value={form.patient}
                 onChange={(e) => setForm({ ...form, patient: e.target.value })}
-                className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
               >
                 <option value="">Seleccionar...</option>
                 {patients.map((p) => (
@@ -445,7 +445,7 @@ export default function Treatments() {
               <select
                 value={form.prescribedBy}
                 onChange={(e) => setForm({ ...form, prescribedBy: e.target.value })}
-                className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
               >
                 <option value="">—</option>
                 {doctors.map((d) => (
@@ -462,7 +462,7 @@ export default function Treatments() {
               required
               value={form.name}
               onChange={(e) => setForm({ ...form, name: e.target.value })}
-              className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+              className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
             />
           </label>
           <label className="block">
@@ -471,7 +471,7 @@ export default function Treatments() {
               rows={2}
               value={form.description}
               onChange={(e) => setForm({ ...form, description: e.target.value })}
-              className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+              className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
             />
           </label>
           <div className="grid sm:grid-cols-2 gap-3">
@@ -481,7 +481,7 @@ export default function Treatments() {
                 type="date"
                 value={form.startDate}
                 onChange={(e) => setForm({ ...form, startDate: e.target.value })}
-                className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
               />
             </label>
             <label className="block">
@@ -490,7 +490,7 @@ export default function Treatments() {
                 type="date"
                 value={form.targetEndDate}
                 onChange={(e) => setForm({ ...form, targetEndDate: e.target.value })}
-                className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
               />
             </label>
           </div>
@@ -514,7 +514,7 @@ export default function Treatments() {
                   <select
                     value={it.product}
                     onChange={(e) => updateItem(idx, 'product', e.target.value)}
-                    className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                    className="flex-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
                   >
                     <option value="">Servicio o programa...</option>
                     {products.map((p) => (
@@ -548,7 +548,7 @@ export default function Treatments() {
               rows={2}
               value={form.notes}
               onChange={(e) => setForm({ ...form, notes: e.target.value })}
-              className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+              className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
             />
           </label>
           <div className="flex justify-end gap-2 pt-2">
@@ -586,7 +586,7 @@ export default function Treatments() {
             rows={5}
             value={waMessage}
             onChange={(e) => setWaMessage(e.target.value)}
-            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+            className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
           />
           <div className="flex justify-end gap-2">
             <button

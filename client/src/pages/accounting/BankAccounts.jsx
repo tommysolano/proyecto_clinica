@@ -80,10 +80,10 @@ export default function BankAccounts() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineBanknotes className="text-emerald-600" /> Bancos</h1>
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineBanknotes className="text-emerald-600" /> Bancos</h1>
         <div className="flex gap-2">
           <Link to="/accounting/cash" className="px-4 py-2 bg-amber-500 text-white rounded-lg flex items-center gap-2 no-underline"><HiOutlineArrowsRightLeft /> Caja → Banco</Link>
-          <button onClick={() => { setEditing(null); setForm(EMPTY); setShowAcc(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2"><HiOutlinePlus /> Nueva cuenta</button>
+          <button onClick={() => { setEditing(null); setForm(EMPTY); setShowAcc(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva cuenta</button>
         </div>
       </div>
 
@@ -110,7 +110,7 @@ export default function BankAccounts() {
         <div className="bg-white rounded-xl p-4 shadow-sm border border-emerald-100">
           <div className="flex justify-between items-center mb-3">
             <h2 className="font-semibold">Movimientos · {selected.name}</h2>
-            <button onClick={() => { setMovForm({ bankAccount: selected._id, date: today(), type: 'DEPOSITO', amount: 0, counterpartAccount: '', description: '', reference: '', voucherNumber: '', voucherUrl: '' }); setShowMov(true); }} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-sm">+ Movimiento</button>
+            <button onClick={() => { setMovForm({ bankAccount: selected._id, date: today(), type: 'DEPOSITO', amount: 0, counterpartAccount: '', description: '', reference: '', voucherNumber: '', voucherUrl: '' }); setShowMov(true); }} className="px-3 py-1.5 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm">+ Movimiento</button>
           </div>
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-xs uppercase"><tr>
@@ -151,7 +151,7 @@ export default function BankAccounts() {
               {chart.filter((c) => c.code?.startsWith('1.1.01')).map((c) => <option key={c._id} value={c._id}>{c.code} {c.name}</option>)}
             </select>
           </div>
-          <div className="flex justify-end gap-2"><button type="button" onClick={() => setShowAcc(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Guardar</button></div>
+          <div className="flex justify-end gap-2"><button type="button" onClick={() => setShowAcc(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button></div>
         </form>
       </Modal>
 
@@ -188,7 +188,7 @@ export default function BankAccounts() {
             </div>
           )}
           <input placeholder="Descripción" value={movForm.description} onChange={(e) => setMovForm({ ...movForm, description: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2" />
-          <div className="flex justify-end gap-2"><button type="button" onClick={() => setShowMov(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Registrar</button></div>
+          <div className="flex justify-end gap-2"><button type="button" onClick={() => setShowMov(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Registrar</button></div>
         </form>
       </Modal>
     </div>

@@ -110,7 +110,7 @@ export default function CashBox() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
             <HiOutlineCurrencyDollar className="w-7 h-7 text-emerald-600" /> Caja
           </h1>
           <p className="text-sm text-slate-500">

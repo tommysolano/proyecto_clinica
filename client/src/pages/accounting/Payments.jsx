@@ -61,16 +61,16 @@ export default function Payments() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineCurrencyDollar className="text-emerald-600" /> {type === 'PAGO' ? 'Pagos' : 'Cobros'}</h1>
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineCurrencyDollar className="text-emerald-600" /> {type === 'PAGO' ? 'Pagos' : 'Cobros'}</h1>
         <div className="flex gap-2">
           <div className="flex rounded-lg overflow-hidden border border-emerald-200">
             <button onClick={() => setType('COBRO')} className={`px-3 py-2 text-sm ${type === 'COBRO' ? 'bg-emerald-600 text-white' : 'bg-white'}`}>Cobros</button>
             <button onClick={() => setType('PAGO')} className={`px-3 py-2 text-sm ${type === 'PAGO' ? 'bg-emerald-600 text-white' : 'bg-white'}`}>Pagos</button>
           </div>
-          <button onClick={() => openNew(type)} className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2"><HiOutlinePlus /> Nuevo</button>
+          <button onClick={() => openNew(type)} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nuevo</button>
         </div>
       </div>
-      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Número</th><th className="px-3 py-2 text-left">Fecha</th>
@@ -143,7 +143,7 @@ export default function Payments() {
             <span className="ml-auto font-semibold">Total: ${fmt(totalApplied)}</span>
           </div>
           <input placeholder="Notas / cheque #" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2" />
-          <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Registrar</button></div>
+          <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Registrar</button></div>
         </form>
       </Modal>
     </div>

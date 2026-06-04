@@ -20,13 +20,13 @@ export default function TrialBalance() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineScale className="text-emerald-600" /> Balance de Comprobación</h1>
+      <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineScale className="text-emerald-600" /> Balance de Comprobación</h1>
       <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 items-end">
         <div><label className="text-xs text-slate-500">Desde</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2" /></div>
         <div><label className="text-xs text-slate-500">Hasta</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2" /></div>
         <button type="button" onClick={load} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg cursor-pointer">Consultar</button>
       </div>
-      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Código</th><th className="px-3 py-2 text-left">Cuenta</th>

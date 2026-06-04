@@ -92,7 +92,7 @@ export default function OpportunitiesGlobal() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
           <HiOutlineMegaphone className="text-emerald-600" /> Oportunidades globales
         </h1>
         <div className="text-sm text-slate-600">
@@ -134,7 +134,7 @@ export default function OpportunitiesGlobal() {
         </div>
         <button
           onClick={load}
-          className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm border-none cursor-pointer hover:bg-emerald-700"
+          className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm border-none cursor-pointer hover:bg-emerald-700"
         >Filtrar</button>
       </div>
 
@@ -159,12 +159,12 @@ export default function OpportunitiesGlobal() {
             onChange={(e) => setBulkBody(e.target.value)}
             placeholder="Mensaje a enviar a las conversaciones seleccionadas..."
             rows={2}
-            className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm resize-none"
+            className="flex-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm resize-none"
           />
           <button
             onClick={sendBulk}
             disabled={selected.size === 0 || !bulkBody.trim()}
-            className="px-4 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm cursor-pointer border-none"
+            className="px-4 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 disabled:opacity-50 text-sm cursor-pointer border-none"
           >
             Enviar masivo
           </button>

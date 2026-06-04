@@ -267,11 +267,11 @@ export default function AutoMessages() {
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <label className="block text-sm">
             Nombre del flujo
-            <input value={editor.name} onChange={(e) => setEditor({ ...editor, name: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Ej: Bienvenida colesterol" />
+            <input value={editor.name} onChange={(e) => setEditor({ ...editor, name: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" placeholder="Ej: Bienvenida colesterol" />
           </label>
           <label className="block text-sm">
             Carpeta
-            <input list="flow-folders" value={editor.folder} onChange={(e) => setEditor({ ...editor, folder: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+            <input list="flow-folders" value={editor.folder} onChange={(e) => setEditor({ ...editor, folder: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
             <datalist id="flow-folders">{folderNames.map((f) => <option key={f} value={f} />)}</datalist>
           </label>
         </div>
@@ -314,10 +314,10 @@ export default function AutoMessages() {
                   )}
                 </div>
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                  <select value={tr.type} onChange={(e) => updateTrigger(idx, { type: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2 text-sm">
+                  <select value={tr.type} onChange={(e) => updateTrigger(idx, { type: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
                     {TRIGGER_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                   </select>
-                  <select value={tr.audience} onChange={(e) => updateTrigger(idx, { audience: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2 text-sm">
+                  <select value={tr.audience} onChange={(e) => updateTrigger(idx, { audience: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
                     {AUDIENCES.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
                   </select>
                 </div>
@@ -327,9 +327,9 @@ export default function AutoMessages() {
                       value={(tr.keywords || []).join(', ')}
                       onChange={(e) => updateTrigger(idx, { keywords: e.target.value.split(',').map((k) => k.trim()) })}
                       placeholder="precio, costo, cuánto cuesta"
-                      className="sm:col-span-2 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                      className="sm:col-span-2 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
                     />
-                    <select value={tr.matchType} onChange={(e) => updateTrigger(idx, { matchType: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2 text-sm">
+                    <select value={tr.matchType} onChange={(e) => updateTrigger(idx, { matchType: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
                       {MATCH_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                     </select>
                   </div>
@@ -387,7 +387,7 @@ export default function AutoMessages() {
     <div className="space-y-5">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
             <span className="inline-flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-md">
               <HiOutlineBolt className="w-5 h-5" />
             </span>
@@ -521,7 +521,7 @@ function StepCard({ step, idx, total, onChange, onRemove, onMove }) {
       </div>
 
       {step.type === 'message' && (
-        <textarea value={step.body} onChange={(e) => onChange({ body: e.target.value })} rows={3} placeholder="Mensaje que se enviará al cliente. Usa {{nombre}} para personalizar." className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm resize-none" />
+        <textarea value={step.body} onChange={(e) => onChange({ body: e.target.value })} rows={3} placeholder="Mensaje que se enviará al cliente. Usa {{nombre}} para personalizar." className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm resize-none" />
       )}
       {step.type === 'wait' && (
         <label className="flex items-center gap-2 text-sm text-slate-600">

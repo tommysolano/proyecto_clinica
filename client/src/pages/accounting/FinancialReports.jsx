@@ -109,7 +109,7 @@ export default function FinancialReports() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineDocumentChartBar className="text-emerald-600" /> Reportes Financieros</h1>
+      <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineDocumentChartBar className="text-emerald-600" /> Reportes Financieros</h1>
       <div className="flex gap-2 flex-wrap">
         {REPORT_TABS.map(([k, l]) =>
           <button key={k} onClick={() => { setTab(k); setData(null); }} className={`px-4 py-2 rounded-lg text-sm ${tab === k ? 'bg-emerald-600 text-white' : 'bg-white border'}`}>{l}</button>)}
@@ -117,7 +117,7 @@ export default function FinancialReports() {
       <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 items-end flex-wrap">
         <div><label className="text-xs text-slate-500 block">Desde</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2" /></div>
         <div><label className="text-xs text-slate-500 block">Hasta</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2" /></div>
-        <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Generar</button>
+        <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Generar</button>
         {(tab === 'BG' || tab === 'PYG') && (
           <button
             onClick={downloadSupercias}

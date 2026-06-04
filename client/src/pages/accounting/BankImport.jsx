@@ -62,12 +62,12 @@ export default function BankImport() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineArrowDownTray className="text-emerald-600" /> Importar Estado de Cuenta</h1>
+      <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineArrowDownTray className="text-emerald-600" /> Importar Estado de Cuenta</h1>
 
-      <div className="bg-white rounded-xl shadow-sm p-4 space-y-3">
+      <div className="bg-white rounded-2xl shadow-sm p-4 space-y-3">
         <div className="flex flex-wrap gap-3 items-end">
           <label className="text-xs text-slate-500">Cuenta bancaria
-            <select value={bankAccount} onChange={(e) => setBankAccount(e.target.value)} className="mt-1 block border border-slate-200 rounded-lg px-3 py-2 text-sm min-w-[220px]">
+            <select value={bankAccount} onChange={(e) => setBankAccount(e.target.value)} className="mt-1 block border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm min-w-[220px]">
               {banks.map((b) => <option key={b._id} value={b._id}>{b.name} — {b.bank}</option>)}
             </select>
           </label>
@@ -77,11 +77,11 @@ export default function BankImport() {
         </div>
         <p className="text-xs text-slate-400">Formato por línea: <code>fecha,descripción,referencia,monto</code> · monto negativo = débito/retiro.</p>
         <textarea value={raw} onChange={(e) => setRaw(e.target.value)} rows={6} placeholder="01/06/2026,Depósito cliente,REF123,1500.00&#10;03/06/2026,Comisión mantenimiento,,-8.50" className="w-full border border-slate-200 rounded-lg px-3 py-2 font-mono text-xs" />
-        <button onClick={match} disabled={loading} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm flex items-center gap-2"><HiOutlineArrowPath /> {loading ? 'Conciliando...' : 'Conciliar'}</button>
+        <button onClick={match} disabled={loading} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm flex items-center gap-2"><HiOutlineArrowPath /> {loading ? 'Conciliando...' : 'Conciliar'}</button>
       </div>
 
       {rows && (
-        <div className="bg-white rounded-xl shadow-sm overflow-x-auto">
+        <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-emerald-50 text-xs uppercase"><tr>
               <th className="px-3 py-2 text-left">Fecha</th><th className="px-3 py-2 text-left">Descripción (banco)</th>
@@ -113,7 +113,7 @@ export default function BankImport() {
             </tbody>
           </table>
           <div className="p-3 flex justify-end">
-            <button onClick={apply} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm">Aplicar conciliación</button>
+            <button onClick={apply} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm">Aplicar conciliación</button>
           </div>
         </div>
       )}

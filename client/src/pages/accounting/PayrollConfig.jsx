@@ -30,9 +30,9 @@ export default function PayrollConfig() {
 
   return (
     <div className="space-y-4 max-w-3xl">
-      <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineCog6Tooth className="text-emerald-600" /> Configuración de Nómina</h1>
+      <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineCog6Tooth className="text-emerald-600" /> Configuración de Nómina</h1>
 
-      <div className="bg-white rounded-xl shadow-sm p-4 space-y-3">
+      <div className="bg-white rounded-2xl shadow-sm p-4 space-y-3">
         <h2 className="font-semibold text-slate-700">Parámetros</h2>
         <div className="grid grid-cols-2 gap-3">
           <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Frecuencia de pago</span>
@@ -47,7 +47,7 @@ export default function PayrollConfig() {
         </div>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm p-4 space-y-3">
+      <div className="bg-white rounded-2xl shadow-sm p-4 space-y-3">
         <h2 className="font-semibold text-slate-700">Cuentas contables (códigos del plan)</h2>
         <div className="grid grid-cols-2 gap-3">
           {Object.keys(ACCOUNT_LABELS).map((k) => (
@@ -58,7 +58,7 @@ export default function PayrollConfig() {
         </div>
       </div>
 
-      <button onClick={save} className="px-5 py-2 bg-emerald-600 text-white rounded-lg">Guardar configuración</button>
+      <button onClick={save} className="px-5 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar configuración</button>
     </div>
   );
 }

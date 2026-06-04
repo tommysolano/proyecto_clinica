@@ -91,7 +91,7 @@ export default function Login() {
             {step === 'credentials' && (
               <>
                 <div className="mb-6">
-                  <h2 className="text-2xl font-bold text-slate-800">Bienvenido</h2>
+                  <h2 className="text-2xl font-bold text-slate-800 tracking-tight">Bienvenido</h2>
                   <p className="text-muted mt-1 text-sm">Ingrese sus credenciales para acceder</p>
                 </div>
                 <form onSubmit={handleCredentials} className="space-y-5">
@@ -131,7 +131,7 @@ export default function Login() {
             {step === 'clinic' && (
               <>
                 <div className="mb-6">
-                  <h2 className="text-2xl font-bold text-slate-800">Seleccione sucursal</h2>
+                  <h2 className="text-2xl font-bold text-slate-800 tracking-tight">Seleccione sucursal</h2>
                   <p className="text-muted mt-1 text-sm">
                     Tiene acceso a múltiples sucursales. Elija con cuál desea trabajar.
                   </p>

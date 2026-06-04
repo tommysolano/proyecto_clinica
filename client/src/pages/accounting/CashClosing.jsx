@@ -61,17 +61,17 @@ export default function CashClosing() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineCalculator className="text-emerald-600" /> Caja</h1>
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineCalculator className="text-emerald-600" /> Caja</h1>
         {open ? (
           <button onClick={() => { setCloseForm({ countedCash: expectedCash, notes: '' }); setCloseModal(true); }} className="px-4 py-2 bg-rose-600 text-white rounded-lg flex items-center gap-2 border-none cursor-pointer hover:bg-rose-700"><HiOutlineLockClosed /> Cerrar caja</button>
         ) : (
-          <button onClick={() => setOpenModal(true)} className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2 border-none cursor-pointer hover:bg-emerald-700"><HiOutlineLockOpen /> Abrir caja</button>
+          <button onClick={() => setOpenModal(true)} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 border-none cursor-pointer hover:bg-emerald-700"><HiOutlineLockOpen /> Abrir caja</button>
         )}
       </div>
 
       {/* Estado de la caja actual */}
       {open ? (
-        <div className="bg-white rounded-xl shadow-sm border border-emerald-200 p-4">
+        <div className="bg-white rounded-2xl shadow-sm border border-emerald-200 p-4">
           <div className="flex items-center gap-2 mb-3">
             <span className="px-2 py-0.5 rounded-full text-[11px] bg-emerald-100 text-emerald-700 font-semibold">CAJA ABIERTA</span>
             <span className="text-xs text-slate-500">desde {fmtDate(open.openedAt)} · {open.openedBy?.name || ''}</span>
@@ -85,13 +85,13 @@ export default function CashClosing() {
           </div>
         </div>
       ) : (
-        <div className="bg-white rounded-xl shadow-sm border border-slate-200 p-6 text-center text-slate-400 text-sm">
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 text-center text-slate-400 text-sm">
           No hay una caja abierta. Abre la caja para empezar a registrar ventas del turno.
         </div>
       )}
 
       {/* Historial */}
-      <div className="bg-white rounded-xl shadow-sm overflow-x-auto">
+      <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Fecha</th><th className="px-3 py-2 text-right">Fondo inicial</th>
@@ -122,12 +122,12 @@ export default function CashClosing() {
       <Modal isOpen={openModal} onClose={() => setOpenModal(false)} title="Abrir caja" size="sm">
         <form onSubmit={doOpen} className="space-y-3">
           <label className="text-xs text-slate-500 block">Fondo de caja inicial ($)
-            <input type="number" step="0.01" value={openForm.openingBalance} onChange={(e) => setOpenForm({ ...openForm, openingBalance: +e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-right" autoFocus />
+            <input type="number" step="0.01" value={openForm.openingBalance} onChange={(e) => setOpenForm({ ...openForm, openingBalance: +e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-right" autoFocus />
           </label>
           <label className="text-xs text-slate-500 block">Observaciones
-            <textarea value={openForm.notes} onChange={(e) => setOpenForm({ ...openForm, notes: e.target.value })} rows={2} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+            <textarea value={openForm.notes} onChange={(e) => setOpenForm({ ...openForm, notes: e.target.value })} rows={2} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
           </label>
-          <div className="flex justify-end gap-2"><button type="button" onClick={() => setOpenModal(false)} className="px-4 py-2 bg-slate-200 rounded-lg border-none cursor-pointer">Cancelar</button><button disabled={busy} className="px-4 py-2 bg-emerald-600 text-white rounded-lg border-none cursor-pointer disabled:opacity-50">Abrir caja</button></div>
+          <div className="flex justify-end gap-2"><button type="button" onClick={() => setOpenModal(false)} className="px-4 py-2 bg-slate-200 rounded-xl border-none cursor-pointer">Cancelar</button><button disabled={busy} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 border-none cursor-pointer disabled:opacity-50">Abrir caja</button></div>
         </form>
       </Modal>
 
@@ -143,7 +143,7 @@ export default function CashClosing() {
             </div>
           )}
           <label className="text-xs text-slate-500 block">Efectivo físico contado ($)
-            <input type="number" step="0.01" value={closeForm.countedCash} onChange={(e) => setCloseForm({ ...closeForm, countedCash: +e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-right" autoFocus />
+            <input type="number" step="0.01" value={closeForm.countedCash} onChange={(e) => setCloseForm({ ...closeForm, countedCash: +e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-right" autoFocus />
           </label>
           <div className="bg-slate-50 rounded-lg p-3 flex flex-wrap justify-between gap-3 text-sm">
             <span>Efectivo esperado: <b className="font-mono">${fmt(expectedCash)}</b></span>
@@ -152,9 +152,9 @@ export default function CashClosing() {
           </div>
           <p className="text-[11px] text-slate-400">La diferencia genera automáticamente un asiento contable (faltante = gasto, sobrante = ingreso).</p>
           <label className="text-xs text-slate-500 block">Observaciones
-            <textarea value={closeForm.notes} onChange={(e) => setCloseForm({ ...closeForm, notes: e.target.value })} rows={2} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+            <textarea value={closeForm.notes} onChange={(e) => setCloseForm({ ...closeForm, notes: e.target.value })} rows={2} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
           </label>
-          <div className="flex justify-end gap-2"><button type="button" onClick={() => setCloseModal(false)} className="px-4 py-2 bg-slate-200 rounded-lg border-none cursor-pointer">Cancelar</button><button disabled={busy} className="px-4 py-2 bg-rose-600 text-white rounded-lg border-none cursor-pointer disabled:opacity-50">Cerrar caja</button></div>
+          <div className="flex justify-end gap-2"><button type="button" onClick={() => setCloseModal(false)} className="px-4 py-2 bg-slate-200 rounded-xl border-none cursor-pointer">Cancelar</button><button disabled={busy} className="px-4 py-2 bg-rose-600 text-white rounded-lg border-none cursor-pointer disabled:opacity-50">Cerrar caja</button></div>
         </form>
       </Modal>
 

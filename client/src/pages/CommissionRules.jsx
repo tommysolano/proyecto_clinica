@@ -148,11 +148,11 @@ export default function CommissionRules() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
           <HiOutlineTrophy className="text-emerald-600" /> Comisiones
         </h1>
         {tab === 'rules' && (
-          <button onClick={openNew} className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2 hover:bg-emerald-700 border-none cursor-pointer">
+          <button onClick={openNew} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 hover:bg-emerald-700 border-none cursor-pointer">
             <HiOutlinePlus className="w-4 h-4" /> Nueva regla
           </button>
         )}
@@ -216,7 +216,7 @@ export default function CommissionRules() {
                 {users.map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
               </select>
             </label>
-            <button onClick={loadReport} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm border-none cursor-pointer hover:bg-emerald-700">Calcular</button>
+            <button onClick={loadReport} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm border-none cursor-pointer hover:bg-emerald-700">Calcular</button>
           </div>
 
           {report && (() => {
@@ -266,11 +266,11 @@ export default function CommissionRules() {
       <Modal isOpen={modal} onClose={() => setModal(false)} title={editing ? 'Editar regla' : 'Nueva regla de comisión'} size="lg">
         <form onSubmit={submit} className="space-y-3">
           <label className="block text-sm">Nombre de la regla
-            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" required />
+            <input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" required />
           </label>
           <div className="grid grid-cols-2 gap-3">
             <label className="block text-sm">Aplica a
-              <select value={form.targetType} onChange={(e) => setForm({ ...form, targetType: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm">
+              <select value={form.targetType} onChange={(e) => setForm({ ...form, targetType: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
                 <option value="role">Un rol</option>
                 <option value="user">Un usuario específico</option>
               </select>
@@ -284,14 +284,14 @@ export default function CommissionRules() {
                     const opts = triggersForRole(role);
                     setForm({ ...form, role, trigger: opts.includes(form.trigger) ? form.trigger : opts[0] });
                   }}
-                  className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                  className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
                 >
                   {ROLES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
                 </select>
               </label>
             ) : (
               <label className="block text-sm">Usuario
-                <select value={form.user} onChange={(e) => setForm({ ...form, user: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm">
+                <select value={form.user} onChange={(e) => setForm({ ...form, user: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
                   <option value="">— Seleccionar —</option>
                   {users.map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
                 </select>
@@ -304,7 +304,7 @@ export default function CommissionRules() {
             <select
               value={form.trigger}
               onChange={(e) => setForm({ ...form, trigger: e.target.value })}
-              className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+              className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
             >
               {(form.targetType === 'role' ? triggersForRole(form.role) : ALL_TRIGGERS).map((t) => (
                 <option key={t} value={t}>{TRIGGERS[t]}</option>
@@ -324,7 +324,7 @@ export default function CommissionRules() {
             {/* El call center no se filtra por producto/servicio (comisiona por la cita agendada). */}
             {!isCallCenter && (
               <label className="block text-sm">Producto / Servicio / Ítem
-                <select value={form.service} onChange={(e) => setForm({ ...form, service: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm">
+                <select value={form.service} onChange={(e) => setForm({ ...form, service: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
                   <option value="">Cualquier producto/servicio</option>
                   {services.map((s) => (
                     <option key={s._id} value={s._id}>
@@ -335,7 +335,7 @@ export default function CommissionRules() {
               </label>
             )}
             <label className="block text-sm">Pacientes
-              <select value={form.patientScope} onChange={(e) => setForm({ ...form, patientScope: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm">
+              <select value={form.patientScope} onChange={(e) => setForm({ ...form, patientScope: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
                 <option value="all">Todos los pacientes</option>
                 <option value="new">Solo pacientes nuevos</option>
               </select>
@@ -343,10 +343,10 @@ export default function CommissionRules() {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="block text-sm">Monto de la comisión ($) <span className="text-slate-400 font-normal">(opcional)</span>
-              <input type="number" step="0.01" min="0" placeholder="0.00 — déjalo vacío para contar sin valor" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+              <input type="number" step="0.01" min="0" placeholder="0.00 — déjalo vacío para contar sin valor" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
             </label>
             <label className="block text-sm">Cuenta contable (gasto comisión)
-              <select value={form.account} onChange={(e) => setForm({ ...form, account: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm">
+              <select value={form.account} onChange={(e) => setForm({ ...form, account: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
                 <option value="">Sin asignar</option>
                 {accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}
               </select>
@@ -371,8 +371,8 @@ export default function CommissionRules() {
                 })}
               </div>
               <div className="grid grid-cols-2 gap-3">
-                <label className="block text-sm">Desde<input type="time" value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" /></label>
-                <label className="block text-sm">Hasta<input type="time" value={form.endTime} onChange={(e) => setForm({ ...form, endTime: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" /></label>
+                <label className="block text-sm">Desde<input type="time" value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" /></label>
+                <label className="block text-sm">Hasta<input type="time" value={form.endTime} onChange={(e) => setForm({ ...form, endTime: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" /></label>
               </div>
             </div>
           )}

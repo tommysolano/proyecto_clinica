@@ -245,7 +245,7 @@ export default function Marketing() {
   return (
     <div className="space-y-5">
       <div>
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
           <HiOutlineMegaphone className="text-emerald-600" /> Marketing
         </h1>
         <p className="text-sm text-slate-500">
@@ -1035,7 +1035,7 @@ export default function Marketing() {
                 rows={5}
                 value={waModal.message}
                 onChange={(e) => setWaModal((m) => ({ ...m, message: e.target.value }))}
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-emerald-500"
+                className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm outline-none focus:ring-2 focus:ring-emerald-500"
               />
               <p className="text-xs text-slate-400 mt-1">
                 Usa <code>{'{{nombre}}'}</code> para personalizar con el nombre del paciente.

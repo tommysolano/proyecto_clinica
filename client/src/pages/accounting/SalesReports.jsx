@@ -74,7 +74,7 @@ export default function SalesReports() {
   const topServices = (data?.byService || []).slice(0, 12).map((s) => ({ name: s.name || s.code || '—', total: s.total, quantity: s.quantity }));
 
   const KPI = ({ label, value, sub, color = 'text-slate-800' }) => (
-    <div className="bg-white rounded-xl shadow-sm p-4">
+    <div className="bg-white rounded-2xl shadow-sm p-4">
       <p className="text-xs text-slate-500">{label}</p>
       <p className={`text-2xl font-bold ${color}`}>{value}</p>
       {sub && <p className="text-xs text-slate-400 mt-0.5">{sub}</p>}
@@ -84,23 +84,23 @@ export default function SalesReports() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineChartBar className="text-emerald-600" /> Reportes de Ventas</h1>
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineChartBar className="text-emerald-600" /> Reportes de Ventas</h1>
         <div className="flex gap-2">
           <button onClick={openNewCat} className="px-3 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2 text-sm"><HiOutlineTag /> Categorías</button>
-          <button onClick={downloadExcel} className="px-3 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2 text-sm"><HiOutlineArrowDownTray /> Excel detallado</button>
+          <button onClick={downloadExcel} className="px-3 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 text-sm"><HiOutlineArrowDownTray /> Excel detallado</button>
         </div>
       </div>
 
       {/* Filtros */}
-      <div className="bg-white rounded-xl shadow-sm p-4 space-y-3">
+      <div className="bg-white rounded-2xl shadow-sm p-4 space-y-3">
         <div className="flex flex-wrap items-end gap-3">
           <label className="text-xs text-slate-500">Desde
-            <input type="date" value={filters.startDate} onChange={(e) => setFilters({ ...filters, startDate: e.target.value })} className="mt-1 block border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+            <input type="date" value={filters.startDate} onChange={(e) => setFilters({ ...filters, startDate: e.target.value })} className="mt-1 block border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
           </label>
           <label className="text-xs text-slate-500">Hasta
-            <input type="date" value={filters.endDate} onChange={(e) => setFilters({ ...filters, endDate: e.target.value })} className="mt-1 block border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+            <input type="date" value={filters.endDate} onChange={(e) => setFilters({ ...filters, endDate: e.target.value })} className="mt-1 block border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
           </label>
-          <button onClick={run} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm">{loading ? 'Cargando...' : 'Generar'}</button>
+          <button onClick={run} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm">{loading ? 'Cargando...' : 'Generar'}</button>
         </div>
         {/* Categorías guardadas como chips */}
         {!!categories.length && (
@@ -137,7 +137,7 @@ export default function SalesReports() {
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         {/* Ventas en el tiempo */}
-        <div className="bg-white rounded-xl shadow-sm p-4">
+        <div className="bg-white rounded-2xl shadow-sm p-4">
           <h3 className="text-sm font-semibold text-slate-700 mb-2">Ventas en el período</h3>
           <ResponsiveContainer width="100%" height={260}>
             <LineChart data={data?.timeSeries || []}>
@@ -151,7 +151,7 @@ export default function SalesReports() {
         </div>
 
         {/* Resumen de cobros */}
-        <div className="bg-white rounded-xl shadow-sm p-4">
+        <div className="bg-white rounded-2xl shadow-sm p-4">
           <h3 className="text-sm font-semibold text-slate-700 mb-2">Resumen de cobros (cómo se cobró)</h3>
           <ResponsiveContainer width="100%" height={260}>
             <PieChart>
@@ -166,7 +166,7 @@ export default function SalesReports() {
       </div>
 
       {/* Top servicios */}
-      <div className="bg-white rounded-xl shadow-sm p-4">
+      <div className="bg-white rounded-2xl shadow-sm p-4">
         <h3 className="text-sm font-semibold text-slate-700 mb-2">Ventas por servicio (top 12)</h3>
         <ResponsiveContainer width="100%" height={320}>
           <BarChart data={topServices} layout="vertical" margin={{ left: 40 }}>
@@ -180,7 +180,7 @@ export default function SalesReports() {
       </div>
 
       {/* Tabla detalle por servicio */}
-      <div className="bg-white rounded-xl shadow-sm overflow-x-auto">
+      <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Servicio</th><th className="px-3 py-2 text-left">Código</th>
@@ -220,8 +220,8 @@ export default function SalesReports() {
         <form onSubmit={saveCat} className="space-y-3 border-t pt-3">
           <p className="text-sm font-semibold">{editCatId ? 'Editar' : 'Nueva'} categoría</p>
           <div className="grid grid-cols-2 gap-3">
-            <input required placeholder="Nombre" value={catForm.name} onChange={(e) => setCatForm({ ...catForm, name: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2 text-sm" />
-            <input placeholder="Descripción" value={catForm.description} onChange={(e) => setCatForm({ ...catForm, description: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+            <input required placeholder="Nombre" value={catForm.name} onChange={(e) => setCatForm({ ...catForm, name: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+            <input placeholder="Descripción" value={catForm.description} onChange={(e) => setCatForm({ ...catForm, description: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
           </div>
           <div>
             <p className="text-xs text-slate-500 mb-1">Servicios incluidos ({catForm.products.length})</p>
@@ -235,8 +235,8 @@ export default function SalesReports() {
             </div>
           </div>
           <div className="flex justify-end gap-2">
-            {editCatId && <button type="button" onClick={() => { setEditCatId(null); setCatForm({ name: '', description: '', products: [] }); }} className="px-4 py-2 bg-slate-200 rounded-lg text-sm">Nueva</button>}
-            <button className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm">Guardar categoría</button>
+            {editCatId && <button type="button" onClick={() => { setEditCatId(null); setCatForm({ name: '', description: '', products: [] }); }} className="px-4 py-2 bg-slate-200 rounded-xl text-sm">Nueva</button>}
+            <button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm">Guardar categoría</button>
           </div>
         </form>
       </Modal>

@@ -111,7 +111,7 @@ export default function Settings() {
 
   return (
     <div className="space-y-6 max-w-3xl">
-      <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+      <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
         <HiOutlineCog6Tooth className="text-emerald-600" /> Configuración
       </h1>
 
@@ -204,15 +204,15 @@ export default function Settings() {
         <form onSubmit={submitPassword} className="space-y-3 max-w-sm">
           <label className="block text-sm">Contraseña actual
             <input type="password" value={pwd.currentPassword} onChange={(e) => setPwd({ ...pwd, currentPassword: e.target.value })}
-              className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" required />
+              className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" required />
           </label>
           <label className="block text-sm">Nueva contraseña
             <input type="password" value={pwd.newPassword} onChange={(e) => setPwd({ ...pwd, newPassword: e.target.value })}
-              className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" required />
+              className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" required />
           </label>
           <label className="block text-sm">Confirmar nueva contraseña
             <input type="password" value={pwd.confirm} onChange={(e) => setPwd({ ...pwd, confirm: e.target.value })}
-              className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" required />
+              className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" required />
           </label>
           <button type="submit" disabled={saving}
             className="px-5 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg text-sm font-medium border-none cursor-pointer disabled:opacity-50">

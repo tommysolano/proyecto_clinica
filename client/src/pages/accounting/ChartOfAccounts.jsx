@@ -57,14 +57,14 @@ export default function ChartOfAccounts() {
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineBookOpen className="text-emerald-600" /> Plan de Cuentas</h1>
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineBookOpen className="text-emerald-600" /> Plan de Cuentas</h1>
           <p className="text-sm text-slate-500">Catálogo contable jerárquico bajo norma Supercías.</p>
         </div>
         <div className="flex gap-2">
           <button onClick={seed} className="px-3 py-2 bg-amber-500 text-white rounded-lg flex items-center gap-2 hover:bg-amber-600">
             <HiOutlineSparkles className="w-4 h-4" /> Cargar plan inicial
           </button>
-          <button onClick={() => { setEditing(null); setForm(EMPTY); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2 hover:bg-emerald-700">
+          <button onClick={() => { setEditing(null); setForm(EMPTY); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 hover:bg-emerald-700">
             <HiOutlinePlus className="w-4 h-4" /> Nueva cuenta
           </button>
         </div>
@@ -80,7 +80,7 @@ export default function ChartOfAccounts() {
         <button onClick={load} className="px-4 py-2 bg-slate-700 text-white rounded-lg text-sm">Buscar</button>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm border border-emerald-100 overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-sm border border-emerald-100 overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-emerald-900 text-xs uppercase">
             <tr>
@@ -140,8 +140,8 @@ export default function ChartOfAccounts() {
             <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} /> Activa</label>
           </div>
           <div className="flex justify-end gap-2 pt-2">
-            <button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button>
-            <button type="submit" className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Guardar</button>
+            <button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button>
+            <button type="submit" className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button>
           </div>
         </form>
       </Modal>

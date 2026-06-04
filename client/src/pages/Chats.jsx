@@ -236,7 +236,7 @@ export default function Chats() {
       {/* Header con tabs */}
       <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
             <HiOutlineChatBubbleLeftRight className="text-emerald-600" /> Chats
           </h1>
           <p className="text-xs text-slate-500">
@@ -252,7 +252,7 @@ export default function Chats() {
           </button>
           <button
             onClick={() => setNewChatModal(true)}
-            className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 flex items-center gap-1"
+            className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 flex items-center gap-1"
           >
             <HiOutlinePlus className="w-4 h-4" /> Nuevo chat
           </button>
@@ -441,12 +441,12 @@ export default function Chats() {
                       placeholder="Escribe un mensaje... (usa / para mensajes guardados)"
                       rows={2}
                       disabled={!!activeConv?.blocked}
-                      className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm resize-none disabled:bg-slate-100"
+                      className="flex-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm resize-none disabled:bg-slate-100"
                     />
                     <button
                       onClick={sendMessage}
                       disabled={!draft.trim() || !!activeConv?.blocked}
-                      className="px-3 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1"
+                      className="px-3 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1"
                     >
                       <HiOutlinePaperAirplane className="w-4 h-4" /> Enviar
                     </button>
@@ -643,7 +643,7 @@ function SavedRepliesModal({ replies, onClose, onChange }) {
           <button
             type="button"
             onClick={save}
-            className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 border-none cursor-pointer"
+            className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 border-none cursor-pointer"
           >
             {editing ? 'Actualizar' : 'Agregar'}
           </button>
@@ -761,7 +761,7 @@ function GalleryModal({ images, onClose, onChange, onSend }) {
             type="button"
             disabled={!selected}
             onClick={() => onSend(selected, caption)}
-            className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded-lg disabled:opacity-50 border-none cursor-pointer"
+            className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 disabled:opacity-50 border-none cursor-pointer"
           >Enviar</button>
         </div>
       </div>
@@ -865,7 +865,7 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onOpenOpportunity, onCreat
         {canTake && (
           <button
             onClick={onTake}
-            className="text-xs px-2 py-1 bg-slate-100 hover:bg-slate-200 rounded-lg"
+            className="text-xs px-2 py-1 bg-slate-100 hover:bg-slate-200 rounded-xl"
           >
             Tomar
           </button>
@@ -965,7 +965,7 @@ function SidePanel({ conv, onUpdated, onEditOpportunity, onScheduleAppointment, 
           {!conv.patient && (
             <button
               onClick={() => setRegisterModal(true)}
-              className="w-full text-xs px-2 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 border-none cursor-pointer"
+              className="w-full text-xs px-2 py-1.5 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 border-none cursor-pointer"
             >
               + Agregar al sistema
             </button>
@@ -1146,19 +1146,19 @@ function RegisterPatientModal({ conv, onClose, onRegistered }) {
         <div className="grid grid-cols-2 gap-2">
           <div>
             <label className="text-xs font-semibold text-slate-600 block mb-1">Nombres</label>
-            <input value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+            <input value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
           </div>
           <div>
             <label className="text-xs font-semibold text-slate-600 block mb-1">Apellidos</label>
-            <input value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+            <input value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
           </div>
           <div>
             <label className="text-xs font-semibold text-slate-600 block mb-1">Cédula (opcional)</label>
-            <input value={form.cedula} onChange={(e) => setForm({ ...form, cedula: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+            <input value={form.cedula} onChange={(e) => setForm({ ...form, cedula: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
           </div>
           <div>
             <label className="text-xs font-semibold text-slate-600 block mb-1">Género *</label>
-            <select value={form.gender} onChange={(e) => setForm({ ...form, gender: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm">
+            <select value={form.gender} onChange={(e) => setForm({ ...form, gender: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
               <option value="">Seleccionar</option>
               <option value="masculino">Masculino</option>
               <option value="femenino">Femenino</option>
@@ -1205,7 +1205,7 @@ function NewChatModal({ onClose, onCreated }) {
             value={phone}
             onChange={(e) => setPhone(e.target.value)}
             placeholder="593987654321"
-            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+            className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
           />
         </div>
         <div>
@@ -1215,7 +1215,7 @@ function NewChatModal({ onClose, onCreated }) {
           <input
             value={contactName}
             onChange={(e) => setContactName(e.target.value)}
-            className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+            className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
           />
         </div>
         <button
@@ -1261,19 +1261,19 @@ function SimulateModal({ onClose, onSimulated }) {
           value={phone}
           onChange={(e) => setPhone(e.target.value)}
           placeholder="Teléfono (ej: 593987654321)"
-          className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+          className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
         />
         <input
           value={contactName}
           onChange={(e) => setContactName(e.target.value)}
           placeholder="Nombre (opcional)"
-          className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+          className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
         />
         <textarea
           value={body}
           onChange={(e) => setBody(e.target.value)}
           rows={3}
-          className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm resize-none"
+          className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm resize-none"
         />
         <button
           disabled={saving}
@@ -1412,7 +1412,7 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
                 value={it.notes}
                 onChange={(e) => setItems((prev) => prev.map((x, i) => i === idx ? { ...x, notes: e.target.value } : x))}
                 rows={2}
-                className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm resize-none bg-white"
+                className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm resize-none bg-white"
               />
             </div>
             {it.stage === 'perdido' && (
@@ -1421,7 +1421,7 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
                 <input
                   value={it.lostReason}
                   onChange={(e) => setItems((prev) => prev.map((x, i) => i === idx ? { ...x, lostReason: e.target.value } : x))}
-                  className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm bg-white"
+                  className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-white"
                 />
               </div>
             )}
@@ -1446,7 +1446,7 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
             type="button"
             disabled={saving}
             onClick={submit}
-            className="px-4 py-2 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 text-sm border-none cursor-pointer"
+            className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 disabled:opacity-50 text-sm border-none cursor-pointer"
           >
             Guardar
           </button>
@@ -1728,7 +1728,7 @@ function AppointmentFromChatModal({ conv, services, onClose, onCreated }) {
           <button
             onClick={submit}
             disabled={saving}
-            className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 border-none cursor-pointer"
+            className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 disabled:opacity-50 border-none cursor-pointer"
           >
             {saving ? 'Creando…' : items.length > 1 ? `Crear ${items.length} citas` : 'Crear cita'}
           </button>

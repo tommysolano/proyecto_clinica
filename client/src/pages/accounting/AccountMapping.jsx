@@ -43,14 +43,14 @@ export default function AccountMapping() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineAdjustmentsHorizontal className="text-emerald-600" /> Configuración de Cuentas</h1>
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineAdjustmentsHorizontal className="text-emerald-600" /> Configuración de Cuentas</h1>
           <p className="text-sm text-slate-500">Define qué cuenta contable usa el sistema para cada concepto. Si dejas "(Predeterminada)", se usa la cuenta estándar del plan.</p>
         </div>
-        <button onClick={save} disabled={saving} className="px-4 py-2 bg-emerald-600 text-white rounded-lg disabled:opacity-50">{saving ? 'Guardando...' : 'Guardar'}</button>
+        <button onClick={save} disabled={saving} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 disabled:opacity-50">{saving ? 'Guardando...' : 'Guardar'}</button>
       </div>
 
       {groups.map((g) => (
-        <div key={g} className="bg-white rounded-xl shadow-sm overflow-hidden">
+        <div key={g} className="bg-white rounded-2xl shadow-sm overflow-hidden">
           <div className="px-4 py-2 bg-emerald-50 text-sm font-semibold text-emerald-700">{g}</div>
           <table className="w-full text-sm">
             <thead className="text-xs text-slate-500"><tr><th className="px-4 py-2 text-left">Concepto</th><th className="px-4 py-2 text-left">Cuenta a usar</th><th className="px-4 py-2 text-left">Efectiva actual</th></tr></thead>

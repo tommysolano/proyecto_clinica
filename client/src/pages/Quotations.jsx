@@ -162,7 +162,7 @@ export default function Quotations() {
     <div className="space-y-5">
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
             <span className="inline-flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-md">
               <HiOutlineDocumentDuplicate className="w-5 h-5" />
             </span>

@@ -70,12 +70,12 @@ export default function Blocks() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
             <HiOutlineNoSymbol className="text-rose-600" /> Bloqueos de horario
           </h1>
           <p className="text-sm text-slate-500">Días feriados, vacaciones de doctores o consultorios cerrados.</p>
         </div>
-        <button onClick={() => setShowModal(true)} className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2 hover:bg-emerald-700">
+        <button onClick={() => setShowModal(true)} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 hover:bg-emerald-700">
           <HiOutlinePlus className="w-4 h-4" /> Nuevo bloqueo
         </button>
       </div>
@@ -118,11 +118,11 @@ export default function Blocks() {
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
               <span className="text-xs font-medium text-slate-600">Inicio</span>
-              <input type="date" required value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+              <input type="date" required value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
             </label>
             <label className="block">
               <span className="text-xs font-medium text-slate-600">Fin</span>
-              <input type="date" required value={form.endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+              <input type="date" required value={form.endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
             </label>
           </div>
           <label className="flex items-center gap-2 text-sm">
@@ -133,25 +133,25 @@ export default function Blocks() {
             <div className="grid grid-cols-2 gap-3">
               <label className="block">
                 <span className="text-xs font-medium text-slate-600">Hora inicio</span>
-                <input type="time" value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                <input type="time" value={form.startTime} onChange={(e) => setForm({ ...form, startTime: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
               </label>
               <label className="block">
                 <span className="text-xs font-medium text-slate-600">Hora fin</span>
-                <input type="time" value={form.endTime} onChange={(e) => setForm({ ...form, endTime: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                <input type="time" value={form.endTime} onChange={(e) => setForm({ ...form, endTime: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
               </label>
             </div>
           )}
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
               <span className="text-xs font-medium text-slate-600">Doctor (opcional)</span>
-              <select value={form.doctor} onChange={(e) => setForm({ ...form, doctor: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm">
+              <select value={form.doctor} onChange={(e) => setForm({ ...form, doctor: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
                 <option value="">Todos</option>
                 {doctors.map((d) => <option key={d._id} value={d._id}>{d.name}</option>)}
               </select>
             </label>
             <label className="block">
               <span className="text-xs font-medium text-slate-600">Consultorio (opcional)</span>
-              <select value={form.room} onChange={(e) => setForm({ ...form, room: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm">
+              <select value={form.room} onChange={(e) => setForm({ ...form, room: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
                 <option value="">Todos</option>
                 {rooms.map((r) => <option key={r._id} value={r._id}>{r.name}</option>)}
               </select>
@@ -159,7 +159,7 @@ export default function Blocks() {
           </div>
           <label className="block">
             <span className="text-xs font-medium text-slate-600">Motivo</span>
-            <input required value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+            <input required value={form.reason} onChange={(e) => setForm({ ...form, reason: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
           </label>
           <div className="flex justify-end gap-2 pt-2">
             <button type="button" onClick={() => setShowModal(false)} className="px-4 py-2 rounded-lg border border-slate-200">Cancelar</button>

@@ -127,19 +127,19 @@ export default function PurchaseInvoices() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineDocumentText className="text-emerald-600" /> Compras
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineDocumentText className="text-emerald-600" /> Compras
           {pendingCount > 0 && <span className="text-xs font-medium px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">{pendingCount} por autorizar</span>}
         </h1>
         <div className="flex gap-2">
           <button onClick={() => { setImportMode('xml'); setShowImport(true); }} className="px-4 py-2 bg-amber-500 text-white rounded-lg flex items-center gap-2"><HiOutlineArrowDownTray /> Importar SRI</button>
-          <button onClick={() => { setForm(EMPTY); setAuthorizeId(null); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
+          <button onClick={() => { setForm(EMPTY); setAuthorizeId(null); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
         </div>
       </div>
 
       {/* Buscador */}
-      <div className="bg-white rounded-xl shadow-sm p-3 flex flex-wrap items-center gap-3">
-        <input placeholder="Buscar por proveedor, RUC, serie, autorización, clave de acceso..." value={search} onChange={(e) => setSearch(e.target.value)} className="flex-1 min-w-[260px] border border-slate-200 rounded-lg px-3 py-2 text-sm" />
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2 text-sm">
+      <div className="bg-white rounded-2xl shadow-sm p-3 flex flex-wrap items-center gap-3">
+        <input placeholder="Buscar por proveedor, RUC, serie, autorización, clave de acceso..." value={search} onChange={(e) => setSearch(e.target.value)} className="flex-1 min-w-[260px] border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
           <option value="">Todos los estados</option>
           <option value="POR_AUTORIZAR">Por autorizar</option>
           <option value="REGISTRADA">Registrada</option>
@@ -147,7 +147,7 @@ export default function PurchaseInvoices() {
           <option value="ANULADA">Anulada</option>
         </select>
       </div>
-      <div className="bg-white rounded-xl shadow-sm overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-sm overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Serie</th><th className="px-3 py-2 text-left">Fecha</th>
@@ -287,7 +287,7 @@ export default function PurchaseInvoices() {
             <input placeholder="Nro comprobante retención" value={form.retentionNumber} onChange={(e) => setForm({ ...form, retentionNumber: e.target.value })} className="block mt-1 w-full border border-slate-200 rounded-lg px-3 py-2" />
           </div>
 
-          <div className="flex justify-end gap-2"><button type="button" onClick={() => { setShow(false); setAuthorizeId(null); }} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-lg">{authorizeId ? 'Autorizar y contabilizar' : 'Registrar'}</button></div>
+          <div className="flex justify-end gap-2"><button type="button" onClick={() => { setShow(false); setAuthorizeId(null); }} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">{authorizeId ? 'Autorizar y contabilizar' : 'Registrar'}</button></div>
         </form>
       </Modal>
 
@@ -324,7 +324,7 @@ export default function PurchaseInvoices() {
             <textarea value={importTxt} onChange={(e) => setImportTxt(e.target.value)} rows={8} className="w-full border border-slate-200 rounded-lg px-3 py-2 font-mono text-xs" />
           </div>
         )}
-        <div className="flex justify-end gap-2 mt-3"><button onClick={() => setShowImport(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button><button onClick={submitImport} className="px-4 py-2 bg-emerald-600 text-white rounded-lg">Importar</button></div>
+        <div className="flex justify-end gap-2 mt-3"><button onClick={() => setShowImport(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button onClick={submitImport} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Importar</button></div>
       </Modal>
     </div>
   );

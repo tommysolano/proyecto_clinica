@@ -607,7 +607,7 @@ export default function Appointments() {
     <div>
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800">Citas y Calendario</h1>
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Citas y Calendario</h1>
           <p className="text-sm text-slate-500 mt-1">Agenda y seguimiento de consultas</p>
         </div>
         <div className="flex gap-2">

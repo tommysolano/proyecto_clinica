@@ -51,7 +51,7 @@ export default function Reports() {
 
   return (
     <div className="space-y-4">
-      <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+      <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
         <HiOutlineChartBar className="text-emerald-600" /> Reportes de atención
       </h1>
 
@@ -66,7 +66,7 @@ export default function Reports() {
             ))}
           </select>
         </label>
-        <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm border-none cursor-pointer hover:bg-emerald-700">Calcular</button>
+        <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm border-none cursor-pointer hover:bg-emerald-700">Calcular</button>
         {doctorFilter && (
           <button onClick={() => { setDoctorFilter(''); }} className="px-3 py-2 text-sm text-slate-500 hover:underline bg-transparent border-none cursor-pointer">Limpiar filtro</button>
         )}

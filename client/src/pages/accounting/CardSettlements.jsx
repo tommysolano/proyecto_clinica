@@ -120,11 +120,11 @@ export default function CardSettlements() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineCreditCard className="text-emerald-600" /> Liquidaciones de Tarjetas de Crédito</h1>
-        <button onClick={openNew} className="px-4 py-2 bg-emerald-600 text-white rounded-lg flex items-center gap-2"><HiOutlinePlus /> Nueva liquidación</button>
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineCreditCard className="text-emerald-600" /> Liquidaciones de Tarjetas de Crédito</h1>
+        <button onClick={openNew} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva liquidación</button>
       </div>
 
-      <div className="bg-white rounded-xl shadow-sm overflow-x-auto">
+      <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
         <table className="w-full text-sm">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
             <th className="px-3 py-2 text-left">Código</th><th className="px-3 py-2 text-left">F. Emisión</th>
@@ -169,28 +169,28 @@ export default function CardSettlements() {
           {/* Cabecera */}
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             <label className="text-xs text-slate-500">Fecha de emisión
-              <input type="date" required value={form.issueDate} onChange={(e) => setForm({ ...form, issueDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+              <input type="date" required value={form.issueDate} onChange={(e) => setForm({ ...form, issueDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
             </label>
             <label className="text-xs text-slate-500">Tipo de documento
-              <select value={form.docType} onChange={(e) => setForm({ ...form, docType: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm">
+              <select value={form.docType} onChange={(e) => setForm({ ...form, docType: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
                 <option value="LIQUIDACION">Liquidación</option><option value="FACTURA">Factura</option><option value="NOTA_CREDITO">Nota de crédito</option><option value="OTRO">Otro</option>
               </select>
             </label>
             <label className="text-xs text-slate-500">Proveedor (adquirente)
-              <select value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm">
+              <select value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
                 <option value="">Selecciona...</option>{suppliers.map((s) => <option key={s._id} value={s._id}>{s.razonSocial || s.nombreComercial}</option>)}
               </select>
             </label>
             <label className="text-xs text-slate-500">Banco (acreditación)
-              <select value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm">
+              <select value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
                 <option value="">Selecciona...</option>{banks.map((b) => <option key={b._id} value={b._id}>{b.name}</option>)}
               </select>
             </label>
             <label className="text-xs text-slate-500">Número de documento
-              <input value={form.docNumber} onChange={(e) => setForm({ ...form, docNumber: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+              <input value={form.docNumber} onChange={(e) => setForm({ ...form, docNumber: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
             </label>
             <label className="text-xs text-slate-500">Comisión por liquidar ($)
-              <input type="number" step="0.01" value={form.commissionToSettle} onChange={(e) => setForm({ ...form, commissionToSettle: +e.target.value })} className="mt-1 w-full border border-slate-200 rounded-lg px-3 py-2 text-sm text-right" />
+              <input type="number" step="0.01" value={form.commissionToSettle} onChange={(e) => setForm({ ...form, commissionToSettle: +e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-right" />
             </label>
           </div>
 
@@ -285,8 +285,8 @@ export default function CardSettlements() {
           </div>
 
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-lg">Cancelar</button>
-            <button className="px-4 py-2 bg-emerald-600 text-white rounded-lg">{editId ? 'Guardar' : 'Crear liquidación'}</button>
+            <button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button>
+            <button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">{editId ? 'Guardar' : 'Crear liquidación'}</button>
           </div>
         </form>
       </Modal>

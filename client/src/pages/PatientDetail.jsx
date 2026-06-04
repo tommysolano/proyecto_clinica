@@ -89,7 +89,7 @@ export default function PatientDetail() {
             {patient.lastName?.[0]}
           </div>
           <div className="flex-1">
-            <h1 className="text-2xl font-bold text-slate-800">
+            <h1 className="text-2xl font-bold text-slate-800 tracking-tight">
               {patient.firstName} {patient.lastName}
             </h1>
             <p className="text-sm text-slate-500 mt-1">
@@ -1424,7 +1424,7 @@ function CitasTab({ patientId }) {
           </div>
           <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
             <p className="text-xs text-slate-700 font-semibold uppercase">Total</p>
-            <p className="text-2xl font-bold text-slate-800">{stats.total || appts.length}</p>
+            <p className="text-2xl font-bold text-slate-800 tracking-tight">{stats.total || appts.length}</p>
           </div>
         </div>
       )}

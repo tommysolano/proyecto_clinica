@@ -54,9 +54,9 @@ export default function Budgets() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2"><HiOutlineBanknotes className="text-emerald-600" /> Presupuesto</h1>
+        <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineBanknotes className="text-emerald-600" /> Presupuesto</h1>
         <div className="flex gap-2 items-center">
-          <input type="number" value={year} onChange={(e) => setYear(+e.target.value)} className="w-24 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+          <input type="number" value={year} onChange={(e) => setYear(+e.target.value)} className="w-24 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
           <div className="flex rounded-lg overflow-hidden border border-slate-200">
             <button onClick={() => setTab('edit')} className={`px-3 py-2 text-sm ${tab === 'edit' ? 'bg-emerald-600 text-white' : 'bg-white'}`}>Editar</button>
             <button onClick={() => { setTab('exec'); loadExecution(); }} className={`px-3 py-2 text-sm ${tab === 'exec' ? 'bg-emerald-600 text-white' : 'bg-white'}`}>Ejecución</button>
@@ -65,7 +65,7 @@ export default function Budgets() {
       </div>
 
       {tab === 'edit' && (
-        <div className="bg-white rounded-xl shadow-sm p-4 space-y-2">
+        <div className="bg-white rounded-2xl shadow-sm p-4 space-y-2">
           <p className="text-xs text-slate-500">Define el monto anual presupuestado por cuenta de ingreso/gasto/costo (se distribuye en 12 meses).</p>
           {lines.map((l, i) => (
             <div key={i} className="flex gap-2 items-center">
@@ -79,13 +79,13 @@ export default function Budgets() {
           ))}
           <div className="flex justify-between items-center pt-2">
             <button onClick={addLine} className="text-emerald-600 text-sm flex items-center gap-1"><HiOutlinePlus /> Cuenta</button>
-            <button onClick={save} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm">Guardar presupuesto</button>
+            <button onClick={save} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm">Guardar presupuesto</button>
           </div>
         </div>
       )}
 
       {tab === 'exec' && (
-        <div className="bg-white rounded-xl shadow-sm overflow-x-auto">
+        <div className="bg-white rounded-2xl shadow-sm overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-emerald-50 text-xs uppercase"><tr>
               <th className="px-3 py-2 text-left">Cuenta</th><th className="px-3 py-2 text-right">Presupuesto</th>

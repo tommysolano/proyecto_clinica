@@ -151,7 +151,7 @@ export default function CallCenterConfig() {
     <div className="space-y-5">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h1 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
             <span className="inline-flex items-center justify-center w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-500 to-teal-600 text-white shadow-md">
               <HiOutlineCog6Tooth className="w-5 h-5" />
             </span>
@@ -249,7 +249,7 @@ export default function CallCenterConfig() {
                   onChange={(e) => setField(f.key, e.target.value)}
                   placeholder={f.sensitive ? '••••••' : ''}
                   autoComplete="off"
-                  className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono"
+                  className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono"
                 />
                 {f.help && <span className="text-[11px] text-slate-400">{f.help}</span>}
                 {f.sensitive && stored && draftVal === undefined && (
