@@ -62,6 +62,25 @@ const cardSettlementSchema = new mongoose.Schema(
     transactions: { type: [settlementTxnSchema], default: [] },
     retentions: { type: [settlementRetentionSchema], default: [] },
 
+    // Ventas con tarjeta que esta liquidación incluye (cargadas por lote/fecha).
+    // Sirve para trazabilidad y para no liquidar dos veces la misma factura.
+    sourceSales: {
+      type: [
+        new mongoose.Schema(
+          {
+            sale: { type: mongoose.Schema.Types.ObjectId, ref: 'Sale' },
+            saleNumber: { type: String, default: '' },
+            date: { type: Date },
+            lote: { type: String, default: '' },
+            voucher: { type: String, default: '' },
+            amount: { type: Number, default: 0 },
+          },
+          { _id: false }
+        ),
+      ],
+      default: [],
+    },
+
     // Cuentas contables seleccionables (el sistema no las elige automáticamente)
     receivableAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null }, // tarjetas por cobrar/liquidar
     commissionAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },

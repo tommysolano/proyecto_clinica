@@ -44,6 +44,8 @@ export default function AttendChargeModal({ appointment, doctors = [], onClose, 
     bankAccount: '',
     creditCard: '',
     cardPos: '',
+    cardLote: '',
+    cardVoucher: '',
     recommendedBy: '',
   });
 
@@ -96,6 +98,8 @@ export default function AttendChargeModal({ appointment, doctors = [], onClose, 
         bankAccount: pay.paymentMethod === 'transferencia' ? pay.bankAccount || null : null,
         creditCard: pay.paymentMethod === 'tarjeta' ? pay.creditCard || null : null,
         cardPos: pay.paymentMethod === 'tarjeta' ? pay.cardPos || '' : '',
+        cardLote: pay.paymentMethod === 'tarjeta' ? pay.cardLote || '' : '',
+        cardVoucher: pay.paymentMethod === 'tarjeta' ? pay.cardVoucher || '' : '',
         recommendedBy: pay.recommendedBy || null,
         items: items.map((i) => ({ product: i.product, quantity: 1 })),
       });
@@ -203,7 +207,7 @@ export default function AttendChargeModal({ appointment, doctors = [], onClose, 
 
               <div className="grid grid-cols-2 gap-3">
                 <label className="block text-sm">Método de pago
-                  <select value={pay.paymentMethod} onChange={(e) => setPay({ ...pay, paymentMethod: e.target.value, bankAccount: '', creditCard: '', cardPos: '' })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50">
+                  <select value={pay.paymentMethod} onChange={(e) => setPay({ ...pay, paymentMethod: e.target.value, bankAccount: '', creditCard: '', cardPos: '', cardLote: '', cardVoucher: '' })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50">
                     {Object.entries(PAYMENT_METHODS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                   </select>
                 </label>
@@ -239,6 +243,12 @@ export default function AttendChargeModal({ appointment, doctors = [], onClose, 
                       </select>
                     </label>
                   )}
+                  <label className="block text-sm">N° de lote
+                    <input value={pay.cardLote} onChange={(e) => setPay({ ...pay, cardLote: e.target.value })} placeholder="Del voucher POS" className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50" />
+                  </label>
+                  <label className="block text-sm">N° de voucher
+                    <input value={pay.cardVoucher} onChange={(e) => setPay({ ...pay, cardVoucher: e.target.value })} placeholder="Opcional" className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50" />
+                  </label>
                 </div>
               )}
 

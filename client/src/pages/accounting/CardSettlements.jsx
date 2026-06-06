@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
-import { HiOutlinePlus, HiOutlineCreditCard, HiOutlineCheckCircle, HiOutlineEye, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineXCircle } from 'react-icons/hi2';
+import { HiOutlinePlus, HiOutlineCreditCard, HiOutlineCheckCircle, HiOutlineEye, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineXCircle, HiOutlineMagnifyingGlass } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 
 // Códigos SRI frecuentes en liquidaciones de tarjeta (referenciales, editables)
@@ -14,8 +14,9 @@ const EMPTY_RET = { issueDate: today(), retentionNumber: '', authorization: '', 
 const EMPTY = {
   issueDate: today(), docType: 'LIQUIDACION', supplier: '', bankAccount: '', docNumber: '', commissionToSettle: 0,
   receivableAccount: '', commissionAccount: '', ivaAccount: '', retIvaAccount: '', retIrAccount: '',
-  transactions: [{ ...EMPTY_TXN }], retentions: [], notes: '',
+  transactions: [{ ...EMPTY_TXN }], retentions: [], sourceSales: [], notes: '',
 };
+const EMPTY_PICKER = { lote: '', from: today(), to: today(), includeSettled: false };
 
 const round = (n) => +(Number(n) || 0).toFixed(2);
 
@@ -29,6 +30,11 @@ export default function CardSettlements() {
   const [editId, setEditId] = useState(null);
   const [form, setForm] = useState(EMPTY);
   const [viewItem, setViewItem] = useState(null);
+  // Cargador de facturas por lote/fecha
+  const [picker, setPicker] = useState(EMPTY_PICKER);
+  const [pickerResults, setPickerResults] = useState([]);
+  const [picked, setPicked] = useState({});
+  const [searching, setSearching] = useState(false);
 
   const load = async () => {
     try { const r = await api.get('/card-settlements'); setList(r.data || []); }
@@ -53,7 +59,8 @@ export default function CardSettlements() {
     return { deposit: round(deposit), commission: round(commission), iva: round(iva), retIva: round(retIva), retIr: round(retIr), toPay: round(toPay), net: round(toPay - retIr) };
   })();
 
-  const openNew = () => { setEditId(null); setForm(EMPTY); setShow(true); };
+  const resetPicker = () => { setPicker(EMPTY_PICKER); setPickerResults([]); setPicked({}); };
+  const openNew = () => { setEditId(null); setForm(EMPTY); resetPicker(); setShow(true); };
   const openEdit = async (id) => {
     try {
       const r = await api.get(`/card-settlements/${id}`);
@@ -69,10 +76,58 @@ export default function CardSettlements() {
           ...t, date: t.date ? t.date.slice(0, 10) : '', account: t.account?._id || t.account || '', costCenter: t.costCenter?._id || t.costCenter || '',
         })),
         retentions: (d.retentions || []).map((r2) => ({ ...r2, issueDate: r2.issueDate ? r2.issueDate.slice(0, 10) : '' })),
+        sourceSales: d.sourceSales || [],
       });
+      resetPicker();
       setEditId(id); setShow(true);
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
+
+  // Buscar ventas con tarjeta por lote/fecha para cargarlas en la liquidación
+  const searchSales = async () => {
+    if (!picker.lote.trim() && !picker.from && !picker.to) return toast.error('Ingresa el N° de lote o un rango de fechas');
+    setSearching(true);
+    try {
+      const params = {};
+      if (picker.lote.trim()) params.lote = picker.lote.trim();
+      if (picker.from) params.from = picker.from;
+      if (picker.to) params.to = picker.to;
+      if (picker.includeSettled) params.includeSettled = true;
+      const r = await api.get('/card-settlements/card-sales', { params });
+      const already = new Set((form.sourceSales || []).map((x) => String(x.sale)));
+      const results = (r.data || []).filter((s) => !already.has(String(s._id)));
+      setPickerResults(results);
+      const pick = {}; results.forEach((s) => { pick[s._id] = true; });
+      setPicked(pick);
+      if (!results.length) toast('Sin facturas con tarjeta para esos filtros', { icon: 'ℹ️' });
+    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+    finally { setSearching(false); }
+  };
+
+  const pickedList = pickerResults.filter((s) => picked[s._id]);
+  const pickedTotal = round(pickedList.reduce((a, s) => a + (+s.total || 0), 0));
+  const allPicked = pickerResults.length > 0 && pickedList.length === pickerResults.length;
+  const toggleAll = () => { const v = !allPicked; const p = {}; pickerResults.forEach((s) => { p[s._id] = v; }); setPicked(p); };
+
+  const addPicked = () => {
+    if (!pickedList.length) return toast.error('Selecciona al menos una factura');
+    const newSources = pickedList.map((s) => ({
+      sale: s._id, saleNumber: s.saleNumber, date: s.createdAt,
+      lote: s.cardLote || '', voucher: s.cardVoucher || '', amount: round(+s.total || 0),
+    }));
+    const txn = { ...EMPTY_TXN, date: picker.to || picker.from || today(), recap: picker.lote || '', deposit: pickedTotal };
+    setForm((f) => {
+      // Descarta la fila vacía inicial (sin depósito ni #recap)
+      const base = (f.transactions || []).filter((t) => (+t.deposit || 0) !== 0 || (t.recap || '').trim());
+      return { ...f, sourceSales: [...(f.sourceSales || []), ...newSources], transactions: [...base, txn] };
+    });
+    setPickerResults((rs) => rs.filter((s) => !picked[s._id]));
+    setPicked({});
+    toast.success(`${newSources.length} factura(s) cargada(s) · $${fmt(pickedTotal)}`);
+  };
+
+  const clearSources = () => setForm((f) => ({ ...f, sourceSales: [] }));
+  const sourcesTotal = round((form.sourceSales || []).reduce((a, x) => a + (+x.amount || 0), 0));
 
   const setTxn = (i, patch) => { const a = [...form.transactions]; a[i] = { ...a[i], ...patch }; setForm({ ...form, transactions: a }); };
   const addTxn = () => setForm({ ...form, transactions: [...form.transactions, { ...EMPTY_TXN }] });
@@ -192,6 +247,74 @@ export default function CardSettlements() {
             <label className="text-xs text-slate-500">Comisión por liquidar ($)
               <input type="number" step="0.01" value={form.commissionToSettle} onChange={(e) => setForm({ ...form, commissionToSettle: +e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-right" />
             </label>
+          </div>
+
+          {/* Cargar facturas por lote / fecha */}
+          <div className="border border-emerald-200 bg-emerald-50/40 rounded-lg p-3 space-y-3">
+            <div className="flex items-center gap-2">
+              <HiOutlineMagnifyingGlass className="text-emerald-600" />
+              <p className="font-semibold text-sm text-slate-700">Cargar facturas por lote</p>
+              <span className="text-xs text-slate-500">Digita el lote y/o la fecha; selecciona las facturas y se cargan como depósito.</span>
+            </div>
+            <div className="grid grid-cols-2 md:grid-cols-5 gap-2 items-end">
+              <label className="text-xs text-slate-500">N° de lote
+                <input value={picker.lote} onChange={(e) => setPicker({ ...picker, lote: e.target.value })} placeholder="Ej. 0457" className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs text-slate-500">Desde
+                <input type="date" value={picker.from} onChange={(e) => setPicker({ ...picker, from: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs text-slate-500">Hasta
+                <input type="date" value={picker.to} onChange={(e) => setPicker({ ...picker, to: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
+              </label>
+              <label className="text-xs text-slate-500 flex items-center gap-1.5 pb-2">
+                <input type="checkbox" checked={picker.includeSettled} onChange={(e) => setPicker({ ...picker, includeSettled: e.target.checked })} className="rounded" />
+                Incluir ya liquidadas
+              </label>
+              <button type="button" onClick={searchSales} disabled={searching} className="px-3 py-2 bg-emerald-600 text-white rounded-xl text-sm flex items-center justify-center gap-1.5 disabled:opacity-50">
+                <HiOutlineMagnifyingGlass /> {searching ? 'Buscando…' : 'Buscar'}
+              </button>
+            </div>
+
+            {pickerResults.length > 0 && (
+              <div className="bg-white rounded-lg border overflow-x-auto">
+                <table className="tbl text-xs min-w-[760px]">
+                  <thead className="bg-slate-50 text-slate-500">
+                    <tr>
+                      <th className="px-2 py-1.5 text-center"><input type="checkbox" checked={allPicked} onChange={toggleAll} /></th>
+                      <th className="px-2 py-1.5 text-left">Venta</th><th className="px-2 py-1.5 text-left">Fecha</th>
+                      <th className="px-2 py-1.5 text-left">Cliente</th><th className="px-2 py-1.5 text-left">Tarjeta</th>
+                      <th className="px-2 py-1.5 text-left">Lote</th><th className="px-2 py-1.5 text-left">Voucher</th>
+                      <th className="px-2 py-1.5 text-right">Monto</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {pickerResults.map((s) => (
+                      <tr key={s._id} className={`border-t ${picked[s._id] ? 'bg-emerald-50/60' : ''}`}>
+                        <td className="px-2 py-1.5 text-center"><input type="checkbox" checked={!!picked[s._id]} onChange={(e) => setPicked({ ...picked, [s._id]: e.target.checked })} /></td>
+                        <td className="px-2 py-1.5 font-mono">{s.saleNumber}</td>
+                        <td className="px-2 py-1.5">{fmtDate(s.createdAt)}</td>
+                        <td className="px-2 py-1.5">{s.clientName}</td>
+                        <td className="px-2 py-1.5">{s.creditCard?.name || '—'}</td>
+                        <td className="px-2 py-1.5 font-mono">{s.cardLote || '—'}</td>
+                        <td className="px-2 py-1.5 font-mono">{s.cardVoucher || '—'}</td>
+                        <td className="px-2 py-1.5 text-right font-mono">${fmt(s.total)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="flex items-center justify-between px-3 py-2 bg-slate-50 border-t">
+                  <span className="text-xs text-slate-600">{pickedList.length} de {pickerResults.length} seleccionadas · <b className="font-mono">${fmt(pickedTotal)}</b></span>
+                  <button type="button" onClick={addPicked} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs flex items-center gap-1.5"><HiOutlinePlus /> Agregar seleccionadas</button>
+                </div>
+              </div>
+            )}
+
+            {!!(form.sourceSales || []).length && (
+              <div className="flex items-center justify-between text-xs bg-white border rounded-lg px-3 py-2">
+                <span className="text-slate-600"><b>{form.sourceSales.length}</b> factura(s) vinculada(s) a esta liquidación · <b className="font-mono">${fmt(sourcesTotal)}</b></span>
+                <button type="button" onClick={clearSources} className="text-rose-600 hover:underline">Quitar vínculo</button>
+              </div>
+            )}
           </div>
 
           {/* Cuentas contables seleccionables */}
@@ -327,6 +450,15 @@ export default function CardSettlements() {
                 <table className="tbl text-xs">
                   <thead className="bg-slate-50"><tr><th className="px-2 py-1 text-left">N°</th><th className="px-2 py-1 text-left">Tipo</th><th className="px-2 py-1 text-left">Cód SRI</th><th className="px-2 py-1 text-right">Base</th><th className="px-2 py-1 text-right">%</th><th className="px-2 py-1 text-right">Valor</th></tr></thead>
                   <tbody>{viewItem.retentions.map((r, i) => (<tr key={i} className="border-t"><td className="px-2 py-1">{r.retentionNumber}</td><td className="px-2 py-1">{r.type}</td><td className="px-2 py-1">{r.sriCode}</td><td className="px-2 py-1 text-right font-mono">{fmt(r.base)}</td><td className="px-2 py-1 text-right">{r.percentage}</td><td className="px-2 py-1 text-right font-mono">{fmt(r.value)}</td></tr>))}</tbody>
+                </table>
+              </div>
+            )}
+            {!!(viewItem.sourceSales || []).length && (
+              <div>
+                <p className="font-semibold mb-1">Facturas vinculadas ({viewItem.sourceSales.length})</p>
+                <table className="tbl text-xs">
+                  <thead className="bg-slate-50"><tr><th className="px-2 py-1 text-left">Venta</th><th className="px-2 py-1 text-left">Fecha</th><th className="px-2 py-1 text-left">Lote</th><th className="px-2 py-1 text-left">Voucher</th><th className="px-2 py-1 text-right">Monto</th></tr></thead>
+                  <tbody>{viewItem.sourceSales.map((x, i) => (<tr key={i} className="border-t"><td className="px-2 py-1 font-mono">{x.saleNumber}</td><td className="px-2 py-1">{fmtDate(x.date)}</td><td className="px-2 py-1 font-mono">{x.lote || '—'}</td><td className="px-2 py-1 font-mono">{x.voucher || '—'}</td><td className="px-2 py-1 text-right font-mono">{fmt(x.amount)}</td></tr>))}</tbody>
                 </table>
               </div>
             )}

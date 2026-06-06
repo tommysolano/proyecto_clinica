@@ -234,6 +234,8 @@ exports.createSale = async (req, res) => {
       bankAccount: paymentMethod === 'transferencia' ? (req.body.bankAccount || undefined) : undefined,
       creditCard: paymentMethod === 'tarjeta' ? (req.body.creditCard || undefined) : undefined,
       cardPos: paymentMethod === 'tarjeta' ? (req.body.cardPos || '') : '',
+      cardLote: paymentMethod === 'tarjeta' ? (req.body.cardLote || '').trim() : '',
+      cardVoucher: paymentMethod === 'tarjeta' ? (req.body.cardVoucher || '').trim() : '',
       appointment: req.body.appointment || undefined,
       createdBy: req.user._id,
     });

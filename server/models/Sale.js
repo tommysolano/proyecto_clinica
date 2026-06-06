@@ -56,6 +56,11 @@ const saleSchema = new mongoose.Schema(
     bankAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'BankAccount', default: null },
     creditCard: { type: mongoose.Schema.Types.ObjectId, ref: 'CreditCard', default: null },
     cardPos: { type: String, default: '' },
+    // N° de lote y voucher del POS (para reconciliar en la liquidación del adquirente).
+    cardLote: { type: String, default: '', trim: true, index: true },
+    cardVoucher: { type: String, default: '', trim: true },
+    // Liquidación de tarjeta que ya incluyó esta venta (evita liquidarla dos veces).
+    cardSettlement: { type: mongoose.Schema.Types.ObjectId, ref: 'CardSettlement', default: null },
     // Ventas a crédito (CxC): vencimiento y saldo pendiente de cobro.
     dueDate: { type: Date, default: null },
     balance: { type: Number, default: 0 },

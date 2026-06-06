@@ -2,10 +2,43 @@ const CardSettlement = require('../models/CardSettlement');
 const BankAccount = require('../models/BankAccount');
 const BankTransaction = require('../models/BankTransaction');
 const ChartOfAccount = require('../models/ChartOfAccount');
+const Sale = require('../models/Sale');
 const { createEntry, findAccount, reverseEntry } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 
 const round = (n) => +(Number(n) || 0).toFixed(2);
+const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Busca ventas pagadas con tarjeta para cargarlas en una liquidación.
+ * Filtra por N° de lote y/o rango de fechas (y opcionalmente POS / tarjeta).
+ * Por defecto excluye las ventas ya incluidas en otra liquidación no anulada
+ * para evitar liquidar dos veces la misma factura.
+ */
+exports.searchCardSales = async (req, res) => {
+  try {
+    const { lote, from, to, cardPos, creditCard, includeSettled } = req.query;
+    const filter = { clinic: req.clinicId, paymentMethod: 'tarjeta', status: 'completada' };
+    if (lote && lote.trim()) filter.cardLote = new RegExp(`^${escapeRegex(lote.trim())}$`, 'i');
+    if (cardPos) filter.cardPos = cardPos;
+    if (creditCard) filter.creditCard = creditCard;
+    if (from || to) {
+      filter.createdAt = {};
+      if (from) filter.createdAt.$gte = new Date(`${from}T00:00:00.000`);
+      if (to) filter.createdAt.$lte = new Date(`${to}T23:59:59.999`);
+    }
+    if (!includeSettled || includeSettled === 'false') {
+      const used = await CardSettlement.distinct('sourceSales.sale', { clinic: req.clinicId, status: { $ne: 'ANULADO' } });
+      if (used.length) filter._id = { $nin: used };
+    }
+    const sales = await Sale.find(filter)
+      .select('saleNumber clientName total createdAt cardLote cardVoucher cardPos creditCard invoice')
+      .populate('creditCard', 'name brand')
+      .sort({ createdAt: 1 })
+      .limit(500);
+    res.json(sales);
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
 
 /**
  * Recalcula los totales de la liquidación a partir de sus transacciones y
@@ -152,6 +185,9 @@ exports.accredit = async (req, res) => {
     s.journalEntry = entry._id;
     s.bankTransaction = bt._id;
     await s.save();
+    // Marca las ventas de origen como ya liquidadas (trazabilidad / anti-duplicado).
+    const saleIds = (s.sourceSales || []).map((x) => x.sale).filter(Boolean);
+    if (saleIds.length) await Sale.updateMany({ _id: { $in: saleIds }, clinic: req.clinicId }, { cardSettlement: s._id });
     res.json(s);
   } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
@@ -165,6 +201,9 @@ exports.cancel = async (req, res) => {
     if (s.bankTransaction) await BankTransaction.updateOne({ _id: s.bankTransaction }, { voided: true });
     s.status = 'ANULADO';
     await s.save();
+    // Libera las ventas para que puedan volver a liquidarse.
+    const saleIds = (s.sourceSales || []).map((x) => x.sale).filter(Boolean);
+    if (saleIds.length) await Sale.updateMany({ _id: { $in: saleIds }, cardSettlement: s._id }, { cardSettlement: null });
     res.json(s);
   } catch (e) { res.status(400).json({ message: e.message }); }
 };

@@ -57,6 +57,8 @@ export default function Sales() {
     bankAccount: '',
     creditCard: '',
     cardPos: '',
+    cardLote: '',
+    cardVoucher: '',
     recommendedBy: '',
     notes: '',
     items: [],
@@ -161,6 +163,8 @@ export default function Sales() {
       bankAccount: '',
       creditCard: '',
       cardPos: '',
+      cardLote: '',
+      cardVoucher: '',
       recommendedBy: '',
       notes: '',
       items: [],
@@ -282,6 +286,8 @@ export default function Sales() {
         bankAccount: form.paymentMethod === 'transferencia' ? form.bankAccount || null : null,
         creditCard: form.paymentMethod === 'tarjeta' ? form.creditCard || null : null,
         cardPos: form.paymentMethod === 'tarjeta' ? form.cardPos || '' : '',
+        cardLote: form.paymentMethod === 'tarjeta' ? form.cardLote || '' : '',
+        cardVoucher: form.paymentMethod === 'tarjeta' ? form.cardVoucher || '' : '',
         recommendedBy: form.recommendedBy || null,
         items: form.items.map((i) => ({
           product: i.product,
@@ -655,7 +661,7 @@ export default function Sales() {
               <label className="lbl">Método de pago</label>
               <select
                 value={form.paymentMethod}
-                onChange={(e) => setForm({ ...form, paymentMethod: e.target.value, bankAccount: '', creditCard: '', cardPos: '' })}
+                onChange={(e) => setForm({ ...form, paymentMethod: e.target.value, bankAccount: '', creditCard: '', cardPos: '', cardLote: '', cardVoucher: '' })}
                 className="input"
               >
                 {Object.entries(paymentMethods).map(([k, v]) => (
@@ -714,6 +720,24 @@ export default function Sales() {
                     </div>
                   );
                 })()}
+                <div>
+                  <label className="lbl">N° de lote</label>
+                  <input
+                    value={form.cardLote || ''}
+                    onChange={(e) => setForm({ ...form, cardLote: e.target.value })}
+                    placeholder="Del voucher POS (para la liquidación)"
+                    className="input"
+                  />
+                </div>
+                <div>
+                  <label className="lbl">N° de voucher</label>
+                  <input
+                    value={form.cardVoucher || ''}
+                    onChange={(e) => setForm({ ...form, cardVoucher: e.target.value })}
+                    placeholder="Opcional"
+                    className="input"
+                  />
+                </div>
               </>
             )}
             {form.paymentMethod === 'credito' && (

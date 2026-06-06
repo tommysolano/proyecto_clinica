@@ -5,6 +5,7 @@ const c = require('../controllers/cardSettlementController');
 router.use(auth, requireClinic, requireRole('admin', 'contabilidad', 'cajero'));
 
 router.get('/', c.list);
+router.get('/card-sales', c.searchCardSales);
 router.get('/:id', c.get);
 router.post('/', c.create);
 router.put('/:id', c.update);
