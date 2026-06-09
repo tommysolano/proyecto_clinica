@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
-import { HiOutlinePlus, HiOutlineTrash, HiOutlinePencil, HiOutlineTrophy } from 'react-icons/hi2';
+import { HiOutlinePlus, HiOutlineTrash, HiOutlinePencil, HiOutlineTrophy, HiOutlineArrowDownTray } from 'react-icons/hi2';
 
 const ROLES = [
   { value: 'doctor', label: 'Doctor' },
@@ -37,6 +37,25 @@ const DAYS = [
   { v: 1, l: 'Lun' }, { v: 2, l: 'Mar' }, { v: 3, l: 'Mié' }, { v: 4, l: 'Jue' },
   { v: 5, l: 'Vie' }, { v: 6, l: 'Sáb' }, { v: 0, l: 'Dom' },
 ];
+
+const ROLE_LABELS = {
+  doctor: 'Doctor', optica: 'Óptica', enfermero: 'Enfermero/a',
+  cajero: 'Cajero', call_center: 'Call Center', marketing: 'Marketing',
+};
+
+function downloadCsv(rows, filename) {
+  const escape = (v) => {
+    const s = v == null ? '' : String(v);
+    return s.includes(',') || s.includes('"') || s.includes('\n')
+      ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+  const csv = rows.map((r) => r.map(escape).join(',')).join('\r\n');
+  const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
 
 const EMPTY = {
   name: '', active: true, targetType: 'role', user: '', role: 'doctor',
@@ -142,6 +161,34 @@ export default function CommissionRules() {
     } finally {
       setSaving(false);
     }
+  };
+
+  const downloadSummary = () => {
+    if (!report) return;
+    const hasValues = Number(report.total) > 0;
+    const header = ['Usuario', 'Comisiones', ...(hasValues ? ['Valor ($)'] : [])];
+    const rows = report.byUser.map((u) => [
+      u.userName,
+      u.count,
+      ...(hasValues ? [Number(u.total).toFixed(2)] : []),
+    ]);
+    downloadCsv([header, ...rows], `comisiones_resumen_${start}_${end}.csv`);
+  };
+
+  const downloadDetail = () => {
+    if (!report) return;
+    const header = ['Fecha', 'Usuario', 'Rol', 'Regla', 'Servicio', 'Paciente', 'Origen', 'Valor ($)'];
+    const rows = report.detail.map((d) => [
+      d.date ? new Date(d.date).toLocaleDateString('es-EC') : '',
+      d.userName,
+      ROLE_LABELS[d.userRole] || d.userRole || '',
+      d.ruleName,
+      d.service,
+      d.patient,
+      d.source,
+      Number(d.amount || 0).toFixed(2),
+    ]);
+    downloadCsv([header, ...rows], `comisiones_detalle_${start}_${end}.csv`);
   };
 
   const remove = async (id) => {
@@ -263,6 +310,25 @@ export default function CommissionRules() {
                       <p className="text-3xl font-bold text-emerald-800">${Number(report.total).toFixed(2)}</p>
                     </div>
                   )}
+                </div>
+                <div className="flex items-center justify-between">
+                  <p className="text-sm font-medium text-slate-600">Resumen por usuario</p>
+                  <div className="flex gap-2">
+                    <button
+                      onClick={downloadSummary}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 cursor-pointer border-solid"
+                    >
+                      <HiOutlineArrowDownTray className="w-3.5 h-3.5" />
+                      Descargar vista
+                    </button>
+                    <button
+                      onClick={downloadDetail}
+                      className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-100 cursor-pointer border-solid"
+                    >
+                      <HiOutlineArrowDownTray className="w-3.5 h-3.5" />
+                      Descargar detalle completo
+                    </button>
+                  </div>
                 </div>
                 <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
                   <table className="tbl">
