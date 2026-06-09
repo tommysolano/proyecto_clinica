@@ -115,7 +115,28 @@ exports.uploadCertificate = async (req, res) => {
       { new: true, upsert: true }
     );
 
-    res.json(sanitizeOutput(config));
+    // Construir sugerencias de auto-relleno a partir del certificado
+    const attribs = info.subjectAttribs || {};
+    const autoFill = {};
+
+    // RUC: los certs del SRI Ecuador lo ponen en el atributo serialNumber del subject
+    const rawSerial = attribs.serialNumber || attribs.SERIALNUMBER || '';
+    const rucCandidate = rawSerial.replace(/\D/g, '');
+    if (rucCandidate.length === 13 || rucCandidate.length === 10) {
+      autoFill.ruc = rucCandidate;
+    }
+
+    // Razón social: primero O (organización), si no CN (common name)
+    const orgName = attribs.O || attribs.organizationName || '';
+    const cnName = attribs.CN || attribs.commonName || '';
+    if (orgName) {
+      autoFill.razonSocial = orgName;
+      if (cnName && cnName !== orgName) autoFill.nombreComercial = cnName;
+    } else if (cnName) {
+      autoFill.razonSocial = cnName;
+    }
+
+    res.json({ config: sanitizeOutput(config), autoFill });
   } catch (error) {
     res
       .status(500)

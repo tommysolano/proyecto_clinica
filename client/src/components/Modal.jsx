@@ -1,8 +1,8 @@
+import { useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { HiOutlineXMark } from 'react-icons/hi2';
 
 export default function Modal({ isOpen, onClose, title, children, size = 'md' }) {
-  if (!isOpen) return null;
-
   const sizes = {
     sm: 'max-w-md',
     md: 'max-w-lg',
@@ -12,8 +12,28 @@ export default function Modal({ isOpen, onClose, title, children, size = 'md' })
     full: 'max-w-7xl',
   };
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
+  useEffect(() => {
+    if (!isOpen) return;
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, [isOpen]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const handler = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [isOpen, onClose]);
+
+  if (!isOpen) return null;
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[9999] flex items-center justify-center p-4 sm:p-6"
+      style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
       <div
         className={`modal-panel relative bg-white rounded-2xl shadow-2xl shadow-slate-900/20 w-full ${sizes[size]} max-h-[90vh] overflow-y-auto ring-1 ring-slate-900/5`}
       >
@@ -29,6 +49,7 @@ export default function Modal({ isOpen, onClose, title, children, size = 'md' })
         </div>
         <div className="px-6 py-5">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }

@@ -104,10 +104,25 @@ export default function InvoicingConfig() {
       const res = await api.post('/invoicing-config/certificate', fd, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
-      setConfig(res.data);
+      setConfig(res.data.config);
       setCertFile(null);
       setCertPassword('');
-      toast.success('Certificado cargado correctamente');
+
+      const autoFill = res.data.autoFill || {};
+      const filled = [];
+      setForm((prev) => {
+        const updated = { ...prev };
+        if (!prev.ruc && autoFill.ruc) { updated.ruc = autoFill.ruc; filled.push('RUC'); }
+        if (!prev.razonSocial && autoFill.razonSocial) { updated.razonSocial = autoFill.razonSocial; filled.push('Razón social'); }
+        if (!prev.nombreComercial && autoFill.nombreComercial) { updated.nombreComercial = autoFill.nombreComercial; filled.push('Nombre comercial'); }
+        return updated;
+      });
+
+      if (filled.length > 0) {
+        toast.success(`Certificado cargado. Se completaron automáticamente: ${filled.join(', ')}`);
+      } else {
+        toast.success('Certificado cargado correctamente');
+      }
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al cargar certificado');
     } finally {

@@ -78,6 +78,12 @@ function loadP12(p12Buffer, password) {
     .map((a) => `${a.shortName || a.name}=${a.value}`)
     .join(', ');
 
+  const subjectAttribs = {};
+  certificate.subject.attributes.forEach((a) => {
+    if (a.shortName) subjectAttribs[a.shortName] = a.value;
+    if (a.name) subjectAttribs[a.name] = a.value;
+  });
+
   return {
     certPem,
     keyPem,
@@ -88,6 +94,7 @@ function loadP12(p12Buffer, password) {
     validFrom: certificate.validity.notBefore,
     validTo: certificate.validity.notAfter,
     subject,
+    subjectAttribs,
   };
 }
 

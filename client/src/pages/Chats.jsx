@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import toast from 'react-hot-toast';
 import {
   HiOutlineChatBubbleLeftRight,
@@ -1557,8 +1558,12 @@ function KPICard({ label, value, color }) {
 
 function ModalShell({ title, onClose, children, size = 'md' }) {
   const sizes = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-2xl', xl: 'max-w-4xl' };
-  return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
+  return createPortal(
+    <div
+      className="fixed inset-0 flex items-center justify-center z-[9999] p-4"
+      style={{ backgroundColor: 'rgba(0,0,0,0.5)' }}
+      onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
       <div className={`bg-white rounded-xl shadow-2xl w-full ${sizes[size] || sizes.md} max-h-[90vh] overflow-y-auto`}>
         <div className="flex items-center justify-between p-3 border-b border-slate-100 sticky top-0 bg-white">
           <h3 className="font-semibold text-slate-800">{title}</h3>
@@ -1568,7 +1573,8 @@ function ModalShell({ title, onClose, children, size = 'md' }) {
         </div>
         <div className="p-4">{children}</div>
       </div>
-    </div>
+    </div>,
+    document.body
   );
 }
 
