@@ -25,7 +25,6 @@ import OpportunitiesGlobal from './pages/OpportunitiesGlobal';
 import Analytics from './pages/Analytics';
 import AutoMessages from './pages/AutoMessages';
 import CallCenterConfig from './pages/CallCenterConfig';
-import Commissions from './pages/Commissions';
 import CommissionRules from './pages/CommissionRules';
 import Settings from './pages/Settings';
 import Reports from './pages/Reports';
@@ -243,14 +242,6 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'marketing']}>
                       <CallCenterConfig />
-                    </RoleRoute>
-                  }
-                />
-                <Route
-                  path="/commissions"
-                  element={
-                    <RoleRoute roles={['admin', 'call_center', 'marketing']}>
-                      <Commissions />
                     </RoleRoute>
                   }
                 />

@@ -69,7 +69,7 @@ const inSchedule = (rule, appt) => {
  */
 exports.report = async (req, res) => {
   try {
-    const { start, end, user } = req.query;
+    const { start, end, user, role: roleFilter } = req.query;
     const startDate = start ? new Date(start) : new Date(Date.now() - 30 * 86400000);
     startDate.setHours(0, 0, 0, 0);
     const endDate = end ? new Date(end) : new Date();
@@ -117,9 +117,10 @@ exports.report = async (req, res) => {
           if (!inSchedule(rule, appt)) continue;
 
           if (rule.trigger === 'appointment_created') {
-            if (!matchTarget(rule, creator, roleFor(creator))) continue;
+            const creatorRole = roleFor(creator);
+            if (!matchTarget(rule, creator, creatorRole)) continue;
             detail.push({
-              userId: String(creator._id), userName: creator.name,
+              userId: String(creator._id), userName: creator.name, userRole: creatorRole,
               ruleName: rule.name, amount: rule.amount, date: appt.date,
               service: svc.name || '—',
               patient: appt.patient ? `${appt.patient.firstName} ${appt.patient.lastName}` : '—',
@@ -127,9 +128,10 @@ exports.report = async (req, res) => {
             });
           } else if (!rule.trigger || rule.trigger === 'appointment_performed') {
             for (const performer of performers) {
-              if (!matchTarget(rule, performer, roleFor(performer))) continue;
+              const performerRole = roleFor(performer);
+              if (!matchTarget(rule, performer, performerRole)) continue;
               detail.push({
-                userId: String(performer._id), userName: performer.name,
+                userId: String(performer._id), userName: performer.name, userRole: performerRole,
                 ruleName: rule.name, amount: rule.amount, date: appt.date,
                 service: svc.name || '—',
                 patient: appt.patient ? `${appt.patient.firstName} ${appt.patient.lastName}` : '—',
@@ -166,9 +168,10 @@ exports.report = async (req, res) => {
           if (rule.trigger === 'sale') { performer = sale.createdBy; source = 'venta'; }
           else if (rule.trigger === 'recommendation') { performer = sale.recommendedBy; source = 'recomendación'; }
           else continue;
-          if (!matchTarget(rule, performer, roleFor(performer))) continue;
+          const performerRole = roleFor(performer);
+          if (!matchTarget(rule, performer, performerRole)) continue;
           detail.push({
-            userId: String(performer._id), userName: performer.name,
+            userId: String(performer._id), userName: performer.name, userRole: performerRole,
             ruleName: rule.name, amount: Number(rule.amount) * qty,
             date: sale.createdAt, service: it.productName || '—',
             patient: patientName, source,
@@ -177,7 +180,11 @@ exports.report = async (req, res) => {
       }
     }
 
-    const filtered = user ? detail.filter((d) => d.userId === String(user)) : detail;
+    const filtered = user
+      ? detail.filter((d) => d.userId === String(user))
+      : roleFilter
+      ? detail.filter((d) => d.userRole === roleFilter)
+      : detail;
 
     const byUserMap = {};
     for (const d of filtered) {

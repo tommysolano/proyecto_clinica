@@ -61,7 +61,9 @@ export default function CommissionRules() {
   const monthAgo = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
   const [start, setStart] = useState(monthAgo);
   const [end, setEnd] = useState(today);
+  const [filterMode, setFilterMode] = useState('all'); // 'all' | 'user' | 'role'
   const [userFilter, setUserFilter] = useState('');
+  const [roleFilter, setRoleFilter] = useState('');
   const [report, setReport] = useState(null);
 
   const load = async () => {
@@ -85,7 +87,10 @@ export default function CommissionRules() {
 
   const loadReport = async () => {
     try {
-      const res = await api.get('/commissions/report', { params: { start, end, user: userFilter || undefined } });
+      const params = { start, end };
+      if (filterMode === 'user' && userFilter) params.user = userFilter;
+      if (filterMode === 'role' && roleFilter) params.role = roleFilter;
+      const res = await api.get('/commissions/report', { params });
       setReport(res.data);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al calcular');
@@ -210,12 +215,33 @@ export default function CommissionRules() {
           <div className="bg-white rounded-xl border border-slate-200 p-3 flex flex-wrap gap-3 items-end">
             <label className="text-sm">Desde<input type="date" value={start} onChange={(e) => setStart(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
             <label className="text-sm">Hasta<input type="date" value={end} onChange={(e) => setEnd(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
-            <label className="text-sm">Usuario
-              <select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm">
-                <option value="">Todos</option>
-                {users.map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
+            <label className="text-sm">Filtrar por
+              <select
+                value={filterMode}
+                onChange={(e) => { setFilterMode(e.target.value); setUserFilter(''); setRoleFilter(''); }}
+                className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm"
+              >
+                <option value="all">Todos</option>
+                <option value="user">Usuario específico</option>
+                <option value="role">Rol</option>
               </select>
             </label>
+            {filterMode === 'user' && (
+              <label className="text-sm">Usuario
+                <select value={userFilter} onChange={(e) => setUserFilter(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm">
+                  <option value="">— Seleccionar —</option>
+                  {users.map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
+                </select>
+              </label>
+            )}
+            {filterMode === 'role' && (
+              <label className="text-sm">Rol
+                <select value={roleFilter} onChange={(e) => setRoleFilter(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm">
+                  <option value="">— Seleccionar —</option>
+                  {ROLES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+                </select>
+              </label>
+            )}
             <button onClick={loadReport} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm border-none cursor-pointer hover:bg-emerald-700">Calcular</button>
           </div>
 
