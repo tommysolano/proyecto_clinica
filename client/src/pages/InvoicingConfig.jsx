@@ -52,7 +52,7 @@ export default function InvoicingConfig() {
           puntoEmision: res.data.puntoEmision || '001',
           secuencial: res.data.secuencial || 1,
           ambiente: res.data.ambiente || 'pruebas',
-          obligadoContabilidad: !!res.data.obligadoContabilidad,
+          obligadoContabilidad: res.data.obligadoContabilidad === 'SI',
           agenteRetencion: res.data.agenteRetencion || '',
           contribuyenteEspecial: res.data.contribuyenteEspecial || '',
         });
@@ -76,7 +76,10 @@ export default function InvoicingConfig() {
     e.preventDefault();
     setSaving(true);
     try {
-      const res = await api.put('/invoicing-config', form);
+      const res = await api.put('/invoicing-config', {
+        ...form,
+        obligadoContabilidad: form.obligadoContabilidad ? 'SI' : 'NO',
+      });
       setConfig(res.data);
       toast.success('Configuración guardada');
     } catch (err) {
