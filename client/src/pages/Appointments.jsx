@@ -10,6 +10,7 @@ import NurseFinishModal from '../components/NurseFinishModal';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
+import { fmtDateTime } from '../utils/date';
 import {
   HiOutlinePlus,
   HiOutlinePencil,
@@ -913,11 +914,6 @@ export default function Appointments() {
                       </td>
                       <td className="px-6 py-3.5 text-sm text-slate-800 font-medium">
                         {apt.startTime}{apt.endTime ? ` - ${apt.endTime}` : ''}
-                        {inProgress && (
-                          <div className="text-[11px] text-amber-700 font-mono mt-0.5">
-                            ⏱ {fmtSeconds(elapsedSeconds(apt))}
-                          </div>
-                        )}
                       </td>
                       <td className="px-6 py-3.5 text-sm text-slate-800">
                         <div className="flex items-center gap-2">
@@ -984,7 +980,12 @@ export default function Appointments() {
                           apt.status === 'asistida' &&
                           String(apt.doctor?._id || apt.doctor) === String(user?.id) && (
                             <button
-                              onClick={() => navigate(`/patients/${apt.patient?._id}?appointment=${apt._id}&tab=ficha`)}
+                              onClick={() => {
+                                if (!apt.consultationStartedAt) {
+                                  api.post(`/appointments/${apt._id}/start`).catch(() => {});
+                                }
+                                navigate(`/patients/${apt.patient?._id}?appointment=${apt._id}&tab=ficha`);
+                              }}
                               className="p-1.5 rounded-lg hover:bg-emerald-50 text-emerald-600 bg-transparent border border-emerald-200 cursor-pointer transition-colors text-xs font-semibold mr-1"
                               title="Atender ahora"
                             >
@@ -1577,7 +1578,7 @@ export default function Appointments() {
                       <div className="text-[11px] text-slate-500">
                         por {h.rescheduledBy?.name || h.rescheduledByName || '—'}
                         {h.rescheduledByRole ? ` (${roleLabels[h.rescheduledByRole] || h.rescheduledByRole})` : ''}
-                        {' • '}{new Date(h.at).toLocaleString('es-EC')}
+                        {' • '}{fmtDateTime(h.at)}
                       </div>
                       {h.reason && <div className="italic text-slate-600">"{h.reason}"</div>}
                     </li>

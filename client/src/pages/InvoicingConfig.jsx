@@ -8,6 +8,7 @@ import {
   HiOutlineCheckCircle,
   HiOutlineExclamationTriangle,
 } from 'react-icons/hi2';
+import { fmtDate } from '../utils/date';
 
 const EMPTY = {
   ruc: '',
@@ -314,8 +315,8 @@ export default function InvoicingConfig() {
               </p>
               <p className="text-slate-600">
                 <strong>Vigencia:</strong>{' '}
-                {new Date(certInfo.validFrom).toLocaleDateString()} →{' '}
-                {new Date(certInfo.validTo).toLocaleDateString()}
+                {fmtDate(certInfo.validFrom)} →{' '}
+                {fmtDate(certInfo.validTo)}
               </p>
               <p className="text-slate-600">
                 <strong>Serie:</strong> {certInfo.serialNumber}

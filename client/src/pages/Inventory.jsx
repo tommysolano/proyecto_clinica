@@ -10,6 +10,7 @@ import {
   HiOutlineMagnifyingGlass, HiOutlineArrowDown, HiOutlineArrowUp,
   HiOutlineExclamationTriangle, HiOutlineCube, HiOutlineArrowDownTray,
 } from 'react-icons/hi2';
+import { fmtDateTime } from '../utils/date';
 
 const categories = { medicamento: 'Medicamento', insumo: 'Insumo', servicio: 'Servicio', programa: 'Programa', otro: 'Otro' };
 const emptyProduct = {
@@ -407,7 +408,7 @@ export default function Inventory() {
                 ) : (
                   movements.map((m) => (
                     <tr key={m._id} className="border-b border-emerald-50 hover:bg-emerald-50/30 transition-colors">
-                      <td className="px-6 py-3 text-sm text-slate-600">{new Date(m.createdAt).toLocaleString('es-EC')}</td>
+                      <td className="px-6 py-3 text-sm text-slate-600">{fmtDateTime(m.createdAt)}</td>
                       <td className="px-6 py-3 text-sm font-medium text-slate-800">{m.product?.name}</td>
                       <td className="px-6 py-3">
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${

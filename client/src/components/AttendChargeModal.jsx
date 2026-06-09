@@ -39,6 +39,8 @@ export default function AttendChargeModal({ appointment, doctors = [], onClose, 
 
   const [payOptions, setPayOptions] = useState({ accounts: [], cards: [] });
   const [staff, setStaff] = useState([]);
+  const [staffSearch, setStaffSearch] = useState('');
+  const [staffOpen, setStaffOpen] = useState(false);
   const [pay, setPay] = useState({
     paymentMethod: 'efectivo',
     bankAccount: '',
@@ -47,6 +49,10 @@ export default function AttendChargeModal({ appointment, doctors = [], onClose, 
     cardLote: '',
     cardVoucher: '',
     recommendedBy: '',
+    clientName: `${apt?.patient?.firstName || ''} ${apt?.patient?.lastName || ''}`.trim(),
+    clientCedula: apt?.patient?.cedula || '',
+    clientEmail: apt?.patient?.email || '',
+    clientPhone: apt?.patient?.phone || '',
   });
 
   useEffect(() => {
@@ -91,8 +97,10 @@ export default function AttendChargeModal({ appointment, doctors = [], onClose, 
     try {
       await api.post('/sales', {
         patient: apt.patient?._id || apt.patient,
-        clientName: `${apt.patient?.firstName || ''} ${apt.patient?.lastName || ''}`.trim() || 'Consumidor Final',
-        clientCedula: apt.patient?.cedula || '9999999999999',
+        clientName: pay.clientName || 'Consumidor Final',
+        clientCedula: pay.clientCedula || '9999999999999',
+        clientEmail: pay.clientEmail || undefined,
+        clientPhone: pay.clientPhone || undefined,
         appointment: apt._id,
         paymentMethod: pay.paymentMethod,
         bankAccount: pay.paymentMethod === 'transferencia' ? pay.bankAccount || null : null,
@@ -187,6 +195,24 @@ export default function AttendChargeModal({ appointment, doctors = [], onClose, 
           {/* Paso 2 */}
           {step === 'cobro' && (
             <div className="space-y-3">
+              {/* Datos del cliente para facturación */}
+              <div className="rounded-xl border border-slate-200 p-3 space-y-2">
+                <p className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Datos para factura</p>
+                <div className="grid grid-cols-2 gap-2">
+                  <label className="block text-xs text-slate-600">Nombre completo
+                    <input value={pay.clientName} onChange={(e) => setPay({ ...pay, clientName: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm bg-slate-50/50" />
+                  </label>
+                  <label className="block text-xs text-slate-600">Cédula / RUC
+                    <input value={pay.clientCedula} onChange={(e) => setPay({ ...pay, clientCedula: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm bg-slate-50/50" />
+                  </label>
+                  <label className="block text-xs text-slate-600">Email
+                    <input type="email" value={pay.clientEmail} onChange={(e) => setPay({ ...pay, clientEmail: e.target.value })} placeholder="Opcional" className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm bg-slate-50/50" />
+                  </label>
+                  <label className="block text-xs text-slate-600">Teléfono
+                    <input value={pay.clientPhone} onChange={(e) => setPay({ ...pay, clientPhone: e.target.value })} placeholder="Opcional" className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm bg-slate-50/50" />
+                  </label>
+                </div>
+              </div>
               <div className="rounded-xl border border-slate-200 divide-y divide-slate-100">
                 {items.length === 0 && (
                   <div className="px-3 py-3 text-sm text-slate-400 text-center">Esta cita no tiene servicios para cobrar.</div>
@@ -212,10 +238,47 @@ export default function AttendChargeModal({ appointment, doctors = [], onClose, 
                   </select>
                 </label>
                 <label className="block text-sm">Recomendado por
-                  <select value={pay.recommendedBy} onChange={(e) => setPay({ ...pay, recommendedBy: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50">
-                    <option value="">— Nadie —</option>
-                    {staff.map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
-                  </select>
+                  <div className="relative mt-1">
+                    <input
+                      type="text"
+                      value={staffSearch}
+                      onChange={(e) => {
+                        setStaffSearch(e.target.value);
+                        setStaffOpen(true);
+                        if (!e.target.value) setPay({ ...pay, recommendedBy: '' });
+                      }}
+                      onFocus={() => setStaffOpen(true)}
+                      onBlur={() => setTimeout(() => setStaffOpen(false), 150)}
+                      placeholder="Buscar trabajador..."
+                      className="block w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50"
+                    />
+                    {staffOpen && (
+                      <div className="absolute z-20 w-full bg-white border border-slate-200 rounded-xl shadow-lg max-h-40 overflow-y-auto mt-1">
+                        <button
+                          type="button"
+                          onMouseDown={() => { setPay({ ...pay, recommendedBy: '' }); setStaffSearch(''); setStaffOpen(false); }}
+                          className="w-full text-left px-3 py-2 text-sm text-slate-400 hover:bg-slate-50 border-none cursor-pointer"
+                        >
+                          — Nadie —
+                        </button>
+                        {staff
+                          .filter((u) => !staffSearch || u.name.toLowerCase().includes(staffSearch.toLowerCase()))
+                          .map((u) => (
+                            <button
+                              key={u._id}
+                              type="button"
+                              onMouseDown={() => { setPay({ ...pay, recommendedBy: u._id }); setStaffSearch(u.name); setStaffOpen(false); }}
+                              className="w-full text-left px-3 py-2 text-sm hover:bg-emerald-50 border-none cursor-pointer"
+                            >
+                              {u.name}
+                            </button>
+                          ))}
+                        {staffSearch && staff.filter((u) => u.name.toLowerCase().includes(staffSearch.toLowerCase())).length === 0 && (
+                          <div className="px-3 py-2 text-xs text-slate-400">Sin resultados</div>
+                        )}
+                      </div>
+                    )}
+                  </div>
                 </label>
               </div>
 

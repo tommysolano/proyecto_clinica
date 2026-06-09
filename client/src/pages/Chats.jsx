@@ -21,6 +21,7 @@ import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
 import SameSlotPanel from '../components/SameSlotPanel';
+import { fmtDate } from '../utils/date';
 
 const STAGES = [
   { value: 'nuevo', label: 'Nuevo', color: 'bg-slate-100 text-slate-700' },
@@ -41,7 +42,7 @@ function timeAgo(date) {
   if (diff < 3600) return `${Math.floor(diff / 60)} min`;
   if (diff < 86400) return `${Math.floor(diff / 3600)} h`;
   if (diff < 86400 * 7) return `${Math.floor(diff / 86400)} d`;
-  return d.toLocaleDateString();
+  return fmtDate(d);
 }
 
 function formatTime(date) {

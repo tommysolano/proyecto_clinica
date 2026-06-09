@@ -3,6 +3,7 @@ import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import { HiOutlineChartBar, HiOutlineUserGroup } from 'react-icons/hi2';
+import { fmtDate } from '../utils/date';
 
 export default function Reports() {
   const today = new Date().toISOString().slice(0, 10);
@@ -126,7 +127,7 @@ export default function Reports() {
                   <tbody>
                     {p.list.map((a, i) => (
                       <tr key={i} className="border-t border-slate-100">
-                        <td className="px-4 py-1.5 text-slate-600">{new Date(a.date).toLocaleDateString('es-EC')}</td>
+                        <td className="px-4 py-1.5 text-slate-600">{fmtDate(a.date)}</td>
                         <td className="px-4 py-1.5">{a.patient}</td>
                         <td className="px-4 py-1.5 text-slate-600 text-xs">
                           {a.services && a.services.length > 0 ? a.services.join(', ') : '—'}

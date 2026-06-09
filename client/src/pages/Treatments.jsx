@@ -13,6 +13,7 @@ import {
 } from 'react-icons/hi2';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
+import { fmtDate } from '../utils/date';
 
 const STATUSES = [
   { value: 'activo', label: 'Activo', color: 'bg-emerald-100 text-emerald-800' },
@@ -332,8 +333,8 @@ export default function Treatments() {
                     Doctor: {t.prescribedBy?.name || '—'}
                   </div>
                   <div className="text-xs text-slate-400 mt-1">
-                    Inicio: {(t.startDate || '').slice(0, 10)}
-                    {t.targetEndDate ? ` · Meta: ${t.targetEndDate.slice(0, 10)}` : ''}
+                    Inicio: {fmtDate(t.startDate)}
+                    {t.targetEndDate ? ` · Meta: ${fmtDate(t.targetEndDate)}` : ''}
                   </div>
                 </div>
                 </div>

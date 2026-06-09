@@ -3,6 +3,7 @@ import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import { HiOutlinePlus, HiOutlineTrash, HiOutlineNoSymbol } from 'react-icons/hi2';
+import { fmtDate } from '../utils/date';
 
 const EMPTY = {
   doctor: '',
@@ -97,8 +98,8 @@ export default function Blocks() {
             {loading && <tr><td colSpan={7} className="text-center py-4 text-slate-400">Cargando...</td></tr>}
             {list.map((b) => (
               <tr key={b._id} className="border-t border-slate-100">
-                <td className="px-3 py-2">{(b.startDate || '').slice(0, 10)} {!b.allDay && b.startTime}</td>
-                <td className="px-3 py-2">{(b.endDate || '').slice(0, 10)} {!b.allDay && b.endTime}</td>
+                <td className="px-3 py-2">{fmtDate(b.startDate)} {!b.allDay && b.startTime}</td>
+                <td className="px-3 py-2">{fmtDate(b.endDate)} {!b.allDay && b.endTime}</td>
                 <td className="px-3 py-2">{b.allDay ? 'Sí' : 'No'}</td>
                 <td className="px-3 py-2">{b.doctor?.name || 'Todos'}</td>
                 <td className="px-3 py-2">{b.room?.name || 'Todos'}</td>

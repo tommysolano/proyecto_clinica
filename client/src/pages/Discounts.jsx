@@ -5,6 +5,7 @@ import Modal from '../components/Modal';
 import { useAuth } from '../context/AuthContext';
 import { HiOutlinePlus, HiOutlineTag, HiOutlineTrash, HiOutlinePencilSquare } from 'react-icons/hi2';
 import PageHeader, { EmptyState } from '../components/PageHeader';
+import { fmtDate } from '../utils/date';
 
 const DAYS = [['Dom', 0], ['Lun', 1], ['Mar', 2], ['Mié', 3], ['Jue', 4], ['Vie', 5], ['Sáb', 6]];
 const AUDIENCES = [['todos', 'Todos'], ['nuevos', 'Pacientes nuevos'], ['recurrentes', 'Pacientes recurrentes'], ['cumpleanos', 'Cumpleañeros']];
@@ -140,7 +141,7 @@ export default function Discounts() {
                 <td className="px-3 py-2">{d.type === 'percentage' ? `${d.value}%` : `$${d.value}`}</td>
                 <td className="px-3 py-2">{d.scope === 'all' ? 'Todos' : `${(d.products || []).length} productos`}</td>
                 <td className="px-3 py-2 text-xs text-slate-500">
-                  {(d.startDate || '').slice(0, 10) || '—'} → {(d.endDate || '').slice(0, 10) || '—'}
+                  {fmtDate(d.startDate) || '—'} → {fmtDate(d.endDate) || '—'}
                 </td>
                 <td className="px-3 py-2">
                   <span className={`text-xs px-2 py-1 rounded ${d.active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-200 text-slate-600'}`}>

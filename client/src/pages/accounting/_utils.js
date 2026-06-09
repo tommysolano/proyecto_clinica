@@ -6,7 +6,12 @@ export const fmt = (n) => {
 
 export const fmtDate = (d) => {
   if (!d) return '';
-  return new Date(d).toLocaleDateString('es-EC');
+  const str = String(d);
+  const m = str.match(/^(\d{4})-(\d{2})-(\d{2})/);
+  if (m) return `${m[3]}/${m[2]}/${m[1]}`;
+  const dt = new Date(str);
+  if (Number.isNaN(dt.getTime())) return '';
+  return `${String(dt.getDate()).padStart(2, '0')}/${String(dt.getMonth() + 1).padStart(2, '0')}/${dt.getFullYear()}`;
 };
 
 export const today = () => new Date().toISOString().slice(0, 10);

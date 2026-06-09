@@ -6,6 +6,7 @@ import Modal from '../components/Modal';
 import ProductAutocomplete from '../components/ProductAutocomplete';
 import PageHeader from '../components/PageHeader';
 import { useAuth } from '../context/AuthContext';
+import { fmtDate } from '../utils/date';
 import {
   HiOutlinePlus,
   HiOutlineDocumentDuplicate,
@@ -236,7 +237,7 @@ export default function Quotations() {
                     {q.status}
                   </span>
                 </td>
-                <td className="px-4 py-3 text-slate-500 text-xs">{new Date(q.createdAt).toLocaleDateString('es-EC')}</td>
+                <td className="px-4 py-3 text-slate-500 text-xs">{fmtDate(q.createdAt)}</td>
                 <td className="px-4 py-3">
                   <div className="flex items-center justify-end gap-1">
                     <button onClick={() => openView(q)} className="px-2.5 py-1.5 text-xs bg-slate-100 text-slate-700 rounded-lg hover:bg-slate-200 border-none cursor-pointer flex items-center gap-1">
@@ -268,8 +269,8 @@ export default function Quotations() {
               <div><span className="text-slate-500">Cédula/RUC:</span> {viewItem.clientCedula || '—'}</div>
               <div><span className="text-slate-500">Teléfono:</span> {viewItem.clientPhone || viewItem.patient?.phone || '—'}</div>
               <div><span className="text-slate-500">Estado:</span> <span className={`px-2 py-0.5 rounded-full text-xs capitalize ${STATUS_STYLES[viewItem.status] || STATUS_STYLES.borrador}`}>{viewItem.status}</span></div>
-              <div><span className="text-slate-500">Creado:</span> {new Date(viewItem.createdAt).toLocaleDateString('es-EC')}</div>
-              {viewItem.validUntil && <div><span className="text-slate-500">Válida hasta:</span> {new Date(viewItem.validUntil).toLocaleDateString('es-EC')}</div>}
+              <div><span className="text-slate-500">Creado:</span> {fmtDate(viewItem.createdAt)}</div>
+              {viewItem.validUntil && <div><span className="text-slate-500">Válida hasta:</span> {fmtDate(viewItem.validUntil)}</div>}
             </div>
             <table className="tbl text-xs border-t">
               <thead className="bg-slate-50"><tr><th className="px-2 py-1 text-left">Descripción</th><th className="px-2 py-1 text-right">Cant.</th><th className="px-2 py-1 text-right">P. Unit.</th><th className="px-2 py-1 text-right">Desc.</th><th className="px-2 py-1 text-right">Subtotal</th></tr></thead>

@@ -1,4 +1,4 @@
-import { useEffect, useState, Fragment } from 'react';
+import { useEffect, useState, Fragment, useRef } from 'react';
 import { useParams, useSearchParams, Link } from 'react-router-dom';
 import api from '../api/axios';
 import { downloadFile } from '../utils/download';
@@ -41,6 +41,8 @@ export default function PatientDetail() {
   const [tab, setTab] = useState(initialTab);
   const [patient, setPatient] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [aptData, setAptData] = useState(null);
+  const [now, setNow] = useState(Date.now());
 
   useEffect(() => {
     (async () => {
@@ -54,6 +56,41 @@ export default function PatientDetail() {
       }
     })();
   }, [id]);
+
+  useEffect(() => {
+    if (!appointmentId) return;
+    api.get(`/appointments/${appointmentId}`)
+      .then((r) => setAptData(r.data))
+      .catch(() => {});
+  }, [appointmentId]);
+
+  useEffect(() => {
+    if (!aptData?.consultationStartedAt || aptData?.consultationEndedAt) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [aptData?.consultationStartedAt, aptData?.consultationEndedAt]);
+
+  const endConsultation = async () => {
+    try {
+      await api.post(`/appointments/${appointmentId}/end`);
+      setAptData((d) => ({ ...d, consultationEndedAt: new Date().toISOString() }));
+      toast.success('Consulta finalizada');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al finalizar');
+    }
+  };
+
+  const timerSeconds = aptData?.consultationStartedAt && !aptData?.consultationEndedAt
+    ? Math.max(0, Math.floor((now - new Date(aptData.consultationStartedAt).getTime()) / 1000))
+    : null;
+
+  const fmtTimer = (s) =>
+    `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+
+  const timerStyle = timerSeconds === null ? null
+    : timerSeconds >= 19 * 60 ? 'bg-red-50 border-red-300 text-red-600'
+    : timerSeconds >= 14 * 60 ? 'bg-amber-50 border-amber-300 text-amber-600'
+    : 'bg-emerald-50 border-emerald-300 text-emerald-600';
 
   if (loading) {
     return (
@@ -103,6 +140,21 @@ export default function PatientDetail() {
               )}
             </p>
           </div>
+          {timerSeconds !== null && (
+            <div className="flex flex-col items-end gap-1 ml-4 shrink-0">
+              <span className="text-xs text-slate-400">{fmtDate(new Date().toISOString())}</span>
+              <div className={`flex items-center gap-2 px-4 py-2 rounded-xl border font-mono text-2xl font-bold tabular-nums transition-colors ${timerStyle}`}>
+                <span>⏱</span>
+                <span>{fmtTimer(timerSeconds)}</span>
+              </div>
+              <button
+                onClick={endConsultation}
+                className="text-xs text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer transition-colors"
+              >
+                Finalizar consulta
+              </button>
+            </div>
+          )}
         </div>
       </div>
 
@@ -264,9 +316,13 @@ function FichaTab({ patientId }) {
         </Field>
         <Field label="Edad">
           <input
-            type="number"
+            type="text"
+            inputMode="numeric"
             value={record.edad ?? ''}
-            onChange={(e) => update('edad', Number(e.target.value))}
+            onChange={(e) => {
+              const val = e.target.value.replace(/\D/g, '');
+              update('edad', val === '' ? '' : Number(val));
+            }}
             className="input"
           />
         </Field>
@@ -396,6 +452,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
   const [record, setRecord] = useState(null);
   const [loading, setLoading] = useState(true);
   const [products, setProducts] = useState([]);
+  const fileInputRef = useRef(null);
   const emptyRow = () => ({
     product: '',
     name: '',
@@ -1056,6 +1113,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
           </label>
           <div className="bg-white rounded-lg border border-slate-200 p-3 space-y-2">
             <input
+              ref={fileInputRef}
               type="file"
               accept="application/pdf"
               multiple
@@ -1066,8 +1124,16 @@ function SeguimientosTab({ patientId, appointmentId }) {
                 setPendingFiles((prev) => [...prev, ...files]);
                 e.target.value = '';
               }}
-              className="text-xs"
+              className="hidden"
             />
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-dashed border-slate-300 bg-slate-50 hover:bg-emerald-50 hover:border-emerald-400 text-sm text-slate-600 hover:text-emerald-700 cursor-pointer transition-colors"
+            >
+              <HiOutlineArrowDownTray className="w-4 h-4" />
+              Adjuntar PDFs
+            </button>
             {pendingFiles.length > 0 && (
               <ul className="space-y-1">
                 {pendingFiles.map((f, i) => (
@@ -1143,7 +1209,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                 {purchases.map((p) => (
                   <div key={p._id} className="border border-slate-200 rounded-lg p-2 text-xs">
                     <div className="flex items-center justify-between">
-                      <span className="font-medium text-slate-700">{new Date(p.date).toLocaleDateString('es-EC')} · {p.saleNumber}</span>
+                      <span className="font-medium text-slate-700">{fmtDate(p.date)} · {p.saleNumber}</span>
                       <span className="font-mono text-emerald-700">${Number(p.total).toFixed(2)}</span>
                     </div>
                     <div className="text-slate-600 mt-0.5">
@@ -1188,7 +1254,12 @@ function SeguimientosTab({ patientId, appointmentId }) {
               return (
                 <tr key={fu._id} className="border-t border-slate-100 align-top">
                   <td className="px-4 py-2.5 text-slate-600 whitespace-nowrap">
-                    {new Date(fu.fecha).toLocaleDateString('es-EC')}
+                    {fmtDate(fu.fecha)}
+                    {fu.createdBy?.name && (
+                      <div className="text-[11px] text-emerald-700 mt-0.5 font-medium">
+                        Dr. {fu.createdBy.name}
+                      </div>
+                    )}
                   </td>
                   <td className="px-4 py-2.5 text-slate-800">
                     {fu.kind === 'enfermeria' && (

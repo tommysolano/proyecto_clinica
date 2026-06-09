@@ -5,6 +5,7 @@ import Modal from '../components/Modal';
 import { useAuth } from '../context/AuthContext';
 import { HiOutlinePlus, HiOutlineArrowsRightLeft, HiOutlineTrash } from 'react-icons/hi2';
 import PageHeader from '../components/PageHeader';
+import { fmtDate } from '../utils/date';
 
 const STATUSES = [
   { value: 'pendiente', label: 'Pendiente', color: 'bg-amber-100 text-amber-800' },
@@ -194,7 +195,7 @@ export default function Referrals() {
               const st = STATUSES.find((s) => s.value === r.status) || STATUSES[0];
               return (
                 <tr key={r._id} className="border-t border-slate-100">
-                  <td className="px-3 py-2">{(r.date || '').slice(0, 10)}</td>
+                  <td className="px-3 py-2">{fmtDate(r.date)}</td>
                   <td className="px-3 py-2">
                     {r.patient?.firstName} {r.patient?.lastName}
                   </td>

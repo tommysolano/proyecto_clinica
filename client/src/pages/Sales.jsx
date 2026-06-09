@@ -6,6 +6,7 @@ import ProductAutocomplete from '../components/ProductAutocomplete';
 import PageHeader, { EmptyState } from '../components/PageHeader';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
+import { fmtDateTime } from '../utils/date';
 import {
   HiOutlinePlus,
   HiOutlineEye,
@@ -464,7 +465,7 @@ export default function Sales() {
                   <tr key={s._id} className="border-b border-emerald-50 hover:bg-emerald-50/30">
                     <td className="px-6 py-3 text-sm font-mono text-slate-600">{s.saleNumber}</td>
                     <td className="px-6 py-3 text-sm text-slate-600">
-                      {new Date(s.createdAt).toLocaleString('es-EC')}
+                      {fmtDateTime(s.createdAt)}
                     </td>
                     <td className="px-6 py-3 text-sm text-slate-800">
                       <div className="flex items-center gap-2">
@@ -1008,7 +1009,7 @@ export default function Sales() {
               </div>
               <div>
                 <p className="text-xs text-slate-500">Fecha</p>
-                <p>{new Date(detailModal.createdAt).toLocaleString('es-EC')}</p>
+                <p>{fmtDateTime(detailModal.createdAt)}</p>
               </div>
               <div>
                 <p className="text-xs text-slate-500">Método de pago</p>

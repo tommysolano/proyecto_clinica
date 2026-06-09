@@ -5,6 +5,7 @@ import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import PageHeader, { EmptyState } from '../components/PageHeader';
 import { useAuth } from '../context/AuthContext';
+import { fmtDate, fmtDateTime } from '../utils/date';
 import {
   HiOutlineDocumentText,
   HiOutlineArrowPath,
@@ -207,7 +208,7 @@ export default function Invoices() {
                       )}
                     </td>
                     <td className="px-5 py-3 text-slate-600">
-                      {new Date(inv.createdAt).toLocaleDateString('es-EC')}
+                      {fmtDate(inv.createdAt)}
                     </td>
                     <td className="px-5 py-3 text-right font-medium text-slate-800">
                       ${Number(inv.importeTotal || 0).toFixed(2)}
@@ -288,7 +289,7 @@ export default function Invoices() {
                 label="Fecha autorización"
                 value={
                   detail.fechaAutorizacion
-                    ? new Date(detail.fechaAutorizacion).toLocaleString('es-EC')
+                    ? fmtDateTime(detail.fechaAutorizacion)
                     : '—'
                 }
               />
@@ -336,7 +337,7 @@ export default function Invoices() {
                 <strong>Anulación:</strong> {detail.motivoAnulacion}
                 {detail.anuladaAt && (
                   <p className="text-slate-500 mt-1">
-                    {new Date(detail.anuladaAt).toLocaleString('es-EC')}
+                    {fmtDateTime(detail.anuladaAt)}
                   </p>
                 )}
               </div>
