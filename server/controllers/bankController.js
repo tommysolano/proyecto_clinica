@@ -6,6 +6,7 @@ const CreditCard = require('../models/CreditCard');
 const Sale = require('../models/Sale');
 const ChartOfAccount = require('../models/ChartOfAccount');
 const { createEntry, findAccount } = require('../utils/accounting');
+const { getAccount } = require('../utils/accountMap');
 
 /**
  * Opciones de medios de pago para el punto de cobro (cajero / recepción).
@@ -137,17 +138,23 @@ exports.createMovement = async (req, res) => {
       }
     }
 
-    // Contracuenta por defecto según tipo
-    const defaultCounter = {
-      DEPOSITO: '1.1.01.01',        // contra Caja general
-      RETIRO: '1.1.01.01',
-      CAJA_CHICA: '1.1.01.02',
-      ANTICIPO: '1.1.02.03',
-      COMISION: '6.1.16',
-      INTERES: '4.2.01',
-      AJUSTE: '3.3.01',
-      CHEQUE_EMITIDO: '2.1.01.01',
-    }[type] || counterAccountCode;
+    // Contracuenta por defecto según tipo. Se resuelve por "rol" configurable en
+    // Configuración de Cuentas (con caída al plan estándar), salvo que el cliente
+    // envíe explícitamente un counterAccountCode.
+    const counterRoleByType = {
+      DEPOSITO: 'caja',             // contra Caja general
+      RETIRO: 'caja',
+      CAJA_CHICA: 'cajaChica',
+      ANTICIPO: 'anticipoProveedores',
+      COMISION: 'comisionBancaria',
+      INTERES: 'interesesGanados',
+      AJUSTE: 'resultadosAcumulados',
+      CHEQUE_EMITIDO: 'proveedores',
+    };
+    let defaultCounter = counterAccountCode || null;
+    if (!defaultCounter && counterRoleByType[type]) {
+      defaultCounter = (await getAccount(req.clinicId, counterRoleByType[type])).code;
+    }
 
     let counterpartTx = null;
     let entry = null;
@@ -293,11 +300,12 @@ exports.cashToTransfer = async (req, res) => {
     const total = sales.reduce((s, v) => s + (v.total || 0), 0);
 
     // Asiento: Banco (DB) / Caja general (CR)
+    const cajaAcc = await getAccount(req.clinicId, 'caja');
     const entry = await postBankJournal({
       clinicId: req.clinicId, userId: req.user._id,
       date: date ? new Date(date) : new Date(),
       description: description || `Depósito ventas efectivo - papeleta ${voucher}`,
-      bank, counterAccountCode: '1.1.01.01',
+      bank, counterAccountCode: cajaAcc.code,
       amount: total, direction: 1,
     });
     const tx = await BankTransaction.create({
@@ -439,8 +447,10 @@ exports.statementApply = async (req, res) => {
       const amount = Math.abs(Number(c.amount) || 0);
       if (!amount) continue;
       const direction = (Number(c.amount) || 0) >= 0 ? 1 : -1;
-      // Cuenta de contrapartida: comisión bancaria, interés ganado, etc.
-      const counterCode = c.counterAccountCode || (direction > 0 ? '4.2.01' : '6.1.16');
+      // Cuenta de contrapartida: interés ganado (ingreso) o comisión bancaria (gasto),
+      // resueltas por rol configurable salvo que se envíe un código explícito.
+      const counterCode = c.counterAccountCode
+        || (await getAccount(req.clinicId, direction > 0 ? 'interesesGanados' : 'comisionBancaria')).code;
       const entry = await postBankJournal({
         clinicId: req.clinicId, userId: req.user._id,
         date: c.date ? new Date(c.date) : new Date(),

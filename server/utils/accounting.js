@@ -54,14 +54,19 @@ async function assertPeriodOpen(clinicId, date) {
 }
 
 /**
- * Crea el plan de cuentas por defecto para una clínica (idempotente).
+ * Crea/actualiza el plan de cuentas por defecto para una clínica.
+ * Es idempotente y *aditivo*: si la clínica ya tiene cuentas, solo agrega las
+ * que falten del plan estándar (por código) sin tocar las existentes. Esto
+ * permite incorporar cuentas nuevas del catálogo a clínicas ya creadas.
  */
 async function seedChartOfAccounts(clinicId) {
-  const existing = await ChartOfAccount.countDocuments({ clinic: clinicId });
-  if (existing > 0) return { created: 0, skipped: existing };
+  const existingDocs = await ChartOfAccount.find({ clinic: clinicId }).select('code');
+  const existingCodes = new Set(existingDocs.map((d) => d.code));
+  const missing = defaultPlan.filter((a) => !existingCodes.has(a.code));
+  if (!missing.length) return { created: 0, skipped: existingCodes.size };
 
-  // Crear primero todos sin parent, luego asignar parent por código padre.
-  const docs = defaultPlan.map((a) => ({
+  // Crear las cuentas faltantes (sin parent), luego asignar parent por código.
+  const docs = missing.map((a) => ({
     clinic: clinicId,
     code: a.code,
     name: a.name,
@@ -73,7 +78,9 @@ async function seedChartOfAccounts(clinicId) {
     isSystem: true,
   }));
   const created = await ChartOfAccount.insertMany(docs);
-  const byCode = new Map(created.map((c) => [c.code, c._id]));
+  // Mapa código→id de TODAS las cuentas (existentes + nuevas) para enlazar padres.
+  const all = await ChartOfAccount.find({ clinic: clinicId }).select('code');
+  const byCode = new Map(all.map((c) => [c.code, c._id]));
   const updates = [];
   for (const c of created) {
     const parts = c.code.split('.');
@@ -84,7 +91,48 @@ async function seedChartOfAccounts(clinicId) {
     }
   }
   if (updates.length) await ChartOfAccount.bulkWrite(updates);
-  return { created: created.length, skipped: 0 };
+  return { created: created.length, skipped: existingCodes.size };
+}
+
+/**
+ * Busca una cuenta por código y, si no existe pero está definida en el plan
+ * estándar, la crea sobre la marcha (enlazando su cuenta padre). Garantiza que
+ * las cuentas usadas por la contabilidad automática siempre estén disponibles,
+ * incluso en clínicas creadas antes de incorporarse la cuenta al catálogo.
+ * Devuelve null si el código no pertenece al plan estándar.
+ */
+async function ensureAccountByCode(clinicId, code) {
+  let acc = await ChartOfAccount.findOne({ clinic: clinicId, code });
+  if (acc) return acc;
+  const def = defaultPlan.find((a) => a.code === code);
+  if (!def) return null;
+  const parts = code.split('.');
+  let parentId = null;
+  if (parts.length > 1) {
+    const parentCode = parts.slice(0, -1).join('.');
+    const parent = (await ChartOfAccount.findOne({ clinic: clinicId, code: parentCode }))
+      || (await ensureAccountByCode(clinicId, parentCode));
+    parentId = parent?._id || null;
+  }
+  try {
+    acc = await ChartOfAccount.create({
+      clinic: clinicId,
+      code: def.code,
+      name: def.name,
+      type: def.type,
+      nature: def.nature,
+      allowsMovement: def.allowsMovement !== false,
+      taxCode: def.taxCode || null,
+      level: parts.length,
+      parent: parentId,
+      isSystem: true,
+    });
+    return acc;
+  } catch (e) {
+    // Creada en paralelo por otra petición (índice único clinic+code): la reusamos.
+    if (e.code === 11000) return ChartOfAccount.findOne({ clinic: clinicId, code });
+    throw e;
+  }
 }
 
 /** Resuelve una cuenta por taxCode o por code. Lanza si no existe. */
@@ -266,6 +314,7 @@ module.exports = {
   getOrCreatePeriod,
   assertPeriodOpen,
   seedChartOfAccounts,
+  ensureAccountByCode,
   findAccount,
   createEntry,
   reverseEntry,

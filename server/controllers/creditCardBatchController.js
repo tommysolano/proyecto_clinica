@@ -1,7 +1,8 @@
 const CreditCardBatch = require('../models/CreditCardBatch');
 const BankAccount = require('../models/BankAccount');
 const BankTransaction = require('../models/BankTransaction');
-const { createEntry, findAccount, reverseEntry } = require('../utils/accounting');
+const { createEntry, reverseEntry } = require('../utils/accounting');
+const { getAccount } = require('../utils/accountMap');
 
 exports.list = async (req, res) => {
   const filter = { clinic: req.clinicId };
@@ -64,12 +65,14 @@ exports.liquidate = async (req, res) => {
     const bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId });
     if (!bank) return res.status(404).json({ message: 'Cuenta bancaria no encontrada' });
 
-    const bankAcc = await findAccount(req.clinicId, { id: bank.chartAccount });
-    const tarjetasXliq = await findAccount(req.clinicId, { code: '1.1.02.02' });
-    const comision = await findAccount(req.clinicId, { code: '6.1.17' });
-    const ivaCompras = await findAccount(req.clinicId, { taxCode: 'IVA_COMPRAS' });
+    const ChartOfAccount = require('../models/ChartOfAccount');
+    const bankAcc = await ChartOfAccount.findOne({ _id: bank.chartAccount, clinic: req.clinicId });
+    if (!bankAcc) return res.status(400).json({ message: 'La cuenta bancaria no tiene cuenta contable asociada' });
+    const tarjetasXliq = await getAccount(req.clinicId, 'tarjetasPorLiquidar');
+    const comision = await getAccount(req.clinicId, 'comisionTarjeta');
+    const ivaCompras = await getAccount(req.clinicId, 'ivaCompras');
     // Retención que el adquirente nos efectúa (renta) → crédito tributario, no provisión incobrables
-    const retXcobrar = await findAccount(req.clinicId, { code: '1.1.03.03' });
+    const retXcobrar = await getAccount(req.clinicId, 'retRentaPorCobrar');
 
     const lines = [];
     if (b.netAmount > 0) lines.push({ account: bankAcc._id, debit: b.netAmount, credit: 0, description: `Depósito liquidación ${b.code}` });

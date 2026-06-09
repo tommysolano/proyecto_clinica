@@ -1,6 +1,6 @@
 const ChartOfAccount = require('../models/ChartOfAccount');
 const AccountingConfig = require('../models/AccountingConfig');
-const { findAccount } = require('./accounting');
+const { findAccount, ensureAccountByCode } = require('./accounting');
 
 /**
  * Catálogo de "roles" de cuenta usados por la contabilidad automática.
@@ -20,6 +20,7 @@ const ACCOUNT_ROLES = {
   inventario:           { group: 'Activo',  label: 'Inventario',                code: '1.1.04.01' },
 
   proveedores:          { group: 'Pasivo',  label: 'Proveedores (CxP)',         code: '2.1.01.01' },
+  comisionesPorPagar:   { group: 'Pasivo',  label: 'Comisiones por pagar (personal)', code: '2.1.01.02' },
   ivaVentas:            { group: 'Pasivo',  label: 'IVA en ventas',             taxCode: 'IVA_VENTAS' },
   ivaPorPagar:          { group: 'Pasivo',  label: 'IVA por pagar',             code: '2.1.02.02' },
   retIvaPorPagar:       { group: 'Pasivo',  label: 'Retención IVA por pagar',   code: '2.1.02.03' },
@@ -28,6 +29,9 @@ const ACCOUNT_ROLES = {
   resultadosAcumulados: { group: 'Patrimonio', label: 'Resultados acumulados',  code: '3.3.01' },
   resultadoEjercicio:   { group: 'Patrimonio', label: 'Resultado del ejercicio', code: '3.3.02' },
 
+  bancos:               { group: 'Activo',  label: 'Bancos',                    code: '1.1.01.03' },
+
+  interesesGanados:     { group: 'Ingreso', label: 'Intereses ganados',         code: '4.2.01' },
   ingresoServicios:     { group: 'Ingreso', label: 'Ingreso por servicios',     code: '4.1.01' },
   ingresoProductos:     { group: 'Ingreso', label: 'Ingreso por productos',     code: '4.1.02' },
   descuentoVentas:      { group: 'Ingreso', label: 'Descuentos en ventas',      code: '4.1.03' },
@@ -37,9 +41,10 @@ const ACCOUNT_ROLES = {
 
   comisionBancaria:     { group: 'Gasto',   label: 'Comisiones bancarias',      code: '6.1.16' },
   comisionTarjeta:      { group: 'Gasto',   label: 'Comisiones tarjeta',        code: '6.1.17' },
-  faltanteCaja:         { group: 'Gasto',   label: 'Faltantes de caja',         code: '6.1.18' },
+  comisionesPersonal:   { group: 'Gasto',   label: 'Comisiones al personal',    code: '6.1.22' },
+  faltanteCaja:         { group: 'Gasto',   label: 'Faltantes de caja',         code: '6.1.21' },
 
-  sobranteCaja:         { group: 'Ingreso', label: 'Sobrantes de caja',         code: '4.1.04' },
+  sobranteCaja:         { group: 'Ingreso', label: 'Sobrantes de caja',         code: '4.2.03' },
 };
 
 /**
@@ -55,7 +60,12 @@ async function getAccount(clinicId, role) {
     const acc = await ChartOfAccount.findOne({ _id: mappedId, clinic: clinicId });
     if (acc) return acc;
   }
-  return findAccount(clinicId, def.taxCode ? { taxCode: def.taxCode } : { code: def.code });
+  if (def.taxCode) return findAccount(clinicId, { taxCode: def.taxCode });
+  // Para roles por código: crea la cuenta del plan estándar si aún no existe
+  // (clínicas antiguas), garantizando que la contabilidad automática no falle.
+  const ensured = await ensureAccountByCode(clinicId, def.code);
+  if (ensured) return ensured;
+  return findAccount(clinicId, { code: def.code });
 }
 
 module.exports = { ACCOUNT_ROLES, getAccount };

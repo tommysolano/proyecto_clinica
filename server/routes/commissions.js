@@ -11,4 +11,9 @@ router.put('/rules/:id', requireRole('admin', 'contabilidad'), ctrl.updateRule);
 router.delete('/rules/:id', requireRole('admin', 'contabilidad'), ctrl.deleteRule);
 router.get('/report', requireRole('admin', 'contabilidad'), ctrl.report);
 
+// Contabilización de comisiones devengadas (genera asiento contable).
+router.get('/postings', requireRole('admin', 'contabilidad'), ctrl.listPostings);
+router.post('/post', requireRole('admin', 'contabilidad'), ctrl.postCommissions);
+router.post('/postings/:id/cancel', requireRole('admin', 'contabilidad'), ctrl.cancelPosting);
+
 module.exports = router;

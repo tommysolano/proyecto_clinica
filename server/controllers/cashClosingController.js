@@ -84,10 +84,16 @@ exports.list = async (req, res) => {
   res.json(items);
 };
 
-/** Genera (best-effort) el asiento de ajuste por diferencia al cerrar caja. */
+/**
+ * Genera el asiento de ajuste por diferencia al cerrar caja.
+ * Devuelve { entry, error }: si hay diferencia pero no se pudo generar el
+ * asiento (p. ej. falta una cuenta o el período está cerrado), `error` trae el
+ * motivo para avisar al usuario en vez de fallar en silencio. El cierre físico
+ * de caja NO se bloquea por esto.
+ */
 const postDifferenceEntry = async (clinicId, closing, userId) => {
   const diff = closing.difference;
-  if (!diff || Math.abs(diff) < 0.01) return null;
+  if (!diff || Math.abs(diff) < 0.01) return { entry: null, error: null };
   try {
     const caja = await getAccount(clinicId, 'caja');
     let lines;
@@ -114,10 +120,10 @@ const postDifferenceEntry = async (clinicId, closing, userId) => {
       source: 'CIERRE', sourceRef: closing._id, sourceModel: 'CashClosing',
       lines, userId,
     });
-    return entry;
+    return { entry, error: null };
   } catch (e) {
     console.warn('No se pudo generar asiento de diferencia de caja:', e.message);
-    return null;
+    return { entry: null, error: e.message };
   }
 };
 
@@ -145,10 +151,14 @@ exports.close = async (req, res) => {
     if (req.body.notes) closing.notes = req.body.notes;
     closing.status = 'CERRADO';
 
-    const entry = await postDifferenceEntry(req.clinicId, closing, req.user._id);
+    const { entry, error } = await postDifferenceEntry(req.clinicId, closing, req.user._id);
     if (entry) closing.journalEntry = entry._id;
     await closing.save();
-    res.json(closing);
+    // Si había diferencia pero no se pudo asentar, avisamos sin bloquear el cierre.
+    const accountingWarning = error
+      ? `La caja se cerró, pero no se pudo registrar el asiento contable de la diferencia: ${error}`
+      : null;
+    res.json({ ...closing.toObject(), accountingWarning });
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 
@@ -169,9 +179,12 @@ exports.create = async (req, res) => {
       status: 'CERRADO',
       closedBy: req.user._id,
     });
-    const entry = await postDifferenceEntry(req.clinicId, closing, req.user._id);
+    const { entry, error } = await postDifferenceEntry(req.clinicId, closing, req.user._id);
     if (entry) { closing.journalEntry = entry._id; await closing.save(); }
-    res.status(201).json(closing);
+    const accountingWarning = error
+      ? `La caja se cerró, pero no se pudo registrar el asiento contable de la diferencia: ${error}`
+      : null;
+    res.status(201).json({ ...closing.toObject(), accountingWarning });
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 

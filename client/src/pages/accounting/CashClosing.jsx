@@ -49,8 +49,12 @@ export default function CashClosing() {
     e.preventDefault();
     setBusy(true);
     try {
-      await api.post(`/cash-closings/${open._id}/close`, closeForm);
-      toast.success('Caja cerrada y contabilizada');
+      const res = await api.post(`/cash-closings/${open._id}/close`, closeForm);
+      if (res.data?.accountingWarning) {
+        toast(res.data.accountingWarning, { icon: '⚠️', duration: 7000 });
+      } else {
+        toast.success('Caja cerrada y contabilizada');
+      }
       setCloseModal(false);
       setCloseForm({ countedCash: 0, notes: '' });
       load();

@@ -89,6 +89,7 @@ module.exports = [
   { code: '4.2',      name: 'INGRESOS NO OPERACIONALES',                  type: 'INGRESO',   nature: 'CREDITO', allowsMovement: false },
   { code: '4.2.01',   name: 'Intereses ganados',                          type: 'INGRESO',   nature: 'CREDITO' },
   { code: '4.2.02',   name: 'Otros ingresos',                             type: 'INGRESO',   nature: 'CREDITO' },
+  { code: '4.2.03',   name: 'Sobrantes de caja',                          type: 'INGRESO',   nature: 'CREDITO' },
 
   // COSTO
   { code: '5',        name: 'COSTOS',                                     type: 'COSTO',     nature: 'DEBITO',  allowsMovement: false },
@@ -119,6 +120,8 @@ module.exports = [
   { code: '6.1.18',   name: 'Impuestos y contribuciones',                 type: 'GASTO',     nature: 'DEBITO' },
   { code: '6.1.19',   name: 'Gastos de viaje',                            type: 'GASTO',     nature: 'DEBITO' },
   { code: '6.1.20',   name: 'Capacitación',                               type: 'GASTO',     nature: 'DEBITO' },
+  { code: '6.1.21',   name: 'Faltantes de caja',                          type: 'GASTO',     nature: 'DEBITO' },
+  { code: '6.1.22',   name: 'Comisiones al personal',                     type: 'GASTO',     nature: 'DEBITO' },
   { code: '6.1.99',   name: 'Otros gastos administrativos',               type: 'GASTO',     nature: 'DEBITO' },
   { code: '6.2',      name: 'GASTOS FINANCIEROS',                         type: 'GASTO',     nature: 'DEBITO',  allowsMovement: false },
   { code: '6.2.01',   name: 'Intereses pagados',                          type: 'GASTO',     nature: 'DEBITO' },

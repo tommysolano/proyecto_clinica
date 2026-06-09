@@ -3,7 +3,8 @@ const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
 const Discount = require('../models/Discount');
 const Treatment = require('../models/Treatment');
-const { createEntry, findAccount, reverseEntry } = require('../utils/accounting');
+const { createEntry, reverseEntry } = require('../utils/accounting');
+const { getAccount } = require('../utils/accountMap');
 const { emitToClinic } = require('../realtime');
 
 exports.getSales = async (req, res) => {
@@ -305,42 +306,40 @@ exports.createSale = async (req, res) => {
         if (card?.chartAccount) debitAcc = await ChartOfAccount.findById(card.chartAccount);
       }
       if (!debitAcc) {
-        let debitCode = '1.1.02.01';
-        if (paymentMethod === 'efectivo') debitCode = '1.1.01.01';
-        else if (paymentMethod === 'tarjeta') debitCode = '1.1.02.02';
-        else if (paymentMethod === 'transferencia') debitCode = '1.1.01.03';
-        debitAcc = await findAccount(req.clinicId, { code: debitCode });
+        // Cuenta de cobro según el medio de pago, resolviendo el rol configurable
+        // en Configuración de Cuentas (con caída al plan estándar).
+        let debitRole = 'clientes'; // crédito → cuentas por cobrar
+        if (paymentMethod === 'efectivo') debitRole = 'caja';
+        else if (paymentMethod === 'tarjeta') debitRole = 'tarjetasPorLiquidar';
+        else if (paymentMethod === 'transferencia') debitRole = 'bancos';
+        debitAcc = await getAccount(req.clinicId, debitRole);
       }
       lines.push({ account: debitAcc._id, debit: total, credit: 0, description: `Venta ${sale.saleNumber}` });
 
-      // Crédito: ingresos por producto/servicio
+      // Crédito: ingresos por producto/servicio a valor BRUTO (antes de descuento).
+      // El descuento se registra aparte como contra-ingreso (débito), de modo que
+      // el asiento cuadra: caja (neto) + descuento = ingreso bruto.
       const productosVendidos = saleItems.filter((i) => i.category !== 'servicio');
       const servicios = saleItems.filter((i) => i.category === 'servicio');
-      const baseProd = productosVendidos.reduce((s, i) => s + i.subtotal, 0);
-      const baseServ = servicios.reduce((s, i) => s + i.subtotal, 0);
+      const baseProd = +productosVendidos.reduce((s, i) => s + i.subtotal + (i.discount || 0), 0).toFixed(2);
+      const baseServ = +servicios.reduce((s, i) => s + i.subtotal + (i.discount || 0), 0).toFixed(2);
       if (baseProd > 0) {
-        const accProd = await findAccount(req.clinicId, { code: '4.1.02' });
+        const accProd = await getAccount(req.clinicId, 'ingresoProductos');
         lines.push({ account: accProd._id, debit: 0, credit: baseProd, description: 'Ingreso productos' });
       }
       if (baseServ > 0) {
-        const accServ = await findAccount(req.clinicId, { code: '4.1.01' });
+        const accServ = await getAccount(req.clinicId, 'ingresoServicios');
         lines.push({ account: accServ._id, debit: 0, credit: baseServ, description: 'Ingreso servicios' });
       }
       if (taxAmount > 0) {
-        const ivaV = await findAccount(req.clinicId, { taxCode: 'IVA_VENTAS' });
+        const ivaV = await getAccount(req.clinicId, 'ivaVentas');
         lines.push({ account: ivaV._id, debit: 0, credit: taxAmount, description: 'IVA en ventas' });
       }
       if (discountTotal > 0) {
-        const desc = await findAccount(req.clinicId, { code: '4.1.03' });
-        // El descuento es contra-ingreso: débito
+        // Descuento como contra-ingreso (débito). Los ingresos ya se acreditaron
+        // a valor bruto arriba, por lo que el asiento queda balanceado.
+        const desc = await getAccount(req.clinicId, 'descuentoVentas');
         lines.push({ account: desc._id, debit: discountTotal, credit: 0, description: 'Descuento en venta' });
-        // Ajustar el débito principal: caja recibió total real ya descontado.
-        // Para cuadrar, el bruto fue subtotal + iva; el descuento se aplica al ingreso.
-        // Sumamos descuento al ingreso bruto en crédito:
-        const accProd2 = lines.find((l) => l.description === 'Ingreso productos');
-        const accServ2 = lines.find((l) => l.description === 'Ingreso servicios');
-        if (accProd2) accProd2.credit += discountTotal; // simplificación
-        else if (accServ2) accServ2.credit += discountTotal;
       }
       const entry = await createEntry({
         clinicId: req.clinicId, date: new Date(),
@@ -434,7 +433,6 @@ exports.collectSale = async (req, res) => {
   try {
     const BankAccount = require('../models/BankAccount');
     const BankTransaction = require('../models/BankTransaction');
-    const { getAccount } = require('../utils/accountMap');
     const sale = await Sale.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!sale) return res.status(404).json({ message: 'Venta no encontrada' });
     if (sale.status !== 'completada') return res.status(400).json({ message: 'La venta no está activa' });

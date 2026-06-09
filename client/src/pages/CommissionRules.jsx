@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
-import { HiOutlinePlus, HiOutlineTrash, HiOutlinePencil, HiOutlineTrophy, HiOutlineArrowDownTray } from 'react-icons/hi2';
+import { HiOutlinePlus, HiOutlineTrash, HiOutlinePencil, HiOutlineTrophy, HiOutlineArrowDownTray, HiOutlineBanknotes } from 'react-icons/hi2';
 
 const ROLES = [
   { value: 'doctor', label: 'Doctor' },
@@ -84,6 +84,7 @@ export default function CommissionRules() {
   const [userFilter, setUserFilter] = useState('');
   const [roleFilter, setRoleFilter] = useState('');
   const [report, setReport] = useState(null);
+  const [posting, setPosting] = useState(false);
 
   const load = async () => {
     try {
@@ -195,6 +196,21 @@ export default function CommissionRules() {
     if (!confirm('¿Eliminar esta regla?')) return;
     try { await api.delete(`/commissions/rules/${id}`); toast.success('Eliminada'); load(); }
     catch (err) { toast.error(err.response?.data?.message || 'Error'); }
+  };
+
+  // Contabiliza las comisiones del período: genera el asiento contable
+  // (Débito gasto comisiones / Crédito comisiones por pagar al personal).
+  const contabilizar = async () => {
+    if (!confirm(`¿Contabilizar las comisiones del ${start} al ${end}? Se generará un asiento contable por $${Number(report?.total || 0).toFixed(2)}.`)) return;
+    setPosting(true);
+    try {
+      const res = await api.post('/commissions/post', { start, end });
+      toast.success(`Comisiones contabilizadas (asiento ${res.data?.journalEntry?.number || ''})`);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al contabilizar');
+    } finally {
+      setPosting(false);
+    }
   };
 
   return (
@@ -314,6 +330,17 @@ export default function CommissionRules() {
                 <div className="flex items-center justify-between">
                   <p className="text-sm font-medium text-slate-600">Resumen por usuario</p>
                   <div className="flex gap-2">
+                    {hasValues && (
+                      <button
+                        onClick={contabilizar}
+                        disabled={posting}
+                        title="Genera el asiento contable de las comisiones del período"
+                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-emerald-600 border border-emerald-600 rounded-lg hover:bg-emerald-700 cursor-pointer border-solid disabled:opacity-50"
+                      >
+                        <HiOutlineBanknotes className="w-3.5 h-3.5" />
+                        {posting ? 'Contabilizando...' : 'Contabilizar período'}
+                      </button>
+                    )}
                     <button
                       onClick={downloadSummary}
                       className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg hover:bg-emerald-100 cursor-pointer border-solid"
