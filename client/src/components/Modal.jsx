@@ -14,11 +14,11 @@ export default function Modal({ isOpen, onClose, title, children, size = 'md' })
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 sm:p-6">
-      <div className="modal-overlay fixed inset-0 bg-slate-900/40 backdrop-blur-sm" onClick={onClose} />
+      <div className="modal-overlay fixed inset-0 bg-slate-900/50" onClick={onClose} />
       <div
         className={`modal-panel relative bg-white rounded-2xl shadow-2xl shadow-slate-900/20 w-full ${sizes[size]} max-h-[90vh] overflow-y-auto ring-1 ring-slate-900/5`}
       >
-        <div className="sticky top-0 z-10 bg-white/95 backdrop-blur flex items-center justify-between px-6 py-4 border-b border-slate-100 rounded-t-2xl">
+        <div className="sticky top-0 z-10 bg-white flex items-center justify-between px-6 py-4 border-b border-slate-100 rounded-t-2xl">
           <h2 className="text-base sm:text-lg font-bold text-slate-800 tracking-tight pr-4">{title}</h2>
           <button
             onClick={onClose}

@@ -64,6 +64,9 @@ export default function Patients() {
   const [rooms, setRooms] = useState([]);
   const [services, setServices] = useState([]);
   const [aptForm, setAptForm] = useState(emptyApt);
+  const [serviceSearch, setServiceSearch] = useState('');
+  const [dayApts, setDayApts] = useState([]);
+  const [loadingApts, setLoadingApts] = useState(false);
 
   useEffect(() => {
     if (canWrite) {
@@ -80,6 +83,15 @@ export default function Patients() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  useEffect(() => {
+    if (!aptForm.enabled || !aptForm.date) { setDayApts([]); return; }
+    setLoadingApts(true);
+    api.get('/appointments', { params: { startDate: aptForm.date, endDate: aptForm.date } })
+      .then((r) => setDayApts(r.data || []))
+      .catch(() => setDayApts([]))
+      .finally(() => setLoadingApts(false));
+  }, [aptForm.date, aptForm.enabled]);
 
   const fetchPatients = async () => {
     try {
@@ -107,6 +119,8 @@ export default function Patients() {
     setEditing(null);
     setForm(emptyForm);
     setAptForm(emptyApt);
+    setServiceSearch('');
+    setDayApts([]);
     setModalOpen(true);
   };
 
@@ -559,45 +573,90 @@ export default function Patients() {
                       className="input resize-none"
                     />
                   </Field>
+                  {aptForm.date && (
+                    <div className="bg-white rounded-lg border border-emerald-100 p-2">
+                      <p className="text-xs font-medium text-slate-600 mb-1">
+                        Citas agendadas para este día
+                      </p>
+                      {loadingApts ? (
+                        <p className="text-xs text-slate-400 py-1">Cargando...</p>
+                      ) : dayApts.length === 0 ? (
+                        <p className="text-xs text-emerald-600 py-1">Sin citas — horario disponible</p>
+                      ) : (
+                        <div className="max-h-24 overflow-y-auto space-y-0.5">
+                          {dayApts
+                            .slice()
+                            .sort((a, b) => (a.startTime || '').localeCompare(b.startTime || ''))
+                            .map((a) => (
+                              <div key={a._id} className="flex items-center gap-2 text-xs text-slate-600 py-0.5">
+                                <span className="font-medium text-slate-800 w-12 shrink-0">{a.startTime || '—'}</span>
+                                <span className="truncate">{a.patient?.firstName} {a.patient?.lastName}</span>
+                                {a.services?.length > 0 && (
+                                  <span className="text-slate-400 truncate hidden sm:block">· {a.services.map(s => s.name).join(', ')}</span>
+                                )}
+                              </div>
+                            ))}
+                        </div>
+                      )}
+                    </div>
+                  )}
                   {(!aptForm.clinic || String(aptForm.clinic) === String(activeClinic?._id)) ? (
                   <div>
                     <label className="block text-sm font-medium text-slate-700 mb-1.5">
                       Servicios
                     </label>
+                    <div className="relative mb-1.5">
+                      <HiOutlineMagnifyingGlass className="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-slate-400 pointer-events-none" />
+                      <input
+                        type="text"
+                        placeholder="Buscar servicio..."
+                        value={serviceSearch}
+                        onChange={(e) => setServiceSearch(e.target.value)}
+                        className="input pl-7 py-1.5 text-xs"
+                      />
+                    </div>
                     <div className="max-h-36 overflow-y-auto bg-white rounded-lg border border-emerald-100 p-2">
                       {services.length === 0 ? (
                         <p className="text-xs text-slate-400 text-center py-2">Sin servicios</p>
-                      ) : (
-                        services.map((s) => {
-                          const checked = aptForm.services.includes(s._id);
-                          return (
-                            <label
-                              key={s._id}
-                              className={`flex items-center gap-2 px-2 py-1 rounded text-sm cursor-pointer ${
-                                checked ? 'bg-emerald-100' : 'hover:bg-emerald-50'
-                              }`}
-                            >
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={() =>
-                                  setAptForm((prev) => ({
-                                    ...prev,
-                                    services: prev.services.includes(s._id)
-                                      ? prev.services.filter((x) => x !== s._id)
-                                      : [...prev.services, s._id],
-                                  }))
-                                }
-                                className="w-4 h-4 accent-emerald-600"
-                              />
-                              <span className="flex-1">{s.name}</span>
-                              <span className="text-xs text-slate-500">
-                                ${Number(s.salePrice).toFixed(2)}
-                              </span>
-                            </label>
+                      ) : (() => {
+                          const filtered = services.filter((s) =>
+                            s.name.toLowerCase().includes(serviceSearch.toLowerCase())
                           );
-                        })
-                      )}
+                          return filtered.length === 0 ? (
+                            <p className="text-xs text-slate-400 text-center py-2">Sin resultados</p>
+                          ) : (
+                            filtered.map((s) => {
+                              const checked = aptForm.services.includes(s._id);
+                              return (
+                                <label
+                                  key={s._id}
+                                  className={`flex items-center gap-2 px-2 py-1 rounded text-sm cursor-pointer ${
+                                    checked ? 'bg-emerald-100' : 'hover:bg-emerald-50'
+                                  }`}
+                                >
+                                  <input
+                                    type="checkbox"
+                                    checked={checked}
+                                    onChange={() =>
+                                      setAptForm((prev) => ({
+                                        ...prev,
+                                        services: prev.services.includes(s._id)
+                                          ? prev.services.filter((x) => x !== s._id)
+                                          : [...prev.services, s._id],
+                                      }))
+                                    }
+                                    className="w-4 h-4 accent-emerald-600"
+                                  />
+                                  <span className="flex-1">{s.name}</span>
+                                  <span className="text-xs text-slate-500">
+                                    ${Number(s.salePrice).toFixed(2)}
+                                  </span>
+                                </label>
+                              );
+                            })
+                          );
+                        })()
+                      }
                     </div>
                   </div>
                   ) : (
