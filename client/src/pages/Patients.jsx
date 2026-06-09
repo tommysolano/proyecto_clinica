@@ -209,7 +209,10 @@ export default function Patients() {
     }
   };
 
-  const handleChange = (e) => setForm({ ...form, [e.target.name]: e.target.value });
+  const handleChange = (e) => {
+    const { name, value } = e.target;
+    setForm({ ...form, [name]: (name === 'firstName' || name === 'lastName') ? value.toUpperCase() : value });
+  };
 
   return (
     <div className="space-y-6">

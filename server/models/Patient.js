@@ -17,11 +17,13 @@ const patientSchema = new mongoose.Schema(
       type: String,
       required: [true, 'El nombre es requerido'],
       trim: true,
+      uppercase: true,
     },
     lastName: {
       type: String,
       required: [true, 'El apellido es requerido'],
       trim: true,
+      uppercase: true,
     },
     email: { type: String, lowercase: true, trim: true },
     phone: { type: String, trim: true },
