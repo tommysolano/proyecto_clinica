@@ -59,6 +59,7 @@ export default function Patients() {
   const [saving, setSaving] = useState(false);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
+  const [cedulaLookup, setCedulaLookup] = useState({ loading: false, msg: '', error: false });
 
   // Para crear cita junto al paciente
   const [rooms, setRooms] = useState([]);
@@ -115,12 +116,53 @@ export default function Patients() {
   useSocketEvent('patient:created', () => fetchPatients(), [search, page, onlyNew]);
   useSocketEvent('patient:updated', () => fetchPatients(), [search, page, onlyNew]);
 
+  // Autocompletado por cédula: al ingresar 10 dígitos consultamos el SRI para
+  // llenar nombres/apellidos. La fecha de nacimiento y el género no están en
+  // fuentes públicas gratuitas en Ecuador, así que esos se ingresan a mano.
+  useEffect(() => {
+    const ced = (form.cedula || '').trim();
+    if (!modalOpen || editing || !/^\d{10}$/.test(ced)) {
+      setCedulaLookup({ loading: false, msg: '', error: false });
+      return;
+    }
+    let cancelled = false;
+    setCedulaLookup({ loading: true, msg: 'Buscando datos…', error: false });
+    const t = setTimeout(async () => {
+      try {
+        const { data } = await api.get(`/patients/lookup/${ced}`);
+        if (cancelled) return;
+        if (data.alreadyExists) {
+          setCedulaLookup({ loading: false, error: true, msg: 'Ya existe un paciente con esta cédula.' });
+          return;
+        }
+        if (data.found) {
+          setForm((f) => ({
+            ...f,
+            // No sobrescribimos lo que el usuario ya escribió.
+            firstName: f.firstName?.trim() ? f.firstName : (data.firstName || '').toUpperCase(),
+            lastName: f.lastName?.trim() ? f.lastName : (data.lastName || '').toUpperCase(),
+          }));
+          setCedulaLookup({ loading: false, error: false, msg: `Datos encontrados: ${data.fullName}` });
+        } else {
+          setCedulaLookup({ loading: false, error: false, msg: 'Sin datos públicos para esta cédula. Ingrésalos manualmente.' });
+        }
+      } catch (err) {
+        if (cancelled) return;
+        const m = err.response?.data?.message || 'No se pudo consultar la cédula';
+        setCedulaLookup({ loading: false, error: true, msg: m });
+      }
+    }, 500);
+    return () => { cancelled = true; clearTimeout(t); };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.cedula, modalOpen, editing]);
+
   const openNew = () => {
     setEditing(null);
     setForm(emptyForm);
     setAptForm(emptyApt);
     setServiceSearch('');
     setDayApts([]);
+    setCedulaLookup({ loading: false, msg: '', error: false });
     setModalOpen(true);
   };
 
@@ -393,8 +435,14 @@ export default function Patients() {
                 value={form.cedula}
                 onChange={handleChange}
                 className="input"
-                placeholder="Opcional"
+                placeholder="Opcional — autocompleta el nombre"
+                inputMode="numeric"
               />
+              {cedulaLookup.msg && (
+                <p className={`text-[11px] mt-1 ${cedulaLookup.error ? 'text-red-500' : cedulaLookup.loading ? 'text-slate-400' : 'text-emerald-600'}`}>
+                  {cedulaLookup.msg}
+                </p>
+              )}
             </Field>
             <Field label="Género" required>
               <select

@@ -7,6 +7,7 @@ const {
   deletePatient,
   searchReferralCandidates,
   getPatientPurchases,
+  lookupByCedula,
 } = require('../controllers/patientController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
@@ -14,6 +15,9 @@ router.use(auth, requireClinic);
 
 // Buscador de referidores (pacientes + personal) — usado al crear un paciente.
 router.get('/referral-options', requireRole('admin', 'cajero', 'call_center', 'marketing'), searchReferralCandidates);
+
+// Consulta de datos por cédula (SRI) para autocompletar el alta de un paciente.
+router.get('/lookup/:cedula', requireRole('admin', 'cajero', 'call_center'), lookupByCedula);
 
 // Cajeros, admins, doctores, call_center, enfermero y marketing ven pacientes
 router.get('/', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'), getPatients);

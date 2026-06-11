@@ -155,7 +155,10 @@ export default function Inventory() {
         stock: isService ? 0 : parseInt(productForm.stock) || 0,
         minStock: isService ? 0 : parseInt(productForm.minStock) || 5,
         unit: isService ? 'servicio' : productForm.unit,
-        taxRate: parseFloat(productForm.taxRate) || 15,
+        // IMPORTANTE: no usar `|| 15` aquí. parseFloat('0') es 0 (falsy) y volvería
+        // a poner 15, descartando el IVA cero que el usuario eligió. Solo caemos a 15
+        // si el campo quedó vacío o no es numérico.
+        taxRate: Number.isFinite(parseFloat(productForm.taxRate)) ? parseFloat(productForm.taxRate) : 15,
         unlimited,
         maxAppointmentsPerDay: parseInt(productForm.maxAppointmentsPerDay) || 0,
         excludeFromFirstVisit: !!productForm.excludeFromFirstVisit,
@@ -466,7 +469,17 @@ export default function Inventory() {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Categoría</label>
-              <select value={productForm.category} onChange={(e) => setProductForm({...productForm, category: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50">
+              <select value={productForm.category} onChange={(e) => {
+                const category = e.target.value;
+                // Servicios y programas no llevan IVA: al elegir esa categoría se pone
+                // el IVA en 0 automáticamente (el usuario aún puede editarlo después).
+                const isExempt = category === 'servicio' || category === 'programa';
+                setProductForm((prev) => ({
+                  ...prev,
+                  category,
+                  taxRate: isExempt ? '0' : prev.taxRate,
+                }));
+              }} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50">
                 {Object.entries(categories).map(([k, v]) => (
                   <option key={k} value={k}>{v}</option>
                 ))}
@@ -508,7 +521,10 @@ export default function Inventory() {
             )}
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">IVA %</label>
-              <input type="number" value={productForm.taxRate} onChange={(e) => setProductForm({...productForm, taxRate: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
+              <input type="number" min="0" step="0.01" value={productForm.taxRate} onChange={(e) => setProductForm({...productForm, taxRate: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
+              {(productForm.category === 'servicio' || productForm.category === 'programa') && (
+                <p className="text-[11px] text-slate-400 mt-1">Los servicios y programas no llevan IVA (0 por defecto). Puedes editarlo si lo necesitas.</p>
+              )}
             </div>
             {productForm.category === 'servicio' && (
               <div className="sm:col-span-2 bg-emerald-50 border border-emerald-200 rounded-xl p-2 text-xs text-emerald-700">
