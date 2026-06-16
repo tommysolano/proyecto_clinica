@@ -64,7 +64,8 @@ exports.closeYear = async (req, res) => {
     const { year } = req.body;
     if (!year) return res.status(400).json({ message: 'year requerido' });
     const ChartOfAccount = require('../models/ChartOfAccount');
-    const { createEntry, findAccount } = require('../utils/accounting');
+    const { createEntry } = require('../utils/accounting');
+    const { getAccount } = require('../utils/accountMap');
 
     // Asegurar que todos los meses estén creados (sin cerrar todavía: el asiento
     // de cierre debe registrarse con el período de diciembre aún ABIERTO).
@@ -106,7 +107,7 @@ exports.closeYear = async (req, res) => {
     }
     const utilidad = netIngreso - netGastoCosto;
     if (Math.abs(utilidad) > 0.001) {
-      const resultado = await findAccount(req.clinicId, { code: '3.3.02' });
+      const resultado = await getAccount(req.clinicId, 'resultadoEjercicio');
       if (utilidad >= 0) {
         lines.push({ account: resultado._id, debit: 0, credit: utilidad, description: 'Utilidad del ejercicio' });
       } else {

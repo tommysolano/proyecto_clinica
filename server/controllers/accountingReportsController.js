@@ -1040,14 +1040,21 @@ exports.form104 = async (req, res) => {
     const c = compras.reduce((acc, p) => {
       acc.base += p.subtotal || 0;
       acc.iva += p.iva || 0;
+      // IVA con derecho a crédito tributario (excluye el no deducible / no recuperable).
+      const creditIva = p.deductible === false ? 0 : (p.vatCreditAmount || p.iva || 0);
+      acc.ivaCredito += creditIva;
+      acc.ivaNoCredito += (p.iva || 0) - creditIva;
       acc.retIVA += (p.retentions || []).filter((r) => r.type === 'IVA').reduce((s, r) => s + (r.amount || 0), 0);
       return acc;
-    }, { base: 0, iva: 0, retIVA: 0 });
+    }, { base: 0, iva: 0, ivaCredito: 0, ivaNoCredito: 0, retIVA: 0 });
 
     res.json({
       periodo: `${y}-${String(m).padStart(2, '0')}`,
       ventas: v, compras: c,
-      ivaPorPagar: +(v.iva - c.iva - c.retIVA).toFixed(2),
+      // Solo el IVA con crédito tributario reduce el IVA por pagar.
+      ivaPorPagar: +(v.iva - c.ivaCredito - c.retIVA).toFixed(2),
+      isPreliminary: true,
+      nota: 'Preliquidación. Validar contra el formato oficial vigente del SRI antes de declarar.',
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
