@@ -76,6 +76,7 @@ app.use('/api/card-settlements', require('./routes/cardSettlements'));
 app.use('/api/sales-reports', require('./routes/salesReports'));
 app.use('/api/cash-closings', require('./routes/cashClosings'));
 app.use('/api/accounting-config', require('./routes/accountingConfig'));
+app.use('/api/accounting-health', require('./routes/accountingHealth'));
 app.use('/api/budgets', require('./routes/budgets'));
 app.use('/api/audit-logs', require('./routes/auditLogs'));
 
