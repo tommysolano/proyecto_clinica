@@ -74,8 +74,12 @@ const productSchema = new mongoose.Schema(
     },
     stock: { type: Number, default: 0, min: 0 },
     minStock: { type: Number, default: 5, min: 0 },
-    // Costo unitario promedio ponderado (se recalcula con cada compra/entrada).
+    // Costo unitario promedio ponderado (cache derivado de las capas de kardex vivas).
     averageCost: { type: Number, default: 0, min: 0 },
+    // Costeo y trazabilidad por capas (kardex). Para fármacos/insumos con vencimiento.
+    costingMethod: { type: String, enum: ['FIFO', 'PROMEDIO'], default: 'FIFO' },
+    tracksLot: { type: Boolean, default: false },
+    tracksExpiry: { type: Boolean, default: false },
     // Cuentas contables vinculadas. Si no se setean, el sistema usa los códigos
     // por defecto del plan (1.1.04.01 inventario, 6.x gasto, 4.x ingreso, según corresponda).
     inventoryAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null }, // Activo: inventario

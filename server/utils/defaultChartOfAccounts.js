@@ -122,6 +122,7 @@ module.exports = [
   { code: '6.1.20',   name: 'Capacitación',                               type: 'GASTO',     nature: 'DEBITO' },
   { code: '6.1.21',   name: 'Faltantes de caja',                          type: 'GASTO',     nature: 'DEBITO' },
   { code: '6.1.22',   name: 'Comisiones al personal',                     type: 'GASTO',     nature: 'DEBITO' },
+  { code: '6.1.23',   name: 'Mermas y ajustes de inventario',             type: 'GASTO',     nature: 'DEBITO' },
   { code: '6.1.99',   name: 'Otros gastos administrativos',               type: 'GASTO',     nature: 'DEBITO' },
   { code: '6.2',      name: 'GASTOS FINANCIEROS',                         type: 'GASTO',     nature: 'DEBITO',  allowsMovement: false },
   { code: '6.2.01',   name: 'Intereses pagados',                          type: 'GASTO',     nature: 'DEBITO' },

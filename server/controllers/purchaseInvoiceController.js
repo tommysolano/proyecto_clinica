@@ -6,6 +6,7 @@ const InventoryMovement = require('../models/InventoryMovement');
 const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { openPayable, voidPayable } = require('../utils/subledger');
+const kardex = require('../utils/kardex');
 const { parsePurchaseInvoiceXml } = require('../utils/sriXmlParser');
 
 /**
@@ -213,16 +214,24 @@ async function postInventoryEntries(inv, req, session) {
     if (!prod || prod.unlimited || prod.category === 'servicio') continue;
     const qty = Number(it.quantity);
     const unitCost = Number(it.unitPrice) || 0;
-    const prevStock = Number(prod.stock || 0);
-    const prevAvg = Number(prod.averageCost || prod.purchasePrice || 0);
-    const newStock = prevStock + qty;
-    // Costo promedio ponderado
-    const newAvg = newStock > 0
-      ? +(((prevStock * prevAvg) + (qty * unitCost)) / newStock).toFixed(4)
-      : unitCost;
-    prod.stock = newStock;
-    prod.averageCost = newAvg;
-    // Actualiza precio de compra para reflejar el último costo
+    // Kardex: cada compra crea una capa valorada (con lote/vencimiento si aplica).
+    await kardex.receiveStock({
+      clinicId: req.clinicId,
+      product: prod._id,
+      warehouse: it.warehouse || null,
+      lot: it.lot || '',
+      expiryDate: it.expiryDate || null,
+      quantity: qty,
+      unitCost,
+      date: inv.fechaEmision || new Date(),
+      sourceModel: 'PurchaseInvoice',
+      sourceRef: inv._id,
+      userId: req.user._id,
+    }, session);
+    // El stock y el costo promedio del producto pasan a ser un cache de las capas vivas.
+    const cur = await kardex.currentStock({ clinicId: req.clinicId, product: prod._id }, session);
+    prod.stock = cur.qty;
+    prod.averageCost = cur.averageCost;
     if (unitCost > 0) prod.purchasePrice = unitCost;
     await prod.save({ session });
     await InventoryMovement.create([{
@@ -232,7 +241,9 @@ async function postInventoryEntries(inv, req, session) {
       quantity: qty,
       unitCost,
       totalCost: +(qty * unitCost).toFixed(2),
-      balanceAfter: newStock,
+      balanceAfter: cur.qty,
+      lot: it.lot || '',
+      expiryDate: it.expiryDate || null,
       reason: `Compra ${inv.serie || ''}`.trim(),
       reference: inv.serie || '',
       sourceModel: 'PurchaseInvoice',
@@ -316,24 +327,33 @@ exports.void = async (req, res) => {
  * promedio histórico (sigue siendo conservador y suficiente para anulación).
  */
 async function revertInventoryEntries(inv, req, session) {
+  // Anula las capas de kardex creadas por esta compra (retira lo no consumido).
+  await kardex.reverseReceiptBySource(
+    { clinicId: req.clinicId, sourceModel: 'PurchaseInvoice', sourceRef: inv._id },
+    session
+  );
   const movs = await InventoryMovement.find({
     clinic: req.clinicId,
     sourceModel: 'PurchaseInvoice',
     sourceRef: inv._id,
     type: 'entrada',
   }).session(session || null);
-  for (const m of movs) {
-    const prod = await Product.findOne({ _id: m.product, clinic: req.clinicId }).session(session || null);
-    if (prod) {
-      prod.stock = Math.max(0, Number(prod.stock || 0) - Number(m.quantity || 0));
-      await prod.save({ session });
-    }
-  }
+  const touched = new Set();
+  for (const m of movs) touched.add(String(m.product));
   await InventoryMovement.deleteMany({
     clinic: req.clinicId,
     sourceModel: 'PurchaseInvoice',
     sourceRef: inv._id,
   }).session(session || null);
+  // Recalcula stock/costo de los productos afectados desde las capas vivas.
+  for (const productId of touched) {
+    const prod = await Product.findOne({ _id: productId, clinic: req.clinicId }).session(session || null);
+    if (!prod) continue;
+    const cur = await kardex.currentStock({ clinicId: req.clinicId, product: prod._id }, session);
+    prod.stock = cur.qty;
+    prod.averageCost = cur.averageCost;
+    await prod.save({ session });
+  }
 }
 
 /**

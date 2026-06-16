@@ -29,6 +29,17 @@ const inventoryMovementSchema = new mongoose.Schema(
     reference: { type: String, trim: true },
     sourceModel: { type: String, default: null }, // p.ej. 'PurchaseInvoice', 'Sale'
     sourceRef: { type: mongoose.Schema.Types.ObjectId, default: null },
+    // Trazabilidad de lote/vencimiento y consumo FIFO de capas (kardex).
+    lot: { type: String, default: '' },
+    expiryDate: { type: Date, default: null },
+    layerConsumption: {
+      type: [{
+        layer: { type: mongoose.Schema.Types.ObjectId, ref: 'InventoryLayer' },
+        qty: Number,
+        unitCost: Number,
+      }],
+      default: [],
+    },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }

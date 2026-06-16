@@ -6,6 +6,8 @@ const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
 const BankAccount = require('../models/BankAccount');
 const { createEntry, findAccount, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
+const { getAccount } = require('../utils/accountMap');
+const kardex = require('../utils/kardex');
 const ExcelJS = require('exceljs');
 const multer = require('multer');
 
@@ -264,12 +266,32 @@ exports.confirmCount = async (req, res) => {
         for (const it of pc.items) {
           const diff = (it.countedQty || 0) - (it.systemQty || 0);
           if (diff === 0) continue;
+          let layerConsumption = [];
+          if (diff > 0) {
+            // Sobrante: nueva capa al costo informado en el conteo.
+            await kardex.receiveStock({
+              clinicId: req.clinicId, product: it.product, quantity: diff,
+              unitCost: it.unitCost || 0, date, sourceModel: 'PhysicalCount', sourceRef: pc._id, userId: req.user._id,
+            }, session);
+          } else {
+            // Faltante/merma: consume capas FIFO.
+            const issue = await kardex.issueStock({
+              clinicId: req.clinicId, product: it.product, quantity: Math.abs(diff), allowNegative: true,
+            }, session);
+            layerConsumption = issue.consumption.map((c) => ({ layer: c.layerId, qty: c.qty, unitCost: c.unitCost }));
+          }
           await Product.updateOne({ _id: it.product, clinic: req.clinicId }, { $inc: { stock: diff } }, { session });
+          const cur = await kardex.currentStock({ clinicId: req.clinicId, product: it.product }, session);
+          await Product.updateOne({ _id: it.product, clinic: req.clinicId }, { $set: { averageCost: cur.averageCost } }, { session });
           await InventoryMovement.create([{
             clinic: req.clinicId,
             product: it.product,
             type: diff > 0 ? 'entrada' : 'salida',
             quantity: Math.abs(diff),
+            unitCost: it.unitCost || 0,
+            totalCost: +(Math.abs(diff) * (it.unitCost || 0)).toFixed(2),
+            balanceAfter: cur.qty,
+            layerConsumption,
             reason: 'Ajuste por toma fisica',
             reference: pc.code,
             sourceModel: 'PhysicalCount',
@@ -282,8 +304,8 @@ exports.confirmCount = async (req, res) => {
         }
 
         if (positive > 0 || negative > 0) {
-          const inv = await findAccount(req.clinicId, { code: '1.1.04.01' }, { session });
-          const gasto = await findAccount(req.clinicId, { code: '6.1.99' }, { session });
+          const inv = await getAccount(req.clinicId, 'inventario', { session });
+          const gasto = await getAccount(req.clinicId, 'mermaInventario', { session });
           const lines = [];
           const net = +(positive - negative).toFixed(2);
           if (net > 0) {

@@ -6,6 +6,7 @@ const Treatment = require('../models/Treatment');
 const { createEntry, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { openReceivable, applyToReceivable, voidReceivable } = require('../utils/subledger');
+const kardex = require('../utils/kardex');
 const { calculateSaleLine, summarizeSaleTaxes } = require('../utils/tax');
 const { emitToClinic } = require('../realtime');
 
@@ -261,15 +262,38 @@ exports.createSale = async (req, res) => {
         for (const it of txSaleItems) {
           const prod = txProductMap.get(String(it.product));
           if (prod && txIsUnlimited(prod)) continue;
-          const unitCost = Number(prod.averageCost || prod.purchasePrice || 0);
+          // Kardex: consume capas FIFO -> costo de venta exacto. allowNegative cubre
+          // productos con stock previo al kardex (sin capas): el faltante se valora
+          // al costo promedio como respaldo.
+          const issue = await kardex.issueStock({
+            clinicId: req.clinicId,
+            product: it.product,
+            warehouse: it.warehouse || null,
+            quantity: it.quantity,
+            lot: it.lot || null,
+            allowNegative: true,
+          }, session);
+          let itemCost = issue.totalCost;
+          if (issue.shortfall > 0.00001) {
+            itemCost = +(itemCost + issue.shortfall * Number(prod.averageCost || prod.purchasePrice || 0)).toFixed(2);
+          }
+          it._cogs = itemCost;
+          const cur = await kardex.currentStock({ clinicId: req.clinicId, product: it.product }, session);
+          await Product.updateOne(
+            { _id: it.product, clinic: req.clinicId },
+            { $set: { averageCost: cur.averageCost } },
+            { session }
+          );
           await InventoryMovement.create([{
             clinic: req.clinicId,
             product: it.product,
             type: 'salida',
             quantity: it.quantity,
-            unitCost,
-            totalCost: +(it.quantity * unitCost).toFixed(2),
-            balanceAfter: Number(prod.stock || 0),
+            unitCost: it.quantity > 0 ? +(itemCost / it.quantity).toFixed(4) : 0,
+            totalCost: itemCost,
+            balanceAfter: cur.qty,
+            lot: it.lot || '',
+            layerConsumption: issue.consumption.map((c) => ({ layer: c.layerId, qty: c.qty, unitCost: c.unitCost })),
             reason: 'Venta',
             reference: txSale.saleNumber,
             sourceModel: 'Sale',
@@ -330,7 +354,7 @@ exports.createSale = async (req, res) => {
         for (const it of txSaleItems) {
           const prod = txProductMap.get(String(it.product));
           if (!prod || txIsUnlimited(prod)) continue;
-          const totalCost = +((Number(prod.averageCost || prod.purchasePrice || 0)) * Number(it.quantity || 0)).toFixed(2);
+          const totalCost = +Number(it._cogs || 0).toFixed(2);
           if (totalCost <= 0) continue;
           txLines.push({ account: prod.expenseAccount || costoDefault._id, debit: totalCost, credit: 0, description: `Costo venta ${it.productName}` });
           txLines.push({ account: prod.inventoryAccount || inventarioDefault._id, debit: 0, credit: totalCost, description: `Salida inventario ${it.productName}` });
@@ -410,6 +434,17 @@ exports.cancelSale = async (req, res) => {
         const reversalDate = req.body.date ? new Date(req.body.date) : new Date();
         await assertPeriodOpen(req.clinicId, reversalDate, { session });
 
+        // Kardex: devuelve a sus capas originales lo consumido por las salidas de esta venta.
+        const salidas = await InventoryMovement.find({
+          clinic: req.clinicId,
+          sourceModel: 'Sale',
+          sourceRef: sale._id,
+          type: 'salida',
+        }).session(session);
+        for (const mov of salidas) {
+          await kardex.reverseIssue({ consumption: (mov.layerConsumption || []).map((c) => ({ layerId: c.layer, qty: c.qty })) }, session);
+        }
+
         for (const item of sale.items) {
           if (item.category === 'servicio') continue;
           const prod = await Product.findOne({ _id: item.product, clinic: req.clinicId })
@@ -419,6 +454,12 @@ exports.cancelSale = async (req, res) => {
           await Product.updateOne(
             { _id: item.product, clinic: req.clinicId },
             { $inc: { stock: item.quantity } },
+            { session }
+          );
+          const cur = await kardex.currentStock({ clinicId: req.clinicId, product: item.product }, session);
+          await Product.updateOne(
+            { _id: item.product, clinic: req.clinicId },
+            { $set: { averageCost: cur.averageCost } },
             { session }
           );
           const unitCost = Number(prod?.averageCost || prod?.purchasePrice || 0);
