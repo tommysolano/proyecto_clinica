@@ -128,4 +128,5 @@ module.exports = [
   { code: '6.3',      name: 'GASTOS NO DEDUCIBLES',                       type: 'GASTO',     nature: 'DEBITO',  allowsMovement: false },
   { code: '6.3.01',   name: 'Multas e intereses tributarios',             type: 'GASTO',     nature: 'DEBITO' },
   { code: '6.3.02',   name: 'Gastos personales no deducibles',            type: 'GASTO',     nature: 'DEBITO' },
+  { code: '6.3.03',   name: 'IVA que se carga al gasto (no recuperable)', type: 'GASTO',     nature: 'DEBITO' },
 ];

@@ -3,8 +3,33 @@ const Supplier = require('../models/Supplier');
 const ChartOfAccount = require('../models/ChartOfAccount');
 const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
-const { createEntry, findAccount, reverseEntry } = require('../utils/accounting');
+const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
+const { getAccount } = require('../utils/accountMap');
+const { openPayable, voidPayable } = require('../utils/subledger');
 const { parsePurchaseInvoiceXml } = require('../utils/sriXmlParser');
+
+/**
+ * Abre el documento de cuentas por pagar (CxP) de una compra: el saldo a pagar
+ * al proveedor es el total menos las retenciones. Idempotente por la factura.
+ */
+async function openPayableForInvoice(inv, sup, req, session) {
+  const payable = +(Number(inv.total || 0) - Number(inv.retentionTotal || 0)).toFixed(2);
+  if (payable <= 0) return;
+  const provAcc = sup?.defaultPayableAccount
+    ? sup.defaultPayableAccount
+    : (await getAccount(req.clinicId, 'proveedores', { session }))._id;
+  await openPayable({
+    clinic: req.clinicId,
+    party: { model: 'Supplier', ref: inv.supplier, name: sup?.razonSocial || sup?.name || '' },
+    sourceModel: 'PurchaseInvoice',
+    sourceRef: inv._id,
+    docType: 'COMPRA',
+    number: inv.serie || '',
+    issueDate: inv.fechaEmision || new Date(),
+    total: payable,
+    account: provAcc,
+  }, { session });
+}
 
 function calcTotals(invoice) {
   let s0 = 0, s12 = 0, s15 = 0, sNo = 0, sEx = 0, iva = 0;
@@ -67,32 +92,36 @@ exports.get = async (req, res) => {
 
 exports.create = async (req, res) => {
   try {
-    const data = { ...req.body, clinic: req.clinicId, createdBy: req.user._id };
-    if (data.fechaEmision) data.fechaEmision = new Date(data.fechaEmision);
-    calcTotals(data);
-    // Recordar cuenta por defecto del proveedor: usar la primera del primer ítem si trae account
-    const sup = await Supplier.findOne({ _id: data.supplier, clinic: req.clinicId });
-    if (!sup) return res.status(400).json({ message: 'Proveedor no encontrado' });
-    if ((!data.items?.length || !data.items[0].account) && sup.defaultExpenseAccount) {
-      if (data.items?.length) data.items[0].account = sup.defaultExpenseAccount;
+    {
+      const invoiceId = await runInTransaction(async (session) => {
+        const data = { ...req.body, clinic: req.clinicId, createdBy: req.user._id };
+        if (data.fechaEmision) data.fechaEmision = new Date(data.fechaEmision);
+        calcTotals(data);
+        await assertPeriodOpen(req.clinicId, data.fechaEmision || new Date(), { session });
+        const sup = await Supplier.findOne({ _id: data.supplier, clinic: req.clinicId }).session(session);
+        if (!sup) throw Object.assign(new Error('Proveedor no encontrado'), { status: 400 });
+        if ((!data.items?.length || !data.items[0].account) && sup.defaultExpenseAccount) {
+          if (data.items?.length) data.items[0].account = sup.defaultExpenseAccount;
+        }
+        const [inv] = await PurchaseInvoice.create([data], { session });
+        if (inv.items?.[0]?.account) {
+          sup.defaultExpenseAccount = inv.items[0].account;
+          await sup.save({ session });
+        }
+        await postPurchaseJournal(inv, req, session);
+        await postInventoryEntries(inv, req, session);
+        await openPayableForInvoice(inv, sup, req, session);
+        return inv._id;
+      });
+      const inv = await PurchaseInvoice.findById(invoiceId);
+      return res.status(201).json(inv);
     }
-    const inv = await PurchaseInvoice.create(data);
-    // Memorizar cuenta de gasto del primer item
-    if (inv.items?.[0]?.account) {
-      sup.defaultExpenseAccount = inv.items[0].account;
-      await sup.save();
-    }
-    // Asiento de compra: DB Gasto/Inventario por cada item + DB IVA en compras / CR Proveedores
-    await postPurchaseJournal(inv, req);
-    // Actualizar inventario: stock + costo promedio + movimiento
-    await postInventoryEntries(inv, req);
-    res.status(201).json(inv);
   } catch (e) {
     res.status(e.status || 400).json({ message: e.message });
   }
 };
 
-async function postPurchaseJournal(inv, req) {
+async function postPurchaseJournal(inv, req, session, sourceAction = 'POST') {
   const lines = [];
   // Resolver cuenta de inventario por defecto (1.1.04.01) una sola vez
   let inventoryDefault = null;
@@ -113,12 +142,12 @@ async function postPurchaseJournal(inv, req) {
     // Si el ítem está ligado a un producto físico (no servicio/ilimitado) y NO se eligió
     // una cuenta manualmente, debitar la cuenta de inventario (activo).
     if (it.product && !it.account) {
-      const prod = await Product.findOne({ _id: it.product, clinic: req.clinicId });
+      const prod = await Product.findOne({ _id: it.product, clinic: req.clinicId }).session(session || null);
       if (prod && !prod.unlimited && prod.category !== 'servicio') {
         if (prod.inventoryAccount) {
           accountId = prod.inventoryAccount;
         } else {
-          if (!inventoryDefault) inventoryDefault = await findAccount(req.clinicId, { code: '1.1.04.01' });
+          if (!inventoryDefault) inventoryDefault = await getAccount(req.clinicId, 'inventario', { session });
           if (inventoryDefault) accountId = inventoryDefault._id;
         }
         // Persistir el account decidido para que el ítem refleje la cuenta usada
@@ -129,31 +158,41 @@ async function postPurchaseJournal(inv, req) {
     lines.push({ account: accountId, debit: it.subtotal, credit: 0, description: it.description });
   }
   if (inv.iva > 0) {
-    const ivaAcc = await findAccount(req.clinicId, { taxCode: 'IVA_COMPRAS' });
-    lines.push({ account: ivaAcc._id, debit: inv.iva, credit: 0, description: 'IVA en compras' });
+    // IVA con derecho a crédito tributario (deducible) vs IVA no recuperable que se carga al gasto.
+    if (inv.deductible === false) {
+      inv.vatCreditAmount = 0;
+      inv.vatNonCreditAmount = inv.iva;
+      const ivaGasto = await getAccount(req.clinicId, 'ivaComprasNoCredito', { session });
+      lines.push({ account: ivaGasto._id, debit: inv.iva, credit: 0, description: 'IVA no recuperable (al gasto)' });
+    } else {
+      inv.vatCreditAmount = inv.iva;
+      inv.vatNonCreditAmount = 0;
+      const ivaAcc = await getAccount(req.clinicId, 'ivaCompras', { session });
+      lines.push({ account: ivaAcc._id, debit: inv.iva, credit: 0, description: 'IVA en compras (crédito tributario)' });
+    }
   }
-  const sup = await Supplier.findById(inv.supplier);
+  const sup = await Supplier.findById(inv.supplier).session(session || null);
   const provAcc = sup?.defaultPayableAccount
-    ? await ChartOfAccount.findById(sup.defaultPayableAccount)
-    : await findAccount(req.clinicId, { code: '2.1.01.01' });
+    ? await ChartOfAccount.findById(sup.defaultPayableAccount).session(session || null)
+    : await getAccount(req.clinicId, 'proveedores', { session });
   lines.push({ account: provAcc._id, debit: 0, credit: inv.total, description: `Factura ${inv.serie || ''}` });
   // Retenciones (si se ingresan al mismo tiempo): se reducen las CxP del proveedor y se acreditan retenciones por pagar
   if (inv.retentionTotal > 0) {
     // Quitamos del crédito al proveedor y subimos retención por pagar
     lines[lines.length - 1].credit = +(lines[lines.length - 1].credit - inv.retentionTotal).toFixed(2);
     for (const r of inv.retentions) {
-      const code = r.type === 'IVA' ? '2.1.02.03' : '2.1.02.04';
-      const acc = await findAccount(req.clinicId, { code });
+      const role = r.type === 'IVA' ? 'retIvaPorPagar' : 'retRentaPorPagar';
+      const acc = await getAccount(req.clinicId, role, { session });
       lines.push({ account: acc._id, debit: 0, credit: r.amount, description: `Ret ${r.type} ${r.code || ''}` });
     }
   }
   const entry = await createEntry({
     clinicId: req.clinicId, date: inv.fechaEmision, description: `Compra ${inv.serie || ''}`,
-    source: 'COMPRA', sourceRef: inv._id, sourceModel: 'PurchaseInvoice',
-    lines, userId: req.user._id,
+    source: 'COMPRA', sourceRef: inv._id, sourceModel: 'PurchaseInvoice', sourceAction,
+    lines, userId: req.user._id, session,
   });
   inv.journalEntry = entry._id;
-  await inv.save();
+  await inv.save({ session });
 }
 
 /**
@@ -161,16 +200,16 @@ async function postPurchaseJournal(inv, req) {
  * producto físico: actualiza stock, recalcula costo promedio ponderado y registra
  * un InventoryMovement de tipo entrada. Idempotente por (sourceModel, sourceRef).
  */
-async function postInventoryEntries(inv, req) {
+async function postInventoryEntries(inv, req, session) {
   // Evita duplicar entradas si ya fueron registradas (p.ej. en una edición)
   await InventoryMovement.deleteMany({
     clinic: req.clinicId,
     sourceModel: 'PurchaseInvoice',
     sourceRef: inv._id,
-  });
+  }).session(session || null);
   for (const it of inv.items || []) {
     if (!it.product || !it.quantity || it.quantity <= 0) continue;
-    const prod = await Product.findOne({ _id: it.product, clinic: req.clinicId });
+    const prod = await Product.findOne({ _id: it.product, clinic: req.clinicId }).session(session || null);
     if (!prod || prod.unlimited || prod.category === 'servicio') continue;
     const qty = Number(it.quantity);
     const unitCost = Number(it.unitPrice) || 0;
@@ -185,8 +224,8 @@ async function postInventoryEntries(inv, req) {
     prod.averageCost = newAvg;
     // Actualiza precio de compra para reflejar el último costo
     if (unitCost > 0) prod.purchasePrice = unitCost;
-    await prod.save();
-    await InventoryMovement.create({
+    await prod.save({ session });
+    await InventoryMovement.create([{
       clinic: req.clinicId,
       product: prod._id,
       type: 'entrada',
@@ -199,38 +238,75 @@ async function postInventoryEntries(inv, req) {
       sourceModel: 'PurchaseInvoice',
       sourceRef: inv._id,
       createdBy: req.user._id,
-    });
+    }], session ? { session } : {});
   }
 }
 
 exports.update = async (req, res) => {
   try {
-    const inv = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId });
-    if (!inv) return res.status(404).json({ message: 'No encontrada' });
-    if (inv.status !== 'REGISTRADA') return res.status(400).json({ message: 'No editable en su estado' });
-    if (inv.journalEntry) await reverseEntry({ clinicId: req.clinicId, entryId: inv.journalEntry, userId: req.user._id, reason: 'Edición de compra' });
-    // Revertir entradas previas de inventario (stock)
-    await revertInventoryEntries(inv, req);
-    Object.assign(inv, req.body);
-    calcTotals(inv);
-    await inv.save();
-    await postPurchaseJournal(inv, req);
-    await postInventoryEntries(inv, req);
-    res.json(inv);
+    {
+      const invoiceId = await runInTransaction(async (session) => {
+        const inv = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+        if (!inv) throw Object.assign(new Error('No encontrada'), { status: 404 });
+        if (inv.status !== 'REGISTRADA') throw Object.assign(new Error('No editable en su estado'), { status: 400 });
+        await assertPeriodOpen(req.clinicId, inv.fechaEmision, { session });
+        const nextDate = req.body.fechaEmision ? new Date(req.body.fechaEmision) : inv.fechaEmision;
+        await assertPeriodOpen(req.clinicId, nextDate, { session });
+        if (inv.journalEntry) {
+          await reverseEntry({
+            clinicId: req.clinicId,
+            entryId: inv.journalEntry,
+            userId: req.user._id,
+            reason: 'Edicion de compra',
+            date: req.body.reversalDate ? new Date(req.body.reversalDate) : new Date(),
+            session,
+          });
+        }
+        await revertInventoryEntries(inv, req, session);
+        Object.assign(inv, req.body);
+        if (inv.fechaEmision) inv.fechaEmision = new Date(inv.fechaEmision);
+        calcTotals(inv);
+        await inv.save({ session });
+        await postPurchaseJournal(inv, req, session, `UPDATE:${Date.now()}`);
+        await postInventoryEntries(inv, req, session);
+        const supForPayable = await Supplier.findById(inv.supplier).session(session);
+        await openPayableForInvoice(inv, supForPayable, req, session);
+        return inv._id;
+      });
+      const inv = await PurchaseInvoice.findById(invoiceId);
+      return res.json(inv);
+    }
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 
 exports.void = async (req, res) => {
   try {
-    const inv = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId });
-    if (!inv) return res.status(404).json({ message: 'No encontrada' });
-    if (inv.status === 'ANULADA') return res.status(400).json({ message: 'Ya anulada' });
-    if (inv.journalEntry) await reverseEntry({ clinicId: req.clinicId, entryId: inv.journalEntry, userId: req.user._id, reason: 'Anulación' });
-    // Revertir las entradas de inventario asociadas
-    await revertInventoryEntries(inv, req);
-    inv.status = 'ANULADA';
-    await inv.save();
-    res.json({ message: 'Anulada' });
+    {
+      const result = await runInTransaction(async (session) => {
+        const inv = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+        if (!inv) throw Object.assign(new Error('No encontrada'), { status: 404 });
+        if (inv.status === 'ANULADA') throw Object.assign(new Error('Ya anulada'), { status: 400 });
+        await assertPeriodOpen(req.clinicId, inv.fechaEmision, { session });
+        const reversalDate = req.body.date ? new Date(req.body.date) : new Date();
+        await assertPeriodOpen(req.clinicId, reversalDate, { session });
+        if (inv.journalEntry) {
+          await reverseEntry({
+            clinicId: req.clinicId,
+            entryId: inv.journalEntry,
+            userId: req.user._id,
+            reason: 'Anulacion compra',
+            date: reversalDate,
+            session,
+          });
+        }
+        await revertInventoryEntries(inv, req, session);
+        await voidPayable({ clinicId: req.clinicId, sourceModel: 'PurchaseInvoice', sourceRef: inv._id }, { session });
+        inv.status = 'ANULADA';
+        await inv.save({ session });
+        return { message: 'Anulada' };
+      });
+      return res.json(result);
+    }
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 
@@ -239,25 +315,25 @@ exports.void = async (req, res) => {
  * stock que se había sumado y elimina los movimientos. No restaura el costo
  * promedio histórico (sigue siendo conservador y suficiente para anulación).
  */
-async function revertInventoryEntries(inv, req) {
+async function revertInventoryEntries(inv, req, session) {
   const movs = await InventoryMovement.find({
     clinic: req.clinicId,
     sourceModel: 'PurchaseInvoice',
     sourceRef: inv._id,
     type: 'entrada',
-  });
+  }).session(session || null);
   for (const m of movs) {
-    const prod = await Product.findOne({ _id: m.product, clinic: req.clinicId });
+    const prod = await Product.findOne({ _id: m.product, clinic: req.clinicId }).session(session || null);
     if (prod) {
       prod.stock = Math.max(0, Number(prod.stock || 0) - Number(m.quantity || 0));
-      await prod.save();
+      await prod.save({ session });
     }
   }
   await InventoryMovement.deleteMany({
     clinic: req.clinicId,
     sourceModel: 'PurchaseInvoice',
     sourceRef: inv._id,
-  });
+  }).session(session || null);
 }
 
 /**
@@ -360,23 +436,30 @@ exports.importXml = async (req, res) => {
  */
 exports.authorize = async (req, res) => {
   try {
-    const inv = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId });
-    if (!inv) return res.status(404).json({ message: 'No encontrada' });
-    if (inv.status !== 'POR_AUTORIZAR') return res.status(400).json({ message: 'La factura no está pendiente de autorización' });
-    // Permite ajustar datos antes de autorizar (cuentas, ítems, retenciones)
-    if (req.body && Object.keys(req.body).length) {
-      const { status, clinic, journalEntry, ...rest } = req.body;
-      Object.assign(inv, rest);
-      calcTotals(inv);
+    {
+      const invoiceId = await runInTransaction(async (session) => {
+        const inv = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+        if (!inv) throw Object.assign(new Error('No encontrada'), { status: 404 });
+        if (inv.status !== 'POR_AUTORIZAR') throw Object.assign(new Error('La factura no esta pendiente de autorizacion'), { status: 400 });
+        if (req.body && Object.keys(req.body).length) {
+          const { status, clinic, journalEntry, ...rest } = req.body;
+          Object.assign(inv, rest);
+          if (inv.fechaEmision) inv.fechaEmision = new Date(inv.fechaEmision);
+          calcTotals(inv);
+        }
+        await assertPeriodOpen(req.clinicId, inv.fechaEmision, { session });
+        const sinCuenta = (inv.items || []).some((it) => !it.account && !(it.accountSplits || []).length && !it.product);
+        if (sinCuenta) throw Object.assign(new Error('Asigna una cuenta contable a cada item antes de autorizar'), { status: 400 });
+        inv.status = 'REGISTRADA';
+        inv.authorizedBy = req.user._id;
+        inv.authorizedAt = new Date();
+        await inv.save({ session });
+        await postPurchaseJournal(inv, req, session, 'AUTHORIZE');
+        await postInventoryEntries(inv, req, session);
+        return inv._id;
+      });
+      const inv = await PurchaseInvoice.findById(invoiceId);
+      return res.json(inv);
     }
-    const sinCuenta = (inv.items || []).some((it) => !it.account && !(it.accountSplits || []).length && !it.product);
-    if (sinCuenta) return res.status(400).json({ message: 'Asigna una cuenta contable a cada ítem antes de autorizar' });
-    inv.status = 'REGISTRADA';
-    inv.authorizedBy = req.user._id;
-    inv.authorizedAt = new Date();
-    await inv.save();
-    await postPurchaseJournal(inv, req);
-    await postInventoryEntries(inv, req);
-    res.json(inv);
   } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };

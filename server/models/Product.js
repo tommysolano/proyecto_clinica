@@ -87,6 +87,17 @@ const productSchema = new mongoose.Schema(
     unlimited: { type: Boolean, default: false },
     unit: { type: String, default: 'unidad', trim: true },
     taxRate: { type: Number, default: 15 },
+    taxCodeSri: { type: String, default: '4' },
+    taxCategory: {
+      type: String,
+      enum: ['IVA_15', 'IVA_12', 'IVA_0', 'EXENTO', 'NO_OBJETO', 'ICE'],
+      default: 'IVA_15',
+    },
+    priceIncludesVat: { type: Boolean, default: true },
+    isMedicalService: { type: Boolean, default: false },
+    isInventoryItem: { type: Boolean, default: false },
+    costAccountCode: { type: String, default: '' },
+    inventoryAccountCode: { type: String, default: '' },
     // Límite de citas concurrentes para este servicio en un mismo horario (0 o null = sin límite).
     // Solo aplica a productos de categoría 'servicio' o 'programa'.
     // Cuenta citas con la misma fecha y misma hora de inicio.

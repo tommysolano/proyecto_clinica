@@ -126,4 +126,101 @@ function buildFacturaXml(factura) {
   return root.end({ prettyPrint: false, headless: false });
 }
 
-module.exports = { buildFacturaXml };
+function buildRetentionXml(voucher) {
+  const {
+    infoTributaria,
+    infoCompRetencion,
+    docsSustento = [],
+    infoAdicional = [],
+  } = voucher;
+
+  const root = create({ version: '1.0', encoding: 'UTF-8', standalone: false }).ele(
+    'comprobanteRetencion',
+    { id: 'comprobante', version: '2.0.0' }
+  );
+
+  const it = root.ele('infoTributaria');
+  it.ele('ambiente').txt(infoTributaria.ambiente);
+  it.ele('tipoEmision').txt(infoTributaria.tipoEmision || '1');
+  it.ele('razonSocial').txt(infoTributaria.razonSocial);
+  if (infoTributaria.nombreComercial) it.ele('nombreComercial').txt(infoTributaria.nombreComercial);
+  it.ele('ruc').txt(infoTributaria.ruc);
+  it.ele('claveAcceso').txt(infoTributaria.claveAcceso);
+  it.ele('codDoc').txt(infoTributaria.codDoc || '07');
+  it.ele('estab').txt(infoTributaria.estab);
+  it.ele('ptoEmi').txt(infoTributaria.ptoEmi);
+  it.ele('secuencial').txt(infoTributaria.secuencial);
+  it.ele('dirMatriz').txt(infoTributaria.dirMatriz);
+  if (infoTributaria.agenteRetencion) it.ele('agenteRetencion').txt(infoTributaria.agenteRetencion);
+  if (infoTributaria.contribuyenteRimpe) {
+    it.ele('contribuyenteRimpe').txt(infoTributaria.contribuyenteRimpe);
+  }
+
+  const ic = root.ele('infoCompRetencion');
+  ic.ele('fechaEmision').txt(infoCompRetencion.fechaEmision);
+  ic.ele('dirEstablecimiento').txt(infoCompRetencion.dirEstablecimiento);
+  if (infoCompRetencion.contribuyenteEspecial) {
+    ic.ele('contribuyenteEspecial').txt(infoCompRetencion.contribuyenteEspecial);
+  }
+  ic.ele('obligadoContabilidad').txt(infoCompRetencion.obligadoContabilidad || 'NO');
+  ic.ele('tipoIdentificacionSujetoRetenido').txt(infoCompRetencion.tipoIdentificacionSujetoRetenido);
+  ic.ele('parteRel').txt(infoCompRetencion.parteRel || 'NO');
+  ic.ele('razonSocialSujetoRetenido').txt(infoCompRetencion.razonSocialSujetoRetenido);
+  ic.ele('identificacionSujetoRetenido').txt(infoCompRetencion.identificacionSujetoRetenido);
+  ic.ele('periodoFiscal').txt(infoCompRetencion.periodoFiscal);
+
+  const docs = root.ele('docsSustento');
+  for (const d of docsSustento) {
+    const doc = docs.ele('docSustento');
+    doc.ele('codSustento').txt(d.codSustento || '01');
+    doc.ele('codDocSustento').txt(d.codDocSustento || '01');
+    doc.ele('numDocSustento').txt(d.numDocSustento);
+    doc.ele('fechaEmisionDocSustento').txt(d.fechaEmisionDocSustento);
+    if (d.fechaRegistroContable) doc.ele('fechaRegistroContable').txt(d.fechaRegistroContable);
+    doc.ele('numAutDocSustento').txt(d.numAutDocSustento || d.numDocSustento);
+    doc.ele('pagoLocExt').txt(d.pagoLocExt || '01');
+    doc.ele('totalSinImpuestos').txt(n2(d.totalSinImpuestos));
+    doc.ele('importeTotal').txt(n2(d.importeTotal));
+
+    const impuestos = doc.ele('impuestosDocSustento');
+    for (const i of d.impuestosDocSustento || []) {
+      const imp = impuestos.ele('impuestoDocSustento');
+      imp.ele('codImpuestoDocSustento').txt(i.codImpuestoDocSustento || '2');
+      imp.ele('codigoPorcentaje').txt(i.codigoPorcentaje || '0');
+      imp.ele('baseImponible').txt(n2(i.baseImponible));
+      imp.ele('tarifa').txt(n2(i.tarifa || 0));
+      imp.ele('valorImpuesto').txt(n2(i.valorImpuesto || 0));
+    }
+
+    const rets = doc.ele('retenciones');
+    for (const r of d.retenciones || []) {
+      const ret = rets.ele('retencion');
+      ret.ele('codigo').txt(r.codigo);
+      ret.ele('codigoRetencion').txt(r.codigoRetencion);
+      ret.ele('baseImponible').txt(n2(r.baseImponible));
+      ret.ele('porcentajeRetener').txt(n2(r.porcentajeRetener));
+      ret.ele('valorRetenido').txt(n2(r.valorRetenido));
+    }
+
+    if (Array.isArray(d.pagos) && d.pagos.length) {
+      const pagos = doc.ele('pagos');
+      for (const p of d.pagos) {
+        const pago = pagos.ele('pago');
+        pago.ele('formaPago').txt(p.formaPago || '01');
+        pago.ele('total').txt(n2(p.total));
+      }
+    }
+  }
+
+  if (Array.isArray(infoAdicional) && infoAdicional.length > 0) {
+    const add = root.ele('infoAdicional');
+    for (const a of infoAdicional) {
+      if (!a.nombre || a.valor == null) continue;
+      add.ele('campoAdicional', { nombre: a.nombre }).txt(String(a.valor));
+    }
+  }
+
+  return root.end({ prettyPrint: false, headless: false });
+}
+
+module.exports = { buildFacturaXml, buildRetentionXml };

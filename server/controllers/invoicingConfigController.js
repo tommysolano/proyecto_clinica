@@ -50,6 +50,7 @@ exports.upsertConfig = async (req, res) => {
       'establecimiento',
       'puntoEmision',
       'secuencial',
+      'retentionSequential',
       'ambiente',
       'obligadoContabilidad',
       'agenteRetencion',

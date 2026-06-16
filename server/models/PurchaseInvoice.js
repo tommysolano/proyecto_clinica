@@ -67,12 +67,16 @@ const purchaseInvoiceSchema = new mongoose.Schema(
     subtotal: { type: Number, default: 0 },
     discount: { type: Number, default: 0 },
     iva: { type: Number, default: 0 },
+    // Desglose del IVA en compras: con derecho a crédito tributario vs no recuperable (al gasto)
+    vatCreditAmount: { type: Number, default: 0 },
+    vatNonCreditAmount: { type: Number, default: 0 },
     ice: { type: Number, default: 0 },
     propina: { type: Number, default: 0 },
     total: { type: Number, default: 0 },
     retentions: { type: [retentionItemSchema], default: [] },
     retentionTotal: { type: Number, default: 0 },
     retentionNumber: String, // nº comprobante retención emitida
+    retentionVoucher: { type: mongoose.Schema.Types.ObjectId, ref: 'RetentionVoucher', default: null },
     balance: { type: Number, default: 0 }, // saldo por pagar
     paid: { type: Boolean, default: false },
     status: { type: String, enum: ['POR_AUTORIZAR', 'REGISTRADA', 'PAGADA', 'ANULADA'], default: 'REGISTRADA' },

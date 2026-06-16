@@ -1,7 +1,7 @@
 const CreditCardBatch = require('../models/CreditCardBatch');
 const BankAccount = require('../models/BankAccount');
 const BankTransaction = require('../models/BankTransaction');
-const { createEntry, reverseEntry } = require('../utils/accounting');
+const { createEntry, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 
 exports.list = async (req, res) => {
@@ -59,6 +59,69 @@ exports.update = async (req, res) => {
 exports.liquidate = async (req, res) => {
   try {
     const { bankAccount, liquidationDate } = req.body;
+    {
+      const batchId = await runInTransaction(async (session) => {
+        const b = await CreditCardBatch.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+        if (!b) throw Object.assign(new Error('No encontrado'), { status: 404 });
+        if (b.status !== 'ABIERTO') throw Object.assign(new Error('No es ABIERTO'), { status: 400 });
+        const txDate = liquidationDate ? new Date(liquidationDate) : new Date();
+        await assertPeriodOpen(req.clinicId, txDate, { session });
+        const bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId }).session(session);
+        if (!bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 404 });
+
+        const ChartOfAccount = require('../models/ChartOfAccount');
+        const bankAcc = await ChartOfAccount.findOne({ _id: bank.chartAccount, clinic: req.clinicId }).session(session);
+        if (!bankAcc) throw Object.assign(new Error('La cuenta bancaria no tiene cuenta contable asociada'), { status: 400 });
+        const tarjetasXliq = await getAccount(req.clinicId, 'tarjetasPorLiquidar', { session });
+        const comision = await getAccount(req.clinicId, 'comisionTarjeta', { session });
+        const ivaCompras = await getAccount(req.clinicId, 'ivaCompras', { session });
+        const retXcobrar = await getAccount(req.clinicId, 'retRentaPorCobrar', { session });
+
+        const lines = [];
+        if (b.netAmount > 0) lines.push({ account: bankAcc._id, debit: b.netAmount, credit: 0, description: `Deposito liquidacion ${b.code}` });
+        if (b.commissionAmount > 0) lines.push({ account: comision._id, debit: b.commissionAmount, credit: 0, description: 'Comision tarjeta' });
+        if (b.ivaCommissionAmount > 0 && ivaCompras) lines.push({ account: ivaCompras._id, debit: b.ivaCommissionAmount, credit: 0, description: 'IVA comision' });
+        if (b.retentionAmount > 0) lines.push({ account: retXcobrar._id, debit: b.retentionAmount, credit: 0, description: 'Retencion por cobrar' });
+        if (b.grossAmount > 0) lines.push({ account: tarjetasXliq._id, debit: 0, credit: b.grossAmount, description: 'Cancelacion tarjetas por liquidar' });
+
+        const [bt] = await BankTransaction.create([{
+          clinic: req.clinicId,
+          bankAccount: bank._id,
+          date: txDate,
+          type: 'DEPOSITO',
+          amount: b.netAmount,
+          direction: 1,
+          description: `Liquidacion tarjetas ${b.code}`,
+          reference: b.code,
+          sourceModel: 'CreditCardBatch',
+          sourceRef: b._id,
+          createdBy: req.user._id,
+        }], { session });
+        const entry = await createEntry({
+          clinicId: req.clinicId,
+          date: txDate,
+          description: `Liquidacion tarjetas ${b.code}`,
+          source: 'TARJETA',
+          sourceRef: b._id,
+          sourceModel: 'CreditCardBatch',
+          sourceAction: 'LIQUIDATE',
+          lines,
+          userId: req.user._id,
+          session,
+        });
+        bt.journalEntry = entry._id;
+        await bt.save({ session });
+        b.status = 'LIQUIDADO';
+        b.liquidationDate = txDate;
+        b.bankAccount = bank._id;
+        b.journalEntry = entry._id;
+        b.bankTransaction = bt._id;
+        await b.save({ session });
+        return b._id;
+      });
+      const batch = await CreditCardBatch.findById(batchId);
+      return res.json(batch);
+    }
     const b = await CreditCardBatch.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!b) return res.status(404).json({ message: 'No encontrado' });
     if (b.status !== 'ABIERTO') return res.status(400).json({ message: 'No es ABIERTO' });
@@ -105,6 +168,46 @@ exports.liquidate = async (req, res) => {
 
 exports.cancel = async (req, res) => {
   try {
+    {
+      const batchId = await runInTransaction(async (session) => {
+        const b = await CreditCardBatch.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+        if (!b) throw Object.assign(new Error('No encontrado'), { status: 404 });
+        if (b.status === 'ANULADO') throw Object.assign(new Error('Ya anulado'), { status: 400 });
+        const reversalDate = req.body.date ? new Date(req.body.date) : new Date();
+        await assertPeriodOpen(req.clinicId, reversalDate, { session });
+        if (b.journalEntry) {
+          await reverseEntry({
+            clinicId: req.clinicId,
+            entryId: b.journalEntry,
+            userId: req.user._id,
+            reason: 'Anulacion lote',
+            date: reversalDate,
+            session,
+          });
+        }
+        if (b.bankTransaction) {
+          const tx = await BankTransaction.findById(b.bankTransaction).session(session);
+          if (tx && !tx.voided) {
+            tx.voided = true;
+            tx.voidedAt = reversalDate;
+            tx.voidedBy = req.user._id;
+            tx.voidReason = req.body?.reason || 'Anulacion lote';
+            await tx.save({ session });
+            await BankAccount.updateOne(
+              { _id: tx.bankAccount },
+              { $inc: { bookBalance: -(Number(tx.amount || 0) * Number(tx.direction || 0)) } },
+              { session }
+            );
+          }
+        }
+        b.status = 'ANULADO';
+        await b.save({ session });
+        return b._id;
+      });
+      const batch = await CreditCardBatch.findById(batchId);
+      return res.json(batch);
+    }
+
     const b = await CreditCardBatch.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!b) return res.status(404).json({ message: 'No encontrado' });
     if (b.journalEntry) await reverseEntry({ clinicId: req.clinicId, entryId: b.journalEntry, userId: req.user._id, reason: 'Anulación lote' });

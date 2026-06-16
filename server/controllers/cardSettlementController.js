@@ -3,7 +3,7 @@ const BankAccount = require('../models/BankAccount');
 const BankTransaction = require('../models/BankTransaction');
 const ChartOfAccount = require('../models/ChartOfAccount');
 const Sale = require('../models/Sale');
-const { createEntry, findAccount, reverseEntry } = require('../utils/accounting');
+const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 
 const round = (n) => +(Number(n) || 0).toFixed(2);
@@ -71,12 +71,12 @@ function computeTotals(doc) {
 }
 
 /** Resuelve una cuenta: usa la seleccionada, o el rol del mapa de cuentas configurable. */
-async function resolveAccount(clinicId, selectedId, role) {
+async function resolveAccount(clinicId, selectedId, role, session) {
   if (selectedId) {
-    const acc = await ChartOfAccount.findOne({ _id: selectedId, clinic: clinicId });
+    const acc = await ChartOfAccount.findOne({ _id: selectedId, clinic: clinicId }).session(session || null);
     if (acc) return acc;
   }
-  return getAccount(clinicId, role);
+  return getAccount(clinicId, role, { session });
 }
 
 exports.list = async (req, res) => {
@@ -130,6 +130,92 @@ exports.update = async (req, res) => {
  */
 exports.accredit = async (req, res) => {
   try {
+    {
+      const settlementId = await runInTransaction(async (session) => {
+        const s = await CardSettlement.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+        if (!s) throw Object.assign(new Error('No encontrada'), { status: 404 });
+        if (s.status !== 'BORRADOR') throw Object.assign(new Error('No esta en BORRADOR'), { status: 400 });
+        if (!s.bankAccount) throw Object.assign(new Error('Selecciona el banco donde se acredita'), { status: 400 });
+
+        computeTotals(s);
+        const accreditedAt = req.body.accreditedAt ? new Date(req.body.accreditedAt) : (s.issueDate || new Date());
+        await assertPeriodOpen(req.clinicId, accreditedAt, { session });
+        const bank = await BankAccount.findOne({ _id: s.bankAccount, clinic: req.clinicId }).session(session);
+        if (!bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 404 });
+        const bankAcc = await ChartOfAccount.findOne({ _id: bank.chartAccount, clinic: req.clinicId }).session(session);
+        if (!bankAcc) throw Object.assign(new Error('La cuenta bancaria no tiene cuenta contable asociada'), { status: 400 });
+
+        const receivable = await resolveAccount(req.clinicId, s.receivableAccount, 'tarjetasPorLiquidar', session);
+        const commissionAcc = await resolveAccount(req.clinicId, s.commissionAccount, 'comisionTarjeta', session);
+        const ivaAcc = s.totalIva > 0 ? await resolveAccount(req.clinicId, s.ivaAccount, 'ivaCompras', session) : null;
+        const retIvaAcc = s.totalRetIva > 0 ? await resolveAccount(req.clinicId, s.retIvaAccount, 'retIvaPorCobrar', session) : null;
+        const retIrAcc = s.totalRetIr > 0 ? await resolveAccount(req.clinicId, s.retIrAccount, 'retRentaPorCobrar', session) : null;
+
+        const netToBank = round(s.totalToPay - s.totalRetIr);
+        const lines = [];
+        if (netToBank > 0) lines.push({ account: bankAcc._id, debit: netToBank, credit: 0, description: `Acreditacion liquidacion ${s.code}` });
+        (s.transactions || []).forEach((t) => {
+          if ((Number(t.commission) || 0) > 0) {
+            lines.push({
+              account: commissionAcc._id,
+              costCenter: t.costCenter || null,
+              debit: round(t.commission),
+              credit: 0,
+              description: `Comision tarjeta ${t.recap ? '#' + t.recap : ''}`.trim(),
+            });
+          }
+        });
+        if (s.totalIva > 0 && ivaAcc) lines.push({ account: ivaAcc._id, debit: s.totalIva, credit: 0, description: 'IVA comision' });
+        if (s.totalRetIva > 0 && retIvaAcc) lines.push({ account: retIvaAcc._id, debit: s.totalRetIva, credit: 0, description: 'Retencion IVA por cobrar' });
+        if (s.totalRetIr > 0 && retIrAcc) lines.push({ account: retIrAcc._id, debit: s.totalRetIr, credit: 0, description: 'Retencion IR por cobrar' });
+        if (s.totalDeposit > 0) lines.push({ account: receivable._id, debit: 0, credit: s.totalDeposit, description: 'Cancelacion tarjetas por cobrar' });
+
+        const [bt] = await BankTransaction.create([{
+          clinic: req.clinicId,
+          bankAccount: bank._id,
+          date: accreditedAt,
+          type: 'DEPOSITO',
+          amount: netToBank,
+          direction: 1,
+          description: `Liquidacion tarjetas ${s.code}`,
+          reference: s.docNumber || s.code,
+          sourceModel: 'CardSettlement',
+          sourceRef: s._id,
+          createdBy: req.user._id,
+        }], { session });
+        const entry = await createEntry({
+          clinicId: req.clinicId,
+          date: accreditedAt,
+          description: `Liquidacion tarjetas ${s.code}`,
+          source: 'TARJETA',
+          sourceRef: s._id,
+          sourceModel: 'CardSettlement',
+          sourceAction: 'ACCREDIT',
+          lines,
+          userId: req.user._id,
+          session,
+        });
+        bt.journalEntry = entry._id;
+        await bt.save({ session });
+        s.status = 'CONTABILIZADO';
+        s.accreditedAt = accreditedAt;
+        s.journalEntry = entry._id;
+        s.bankTransaction = bt._id;
+        await s.save({ session });
+        const saleIds = (s.sourceSales || []).map((x) => x.sale).filter(Boolean);
+        if (saleIds.length) {
+          await Sale.updateMany(
+            { _id: { $in: saleIds }, clinic: req.clinicId },
+            { cardSettlement: s._id },
+            { session }
+          );
+        }
+        return s._id;
+      });
+      const settlement = await CardSettlement.findById(settlementId);
+      return res.json(settlement);
+    }
+
     const s = await CardSettlement.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!s) return res.status(404).json({ message: 'No encontrada' });
     if (s.status !== 'BORRADOR') return res.status(400).json({ message: 'No está en BORRADOR' });
@@ -194,6 +280,54 @@ exports.accredit = async (req, res) => {
 
 exports.cancel = async (req, res) => {
   try {
+    {
+      const settlementId = await runInTransaction(async (session) => {
+        const s = await CardSettlement.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+        if (!s) throw Object.assign(new Error('No encontrada'), { status: 404 });
+        if (s.status === 'ANULADO') throw Object.assign(new Error('Ya esta anulada'), { status: 400 });
+        const reversalDate = req.body.date ? new Date(req.body.date) : new Date();
+        await assertPeriodOpen(req.clinicId, reversalDate, { session });
+        if (s.journalEntry) {
+          await reverseEntry({
+            clinicId: req.clinicId,
+            entryId: s.journalEntry,
+            userId: req.user._id,
+            reason: 'Anulacion liquidacion tarjeta',
+            date: reversalDate,
+            session,
+          });
+        }
+        if (s.bankTransaction) {
+          const tx = await BankTransaction.findById(s.bankTransaction).session(session);
+          if (tx && !tx.voided) {
+            tx.voided = true;
+            tx.voidedAt = reversalDate;
+            tx.voidedBy = req.user._id;
+            tx.voidReason = req.body?.reason || 'Anulacion liquidacion tarjeta';
+            await tx.save({ session });
+            await BankAccount.updateOne(
+              { _id: tx.bankAccount },
+              { $inc: { bookBalance: -(Number(tx.amount || 0) * Number(tx.direction || 0)) } },
+              { session }
+            );
+          }
+        }
+        s.status = 'ANULADO';
+        await s.save({ session });
+        const saleIds = (s.sourceSales || []).map((x) => x.sale).filter(Boolean);
+        if (saleIds.length) {
+          await Sale.updateMany(
+            { _id: { $in: saleIds }, cardSettlement: s._id },
+            { cardSettlement: null },
+            { session }
+          );
+        }
+        return s._id;
+      });
+      const settlement = await CardSettlement.findById(settlementId);
+      return res.json(settlement);
+    }
+
     const s = await CardSettlement.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!s) return res.status(404).json({ message: 'No encontrada' });
     if (s.status === 'ANULADO') return res.status(400).json({ message: 'Ya está anulada' });

@@ -53,10 +53,11 @@ bankTransactionSchema.post('save', async function (doc) {
   try {
     if (doc.$locals.wasNew && !doc.voided) {
       const BankAccount = mongoose.model('BankAccount');
+      const session = doc.$session?.();
       await BankAccount.updateOne(
         { _id: doc.bankAccount },
         { $inc: { bookBalance: doc.amount * doc.direction } }
-      );
+      ).session(session || null);
     }
   } catch (e) { /* el saldo agregado (endpoint balances) sigue siendo la fuente de verdad */ }
 });

@@ -4,7 +4,8 @@ const PhysicalCount = require('../models/PhysicalCount');
 const FixedAsset = require('../models/FixedAsset');
 const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
-const { createEntry, findAccount } = require('../utils/accounting');
+const BankAccount = require('../models/BankAccount');
+const { createEntry, findAccount, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const ExcelJS = require('exceljs');
 const multer = require('multer');
 
@@ -250,6 +251,74 @@ exports.updateCount = async (req, res) => {
 
 exports.confirmCount = async (req, res) => {
   try {
+    {
+      const countId = await runInTransaction(async (session) => {
+        const pc = await PhysicalCount.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+        if (!pc) throw Object.assign(new Error('No encontrada'), { status: 404 });
+        if (pc.status !== 'BORRADOR') throw Object.assign(new Error('No editable'), { status: 400 });
+        const date = req.body.date ? new Date(req.body.date) : new Date();
+        await assertPeriodOpen(req.clinicId, date, { session });
+
+        let positive = 0;
+        let negative = 0;
+        for (const it of pc.items) {
+          const diff = (it.countedQty || 0) - (it.systemQty || 0);
+          if (diff === 0) continue;
+          await Product.updateOne({ _id: it.product, clinic: req.clinicId }, { $inc: { stock: diff } }, { session });
+          await InventoryMovement.create([{
+            clinic: req.clinicId,
+            product: it.product,
+            type: diff > 0 ? 'entrada' : 'salida',
+            quantity: Math.abs(diff),
+            reason: 'Ajuste por toma fisica',
+            reference: pc.code,
+            sourceModel: 'PhysicalCount',
+            sourceRef: pc._id,
+            createdBy: req.user._id,
+          }], { session });
+          const val = Math.abs(diff) * (it.unitCost || 0);
+          if (diff > 0) positive += val;
+          else negative += val;
+        }
+
+        if (positive > 0 || negative > 0) {
+          const inv = await findAccount(req.clinicId, { code: '1.1.04.01' }, { session });
+          const gasto = await findAccount(req.clinicId, { code: '6.1.99' }, { session });
+          const lines = [];
+          const net = +(positive - negative).toFixed(2);
+          if (net > 0) {
+            lines.push({ account: inv._id, debit: net, credit: 0, description: 'Sobrante inventario' });
+            lines.push({ account: gasto._id, debit: 0, credit: net, description: 'Ajuste sobrante' });
+          } else if (net < 0) {
+            lines.push({ account: gasto._id, debit: -net, credit: 0, description: 'Faltante inventario' });
+            lines.push({ account: inv._id, debit: 0, credit: -net, description: 'Ajuste faltante' });
+          }
+          if (lines.length) {
+            const entry = await createEntry({
+              clinicId: req.clinicId,
+              date,
+              description: `Ajuste toma fisica ${pc.code}`,
+              source: 'AJUSTE',
+              sourceRef: pc._id,
+              sourceModel: 'PhysicalCount',
+              sourceAction: 'CONFIRM',
+              lines,
+              userId: req.user._id,
+              session,
+            });
+            pc.adjustmentEntry = entry._id;
+          }
+        }
+        pc.status = 'CONFIRMADO';
+        pc.confirmedAt = date;
+        pc.confirmedBy = req.user._id;
+        await pc.save({ session });
+        return pc._id;
+      });
+      const pc = await PhysicalCount.findById(countId);
+      return res.json(pc);
+    }
+
     const pc = await PhysicalCount.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!pc) return res.status(404).json({ message: 'No encontrada' });
     if (pc.status !== 'BORRADOR') return res.status(400).json({ message: 'No editable' });
@@ -371,12 +440,173 @@ exports.deleteAsset = async (req, res) => {
   res.json({ message: 'Eliminado' });
 };
 
+exports.disposeAsset = async (req, res) => {
+  try {
+    const assetId = await runInTransaction(async (session) => {
+      const asset = await FixedAsset.findOne({ _id: req.params.id, clinic: req.clinicId })
+        .populate('category')
+        .session(session);
+      if (!asset) throw Object.assign(new Error('No encontrado'), { status: 404 });
+      if (asset.status !== 'ACTIVO') throw Object.assign(new Error('El activo ya no esta activo'), { status: 400 });
+
+      const disposalDate = req.body.disposalDate ? new Date(req.body.disposalDate) : new Date();
+      await assertPeriodOpen(req.clinicId, disposalDate, { session });
+      const disposalValue = +Number(req.body.disposalValue || 0).toFixed(2);
+      if (disposalValue < 0) throw Object.assign(new Error('Valor de baja invalido'), { status: 400 });
+
+      const assetAccount = asset.assetAccount || asset.category?.assetAccount;
+      const accumAccount = asset.accumDepreciationAccount || asset.category?.accumDepreciationAccount;
+      if (!assetAccount) throw Object.assign(new Error(`Activo ${asset.code} sin cuenta de activo`), { status: 400 });
+      if (asset.accumulatedDepreciation > 0 && !accumAccount) {
+        throw Object.assign(new Error(`Activo ${asset.code} sin cuenta de depreciacion acumulada`), { status: 400 });
+      }
+
+      let proceedsAccount = null;
+      if (disposalValue > 0) {
+        if (req.body.bankAccount) {
+          const bank = await BankAccount.findOne({ _id: req.body.bankAccount, clinic: req.clinicId }).session(session);
+          if (!bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 404 });
+          proceedsAccount = bank.chartAccount;
+        } else {
+          proceedsAccount = (await findAccount(req.clinicId, { code: '1.1.01.01' }, { session }))._id;
+        }
+      }
+
+      const cost = +Number(asset.acquisitionCost || 0).toFixed(2);
+      const accumulated = +Number(asset.accumulatedDepreciation || 0).toFixed(2);
+      const bookValue = +Math.max(0, cost - accumulated).toFixed(2);
+      const gain = disposalValue > bookValue ? +(disposalValue - bookValue).toFixed(2) : 0;
+      const loss = disposalValue < bookValue ? +(bookValue - disposalValue).toFixed(2) : 0;
+      const lines = [];
+      if (accumulated > 0) lines.push({ account: accumAccount, debit: accumulated, credit: 0, description: `Depreciacion acumulada ${asset.code}` });
+      if (disposalValue > 0) lines.push({ account: proceedsAccount, debit: disposalValue, credit: 0, description: `Venta/baja activo ${asset.code}` });
+      if (loss > 0) {
+        const lossAcc = await findAccount(req.clinicId, { code: '6.1.99' }, { session });
+        lines.push({ account: lossAcc._id, debit: loss, credit: 0, description: `Perdida baja activo ${asset.code}` });
+      }
+      lines.push({ account: assetAccount, debit: 0, credit: cost, description: `Baja activo ${asset.code}` });
+      if (gain > 0) {
+        const gainAcc = await findAccount(req.clinicId, { code: '4.2.02' }, { session });
+        lines.push({ account: gainAcc._id, debit: 0, credit: gain, description: `Ganancia baja activo ${asset.code}` });
+      }
+
+      const entry = await createEntry({
+        clinicId: req.clinicId,
+        date: disposalDate,
+        description: `Baja activo ${asset.code}`,
+        source: 'AJUSTE',
+        sourceRef: asset._id,
+        sourceModel: 'FixedAsset',
+        sourceAction: 'DISPOSE',
+        lines,
+        userId: req.user._id,
+        session,
+      });
+
+      asset.status = disposalValue > 0 ? 'VENDIDO' : 'DADO_DE_BAJA';
+      asset.disposalDate = disposalDate;
+      asset.disposalValue = disposalValue;
+      asset.notes = [asset.notes, req.body.reason || req.body.notes].filter(Boolean).join('\n');
+      asset.history.push({
+        period: `${disposalDate.getFullYear()}-${String(disposalDate.getMonth() + 1).padStart(2, '0')}`,
+        date: disposalDate,
+        amount: 0,
+        accumulated,
+        bookValue: 0,
+        journalEntry: entry._id,
+      });
+      asset.bookValue = 0;
+      await asset.save({ session });
+      return asset._id;
+    });
+    const asset = await FixedAsset.findById(assetId);
+    res.json(asset);
+  } catch (e) {
+    res.status(e.status || 400).json({ message: e.message });
+  }
+};
+
 /**
  * Corre depreciación mensual para todos los activos activos (idempotente por período).
  */
 exports.runDepreciation = async (req, res) => {
   try {
     const { year, month } = req.body;
+    {
+      const result = await runInTransaction(async (session) => {
+        const y = parseInt(year);
+        const m = parseInt(month);
+        if (!y || !m || m < 1 || m > 12) throw Object.assign(new Error('year y month invalidos'), { status: 400 });
+        const period = `${y}-${String(m).padStart(2, '0')}`;
+        const endOfMonth = new Date(y, m, 0, 23, 59, 59);
+        await assertPeriodOpen(req.clinicId, endOfMonth, { session });
+
+        const assets = await FixedAsset.find({ clinic: req.clinicId, status: 'ACTIVO' })
+          .populate('category')
+          .session(session);
+        let totalDep = 0;
+        const lines = [];
+        const touchedAssets = [];
+        for (const asset of assets) {
+          if (asset.lastDepreciationPeriod >= period) continue;
+          if (new Date(asset.startDate) > endOfMonth) continue;
+          const remainingBase = (asset.acquisitionCost - (asset.residualValue || 0)) - asset.accumulatedDepreciation;
+          if (remainingBase <= 0) continue;
+          const dep = +Math.min(asset.monthlyDepreciation, remainingBase).toFixed(2);
+          const depAccount = asset.depreciationAccount || asset.category?.depreciationAccount;
+          const accumAccount = asset.accumDepreciationAccount || asset.category?.accumDepreciationAccount;
+          if (!depAccount || !accumAccount) {
+            throw Object.assign(new Error(`Activo ${asset.code} sin cuentas de depreciacion completas`), { status: 400 });
+          }
+          asset.accumulatedDepreciation = +(asset.accumulatedDepreciation + dep).toFixed(2);
+          asset.bookValue = +(asset.acquisitionCost - asset.accumulatedDepreciation).toFixed(2);
+          asset.lastDepreciationPeriod = period;
+          asset.history.push({
+            period,
+            date: endOfMonth,
+            amount: dep,
+            accumulated: asset.accumulatedDepreciation,
+            bookValue: asset.bookValue,
+          });
+          await asset.save({ session });
+          touchedAssets.push(asset._id);
+          totalDep += dep;
+          lines.push({ account: depAccount, debit: dep, credit: 0, description: `Depreciacion ${asset.code} ${period}` });
+          lines.push({ account: accumAccount, debit: 0, credit: dep, description: `Depreciacion acumulada ${asset.code}` });
+        }
+
+        let entry = null;
+        if (lines.length) {
+          const map = new Map();
+          for (const l of lines) {
+            const key = `${l.account}-${l.debit > 0 ? 'D' : 'C'}`;
+            const cur = map.get(key) || { account: l.account, debit: 0, credit: 0, description: 'Depreciacion mensual' };
+            cur.debit = +(cur.debit + l.debit).toFixed(2);
+            cur.credit = +(cur.credit + l.credit).toFixed(2);
+            map.set(key, cur);
+          }
+          entry = await createEntry({
+            clinicId: req.clinicId,
+            date: endOfMonth,
+            description: `Depreciacion ${period}`,
+            source: 'DEPRECIACION',
+            sourceModel: 'FixedAsset',
+            sourceRef: touchedAssets[0],
+            sourceAction: `DEPRECIATION:${period}`,
+            lines: Array.from(map.values()),
+            userId: req.user._id,
+            session,
+          });
+          await FixedAsset.updateMany(
+            { _id: { $in: touchedAssets }, clinic: req.clinicId, lastDepreciationPeriod: period, status: 'ACTIVO' },
+            { $set: { 'history.$[h].journalEntry': entry._id } },
+            { arrayFilters: [{ 'h.period': period }], session }
+          );
+        }
+        return { period, processed: touchedAssets.length, totalDepreciation: +totalDep.toFixed(2), journalEntry: entry };
+      });
+      return res.json(result);
+    }
     const y = parseInt(year);
     const m = parseInt(month);
     if (!y || !m || m < 1 || m > 12) return res.status(400).json({ message: 'year y month inválidos' });

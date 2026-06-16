@@ -35,11 +35,15 @@ const journalEntrySchema = new mongoose.Schema(
     },
     sourceRef: { type: mongoose.Schema.Types.ObjectId, default: null },
     sourceModel: { type: String, default: null },
+    sourceAction: { type: String, default: null },
     lines: { type: [journalLineSchema], default: [] },
     totalDebit: { type: Number, default: 0 },
     totalCredit: { type: Number, default: 0 },
     status: { type: String, enum: ['BORRADOR', 'CONTABILIZADO', 'ANULADO'], default: 'CONTABILIZADO' },
+    isReversed: { type: Boolean, default: false, index: true },
     reversedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
+    reversedAt: { type: Date, default: null },
+    reversalReason: { type: String, default: '' },
     reverses: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
@@ -47,6 +51,21 @@ const journalEntrySchema = new mongoose.Schema(
 );
 
 journalEntrySchema.index({ clinic: 1, number: 1 }, { unique: true });
+journalEntrySchema.index(
+  { clinic: 1, sourceModel: 1, sourceRef: 1, sourceAction: 1 },
+  {
+    unique: true,
+    partialFilterExpression: {
+      sourceModel: { $type: 'string' },
+      sourceRef: { $type: 'objectId' },
+      sourceAction: { $type: 'string' },
+    },
+  }
+);
+journalEntrySchema.index(
+  { clinic: 1, reverses: 1 },
+  { unique: true, partialFilterExpression: { reverses: { $type: 'objectId' } } }
+);
 
 journalEntrySchema.pre('validate', function (next) {
   this.totalDebit = (this.lines || []).reduce((s, l) => s + (l.debit || 0), 0);

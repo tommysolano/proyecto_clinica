@@ -5,7 +5,7 @@ const BankCheck = require('../models/BankCheck');
 const CreditCard = require('../models/CreditCard');
 const Sale = require('../models/Sale');
 const ChartOfAccount = require('../models/ChartOfAccount');
-const { createEntry, findAccount } = require('../utils/accounting');
+const { createEntry, findAccount, runInTransaction, assertPeriodOpen, reverseEntry } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 
 /**
@@ -90,9 +90,23 @@ exports.balances = async (req, res) => {
 };
 
 // ---------- Helper: genera asiento contable de banco ----------
-async function postBankJournal({ clinicId, userId, date, description, bank, counterAccountCode, amount, direction, source = 'BANCO' }) {
-  const bankAcc = await ChartOfAccount.findById(bank.chartAccount);
-  const counter = await findAccount(clinicId, { code: counterAccountCode });
+async function postBankJournal({
+  clinicId,
+  userId,
+  date,
+  description,
+  bank,
+  counterAccountCode,
+  amount,
+  direction,
+  source = 'BANCO',
+  sourceModel,
+  sourceRef,
+  sourceAction,
+  session,
+}) {
+  const bankAcc = await ChartOfAccount.findById(bank.chartAccount).session(session || null);
+  const counter = await findAccount(clinicId, { code: counterAccountCode }, { session });
   const lines = direction > 0
     ? [
         { account: bankAcc._id, debit: amount, credit: 0, description },
@@ -102,7 +116,18 @@ async function postBankJournal({ clinicId, userId, date, description, bank, coun
         { account: counter._id, debit: amount, credit: 0, description },
         { account: bankAcc._id, debit: 0, credit: amount, description },
       ];
-  return createEntry({ clinicId, date, description, source, lines, userId });
+  return createEntry({
+    clinicId,
+    date,
+    description,
+    source,
+    sourceModel,
+    sourceRef,
+    sourceAction,
+    lines,
+    userId,
+    session,
+  });
 }
 
 // ---------- Movimientos genéricos ----------
@@ -111,6 +136,170 @@ exports.createMovement = async (req, res) => {
     const { bankAccount, type, amount, date, description, reference,
             counterAccountCode, checkNumber, counterpartAccount,
             voucherUrl, voucherNumber } = req.body;
+    {
+      const result = await runInTransaction(async (session) => {
+        if (!bankAccount || !type || !amount) {
+          throw Object.assign(new Error('bankAccount, type y amount requeridos'), { status: 400 });
+        }
+        const txAmount = +Number(amount).toFixed(2);
+        if (txAmount <= 0) throw Object.assign(new Error('Monto invalido'), { status: 400 });
+        const txDate = date ? new Date(date) : new Date();
+        await assertPeriodOpen(req.clinicId, txDate, { session });
+
+        const bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId }).session(session);
+        if (!bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 404 });
+
+        const inflow = ['DEPOSITO', 'TRANSFERENCIA_IN', 'INTERES', 'COBRO'].includes(type);
+        const direction = inflow ? 1 : -1;
+        const requiresVoucher = ['DEPOSITO', 'TRANSFERENCIA_IN', 'TRANSFERENCIA_OUT', 'CHEQUE_EMITIDO'].includes(type);
+        if (requiresVoucher && !voucherNumber && !voucherUrl && !reference) {
+          throw Object.assign(new Error('Comprobante requerido (voucherNumber, voucherUrl o reference)'), { status: 400 });
+        }
+
+        const counterRoleByType = {
+          DEPOSITO: 'caja',
+          RETIRO: 'caja',
+          CAJA_CHICA: 'cajaChica',
+          ANTICIPO: 'anticipoProveedores',
+          COMISION: 'comisionBancaria',
+          INTERES: 'interesesGanados',
+          AJUSTE: 'resultadosAcumulados',
+          CHEQUE_EMITIDO: 'proveedores',
+        };
+        let defaultCounter = counterAccountCode || null;
+        if (!defaultCounter && counterRoleByType[type]) {
+          defaultCounter = (await getAccount(req.clinicId, counterRoleByType[type], { session })).code;
+        }
+
+        let counterpartTx = null;
+        let entry = null;
+        let realCheckNumber = checkNumber;
+
+        if (type === 'TRANSFERENCIA_OUT' || type === 'TRANSFERENCIA_IN') {
+          if (!counterpartAccount) throw Object.assign(new Error('counterpartAccount requerido para transferencia'), { status: 400 });
+          const other = await BankAccount.findOne({ _id: counterpartAccount, clinic: req.clinicId }).session(session);
+          if (!other) throw Object.assign(new Error('Cuenta contraparte no encontrada'), { status: 404 });
+          const out = direction < 0 ? bank : other;
+          const inn = direction > 0 ? bank : other;
+          const outBalanceAgg = await BankTransaction.aggregate([
+            { $match: { clinic: out.clinic, bankAccount: out._id, voided: false } },
+            { $group: { _id: null, total: { $sum: { $multiply: ['$amount', '$direction'] } } } },
+          ]).session(session);
+          const outBalance = (out.initialBalance || 0) + (outBalanceAgg[0]?.total || 0);
+          if (outBalance < txAmount) {
+            throw Object.assign(new Error(`Saldo insuficiente en ${out.name} (disponible $${outBalance.toFixed(2)})`), { status: 400 });
+          }
+
+          const [mainTx] = await BankTransaction.create([{
+            clinic: req.clinicId,
+            bankAccount: bank._id,
+            date: txDate,
+            type,
+            amount: txAmount,
+            direction,
+            description,
+            reference,
+            voucherUrl: voucherUrl || '',
+            voucherNumber: voucherNumber || '',
+            counterpartAccount: other._id,
+            createdBy: req.user._id,
+          }], { session });
+          [counterpartTx] = await BankTransaction.create([{
+            clinic: req.clinicId,
+            bankAccount: other._id,
+            date: txDate,
+            type: direction > 0 ? 'TRANSFERENCIA_OUT' : 'TRANSFERENCIA_IN',
+            amount: txAmount,
+            direction: -direction,
+            description,
+            reference,
+            voucherUrl: voucherUrl || '',
+            voucherNumber: voucherNumber || '',
+            counterpartAccount: bank._id,
+            createdBy: req.user._id,
+          }], { session });
+          entry = await createEntry({
+            clinicId: req.clinicId,
+            date: txDate,
+            description: description || 'Transferencia bancaria',
+            source: 'BANCO',
+            sourceModel: 'BankTransaction',
+            sourceRef: mainTx._id,
+            sourceAction: 'TRANSFER',
+            userId: req.user._id,
+            session,
+            lines: [
+              { account: inn.chartAccount, debit: txAmount, credit: 0, description },
+              { account: out.chartAccount, debit: 0, credit: txAmount, description },
+            ],
+          });
+          mainTx.journalEntry = entry._id;
+          counterpartTx.journalEntry = entry._id;
+          await mainTx.save({ session });
+          await counterpartTx.save({ session });
+          return { transaction: mainTx, journalEntry: entry, counterpartTx };
+        }
+
+        if (direction < 0) {
+          const agg = await BankTransaction.aggregate([
+            { $match: { clinic: bank.clinic, bankAccount: bank._id, voided: false } },
+            { $group: { _id: null, total: { $sum: { $multiply: ['$amount', '$direction'] } } } },
+          ]).session(session);
+          const balance = (bank.initialBalance || 0) + (agg[0]?.total || 0);
+          if (balance < txAmount) {
+            throw Object.assign(new Error(`Saldo insuficiente en ${bank.name} (disponible $${balance.toFixed(2)})`), { status: 400 });
+          }
+        }
+
+        if (type === 'CHEQUE_EMITIDO') {
+          realCheckNumber = checkNumber || String(bank.nextCheckNumber);
+          bank.nextCheckNumber = (parseInt(realCheckNumber, 10) || bank.nextCheckNumber) + 1;
+          await bank.save({ session });
+        }
+
+        const [tx] = await BankTransaction.create([{
+          clinic: req.clinicId,
+          bankAccount: bank._id,
+          date: txDate,
+          type,
+          amount: txAmount,
+          direction,
+          description,
+          reference,
+          checkNumber: realCheckNumber,
+          voucherUrl: voucherUrl || '',
+          voucherNumber: voucherNumber || '',
+          createdBy: req.user._id,
+        }], { session });
+
+        entry = await postBankJournal({
+          clinicId: req.clinicId,
+          userId: req.user._id,
+          date: txDate,
+          description: description || type,
+          bank,
+          counterAccountCode: defaultCounter,
+          amount: txAmount,
+          direction,
+          sourceModel: 'BankTransaction',
+          sourceRef: tx._id,
+          sourceAction: 'POST',
+          session,
+        });
+        tx.journalEntry = entry._id;
+        await tx.save({ session });
+
+        if (type === 'CHEQUE_EMITIDO' && realCheckNumber) {
+          await BankCheck.findOneAndUpdate(
+            { clinic: req.clinicId, bankAccount: bank._id, number: parseInt(realCheckNumber, 10) },
+            { status: 'GIRADO', beneficiary: description || '', amount: txAmount, date: txDate, transaction: tx._id },
+            { session }
+          );
+        }
+        return { transaction: tx, journalEntry: entry, counterpartTx: null };
+      });
+      return res.status(201).json(result);
+    }
     if (!bankAccount || !type || !amount) return res.status(400).json({ message: 'bankAccount, type y amount requeridos' });
     const bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId });
     if (!bank) return res.status(404).json({ message: 'Cuenta bancaria no encontrada' });
@@ -242,6 +431,57 @@ exports.listMovements = async (req, res) => {
 
 exports.voidMovement = async (req, res) => {
   try {
+    {
+      const result = await runInTransaction(async (session) => {
+        const tx = await BankTransaction.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+        if (!tx) throw Object.assign(new Error('No encontrado'), { status: 404 });
+        if (tx.voided) throw Object.assign(new Error('Ya anulado'), { status: 400 });
+        if (tx.reconciled) throw Object.assign(new Error('Conciliado, no se puede anular'), { status: 400 });
+        const reversalDate = req.body.date ? new Date(req.body.date) : new Date();
+        await assertPeriodOpen(req.clinicId, reversalDate, { session });
+
+        const toVoid = [tx];
+        if (tx.journalEntry && ['TRANSFERENCIA_IN', 'TRANSFERENCIA_OUT'].includes(tx.type)) {
+          const pair = await BankTransaction.findOne({
+            _id: { $ne: tx._id },
+            clinic: req.clinicId,
+            journalEntry: tx.journalEntry,
+            voided: false,
+          }).session(session);
+          if (pair) {
+            if (pair.reconciled) throw Object.assign(new Error('La contraparte esta conciliada, no se puede anular'), { status: 400 });
+            toVoid.push(pair);
+          }
+        }
+
+        if (tx.journalEntry) {
+          await reverseEntry({
+            clinicId: req.clinicId,
+            entryId: tx.journalEntry,
+            userId: req.user._id,
+            reason: `Anulacion tx ${tx._id}`,
+            date: reversalDate,
+            session,
+          });
+        }
+
+        for (const item of toVoid) {
+          item.voided = true;
+          item.voidedAt = reversalDate;
+          item.voidedBy = req.user._id;
+          item.voidReason = req.body?.reason || '';
+          await item.save({ session });
+          await BankAccount.updateOne(
+            { _id: item.bankAccount },
+            { $inc: { bookBalance: -(Number(item.amount || 0) * Number(item.direction || 0)) } },
+            { session }
+          );
+        }
+        return { message: 'Anulado', voidedCount: toVoid.length };
+      });
+      return res.json(result);
+    }
+
     const tx = await BankTransaction.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!tx) return res.status(404).json({ message: 'No encontrado' });
     if (tx.voided) return res.status(400).json({ message: 'Ya anulado' });
@@ -290,6 +530,62 @@ exports.getCashPending = async (req, res) => {
 exports.cashToTransfer = async (req, res) => {
   try {
     const { saleIds, bankAccount, voucher, date, description } = req.body;
+    {
+      const result = await runInTransaction(async (session) => {
+        if (!Array.isArray(saleIds) || !saleIds.length) throw Object.assign(new Error('saleIds requerido'), { status: 400 });
+        if (!bankAccount || !voucher) throw Object.assign(new Error('bankAccount y voucher requeridos'), { status: 400 });
+        const txDate = date ? new Date(date) : new Date();
+        await assertPeriodOpen(req.clinicId, txDate, { session });
+        const bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId }).session(session);
+        if (!bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 404 });
+        const sales = await Sale.find({
+          _id: { $in: saleIds },
+          clinic: req.clinicId,
+          paymentMethod: 'efectivo',
+          status: 'completada',
+        }).session(session);
+        if (!sales.length) throw Object.assign(new Error('No hay ventas en efectivo validas'), { status: 400 });
+        const total = +sales.reduce((s, v) => s + (Number(v.total) || 0), 0).toFixed(2);
+        const [tx] = await BankTransaction.create([{
+          clinic: req.clinicId,
+          bankAccount: bank._id,
+          date: txDate,
+          type: 'DEPOSITO',
+          amount: total,
+          direction: 1,
+          description: description || 'Deposito ventas efectivo',
+          reference: voucher,
+          voucherNumber: voucher,
+          sourceModel: 'CashDeposit',
+          createdBy: req.user._id,
+        }], { session });
+        const cajaAcc = await getAccount(req.clinicId, 'caja', { session });
+        const entry = await postBankJournal({
+          clinicId: req.clinicId,
+          userId: req.user._id,
+          date: txDate,
+          description: description || `Deposito ventas efectivo - papeleta ${voucher}`,
+          bank,
+          counterAccountCode: cajaAcc.code,
+          amount: total,
+          direction: 1,
+          sourceModel: 'BankTransaction',
+          sourceRef: tx._id,
+          sourceAction: 'CASH_DEPOSIT',
+          session,
+        });
+        tx.journalEntry = entry._id;
+        tx.sourceRef = tx._id;
+        await tx.save({ session });
+        await Sale.updateMany(
+          { _id: { $in: sales.map((s) => s._id) }, clinic: req.clinicId },
+          { $set: { paymentMethod: 'transferencia', notes: `Depositado en ${bank.name} - papeleta ${voucher}` } },
+          { session }
+        );
+        return { transaction: tx, journalEntry: entry, total, salesCount: sales.length };
+      });
+      return res.json(result);
+    }
     if (!Array.isArray(saleIds) || !saleIds.length) return res.status(400).json({ message: 'saleIds requerido' });
     if (!bankAccount || !voucher) return res.status(400).json({ message: 'bankAccount y voucher requeridos' });
     const bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId });
@@ -364,6 +660,28 @@ exports.updateReconciliation = async (req, res) => {
 
 exports.closeReconciliation = async (req, res) => {
   try {
+    {
+      const recId = await runInTransaction(async (session) => {
+        const rec = await Reconciliation.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+        if (!rec) throw Object.assign(new Error('No encontrada'), { status: 404 });
+        if (Math.abs(rec.difference) > 0.01) throw Object.assign(new Error(`Hay diferencia de ${rec.difference.toFixed(2)}`), { status: 400 });
+        rec.status = 'CONCILIADO';
+        rec.closedAt = new Date();
+        await rec.save({ session });
+        const matchedIds = rec.items.filter((i) => i.matched).map((i) => i.transaction);
+        if (matchedIds.length) {
+          await BankTransaction.updateMany(
+            { _id: { $in: matchedIds }, clinic: req.clinicId, bankAccount: rec.bankAccount },
+            { reconciled: true, reconciliation: rec._id },
+            { session }
+          );
+        }
+        return rec._id;
+      });
+      const rec = await Reconciliation.findById(recId);
+      return res.json(rec);
+    }
+
     const rec = await Reconciliation.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!rec) return res.status(404).json({ message: 'No encontrada' });
     if (Math.abs(rec.difference) > 0.01) return res.status(400).json({ message: `Hay diferencia de ${rec.difference.toFixed(2)}` });
@@ -432,6 +750,62 @@ exports.statementMatch = async (req, res) => {
 exports.statementApply = async (req, res) => {
   try {
     const { bankAccount, matchTransactionIds = [], creates = [] } = req.body;
+    {
+      const result = await runInTransaction(async (session) => {
+        const bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId }).session(session);
+        if (!bank) throw Object.assign(new Error('Cuenta no encontrada'), { status: 404 });
+
+        if (matchTransactionIds.length) {
+          await BankTransaction.updateMany(
+            { _id: { $in: matchTransactionIds }, clinic: req.clinicId, bankAccount: bank._id },
+            { reconciled: true },
+            { session }
+          );
+        }
+
+        const created = [];
+        for (const c of creates) {
+          const amount = Math.abs(Number(c.amount) || 0);
+          if (!amount) continue;
+          const direction = (Number(c.amount) || 0) >= 0 ? 1 : -1;
+          const txDate = c.date ? new Date(c.date) : new Date();
+          await assertPeriodOpen(req.clinicId, txDate, { session });
+          const counterCode = c.counterAccountCode
+            || (await getAccount(req.clinicId, direction > 0 ? 'interesesGanados' : 'comisionBancaria', { session })).code;
+          const [tx] = await BankTransaction.create([{
+            clinic: req.clinicId,
+            bankAccount: bank._id,
+            date: txDate,
+            type: c.type || (direction > 0 ? 'DEPOSITO' : 'COMISION'),
+            amount,
+            direction,
+            description: c.description || 'Movimiento de estado de cuenta',
+            reference: c.reference || '',
+            reconciled: true,
+            createdBy: req.user._id,
+          }], { session });
+          const entry = await postBankJournal({
+            clinicId: req.clinicId,
+            userId: req.user._id,
+            date: txDate,
+            description: c.description || 'Movimiento de estado de cuenta',
+            bank,
+            counterAccountCode: counterCode,
+            amount,
+            direction,
+            sourceModel: 'BankTransaction',
+            sourceRef: tx._id,
+            sourceAction: 'STATEMENT',
+            session,
+          });
+          tx.journalEntry = entry._id;
+          await tx.save({ session });
+          created.push(tx);
+        }
+        return { ok: true, matched: matchTransactionIds.length, created: created.length };
+      });
+      return res.json(result);
+    }
     const bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId });
     if (!bank) return res.status(404).json({ message: 'Cuenta no encontrada' });
 

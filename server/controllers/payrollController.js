@@ -2,7 +2,7 @@ const Employee = require('../models/Employee');
 const EmployeeLoan = require('../models/EmployeeLoan');
 const Payroll = require('../models/Payroll');
 const PayrollConfig = require('../models/PayrollConfig');
-const { createEntry, findAccount } = require('../utils/accounting');
+const { createEntry, findAccount, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 
 // Tasas legales Ecuador por defecto (se sobrescriben con PayrollConfig)
 const RATES = {
@@ -335,6 +335,87 @@ exports.updatePayrollItem = async (req, res) => {
 /** Cierra rol y genera asiento contable + marca cuotas de préstamos pagadas. */
 exports.closePayroll = async (req, res) => {
   try {
+    {
+      const payrollId = await runInTransaction(async (session) => {
+        const p = await Payroll.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+        if (!p) throw Object.assign(new Error('No encontrado'), { status: 404 });
+        if (p.status !== 'BORRADOR') throw Object.assign(new Error('No es borrador'), { status: 400 });
+        const payrollDate = new Date(p.year, p.month - 1, 28);
+        await assertPeriodOpen(req.clinicId, payrollDate, { session });
+
+        const cfg = await PayrollConfig.findOne({ clinic: req.clinicId }).session(session);
+        const acc = cfg?.accounts || {};
+        const sueldos = await findAccount(req.clinicId, { code: acc.sueldos || '6.1.01' }, { session });
+        const beneficios = await findAccount(req.clinicId, { code: acc.beneficios || '6.1.02' }, { session });
+        const iessPat = await findAccount(req.clinicId, { code: acc.iessPatronal || '6.1.03' }, { session });
+        const iessXpagar = await findAccount(req.clinicId, { code: acc.iessPorPagar || '2.1.03.02' }, { session });
+        const sueldosXpagar = await findAccount(req.clinicId, { code: acc.sueldosPorPagar || '2.1.03.01' }, { session });
+        const irXpagar = await findAccount(req.clinicId, { code: acc.irPorPagar || '2.1.02.05' }, { session });
+        const prestEmpresaXcobrar = await findAccount(req.clinicId, { code: acc.prestamosPorCobrar || '1.1.02.04' }, { session });
+        const provisiones = await findAccount(req.clinicId, { code: acc.provisionesPorPagar || '2.1.03.03' }, { session });
+
+        const lines = [];
+        if (p.totalIngresos > 0) lines.push({ account: sueldos._id, debit: p.totalIngresos, credit: 0, description: 'Sueldos y beneficios' });
+        const totIessPat = p.items.reduce((s, i) => s + (i.iessPatronal || 0) + (i.iece || 0) + (i.secap || 0), 0);
+        const totProvBen = p.items.reduce((s, i) => s + (i.provDecimoTercero || 0) + (i.provDecimoCuarto || 0) + (i.provVacaciones || 0) + (i.provFondosReserva || 0), 0);
+        if (totIessPat > 0) lines.push({ account: iessPat._id, debit: +totIessPat.toFixed(2), credit: 0, description: 'Aporte patronal IESS' });
+        if (totProvBen > 0) lines.push({ account: beneficios._id, debit: +totProvBen.toFixed(2), credit: 0, description: 'Provision beneficios sociales' });
+        const totIessPer = p.items.reduce((s, i) => s + (i.iessPersonal || 0), 0);
+        if (totIessPer + totIessPat > 0) lines.push({ account: iessXpagar._id, debit: 0, credit: +(totIessPer + totIessPat).toFixed(2), description: 'IESS por pagar' });
+        const totIR = p.items.reduce((s, i) => s + (i.impuestoRenta || 0), 0);
+        if (totIR > 0) lines.push({ account: irXpagar._id, debit: 0, credit: +totIR.toFixed(2), description: 'Impuesto a la renta' });
+        const totPrest = p.items.reduce((s, i) => s + (i.prestamoEmpresa || 0), 0);
+        if (totPrest > 0) lines.push({ account: prestEmpresaXcobrar._id, debit: 0, credit: +totPrest.toFixed(2), description: 'Prestamos empleados' });
+        if (totProvBen > 0) lines.push({ account: provisiones._id, debit: 0, credit: +totProvBen.toFixed(2), description: 'Provisiones por pagar' });
+        if (p.totalNeto > 0) lines.push({ account: sueldosXpagar._id, debit: 0, credit: +p.totalNeto.toFixed(2), description: 'Sueldos por pagar' });
+
+        const entry = await createEntry({
+          clinicId: req.clinicId,
+          date: payrollDate,
+          description: `Rol de pagos ${p.period}`,
+          source: 'NOMINA',
+          sourceRef: p._id,
+          sourceModel: 'Payroll',
+          sourceAction: 'CLOSE',
+          lines,
+          userId: req.user._id,
+          session,
+        });
+
+        for (const it of p.items) {
+          if (it.prestamoEmpresa > 0) {
+            const loans = await EmployeeLoan.find({ clinic: req.clinicId, employee: it.employee, status: 'ACTIVO' }).session(session);
+            let remaining = it.prestamoEmpresa;
+            for (const loan of loans) {
+              for (const inst of loan.installments) {
+                if (inst.paid || remaining <= 0) continue;
+                if (inst.amount <= remaining + 0.01) {
+                  inst.paid = true;
+                  inst.paidIn = p.period;
+                  inst.paidAt = new Date();
+                  loan.paidAmount = +(loan.paidAmount + inst.amount).toFixed(2);
+                  loan.balance = +(loan.principal - loan.paidAmount).toFixed(2);
+                  remaining -= inst.amount;
+                }
+              }
+              if (loan.balance <= 0.01) loan.status = 'CANCELADO';
+              await loan.save({ session });
+              if (remaining <= 0) break;
+            }
+          }
+        }
+
+        p.status = 'CERRADO';
+        p.journalEntry = entry._id;
+        p.closedAt = new Date();
+        p.closedBy = req.user._id;
+        await p.save({ session });
+        return p._id;
+      });
+      const payroll = await Payroll.findById(payrollId);
+      return res.json(payroll);
+    }
+
     const p = await Payroll.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!p) return res.status(404).json({ message: 'No encontrado' });
     if (p.status !== 'BORRADOR') return res.status(400).json({ message: 'No es borrador' });

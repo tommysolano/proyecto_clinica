@@ -13,7 +13,8 @@ const ACCOUNT_ROLES = {
   clientes:             { group: 'Activo',  label: 'Clientes (CxC)',            code: '1.1.02.01' },
   tarjetasPorLiquidar:  { group: 'Activo',  label: 'Tarjetas por liquidar',     code: '1.1.02.02' },
   anticipoProveedores:  { group: 'Activo',  label: 'Anticipos a proveedores',   code: '1.1.02.03' },
-  ivaCompras:           { group: 'Activo',  label: 'IVA en compras',            taxCode: 'IVA_COMPRAS' },
+  ivaCompras:           { group: 'Activo',  label: 'IVA en compras (crédito tributario)', taxCode: 'IVA_COMPRAS' },
+  ivaComprasNoCredito:  { group: 'Gasto',   label: 'IVA que se carga al gasto (no recuperable)', code: '6.3.03' },
   retIvaPorCobrar:      { group: 'Activo',  label: 'Retención IVA por cobrar',  code: '1.1.03.02' },
   retRentaPorCobrar:    { group: 'Activo',  label: 'Retención Renta por cobrar', code: '1.1.03.03' },
   anticipoIR:           { group: 'Activo',  label: 'Anticipo Impuesto a la Renta', code: '1.1.03.04' },
@@ -21,6 +22,7 @@ const ACCOUNT_ROLES = {
 
   proveedores:          { group: 'Pasivo',  label: 'Proveedores (CxP)',         code: '2.1.01.01' },
   comisionesPorPagar:   { group: 'Pasivo',  label: 'Comisiones por pagar (personal)', code: '2.1.01.02' },
+  anticipoClientes:     { group: 'Pasivo',  label: 'Anticipos de clientes',     code: '2.1.01.03' },
   ivaVentas:            { group: 'Pasivo',  label: 'IVA en ventas',             taxCode: 'IVA_VENTAS' },
   ivaPorPagar:          { group: 'Pasivo',  label: 'IVA por pagar',             code: '2.1.02.02' },
   retIvaPorPagar:       { group: 'Pasivo',  label: 'Retención IVA por pagar',   code: '2.1.02.03' },
@@ -51,21 +53,21 @@ const ACCOUNT_ROLES = {
  * Resuelve la cuenta contable para un rol: primero busca la configurada por el
  * contador; si no, cae al código/taxCode por defecto del catálogo.
  */
-async function getAccount(clinicId, role) {
+async function getAccount(clinicId, role, options = {}) {
   const def = ACCOUNT_ROLES[role];
   if (!def) throw Object.assign(new Error(`Rol de cuenta desconocido: ${role}`), { status: 400 });
-  const cfg = await AccountingConfig.findOne({ clinic: clinicId });
+  const cfg = await AccountingConfig.findOne({ clinic: clinicId }).session(options.session || null);
   const mappedId = cfg?.accounts?.get?.(role);
   if (mappedId) {
-    const acc = await ChartOfAccount.findOne({ _id: mappedId, clinic: clinicId });
+    const acc = await ChartOfAccount.findOne({ _id: mappedId, clinic: clinicId }).session(options.session || null);
     if (acc) return acc;
   }
-  if (def.taxCode) return findAccount(clinicId, { taxCode: def.taxCode });
+  if (def.taxCode) return findAccount(clinicId, { taxCode: def.taxCode }, options);
   // Para roles por código: crea la cuenta del plan estándar si aún no existe
   // (clínicas antiguas), garantizando que la contabilidad automática no falle.
-  const ensured = await ensureAccountByCode(clinicId, def.code);
+  const ensured = await ensureAccountByCode(clinicId, def.code, options);
   if (ensured) return ensured;
-  return findAccount(clinicId, { code: def.code });
+  return findAccount(clinicId, { code: def.code }, options);
 }
 
 module.exports = { ACCOUNT_ROLES, getAccount };

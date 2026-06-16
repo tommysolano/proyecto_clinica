@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const ChartOfAccount = require('../models/ChartOfAccount');
 const FiscalPeriod = require('../models/FiscalPeriod');
 const JournalEntry = require('../models/JournalEntry');
@@ -5,11 +6,29 @@ const Counter = require('../models/Counter');
 const AccountBalance = require('../models/AccountBalance');
 const defaultPlan = require('./defaultChartOfAccounts');
 
-/**
- * Aplica los movimientos de un asiento a los saldos materializados por período.
- * sign = +1 al contabilizar, -1 si se necesitara revertir el efecto.
- */
-async function applyToBalances(clinicId, date, lines, sign = 1) {
+function withSession(query, session) {
+  return session ? query.session(session) : query;
+}
+
+function createWithSession(Model, doc, session) {
+  return Model.create([doc], session ? { session } : {}).then((docs) => docs[0]);
+}
+
+async function runInTransaction(work, { session } = {}) {
+  if (session) return work(session);
+  const ownSession = await mongoose.startSession();
+  try {
+    let result;
+    await ownSession.withTransaction(async () => {
+      result = await work(ownSession);
+    });
+    return result;
+  } finally {
+    await ownSession.endSession();
+  }
+}
+
+async function applyToBalances(clinicId, date, lines, sign = 1, options = {}) {
   const d = new Date(date);
   const year = d.getFullYear();
   const month = d.getMonth() + 1;
@@ -18,54 +37,50 @@ async function applyToBalances(clinicId, date, lines, sign = 1) {
     .map((l) => ({
       updateOne: {
         filter: { clinic: clinicId, account: l.account, year, month },
-        update: { $inc: { debit: sign * (Number(l.debit) || 0), credit: sign * (Number(l.credit) || 0) } },
+        update: {
+          $inc: {
+            debit: sign * (Number(l.debit) || 0),
+            credit: sign * (Number(l.credit) || 0),
+          },
+        },
         upsert: true,
       },
     }));
-  if (ops.length) {
-    try { await AccountBalance.bulkWrite(ops); } catch (e) { /* no bloquear el asiento por el cache de saldos */ }
-  }
+  if (ops.length) await AccountBalance.bulkWrite(ops, options.session ? { session: options.session } : {});
 }
 
-/**
- * Obtiene/crea el período fiscal correspondiente a la fecha indicada.
- * No reabre períodos cerrados; en ese caso retorna el existente.
- */
-async function getOrCreatePeriod(clinicId, date = new Date()) {
+async function getOrCreatePeriod(clinicId, date = new Date(), options = {}) {
   const d = new Date(date);
   const year = d.getFullYear();
   const month = d.getMonth() + 1;
-  let p = await FiscalPeriod.findOne({ clinic: clinicId, year, month });
-  if (!p) {
-    p = await FiscalPeriod.create({ clinic: clinicId, year, month, status: 'ABIERTO' });
+  let period = await withSession(FiscalPeriod.findOne({ clinic: clinicId, year, month }), options.session);
+  if (period) return period;
+
+  try {
+    period = await createWithSession(FiscalPeriod, { clinic: clinicId, year, month, status: 'ABIERTO' }, options.session);
+  } catch (e) {
+    if (e.code !== 11000) throw e;
+    period = await withSession(FiscalPeriod.findOne({ clinic: clinicId, year, month }), options.session);
   }
-  return p;
+  return period;
 }
 
-/** Garantiza que el período asociado a la fecha esté ABIERTO. */
-async function assertPeriodOpen(clinicId, date) {
-  const p = await getOrCreatePeriod(clinicId, date);
-  if (p.status !== 'ABIERTO') {
-    const err = new Error(`Período ${p.year}-${String(p.month).padStart(2, '0')} no está abierto`);
+async function assertPeriodOpen(clinicId, date, options = {}) {
+  const period = await getOrCreatePeriod(clinicId, date, options);
+  if (period.status !== 'ABIERTO') {
+    const err = new Error(`Periodo ${period.year}-${String(period.month).padStart(2, '0')} no esta abierto`);
     err.status = 400;
     throw err;
   }
-  return p;
+  return period;
 }
 
-/**
- * Crea/actualiza el plan de cuentas por defecto para una clínica.
- * Es idempotente y *aditivo*: si la clínica ya tiene cuentas, solo agrega las
- * que falten del plan estándar (por código) sin tocar las existentes. Esto
- * permite incorporar cuentas nuevas del catálogo a clínicas ya creadas.
- */
-async function seedChartOfAccounts(clinicId) {
-  const existingDocs = await ChartOfAccount.find({ clinic: clinicId }).select('code');
+async function seedChartOfAccounts(clinicId, options = {}) {
+  const existingDocs = await withSession(ChartOfAccount.find({ clinic: clinicId }).select('code'), options.session);
   const existingCodes = new Set(existingDocs.map((d) => d.code));
   const missing = defaultPlan.filter((a) => !existingCodes.has(a.code));
   if (!missing.length) return { created: 0, skipped: existingCodes.size };
 
-  // Crear las cuentas faltantes (sin parent), luego asignar parent por código.
   const docs = missing.map((a) => ({
     clinic: clinicId,
     code: a.code,
@@ -77,45 +92,39 @@ async function seedChartOfAccounts(clinicId) {
     level: a.code.split('.').length,
     isSystem: true,
   }));
-  const created = await ChartOfAccount.insertMany(docs);
-  // Mapa código→id de TODAS las cuentas (existentes + nuevas) para enlazar padres.
-  const all = await ChartOfAccount.find({ clinic: clinicId }).select('code');
+  const created = await ChartOfAccount.insertMany(docs, options.session ? { session: options.session } : {});
+  const all = await withSession(ChartOfAccount.find({ clinic: clinicId }).select('code'), options.session);
   const byCode = new Map(all.map((c) => [c.code, c._id]));
   const updates = [];
   for (const c of created) {
     const parts = c.code.split('.');
     if (parts.length > 1) {
-      const parentCode = parts.slice(0, -1).join('.');
-      const parentId = byCode.get(parentCode);
+      const parentId = byCode.get(parts.slice(0, -1).join('.'));
       if (parentId) updates.push({ updateOne: { filter: { _id: c._id }, update: { parent: parentId } } });
     }
   }
-  if (updates.length) await ChartOfAccount.bulkWrite(updates);
+  if (updates.length) await ChartOfAccount.bulkWrite(updates, options.session ? { session: options.session } : {});
   return { created: created.length, skipped: existingCodes.size };
 }
 
-/**
- * Busca una cuenta por código y, si no existe pero está definida en el plan
- * estándar, la crea sobre la marcha (enlazando su cuenta padre). Garantiza que
- * las cuentas usadas por la contabilidad automática siempre estén disponibles,
- * incluso en clínicas creadas antes de incorporarse la cuenta al catálogo.
- * Devuelve null si el código no pertenece al plan estándar.
- */
-async function ensureAccountByCode(clinicId, code) {
-  let acc = await ChartOfAccount.findOne({ clinic: clinicId, code });
+async function ensureAccountByCode(clinicId, code, options = {}) {
+  let acc = await withSession(ChartOfAccount.findOne({ clinic: clinicId, code }), options.session);
   if (acc) return acc;
+
   const def = defaultPlan.find((a) => a.code === code);
   if (!def) return null;
+
   const parts = code.split('.');
   let parentId = null;
   if (parts.length > 1) {
     const parentCode = parts.slice(0, -1).join('.');
-    const parent = (await ChartOfAccount.findOne({ clinic: clinicId, code: parentCode }))
-      || (await ensureAccountByCode(clinicId, parentCode));
+    const parent = (await withSession(ChartOfAccount.findOne({ clinic: clinicId, code: parentCode }), options.session))
+      || (await ensureAccountByCode(clinicId, parentCode, options));
     parentId = parent?._id || null;
   }
+
   try {
-    acc = await ChartOfAccount.create({
+    acc = await createWithSession(ChartOfAccount, {
       clinic: clinicId,
       code: def.code,
       name: def.name,
@@ -126,21 +135,19 @@ async function ensureAccountByCode(clinicId, code) {
       level: parts.length,
       parent: parentId,
       isSystem: true,
-    });
+    }, options.session);
     return acc;
   } catch (e) {
-    // Creada en paralelo por otra petición (índice único clinic+code): la reusamos.
-    if (e.code === 11000) return ChartOfAccount.findOne({ clinic: clinicId, code });
+    if (e.code === 11000) return withSession(ChartOfAccount.findOne({ clinic: clinicId, code }), options.session);
     throw e;
   }
 }
 
-/** Resuelve una cuenta por taxCode o por code. Lanza si no existe. */
-async function findAccount(clinicId, { code, taxCode }) {
+async function findAccount(clinicId, { code, taxCode }, options = {}) {
   const q = { clinic: clinicId };
   if (taxCode) q.taxCode = taxCode;
   else if (code) q.code = code;
-  const acc = await ChartOfAccount.findOne(q);
+  const acc = await withSession(ChartOfAccount.findOne(q), options.session);
   if (!acc) {
     const err = new Error(`Cuenta contable no encontrada: ${code || taxCode}`);
     err.status = 400;
@@ -149,75 +156,77 @@ async function findAccount(clinicId, { code, taxCode }) {
   return acc;
 }
 
-/**
- * Genera número correlativo de asiento por clínica y año de forma ATÓMICA
- * usando un contador (evita duplicados/huecos bajo concurrencia).
- * La primera vez para un año se inicializa con el máximo existente.
- */
-async function nextEntryNumber(clinicId, date = new Date()) {
+async function nextEntryNumber(clinicId, date = new Date(), options = {}) {
   const year = new Date(date).getFullYear();
   const key = `journal-${year}`;
   const prefix = `AS-${year}-`;
-  let counter = await Counter.findOne({ clinic: clinicId, key });
+  let counter = await withSession(Counter.findOne({ clinic: clinicId, key }), options.session);
   if (!counter) {
-    // Inicializar con el máximo número existente (migración suave de datos previos)
-    const last = await JournalEntry.findOne({ clinic: clinicId, number: new RegExp(`^${prefix}`) })
-      .sort({ number: -1 })
-      .select('number');
+    const last = await withSession(
+      JournalEntry.findOne({ clinic: clinicId, number: new RegExp(`^${prefix}`) })
+        .sort({ number: -1 })
+        .select('number'),
+      options.session
+    );
     let start = 0;
     if (last) {
       const m = last.number.match(/(\d+)$/);
-      if (m) start = parseInt(m[1]);
+      if (m) start = parseInt(m[1], 10);
     }
     try {
-      await Counter.create({ clinic: clinicId, key, seq: start });
+      await createWithSession(Counter, { clinic: clinicId, key, seq: start }, options.session);
     } catch (e) {
-      // creado en paralelo por otra petición; se ignora
+      if (e.code !== 11000) throw e;
     }
   }
-  const updated = await Counter.findOneAndUpdate(
-    { clinic: clinicId, key },
-    { $inc: { seq: 1 } },
-    { new: true, upsert: true }
+  const updated = await withSession(
+    Counter.findOneAndUpdate(
+      { clinic: clinicId, key },
+      { $inc: { seq: 1 } },
+      { new: true, upsert: true }
+    ),
+    options.session
   );
   return `${prefix}${String(updated.seq).padStart(6, '0')}`;
 }
 
-/**
- * Crea un asiento contable validando partida doble.
- * lines: [{ accountCode?|account?, costCenter?, description?, debit, credit }]
- */
-async function createEntry({ clinicId, date, description, source, sourceRef, sourceModel, lines, userId }) {
+async function resolveEntryLines(clinicId, lines, options = {}) {
   if (!Array.isArray(lines) || lines.length < 2) {
-    const err = new Error('El asiento debe tener al menos 2 líneas');
+    const err = new Error('El asiento debe tener al menos 2 lineas');
     err.status = 400;
     throw err;
   }
-  const period = await assertPeriodOpen(clinicId, date);
 
-  // Hidratar cuentas si vienen por code
   const resolved = [];
   for (const l of lines) {
     let acc = null;
     if (l.account) {
-      acc = await ChartOfAccount.findOne({ _id: l.account, clinic: clinicId });
+      acc = await withSession(ChartOfAccount.findOne({ _id: l.account, clinic: clinicId }), options.session);
     } else if (l.accountCode) {
-      acc = await ChartOfAccount.findOne({ code: l.accountCode, clinic: clinicId });
+      acc = await withSession(ChartOfAccount.findOne({ code: l.accountCode, clinic: clinicId }), options.session);
     }
     if (!acc) {
       const err = new Error(`Cuenta no encontrada: ${l.accountCode || l.account}`);
       err.status = 400;
       throw err;
     }
-    if (!acc.allowsMovement) {
-      const err = new Error(`Cuenta ${acc.code} no admite movimientos (es agrupadora)`);
+    if (!acc.active) {
+      const err = new Error(`Cuenta ${acc.code} esta inactiva`);
       err.status = 400;
       throw err;
     }
-    const debit = Number(l.debit) || 0;
-    const credit = Number(l.credit) || 0;
+    if (!acc.allowsMovement) {
+      const err = new Error(`Cuenta ${acc.code} no admite movimientos`);
+      err.status = 400;
+      throw err;
+    }
+
+    const debit = +((Number(l.debit) || 0).toFixed(2));
+    const credit = +((Number(l.credit) || 0).toFixed(2));
     if (debit < 0 || credit < 0) throw Object.assign(new Error('Importes negativos no permitidos'), { status: 400 });
-    if (debit > 0 && credit > 0) throw Object.assign(new Error('Una línea no puede tener débito y crédito'), { status: 400 });
+    if (debit > 0 && credit > 0) throw Object.assign(new Error('Una linea no puede tener debito y credito'), { status: 400 });
+    if (debit === 0 && credit === 0) throw Object.assign(new Error('Una linea debe tener debito o credito'), { status: 400 });
+
     resolved.push({
       account: acc._id,
       accountCode: acc.code,
@@ -228,89 +237,154 @@ async function createEntry({ clinicId, date, description, source, sourceRef, sou
       credit,
     });
   }
-  const totalDebit = resolved.reduce((s, l) => s + l.debit, 0);
-  const totalCredit = resolved.reduce((s, l) => s + l.credit, 0);
+
+  const totalDebit = +resolved.reduce((s, l) => s + l.debit, 0).toFixed(2);
+  const totalCredit = +resolved.reduce((s, l) => s + l.credit, 0).toFixed(2);
   if (Math.abs(totalDebit - totalCredit) > 0.01) {
-    const err = new Error(`Asiento descuadrado: débito ${totalDebit.toFixed(2)} ≠ crédito ${totalCredit.toFixed(2)}`);
+    const err = new Error(`Asiento descuadrado: debito ${totalDebit.toFixed(2)} != credito ${totalCredit.toFixed(2)}`);
     err.status = 400;
     throw err;
   }
-  const number = await nextEntryNumber(clinicId, date);
-  const entry = await JournalEntry.create({
-    clinic: clinicId,
-    number,
-    date,
-    period: period._id,
-    description: description || '',
-    source: source || 'MANUAL',
-    sourceRef: sourceRef || null,
-    sourceModel: sourceModel || null,
-    lines: resolved,
-    totalDebit,
-    totalCredit,
-    status: 'CONTABILIZADO',
-    createdBy: userId || null,
-  });
-  await applyToBalances(clinicId, date, entry.lines, 1);
-  return entry;
+  return { resolved, totalDebit, totalCredit };
 }
 
-/** Reversa (storno) de un asiento: crea otro con débitos/créditos invertidos. */
-async function reverseEntry({ clinicId, entryId, userId, reason }) {
-  const orig = await JournalEntry.findOne({ _id: entryId, clinic: clinicId });
+async function findExistingSourceEntry({ clinicId, sourceModel, sourceRef, sourceAction }, options = {}) {
+  if (!sourceModel || !sourceRef || !sourceAction) return null;
+  return withSession(
+    JournalEntry.findOne({
+      clinic: clinicId,
+      sourceModel,
+      sourceRef,
+      sourceAction,
+      status: 'CONTABILIZADO',
+    }),
+    options.session
+  );
+}
+
+async function createEntry({
+  clinicId,
+  date,
+  description,
+  source,
+  sourceRef,
+  sourceModel,
+  sourceAction,
+  lines,
+  userId,
+  allowExisting = true,
+  session,
+}) {
+  const entryDate = date ? new Date(date) : new Date();
+  const action = sourceModel && sourceRef ? (sourceAction || 'POST') : (sourceAction || null);
+
+  const existing = allowExisting
+    ? await findExistingSourceEntry({ clinicId, sourceModel, sourceRef, sourceAction: action }, { session })
+    : null;
+  if (existing) return existing;
+
+  const period = await assertPeriodOpen(clinicId, entryDate, { session });
+  const { resolved, totalDebit, totalCredit } = await resolveEntryLines(clinicId, lines, { session });
+  const number = await nextEntryNumber(clinicId, entryDate, { session });
+
+  try {
+    const entry = await createWithSession(JournalEntry, {
+      clinic: clinicId,
+      number,
+      date: entryDate,
+      period: period._id,
+      description: description || '',
+      source: source || 'MANUAL',
+      sourceRef: sourceRef || null,
+      sourceModel: sourceModel || null,
+      sourceAction: action,
+      lines: resolved,
+      totalDebit,
+      totalCredit,
+      status: 'CONTABILIZADO',
+      createdBy: userId || null,
+    }, session);
+    await applyToBalances(clinicId, entryDate, entry.lines, 1, { session });
+    return entry;
+  } catch (e) {
+    if (e.code === 11000) {
+      const duplicated = await findExistingSourceEntry({ clinicId, sourceModel, sourceRef, sourceAction: action }, { session });
+      if (duplicated) return duplicated;
+    }
+    throw e;
+  }
+}
+
+async function reverseEntry({ clinicId, entryId, userId, reason, date, session }) {
+  const reversalDate = date ? new Date(date) : new Date();
+  const orig = await withSession(JournalEntry.findOne({ _id: entryId, clinic: clinicId }), session);
   if (!orig) throw Object.assign(new Error('Asiento no encontrado'), { status: 404 });
-  if (orig.status === 'ANULADO') throw Object.assign(new Error('Ya fue anulado'), { status: 400 });
+  if (orig.status !== 'CONTABILIZADO') throw Object.assign(new Error('Solo se reversan asientos contabilizados'), { status: 400 });
+  if (orig.isReversed || orig.reversedBy) throw Object.assign(new Error('El asiento ya fue reversado'), { status: 400 });
+  if (orig.reverses) throw Object.assign(new Error('No se puede reversar un asiento de reverso'), { status: 400 });
+
   const inverted = orig.lines.map((l) => ({
     account: l.account,
-    accountCode: l.accountCode,
-    accountName: l.accountName,
     costCenter: l.costCenter,
-    description: `Reversión: ${l.description || ''}`,
+    description: `Reversion: ${l.description || orig.description || orig.number}`,
     debit: l.credit,
     credit: l.debit,
   }));
-  const period = await assertPeriodOpen(clinicId, new Date());
-  const number = await nextEntryNumber(clinicId, new Date());
-  const rev = await JournalEntry.create({
-    clinic: clinicId,
-    number,
-    date: new Date(),
-    period: period._id,
-    description: `REVERSIÓN ${orig.number} — ${reason || ''}`,
+
+  const rev = await createEntry({
+    clinicId,
+    date: reversalDate,
+    description: `REVERSO ${orig.number}${reason ? ` - ${reason}` : ''}`,
     source: 'AJUSTE',
     sourceRef: orig._id,
     sourceModel: 'JournalEntry',
+    sourceAction: 'REVERSAL',
     lines: inverted,
-    totalDebit: orig.totalCredit,
-    totalCredit: orig.totalDebit,
-    status: 'CONTABILIZADO',
-    reverses: orig._id,
-    createdBy: userId,
+    userId,
+    allowExisting: false,
+    session,
   });
-  orig.status = 'ANULADO';
+
+  rev.reverses = orig._id;
+  rev.reversalReason = reason || '';
+  await rev.save({ session });
+
+  orig.isReversed = true;
   orig.reversedBy = rev._id;
-  await orig.save();
-  await applyToBalances(clinicId, rev.date, rev.lines, 1);
+  orig.reversedAt = reversalDate;
+  orig.reversalReason = reason || '';
+  await orig.save({ session });
   return rev;
 }
 
-/** Reconstruye AccountBalance desde cero a partir de los asientos contabilizados. */
-async function recomputeBalances(clinicId) {
-  await AccountBalance.deleteMany({ clinic: clinicId });
+async function recomputeBalances(clinicId, options = {}) {
+  await AccountBalance.deleteMany({ clinic: clinicId }).session(options.session || null);
+  const clinicObjectId = mongoose.Types.ObjectId.createFromHexString(String(clinicId));
   const agg = await JournalEntry.aggregate([
-    { $match: { clinic: new (require('mongoose').Types.ObjectId)(clinicId), status: 'CONTABILIZADO' } },
+    { $match: { clinic: clinicObjectId, status: 'CONTABILIZADO' } },
     { $unwind: '$lines' },
-    { $group: {
-      _id: { account: '$lines.account', year: { $year: '$date' }, month: { $month: '$date' } },
-      debit: { $sum: '$lines.debit' }, credit: { $sum: '$lines.credit' },
-    } },
-  ]);
-  const docs = agg.map((r) => ({ clinic: clinicId, account: r._id.account, year: r._id.year, month: r._id.month, debit: r.debit, credit: r.credit }));
-  if (docs.length) await AccountBalance.insertMany(docs);
+    {
+      $group: {
+        _id: { account: '$lines.account', year: { $year: '$date' }, month: { $month: '$date' } },
+        debit: { $sum: '$lines.debit' },
+        credit: { $sum: '$lines.credit' },
+      },
+    },
+  ]).session(options.session || null);
+  const docs = agg.map((r) => ({
+    clinic: clinicId,
+    account: r._id.account,
+    year: r._id.year,
+    month: r._id.month,
+    debit: +Number(r.debit || 0).toFixed(2),
+    credit: +Number(r.credit || 0).toFixed(2),
+  }));
+  if (docs.length) await AccountBalance.insertMany(docs, options.session ? { session: options.session } : {});
   return docs.length;
 }
 
 module.exports = {
+  runInTransaction,
   getOrCreatePeriod,
   assertPeriodOpen,
   seedChartOfAccounts,
@@ -321,4 +395,5 @@ module.exports = {
   nextEntryNumber,
   applyToBalances,
   recomputeBalances,
+  resolveEntryLines,
 };

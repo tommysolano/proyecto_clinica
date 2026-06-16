@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 const CashClosing = require('../models/CashClosing');
 const Sale = require('../models/Sale');
-const { createEntry } = require('../utils/accounting');
+const { createEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 
 const oid = (v) => new mongoose.Types.ObjectId(v);
@@ -91,15 +91,15 @@ exports.list = async (req, res) => {
  * motivo para avisar al usuario en vez de fallar en silencio. El cierre físico
  * de caja NO se bloquea por esto.
  */
-const postDifferenceEntry = async (clinicId, closing, userId) => {
+const postDifferenceEntry = async (clinicId, closing, userId, session) => {
   const diff = closing.difference;
   if (!diff || Math.abs(diff) < 0.01) return { entry: null, error: null };
-  try {
-    const caja = await getAccount(clinicId, 'caja');
+  await assertPeriodOpen(clinicId, closing.closedAt || new Date(), { session });
+  const caja = await getAccount(clinicId, 'caja', { session });
     let lines;
     if (diff < 0) {
       // Faltante: pérdida (gasto) contra caja
-      const faltante = await getAccount(clinicId, 'faltanteCaja');
+      const faltante = await getAccount(clinicId, 'faltanteCaja', { session });
       const amount = +Math.abs(diff).toFixed(2);
       lines = [
         { account: faltante._id, debit: amount, credit: 0, description: 'Faltante de caja' },
@@ -107,7 +107,7 @@ const postDifferenceEntry = async (clinicId, closing, userId) => {
       ];
     } else {
       // Sobrante: ingreso contra caja
-      const sobrante = await getAccount(clinicId, 'sobranteCaja');
+      const sobrante = await getAccount(clinicId, 'sobranteCaja', { session });
       const amount = +diff.toFixed(2);
       lines = [
         { account: caja._id, debit: amount, credit: 0, description: 'Sobrante de caja' },
@@ -117,19 +117,47 @@ const postDifferenceEntry = async (clinicId, closing, userId) => {
     const entry = await createEntry({
       clinicId, date: closing.closedAt || new Date(),
       description: `Ajuste cierre de caja ${closing.date.toISOString().slice(0, 10)}`,
-      source: 'CIERRE', sourceRef: closing._id, sourceModel: 'CashClosing',
-      lines, userId,
+      source: 'CIERRE', sourceRef: closing._id, sourceModel: 'CashClosing', sourceAction: 'DIFFERENCE',
+      lines, userId, session,
     });
-    return { entry, error: null };
-  } catch (e) {
-    console.warn('No se pudo generar asiento de diferencia de caja:', e.message);
-    return { entry: null, error: e.message };
-  }
+  return { entry, error: null };
 };
 
 /** Cierra la caja abierta indicada: cuenta efectivo y registra la diferencia. */
 exports.close = async (req, res) => {
   try {
+    {
+      const closingId = await runInTransaction(async (session) => {
+        const closing = await CashClosing.findOne({ _id: req.params.id, clinic: req.clinicId, status: 'ABIERTA' }).session(session);
+        if (!closing) throw Object.assign(new Error('Caja abierta no encontrada'), { status: 404 });
+
+        const closedAt = new Date();
+        const { byMethod, salesCount, totalSales } = await salesByMethod(req.clinicId, closing.openedAt, closedAt);
+        const countedCash = Number(req.body.countedCash) || 0;
+        const expectedCash = +((closing.openingBalance || 0) + byMethod.efectivo).toFixed(2);
+        const difference = +(countedCash - expectedCash).toFixed(2);
+
+        closing.closedAt = closedAt;
+        closing.closedBy = req.user._id;
+        closing.expectedCash = expectedCash;
+        closing.countedCash = countedCash;
+        closing.difference = difference;
+        closing.byMethod = byMethod;
+        closing.salesCount = salesCount;
+        closing.totalSales = totalSales;
+        closing.denominations = req.body.denominations || [];
+        if (req.body.notes) closing.notes = req.body.notes;
+        closing.status = 'CERRADO';
+
+        const { entry } = await postDifferenceEntry(req.clinicId, closing, req.user._id, session);
+        if (entry) closing.journalEntry = entry._id;
+        await closing.save({ session });
+        return closing._id;
+      });
+      const closing = await CashClosing.findById(closingId);
+      return res.json({ ...closing.toObject(), accountingWarning: null });
+    }
+
     const closing = await CashClosing.findOne({ _id: req.params.id, clinic: req.clinicId, status: 'ABIERTA' });
     if (!closing) return res.status(404).json({ message: 'Caja abierta no encontrada' });
 
@@ -165,6 +193,40 @@ exports.close = async (req, res) => {
 /** Cierre directo (legacy de un solo paso, por día). Mantiene compatibilidad. */
 exports.create = async (req, res) => {
   try {
+    {
+      const closingId = await runInTransaction(async (session) => {
+        const { date, openingBalance = 0, countedCash = 0, denominations = [], notes = '' } = req.body;
+        const { start, end } = dayRange(date);
+        const { byMethod, salesCount, totalSales } = await salesByMethod(req.clinicId, start, end);
+        const expectedCash = +((Number(openingBalance) || 0) + byMethod.efectivo).toFixed(2);
+        const difference = +((Number(countedCash) || 0) - expectedCash).toFixed(2);
+        const [closing] = await CashClosing.create([{
+          clinic: req.clinicId,
+          date: start,
+          closedAt: new Date(),
+          openingBalance: Number(openingBalance) || 0,
+          expectedCash,
+          countedCash: Number(countedCash) || 0,
+          difference,
+          byMethod,
+          salesCount,
+          totalSales,
+          denominations,
+          notes,
+          status: 'CERRADO',
+          closedBy: req.user._id,
+        }], { session });
+        const { entry } = await postDifferenceEntry(req.clinicId, closing, req.user._id, session);
+        if (entry) {
+          closing.journalEntry = entry._id;
+          await closing.save({ session });
+        }
+        return closing._id;
+      });
+      const closing = await CashClosing.findById(closingId);
+      return res.status(201).json({ ...closing.toObject(), accountingWarning: null });
+    }
+
     const { date, openingBalance = 0, countedCash = 0, denominations = [], notes = '' } = req.body;
     const { start, end } = dayRange(date);
     const { byMethod, salesCount, totalSales } = await salesByMethod(req.clinicId, start, end);

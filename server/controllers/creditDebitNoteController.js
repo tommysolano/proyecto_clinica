@@ -1,7 +1,7 @@
 const CreditDebitNote = require('../models/CreditDebitNote');
 const Invoice = require('../models/Invoice');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
-const { createEntry, findAccount, reverseEntry } = require('../utils/accounting');
+const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 
 exports.list = async (req, res) => {
   const { kind, direction, startDate, endDate, page = 1, limit = 20 } = req.query;
@@ -15,82 +15,143 @@ exports.list = async (req, res) => {
   }
   const total = await CreditDebitNote.countDocuments(filter);
   const items = await CreditDebitNote.find(filter)
-    .sort({ fechaEmision: -1 }).skip((page - 1) * limit).limit(parseInt(limit));
-  res.json({ items, total, pages: Math.ceil(total / limit), currentPage: parseInt(page) });
+    .sort({ fechaEmision: -1 })
+    .skip((page - 1) * limit)
+    .limit(parseInt(limit, 10));
+  res.json({ items, total, pages: Math.ceil(total / limit), currentPage: parseInt(page, 10) });
 };
 
 exports.get = async (req, res) => {
-  const n = await CreditDebitNote.findOne({ _id: req.params.id, clinic: req.clinicId });
-  if (!n) return res.status(404).json({ message: 'No encontrada' });
-  res.json(n);
+  const note = await CreditDebitNote.findOne({ _id: req.params.id, clinic: req.clinicId });
+  if (!note) return res.status(404).json({ message: 'No encontrada' });
+  res.json(note);
 };
 
-/**
- * Crea NC/ND. Para emitidas (NC venta) genera asiento que reversa parcialmente la venta.
- */
+function affectedSerie(origin) {
+  return origin.serie || `${origin.estab || ''}-${origin.ptoEmi || ''}-${origin.secuencial || ''}`;
+}
+
+async function getOrigin(refModel, refDoc, clinicId, session) {
+  if (refModel === 'Invoice') return Invoice.findOne({ _id: refDoc, clinic: clinicId }).session(session);
+  if (refModel === 'PurchaseInvoice') return PurchaseInvoice.findOne({ _id: refDoc, clinic: clinicId }).session(session);
+  return null;
+}
+
 exports.create = async (req, res) => {
   try {
-    const { kind, direction, refModel, refDoc, motivo, items, subtotal, iva, total, fechaEmision, estab, ptoEmi, secuencial } = req.body;
-    if (!['NC', 'ND'].includes(kind)) return res.status(400).json({ message: 'kind inválido' });
-    if (!['EMITIDA', 'RECIBIDA'].includes(direction)) return res.status(400).json({ message: 'direction inválido' });
+    const noteId = await runInTransaction(async (session) => {
+      const { kind, direction, refModel, refDoc, motivo, items, subtotal, iva, total, fechaEmision, estab, ptoEmi, secuencial } = req.body;
+      if (!['NC', 'ND'].includes(kind)) throw Object.assign(new Error('kind invalido'), { status: 400 });
+      if (!['EMITIDA', 'RECIBIDA'].includes(direction)) throw Object.assign(new Error('direction invalido'), { status: 400 });
 
-    let origin = null;
-    if (refModel === 'Invoice') origin = await Invoice.findOne({ _id: refDoc, clinic: req.clinicId });
-    else origin = await PurchaseInvoice.findOne({ _id: refDoc, clinic: req.clinicId });
-    if (!origin) return res.status(404).json({ message: 'Documento referencia no encontrado' });
+      const noteDate = fechaEmision ? new Date(fechaEmision) : new Date();
+      await assertPeriodOpen(req.clinicId, noteDate, { session });
+      const noteSubtotal = +Number(subtotal || 0).toFixed(2);
+      const noteIva = +Number(iva || 0).toFixed(2);
+      const noteTotal = +Number(total || (noteSubtotal + noteIva)).toFixed(2);
+      if (noteTotal <= 0) throw Object.assign(new Error('Total de nota invalido'), { status: 400 });
 
-    const serie = `${estab || '001'}-${ptoEmi || '001'}-${secuencial || ''}`;
-    const note = await CreditDebitNote.create({
-      clinic: req.clinicId, kind, direction, refModel, refDoc,
-      serieAfecta: origin.serie || `${origin.estab}-${origin.ptoEmi}-${origin.secuencial}`,
-      fechaEmisionAfecta: origin.fechaEmision,
-      estab, ptoEmi, secuencial, serie,
-      fechaEmision: fechaEmision ? new Date(fechaEmision) : new Date(),
-      motivo, items: items || [], subtotal: subtotal || 0, iva: iva || 0, total: total || 0,
-      createdBy: req.user._id,
+      const origin = await getOrigin(refModel, refDoc, req.clinicId, session);
+      if (!origin) throw Object.assign(new Error('Documento referencia no encontrado'), { status: 404 });
+      if (origin.estado === 'ANULADA' || origin.status === 'ANULADA') {
+        throw Object.assign(new Error('No se puede emitir nota sobre documento anulado'), { status: 400 });
+      }
+      if (noteTotal > Number(origin.total || origin.importeTotal || 0) + 0.01) {
+        throw Object.assign(new Error('La nota no puede exceder el total del documento afectado'), { status: 400 });
+      }
+
+      const serie = `${estab || '001'}-${ptoEmi || '001'}-${secuencial || ''}`;
+      const [note] = await CreditDebitNote.create([{
+        clinic: req.clinicId,
+        kind,
+        direction,
+        refModel,
+        refDoc,
+        serieAfecta: affectedSerie(origin),
+        fechaEmisionAfecta: origin.fechaEmision,
+        estab,
+        ptoEmi,
+        secuencial,
+        serie,
+        fechaEmision: noteDate,
+        motivo,
+        items: items || [],
+        subtotal: noteSubtotal,
+        iva: noteIva,
+        total: noteTotal,
+        createdBy: req.user._id,
+      }], { session });
+
+      const lines = [];
+      if (kind === 'NC' && direction === 'EMITIDA') {
+        const ingreso = await findAccount(req.clinicId, { code: '4.1.02' }, { session });
+        const ivaV = await findAccount(req.clinicId, { taxCode: 'IVA_VENTAS' }, { session });
+        const clientes = await findAccount(req.clinicId, { code: '1.1.02.01' }, { session });
+        lines.push({ account: ingreso._id, debit: noteSubtotal, credit: 0, description: motivo });
+        if (noteIva) lines.push({ account: ivaV._id, debit: noteIva, credit: 0, description: 'IVA NC' });
+        lines.push({ account: clientes._id, debit: 0, credit: noteTotal, description: 'NC clientes' });
+        if (refModel === 'Invoice') {
+          origin.balance = Math.max(0, Number(origin.balance ?? origin.importeTotal ?? origin.total ?? 0) - noteTotal);
+          origin.paid = origin.balance <= 0.005;
+          await origin.save({ session });
+        }
+      } else if (kind === 'NC' && direction === 'RECIBIDA') {
+        const gasto = await findAccount(req.clinicId, { code: '6.1.99' }, { session });
+        const ivaC = await findAccount(req.clinicId, { taxCode: 'IVA_COMPRAS' }, { session });
+        const prov = await findAccount(req.clinicId, { code: '2.1.01.01' }, { session });
+        lines.push({ account: prov._id, debit: noteTotal, credit: 0, description: 'NC recibida' });
+        lines.push({ account: gasto._id, debit: 0, credit: noteSubtotal, description: motivo });
+        if (noteIva) lines.push({ account: ivaC._id, debit: 0, credit: noteIva, description: 'IVA NC' });
+        if (refModel === 'PurchaseInvoice') {
+          origin.balance = Math.max(0, Number(origin.balance ?? origin.total ?? 0) - noteTotal);
+          origin.paid = origin.balance <= 0.005;
+          if (origin.paid && origin.status !== 'ANULADA') origin.status = 'PAGADA';
+          await origin.save({ session });
+        }
+      } else if (kind === 'ND' && direction === 'EMITIDA') {
+        const ingreso = await findAccount(req.clinicId, { code: '4.2.02' }, { session });
+        const ivaV = await findAccount(req.clinicId, { taxCode: 'IVA_VENTAS' }, { session });
+        const clientes = await findAccount(req.clinicId, { code: '1.1.02.01' }, { session });
+        lines.push({ account: clientes._id, debit: noteTotal, credit: 0, description: 'ND clientes' });
+        lines.push({ account: ingreso._id, debit: 0, credit: noteSubtotal, description: motivo });
+        if (noteIva) lines.push({ account: ivaV._id, debit: 0, credit: noteIva, description: 'IVA ND' });
+        if (refModel === 'Invoice') {
+          origin.balance = +(Number(origin.balance || 0) + noteTotal).toFixed(2);
+          origin.paid = false;
+          await origin.save({ session });
+        }
+      } else {
+        const gasto = await findAccount(req.clinicId, { code: '6.1.99' }, { session });
+        const ivaC = await findAccount(req.clinicId, { taxCode: 'IVA_COMPRAS' }, { session });
+        const prov = await findAccount(req.clinicId, { code: '2.1.01.01' }, { session });
+        lines.push({ account: gasto._id, debit: noteSubtotal, credit: 0, description: motivo });
+        if (noteIva) lines.push({ account: ivaC._id, debit: noteIva, credit: 0, description: 'IVA ND' });
+        lines.push({ account: prov._id, debit: 0, credit: noteTotal, description: 'ND recibida' });
+        if (refModel === 'PurchaseInvoice') {
+          origin.balance = +(Number(origin.balance || 0) + noteTotal).toFixed(2);
+          origin.paid = false;
+          if (origin.status === 'PAGADA') origin.status = 'REGISTRADA';
+          await origin.save({ session });
+        }
+      }
+
+      const entry = await createEntry({
+        clinicId: req.clinicId,
+        date: note.fechaEmision,
+        description: `${kind} ${direction} ${note.serie} - ${motivo || ''}`,
+        source: kind,
+        sourceRef: note._id,
+        sourceModel: 'CreditDebitNote',
+        sourceAction: 'POST',
+        lines,
+        userId: req.user._id,
+        session,
+      });
+      note.journalEntry = entry._id;
+      await note.save({ session });
+      return note._id;
     });
-
-    // Asiento contable
-    const lines = [];
-    if (kind === 'NC' && direction === 'EMITIDA') {
-      // Disminuir ingresos y IVA en ventas, y disminuir CxC clientes
-      const ingreso = await findAccount(req.clinicId, { code: '4.1.02' });
-      const ivaV = await findAccount(req.clinicId, { taxCode: 'IVA_VENTAS' });
-      const clientes = await findAccount(req.clinicId, { code: '1.1.02.01' });
-      lines.push({ account: ingreso._id, debit: subtotal || 0, credit: 0, description: motivo });
-      if (iva) lines.push({ account: ivaV._id, debit: iva, credit: 0, description: 'IVA NC' });
-      lines.push({ account: clientes._id, debit: 0, credit: total || 0, description: 'NC clientes' });
-    } else if (kind === 'NC' && direction === 'RECIBIDA') {
-      // Disminuye gasto/inventario, disminuye IVA compras, disminuye CxP
-      const gasto = await findAccount(req.clinicId, { code: '6.1.99' });
-      const ivaC = await findAccount(req.clinicId, { taxCode: 'IVA_COMPRAS' });
-      const prov = await findAccount(req.clinicId, { code: '2.1.01.01' });
-      lines.push({ account: prov._id, debit: total || 0, credit: 0, description: 'NC recibida' });
-      lines.push({ account: gasto._id, debit: 0, credit: subtotal || 0, description: motivo });
-      if (iva) lines.push({ account: ivaC._id, debit: 0, credit: iva, description: 'IVA NC' });
-    } else if (kind === 'ND' && direction === 'EMITIDA') {
-      const ingreso = await findAccount(req.clinicId, { code: '4.2.02' });
-      const ivaV = await findAccount(req.clinicId, { taxCode: 'IVA_VENTAS' });
-      const clientes = await findAccount(req.clinicId, { code: '1.1.02.01' });
-      lines.push({ account: clientes._id, debit: total || 0, credit: 0, description: 'ND clientes' });
-      lines.push({ account: ingreso._id, debit: 0, credit: subtotal || 0, description: motivo });
-      if (iva) lines.push({ account: ivaV._id, debit: 0, credit: iva, description: 'IVA ND' });
-    } else {
-      const gasto = await findAccount(req.clinicId, { code: '6.1.99' });
-      const ivaC = await findAccount(req.clinicId, { taxCode: 'IVA_COMPRAS' });
-      const prov = await findAccount(req.clinicId, { code: '2.1.01.01' });
-      lines.push({ account: gasto._id, debit: subtotal || 0, credit: 0, description: motivo });
-      if (iva) lines.push({ account: ivaC._id, debit: iva, credit: 0, description: 'IVA ND' });
-      lines.push({ account: prov._id, debit: 0, credit: total || 0, description: 'ND recibida' });
-    }
-    const entry = await createEntry({
-      clinicId: req.clinicId, date: note.fechaEmision,
-      description: `${kind} ${direction} ${note.serie} - ${motivo || ''}`,
-      source: kind, sourceRef: note._id, sourceModel: 'CreditDebitNote',
-      lines, userId: req.user._id,
-    });
-    note.journalEntry = entry._id;
-    await note.save();
+    const note = await CreditDebitNote.findById(noteId);
     res.status(201).json(note);
   } catch (e) {
     res.status(e.status || 400).json({ message: e.message });
@@ -99,12 +160,45 @@ exports.create = async (req, res) => {
 
 exports.void = async (req, res) => {
   try {
-    const n = await CreditDebitNote.findOne({ _id: req.params.id, clinic: req.clinicId });
-    if (!n) return res.status(404).json({ message: 'No encontrada' });
-    if (n.estado === 'ANULADA') return res.status(400).json({ message: 'Ya anulada' });
-    if (n.journalEntry) await reverseEntry({ clinicId: req.clinicId, entryId: n.journalEntry, userId: req.user._id, reason: 'Anulación NC/ND' });
-    n.estado = 'ANULADA';
-    await n.save();
-    res.json({ message: 'Anulada' });
-  } catch (e) { res.status(400).json({ message: e.message }); }
+    const result = await runInTransaction(async (session) => {
+      const note = await CreditDebitNote.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+      if (!note) throw Object.assign(new Error('No encontrada'), { status: 404 });
+      if (note.estado === 'ANULADA') throw Object.assign(new Error('Ya anulada'), { status: 400 });
+      const reversalDate = req.body.date ? new Date(req.body.date) : new Date();
+      await assertPeriodOpen(req.clinicId, reversalDate, { session });
+
+      if (note.journalEntry) {
+        await reverseEntry({
+          clinicId: req.clinicId,
+          entryId: note.journalEntry,
+          userId: req.user._id,
+          reason: 'Anulacion NC/ND',
+          date: reversalDate,
+          session,
+        });
+      }
+
+      const origin = await getOrigin(note.refModel, note.refDoc, req.clinicId, session);
+      if (origin) {
+        const amount = Number(note.total || 0);
+        if (note.kind === 'NC') {
+          origin.balance = +(Number(origin.balance || 0) + amount).toFixed(2);
+          origin.paid = false;
+          if (origin.status === 'PAGADA') origin.status = 'REGISTRADA';
+        } else {
+          origin.balance = Math.max(0, Number(origin.balance || 0) - amount);
+          origin.paid = origin.balance <= 0.005;
+          if (origin.paid && origin.status && origin.status !== 'ANULADA') origin.status = 'PAGADA';
+        }
+        await origin.save({ session });
+      }
+
+      note.estado = 'ANULADA';
+      await note.save({ session });
+      return { message: 'Anulada' };
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(e.status || 400).json({ message: e.message });
+  }
 };

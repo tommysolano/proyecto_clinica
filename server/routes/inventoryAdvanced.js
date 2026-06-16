@@ -31,6 +31,7 @@ router.get('/assets', requireRole('admin', 'contabilidad'), c.listAssets);
 router.get('/assets/:id', requireRole('admin', 'contabilidad'), c.getAsset);
 router.post('/assets', requireRole('admin', 'contabilidad'), c.createAsset);
 router.put('/assets/:id', requireRole('admin', 'contabilidad'), c.updateAsset);
+router.post('/assets/:id/dispose', requireRole('admin', 'contabilidad'), c.disposeAsset);
 router.delete('/assets/:id', requireRole('admin'), c.deleteAsset);
 router.post('/assets/run-depreciation', requireRole('admin', 'contabilidad'), c.runDepreciation);
 

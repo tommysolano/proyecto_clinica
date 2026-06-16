@@ -70,6 +70,8 @@ const invoiceSchema = new mongoose.Schema(
     totalDescuento: { type: Number, default: 0 },
     totalImpuesto: { type: Number, default: 0 },
     importeTotal: { type: Number, default: 0 },
+    balance: { type: Number, default: 0 },
+    paid: { type: Boolean, default: false },
     formaPago: { type: String },
     items: { type: Array, default: [] },
     // Reintentos / mensajes

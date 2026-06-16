@@ -84,16 +84,18 @@ exports.emitFromSale = async (req, res) => {
     // Mapear ítems
     const detalles = sale.items.map((it) => {
       const cantidad = Number(it.quantity);
-      const precioUnitario = Number(it.unitPrice);
-      const descuento = +Number(it.discount || 0).toFixed(2);
-      const precioTotalSin = +(cantidad * precioUnitario - descuento).toFixed(2);
+      const precioUnitario = +Number(it.unitPriceExcludingTax || it.unitPrice || 0).toFixed(2);
+      const descuento = +Number(it.discountTaxBase ?? it.discount ?? 0).toFixed(2);
+      const precioTotalSin = +Number(it.taxBase ?? (cantidad * precioUnitario - descuento)).toFixed(2);
       const tarifa = Number(it.taxRate || 0);
-      const valorIva = +(precioTotalSin * (tarifa / 100)).toFixed(2);
+      const valorIva = +Number(it.taxAmount ?? (precioTotalSin * (tarifa / 100))).toFixed(2);
       // Códigos SRI IVA: 2 = IVA, codigoPorcentaje 0=0%, 2=12%, 3=14%, 4=15%
-      let codigoPorcentaje = '0';
-      if (tarifa === 12) codigoPorcentaje = '2';
-      else if (tarifa === 14) codigoPorcentaje = '3';
-      else if (tarifa === 15) codigoPorcentaje = '4';
+      let codigoPorcentaje = it.taxCodeSri || '0';
+      if (!it.taxCodeSri) {
+        if (tarifa === 12) codigoPorcentaje = '2';
+        else if (tarifa === 14) codigoPorcentaje = '3';
+        else if (tarifa === 15) codigoPorcentaje = '4';
+      }
       return {
         codigoPrincipal: it.productCode || String(it.product),
         descripcion: it.productName,
@@ -138,10 +140,16 @@ exports.emitFromSale = async (req, res) => {
     // Forma de pago SRI: 01 sin sistema financiero | 16 débito | 19 crédito | 20 transferencia
     const FORMA_PAGO = {
       efectivo: '01',
+      tarjeta: '19',
       tarjeta_debito: '16',
       tarjeta_credito: '19',
       transferencia: '20',
+      credito: '20',
     };
+
+    const totalSinImpuestos = +(sale.items || [])
+      .reduce((sum, item) => sum + Number(item.taxBase || item.subtotal || 0), 0)
+      .toFixed(2);
 
     const factura = {
       infoTributaria: {
@@ -167,7 +175,7 @@ exports.emitFromSale = async (req, res) => {
         razonSocialComprador: compradorNombre,
         identificacionComprador: compradorIdent,
         direccionComprador: compradorDir || undefined,
-        totalSinImpuestos: +(sale.subtotal - (sale.discountTotal || 0)).toFixed(2),
+        totalSinImpuestos,
         totalDescuento: +Number(sale.discountTotal || 0).toFixed(2),
         totalConImpuestos,
         propina: 0,
@@ -207,10 +215,12 @@ exports.emitFromSale = async (req, res) => {
       direccionComprador: compradorDir,
       emailComprador: compradorEmail,
       telefonoComprador: compradorTel,
-      totalSinImpuestos: +(sale.subtotal - (sale.discountTotal || 0)).toFixed(2),
+      totalSinImpuestos,
       totalDescuento: +Number(sale.discountTotal || 0).toFixed(2),
       totalImpuesto: sale.taxAmount,
       importeTotal: sale.total,
+      balance: sale.paymentMethod === 'credito' ? Number(sale.balance || sale.total || 0) : 0,
+      paid: sale.paymentMethod !== 'credito',
       createdBy: req.user._id,
     });
 

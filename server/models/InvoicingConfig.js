@@ -61,6 +61,9 @@ const invoicingConfigSchema = new mongoose.Schema(
     smtpPassword: { type: String, trim: true },
     invoiceCount: { type: Number, default: 0 },
     lastInvoiceDate: { type: Date, default: null },
+    retentionSequential: { type: Number, default: 1, min: 1, max: 999999999 },
+    retentionCount: { type: Number, default: 0 },
+    lastRetentionDate: { type: Date, default: null },
   },
   { timestamps: true }
 );
@@ -70,6 +73,15 @@ invoicingConfigSchema.methods.reserveSequential = async function () {
   this.secuencial += 1;
   this.invoiceCount += 1;
   this.lastInvoiceDate = new Date();
+  await this.save();
+  return seq;
+};
+
+invoicingConfigSchema.methods.reserveRetentionSequential = async function () {
+  const seq = String(this.retentionSequential || 1).padStart(9, '0');
+  this.retentionSequential = (this.retentionSequential || 1) + 1;
+  this.retentionCount += 1;
+  this.lastRetentionDate = new Date();
   await this.save();
   return seq;
 };

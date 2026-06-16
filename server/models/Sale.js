@@ -12,6 +12,19 @@ const saleItemSchema = new mongoose.Schema({
   quantity: { type: Number, required: true, min: 1 },
   unitPrice: { type: Number, required: true },
   taxRate: { type: Number, default: 15 },
+  taxCodeSri: { type: String, default: '4' },
+  taxCategory: {
+    type: String,
+    enum: ['IVA_15', 'IVA_12', 'IVA_0', 'EXENTO', 'NO_OBJETO', 'ICE'],
+    default: 'IVA_15',
+  },
+  priceIncludesVat: { type: Boolean, default: true },
+  unitPriceExcludingTax: { type: Number, default: 0 },
+  grossAmount: { type: Number, default: 0 },
+  taxBase: { type: Number, default: 0 },
+  taxAmount: { type: Number, default: 0 },
+  lineTotal: { type: Number, default: 0 },
+  discountTaxBase: { type: Number, default: 0 },
   // Descuento aplicado al ítem (en valor absoluto, ya calculado).
   discount: { type: Number, default: 0 },
   // Referencia opcional al descuento maestro aplicado.
@@ -42,7 +55,12 @@ const saleSchema = new mongoose.Schema(
     clientZone: { type: String, trim: true },
     items: [saleItemSchema],
     subtotal: { type: Number, required: true },
+    taxableSubtotal: { type: Number, default: 0 },
+    subtotal0: { type: Number, default: 0 },
+    subtotalExento: { type: Number, default: 0 },
+    subtotalNoObjeto: { type: Number, default: 0 },
     discountTotal: { type: Number, default: 0 },
+    discountTaxBase: { type: Number, default: 0 },
     taxAmount: { type: Number, required: true },
     total: { type: Number, required: true },
     paymentMethod: {
@@ -85,9 +103,18 @@ const saleSchema = new mongoose.Schema(
     // Sirve para atribuir comisiones por recomendación.
     recommendedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     appointment: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment' },
+    // Clave de idempotencia provista por el cliente para evitar ventas duplicadas
+    // por doble-submit / reintento de red. Único por clínica (índice parcial).
+    idempotencyKey: { type: String, default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }
+);
+
+// Evita duplicar la venta si llega dos veces la misma idempotencyKey.
+saleSchema.index(
+  { clinic: 1, idempotencyKey: 1 },
+  { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } }
 );
 
 // Generar saleNumber por clínica

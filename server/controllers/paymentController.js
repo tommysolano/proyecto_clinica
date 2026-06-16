@@ -3,7 +3,10 @@ const Invoice = require('../models/Invoice');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
 const BankAccount = require('../models/BankAccount');
 const BankTransaction = require('../models/BankTransaction');
-const { createEntry, findAccount, reverseEntry } = require('../utils/accounting');
+const Sale = require('../models/Sale');
+const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
+const { getAccount } = require('../utils/accountMap');
+const { openReceivable, applyToReceivable, unapplyFromReceivable, openPayable, applyToPayable, unapplyFromPayable } = require('../utils/subledger');
 
 async function nextNumber(clinicId, type) {
   const prefix = type === 'COBRO' ? 'CB-' : 'PG-';
@@ -52,161 +55,240 @@ exports.get = async (req, res) => {
  */
 exports.create = async (req, res) => {
   try {
-    const { type, date, partyModel, partyRef, partyName, partyId,
-            method, bankAccount, checkNumber, reference, applications = [],
-            advanceAmount = 0, description, voucherUrl, voucherNumber } = req.body;
-    if (!['COBRO', 'PAGO'].includes(type)) return res.status(400).json({ message: 'type inválido' });
-    if (!method) return res.status(400).json({ message: 'method requerido' });
-    if (!['EFECTIVO'].includes(method) && !bankAccount && method !== 'TARJETA') {
-      return res.status(400).json({ message: 'bankAccount requerido para este método' });
-    }
-    const apps = applications.map((a) => ({ ...a, amount: Number(a.amount) }));
-    const appliedAmount = apps.reduce((s, a) => s + a.amount, 0);
-    const total = appliedAmount + Number(advanceAmount || 0);
-    if (total <= 0) return res.status(400).json({ message: 'Total debe ser mayor a 0' });
-
-    // Validar saldos en facturas (de venta) — solo para cobros, opcional ampliar para compras
-    if (type === 'COBRO') {
-      for (const a of apps) {
-        if (a.docModel === 'Invoice') {
-          const inv = await Invoice.findOne({ _id: a.docRef, clinic: req.clinicId });
-          if (!inv) return res.status(400).json({ message: `Factura no encontrada` });
+    {
+      const paymentId = await runInTransaction(async (session) => {
+        const { type, date, partyModel, partyRef, partyName, partyId,
+                method, bankAccount, checkNumber, reference, applications = [],
+                advanceAmount = 0, description, voucherUrl, voucherNumber } = req.body;
+        if (!['COBRO', 'PAGO'].includes(type)) throw Object.assign(new Error('type invalido'), { status: 400 });
+        if (!method) throw Object.assign(new Error('method requerido'), { status: 400 });
+        if (!['EFECTIVO'].includes(method) && !bankAccount && method !== 'TARJETA') {
+          throw Object.assign(new Error('bankAccount requerido para este metodo'), { status: 400 });
         }
-      }
-    }
-    // Para PAGO desde banco, exigir comprobante y validar saldo disponible
-    if (type === 'PAGO' && method !== 'EFECTIVO' && bankAccount) {
-      if (!voucherNumber && !voucherUrl && !reference && !checkNumber) {
-        return res.status(400).json({
-          message: 'Comprobante requerido para pagos bancarios (voucherNumber, voucherUrl, reference o checkNumber)',
+
+        const txDate = date ? new Date(date) : new Date();
+        await assertPeriodOpen(req.clinicId, txDate, { session });
+        const apps = applications.map((a) => ({ ...a, amount: +(Number(a.amount) || 0).toFixed(2) }));
+        const seen = new Set();
+        for (const a of apps) {
+          if (!a.docRef || !(a.amount > 0)) throw Object.assign(new Error('Aplicacion invalida'), { status: 400 });
+          const key = `${a.docModel}:${a.docRef}`;
+          if (seen.has(key)) throw Object.assign(new Error('No se permite aplicar dos veces al mismo documento'), { status: 400 });
+          seen.add(key);
+        }
+        const appliedAmount = +apps.reduce((s, a) => s + a.amount, 0).toFixed(2);
+        const total = +(appliedAmount + Number(advanceAmount || 0)).toFixed(2);
+        if (total <= 0) throw Object.assign(new Error('Total debe ser mayor a 0'), { status: 400 });
+
+        for (const a of apps) {
+          if (type === 'PAGO' && a.docModel === 'PurchaseInvoice') {
+            const pi = await PurchaseInvoice.findOne({ _id: a.docRef, clinic: req.clinicId }).session(session);
+            if (!pi) throw Object.assign(new Error('Compra no encontrada'), { status: 400 });
+            if (pi.status === 'ANULADA') throw Object.assign(new Error('No se puede pagar una compra anulada'), { status: 400 });
+            await assertPeriodOpen(req.clinicId, pi.fechaEmision, { session });
+            const balance = Number(pi.balance ?? pi.total ?? 0);
+            if (a.amount > balance + 0.01) throw Object.assign(new Error(`El pago excede el saldo de ${pi.serie || 'compra'}`), { status: 400 });
+          } else if (type === 'COBRO' && a.docModel === 'Invoice') {
+            const inv = await Invoice.findOne({ _id: a.docRef, clinic: req.clinicId }).session(session);
+            if (!inv) throw Object.assign(new Error('Factura no encontrada'), { status: 400 });
+            if (inv.estado === 'ANULADA') throw Object.assign(new Error('No se puede cobrar una factura anulada'), { status: 400 });
+            if (typeof inv.balance !== 'undefined' && a.amount > Number(inv.balance || 0) + 0.01) {
+              throw Object.assign(new Error('El cobro excede el saldo de la factura'), { status: 400 });
+            }
+          } else if (type === 'COBRO' && a.docModel === 'Sale') {
+            const s = await Sale.findOne({ _id: a.docRef, clinic: req.clinicId }).session(session);
+            if (!s) throw Object.assign(new Error('Venta no encontrada'), { status: 400 });
+            if (s.status === 'anulada') throw Object.assign(new Error('No se puede cobrar una venta anulada'), { status: 400 });
+            if (s.paymentMethod !== 'credito') throw Object.assign(new Error('La venta no es a crédito'), { status: 400 });
+            if (a.amount > Number(s.balance || 0) + 0.01) {
+              throw Object.assign(new Error('El cobro excede el saldo de la venta'), { status: 400 });
+            }
+          }
+        }
+
+        let bank = null;
+        if (bankAccount) bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId }).session(session);
+        if (bankAccount && !bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 404 });
+
+        if (type === 'PAGO' && method !== 'EFECTIVO' && bank) {
+          if (!voucherNumber && !voucherUrl && !reference && !checkNumber) {
+            throw Object.assign(new Error('Comprobante requerido para pagos bancarios'), { status: 400 });
+          }
+          const agg = await BankTransaction.aggregate([
+            { $match: { clinic: bank.clinic, bankAccount: bank._id, voided: false } },
+            { $group: { _id: null, total: { $sum: { $multiply: ['$amount', '$direction'] } } } },
+          ]).session(session);
+          const balance = (bank.initialBalance || 0) + (agg[0]?.total || 0);
+          if (balance < total) {
+            throw Object.assign(new Error(`Saldo insuficiente en ${bank.name} (disponible $${balance.toFixed(2)})`), { status: 400 });
+          }
+        }
+
+        const number = await nextNumber(req.clinicId, type);
+        const [payment] = await Payment.create([{
+          clinic: req.clinicId,
+          type,
+          number,
+          date: txDate,
+          partyModel: partyModel || (type === 'COBRO' ? 'Patient' : 'Supplier'),
+          partyRef,
+          partyName,
+          partyId,
+          method,
+          bankAccount: bank?._id || null,
+          checkNumber,
+          reference,
+          total,
+          applications: apps,
+          appliedAmount,
+          advanceAmount,
+          description,
+          createdBy: req.user._id,
+        }], { session });
+
+        const lines = [];
+        if (type === 'COBRO') {
+          if (method === 'EFECTIVO') {
+            const caja = await getAccount(req.clinicId, 'caja', { session });
+            lines.push({ account: caja._id, debit: total, credit: 0, description: 'Cobro en efectivo' });
+          } else if (method === 'TARJETA') {
+            const tarj = await getAccount(req.clinicId, 'tarjetasPorLiquidar', { session });
+            lines.push({ account: tarj._id, debit: total, credit: 0, description: 'Cobro tarjeta - por liquidar' });
+          } else {
+            lines.push({ account: bank.chartAccount, debit: total, credit: 0, description: `Cobro ${method}` });
+          }
+          if (appliedAmount > 0) {
+            const clientes = await getAccount(req.clinicId, 'clientes', { session });
+            lines.push({ account: clientes._id, debit: 0, credit: appliedAmount, description: 'Aplicacion a factura' });
+          }
+          if (Number(advanceAmount || 0) > 0) {
+            const anticipo = await getAccount(req.clinicId, 'anticipoClientes', { session });
+            lines.push({ account: anticipo._id, debit: 0, credit: Number(advanceAmount), description: 'Anticipo cliente' });
+          }
+        } else {
+          if (appliedAmount > 0) {
+            const prov = await getAccount(req.clinicId, 'proveedores', { session });
+            lines.push({ account: prov._id, debit: appliedAmount, credit: 0, description: 'Pago a proveedor' });
+          }
+          if (Number(advanceAmount || 0) > 0) {
+            const ant = await getAccount(req.clinicId, 'anticipoProveedores', { session });
+            lines.push({ account: ant._id, debit: Number(advanceAmount), credit: 0, description: 'Anticipo a proveedor' });
+          }
+          if (method === 'EFECTIVO') {
+            const caja = await getAccount(req.clinicId, 'caja', { session });
+            lines.push({ account: caja._id, debit: 0, credit: total, description: 'Pago en efectivo' });
+          } else {
+            lines.push({ account: bank.chartAccount, debit: 0, credit: total, description: `Pago ${method}` });
+          }
+        }
+
+        const entry = await createEntry({
+          clinicId: req.clinicId,
+          date: txDate,
+          description: description || `${type} ${number}`,
+          source: type === 'COBRO' ? 'COBRO' : 'PAGO',
+          sourceModel: 'Payment',
+          sourceRef: payment._id,
+          sourceAction: 'REGISTER',
+          lines,
+          userId: req.user._id,
+          session,
         });
-      }
-      const bankPre = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId });
-      if (!bankPre) return res.status(404).json({ message: 'Cuenta bancaria no encontrada' });
-      const agg = await BankTransaction.aggregate([
-        { $match: { clinic: bankPre.clinic, bankAccount: bankPre._id, voided: false } },
-        { $group: { _id: null, total: { $sum: { $multiply: ['$amount', '$direction'] } } } },
-      ]);
-      const balance = (bankPre.initialBalance || 0) + (agg[0]?.total || 0);
-      if (balance < total) {
-        return res.status(400).json({ message: `Saldo insuficiente en ${bankPre.name} (disponible $${balance.toFixed(2)})` });
-      }
-    }
 
-    // Cuentas contables
-    const txDate = date ? new Date(date) : new Date();
-    const number = await nextNumber(req.clinicId, type);
-
-    let bank = null;
-    if (bankAccount) bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId });
-
-    // Construcción del asiento
-    const lines = [];
-    if (type === 'COBRO') {
-      // DB Banco/Caja por método  /  CR Clientes (1.1.02.01) o Anticipos clientes (2.1.01.03)
-      if (method === 'EFECTIVO') {
-        const caja = await findAccount(req.clinicId, { code: '1.1.01.01' });
-        lines.push({ account: caja._id, debit: total, credit: 0, description: 'Cobro en efectivo' });
-      } else if (method === 'TARJETA') {
-        const tarj = await findAccount(req.clinicId, { code: '1.1.02.02' });
-        lines.push({ account: tarj._id, debit: total, credit: 0, description: 'Cobro tarjeta - por liquidar' });
-      } else {
-        if (!bank) throw Object.assign(new Error('Cuenta bancaria requerida'), { status: 400 });
-        lines.push({ account: bank.chartAccount, debit: total, credit: 0, description: `Cobro ${method}` });
-      }
-      if (appliedAmount > 0) {
-        const clientes = await findAccount(req.clinicId, { code: '1.1.02.01' });
-        lines.push({ account: clientes._id, debit: 0, credit: appliedAmount, description: 'Aplicación a factura' });
-      }
-      if (advanceAmount > 0) {
-        const anticipo = await findAccount(req.clinicId, { code: '2.1.01.03' });
-        lines.push({ account: anticipo._id, debit: 0, credit: advanceAmount, description: 'Anticipo cliente' });
-      }
-    } else {
-      // PAGO: DB Proveedores (2.1.01.01) o Anticipo proveedor (1.1.02.03) / CR Banco o Caja
-      if (appliedAmount > 0) {
-        const prov = await findAccount(req.clinicId, { code: '2.1.01.01' });
-        lines.push({ account: prov._id, debit: appliedAmount, credit: 0, description: 'Pago a proveedor' });
-      }
-      if (advanceAmount > 0) {
-        const ant = await findAccount(req.clinicId, { code: '1.1.02.03' });
-        lines.push({ account: ant._id, debit: advanceAmount, credit: 0, description: 'Anticipo a proveedor' });
-      }
-      if (method === 'EFECTIVO') {
-        const caja = await findAccount(req.clinicId, { code: '1.1.01.01' });
-        lines.push({ account: caja._id, debit: 0, credit: total, description: 'Pago en efectivo' });
-      } else {
-        if (!bank) throw Object.assign(new Error('Cuenta bancaria requerida'), { status: 400 });
-        lines.push({ account: bank.chartAccount, debit: 0, credit: total, description: `Pago ${method}` });
-      }
-    }
-
-    const entry = await createEntry({
-      clinicId: req.clinicId, date: txDate,
-      description: description || `${type} ${number}`,
-      source: type === 'COBRO' ? 'COBRO' : 'PAGO',
-      lines, userId: req.user._id,
-    });
-
-    // Banco transaction si aplica
-    let bankTx = null;
-    if (bank) {
-      let txType = type === 'COBRO' ? 'COBRO' : 'PAGO';
-      if (method === 'CHEQUE' && type === 'PAGO') {
-        txType = 'CHEQUE_EMITIDO';
-        if (!checkNumber) {
-          bank.nextCheckNumber++;
-          await bank.save();
+        let bankTx = null;
+        if (bank) {
+          let txType = type === 'COBRO' ? 'COBRO' : 'PAGO';
+          if (method === 'CHEQUE' && type === 'PAGO') {
+            txType = 'CHEQUE_EMITIDO';
+            if (!checkNumber) {
+              bank.nextCheckNumber++;
+              await bank.save({ session });
+            }
+          }
+          [bankTx] = await BankTransaction.create([{
+            clinic: req.clinicId,
+            bankAccount: bank._id,
+            date: txDate,
+            type: txType,
+            amount: total,
+            direction: type === 'COBRO' ? 1 : -1,
+            description: description || `${type} ${number}`,
+            reference,
+            voucherUrl: voucherUrl || '',
+            voucherNumber: voucherNumber || '',
+            checkNumber,
+            journalEntry: entry._id,
+            sourceModel: 'Payment',
+            sourceRef: payment._id,
+            createdBy: req.user._id,
+          }], { session });
         }
-      }
-      bankTx = await BankTransaction.create({
-        clinic: req.clinicId, bankAccount: bank._id, date: txDate, type: txType,
-        amount: total, direction: type === 'COBRO' ? 1 : -1,
-        description: description || `${type} ${number}`, reference,
-        voucherUrl: voucherUrl || '', voucherNumber: voucherNumber || '',
-        checkNumber, journalEntry: entry._id, sourceModel: 'Payment', createdBy: req.user._id,
+
+        payment.journalEntry = entry._id;
+        payment.bankTransaction = bankTx?._id || null;
+        await payment.save({ session });
+
+        for (const a of apps) {
+          if (type === 'PAGO' && a.docModel === 'PurchaseInvoice') {
+            const pi = await PurchaseInvoice.findOne({ _id: a.docRef, clinic: req.clinicId }).session(session);
+            pi.balance = Math.max(0, Number(pi.balance || pi.total || 0) - Number(a.amount));
+            if (pi.balance <= 0.005) {
+              pi.balance = 0;
+              pi.paid = true;
+              if (pi.status !== 'ANULADA') pi.status = 'PAGADA';
+            }
+            await pi.save({ session });
+            // Subledger CxP: asegura y aplica el pago al documento de la compra.
+            const provAcc = await getAccount(req.clinicId, 'proveedores', { session });
+            await openPayable({
+              clinic: req.clinicId,
+              party: { model: 'Supplier', ref: pi.supplier, name: partyName || '' },
+              sourceModel: 'PurchaseInvoice', sourceRef: pi._id, docType: 'COMPRA',
+              number: pi.serie || '', issueDate: pi.fechaEmision || new Date(),
+              total: +(Number(pi.total || 0) - Number(pi.retentionTotal || 0)).toFixed(2),
+              // applied previo (antes de este pago): total - retención - saldo ANTERIOR.
+              applied: +(Number(pi.total || 0) - Number(pi.retentionTotal || 0) - (Number(pi.balance || 0) + Number(a.amount))).toFixed(2),
+              account: provAcc._id,
+            }, { session });
+            await applyToPayable({ clinicId: req.clinicId, sourceModel: 'PurchaseInvoice', sourceRef: pi._id, amount: a.amount }, { session });
+          } else if (type === 'COBRO' && a.docModel === 'Invoice') {
+            const inv = await Invoice.findOne({ _id: a.docRef, clinic: req.clinicId }).session(session);
+            if (inv && typeof inv.balance !== 'undefined') {
+              inv.balance = Math.max(0, Number(inv.balance || inv.total || 0) - Number(a.amount));
+              if (inv.balance <= 0.005) {
+                inv.balance = 0;
+                if (typeof inv.paid !== 'undefined') inv.paid = true;
+              }
+              await inv.save({ session });
+            }
+          } else if (type === 'COBRO' && a.docModel === 'Sale') {
+            const s = await Sale.findOne({ _id: a.docRef, clinic: req.clinicId }).session(session);
+            if (s) {
+              s.balance = Math.max(0, Number(s.balance || s.total || 0) - Number(a.amount));
+              s.paid = s.balance <= 0.005;
+              if (s.paid) s.balance = 0;
+              await s.save({ session });
+              // Subledger CxC: asegura y aplica el cobro al documento de la venta.
+              const clientesAcc = await getAccount(req.clinicId, 'clientes', { session });
+              await openReceivable({
+                clinic: req.clinicId,
+                party: { model: 'Patient', ref: s.patient || null, name: s.clientName || '' },
+                sourceModel: 'Sale', sourceRef: s._id, docType: 'VENTA',
+                number: s.saleNumber, issueDate: s.createdAt || txDate, dueDate: s.dueDate || null,
+                total: s.total,
+                applied: +(Number(s.total || 0) - (Number(s.balance || 0) + Number(a.amount))).toFixed(2),
+                account: clientesAcc._id,
+              }, { session });
+              await applyToReceivable({ clinicId: req.clinicId, sourceModel: 'Sale', sourceRef: s._id, amount: a.amount }, { session });
+            }
+          }
+        }
+
+        return payment._id;
       });
+      const payment = await Payment.findById(paymentId);
+      return res.status(201).json(payment);
     }
-
-    const payment = await Payment.create({
-      clinic: req.clinicId, type, number, date: txDate,
-      partyModel: partyModel || (type === 'COBRO' ? 'Patient' : 'Supplier'),
-      partyRef, partyName, partyId,
-      method, bankAccount: bank?._id || null, checkNumber, reference,
-      total, applications: apps, appliedAmount, advanceAmount,
-      description, journalEntry: entry._id, bankTransaction: bankTx?._id || null,
-      createdBy: req.user._id,
-    });
-    if (bankTx) { bankTx.sourceRef = payment._id; await bankTx.save(); }
-
-    // Actualizar saldos de los documentos aplicados
-    for (const a of apps) {
-      if (!a.docRef || !a.amount) continue;
-      if (type === 'PAGO' && a.docModel === 'PurchaseInvoice') {
-        const pi = await PurchaseInvoice.findOne({ _id: a.docRef, clinic: req.clinicId });
-        if (pi) {
-          pi.balance = Math.max(0, Number(pi.balance || pi.total || 0) - Number(a.amount));
-          if (pi.balance <= 0.005) {
-            pi.balance = 0;
-            pi.paid = true;
-            if (pi.status !== 'ANULADA') pi.status = 'PAGADA';
-          }
-          await pi.save();
-        }
-      } else if (type === 'COBRO' && a.docModel === 'Invoice') {
-        const inv = await Invoice.findOne({ _id: a.docRef, clinic: req.clinicId });
-        if (inv && typeof inv.balance !== 'undefined') {
-          inv.balance = Math.max(0, Number(inv.balance || inv.total || 0) - Number(a.amount));
-          if (inv.balance <= 0.005) {
-            inv.balance = 0;
-            if (typeof inv.paid !== 'undefined') inv.paid = true;
-          }
-          await inv.save();
-        }
-      }
-    }
-
-    res.status(201).json(payment);
   } catch (e) {
     res.status(e.status || 400).json({ message: e.message });
   }
@@ -214,42 +296,79 @@ exports.create = async (req, res) => {
 
 exports.void = async (req, res) => {
   try {
-    const p = await Payment.findOne({ _id: req.params.id, clinic: req.clinicId });
-    if (!p) return res.status(404).json({ message: 'No encontrado' });
-    if (p.status === 'ANULADO') return res.status(400).json({ message: 'Ya anulado' });
-    if (p.journalEntry) await reverseEntry({ clinicId: req.clinicId, entryId: p.journalEntry, userId: req.user._id, reason: 'Anulación de cobro/pago' });
-    if (p.bankTransaction) {
-      const tx = await BankTransaction.findById(p.bankTransaction);
-      if (tx && !tx.voided) {
-        tx.voided = true; tx.voidedAt = new Date(); tx.voidedBy = req.user._id;
-        tx.voidReason = 'Anulación de pago';
-        await tx.save();
-      }
-    }
-    p.status = 'ANULADO';
-    await p.save();
-    // Revertir saldos en documentos aplicados
-    for (const a of p.applications || []) {
-      if (!a.docRef || !a.amount) continue;
-      if (p.type === 'PAGO' && a.docModel === 'PurchaseInvoice') {
-        const pi = await PurchaseInvoice.findOne({ _id: a.docRef, clinic: req.clinicId });
-        if (pi) {
-          pi.balance = Number(pi.balance || 0) + Number(a.amount);
-          if (pi.balance > 0.005 && pi.status === 'PAGADA') {
-            pi.paid = false;
-            pi.status = 'REGISTRADA';
+    {
+      const result = await runInTransaction(async (session) => {
+        const p = await Payment.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+        if (!p) throw Object.assign(new Error('No encontrado'), { status: 404 });
+        if (p.status === 'ANULADO') throw Object.assign(new Error('Ya anulado'), { status: 400 });
+        await assertPeriodOpen(req.clinicId, p.date, { session });
+        const reversalDate = req.body.date ? new Date(req.body.date) : new Date();
+        await assertPeriodOpen(req.clinicId, reversalDate, { session });
+
+        if (p.journalEntry) {
+          await reverseEntry({
+            clinicId: req.clinicId,
+            entryId: p.journalEntry,
+            userId: req.user._id,
+            reason: 'Anulacion de cobro/pago',
+            date: reversalDate,
+            session,
+          });
+        }
+        if (p.bankTransaction) {
+          const tx = await BankTransaction.findById(p.bankTransaction).session(session);
+          if (tx && !tx.voided) {
+            tx.voided = true;
+            tx.voidedAt = reversalDate;
+            tx.voidedBy = req.user._id;
+            tx.voidReason = req.body?.reason || 'Anulacion de pago';
+            await tx.save({ session });
+            await BankAccount.updateOne(
+              { _id: tx.bankAccount },
+              { $inc: { bookBalance: -(Number(tx.amount || 0) * Number(tx.direction || 0)) } },
+              { session }
+            );
           }
-          await pi.save();
         }
-      } else if (p.type === 'COBRO' && a.docModel === 'Invoice') {
-        const inv = await Invoice.findOne({ _id: a.docRef, clinic: req.clinicId });
-        if (inv && typeof inv.balance !== 'undefined') {
-          inv.balance = Number(inv.balance || 0) + Number(a.amount);
-          if (inv.balance > 0.005 && inv.paid) inv.paid = false;
-          await inv.save();
+
+        p.status = 'ANULADO';
+        await p.save({ session });
+
+        for (const a of p.applications || []) {
+          if (!a.docRef || !a.amount) continue;
+          if (p.type === 'PAGO' && a.docModel === 'PurchaseInvoice') {
+            const pi = await PurchaseInvoice.findOne({ _id: a.docRef, clinic: req.clinicId }).session(session);
+            if (pi) {
+              await assertPeriodOpen(req.clinicId, pi.fechaEmision, { session });
+              pi.balance = Number(pi.balance || 0) + Number(a.amount);
+              if (pi.balance > 0.005 && pi.status === 'PAGADA') {
+                pi.paid = false;
+                pi.status = 'REGISTRADA';
+              }
+              await pi.save({ session });
+              await unapplyFromPayable({ clinicId: req.clinicId, sourceModel: 'PurchaseInvoice', sourceRef: pi._id, amount: a.amount }, { session });
+            }
+          } else if (p.type === 'COBRO' && a.docModel === 'Invoice') {
+            const inv = await Invoice.findOne({ _id: a.docRef, clinic: req.clinicId }).session(session);
+            if (inv && typeof inv.balance !== 'undefined') {
+              inv.balance = Number(inv.balance || 0) + Number(a.amount);
+              if (inv.balance > 0.005 && inv.paid) inv.paid = false;
+              await inv.save({ session });
+            }
+          } else if (p.type === 'COBRO' && a.docModel === 'Sale') {
+            const s = await Sale.findOne({ _id: a.docRef, clinic: req.clinicId }).session(session);
+            if (s) {
+              s.balance = Number(s.balance || 0) + Number(a.amount);
+              if (s.balance > 0.005 && s.paid) s.paid = false;
+              await s.save({ session });
+              await unapplyFromReceivable({ clinicId: req.clinicId, sourceModel: 'Sale', sourceRef: s._id, amount: a.amount }, { session });
+            }
+          }
         }
-      }
+
+        return { message: 'Anulado' };
+      });
+      return res.json(result);
     }
-    res.json({ message: 'Anulado' });
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
