@@ -2,6 +2,7 @@ const CreditDebitNote = require('../models/CreditDebitNote');
 const Invoice = require('../models/Invoice');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
 const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
+const { getAccount } = require('../utils/accountMap');
 
 exports.list = async (req, res) => {
   const { kind, direction, startDate, endDate, page = 1, limit = 20 } = req.query;
@@ -84,9 +85,9 @@ exports.create = async (req, res) => {
 
       const lines = [];
       if (kind === 'NC' && direction === 'EMITIDA') {
-        const ingreso = await findAccount(req.clinicId, { code: '4.1.02' }, { session });
-        const ivaV = await findAccount(req.clinicId, { taxCode: 'IVA_VENTAS' }, { session });
-        const clientes = await findAccount(req.clinicId, { code: '1.1.02.01' }, { session });
+        const ingreso = await getAccount(req.clinicId, 'ingresoProductos', { session });
+        const ivaV = await getAccount(req.clinicId, 'ivaVentas', { session });
+        const clientes = await getAccount(req.clinicId, 'clientes', { session });
         lines.push({ account: ingreso._id, debit: noteSubtotal, credit: 0, description: motivo });
         if (noteIva) lines.push({ account: ivaV._id, debit: noteIva, credit: 0, description: 'IVA NC' });
         lines.push({ account: clientes._id, debit: 0, credit: noteTotal, description: 'NC clientes' });
@@ -96,9 +97,9 @@ exports.create = async (req, res) => {
           await origin.save({ session });
         }
       } else if (kind === 'NC' && direction === 'RECIBIDA') {
-        const gasto = await findAccount(req.clinicId, { code: '6.1.99' }, { session });
-        const ivaC = await findAccount(req.clinicId, { taxCode: 'IVA_COMPRAS' }, { session });
-        const prov = await findAccount(req.clinicId, { code: '2.1.01.01' }, { session });
+        const gasto = await getAccount(req.clinicId, 'otrosGastos', { session });
+        const ivaC = await getAccount(req.clinicId, 'ivaCompras', { session });
+        const prov = await getAccount(req.clinicId, 'proveedores', { session });
         lines.push({ account: prov._id, debit: noteTotal, credit: 0, description: 'NC recibida' });
         lines.push({ account: gasto._id, debit: 0, credit: noteSubtotal, description: motivo });
         if (noteIva) lines.push({ account: ivaC._id, debit: 0, credit: noteIva, description: 'IVA NC' });
@@ -109,9 +110,9 @@ exports.create = async (req, res) => {
           await origin.save({ session });
         }
       } else if (kind === 'ND' && direction === 'EMITIDA') {
-        const ingreso = await findAccount(req.clinicId, { code: '4.2.02' }, { session });
-        const ivaV = await findAccount(req.clinicId, { taxCode: 'IVA_VENTAS' }, { session });
-        const clientes = await findAccount(req.clinicId, { code: '1.1.02.01' }, { session });
+        const ingreso = await getAccount(req.clinicId, 'otrosIngresos', { session });
+        const ivaV = await getAccount(req.clinicId, 'ivaVentas', { session });
+        const clientes = await getAccount(req.clinicId, 'clientes', { session });
         lines.push({ account: clientes._id, debit: noteTotal, credit: 0, description: 'ND clientes' });
         lines.push({ account: ingreso._id, debit: 0, credit: noteSubtotal, description: motivo });
         if (noteIva) lines.push({ account: ivaV._id, debit: 0, credit: noteIva, description: 'IVA ND' });
@@ -121,9 +122,9 @@ exports.create = async (req, res) => {
           await origin.save({ session });
         }
       } else {
-        const gasto = await findAccount(req.clinicId, { code: '6.1.99' }, { session });
-        const ivaC = await findAccount(req.clinicId, { taxCode: 'IVA_COMPRAS' }, { session });
-        const prov = await findAccount(req.clinicId, { code: '2.1.01.01' }, { session });
+        const gasto = await getAccount(req.clinicId, 'otrosGastos', { session });
+        const ivaC = await getAccount(req.clinicId, 'ivaCompras', { session });
+        const prov = await getAccount(req.clinicId, 'proveedores', { session });
         lines.push({ account: gasto._id, debit: noteSubtotal, credit: 0, description: motivo });
         if (noteIva) lines.push({ account: ivaC._id, debit: noteIva, credit: 0, description: 'IVA ND' });
         lines.push({ account: prov._id, debit: 0, credit: noteTotal, description: 'ND recibida' });

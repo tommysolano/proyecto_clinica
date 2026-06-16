@@ -34,6 +34,7 @@ const ACCOUNT_ROLES = {
   bancos:               { group: 'Activo',  label: 'Bancos',                    code: '1.1.01.03' },
 
   interesesGanados:     { group: 'Ingreso', label: 'Intereses ganados',         code: '4.2.01' },
+  otrosIngresos:        { group: 'Ingreso', label: 'Otros ingresos',            code: '4.2.02' },
   ingresoServicios:     { group: 'Ingreso', label: 'Ingreso por servicios',     code: '4.1.01' },
   ingresoProductos:     { group: 'Ingreso', label: 'Ingreso por productos',     code: '4.1.02' },
   descuentoVentas:      { group: 'Ingreso', label: 'Descuentos en ventas',      code: '4.1.03' },
@@ -45,6 +46,7 @@ const ACCOUNT_ROLES = {
   comisionTarjeta:      { group: 'Gasto',   label: 'Comisiones tarjeta',        code: '6.1.17' },
   comisionesPersonal:   { group: 'Gasto',   label: 'Comisiones al personal',    code: '6.1.22' },
   mermaInventario:      { group: 'Gasto',   label: 'Mermas y ajustes de inventario', code: '6.1.23' },
+  otrosGastos:          { group: 'Gasto',   label: 'Otros gastos administrativos', code: '6.1.99' },
   faltanteCaja:         { group: 'Gasto',   label: 'Faltantes de caja',         code: '6.1.21' },
 
   sobranteCaja:         { group: 'Ingreso', label: 'Sobrantes de caja',         code: '4.2.03' },
