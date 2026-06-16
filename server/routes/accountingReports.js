@@ -41,6 +41,9 @@ router.get('/cash-flow.xlsx', c.cashFlowExcel);
 router.get('/advances', c.advancesControl);
 router.get('/inventory', c.inventoryReport);
 
+// Rentabilidad por centro de costo
+router.get('/profitability/by-doctor', c.profitabilityByDoctor);
+
 // SRI
 router.get('/sri/purchases-sales', c.purchaseSalesList);
 router.get('/sri/purchases-sales.xlsx', c.purchaseSalesExcel);

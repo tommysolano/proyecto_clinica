@@ -370,6 +370,8 @@ exports.createSale = async (req, res) => {
           sourceAction: 'POST',
           lines: txLines,
           userId: req.user._id,
+          doctor: txSale.doctor || null,
+          costCenter: req.body.costCenter || null,
           session,
         });
         txSale.journalEntry = txEntry._id;

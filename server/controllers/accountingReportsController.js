@@ -1020,6 +1020,53 @@ exports.purchaseSalesList = async (req, res) => {
 };
 
 /** Formulario 104 - IVA mensual (resumen para llenado). */
+/**
+ * Rentabilidad por centro de costo (médico). Agrupa los asientos con dimensión
+ * `doctor` y compara ingresos vs costos/gastos en el período.
+ */
+exports.profitabilityByDoctor = async (req, res) => {
+  try {
+    const mongoose = require('mongoose');
+    const User = require('../models/User');
+    const clinicId = mongoose.Types.ObjectId.createFromHexString(String(req.clinicId));
+    const match = { clinic: clinicId, status: 'CONTABILIZADO', doctor: { $ne: null } };
+    if (req.query.from || req.query.to) {
+      match.date = {};
+      if (req.query.from) match.date.$gte = new Date(req.query.from);
+      if (req.query.to) match.date.$lte = new Date(req.query.to);
+    }
+    const rows = await JournalEntry.aggregate([
+      { $match: match },
+      { $unwind: '$lines' },
+      { $lookup: { from: 'chartofaccounts', localField: 'lines.account', foreignField: '_id', as: 'acc' } },
+      { $unwind: '$acc' },
+      { $group: { _id: { doctor: '$doctor', type: '$acc.type' }, debit: { $sum: '$lines.debit' }, credit: { $sum: '$lines.credit' } } },
+    ]);
+    const byDoctor = new Map();
+    for (const r of rows) {
+      const id = String(r._id.doctor);
+      if (!byDoctor.has(id)) byDoctor.set(id, { doctor: r._id.doctor, ingreso: 0, costo: 0, gasto: 0 });
+      const row = byDoctor.get(id);
+      if (r._id.type === 'INGRESO') row.ingreso += (r.credit - r.debit);
+      else if (r._id.type === 'COSTO') row.costo += (r.debit - r.credit);
+      else if (r._id.type === 'GASTO') row.gasto += (r.debit - r.credit);
+    }
+    const users = await User.find({ _id: { $in: [...byDoctor.values()].map((r) => r.doctor) } }).select('name');
+    const names = new Map(users.map((u) => [String(u._id), u.name]));
+    const result = [...byDoctor.values()].map((r) => ({
+      doctor: r.doctor,
+      doctorName: names.get(String(r.doctor)) || '—',
+      ingreso: +r.ingreso.toFixed(2),
+      costo: +r.costo.toFixed(2),
+      gasto: +r.gasto.toFixed(2),
+      margen: +(r.ingreso - r.costo - r.gasto).toFixed(2),
+    })).sort((a, b) => b.margen - a.margen);
+    res.json({ rows: result });
+  } catch (e) {
+    res.status(500).json({ message: 'Error en rentabilidad por médico', error: e.message });
+  }
+};
+
 exports.form104 = async (req, res) => {
   try {
     const { year, month } = req.query;

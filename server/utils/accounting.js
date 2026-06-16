@@ -272,6 +272,8 @@ async function createEntry({
   sourceAction,
   lines,
   userId,
+  doctor = null,
+  costCenter = null,
   allowExisting = true,
   session,
 }) {
@@ -302,6 +304,8 @@ async function createEntry({
       totalDebit,
       totalCredit,
       status: 'CONTABILIZADO',
+      doctor: doctor || null,
+      costCenter: costCenter || null,
       createdBy: userId || null,
     }, session);
     await applyToBalances(clinicId, entryDate, entry.lines, 1, { session });

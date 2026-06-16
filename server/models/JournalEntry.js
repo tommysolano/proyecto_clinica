@@ -45,6 +45,10 @@ const journalEntrySchema = new mongoose.Schema(
     reversedAt: { type: Date, default: null },
     reversalReason: { type: String, default: '' },
     reverses: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
+    // Dimensiones analíticas (centros de costo) para rentabilidad por:
+    //   sucursal = clinic · médico = doctor · especialidad/servicio = costCenter
+    doctor: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+    costCenter: { type: mongoose.Schema.Types.ObjectId, ref: 'CostCenter', default: null, index: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }
