@@ -79,7 +79,7 @@ export default function JournalEntries() {
             <option value="">Todos</option><option>BORRADOR</option><option>CONTABILIZADO</option><option>ANULADO</option>
           </select>
         </div>
-        <input value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} placeholder="Buscar..." className="flex-1 px-3 py-2 border border-slate-200 rounded-lg" />
+        <input aria-label="Buscar asiento" value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} placeholder="Buscar por número o descripción…" className="flex-1 px-3 py-2 border border-slate-200 rounded-lg" />
         <button onClick={load} className="px-4 py-2 bg-slate-700 text-white rounded-lg">Filtrar</button>
       </div>
 

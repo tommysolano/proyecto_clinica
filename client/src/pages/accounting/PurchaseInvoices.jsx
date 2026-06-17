@@ -145,8 +145,8 @@ export default function PurchaseInvoices() {
 
       {/* Buscador */}
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-3 flex flex-wrap items-center gap-3">
-        <input placeholder="Buscar por proveedor, RUC, serie, autorización, clave de acceso..." value={search} onChange={(e) => setSearch(e.target.value)} className="flex-1 min-w-[260px] border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
-        <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
+        <input aria-label="Buscar factura de compra" placeholder="Buscar por proveedor, RUC, serie, autorización, clave de acceso..." value={search} onChange={(e) => setSearch(e.target.value)} className="flex-1 min-w-[260px] border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+        <select aria-label="Filtrar por estado" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
           <option value="">Todos los estados</option>
           <option value="POR_AUTORIZAR">Por autorizar</option>
           <option value="REGISTRADA">Registrada</option>
@@ -319,6 +319,7 @@ export default function PurchaseInvoices() {
           <div>
             <p className="text-xs text-slate-500 mb-2">Carga uno o varios archivos XML de facturas electrónicas recibidas. Se cargarán como <b>POR AUTORIZAR</b> para que el área contable las verifique antes de contabilizar.</p>
             <input
+              aria-label="Cargar archivos XML"
               type="file" accept=".xml,text/xml,application/xml" multiple
               onChange={(e) => onXmlFiles(e.target.files)}
               className="block w-full text-sm text-slate-600 file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border-0 file:bg-emerald-600 file:text-white file:cursor-pointer"

@@ -71,7 +71,7 @@ export default function ChartOfAccounts() {
       </div>
 
       <div className="bg-white rounded-xl p-3 shadow-sm border border-emerald-100 flex gap-2">
-        <input value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load()} placeholder="Buscar por código o nombre" className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm" />
+        <input aria-label="Buscar cuenta" value={q} onChange={(e) => setQ(e.target.value)} onKeyDown={(e) => e.key === 'Enter' && load()} placeholder="Buscar por código o nombre" className="flex-1 px-3 py-2 border border-slate-200 rounded-lg text-sm" />
         <select value={filterType} onChange={(e) => setFilterType(e.target.value)} className="px-3 py-2 border border-slate-200 rounded-lg text-sm">
           <option value="">Todos los tipos</option>
           <option>ACTIVO</option><option>PASIVO</option><option>PATRIMONIO</option>

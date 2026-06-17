@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
+import Field from '../../components/Field';
 import { HiOutlineCalculator, HiOutlineLockOpen, HiOutlineLockClosed, HiOutlineEye, HiOutlinePlus } from 'react-icons/hi2';
 import { fmt, fmtDate } from './_utils';
 
@@ -238,20 +239,28 @@ export default function CashClosing() {
 
       <Modal isOpen={movModal} onClose={() => setMovModal(false)} title="Movimiento de caja" size="sm">
         <form onSubmit={addMovement} className="space-y-3">
-          <select value={movForm.type} onChange={(e) => setMovForm({ ...movForm, type: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
-            <option value="INGRESO">Ingreso a caja</option>
-            <option value="GASTO">Gasto (caja chica)</option>
-            <option value="EGRESO">Egreso</option>
-            <option value="RETIRO">Retiro</option>
-            <option value="DEPOSITO">Depósito a banco</option>
-          </select>
-          <input type="number" step="0.01" required placeholder="Monto" value={movForm.amount} onChange={(e) => setMovForm({ ...movForm, amount: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
-          <input placeholder="Descripción" value={movForm.description} onChange={(e) => setMovForm({ ...movForm, description: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
-          {movForm.type === 'DEPOSITO' && (
-            <select required value={movForm.bankAccount} onChange={(e) => setMovForm({ ...movForm, bankAccount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
-              <option value="">Banco destino…</option>
-              {banks.map((b) => <option key={b._id} value={b._id}>{b.name}</option>)}
+          <Field label="Tipo de movimiento" required>
+            <select value={movForm.type} onChange={(e) => setMovForm({ ...movForm, type: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+              <option value="INGRESO">Ingreso a caja</option>
+              <option value="GASTO">Gasto (caja chica)</option>
+              <option value="EGRESO">Egreso</option>
+              <option value="RETIRO">Retiro</option>
+              <option value="DEPOSITO">Depósito a banco</option>
             </select>
+          </Field>
+          <Field label="Monto ($)" required>
+            <input type="number" step="0.01" required placeholder="0.00" value={movForm.amount} onChange={(e) => setMovForm({ ...movForm, amount: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+          </Field>
+          <Field label="Descripción">
+            <input placeholder="Concepto del movimiento" value={movForm.description} onChange={(e) => setMovForm({ ...movForm, description: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+          </Field>
+          {movForm.type === 'DEPOSITO' && (
+            <Field label="Banco destino" required>
+              <select required value={movForm.bankAccount} onChange={(e) => setMovForm({ ...movForm, bankAccount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                <option value="">Selecciona…</option>
+                {banks.map((b) => <option key={b._id} value={b._id}>{b.name}</option>)}
+              </select>
+            </Field>
           )}
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setMovModal(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button disabled={busy} className="px-4 py-2 bg-emerald-600 text-white rounded-xl disabled:opacity-60">Registrar</button></div>
         </form>

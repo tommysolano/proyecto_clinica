@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
+import Field from '../../components/Field';
 import { HiOutlineChartBar, HiOutlineArrowDownTray, HiOutlinePlus, HiOutlineTag, HiOutlineTrash, HiOutlinePencilSquare } from 'react-icons/hi2';
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { fmt, startOfMonth, endOfMonth } from './_utils';
@@ -220,8 +221,8 @@ export default function SalesReports() {
         <form onSubmit={saveCat} className="space-y-3 border-t pt-3">
           <p className="text-sm font-semibold">{editCatId ? 'Editar' : 'Nueva'} categoría</p>
           <div className="grid grid-cols-2 gap-3">
-            <input required placeholder="Nombre" value={catForm.name} onChange={(e) => setCatForm({ ...catForm, name: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
-            <input placeholder="Descripción" value={catForm.description} onChange={(e) => setCatForm({ ...catForm, description: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+            <Field label="Nombre" required><input required placeholder="Ej: Tratamientos faciales" value={catForm.name} onChange={(e) => setCatForm({ ...catForm, name: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" /></Field>
+            <Field label="Descripción"><input placeholder="Opcional" value={catForm.description} onChange={(e) => setCatForm({ ...catForm, description: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" /></Field>
           </div>
           <div>
             <p className="text-xs text-slate-500 mb-1">Servicios incluidos ({catForm.products.length})</p>

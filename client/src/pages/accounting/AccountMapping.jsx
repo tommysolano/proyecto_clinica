@@ -59,7 +59,7 @@ export default function AccountMapping() {
                 <tr key={r.key} className="border-t">
                   <td className="px-4 py-2 font-medium text-slate-700">{r.label}</td>
                   <td className="px-4 py-2">
-                    <select value={draft[r.key] || ''} onChange={(e) => setDraft({ ...draft, [r.key]: e.target.value })} className="w-full max-w-md border border-slate-200 rounded-xl px-2 py-1.5 text-sm">
+                    <select aria-label={`Cuenta para ${r.label}`} value={draft[r.key] || ''} onChange={(e) => setDraft({ ...draft, [r.key]: e.target.value })} className="w-full max-w-md border border-slate-200 rounded-xl px-2 py-1.5 text-sm">
                       <option value="">(Predeterminada: {r.defaultCode})</option>
                       {accounts.map((a) => <option key={a._id} value={a._id}>{a.code} — {a.name}</option>)}
                     </select>

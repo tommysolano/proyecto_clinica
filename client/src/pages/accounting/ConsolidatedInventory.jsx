@@ -51,6 +51,7 @@ export default function ConsolidatedInventory() {
           <div className="relative">
             <HiOutlineMagnifyingGlass className="absolute left-2 top-2.5 text-slate-400" />
             <input
+              aria-label="Buscar producto"
               value={q}
               onChange={(e) => setQ(e.target.value)}
               placeholder="Buscar código, nombre o categoría..."
