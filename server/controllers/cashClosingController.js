@@ -1,10 +1,22 @@
 const mongoose = require('mongoose');
 const CashClosing = require('../models/CashClosing');
+const CashMovement = require('../models/CashMovement');
 const Sale = require('../models/Sale');
 const { createEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 
 const oid = (v) => new mongoose.Types.ObjectId(v);
+
+/** Neto de movimientos de caja (ingresos - egresos) de una sesión abierta. */
+const cashMovementsNet = async (clinicId, cashSessionId) => {
+  const rows = await CashMovement.aggregate([
+    { $match: { clinic: oid(clinicId), cashSession: oid(cashSessionId), voided: false } },
+    { $group: { _id: '$type', total: { $sum: '$amount' } } },
+  ]);
+  let net = 0;
+  for (const r of rows) net += (r._id === 'INGRESO' ? 1 : -1) * r.total;
+  return +net.toFixed(2);
+};
 
 const dayRange = (dateStr) => {
   const base = dateStr ? new Date(dateStr) : new Date();
@@ -33,8 +45,9 @@ exports.current = async (req, res) => {
       .sort({ openedAt: -1 });
     if (!open) return res.json({ open: null });
     const { byMethod, salesCount, totalSales } = await salesByMethod(req.clinicId, open.openedAt, new Date());
-    const expectedCash = +((open.openingBalance || 0) + byMethod.efectivo).toFixed(2);
-    res.json({ open, live: { byMethod, salesCount, totalSales, expectedCash } });
+    const movementsNet = await cashMovementsNet(req.clinicId, open._id);
+    const expectedCash = +((open.openingBalance || 0) + byMethod.efectivo + movementsNet).toFixed(2);
+    res.json({ open, live: { byMethod, salesCount, totalSales, movementsNet, expectedCash } });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
@@ -133,8 +146,9 @@ exports.close = async (req, res) => {
 
         const closedAt = new Date();
         const { byMethod, salesCount, totalSales } = await salesByMethod(req.clinicId, closing.openedAt, closedAt);
+        const movementsNet = await cashMovementsNet(req.clinicId, closing._id);
         const countedCash = Number(req.body.countedCash) || 0;
-        const expectedCash = +((closing.openingBalance || 0) + byMethod.efectivo).toFixed(2);
+        const expectedCash = +((closing.openingBalance || 0) + byMethod.efectivo + movementsNet).toFixed(2);
         const difference = +(countedCash - expectedCash).toFixed(2);
 
         closing.closedAt = closedAt;
@@ -258,4 +272,157 @@ exports.cancel = async (req, res) => {
     await c.save();
     res.json(c);
   } catch (e) { res.status(400).json({ message: e.message }); }
+};
+
+/**
+ * Registra un movimiento de caja (ingreso vario, gasto/egreso de caja chica,
+ * retiro o depósito a banco) en la sesión abierta, con su asiento contra Caja.
+ */
+exports.addMovement = async (req, res) => {
+  try {
+    const ChartOfAccount = require('../models/ChartOfAccount');
+    const BankAccount = require('../models/BankAccount');
+    const BankTransaction = require('../models/BankTransaction');
+    const movementId = await runInTransaction(async (session) => {
+      const open = await CashClosing.findOne({ clinic: req.clinicId, status: 'ABIERTA' }).session(session);
+      if (!open) throw Object.assign(new Error('No hay caja abierta'), { status: 400 });
+
+      const { type, description } = req.body;
+      if (!['INGRESO', 'EGRESO', 'GASTO', 'RETIRO', 'DEPOSITO'].includes(type)) {
+        throw Object.assign(new Error('Tipo de movimiento inválido'), { status: 400 });
+      }
+      const amount = +(Number(req.body.amount) || 0).toFixed(2);
+      if (amount <= 0) throw Object.assign(new Error('Monto inválido'), { status: 400 });
+      const date = req.body.date ? new Date(req.body.date) : new Date();
+      await assertPeriodOpen(req.clinicId, date, { session });
+
+      const caja = await getAccount(req.clinicId, 'caja', { session });
+      const lines = [];
+      let counterpartAccount = null;
+      let bank = null;
+      let bankTx = null;
+
+      // Resolver cuenta contraparte (si la envían por id) o por defecto según el tipo.
+      async function resolveCounterpart(defaultRole) {
+        if (req.body.counterpartAccount) {
+          const acc = await ChartOfAccount.findOne({ _id: req.body.counterpartAccount, clinic: req.clinicId }).session(session);
+          if (acc) return acc;
+        }
+        return getAccount(req.clinicId, defaultRole, { session });
+      }
+
+      if (type === 'INGRESO') {
+        counterpartAccount = await resolveCounterpart('otrosIngresos');
+        lines.push({ account: caja._id, debit: amount, credit: 0, description: description || 'Ingreso a caja' });
+        lines.push({ account: counterpartAccount._id, debit: 0, credit: amount, description: description || 'Ingreso a caja' });
+      } else if (type === 'DEPOSITO') {
+        if (!req.body.bankAccount) throw Object.assign(new Error('bankAccount requerido para depósito'), { status: 400 });
+        bank = await BankAccount.findOne({ _id: req.body.bankAccount, clinic: req.clinicId }).session(session);
+        if (!bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 404 });
+        lines.push({ account: bank.chartAccount, debit: amount, credit: 0, description: description || 'Depósito a banco' });
+        lines.push({ account: caja._id, debit: 0, credit: amount, description: description || 'Depósito a banco' });
+      } else {
+        // EGRESO / GASTO / RETIRO
+        counterpartAccount = await resolveCounterpart('otrosGastos');
+        lines.push({ account: counterpartAccount._id, debit: amount, credit: 0, description: description || type });
+        lines.push({ account: caja._id, debit: 0, credit: amount, description: description || type });
+      }
+
+      const entry = await createEntry({
+        clinicId: req.clinicId, date,
+        description: description || `Movimiento de caja ${type}`,
+        source: type === 'DEPOSITO' ? 'BANCO' : 'CAJA', sourceModel: 'CashMovement',
+        lines, userId: req.user._id, session,
+      });
+
+      const [movement] = await CashMovement.create([{
+        clinic: req.clinicId,
+        cashSession: open._id,
+        date,
+        type,
+        amount,
+        description: description || '',
+        counterpartAccount: counterpartAccount?._id || null,
+        bankAccount: bank?._id || null,
+        journalEntry: entry._id,
+        createdBy: req.user._id,
+      }], { session });
+
+      // Vincular el asiento al movimiento (sourceRef) y crear el BankTransaction del depósito.
+      entry.sourceRef = movement._id;
+      await entry.save({ session });
+
+      if (type === 'DEPOSITO' && bank) {
+        [bankTx] = await BankTransaction.create([{
+          clinic: req.clinicId,
+          bankAccount: bank._id,
+          date,
+          type: 'DEPOSITO',
+          amount,
+          direction: 1,
+          description: description || 'Depósito de caja',
+          journalEntry: entry._id,
+          sourceModel: 'CashMovement',
+          sourceRef: movement._id,
+          createdBy: req.user._id,
+        }], { session });
+        movement.bankTransaction = bankTx._id;
+        await movement.save({ session });
+      }
+      return movement._id;
+    });
+    const movement = await CashMovement.findById(movementId);
+    res.status(201).json(movement);
+  } catch (e) {
+    res.status(e.status || 400).json({ message: e.message });
+  }
+};
+
+/** Lista los movimientos de la sesión de caja abierta (o de una indicada por ?session=). */
+exports.listMovements = async (req, res) => {
+  try {
+    let sessionId = req.query.session;
+    if (!sessionId) {
+      const open = await CashClosing.findOne({ clinic: req.clinicId, status: 'ABIERTA' }).select('_id');
+      sessionId = open?._id;
+    }
+    if (!sessionId) return res.json([]);
+    const items = await CashMovement.find({ clinic: req.clinicId, cashSession: sessionId })
+      .sort({ date: -1 })
+      .populate('counterpartAccount', 'code name')
+      .populate('bankAccount', 'name');
+    res.json(items);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+/** Anula un movimiento de caja: reversa su asiento y su movimiento bancario. */
+exports.voidMovement = async (req, res) => {
+  try {
+    const { reverseEntry } = require('../utils/accounting');
+    const BankTransaction = require('../models/BankTransaction');
+    const result = await runInTransaction(async (session) => {
+      const mov = await CashMovement.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+      if (!mov) throw Object.assign(new Error('Movimiento no encontrado'), { status: 404 });
+      if (mov.voided) throw Object.assign(new Error('Ya anulado'), { status: 400 });
+      const date = req.body.date ? new Date(req.body.date) : new Date();
+      if (mov.journalEntry) {
+        await reverseEntry({ clinicId: req.clinicId, entryId: mov.journalEntry, userId: req.user._id, reason: 'Anulación movimiento de caja', date, session });
+      }
+      if (mov.bankTransaction) {
+        const tx = await BankTransaction.findById(mov.bankTransaction).session(session);
+        if (tx && !tx.voided) {
+          tx.voided = true; tx.voidedAt = date; tx.voidedBy = req.user._id;
+          await tx.save({ session });
+        }
+      }
+      mov.voided = true;
+      await mov.save({ session });
+      return { message: 'Movimiento anulado' };
+    });
+    res.json(result);
+  } catch (e) {
+    res.status(e.status || 400).json({ message: e.message });
+  }
 };
