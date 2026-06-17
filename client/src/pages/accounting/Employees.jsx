@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
+import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineUserGroup, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineClock } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 
@@ -94,19 +95,19 @@ export default function Employees() {
       <Modal isOpen={show} onClose={() => setShow(false)} title={editing ? 'Editar empleado' : 'Nuevo empleado'} size="lg">
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <input required placeholder="Código" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <select value={form.tipoIdentificacion} onChange={(e) => setForm({ ...form, tipoIdentificacion: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option>CEDULA</option><option>RUC</option><option>PASAPORTE</option></select>
-            <input required placeholder="Identificación" value={form.identificacion} onChange={(e) => setForm({ ...form, identificacion: e.target.value })} className="col-span-2 border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input required placeholder="Nombres" value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input required placeholder="Apellidos" value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input placeholder="Email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input placeholder="Teléfono" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input placeholder="Cargo" value={form.position} onChange={(e) => setForm({ ...form, position: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input placeholder="Departamento" value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <select value={form.contractType} onChange={(e) => setForm({ ...form, contractType: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option>INDEFINIDO</option><option>FIJO</option><option>EVENTUAL</option><option>JUVENIL</option></select>
-            <select value={form.paymentFrequency} onChange={(e) => setForm({ ...form, paymentFrequency: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option>MENSUAL</option><option>QUINCENAL</option></select>
-            <input type="date" required value={form.hireDate} onChange={(e) => setForm({ ...form, hireDate: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input type="number" placeholder="Cargas familiares" value={form.chargesFamily} onChange={(e) => setForm({ ...form, chargesFamily: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <Field label="Código" required><input required placeholder="Ej: EMP-01" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Tipo de identificación"><select value={form.tipoIdentificacion} onChange={(e) => setForm({ ...form, tipoIdentificacion: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>CEDULA</option><option>RUC</option><option>PASAPORTE</option></select></Field>
+            <Field label="Identificación" required className="col-span-2"><input required placeholder="Nº de cédula / RUC" value={form.identificacion} onChange={(e) => setForm({ ...form, identificacion: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Nombres" required><input required value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Apellidos" required><input required value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Email"><input placeholder="correo@dominio.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Teléfono"><input placeholder="09xxxxxxxx" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Cargo"><input value={form.position} onChange={(e) => setForm({ ...form, position: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Departamento"><input value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Tipo de contrato"><select value={form.contractType} onChange={(e) => setForm({ ...form, contractType: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>INDEFINIDO</option><option>FIJO</option><option>EVENTUAL</option><option>JUVENIL</option></select></Field>
+            <Field label="Frecuencia de pago"><select value={form.paymentFrequency} onChange={(e) => setForm({ ...form, paymentFrequency: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>MENSUAL</option><option>QUINCENAL</option></select></Field>
+            <Field label="Fecha de ingreso" required><input type="date" required value={form.hireDate} onChange={(e) => setForm({ ...form, hireDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Cargas familiares"><input type="number" value={form.chargesFamily} onChange={(e) => setForm({ ...form, chargesFamily: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           </div>
           {/* Sección de sueldo (NET/GROSS) */}
           <div className="bg-emerald-50/60 border border-emerald-100 rounded-xl p-3 space-y-3">
@@ -163,12 +164,14 @@ export default function Employees() {
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <select value={form.salaryOriginClinic} onChange={(e) => setForm({ ...form, salaryOriginClinic: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5">
-              <option value="">Origen del sueldo (sede)...</option>{clinics.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}
-            </select>
-            <input placeholder="Banco" value={form.bankName} onChange={(e) => setForm({ ...form, bankName: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input placeholder="Nº cuenta bancaria" value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <select value={form.bankAccountType} onChange={(e) => setForm({ ...form, bankAccountType: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option value="">Tipo de cuenta...</option><option value="AHORROS">Ahorros</option><option value="CORRIENTE">Corriente</option></select>
+            <Field label="Origen del sueldo (sede)">
+              <select value={form.salaryOriginClinic} onChange={(e) => setForm({ ...form, salaryOriginClinic: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                <option value="">Seleccione…</option>{clinics.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Banco"><input value={form.bankName} onChange={(e) => setForm({ ...form, bankName: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Nº cuenta bancaria"><input value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Tipo de cuenta"><select value={form.bankAccountType} onChange={(e) => setForm({ ...form, bankAccountType: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option value="">Seleccione…</option><option value="AHORROS">Ahorros</option><option value="CORRIENTE">Corriente</option></select></Field>
           </div>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button></div>
         </form>

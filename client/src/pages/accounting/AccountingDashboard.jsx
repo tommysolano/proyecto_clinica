@@ -50,9 +50,11 @@ export default function AccountingDashboard() {
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineChartPie className="text-emerald-600" /> Dashboard Contable</h1>
-        <select value={granularity} onChange={(e) => setGranularity(e.target.value)} className="px-3 py-2 border border-slate-200 rounded-lg bg-white">
-          <option value="day">Diario</option><option value="week">Semanal</option><option value="month">Mensual</option><option value="quarter">Trimestral</option><option value="year">Anual</option>
-        </select>
+        <label className="text-xs text-slate-500 flex flex-col">Período
+          <select value={granularity} onChange={(e) => setGranularity(e.target.value)} className="px-3 py-2 border border-slate-200 rounded-lg bg-white">
+            <option value="day">Diario</option><option value="week">Semanal</option><option value="month">Mensual</option><option value="quarter">Trimestral</option><option value="year">Anual</option>
+          </select>
+        </label>
       </div>
 
       {/* Indicadores */}

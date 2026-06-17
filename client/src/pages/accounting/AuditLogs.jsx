@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlineShieldCheck } from 'react-icons/hi2';
+import Field from '../../components/Field';
 import { fmtDate } from './_utils';
 
 export default function AuditLogs() {
@@ -18,14 +19,14 @@ export default function AuditLogs() {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineShieldCheck className="text-emerald-600" /> Auditoría</h1>
       <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 flex-wrap items-end">
-        <input placeholder="Entidad" value={filters.entity} onChange={(e) => setFilters({ ...filters, entity: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-        <select value={filters.action} onChange={(e) => setFilters({ ...filters, action: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5">
-          <option value="">Acción...</option>
+        <Field label="Entidad"><input placeholder="Ej: Sale, Payment…" value={filters.entity} onChange={(e) => setFilters({ ...filters, entity: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+        <Field label="Acción"><select value={filters.action} onChange={(e) => setFilters({ ...filters, action: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5">
+          <option value="">Todas</option>
           <option>CREATE</option><option>UPDATE</option><option>DELETE</option><option>POST</option><option>REVERSE</option><option>CLOSE</option><option>OPEN</option><option>LIQUIDATE</option>
-        </select>
-        <input type="date" value={filters.startDate} onChange={(e) => setFilters({ ...filters, startDate: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-        <input type="date" value={filters.endDate} onChange={(e) => setFilters({ ...filters, endDate: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-        <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Filtrar</button>
+        </select></Field>
+        <Field label="Desde"><input type="date" value={filters.startDate} onChange={(e) => setFilters({ ...filters, startDate: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+        <Field label="Hasta"><input type="date" value={filters.endDate} onChange={(e) => setFilters({ ...filters, endDate: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+        <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 h-[42px]">Filtrar</button>
       </div>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
         <table className="tbl text-xs">

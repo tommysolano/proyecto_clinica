@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
+import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineCurrencyDollar, HiOutlineXMark } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 
@@ -96,22 +97,28 @@ export default function Payments() {
       <Modal isOpen={show} onClose={() => setShow(false)} title={`Nuevo ${form.type === 'PAGO' ? 'pago' : 'cobro'}`} size="xl">
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-3 gap-3">
-            <input type="date" required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <select required value={form.party} onChange={(e) => { setForm({ ...form, party: e.target.value, applications: [] }); loadDocs(e.target.value); }} className="border border-slate-200 rounded-xl px-3.5 py-2.5 col-span-2">
-              <option value="">{form.type === 'PAGO' ? 'Proveedor...' : 'Paciente (escriba ID)...'}</option>
-              {form.type === 'PAGO' && suppliers.map((s) => <option key={s._id} value={s._id}>{s.razonSocial}</option>)}
-            </select>
-            <select value={form.method} onChange={(e) => setForm({ ...form, method: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5">
-              <option>EFECTIVO</option><option>TRANSFERENCIA</option><option>CHEQUE</option><option>TARJETA</option><option>DEPOSITO</option>
-            </select>
+            <Field label="Fecha" required><input type="date" required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label={form.type === 'PAGO' ? 'Proveedor' : 'Paciente'} required className="col-span-2">
+              <select required value={form.party} onChange={(e) => { setForm({ ...form, party: e.target.value, applications: [] }); loadDocs(e.target.value); }} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                <option value="">{form.type === 'PAGO' ? 'Seleccione proveedor…' : 'Seleccione paciente…'}</option>
+                {form.type === 'PAGO' && suppliers.map((s) => <option key={s._id} value={s._id}>{s.razonSocial}</option>)}
+              </select>
+            </Field>
+            <Field label="Método de pago">
+              <select value={form.method} onChange={(e) => setForm({ ...form, method: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                <option>EFECTIVO</option><option>TRANSFERENCIA</option><option>CHEQUE</option><option>TARJETA</option><option>DEPOSITO</option>
+              </select>
+            </Field>
             {form.method !== 'EFECTIVO' &&
-              <select required value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5 col-span-2">
-                <option value="">Banco...</option>{banks.map((b) => <option key={b._id} value={b._id}>{b.name} {b.initialBalance != null ? `(saldo inicial $${fmt(b.initialBalance)})` : ''}</option>)}
-              </select>}
+              <Field label="Banco" required className="col-span-2">
+                <select required value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                  <option value="">Seleccione…</option>{banks.map((b) => <option key={b._id} value={b._id}>{b.name} {b.initialBalance != null ? `(saldo inicial $${fmt(b.initialBalance)})` : ''}</option>)}
+                </select>
+              </Field>}
             {form.type === 'PAGO' && form.method !== 'EFECTIVO' && (
               <>
-                <input required placeholder="N° Comprobante (requerido)" value={form.voucherNumber} onChange={(e) => setForm({ ...form, voucherNumber: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-                <input placeholder="URL comprobante (opcional)" value={form.voucherUrl} onChange={(e) => setForm({ ...form, voucherUrl: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5 col-span-2" />
+                <Field label="N° Comprobante" required><input required placeholder="Transferencia / cheque" value={form.voucherNumber} onChange={(e) => setForm({ ...form, voucherNumber: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+                <Field label="URL comprobante (opcional)" className="col-span-2"><input placeholder="https://…" value={form.voucherUrl} onChange={(e) => setForm({ ...form, voucherUrl: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
               </>
             )}
           </div>
@@ -142,7 +149,7 @@ export default function Payments() {
             <input type="number" step="0.01" value={form.advanceAmount} onChange={(e) => setForm({ ...form, advanceAmount: +e.target.value })} className="w-32 border border-slate-200 rounded-xl px-3.5 py-2.5" />
             <span className="ml-auto font-semibold">Total: ${fmt(totalApplied)}</span>
           </div>
-          <input placeholder="Notas / cheque #" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+          <Field label="Notas"><input placeholder="Observaciones / cheque #" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Registrar</button></div>
         </form>
       </Modal>

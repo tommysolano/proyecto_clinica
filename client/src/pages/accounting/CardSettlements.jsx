@@ -382,6 +382,11 @@ export default function CardSettlements() {
             <div className="flex justify-between items-center mb-2"><p className="font-semibold text-sm">Retenciones</p><button type="button" onClick={addRet} className="text-emerald-600 text-sm flex items-center gap-1"><HiOutlinePlus /> Retención</button></div>
             <datalist id="sri-renta">{SRI_RENTA.map((c) => <option key={c} value={c} />)}</datalist>
             <datalist id="sri-iva">{SRI_IVA.map((c) => <option key={c} value={c} />)}</datalist>
+            {form.retentions.length > 0 && (
+              <div className="hidden md:grid grid-cols-9 gap-1.5 mb-1 text-[10px] text-slate-400 uppercase px-1">
+                <span>Fecha emisión</span><span>N° retención</span><span>Autorización</span><span>Tipo</span><span>Cód. SRI</span><span className="text-right">Base</span><span className="text-right">%</span><span className="text-right">Valor</span><span></span>
+              </div>
+            )}
             {form.retentions.map((r, i) => (
               <div key={i} className="grid grid-cols-2 md:grid-cols-9 gap-1.5 mb-1 items-center">
                 <input type="date" value={r.issueDate} onChange={(e) => setRet(i, { issueDate: e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs" title="Fecha emisión" />

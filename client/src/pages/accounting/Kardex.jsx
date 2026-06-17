@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlineArchiveBox } from 'react-icons/hi2';
+import Field from '../../components/Field';
 import { fmt, fmtDate } from './_utils';
 
 const TYPE_COLOR = { entrada: 'text-emerald-600', salida: 'text-rose-600', ajuste: 'text-amber-600', traslado: 'text-blue-600' };
@@ -31,17 +32,23 @@ export default function Kardex() {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineArchiveBox className="text-emerald-600" /> Kardex</h1>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-3 grid grid-cols-1 md:grid-cols-6 gap-2">
-        <select value={filters.product} onChange={(e) => setFilters({ ...filters, product: e.target.value })} className="md:col-span-2 px-3 py-2 border border-slate-200 rounded-lg">
-          <option value="">Producto...</option>{products.map((p) => <option key={p._id} value={p._id}>{p.code} - {p.name}</option>)}
-        </select>
-        <select value={filters.warehouse} onChange={(e) => setFilters({ ...filters, warehouse: e.target.value })} className="px-3 py-2 border border-slate-200 rounded-lg">
-          <option value="">Todas las bodegas</option>{warehouses.map((w) => <option key={w._id} value={w._id}>{w.name}</option>)}
-        </select>
-        <select value={filters.type} onChange={(e) => setFilters({ ...filters, type: e.target.value })} className="px-3 py-2 border border-slate-200 rounded-lg">
-          <option value="">Todos los tipos</option><option value="entrada">Ingreso</option><option value="salida">Egreso</option><option value="ajuste">Ajuste</option><option value="traslado">Traslado</option>
-        </select>
-        <input type="date" value={filters.startDate} onChange={(e) => setFilters({ ...filters, startDate: e.target.value })} className="px-3 py-2 border border-slate-200 rounded-lg" />
-        <input type="date" value={filters.endDate} onChange={(e) => setFilters({ ...filters, endDate: e.target.value })} className="px-3 py-2 border border-slate-200 rounded-lg" />
+        <Field label="Producto" required className="md:col-span-2">
+          <select value={filters.product} onChange={(e) => setFilters({ ...filters, product: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-lg">
+            <option value="">Seleccione…</option>{products.map((p) => <option key={p._id} value={p._id}>{p.code} - {p.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Bodega">
+          <select value={filters.warehouse} onChange={(e) => setFilters({ ...filters, warehouse: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-lg">
+            <option value="">Todas</option>{warehouses.map((w) => <option key={w._id} value={w._id}>{w.name}</option>)}
+          </select>
+        </Field>
+        <Field label="Tipo de movimiento">
+          <select value={filters.type} onChange={(e) => setFilters({ ...filters, type: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-lg">
+            <option value="">Todos</option><option value="entrada">Ingreso</option><option value="salida">Egreso</option><option value="ajuste">Ajuste</option><option value="traslado">Traslado</option>
+          </select>
+        </Field>
+        <Field label="Desde"><input type="date" value={filters.startDate} onChange={(e) => setFilters({ ...filters, startDate: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-lg" /></Field>
+        <Field label="Hasta"><input type="date" value={filters.endDate} onChange={(e) => setFilters({ ...filters, endDate: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-lg" /></Field>
         <button onClick={load} className="md:col-span-6 px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Consultar</button>
       </div>
 

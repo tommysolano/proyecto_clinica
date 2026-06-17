@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
+import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineUserGroup } from 'react-icons/hi2';
 
 const ROLES = ['CLIENTE', 'PROVEEDOR', 'EMPLEADO', 'VENDEDOR'];
@@ -94,18 +95,20 @@ export default function Suppliers() {
             </div>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <select value={form.tipoIdentificacion} onChange={(e) => setForm({ ...form, tipoIdentificacion: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option>RUC</option><option>CEDULA</option><option>PASAPORTE</option></select>
-            <input required placeholder="RUC/CI" value={form.ruc} onChange={(e) => setForm({ ...form, ruc: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input required placeholder="Razón social / Nombre" value={form.razonSocial} onChange={(e) => setForm({ ...form, razonSocial: e.target.value })} className="col-span-2 border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input placeholder="Nombre comercial" value={form.nombreComercial} onChange={(e) => setForm({ ...form, nombreComercial: e.target.value })} className="col-span-2 border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input placeholder="Email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input placeholder="Teléfono" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input placeholder="Dirección" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className="col-span-2 border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <select value={form.rimpe} onChange={(e) => setForm({ ...form, rimpe: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option value="">Régimen General</option><option value="POPULAR">RIMPE Popular</option><option value="EMPRENDEDOR">RIMPE Emprendedor</option></select>
-            <div className="flex gap-3 items-center">
-              <label className="text-sm flex items-center gap-1"><input type="checkbox" checked={form.isSpecialContributor} onChange={(e) => setForm({ ...form, isSpecialContributor: e.target.checked })} /> Especial</label>
-              <label className="text-sm flex items-center gap-1"><input type="checkbox" checked={form.isWithholdingAgent} onChange={(e) => setForm({ ...form, isWithholdingAgent: e.target.checked })} /> Ag. retención</label>
-            </div>
+            <Field label="Tipo de identificación"><select value={form.tipoIdentificacion} onChange={(e) => setForm({ ...form, tipoIdentificacion: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>RUC</option><option>CEDULA</option><option>PASAPORTE</option></select></Field>
+            <Field label="RUC / CI" required><input required placeholder="Ej: 0991234567001" value={form.ruc} onChange={(e) => setForm({ ...form, ruc: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Razón social / Nombre" required className="col-span-2"><input required placeholder="Nombre legal" value={form.razonSocial} onChange={(e) => setForm({ ...form, razonSocial: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Nombre comercial" className="col-span-2"><input placeholder="Opcional" value={form.nombreComercial} onChange={(e) => setForm({ ...form, nombreComercial: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Email"><input placeholder="correo@dominio.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Teléfono"><input placeholder="09xxxxxxxx" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Dirección" className="col-span-2"><input placeholder="Dirección" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Régimen tributario"><select value={form.rimpe} onChange={(e) => setForm({ ...form, rimpe: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option value="">Régimen General</option><option value="POPULAR">RIMPE Popular</option><option value="EMPRENDEDOR">RIMPE Emprendedor</option></select></Field>
+            <Field label="Clasificación SRI">
+              <div className="flex gap-3 items-center h-[42px]">
+                <label className="text-sm flex items-center gap-1"><input type="checkbox" checked={form.isSpecialContributor} onChange={(e) => setForm({ ...form, isSpecialContributor: e.target.checked })} /> Especial</label>
+                <label className="text-sm flex items-center gap-1"><input type="checkbox" checked={form.isWithholdingAgent} onChange={(e) => setForm({ ...form, isWithholdingAgent: e.target.checked })} /> Ag. retención</label>
+              </div>
+            </Field>
           </div>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button></div>
         </form>

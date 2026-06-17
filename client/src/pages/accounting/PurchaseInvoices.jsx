@@ -2,6 +2,7 @@ import { useEffect, useState, Fragment } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
+import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineDocumentText, HiOutlineArrowDownTray, HiOutlineXMark } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 
@@ -195,18 +196,22 @@ export default function PurchaseInvoices() {
         <form onSubmit={submit} className="space-y-3">
           {authorizeId && <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2">Factura cargada automáticamente. Verifica los datos y asigna la cuenta contable de cada ítem antes de autorizar; al autorizar se contabilizará.</div>}
           <div className="grid grid-cols-4 gap-3">
-            <select required value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5 col-span-2">
-              <option value="">Proveedor...</option>
-              {suppliers.map((s) => <option key={s._id} value={s._id}>{s.ruc} - {s.razonSocial}</option>)}
-            </select>
-            <select value={form.docType} onChange={(e) => setForm({ ...form, docType: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5">
-              <option>FACTURA</option><option>NOTA_VENTA</option><option>LIQUIDACION</option><option>NOTA_DEBITO_REC</option><option>NOTA_CREDITO_REC</option>
-            </select>
-            <input type="date" required value={form.fechaEmision} onChange={(e) => setForm({ ...form, fechaEmision: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input placeholder="Estab" value={form.estab} onChange={(e) => setForm({ ...form, estab: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input placeholder="Pto Emi" value={form.ptoEmi} onChange={(e) => setForm({ ...form, ptoEmi: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input required placeholder="Secuencial" value={form.secuencial} onChange={(e) => setForm({ ...form, secuencial: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input placeholder="Autorización" value={form.autorizacion} onChange={(e) => setForm({ ...form, autorizacion: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <Field label="Proveedor" required className="col-span-2">
+              <select required value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                <option value="">Seleccione…</option>
+                {suppliers.map((s) => <option key={s._id} value={s._id}>{s.ruc} - {s.razonSocial}</option>)}
+              </select>
+            </Field>
+            <Field label="Tipo de documento">
+              <select value={form.docType} onChange={(e) => setForm({ ...form, docType: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                <option>FACTURA</option><option>NOTA_VENTA</option><option>LIQUIDACION</option><option>NOTA_DEBITO_REC</option><option>NOTA_CREDITO_REC</option>
+              </select>
+            </Field>
+            <Field label="Fecha de emisión" required><input type="date" required value={form.fechaEmision} onChange={(e) => setForm({ ...form, fechaEmision: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Establecimiento"><input placeholder="001" value={form.estab} onChange={(e) => setForm({ ...form, estab: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Punto de emisión"><input placeholder="001" value={form.ptoEmi} onChange={(e) => setForm({ ...form, ptoEmi: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Secuencial" required><input required placeholder="000000123" value={form.secuencial} onChange={(e) => setForm({ ...form, secuencial: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="N° de autorización SRI"><input placeholder="Opcional" value={form.autorizacion} onChange={(e) => setForm({ ...form, autorizacion: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           </div>
           <table className="tbl">
             <thead className="bg-slate-100 text-xs"><tr>
@@ -282,6 +287,11 @@ export default function PurchaseInvoices() {
 
           <div className="border-t pt-2">
             <p className="text-sm font-semibold">Retenciones</p>
+            {form.retentions.length > 0 && (
+              <div className="grid grid-cols-6 gap-2 mt-1 text-[11px] text-slate-400 uppercase px-1">
+                <span>Tipo</span><span>Código</span><span>Base</span><span>%</span><span>Monto</span><span></span>
+              </div>
+            )}
             {form.retentions.map((r, i) => (
               <div key={i} className="grid grid-cols-6 gap-2 mt-1 text-xs">
                 <select value={r.type} onChange={(e) => { const rs = [...form.retentions]; rs[i].type = e.target.value; setForm({ ...form, retentions: rs }); }} className="border rounded px-2 py-1"><option>IVA</option><option>RENTA</option></select>
@@ -293,7 +303,7 @@ export default function PurchaseInvoices() {
               </div>
             ))}
             <button type="button" onClick={() => setForm({ ...form, retentions: [...form.retentions, { type: 'RENTA', code: '', baseAmount: 0, percentage: 0, amount: 0 }] })} className="text-emerald-600 text-xs mt-1">+ Retención</button>
-            <input placeholder="Nro comprobante retención" value={form.retentionNumber} onChange={(e) => setForm({ ...form, retentionNumber: e.target.value })} className="block mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <Field label="N° comprobante de retención" className="mt-2"><input placeholder="Opcional" value={form.retentionNumber} onChange={(e) => setForm({ ...form, retentionNumber: e.target.value })} className="block w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           </div>
 
           <div className="flex justify-end gap-2"><button type="button" onClick={() => { setShow(false); setAuthorizeId(null); }} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">{authorizeId ? 'Autorizar y contabilizar' : 'Registrar'}</button></div>
