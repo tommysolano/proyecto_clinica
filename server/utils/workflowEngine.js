@@ -3,10 +3,37 @@ const Workflow = require('../models/Workflow');
 const WorkflowEnrollment = require('../models/WorkflowEnrollment');
 const Patient = require('../models/Patient');
 const Conversation = require('../models/Conversation');
+const Appointment = require('../models/Appointment');
 const messaging = require('./messaging');
+const { emitToClinic } = require('../realtime');
 const { DOMAIN_EVENTS, onDomainEvent } = require('./events');
 
 const MAX_STEP_TRANSITIONS = 100; // guarda contra bucles por onFailGoTo mal formado
+
+// Normaliza texto (sin acentos, mayúsculas) para clasificar respuestas.
+function normalizeReply(text) {
+  return String(text || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^\p{L}\p{N}\s]/gu, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .toUpperCase();
+}
+
+const YES_WORDS = ['SI', 'SII', 'CLARO', 'OK', 'OKEY', 'DALE', 'LISTO', 'CONFIRMO', 'CONFIRMADO', 'CONFIRMAR', 'ASISTIRE', 'VOY', 'DE ACUERDO', 'PERFECTO'];
+const NO_WORDS = ['NO', 'NEL', 'CANCELAR', 'CANCELA', 'CANCELO', 'NO PUEDO', 'NO VOY', 'NO ASISTIRE', 'REAGENDAR', 'REPROGRAMAR', 'OTRO DIA'];
+
+/**
+ * Clasifica una respuesta entrante como 'yes' | 'no' | 'other'. PURO y testeable.
+ */
+function classifyReply(text) {
+  const n = normalizeReply(text);
+  if (!n) return 'other';
+  if (NO_WORDS.some((w) => n === w || n.startsWith(w + ' '))) return 'no';
+  if (YES_WORDS.some((w) => n === w || n.startsWith(w + ' '))) return 'yes';
+  return 'other';
+}
 
 function firstNameOf(patient) {
   return (patient?.firstName || (patient?.name || '').split(' ')[0] || '').trim();
@@ -34,10 +61,11 @@ function computeWaitUntil(step, context = {}) {
  * Evalúa un predicado de condition/goal contra el paciente y la conversación.
  * PURO y testeable.
  */
-function evaluateCondition(step, { patient, conversation } = {}) {
+function evaluateCondition(step, { patient, conversation, context } = {}) {
   const tags = patient?.tags || [];
   const stage = conversation?.opportunity?.stage || '';
   const source = patient?.source || '';
+  const lastReply = context?.lastReply || '';
   const value = step.value;
 
   switch (step.field) {
@@ -52,6 +80,10 @@ function evaluateCondition(step, { patient, conversation } = {}) {
     case 'source':
       if (step.op === 'neq') return source !== value;
       return source === value;
+    case 'lastReply':
+      if (step.op === 'exists') return !!lastReply && lastReply !== 'other';
+      if (step.op === 'neq') return lastReply !== value;
+      return lastReply === value; // eq → 'yes' | 'no' | 'other'
     case 'hasPatient':
       return !!patient;
     default:
@@ -81,6 +113,10 @@ async function executeEnrollment(enrollment) {
   const ctx = enrollment.context || {};
   const phone = ctx.phone || patient?.whatsapp || patient?.phone || '';
   let conversation = await loadConversationForPatient(enrollment.clinic, phone);
+
+  // Estamos ejecutando activamente: ya no esperamos respuesta (se reactivará si
+  // un próximo paso wait_reply vuelve a pausar).
+  enrollment.waitingForReply = false;
 
   let i = enrollment.stepIndex;
   let transitions = 0;
@@ -132,8 +168,29 @@ async function executeEnrollment(enrollment) {
         return;
       }
       i++; // fecha ya pasada → continuar
+    } else if (step.type === 'wait_reply') {
+      // Pausa hasta que el paciente responda (resumeOnReply) o venza el timeout.
+      enrollment.stepIndex = i + 1;
+      enrollment.nextRunAt = new Date(Date.now() + Number(step.timeoutMinutes || 720) * 60000);
+      enrollment.status = 'waiting';
+      enrollment.waitingForReply = true;
+      enrollment.markModified('context');
+      await enrollment.save();
+      return;
+    } else if (step.type === 'set_appointment_status') {
+      if (ctx.appointmentId && step.appointmentStatus) {
+        // eslint-disable-next-line no-await-in-loop
+        const appt = await Appointment.findOne({ _id: ctx.appointmentId, clinic: enrollment.clinic });
+        if (appt && !['completada', 'asistida'].includes(appt.status)) {
+          appt.status = step.appointmentStatus;
+          // eslint-disable-next-line no-await-in-loop
+          await appt.save();
+          emitToClinic(enrollment.clinic, 'appointment:updated', appt);
+        }
+      }
+      i++;
     } else if (step.type === 'condition') {
-      const pass = evaluateCondition(step, { patient, conversation });
+      const pass = evaluateCondition(step, { patient, conversation, context: ctx });
       if (pass) {
         i++;
       } else if (step.onFailGoTo != null && step.onFailGoTo >= 0) {
@@ -142,7 +199,7 @@ async function executeEnrollment(enrollment) {
         break; // termina
       }
     } else if (step.type === 'goal') {
-      if (evaluateCondition(step, { patient, conversation })) break; // objetivo cumplido → fin
+      if (evaluateCondition(step, { patient, conversation, context: ctx })) break; // objetivo cumplido → fin
       i++;
     } else if (step.type === 'add_tag' && step.tag && patient) {
       if (!patient.tags.includes(step.tag)) {
@@ -255,6 +312,42 @@ async function processDueEnrollments() {
   return { processed: due.length };
 }
 
+/**
+ * Reanuda las inscripciones que esperaban respuesta del paciente cuando llega un
+ * mensaje entrante. Clasifica la respuesta (yes/no/other) en el contexto para que
+ * los pasos `condition` posteriores puedan ramificar.
+ * Lo invoca el ingest de mensajes entrantes (chatController).
+ */
+async function resumeOnReply({ clinicId, patientId, phone, text }) {
+  const q = { clinic: clinicId, status: 'waiting', waitingForReply: true };
+  if (patientId) q.patient = patientId;
+  else if (phone) q['context.phone'] = messaging.normalizePhone(phone);
+  else return { resumed: 0 };
+
+  const enrollments = await WorkflowEnrollment.find(q);
+  if (!enrollments.length) return { resumed: 0 };
+
+  const reply = classifyReply(text);
+  for (const enrollment of enrollments) {
+    enrollment.context = {
+      ...(enrollment.context || {}),
+      lastReply: reply,
+      lastReplyText: String(text || '').slice(0, 200),
+    };
+    enrollment.markModified('context');
+    enrollment.waitingForReply = false;
+    enrollment.status = 'active';
+    enrollment.nextRunAt = new Date();
+    // eslint-disable-next-line no-await-in-loop
+    await enrollment.save();
+    // eslint-disable-next-line no-await-in-loop
+    await executeEnrollment(enrollment).catch((err) =>
+      console.error('[workflowEngine] resume error', enrollment._id, err.message)
+    );
+  }
+  return { resumed: enrollments.length };
+}
+
 /** Suscribe el motor al bus de eventos de dominio (llamar una vez al arrancar). */
 function subscribeDomainEvents() {
   const map = {
@@ -270,11 +363,13 @@ function subscribeDomainEvents() {
 }
 
 module.exports = {
+  classifyReply,
   computeWaitUntil,
   evaluateCondition,
   personalize,
   executeEnrollment,
   enrollForEvent,
   processDueEnrollments,
+  resumeOnReply,
   subscribeDomainEvents,
 };

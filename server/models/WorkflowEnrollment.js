@@ -22,6 +22,8 @@ const workflowEnrollmentSchema = new mongoose.Schema(
       index: true,
     },
     nextRunAt: { type: Date, default: Date.now, index: true },
+    // true mientras un paso wait_reply espera la respuesta del paciente.
+    waitingForReply: { type: Boolean, default: false, index: true },
     context: { type: mongoose.Schema.Types.Mixed, default: {} },
     lastError: { type: String, default: '' },
   },

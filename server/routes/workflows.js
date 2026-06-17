@@ -7,6 +7,8 @@ router.use(auth, requireClinic);
 const ROLES = ['admin', 'marketing'];
 
 router.get('/', requireRole(...ROLES), ctrl.list);
+router.get('/presets', requireRole(...ROLES), ctrl.listPresets);
+router.post('/presets/:key', requireRole(...ROLES), ctrl.installPreset);
 router.post('/', requireRole(...ROLES), ctrl.create);
 router.get('/:id', requireRole(...ROLES), ctrl.get);
 router.get('/:id/enrollments', requireRole(...ROLES), ctrl.enrollments);

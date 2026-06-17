@@ -24,10 +24,12 @@ const workflowStepSchema = new mongoose.Schema(
         'send_template',
         'wait',
         'wait_until',
+        'wait_reply',
         'condition',
         'add_tag',
         'remove_tag',
         'move_stage',
+        'set_appointment_status',
         'goal',
       ],
       required: true,
@@ -42,8 +44,12 @@ const workflowStepSchema = new mongoose.Schema(
     // wait_until: fecha base del contexto + offset (offset negativo = antes)
     waitEvent: { type: String, enum: ['appointment_date', ''], default: '' },
     offsetMinutes: { type: Number, default: 0 },
+    // wait_reply: pausa hasta que el paciente responda (o venza el timeout)
+    timeoutMinutes: { type: Number, default: 720, min: 1 },
+    // set_appointment_status: actualiza la cita del contexto
+    appointmentStatus: { type: String, enum: ['confirmada', 'cancelada', ''], default: '' },
     // condition / goal
-    field: { type: String, enum: ['tag', 'stage', 'source', 'hasPatient', ''], default: '' },
+    field: { type: String, enum: ['tag', 'stage', 'source', 'hasPatient', 'lastReply', ''], default: '' },
     op: { type: String, enum: ['eq', 'neq', 'contains', 'exists', ''], default: 'eq' },
     value: { type: String, default: '' },
     onFailGoTo: { type: Number, default: null }, // índice de paso; null = terminar

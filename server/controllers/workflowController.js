@@ -71,6 +71,71 @@ exports.remove = async (req, res) => {
   }
 };
 
+// Plantillas de automatización listas para instalar (casos de clínica).
+// Se crean PAUSADAS para que el usuario las revise (y cambie send_message por una
+// plantilla aprobada cuando el envío caiga fuera de la ventana de 24h) antes de activar.
+const PRESETS = {
+  reminder_24h: {
+    name: 'Recordatorio de cita 24h (con confirmación)',
+    trigger: { type: 'appointment_created', audience: 'all', serviceFilter: null },
+    steps: [
+      { type: 'wait_until', waitEvent: 'appointment_date', offsetMinutes: -1440 },
+      { type: 'send_message', body: 'Hola {{nombre}}, te recordamos tu cita de mañana. ¿Confirmas tu asistencia? Responde SÍ o NO.' },
+      { type: 'wait_reply', timeoutMinutes: 720 },
+      { type: 'condition', field: 'lastReply', op: 'eq', value: 'yes', onFailGoTo: 5 },
+      { type: 'set_appointment_status', appointmentStatus: 'confirmada' },
+      { type: 'condition', field: 'lastReply', op: 'eq', value: 'no', onFailGoTo: null },
+      { type: 'set_appointment_status', appointmentStatus: 'cancelada' },
+    ],
+  },
+  recall_6m: {
+    name: 'Recordatorio de control (6 meses)',
+    trigger: { type: 'appointment_attended', audience: 'all', serviceFilter: null },
+    steps: [
+      { type: 'wait_until', waitEvent: 'appointment_date', offsetMinutes: 180 * 24 * 60 },
+      { type: 'send_message', body: 'Hola {{nombre}}, ya pasaron 6 meses de tu última visita. ¿Agendamos tu control? Escríbenos para reservar.' },
+    ],
+  },
+  reactivation: {
+    name: 'Reactivación de tratamiento abandonado',
+    trigger: { type: 'treatment_abandoned', audience: 'all', serviceFilter: null },
+    steps: [
+      { type: 'send_message', body: 'Hola {{nombre}}, notamos que dejaste tu tratamiento en pausa. Nos encantaría ayudarte a completarlo. ¿Coordinamos una cita?' },
+      { type: 'add_tag', tag: 'reactivacion' },
+    ],
+  },
+  birthday: {
+    name: 'Saludo de cumpleaños',
+    trigger: { type: 'patient_birthday', audience: 'all', serviceFilter: null },
+    steps: [
+      { type: 'send_message', body: '¡Feliz cumpleaños, {{nombre}}! 🎉 Todo el equipo te desea un día maravilloso.' },
+    ],
+  },
+};
+
+exports.listPresets = (_req, res) => {
+  res.json(Object.entries(PRESETS).map(([key, p]) => ({ key, name: p.name, trigger: p.trigger.type, steps: p.steps.length })));
+};
+
+exports.installPreset = async (req, res) => {
+  try {
+    const preset = PRESETS[req.params.key];
+    if (!preset) return res.status(404).json({ message: 'Preset no encontrado' });
+    const wf = await Workflow.create({
+      clinic: req.clinicId,
+      folder: 'Clínica',
+      name: preset.name,
+      active: false, // se instala pausado para revisión
+      trigger: preset.trigger,
+      steps: preset.steps,
+      createdBy: req.user._id,
+    });
+    res.status(201).json(wf);
+  } catch (err) {
+    res.status(500).json({ message: 'Error al instalar preset', error: err.message });
+  }
+};
+
 // Inscripciones de un workflow (para depurar/monitorear).
 exports.enrollments = async (req, res) => {
   try {

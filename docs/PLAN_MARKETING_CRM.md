@@ -201,7 +201,19 @@ Reglas que aplica **siempre**:
 
 ---
 
-## Fase 3 — Casos verticales de clínica (2-3 semanas) 🟠
+## Fase 3 — Casos verticales de clínica (2-3 semanas) 🟠 — 🟡 EN CURSO (núcleo hecho)
+
+> Hecho: paso `wait_reply` + `set_appointment_status` en el motor; clasificación de
+> respuesta `classifyReply` (sí/no/otra) con tests; `resumeOnReply` cableado en el ingest
+> de mensajes entrantes (chatController) → el **recordatorio de cita con confirmación SÍ/NO
+> que muta la cita** ya funciona. Condición por `lastReply`. Presets instalables
+> (`/api/workflows/presets`): recordatorio 24h con confirmación, recall 6m, reactivación,
+> cumpleaños — se crean PAUSADOS para revisión. UI: nuevos pasos + sección de presets. 42 tests.
+>
+> Pendiente Fase 3: post-visita (encuesta + `ReviewRequest` con link a Google reseñas),
+> `recallMonths` configurable por servicio, y KPIs de no-show antes/después. Nota: los presets
+> usan `send_message` (texto) — para envíos fuera de la ventana de 24h hay que cambiarlos a
+> `send_template` con plantilla aprobada antes de activar en producción.
 
 **Objetivo:** alto ROI inmediato sobre el motor de Fase 2. Resuelve G14.
 

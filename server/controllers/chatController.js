@@ -1215,6 +1215,9 @@ exports.simulateIncoming = async (req, res) => {
       incomingText: body,
     });
     if (!optedOut) {
+      await require('../utils/workflowEngine')
+        .resumeOnReply({ clinicId: req.clinicId, patientId: conv.patient, phone: conv.phone, text: body })
+        .catch(() => {});
       await triggerFlows({
         conv,
         clinicId: req.clinicId,
@@ -1366,6 +1369,10 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
 
   const optedOut = await applyIncomingOptOut({ clinicId, conv, incomingText: body || '' });
   if (optedOut) return;
+  // Reanuda workflows que esperaban respuesta del paciente (p.ej. confirmar cita).
+  await require('../utils/workflowEngine')
+    .resumeOnReply({ clinicId, patientId: conv.patient, phone: conv.phone, text: body || '' })
+    .catch(() => {});
   await triggerFlows({ conv, clinicId, isNewConversation: isNew, incomingText: body || '' });
 }
 

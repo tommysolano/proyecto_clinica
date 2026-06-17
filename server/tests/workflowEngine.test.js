@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { computeWaitUntil, evaluateCondition, personalize } = require('../utils/workflowEngine');
+const { computeWaitUntil, evaluateCondition, personalize, classifyReply } = require('../utils/workflowEngine');
 
 test('computeWaitUntil applies a negative offset (e.g. 24h before the appointment)', () => {
   const ctx = { appointmentDate: '2026-06-20T15:00:00Z' };
@@ -37,4 +37,22 @@ test('evaluateCondition hasPatient + unknown field defaults to true', () => {
 
 test('personalize replaces name tokens', () => {
   assert.equal(personalize('Hola {{nombre}}', { firstName: 'Ana' }), 'Hola Ana');
+});
+
+test('classifyReply detects affirmative, negative and other', () => {
+  assert.equal(classifyReply('Sí'), 'yes');
+  assert.equal(classifyReply('si confirmo'), 'yes');
+  assert.equal(classifyReply('OK'), 'yes');
+  assert.equal(classifyReply('No'), 'no');
+  assert.equal(classifyReply('no puedo asistir'), 'no');
+  assert.equal(classifyReply('cancelar'), 'no');
+  assert.equal(classifyReply('¿a qué hora era?'), 'other');
+  assert.equal(classifyReply(''), 'other');
+});
+
+test('evaluateCondition reads lastReply from context', () => {
+  assert.equal(evaluateCondition({ field: 'lastReply', op: 'eq', value: 'yes' }, { context: { lastReply: 'yes' } }), true);
+  assert.equal(evaluateCondition({ field: 'lastReply', op: 'eq', value: 'no' }, { context: { lastReply: 'yes' } }), false);
+  assert.equal(evaluateCondition({ field: 'lastReply', op: 'exists' }, { context: { lastReply: 'other' } }), false);
+  assert.equal(evaluateCondition({ field: 'lastReply', op: 'exists' }, { context: { lastReply: 'no' } }), true);
 });
