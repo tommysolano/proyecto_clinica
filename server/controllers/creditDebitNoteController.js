@@ -3,6 +3,22 @@ const Invoice = require('../models/Invoice');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
 const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
+const Clinic = require('../models/Clinic');
+const { loadForSigning } = require('./invoicingConfigController');
+const { generarClaveAcceso } = require('../modules/invoicing/ec/accessKey');
+const { buildNotaCreditoXml } = require('../modules/invoicing/ec/xmlBuilder');
+const { signXml } = require('../modules/invoicing/ec/xadesSigner');
+const { enviarComprobante, autorizarComprobante } = require('../modules/invoicing/ec/sriClient');
+
+function fmtFecha(d) {
+  const dt = d ? new Date(d) : new Date();
+  return `${String(dt.getDate()).padStart(2, '0')}/${String(dt.getMonth() + 1).padStart(2, '0')}/${dt.getFullYear()}`;
+}
+function mapMensajes(node) {
+  if (!node) return [];
+  const arr = Array.isArray(node) ? node : [node];
+  return arr.map((m) => ({ identificador: m.identificador, mensaje: m.mensaje, informacionAdicional: m.informacionAdicional, tipo: m.tipo }));
+}
 
 exports.list = async (req, res) => {
   const { kind, direction, startDate, endDate, page = 1, limit = 20 } = req.query;
@@ -156,6 +172,130 @@ exports.create = async (req, res) => {
     res.status(201).json(note);
   } catch (e) {
     res.status(e.status || 400).json({ message: e.message });
+  }
+};
+
+/**
+ * Emite electrónicamente una Nota de Crédito (cod 04) ya registrada que modifica
+ * una factura electrónica: clave de acceso, XML firmado, envío y autorización SRI.
+ */
+exports.emit = async (req, res) => {
+  let note;
+  try {
+    note = await CreditDebitNote.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!note) return res.status(404).json({ message: 'Nota no encontrada' });
+    if (note.kind !== 'NC' || note.direction !== 'EMITIDA') {
+      return res.status(400).json({ message: 'Solo se emiten electrónicamente notas de crédito emitidas' });
+    }
+    if (note.refModel !== 'Invoice') {
+      return res.status(400).json({ message: 'La nota debe referenciar una factura electrónica' });
+    }
+    if (['AUTORIZADO', 'RECIBIDA', 'EN_PROCESO'].includes(note.estado)) {
+      return res.status(400).json({ message: `La nota ya está en estado ${note.estado}` });
+    }
+    const invoice = await Invoice.findOne({ _id: note.refDoc, clinic: req.clinicId });
+    if (!invoice) return res.status(400).json({ message: 'Factura referenciada no encontrada' });
+
+    const { config, p12Buffer, password } = await loadForSigning(req.clinicId);
+    const clinic = await Clinic.findById(req.clinicId);
+    const secuencial = await config.reserveCreditNoteSequential();
+    const fechaEmision = note.fechaEmision || new Date();
+    const claveAcceso = generarClaveAcceso({
+      fechaEmision, tipoComprobante: 'notaCredito', ruc: config.ruc, ambiente: config.ambiente,
+      estab: config.establecimiento, puntoEmision: config.puntoEmision, secuencial,
+    });
+
+    const subtotal = +Number(note.subtotal || 0).toFixed(2);
+    const iva = +Number(note.iva || 0).toFixed(2);
+    const codigoPorcentaje = iva > 0 ? '4' : '0';
+    const tarifa = iva > 0 ? 15 : 0;
+    const numDocModificado = `${invoice.estab}-${invoice.ptoEmi}-${invoice.secuencial}`;
+
+    const detalles = (Array.isArray(note.items) && note.items.length ? note.items : [{
+      descripcion: note.motivo || 'Nota de crédito', cantidad: 1, precioUnitario: subtotal, base: subtotal, iva,
+    }]).map((it) => {
+      const cantidad = Number(it.cantidad || it.quantity || 1);
+      const base = +Number(it.base ?? it.precioTotalSinImpuesto ?? it.subtotal ?? subtotal).toFixed(2);
+      const valorIva = +Number(it.iva ?? it.valor ?? iva).toFixed(2);
+      return {
+        codigoInterno: it.codigoInterno || it.productCode || 'NC',
+        descripcion: it.descripcion || it.productName || note.motivo || 'Nota de crédito',
+        cantidad,
+        precioUnitario: cantidad ? +(base / cantidad).toFixed(6) : base,
+        descuento: 0,
+        precioTotalSinImpuesto: base,
+        impuestos: [{ codigo: '2', codigoPorcentaje, tarifa, baseImponible: base, valor: valorIva }],
+      };
+    });
+
+    const nota = {
+      infoTributaria: {
+        ambiente: config.ambiente, tipoEmision: '1', razonSocial: config.razonSocial,
+        nombreComercial: config.nombreComercial || undefined, ruc: config.ruc, claveAcceso,
+        estab: config.establecimiento, ptoEmi: config.puntoEmision, secuencial, dirMatriz: config.direccionMatriz,
+      },
+      infoNotaCredito: {
+        fechaEmision: fmtFecha(fechaEmision),
+        dirEstablecimiento: config.direccionEstablecimiento || config.direccionMatriz,
+        tipoIdentificacionComprador: invoice.tipoIdentificacionComprador,
+        razonSocialComprador: invoice.razonSocialComprador,
+        identificacionComprador: invoice.identificacionComprador,
+        contribuyenteEspecial: config.contribuyenteEspecial || undefined,
+        obligadoContabilidad: config.obligadoContabilidad || 'NO',
+        codDocModificado: '01',
+        numDocModificado,
+        fechaEmisionDocSustento: typeof invoice.fechaEmision === 'string' ? invoice.fechaEmision : fmtFecha(invoice.fechaEmision),
+        totalSinImpuestos: subtotal,
+        valorModificacion: +Number(note.total || subtotal + iva).toFixed(2),
+        moneda: 'DOLAR',
+        totalConImpuestos: [{ codigo: '2', codigoPorcentaje, baseImponible: subtotal, valor: iva }],
+        motivo: note.motivo || 'Nota de crédito',
+      },
+      detalles,
+      infoAdicional: [clinic ? { nombre: 'Establecimiento', valor: clinic.name } : null].filter(Boolean),
+    };
+
+    note.estab = config.establecimiento;
+    note.ptoEmi = config.puntoEmision;
+    note.secuencial = secuencial;
+    note.serie = `${config.establecimiento}-${config.puntoEmision}-${secuencial}`;
+    note.claveAcceso = claveAcceso;
+    note.estado = 'EN_COLA';
+    await note.save();
+
+    const xml = buildNotaCreditoXml(nota);
+    const xmlFirmado = signXml(xml, p12Buffer, password);
+    note.xmlFirmado = xmlFirmado;
+    await note.save();
+
+    const recepcion = await enviarComprobante(xmlFirmado, config.ambiente);
+    note.estado = recepcion?.estado === 'RECIBIDA' ? 'RECIBIDA' : 'DEVUELTA';
+    await note.save();
+    if (note.estado !== 'RECIBIDA') {
+      return res.status(400).json({ message: 'El SRI rechazó la nota de crédito', note, mensajes: mapMensajes(recepcion?.comprobantes?.comprobante?.mensajes?.mensaje) });
+    }
+
+    for (let i = 0; i < 3; i++) {
+      await new Promise((r) => setTimeout(r, 1500));
+      const aut = await autorizarComprobante(claveAcceso, config.ambiente);
+      const list = aut?.autorizaciones?.autorizacion;
+      const item = Array.isArray(list) ? list[0] : list;
+      if (item?.estado === 'AUTORIZADO') {
+        note.estado = 'AUTORIZADO';
+        note.autorizacion = item.numeroAutorizacion;
+        note.xmlAutorizado = item.comprobante;
+        break;
+      } else if (item?.estado === 'NO AUTORIZADO') {
+        note.estado = 'NO_AUTORIZADO';
+        break;
+      }
+      note.estado = 'EN_PROCESO';
+    }
+    await note.save();
+    res.json(note);
+  } catch (error) {
+    if (note) { note.estado = 'ERROR'; try { await note.save(); } catch (_) {} }
+    res.status(500).json({ message: 'Error al emitir nota de crédito', error: error.message });
   }
 };
 

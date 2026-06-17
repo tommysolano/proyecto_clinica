@@ -223,4 +223,90 @@ function buildRetentionXml(voucher) {
   return root.end({ prettyPrint: false, headless: false });
 }
 
-module.exports = { buildFacturaXml, buildRetentionXml };
+/**
+ * Construye el XML de una Nota de Crédito electrónica (versión 1.1.0).
+ *
+ * @param {Object} nota
+ * @param {Object} nota.infoTributaria
+ * @param {Object} nota.infoNotaCredito
+ * @param {Array}  nota.detalles
+ * @param {Array}  [nota.infoAdicional]
+ */
+function buildNotaCreditoXml(nota) {
+  const { infoTributaria, infoNotaCredito, detalles, infoAdicional = [] } = nota;
+
+  const root = create({ version: '1.0', encoding: 'UTF-8', standalone: false }).ele(
+    'notaCredito',
+    { id: 'comprobante', version: '1.1.0' }
+  );
+
+  const it = root.ele('infoTributaria');
+  it.ele('ambiente').txt(infoTributaria.ambiente);
+  it.ele('tipoEmision').txt(infoTributaria.tipoEmision || '1');
+  it.ele('razonSocial').txt(infoTributaria.razonSocial);
+  if (infoTributaria.nombreComercial) it.ele('nombreComercial').txt(infoTributaria.nombreComercial);
+  it.ele('ruc').txt(infoTributaria.ruc);
+  it.ele('claveAcceso').txt(infoTributaria.claveAcceso);
+  it.ele('codDoc').txt('04');
+  it.ele('estab').txt(infoTributaria.estab);
+  it.ele('ptoEmi').txt(infoTributaria.ptoEmi);
+  it.ele('secuencial').txt(infoTributaria.secuencial);
+  it.ele('dirMatriz').txt(infoTributaria.dirMatriz);
+
+  const inc = root.ele('infoNotaCredito');
+  inc.ele('fechaEmision').txt(infoNotaCredito.fechaEmision);
+  if (infoNotaCredito.dirEstablecimiento) inc.ele('dirEstablecimiento').txt(infoNotaCredito.dirEstablecimiento);
+  inc.ele('tipoIdentificacionComprador').txt(infoNotaCredito.tipoIdentificacionComprador);
+  inc.ele('razonSocialComprador').txt(infoNotaCredito.razonSocialComprador);
+  inc.ele('identificacionComprador').txt(infoNotaCredito.identificacionComprador);
+  if (infoNotaCredito.contribuyenteEspecial) inc.ele('contribuyenteEspecial').txt(infoNotaCredito.contribuyenteEspecial);
+  inc.ele('obligadoContabilidad').txt(infoNotaCredito.obligadoContabilidad || 'NO');
+  inc.ele('codDocModificado').txt(infoNotaCredito.codDocModificado || '01');
+  inc.ele('numDocModificado').txt(infoNotaCredito.numDocModificado);
+  inc.ele('fechaEmisionDocSustento').txt(infoNotaCredito.fechaEmisionDocSustento);
+  inc.ele('totalSinImpuestos').txt(n2(infoNotaCredito.totalSinImpuestos));
+  inc.ele('valorModificacion').txt(n2(infoNotaCredito.valorModificacion));
+  inc.ele('moneda').txt(infoNotaCredito.moneda || 'DOLAR');
+
+  const tci = inc.ele('totalConImpuestos');
+  for (const t of infoNotaCredito.totalConImpuestos || []) {
+    const ti = tci.ele('totalImpuesto');
+    ti.ele('codigo').txt(t.codigo || '2');
+    ti.ele('codigoPorcentaje').txt(t.codigoPorcentaje || '0');
+    ti.ele('baseImponible').txt(n2(t.baseImponible));
+    ti.ele('valor').txt(n2(t.valor));
+  }
+  inc.ele('motivo').txt(infoNotaCredito.motivo || 'Nota de crédito');
+
+  const dets = root.ele('detalles');
+  for (const d of detalles || []) {
+    const det = dets.ele('detalle');
+    det.ele('codigoInterno').txt(d.codigoPrincipal || d.codigoInterno || '');
+    det.ele('descripcion').txt(d.descripcion);
+    det.ele('cantidad').txt(n6(d.cantidad));
+    det.ele('precioUnitario').txt(n6(d.precioUnitario));
+    det.ele('descuento').txt(n2(d.descuento || 0));
+    det.ele('precioTotalSinImpuesto').txt(n2(d.precioTotalSinImpuesto));
+    const imps = det.ele('impuestos');
+    for (const i of d.impuestos || []) {
+      const imp = imps.ele('impuesto');
+      imp.ele('codigo').txt(i.codigo || '2');
+      imp.ele('codigoPorcentaje').txt(i.codigoPorcentaje || '0');
+      imp.ele('tarifa').txt(n2(i.tarifa || 0));
+      imp.ele('baseImponible').txt(n2(i.baseImponible));
+      imp.ele('valor').txt(n2(i.valor));
+    }
+  }
+
+  if (Array.isArray(infoAdicional) && infoAdicional.length) {
+    const add = root.ele('infoAdicional');
+    for (const a of infoAdicional) {
+      if (!a.nombre || a.valor == null) continue;
+      add.ele('campoAdicional', { nombre: a.nombre }).txt(String(a.valor));
+    }
+  }
+
+  return root.end({ prettyPrint: false, headless: false });
+}
+
+module.exports = { buildFacturaXml, buildRetentionXml, buildNotaCreditoXml };
