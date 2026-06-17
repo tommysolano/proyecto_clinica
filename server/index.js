@@ -58,6 +58,7 @@ app.use('/api/quotations', require('./routes/quotations'));
 app.use('/api/marketing', require('./routes/marketing'));
 app.use('/api/message-templates', require('./routes/messageTemplates'));
 app.use('/api/segments', require('./routes/segments'));
+app.use('/api/campaigns', require('./routes/campaigns'));
 app.use('/api/chats', require('./routes/chats'));
 app.use('/api/call-center', require('./routes/callCenter'));
 app.use('/api/call-center-config', require('./routes/callCenterConfig'));
@@ -106,6 +107,9 @@ connectDB().then(() => {
   // Job: reanudar flujos de mensajes con pasos de espera vencidos (cada 60s).
   const { processDueFlowRuns } = require('./controllers/chatController');
   setInterval(() => { processDueFlowRuns().catch(() => {}); }, 60 * 1000);
+  // Job: procesar mensajes de campañas encolados/vencidos (cada 60s).
+  const { processDueScheduledMessages } = require('./controllers/campaignController');
+  setInterval(() => { processDueScheduledMessages().catch(() => {}); }, 60 * 1000);
 }).catch((err) => {
   console.error('No se pudo conectar a MongoDB, abortando:', err.message);
   process.exit(1);

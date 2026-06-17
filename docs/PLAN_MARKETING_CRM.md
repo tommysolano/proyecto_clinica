@@ -137,13 +137,15 @@ Reglas que aplica **siempre**:
 
 ---
 
-## Fase 1 — Plantillas + segmentación (2-3 semanas) 🔴 — 🟡 EN CURSO (backend hecho)
+## Fase 1 — Plantillas + segmentación (2-3 semanas) 🔴 — ✅ COMPLETADA
 
-> Hecho: modelos `MessageTemplate` + `Segment`; `utils/segmentResolver.js` (con tests);
-> controladores y rutas `/api/message-templates` (CRUD + `sync-whatsapp`) y `/api/segments`
-> (CRUD + `preview` + `:id/resolve`); `POST /api/patients/bulk-tag`. Frontend: páginas
-> `MessageTemplates.jsx` y `Segments.jsx` (constructor con previsualización en vivo) + nav.
-> Pendiente: modelo `Campaign` + job de envío programado (`ScheduledMessage`) y su UI.
+> Hecho: modelos `MessageTemplate` + `Segment` + `Campaign` + `ScheduledMessage`;
+> `utils/segmentResolver.js` (con tests); rutas `/api/message-templates` (CRUD +
+> `sync-whatsapp`), `/api/segments` (CRUD + `preview` + `:id/resolve`), `/api/campaigns`
+> (CRUD + `cancel`), `POST /api/patients/bulk-tag`. Job `processDueScheduledMessages`
+> cada 60s en index.js (idempotente, por lotes, respeta opt-out/ventana). Frontend:
+> `MessageTemplates.jsx`, `Segments.jsx` (constructor con preview en vivo), `Campaigns.jsx`
+> (crear/programar/cancelar + stats que refrescan) + nav. 34 tests verdes, build OK.
 
 **Objetivo:** outbound masivo legal y segmentos reutilizables.
 
