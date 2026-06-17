@@ -247,9 +247,14 @@ Reglas que aplica **siempre**:
 > paciente; reporte `GET /api/marketing/attribution` (pacientes + ingresos por origen/campaña) +
 > página `Attribution.jsx`. Build OK, 42 tests.
 >
-> Pendiente Fase 4: **link público de auto-agendamiento** (calendario público que crea cita y
-> dispara workflow de confirmación) — feature grande con lógica de disponibilidad; queda como
-> su propio bloque. Tracking de aperturas/clics de email también pendiente.
+> **Auto-agendamiento público ✅**: `models/BookingConfig.js` (horario/slots/servicios/token),
+> `utils/booking.js` (generación + filtrado de slots, con tests), `bookingConfigController` (admin)
+> + `bookingPublicController` (info/slots/book sin auth) en `/api/public/booking/:token`. La reserva
+> crea/vincula paciente y dispara `appointment_created` (→ recordatorio con confirmación). Frontend:
+> página pública `PublicBooking.jsx` (ruta `/book/:token`) + admin `BookingConfig.jsx` (link, días,
+> horario, capacidad, servicios). 52 tests, build OK.
+>
+> Pendiente Fase 4: tracking de aperturas/clics de email.
 
 **Objetivo:** cerrar el círculo de ROI. Resuelve G8, G16, G21.
 

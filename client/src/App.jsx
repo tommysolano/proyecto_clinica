@@ -30,6 +30,8 @@ import Campaigns from './pages/Campaigns';
 import Workflows from './pages/Workflows';
 import Attribution from './pages/Attribution';
 import Tasks from './pages/Tasks';
+import PublicBooking from './pages/PublicBooking';
+import BookingConfig from './pages/BookingConfig';
 import CallCenterConfig from './pages/CallCenterConfig';
 import CommissionRules from './pages/CommissionRules';
 import Settings from './pages/Settings';
@@ -102,6 +104,7 @@ function AppRoutes() {
   return (
     <Routes>
       <Route path="/login" element={<Login />} />
+      <Route path="/book/:token" element={<PublicBooking />} />
       <Route
         path="/*"
         element={
@@ -292,6 +295,14 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'call_center', 'marketing']}>
                       <Tasks />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/booking-config"
+                  element={
+                    <RoleRoute roles={['admin', 'marketing']}>
+                      <BookingConfig />
                     </RoleRoute>
                   }
                 />

@@ -1,7 +1,13 @@
 const router = require('express').Router();
 const Patient = require('../models/Patient');
+const booking = require('../controllers/bookingPublicController');
 
-// Endpoints públicos (sin auth). Hoy: baja de email marketing (unsubscribe).
+// Endpoints públicos (sin auth). Hoy: baja de email + auto-agendamiento.
+
+// Auto-agendamiento público.
+router.get('/booking/:token', booking.info);
+router.get('/booking/:token/slots', booking.slots);
+router.post('/booking/:token', booking.book);
 
 const page = (title, msg) =>
   `<!doctype html><html lang="es"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>${title}</title></head><body style="font-family:sans-serif;max-width:480px;margin:60px auto;text-align:center;color:#222"><h2>${title}</h2><p>${msg}</p></body></html>`;
