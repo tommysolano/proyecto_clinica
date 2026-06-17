@@ -71,6 +71,10 @@ import AccountMapping from './pages/accounting/AccountMapping';
 import PeriodBalances from './pages/accounting/PeriodBalances';
 import BankImport from './pages/accounting/BankImport';
 import Budgets from './pages/accounting/Budgets';
+import Receivables from './pages/accounting/Receivables';
+import RetentionVouchers from './pages/accounting/RetentionVouchers';
+import AccountingHealth from './pages/accounting/AccountingHealth';
+import Profitability from './pages/accounting/Profitability';
 
 function SuperAdminRoute({ children }) {
   const { user, loading } = useAuth();
@@ -311,8 +315,12 @@ function AppRoutes() {
                   ['bank-import', BankImport],
                   ['suppliers', Suppliers],
                   ['payments', Payments],
+                  ['cartera', Receivables],
                   ['purchases', PurchaseInvoices],
                   ['credit-debit-notes', CreditDebitNotes],
+                  ['retention-vouchers', RetentionVouchers],
+                  ['accounting-health', AccountingHealth],
+                  ['profitability', Profitability],
                   ['warehouses', Warehouses],
                   ['inv-categories', InventoryCategories],
                   ['inv-consolidated', ConsolidatedInventory],

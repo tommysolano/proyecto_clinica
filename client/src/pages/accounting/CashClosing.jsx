@@ -2,8 +2,10 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
-import { HiOutlineCalculator, HiOutlineLockOpen, HiOutlineLockClosed, HiOutlineEye } from 'react-icons/hi2';
+import { HiOutlineCalculator, HiOutlineLockOpen, HiOutlineLockClosed, HiOutlineEye, HiOutlinePlus } from 'react-icons/hi2';
 import { fmt, fmtDate } from './_utils';
+
+const MOV_EMPTY = { type: 'GASTO', amount: 0, description: '', bankAccount: '' };
 
 export default function CashClosing() {
   const [list, setList] = useState([]);
@@ -14,6 +16,10 @@ export default function CashClosing() {
   const [openForm, setOpenForm] = useState({ openingBalance: 0, notes: '' });
   const [closeForm, setCloseForm] = useState({ countedCash: 0, notes: '' });
   const [busy, setBusy] = useState(false);
+  const [movements, setMovements] = useState([]);
+  const [movModal, setMovModal] = useState(false);
+  const [movForm, setMovForm] = useState(MOV_EMPTY);
+  const [banks, setBanks] = useState([]);
 
   const load = async () => {
     try {
@@ -23,9 +29,32 @@ export default function CashClosing() {
       ]);
       setList(l.data || []);
       setSession(s.data || { open: null, live: null });
+      if (s.data?.open) {
+        const m = await api.get('/cash-closings/movements');
+        setMovements(m.data || []);
+      } else {
+        setMovements([]);
+      }
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
   useEffect(() => { load(); }, []);
+  useEffect(() => { api.get('/banks').then((r) => setBanks(r.data || [])).catch(() => {}); }, []);
+
+  const addMovement = async (e) => {
+    e.preventDefault();
+    setBusy(true);
+    try {
+      await api.post('/cash-closings/movements', movForm);
+      toast.success('Movimiento registrado');
+      setMovModal(false); setMovForm(MOV_EMPTY); load();
+    } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
+    finally { setBusy(false); }
+  };
+  const voidMovement = async (m) => {
+    if (!confirm('¿Anular este movimiento?')) return;
+    try { await api.post(`/cash-closings/movements/${m._id}/void`); toast.success('Anulado'); load(); }
+    catch (err) { toast.error(err.response?.data?.message || 'Error'); }
+  };
 
   const live = session.live;
   const open = session.open;
@@ -86,6 +115,31 @@ export default function CashClosing() {
             <div className="bg-sky-50 rounded-lg p-2"><p className="text-xs text-sky-700">Tarjeta</p><p className="font-bold text-sky-800">${fmt(live?.byMethod?.tarjeta)}</p></div>
             <div className="bg-violet-50 rounded-lg p-2"><p className="text-xs text-violet-700">Transferencia</p><p className="font-bold text-violet-800">${fmt(live?.byMethod?.transferencia)}</p></div>
             <div className="bg-amber-50 rounded-lg p-2"><p className="text-xs text-amber-700">Efectivo esperado</p><p className="font-bold text-amber-800">${fmt(expectedCash)}</p></div>
+          </div>
+
+          {/* Movimientos de caja (caja chica / ingresos / egresos / depósitos) */}
+          <div className="mt-4 border-t border-slate-100 pt-3">
+            <div className="flex items-center justify-between mb-2">
+              <h3 className="text-sm font-semibold text-slate-700">Movimientos de caja {live?.movementsNet != null && <span className="text-xs text-slate-400">(neto ${fmt(live.movementsNet)})</span>}</h3>
+              <button onClick={() => { setMovForm(MOV_EMPTY); setMovModal(true); }} className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded-lg flex items-center gap-1"><HiOutlinePlus className="w-3.5 h-3.5" /> Movimiento</button>
+            </div>
+            {movements.length === 0 ? (
+              <p className="text-xs text-slate-400">Sin movimientos en este turno.</p>
+            ) : (
+              <table className="tbl text-xs">
+                <thead className="bg-slate-50"><tr><th className="px-2 py-1 text-left">Tipo</th><th className="px-2 py-1 text-left">Descripción</th><th className="px-2 py-1 text-right">Monto</th><th></th></tr></thead>
+                <tbody>
+                  {movements.map((m) => (
+                    <tr key={m._id} className={`border-t border-slate-100 ${m.voided ? 'line-through text-slate-400' : ''}`}>
+                      <td className="px-2 py-1">{m.type}</td>
+                      <td className="px-2 py-1">{m.description}</td>
+                      <td className={`px-2 py-1 text-right font-mono ${m.type === 'INGRESO' ? 'text-emerald-600' : 'text-rose-600'}`}>{m.type === 'INGRESO' ? '+' : '−'}${fmt(m.amount)}</td>
+                      <td className="px-2 py-1 text-right">{!m.voided && <button onClick={() => voidMovement(m)} className="text-rose-500 text-[11px]">anular</button>}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
         </div>
       ) : (
@@ -180,6 +234,27 @@ export default function CashClosing() {
             {view.notes && <p className="text-slate-600 border-t pt-2">{view.notes}</p>}
           </div>
         )}
+      </Modal>
+
+      <Modal isOpen={movModal} onClose={() => setMovModal(false)} title="Movimiento de caja" size="sm">
+        <form onSubmit={addMovement} className="space-y-3">
+          <select value={movForm.type} onChange={(e) => setMovForm({ ...movForm, type: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+            <option value="INGRESO">Ingreso a caja</option>
+            <option value="GASTO">Gasto (caja chica)</option>
+            <option value="EGRESO">Egreso</option>
+            <option value="RETIRO">Retiro</option>
+            <option value="DEPOSITO">Depósito a banco</option>
+          </select>
+          <input type="number" step="0.01" required placeholder="Monto" value={movForm.amount} onChange={(e) => setMovForm({ ...movForm, amount: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+          <input placeholder="Descripción" value={movForm.description} onChange={(e) => setMovForm({ ...movForm, description: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+          {movForm.type === 'DEPOSITO' && (
+            <select required value={movForm.bankAccount} onChange={(e) => setMovForm({ ...movForm, bankAccount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+              <option value="">Banco destino…</option>
+              {banks.map((b) => <option key={b._id} value={b._id}>{b.name}</option>)}
+            </select>
+          )}
+          <div className="flex justify-end gap-2"><button type="button" onClick={() => setMovModal(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button disabled={busy} className="px-4 py-2 bg-emerald-600 text-white rounded-xl disabled:opacity-60">Registrar</button></div>
+        </form>
       </Modal>
     </div>
   );

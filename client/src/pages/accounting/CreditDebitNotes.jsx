@@ -36,6 +36,12 @@ export default function CreditDebitNotes() {
     catch (err) { toast.error(err.response?.data?.message || 'Error'); }
   };
 
+  const emit = async (n) => {
+    if (!confirm('¿Emitir electrónicamente esta nota de crédito al SRI?')) return;
+    try { await api.post(`/credit-debit-notes/${n._id}/emit`); toast.success('Nota emitida'); load(); }
+    catch (err) { toast.error(err.response?.data?.message || 'Error al emitir'); }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -48,7 +54,7 @@ export default function CreditDebitNotes() {
             <th className="px-3 py-2 text-left">Tipo</th><th className="px-3 py-2 text-left">Sentido</th>
             <th className="px-3 py-2 text-left">Serie</th><th className="px-3 py-2 text-left">Afecta</th>
             <th className="px-3 py-2 text-left">Fecha</th><th className="px-3 py-2 text-right">Total</th>
-            <th className="px-3 py-2 text-center">Estado</th>
+            <th className="px-3 py-2 text-center">Estado</th><th className="px-3 py-2"></th>
           </tr></thead>
           <tbody>
             {list.map((n) => (
@@ -57,9 +63,14 @@ export default function CreditDebitNotes() {
                 <td className="px-3 py-2 text-xs">{n.direction}</td>
                 <td className="px-3 py-2 font-mono text-xs">{n.serie}</td>
                 <td className="px-3 py-2 font-mono text-xs">{n.serieAfecta}</td>
-                <td className="px-3 py-2">{fmtDate(n.date)}</td>
+                <td className="px-3 py-2">{fmtDate(n.date || n.fechaEmision)}</td>
                 <td className="px-3 py-2 text-right font-mono">{fmt(n.total)}</td>
                 <td className="px-3 py-2 text-center text-xs">{n.estado}</td>
+                <td className="px-3 py-2 text-right">
+                  {n.kind === 'NC' && n.direction === 'EMITIDA' && n.refModel === 'Invoice' && !['AUTORIZADO', 'RECIBIDA', 'EN_PROCESO'].includes(n.estado) && (
+                    <button onClick={() => emit(n)} className="px-2.5 py-1 text-xs bg-emerald-600 text-white rounded-lg">Emitir</button>
+                  )}
+                </td>
               </tr>
             ))}
           </tbody>

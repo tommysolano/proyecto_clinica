@@ -92,6 +92,12 @@ export default function PurchaseInvoices() {
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
 
+  const emitRetention = async (p) => {
+    if (!confirm('¿Emitir el comprobante de retención electrónico de esta compra?')) return;
+    try { await api.post(`/retention-vouchers/from-purchase/${p._id}`); toast.success('Retención emitida'); load(); }
+    catch (e) { toast.error(e.response?.data?.message || 'Error al emitir retención'); }
+  };
+
   const voidIt = async (p) => {
     if (!confirm('¿Anular?')) return;
     try { await api.post(`/purchase-invoices/${p._id}/void`); load(); }
@@ -173,6 +179,9 @@ export default function PurchaseInvoices() {
                 <td className="px-3 py-2 text-right">
                   <div className="flex items-center justify-end gap-2">
                     {p.status === 'POR_AUTORIZAR' && <button onClick={() => openAuthorize(p)} className="text-emerald-600 text-xs font-medium hover:underline">Verificar / Autorizar</button>}
+                    {p.status !== 'ANULADA' && p.retentionTotal > 0 && !p.retentionVoucher && (
+                      <button onClick={() => emitRetention(p)} className="text-indigo-600 text-xs font-medium hover:underline">Emitir retención</button>
+                    )}
                     {p.status === 'REGISTRADA' && <button onClick={() => voidIt(p)} className="text-rose-600" title="Anular"><HiOutlineXMark className="w-4 h-4" /></button>}
                   </div>
                 </td>
