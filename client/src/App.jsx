@@ -27,6 +27,7 @@ import AutoMessages from './pages/AutoMessages';
 import MessageTemplates from './pages/MessageTemplates';
 import Segments from './pages/Segments';
 import Campaigns from './pages/Campaigns';
+import Workflows from './pages/Workflows';
 import CallCenterConfig from './pages/CallCenterConfig';
 import CommissionRules from './pages/CommissionRules';
 import Settings from './pages/Settings';
@@ -265,6 +266,14 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'marketing']}>
                       <Campaigns />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/workflows"
+                  element={
+                    <RoleRoute roles={['admin', 'marketing']}>
+                      <Workflows />
                     </RoleRoute>
                   }
                 />

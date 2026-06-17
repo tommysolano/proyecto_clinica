@@ -2,6 +2,20 @@ const Appointment = require('../models/Appointment');
 const Product = require('../models/Product');
 const Patient = require('../models/Patient');
 const { emitToClinic, emitToUser } = require('../realtime');
+const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
+
+// Construye el payload de evento de dominio para una cita (para workflows).
+function appointmentEventPayload(appt) {
+  const patientId = appt.patient?._id || appt.patient;
+  return {
+    clinicId: String(appt.clinic),
+    patientId: patientId ? String(patientId) : null,
+    appointmentId: String(appt._id),
+    appointmentDate: appt.date,
+    isFirstVisit: !!appt.isFirstVisit,
+    services: (appt.services || []).map((s) => String(s.product?._id || s.product)).filter(Boolean),
+  };
+}
 
 const POPULATE_PATIENT = 'firstName lastName cedula phone whatsapp email birthDate age gender';
 const POPULATE_DOCTOR = 'name specialty';
@@ -367,6 +381,7 @@ exports.createAppointment = async (req, res) => {
     if (populated.doctor?._id) {
       emitToUser(populated.doctor._id, 'appointment:created', populated);
     }
+    emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CREATED, appointmentEventPayload(populated));
 
     res.status(201).json(populated);
   } catch (error) {
@@ -607,6 +622,7 @@ exports.endConsultation = async (req, res) => {
     appointment.status = 'completada';
     await appointment.save();
     emitToClinic(req.clinicId, 'appointment:updated', appointment);
+    emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_ATTENDED, appointmentEventPayload(appointment));
 
     // Sincronizar derivación asociada
     if (appointment.referral) {
@@ -944,6 +960,7 @@ exports.markAttended = async (req, res) => {
       .populate('services.product', 'name code salePrice category');
     emitToClinic(req.clinicId, 'appointment:updated', populated);
     if (populated.doctor?._id) emitToUser(populated.doctor._id, 'appointment:updated', populated);
+    emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_ATTENDED, appointmentEventPayload(populated));
     res.json(populated);
   } catch (error) {
     res.status(500).json({ message: 'Error al marcar asistencia' });

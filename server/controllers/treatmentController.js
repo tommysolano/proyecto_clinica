@@ -1,6 +1,7 @@
 const Treatment = require('../models/Treatment');
 const Product = require('../models/Product');
 const { emitToClinic } = require('../realtime');
+const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
 
 const POPULATE = [
   { path: 'patient', select: 'firstName lastName cedula phone email' },
@@ -22,6 +23,12 @@ async function applyAbandonment(treatments) {
       t.status = 'abandonado';
       t.abandonedAt = new Date();
       await t.save();
+      emitDomainEvent(DOMAIN_EVENTS.TREATMENT_ABANDONED, {
+        clinicId: String(t.clinic),
+        patientId: t.patient ? String(t.patient._id || t.patient) : null,
+        treatmentId: String(t._id),
+        services: (t.items || []).map((it) => String(it.product?._id || it.product)).filter(Boolean),
+      });
     }
   }
 }

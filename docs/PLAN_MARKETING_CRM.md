@@ -167,7 +167,19 @@ Reglas que aplica **siempre**:
 
 ---
 
-## Fase 2 — Motor de workflows real (3-4 semanas) 🔴
+## Fase 2 — Motor de workflows real (3-4 semanas) 🔴 — 🟡 EN CURSO (motor por eventos hecho)
+
+> Hecho: bus de eventos `utils/events.js`; modelos `Workflow` + `WorkflowEnrollment`;
+> motor `utils/workflowEngine.js` (pasos send_message/send_template/wait/wait_until/
+> condition/add_tag/remove_tag/move_stage/goal; runner con anti-duplicado; helpers puros
+> con tests). Disparadores por evento del sistema emitidos desde appointment/treatment
+> controllers + `autoNoShow` + nuevo `birthdayJob`: appointment_created/attended/no_show,
+> treatment_abandoned, patient_birthday. Rutas `/api/workflows` (CRUD + enrollments) +
+> jobs en index.js. Frontend: `Workflows.jsx` (editor disparador + pasos). 40 tests, build OK.
+>
+> Pendiente Fase 2: paso `wait_reply` (esperar respuesta del paciente, base del
+> recordatorio con confirmación SÍ/NO), unificar AutoMessage+MessageFlow en este motor,
+> y disparadores de chat (keyword/inbound) — hoy siguen en MessageFlow.
 
 **Objetivo:** la pieza que cose todo: condiciones, esperas por evento, acciones. Resuelve G12, G13, G15.
 

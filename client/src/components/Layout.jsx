@@ -61,6 +61,7 @@ const ALL_ITEMS = [
   { path: '/message-templates', label: 'Plantillas de mensaje', icon: HiOutlineDocumentText, roles: ['admin', 'marketing'] },
   { path: '/segments', label: 'Segmentos', icon: HiOutlineFunnel, roles: ['admin', 'marketing'] },
   { path: '/campaigns', label: 'Campañas', icon: HiOutlineMegaphone, roles: ['admin', 'marketing'] },
+  { path: '/workflows', label: 'Automatizaciones', icon: HiOutlineBolt, roles: ['admin', 'marketing'] },
   { path: '/call-center-config', label: 'Configuración Call Center', icon: HiOutlineCog6Tooth, roles: ['admin', 'marketing'] },
   { path: '/analytics', label: 'Analíticas', icon: HiOutlineChartBar, roles: ['admin', 'marketing'] },
   { path: '/commission-rules', label: 'Reglas de Comisión', icon: HiOutlineTrophy, roles: ['admin', 'contabilidad'] },

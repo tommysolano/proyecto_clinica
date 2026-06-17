@@ -1,4 +1,5 @@
 const Appointment = require('../models/Appointment');
+const { emitDomainEvent, DOMAIN_EVENTS } = require('./events');
 
 // Ecuador no tiene horario de verano (UTC-5 todo el año).
 const EC_OFFSET_MS = 5 * 60 * 60 * 1000;
@@ -20,13 +21,25 @@ function ecTodayUtcMidnight() {
 async function runAutoNoShow() {
   try {
     const cutoff = ecTodayUtcMidnight();
-    const res = await Appointment.updateMany(
-      { date: { $lt: cutoff }, status: { $in: ['pendiente', 'confirmada'] } },
-      { $set: { status: 'no_asistio' } }
-    );
+    const filter = { date: { $lt: cutoff }, status: { $in: ['pendiente', 'confirmada'] } };
+    // Tomamos los datos ANTES de actualizar para poder disparar workflows por cita.
+    const affected = await Appointment.find(filter)
+      .select('clinic patient date isFirstVisit services')
+      .lean();
+    const res = await Appointment.updateMany(filter, { $set: { status: 'no_asistio' } });
     const modified = res.modifiedCount ?? res.nModified ?? 0;
     if (modified > 0) {
       console.log(`[autoNoShow] ${modified} cita(s) marcadas como "no asistió".`);
+      for (const appt of affected) {
+        emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_NO_SHOW, {
+          clinicId: String(appt.clinic),
+          patientId: appt.patient ? String(appt.patient) : null,
+          appointmentId: String(appt._id),
+          appointmentDate: appt.date,
+          isFirstVisit: !!appt.isFirstVisit,
+          services: (appt.services || []).map((s) => String(s.product)).filter(Boolean),
+        });
+      }
     }
     return modified;
   } catch (err) {

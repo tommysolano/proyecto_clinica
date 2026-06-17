@@ -59,6 +59,7 @@ app.use('/api/marketing', require('./routes/marketing'));
 app.use('/api/message-templates', require('./routes/messageTemplates'));
 app.use('/api/segments', require('./routes/segments'));
 app.use('/api/campaigns', require('./routes/campaigns'));
+app.use('/api/workflows', require('./routes/workflows'));
 app.use('/api/chats', require('./routes/chats'));
 app.use('/api/call-center', require('./routes/callCenter'));
 app.use('/api/call-center-config', require('./routes/callCenterConfig'));
@@ -110,6 +111,12 @@ connectDB().then(() => {
   // Job: procesar mensajes de campañas encolados/vencidos (cada 60s).
   const { processDueScheduledMessages } = require('./controllers/campaignController');
   setInterval(() => { processDueScheduledMessages().catch(() => {}); }, 60 * 1000);
+  // Motor de workflows: suscribe a eventos de dominio + reanuda esperas vencidas.
+  const workflowEngine = require('./utils/workflowEngine');
+  workflowEngine.subscribeDomainEvents();
+  setInterval(() => { workflowEngine.processDueEnrollments().catch(() => {}); }, 60 * 1000);
+  // Job: cumpleaños del día (dispara workflows patient_birthday).
+  require('./utils/birthdayJob').startBirthdayJob();
 }).catch((err) => {
   console.error('No se pudo conectar a MongoDB, abortando:', err.message);
   process.exit(1);
