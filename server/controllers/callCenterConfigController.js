@@ -4,7 +4,7 @@ const CallCenterConfig = require('../models/CallCenterConfig');
  * Devuelve la configuración de la clínica enmascarando tokens/secrets.
  * El cliente solo ve los últimos 4 caracteres como indicador de "configurado".
  */
-const SENSITIVE_KEYS = ['accessToken', 'verifyToken', 'appSecret', 'pageAccessToken'];
+const SENSITIVE_KEYS = ['accessToken', 'verifyToken', 'appSecret', 'pageAccessToken', 'apiKey'];
 
 const maskSecret = (val) => {
   if (!val || typeof val !== 'string') return '';
@@ -27,6 +27,7 @@ const maskConfig = (cfg) => {
   out.messenger = maskChannel(out.messenger);
   out.instagram = maskChannel(out.instagram);
   out.tiktok = maskChannel(out.tiktok);
+  out.email = maskChannel(out.email);
   return out;
 };
 
@@ -74,7 +75,7 @@ exports.getWebhookUrls = async (req, res) => {
 exports.update = async (req, res) => {
   try {
     const { channel, data } = req.body;
-    if (!['whatsapp', 'messenger', 'instagram', 'tiktok'].includes(channel)) {
+    if (!['whatsapp', 'messenger', 'instagram', 'tiktok', 'email'].includes(channel)) {
       return res.status(400).json({ message: 'Canal inválido' });
     }
     if (!data || typeof data !== 'object') {
@@ -146,6 +147,15 @@ exports.testConnection = async (req, res) => {
       return res.json({
         ok: true,
         info: { message: 'Token presente. La verificación real depende del producto TikTok que uses.' },
+      });
+    }
+    if (channel === 'email') {
+      if (!c.apiKey || !c.fromEmail) {
+        return res.status(400).json({ message: 'Falta apiKey o fromEmail' });
+      }
+      return res.json({
+        ok: true,
+        info: { message: 'Credenciales presentes. Envía una campaña de prueba para verificar la entrega.' },
       });
     }
     res.status(400).json({ message: 'Canal no soportado' });

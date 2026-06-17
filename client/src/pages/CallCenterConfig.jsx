@@ -13,6 +13,7 @@ const TABS = [
   { key: 'messenger', label: 'Messenger', color: 'blue' },
   { key: 'instagram', label: 'Instagram', color: 'pink' },
   { key: 'tiktok', label: 'TikTok', color: 'slate' },
+  { key: 'email', label: 'Email', color: 'amber' },
 ];
 
 const FIELD_DEFS = {
@@ -44,6 +45,12 @@ const FIELD_DEFS = {
     { key: 'businessId', label: 'Business ID', sensitive: false },
     { key: 'verifyToken', label: 'Verify Token', sensitive: true },
   ],
+  email: [
+    { key: 'apiKey', label: 'API Key de Resend', help: 'En resend.com → API Keys', sensitive: true },
+    { key: 'fromEmail', label: 'Email remitente (verificado en Resend)', sensitive: false },
+    { key: 'fromName', label: 'Nombre remitente', sensitive: false },
+    { key: 'replyTo', label: 'Responder a (opcional)', sensitive: false },
+  ],
 };
 
 export default function CallCenterConfig() {
@@ -52,6 +59,7 @@ export default function CallCenterConfig() {
     messenger: { enabled: false },
     instagram: { enabled: false },
     tiktok: { enabled: false },
+    email: { enabled: false },
   });
   const [webhookUrls, setWebhookUrls] = useState(null);
   const [tab, setTab] = useState('whatsapp');

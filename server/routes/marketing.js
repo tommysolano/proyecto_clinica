@@ -16,5 +16,6 @@ router.get('/programs', requireRole('admin', 'marketing'), ctrl.programs);
 router.get('/next-week', requireRole('admin', 'marketing'), ctrl.nextWeek);
 router.get('/appointments-breakdown', requireRole('admin', 'marketing'), ctrl.appointmentsBreakdown);
 router.get('/referrers', requireRole('admin', 'marketing'), ctrl.referrers);
+router.get('/attribution', requireRole('admin', 'marketing'), ctrl.attribution);
 
 module.exports = router;

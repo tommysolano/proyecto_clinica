@@ -236,7 +236,20 @@ Reglas que aplica **siempre**:
 
 ---
 
-## Fase 4 — Email + captación + atribución (3-4 semanas) 🟠
+## Fase 4 — Email + captación + atribución (3-4 semanas) 🟠 — 🟡 EN CURSO (email + atribución hechos)
+
+> Hecho: canal **email** end-to-end — `utils/emailProvider.js` (Resend HTTP, sin dependencias,
+> simula si no hay creds), rama email en `messaging.send` (sin conversación, respeta opt-out),
+> config `email` en CallCenterConfig (modelo + UI + máscara de apiKey + test), campañas por email
+> (asunto + cuerpo, `subject` en Campaign/ScheduledMessage), endpoint público de baja
+> `/api/public/unsubscribe/:patientId`. **Atribución**: captura `referral` (ctwa_clid/ad id) del
+> webhook WhatsApp → `Conversation.attribution`; traspaso a `Patient.attribution` al registrar
+> paciente; reporte `GET /api/marketing/attribution` (pacientes + ingresos por origen/campaña) +
+> página `Attribution.jsx`. Build OK, 42 tests.
+>
+> Pendiente Fase 4: **link público de auto-agendamiento** (calendario público que crea cita y
+> dispara workflow de confirmación) — feature grande con lógica de disponibilidad; queda como
+> su propio bloque. Tracking de aperturas/clics de email también pendiente.
 
 **Objetivo:** cerrar el círculo de ROI. Resuelve G8, G16, G21.
 

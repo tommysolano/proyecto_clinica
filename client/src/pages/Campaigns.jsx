@@ -24,6 +24,7 @@ const blank = () => ({
   mode: 'body', // 'body' | 'template'
   template: '',
   body: '',
+  subject: '',
   when: 'now', // 'now' | 'later'
   scheduledFor: '',
 });
@@ -78,8 +79,10 @@ export default function Campaigns() {
     const c = creating;
     if (!c.name.trim()) return toast.error('Ponle un nombre a la campaña');
     if (!c.segment) return toast.error('Selecciona un segmento');
-    if (c.mode === 'template' && !c.template) return toast.error('Selecciona una plantilla');
-    if (c.mode === 'body' && !c.body.trim()) return toast.error('Escribe el mensaje');
+    const isEmail = c.channel === 'email';
+    if (!isEmail && c.mode === 'template' && !c.template) return toast.error('Selecciona una plantilla');
+    if ((isEmail || c.mode === 'body') && !c.body.trim()) return toast.error('Escribe el mensaje');
+    if (isEmail && !c.subject.trim()) return toast.error('El email requiere un asunto');
     if (c.when === 'later' && !c.scheduledFor) return toast.error('Indica fecha y hora');
 
     setSaving(true);
@@ -88,8 +91,9 @@ export default function Campaigns() {
         name: c.name,
         channel: c.channel,
         segment: c.segment,
-        template: c.mode === 'template' ? c.template : undefined,
-        body: c.mode === 'body' ? c.body : undefined,
+        template: !isEmail && c.mode === 'template' ? c.template : undefined,
+        body: isEmail || c.mode === 'body' ? c.body : undefined,
+        subject: isEmail ? c.subject : undefined,
         scheduledFor: c.when === 'later' ? c.scheduledFor : undefined,
       });
       toast.success('Campaña creada');
@@ -181,6 +185,11 @@ export default function Campaigns() {
             <div className="grid gap-3">
               <input value={creating.name} onChange={(e) => setCreating({ ...creating, name: e.target.value })} placeholder="Nombre de la campaña" className="border border-slate-200 rounded-lg px-3 py-2 text-sm" />
 
+              <div className="flex gap-2 text-sm">
+                <button type="button" onClick={() => setCreating({ ...creating, channel: 'whatsapp' })} className={`px-3 py-1.5 rounded-lg border cursor-pointer ${creating.channel === 'whatsapp' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200'}`}>WhatsApp</button>
+                <button type="button" onClick={() => setCreating({ ...creating, channel: 'email', mode: 'body' })} className={`px-3 py-1.5 rounded-lg border cursor-pointer ${creating.channel === 'email' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200'}`}>Email</button>
+              </div>
+
               <label className="text-sm">
                 <span className="text-slate-600">Segmento de destino</span>
                 <select
@@ -196,26 +205,41 @@ export default function Campaigns() {
                 )}
               </label>
 
-              <div className="flex gap-2 text-sm">
-                <button type="button" onClick={() => setCreating({ ...creating, mode: 'body' })} className={`px-3 py-1.5 rounded-lg border cursor-pointer ${creating.mode === 'body' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200'}`}>Texto libre</button>
-                <button type="button" onClick={() => setCreating({ ...creating, mode: 'template' })} className={`px-3 py-1.5 rounded-lg border cursor-pointer ${creating.mode === 'template' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200'}`}>Plantilla</button>
-              </div>
-
-              {creating.mode === 'body' ? (
-                <label className="text-sm">
-                  <span className="text-slate-600">Mensaje (usa {'{{nombre}}'})</span>
-                  <textarea value={creating.body} onChange={(e) => setCreating({ ...creating, body: e.target.value })} rows={4} className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
-                  <span className="text-xs text-amber-600">⚠ El texto libre solo llega a quien escribió en las últimas 24h. Para inactivos usa una plantilla.</span>
-                </label>
+              {creating.channel === 'email' ? (
+                <>
+                  <label className="text-sm">
+                    <span className="text-slate-600">Asunto</span>
+                    <input value={creating.subject} onChange={(e) => setCreating({ ...creating, subject: e.target.value })} className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Asunto del correo (usa {{nombre}})" />
+                  </label>
+                  <label className="text-sm">
+                    <span className="text-slate-600">Cuerpo del email</span>
+                    <textarea value={creating.body} onChange={(e) => setCreating({ ...creating, body: e.target.value })} rows={5} className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                    <span className="text-xs text-slate-400">Se añade automáticamente un enlace de baja. Solo se envía a pacientes con email y opt-in.</span>
+                  </label>
+                </>
               ) : (
-                <label className="text-sm">
-                  <span className="text-slate-600">Plantilla aprobada</span>
-                  <select value={creating.template} onChange={(e) => setCreating({ ...creating, template: e.target.value })} className="w-full mt-1 border border-slate-200 rounded-lg px-2 py-2 text-sm">
-                    <option value="">Selecciona…</option>
-                    {templates.map((t) => <option key={t._id} value={t._id}>{t.name} ({t.language})</option>)}
-                  </select>
-                  {templates.length === 0 && <span className="text-xs text-slate-400">No hay plantillas aprobadas. Crea/sincroniza en "Plantillas de mensaje".</span>}
-                </label>
+                <>
+                  <div className="flex gap-2 text-sm">
+                    <button type="button" onClick={() => setCreating({ ...creating, mode: 'body' })} className={`px-3 py-1.5 rounded-lg border cursor-pointer ${creating.mode === 'body' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200'}`}>Texto libre</button>
+                    <button type="button" onClick={() => setCreating({ ...creating, mode: 'template' })} className={`px-3 py-1.5 rounded-lg border cursor-pointer ${creating.mode === 'template' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200'}`}>Plantilla</button>
+                  </div>
+                  {creating.mode === 'body' ? (
+                    <label className="text-sm">
+                      <span className="text-slate-600">Mensaje (usa {'{{nombre}}'})</span>
+                      <textarea value={creating.body} onChange={(e) => setCreating({ ...creating, body: e.target.value })} rows={4} className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                      <span className="text-xs text-amber-600">⚠ El texto libre solo llega a quien escribió en las últimas 24h. Para inactivos usa una plantilla.</span>
+                    </label>
+                  ) : (
+                    <label className="text-sm">
+                      <span className="text-slate-600">Plantilla aprobada</span>
+                      <select value={creating.template} onChange={(e) => setCreating({ ...creating, template: e.target.value })} className="w-full mt-1 border border-slate-200 rounded-lg px-2 py-2 text-sm">
+                        <option value="">Selecciona…</option>
+                        {templates.map((t) => <option key={t._id} value={t._id}>{t.name} ({t.language})</option>)}
+                      </select>
+                      {templates.length === 0 && <span className="text-xs text-slate-400">No hay plantillas aprobadas. Crea/sincroniza en "Plantillas de mensaje".</span>}
+                    </label>
+                  )}
+                </>
               )}
 
               <div className="flex gap-2 text-sm">

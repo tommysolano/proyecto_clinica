@@ -17,6 +17,7 @@ const campaignSchema = new mongoose.Schema(
     templateName: { type: String, trim: true, default: '' },
     templateLanguage: { type: String, trim: true, default: 'es' },
     body: { type: String, default: '' },
+    subject: { type: String, default: '' }, // solo email
     scheduledFor: { type: Date, default: Date.now },
     status: {
       type: String,

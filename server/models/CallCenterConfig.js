@@ -59,6 +59,18 @@ const tiktokSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const emailSchema = new mongoose.Schema(
+  {
+    enabled: { type: Boolean, default: false },
+    provider: { type: String, enum: ['resend'], default: 'resend' },
+    apiKey: { type: String, default: '' },
+    fromEmail: { type: String, trim: true, default: '' },
+    fromName: { type: String, trim: true, default: '' },
+    replyTo: { type: String, trim: true, default: '' },
+  },
+  { _id: false }
+);
+
 const callCenterConfigSchema = new mongoose.Schema(
   {
     clinic: {
@@ -72,6 +84,7 @@ const callCenterConfigSchema = new mongoose.Schema(
     messenger: { type: messengerSchema, default: () => ({}) },
     instagram: { type: instagramSchema, default: () => ({}) },
     tiktok: { type: tiktokSchema, default: () => ({}) },
+    email: { type: emailSchema, default: () => ({}) },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }

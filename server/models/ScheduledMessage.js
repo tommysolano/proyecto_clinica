@@ -19,6 +19,7 @@ const scheduledMessageSchema = new mongoose.Schema(
     contactName: { type: String, trim: true, default: '' },
     // Contenido: texto libre y/o plantilla.
     body: { type: String, default: '' },
+    subject: { type: String, default: '' }, // solo email
     templateName: { type: String, trim: true, default: '' },
     templateLanguage: { type: String, trim: true, default: 'es' },
     templateVars: { type: mongoose.Schema.Types.Mixed, default: null },

@@ -1325,7 +1325,7 @@ async function applyIncomingOptOut({ clinicId, conv, incomingText }) {
 
 // Procesa un evento "normalizado" (externalUserId, body, contactName) creando/
 // actualizando la conversación correspondiente.
-async function ingestExternalMessage({ clinicId, channel, externalUserId, body, contactName, externalId, phone }) {
+async function ingestExternalMessage({ clinicId, channel, externalUserId, body, contactName, externalId, phone, referral }) {
   if (!externalUserId && !phone) return;
   const normalizedPhone = normalizePhone(phone || externalUserId);
   const findKey = phone
@@ -1344,10 +1344,15 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
         (patient ? `${patient.firstName || ''} ${patient.lastName || ''}`.trim() : ''),
       patient: patient?._id || null,
       channel,
+      ...(referral ? { attribution: referral } : {}),
     });
     isNew = true;
   } else if (!conv.patient && patient) {
     conv.patient = patient._id;
+  }
+  // Si llega atribución (click-to-WhatsApp) y la conversación aún no la tiene, guárdala.
+  if (referral && referral.adId && !conv.attribution?.adId) {
+    conv.attribution = referral;
   }
   if (conv.blocked) return;
   const msg = await Message.create({
@@ -1426,6 +1431,14 @@ exports.webhookWhatsappReceive = async (req, res) => {
             body: m.text?.body || m.button?.text || m.interactive?.button_reply?.title || '',
             contactName: contact.profile?.name || '',
             externalId: m.id,
+            // Atribución click-to-WhatsApp (anuncios Meta): solo viene en el 1er mensaje.
+            referral: m.referral
+              ? {
+                  adId: m.referral.source_id || '',
+                  campaign: m.referral.headline || m.referral.body || '',
+                  ctwaClid: m.referral.ctwa_clid || '',
+                }
+              : null,
           });
         }
       }
@@ -1636,6 +1649,16 @@ exports.registerPatientFromChat = async (req, res) => {
     }
     conv.patient = patient._id;
     if (!conv.contactName) conv.contactName = `${patient.firstName} ${patient.lastName}`;
+    // Atribución: traspasa el origen del anuncio (click-to-WhatsApp) al paciente.
+    if (conv.attribution?.adId && !patient.attribution?.adId) {
+      patient.attribution = {
+        ...(patient.attribution?.toObject ? patient.attribution.toObject() : patient.attribution || {}),
+        utmCampaign: conv.attribution.campaign || '',
+        adId: conv.attribution.adId,
+        firstTouchAt: patient.attribution?.firstTouchAt || conv.createdAt || new Date(),
+      };
+      await patient.save();
+    }
     await conv.save();
     emitToClinic(req.clinicId, 'patient:created', { id: patient._id });
     emitToClinic(req.clinicId, 'chat:updated', { id: conv._id });

@@ -73,6 +73,7 @@ exports.create = async (req, res) => {
     const seg = await Segment.findOne({ _id: segment, clinic: req.clinicId });
     if (!seg) return res.status(404).json({ message: 'Segmento no encontrado' });
 
+    const subject = String(req.body.subject || '').trim();
     let template = null;
     if (req.body.template) {
       template = await MessageTemplate.findOne({ _id: req.body.template, clinic: req.clinicId });
@@ -80,6 +81,9 @@ exports.create = async (req, res) => {
     }
     if (!template && !String(body || '').trim()) {
       return res.status(400).json({ message: 'Indica un cuerpo de mensaje o una plantilla' });
+    }
+    if (channel === 'email' && !subject) {
+      return res.status(400).json({ message: 'El email requiere un asunto' });
     }
 
     const { patients } = await resolveSegment(req.clinicId, seg.filters || {});
@@ -99,6 +103,7 @@ exports.create = async (req, res) => {
       templateName: template?.name || '',
       templateLanguage: template?.language || 'es',
       body: body || '',
+      subject,
       scheduledFor,
       status: isFuture ? 'scheduled' : 'sending',
       stats: { targeted: patients.length, queued: patients.length, sent: 0, failed: 0, skipped: 0 },
@@ -117,6 +122,7 @@ exports.create = async (req, res) => {
         patient: p._id,
         contactName: p.name || '',
         body: template ? '' : personalize(body, p),
+        subject: channel === 'email' ? personalize(subject, p) : '',
         templateName: template?.name || '',
         templateLanguage: template?.language || 'es',
         templateVars: template ? buildVars(template, p) : null,
@@ -217,6 +223,7 @@ async function processDueScheduledMessages() {
         patient: sm.patient,
         contactName: sm.contactName,
         body: sm.body,
+        subject: sm.subject,
         template: sm.templateName
           ? { name: sm.templateName, language: sm.templateLanguage, vars: sm.templateVars || [] }
           : null,

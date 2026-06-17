@@ -3,6 +3,7 @@ const Message = require('../models/Message');
 const Patient = require('../models/Patient');
 const CallCenterConfig = require('../models/CallCenterConfig');
 const wa = require('./whatsappCloud');
+const email = require('./emailProvider');
 const { emitToClinic } = require('../realtime');
 
 const WHATSAPP_WINDOW_MS = 24 * 60 * 60 * 1000;
@@ -265,6 +266,47 @@ function providerErrorMessage(result) {
   return String(result?.error || result?.data?.error?.message || 'No se pudo enviar el mensaje');
 }
 
+async function findPatientByEmail(clinicId, email) {
+  if (!email) return null;
+  return Patient.findOne({ clinic: clinicId, email: String(email).toLowerCase().trim() });
+}
+
+/**
+ * Envío por email (sin conversación). Respeta opt-out de email y añade enlace de
+ * baja. Devuelve el mismo shape que send() para uniformidad en campañas/jobs.
+ */
+async function sendEmailChannel({ clinicId, to, patient, subject, body, ignoreOptOut }) {
+  if (!to || !/.+@.+\..+/.test(String(to))) {
+    return { ok: false, skipped: true, reason: 'invalid_recipient' };
+  }
+  let patientDoc = null;
+  if (patient && patient.marketing !== undefined && patient._id) patientDoc = patient;
+  else {
+    const pid = patient?._id || patient;
+    patientDoc = pid
+      ? await Patient.findOne({ _id: pid, clinic: clinicId })
+      : await findPatientByEmail(clinicId, to);
+  }
+  if (!ignoreOptOut && patientDoc) {
+    const m = patientDoc.marketing || {};
+    if (m.optOutAt) return { ok: false, skipped: true, reason: 'opt_out' };
+    if (m.emailOptIn === false) return { ok: false, skipped: true, reason: 'no_email_consent' };
+  }
+
+  const { ok, creds } = await email.loadCreds(clinicId);
+  const base = process.env.PUBLIC_API_URL || '';
+  const unsubscribeUrl = patientDoc && base ? `${base}/api/public/unsubscribe/${patientDoc._id}` : '';
+  const result = await email.sendEmail(ok ? creds : null, { to, subject, body, unsubscribeUrl });
+
+  if (result.skipped || result.simulated) {
+    return { ok: false, skipped: true, reason: 'provider_unavailable', deliveryStatus: 'skipped' };
+  }
+  if (!result.ok) {
+    return { ok: false, deliveryStatus: 'failed', errorCode: String(result.status || 'email_error'), errorMessage: result.error || 'Error de email' };
+  }
+  return { ok: true, deliveryStatus: 'sent', externalId: result.data?.id || '' };
+}
+
 async function send({
   clinicId,
   channel = 'whatsapp',
@@ -275,6 +317,7 @@ async function send({
   template,
   vars,
   body,
+  subject,
   mediaUrl,
   mediaType,
   sentBy,
@@ -283,6 +326,12 @@ async function send({
   ignoreOptOut = false,
 }) {
   const normalizedChannel = channel || 'whatsapp';
+
+  // El email no usa el modelo de conversación (telefónico): rama propia.
+  if (normalizedChannel === 'email') {
+    return sendEmailChannel({ clinicId, to, patient, subject, body, ignoreOptOut });
+  }
+
   const conv = await resolveConversation({
     clinicId,
     conversation,

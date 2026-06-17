@@ -877,6 +877,64 @@ exports.appointmentsBreakdown = async (req, res) => {
 };
 
 /**
+ * Atribución / ROI por origen: agrupa pacientes captados por fuente + campaña
+ * (atribución de anuncios click-to-WhatsApp) y suma los ingresos de ventas que
+ * generaron. GET /api/marketing/attribution
+ */
+exports.attribution = async (req, res) => {
+  try {
+    const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
+    const { from, to } = resolveRange(req.query);
+    const match = { clinic: clinicObjId, active: true };
+    if (from || to) {
+      match.createdAt = {};
+      if (from) match.createdAt.$gte = from;
+      if (to) match.createdAt.$lte = to;
+    }
+
+    const groups = await Patient.aggregate([
+      { $match: match },
+      {
+        $group: {
+          _id: {
+            source: { $ifNull: ['$source', 'organico'] },
+            campaign: { $ifNull: ['$attribution.utmCampaign', ''] },
+          },
+          patients: { $sum: 1 },
+          ids: { $push: '$_id' },
+        },
+      },
+    ]);
+
+    const allIds = groups.flatMap((g) => g.ids);
+    const salesByPatient = allIds.length
+      ? await Sale.aggregate([
+          { $match: { clinic: clinicObjId, patient: { $in: allIds } } },
+          { $group: { _id: '$patient', total: { $sum: '$total' } } },
+        ])
+      : [];
+    const revMap = new Map(salesByPatient.map((s) => [String(s._id), s.total]));
+
+    const rows = groups
+      .map((g) => ({
+        source: g._id.source || 'organico',
+        campaign: g._id.campaign || '',
+        patients: g.patients,
+        revenue: +g.ids.reduce((sum, id) => sum + (revMap.get(String(id)) || 0), 0).toFixed(2),
+      }))
+      .sort((a, b) => b.revenue - a.revenue);
+
+    const totals = rows.reduce(
+      (acc, r) => ({ patients: acc.patients + r.patients, revenue: +(acc.revenue + r.revenue).toFixed(2) }),
+      { patients: 0, revenue: 0 }
+    );
+    res.json({ range: { from, to }, rows, totals });
+  } catch (error) {
+    res.status(500).json({ message: 'Error en atribución', error: error.message });
+  }
+};
+
+/**
  * Reportes de "quien refirió a quien": para cada paciente con source='referido',
  * devolver el nombre de quien lo refirió (sourceDetail).
  * GET /api/marketing/referrers
