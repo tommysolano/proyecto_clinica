@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
+import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineCreditCard, HiOutlineCheckCircle } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 
@@ -74,16 +75,21 @@ export default function CreditCardBatches() {
       <Modal isOpen={show} onClose={() => setShow(false)} title="Nuevo lote de tarjetas" size="xl">
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-4 gap-3">
-            <input type="date" required value={form.closeDate} onChange={(e) => setForm({ ...form, closeDate: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <select value={form.cardType} onChange={(e) => setForm({ ...form, cardType: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option>CREDITO</option><option>DEBITO</option></select>
-            <input required placeholder="Adquirente (Datafast/Medianet)" value={form.acquirer} onChange={(e) => setForm({ ...form, acquirer: e.target.value })} className="col-span-2 border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input type="number" step="0.01" placeholder="% comisión" value={form.commissionRate} onChange={(e) => setForm({ ...form, commissionRate: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input type="number" step="0.01" placeholder="% retención" value={form.retentionRate} onChange={(e) => setForm({ ...form, retentionRate: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input type="number" step="0.01" placeholder="% IVA com." value={form.ivaCommissionRate} onChange={(e) => setForm({ ...form, ivaCommissionRate: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <select required value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option value="">Banco...</option>{banks.map((b) => <option key={b._id} value={b._id}>{b.name}</option>)}</select>
+            <Field label="Fecha de cierre" required><input type="date" required value={form.closeDate} onChange={(e) => setForm({ ...form, closeDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Tipo de tarjeta"><select value={form.cardType} onChange={(e) => setForm({ ...form, cardType: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>CREDITO</option><option>DEBITO</option></select></Field>
+            <Field label="Adquirente" required className="col-span-2"><input required placeholder="Datafast / Medianet" value={form.acquirer} onChange={(e) => setForm({ ...form, acquirer: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="% comisión"><input type="number" step="0.01" value={form.commissionRate} onChange={(e) => setForm({ ...form, commissionRate: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="% retención"><input type="number" step="0.01" value={form.retentionRate} onChange={(e) => setForm({ ...form, retentionRate: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="% IVA comisión"><input type="number" step="0.01" value={form.ivaCommissionRate} onChange={(e) => setForm({ ...form, ivaCommissionRate: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Banco de acreditación" required><select required value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option value="">Seleccione…</option>{banks.map((b) => <option key={b._id} value={b._id}>{b.name}</option>)}</select></Field>
           </div>
           <div className="border rounded-lg p-3">
             <div className="flex justify-between items-center mb-2"><p className="font-semibold text-sm">Vouchers</p><button type="button" onClick={addVoucher} className="text-emerald-600 text-sm flex items-center gap-1"><HiOutlinePlus /> Voucher</button></div>
+            {form.vouchers.length > 0 && (
+              <div className="grid grid-cols-5 gap-2 mb-1 text-[11px] text-slate-400 uppercase px-1">
+                <span>Voucher #</span><span>Lote</span><span>Últ. 4</span><span className="text-right">Monto bruto</span><span></span>
+              </div>
+            )}
             {form.vouchers.map((v, i) => (
               <div key={i} className="grid grid-cols-5 gap-2 mb-1">
                 <input placeholder="Voucher #" value={v.voucherNumber} onChange={(e) => setVoucher(i, { voucherNumber: e.target.value })} className="border border-slate-200 rounded px-2 py-1 text-sm" />

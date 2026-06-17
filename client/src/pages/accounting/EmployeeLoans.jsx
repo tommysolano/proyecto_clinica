@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
+import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineBanknotes } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 
@@ -59,17 +60,19 @@ export default function EmployeeLoans() {
       </div>
       <Modal isOpen={show} onClose={() => setShow(false)} title="Nuevo préstamo">
         <form onSubmit={submit} className="space-y-3">
-          <select required value={form.employee} onChange={(e) => setForm({ ...form, employee: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
-            <option value="">Empleado...</option>
-            {employees.map((e) => <option key={e._id} value={e._id}>{e.firstName} {e.lastName}</option>)}
-          </select>
+          <Field label="Empleado" required>
+            <select required value={form.employee} onChange={(e) => setForm({ ...form, employee: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+              <option value="">Seleccione…</option>
+              {employees.map((e) => <option key={e._id} value={e._id}>{e.firstName} {e.lastName}</option>)}
+            </select>
+          </Field>
           <div className="grid grid-cols-2 gap-3">
-            <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option>EMPRESA</option><option>QUIROGRAFARIO</option><option>HIPOTECARIO</option></select>
-            <input type="date" required value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input type="number" step="0.01" required placeholder="Capital" value={form.principal} onChange={(e) => setForm({ ...form, principal: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input type="number" required placeholder="Cuotas" value={form.installmentsCount} onChange={(e) => setForm({ ...form, installmentsCount: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <Field label="Tipo de préstamo"><select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>EMPRESA</option><option>QUIROGRAFARIO</option><option>HIPOTECARIO</option></select></Field>
+            <Field label="Fecha de inicio" required><input type="date" required value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Capital" required><input type="number" step="0.01" required value={form.principal} onChange={(e) => setForm({ ...form, principal: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="N° de cuotas" required><input type="number" required value={form.installmentsCount} onChange={(e) => setForm({ ...form, installmentsCount: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           </div>
-          <input placeholder="Descripción" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+          <Field label="Descripción"><input placeholder="Concepto del préstamo" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button></div>
         </form>
       </Modal>

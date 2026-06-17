@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
+import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineSquares2X2, HiOutlinePencilSquare, HiOutlineTrash } from 'react-icons/hi2';
 
 const EMPTY = { code: '', name: '', kind: 'INVENTARIO', parent: '', depreciationRate: 0, usefulLifeYears: 0, residualPercent: 0, assetAccount: '', depreciationAccount: '', accumDepreciationAccount: '', expenseAccount: '', incomeAccount: '' };
@@ -44,7 +45,7 @@ export default function InventoryCategories() {
 
   const parentOptions = list.filter((c) => c.kind === form.kind && !c.parent && c._id !== editing?._id);
   const nameById = (id) => list.find((c) => c._id === id)?.name || '';
-  const inputCls = 'border border-slate-200 rounded-xl px-3.5 py-2.5';
+  const inputCls = 'w-full border border-slate-200 rounded-xl px-3.5 py-2.5';
 
   return (
     <div className="space-y-4">
@@ -76,32 +77,34 @@ export default function InventoryCategories() {
       <Modal isOpen={show} onClose={() => setShow(false)} title={editing ? 'Editar categoría' : 'Nueva categoría'} size="lg">
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <input required placeholder="Código" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className={inputCls} />
-            <select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value, parent: '' })} className={inputCls}><option>INVENTARIO</option><option>ACTIVO_FIJO</option></select>
-            <input required placeholder="Nombre" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="col-span-2 border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <select value={form.parent} onChange={(e) => setForm({ ...form, parent: e.target.value })} className={`${inputCls} col-span-2`}>
-              <option value="">Categoría raíz (sin padre)</option>
-              {parentOptions.map((c) => <option key={c._id} value={c._id}>{c.code} - {c.name}</option>)}
-            </select>
+            <Field label="Código" required><input required placeholder="Ej: INV-01" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className={inputCls} /></Field>
+            <Field label="Tipo"><select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value, parent: '' })} className={inputCls}><option>INVENTARIO</option><option>ACTIVO_FIJO</option></select></Field>
+            <Field label="Nombre" required className="col-span-2"><input required placeholder="Ej: Medicamentos" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} /></Field>
+            <Field label="Categoría padre" className="col-span-2">
+              <select value={form.parent} onChange={(e) => setForm({ ...form, parent: e.target.value })} className={inputCls}>
+                <option value="">Categoría raíz (sin padre)</option>
+                {parentOptions.map((c) => <option key={c._id} value={c._id}>{c.code} - {c.name}</option>)}
+              </select>
+            </Field>
             {form.kind === 'ACTIVO_FIJO' && <>
-              <input type="number" step="0.01" placeholder="% Dep. anual" value={form.depreciationRate} onChange={(e) => setForm({ ...form, depreciationRate: +e.target.value })} className={inputCls} />
-              <input type="number" placeholder="Vida útil años" value={form.usefulLifeYears} onChange={(e) => setForm({ ...form, usefulLifeYears: +e.target.value })} className={inputCls} />
-              <input type="number" step="0.01" placeholder="% Residual" value={form.residualPercent} onChange={(e) => setForm({ ...form, residualPercent: +e.target.value })} className={`${inputCls} col-span-2`} />
+              <Field label="% Depreciación anual"><input type="number" step="0.01" value={form.depreciationRate} onChange={(e) => setForm({ ...form, depreciationRate: +e.target.value })} className={inputCls} /></Field>
+              <Field label="Vida útil (años)"><input type="number" value={form.usefulLifeYears} onChange={(e) => setForm({ ...form, usefulLifeYears: +e.target.value })} className={inputCls} /></Field>
+              <Field label="% Valor residual" className="col-span-2"><input type="number" step="0.01" value={form.residualPercent} onChange={(e) => setForm({ ...form, residualPercent: +e.target.value })} className={inputCls} /></Field>
             </>}
           </div>
           <p className="text-xs font-semibold text-slate-500 pt-1">Cuentas contables vinculadas</p>
           <div className="grid grid-cols-2 gap-3">
             {form.kind === 'ACTIVO_FIJO' ? (
               <>
-                <select value={form.assetAccount} onChange={(e) => setForm({ ...form, assetAccount: e.target.value })} className={inputCls}><option value="">Cuenta de activo...</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select>
-                <select value={form.depreciationAccount} onChange={(e) => setForm({ ...form, depreciationAccount: e.target.value })} className={inputCls}><option value="">Gasto depreciación...</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select>
-                <select value={form.accumDepreciationAccount} onChange={(e) => setForm({ ...form, accumDepreciationAccount: e.target.value })} className={`${inputCls} col-span-2`}><option value="">Depreciación acumulada...</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select>
+                <Field label="Cuenta de activo"><select value={form.assetAccount} onChange={(e) => setForm({ ...form, assetAccount: e.target.value })} className={inputCls}><option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select></Field>
+                <Field label="Gasto depreciación"><select value={form.depreciationAccount} onChange={(e) => setForm({ ...form, depreciationAccount: e.target.value })} className={inputCls}><option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select></Field>
+                <Field label="Depreciación acumulada" className="col-span-2"><select value={form.accumDepreciationAccount} onChange={(e) => setForm({ ...form, accumDepreciationAccount: e.target.value })} className={inputCls}><option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select></Field>
               </>
             ) : (
               <>
-                <select value={form.assetAccount} onChange={(e) => setForm({ ...form, assetAccount: e.target.value })} className={inputCls}><option value="">Cuenta de inventario...</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select>
-                <select value={form.expenseAccount} onChange={(e) => setForm({ ...form, expenseAccount: e.target.value })} className={inputCls}><option value="">Costo/gasto...</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select>
-                <select value={form.incomeAccount} onChange={(e) => setForm({ ...form, incomeAccount: e.target.value })} className={`${inputCls} col-span-2`}><option value="">Ingreso por venta...</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select>
+                <Field label="Cuenta de inventario"><select value={form.assetAccount} onChange={(e) => setForm({ ...form, assetAccount: e.target.value })} className={inputCls}><option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select></Field>
+                <Field label="Costo / gasto"><select value={form.expenseAccount} onChange={(e) => setForm({ ...form, expenseAccount: e.target.value })} className={inputCls}><option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select></Field>
+                <Field label="Ingreso por venta" className="col-span-2"><select value={form.incomeAccount} onChange={(e) => setForm({ ...form, incomeAccount: e.target.value })} className={inputCls}><option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select></Field>
               </>
             )}
           </div>

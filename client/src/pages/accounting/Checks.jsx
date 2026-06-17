@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
+import Field from '../../components/Field';
 import { HiOutlineDocumentText, HiOutlinePlus, HiOutlineNoSymbol } from 'react-icons/hi2';
 import { fmt, fmtDate } from './_utils';
 
@@ -39,13 +40,13 @@ export default function Checks() {
         <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineDocumentText className="text-emerald-600" /> Cheques</h1>
         <button onClick={() => setShow(true)} disabled={!account} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 disabled:opacity-50"><HiOutlinePlus /> Generar chequera</button>
       </div>
-      <div className="bg-white rounded-xl p-3 shadow-sm flex gap-2 flex-wrap">
-        <select value={account} onChange={(e) => setAccount(e.target.value)} className="px-3 py-2 border border-slate-200 rounded-lg">
+      <div className="bg-white rounded-xl p-3 shadow-sm flex gap-3 flex-wrap items-end">
+        <Field label="Cuenta bancaria"><select value={account} onChange={(e) => setAccount(e.target.value)} className="px-3 py-2 border border-slate-200 rounded-lg">
           {accounts.map((a) => <option key={a._id} value={a._id}>{a.name} — {a.bank}</option>)}
-        </select>
-        <select value={status} onChange={(e) => setStatus(e.target.value)} className="px-3 py-2 border border-slate-200 rounded-lg">
+        </select></Field>
+        <Field label="Estado"><select value={status} onChange={(e) => setStatus(e.target.value)} className="px-3 py-2 border border-slate-200 rounded-lg">
           <option value="">Todos</option><option value="DISPONIBLE">Disponibles</option><option value="GIRADO">Girados</option><option value="COBRADO">Cobrados</option><option value="ANULADO">Anulados</option>
-        </select>
+        </select></Field>
       </div>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
         <table className="tbl">
@@ -69,8 +70,8 @@ export default function Checks() {
         <div className="space-y-3">
           <p className="text-sm text-slate-500">Crea un rango de cheques disponibles para la cuenta seleccionada.</p>
           <div className="grid grid-cols-2 gap-3">
-            <input type="number" placeholder="Desde Nº" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input type="number" placeholder="Hasta Nº" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <Field label="Desde Nº de cheque"><input type="number" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Hasta Nº de cheque"><input type="number" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           </div>
           <div className="flex justify-end gap-2"><button onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button onClick={generate} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Generar</button></div>
         </div>

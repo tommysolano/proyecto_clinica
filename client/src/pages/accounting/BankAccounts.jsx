@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
+import Field from '../../components/Field';
 import { Link } from 'react-router-dom';
 import { HiOutlinePlus, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineBanknotes, HiOutlineArrowsRightLeft } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
@@ -137,19 +138,23 @@ export default function BankAccounts() {
       <Modal isOpen={showAcc} onClose={() => setShowAcc(false)} title={editing ? 'Editar cuenta bancaria' : 'Nueva cuenta bancaria'} size="lg">
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <input required placeholder="Nombre" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input required placeholder="Banco" value={form.bank} onChange={(e) => setForm({ ...form, bank: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input required placeholder="Nro de cuenta" value={form.accountNumber} onChange={(e) => setForm({ ...form, accountNumber: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <select value={form.accountType} onChange={(e) => setForm({ ...form, accountType: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5">
-              <option>CORRIENTE</option><option>AHORROS</option><option>VIRTUAL</option>
-            </select>
-            <input placeholder="Ciudad" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input type="number" step="0.01" placeholder="Saldo inicial" value={form.initialBalance} onChange={(e) => setForm({ ...form, initialBalance: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input type="number" placeholder="Próximo cheque #" value={form.nextCheckNumber} onChange={(e) => setForm({ ...form, nextCheckNumber: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <select required value={form.chartAccount} onChange={(e) => setForm({ ...form, chartAccount: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5">
-              <option value="">Cuenta contable...</option>
-              {chart.filter((c) => c.code?.startsWith('1.1.01')).map((c) => <option key={c._id} value={c._id}>{c.code} {c.name}</option>)}
-            </select>
+            <Field label="Nombre" required><input required placeholder="Ej: Cuenta Pichincha principal" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Banco" required><input required placeholder="Ej: Banco Pichincha" value={form.bank} onChange={(e) => setForm({ ...form, bank: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Nro de cuenta" required><input required placeholder="Ej: 2100xxxxxx" value={form.accountNumber} onChange={(e) => setForm({ ...form, accountNumber: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Tipo de cuenta">
+              <select value={form.accountType} onChange={(e) => setForm({ ...form, accountType: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                <option>CORRIENTE</option><option>AHORROS</option><option>VIRTUAL</option>
+              </select>
+            </Field>
+            <Field label="Ciudad"><input placeholder="Ej: Guayaquil" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Saldo inicial"><input type="number" step="0.01" value={form.initialBalance} onChange={(e) => setForm({ ...form, initialBalance: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Próximo cheque #"><input type="number" value={form.nextCheckNumber} onChange={(e) => setForm({ ...form, nextCheckNumber: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Cuenta contable" required>
+              <select required value={form.chartAccount} onChange={(e) => setForm({ ...form, chartAccount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                <option value="">Seleccione…</option>
+                {chart.filter((c) => c.code?.startsWith('1.1.01')).map((c) => <option key={c._id} value={c._id}>{c.code} {c.name}</option>)}
+              </select>
+            </Field>
           </div>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShowAcc(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button></div>
         </form>
@@ -158,36 +163,44 @@ export default function BankAccounts() {
       <Modal isOpen={showMov} onClose={() => setShowMov(false)} title="Nuevo movimiento" size="lg">
         <form onSubmit={submitMov} className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <select required value={movForm.bankAccount} onChange={(e) => setMovForm({ ...movForm, bankAccount: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5">
-              <option value="">Cuenta...</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
-            </select>
-            <select value={movForm.type} onChange={(e) => setMovForm({ ...movForm, type: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5">
-              <option>DEPOSITO</option><option>RETIRO</option><option>CHEQUE_EMITIDO</option>
-              <option>COMISION</option><option>INTERES</option><option>AJUSTE</option>
-              <option>TRANSFERENCIA_OUT</option><option>TRANSFERENCIA_IN</option>
-            </select>
-            <input type="date" required value={movForm.date} onChange={(e) => setMovForm({ ...movForm, date: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input type="number" step="0.01" required placeholder="Monto" value={movForm.amount} onChange={(e) => setMovForm({ ...movForm, amount: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input
-              placeholder={['DEPOSITO', 'TRANSFERENCIA_IN', 'TRANSFERENCIA_OUT', 'CHEQUE_EMITIDO'].includes(movForm.type) ? 'N° Comprobante (requerido)' : 'N° Comprobante'}
-              required={['DEPOSITO', 'TRANSFERENCIA_IN', 'TRANSFERENCIA_OUT', 'CHEQUE_EMITIDO'].includes(movForm.type)}
-              value={movForm.voucherNumber}
-              onChange={(e) => setMovForm({ ...movForm, voucherNumber: e.target.value })}
-              className="border border-slate-200 rounded-xl px-3.5 py-2.5"
-            />
-            <input placeholder="URL comprobante (opcional)" value={movForm.voucherUrl} onChange={(e) => setMovForm({ ...movForm, voucherUrl: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
-            <input placeholder="Referencia adicional" value={movForm.reference} onChange={(e) => setMovForm({ ...movForm, reference: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <Field label="Cuenta bancaria" required>
+              <select required value={movForm.bankAccount} onChange={(e) => setMovForm({ ...movForm, bankAccount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                <option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Tipo de movimiento">
+              <select value={movForm.type} onChange={(e) => setMovForm({ ...movForm, type: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                <option>DEPOSITO</option><option>RETIRO</option><option>CHEQUE_EMITIDO</option>
+                <option>COMISION</option><option>INTERES</option><option>AJUSTE</option>
+                <option>TRANSFERENCIA_OUT</option><option>TRANSFERENCIA_IN</option>
+              </select>
+            </Field>
+            <Field label="Fecha" required><input type="date" required value={movForm.date} onChange={(e) => setMovForm({ ...movForm, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Monto" required><input type="number" step="0.01" required value={movForm.amount} onChange={(e) => setMovForm({ ...movForm, amount: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="N° Comprobante" required={['DEPOSITO', 'TRANSFERENCIA_IN', 'TRANSFERENCIA_OUT', 'CHEQUE_EMITIDO'].includes(movForm.type)}>
+              <input
+                placeholder="Papeleta / transferencia / cheque"
+                required={['DEPOSITO', 'TRANSFERENCIA_IN', 'TRANSFERENCIA_OUT', 'CHEQUE_EMITIDO'].includes(movForm.type)}
+                value={movForm.voucherNumber}
+                onChange={(e) => setMovForm({ ...movForm, voucherNumber: e.target.value })}
+                className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"
+              />
+            </Field>
+            <Field label="URL comprobante (opcional)"><input placeholder="https://…" value={movForm.voucherUrl} onChange={(e) => setMovForm({ ...movForm, voucherUrl: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Referencia adicional"><input placeholder="Detalle / nota" value={movForm.reference} onChange={(e) => setMovForm({ ...movForm, reference: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             {(movForm.type === 'TRANSFERENCIA_OUT' || movForm.type === 'TRANSFERENCIA_IN') &&
-              <select required value={movForm.counterpartAccount || ''} onChange={(e) => setMovForm({ ...movForm, counterpartAccount: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5">
-                <option value="">Banco contraparte...</option>{accounts.filter((a) => a._id !== movForm.bankAccount).map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
-              </select>}
+              <Field label="Banco contraparte" required>
+                <select required value={movForm.counterpartAccount || ''} onChange={(e) => setMovForm({ ...movForm, counterpartAccount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                  <option value="">Seleccione…</option>{accounts.filter((a) => a._id !== movForm.bankAccount).map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
+                </select>
+              </Field>}
           </div>
           {['DEPOSITO', 'TRANSFERENCIA_IN', 'TRANSFERENCIA_OUT', 'CHEQUE_EMITIDO'].includes(movForm.type) && (
             <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
               ⚠ Este tipo de movimiento requiere número de comprobante (papeleta de depósito, transferencia o cheque).
             </div>
           )}
-          <input placeholder="Descripción" value={movForm.description} onChange={(e) => setMovForm({ ...movForm, description: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+          <Field label="Descripción"><input placeholder="Concepto del movimiento" value={movForm.description} onChange={(e) => setMovForm({ ...movForm, description: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShowMov(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Registrar</button></div>
         </form>
       </Modal>

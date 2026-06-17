@@ -56,7 +56,9 @@ export default function Budgets() {
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineBanknotes className="text-emerald-600" /> Presupuesto</h1>
         <div className="flex gap-2 items-center">
-          <input type="number" value={year} onChange={(e) => setYear(+e.target.value)} className="w-24 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+          <label className="text-xs text-slate-500 flex flex-col">Año
+            <input type="number" value={year} onChange={(e) => setYear(+e.target.value)} className="w-24 border border-slate-200 rounded-xl px-3.5 py-2 text-sm" />
+          </label>
           <div className="flex rounded-lg overflow-hidden border border-slate-200">
             <button onClick={() => setTab('edit')} className={`px-3 py-2 text-sm ${tab === 'edit' ? 'bg-emerald-600 text-white' : 'bg-white'}`}>Editar</button>
             <button onClick={() => { setTab('exec'); loadExecution(); }} className={`px-3 py-2 text-sm ${tab === 'exec' ? 'bg-emerald-600 text-white' : 'bg-white'}`}>Ejecución</button>
@@ -67,6 +69,11 @@ export default function Budgets() {
       {tab === 'edit' && (
         <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4 space-y-2">
           <p className="text-xs text-slate-500">Define el monto anual presupuestado por cuenta de ingreso/gasto/costo (se distribuye en 12 meses).</p>
+          {lines.length > 0 && (
+            <div className="flex gap-2 text-[11px] text-slate-400 uppercase px-1">
+              <span className="flex-1">Cuenta</span><span className="w-40 text-right">Monto anual</span><span className="w-5" />
+            </div>
+          )}
           {lines.map((l, i) => (
             <div key={i} className="flex gap-2 items-center">
               <select value={l.account} onChange={(e) => setLine(i, { account: e.target.value })} className="flex-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm">

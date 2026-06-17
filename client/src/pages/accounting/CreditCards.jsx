@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
+import Field from '../../components/Field';
 import { HiOutlineCreditCard, HiOutlinePlus, HiOutlinePencilSquare, HiOutlineTrash } from 'react-icons/hi2';
 
 const EMPTY = { name: '', brand: 'VISA', acquirer: '', accountType: 'CREDITO', chartAccount: '', commissionRate: 0, retentionRate: 0, pos: [], active: true };
@@ -39,7 +40,7 @@ export default function CreditCards() {
   const addPos = () => setForm((f) => ({ ...f, pos: [...f.pos, { code: '', name: '', terminal: '', commissionRate: 0, active: true }] }));
   const updatePos = (i, k, v) => setForm((f) => ({ ...f, pos: f.pos.map((p, idx) => idx === i ? { ...p, [k]: v } : p) }));
   const removePos = (i) => setForm((f) => ({ ...f, pos: f.pos.filter((_, idx) => idx !== i) }));
-  const inputCls = 'border border-slate-200 rounded-xl px-3.5 py-2.5';
+  const inputCls = 'w-full border border-slate-200 rounded-xl px-3.5 py-2.5';
 
   return (
     <div className="space-y-4">
@@ -72,17 +73,22 @@ export default function CreditCards() {
       <Modal isOpen={show} onClose={() => setShow(false)} title={editing ? 'Editar tarjeta' : 'Nueva tarjeta'} size="lg">
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <input required placeholder="Nombre" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} />
-            <select value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} className={inputCls}><option>VISA</option><option>MASTERCARD</option><option>AMEX</option><option>DINERS</option><option>DISCOVER</option><option>OTRA</option></select>
-            <input placeholder="Adquiriente (Datafast, Medianet...)" value={form.acquirer} onChange={(e) => setForm({ ...form, acquirer: e.target.value })} className={inputCls} />
-            <select value={form.accountType} onChange={(e) => setForm({ ...form, accountType: e.target.value })} className={inputCls}><option value="CREDITO">Crédito</option><option value="DEBITO">Débito</option><option value="CORRIENTE">Corriente</option></select>
-            <input type="number" step="0.01" placeholder="% Comisión" value={form.commissionRate} onChange={(e) => setForm({ ...form, commissionRate: +e.target.value })} className={inputCls} />
-            <input type="number" step="0.01" placeholder="% Retención" value={form.retentionRate} onChange={(e) => setForm({ ...form, retentionRate: +e.target.value })} className={inputCls} />
-            <select value={form.chartAccount} onChange={(e) => setForm({ ...form, chartAccount: e.target.value })} className={`${inputCls} col-span-2`}><option value="">Cuenta contable...</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select>
+            <Field label="Nombre" required><input required placeholder="Ej: Visa Datafast" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} /></Field>
+            <Field label="Marca"><select value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} className={inputCls}><option>VISA</option><option>MASTERCARD</option><option>AMEX</option><option>DINERS</option><option>DISCOVER</option><option>OTRA</option></select></Field>
+            <Field label="Adquiriente"><input placeholder="Datafast, Medianet…" value={form.acquirer} onChange={(e) => setForm({ ...form, acquirer: e.target.value })} className={inputCls} /></Field>
+            <Field label="Tipo de cuenta"><select value={form.accountType} onChange={(e) => setForm({ ...form, accountType: e.target.value })} className={inputCls}><option value="CREDITO">Crédito</option><option value="DEBITO">Débito</option><option value="CORRIENTE">Corriente</option></select></Field>
+            <Field label="% Comisión"><input type="number" step="0.01" value={form.commissionRate} onChange={(e) => setForm({ ...form, commissionRate: +e.target.value })} className={inputCls} /></Field>
+            <Field label="% Retención"><input type="number" step="0.01" value={form.retentionRate} onChange={(e) => setForm({ ...form, retentionRate: +e.target.value })} className={inputCls} /></Field>
+            <Field label="Cuenta contable" className="col-span-2"><select value={form.chartAccount} onChange={(e) => setForm({ ...form, chartAccount: e.target.value })} className={inputCls}><option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select></Field>
           </div>
           <div>
             <div className="flex items-center justify-between mb-1"><p className="text-xs font-semibold text-slate-500">POS / Terminales</p><button type="button" onClick={addPos} className="text-emerald-600 text-sm flex items-center gap-1"><HiOutlinePlus className="w-4 h-4" /> Agregar POS</button></div>
             <div className="space-y-2">
+              {form.pos.length > 0 && (
+                <div className="grid grid-cols-12 gap-2 text-[11px] text-slate-400 uppercase px-1">
+                  <span className="col-span-3">Código</span><span className="col-span-3">Nombre</span><span className="col-span-3">Terminal</span><span className="col-span-2">% Com.</span><span className="col-span-1"></span>
+                </div>
+              )}
               {form.pos.map((p, i) => (
                 <div key={i} className="grid grid-cols-12 gap-2 items-center">
                   <input placeholder="Código" value={p.code} onChange={(e) => updatePos(i, 'code', e.target.value)} className="col-span-3 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />

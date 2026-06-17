@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
+import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineClipboardDocumentCheck, HiOutlineCheck } from 'react-icons/hi2';
 import { fmt, fmtDate } from './_utils';
 
@@ -103,10 +104,12 @@ export default function PhysicalCounts() {
       </div>
       <Modal isOpen={show} onClose={() => setShow(false)} title="Nueva toma física">
         <form onSubmit={start} className="space-y-3">
-          <select value={form.warehouse} onChange={(e) => setForm({ ...form, warehouse: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
-            <option value="">Bodega (opcional)...</option>{warehouses.map((w) => <option key={w._id} value={w._id}>{w.name}</option>)}
-          </select>
-          <input placeholder="Descripción" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+          <Field label="Bodega (opcional)">
+            <select value={form.warehouse} onChange={(e) => setForm({ ...form, warehouse: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+              <option value="">Todas las bodegas</option>{warehouses.map((w) => <option key={w._id} value={w._id}>{w.name}</option>)}
+            </select>
+          </Field>
+          <Field label="Descripción"><input placeholder="Ej: Conteo mensual diciembre" value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Iniciar</button></div>
         </form>
       </Modal>

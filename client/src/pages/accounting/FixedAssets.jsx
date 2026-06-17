@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
+import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineBuildingLibrary, HiOutlineCalculator, HiOutlinePencilSquare, HiOutlineEye } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 
@@ -111,7 +112,7 @@ export default function FixedAssets() {
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
 
-  const inputCls = 'border border-slate-200 rounded-xl px-3.5 py-2.5';
+  const inputCls = 'w-full border border-slate-200 rounded-xl px-3.5 py-2.5';
 
   return (
     <div className="space-y-4">
@@ -156,43 +157,57 @@ export default function FixedAssets() {
       <Modal isOpen={show} onClose={() => setShow(false)} title={editing ? 'Editar activo fijo' : 'Nuevo activo fijo'} size="lg">
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <input required placeholder="Código" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className={inputCls} />
-            <input required placeholder="Nombre" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} />
-            <select value={form.category} onChange={(e) => onSelectCategory(e.target.value)} className={inputCls}>
-              <option value="">Categoría...</option>{rootCategories.map((c) => <option key={c._id} value={c._id}>{c.code} - {c.name} ({c.depreciationRate}%)</option>)}
-            </select>
-            <select value={form.assetType} onChange={(e) => setForm({ ...form, assetType: e.target.value })} className={inputCls} disabled={!typesForCategory.length}>
-              <option value="">{typesForCategory.length ? 'Tipo de activo...' : 'Sin tipos'}</option>
-              {typesForCategory.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}
-            </select>
-            <select value={form.locationClinic} onChange={(e) => setForm({ ...form, locationClinic: e.target.value })} className={inputCls}>
-              <option value="">Sede / clínica...</option>{clinics.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}
-            </select>
-            <input placeholder="Ubicación específica (área)" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} className={inputCls} />
-            <select value={form.purchaseInvoice} onChange={(e) => onSelectPurchase(e.target.value)} className={`${inputCls} col-span-2`}>
-              <option value="">Factura de compra (opcional)...</option>
-              {purchases.map((p) => <option key={p._id} value={p._id}>{p.serie || p.secuencial} — {fmtDate(p.fechaEmision)} — ${fmt(p.total)}</option>)}
-            </select>
-            <input type="date" required value={form.acquisitionDate} onChange={(e) => setForm({ ...form, acquisitionDate: e.target.value })} className={inputCls} />
-            <input type="date" required value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} className={inputCls} />
-            <input type="number" step="0.01" placeholder="Costo de adquisición" value={form.acquisitionCost} onChange={(e) => setForm({ ...form, acquisitionCost: +e.target.value })} className={inputCls} />
-            <input type="number" step="0.01" placeholder="% valor residual" value={form.residualPercent} onChange={(e) => setForm({ ...form, residualPercent: +e.target.value, residualValue: +(form.acquisitionCost * (+e.target.value / 100)).toFixed(2) })} className={inputCls} />
-            <input type="number" step="0.01" placeholder="Valor residual ($)" value={form.residualValue} onChange={(e) => setForm({ ...form, residualValue: +e.target.value })} className={inputCls} />
-            <input type="number" step="0.01" placeholder="% depreciación anual" value={form.depreciationRate} onChange={(e) => setForm({ ...form, depreciationRate: +e.target.value, usefulLifeMonths: Math.round(1200 / (+e.target.value || 1)) })} className={inputCls} />
-            <input type="number" placeholder="Vida útil (meses)" value={form.usefulLifeMonths} onChange={(e) => setForm({ ...form, usefulLifeMonths: +e.target.value })} className={inputCls} />
-            <input placeholder="Serial" value={form.serial} onChange={(e) => setForm({ ...form, serial: e.target.value })} className={inputCls} />
+            <Field label="Código" required><input required placeholder="Ej: AF-001" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className={inputCls} /></Field>
+            <Field label="Nombre" required><input required placeholder="Ej: Sillón odontológico" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} /></Field>
+            <Field label="Categoría">
+              <select value={form.category} onChange={(e) => onSelectCategory(e.target.value)} className={inputCls}>
+                <option value="">Seleccione…</option>{rootCategories.map((c) => <option key={c._id} value={c._id}>{c.code} - {c.name} ({c.depreciationRate}%)</option>)}
+              </select>
+            </Field>
+            <Field label="Tipo de activo">
+              <select value={form.assetType} onChange={(e) => setForm({ ...form, assetType: e.target.value })} className={inputCls} disabled={!typesForCategory.length}>
+                <option value="">{typesForCategory.length ? 'Seleccione…' : 'Sin tipos'}</option>
+                {typesForCategory.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Sede / clínica">
+              <select value={form.locationClinic} onChange={(e) => setForm({ ...form, locationClinic: e.target.value })} className={inputCls}>
+                <option value="">Seleccione…</option>{clinics.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Ubicación específica (área)"><input placeholder="Ej: Consultorio 2" value={form.location} onChange={(e) => setForm({ ...form, location: e.target.value })} className={inputCls} /></Field>
+            <Field label="Factura de compra (opcional)" className="col-span-2">
+              <select value={form.purchaseInvoice} onChange={(e) => onSelectPurchase(e.target.value)} className={inputCls}>
+                <option value="">Sin factura asociada</option>
+                {purchases.map((p) => <option key={p._id} value={p._id}>{p.serie || p.secuencial} — {fmtDate(p.fechaEmision)} — ${fmt(p.total)}</option>)}
+              </select>
+            </Field>
+            <Field label="Fecha de adquisición" required><input type="date" required value={form.acquisitionDate} onChange={(e) => setForm({ ...form, acquisitionDate: e.target.value })} className={inputCls} /></Field>
+            <Field label="Inicio de depreciación" required><input type="date" required value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} className={inputCls} /></Field>
+            <Field label="Costo de adquisición"><input type="number" step="0.01" value={form.acquisitionCost} onChange={(e) => setForm({ ...form, acquisitionCost: +e.target.value })} className={inputCls} /></Field>
+            <Field label="% valor residual"><input type="number" step="0.01" value={form.residualPercent} onChange={(e) => setForm({ ...form, residualPercent: +e.target.value, residualValue: +(form.acquisitionCost * (+e.target.value / 100)).toFixed(2) })} className={inputCls} /></Field>
+            <Field label="Valor residual ($)"><input type="number" step="0.01" value={form.residualValue} onChange={(e) => setForm({ ...form, residualValue: +e.target.value })} className={inputCls} /></Field>
+            <Field label="% depreciación anual"><input type="number" step="0.01" value={form.depreciationRate} onChange={(e) => setForm({ ...form, depreciationRate: +e.target.value, usefulLifeMonths: Math.round(1200 / (+e.target.value || 1)) })} className={inputCls} /></Field>
+            <Field label="Vida útil (meses)"><input type="number" value={form.usefulLifeMonths} onChange={(e) => setForm({ ...form, usefulLifeMonths: +e.target.value })} className={inputCls} /></Field>
+            <Field label="Serial"><input placeholder="Nº de serie" value={form.serial} onChange={(e) => setForm({ ...form, serial: e.target.value })} className={inputCls} /></Field>
           </div>
           <p className="text-xs font-semibold text-slate-500 pt-2">Cuentas contables ligadas (si no se setean, se usan las de la categoría)</p>
           <div className="grid grid-cols-3 gap-3">
-            <select value={form.assetAccount} onChange={(e) => setForm({ ...form, assetAccount: e.target.value })} className={inputCls}>
-              <option value="">Cuenta de activo...</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}
-            </select>
-            <select value={form.depreciationAccount} onChange={(e) => setForm({ ...form, depreciationAccount: e.target.value })} className={inputCls}>
-              <option value="">Gasto depreciación...</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}
-            </select>
-            <select value={form.accumDepreciationAccount} onChange={(e) => setForm({ ...form, accumDepreciationAccount: e.target.value })} className={inputCls}>
-              <option value="">Dep. acumulada...</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}
-            </select>
+            <Field label="Cuenta de activo">
+              <select value={form.assetAccount} onChange={(e) => setForm({ ...form, assetAccount: e.target.value })} className={inputCls}>
+                <option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Gasto depreciación">
+              <select value={form.depreciationAccount} onChange={(e) => setForm({ ...form, depreciationAccount: e.target.value })} className={inputCls}>
+                <option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Dep. acumulada">
+              <select value={form.accumDepreciationAccount} onChange={(e) => setForm({ ...form, accumDepreciationAccount: e.target.value })} className={inputCls}>
+                <option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}
+              </select>
+            </Field>
           </div>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button></div>
         </form>
@@ -239,8 +254,8 @@ export default function FixedAssets() {
       <Modal isOpen={showDep} onClose={() => setShowDep(false)} title="Correr depreciación mensual">
         <p className="text-sm text-slate-500 mb-3">Genera un asiento contable consolidando la depreciación del mes seleccionado. Es idempotente por período.</p>
         <div className="grid grid-cols-2 gap-3 mb-3">
-          <input type="number" placeholder="Año" value={depForm.year} onChange={(e) => setDepForm({ ...depForm, year: +e.target.value })} className={inputCls} />
-          <input type="number" min="1" max="12" placeholder="Mes" value={depForm.month} onChange={(e) => setDepForm({ ...depForm, month: +e.target.value })} className={inputCls} />
+          <Field label="Año"><input type="number" value={depForm.year} onChange={(e) => setDepForm({ ...depForm, year: +e.target.value })} className={inputCls} /></Field>
+          <Field label="Mes"><input type="number" min="1" max="12" value={depForm.month} onChange={(e) => setDepForm({ ...depForm, month: +e.target.value })} className={inputCls} /></Field>
         </div>
         <div className="flex justify-end gap-2"><button onClick={() => setShowDep(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button onClick={runDep} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Procesar</button></div>
       </Modal>
