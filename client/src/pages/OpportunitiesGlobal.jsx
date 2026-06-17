@@ -25,6 +25,7 @@ export default function OpportunitiesGlobal() {
   const [filter, setFilter] = useState({ from: '', to: '', patient: '', service: '' });
   const [selected, setSelected] = useState(new Set());
   const [bulkBody, setBulkBody] = useState('');
+  const [bulkResult, setBulkResult] = useState(null);
   const [loading, setLoading] = useState(false);
 
   const load = async () => {
@@ -76,7 +77,10 @@ export default function OpportunitiesGlobal() {
         conversationIds: [...selected],
         body: bulkBody,
       });
-      toast.success(`Enviado a ${r.data.sent} conversaciones`);
+      setBulkResult(r.data);
+      toast.success(
+        `Enviados: ${r.data.sent || 0} · Fallidos: ${r.data.failed || 0} · Omitidos: ${r.data.skipped || 0}`
+      );
       setBulkBody('');
       setSelected(new Set());
     } catch (err) {
@@ -169,6 +173,12 @@ export default function OpportunitiesGlobal() {
             Enviar masivo
           </button>
         </div>
+        {bulkResult && (
+          <div className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+            Resultado: <b>{bulkResult.sent || 0}</b> enviados, <b>{bulkResult.failed || 0}</b> fallidos,{' '}
+            <b>{bulkResult.skipped || 0}</b> omitidos.
+          </div>
+        )}
       </div>
 
       <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">

@@ -7,6 +7,8 @@ const Appointment = require('../models/Appointment');
 const Product = require('../models/Product');
 const Quotation = require('../models/Quotation');
 const { emitToClinic } = require('../realtime');
+const messaging = require('../utils/messaging');
+const { verifyMetaSignature } = require('../utils/metaWebhook');
 
 /**
  * Normaliza un número de teléfono a sólo dígitos (sin +, ni espacios).
@@ -62,7 +64,7 @@ exports.listConversations = async (req, res) => {
     }
 
     const conversations = await Conversation.find(filter)
-      .populate('patient', 'firstName lastName cedula phone')
+      .populate('patient', 'firstName lastName cedula phone whatsapp marketing')
       .populate('assignedTo', 'name email')
       .sort({ isFeatured: -1, lastMessageAt: -1 })
       .limit(300);
@@ -76,7 +78,7 @@ exports.listConversations = async (req, res) => {
 exports.getConversation = async (req, res) => {
   try {
     const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId })
-      .populate('patient', 'firstName lastName cedula phone email')
+      .populate('patient', 'firstName lastName cedula phone whatsapp email marketing tags')
       .populate('assignedTo', 'name email')
       .populate('featuredBy', 'name')
       .populate('opportunity.appointment', 'date startTime status')
@@ -113,7 +115,9 @@ exports.createConversation = async (req, res) => {
     conv = await Conversation.create({
       clinic: req.clinicId,
       phone,
-      contactName: req.body.contactName || patient ? `${patient.firstName} ${patient.lastName}` : '',
+      contactName:
+        req.body.contactName ||
+        (patient ? `${patient.firstName} ${patient.lastName}` : ''),
       patient: patient?._id || null,
       channel: req.body.channel || 'whatsapp',
       assignedTo: req.user._id,
@@ -484,17 +488,15 @@ async function fireAutoMessages({ conv, clinicId, isNewConversation, incomingTex
 
       if (!shouldFire) continue;
       // eslint-disable-next-line no-await-in-loop
-      const msg = await Message.create({
-        clinic: clinicId,
-        conversation: conv._id,
-        direction: 'out',
+      await messaging.send({
+        clinicId,
+        channel: conv.channel || 'whatsapp',
+        conversation: conv,
+        to: conv.phone,
+        patient: conv.patient,
         body: rule.body,
-        deliveryStatus: 'sent',
         isAutoReply: true,
       });
-      conv.lastMessageAt = msg.createdAt;
-      conv.lastMessagePreview = String(rule.body || '').slice(0, 140);
-      conv.lastMessageDirection = 'out';
 
       // Acción: crear oportunidad automáticamente (una sola vez por mensaje entrante).
       if (rule.createOpportunity && !createdOpportunity && !conv.opportunity?.isOpportunity) {
@@ -545,25 +547,15 @@ function flowAudienceOk(trigger, conv) {
 }
 
 async function sendFlowMessage(conv, clinicId, body) {
-  const msg = await Message.create({
-    clinic: clinicId,
-    conversation: conv._id,
-    direction: 'out',
+  return messaging.send({
+    clinicId,
+    channel: conv.channel || 'whatsapp',
+    conversation: conv,
+    to: conv.phone,
+    patient: conv.patient,
     body,
-    deliveryStatus: 'sent',
     isAutoReply: true,
   });
-  conv.lastMessageAt = msg.createdAt;
-  conv.lastMessagePreview = String(body || '').slice(0, 140);
-  conv.lastMessageDirection = 'out';
-  await conv.save();
-  try {
-    await sendToExternalChannel({ conv, msg, clinicId });
-  } catch (e) {
-    msg.deliveryStatus = 'failed';
-    await msg.save();
-  }
-  emitToClinic(clinicId, 'chat:message', { conversationId: conv._id, message: msg });
 }
 
 async function applyFlowOpportunity(conv, stage) {
@@ -827,7 +819,7 @@ exports.listAllOpportunities = async (req, res) => {
     ];
     query.$or = orFilters;
     const list = await Conversation.find(query)
-      .populate('patient', 'firstName lastName cedula phone')
+      .populate('patient', 'firstName lastName cedula phone whatsapp marketing')
       .sort({ lastMessageAt: -1 })
       .limit(500);
 
@@ -879,26 +871,44 @@ exports.bulkWhatsappOpportunities = async (req, res) => {
       _id: { $in: conversationIds },
       clinic: req.clinicId,
       blocked: { $ne: true },
-    });
+    }).populate('patient', 'firstName lastName phone whatsapp marketing');
     let sent = 0;
+    let failed = 0;
+    let skipped = 0;
+    const results = [];
     for (const c of convs) {
       // eslint-disable-next-line no-await-in-loop
-      await Message.create({
-        clinic: req.clinicId,
-        conversation: c._id,
-        direction: 'out',
+      const result = await messaging.send({
+        clinicId: req.clinicId,
+        channel: c.channel || 'whatsapp',
+        conversation: c,
+        to: c.phone,
+        patient: c.patient,
         body: String(body).trim(),
         sentBy: req.user._id,
         sentByName: req.user.name,
       });
-      c.lastMessagePreview = String(body).slice(0, 140);
-      c.lastMessageAt = new Date();
-      c.lastMessageDirection = 'out';
-      // eslint-disable-next-line no-await-in-loop
-      await c.save();
-      sent++;
+      if (result.skipped) skipped++;
+      else if (result.ok) sent++;
+      else failed++;
+      results.push({
+        conversationId: c._id,
+        ok: !!result.ok,
+        skipped: !!result.skipped,
+        reason: result.reason || '',
+        deliveryStatus: result.deliveryStatus || '',
+        errorCode: result.errorCode || '',
+        errorMessage: result.errorMessage || '',
+      });
     }
-    res.json({ sent, total: conversationIds.length });
+    res.json({
+      total: convs.length,
+      requested: conversationIds.length,
+      sent,
+      failed,
+      skipped,
+      results,
+    });
   } catch (err) {
     res.status(500).json({ message: 'Error al enviar masivo', error: err.message });
   }
@@ -939,53 +949,69 @@ exports.sendMessage = async (req, res) => {
     if (conv.blocked) {
       return res.status(403).json({ message: 'Este contacto está bloqueado.' });
     }
-    const body = (req.body.body || '').toString().trim();
-    if (!body && !req.body.mediaUrl) {
+
+    const outboundBody = (req.body.body || '').toString().trim();
+    const templateName = String(
+      req.body.templateName || req.body.template?.name || req.body.template || ''
+    ).trim();
+    if (!outboundBody && !req.body.mediaUrl && !templateName) {
       return res.status(400).json({ message: 'Mensaje vacío' });
     }
-    const msg = await Message.create({
-      clinic: req.clinicId,
-      conversation: conv._id,
-      direction: 'out',
-      body,
+
+    // Todo envío saliente pasa por la puerta única (ventana 24h, opt-out, registro de estado).
+    const result = await messaging.send({
+      clinicId: req.clinicId,
+      channel: conv.channel || 'whatsapp',
+      conversation: conv,
+      to: conv.phone,
+      patient: conv.patient,
+      body: outboundBody,
       mediaUrl: req.body.mediaUrl || null,
       mediaType: req.body.mediaType || null,
-      deliveryStatus: 'sent',
+      template: templateName
+        ? {
+            name: templateName,
+            language: req.body.templateLanguage || req.body.language || 'es',
+            vars: req.body.templateVars || req.body.vars || [],
+          }
+        : null,
       sentBy: req.user._id,
       sentByName: req.user.name,
     });
-    conv.lastMessageAt = msg.createdAt;
-    conv.lastMessagePreview = body.slice(0, 140);
-    conv.lastMessageDirection = 'out';
+
+    if (result.skipped) {
+      const reasons = {
+        blocked: 'Este contacto está bloqueado.',
+        opt_out: 'Este paciente solicitó no recibir mensajes.',
+        no_whatsapp_consent: 'Este paciente no tiene consentimiento de WhatsApp.',
+        out_of_window: 'La ventana de 24h está cerrada. Usa una plantilla aprobada.',
+        invalid_recipient: 'Destinatario inválido.',
+      };
+      return res.status(409).json({
+        message: reasons[result.reason] || 'El mensaje fue omitido.',
+        code: result.reason,
+      });
+    }
+
     if (!conv.assignedTo) {
       conv.assignedTo = req.user._id;
       conv.assignedToName = req.user.name;
       conv.assignedAt = new Date();
-    }
-    await conv.save();
-
-    // Envío real al proveedor externo según el canal de la conversación.
-    // Si falla, dejamos el mensaje guardado pero marcamos deliveryStatus='failed'.
-    try {
-      await sendToExternalChannel({ conv, msg, clinicId: req.clinicId });
-    } catch (sendErr) {
-      console.warn('[external send]', sendErr.message);
-      msg.deliveryStatus = 'failed';
-      await msg.save();
+      await conv.save();
     }
 
-    emitToClinic(req.clinicId, 'chat:message', { conversationId: conv._id, message: msg });
-    res.status(201).json(msg);
+    return res.status(201).json(result.message);
   } catch (err) {
     res.status(500).json({ message: 'Error al enviar mensaje', error: err.message });
   }
 };
 
 /**
- * Envía un mensaje saliente usando la API del proveedor del canal.
- * Si el canal es 'web' o 'sms' (legacy) no hace nada.
+ * Envío externo legacy — DESHABILITADO. Toda la mensajería saliente pasa ahora
+ * por la puerta única en utils/messaging.js. Se conserva la firma sólo para
+ * referencia histórica; no se invoca desde ningún flujo.
  */
-async function sendToExternalChannel({ conv, msg, clinicId }) {
+async function legacyExternalSendDisabled({ conv, msg, clinicId }) {
   const CallCenterConfigModel = require('../models/CallCenterConfig');
   const cfg = await CallCenterConfigModel.findOne({ clinic: clinicId });
   if (!cfg) return;
@@ -1075,10 +1101,12 @@ exports.webhookReceive = async (req, res) => {
   try {
     // Soportar dos formatos
     const events = [];
+    const statuses = [];
     if (Array.isArray(req.body.entry)) {
       req.body.entry.forEach((entry) => {
         (entry.changes || []).forEach((change) => {
           const value = change.value || {};
+          (value.statuses || []).forEach((s) => statuses.push(s));
           (value.messages || []).forEach((m) => {
             const contact = (value.contacts || [])[0] || {};
             events.push({
@@ -1107,51 +1135,25 @@ exports.webhookReceive = async (req, res) => {
       return res.status(400).json({ message: 'clinicId requerido en webhook' });
     }
 
-    for (const ev of events) {
-      const phone = normalizePhone(ev.phone);
-      if (!phone) continue;
-      let conv = await Conversation.findOne({ clinic: clinicId, phone });
-      let isNewConversation = false;
-      if (!conv) {
-        const patient = await Patient.findOne({
-          clinic: clinicId,
-          phone: { $regex: phone.slice(-9) + '$' },
-        });
-        conv = await Conversation.create({
-          clinic: clinicId,
-          phone,
-          contactName: ev.contactName || patient ? `${patient.firstName} ${patient.lastName}` : '',
-          patient: patient?._id || null,
-          channel: 'whatsapp',
-        });
-        isNewConversation = true;
-      }
-      // Si el contacto está bloqueado, descartamos el mensaje silenciosamente.
-      if (conv.blocked) continue;
-      await Message.create({
-        clinic: clinicId,
-        conversation: conv._id,
-        direction: 'in',
-        body: ev.body || '',
-        externalId: ev.externalId,
-        deliveryStatus: 'delivered',
-      });
-      conv.lastMessageAt = new Date();
-      conv.lastMessagePreview = (ev.body || '').slice(0, 140);
-      conv.lastMessageDirection = 'in';
-      conv.unreadCount = (conv.unreadCount || 0) + 1;
-      if (conv.status === 'closed') conv.status = 'open';
-      await conv.save();
+    const signature = await validateMetaWebhookRequest(req, clinicId, 'whatsapp');
+    if (!signature.ok) {
+      return res.status(403).json({ message: 'Firma invalida', code: signature.reason });
+    }
 
-      // Disparar flujos de mensajes automáticos
-      await triggerFlows({
-        conv,
+    const statusUpdates = await processMetaStatuses(clinicId, statuses);
+    for (const ev of events) {
+      // eslint-disable-next-line no-await-in-loop
+      await ingestExternalMessage({
         clinicId,
-        isNewConversation,
-        incomingText: ev.body || '',
+        channel: 'whatsapp',
+        phone: ev.phone,
+        externalUserId: ev.phone,
+        body: ev.body || '',
+        contactName: ev.contactName,
+        externalId: ev.externalId,
       });
     }
-    res.status(200).json({ received: events.length });
+    return res.status(200).json({ received: events.length, statusUpdates });
   } catch (err) {
     console.error('Webhook error:', err);
     res.status(500).json({ message: 'Error en webhook', error: err.message });
@@ -1201,19 +1203,27 @@ exports.simulateIncoming = async (req, res) => {
     conv.lastMessageAt = msg.createdAt;
     conv.lastMessagePreview = body.slice(0, 140);
     conv.lastMessageDirection = 'in';
+    conv.window24hExpiresAt = messaging.computeWhatsappWindowExpiresAt(msg.createdAt);
     conv.unreadCount = (conv.unreadCount || 0) + 1;
     if (conv.status === 'closed') conv.status = 'open';
     await conv.save();
 
-    // Disparar flujos de mensajes automáticos
-    await triggerFlows({
-      conv,
+    emitToClinic(req.clinicId, 'chat:message', { conversationId: conv._id, message: msg });
+    const optedOut = await applyIncomingOptOut({
       clinicId: req.clinicId,
-      isNewConversation,
+      conv,
       incomingText: body,
     });
+    if (!optedOut) {
+      await triggerFlows({
+        conv,
+        clinicId: req.clinicId,
+        isNewConversation,
+        incomingText: body,
+      });
+    }
 
-    res.status(201).json({ conversation: conv, message: msg });
+    return res.status(201).json({ conversation: conv, message: msg });
   } catch (err) {
     res.status(500).json({ message: 'Error al simular mensaje', error: err.message });
   }
@@ -1233,27 +1243,111 @@ const getChannelConfig = async (clinicId, channel) => {
   return cfg[channel] || null;
 };
 
+async function validateMetaWebhookRequest(req, clinicId, channel) {
+  const cfg = await getChannelConfig(clinicId, channel);
+  return verifyMetaSignature({
+    rawBody: req.rawBody || req.body,
+    signature: req.headers['x-hub-signature-256'],
+    appSecret: cfg?.appSecret,
+  });
+}
+
+function normalizeMetaStatus(status) {
+  const err = (status.errors || [])[0] || {};
+  return {
+    externalId: status.id,
+    status: status.status,
+    timestamp: status.timestamp,
+    errorCode: err.code || err.error_subcode,
+    errorMessage: err.title || err.message || err.error_data?.details || '',
+  };
+}
+
+async function processMetaStatuses(clinicId, statuses = []) {
+  let updated = 0;
+  for (const status of statuses) {
+    const normalized = normalizeMetaStatus(status);
+    // eslint-disable-next-line no-await-in-loop
+    const result = await messaging.updateMessageStatus({ clinicId, ...normalized });
+    if (result.ok) updated++;
+  }
+  return updated;
+}
+
+async function findPatientForIncoming(clinicId, phone) {
+  const normalized = normalizePhone(phone);
+  if (!normalized) return null;
+  const tail = normalized.slice(-9);
+  return Patient.findOne({
+    clinic: clinicId,
+    $or: [
+      { phone: { $regex: `${tail}$` } },
+      { whatsapp: { $regex: `${tail}$` } },
+    ],
+  });
+}
+
+async function applyIncomingOptOut({ clinicId, conv, incomingText }) {
+  if (!messaging.isOptOutText(incomingText)) return false;
+  const patientId = conv.patient?._id || conv.patient;
+  const patient = conv.patient
+    ? await Patient.findOne({ _id: patientId, clinic: clinicId })
+    : await findPatientForIncoming(clinicId, conv.phone);
+  if (patient) {
+    patient.marketing = {
+      ...(patient.marketing?.toObject ? patient.marketing.toObject() : patient.marketing || {}),
+      whatsappOptIn: false,
+      optOutAt: new Date(),
+      optOutReason: 'keyword',
+    };
+    await patient.save();
+    if (!conv.patient) {
+      conv.patient = patient._id;
+      await conv.save();
+    }
+    emitToClinic(clinicId, 'patient:updated', { id: patient._id });
+  }
+  await messaging.send({
+    clinicId,
+    channel: conv.channel || 'whatsapp',
+    conversation: conv,
+    to: conv.phone,
+    patient,
+    body: 'Hemos registrado tu baja. No volveremos a enviarte mensajes promocionales.',
+    isAutoReply: true,
+    ignoreOptOut: true,
+  });
+  return true;
+}
+
 // Procesa un evento "normalizado" (externalUserId, body, contactName) creando/
 // actualizando la conversación correspondiente.
 async function ingestExternalMessage({ clinicId, channel, externalUserId, body, contactName, externalId, phone }) {
   if (!externalUserId && !phone) return;
+  const normalizedPhone = normalizePhone(phone || externalUserId);
   const findKey = phone
-    ? { clinic: clinicId, channel, phone }
+    ? { clinic: clinicId, channel, phone: normalizedPhone }
     : { clinic: clinicId, channel, externalUserId };
   let conv = await Conversation.findOne(findKey);
   let isNew = false;
+  let patient = phone ? await findPatientForIncoming(clinicId, normalizedPhone) : null;
   if (!conv) {
     conv = await Conversation.create({
       clinic: clinicId,
-      phone: phone || externalUserId, // unique constraint en (clinic, phone)
+      phone: normalizedPhone || phone || externalUserId, // unique constraint en (clinic, phone)
       externalUserId: externalUserId || '',
-      contactName: contactName || '',
+      contactName:
+        contactName ||
+        (patient ? `${patient.firstName || ''} ${patient.lastName || ''}`.trim() : ''),
+      patient: patient?._id || null,
       channel,
     });
     isNew = true;
+  } else if (!conv.patient && patient) {
+    conv.patient = patient._id;
   }
   if (conv.blocked) return;
-  await Message.create({
+  const msg = await Message.create({
     clinic: clinicId,
     conversation: conv._id,
     direction: 'in',
@@ -1261,14 +1355,18 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
     externalId,
     deliveryStatus: 'delivered',
   });
-  conv.lastMessageAt = new Date();
+  conv.lastMessageAt = msg.createdAt;
   conv.lastMessagePreview = String(body || '').slice(0, 140);
   conv.lastMessageDirection = 'in';
+  conv.window24hExpiresAt = messaging.computeWhatsappWindowExpiresAt(msg.createdAt);
   conv.unreadCount = (conv.unreadCount || 0) + 1;
   if (conv.status === 'closed') conv.status = 'open';
   await conv.save();
+  emitToClinic(clinicId, 'chat:message', { conversationId: conv._id, message: msg });
+
+  const optedOut = await applyIncomingOptOut({ clinicId, conv, incomingText: body || '' });
+  if (optedOut) return;
   await triggerFlows({ conv, clinicId, isNewConversation: isNew, incomingText: body || '' });
-  emitToClinic(clinicId, 'chat:message', { conversationId: conv._id });
 }
 
 // Verificación GET para canales Meta (whatsapp/messenger/instagram).
@@ -1297,10 +1395,19 @@ exports.webhookInstagramVerify = metaVerify('instagram');
 exports.webhookWhatsappReceive = async (req, res) => {
   try {
     const { clinicId } = req.params;
+    const signature = await validateMetaWebhookRequest(req, clinicId, 'whatsapp');
+    if (!signature.ok) {
+      return res.status(403).json({ message: 'Firma invalida', code: signature.reason });
+    }
     const entries = Array.isArray(req.body.entry) ? req.body.entry : [];
+    let statusUpdates = 0;
     for (const entry of entries) {
       for (const change of entry.changes || []) {
         const value = change.value || {};
+        if (Array.isArray(value.statuses) && value.statuses.length) {
+          // eslint-disable-next-line no-await-in-loop
+          statusUpdates += await processMetaStatuses(clinicId, value.statuses);
+        }
         const contact = (value.contacts || [])[0] || {};
         for (const m of value.messages || []) {
           // eslint-disable-next-line no-await-in-loop
@@ -1316,7 +1423,7 @@ exports.webhookWhatsappReceive = async (req, res) => {
         }
       }
     }
-    res.status(200).json({ ok: true });
+    res.status(200).json({ ok: true, statusUpdates });
   } catch (err) {
     console.error('[whatsapp webhook]', err);
     res.status(500).json({ message: 'Error', error: err.message });
@@ -1326,6 +1433,10 @@ exports.webhookWhatsappReceive = async (req, res) => {
 exports.webhookMessengerReceive = async (req, res) => {
   try {
     const { clinicId } = req.params;
+    const signature = await validateMetaWebhookRequest(req, clinicId, 'messenger');
+    if (!signature.ok) {
+      return res.status(403).json({ message: 'Firma invalida', code: signature.reason });
+    }
     const entries = Array.isArray(req.body.entry) ? req.body.entry : [];
     for (const entry of entries) {
       for (const event of entry.messaging || []) {
@@ -1353,6 +1464,10 @@ exports.webhookMessengerReceive = async (req, res) => {
 exports.webhookInstagramReceive = async (req, res) => {
   try {
     const { clinicId } = req.params;
+    const signature = await validateMetaWebhookRequest(req, clinicId, 'instagram');
+    if (!signature.ok) {
+      return res.status(403).json({ message: 'Firma invalida', code: signature.reason });
+    }
     const entries = Array.isArray(req.body.entry) ? req.body.entry : [];
     for (const entry of entries) {
       for (const event of entry.messaging || []) {

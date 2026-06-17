@@ -357,6 +357,11 @@ export default function Patients() {
                     <td className="px-6 py-3.5 text-sm text-slate-600">{p.cedula || '—'}</td>
                     <td className="px-6 py-3.5 text-sm font-medium text-slate-800">
                       {p.firstName} {p.lastName}
+                      {(p.marketing?.optOutAt || p.marketing?.whatsappOptIn === false) && (
+                        <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-700">
+                          Opt-out
+                        </span>
+                      )}
                     </td>
                     <td className="px-6 py-3.5 text-sm text-slate-600 hidden md:table-cell">
                       {p.phone || '—'}

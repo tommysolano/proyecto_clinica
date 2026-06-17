@@ -254,3 +254,34 @@ exports.deletePatient = async (req, res) => {
     res.status(500).json({ message: 'Error al eliminar paciente' });
   }
 };
+
+/**
+ * Etiquetado masivo de pacientes (para segmentación).
+ * POST /api/patients/bulk-tag  body: { patientIds:[], add:[], remove:[] }
+ */
+exports.bulkTag = async (req, res) => {
+  try {
+    const { patientIds, add = [], remove = [] } = req.body;
+    if (!Array.isArray(patientIds) || patientIds.length === 0) {
+      return res.status(400).json({ message: 'Selecciona al menos un paciente' });
+    }
+    const toAdd = (add || []).map((t) => String(t).trim()).filter(Boolean);
+    const toRemove = (remove || []).map((t) => String(t).trim()).filter(Boolean);
+    if (!toAdd.length && !toRemove.length) {
+      return res.status(400).json({ message: 'Indica etiquetas a agregar o quitar' });
+    }
+    const baseFilter = { _id: { $in: patientIds }, clinic: req.clinicId };
+    let modified = 0;
+    if (toAdd.length) {
+      const r = await Patient.updateMany(baseFilter, { $addToSet: { tags: { $each: toAdd } } });
+      modified = Math.max(modified, r.modifiedCount || 0);
+    }
+    if (toRemove.length) {
+      const r = await Patient.updateMany(baseFilter, { $pull: { tags: { $in: toRemove } } });
+      modified = Math.max(modified, r.modifiedCount || 0);
+    }
+    res.json({ matched: patientIds.length, modified, add: toAdd, remove: toRemove });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al etiquetar pacientes', error: error.message });
+  }
+};

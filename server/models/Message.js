@@ -20,6 +20,16 @@ const messageSchema = new mongoose.Schema(
     mediaType: { type: String, enum: ['image', 'audio', 'video', 'document', null], default: null },
     // Identificadores externos (WhatsApp message id)
     externalId: { type: String, index: true },
+    templateName: { type: String, trim: true, default: '' },
+    errorCode: { type: String, trim: true, default: '' },
+    errorMessage: { type: String, trim: true, default: '' },
+    statusTimestamps: {
+      sentAt: { type: Date },
+      deliveredAt: { type: Date },
+      readAt: { type: Date },
+      failedAt: { type: Date },
+    },
+    mediaStorageKey: { type: String, trim: true, default: '' },
     // Estado: enviado, entregado, leído (para mensajes salientes)
     deliveryStatus: {
       type: String,

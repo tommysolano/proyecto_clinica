@@ -24,6 +24,8 @@ import Chats from './pages/Chats';
 import OpportunitiesGlobal from './pages/OpportunitiesGlobal';
 import Analytics from './pages/Analytics';
 import AutoMessages from './pages/AutoMessages';
+import MessageTemplates from './pages/MessageTemplates';
+import Segments from './pages/Segments';
 import CallCenterConfig from './pages/CallCenterConfig';
 import CommissionRules from './pages/CommissionRules';
 import Settings from './pages/Settings';
@@ -238,6 +240,22 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'call_center', 'marketing']}>
                       <AutoMessages />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/message-templates"
+                  element={
+                    <RoleRoute roles={['admin', 'marketing']}>
+                      <MessageTemplates />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/segments"
+                  element={
+                    <RoleRoute roles={['admin', 'marketing']}>
+                      <Segments />
                     </RoleRoute>
                   }
                 />

@@ -210,6 +210,14 @@ function DatosTab({ patient }) {
         {!isDoctor && <Item label="Teléfono" value={patient.phone} />}
         <Item label="WhatsApp" value={patient.whatsapp} />
         <Item
+          label="Marketing"
+          value={
+            patient.marketing?.optOutAt || patient.marketing?.whatsappOptIn === false
+              ? 'Opt-out activo'
+              : 'Opt-in WhatsApp'
+          }
+        />
+        <Item
           label="Fecha de nacimiento"
           value={patient.birthDate ? fmtDate(patient.birthDate) : '—'}
         />

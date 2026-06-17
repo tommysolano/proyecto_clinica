@@ -1,6 +1,6 @@
 const ExcelJS = require('exceljs');
 const Treatment = require('../models/Treatment');
-const { sendBulk, loadCreds } = require('../utils/whatsappCloud');
+const messaging = require('../utils/messaging');
 
 // Replicates the abandonment-application used by treatmentController.list
 async function applyAbandonment(treatments) {
@@ -117,23 +117,42 @@ exports.whatsappBroadcast = async (req, res) => {
       recipients.push({ phone, patient: p, treatment: t });
     }
 
-    const { ok, creds, reason } = await loadCreds(req.clinicId);
-    if (!ok) {
-      return res.status(400).json({ message: `WhatsApp no disponible: ${reason}` });
-    }
-    const result = await sendBulk(creds, recipients, (r) => {
+    const results = [];
+    for (const r of recipients) {
       const name = `${r.patient.firstName || ''} ${r.patient.lastName || ''}`.trim();
-      return String(message)
+      const personalized = String(message)
         .replace(/\{\{\s*name\s*\}\}/gi, name)
         .replace(/\{\{\s*treatment\s*\}\}/gi, r.treatment.name || '');
-    });
+      // eslint-disable-next-line no-await-in-loop
+      const sendResult = await messaging.send({
+        clinicId: req.clinicId,
+        channel: 'whatsapp',
+        to: r.phone,
+        contactName: name,
+        patient: r.patient,
+        body: personalized,
+      });
+      results.push({
+        to: r.phone,
+        ok: !!sendResult.ok,
+        skipped: !!sendResult.skipped,
+        reason: sendResult.reason || '',
+        deliveryStatus: sendResult.deliveryStatus || '',
+        errorCode: sendResult.errorCode || '',
+        errorMessage: sendResult.errorMessage || '',
+      });
+    }
 
-    res.json({
+    const sent = results.filter((r) => r.ok).length;
+    const skipped = results.filter((r) => r.skipped).length;
+    const failed = results.length - sent - skipped;
+    return res.json({
       total: recipients.length,
-      sent: result.filter((r) => r.ok).length,
-      failed: result.filter((r) => !r.ok).length,
-      simulated: result.some((r) => r.simulated),
-      results: result,
+      sent,
+      failed,
+      skipped,
+      simulated: false,
+      results,
     });
   } catch (error) {
     res.status(500).json({ message: 'Error al enviar WhatsApp', error: error.message });

@@ -17,6 +17,7 @@ import {
   HiOutlineCheckCircle,
   HiOutlineDocumentDuplicate,
   HiOutlineTrash,
+  HiOutlineExclamationTriangle,
 } from 'react-icons/hi2';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
@@ -51,6 +52,26 @@ function formatTime(date) {
   return new Date(date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 }
 
+function getWindow24hExpiresAt(conv) {
+  if (!conv || conv.channel !== 'whatsapp') return null;
+  if (conv.window24hExpiresAt) return new Date(conv.window24hExpiresAt);
+  if (conv.lastMessageDirection === 'in' && conv.lastMessageAt) {
+    return new Date(new Date(conv.lastMessageAt).getTime() + 24 * 60 * 60 * 1000);
+  }
+  return null;
+}
+
+function isWhatsappWindowClosed(conv) {
+  if (!conv || conv.channel !== 'whatsapp') return false;
+  const expiresAt = getWindow24hExpiresAt(conv);
+  return !expiresAt || expiresAt.getTime() <= Date.now();
+}
+
+function isOptedOut(conv) {
+  const marketing = conv?.patient?.marketing;
+  return Boolean(marketing?.optOutAt || marketing?.whatsappOptIn === false);
+}
+
 export default function Chats() {
   const { role, user } = useAuth();
   const [tab, setTab] = useState('all'); // all | mine | featured | opportunities | board
@@ -62,6 +83,7 @@ export default function Chats() {
   const [services, setServices] = useState([]);
   const [loading, setLoading] = useState(false);
   const [draft, setDraft] = useState('');
+  const [templateDraft, setTemplateDraft] = useState({ name: '', language: 'es', vars: '' });
   // Mensajes guardados y galería
   const [savedReplies, setSavedReplies] = useState([]);
   const [slashOpen, setSlashOpen] = useState(false);
@@ -144,6 +166,7 @@ export default function Chats() {
   useEffect(() => {
     if (activeId) loadMessages(activeId);
     else setMessages([]);
+    setTemplateDraft({ name: '', language: 'es', vars: '' });
   }, [activeId]);
 
   // Realtime — recargar al recibir cambios
@@ -161,6 +184,27 @@ export default function Chats() {
       loadConversations(params);
     },
     [activeId, tab, search]
+  );
+  useSocketEvent(
+    'chat:message:status',
+    (payload) => {
+      if (payload?.conversationId && String(payload.conversationId) === String(activeId)) {
+        setMessages((prev) =>
+          prev.map((m) =>
+            String(m._id) === String(payload.messageId)
+              ? {
+                  ...m,
+                  deliveryStatus: payload.deliveryStatus,
+                  statusTimestamps: payload.statusTimestamps,
+                  errorCode: payload.errorCode,
+                  errorMessage: payload.errorMessage,
+                }
+              : m
+          )
+        );
+      }
+    },
+    [activeId]
   );
   useSocketEvent(
     'chat:updated',
@@ -185,29 +229,59 @@ export default function Chats() {
     () => conversations.find((c) => c._id === activeId),
     [conversations, activeId]
   );
+  const activeWindowClosed = isWhatsappWindowClosed(activeConv);
+  const activeOptedOut = isOptedOut(activeConv);
 
   const sendMessage = async () => {
-    if (!draft.trim() || !activeId) return;
+    if (!activeId || !activeConv) return;
+    const windowClosed = isWhatsappWindowClosed(activeConv);
+    const optedOut = isOptedOut(activeConv);
+    if (optedOut) {
+      toast.error('Contacto en opt-out');
+      return;
+    }
     const body = draft.trim();
-    setDraft('');
+    const templateName = templateDraft.name.trim();
+    if (!windowClosed && !body) return;
+    if (windowClosed && !templateName) {
+      toast.error('Selecciona una plantilla aprobada');
+      return;
+    }
+    if (!windowClosed) setDraft('');
     try {
-      const r = await api.post(`/chats/${activeId}/messages`, { body });
+      const payload = windowClosed
+        ? {
+            templateName,
+            templateLanguage: templateDraft.language || 'es',
+            templateVars: templateDraft.vars
+              .split(',')
+              .map((v) => v.trim())
+              .filter(Boolean),
+          }
+        : { body };
+      const r = await api.post(`/chats/${activeId}/messages`, payload);
       setMessages((prev) => [...prev, r.data]);
+      const preview = windowClosed ? `[Plantilla: ${templateName}]` : body;
       setConversations((prev) =>
         prev.map((c) =>
           c._id === activeId
             ? {
                 ...c,
-                lastMessagePreview: body.slice(0, 140),
+                lastMessagePreview: preview.slice(0, 140),
                 lastMessageAt: r.data.createdAt,
                 lastMessageDirection: 'out',
               }
             : c
         )
       );
+      if (r.data.deliveryStatus === 'failed') {
+        toast.error(r.data.errorMessage || 'No se pudo enviar');
+      } else if (windowClosed) {
+        setTemplateDraft({ name: '', language: 'es', vars: '' });
+      }
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al enviar');
-      setDraft(body);
+      if (!windowClosed) setDraft(body);
     }
   };
 
@@ -366,6 +440,39 @@ export default function Chats() {
                       Contacto bloqueado. Desbloquéalo desde el panel lateral para enviar mensajes.
                     </div>
                   )}
+                  {activeOptedOut && (
+                    <div className="mb-2 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded px-2 py-1 flex items-center gap-1">
+                      <HiOutlineExclamationTriangle className="w-4 h-4" />
+                      Contacto en opt-out. No se enviaran mensajes de marketing.
+                    </div>
+                  )}
+                  {activeWindowClosed && !activeOptedOut && (
+                    <div className="mb-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                      Ventana de WhatsApp cerrada. Usa una plantilla aprobada.
+                    </div>
+                  )}
+                  {activeWindowClosed && !activeOptedOut && (
+                    <div className="mb-2 grid grid-cols-1 sm:grid-cols-[1fr_90px_1.4fr] gap-2">
+                      <input
+                        value={templateDraft.name}
+                        onChange={(e) => setTemplateDraft({ ...templateDraft, name: e.target.value })}
+                        placeholder="Nombre de plantilla"
+                        className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                      />
+                      <input
+                        value={templateDraft.language}
+                        onChange={(e) => setTemplateDraft({ ...templateDraft, language: e.target.value })}
+                        placeholder="es"
+                        className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                      />
+                      <input
+                        value={templateDraft.vars}
+                        onChange={(e) => setTemplateDraft({ ...templateDraft, vars: e.target.value })}
+                        placeholder="Variables separadas por coma"
+                        className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                      />
+                    </div>
+                  )}
                   <div className="relative flex gap-2 items-end">
                     {slashOpen && (
                       <div className="absolute bottom-full left-0 mb-1 w-72 max-h-64 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg z-30">
@@ -442,12 +549,16 @@ export default function Chats() {
                       }}
                       placeholder="Escribe un mensaje... (usa / para mensajes guardados)"
                       rows={2}
-                      disabled={!!activeConv?.blocked}
+                      disabled={!!activeConv?.blocked || activeWindowClosed || activeOptedOut}
                       className="flex-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm resize-none disabled:bg-slate-100"
                     />
                     <button
                       onClick={sendMessage}
-                      disabled={!draft.trim() || !!activeConv?.blocked}
+                      disabled={
+                        !!activeConv?.blocked ||
+                        activeOptedOut ||
+                        (activeWindowClosed ? !templateDraft.name.trim() : !draft.trim())
+                      }
                       className="px-3 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1"
                     >
                       <HiOutlinePaperAirplane className="w-4 h-4" /> Enviar
@@ -820,6 +931,11 @@ function ConversationRow({ conv, active, onClick, onToggleFeatured }) {
                 {meta.label}
               </span>
             )}
+            {isOptedOut(conv) && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-rose-100 text-rose-700">
+                Opt-out
+              </span>
+            )}
             {conv.assignedToName && (
               <span className="text-[10px] text-slate-400">→ {conv.assignedToName}</span>
             )}
@@ -909,6 +1025,28 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onOpenOpportunity, onCreat
   );
 }
 
+const DELIVERY_META = {
+  queued: { label: 'en cola', className: 'text-slate-200' },
+  sent: { label: 'enviado', className: 'text-emerald-100' },
+  delivered: { label: 'entregado', className: 'text-emerald-100' },
+  read: { label: 'leido', className: 'text-sky-100' },
+  failed: { label: 'fallido', className: 'text-rose-100' },
+};
+
+function DeliveryBadge({ msg }) {
+  const meta = DELIVERY_META[msg.deliveryStatus] || DELIVERY_META.sent;
+  return (
+    <span className={`inline-flex items-center gap-0.5 ${meta.className}`} title={msg.errorMessage || meta.label}>
+      {msg.deliveryStatus === 'failed' ? (
+        <HiOutlineExclamationTriangle className="w-3 h-3" />
+      ) : msg.deliveryStatus === 'read' ? (
+        <HiOutlineCheckCircle className="w-3 h-3" />
+      ) : null}
+      {meta.label}
+    </span>
+  );
+}
+
 function MessageBubble({ msg }) {
   const isOut = msg.direction === 'out';
   return (
@@ -922,7 +1060,8 @@ function MessageBubble({ msg }) {
         <div className={`text-[10px] mt-1 flex items-center gap-1 ${isOut ? 'text-emerald-100' : 'text-slate-400'}`}>
           {isOut && msg.sentByName && <span>{msg.sentByName} · </span>}
           {formatTime(msg.createdAt)}
-          {isOut && msg.deliveryStatus === 'read' && <HiOutlineCheckCircle className="w-3 h-3" />}
+          {isOut && <span>Â·</span>}
+          {isOut && <DeliveryBadge msg={msg} />}
         </div>
       </div>
     </div>
@@ -961,6 +1100,11 @@ function SidePanel({ conv, onUpdated, onEditOpportunity, onScheduleAppointment, 
           <div className="mt-2 text-xs bg-emerald-50 text-emerald-700 px-2 py-1 rounded">
             Paciente: {conv.patient.firstName} {conv.patient.lastName}
             {conv.patient.cedula && <span className="text-emerald-600/70 ml-1">· {conv.patient.cedula}</span>}
+          </div>
+        )}
+        {isOptedOut(conv) && (
+          <div className="mt-2 text-xs bg-rose-50 text-rose-700 border border-rose-100 px-2 py-1 rounded">
+            Opt-out de marketing activo.
           </div>
         )}
         <div className="mt-2 flex flex-col gap-1.5">

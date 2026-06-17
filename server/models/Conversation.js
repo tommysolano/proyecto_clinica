@@ -74,6 +74,24 @@ const conversationSchema = new mongoose.Schema(
     blocked: { type: Boolean, default: false, index: true },
     blockedAt: { type: Date },
     blockedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    window24hExpiresAt: { type: Date, default: null, index: true },
+    attribution: {
+      adId: { type: String, trim: true, default: '' },
+      campaign: { type: String, trim: true, default: '' },
+      ctwaClid: { type: String, trim: true, default: '' },
+    },
+    internalNotes: {
+      type: [
+        {
+          author: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+          body: { type: String, trim: true },
+          at: { type: Date, default: Date.now },
+        },
+      ],
+      default: [],
+    },
+    firstResponseAt: { type: Date, default: null },
+    lastAgentReplyAt: { type: Date, default: null },
     // Oportunidad principal (compatibilidad). El array `opportunities` permite tener varias por chat.
     opportunity: { type: opportunitySchema, default: () => ({}) },
     opportunities: { type: [opportunitySchema], default: [] },

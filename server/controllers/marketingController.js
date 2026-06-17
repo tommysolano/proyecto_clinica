@@ -5,7 +5,7 @@ const Appointment = require('../models/Appointment');
 const Sale = require('../models/Sale');
 const Product = require('../models/Product');
 const Referral = require('../models/Referral');
-const wa = require('../utils/whatsappCloud');
+const messaging = require('../utils/messaging');
 
 /**
  * Dashboard global para el rol de marketing:
@@ -188,29 +188,51 @@ exports.sendBulkWhatsapp = async (req, res) => {
     if (!Array.isArray(recipients) || recipients.length === 0) {
       return res.status(400).json({ message: 'No hay destinatarios seleccionados' });
     }
-    if (!message || !String(message).trim()) {
-      return res.status(400).json({ message: 'El mensaje es requerido' });
+    const templateName = String(req.body.templateName || req.body.template?.name || '').trim();
+    if (!message?.trim() && !templateName) {
+      return res.status(400).json({ message: 'El mensaje o plantilla es requerido' });
     }
-    const { ok, creds, reason } = await wa.loadCreds(req.clinicId);
-    if (!ok) {
-      return res.status(400).json({ message: reason || 'WhatsApp no está configurado para esta sucursal' });
-    }
-
-    const valid = recipients.filter((r) => r && (r.phone || r.whatsapp));
-    if (valid.length === 0) {
+    const validRecipients = recipients.filter((r) => r && (r.phone || r.whatsapp));
+    if (validRecipients.length === 0) {
       return res.status(400).json({ message: 'Ningún destinatario tiene teléfono/WhatsApp' });
     }
     const personalize = (tpl, r) =>
-      String(tpl)
+      String(tpl || '')
         .replace(/\{\{\s*nombre\s*\}\}/gi, r.name || '')
         .replace(/\{\{\s*name\s*\}\}/gi, r.name || '');
 
-    const results = await wa.sendBulk(creds, valid, (r) => ({
-      to: r.whatsapp || r.phone,
-      body: personalize(message, r),
-    }));
+    const results = [];
+    for (const r of validRecipients) {
+      // eslint-disable-next-line no-await-in-loop
+      const result = await messaging.send({
+        clinicId: req.clinicId,
+        channel: 'whatsapp',
+        to: r.whatsapp || r.phone,
+        contactName: r.name || '',
+        patient: r.patient || r.patientId || r._id || null,
+        body: message ? personalize(message, r) : '',
+        template: templateName
+          ? {
+              name: templateName,
+              language: req.body.templateLanguage || req.body.language || 'es',
+              vars: req.body.templateVars || req.body.vars || [],
+            }
+          : null,
+      });
+      results.push({
+        to: r.whatsapp || r.phone,
+        ok: !!result.ok,
+        skipped: !!result.skipped,
+        reason: result.reason || '',
+        deliveryStatus: result.deliveryStatus || '',
+        errorCode: result.errorCode || '',
+        errorMessage: result.errorMessage || '',
+      });
+    }
     const sent = results.filter((x) => x.ok).length;
-    res.json({ total: results.length, sent, failed: results.length - sent });
+    const skipped = results.filter((x) => x.skipped).length;
+    const failed = results.length - sent - skipped;
+    return res.json({ total: results.length, sent, failed, skipped, results });
   } catch (error) {
     res.status(500).json({ message: 'Error al enviar WhatsApp masivo', error: error.message });
   }

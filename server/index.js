@@ -25,7 +25,12 @@ app.use(
     credentials: true,
   })
 );
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({
+  limit: '10mb',
+  verify: (req, _res, buf) => {
+    req.rawBody = buf;
+  },
+}));
 
 // Auditoría contable
 app.use(require('./middleware/audit'));
@@ -51,6 +56,8 @@ app.use('/api/referrals', require('./routes/referrals'));
 app.use('/api/discounts', require('./routes/discounts'));
 app.use('/api/quotations', require('./routes/quotations'));
 app.use('/api/marketing', require('./routes/marketing'));
+app.use('/api/message-templates', require('./routes/messageTemplates'));
+app.use('/api/segments', require('./routes/segments'));
 app.use('/api/chats', require('./routes/chats'));
 app.use('/api/call-center', require('./routes/callCenter'));
 app.use('/api/call-center-config', require('./routes/callCenterConfig'));

@@ -8,10 +8,14 @@ const {
   searchReferralCandidates,
   getPatientPurchases,
   lookupByCedula,
+  bulkTag,
 } = require('../controllers/patientController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
 router.use(auth, requireClinic);
+
+// Etiquetado masivo para segmentación de marketing.
+router.post('/bulk-tag', requireRole('admin', 'marketing'), bulkTag);
 
 // Buscador de referidores (pacientes + personal) — usado al crear un paciente.
 router.get('/referral-options', requireRole('admin', 'cajero', 'call_center', 'marketing'), searchReferralCandidates);

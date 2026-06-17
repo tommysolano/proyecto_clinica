@@ -48,6 +48,20 @@ const patientSchema = new mongoose.Schema(
     // Antecedentes
     antecedentesFamiliares: { type: String, trim: true, default: '' },
     antecedentesPatologicos: { type: String, trim: true, default: '' },
+    tags: { type: [String], default: [], index: true },
+    marketing: {
+      whatsappOptIn: { type: Boolean, default: true },
+      emailOptIn: { type: Boolean, default: true },
+      optOutAt: { type: Date, default: null },
+      optOutReason: { type: String, trim: true, default: '' },
+    },
+    attribution: {
+      utmSource: { type: String, trim: true, default: '' },
+      utmMedium: { type: String, trim: true, default: '' },
+      utmCampaign: { type: String, trim: true, default: '' },
+      adId: { type: String, trim: true, default: '' },
+      firstTouchAt: { type: Date, default: null },
+    },
     active: { type: Boolean, default: true },
   },
   { timestamps: true }
