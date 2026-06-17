@@ -171,36 +171,6 @@ exports.close = async (req, res) => {
       const closing = await CashClosing.findById(closingId);
       return res.json({ ...closing.toObject(), accountingWarning: null });
     }
-
-    const closing = await CashClosing.findOne({ _id: req.params.id, clinic: req.clinicId, status: 'ABIERTA' });
-    if (!closing) return res.status(404).json({ message: 'Caja abierta no encontrada' });
-
-    const closedAt = new Date();
-    const { byMethod, salesCount, totalSales } = await salesByMethod(req.clinicId, closing.openedAt, closedAt);
-    const countedCash = Number(req.body.countedCash) || 0;
-    const expectedCash = +((closing.openingBalance || 0) + byMethod.efectivo).toFixed(2);
-    const difference = +(countedCash - expectedCash).toFixed(2);
-
-    closing.closedAt = closedAt;
-    closing.closedBy = req.user._id;
-    closing.expectedCash = expectedCash;
-    closing.countedCash = countedCash;
-    closing.difference = difference;
-    closing.byMethod = byMethod;
-    closing.salesCount = salesCount;
-    closing.totalSales = totalSales;
-    closing.denominations = req.body.denominations || [];
-    if (req.body.notes) closing.notes = req.body.notes;
-    closing.status = 'CERRADO';
-
-    const { entry, error } = await postDifferenceEntry(req.clinicId, closing, req.user._id);
-    if (entry) closing.journalEntry = entry._id;
-    await closing.save();
-    // Si había diferencia pero no se pudo asentar, avisamos sin bloquear el cierre.
-    const accountingWarning = error
-      ? `La caja se cerró, pero no se pudo registrar el asiento contable de la diferencia: ${error}`
-      : null;
-    res.json({ ...closing.toObject(), accountingWarning });
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 
@@ -240,27 +210,6 @@ exports.create = async (req, res) => {
       const closing = await CashClosing.findById(closingId);
       return res.status(201).json({ ...closing.toObject(), accountingWarning: null });
     }
-
-    const { date, openingBalance = 0, countedCash = 0, denominations = [], notes = '' } = req.body;
-    const { start, end } = dayRange(date);
-    const { byMethod, salesCount, totalSales } = await salesByMethod(req.clinicId, start, end);
-    const expectedCash = +((Number(openingBalance) || 0) + byMethod.efectivo).toFixed(2);
-    const difference = +((Number(countedCash) || 0) - expectedCash).toFixed(2);
-
-    const closing = await CashClosing.create({
-      clinic: req.clinicId, date: start, closedAt: new Date(),
-      openingBalance: Number(openingBalance) || 0,
-      expectedCash, countedCash: Number(countedCash) || 0, difference,
-      byMethod, salesCount, totalSales, denominations, notes,
-      status: 'CERRADO',
-      closedBy: req.user._id,
-    });
-    const { entry, error } = await postDifferenceEntry(req.clinicId, closing, req.user._id);
-    if (entry) { closing.journalEntry = entry._id; await closing.save(); }
-    const accountingWarning = error
-      ? `La caja se cerró, pero no se pudo registrar el asiento contable de la diferencia: ${error}`
-      : null;
-    res.status(201).json({ ...closing.toObject(), accountingWarning });
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 

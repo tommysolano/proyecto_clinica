@@ -215,66 +215,6 @@ exports.accredit = async (req, res) => {
       const settlement = await CardSettlement.findById(settlementId);
       return res.json(settlement);
     }
-
-    const s = await CardSettlement.findOne({ _id: req.params.id, clinic: req.clinicId });
-    if (!s) return res.status(404).json({ message: 'No encontrada' });
-    if (s.status !== 'BORRADOR') return res.status(400).json({ message: 'No está en BORRADOR' });
-    if (!s.bankAccount) return res.status(400).json({ message: 'Selecciona el banco donde se acredita' });
-
-    computeTotals(s);
-    const bank = await BankAccount.findOne({ _id: s.bankAccount, clinic: req.clinicId });
-    if (!bank) return res.status(404).json({ message: 'Cuenta bancaria no encontrada' });
-
-    const bankAcc = await ChartOfAccount.findOne({ _id: bank.chartAccount, clinic: req.clinicId });
-    if (!bankAcc) return res.status(400).json({ message: 'La cuenta bancaria no tiene cuenta contable asociada' });
-    const receivable = await resolveAccount(req.clinicId, s.receivableAccount, 'tarjetasPorLiquidar');
-    const commissionAcc = await resolveAccount(req.clinicId, s.commissionAccount, 'comisionTarjeta');
-    const ivaAcc = s.totalIva > 0 ? await resolveAccount(req.clinicId, s.ivaAccount, 'ivaCompras') : null;
-    const retIvaAcc = s.totalRetIva > 0 ? await resolveAccount(req.clinicId, s.retIvaAccount, 'retIvaPorCobrar') : null;
-    const retIrAcc = s.totalRetIr > 0 ? await resolveAccount(req.clinicId, s.retIrAccount, 'retRentaPorCobrar') : null;
-
-    const netToBank = round(s.totalToPay - s.totalRetIr);
-    const lines = [];
-    if (netToBank > 0) lines.push({ account: bankAcc._id, debit: netToBank, credit: 0, description: `Acreditación liquidación ${s.code}` });
-    // Comisión: una línea por transacción para conservar el centro de costo
-    (s.transactions || []).forEach((t) => {
-      if ((Number(t.commission) || 0) > 0) {
-        lines.push({
-          account: commissionAcc._id,
-          costCenter: t.costCenter || null,
-          debit: round(t.commission),
-          credit: 0,
-          description: `Comisión tarjeta ${t.recap ? '#' + t.recap : ''}`.trim(),
-        });
-      }
-    });
-    if (s.totalIva > 0 && ivaAcc) lines.push({ account: ivaAcc._id, debit: s.totalIva, credit: 0, description: 'IVA comisión' });
-    if (s.totalRetIva > 0 && retIvaAcc) lines.push({ account: retIvaAcc._id, debit: s.totalRetIva, credit: 0, description: 'Retención IVA por cobrar' });
-    if (s.totalRetIr > 0 && retIrAcc) lines.push({ account: retIrAcc._id, debit: s.totalRetIr, credit: 0, description: 'Retención IR por cobrar' });
-    if (s.totalDeposit > 0) lines.push({ account: receivable._id, debit: 0, credit: s.totalDeposit, description: 'Cancelación tarjetas por cobrar' });
-
-    const accreditedAt = req.body.accreditedAt || s.issueDate || new Date();
-    const entry = await createEntry({
-      clinicId: req.clinicId, date: accreditedAt,
-      description: `Liquidación tarjetas ${s.code}`, source: 'TARJETA',
-      sourceRef: s._id, sourceModel: 'CardSettlement',
-      lines, userId: req.user._id,
-    });
-    const bt = await BankTransaction.create({
-      clinic: req.clinicId, bankAccount: bank._id, date: accreditedAt,
-      type: 'DEPOSITO', amount: netToBank, direction: 1,
-      description: `Liquidación tarjetas ${s.code}`, reference: s.docNumber || s.code,
-      sourceModel: 'CardSettlement', sourceRef: s._id, journalEntry: entry._id,
-    });
-    s.status = 'CONTABILIZADO';
-    s.accreditedAt = accreditedAt;
-    s.journalEntry = entry._id;
-    s.bankTransaction = bt._id;
-    await s.save();
-    // Marca las ventas de origen como ya liquidadas (trazabilidad / anti-duplicado).
-    const saleIds = (s.sourceSales || []).map((x) => x.sale).filter(Boolean);
-    if (saleIds.length) await Sale.updateMany({ _id: { $in: saleIds }, clinic: req.clinicId }, { cardSettlement: s._id });
-    res.json(s);
   } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
 
@@ -327,18 +267,6 @@ exports.cancel = async (req, res) => {
       const settlement = await CardSettlement.findById(settlementId);
       return res.json(settlement);
     }
-
-    const s = await CardSettlement.findOne({ _id: req.params.id, clinic: req.clinicId });
-    if (!s) return res.status(404).json({ message: 'No encontrada' });
-    if (s.status === 'ANULADO') return res.status(400).json({ message: 'Ya está anulada' });
-    if (s.journalEntry) await reverseEntry({ clinicId: req.clinicId, entryId: s.journalEntry, userId: req.user._id, reason: 'Anulación liquidación tarjeta' });
-    if (s.bankTransaction) await BankTransaction.updateOne({ _id: s.bankTransaction }, { voided: true });
-    s.status = 'ANULADO';
-    await s.save();
-    // Libera las ventas para que puedan volver a liquidarse.
-    const saleIds = (s.sourceSales || []).map((x) => x.sale).filter(Boolean);
-    if (saleIds.length) await Sale.updateMany({ _id: { $in: saleIds }, cardSettlement: s._id }, { cardSettlement: null });
-    res.json(s);
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 
