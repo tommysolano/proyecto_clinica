@@ -83,6 +83,7 @@ export default function Chats() {
   const [services, setServices] = useState([]);
   const [loading, setLoading] = useState(false);
   const [draft, setDraft] = useState('');
+  const [suggesting, setSuggesting] = useState(false);
   const [templateDraft, setTemplateDraft] = useState({ name: '', language: 'es', vars: '' });
   // Mensajes guardados y galería
   const [savedReplies, setSavedReplies] = useState([]);
@@ -231,6 +232,19 @@ export default function Chats() {
   );
   const activeWindowClosed = isWhatsappWindowClosed(activeConv);
   const activeOptedOut = isOptedOut(activeConv);
+
+  const suggestReply = async () => {
+    if (!activeId) return;
+    setSuggesting(true);
+    try {
+      const { data } = await api.post(`/chats/${activeId}/suggest-reply`);
+      if (data.suggestion) setDraft(data.suggestion);
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'No se pudo sugerir respuesta');
+    } finally {
+      setSuggesting(false);
+    }
+  };
 
   const sendMessage = async () => {
     if (!activeId || !activeConv) return;
@@ -552,6 +566,14 @@ export default function Chats() {
                       disabled={!!activeConv?.blocked || activeWindowClosed || activeOptedOut}
                       className="flex-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm resize-none disabled:bg-slate-100"
                     />
+                    <button
+                      onClick={suggestReply}
+                      disabled={suggesting || !!activeConv?.blocked || activeOptedOut || activeWindowClosed}
+                      title="Sugerir respuesta con IA"
+                      className="px-3 py-2 bg-white border border-slate-200 text-slate-600 rounded-xl hover:border-emerald-400 disabled:opacity-50 flex items-center gap-1"
+                    >
+                      <HiOutlineSparkles className="w-4 h-4" /> {suggesting ? '...' : 'IA'}
+                    </button>
                     <button
                       onClick={sendMessage}
                       disabled={

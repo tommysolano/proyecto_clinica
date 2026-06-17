@@ -60,6 +60,7 @@ app.use('/api/message-templates', require('./routes/messageTemplates'));
 app.use('/api/segments', require('./routes/segments'));
 app.use('/api/campaigns', require('./routes/campaigns'));
 app.use('/api/workflows', require('./routes/workflows'));
+app.use('/api/agent-tasks', require('./routes/agentTasks'));
 app.use('/api/public', require('./routes/public'));
 app.use('/api/chats', require('./routes/chats'));
 app.use('/api/call-center', require('./routes/callCenter'));

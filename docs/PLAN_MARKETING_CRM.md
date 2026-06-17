@@ -268,7 +268,18 @@ Reglas que aplica **siempre**:
 
 ---
 
-## Fase 5 — Productividad, reputación e IA (continuo) 🟡
+## Fase 5 — Productividad, reputación e IA (continuo) 🟡 — 🟡 EN CURSO (productividad + IA hechos)
+
+> Hecho: `AgentTask` (modelo + CRUD + página Tareas); notas internas + @menciones
+> (`Conversation.internalNotes` con `mentions` + notificación a mencionados); auto-asignación
+> round-robin (`pickRoundRobinAgent` por carga); métricas de **tiempo de primera respuesta**
+> por agente + **SLA** (no respondidas) en `getStats`. **IA conversacional**: `utils/aiAssistant.js`
+> (Claude Messages API por fetch, modelo `claude-opus-4-8`, key por `ANTHROPIC_API_KEY`, maneja
+> `stop_reason:'refusal'`, degrada sin key) + endpoint `POST /chats/:id/suggest-reply` + botón
+> "IA" en el compositor de Chats. 46 tests, build OK.
+>
+> Pendiente Fase 5: panel de supervisión (consumir responseTimes/SLA en UI), reputación/reseñas,
+> y acciones IA adicionales (auto-respuesta de primer contacto / calificación como paso de workflow).
 
 **Objetivo:** llevar el call center a nivel operativo de GHL. Resuelve G19, G22.
 

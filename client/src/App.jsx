@@ -29,6 +29,7 @@ import Segments from './pages/Segments';
 import Campaigns from './pages/Campaigns';
 import Workflows from './pages/Workflows';
 import Attribution from './pages/Attribution';
+import Tasks from './pages/Tasks';
 import CallCenterConfig from './pages/CallCenterConfig';
 import CommissionRules from './pages/CommissionRules';
 import Settings from './pages/Settings';
@@ -283,6 +284,14 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'marketing']}>
                       <Attribution />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/tasks"
+                  element={
+                    <RoleRoute roles={['admin', 'call_center', 'marketing']}>
+                      <Tasks />
                     </RoleRoute>
                   }
                 />

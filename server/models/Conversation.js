@@ -84,7 +84,9 @@ const conversationSchema = new mongoose.Schema(
       type: [
         {
           author: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+          authorName: { type: String, trim: true, default: '' },
           body: { type: String, trim: true },
+          mentions: { type: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }], default: [] },
           at: { type: Date, default: Date.now },
         },
       ],

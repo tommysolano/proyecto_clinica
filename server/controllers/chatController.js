@@ -6,7 +6,7 @@ const User = require('../models/User');
 const Appointment = require('../models/Appointment');
 const Product = require('../models/Product');
 const Quotation = require('../models/Quotation');
-const { emitToClinic } = require('../realtime');
+const { emitToClinic, emitToUser } = require('../realtime');
 const messaging = require('../utils/messaging');
 const { verifyMetaSignature } = require('../utils/metaWebhook');
 
@@ -177,6 +177,101 @@ exports.assignConversation = async (req, res) => {
     res.json(conv);
   } catch (err) {
     res.status(500).json({ message: 'Error al asignar conversación', error: err.message });
+  }
+};
+
+// =================== Asistente IA: sugerir respuesta ===================
+
+exports.suggestReply = async (req, res) => {
+  try {
+    const { suggestReply } = require('../utils/aiAssistant');
+    const result = await suggestReply({ clinicId: req.clinicId, conversationId: req.params.id });
+    if (!result.ok) return res.status(400).json({ message: result.reason });
+    res.json({ suggestion: result.suggestion });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al sugerir respuesta', error: err.message });
+  }
+};
+
+// =================== Notas internas + @menciones ===================
+
+exports.addInternalNote = async (req, res) => {
+  try {
+    const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
+    const body = String(req.body.body || '').trim();
+    if (!body) return res.status(400).json({ message: 'La nota está vacía' });
+    const mentions = Array.isArray(req.body.mentions)
+      ? req.body.mentions.filter((id) => mongoose.isValidObjectId(id))
+      : [];
+    const note = { author: req.user._id, authorName: req.user.name, body, mentions, at: new Date() };
+    conv.internalNotes = [...(conv.internalNotes || []), note];
+    await conv.save();
+    // Notifica a los mencionados.
+    for (const uid of mentions) {
+      if (String(uid) !== String(req.user._id)) {
+        emitToUser(uid, 'chat:mention', {
+          conversationId: conv._id,
+          by: req.user.name,
+          preview: body.slice(0, 120),
+        });
+      }
+    }
+    res.status(201).json(conv.internalNotes[conv.internalNotes.length - 1]);
+  } catch (err) {
+    res.status(500).json({ message: 'Error al agregar nota', error: err.message });
+  }
+};
+
+exports.listInternalNotes = async (req, res) => {
+  try {
+    const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId })
+      .select('internalNotes')
+      .populate('internalNotes.author', 'name');
+    if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
+    res.json(conv.internalNotes || []);
+  } catch (err) {
+    res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
+// =================== Auto-asignación round-robin ===================
+
+/**
+ * Devuelve el agente call_center con MENOS conversaciones abiertas asignadas.
+ * Empata por el que tiene la asignación más antigua (reparto equitativo).
+ */
+async function pickRoundRobinAgent(clinicId) {
+  const agents = await User.find({
+    active: true,
+    'clinics.clinic': clinicId,
+    'clinics.role': 'call_center',
+  }).select('_id name');
+  if (!agents.length) return null;
+
+  const counts = await Conversation.aggregate([
+    { $match: { clinic: new mongoose.Types.ObjectId(clinicId), status: 'open', assignedTo: { $ne: null } } },
+    { $group: { _id: '$assignedTo', count: { $sum: 1 } } },
+  ]);
+  const byAgent = new Map(counts.map((c) => [String(c._id), c.count]));
+  agents.sort((a, b) => (byAgent.get(String(a._id)) || 0) - (byAgent.get(String(b._id)) || 0));
+  return agents[0];
+}
+
+exports.autoAssign = async (req, res) => {
+  try {
+    const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
+    const agent = await pickRoundRobinAgent(req.clinicId);
+    if (!agent) return res.status(400).json({ message: 'No hay agentes de call center disponibles' });
+    conv.assignedTo = agent._id;
+    conv.assignedToName = agent.name;
+    conv.assignedAt = new Date();
+    await conv.save();
+    emitToUser(agent._id, 'chat:assigned', { conversationId: conv._id });
+    res.json(conv);
+  } catch (err) {
+    res.status(500).json({ message: 'Error al auto-asignar', error: err.message });
   }
 };
 
@@ -1596,7 +1691,37 @@ exports.getStats = async (req, res) => {
         { $sort: { total: -1 } },
       ]),
     ]);
-    res.json({ byStatus, opportunities, featuredCount, byAgent });
+
+    // Tiempo de primera respuesta (promedio) por agente + SLA (conversaciones sin
+    // responder cuyo último mensaje es entrante y lleva más del umbral abierto).
+    const SLA_MINUTES = Number(req.query.slaMinutes || 60);
+    const slaCutoff = new Date(Date.now() - SLA_MINUTES * 60000);
+    const [responseTimes, unanswered] = await Promise.all([
+      Conversation.aggregate([
+        { $match: { ...match, firstResponseAt: { $ne: null } } },
+        { $project: { assignedTo: 1, respMs: { $subtract: ['$firstResponseAt', '$createdAt'] } } },
+        { $group: { _id: '$assignedTo', avgMs: { $avg: '$respMs' }, count: { $sum: 1 } } },
+        { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'user' } },
+        { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+        { $project: { name: '$user.name', avgMinutes: { $round: [{ $divide: ['$avgMs', 60000] }, 1] }, count: 1 } },
+        { $sort: { avgMinutes: 1 } },
+      ]),
+      Conversation.countDocuments({
+        ...match,
+        status: 'open',
+        lastMessageDirection: 'in',
+        lastMessageAt: { $lt: slaCutoff },
+      }),
+    ]);
+
+    res.json({
+      byStatus,
+      opportunities,
+      featuredCount,
+      byAgent,
+      responseTimes,
+      sla: { thresholdMinutes: SLA_MINUTES, unanswered },
+    });
   } catch (err) {
     res.status(500).json({ message: 'Error al obtener estadísticas', error: err.message });
   }
