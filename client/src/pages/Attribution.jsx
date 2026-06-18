@@ -44,9 +44,12 @@ export default function Attribution() {
             Pacientes captados por origen y campaña, e ingresos de ventas que generaron.
           </p>
         </div>
-        <select value={range} onChange={(e) => setRange(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2 text-sm">
-          {RANGES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
-        </select>
+        <label className="text-sm text-slate-600 flex items-center gap-2">
+          <span>Rango</span>
+          <select value={range} onChange={(e) => setRange(e.target.value)} className="border border-slate-200 rounded-lg px-3 py-2 text-sm">
+            {RANGES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+          </select>
+        </label>
       </div>
 
       {data && (

@@ -13,6 +13,7 @@
  */
 
 const CallCenterConfig = require('../models/CallCenterConfig');
+const { decryptSecret } = require('./secretCrypto');
 
 const DEFAULT_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v20.0';
 
@@ -33,11 +34,36 @@ async function loadCreds(clinicId) {
   return {
     ok: true,
     creds: {
-      accessToken: wa.accessToken,
+      accessToken: decryptSecret(wa.accessToken),
       phoneNumberId: wa.phoneNumberId,
       apiVersion: DEFAULT_API_VERSION,
     },
   };
+}
+
+/**
+ * Descarga un media entrante de WhatsApp (imagen/audio/documento) por su id.
+ * Devuelve { ok, dataUrl, mimeType } o { ok:false }. Cap de tamaño para no
+ * desbordar el documento de Mongo (la media se guarda como dataUrl base64).
+ */
+async function downloadMedia(creds, mediaId, { maxBytes = 4 * 1024 * 1024 } = {}) {
+  if (!isConfigured(creds) || !mediaId) return { ok: false };
+  const apiVersion = creds.apiVersion || DEFAULT_API_VERSION;
+  try {
+    const metaRes = await fetch(`https://graph.facebook.com/${apiVersion}/${mediaId}`, {
+      headers: { Authorization: `Bearer ${creds.accessToken}` },
+    });
+    const meta = await metaRes.json().catch(() => ({}));
+    if (!metaRes.ok || !meta.url) return { ok: false };
+    const binRes = await fetch(meta.url, { headers: { Authorization: `Bearer ${creds.accessToken}` } });
+    if (!binRes.ok) return { ok: false };
+    const buf = Buffer.from(await binRes.arrayBuffer());
+    if (buf.length > maxBytes) return { ok: false, tooLarge: true, mimeType: meta.mime_type };
+    const mimeType = meta.mime_type || 'application/octet-stream';
+    return { ok: true, dataUrl: `data:${mimeType};base64,${buf.toString('base64')}`, mimeType };
+  } catch {
+    return { ok: false };
+  }
 }
 
 function isConfigured(creds) {
@@ -127,4 +153,4 @@ async function sendBulk(creds, recipients, builderFn) {
   return results;
 }
 
-module.exports = { loadCreds, isConfigured, sendText, sendTemplate, sendBulk };
+module.exports = { loadCreds, isConfigured, sendText, sendTemplate, sendBulk, downloadMedia };

@@ -441,6 +441,15 @@ exports.createSale = async (req, res) => {
         .populate('patient', 'firstName lastName cedula')
         .populate('createdBy', 'name');
       emitToClinic(req.clinicId, 'sale:created', { id: txSaleId });
+      // Evento de dominio para el motor de workflows (trigger sale_created).
+      if (txPopulated.patient?._id) {
+        const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
+        emitDomainEvent(DOMAIN_EVENTS.SALE_CREATED, {
+          clinicId: String(req.clinicId),
+          patientId: String(txPopulated.patient._id),
+          saleId: String(txSaleId),
+        });
+      }
       return res.status(201).json(txPopulated);
     }
   } catch (error) {

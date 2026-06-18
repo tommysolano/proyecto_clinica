@@ -61,6 +61,7 @@ app.use('/api/segments', require('./routes/segments'));
 app.use('/api/campaigns', require('./routes/campaigns'));
 app.use('/api/workflows', require('./routes/workflows'));
 app.use('/api/agent-tasks', require('./routes/agentTasks'));
+app.use('/api/reviews', require('./routes/reviews'));
 app.use('/api/booking-config', require('./routes/bookingConfig'));
 app.use('/api/public', require('./routes/public'));
 app.use('/api/chats', require('./routes/chats'));

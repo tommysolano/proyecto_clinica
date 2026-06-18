@@ -193,6 +193,17 @@ exports.suggestReply = async (req, res) => {
   }
 };
 
+exports.summarizeConversation = async (req, res) => {
+  try {
+    const { summarizeConversation } = require('../utils/aiAssistant');
+    const result = await summarizeConversation({ clinicId: req.clinicId, conversationId: req.params.id });
+    if (!result.ok) return res.status(400).json({ message: result.reason });
+    res.json({ summary: result.summary });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al resumir', error: err.message });
+  }
+};
+
 // =================== Notas internas + @menciones ===================
 
 exports.addInternalNote = async (req, res) => {
@@ -1343,10 +1354,11 @@ const getChannelConfig = async (clinicId, channel) => {
 
 async function validateMetaWebhookRequest(req, clinicId, channel) {
   const cfg = await getChannelConfig(clinicId, channel);
+  const { decryptSecret } = require('../utils/secretCrypto');
   return verifyMetaSignature({
     rawBody: req.rawBody || req.body,
     signature: req.headers['x-hub-signature-256'],
-    appSecret: cfg?.appSecret,
+    appSecret: cfg?.appSecret ? decryptSecret(cfg.appSecret) : '',
   });
 }
 
@@ -1420,7 +1432,7 @@ async function applyIncomingOptOut({ clinicId, conv, incomingText }) {
 
 // Procesa un evento "normalizado" (externalUserId, body, contactName) creando/
 // actualizando la conversación correspondiente.
-async function ingestExternalMessage({ clinicId, channel, externalUserId, body, contactName, externalId, phone, referral }) {
+async function ingestExternalMessage({ clinicId, channel, externalUserId, body, contactName, externalId, phone, referral, media }) {
   if (!externalUserId && !phone) return;
   const normalizedPhone = normalizePhone(phone || externalUserId);
   const findKey = phone
@@ -1450,16 +1462,37 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
     conv.attribution = referral;
   }
   if (conv.blocked) return;
+
+  // Media entrante (imagen/audio/documento/video de WhatsApp): se descarga y
+  // persiste como dataUrl base64 para no perderla. Cap de tamaño en downloadMedia.
+  let mediaUrl = null;
+  let mediaType = null;
+  let finalBody = body || '';
+  if (media && media.id && channel === 'whatsapp') {
+    const wa = require('../utils/whatsappCloud');
+    const { ok, creds } = await wa.loadCreds(clinicId);
+    if (ok) {
+      const dl = await wa.downloadMedia(creds, media.id);
+      if (dl.ok) {
+        mediaUrl = dl.dataUrl;
+        mediaType = media.type;
+      }
+    }
+    if (!finalBody) finalBody = media.caption || `[${media.type}]`;
+  }
+
   const msg = await Message.create({
     clinic: clinicId,
     conversation: conv._id,
     direction: 'in',
-    body: body || '',
+    body: finalBody,
+    mediaUrl,
+    mediaType,
     externalId,
     deliveryStatus: 'delivered',
   });
   conv.lastMessageAt = msg.createdAt;
-  conv.lastMessagePreview = String(body || '').slice(0, 140);
+  conv.lastMessagePreview = String(finalBody || '').slice(0, 140);
   conv.lastMessageDirection = 'in';
   conv.window24hExpiresAt = messaging.computeWhatsappWindowExpiresAt(msg.createdAt);
   conv.unreadCount = (conv.unreadCount || 0) + 1;
@@ -1467,13 +1500,26 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   await conv.save();
   emitToClinic(clinicId, 'chat:message', { conversationId: conv._id, message: msg });
 
-  const optedOut = await applyIncomingOptOut({ clinicId, conv, incomingText: body || '' });
+  const optedOut = await applyIncomingOptOut({ clinicId, conv, incomingText: finalBody });
   if (optedOut) return;
+  const workflowEngine = require('../utils/workflowEngine');
   // Reanuda workflows que esperaban respuesta del paciente (p.ej. confirmar cita).
-  await require('../utils/workflowEngine')
-    .resumeOnReply({ clinicId, patientId: conv.patient, phone: conv.phone, text: body || '' })
+  await workflowEngine
+    .resumeOnReply({ clinicId, patientId: conv.patient, phone: conv.phone, text: finalBody })
     .catch(() => {});
-  await triggerFlows({ conv, clinicId, isNewConversation: isNew, incomingText: body || '' });
+  // Motor nuevo: disparadores de chat (inbound_message / keyword / new_conversation).
+  await workflowEngine
+    .enrollForChatMessage({
+      clinicId,
+      conversation: conv,
+      patient: patient || (conv.patient ? { _id: conv.patient } : null),
+      phone: conv.phone,
+      text: finalBody,
+      isNew,
+    })
+    .catch(() => {});
+  // Legacy MessageFlow (en deprecación): sigue atendiendo flujos ya existentes.
+  await triggerFlows({ conv, clinicId, isNewConversation: isNew, incomingText: finalBody });
 }
 
 // Verificación GET para canales Meta (whatsapp/messenger/instagram).
@@ -1517,6 +1563,18 @@ exports.webhookWhatsappReceive = async (req, res) => {
         }
         const contact = (value.contacts || [])[0] || {};
         for (const m of value.messages || []) {
+          // Media entrante: imagen/audio/video/documento/sticker.
+          const media = m.image
+            ? { type: 'image', id: m.image.id, caption: m.image.caption || '' }
+            : m.audio
+            ? { type: 'audio', id: m.audio.id }
+            : m.video
+            ? { type: 'video', id: m.video.id, caption: m.video.caption || '' }
+            : m.document
+            ? { type: 'document', id: m.document.id, caption: m.document.caption || m.document.filename || '' }
+            : m.sticker
+            ? { type: 'sticker', id: m.sticker.id }
+            : null;
           // eslint-disable-next-line no-await-in-loop
           await ingestExternalMessage({
             clinicId,
@@ -1524,6 +1582,7 @@ exports.webhookWhatsappReceive = async (req, res) => {
             phone: m.from,
             externalUserId: m.from,
             body: m.text?.body || m.button?.text || m.interactive?.button_reply?.title || '',
+            media,
             contactName: contact.profile?.name || '',
             externalId: m.id,
             // Atribución click-to-WhatsApp (anuncios Meta): solo viene en el 1er mensaje.

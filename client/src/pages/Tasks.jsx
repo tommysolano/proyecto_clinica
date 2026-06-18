@@ -112,8 +112,14 @@ export default function Tasks() {
           <div className="bg-white rounded-xl p-6 w-full max-w-md">
             <h2 className="text-lg font-bold mb-4">Nueva tarea</h2>
             <div className="grid gap-3">
-              <input value={creating.title} onChange={(e) => setCreating({ ...creating, title: e.target.value })} placeholder="¿Qué hay que hacer?" className="border border-slate-200 rounded-lg px-3 py-2 text-sm" />
-              <textarea value={creating.notes} onChange={(e) => setCreating({ ...creating, notes: e.target.value })} rows={2} placeholder="Notas (opcional)" className="border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+              <label className="text-sm">
+                <span className="text-slate-600">Título de la tarea</span>
+                <input value={creating.title} onChange={(e) => setCreating({ ...creating, title: e.target.value })} placeholder="¿Qué hay que hacer?" className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+              </label>
+              <label className="text-sm">
+                <span className="text-slate-600">Notas (opcional)</span>
+                <textarea value={creating.notes} onChange={(e) => setCreating({ ...creating, notes: e.target.value })} rows={2} placeholder="Detalles adicionales" className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+              </label>
               <label className="text-sm">
                 <span className="text-slate-600">Vence</span>
                 <input type="datetime-local" value={creating.dueAt} onChange={(e) => setCreating({ ...creating, dueAt: e.target.value })} className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" />

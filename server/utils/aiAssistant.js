@@ -46,6 +46,42 @@ function extractText(data) {
 }
 
 /**
+ * Llama a la Messages API de Claude con un system + un mensaje de usuario.
+ * Centraliza el manejo de errores y de `stop_reason:'refusal'`.
+ * @returns {{ ok:boolean, text?:string, reason?:string }}
+ */
+async function callClaude({ apiKey, system, userContent, maxTokens = 400 }) {
+  let res;
+  try {
+    res = await fetch(ANTHROPIC_URL, {
+      method: 'POST',
+      headers: {
+        'x-api-key': apiKey,
+        'anthropic-version': '2023-06-01',
+        'content-type': 'application/json',
+      },
+      body: JSON.stringify({
+        model: DEFAULT_MODEL,
+        max_tokens: maxTokens,
+        system,
+        messages: [{ role: 'user', content: userContent }],
+      }),
+    });
+  } catch (err) {
+    return { ok: false, reason: `Error de red al contactar la IA: ${err.message}` };
+  }
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) return { ok: false, reason: data?.error?.message || `IA respondió ${res.status}` };
+  // La IA puede declinar por seguridad: revisar stop_reason antes de leer content.
+  if (data.stop_reason === 'refusal') {
+    return { ok: false, reason: 'La IA no pudo generar una respuesta para este caso.' };
+  }
+  const text = extractText(data);
+  if (!text) return { ok: false, reason: 'La IA no devolvió texto.' };
+  return { ok: true, text };
+}
+
+/**
  * Genera una sugerencia de respuesta para una conversación.
  * @returns {{ ok:boolean, suggestion?:string, reason?:string }}
  */
@@ -67,37 +103,51 @@ async function suggestReply({ clinicId, conversationId }) {
   const contactName =
     (conv.patient ? `${conv.patient.firstName || ''}`.trim() : '') || conv.contactName || '';
 
-  let res;
-  try {
-    res = await fetch(ANTHROPIC_URL, {
-      method: 'POST',
-      headers: {
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-        'content-type': 'application/json',
-      },
-      body: JSON.stringify({
-        model: DEFAULT_MODEL,
-        max_tokens: 400,
-        system: SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: buildUserPrompt(messages, contactName) }],
-      }),
-    });
-  } catch (err) {
-    return { ok: false, reason: `Error de red al contactar la IA: ${err.message}` };
-  }
-
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    return { ok: false, reason: data?.error?.message || `IA respondió ${res.status}` };
-  }
-  // La IA puede declinar por seguridad: revisar stop_reason antes de leer content.
-  if (data.stop_reason === 'refusal') {
-    return { ok: false, reason: 'La IA no pudo generar una respuesta para este caso.' };
-  }
-  const suggestion = extractText(data);
-  if (!suggestion) return { ok: false, reason: 'La IA no devolvió texto.' };
-  return { ok: true, suggestion };
+  const r = await callClaude({
+    apiKey,
+    system: SYSTEM_PROMPT,
+    userContent: buildUserPrompt(messages, contactName),
+    maxTokens: 400,
+  });
+  return r.ok ? { ok: true, suggestion: r.text } : r;
 }
 
-module.exports = { buildUserPrompt, extractText, suggestReply, DEFAULT_MODEL };
+const SUMMARY_SYSTEM =
+  'Eres un asistente del call center de una clínica estética en Ecuador. ' +
+  'Resume la conversación de WhatsApp en español, en 3-5 viñetas breves: ' +
+  'motivo del paciente, servicios o precios mencionados, estado/acuerdos, y el próximo ' +
+  'paso pendiente. Sé conciso y objetivo. Devuelve solo las viñetas, sin preámbulo.';
+
+/**
+ * Resume una conversación para el agente. Mismo patrón que suggestReply.
+ * @returns {{ ok:boolean, summary?:string, reason?:string }}
+ */
+async function summarizeConversation({ clinicId, conversationId }) {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) return { ok: false, reason: 'IA no configurada (falta ANTHROPIC_API_KEY)' };
+
+  const conv = await Conversation.findOne({ _id: conversationId, clinic: clinicId });
+  if (!conv) return { ok: false, reason: 'Conversación no encontrada' };
+
+  const messages = await Message.find({ conversation: conv._id, clinic: clinicId })
+    .sort({ createdAt: -1 })
+    .limit(40)
+    .select('direction body createdAt');
+  messages.reverse();
+  if (!messages.length) return { ok: false, reason: 'No hay mensajes en la conversación' };
+
+  const transcript = messages
+    .filter((m) => m.body)
+    .map((m) => `${m.direction === 'in' ? 'Paciente' : 'Agente'}: ${m.body}`)
+    .join('\n');
+
+  const r = await callClaude({
+    apiKey,
+    system: SUMMARY_SYSTEM,
+    userContent: `Conversación:\n${transcript}\n\nResume la conversación.`,
+    maxTokens: 500,
+  });
+  return r.ok ? { ok: true, summary: r.text } : r;
+}
+
+module.exports = { buildUserPrompt, extractText, callClaude, suggestReply, summarizeConversation, DEFAULT_MODEL };

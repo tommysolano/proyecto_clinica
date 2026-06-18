@@ -1,15 +1,20 @@
 const CallCenterConfig = require('../models/CallCenterConfig');
+const { encryptSecret, decryptSecret } = require('../utils/secretCrypto');
 
 /**
  * Devuelve la configuración de la clínica enmascarando tokens/secrets.
  * El cliente solo ve los últimos 4 caracteres como indicador de "configurado".
  */
 const SENSITIVE_KEYS = ['accessToken', 'verifyToken', 'appSecret', 'pageAccessToken', 'apiKey'];
+// Secrets reales que se cifran en reposo (verifyToken es solo handshake → no se cifra).
+const ENCRYPT_KEYS = ['accessToken', 'appSecret', 'pageAccessToken', 'apiKey'];
 
+// Enmascara: descifra primero para mostrar los últimos 4 reales.
 const maskSecret = (val) => {
   if (!val || typeof val !== 'string') return '';
-  if (val.length <= 4) return '****';
-  return `••••${val.slice(-4)}`;
+  const plain = decryptSecret(val);
+  if (plain.length <= 4) return '****';
+  return `••••${plain.slice(-4)}`;
 };
 
 const maskChannel = (channel) => {
@@ -93,7 +98,8 @@ exports.update = async (req, res) => {
         // No tocar — el usuario no cambió el campo sensible.
         continue;
       }
-      cleaned[k] = v;
+      // Cifra los secrets reales antes de persistir.
+      cleaned[k] = ENCRYPT_KEYS.includes(k) && typeof v === 'string' && v ? encryptSecret(v) : v;
     }
     cfg[channel] = { ...current.toObject?.() || current, ...cleaned };
     cfg.updatedBy = req.user._id;
@@ -101,6 +107,26 @@ exports.update = async (req, res) => {
     res.json(maskConfig(cfg));
   } catch (err) {
     res.status(500).json({ message: 'Error al guardar configuración', error: err.message });
+  }
+};
+
+/**
+ * PUT /api/call-center-config/reputation
+ * Guarda la URL de reseñas de Google y el rating mínimo para considerar promotor.
+ */
+exports.updateReputation = async (req, res) => {
+  try {
+    let cfg = await CallCenterConfig.findOne({ clinic: req.clinicId });
+    if (!cfg) cfg = new CallCenterConfig({ clinic: req.clinicId });
+    cfg.reputation = {
+      googleReviewUrl: String(req.body.googleReviewUrl || '').trim(),
+      minRating: Math.max(1, Math.min(5, Number(req.body.minRating) || 4)),
+    };
+    cfg.updatedBy = req.user._id;
+    await cfg.save();
+    res.json(maskConfig(cfg));
+  } catch (err) {
+    res.status(500).json({ message: 'Error al guardar reputación', error: err.message });
   }
 };
 
@@ -120,9 +146,9 @@ exports.testConnection = async (req, res) => {
       if (!c.accessToken || !c.phoneNumberId) {
         return res.status(400).json({ message: 'Falta accessToken o phoneNumberId' });
       }
-      // Llamada a Graph API para verificar token.
+      // Llamada a Graph API para verificar token (descifrado en uso).
       const r = await fetch(`https://graph.facebook.com/v20.0/${c.phoneNumberId}?fields=display_phone_number,verified_name`, {
-        headers: { Authorization: `Bearer ${c.accessToken}` },
+        headers: { Authorization: `Bearer ${decryptSecret(c.accessToken)}` },
       });
       const data = await r.json();
       if (!r.ok) return res.status(400).json({ message: 'Token inválido', detail: data });
@@ -133,7 +159,7 @@ exports.testConnection = async (req, res) => {
         return res.status(400).json({ message: 'Falta pageAccessToken o pageId' });
       }
       const r = await fetch(`https://graph.facebook.com/v20.0/${c.pageId}?fields=name`, {
-        headers: { Authorization: `Bearer ${c.pageAccessToken}` },
+        headers: { Authorization: `Bearer ${decryptSecret(c.pageAccessToken)}` },
       });
       const data = await r.json();
       if (!r.ok) return res.status(400).json({ message: 'Token inválido', detail: data });

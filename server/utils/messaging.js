@@ -230,7 +230,9 @@ async function sendToProvider({ clinicId, channel, conv, body, templateInfo }) {
   if (channel === 'messenger' || channel === 'instagram') {
     const cfg = await CallCenterConfig.findOne({ clinic: clinicId }).lean();
     const channelConfig = cfg?.[channel];
-    const pageAccessToken = channelConfig?.pageAccessToken;
+    const pageAccessToken = channelConfig?.pageAccessToken
+      ? require('./secretCrypto').decryptSecret(channelConfig.pageAccessToken)
+      : '';
     if (!channelConfig?.enabled || !pageAccessToken) {
       return { ok: false, errorCode: 'provider_unavailable', error: `${channel} no configurado` };
     }
@@ -275,7 +277,7 @@ async function findPatientByEmail(clinicId, email) {
  * Envío por email (sin conversación). Respeta opt-out de email y añade enlace de
  * baja. Devuelve el mismo shape que send() para uniformidad en campañas/jobs.
  */
-async function sendEmailChannel({ clinicId, to, patient, subject, body, ignoreOptOut }) {
+async function sendEmailChannel({ clinicId, to, patient, subject, body, ignoreOptOut, source }) {
   if (!to || !/.+@.+\..+/.test(String(to))) {
     return { ok: false, skipped: true, reason: 'invalid_recipient' };
   }
@@ -296,13 +298,33 @@ async function sendEmailChannel({ clinicId, to, patient, subject, body, ignoreOp
   const { ok, creds } = await email.loadCreds(clinicId);
   const base = process.env.PUBLIC_API_URL || '';
   const unsubscribeUrl = patientDoc && base ? `${base}/api/public/unsubscribe/${patientDoc._id}` : '';
-  const result = await email.sendEmail(ok ? creds : null, { to, subject, body, unsubscribeUrl });
+  // Tracking de apertura/clic: solo si conocemos la URL pública base.
+  const EmailSend = require('../models/EmailSend');
+  const trackingId = base ? EmailSend.newTrackingId() : '';
+  const result = await email.sendEmail(ok ? creds : null, {
+    to,
+    subject,
+    body,
+    unsubscribeUrl,
+    trackingId,
+    trackingBase: base,
+  });
 
   if (result.skipped || result.simulated) {
     return { ok: false, skipped: true, reason: 'provider_unavailable', deliveryStatus: 'skipped' };
   }
   if (!result.ok) {
     return { ok: false, deliveryStatus: 'failed', errorCode: String(result.status || 'email_error'), errorMessage: result.error || 'Error de email' };
+  }
+  if (trackingId) {
+    await EmailSend.create({
+      clinic: clinicId,
+      campaign: source && source.model === 'Campaign' ? source.ref : null,
+      patient: patientDoc?._id || null,
+      to,
+      subject: subject || '',
+      trackingId,
+    }).catch(() => {});
   }
   return { ok: true, deliveryStatus: 'sent', externalId: result.data?.id || '' };
 }
@@ -329,7 +351,7 @@ async function send({
 
   // El email no usa el modelo de conversación (telefónico): rama propia.
   if (normalizedChannel === 'email') {
-    return sendEmailChannel({ clinicId, to, patient, subject, body, ignoreOptOut });
+    return sendEmailChannel({ clinicId, to, patient, subject, body, ignoreOptOut, source });
   }
 
   const conv = await resolveConversation({

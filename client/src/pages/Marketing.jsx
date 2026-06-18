@@ -692,6 +692,20 @@ export default function Marketing() {
               <KPI label="Por Call Center" value={breakdown.porCallCenter} color="indigo" />
               <KPI label="Asist. Call Center" value={breakdown.asistieronCallCenter} color="violet" />
             </div>
+            {/* Tasas (base = citas no canceladas). Útiles para medir el efecto de los
+                recordatorios automáticos en la asistencia y la confirmación. */}
+            {(() => {
+              const base = Math.max(0, (breakdown.total || 0) - (breakdown.canceladas || 0));
+              const pct = (n) => (base > 0 ? `${Math.round((n / base) * 100)}%` : '—');
+              const confirmadas = breakdown.byStatus?.confirmada || 0;
+              return (
+                <div className="grid grid-cols-3 gap-2 mt-2">
+                  <KPI label="Tasa de asistencia" value={pct(breakdown.asistidos)} color="emerald" />
+                  <KPI label="Tasa de no-show" value={pct(breakdown.noAsistidos)} color="rose" />
+                  <KPI label="Tasa de confirmación" value={pct(confirmadas)} color="sky" />
+                </div>
+              );
+            })()}
             {breakdown.byDoctor?.length > 0 && (
               <div className="mt-3">
                 <div className="text-xs font-semibold text-slate-600 mb-1">Atendidas por doctor</div>

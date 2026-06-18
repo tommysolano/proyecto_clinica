@@ -385,6 +385,13 @@ export default function AutoMessages() {
   // ============================ LISTA ============================
   return (
     <div className="space-y-5">
+      <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+        <strong>Módulo en deprecación.</strong> Estos flujos siguen funcionando, pero las
+        nuevas automatizaciones (incluidos los disparadores por palabra clave y mensaje
+        entrante) ahora se crean en <strong>Automatizaciones (Workflows)</strong>, que además
+        soporta email, asignación de agente, tareas, webhooks y condiciones. Te recomendamos
+        migrar tus flujos allí.
+      </div>
       <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">

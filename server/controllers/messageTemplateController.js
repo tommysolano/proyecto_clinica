@@ -46,9 +46,10 @@ exports.create = async (req, res) => {
       return res.status(400).json({ message: 'El cuerpo es requerido' });
     }
     const variables = req.body.variables?.length ? req.body.variables : extractVariables(body);
+    const channel = req.body.channel || 'whatsapp';
     const tpl = await MessageTemplate.create({
       clinic: req.clinicId,
-      channel: req.body.channel || 'whatsapp',
+      channel,
       name: String(name).trim().toLowerCase().replace(/[^a-z0-9_]/g, '_'),
       language: req.body.language || 'es',
       category: req.body.category || 'MARKETING',
@@ -59,7 +60,8 @@ exports.create = async (req, res) => {
       footer: req.body.footer || '',
       buttons: req.body.buttons || [],
       variables,
-      status: 'draft',
+      // El email no pasa por aprobación de Meta: queda listo para usar.
+      status: channel === 'email' ? 'approved' : 'draft',
       createdBy: req.user._id,
     });
     res.status(201).json(tpl);
@@ -124,7 +126,8 @@ exports.syncWhatsapp = async (req, res) => {
         message: 'Falta businessAccountId / accessToken de WhatsApp para sincronizar con Meta',
       });
     }
-    const url = `https://graph.facebook.com/${API_VERSION}/${wa.businessAccountId}/message_templates?limit=200&access_token=${wa.accessToken}`;
+    const accessToken = require('../utils/secretCrypto').decryptSecret(wa.accessToken);
+    const url = `https://graph.facebook.com/${API_VERSION}/${wa.businessAccountId}/message_templates?limit=200&access_token=${accessToken}`;
     const r = await fetch(url);
     const data = await r.json().catch(() => ({}));
     if (!r.ok) {

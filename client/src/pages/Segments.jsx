@@ -169,8 +169,14 @@ export default function Segments() {
             <h2 className="text-lg font-bold mb-4">{editing._id ? 'Editar segmento' : 'Nuevo segmento'}</h2>
             <div className="grid gap-3">
               <div className="grid grid-cols-2 gap-2">
-                <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="Nombre del segmento" className="border border-slate-200 rounded-lg px-3 py-2 text-sm" />
-                <input value={editing.description} onChange={(e) => setEditing({ ...editing, description: e.target.value })} placeholder="Descripción (opcional)" className="border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                <label className="text-sm">
+                  <span className="text-slate-600">Nombre del segmento</span>
+                  <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="ej. Inactivos 6 meses" className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                </label>
+                <label className="text-sm">
+                  <span className="text-slate-600">Descripción (opcional)</span>
+                  <input value={editing.description} onChange={(e) => setEditing({ ...editing, description: e.target.value })} placeholder="Para qué sirve este segmento" className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                </label>
               </div>
 
               <div className="border-t border-slate-100 pt-3">

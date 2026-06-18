@@ -68,6 +68,7 @@ router.post('/:id/auto-assign', requireRole(...CALL_CENTER_ROLES), ctrl.autoAssi
 router.get('/:id/notes', requireRole(...CALL_CENTER_ROLES), ctrl.listInternalNotes);
 router.post('/:id/notes', requireRole(...CALL_CENTER_ROLES), ctrl.addInternalNote);
 router.post('/:id/suggest-reply', requireRole(...CALL_CENTER_ROLES), ctrl.suggestReply);
+router.post('/:id/summary', requireRole(...CALL_CENTER_ROLES), ctrl.summarizeConversation);
 router.post('/:id/featured', requireRole(...CALL_CENTER_ROLES), ctrl.toggleFeatured);
 router.post('/:id/block', requireRole(...CALL_CENTER_ROLES), ctrl.toggleBlocked);
 router.post('/:id/opportunity', requireRole(...CALL_CENTER_ROLES), ctrl.setOpportunity);

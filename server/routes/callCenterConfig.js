@@ -10,6 +10,7 @@ router.use(auth, requireClinic, requireRole(...ALLOWED));
 router.get('/', ctrl.get);
 router.get('/webhook-urls', ctrl.getWebhookUrls);
 router.put('/', ctrl.update);
+router.put('/reputation', ctrl.updateReputation);
 router.post('/:channel/test', ctrl.testConnection);
 
 module.exports = router;

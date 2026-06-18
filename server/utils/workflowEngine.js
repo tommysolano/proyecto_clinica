@@ -4,11 +4,47 @@ const WorkflowEnrollment = require('../models/WorkflowEnrollment');
 const Patient = require('../models/Patient');
 const Conversation = require('../models/Conversation');
 const Appointment = require('../models/Appointment');
+const AgentTask = require('../models/AgentTask');
+const User = require('../models/User');
+const ReviewRequest = require('../models/ReviewRequest');
 const messaging = require('./messaging');
-const { emitToClinic } = require('../realtime');
+const { emitToClinic, emitToUser } = require('../realtime');
 const { DOMAIN_EVENTS, onDomainEvent } = require('./events');
 
 const MAX_STEP_TRANSITIONS = 100; // guarda contra bucles por onFailGoTo mal formado
+
+/**
+ * Agente call_center con MENOS conversaciones abiertas asignadas (reparto
+ * equitativo). Devuelve { _id, name } o null si no hay agentes.
+ */
+async function pickRoundRobinAgent(clinicId) {
+  const agents = await User.find({
+    active: true,
+    'clinics.clinic': clinicId,
+    'clinics.role': 'call_center',
+  }).select('_id name');
+  if (!agents.length) return null;
+  const counts = await Conversation.aggregate([
+    { $match: { clinic: new mongoose.Types.ObjectId(clinicId), status: 'open', assignedTo: { $ne: null } } },
+    { $group: { _id: '$assignedTo', count: { $sum: 1 } } },
+  ]);
+  const byAgent = new Map(counts.map((c) => [String(c._id), c.count]));
+  agents.sort((a, b) => (byAgent.get(String(a._id)) || 0) - (byAgent.get(String(b._id)) || 0));
+  return agents[0];
+}
+
+/** Coincidencia de palabra clave para triggers de chat. PURO y testeable. */
+function keywordMatchesTrigger(trigger, text) {
+  const kws = (trigger.keywords || []).map((k) => String(k || '').trim().toLowerCase()).filter(Boolean);
+  if (!kws.length) return false;
+  const t = String(text || '').trim().toLowerCase();
+  if (!t) return false;
+  return kws.some((kw) => {
+    if (trigger.matchType === 'exact') return t === kw;
+    if (trigger.matchType === 'starts') return t.startsWith(kw);
+    return t.includes(kw);
+  });
+}
 
 // Normaliza texto (sin acentos, mayúsculas) para clasificar respuestas.
 function normalizeReply(text) {
@@ -148,6 +184,137 @@ async function executeEnrollment(enrollment) {
         isAutoReply: true,
       });
       i++;
+    } else if (step.type === 'send_email') {
+      const to = patient?.email;
+      if (to) {
+        // eslint-disable-next-line no-await-in-loop
+        await messaging.send({
+          clinicId: enrollment.clinic,
+          channel: 'email',
+          to,
+          patient,
+          subject: personalize(step.emailSubject || 'Mensaje de tu clínica', patient),
+          body: personalize(step.body, patient),
+        });
+      }
+      i++;
+    } else if (step.type === 'assign_agent') {
+      if (!conversation) conversation = await loadConversationForPatient(enrollment.clinic, phone);
+      if (conversation) {
+        let agent = null;
+        if (step.assignMode === 'user' && step.assignUser) {
+          // eslint-disable-next-line no-await-in-loop
+          agent = await User.findById(step.assignUser).select('_id name');
+        } else {
+          // eslint-disable-next-line no-await-in-loop
+          agent = await pickRoundRobinAgent(enrollment.clinic);
+        }
+        if (agent) {
+          conversation.assignedTo = agent._id;
+          conversation.assignedToName = agent.name;
+          conversation.assignedAt = new Date();
+          // eslint-disable-next-line no-await-in-loop
+          await conversation.save();
+          emitToUser(agent._id, 'chat:assigned', { conversationId: conversation._id });
+        }
+      }
+      i++;
+    } else if (step.type === 'create_task') {
+      let assignTo = step.assignUser || null;
+      if (!assignTo) {
+        // eslint-disable-next-line no-await-in-loop
+        const a = await pickRoundRobinAgent(enrollment.clinic);
+        assignTo = a?._id || null;
+      }
+      const offset = Number(step.taskDueOffsetMinutes || 0);
+      // eslint-disable-next-line no-await-in-loop
+      const task = await AgentTask.create({
+        clinic: enrollment.clinic,
+        title: personalize(step.taskTitle || 'Tarea automática', patient),
+        conversation: conversation?._id || null,
+        patient: patient?._id || null,
+        assignedTo: assignTo,
+        dueAt: offset ? new Date(Date.now() + offset * 60000) : null,
+      });
+      if (assignTo) emitToUser(assignTo, 'task:assigned', { id: task._id, title: task.title });
+      i++;
+    } else if (step.type === 'webhook') {
+      if (step.webhookUrl) {
+        try {
+          const method = step.webhookMethod || 'POST';
+          const payload = {
+            event: 'workflow',
+            workflowId: String(enrollment.workflow),
+            patient: patient
+              ? {
+                  id: String(patient._id),
+                  firstName: patient.firstName,
+                  lastName: patient.lastName,
+                  phone: patient.phone,
+                  email: patient.email,
+                }
+              : null,
+            conversationId: conversation?._id ? String(conversation._id) : null,
+            context: ctx,
+          };
+          // eslint-disable-next-line no-await-in-loop
+          await fetch(step.webhookUrl, {
+            method,
+            headers: { 'Content-Type': 'application/json' },
+            ...(method === 'POST' ? { body: JSON.stringify(payload) } : {}),
+          });
+        } catch (err) {
+          console.error('[workflowEngine] webhook error', err.message);
+        }
+      }
+      i++;
+    } else if (step.type === 'request_review') {
+      const token = ReviewRequest.newToken();
+      // eslint-disable-next-line no-await-in-loop
+      await ReviewRequest.create({
+        clinic: enrollment.clinic,
+        patient: patient?._id || null,
+        appointment: ctx.appointmentId || null,
+        conversation: conversation?._id || null,
+        token,
+        channel: 'whatsapp',
+      });
+      const base = process.env.PUBLIC_API_URL || '';
+      const link = base ? `${base}/api/public/review/${token}` : '';
+      const text = personalize(
+        step.body || '¡Hola {{nombre}}! ¿Cómo fue tu experiencia con nosotros? Califícanos aquí:',
+        patient
+      );
+      // eslint-disable-next-line no-await-in-loop
+      await messaging.send({
+        clinicId: enrollment.clinic,
+        channel: 'whatsapp',
+        to: phone,
+        patient,
+        body: link ? `${text}\n${link}` : text,
+        isAutoReply: true,
+      });
+      i++;
+    } else if (step.type === 'ai_reply') {
+      if (!conversation) conversation = await loadConversationForPatient(enrollment.clinic, phone);
+      if (conversation) {
+        const { suggestReply } = require('./aiAssistant');
+        // eslint-disable-next-line no-await-in-loop
+        const r = await suggestReply({ clinicId: enrollment.clinic, conversationId: conversation._id });
+        if (r.ok && r.suggestion) {
+          // eslint-disable-next-line no-await-in-loop
+          await messaging.send({
+            clinicId: enrollment.clinic,
+            channel: conversation.channel || 'whatsapp',
+            to: phone,
+            patient,
+            conversation,
+            body: r.suggestion,
+            isAutoReply: true,
+          });
+        }
+      }
+      i++;
     } else if (step.type === 'wait') {
       const mins = Number(step.waitMinutes || 0);
       if (mins > 0) {
@@ -261,6 +428,8 @@ async function enrollForEvent(eventType, payload = {}) {
     if (tr.audience === 'existing' && payload.isFirstVisit) continue;
     // Filtro por servicio.
     if (tr.serviceFilter && !services.includes(String(tr.serviceFilter))) continue;
+    // Filtro por etiqueta (trigger tag_added): solo dispara si coincide la etiqueta añadida.
+    if (eventType === 'tag_added' && tr.tagFilter && String(payload.tag || '') !== tr.tagFilter) continue;
 
     // Anti-duplicado: ¿ya hay una inscripción viva para este paciente?
     // eslint-disable-next-line no-await-in-loop
@@ -296,6 +465,64 @@ async function enrollForEvent(eventType, payload = {}) {
     // eslint-disable-next-line no-await-in-loop
     await executeEnrollment(enrollment);
   }
+}
+
+/**
+ * Inscribe workflows disparados por un mensaje de chat entrante
+ * (inbound_message / keyword / new_conversation). Reemplaza a MessageFlow.
+ * Lo invoca el ingest de mensajes entrantes del chatController.
+ */
+async function enrollForChatMessage({ clinicId, conversation, patient, phone, text, isNew }) {
+  if (!clinicId || !conversation) return { enrolled: 0 };
+  const types = ['inbound_message', 'keyword', 'new_conversation'];
+  const workflows = await Workflow.find({ clinic: clinicId, active: true, 'trigger.type': { $in: types } });
+  if (!workflows.length) return { enrolled: 0 };
+
+  const destPhone = phone || conversation.phone || '';
+  let enrolled = 0;
+  for (const wf of workflows) {
+    const tr = wf.trigger || {};
+    if (tr.type === 'new_conversation' && !isNew) continue;
+    if (tr.type === 'keyword' && !keywordMatchesTrigger(tr, text)) continue;
+    // Audiencia: new = sin paciente vinculado, existing = con paciente.
+    if (tr.audience === 'new' && patient) continue;
+    if (tr.audience === 'existing' && !patient) continue;
+
+    // Anti-duplicado: una inscripción viva por (workflow, conversación).
+    // eslint-disable-next-line no-await-in-loop
+    const existing = await WorkflowEnrollment.findOne({
+      workflow: wf._id,
+      conversation: conversation._id,
+      status: { $in: ['active', 'waiting'] },
+    });
+    if (existing) continue;
+
+    let enrollment;
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      enrollment = await WorkflowEnrollment.create({
+        clinic: clinicId,
+        workflow: wf._id,
+        patient: patient?._id || patient || null,
+        conversation: conversation._id,
+        stepIndex: 0,
+        status: 'active',
+        nextRunAt: new Date(),
+        context: { phone: destPhone, conversationId: String(conversation._id) },
+      });
+    } catch (e) {
+      if (e.code === 11000) continue;
+      throw e;
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await Workflow.updateOne({ _id: wf._id }, { $inc: { 'stats.enrolled': 1 } });
+    // eslint-disable-next-line no-await-in-loop
+    await executeEnrollment(enrollment).catch((err) =>
+      console.error('[workflowEngine] chat enrollment error', enrollment._id, err.message)
+    );
+    enrolled++;
+  }
+  return { enrolled };
 }
 
 /** Job: reanuda inscripciones cuya espera ya venció. */
@@ -356,6 +583,8 @@ function subscribeDomainEvents() {
     [DOMAIN_EVENTS.APPOINTMENT_NO_SHOW]: 'appointment_no_show',
     [DOMAIN_EVENTS.TREATMENT_ABANDONED]: 'treatment_abandoned',
     [DOMAIN_EVENTS.PATIENT_BIRTHDAY]: 'patient_birthday',
+    [DOMAIN_EVENTS.SALE_CREATED]: 'sale_created',
+    [DOMAIN_EVENTS.TAG_ADDED]: 'tag_added',
   };
   Object.entries(map).forEach(([event, triggerType]) => {
     onDomainEvent(event, (payload) => enrollForEvent(triggerType, payload));
@@ -366,9 +595,12 @@ module.exports = {
   classifyReply,
   computeWaitUntil,
   evaluateCondition,
+  keywordMatchesTrigger,
+  pickRoundRobinAgent,
   personalize,
   executeEnrollment,
   enrollForEvent,
+  enrollForChatMessage,
   processDueEnrollments,
   resumeOnReply,
   subscribeDomainEvents,

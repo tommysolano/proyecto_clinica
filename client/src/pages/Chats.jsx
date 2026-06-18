@@ -98,9 +98,11 @@ export default function Chats() {
   const [appointmentModal, setAppointmentModal] = useState(false);
   const [quotationModal, setQuotationModal] = useState(false);
   const messagesEndRef = useRef(null);
+  const [agents, setAgents] = useState([]);
 
   const isSupervisor = role === 'marketing';
   const isAdmin = role === 'admin' || user?.isSuperAdmin;
+  const canAutoAssign = isSupervisor || isAdmin;
 
   const loadConversations = async (params = {}) => {
     try {
@@ -150,6 +152,7 @@ export default function Chats() {
       .catch(() => {});
     api.get('/chats/saved-replies').then((r) => setSavedReplies(r.data || [])).catch(() => {});
     api.get('/chats/gallery').then((r) => setGallery(r.data || [])).catch(() => {});
+    api.get('/call-center/agents').then((r) => setAgents(r.data || [])).catch(() => {});
     loadStats();
   }, []);
 
@@ -321,6 +324,17 @@ export default function Chats() {
     }
   };
 
+  // Reparte la conversación al agente con menos chats abiertos (round-robin).
+  const autoAssignChat = async (conv) => {
+    try {
+      const r = await api.post(`/chats/${conv._id}/auto-assign`, {});
+      setConversations((prev) => prev.map((c) => (c._id === conv._id ? r.data : c)));
+      toast.success(`Asignado a ${r.data.assignedToName || 'un agente'}`);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo auto-asignar');
+    }
+  };
+
   return (
     <div className="h-[calc(100vh-120px)] flex flex-col">
       {/* Header con tabs */}
@@ -378,7 +392,7 @@ export default function Chats() {
       </div>
 
       {tab === 'board' ? (
-        <SupervisorBoard stats={stats} reload={loadStats} />
+        <SupervisorBoard stats={stats} reload={loadStats} agents={agents} />
       ) : (
         <div className="flex-1 grid grid-cols-1 lg:grid-cols-[320px_1fr_320px] gap-3 min-h-0">
           {/* Lista de conversaciones */}
@@ -438,6 +452,7 @@ export default function Chats() {
                   conv={activeConv}
                   onToggleFeatured={() => toggleFeatured(activeConv)}
                   onTake={() => takeChat(activeConv)}
+                  onAutoAssign={canAutoAssign ? () => autoAssignChat(activeConv) : null}
                   onOpenOpportunity={() => setOpportunityModal(true)}
                   onCreateAppointment={() => setAppointmentModal(true)}
                   onCreateQuotation={() => setQuotationModal(true)}
@@ -596,6 +611,8 @@ export default function Chats() {
             {activeConv ? (
               <SidePanel
                 conv={activeConv}
+                agents={agents}
+                meId={user?._id}
                 onUpdated={(c) => {
                   setConversations((prev) => prev.map((x) => (x._id === c._id ? c : x)));
                 }}
@@ -746,24 +763,33 @@ function SavedRepliesModal({ replies, onClose, onChange }) {
           Usa <code className="font-mono bg-white px-1 py-0.5 rounded">/atajo</code> en el chat para insertarlos rápidamente.
         </div>
         <div className="grid grid-cols-12 gap-2">
-          <input
-            placeholder="atajo (ej. saludo)"
-            value={form.shortcut}
-            onChange={(e) => setForm({ ...form, shortcut: e.target.value.toLowerCase().replace(/\s/g, '') })}
-            className="col-span-3 border border-slate-200 rounded-xl px-2 py-1.5 text-sm"
-          />
-          <input
-            placeholder="título (opcional)"
-            value={form.title}
-            onChange={(e) => setForm({ ...form, title: e.target.value })}
-            className="col-span-4 border border-slate-200 rounded-xl px-2 py-1.5 text-sm"
-          />
-          <input
-            placeholder="mensaje"
-            value={form.body}
-            onChange={(e) => setForm({ ...form, body: e.target.value })}
-            className="col-span-5 border border-slate-200 rounded-xl px-2 py-1.5 text-sm"
-          />
+          <div className="col-span-3">
+            <label className="text-xs font-semibold text-slate-600 block mb-1">Atajo</label>
+            <input
+              placeholder="ej. saludo"
+              value={form.shortcut}
+              onChange={(e) => setForm({ ...form, shortcut: e.target.value.toLowerCase().replace(/\s/g, '') })}
+              className="w-full border border-slate-200 rounded-xl px-2 py-1.5 text-sm"
+            />
+          </div>
+          <div className="col-span-4">
+            <label className="text-xs font-semibold text-slate-600 block mb-1">Título (opcional)</label>
+            <input
+              placeholder="Nombre descriptivo"
+              value={form.title}
+              onChange={(e) => setForm({ ...form, title: e.target.value })}
+              className="w-full border border-slate-200 rounded-xl px-2 py-1.5 text-sm"
+            />
+          </div>
+          <div className="col-span-5">
+            <label className="text-xs font-semibold text-slate-600 block mb-1">Mensaje</label>
+            <input
+              placeholder="Texto que se insertará"
+              value={form.body}
+              onChange={(e) => setForm({ ...form, body: e.target.value })}
+              className="w-full border border-slate-200 rounded-xl px-2 py-1.5 text-sm"
+            />
+          </div>
         </div>
         <div className="flex justify-end gap-2">
           {editing && (
@@ -880,12 +906,15 @@ function GalleryModal({ images, onClose, onChange, onSend }) {
             </div>
           ))}
         </div>
-        <input
-          placeholder="Caption (opcional)"
-          value={caption}
-          onChange={(e) => setCaption(e.target.value)}
-          className="w-full border border-slate-200 rounded-xl px-2 py-1.5 text-sm"
-        />
+        <div>
+          <label className="text-xs font-semibold text-slate-600 block mb-1">Texto que acompaña a la imagen (opcional)</label>
+          <input
+            placeholder="Escribe un pie de foto"
+            value={caption}
+            onChange={(e) => setCaption(e.target.value)}
+            className="w-full border border-slate-200 rounded-xl px-2 py-1.5 text-sm"
+          />
+        </div>
         <div className="flex justify-end gap-2">
           <button
             type="button"
@@ -982,15 +1011,24 @@ function ConversationRow({ conv, active, onClick, onToggleFeatured }) {
   );
 }
 
-function ChatHeader({ conv, onToggleFeatured, onTake, onOpenOpportunity, onCreateAppointment, onCreateQuotation, meId }) {
+function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpportunity, onCreateAppointment, onCreateQuotation, meId }) {
   const canTake = !conv.assignedTo || String(conv.assignedTo._id || conv.assignedTo) !== String(meId);
+  // "Esperando respuesta" cuando el último mensaje es entrante (del paciente).
+  const waitingReply = conv.lastMessageDirection === 'in';
   return (
     <div className="border-b border-slate-100 p-3 flex items-center gap-3">
       <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold">
         {(conv.contactName || conv.phone || '?').slice(0, 2).toUpperCase()}
       </div>
       <div className="flex-1">
-        <div className="font-semibold text-slate-800">{conv.contactName || conv.phone}</div>
+        <div className="font-semibold text-slate-800 flex items-center gap-2">
+          {conv.contactName || conv.phone}
+          {waitingReply && (
+            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700" title="El paciente espera respuesta">
+              Esperando respuesta
+            </span>
+          )}
+        </div>
         <div className="text-xs text-slate-500">
           {conv.phone}
           {conv.patient && (
@@ -1008,6 +1046,15 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onOpenOpportunity, onCreat
             className="text-xs px-2 py-1 bg-slate-100 hover:bg-slate-200 rounded-xl"
           >
             Tomar
+          </button>
+        )}
+        {onAutoAssign && (
+          <button
+            onClick={onAutoAssign}
+            className="text-xs px-2 py-1 bg-slate-100 hover:bg-slate-200 rounded-xl"
+            title="Asignar al agente con menos chats abiertos (round-robin)"
+          >
+            Auto-asignar
           </button>
         )}
         <button
@@ -1069,6 +1116,26 @@ function DeliveryBadge({ msg }) {
   );
 }
 
+function MessageMedia({ msg }) {
+  const url = msg.mediaUrl;
+  if (!url) return null;
+  const type = msg.mediaType || '';
+  const isImage = type === 'image' || /^data:image\//.test(url);
+  const isAudio = type === 'audio' || /^data:audio\//.test(url);
+  if (isImage) {
+    return <img src={url} alt="adjunto" className="rounded-lg max-h-60 w-auto mb-1 block" />;
+  }
+  if (isAudio) {
+    return <audio controls src={url} className="mb-1 w-full max-w-[240px]" />;
+  }
+  // Documento u otro: enlace de descarga.
+  return (
+    <a href={url} target="_blank" rel="noreferrer" download className="underline text-xs block mb-1">
+      📎 Ver adjunto
+    </a>
+  );
+}
+
 function MessageBubble({ msg }) {
   const isOut = msg.direction === 'out';
   return (
@@ -1078,6 +1145,7 @@ function MessageBubble({ msg }) {
           isOut ? 'bg-emerald-500 text-white' : 'bg-white border border-slate-200 text-slate-800'
         }`}
       >
+        <MessageMedia msg={msg} />
         <div className="whitespace-pre-wrap break-words">{msg.body}</div>
         <div className={`text-[10px] mt-1 flex items-center gap-1 ${isOut ? 'text-emerald-100' : 'text-slate-400'}`}>
           {isOut && msg.sentByName && <span>{msg.sentByName} · </span>}
@@ -1090,7 +1158,7 @@ function MessageBubble({ msg }) {
   );
 }
 
-function SidePanel({ conv, onUpdated, onEditOpportunity, onScheduleAppointment, onCreateQuotation }) {
+function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onScheduleAppointment, onCreateQuotation }) {
   const op = conv.opportunity || {};
   const meta = op.isOpportunity ? stageMeta(op.stage) : null;
   const [registerModal, setRegisterModal] = useState(false);
@@ -1198,6 +1266,12 @@ function SidePanel({ conv, onUpdated, onEditOpportunity, onScheduleAppointment, 
         )}
       </div>
 
+      <AiSummarySection conv={conv} />
+
+      <NotesSection conv={conv} agents={agents} meId={meId} />
+
+      <TasksSection conv={conv} agents={agents} meId={meId} />
+
       {conv.isFeatured && (
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-2">
           <div className="text-xs font-semibold text-amber-700 flex items-center gap-1">
@@ -1280,6 +1354,276 @@ function SidePanel({ conv, onUpdated, onEditOpportunity, onScheduleAppointment, 
           {conv.blocked ? 'Desbloquear contacto' : 'Bloquear contacto'}
         </button>
       </div>
+    </div>
+  );
+}
+
+// Resumen de la conversación generado por IA (Claude) bajo demanda.
+function AiSummarySection({ conv }) {
+  const [summary, setSummary] = useState('');
+  const [loading, setLoading] = useState(false);
+
+  // Reinicia el resumen al cambiar de conversación.
+  useEffect(() => { setSummary(''); }, [conv._id]);
+
+  const generate = async () => {
+    setLoading(true);
+    try {
+      const { data } = await api.post(`/chats/${conv._id}/summary`);
+      setSummary(data.summary || '');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo generar el resumen');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <div className="text-xs font-semibold text-slate-500">Resumen IA</div>
+        <button
+          onClick={generate}
+          disabled={loading}
+          className="text-[10px] text-emerald-600 hover:underline bg-transparent border-none cursor-pointer disabled:opacity-50"
+        >
+          {loading ? 'Generando…' : summary ? 'Regenerar' : 'Generar'}
+        </button>
+      </div>
+      {summary ? (
+        <div className="text-xs text-slate-600 whitespace-pre-wrap bg-slate-50 border border-slate-100 rounded-lg px-2 py-1.5">
+          {summary}
+        </div>
+      ) : (
+        <div className="text-xs text-slate-400">Genera un resumen de la conversación con IA.</div>
+      )}
+    </div>
+  );
+}
+
+// Notas internas del equipo (no se envían al paciente) con @menciones a agentes.
+function NotesSection({ conv, agents = [], meId }) {
+  const [notes, setNotes] = useState([]);
+  const [draft, setDraft] = useState('');
+  const [mentions, setMentions] = useState([]); // ids de usuarios mencionados
+  const [mentionOpen, setMentionOpen] = useState(false);
+  const [mentionQuery, setMentionQuery] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const load = () => {
+    api.get(`/chats/${conv._id}/notes`).then((r) => setNotes(r.data || [])).catch(() => {});
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [conv._id]);
+
+  const onDraftChange = (v) => {
+    setDraft(v);
+    const at = v.lastIndexOf('@');
+    if (at >= 0 && (at === 0 || /\s/.test(v[at - 1]))) {
+      const q = v.slice(at + 1);
+      if (!q.includes(' ')) { setMentionQuery(q.toLowerCase()); setMentionOpen(true); return; }
+    }
+    setMentionOpen(false);
+  };
+
+  const pickMention = (agent) => {
+    const at = draft.lastIndexOf('@');
+    const before = at >= 0 ? draft.slice(0, at) : draft;
+    setDraft(`${before}@${agent.name} `);
+    setMentions((prev) => (prev.includes(agent._id) ? prev : [...prev, agent._id]));
+    setMentionOpen(false);
+  };
+
+  const submit = async () => {
+    const body = draft.trim();
+    if (!body) return;
+    setSaving(true);
+    try {
+      // Conserva solo las menciones cuyo nombre sigue presente en el texto.
+      const used = mentions.filter((id) => {
+        const a = agents.find((x) => x._id === id);
+        return a && body.includes(`@${a.name}`);
+      });
+      await api.post(`/chats/${conv._id}/notes`, { body, mentions: used });
+      setDraft(''); setMentions([]); load();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al guardar la nota');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const filtered = agents
+    .filter((a) => String(a._id) !== String(meId))
+    .filter((a) => !mentionQuery || (a.name || '').toLowerCase().includes(mentionQuery))
+    .slice(0, 6);
+
+  return (
+    <div>
+      <div className="text-xs font-semibold text-slate-500 mb-1">Notas internas</div>
+      <div className="space-y-1.5 max-h-40 overflow-y-auto pr-1 mb-2">
+        {notes.length === 0 && (
+          <div className="text-xs text-slate-400">Sin notas. Visibles solo para el equipo.</div>
+        )}
+        {notes.map((n, i) => (
+          <div key={n._id || i} className="text-xs bg-amber-50/60 border border-amber-100 rounded-lg px-2 py-1.5">
+            <div className="text-slate-700 whitespace-pre-wrap break-words">{n.body}</div>
+            <div className="text-[10px] text-slate-400 mt-0.5">
+              {n.author?.name || n.authorName || 'Agente'} · {timeAgo(n.at)}
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="relative">
+        {mentionOpen && filtered.length > 0 && (
+          <div className="absolute bottom-full left-0 mb-1 w-full bg-white border border-slate-200 rounded-lg shadow-lg z-30 max-h-40 overflow-y-auto">
+            {filtered.map((a) => (
+              <button
+                key={a._id}
+                type="button"
+                onMouseDown={(e) => { e.preventDefault(); pickMention(a); }}
+                className="w-full text-left px-2 py-1.5 hover:bg-emerald-50 text-xs bg-white cursor-pointer border-none"
+              >
+                @{a.name}
+              </button>
+            ))}
+          </div>
+        )}
+        <label className="sr-only" htmlFor={`note-${conv._id}`}>Nueva nota interna</label>
+        <textarea
+          id={`note-${conv._id}`}
+          value={draft}
+          onChange={(e) => onDraftChange(e.target.value)}
+          rows={2}
+          placeholder="Nota interna... usa @ para mencionar a un agente"
+          className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs resize-none"
+        />
+      </div>
+      <button
+        onClick={submit}
+        disabled={saving || !draft.trim()}
+        className="mt-1 w-full text-xs px-2 py-1.5 bg-slate-700 text-white rounded-lg hover:bg-slate-800 disabled:opacity-50 border-none cursor-pointer"
+      >
+        {saving ? 'Guardando...' : 'Agregar nota'}
+      </button>
+    </div>
+  );
+}
+
+// Tareas/recordatorios del agente ligadas a esta conversación.
+function TasksSection({ conv, agents = [], meId }) {
+  const [tasks, setTasks] = useState([]);
+  const [title, setTitle] = useState('');
+  const [dueAt, setDueAt] = useState('');
+  const [assignedTo, setAssignedTo] = useState('');
+  const [adding, setAdding] = useState(false);
+
+  const load = () => {
+    api
+      .get('/agent-tasks', { params: { conversation: conv._id } })
+      .then((r) => setTasks(r.data || []))
+      .catch(() => {});
+  };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { load(); }, [conv._id]);
+
+  const add = async () => {
+    if (!title.trim()) return;
+    setAdding(true);
+    try {
+      await api.post('/agent-tasks', {
+        title: title.trim(),
+        conversation: conv._id,
+        patient: conv.patient?._id || conv.patient || null,
+        assignedTo: assignedTo || meId,
+        dueAt: dueAt || null,
+      });
+      setTitle(''); setDueAt(''); setAssignedTo(''); load();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al crear la tarea');
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  const toggle = async (t) => {
+    try {
+      await api.put(`/agent-tasks/${t._id}`, { status: t.status === 'done' ? 'open' : 'done' });
+      load();
+    } catch {
+      /* noop */
+    }
+  };
+
+  return (
+    <div>
+      <div className="text-xs font-semibold text-slate-500 mb-1">Tareas</div>
+      <div className="space-y-1 mb-2 max-h-40 overflow-y-auto pr-1">
+        {tasks.length === 0 && (
+          <div className="text-xs text-slate-400">Sin tareas para este chat.</div>
+        )}
+        {tasks.map((t) => (
+          <div key={t._id} className="flex items-start gap-2 text-xs bg-slate-50 rounded-lg px-2 py-1.5">
+            <input
+              type="checkbox"
+              checked={t.status === 'done'}
+              onChange={() => toggle(t)}
+              className="mt-0.5"
+              title="Marcar como completada"
+            />
+            <div className="flex-1">
+              <div className={t.status === 'done' ? 'line-through text-slate-400' : 'text-slate-700'}>{t.title}</div>
+              <div className="text-[10px] text-slate-400">
+                {t.assignedTo?.name && <span>{t.assignedTo.name}</span>}
+                {t.dueAt && <span> · vence {fmtDate(t.dueAt)}</span>}
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+      <label className="sr-only" htmlFor={`task-title-${conv._id}`}>Título de la tarea</label>
+      <input
+        id={`task-title-${conv._id}`}
+        value={title}
+        onChange={(e) => setTitle(e.target.value)}
+        placeholder="Nueva tarea (ej. llamar mañana 10am)"
+        className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs mb-1"
+      />
+      <div className="grid grid-cols-2 gap-1 mb-1">
+        <div>
+          <label className="sr-only" htmlFor={`task-due-${conv._id}`}>Fecha de vencimiento</label>
+          <input
+            id={`task-due-${conv._id}`}
+            type="datetime-local"
+            value={dueAt}
+            onChange={(e) => setDueAt(e.target.value)}
+            className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
+            title="Fecha de vencimiento"
+          />
+        </div>
+        <div>
+          <label className="sr-only" htmlFor={`task-assignee-${conv._id}`}>Asignar a</label>
+          <select
+            id={`task-assignee-${conv._id}`}
+            value={assignedTo}
+            onChange={(e) => setAssignedTo(e.target.value)}
+            className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
+            title="Asignar a"
+          >
+            <option value="">Para mí</option>
+            {agents.map((a) => (
+              <option key={a._id} value={a._id}>{a.name}</option>
+            ))}
+          </select>
+        </div>
+      </div>
+      <button
+        onClick={add}
+        disabled={adding || !title.trim()}
+        className="w-full text-xs px-2 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-50 border-none cursor-pointer"
+      >
+        {adding ? 'Creando...' : 'Agregar tarea'}
+      </button>
     </div>
   );
 }
@@ -1425,24 +1769,34 @@ function SimulateModal({ onClose, onSimulated }) {
         conversación con ese número y agrega un mensaje entrante.
       </p>
       <div className="space-y-2">
-        <input
-          value={phone}
-          onChange={(e) => setPhone(e.target.value)}
-          placeholder="Teléfono (ej: 593987654321)"
-          className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
-        />
-        <input
-          value={contactName}
-          onChange={(e) => setContactName(e.target.value)}
-          placeholder="Nombre (opcional)"
-          className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
-        />
-        <textarea
-          value={body}
-          onChange={(e) => setBody(e.target.value)}
-          rows={3}
-          className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm resize-none"
-        />
+        <div>
+          <label className="text-xs font-semibold text-slate-600 block mb-1">Teléfono</label>
+          <input
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            placeholder="593987654321"
+            className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
+          />
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-slate-600 block mb-1">Nombre del contacto (opcional)</label>
+          <input
+            value={contactName}
+            onChange={(e) => setContactName(e.target.value)}
+            placeholder="Nombre del paciente"
+            className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
+          />
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-slate-600 block mb-1">Mensaje entrante simulado</label>
+          <textarea
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            rows={3}
+            placeholder="Texto que enviaría el paciente"
+            className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm resize-none"
+          />
+        </div>
         <button
           disabled={saving}
           onClick={submit}
@@ -1624,22 +1978,23 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
   );
 }
 
-function SupervisorBoard({ stats, reload }) {
-  const [agents, setAgents] = useState([]);
-  useEffect(() => {
-    api.get('/call-center/agents').then((r) => setAgents(r.data || [])).catch(() => {});
-  }, []);
-
+function SupervisorBoard({ stats, reload, agents = [] }) {
   const byAgent = stats?.byAgent || [];
   const opps = stats?.opportunities || [];
+  const responseTimes = stats?.responseTimes || [];
+  const sla = stats?.sla || { thresholdMinutes: 60, unanswered: 0 };
 
   return (
     <div className="flex-1 overflow-y-auto space-y-4">
       <div className="grid sm:grid-cols-4 gap-3">
         <KPICard label="Chats abiertos" value={stats?.byStatus?.find((s) => s._id === 'open')?.count || 0} color="emerald" />
-        <KPICard label="Destacados" value={stats?.featuredCount || 0} color="amber" />
         <KPICard label="Oportunidades" value={opps.reduce((a, x) => a + x.count, 0)} color="indigo" />
         <KPICard label="Ganadas" value={opps.find((x) => x._id === 'ganado')?.count || 0} color="emerald" />
+        <KPICard
+          label={`Sin responder (>${sla.thresholdMinutes}m)`}
+          value={sla.unanswered || 0}
+          color={sla.unanswered > 0 ? 'rose' : 'slate'}
+        />
       </div>
 
       <section className="bg-white border border-slate-200 rounded-xl p-4">
@@ -1685,6 +2040,44 @@ function SupervisorBoard({ stats, reload }) {
       </section>
 
       <section className="bg-white border border-slate-200 rounded-xl p-4">
+        <h2 className="font-semibold text-slate-800 mb-2">Tiempo de primera respuesta por agente</h2>
+        <div className="overflow-x-auto">
+          <table className="tbl">
+            <thead className="bg-slate-50 text-slate-600">
+              <tr>
+                <th className="text-left px-3 py-2">Agente</th>
+                <th className="text-right px-3 py-2">Prom. 1ª respuesta</th>
+                <th className="text-right px-3 py-2"># Conversaciones</th>
+              </tr>
+            </thead>
+            <tbody>
+              {responseTimes.map((r) => (
+                <tr key={r._id || r.name} className="border-t border-slate-100">
+                  <td className="px-3 py-2 font-medium">{r.name || 'Sin asignar'}</td>
+                  <td className="px-3 py-2 text-right">
+                    <span className={`font-semibold ${r.avgMinutes <= sla.thresholdMinutes ? 'text-emerald-700' : 'text-rose-600'}`}>
+                      {r.avgMinutes != null ? `${r.avgMinutes} min` : '—'}
+                    </span>
+                  </td>
+                  <td className="px-3 py-2 text-right">{r.count}</td>
+                </tr>
+              ))}
+              {responseTimes.length === 0 && (
+                <tr>
+                  <td colSpan={3} className="px-3 py-6 text-center text-slate-400 text-sm">
+                    Aún no hay respuestas registradas
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-[11px] text-slate-400 mt-2">
+          Umbral de SLA: {sla.thresholdMinutes} min. En verde, agentes dentro del umbral.
+        </p>
+      </section>
+
+      <section className="bg-white border border-slate-200 rounded-xl p-4">
         <h2 className="font-semibold text-slate-800 mb-2">Embudo de oportunidades</h2>
         <div className="grid sm:grid-cols-6 gap-2">
           {STAGES.map((s) => {
@@ -1712,6 +2105,7 @@ function KPICard({ label, value, color }) {
     emerald: 'bg-emerald-50 text-emerald-700',
     amber: 'bg-amber-50 text-amber-700',
     indigo: 'bg-indigo-50 text-indigo-700',
+    rose: 'bg-rose-50 text-rose-700',
     slate: 'bg-slate-50 text-slate-700',
   };
   return (

@@ -187,7 +187,12 @@ async function recomputeCampaign(campaignId) {
 
   const campaign = await Campaign.findById(campaignId);
   if (!campaign) return;
-  campaign.stats = { targeted, queued, sent, failed, skipped };
+  // Preserva opened/clicked (los incrementa el tracking de email, no la cola).
+  campaign.stats.targeted = targeted;
+  campaign.stats.queued = queued;
+  campaign.stats.sent = sent;
+  campaign.stats.failed = failed;
+  campaign.stats.skipped = skipped;
   if (campaign.status !== 'cancelled') {
     if (queued === 0) {
       campaign.status = 'done';
@@ -227,6 +232,7 @@ async function processDueScheduledMessages() {
         template: sm.templateName
           ? { name: sm.templateName, language: sm.templateLanguage, vars: sm.templateVars || [] }
           : null,
+        source: sm.campaign ? { model: 'Campaign', ref: sm.campaign } : undefined,
       });
       if (result.skipped) {
         sm.status = 'skipped';

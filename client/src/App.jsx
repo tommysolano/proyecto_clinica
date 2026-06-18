@@ -29,6 +29,7 @@ import Segments from './pages/Segments';
 import Campaigns from './pages/Campaigns';
 import Workflows from './pages/Workflows';
 import Attribution from './pages/Attribution';
+import Reputation from './pages/Reputation';
 import Tasks from './pages/Tasks';
 import PublicBooking from './pages/PublicBooking';
 import BookingConfig from './pages/BookingConfig';
@@ -288,6 +289,14 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'marketing']}>
                       <Attribution />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/reputation"
+                  element={
+                    <RoleRoute roles={['admin', 'marketing']}>
+                      <Reputation />
                     </RoleRoute>
                   }
                 />

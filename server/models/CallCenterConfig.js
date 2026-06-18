@@ -71,6 +71,16 @@ const emailSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Reputación: a dónde enviar a reseñar y a partir de qué rating se considera
+// "promotor" (se le pide reseña pública); por debajo, se captura feedback interno.
+const reputationSchema = new mongoose.Schema(
+  {
+    googleReviewUrl: { type: String, trim: true, default: '' },
+    minRating: { type: Number, default: 4, min: 1, max: 5 },
+  },
+  { _id: false }
+);
+
 const callCenterConfigSchema = new mongoose.Schema(
   {
     clinic: {
@@ -85,6 +95,7 @@ const callCenterConfigSchema = new mongoose.Schema(
     instagram: { type: instagramSchema, default: () => ({}) },
     tiktok: { type: tiktokSchema, default: () => ({}) },
     email: { type: emailSchema, default: () => ({}) },
+    reputation: { type: reputationSchema, default: () => ({}) },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }

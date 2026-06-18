@@ -22,6 +22,7 @@ const workflowStepSchema = new mongoose.Schema(
       enum: [
         'send_message',
         'send_template',
+        'send_email',
         'wait',
         'wait_until',
         'wait_reply',
@@ -30,6 +31,11 @@ const workflowStepSchema = new mongoose.Schema(
         'remove_tag',
         'move_stage',
         'set_appointment_status',
+        'assign_agent',
+        'create_task',
+        'webhook',
+        'ai_reply',
+        'request_review',
         'goal',
       ],
       required: true,
@@ -39,6 +45,17 @@ const workflowStepSchema = new mongoose.Schema(
     // send_template
     templateName: { type: String, trim: true, default: '' },
     templateLanguage: { type: String, trim: true, default: 'es' },
+    // send_email
+    emailSubject: { type: String, trim: true, default: '' },
+    // assign_agent: roundrobin (menos chats) | user (usuario fijo)
+    assignMode: { type: String, enum: ['roundrobin', 'user', ''], default: 'roundrobin' },
+    assignUser: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    // create_task
+    taskTitle: { type: String, trim: true, default: '' },
+    taskDueOffsetMinutes: { type: Number, default: 1440 }, // por defecto vence en 24h
+    // webhook
+    webhookUrl: { type: String, trim: true, default: '' },
+    webhookMethod: { type: String, enum: ['POST', 'GET', ''], default: 'POST' },
     // wait
     waitMinutes: { type: Number, default: 0, min: 0 },
     // wait_until: fecha base del contexto + offset (offset negativo = antes)
@@ -71,6 +88,12 @@ const TRIGGER_TYPES = [
   'appointment_no_show',
   'treatment_abandoned',
   'patient_birthday',
+  'sale_created',
+  // Disparadores de chat (reemplazan a MessageFlow):
+  'inbound_message',
+  'keyword',
+  'new_conversation',
+  'tag_added',
 ];
 
 const workflowSchema = new mongoose.Schema(
@@ -86,6 +109,11 @@ const workflowSchema = new mongoose.Schema(
       serviceFilter: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null },
       // Audiencia (cuando aplica): all | new (primera visita) | existing.
       audience: { type: String, enum: ['all', 'new', 'existing'], default: 'all' },
+      // Trigger 'keyword': palabras clave + tipo de coincidencia.
+      keywords: { type: [String], default: [] },
+      matchType: { type: String, enum: ['contains', 'exact', 'starts', ''], default: 'contains' },
+      // Trigger 'tag_added': solo dispara si se añade esta etiqueta (vacío = cualquiera).
+      tagFilter: { type: String, trim: true, default: '' },
     },
     steps: { type: [workflowStepSchema], default: [] },
     stats: {

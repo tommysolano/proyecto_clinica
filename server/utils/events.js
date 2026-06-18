@@ -22,6 +22,8 @@ const DOMAIN_EVENTS = {
   APPOINTMENT_NO_SHOW: 'appointment.no_show',
   TREATMENT_ABANDONED: 'treatment.abandoned',
   PATIENT_BIRTHDAY: 'patient.birthday',
+  SALE_CREATED: 'sale.created',
+  TAG_ADDED: 'patient.tag_added',
 };
 
 /**

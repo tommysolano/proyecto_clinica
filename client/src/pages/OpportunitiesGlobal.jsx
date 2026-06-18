@@ -157,8 +157,10 @@ export default function OpportunitiesGlobal() {
             </button>
           </div>
         </div>
+        <label className="sr-only" htmlFor="bulk-body">Mensaje masivo a enviar</label>
         <div className="flex gap-2">
           <textarea
+            id="bulk-body"
             value={bulkBody}
             onChange={(e) => setBulkBody(e.target.value)}
             placeholder="Mensaje a enviar a las conversaciones seleccionadas..."

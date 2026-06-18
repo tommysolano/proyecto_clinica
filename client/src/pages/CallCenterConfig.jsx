@@ -64,6 +64,8 @@ export default function CallCenterConfig() {
   const [webhookUrls, setWebhookUrls] = useState(null);
   const [tab, setTab] = useState('whatsapp');
   const [draft, setDraft] = useState({});
+  const [repDraft, setRepDraft] = useState(null); // { googleReviewUrl, minRating }
+  const [savingRep, setSavingRep] = useState(false);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
@@ -76,6 +78,10 @@ export default function CallCenterConfig() {
         api.get('/call-center-config/webhook-urls'),
       ]);
       setConfig(c.data);
+      setRepDraft({
+        googleReviewUrl: c.data.reputation?.googleReviewUrl || '',
+        minRating: c.data.reputation?.minRating || 4,
+      });
       setWebhookUrls(u.data);
       setDraft({});
     } catch (err) {
@@ -141,6 +147,19 @@ export default function CallCenterConfig() {
       toast.error(err.response?.data?.message || 'Error de conexión');
     } finally {
       setTesting(false);
+    }
+  };
+
+  const saveReputation = async () => {
+    setSavingRep(true);
+    try {
+      const r = await api.put('/call-center-config/reputation', repDraft);
+      setConfig(r.data);
+      toast.success('Reputación guardada');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al guardar reputación');
+    } finally {
+      setSavingRep(false);
     }
   };
 
@@ -289,6 +308,59 @@ export default function CallCenterConfig() {
           </button>
         </div>
       </div>
+
+      {/* Reputación / reseñas */}
+      {repDraft && (
+        <div className="bg-white rounded-2xl border border-slate-200 p-5 space-y-3">
+          <div>
+            <h2 className="text-lg font-semibold text-slate-800">Reputación (reseñas)</h2>
+            <p className="text-xs text-slate-500">
+              El workflow post-visita invita a calificar (1-5). Si la calificación es alta, el
+              paciente es redirigido a dejar una reseña en Google; si es baja, se captura su
+              comentario internamente.
+            </p>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="block text-sm">
+              <span className="text-slate-700 font-medium">URL de reseñas de Google</span>
+              <input
+                value={repDraft.googleReviewUrl}
+                onChange={(e) => setRepDraft({ ...repDraft, googleReviewUrl: e.target.value })}
+                placeholder="https://g.page/r/..."
+                className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
+              />
+              <span className="text-[11px] text-slate-400">
+                Enlace "Escribir una reseña" de tu ficha de Google Business.
+              </span>
+            </label>
+            <label className="block text-sm">
+              <span className="text-slate-700 font-medium">Calificación mínima para reseña pública</span>
+              <select
+                value={repDraft.minRating}
+                onChange={(e) => setRepDraft({ ...repDraft, minRating: Number(e.target.value) })}
+                className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
+              >
+                {[3, 4, 5].map((n) => (
+                  <option key={n} value={n}>{n} estrellas o más</option>
+                ))}
+              </select>
+              <span className="text-[11px] text-slate-400">
+                Por debajo de este valor no se envía a Google (feedback interno).
+              </span>
+            </label>
+          </div>
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={saveReputation}
+              disabled={savingRep}
+              className="px-5 py-2 rounded-lg bg-emerald-600 hover:bg-emerald-700 text-white font-medium border-none cursor-pointer disabled:opacity-50"
+            >
+              {savingRep ? 'Guardando…' : 'Guardar reputación'}
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Guía rápida */}
       <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4 text-sm text-amber-900">

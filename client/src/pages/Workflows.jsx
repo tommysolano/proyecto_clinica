@@ -16,6 +16,11 @@ const TRIGGERS = [
   { value: 'appointment_no_show', label: 'No asistió (no-show)' },
   { value: 'treatment_abandoned', label: 'Tratamiento abandonado' },
   { value: 'patient_birthday', label: 'Cumpleaños del paciente' },
+  { value: 'sale_created', label: 'Venta registrada' },
+  { value: 'inbound_message', label: 'Mensaje entrante (chat)' },
+  { value: 'keyword', label: 'Palabra clave (chat)' },
+  { value: 'new_conversation', label: 'Nueva conversación (chat)' },
+  { value: 'tag_added', label: 'Etiqueta añadida' },
 ];
 const AUDIENCES = [
   { value: 'all', label: 'Todos' },
@@ -26,6 +31,7 @@ const STAGES = ['nuevo', 'contactado', 'interesado', 'agendado', 'ganado', 'perd
 const STEP_DEFS = {
   send_message: 'Enviar mensaje',
   send_template: 'Enviar plantilla',
+  send_email: 'Enviar email',
   wait: 'Esperar (tiempo)',
   wait_until: 'Esperar hasta la cita',
   wait_reply: 'Esperar respuesta',
@@ -34,6 +40,11 @@ const STEP_DEFS = {
   remove_tag: 'Quitar etiqueta',
   move_stage: 'Mover etapa',
   set_appointment_status: 'Cambiar estado de cita',
+  assign_agent: 'Asignar agente',
+  create_task: 'Crear tarea',
+  webhook: 'Webhook (integración)',
+  ai_reply: 'Responder con IA',
+  request_review: 'Pedir reseña (reputación)',
   goal: 'Objetivo (terminar si)',
 };
 const FIELDS = [
@@ -55,25 +66,29 @@ const OPS = [
   { value: 'exists', label: 'existe' },
 ];
 
-const newStep = (type) => ({ type, body: '', templateName: '', templateLanguage: 'es', waitMinutes: 60, waitEvent: 'appointment_date', offsetMinutes: -1440, timeoutMinutes: 720, appointmentStatus: 'confirmada', field: 'tag', op: 'eq', value: '', onFailGoTo: null, tag: '', stage: 'contactado' });
-const blank = () => ({ name: '', folder: 'General', active: false, trigger: { type: 'appointment_created', audience: 'all', serviceFilter: null }, steps: [] });
+const newStep = (type) => ({ type, body: '', templateName: '', templateLanguage: 'es', emailSubject: '', waitMinutes: 60, waitEvent: 'appointment_date', offsetMinutes: -1440, timeoutMinutes: 720, appointmentStatus: 'confirmada', field: 'tag', op: 'eq', value: '', onFailGoTo: null, tag: '', stage: 'contactado', assignMode: 'roundrobin', assignUser: '', taskTitle: '', taskDueOffsetMinutes: 1440, webhookUrl: '', webhookMethod: 'POST' });
+const blank = () => ({ name: '', folder: 'General', active: false, trigger: { type: 'appointment_created', audience: 'all', serviceFilter: null, keywords: [], matchType: 'contains', tagFilter: '' }, steps: [] });
 
 export default function Workflows() {
   const [list, setList] = useState([]);
   const [templates, setTemplates] = useState([]);
   const [presets, setPresets] = useState([]);
+  const [agents, setAgents] = useState([]);
   const [editing, setEditing] = useState(null);
+  const [enrollView, setEnrollView] = useState(null); // workflow cuyas inscripciones se ven
 
   const load = async () => {
     try {
-      const [wfs, tpls, ps] = await Promise.all([
+      const [wfs, tpls, ps, ags] = await Promise.all([
         api.get('/workflows'),
         api.get('/message-templates?channel=whatsapp').catch(() => ({ data: [] })),
         api.get('/workflows/presets').catch(() => ({ data: [] })),
+        api.get('/call-center/agents').catch(() => ({ data: [] })),
       ]);
       setList(wfs.data);
       setTemplates(tpls.data.filter((t) => t.status === 'approved'));
       setPresets(ps.data);
+      setAgents(ags.data || []);
     } catch (e) {
       toast.error(e.response?.data?.message || 'Error al cargar workflows');
     }
@@ -140,13 +155,14 @@ export default function Workflows() {
   const addStep = (type) => setEditing({ ...editing, steps: [...editing.steps, newStep(type)] });
 
   const isApptTrigger = editing?.trigger?.type?.startsWith('appointment');
+  const isChatTrigger = ['inbound_message', 'keyword', 'new_conversation'].includes(editing?.trigger?.type);
 
   return (
     <div className="p-6 max-w-5xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2"><HiOutlineBolt className="text-emerald-600" /> Automatizaciones (Workflows)</h1>
-          <p className="text-sm text-slate-500 mt-1">Secuencias disparadas por eventos: citas, tratamientos, cumpleaños.</p>
+          <p className="text-sm text-slate-500 mt-1">Secuencias disparadas por eventos (citas, tratamientos, ventas, cumpleaños) o por chat (palabra clave, mensaje entrante).</p>
         </div>
         <button onClick={() => setEditing(blank())} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm flex items-center gap-1 cursor-pointer border-none"><HiOutlinePlus /> Nuevo workflow</button>
       </div>
@@ -178,6 +194,7 @@ export default function Workflows() {
             </div>
             <div className="flex items-start gap-1 shrink-0">
               <button onClick={() => toggleActive(wf)} className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer">{wf.active ? 'Pausar' : 'Activar'}</button>
+              <button onClick={() => setEnrollView(wf)} className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer">Inscritos</button>
               <button onClick={() => setEditing({ ...wf, trigger: { ...wf.trigger }, steps: (wf.steps || []).map((s) => ({ ...s })) })} className="p-2 text-slate-500 hover:text-emerald-600 bg-transparent border-none cursor-pointer"><HiOutlinePencil /></button>
               <button onClick={() => remove(wf._id)} className="p-2 text-slate-500 hover:text-red-600 bg-transparent border-none cursor-pointer"><HiOutlineTrash /></button>
             </div>
@@ -191,17 +208,56 @@ export default function Workflows() {
             <h2 className="text-lg font-bold mb-4">{editing._id ? 'Editar' : 'Nuevo'} workflow</h2>
 
             <div className="grid gap-3">
-              <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="Nombre" className="border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+              <label className="text-sm">
+                <span className="text-slate-600 block mb-1">Nombre de la automatización</span>
+                <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="ej. Recordatorio de cita 24h" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+              </label>
 
               <div className="border border-slate-100 rounded-lg p-3 bg-slate-50">
                 <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Disparador</p>
+                <label className="text-xs text-slate-500 block mb-1">Evento que inicia la automatización</label>
                 <select value={editing.trigger.type} onChange={(e) => setEditing({ ...editing, trigger: { ...editing.trigger, type: e.target.value } })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm">
                   {TRIGGERS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                 </select>
-                {isApptTrigger && (
-                  <select value={editing.trigger.audience} onChange={(e) => setEditing({ ...editing, trigger: { ...editing.trigger, audience: e.target.value } })} className="w-full mt-2 border border-slate-200 rounded-lg px-2 py-2 text-sm">
-                    {AUDIENCES.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
-                  </select>
+                {(isApptTrigger || isChatTrigger) && (
+                  <div className="mt-2">
+                    <label className="text-xs text-slate-500 block mb-1">Audiencia</label>
+                    <select value={editing.trigger.audience} onChange={(e) => setEditing({ ...editing, trigger: { ...editing.trigger, audience: e.target.value } })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm">
+                      {AUDIENCES.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
+                    </select>
+                  </div>
+                )}
+                {editing.trigger.type === 'keyword' && (
+                  <div className="mt-2 grid gap-2">
+                    <div>
+                      <label className="text-xs text-slate-500 block mb-1">Palabras clave (separadas por coma)</label>
+                      <input
+                        value={(editing.trigger.keywords || []).join(', ')}
+                        onChange={(e) => setEditing({ ...editing, trigger: { ...editing.trigger, keywords: e.target.value.split(',').map((k) => k.trim()).filter(Boolean) } })}
+                        placeholder="precio, info, agendar"
+                        className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm"
+                      />
+                    </div>
+                    <div>
+                      <label className="text-xs text-slate-500 block mb-1">Tipo de coincidencia</label>
+                      <select value={editing.trigger.matchType || 'contains'} onChange={(e) => setEditing({ ...editing, trigger: { ...editing.trigger, matchType: e.target.value } })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm">
+                        <option value="contains">El mensaje contiene la palabra</option>
+                        <option value="exact">El mensaje es exactamente la palabra</option>
+                        <option value="starts">El mensaje empieza con la palabra</option>
+                      </select>
+                    </div>
+                  </div>
+                )}
+                {editing.trigger.type === 'tag_added' && (
+                  <div className="mt-2">
+                    <label className="text-xs text-slate-500 block mb-1">Etiqueta (vacío = cualquier etiqueta)</label>
+                    <input
+                      value={editing.trigger.tagFilter || ''}
+                      onChange={(e) => setEditing({ ...editing, trigger: { ...editing.trigger, tagFilter: e.target.value } })}
+                      placeholder="vip"
+                      className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm"
+                    />
+                  </div>
                 )}
               </div>
 
@@ -284,6 +340,81 @@ export default function Workflows() {
                           {STAGES.map((st) => <option key={st} value={st}>{st}</option>)}
                         </select>
                       )}
+                      {s.type === 'send_email' && (
+                        <div className="grid gap-2">
+                          <div>
+                            <label className="text-xs text-slate-500 block mb-1">Asunto del email</label>
+                            <input value={s.emailSubject} onChange={(e) => setStep(idx, { emailSubject: e.target.value })} placeholder="Asunto" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+                          </div>
+                          <div>
+                            <label className="text-xs text-slate-500 block mb-1">Cuerpo del email (usa {'{{nombre}}'})</label>
+                            <textarea value={s.body} onChange={(e) => setStep(idx, { body: e.target.value })} rows={3} placeholder="Contenido del correo" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+                          </div>
+                          <p className="text-[11px] text-slate-400">Se envía al email del paciente. Incluye enlace de baja automático.</p>
+                        </div>
+                      )}
+                      {s.type === 'assign_agent' && (
+                        <div className="grid gap-2">
+                          <div>
+                            <label className="text-xs text-slate-500 block mb-1">Modo de asignación</label>
+                            <select value={s.assignMode} onChange={(e) => setStep(idx, { assignMode: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+                              <option value="roundrobin">Round-robin (agente con menos chats)</option>
+                              <option value="user">Agente específico</option>
+                            </select>
+                          </div>
+                          {s.assignMode === 'user' && (
+                            <div>
+                              <label className="text-xs text-slate-500 block mb-1">Agente</label>
+                              <select value={s.assignUser || ''} onChange={(e) => setStep(idx, { assignUser: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+                                <option value="">Selecciona…</option>
+                                {agents.map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
+                              </select>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                      {s.type === 'create_task' && (
+                        <div className="grid gap-2">
+                          <div>
+                            <label className="text-xs text-slate-500 block mb-1">Título de la tarea</label>
+                            <input value={s.taskTitle} onChange={(e) => setStep(idx, { taskTitle: e.target.value })} placeholder="Ej. Llamar a {{nombre}}" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+                          </div>
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <label className="text-xs text-slate-500">Vence en</label>
+                            <input type="number" value={Math.round((s.taskDueOffsetMinutes || 0) / 60)} onChange={(e) => setStep(idx, { taskDueOffsetMinutes: Number(e.target.value) * 60 })} className="w-20 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+                            <span className="text-xs text-slate-500">horas</span>
+                            <select value={s.assignUser || ''} onChange={(e) => setStep(idx, { assignUser: e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm" title="Asignar a">
+                              <option value="">Auto (round-robin)</option>
+                              {agents.map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
+                            </select>
+                          </div>
+                        </div>
+                      )}
+                      {s.type === 'webhook' && (
+                        <div className="grid gap-2">
+                          <div>
+                            <label className="text-xs text-slate-500 block mb-1">URL del webhook</label>
+                            <input value={s.webhookUrl} onChange={(e) => setStep(idx, { webhookUrl: e.target.value })} placeholder="https://…" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+                          </div>
+                          <div>
+                            <label className="text-xs text-slate-500 block mb-1">Método HTTP</label>
+                            <select value={s.webhookMethod} onChange={(e) => setStep(idx, { webhookMethod: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+                              <option value="POST">POST (envía datos del paciente)</option>
+                              <option value="GET">GET</option>
+                            </select>
+                          </div>
+                        </div>
+                      )}
+                      {s.type === 'ai_reply' && (
+                        <p className="text-xs text-slate-500">La IA redacta y envía una respuesta automática usando el contexto de la conversación. Útil para primer contacto.</p>
+                      )}
+                      {s.type === 'request_review' && (
+                        <div>
+                          <label className="text-xs text-slate-500 block mb-1">Mensaje de invitación a calificar (usa {'{{nombre}}'})</label>
+                          <textarea value={s.body} onChange={(e) => setStep(idx, { body: e.target.value })} rows={2} placeholder="¡Gracias por tu visita! Califícanos:" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+                          <p className="text-[11px] text-slate-400 mt-1">Se adjunta un enlace de calificación 1-5. Configura tu URL de Google en Configuración Call Center.</p>
+                        </div>
+                      )}
                     </div>
                   ))}
                 </div>
@@ -307,6 +438,91 @@ export default function Workflows() {
           </div>
         </div>
       )}
+
+      {enrollView && (
+        <EnrollmentsModal workflow={enrollView} onClose={() => setEnrollView(null)} />
+      )}
+    </div>
+  );
+}
+
+const ENROLL_STATUS = {
+  active: { label: 'Ejecutando', cls: 'bg-blue-100 text-blue-700' },
+  waiting: { label: 'En espera', cls: 'bg-amber-100 text-amber-700' },
+  done: { label: 'Completado', cls: 'bg-emerald-100 text-emerald-700' },
+  cancelled: { label: 'Cancelado', cls: 'bg-slate-100 text-slate-500' },
+};
+
+// Vista de inscripciones de un workflow (quién está en qué paso) para depurar.
+function EnrollmentsModal({ workflow, onClose }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [statusFilter, setStatusFilter] = useState('');
+
+  useEffect(() => {
+    setLoading(true);
+    api
+      .get(`/workflows/${workflow._id}/enrollments`, { params: statusFilter ? { status: statusFilter } : {} })
+      .then((r) => setRows(r.data || []))
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false));
+  }, [workflow._id, statusFilter]);
+
+  const fmt = (d) => (d ? new Date(d).toLocaleString('es-EC', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—');
+
+  return (
+    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="bg-white rounded-xl p-6 w-full max-w-3xl max-h-[92vh] overflow-auto">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-lg font-bold">Inscritos — {workflow.name}</h2>
+            <p className="text-xs text-slate-500">Pacientes que pasaron por esta automatización y su paso actual.</p>
+          </div>
+          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 bg-transparent border-none cursor-pointer text-xl">×</button>
+        </div>
+        <div className="mb-3">
+          <label className="text-xs text-slate-500 mr-2">Filtrar por estado</label>
+          <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+            <option value="">Todos</option>
+            <option value="active">Ejecutando</option>
+            <option value="waiting">En espera</option>
+            <option value="done">Completado</option>
+            <option value="cancelled">Cancelado</option>
+          </select>
+        </div>
+        {loading ? (
+          <div className="text-center py-10 text-slate-400 text-sm">Cargando…</div>
+        ) : rows.length === 0 ? (
+          <div className="text-center py-10 text-slate-400 text-sm">Sin inscripciones.</div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="tbl w-full">
+              <thead className="bg-slate-50 text-slate-600">
+                <tr>
+                  <th className="text-left px-3 py-2">Paciente / Teléfono</th>
+                  <th className="text-center px-3 py-2">Estado</th>
+                  <th className="text-center px-3 py-2">Paso</th>
+                  <th className="text-left px-3 py-2">Próxima ejecución</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((e) => {
+                  const st = ENROLL_STATUS[e.status] || ENROLL_STATUS.active;
+                  const name = e.patient ? `${e.patient.firstName || ''} ${e.patient.lastName || ''}`.trim() : '';
+                  return (
+                    <tr key={e._id} className="border-t border-slate-100">
+                      <td className="px-3 py-2">{name || e.patient?.phone || e.context?.phone || 'Contacto'}</td>
+                      <td className="px-3 py-2 text-center"><span className={`text-[11px] px-2 py-0.5 rounded-full ${st.cls}`}>{st.label}</span></td>
+                      <td className="px-3 py-2 text-center">{e.stepIndex}</td>
+                      <td className="px-3 py-2">{e.status === 'waiting' ? fmt(e.nextRunAt) : '—'}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }

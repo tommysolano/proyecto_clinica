@@ -111,6 +111,14 @@ const PRESETS = {
       { type: 'send_message', body: '¡Feliz cumpleaños, {{nombre}}! 🎉 Todo el equipo te desea un día maravilloso.' },
     ],
   },
+  postvisit_review: {
+    name: 'Post-visita: solicitar reseña',
+    trigger: { type: 'appointment_attended', audience: 'all', serviceFilter: null },
+    steps: [
+      { type: 'wait', waitMinutes: 180 }, // ~3h después de asistir
+      { type: 'request_review', body: '¡Gracias por tu visita, {{nombre}}! ¿Cómo fue tu experiencia? Califícanos:' },
+    ],
+  },
 };
 
 exports.listPresets = (_req, res) => {

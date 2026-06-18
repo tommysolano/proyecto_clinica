@@ -275,6 +275,17 @@ exports.bulkTag = async (req, res) => {
     if (toAdd.length) {
       const r = await Patient.updateMany(baseFilter, { $addToSet: { tags: { $each: toAdd } } });
       modified = Math.max(modified, r.modifiedCount || 0);
+      // Evento de dominio para el motor de workflows (trigger tag_added).
+      const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
+      for (const pid of patientIds) {
+        for (const tag of toAdd) {
+          emitDomainEvent(DOMAIN_EVENTS.TAG_ADDED, {
+            clinicId: String(req.clinicId),
+            patientId: String(pid),
+            tag,
+          });
+        }
+      }
     }
     if (toRemove.length) {
       const r = await Patient.updateMany(baseFilter, { $pull: { tags: { $in: toRemove } } });

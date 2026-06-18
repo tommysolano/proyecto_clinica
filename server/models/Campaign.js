@@ -31,6 +31,8 @@ const campaignSchema = new mongoose.Schema(
       sent: { type: Number, default: 0 },
       failed: { type: Number, default: 0 },
       skipped: { type: Number, default: 0 },
+      opened: { type: Number, default: 0 }, // solo email (tracking de apertura)
+      clicked: { type: Number, default: 0 }, // solo email (tracking de clic)
     },
     startedAt: { type: Date, default: null },
     finishedAt: { type: Date, default: null },

@@ -33,20 +33,23 @@ export default function Campaigns() {
   const [list, setList] = useState([]);
   const [segments, setSegments] = useState([]);
   const [templates, setTemplates] = useState([]);
+  const [emailTemplates, setEmailTemplates] = useState([]);
   const [creating, setCreating] = useState(null);
   const [segPreview, setSegPreview] = useState(null);
   const [saving, setSaving] = useState(false);
 
   const load = async () => {
     try {
-      const [cs, segs, tpls] = await Promise.all([
+      const [cs, segs, tpls, etpls] = await Promise.all([
         api.get('/campaigns'),
         api.get('/segments'),
         api.get('/message-templates?channel=whatsapp'),
+        api.get('/message-templates?channel=email').catch(() => ({ data: [] })),
       ]);
       setList(cs.data);
       setSegments(segs.data);
       setTemplates(tpls.data.filter((t) => t.status === 'approved'));
+      setEmailTemplates(etpls.data || []);
     } catch (e) {
       toast.error(e.response?.data?.message || 'Error al cargar campañas');
     }
@@ -159,12 +162,18 @@ export default function Campaigns() {
                       <HiOutlineClock /> Programada para {new Date(c.scheduledFor).toLocaleString()}
                     </div>
                   )}
-                  <div className="flex gap-4 text-xs mt-2 text-slate-600">
+                  <div className="flex gap-4 text-xs mt-2 text-slate-600 flex-wrap">
                     <span>🎯 {s.targeted || 0}</span>
                     <span className="text-emerald-600">✓ {s.sent || 0} enviados</span>
                     <span className="text-amber-600">⏳ {s.queued || 0} en cola</span>
                     <span className="text-slate-400">⊘ {s.skipped || 0} omitidos</span>
                     <span className="text-red-500">✗ {s.failed || 0} fallidos</span>
+                    {c.channel === 'email' && (
+                      <>
+                        <span className="text-sky-600" title="Aperturas">👁 {s.opened || 0} abiertos</span>
+                        <span className="text-violet-600" title="Clics">🔗 {s.clicked || 0} clics</span>
+                      </>
+                    )}
                   </div>
                 </div>
                 {['scheduled', 'sending'].includes(c.status) && (
@@ -183,11 +192,17 @@ export default function Campaigns() {
           <div className="bg-white rounded-xl p-6 w-full max-w-lg max-h-[92vh] overflow-auto">
             <h2 className="text-lg font-bold mb-4">Nueva campaña</h2>
             <div className="grid gap-3">
-              <input value={creating.name} onChange={(e) => setCreating({ ...creating, name: e.target.value })} placeholder="Nombre de la campaña" className="border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+              <label className="text-sm">
+                <span className="text-slate-600 block mb-1">Nombre de la campaña</span>
+                <input value={creating.name} onChange={(e) => setCreating({ ...creating, name: e.target.value })} placeholder="ej. Promo limpieza octubre" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+              </label>
 
-              <div className="flex gap-2 text-sm">
-                <button type="button" onClick={() => setCreating({ ...creating, channel: 'whatsapp' })} className={`px-3 py-1.5 rounded-lg border cursor-pointer ${creating.channel === 'whatsapp' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200'}`}>WhatsApp</button>
-                <button type="button" onClick={() => setCreating({ ...creating, channel: 'email', mode: 'body' })} className={`px-3 py-1.5 rounded-lg border cursor-pointer ${creating.channel === 'email' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200'}`}>Email</button>
+              <div>
+                <span className="text-sm text-slate-600 block mb-1">Canal de envío</span>
+                <div className="flex gap-2 text-sm">
+                  <button type="button" onClick={() => setCreating({ ...creating, channel: 'whatsapp' })} className={`px-3 py-1.5 rounded-lg border cursor-pointer ${creating.channel === 'whatsapp' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200'}`}>WhatsApp</button>
+                  <button type="button" onClick={() => setCreating({ ...creating, channel: 'email', mode: 'body' })} className={`px-3 py-1.5 rounded-lg border cursor-pointer ${creating.channel === 'email' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200'}`}>Email</button>
+                </div>
               </div>
 
               <label className="text-sm">
@@ -207,6 +222,23 @@ export default function Campaigns() {
 
               {creating.channel === 'email' ? (
                 <>
+                  {emailTemplates.length > 0 && (
+                    <label className="text-sm">
+                      <span className="text-slate-600">Usar plantilla de email (opcional)</span>
+                      <select
+                        value=""
+                        onChange={(e) => {
+                          const t = emailTemplates.find((x) => x._id === e.target.value);
+                          if (t) setCreating({ ...creating, subject: t.subject || creating.subject, body: t.body || creating.body });
+                        }}
+                        className="w-full mt-1 border border-slate-200 rounded-lg px-2 py-2 text-sm"
+                      >
+                        <option value="">— Empezar desde una plantilla —</option>
+                        {emailTemplates.map((t) => <option key={t._id} value={t._id}>{t.name}</option>)}
+                      </select>
+                      <span className="text-xs text-slate-400">Rellena el asunto y cuerpo; puedes editarlos antes de enviar.</span>
+                    </label>
+                  )}
                   <label className="text-sm">
                     <span className="text-slate-600">Asunto</span>
                     <input value={creating.subject} onChange={(e) => setCreating({ ...creating, subject: e.target.value })} className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Asunto del correo (usa {{nombre}})" />

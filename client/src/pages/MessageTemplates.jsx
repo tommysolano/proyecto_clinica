@@ -229,6 +229,11 @@ export default function MessageTemplates() {
                 <p className="text-xs text-amber-600">
                   Esta plantilla está ligada a Meta; el estado se gobierna por la sincronización.
                 </p>
+              ) : editing.channel === 'email' ? (
+                <p className="text-xs text-slate-400">
+                  Las plantillas de email quedan listas para usar de inmediato (no requieren
+                  aprobación de Meta). Las URLs del cuerpo se rastrean (clics) y se mide la apertura.
+                </p>
               ) : (
                 <p className="text-xs text-slate-400">
                   Tras crearla deberás registrarla/aprobarla en Meta para usarla fuera de la ventana de 24h.
