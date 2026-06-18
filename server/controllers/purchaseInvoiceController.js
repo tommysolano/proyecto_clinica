@@ -172,6 +172,16 @@ async function postPurchaseJournal(inv, req, session, sourceAction = 'POST') {
       lines.push({ account: ivaAcc._id, debit: inv.iva, credit: 0, description: 'IVA en compras (crédito tributario)' });
     }
   }
+  // ICE y propina forman parte del total (y por tanto del crédito al proveedor),
+  // así que deben debitarse a un gasto para que el asiento cuadre.
+  if (Number(inv.ice || 0) > 0) {
+    const iceAcc = await getAccount(req.clinicId, 'otrosGastos', { session });
+    lines.push({ account: iceAcc._id, debit: +Number(inv.ice).toFixed(2), credit: 0, description: 'ICE en compra' });
+  }
+  if (Number(inv.propina || 0) > 0) {
+    const propAcc = await getAccount(req.clinicId, 'otrosGastos', { session });
+    lines.push({ account: propAcc._id, debit: +Number(inv.propina).toFixed(2), credit: 0, description: 'Propina en compra' });
+  }
   const sup = await Supplier.findById(inv.supplier).session(session || null);
   const provAcc = sup?.defaultPayableAccount
     ? await ChartOfAccount.findById(sup.defaultPayableAccount).session(session || null)

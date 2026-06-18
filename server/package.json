@@ -7,6 +7,8 @@
     "start": "node index.js",
     "dev": "nodemon index.js",
     "test": "node --test tests/*.test.js",
+    "test:unit": "node --test tests/accountMap.test.js tests/journalEntry.test.js tests/subledger.test.js tests/kardex.test.js tests/tax.test.js",
+    "test:flows": "node --test tests/flows.integration.test.js",
     "seed": "node seed.js"
   },
   "dependencies": {
@@ -29,6 +31,7 @@
     "xmlbuilder2": "^3.1.1"
   },
   "devDependencies": {
+    "mongodb-memory-server": "^11.2.0",
     "nodemon": "^3.1.7"
   }
 }

@@ -1,6 +1,7 @@
 const mongoose = require('mongoose');
 const CashClosing = require('../models/CashClosing');
 const CashMovement = require('../models/CashMovement');
+const JournalEntry = require('../models/JournalEntry');
 const Sale = require('../models/Sale');
 const { createEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
@@ -16,6 +17,26 @@ const cashMovementsNet = async (clinicId, cashSessionId) => {
   let net = 0;
   for (const r of rows) net += (r._id === 'INGRESO' ? 1 : -1) * r.total;
   return +net.toFixed(2);
+};
+
+/**
+ * Movimiento neto (debe - haber) de la cuenta Caja en el mayor durante la sesión.
+ * Es la fuente de verdad del efectivo que entró/salió físicamente del cajón:
+ * captura ventas de contado, cobros de crédito en efectivo, anticipos, gastos de
+ * caja chica, retiros y depósitos, todo de forma uniforme y sin doble conteo.
+ */
+const cajaLedgerNet = async (clinicId, start, end, session = null) => {
+  const caja = await getAccount(clinicId, 'caja', session ? { session } : {});
+  const pipeline = [
+    { $match: { clinic: oid(clinicId), status: 'CONTABILIZADO', date: { $gte: start, $lte: end } } },
+    { $unwind: '$lines' },
+    { $match: { 'lines.account': caja._id } },
+    { $group: { _id: null, debit: { $sum: '$lines.debit' }, credit: { $sum: '$lines.credit' } } },
+  ];
+  const agg = session
+    ? await JournalEntry.aggregate(pipeline).session(session)
+    : await JournalEntry.aggregate(pipeline);
+  return +(((agg[0]?.debit || 0) - (agg[0]?.credit || 0)).toFixed(2));
 };
 
 const dayRange = (dateStr) => {
@@ -44,10 +65,13 @@ exports.current = async (req, res) => {
       .populate('openedBy', 'name')
       .sort({ openedAt: -1 });
     if (!open) return res.json({ open: null });
-    const { byMethod, salesCount, totalSales } = await salesByMethod(req.clinicId, open.openedAt, new Date());
+    const now = new Date();
+    const { byMethod, salesCount, totalSales } = await salesByMethod(req.clinicId, open.openedAt, now);
     const movementsNet = await cashMovementsNet(req.clinicId, open._id);
-    const expectedCash = +((open.openingBalance || 0) + byMethod.efectivo + movementsNet).toFixed(2);
-    res.json({ open, live: { byMethod, salesCount, totalSales, movementsNet, expectedCash } });
+    // Efectivo esperado = fondo inicial + neto de la cuenta Caja en el mayor.
+    const cashNet = await cajaLedgerNet(req.clinicId, open.openedAt, now);
+    const expectedCash = +((open.openingBalance || 0) + cashNet).toFixed(2);
+    res.json({ open, live: { byMethod, salesCount, totalSales, movementsNet, cashNet, expectedCash } });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
@@ -148,7 +172,11 @@ exports.close = async (req, res) => {
         const { byMethod, salesCount, totalSales } = await salesByMethod(req.clinicId, closing.openedAt, closedAt);
         const movementsNet = await cashMovementsNet(req.clinicId, closing._id);
         const countedCash = Number(req.body.countedCash) || 0;
-        const expectedCash = +((closing.openingBalance || 0) + byMethod.efectivo + movementsNet).toFixed(2);
+        // Efectivo esperado = fondo inicial + neto de la cuenta Caja en el mayor
+        // (incluye ventas de contado, cobros de crédito en efectivo, anticipos,
+        //  gastos de caja chica, retiros y depósitos), sin doble conteo.
+        const cashNet = await cajaLedgerNet(req.clinicId, closing.openedAt, closedAt, session);
+        const expectedCash = +((closing.openingBalance || 0) + cashNet).toFixed(2);
         const difference = +(countedCash - expectedCash).toFixed(2);
 
         closing.closedAt = closedAt;

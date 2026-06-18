@@ -15,7 +15,7 @@ const journalLineSchema = new mongoose.Schema(
 
 /**
  * Asiento contable con partida doble.
- * source: VENTA | COMPRA | COBRO | PAGO | NOMINA | DEPRECIACION | AJUSTE | APERTURA | CIERRE | MANUAL | BANCO | NC | ND
+ * source: VENTA | COMPRA | COBRO | PAGO | NOMINA | DEPRECIACION | AJUSTE | APERTURA | CIERRE | MANUAL | BANCO | CAJA | NC | ND | CHEQUE | TARJETA
  */
 const journalEntrySchema = new mongoose.Schema(
   {
@@ -29,7 +29,7 @@ const journalEntrySchema = new mongoose.Schema(
       enum: [
         'VENTA', 'COMPRA', 'COBRO', 'PAGO', 'NOMINA',
         'DEPRECIACION', 'AJUSTE', 'APERTURA', 'CIERRE',
-        'MANUAL', 'BANCO', 'NC', 'ND', 'CHEQUE', 'TARJETA',
+        'MANUAL', 'BANCO', 'CAJA', 'NC', 'ND', 'CHEQUE', 'TARJETA',
       ],
       default: 'MANUAL',
     },
