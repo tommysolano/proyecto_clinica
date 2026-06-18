@@ -80,6 +80,7 @@ import PeriodBalances from './pages/accounting/PeriodBalances';
 import BankImport from './pages/accounting/BankImport';
 import Budgets from './pages/accounting/Budgets';
 import Receivables from './pages/accounting/Receivables';
+import DeferredIncome from './pages/accounting/DeferredIncome';
 import RetentionVouchers from './pages/accounting/RetentionVouchers';
 import AccountingHealth from './pages/accounting/AccountingHealth';
 import Profitability from './pages/accounting/Profitability';
@@ -381,6 +382,7 @@ function AppRoutes() {
                   ['suppliers', Suppliers],
                   ['payments', Payments],
                   ['cartera', Receivables],
+                  ['deferred-income', DeferredIncome],
                   ['purchases', PurchaseInvoices],
                   ['credit-debit-notes', CreditDebitNotes],
                   ['retention-vouchers', RetentionVouchers],

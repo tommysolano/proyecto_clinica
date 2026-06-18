@@ -65,6 +65,8 @@ module.exports = [
   { code: '2.1.03.06',name: 'Vacaciones por pagar',                       type: 'PASIVO',    nature: 'CREDITO' },
   { code: '2.1.03.07',name: 'Participación trabajadores 15%',             type: 'PASIVO',    nature: 'CREDITO' },
   { code: '2.1.04',   name: 'OBLIGACIONES BANCARIAS CORRIENTES',          type: 'PASIVO',    nature: 'CREDITO' },
+  { code: '2.1.05',   name: 'INGRESOS DIFERIDOS',                         type: 'PASIVO',    nature: 'CREDITO', allowsMovement: false },
+  { code: '2.1.05.01',name: 'Ingresos diferidos (paquetes)',              type: 'PASIVO',    nature: 'CREDITO' },
 
   { code: '2.2',      name: 'PASIVO NO CORRIENTE',                        type: 'PASIVO',    nature: 'CREDITO', allowsMovement: false },
   { code: '2.2.01',   name: 'Préstamos bancarios largo plazo',            type: 'PASIVO',    nature: 'CREDITO' },

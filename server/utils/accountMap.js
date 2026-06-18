@@ -23,6 +23,7 @@ const ACCOUNT_ROLES = {
   proveedores:          { group: 'Pasivo',  label: 'Proveedores (CxP)',         code: '2.1.01.01' },
   comisionesPorPagar:   { group: 'Pasivo',  label: 'Comisiones por pagar (personal)', code: '2.1.01.02' },
   anticipoClientes:     { group: 'Pasivo',  label: 'Anticipos de clientes',     code: '2.1.01.03' },
+  ingresoDiferido:      { group: 'Pasivo',  label: 'Ingresos diferidos (paquetes)', code: '2.1.05.01' },
   ivaVentas:            { group: 'Pasivo',  label: 'IVA en ventas',             taxCode: 'IVA_VENTAS' },
   ivaPorPagar:          { group: 'Pasivo',  label: 'IVA por pagar',             code: '2.1.02.02' },
   retIvaPorPagar:       { group: 'Pasivo',  label: 'Retención IVA por pagar',   code: '2.1.02.03' },

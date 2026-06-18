@@ -15,6 +15,8 @@ const purchase = require('../controllers/purchaseInvoiceController');
 const payment = require('../controllers/paymentController');
 const cash = require('../controllers/cashClosingController');
 const health = require('../controllers/accountingHealthController');
+const fiscal = require('../controllers/fiscalPeriodController');
+const deferred = require('../controllers/deferredIncomeController');
 
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
@@ -463,6 +465,125 @@ test('FLUJO 18 — Arqueo incluye cobros de crédito en efectivo (no sobrante fa
   assert.equal(close.statusCode, 200, JSON.stringify(close.payload));
   assert.equal(close.payload.expectedCash, 170, 'expectedCash debe incluir el cobro en efectivo');
   assert.equal(close.payload.difference, 0, 'no debe haber sobrante fantasma');
+  const led = await H.assertLedgerBalanced(clinicId);
+  assert.ok(led.balanced, `mayor descuadrado ${led.debit} vs ${led.credit}`);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('FLUJO 19 — Cierre anual genera asiento de resultados (clinicId string, como producción)', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-03-15') });
+  const cid = String(clinicId); // producción: req.clinicId llega como string del JWT
+  const serv = await H.makeProduct(clinicId, { category: 'servicio', salePrice: 100, unlimited: true, taxCategory: 'IVA_0' });
+  // Ingreso 300 (3 ventas de contado) en el año
+  for (let i = 0; i < 3; i++) {
+    await H.runController(sale.createSale, H.mockReq(cid, userId, {
+      items: [{ product: serv._id, quantity: 1, unitPrice: 100 }], paymentMethod: 'efectivo', date: new Date('2026-04-10'),
+    }));
+  }
+  // Gasto 120 vía movimiento de caja
+  await H.runController(cash.open, H.mockReq(cid, userId, { openingBalance: 0 }));
+  await H.runController(cash.addMovement, H.mockReq(cid, userId, { type: 'GASTO', amount: 120, description: 'Renta', date: new Date('2026-04-11') }));
+
+  const r = await H.runController(fiscal.closeYear, H.mockReq(cid, userId, { year: 2026 }));
+  assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
+  // Utilidad = 300 ingresos - 120 gasto = 180
+  assert.equal(r.payload.utilidad, 180, 'utilidad del ejercicio incorrecta: ' + JSON.stringify(r.payload));
+  assert.ok(r.payload.asiento, 'debe generarse asiento de cierre');
+  // Resultado del ejercicio (3.3.02) acreditado 180 (utilidad)
+  assert.equal(await H.accountBalanceByCode(clinicId, '3.3.02'), -180);
+  const led = await H.assertLedgerBalanced(clinicId);
+  assert.ok(led.balanced, `mayor descuadrado ${led.debit} vs ${led.credit}`);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('FLUJO 20 — Apertura de año arrastra saldos de balance (Activo/Pasivo/Patrimonio)', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-12-15') });
+  const cid = String(clinicId);
+  const serv = await H.makeProduct(clinicId, { category: 'servicio', salePrice: 100, unlimited: true, taxCategory: 'IVA_0' });
+  // Venta de contado en 2026 deja caja 100, ingreso 100
+  await H.runController(sale.createSale, H.mockReq(cid, userId, {
+    items: [{ product: serv._id, quantity: 1, unitPrice: 100 }], paymentMethod: 'efectivo', date: new Date('2026-12-20'),
+  }));
+  // Cierra 2026 (traslada resultado) y abre 2027
+  await H.runController(fiscal.closeYear, H.mockReq(cid, userId, { year: 2026 }));
+  const r = await H.runController(fiscal.openYear, H.mockReq(cid, userId, { year: 2027 }));
+  assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
+  assert.ok(r.payload.asiento, 'debe generar asiento de apertura');
+  // El asiento de apertura debe estar cuadrado
+  const led = await H.assertLedgerBalanced(clinicId);
+  assert.ok(led.balanced, `mayor descuadrado ${led.debit} vs ${led.credit}`);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('FLUJO 21 — Paquete con ingreso diferido: venta difiere ingreso, reconocimiento por sesión', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const cid = String(clinicId);
+  // Paquete de 4 sesiones a $400 (IVA 0), con ingreso diferido
+  const pack = await H.makeProduct(clinicId, {
+    category: 'programa', salePrice: 400, unlimited: true, taxCategory: 'IVA_0',
+    deferredIncome: true, sessionsIncluded: 4,
+  });
+  const r = await H.runController(sale.createSale, H.mockReq(cid, userId, {
+    items: [{ product: pack._id, quantity: 1, unitPrice: 400 }], paymentMethod: 'efectivo',
+  }));
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  // Al vender: NO se reconoce ingreso de servicios; se acredita Ingresos diferidos (2.1.05.01)
+  assert.equal(await H.accountBalanceByCode(clinicId, '4.1.01'), 0, 'no debe haber ingreso de servicios al vender');
+  assert.equal(await H.accountBalanceByCode(clinicId, '2.1.05.01'), -400, 'ingreso diferido acreditado 400');
+  assert.equal(await H.accountBalanceByCode(clinicId, '1.1.01.01'), 400, 'caja recibió 400');
+
+  const DeferredIncome = require('../models/DeferredIncome');
+  const di = await DeferredIncome.findOne({ clinic: clinicId, sourceRef: r.payload._id });
+  assert.equal(di.total, 400);
+  assert.equal(di.balance, 400);
+  assert.equal(di.sessionsTotal, 4);
+
+  // Reconocer 1 sesión (100)
+  const rec1 = await H.runController(deferred.recognize, H.mockReq(cid, userId,
+    { sessions: 1 }, { params: { id: di._id } }));
+  assert.equal(rec1.statusCode, 200, JSON.stringify(rec1.payload));
+  assert.equal(rec1.payload.entry.amount, 100);
+  // Ahora: ingreso servicios -100, ingreso diferido -300
+  assert.equal(await H.accountBalanceByCode(clinicId, '4.1.01'), -100);
+  assert.equal(await H.accountBalanceByCode(clinicId, '2.1.05.01'), -300);
+
+  // Reconocer el resto (saldo completo)
+  const rec2 = await H.runController(deferred.recognize, H.mockReq(cid, userId,
+    {}, { params: { id: di._id } }));
+  assert.equal(rec2.statusCode, 200, JSON.stringify(rec2.payload));
+  assert.equal(await H.accountBalanceByCode(clinicId, '2.1.05.01'), 0, 'ingreso diferido totalmente reconocido');
+  assert.equal(await H.accountBalanceByCode(clinicId, '4.1.01'), -400, 'todo el ingreso reconocido');
+  const diFinal = await DeferredIncome.findById(di._id);
+  assert.equal(diFinal.status, 'RECONOCIDO');
+  const led = await H.assertLedgerBalanced(clinicId);
+  assert.ok(led.balanced, `mayor descuadrado ${led.debit} vs ${led.credit}`);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('FLUJO 22 — Anular venta de paquete con ingreso parcialmente reconocido revierte todo', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const cid = String(clinicId);
+  const pack = await H.makeProduct(clinicId, {
+    category: 'programa', salePrice: 200, unlimited: true, taxCategory: 'IVA_0',
+    deferredIncome: true, sessionsIncluded: 2,
+  });
+  const r = await H.runController(sale.createSale, H.mockReq(cid, userId, {
+    items: [{ product: pack._id, quantity: 1, unitPrice: 200 }], paymentMethod: 'efectivo',
+  }));
+  const DeferredIncome = require('../models/DeferredIncome');
+  const di = await DeferredIncome.findOne({ clinic: clinicId, sourceRef: r.payload._id });
+  // Reconocer 1 sesión (100)
+  await H.runController(deferred.recognize, H.mockReq(cid, userId, { sessions: 1 }, { params: { id: di._id } }));
+  assert.equal(await H.accountBalanceByCode(clinicId, '4.1.01'), -100);
+
+  // Anular la venta: debe reversar reconocimiento + diferido + caja
+  const cancel = await H.runController(sale.cancelSale, H.mockReq(cid, userId, {}, { params: { id: r.payload._id } }));
+  assert.equal(cancel.statusCode, 200, JSON.stringify(cancel.payload));
+  assert.equal(await H.accountBalanceByCode(clinicId, '4.1.01'), 0, 'ingreso reconocido revertido');
+  assert.equal(await H.accountBalanceByCode(clinicId, '2.1.05.01'), 0, 'ingreso diferido revertido');
+  assert.equal(await H.accountBalanceByCode(clinicId, '1.1.01.01'), 0, 'caja revertida');
+  const diFinal = await DeferredIncome.findById(di._id);
+  assert.equal(diFinal.status, 'ANULADO');
   const led = await H.assertLedgerBalanced(clinicId);
   assert.ok(led.balanced, `mayor descuadrado ${led.debit} vs ${led.credit}`);
 });

@@ -19,6 +19,8 @@ const emptyProduct = {
   maxAppointmentsPerDay: '0',
   excludeFromFirstVisit: false,
   nursingService: false,
+  deferredIncome: false,
+  sessionsIncluded: '',
   programServices: [],
   serviceItems: [],
   isComposite: false,
@@ -119,6 +121,8 @@ export default function Inventory() {
       maxAppointmentsPerDay: String(p.maxAppointmentsPerDay ?? 0),
       excludeFromFirstVisit: !!p.excludeFromFirstVisit,
       nursingService: !!p.nursingService,
+      deferredIncome: !!p.deferredIncome,
+      sessionsIncluded: p.sessionsIncluded ? String(p.sessionsIncluded) : '',
       programServices: (p.programServices || []).map((s) => ({
         product: s.product?._id || s.product || '',
         quantity: s.quantity || 1,
@@ -163,6 +167,8 @@ export default function Inventory() {
         maxAppointmentsPerDay: parseInt(productForm.maxAppointmentsPerDay) || 0,
         excludeFromFirstVisit: !!productForm.excludeFromFirstVisit,
         nursingService: !!productForm.nursingService,
+        deferredIncome: productForm.category === 'programa' ? !!productForm.deferredIncome : false,
+        sessionsIncluded: productForm.category === 'programa' ? (parseInt(productForm.sessionsIncluded) || 0) : 0,
         programServices: (productForm.programServices || [])
           .filter((s) => s.product && Number(s.quantity) > 0)
           .map((s) => ({ product: s.product, quantity: parseInt(s.quantity) || 1 })),
@@ -582,6 +588,27 @@ export default function Inventory() {
                 Servicio atendido por <strong>enfermería</strong> (p.ej. sueroterapia)
               </label>
             </div>
+
+            {/* Programa: ingreso diferido */}
+            {productForm.category === 'programa' && (
+              <div className="sm:col-span-2 bg-amber-50 border border-amber-200 rounded-xl p-3 space-y-2">
+                <label className="flex items-center gap-2 text-sm font-medium text-amber-900 cursor-pointer">
+                  <input type="checkbox" checked={!!productForm.deferredIncome}
+                    onChange={(e) => setProductForm({ ...productForm, deferredIncome: e.target.checked })} />
+                  Ingreso diferido (reconocer por sesión)
+                </label>
+                <p className="text-xs text-amber-700">Si se activa, al vender el ingreso se acredita a “Ingresos diferidos” (pasivo) y se reconoce conforme se usan las sesiones. El IVA sí se reconoce al vender.</p>
+                {productForm.deferredIncome && (
+                  <div>
+                    <label className="block text-xs text-amber-800 mb-1">Sesiones incluidas en el paquete</label>
+                    <input type="number" min="0" value={productForm.sessionsIncluded}
+                      onChange={(e) => setProductForm({ ...productForm, sessionsIncluded: e.target.value })}
+                      placeholder="Ej: 10"
+                      className="w-40 px-3 py-2 border border-amber-300 rounded-xl text-sm bg-white" />
+                  </div>
+                )}
+              </div>
+            )}
 
             {/* Programa: items incluidos */}
             {productForm.category === 'programa' && (

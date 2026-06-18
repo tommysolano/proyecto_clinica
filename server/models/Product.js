@@ -98,6 +98,13 @@ const productSchema = new mongoose.Schema(
       default: 'IVA_15',
     },
     priceIncludesVat: { type: Boolean, default: true },
+    // Ingreso diferido (paquetes/programas): si es true, al vender este producto
+    // el ingreso NO se reconoce de inmediato sino que se acredita a "Ingresos
+    // diferidos" (pasivo) y se reconoce por sesión consumida. Opt-in por producto
+    // para no alterar la política contable de productos existentes.
+    deferredIncome: { type: Boolean, default: false },
+    // N° de sesiones que incluye el paquete (para reconocer el ingreso por sesión).
+    sessionsIncluded: { type: Number, default: 0, min: 0 },
     isMedicalService: { type: Boolean, default: false },
     isInventoryItem: { type: Boolean, default: false },
     costAccountCode: { type: String, default: '' },

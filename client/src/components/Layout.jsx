@@ -146,6 +146,7 @@ const ACCT_GROUPS = [
       { path: '/accounting/period-balances', label: 'Saldos por Período' },
       { path: '/accounting/suppliers', label: 'Personas' },
       { path: '/accounting/cartera', label: 'Cartera (CxC/CxP)' },
+      { path: '/accounting/deferred-income', label: 'Ingresos Diferidos' },
       { path: '/accounting/purchases', label: 'Compras' },
       { path: '/accounting/credit-debit-notes', label: 'NC / ND' },
       { path: '/accounting/retention-vouchers', label: 'Retenciones' },

@@ -73,11 +73,14 @@ exports.closeYear = async (req, res) => {
       await getOrCreatePeriod(req.clinicId, new Date(year, m - 1, 15));
     }
 
-    // Calcular saldos de cuentas de ingreso/gasto/costo del año
+    // Calcular saldos de cuentas de ingreso/gasto/costo del año.
+    // OJO: en aggregate el campo `clinic` (ObjectId) NO se castea desde string
+    // automáticamente; req.clinicId llega como string del JWT, hay que convertirlo.
+    const clinicOid = new (require('mongoose').Types.ObjectId)(req.clinicId);
     const start = new Date(year, 0, 1);
     const end = new Date(year, 11, 31, 23, 59, 59);
     const agg = await JournalEntry.aggregate([
-      { $match: { clinic: req.clinicId, date: { $gte: start, $lte: end }, status: 'CONTABILIZADO' } },
+      { $match: { clinic: clinicOid, date: { $gte: start, $lte: end }, status: 'CONTABILIZADO' } },
       { $unwind: '$lines' },
       { $group: { _id: '$lines.account', debit: { $sum: '$lines.debit' }, credit: { $sum: '$lines.credit' } } },
     ]);

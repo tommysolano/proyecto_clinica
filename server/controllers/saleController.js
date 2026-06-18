@@ -3,6 +3,7 @@ const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
 const Discount = require('../models/Discount');
 const Treatment = require('../models/Treatment');
+const DeferredIncome = require('../models/DeferredIncome');
 const { createEntry, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { openReceivable, applyToReceivable, voidReceivable } = require('../utils/subledger');
@@ -324,12 +325,19 @@ exports.createSale = async (req, res) => {
         }
         txLines.push({ account: txDebitAcc._id, debit: txTotals.total, credit: 0, description: `Venta ${txSale.saleNumber}` });
 
+        // Ingreso diferido (paquetes): la base de los ítems marcados como
+        // deferredIncome NO se reconoce ahora; se acredita a "Ingresos diferidos".
+        const isDeferred = (i) => txProductMap.get(String(i.product))?.deferredIncome === true;
         const productBase = +txSaleItems
-          .filter((i) => i.category !== 'servicio')
+          .filter((i) => i.category !== 'servicio' && !isDeferred(i))
           .reduce((s, i) => s + i.taxBase + (i.discountTaxBase || 0), 0)
           .toFixed(2);
         const serviceBase = +txSaleItems
-          .filter((i) => i.category === 'servicio')
+          .filter((i) => i.category === 'servicio' && !isDeferred(i))
+          .reduce((s, i) => s + i.taxBase + (i.discountTaxBase || 0), 0)
+          .toFixed(2);
+        const deferredBase = +txSaleItems
+          .filter(isDeferred)
           .reduce((s, i) => s + i.taxBase + (i.discountTaxBase || 0), 0)
           .toFixed(2);
         if (productBase > 0) {
@@ -339,6 +347,13 @@ exports.createSale = async (req, res) => {
         if (serviceBase > 0) {
           const accServ = await getAccount(req.clinicId, 'ingresoServicios');
           txLines.push({ account: accServ._id, debit: 0, credit: serviceBase, description: 'Ingreso servicios' });
+        }
+        let accDeferred = null;
+        let accDeferredIncomeTarget = null;
+        if (deferredBase > 0) {
+          accDeferred = await getAccount(req.clinicId, 'ingresoDiferido');
+          accDeferredIncomeTarget = await getAccount(req.clinicId, 'ingresoServicios');
+          txLines.push({ account: accDeferred._id, debit: 0, credit: deferredBase, description: 'Ingreso diferido (paquete)' });
         }
         if (txTotals.taxAmount > 0) {
           const ivaV = await getAccount(req.clinicId, 'ivaVentas');
@@ -376,6 +391,33 @@ exports.createSale = async (req, res) => {
         });
         txSale.journalEntry = txEntry._id;
         await txSale.save({ session });
+
+        // Ingreso diferido: registra un documento por cada ítem de paquete para
+        // reconocer el ingreso por sesión más adelante.
+        if (deferredBase > 0 && accDeferred) {
+          for (const it of txSaleItems) {
+            if (!isDeferred(it)) continue;
+            const base = +(Number(it.taxBase || 0) + Number(it.discountTaxBase || 0)).toFixed(2);
+            if (base <= 0) continue;
+            const prod = txProductMap.get(String(it.product));
+            await DeferredIncome.create([{
+              clinic: req.clinicId,
+              sourceModel: 'Sale',
+              sourceRef: txSale._id,
+              product: it.product,
+              productName: it.productName,
+              patient: txSale.patient || null,
+              partyName: txSale.clientName || '',
+              treatment: it.treatment || null,
+              deferredAccount: accDeferred._id,
+              incomeAccount: (prod && prod.incomeAccount) || accDeferredIncomeTarget._id,
+              total: base,
+              sessionsTotal: (prod && prod.sessionsIncluded) || 0,
+              issueDate: saleDate,
+              createdBy: req.user._id,
+            }], { session });
+          }
+        }
 
         // Cartera (CxC): una venta a crédito abre un documento de cobro en el subledger.
         if (paymentMethod === 'credito') {
@@ -536,6 +578,27 @@ exports.cancelSale = async (req, res) => {
             session,
           });
         }
+        // Ingreso diferido: reversa los asientos de reconocimiento ya emitidos y
+        // anula los documentos. El reverso del asiento principal deshace la
+        // acreditación original a "Ingresos diferidos".
+        const deferreds = await DeferredIncome.find({
+          clinic: req.clinicId, sourceModel: 'Sale', sourceRef: sale._id, status: { $ne: 'ANULADO' },
+        }).session(session);
+        for (const di of deferreds) {
+          const recEntries = await JournalEntry.find({
+            clinic: req.clinicId, sourceModel: 'DeferredIncome', sourceRef: di._id,
+            status: 'CONTABILIZADO', isReversed: false,
+          }).session(session);
+          for (const re of recEntries) {
+            await reverseEntry({
+              clinicId: req.clinicId, entryId: re._id, userId: req.user._id,
+              reason: `Anulacion venta ${sale.saleNumber}`, date: reversalDate, session,
+            });
+          }
+          di.status = 'ANULADO';
+          await di.save({ session });
+        }
+
         // Cartera: anula el documento de cobro (CxC) si la venta era a crédito.
         await voidReceivable({ clinicId: req.clinicId, sourceModel: 'Sale', sourceRef: sale._id }, { session });
 
