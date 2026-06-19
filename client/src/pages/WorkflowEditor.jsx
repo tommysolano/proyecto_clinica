@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useNavigate, useParams } from 'react-router-dom';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
@@ -25,6 +26,13 @@ export default function WorkflowEditor() {
   const [agents, setAgents] = useState([]);
   const [folderNames, setFolderNames] = useState([]);
   const [saving, setSaving] = useState(false);
+
+  // Bloquea el scroll del fondo mientras el editor (portal a pantalla completa) está abierto.
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -92,13 +100,14 @@ export default function WorkflowEditor() {
   };
 
   if (!wf) {
-    return (
-      <div className="fixed inset-0 z-50 bg-white flex items-center justify-center text-slate-400 text-sm">Cargando…</div>
+    return createPortal(
+      <div className="fixed inset-0 z-[9998] bg-white flex items-center justify-center text-slate-400 text-sm">Cargando…</div>,
+      document.body
     );
   }
 
-  return (
-    <div className="fixed inset-0 z-50 bg-slate-50 flex flex-col">
+  return createPortal(
+    <div className="fixed inset-0 z-[9998] bg-slate-50 flex flex-col">
       {/* Barra superior */}
       <header className="flex items-center gap-3 px-4 py-2.5 bg-white border-b border-slate-200 shrink-0">
         <button onClick={() => navigate('/workflows')} title="Volver" className="p-2 rounded-lg text-slate-500 hover:bg-slate-100 bg-transparent border-none cursor-pointer">
@@ -141,6 +150,7 @@ export default function WorkflowEditor() {
           agents={agents}
         />
       </main>
-    </div>
+    </div>,
+    document.body
   );
 }
