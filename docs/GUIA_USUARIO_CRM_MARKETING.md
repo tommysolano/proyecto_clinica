@@ -32,8 +32,11 @@ Entender estas 10 palabras hace que todo lo demás sea fácil:
 - **Conversación / Chat:** un hilo de mensajes con un contacto (por WhatsApp, Instagram, etc.).
 - **Oportunidad:** una posible venta dentro de un chat (ej. "interesada en blanqueamiento").
   Se mueve por etapas (Nuevo → Contactado → Interesado → Agendado → Ganado / Perdido).
+- **Etiqueta:** una palabra para clasificar (ej. *vip*, *ortodoncia*, *reactivación*). Puedes ponerlas
+  al **contacto del chat**, a una **oportunidad** y al **paciente**. Sirven para segmentar y para
+  disparar automatizaciones.
 - **Plantilla:** un mensaje pre-aprobado y reutilizable. Las de **WhatsApp** las aprueba Meta;
-  las de **Email** quedan listas al instante.
+  las de **Email** quedan listas al instante. Pueden llevar **imagen de cabecera, botones y pie**.
 - **Segmento:** una "lista inteligente" de pacientes que cumplen ciertos filtros
   (ej. "mujeres, sin visita hace 6 meses, con consentimiento"). Se recalcula sola cada vez que la usas.
 - **Campaña:** un envío masivo (ahora o programado) a un segmento.
@@ -53,6 +56,7 @@ Entender estas 10 palabras hace que todo lo demás sea fácil:
 | Quiero… | Página del menú |
 |---|---|
 | Conectar WhatsApp / Email / Instagram | **Configuración Call Center** |
+| Conectar la **Inteligencia Artificial** (sugerencias/resúmenes) | **Configuración Call Center → IA** |
 | Atender mensajes de pacientes | **Chats / WhatsApp** |
 | Ver todas las oportunidades de venta juntas | **Oportunidades** |
 | Recordar llamar a alguien | **Tareas** |
@@ -75,9 +79,9 @@ Entender estas 10 palabras hace que todo lo demás sea fácil:
 **Para qué sirve:** conectar los canales por los que la clínica se comunica y definir la
 reputación. **Es el primer paso**: sin canales conectados, los chats funcionan en modo prueba.
 
-**Qué encontrarás (pestañas por canal):** WhatsApp, Messenger, Instagram, TikTok y Email.
-En cada una pegas las credenciales que te da el proveedor (Meta / Resend) y la activas con el
-interruptor **Activo/Inactivo**.
+**Qué encontrarás (pestañas):** WhatsApp, Messenger, Instagram, TikTok, Email e **Inteligencia
+Artificial**. En cada canal pegas las credenciales que te da el proveedor (Meta / Resend) y la
+activas con el interruptor **Activo/Inactivo**.
 
 **Cómo usarla:**
 1. Elige la pestaña del canal (ej. WhatsApp).
@@ -88,10 +92,20 @@ interruptor **Activo/Inactivo**.
    estrellas se considera "promotor" (por defecto 4): a esos pacientes se les enviará a Google;
    a los demás se les pedirá un comentario interno.
 
+**Pestaña Inteligencia Artificial (nuevo):** aquí conectas la IA que usa el sistema para
+**sugerir respuestas** y **resumir conversaciones** en los chats, y para el paso *Responder con IA*
+de las automatizaciones.
+1. Activa el interruptor.
+2. Pega tu **API Key de Anthropic (Claude)** — se guarda **cifrada**.
+3. (Opcional) Indica el **modelo**; si lo dejas vacío usa el predeterminado.
+4. Presiona **Probar conexión** para confirmar que funciona.
+> Si no configuras la IA aquí, el sistema puede usar una clave puesta por el técnico en el servidor;
+> y si no hay ninguna, los botones de IA simplemente avisan que no está disponible.
+
 **Tips:**
 - Los campos sensibles se muestran enmascarados (••••1234) una vez guardados; para cambiarlos,
   simplemente escribe encima.
-- Los tokens se guardan **cifrados**. No los verás completos otra vez (es lo correcto por seguridad).
+- Los tokens y la clave de IA se guardan **cifrados**. No los verás completos otra vez (es lo correcto por seguridad).
 
 ---
 
@@ -117,16 +131,23 @@ crear pacientes, citas, cotizaciones y oportunidades.
      - Escribe y presiona Enter para enviar.
      - Escribe **`/`** para insertar un **mensaje guardado** (respuestas rápidas).
      - Botón **🖼** para enviar una imagen de la galería.
+     - Botón **Plantilla** (icono de documento) para **elegir y enviar una plantilla aprobada**: se
+       abre un buscador con las plantillas **Aprobadas por Meta**, ves una **previsualización** del
+       texto y puedes rellenar sus variables. Funciona **siempre** (dentro o fuera de la ventana de 24h).
      - Botón **IA** para que el asistente **sugiera una respuesta** (la puedes editar antes de enviar).
    - **Avisos automáticos:**
-     - Si pasaron **más de 24h** sin que el paciente escriba, aparece un aviso de "ventana cerrada"
-       y un selector para enviar por **plantilla aprobada** (es la única forma legal de escribir entonces).
+     - Si pasaron **más de 24h** sin que el paciente escriba, aparece un aviso de "ventana cerrada":
+       entonces **solo** puedes usar el botón **Plantilla** (es la única forma legal de escribir).
      - Si el contacto está en **opt-out**, se bloquea el envío de marketing y se avisa.
 
 3. **Derecha — Panel de contexto.**
    - **Contacto:** datos y botones para **Agregar al sistema** (crear paciente), **Agendar cita** o
      **Crear cotización**.
-   - **Oportunidad:** etapa actual, valor esperado (calculado desde los servicios de interés) y notas.
+   - **Oportunidad:** etapa actual, valor esperado (calculado desde los servicios de interés),
+     **etiquetas de la oportunidad** y notas. Al editar la oportunidad puedes añadirle etiquetas
+     propias (ej. *presupuesto enviado*).
+   - **Etiquetas:** sección para clasificar el **contacto/conversación** con chips (escribe y pulsa
+     Enter para añadir; la ✕ para quitar). Se guardan solas y sirven para segmentar.
    - **Resumen IA:** botón para que la IA **resuma la conversación** en viñetas (motivo, acuerdos,
      próximo paso). Ideal cuando retomas un chat largo.
    - **Notas internas:** comentarios **solo para el equipo** (no los ve el paciente). Puedes
@@ -159,6 +180,10 @@ y mandar un **mensaje masivo** a las seleccionadas.
 
 **Tip:** arriba ves el total de oportunidades y el **valor económico** acumulado del embudo.
 
+**Etiquetas dentro de la oportunidad:** cada oportunidad puede llevar sus propias etiquetas
+(se editan desde el chat → *Crear/Editar oportunidad*). Úsalas para distinguir, por ejemplo,
+*presupuesto enviado*, *espera financiamiento* o *seguimiento*.
+
 ---
 
 ### 4.4 Tareas — *no se te olvida nada*
@@ -179,13 +204,32 @@ y mandar un **mensaje masivo** a las seleccionadas.
 ventana de 24h** de WhatsApp.
 
 **Dos tipos:**
-- **WhatsApp:** son plantillas que **Meta debe aprobar**. Verás su estado (Borrador, En revisión,
-  Aprobada, Rechazada). Botón **Sincronizar con Meta** para traer el estado real.
+- **WhatsApp:** son plantillas que **Meta debe aprobar**. Verás su estado con una etiqueta de color:
+  **Borrador**, **En revisión**, **Aprobada**, **Rechazada** o **Deshabilitada**. Botón
+  **Sincronizar con Meta** para traer el estado real (y, si una fue rechazada, su **motivo**).
 - **Email:** asunto + cuerpo. **Quedan listas para usar al instante** (no requieren aprobación).
   Los enlaces que pongas se **rastrean** (clics) y se mide la **apertura**.
 
-**Cómo usarla:** crea la plantilla, usa variables como `{{nombre}}` para personalizar, y guárdala.
-Luego estará disponible para elegir en Campañas y en las Automatizaciones.
+**¿Cómo sé si una plantilla está aprobada?** Por su etiqueta de estado en la lista (verde =
+**Aprobada**). Solo las **Aprobadas** aparecen para elegir en el chat y en las campañas/automatizaciones.
+
+**Constructor enriquecido (nuevo) — con previsualización tipo WhatsApp:**
+al crear/editar una plantilla de WhatsApp tienes un editor a la izquierda y una **vista previa en vivo**
+a la derecha (se ve tal como llegará al paciente):
+- **Cabecera:** ninguna, **texto**, **imagen** o **documento**. Para imagen puedes **Subir imagen**
+  (el sistema la **aloja** y genera su enlace) o pegar una URL pública.
+- **Cuerpo:** el mensaje, con variables como `{{nombre}}` o `{{1}}` para personalizar.
+- **Pie** (opcional) y **Botones** (hasta 3): respuesta rápida, **enlace (URL)** o **llamar**.
+
+**Cómo usarla:** arma la plantilla, mira la previsualización, guárdala. Las de WhatsApp deberás
+**aprobarlas en Meta** (o sincronizar si ya las creaste allí); las de email quedan listas. Luego
+estarán disponibles en el chat, en Campañas y en las Automatizaciones.
+
+**Alertas de cambio de categoría (nuevo):** Meta puede **recategorizar** tus plantillas (p. ej. de
+*Marketing* a *Utilidad*), lo que cambia su costo y uso. El sistema **revisa esto automáticamente**
+(cada pocas horas y también al instante por aviso de Meta) y, si detecta un cambio de categoría o que
+una plantilla pasó a **Rechazada/Deshabilitada**, te muestra una **alerta** en la parte superior de
+esta página. Pulsa **Descartar** cuando la hayas leído.
 
 ---
 
@@ -217,11 +261,19 @@ defines la regla y el sistema mantiene la lista al día.
      (llega a todos, también inactivos).
    - **Email:** asunto y cuerpo, o **parte de una plantilla de email** que puedes editar.
 4. Elige **Enviar ahora** o **Programar** para una fecha/hora.
-5. Sigue los **resultados** en la tarjeta de la campaña: enviados, en cola, omitidos, fallidos y
+5. (Opcional) **Máximo de personas:** un tope de destinatarios. Si el segmento tiene más, solo se
+   envía a esa cantidad.
+6. (Opcional) **Envío por lotes (goteo):** en vez de mandar todo de golpe, el sistema envía en
+   **tandas** (ej. *50 personas cada 30 minutos*). Esto **cuida tu número** de WhatsApp y mejora la
+   entrega. Verás un resumen del cronograma estimado.
+7. Sigue los **resultados** en la tarjeta de la campaña: enviados, en cola, omitidos, fallidos y
    —en email— **abiertos** y **clics**.
 
 **Cumplimiento:** el sistema **nunca** envía a contactos en opt-out, y respeta la ventana de 24h.
 Por eso, para inactivos, **usa plantillas**.
+
+**Tip (goteo):** para listas grandes o números nuevos, activa el goteo con lotes pequeños y un
+intervalo amplio; reduce el riesgo de bloqueos por envíos masivos repentinos.
 
 ---
 
@@ -233,8 +285,9 @@ al sistema en un asistente que recuerda, confirma y reactiva sin que nadie haga 
 **Cómo funciona:** cada automatización tiene **un disparador** + **una lista de pasos**.
 
 **Disparadores disponibles:**
-- De **cita:** cita agendada, cita asistida, no asistió (no-show).
+- De **cita:** cita agendada, cita asistida, no asistió (no-show), **cita cancelada**.
 - De **paciente:** cumpleaños, etiqueta añadida, venta registrada, tratamiento abandonado.
+- De **ventas:** **cotización enviada** (cuando compartes una cotización por WhatsApp a un paciente).
 - De **chat:** mensaje entrante, **palabra clave** (ej. "precio"), nueva conversación.
 
 **Pasos que puedes encadenar:**
@@ -248,22 +301,34 @@ al sistema en un asistente que recuerda, confirma y reactiva sin que nadie haga 
 - **Pedir reseña** (reputación).
 - **Objetivo** (termina la secuencia si se cumple algo).
 
-**Organización visual (carpetas y arrastrar):**
-- A la izquierda tienes un panel de **carpetas** para agrupar tus automatizaciones por tema
-  (ej. *Recordatorios*, *Reactivación*, *Cumpleaños*). Crea una con el botón **＋** (icono de carpeta),
-  haz clic en una carpeta para **filtrar** solo sus automatizaciones, y usa **Todas** para verlas juntas.
-  Cada carpeta muestra cuántas automatizaciones contiene; pasa el cursor sobre una para **eliminarla**
-  (debe estar vacía).
-- Al crear o editar una automatización, elige su **Carpeta** en el campo correspondiente (puedes escribir
-  una nueva o elegir una existente de la lista).
-- Dentro del editor, **arrastra los pasos** (icono de líneas a la izquierda de cada paso) para
-  **reordenarlos**; también puedes usar las flechas ↑/↓.
+**Editor visual de diagrama de flujo (nuevo, estilo GoHighLevel):**
+Al crear o editar una automatización trabajas sobre un **lienzo** donde cada paso es un **nodo** y
+las flechas marcan el orden:
+- El nodo **⚡ Disparador** (verde) es el inicio; refleja el evento que elegiste arriba.
+- **Añade pasos** con los botones de la barra superior (Enviar mensaje, Esperar, Condición, etc.).
+  Cada paso aparece como una caja que puedes **arrastrar** para acomodar el diagrama.
+- **Conecta** los pasos arrastrando desde el **punto inferior** de un nodo al **punto superior** del
+  siguiente.
+- **Ramificaciones (sí/no):** los nodos de **Condición** tienen **dos salidas**: la **izquierda “Sí”**
+  (verde) y la **derecha “No”** (roja). Conecta cada una al camino que corresponda. Así un mismo
+  flujo puede tomar rumbos distintos (ej. si el paciente confirma → marcar cita; si no → ofrecer
+  reagendar).
+- **Configura un nodo** haciendo clic en él: a la derecha aparece su panel (el mensaje, la espera, la
+  condición, la plantilla, etc.). El icono de papelera lo elimina.
+
+> Las automatizaciones que ya tenías (formato de lista) se **convierten automáticamente** a diagrama
+> al abrirlas, conservando su orden.
+
+**Carpetas:** a la izquierda tienes un panel de **carpetas** para agrupar tus automatizaciones por
+tema (ej. *Recordatorios*, *Reactivación*, *Cumpleaños*). Crea una con el botón **＋**, haz clic en una
+para **filtrar**, y usa **Todas** para verlas juntas. Al crear/editar una automatización eliges su
+**Carpeta** en el campo correspondiente.
 
 **Cómo usarla (lo más fácil):**
 1. Arriba verás **plantillas de clínica listas para instalar** (se crean **pausadas** para que las
    revises): *Recordatorio de cita 24h con confirmación SÍ/NO*, *Recall de control*, *Reactivación*,
    *Cumpleaños* y *Post-visita: pedir reseña*. Instálalas con un clic.
-2. Revisa los pasos (arrástralos para ordenarlos), ajústalos y **actívala**.
+2. Ábrelas para ver su **diagrama**, ajusta los nodos/conexiones y **actívala**.
 3. El botón **Inscritos** de cada automatización te muestra **quién está en qué paso** (para depurar).
 4. Organiza tus automatizaciones en **carpetas** para mantener todo ordenado a medida que crecen.
 
@@ -372,6 +437,10 @@ de retorno de inversión.
 - **Personaliza con `{{nombre}}`** en plantillas y pasos: se ve más cercano y profesional.
 - **Instala automatizaciones pausadas, revísalas y luego actívalas.** Evita sorpresas.
 - **Usa notas internas y @menciones** para coordinar al equipo sin escribirle al paciente.
+- **Para listas grandes, usa el goteo** (envío por lotes) en las campañas: protege tu número de
+  WhatsApp y mejora la entrega frente a envíos masivos de golpe.
+- **Etiqueta de forma consistente** (pocos nombres y claros): tus segmentos y automatizaciones por
+  etiqueta serán mucho más útiles.
 
 ---
 
@@ -404,8 +473,23 @@ Son contactos en **opt-out** o fuera de la ventana de 24h (si usaste texto libre
 Los presets se instalan pausados a propósito, para que los revises antes de que empiecen a enviar.
 
 **La IA no responde / no resume.**
-Falta configurar la clave de IA del sistema (la pone el administrador). Sin ella, esos botones avisan
-que no está disponible y el resto del sistema sigue funcionando normal.
+Falta activar la IA. El administrador la configura en **Configuración Call Center → Inteligencia
+Artificial** (pega la API key de Claude y pulsa *Probar conexión*). Sin ella, esos botones avisan que
+no está disponible y el resto del sistema sigue funcionando normal.
+
+**Puse el nombre de una plantilla pero no aparece en el chat.**
+En el chat se eligen desde el botón **Plantilla**, y solo se listan las que están **Aprobadas por
+Meta** (etiqueta verde en *Plantillas de mensaje*). Si la tuya está en Borrador/En revisión, primero
+debes aprobarla en Meta y luego pulsar **Sincronizar con Meta**.
+
+**Me llegó una alerta de que una plantilla "cambió de categoría". ¿Qué hago?**
+Meta recategorizó esa plantilla (cambia su costo/uso). Es solo un aviso para que lo sepas; revísala y
+**Descarta** la alerta. No necesitas hacer nada más salvo que prefieras ajustar su contenido.
+
+**¿Dónde pongo etiquetas a un paciente?**
+En tres lugares: en el **chat** (panel derecho → *Etiquetas*), dentro de una **oportunidad**, y en la
+**ficha del paciente**. Luego puedes usarlas como filtro en *Segmentos* o como disparador en
+*Automatizaciones*.
 
 **¿Los pacientes ven mis notas internas?**
 No. Las notas internas y las @menciones son **solo para el equipo**.

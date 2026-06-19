@@ -28,6 +28,7 @@ import MessageTemplates from './pages/MessageTemplates';
 import Segments from './pages/Segments';
 import Campaigns from './pages/Campaigns';
 import Workflows from './pages/Workflows';
+import WorkflowEditor from './pages/WorkflowEditor';
 import Attribution from './pages/Attribution';
 import Reputation from './pages/Reputation';
 import Tasks from './pages/Tasks';
@@ -281,6 +282,22 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'marketing']}>
                       <Workflows />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/workflows/new"
+                  element={
+                    <RoleRoute roles={['admin', 'marketing']}>
+                      <WorkflowEditor />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/workflows/:id/edit"
+                  element={
+                    <RoleRoute roles={['admin', 'marketing']}>
+                      <WorkflowEditor />
                     </RoleRoute>
                   }
                 />
