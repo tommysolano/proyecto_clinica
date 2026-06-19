@@ -55,7 +55,16 @@ exports.importProductsExcel = async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ message: 'Archivo requerido' });
     const wb = new ExcelJS.Workbook();
-    await wb.xlsx.load(req.file.buffer);
+    try {
+      await wb.xlsx.load(req.file.buffer);
+    } catch (loadErr) {
+      // Algunos generadores (no Excel) escriben .xlsx con namespaces con prefijo
+      // que ExcelJS no puede leer (falla con "...reading 'sheets'"). Mensaje claro.
+      return res.status(400).json({
+        message:
+          'No se pudo leer el archivo Excel. Ábrelo en Excel, Google Sheets o LibreOffice y vuelve a guardarlo como .xlsx (esto normaliza el formato); luego súbelo de nuevo.',
+      });
+    }
     const ws = wb.worksheets[0];
     if (!ws) return res.status(400).json({ message: 'El archivo no tiene hojas' });
 
