@@ -282,7 +282,9 @@ intervalo amplio; reduce el riesgo de bloqueos por envíos masivos repentinos.
 **Para qué sirve:** crear secuencias que se ejecutan solas cuando ocurre algo. Es lo que convierte
 al sistema en un asistente que recuerda, confirma y reactiva sin que nadie haga clic.
 
-**Cómo funciona:** cada automatización tiene **un disparador** + **una lista de pasos**.
+**Cómo funciona:** cada automatización tiene **uno o varios disparadores** + un **diagrama de pasos**.
+Dentro del mismo diagrama puedes tener **varios flujos independientes** (cada uno con su propio
+disparador y su propia cadena de pasos).
 
 **Disparadores disponibles:**
 - De **cita:** cita agendada, cita asistida, no asistió (no-show), **cita cancelada**.
@@ -301,23 +303,32 @@ al sistema en un asistente que recuerda, confirma y reactiva sin que nadie haga 
 - **Pedir reseña** (reputación).
 - **Objetivo** (termina la secuencia si se cumple algo).
 
-**Editor visual de diagrama de flujo (nuevo, estilo GoHighLevel):**
-Al crear o editar una automatización trabajas sobre un **lienzo** donde cada paso es un **nodo** y
-las flechas marcan el orden:
-- El nodo **⚡ Disparador** (verde) es el inicio; refleja el evento que elegiste arriba.
-- **Añade pasos** con los botones de la barra superior (Enviar mensaje, Esperar, Condición, etc.).
-  Cada paso aparece como una caja que puedes **arrastrar** para acomodar el diagrama.
-- **Conecta** los pasos arrastrando desde el **punto inferior** de un nodo al **punto superior** del
-  siguiente.
-- **Ramificaciones (sí/no):** los nodos de **Condición** tienen **dos salidas**: la **izquierda “Sí”**
-  (verde) y la **derecha “No”** (roja). Conecta cada una al camino que corresponda. Así un mismo
-  flujo puede tomar rumbos distintos (ej. si el paciente confirma → marcar cita; si no → ofrecer
-  reagendar).
-- **Configura un nodo** haciendo clic en él: a la derecha aparece su panel (el mensaje, la espera, la
-  condición, la plantilla, etc.). El icono de papelera lo elimina.
+**Editor visual a pantalla completa (estilo GoHighLevel):**
+Al pulsar **Nuevo workflow** o **editar** una automatización se abre un **editor a pantalla completa**
+(no una ventana pequeña): arriba el nombre, la carpeta, el interruptor **Activo** y **Guardar**; abajo,
+el **lienzo** con el diagrama ocupando todo el ancho.
 
-> Las automatizaciones que ya tenías (formato de lista) se **convierten automáticamente** a diagrama
-> al abrirlas, conservando su orden.
+- **Disparador (verde):** la tarjeta del inicio. Haz clic en ella para **elegir el evento** que la
+  dispara (cita, cumpleaños, palabra clave, etc.).
+- **Varios disparadores en un mismo flujo (lógica “cualquiera”):** dentro de la tarjeta usa
+  **“+ Añadir disparador a este flujo”** para que el flujo arranque con **cualquiera** de varios
+  eventos (ej. *cita asistida* **o** *venta registrada*).
+- **Añadir pasos desde el propio diagrama:** pulsa el botón **“+”** que aparece **debajo de un nodo**
+  (para encadenar a continuación) o **sobre una línea** (para **insertar** un paso entre dos). Se abre
+  un buscador de pasos agrupado por categoría. Ya **no** hay que arrastrar conectores.
+- **Mover nodos:** arrastra cualquier nodo para acomodar el diagrama a tu gusto (es fluido). El botón
+  **Auto-organizar** (arriba a la izquierda) los reordena en un árbol limpio.
+- **Configurar un paso:** haz clic en su nodo y se abre un **panel a la derecha** (el mensaje, la
+  espera, la condición, la plantilla, etc.). El icono de papelera lo elimina.
+- **Ramificaciones (sí/no):** los nodos de **Condición** tienen **dos salidas**: **“Sí”** (verde, a la
+  izquierda) y **“No”** (roja, a la derecha), cada una con su propio **“+”** para construir el camino
+  correspondiente (ej. si el paciente confirma → marcar cita; si no → ofrecer reagendar).
+- **Varios flujos en el mismo diagrama:** el botón **“Añadir flujo”** crea **otro disparador con su
+  propia cadena de pasos**, independiente, dentro del mismo diagrama. Útil para agrupar automatizaciones
+  relacionadas. Cada flujo puede eliminarse con su propio icono de papelera.
+
+> Las automatizaciones que ya tenías (formato de lista, o el diagrama anterior) se **adaptan
+> automáticamente** al abrirlas, conservando su orden y su disparador.
 
 **Carpetas:** a la izquierda tienes un panel de **carpetas** para agrupar tus automatizaciones por
 tema (ej. *Recordatorios*, *Reactivación*, *Cumpleaños*). Crea una con el botón **＋**, haz clic en una
@@ -328,7 +339,7 @@ para **filtrar**, y usa **Todas** para verlas juntas. Al crear/editar una automa
 1. Arriba verás **plantillas de clínica listas para instalar** (se crean **pausadas** para que las
    revises): *Recordatorio de cita 24h con confirmación SÍ/NO*, *Recall de control*, *Reactivación*,
    *Cumpleaños* y *Post-visita: pedir reseña*. Instálalas con un clic.
-2. Ábrelas para ver su **diagrama**, ajusta los nodos/conexiones y **actívala**.
+2. Ábrelas para ver su **diagrama**, ajusta los pasos con los botones **“+”** y **actívala**.
 3. El botón **Inscritos** de cada automatización te muestra **quién está en qué paso** (para depurar).
 4. Organiza tus automatizaciones en **carpetas** para mantener todo ordenado a medida que crecen.
 
