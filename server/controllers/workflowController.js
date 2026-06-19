@@ -8,11 +8,23 @@ const WorkflowFolder = require('../models/WorkflowFolder');
  * (step.assignUser, trigger.serviceFilter); Mongoose no puede castear '' a
  * ObjectId y lanza CastError → 500. Aquí los convertimos a null.
  */
+function sanitizeTrigger(tr = {}) {
+  const t = { ...tr };
+  if (!t.serviceFilter) t.serviceFilter = null;
+  return t;
+}
+
 function sanitizeWorkflowPayload(body = {}) {
   const out = { ...body };
-  if (out.trigger) {
-    out.trigger = { ...out.trigger };
-    if (!out.trigger.serviceFilter) out.trigger.serviceFilter = null;
+  // Normaliza la lista de disparadores (lógica OR). Mantiene `trigger` (legacy)
+  // sincronizado con triggers[0] para no romper el motor ni los workflows viejos.
+  let triggers = Array.isArray(out.triggers) ? out.triggers : null;
+  if (!triggers && out.trigger?.type) triggers = [out.trigger];
+  if (triggers) {
+    out.triggers = triggers.filter((t) => t && t.type).map(sanitizeTrigger);
+    out.trigger = out.triggers[0] || undefined;
+  } else if (out.trigger) {
+    out.trigger = sanitizeTrigger(out.trigger);
   }
   if (Array.isArray(out.steps)) {
     out.steps = out.steps.map((s) => {
@@ -103,7 +115,8 @@ exports.get = async (req, res) => {
 exports.create = async (req, res) => {
   try {
     if (!req.body.name?.trim()) return res.status(400).json({ message: 'El nombre es requerido' });
-    if (!req.body.trigger?.type) return res.status(400).json({ message: 'Falta el disparador' });
+    const hasTrigger = req.body.trigger?.type || (Array.isArray(req.body.triggers) && req.body.triggers.some((t) => t?.type));
+    if (!hasTrigger) return res.status(400).json({ message: 'Falta al menos un disparador' });
     const payload = sanitizeWorkflowPayload(req.body);
     const wf = await Workflow.create({
       ...payload,
@@ -214,6 +227,7 @@ exports.installPreset = async (req, res) => {
       name: preset.name,
       active: false, // se instala pausado para revisión
       trigger: preset.trigger,
+      triggers: [preset.trigger],
       steps: preset.steps,
       createdBy: req.user._id,
     });

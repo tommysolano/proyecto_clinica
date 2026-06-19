@@ -190,11 +190,35 @@ function AddButton({ onClick, style, className = '' }) {
 
 // ─────────── Nodos personalizados ───────────
 function TriggerNode({ data }) {
+  const triggers = data._triggers || [];
   return (
     <div className="relative">
-      <div className="rounded-xl border-2 border-emerald-500 bg-emerald-50 px-4 py-2.5 text-xs font-semibold text-emerald-700 shadow-sm min-w-[180px] text-center">
-        <div className="flex items-center justify-center gap-1.5"><HiOutlineBolt className="w-4 h-4" /> {data.label || 'Disparador'}</div>
-        <div className="text-[10px] font-normal text-emerald-600/70 mt-0.5">Disparador · clic para configurar</div>
+      <div className="rounded-xl border-2 border-emerald-500 bg-emerald-50 shadow-sm min-w-[220px] overflow-hidden">
+        <div className="px-3 py-1.5 text-[11px] font-bold text-emerald-700 bg-emerald-100/70 flex items-center gap-1.5">
+          <HiOutlineBolt className="w-3.5 h-3.5" /> Disparadores {triggers.length > 1 ? `(${triggers.length} · cualquiera)` : ''}
+        </div>
+        <div className="p-2 grid gap-1">
+          {triggers.length === 0 && (
+            <div className="text-[11px] text-emerald-700/60 px-1 py-1">Sin disparadores — añade uno.</div>
+          )}
+          {triggers.map((t, i) => (
+            <button
+              key={i}
+              type="button"
+              onClick={(e) => { e.stopPropagation(); data.onSelectTrigger(i); }}
+              className="nodrag text-left px-2 py-1.5 rounded-lg text-xs bg-white border border-emerald-200 text-emerald-800 hover:border-emerald-400 cursor-pointer flex items-center gap-1.5"
+            >
+              ⚡ {t.label}
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); data.onAddTrigger(); }}
+            className="nodrag text-left px-2 py-1 rounded-lg text-[11px] text-emerald-600 hover:bg-emerald-100 bg-transparent border border-dashed border-emerald-300 cursor-pointer"
+          >
+            + Añadir disparador
+          </button>
+        </div>
       </div>
       <Handle type="source" position={Position.Bottom} style={{ background: '#10b981' }} />
       {!data._hasDefaultOut && (
@@ -272,9 +296,21 @@ function toFlowNode(n) {
     id: n.id,
     type: rfType,
     position: n.position || { x: 0, y: 0 },
-    draggable: false,
     data: { ...n.data, _type: n.type, _summary: summarize(n) },
   };
+}
+
+// IDs de un nodo y todos sus descendientes (para empujar el sub-árbol al insertar).
+function descendantIdsInclusive(edges, startId) {
+  const childrenOf = {};
+  edges.forEach((e) => { (childrenOf[e.source] ||= []).push(e.target); });
+  const out = new Set([startId]);
+  const stack = [startId];
+  while (stack.length) {
+    const id = stack.pop();
+    (childrenOf[id] || []).forEach((c) => { if (!out.has(c)) { out.add(c); stack.push(c); } });
+  }
+  return out;
 }
 
 /**
@@ -287,15 +323,19 @@ function toFlowNode(n) {
  */
 export default function WorkflowGraphEditor({
   nodes = [], edges = [], onChange,
-  trigger, onTriggerChange,
+  triggers = [], onTriggersChange,
   templates = [], agents = [],
 }) {
   const [selectedId, setSelectedId] = useState(null);
+  const [selectedTriggerIdx, setSelectedTriggerIdx] = useState(null);
   const [adding, setAdding] = useState(null); // { mode:'append', sourceId, sourceHandle } | { mode:'insert', edgeId }
 
-  const triggerLabel = TRIGGERS.find((t) => t.value === trigger?.type)?.label || 'Disparador';
+  const triggerRows = useMemo(
+    () => triggers.map((t) => ({ label: TRIGGERS.find((x) => x.value === t.type)?.label || 'Disparador' })),
+    [triggers]
+  );
 
-  // Asegura que siempre exista el nodo trigger.
+  // Asegura que siempre exista el nodo trigger (entrada única del grafo).
   const modelNodes = useMemo(() => {
     if (nodes.some((n) => n.type === 'trigger')) return nodes;
     return [{ id: 'trigger', type: 'trigger', position: { x: 0, y: 0 }, data: {} }, ...nodes];
@@ -308,10 +348,6 @@ export default function WorkflowGraphEditor({
     return m;
   }, [edges]);
 
-  const emitGraph = useCallback((nextNodes, nextEdges) => {
-    onChange?.({ nodes: autoLayout(nextNodes, nextEdges), edges: nextEdges });
-  }, [onChange]);
-
   const flowNodes = useMemo(
     () => modelNodes.map((n) => {
       const fn = toFlowNode(n);
@@ -320,15 +356,18 @@ export default function WorkflowGraphEditor({
         ...fn,
         data: {
           ...fn.data,
-          label: n.type === 'trigger' ? triggerLabel : undefined,
+          _triggers: n.type === 'trigger' ? triggerRows : undefined,
           _hasDefaultOut: used.has('default'),
           _hasYesOut: used.has('yes'),
           _hasNoOut: used.has('no'),
           onAppend: (handle) => setAdding({ mode: 'append', sourceId: n.id, sourceHandle: handle }),
+          onSelectTrigger: (i) => { setSelectedTriggerIdx(i); setSelectedId(null); },
+          onAddTrigger: () => addTrigger(),
         },
       };
     }),
-    [modelNodes, triggerLabel, outHandles]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [modelNodes, triggerRows, outHandles]
   );
 
   const flowEdges = useMemo(
@@ -341,24 +380,58 @@ export default function WorkflowGraphEditor({
     [edges]
   );
 
+  // ── Disparadores (lógica OR, varios por workflow) ──
+  function addTrigger() {
+    const next = [...triggers, { type: 'appointment_created', audience: 'all', serviceFilter: null, keywords: [], matchType: 'contains', tagFilter: '' }];
+    onTriggersChange?.(next);
+    setSelectedTriggerIdx(next.length - 1);
+    setSelectedId(null);
+  }
+  const setTriggerAt = (idx, full) => onTriggersChange?.(triggers.map((t, i) => (i === idx ? full : t)));
+  const removeTrigger = (idx) => { onTriggersChange?.(triggers.filter((_, i) => i !== idx)); setSelectedTriggerIdx(null); };
+
+  // ── Mover nodos: persiste las posiciones que arrastra el usuario ──
+  const onNodesChange = useCallback((changes) => {
+    const moves = changes.filter((c) => c.type === 'position' && c.position);
+    if (!moves.length) return;
+    const m = new Map(moves.map((c) => [c.id, c.position]));
+    const next = modelNodes.map((n) => (m.has(n.id) ? { ...n, position: m.get(n.id) } : n));
+    onChange?.({ nodes: next, edges });
+  }, [modelNodes, edges, onChange]);
+
   // Inserta/añade un nodo del tipo elegido según el contexto `adding`.
+  // Posiciona el nodo nuevo respecto a su origen (no reorganiza el resto).
   const handlePickStep = (type) => {
     const id = `n${Date.now()}`;
     const newModelNode = { id, type, position: { x: 0, y: 0 }, data: newNodeData(type) };
 
     if (adding?.mode === 'append') {
+      const src = modelNodes.find((n) => n.id === adding.sourceId);
+      const base = src?.position || { x: 0, y: 0 };
+      const dx = adding.sourceHandle === 'yes' ? -GAP_X / 2 : adding.sourceHandle === 'no' ? GAP_X / 2 : 0;
+      newModelNode.position = { x: base.x + dx, y: base.y + GAP_Y };
       const newEdge = { id: `e-${adding.sourceId}-${id}`, source: adding.sourceId, target: id, sourceHandle: adding.sourceHandle || 'default' };
-      emitGraph([...modelNodes, newModelNode], [...edges, newEdge]);
+      onChange?.({ nodes: [...modelNodes, newModelNode], edges: [...edges, newEdge] });
     } else if (adding?.mode === 'insert') {
       const target = edges.find((e) => e.id === adding.edgeId);
       if (!target) { setAdding(null); return; }
+      const dst = modelNodes.find((n) => n.id === target.target);
+      const src = modelNodes.find((n) => n.id === target.source);
+      newModelNode.position = dst?.position
+        ? { x: dst.position.x, y: dst.position.y }
+        : { x: src?.position?.x || 0, y: (src?.position?.y || 0) + GAP_Y };
       const rest = edges.filter((e) => e.id !== adding.edgeId);
       const e1 = { id: `e-${target.source}-${id}`, source: target.source, target: id, sourceHandle: target.sourceHandle || 'default' };
       const e2 = { id: `e-${id}-${target.target}`, source: id, target: target.target, sourceHandle: 'default' };
-      emitGraph([...modelNodes, newModelNode], [...rest, e1, e2]);
+      const newEdges = [...rest, e1, e2];
+      // Empuja el sub-árbol del destino hacia abajo para hacer hueco al nodo nuevo.
+      const shift = descendantIdsInclusive(newEdges, target.target);
+      const shifted = modelNodes.map((n) => (shift.has(n.id) ? { ...n, position: { x: n.position?.x || 0, y: (n.position?.y || 0) + GAP_Y } } : n));
+      onChange?.({ nodes: [...shifted, newModelNode], edges: newEdges });
     }
     setAdding(null);
     setSelectedId(id); // abre el panel de configuración del paso recién creado
+    setSelectedTriggerIdx(null);
   };
 
   const updateNodeData = (id, patch) => {
@@ -372,18 +445,20 @@ export default function WorkflowGraphEditor({
     const incoming = edges.filter((e) => e.target === id);
     const outgoing = edges.filter((e) => e.source === id);
     const firstChild = outgoing.find((e) => (e.sourceHandle || 'default') === 'default')?.target;
-    let nextEdges = edges.filter((e) => e.source !== id && e.target !== id);
+    const nextEdges = edges.filter((e) => e.source !== id && e.target !== id);
     if (firstChild) {
       incoming.forEach((e) => {
         nextEdges.push({ id: `e-${e.source}-${firstChild}`, source: e.source, target: firstChild, sourceHandle: e.sourceHandle || 'default' });
       });
     }
-    emitGraph(modelNodes.filter((n) => n.id !== id), nextEdges);
+    onChange?.({ nodes: modelNodes.filter((n) => n.id !== id), edges: nextEdges });
     setSelectedId(null);
   };
 
-  const selectedNode = modelNodes.find((n) => n.id === selectedId);
-  const isTriggerSelected = selectedNode?.type === 'trigger';
+  const tidy = () => onChange?.({ nodes: autoLayout(modelNodes, edges), edges });
+
+  const selectedNode = modelNodes.find((n) => n.id === selectedId && n.type !== 'trigger');
+  const selectedTrigger = selectedTriggerIdx != null ? triggers[selectedTriggerIdx] : null;
 
   return (
     <ReactFlowProvider>
@@ -393,9 +468,10 @@ export default function WorkflowGraphEditor({
           edges={flowEdges}
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
-          onNodeClick={(_, n) => setSelectedId(n.id)}
-          onPaneClick={() => setSelectedId(null)}
-          nodesDraggable={false}
+          onNodesChange={onNodesChange}
+          onNodeClick={(_, n) => { if (n.id === 'trigger') { setSelectedTriggerIdx(triggers.length ? 0 : null); setSelectedId(null); } else { setSelectedId(n.id); setSelectedTriggerIdx(null); } }}
+          onPaneClick={() => { setSelectedId(null); setSelectedTriggerIdx(null); }}
+          nodesDraggable
           nodesConnectable={false}
           elementsSelectable
           deleteKeyCode={null}
@@ -407,32 +483,36 @@ export default function WorkflowGraphEditor({
           <Controls showInteractive={false} />
         </ReactFlow>
 
-        {/* Drawer de configuración (sobre el lienzo, lado derecho) */}
+        {/* Botón "Auto-organizar" */}
+        <button
+          type="button"
+          onClick={tidy}
+          className="absolute top-3 left-3 z-10 px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-slate-600 shadow-sm hover:border-emerald-400 cursor-pointer"
+          title="Reorganiza los nodos en un árbol ordenado"
+        >
+          Auto-organizar
+        </button>
+
+        {/* Drawer de configuración del disparador */}
+        {selectedTrigger && (
+          <Drawer
+            title={`Disparador ${triggers.length > 1 ? selectedTriggerIdx + 1 : ''}`}
+            onClose={() => setSelectedTriggerIdx(null)}
+            onDelete={triggers.length > 1 ? () => removeTrigger(selectedTriggerIdx) : null}
+          >
+            <TriggerConfig trigger={selectedTrigger} onChange={(full) => setTriggerAt(selectedTriggerIdx, full)} />
+          </Drawer>
+        )}
+
+        {/* Drawer de configuración del paso */}
         {selectedNode && (
-          <div className="absolute top-0 right-0 h-full w-[360px] bg-white border-l border-slate-200 shadow-xl flex flex-col z-10">
-            <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
-              <span className="text-sm font-bold text-slate-700">
-                {isTriggerSelected ? 'Configurar disparador' : STEP_DEFS[selectedNode.type]}
-              </span>
-              <div className="flex items-center gap-1">
-                {!isTriggerSelected && (
-                  <button type="button" onClick={() => deleteNode(selectedNode.id)} title="Eliminar paso" className="p-1.5 text-rose-400 hover:text-rose-600 bg-transparent border-none cursor-pointer">
-                    <HiOutlineTrash className="w-4 h-4" />
-                  </button>
-                )}
-                <button type="button" onClick={() => setSelectedId(null)} className="p-1.5 text-slate-400 hover:text-slate-700 bg-transparent border-none cursor-pointer">
-                  <HiOutlineXMark className="w-5 h-5" />
-                </button>
-              </div>
-            </div>
-            <div className="flex-1 overflow-y-auto p-4">
-              {isTriggerSelected ? (
-                <TriggerConfig trigger={trigger} onChange={onTriggerChange} />
-              ) : (
-                <NodeConfig node={selectedNode} onChange={(patch) => updateNodeData(selectedNode.id, patch)} templates={templates} agents={agents} />
-              )}
-            </div>
-          </div>
+          <Drawer
+            title={STEP_DEFS[selectedNode.type]}
+            onClose={() => setSelectedId(null)}
+            onDelete={() => deleteNode(selectedNode.id)}
+          >
+            <NodeConfig node={selectedNode} onChange={(patch) => updateNodeData(selectedNode.id, patch)} templates={templates} agents={agents} />
+          </Drawer>
         )}
 
         {/* Selector de paso (al pulsar "+") */}
@@ -441,6 +521,28 @@ export default function WorkflowGraphEditor({
         )}
       </div>
     </ReactFlowProvider>
+  );
+}
+
+// Panel lateral derecho sobre el lienzo.
+function Drawer({ title, onClose, onDelete, children }) {
+  return (
+    <div className="absolute top-0 right-0 h-full w-[360px] bg-white border-l border-slate-200 shadow-xl flex flex-col z-10">
+      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
+        <span className="text-sm font-bold text-slate-700">{title}</span>
+        <div className="flex items-center gap-1">
+          {onDelete && (
+            <button type="button" onClick={onDelete} title="Eliminar" className="p-1.5 text-rose-400 hover:text-rose-600 bg-transparent border-none cursor-pointer">
+              <HiOutlineTrash className="w-4 h-4" />
+            </button>
+          )}
+          <button type="button" onClick={onClose} className="p-1.5 text-slate-400 hover:text-slate-700 bg-transparent border-none cursor-pointer">
+            <HiOutlineXMark className="w-5 h-5" />
+          </button>
+        </div>
+      </div>
+      <div className="flex-1 overflow-y-auto p-4">{children}</div>
+    </div>
   );
 }
 

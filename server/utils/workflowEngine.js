@@ -33,6 +33,25 @@ async function pickRoundRobinAgent(clinicId) {
   return agents[0];
 }
 
+/**
+ * Lista de disparadores efectivos de un workflow. Fuente canónica: `triggers`
+ * (array, lógica OR); si está vacío, cae al legacy `trigger` (objeto único).
+ */
+function getTriggers(wf) {
+  if (Array.isArray(wf.triggers) && wf.triggers.length) return wf.triggers;
+  return wf.trigger && wf.trigger.type ? [wf.trigger] : [];
+}
+
+/** ¿Coincide un disparador con un evento de dominio (cita, venta, etc.)? */
+function triggerMatchesEvent(tr, eventType, payload, services) {
+  if (!tr || tr.type !== eventType) return false;
+  if (tr.audience === 'new' && !payload.isFirstVisit) return false;
+  if (tr.audience === 'existing' && payload.isFirstVisit) return false;
+  if (tr.serviceFilter && !services.includes(String(tr.serviceFilter))) return false;
+  if (eventType === 'tag_added' && tr.tagFilter && String(payload.tag || '') !== tr.tagFilter) return false;
+  return true;
+}
+
 /** Coincidencia de palabra clave para triggers de chat. PURO y testeable. */
 function keywordMatchesTrigger(trigger, text) {
   const kws = (trigger.keywords || []).map((k) => String(k || '').trim().toLowerCase()).filter(Boolean);
@@ -631,7 +650,12 @@ async function executeEnrollment(enrollment) {
 async function enrollForEvent(eventType, payload = {}) {
   const { clinicId, patientId } = payload;
   if (!clinicId || !patientId) return;
-  const workflows = await Workflow.find({ clinic: clinicId, active: true, 'trigger.type': eventType });
+  // Lógica OR: el evento coincide con `trigger` (legacy) o con cualquier `triggers[]`.
+  const workflows = await Workflow.find({
+    clinic: clinicId,
+    active: true,
+    $or: [{ 'trigger.type': eventType }, { 'triggers.type': eventType }],
+  });
   if (!workflows.length) return;
 
   const patient = await Patient.findOne({ _id: patientId, clinic: clinicId });
@@ -642,14 +666,8 @@ async function enrollForEvent(eventType, payload = {}) {
   const services = (payload.services || []).map((s) => String(s));
 
   for (const wf of workflows) {
-    const tr = wf.trigger || {};
-    // Filtro de audiencia (eventos de cita).
-    if (tr.audience === 'new' && !payload.isFirstVisit) continue;
-    if (tr.audience === 'existing' && payload.isFirstVisit) continue;
-    // Filtro por servicio.
-    if (tr.serviceFilter && !services.includes(String(tr.serviceFilter))) continue;
-    // Filtro por etiqueta (trigger tag_added): solo dispara si coincide la etiqueta añadida.
-    if (eventType === 'tag_added' && tr.tagFilter && String(payload.tag || '') !== tr.tagFilter) continue;
+    // Basta con que UN disparador del workflow coincida (con sus filtros).
+    if (!getTriggers(wf).some((tr) => triggerMatchesEvent(tr, eventType, payload, services))) continue;
 
     // Anti-duplicado: ¿ya hay una inscripción viva para este paciente?
     // eslint-disable-next-line no-await-in-loop
@@ -695,18 +713,28 @@ async function enrollForEvent(eventType, payload = {}) {
 async function enrollForChatMessage({ clinicId, conversation, patient, phone, text, isNew }) {
   if (!clinicId || !conversation) return { enrolled: 0 };
   const types = ['inbound_message', 'keyword', 'new_conversation'];
-  const workflows = await Workflow.find({ clinic: clinicId, active: true, 'trigger.type': { $in: types } });
+  const workflows = await Workflow.find({
+    clinic: clinicId,
+    active: true,
+    $or: [{ 'trigger.type': { $in: types } }, { 'triggers.type': { $in: types } }],
+  });
   if (!workflows.length) return { enrolled: 0 };
+
+  const matchesChat = (tr) => {
+    if (!tr || !types.includes(tr.type)) return false;
+    if (tr.type === 'new_conversation' && !isNew) return false;
+    if (tr.type === 'keyword' && !keywordMatchesTrigger(tr, text)) return false;
+    // Audiencia: new = sin paciente vinculado, existing = con paciente.
+    if (tr.audience === 'new' && patient) return false;
+    if (tr.audience === 'existing' && !patient) return false;
+    return true;
+  };
 
   const destPhone = phone || conversation.phone || '';
   let enrolled = 0;
   for (const wf of workflows) {
-    const tr = wf.trigger || {};
-    if (tr.type === 'new_conversation' && !isNew) continue;
-    if (tr.type === 'keyword' && !keywordMatchesTrigger(tr, text)) continue;
-    // Audiencia: new = sin paciente vinculado, existing = con paciente.
-    if (tr.audience === 'new' && patient) continue;
-    if (tr.audience === 'existing' && !patient) continue;
+    // Basta con que UN disparador de chat coincida (lógica OR).
+    if (!getTriggers(wf).some(matchesChat)) continue;
 
     // Anti-duplicado: una inscripción viva por (workflow, conversación).
     // eslint-disable-next-line no-await-in-loop
@@ -818,6 +846,8 @@ module.exports = {
   computeWaitUntil,
   evaluateCondition,
   keywordMatchesTrigger,
+  getTriggers,
+  triggerMatchesEvent,
   pickRoundRobinAgent,
   personalize,
   executeEnrollment,

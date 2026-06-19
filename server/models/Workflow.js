@@ -126,25 +126,36 @@ const workflowEdgeSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Disparador (sub-esquema reutilizable). Un workflow puede tener VARIOS
+// disparadores (lógica OR, estilo GoHighLevel): cualquiera de ellos lo inicia.
+const triggerSchema = new mongoose.Schema(
+  {
+    type: { type: String, enum: TRIGGER_TYPES, required: true },
+    // Filtro opcional por servicio (para eventos de cita): solo dispara si la
+    // cita incluye este producto.
+    serviceFilter: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null },
+    // Audiencia (cuando aplica): all | new (primera visita) | existing.
+    audience: { type: String, enum: ['all', 'new', 'existing'], default: 'all' },
+    // Trigger 'keyword': palabras clave + tipo de coincidencia.
+    keywords: { type: [String], default: [] },
+    matchType: { type: String, enum: ['contains', 'exact', 'starts', ''], default: 'contains' },
+    // Trigger 'tag_added': solo dispara si se añade esta etiqueta (vacío = cualquiera).
+    tagFilter: { type: String, trim: true, default: '' },
+  },
+  { _id: false }
+);
+
 const workflowSchema = new mongoose.Schema(
   {
     clinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', required: true, index: true },
     folder: { type: String, trim: true, default: 'General' },
     name: { type: String, required: true, trim: true },
     active: { type: Boolean, default: false },
-    trigger: {
-      type: { type: String, enum: TRIGGER_TYPES, required: true },
-      // Filtro opcional por servicio (para eventos de cita): solo dispara si la
-      // cita incluye este producto.
-      serviceFilter: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null },
-      // Audiencia (cuando aplica): all | new (primera visita) | existing.
-      audience: { type: String, enum: ['all', 'new', 'existing'], default: 'all' },
-      // Trigger 'keyword': palabras clave + tipo de coincidencia.
-      keywords: { type: [String], default: [] },
-      matchType: { type: String, enum: ['contains', 'exact', 'starts', ''], default: 'contains' },
-      // Trigger 'tag_added': solo dispara si se añade esta etiqueta (vacío = cualquiera).
-      tagFilter: { type: String, trim: true, default: '' },
-    },
+    // Disparador principal (legacy / compatibilidad). Se mantiene sincronizado con
+    // triggers[0]. El motor consulta ambos para no romper workflows antiguos.
+    trigger: { type: triggerSchema, default: undefined },
+    // Lista de disparadores (lógica OR). Fuente canónica para los workflows nuevos.
+    triggers: { type: [triggerSchema], default: [] },
     // Modelo lineal (legacy / compatibilidad). Los workflows nuevos usan nodes/edges.
     steps: { type: [workflowStepSchema], default: [] },
     // Grafo visual con ramificaciones (editor react-flow).

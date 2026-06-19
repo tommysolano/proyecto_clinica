@@ -6,11 +6,12 @@ import toast from 'react-hot-toast';
 import { HiOutlineArrowLeft, HiOutlineBolt } from 'react-icons/hi2';
 import WorkflowGraphEditor, { stepsToGraph, TRIGGERS } from '../components/WorkflowGraphEditor';
 
+const defaultTrigger = () => ({ type: 'appointment_created', audience: 'all', serviceFilter: null, keywords: [], matchType: 'contains', tagFilter: '' });
 const blank = () => ({
   name: '',
   folder: 'General',
   active: false,
-  trigger: { type: 'appointment_created', audience: 'all', serviceFilter: null, keywords: [], matchType: 'contains', tagFilter: '' },
+  triggers: [defaultTrigger()],
   steps: [],
   nodes: [],
   edges: [],
@@ -56,12 +57,15 @@ export default function WorkflowEditor() {
           setWf({ ...blank(), folder: folder || 'General' });
         } else {
           const { data } = await api.get(`/workflows/${id}`);
-          const triggerLabel = TRIGGERS.find((t) => t.value === data.trigger?.type)?.label || 'Disparador';
+          const triggers = Array.isArray(data.triggers) && data.triggers.length
+            ? data.triggers.map((t) => ({ ...t }))
+            : (data.trigger?.type ? [{ ...data.trigger }] : [defaultTrigger()]);
+          const triggerLabel = TRIGGERS.find((t) => t.value === triggers[0]?.type)?.label || 'Disparador';
           const hasGraph = Array.isArray(data.nodes) && data.nodes.length > 0;
           const graph = hasGraph
             ? { nodes: data.nodes.map((n) => ({ ...n, data: { ...n.data } })), edges: (data.edges || []).map((e) => ({ ...e })) }
             : stepsToGraph(data.steps || [], triggerLabel);
-          setWf({ ...data, trigger: { ...data.trigger }, steps: [], nodes: graph.nodes, edges: graph.edges });
+          setWf({ ...data, triggers, steps: [], nodes: graph.nodes, edges: graph.edges });
         }
       } catch (e) {
         toast.error(e.response?.data?.message || 'Error al cargar');
@@ -74,12 +78,15 @@ export default function WorkflowEditor() {
 
   const save = async (close = true) => {
     if (!wf.name.trim()) return toast.error('Ponle un nombre al workflow');
+    const triggers = (wf.triggers || []).filter((t) => t?.type);
+    if (triggers.length === 0) return toast.error('Agrega al menos un disparador');
     const actionNodes = (wf.nodes || []).filter((n) => n.type !== 'trigger');
     if (actionNodes.length === 0) return toast.error('Agrega al menos un paso al diagrama');
     setSaving(true);
     const payload = {
       ...wf,
-      trigger: { ...wf.trigger, serviceFilter: wf.trigger?.serviceFilter || null },
+      triggers,
+      trigger: triggers[0],
       steps: [],
       nodes: wf.nodes || [],
       edges: wf.edges || [],
@@ -144,8 +151,8 @@ export default function WorkflowEditor() {
           nodes={wf.nodes || []}
           edges={wf.edges || []}
           onChange={({ nodes, edges }) => setWf({ ...wf, nodes, edges })}
-          trigger={wf.trigger}
-          onTriggerChange={(trigger) => setWf({ ...wf, trigger })}
+          triggers={wf.triggers || []}
+          onTriggersChange={(triggers) => setWf({ ...wf, triggers })}
           templates={templates}
           agents={agents}
         />

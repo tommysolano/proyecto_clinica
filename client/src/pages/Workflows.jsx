@@ -26,6 +26,14 @@ const TRIGGERS = [
   { value: 'new_conversation', label: 'Nueva conversación (chat)' },
   { value: 'tag_added', label: 'Etiqueta añadida' },
 ];
+
+// Resumen de disparadores para la lista (soporta varios; lógica OR).
+function triggerSummary(wf) {
+  const trs = wf.triggers?.length ? wf.triggers : (wf.trigger?.type ? [wf.trigger] : []);
+  const first = TRIGGERS.find((t) => t.value === trs[0]?.type)?.label || '—';
+  return trs.length > 1 ? `${first} +${trs.length - 1}` : first;
+}
+
 export default function Workflows() {
   const navigate = useNavigate();
   const [list, setList] = useState([]);
@@ -193,7 +201,7 @@ export default function Workflows() {
                   <span className="font-semibold">{wf.name}</span>
                   <span className={`text-xs px-2 py-0.5 rounded-full ${wf.active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{wf.active ? 'Activo' : 'Pausado'}</span>
                   <span className="text-xs text-slate-400 inline-flex items-center gap-1"><HiOutlineFolder className="w-3.5 h-3.5" /> {wf.folder || 'General'}</span>
-                  <span className="text-xs text-slate-400">{TRIGGERS.find((t) => t.value === wf.trigger?.type)?.label} · {((wf.nodes || []).filter((n) => n.type !== 'trigger').length) || wf.steps?.length || 0} paso(s)</span>
+                  <span className="text-xs text-slate-400">{triggerSummary(wf)} · {((wf.nodes || []).filter((n) => n.type !== 'trigger').length) || wf.steps?.length || 0} paso(s)</span>
                 </div>
                 <div className="text-xs text-slate-400 mt-1">Inscritos: {wf.stats?.enrolled || 0} · Completados: {wf.stats?.completed || 0}</div>
               </div>
