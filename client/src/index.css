@@ -60,6 +60,23 @@ a:focus-visible, button:focus-visible, [role="button"]:focus-visible {
   border-radius: 6px;
 }
 
+/* Cursor de mano en todo elemento clicable: garantiza una experiencia
+   consistente aunque un botón puntual no traiga la clase cursor-pointer. */
+button,
+[role="button"],
+label[for],
+summary,
+select,
+a[href] {
+  cursor: pointer;
+}
+button:disabled,
+button[disabled],
+[role="button"][aria-disabled="true"],
+select:disabled {
+  cursor: not-allowed;
+}
+
 /* Transiciones suaves */
 *, *::before, *::after {
   transition-property: background-color, border-color, color, box-shadow;

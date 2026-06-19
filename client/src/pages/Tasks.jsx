@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlinePlus, HiOutlineCheckCircle, HiOutlineTrash, HiOutlineClipboardDocumentList } from 'react-icons/hi2';
+import Modal from '../components/Modal';
 
 const blank = () => ({ title: '', notes: '', dueAt: '', assignedTo: '' });
 
@@ -107,10 +108,9 @@ export default function Tasks() {
         ))}
       </div>
 
-      {creating && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl p-6 w-full max-w-md">
-            <h2 className="text-lg font-bold mb-4">Nueva tarea</h2>
+      <Modal isOpen={!!creating} onClose={() => setCreating(null)} title="Nueva tarea" size="sm">
+        {creating && (
+          <>
             <div className="grid gap-3">
               <label className="text-sm">
                 <span className="text-slate-600">Título de la tarea</span>
@@ -138,9 +138,9 @@ export default function Tasks() {
               <button onClick={() => setCreating(null)} className="px-4 py-2 border border-slate-200 rounded-lg text-sm bg-white cursor-pointer">Cancelar</button>
               <button onClick={save} className="px-5 py-2 bg-emerald-600 text-white rounded-lg text-sm cursor-pointer border-none">Crear</button>
             </div>
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </Modal>
     </div>
   );
 }

@@ -8,6 +8,7 @@ import {
   HiOutlineNoSymbol,
   HiOutlineClock,
 } from 'react-icons/hi2';
+import Modal from '../components/Modal';
 
 const STATUS_BADGE = {
   draft: { label: 'Borrador', cls: 'bg-slate-100 text-slate-600' },
@@ -187,10 +188,9 @@ export default function Campaigns() {
         })}
       </div>
 
-      {creating && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl p-6 w-full max-w-lg max-h-[92vh] overflow-auto">
-            <h2 className="text-lg font-bold mb-4">Nueva campaña</h2>
+      <Modal isOpen={!!creating} onClose={() => { setCreating(null); setSegPreview(null); }} title="Nueva campaña" size="md">
+        {creating && (
+          <>
             <div className="grid gap-3">
               <label className="text-sm">
                 <span className="text-slate-600 block mb-1">Nombre de la campaña</span>
@@ -289,9 +289,9 @@ export default function Campaigns() {
                 <HiOutlinePaperAirplane /> {saving ? 'Creando…' : creating.when === 'now' ? 'Enviar' : 'Programar'}
               </button>
             </div>
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </Modal>
     </div>
   );
 }

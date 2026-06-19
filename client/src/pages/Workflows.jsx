@@ -9,6 +9,7 @@ import {
   HiOutlineArrowDown,
   HiOutlinePencil,
 } from 'react-icons/hi2';
+import Modal from '../components/Modal';
 
 const TRIGGERS = [
   { value: 'appointment_created', label: 'Cita agendada' },
@@ -202,11 +203,9 @@ export default function Workflows() {
         ))}
       </div>
 
-      {editing && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl p-6 w-full max-w-2xl max-h-[92vh] overflow-auto">
-            <h2 className="text-lg font-bold mb-4">{editing._id ? 'Editar' : 'Nuevo'} workflow</h2>
-
+      <Modal isOpen={!!editing} onClose={() => setEditing(null)} title={editing?._id ? 'Editar workflow' : 'Nuevo workflow'} size="lg">
+        {editing && (
+          <>
             <div className="grid gap-3">
               <label className="text-sm">
                 <span className="text-slate-600 block mb-1">Nombre de la automatización</span>
@@ -435,9 +434,9 @@ export default function Workflows() {
               <button onClick={() => setEditing(null)} className="px-4 py-2 border border-slate-200 rounded-lg text-sm bg-white cursor-pointer">Cancelar</button>
               <button onClick={save} className="px-5 py-2 bg-emerald-600 text-white rounded-lg text-sm cursor-pointer border-none">Guardar</button>
             </div>
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </Modal>
 
       {enrollView && (
         <EnrollmentsModal workflow={enrollView} onClose={() => setEnrollView(null)} />
@@ -471,15 +470,9 @@ function EnrollmentsModal({ workflow, onClose }) {
   const fmt = (d) => (d ? new Date(d).toLocaleString('es-EC', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—');
 
   return (
-    <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onMouseDown={(e) => { if (e.target === e.currentTarget) onClose(); }}>
-      <div className="bg-white rounded-xl p-6 w-full max-w-3xl max-h-[92vh] overflow-auto">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-lg font-bold">Inscritos — {workflow.name}</h2>
-            <p className="text-xs text-slate-500">Pacientes que pasaron por esta automatización y su paso actual.</p>
-          </div>
-          <button onClick={onClose} className="text-slate-400 hover:text-slate-700 bg-transparent border-none cursor-pointer text-xl">×</button>
-        </div>
+    <Modal isOpen onClose={onClose} title={`Inscritos — ${workflow.name}`} size="xl">
+      <div>
+        <p className="text-xs text-slate-500 -mt-1 mb-4">Pacientes que pasaron por esta automatización y su paso actual.</p>
         <div className="mb-3">
           <label className="text-xs text-slate-500 mr-2">Filtrar por estado</label>
           <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
@@ -523,6 +516,6 @@ function EnrollmentsModal({ workflow, onClose }) {
           </div>
         )}
       </div>
-    </div>
+    </Modal>
   );
 }

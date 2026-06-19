@@ -8,6 +8,7 @@ import {
   HiOutlineUsers,
   HiOutlineFunnel,
 } from 'react-icons/hi2';
+import Modal from '../components/Modal';
 
 const SOURCES = [
   { value: 'anuncio', label: 'Anuncio' },
@@ -163,10 +164,9 @@ export default function Segments() {
         ))}
       </div>
 
-      {editing && (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-          <div className="bg-white rounded-xl p-6 w-full max-w-2xl max-h-[92vh] overflow-auto">
-            <h2 className="text-lg font-bold mb-4">{editing._id ? 'Editar segmento' : 'Nuevo segmento'}</h2>
+      <Modal isOpen={!!editing} onClose={() => { setEditing(null); setPreview(null); }} title={editing?._id ? 'Editar segmento' : 'Nuevo segmento'} size="lg">
+        {editing && (
+          <>
             <div className="grid gap-3">
               <div className="grid grid-cols-2 gap-2">
                 <label className="text-sm">
@@ -302,9 +302,9 @@ export default function Segments() {
               <button onClick={() => { setEditing(null); setPreview(null); }} className="px-4 py-2 border border-slate-200 rounded-lg text-sm bg-white cursor-pointer">Cancelar</button>
               <button onClick={save} className="px-5 py-2 bg-emerald-600 text-white rounded-lg text-sm cursor-pointer border-none">Guardar segmento</button>
             </div>
-          </div>
-        </div>
-      )}
+          </>
+        )}
+      </Modal>
     </div>
   );
 }
