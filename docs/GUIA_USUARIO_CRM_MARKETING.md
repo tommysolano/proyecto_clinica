@@ -248,12 +248,24 @@ al sistema en un asistente que recuerda, confirma y reactiva sin que nadie haga 
 - **Pedir reseña** (reputación).
 - **Objetivo** (termina la secuencia si se cumple algo).
 
+**Organización visual (carpetas y arrastrar):**
+- A la izquierda tienes un panel de **carpetas** para agrupar tus automatizaciones por tema
+  (ej. *Recordatorios*, *Reactivación*, *Cumpleaños*). Crea una con el botón **＋** (icono de carpeta),
+  haz clic en una carpeta para **filtrar** solo sus automatizaciones, y usa **Todas** para verlas juntas.
+  Cada carpeta muestra cuántas automatizaciones contiene; pasa el cursor sobre una para **eliminarla**
+  (debe estar vacía).
+- Al crear o editar una automatización, elige su **Carpeta** en el campo correspondiente (puedes escribir
+  una nueva o elegir una existente de la lista).
+- Dentro del editor, **arrastra los pasos** (icono de líneas a la izquierda de cada paso) para
+  **reordenarlos**; también puedes usar las flechas ↑/↓.
+
 **Cómo usarla (lo más fácil):**
 1. Arriba verás **plantillas de clínica listas para instalar** (se crean **pausadas** para que las
    revises): *Recordatorio de cita 24h con confirmación SÍ/NO*, *Recall de control*, *Reactivación*,
    *Cumpleaños* y *Post-visita: pedir reseña*. Instálalas con un clic.
-2. Revisa los pasos, ajústalos y **actívala**.
+2. Revisa los pasos (arrástralos para ordenarlos), ajústalos y **actívala**.
 3. El botón **Inscritos** de cada automatización te muestra **quién está en qué paso** (para depurar).
+4. Organiza tus automatizaciones en **carpetas** para mantener todo ordenado a medida que crecen.
 
 > **Importante:** verás también una opción **"Mensajes automáticos (legacy)"** en el menú. Es la
 > versión anterior; **sigue funcionando** pero está en deprecación. Para todo lo nuevo usa

@@ -6,6 +6,11 @@ router.use(auth, requireClinic);
 
 const ROLES = ['admin', 'marketing'];
 
+router.get('/folders', requireRole(...ROLES), ctrl.listFolders);
+router.post('/folders', requireRole(...ROLES), ctrl.createFolder);
+router.put('/folders/:id', requireRole(...ROLES), ctrl.renameFolder);
+router.delete('/folders/:id', requireRole(...ROLES), ctrl.deleteFolder);
+
 router.get('/', requireRole(...ROLES), ctrl.list);
 router.get('/presets', requireRole(...ROLES), ctrl.listPresets);
 router.post('/presets/:key', requireRole(...ROLES), ctrl.installPreset);

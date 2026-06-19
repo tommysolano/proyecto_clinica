@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import {
@@ -8,6 +8,9 @@ import {
   HiOutlineArrowUp,
   HiOutlineArrowDown,
   HiOutlinePencil,
+  HiOutlineFolder,
+  HiOutlineFolderPlus,
+  HiOutlineBars3,
 } from 'react-icons/hi2';
 import Modal from '../components/Modal';
 
@@ -72,21 +75,26 @@ const blank = () => ({ name: '', folder: 'General', active: false, trigger: { ty
 
 export default function Workflows() {
   const [list, setList] = useState([]);
+  const [folders, setFolders] = useState([]);
+  const [selectedFolder, setSelectedFolder] = useState('__all__');
   const [templates, setTemplates] = useState([]);
   const [presets, setPresets] = useState([]);
   const [agents, setAgents] = useState([]);
   const [editing, setEditing] = useState(null);
   const [enrollView, setEnrollView] = useState(null); // workflow cuyas inscripciones se ven
+  const [dragStep, setDragStep] = useState(null); // índice del paso que se arrastra
 
   const load = async () => {
     try {
-      const [wfs, tpls, ps, ags] = await Promise.all([
+      const [wfs, fld, tpls, ps, ags] = await Promise.all([
         api.get('/workflows'),
+        api.get('/workflows/folders').catch(() => ({ data: [] })),
         api.get('/message-templates?channel=whatsapp').catch(() => ({ data: [] })),
         api.get('/workflows/presets').catch(() => ({ data: [] })),
         api.get('/call-center/agents').catch(() => ({ data: [] })),
       ]);
       setList(wfs.data);
+      setFolders(fld.data || []);
       setTemplates(tpls.data.filter((t) => t.status === 'approved'));
       setPresets(ps.data);
       setAgents(ags.data || []);
@@ -95,6 +103,47 @@ export default function Workflows() {
     }
   };
   useEffect(() => { load(); }, []);
+
+  // Nombres de carpeta = carpetas creadas + las usadas por algún workflow.
+  const folderNames = useMemo(() => {
+    const set = new Set(folders.map((f) => f.name));
+    list.forEach((wf) => set.add(wf.folder || 'General'));
+    return [...set].sort();
+  }, [folders, list]);
+
+  const visibleList = useMemo(
+    () => (selectedFolder === '__all__' ? list : list.filter((wf) => (wf.folder || 'General') === selectedFolder)),
+    [list, selectedFolder]
+  );
+
+  const createFolder = async () => {
+    const name = window.prompt('Nombre de la nueva carpeta:');
+    if (!name || !name.trim()) return;
+    try {
+      await api.post('/workflows/folders', { name: name.trim() });
+      toast.success('Carpeta creada');
+      setSelectedFolder(name.trim());
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'Error al crear carpeta');
+    }
+  };
+  const deleteFolder = async (folder) => {
+    if (!window.confirm(`¿Eliminar la carpeta "${folder.name}"?`)) return;
+    try {
+      await api.delete(`/workflows/folders/${folder._id}`);
+      toast.success('Carpeta eliminada');
+      if (selectedFolder === folder.name) setSelectedFolder('__all__');
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'Error al eliminar carpeta');
+    }
+  };
+
+  const openNew = () => {
+    const folder = selectedFolder === '__all__' ? (folderNames[0] || 'General') : selectedFolder;
+    setEditing({ ...blank(), folder });
+  };
 
   const installPreset = async (key) => {
     try {
@@ -154,18 +203,25 @@ export default function Workflows() {
   };
   const removeStep = (idx) => setEditing({ ...editing, steps: editing.steps.filter((_, i) => i !== idx) });
   const addStep = (type) => setEditing({ ...editing, steps: [...editing.steps, newStep(type)] });
+  const reorderStep = (from, to) => {
+    if (from == null || to == null || from === to) return;
+    const steps = [...editing.steps];
+    const [moved] = steps.splice(from, 1);
+    steps.splice(to, 0, moved);
+    setEditing({ ...editing, steps });
+  };
 
   const isApptTrigger = editing?.trigger?.type?.startsWith('appointment');
   const isChatTrigger = ['inbound_message', 'keyword', 'new_conversation'].includes(editing?.trigger?.type);
 
   return (
-    <div className="p-6 max-w-5xl mx-auto">
+    <div className="p-6 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2"><HiOutlineBolt className="text-emerald-600" /> Automatizaciones (Workflows)</h1>
-          <p className="text-sm text-slate-500 mt-1">Secuencias disparadas por eventos (citas, tratamientos, ventas, cumpleaños) o por chat (palabra clave, mensaje entrante).</p>
+          <p className="text-sm text-slate-500 mt-1">Organízalas en carpetas. Cada automatización se dispara por eventos (citas, tratamientos, ventas, cumpleaños) o por chat (palabra clave, mensaje entrante).</p>
         </div>
-        <button onClick={() => setEditing(blank())} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm flex items-center gap-1 cursor-pointer border-none"><HiOutlinePlus /> Nuevo workflow</button>
+        <button onClick={openNew} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm flex items-center gap-1 cursor-pointer border-none"><HiOutlinePlus /> Nuevo workflow</button>
       </div>
 
       {presets.length > 0 && (
@@ -181,36 +237,83 @@ export default function Workflows() {
         </div>
       )}
 
-      <div className="grid gap-3">
-        {list.length === 0 && <div className="text-center py-16 text-slate-400 border border-dashed border-slate-200 rounded-xl">Aún no hay automatizaciones.</div>}
-        {list.map((wf) => (
-          <div key={wf._id} className="border border-slate-200 rounded-xl p-4 bg-white flex justify-between gap-4">
-            <div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <span className="font-semibold">{wf.name}</span>
-                <span className={`text-xs px-2 py-0.5 rounded-full ${wf.active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{wf.active ? 'Activo' : 'Pausado'}</span>
-                <span className="text-xs text-slate-400">{TRIGGERS.find((t) => t.value === wf.trigger?.type)?.label} · {wf.steps?.length || 0} paso(s)</span>
-              </div>
-              <div className="text-xs text-slate-400 mt-1">Inscritos: {wf.stats?.enrolled || 0} · Completados: {wf.stats?.completed || 0}</div>
-            </div>
-            <div className="flex items-start gap-1 shrink-0">
-              <button onClick={() => toggleActive(wf)} className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer">{wf.active ? 'Pausar' : 'Activar'}</button>
-              <button onClick={() => setEnrollView(wf)} className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer">Inscritos</button>
-              <button onClick={() => setEditing({ ...wf, trigger: { ...wf.trigger }, steps: (wf.steps || []).map((s) => ({ ...s })) })} className="p-2 text-slate-500 hover:text-emerald-600 bg-transparent border-none cursor-pointer"><HiOutlinePencil /></button>
-              <button onClick={() => remove(wf._id)} className="p-2 text-slate-500 hover:text-red-600 bg-transparent border-none cursor-pointer"><HiOutlineTrash /></button>
-            </div>
+      <div className="grid grid-cols-1 lg:grid-cols-[240px_1fr] gap-4">
+        {/* Sidebar de carpetas */}
+        <aside className="bg-white rounded-2xl border border-slate-200 shadow-sm p-3 h-max">
+          <div className="flex items-center justify-between mb-2">
+            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Carpetas</span>
+            <button onClick={createFolder} title="Nueva carpeta" className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-lg bg-transparent border-none cursor-pointer">
+              <HiOutlineFolderPlus className="w-5 h-5" />
+            </button>
           </div>
-        ))}
+          <button onClick={() => setSelectedFolder('__all__')} className={`w-full text-left px-3 py-2 rounded-lg text-sm mb-1 cursor-pointer border-none flex items-center justify-between ${selectedFolder === '__all__' ? 'bg-emerald-600 text-white' : 'bg-transparent text-slate-700 hover:bg-slate-50'}`}>
+            <span>Todas</span>
+            <span className="text-xs opacity-70">{list.length}</span>
+          </button>
+          {folderNames.map((name) => {
+            const folderDoc = folders.find((f) => f.name === name);
+            const count = list.filter((wf) => (wf.folder || 'General') === name).length;
+            return (
+              <div key={name} className="group flex items-center">
+                <button onClick={() => setSelectedFolder(name)} className={`flex-1 text-left px-3 py-2 rounded-lg text-sm mb-1 cursor-pointer border-none flex items-center justify-between gap-2 ${selectedFolder === name ? 'bg-emerald-600 text-white' : 'bg-transparent text-slate-700 hover:bg-slate-50'}`}>
+                  <span className="flex items-center gap-2 truncate"><HiOutlineFolder className="w-4 h-4 shrink-0" /> {name}</span>
+                  <span className="text-xs opacity-70">{count}</span>
+                </button>
+                {folderDoc && (
+                  <button onClick={() => deleteFolder(folderDoc)} title="Eliminar carpeta" className="p-1 text-slate-300 hover:text-red-500 bg-transparent border-none cursor-pointer opacity-0 group-hover:opacity-100">
+                    <HiOutlineTrash className="w-4 h-4" />
+                  </button>
+                )}
+              </div>
+            );
+          })}
+          {folderNames.length === 0 && <p className="text-xs text-slate-400 px-2 py-3">Crea una carpeta para organizar tus automatizaciones.</p>}
+        </aside>
+
+        {/* Lista de automatizaciones (filtrada por carpeta) */}
+        <div className="grid gap-3 content-start">
+          {visibleList.length === 0 && (
+            <div className="text-center py-16 text-slate-400 border border-dashed border-slate-200 rounded-xl">
+              {selectedFolder === '__all__' ? 'Aún no hay automatizaciones.' : 'Sin automatizaciones en esta carpeta.'}
+            </div>
+          )}
+          {visibleList.map((wf) => (
+            <div key={wf._id} className="border border-slate-200 rounded-xl p-4 bg-white flex justify-between gap-4">
+              <div>
+                <div className="flex items-center gap-2 flex-wrap">
+                  <span className="font-semibold">{wf.name}</span>
+                  <span className={`text-xs px-2 py-0.5 rounded-full ${wf.active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{wf.active ? 'Activo' : 'Pausado'}</span>
+                  <span className="text-xs text-slate-400 inline-flex items-center gap-1"><HiOutlineFolder className="w-3.5 h-3.5" /> {wf.folder || 'General'}</span>
+                  <span className="text-xs text-slate-400">{TRIGGERS.find((t) => t.value === wf.trigger?.type)?.label} · {wf.steps?.length || 0} paso(s)</span>
+                </div>
+                <div className="text-xs text-slate-400 mt-1">Inscritos: {wf.stats?.enrolled || 0} · Completados: {wf.stats?.completed || 0}</div>
+              </div>
+              <div className="flex items-start gap-1 shrink-0">
+                <button onClick={() => toggleActive(wf)} className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer">{wf.active ? 'Pausar' : 'Activar'}</button>
+                <button onClick={() => setEnrollView(wf)} className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer">Inscritos</button>
+                <button onClick={() => setEditing({ ...wf, trigger: { ...wf.trigger }, steps: (wf.steps || []).map((s) => ({ ...s })) })} className="p-2 text-slate-500 hover:text-emerald-600 bg-transparent border-none cursor-pointer"><HiOutlinePencil /></button>
+                <button onClick={() => remove(wf._id)} className="p-2 text-slate-500 hover:text-red-600 bg-transparent border-none cursor-pointer"><HiOutlineTrash /></button>
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
 
       <Modal isOpen={!!editing} onClose={() => setEditing(null)} title={editing?._id ? 'Editar workflow' : 'Nuevo workflow'} size="lg">
         {editing && (
           <>
             <div className="grid gap-3">
-              <label className="text-sm">
-                <span className="text-slate-600 block mb-1">Nombre de la automatización</span>
-                <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="ej. Recordatorio de cita 24h" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
-              </label>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="text-sm">
+                  <span className="text-slate-600 block mb-1">Nombre de la automatización</span>
+                  <input value={editing.name} onChange={(e) => setEditing({ ...editing, name: e.target.value })} placeholder="ej. Recordatorio de cita 24h" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                </label>
+                <label className="text-sm">
+                  <span className="text-slate-600 block mb-1">Carpeta</span>
+                  <input list="wf-folders" value={editing.folder || 'General'} onChange={(e) => setEditing({ ...editing, folder: e.target.value })} placeholder="General" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                  <datalist id="wf-folders">{folderNames.map((f) => <option key={f} value={f} />)}</datalist>
+                </label>
+              </div>
 
               <div className="border border-slate-100 rounded-lg p-3 bg-slate-50">
                 <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Disparador</p>
@@ -261,12 +364,26 @@ export default function Workflows() {
               </div>
 
               <div>
-                <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Pasos</p>
+                <div className="flex items-center justify-between mb-2">
+                  <p className="text-xs font-semibold text-slate-500 uppercase">Pasos</p>
+                  {editing.steps.length > 1 && <span className="text-[11px] text-slate-400">Arrastra los pasos para reordenarlos</span>}
+                </div>
                 <div className="grid gap-2">
                   {editing.steps.map((s, idx) => (
-                    <div key={idx} className="border border-slate-200 rounded-lg p-3">
+                    <div
+                      key={idx}
+                      draggable
+                      onDragStart={() => setDragStep(idx)}
+                      onDragOver={(e) => e.preventDefault()}
+                      onDrop={() => { reorderStep(dragStep, idx); setDragStep(null); }}
+                      onDragEnd={() => setDragStep(null)}
+                      className={`border border-slate-200 rounded-lg p-3 bg-white ${dragStep === idx ? 'opacity-50 ring-2 ring-emerald-300' : ''}`}
+                    >
                       <div className="flex items-center justify-between mb-2">
-                        <span className="text-sm font-medium">{idx + 1}. {STEP_DEFS[s.type]}</span>
+                        <span className="text-sm font-medium flex items-center gap-2">
+                          <HiOutlineBars3 className="w-4 h-4 text-slate-300 cursor-grab" title="Arrastra para reordenar" />
+                          {idx + 1}. {STEP_DEFS[s.type]}
+                        </span>
                         <div className="flex gap-1">
                           <button onClick={() => moveStep(idx, -1)} className="p-1 text-slate-400 bg-transparent border-none cursor-pointer"><HiOutlineArrowUp /></button>
                           <button onClick={() => moveStep(idx, 1)} className="p-1 text-slate-400 bg-transparent border-none cursor-pointer"><HiOutlineArrowDown /></button>
