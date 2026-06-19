@@ -563,6 +563,7 @@ exports.deleteAppointment = async (req, res) => {
     }
     appointment.status = 'cancelada';
     await appointment.save();
+    emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CANCELLED, appointmentEventPayload(appointment));
     res.json({ message: 'Cita cancelada', appointment });
   } catch (error) {
     res.status(500).json({ message: 'Error al eliminar cita' });

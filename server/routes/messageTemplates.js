@@ -8,7 +8,10 @@ const ROLES = ['admin', 'marketing'];
 
 router.get('/', requireRole(...ROLES), ctrl.list);
 router.post('/', requireRole(...ROLES), ctrl.create);
+router.post('/upload-image', requireRole(...ROLES), ctrl.uploadHeaderImage);
 router.post('/sync-whatsapp', requireRole(...ROLES), ctrl.syncWhatsapp);
+router.get('/alerts', requireRole(...ROLES), ctrl.listAlerts);
+router.post('/alerts/:id/read', requireRole(...ROLES), ctrl.markAlertRead);
 router.get('/:id', requireRole(...ROLES), ctrl.get);
 router.put('/:id', requireRole(...ROLES), ctrl.update);
 router.delete('/:id', requireRole(...ROLES), ctrl.remove);

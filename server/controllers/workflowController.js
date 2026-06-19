@@ -2,6 +2,28 @@ const Workflow = require('../models/Workflow');
 const WorkflowEnrollment = require('../models/WorkflowEnrollment');
 const WorkflowFolder = require('../models/WorkflowFolder');
 
+/**
+ * Normaliza el payload de un workflow antes de guardarlo. Los selects del
+ * frontend envían cadenas vacías ('') para campos ObjectId opcionales
+ * (step.assignUser, trigger.serviceFilter); Mongoose no puede castear '' a
+ * ObjectId y lanza CastError → 500. Aquí los convertimos a null.
+ */
+function sanitizeWorkflowPayload(body = {}) {
+  const out = { ...body };
+  if (out.trigger) {
+    out.trigger = { ...out.trigger };
+    if (!out.trigger.serviceFilter) out.trigger.serviceFilter = null;
+  }
+  if (Array.isArray(out.steps)) {
+    out.steps = out.steps.map((s) => {
+      const step = { ...s };
+      if (!step.assignUser) step.assignUser = null;
+      return step;
+    });
+  }
+  return out;
+}
+
 // ─────────── Carpetas ───────────
 exports.listFolders = async (req, res) => {
   try {
@@ -82,8 +104,9 @@ exports.create = async (req, res) => {
   try {
     if (!req.body.name?.trim()) return res.status(400).json({ message: 'El nombre es requerido' });
     if (!req.body.trigger?.type) return res.status(400).json({ message: 'Falta el disparador' });
+    const payload = sanitizeWorkflowPayload(req.body);
     const wf = await Workflow.create({
-      ...req.body,
+      ...payload,
       folder: (req.body.folder || 'General').trim() || 'General',
       clinic: req.clinicId,
       createdBy: req.user._id,
@@ -96,7 +119,7 @@ exports.create = async (req, res) => {
 
 exports.update = async (req, res) => {
   try {
-    const update = { ...req.body };
+    const update = sanitizeWorkflowPayload(req.body);
     delete update.clinic;
     delete update._id;
     delete update.stats;

@@ -39,8 +39,10 @@ const messageTemplateSchema = new mongoose.Schema(
     },
     // Solo para email
     subject: { type: String, trim: true, default: '' },
-    headerType: { type: String, enum: ['none', 'text', 'image', 'document'], default: 'none' },
+    headerType: { type: String, enum: ['none', 'text', 'image', 'document', 'video'], default: 'none' },
     headerText: { type: String, trim: true, default: '' },
+    // URL pública de la imagen/documento de cabecera (autoalojada en /api/public/media/:id).
+    headerMediaUrl: { type: String, trim: true, default: '' },
     body: { type: String, required: true, trim: true },
     footer: { type: String, trim: true, default: '' },
     buttons: { type: [templateButtonSchema], default: [] },

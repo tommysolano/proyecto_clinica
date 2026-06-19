@@ -13,14 +13,17 @@ import {
   HiOutlineBars3,
 } from 'react-icons/hi2';
 import Modal from '../components/Modal';
+import WorkflowGraphEditor, { stepsToGraph } from '../components/WorkflowGraphEditor';
 
 const TRIGGERS = [
   { value: 'appointment_created', label: 'Cita agendada' },
   { value: 'appointment_attended', label: 'Cita asistida' },
   { value: 'appointment_no_show', label: 'No asistió (no-show)' },
+  { value: 'appointment_cancelled', label: 'Cita cancelada' },
   { value: 'treatment_abandoned', label: 'Tratamiento abandonado' },
   { value: 'patient_birthday', label: 'Cumpleaños del paciente' },
   { value: 'sale_created', label: 'Venta registrada' },
+  { value: 'quotation_sent', label: 'Cotización enviada' },
   { value: 'inbound_message', label: 'Mensaje entrante (chat)' },
   { value: 'keyword', label: 'Palabra clave (chat)' },
   { value: 'new_conversation', label: 'Nueva conversación (chat)' },
@@ -70,8 +73,8 @@ const OPS = [
   { value: 'exists', label: 'existe' },
 ];
 
-const newStep = (type) => ({ type, body: '', templateName: '', templateLanguage: 'es', emailSubject: '', waitMinutes: 60, waitEvent: 'appointment_date', offsetMinutes: -1440, timeoutMinutes: 720, appointmentStatus: 'confirmada', field: 'tag', op: 'eq', value: '', onFailGoTo: null, tag: '', stage: 'contactado', assignMode: 'roundrobin', assignUser: '', taskTitle: '', taskDueOffsetMinutes: 1440, webhookUrl: '', webhookMethod: 'POST' });
-const blank = () => ({ name: '', folder: 'General', active: false, trigger: { type: 'appointment_created', audience: 'all', serviceFilter: null, keywords: [], matchType: 'contains', tagFilter: '' }, steps: [] });
+const newStep = (type) => ({ type, body: '', templateName: '', templateLanguage: 'es', emailSubject: '', waitMinutes: 60, waitEvent: 'appointment_date', offsetMinutes: -1440, timeoutMinutes: 720, appointmentStatus: 'confirmada', field: 'tag', op: 'eq', value: '', onFailGoTo: null, tag: '', stage: 'contactado', assignMode: 'roundrobin', assignUser: null, taskTitle: '', taskDueOffsetMinutes: 1440, webhookUrl: '', webhookMethod: 'POST' });
+const blank = () => ({ name: '', folder: 'General', active: false, trigger: { type: 'appointment_created', audience: 'all', serviceFilter: null, keywords: [], matchType: 'contains', tagFilter: '' }, steps: [], nodes: [], edges: [] });
 
 export default function Workflows() {
   const [list, setList] = useState([]);
@@ -145,6 +148,16 @@ export default function Workflows() {
     setEditing({ ...blank(), folder });
   };
 
+  // Abre un workflow para editar; convierte los legacy (steps) a grafo (nodes/edges).
+  const openEdit = (wf) => {
+    const triggerLabel = TRIGGERS.find((t) => t.value === wf.trigger?.type)?.label || 'Disparador';
+    const hasGraph = Array.isArray(wf.nodes) && wf.nodes.length > 0;
+    const graph = hasGraph
+      ? { nodes: wf.nodes.map((n) => ({ ...n, data: { ...n.data } })), edges: (wf.edges || []).map((e) => ({ ...e })) }
+      : stepsToGraph(wf.steps || [], triggerLabel);
+    setEditing({ ...wf, trigger: { ...wf.trigger }, steps: [], nodes: graph.nodes, edges: graph.edges });
+  };
+
   const installPreset = async (key) => {
     try {
       await api.post(`/workflows/presets/${key}`);
@@ -157,10 +170,19 @@ export default function Workflows() {
 
   const save = async () => {
     if (!editing.name.trim()) return toast.error('Ponle un nombre al workflow');
-    if (!editing.steps.length) return toast.error('Agrega al menos un paso');
+    const actionNodes = (editing.nodes || []).filter((n) => n.type !== 'trigger');
+    if (actionNodes.length === 0) return toast.error('Agrega al menos un paso al diagrama');
+    // Sanea ObjectId vacíos ('' → null) que romperían el cast en Mongoose.
+    const payload = {
+      ...editing,
+      trigger: { ...editing.trigger, serviceFilter: editing.trigger?.serviceFilter || null },
+      steps: [], // los workflows nuevos viven como grafo (nodes/edges)
+      nodes: editing.nodes || [],
+      edges: editing.edges || [],
+    };
     try {
-      if (editing._id) await api.put(`/workflows/${editing._id}`, editing);
-      else await api.post('/workflows', editing);
+      if (editing._id) await api.put(`/workflows/${editing._id}`, payload);
+      else await api.post('/workflows', payload);
       toast.success('Workflow guardado');
       setEditing(null);
       load();
@@ -291,7 +313,7 @@ export default function Workflows() {
               <div className="flex items-start gap-1 shrink-0">
                 <button onClick={() => toggleActive(wf)} className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer">{wf.active ? 'Pausar' : 'Activar'}</button>
                 <button onClick={() => setEnrollView(wf)} className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer">Inscritos</button>
-                <button onClick={() => setEditing({ ...wf, trigger: { ...wf.trigger }, steps: (wf.steps || []).map((s) => ({ ...s })) })} className="p-2 text-slate-500 hover:text-emerald-600 bg-transparent border-none cursor-pointer"><HiOutlinePencil /></button>
+                <button onClick={() => openEdit(wf)} className="p-2 text-slate-500 hover:text-emerald-600 bg-transparent border-none cursor-pointer"><HiOutlinePencil /></button>
                 <button onClick={() => remove(wf._id)} className="p-2 text-slate-500 hover:text-red-600 bg-transparent border-none cursor-pointer"><HiOutlineTrash /></button>
               </div>
             </div>
@@ -299,7 +321,7 @@ export default function Workflows() {
         </div>
       </div>
 
-      <Modal isOpen={!!editing} onClose={() => setEditing(null)} title={editing?._id ? 'Editar workflow' : 'Nuevo workflow'} size="lg">
+      <Modal isOpen={!!editing} onClose={() => setEditing(null)} title={editing?._id ? 'Editar workflow' : 'Nuevo workflow'} size="2xl">
         {editing && (
           <>
             <div className="grid gap-3">
@@ -363,6 +385,19 @@ export default function Workflows() {
                 )}
               </div>
 
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Diagrama de la automatización</p>
+                <WorkflowGraphEditor
+                  nodes={editing.nodes || []}
+                  edges={editing.edges || []}
+                  onChange={({ nodes, edges }) => setEditing({ ...editing, nodes, edges })}
+                  triggerLabel={TRIGGERS.find((t) => t.value === editing.trigger?.type)?.label || 'Disparador'}
+                  templates={templates}
+                  agents={agents}
+                />
+              </div>
+
+              {false && (
               <div>
                 <div className="flex items-center justify-between mb-2">
                   <p className="text-xs font-semibold text-slate-500 uppercase">Pasos</p>
@@ -540,6 +575,7 @@ export default function Workflows() {
                   ))}
                 </div>
               </div>
+              )}
 
               <label className="flex items-center gap-2 text-sm">
                 <input type="checkbox" checked={editing.active} onChange={(e) => setEditing({ ...editing, active: e.target.checked })} />

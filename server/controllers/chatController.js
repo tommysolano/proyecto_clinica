@@ -75,6 +75,20 @@ exports.listConversations = async (req, res) => {
   }
 };
 
+// Repuebla un documento de conversación con los campos que la UI necesita
+// (paciente, agente, productos de la oportunidad). Se usa al devolver el conv
+// tras una mutación para no perder los datos poblados en el cliente.
+async function populateConversation(conv) {
+  return conv.populate([
+    { path: 'patient', select: 'firstName lastName cedula phone whatsapp email marketing tags' },
+    { path: 'assignedTo', select: 'name email' },
+    { path: 'featuredBy', select: 'name' },
+    { path: 'opportunity.appointment', select: 'date startTime status' },
+    { path: 'opportunity.interestedIn.product', select: 'name salePrice' },
+    { path: 'opportunities.interestedIn.product', select: 'name salePrice' },
+  ]);
+}
+
 exports.getConversation = async (req, res) => {
   try {
     const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId })
@@ -82,7 +96,8 @@ exports.getConversation = async (req, res) => {
       .populate('assignedTo', 'name email')
       .populate('featuredBy', 'name')
       .populate('opportunity.appointment', 'date startTime status')
-      .populate('opportunity.interestedIn.product', 'name salePrice');
+      .populate('opportunity.interestedIn.product', 'name salePrice')
+      .populate('opportunities.interestedIn.product', 'name salePrice');
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
     res.json(conv);
   } catch (err) {
@@ -147,6 +162,7 @@ exports.updateConversation = async (req, res) => {
       if (req.body[k] !== undefined) conv[k] = req.body[k];
     });
     await conv.save();
+    await populateConversation(conv);
     res.json(conv);
   } catch (err) {
     res.status(500).json({ message: 'Error al actualizar conversación', error: err.message });
@@ -381,6 +397,24 @@ const sumInterestedValue = async (clinicId, items) => {
   return products.reduce((s, p) => s + Number(p.salePrice || 0), 0);
 };
 
+/**
+ * Mantiene el espejo legacy `conv.opportunity` en sync con el array
+ * `conv.opportunities`. El panel lateral, los listados y el embudo leen
+ * `conv.opportunity`; sin esta sincronización las ediciones del array no se
+ * reflejan en la UI ("se edita y no se guarda"). La oportunidad principal es la
+ * más reciente (última del array).
+ */
+const syncPrimaryOpportunity = (conv) => {
+  const list = Array.isArray(conv.opportunities) ? conv.opportunities : [];
+  if (list.length === 0) {
+    conv.opportunity = { isOpportunity: false, stage: 'nuevo' };
+  } else {
+    const primary = list[list.length - 1];
+    conv.opportunity = primary?.toObject ? primary.toObject() : { ...primary };
+  }
+  conv.markModified('opportunity');
+};
+
 exports.addOpportunity = async (req, res) => {
   try {
     const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
@@ -397,12 +431,14 @@ exports.addOpportunity = async (req, res) => {
       interestedIn,
       expectedValue,
       notes: req.body.notes || '',
+      tags: Array.isArray(req.body.tags) ? req.body.tags.filter(Boolean) : [],
       createdAt: new Date(),
     };
     conv.opportunities = [...(conv.opportunities || []), opp];
-    // Mantener compat: opportunity principal = primera/última creada.
-    conv.opportunity = opp;
+    // Mantener compat: opportunity principal = última creada.
+    syncPrimaryOpportunity(conv);
     await conv.save();
+    await populateConversation(conv);
     res.status(201).json(conv);
   } catch (err) {
     res.status(500).json({ message: 'Error al crear oportunidad', error: err.message });
@@ -426,10 +462,13 @@ exports.updateOpportunityAt = async (req, res) => {
     if (req.body.stage) current.stage = req.body.stage;
     if (req.body.notes !== undefined) current.notes = req.body.notes;
     if (req.body.lostReason !== undefined) current.lostReason = req.body.lostReason;
+    if (Array.isArray(req.body.tags)) current.tags = req.body.tags.filter(Boolean);
     if (req.body.stage === 'ganado' && !current.convertedAt) current.convertedAt = new Date();
     conv.opportunities[idx] = current;
     conv.markModified('opportunities');
+    syncPrimaryOpportunity(conv);
     await conv.save();
+    await populateConversation(conv);
     res.json(conv);
   } catch (err) {
     res.status(500).json({ message: 'Error al actualizar oportunidad', error: err.message });
@@ -443,7 +482,9 @@ exports.removeOpportunityAt = async (req, res) => {
     if (!canMutateConversation(req, conv)) return res.status(403).json({ message: 'No autorizado' });
     const idx = Number(req.params.idx);
     conv.opportunities = (conv.opportunities || []).filter((_, i) => i !== idx);
+    syncPrimaryOpportunity(conv);
     await conv.save();
+    await populateConversation(conv);
     res.json(conv);
   } catch (err) {
     res.status(500).json({ message: 'Error', error: err.message });
@@ -1557,6 +1598,14 @@ exports.webhookWhatsappReceive = async (req, res) => {
     for (const entry of entries) {
       for (const change of entry.changes || []) {
         const value = change.value || {};
+        // Cambios de plantilla (categoría/estado) notificados por Meta en tiempo real.
+        if (change.field === 'message_template_status_update' || change.field === 'template_category_update') {
+          // eslint-disable-next-line no-await-in-loop
+          await require('./messageTemplateController')
+            .handleTemplateWebhook(clinicId, change.field, value)
+            .catch((e) => console.error('[whatsapp webhook template]', e.message));
+          continue;
+        }
         if (Array.isArray(value.statuses) && value.statuses.length) {
           // eslint-disable-next-line no-await-in-loop
           statusUpdates += await processMetaStatuses(clinicId, value.statuses);

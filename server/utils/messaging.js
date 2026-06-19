@@ -107,6 +107,31 @@ function normalizeTemplate(template, vars) {
   };
 }
 
+/**
+ * Si la plantilla tiene cabecera multimedia (imagen/documento/video) con URL
+ * pública, antepone el componente `header` que exige la Cloud API. Busca el doc
+ * de plantilla por nombre+clínica. No-op si no hay cabecera o ya viene incluida.
+ */
+async function enrichTemplateHeader(clinicId, templateInfo) {
+  if (!templateInfo?.name) return templateInfo;
+  const hasHeader = (templateInfo.components || []).some((c) => c.type === 'header');
+  if (hasHeader) return templateInfo;
+  const MessageTemplate = require('../models/MessageTemplate');
+  const tpl = await MessageTemplate.findOne({
+    clinic: clinicId,
+    channel: 'whatsapp',
+    name: templateInfo.name,
+  }).select('headerType headerMediaUrl').lean();
+  if (!tpl || !tpl.headerMediaUrl) return templateInfo;
+  const kind = ['image', 'document', 'video'].includes(tpl.headerType) ? tpl.headerType : null;
+  if (!kind) return templateInfo;
+  const headerComponent = {
+    type: 'header',
+    parameters: [{ type: kind, [kind]: { link: tpl.headerMediaUrl } }],
+  };
+  return { ...templateInfo, components: [headerComponent, ...(templateInfo.components || [])] };
+}
+
 function extractProviderMessageId(result) {
   const data = result?.data || result;
   return (
@@ -373,7 +398,10 @@ async function send({
     if (consentReason) return { ok: false, skipped: true, reason: consentReason };
   }
 
-  const templateInfo = normalizeTemplate(template, vars);
+  let templateInfo = normalizeTemplate(template, vars);
+  if (templateInfo && normalizedChannel === 'whatsapp') {
+    templateInfo = await enrichTemplateHeader(clinicId, templateInfo);
+  }
   if (normalizedChannel === 'whatsapp') {
     const computedWindow = getWhatsappWindowExpiresAt(conv);
     if (!conv.window24hExpiresAt && computedWindow) {

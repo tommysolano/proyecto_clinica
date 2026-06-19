@@ -10,9 +10,28 @@
  */
 const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
+const CallCenterConfig = require('../models/CallCenterConfig');
+const { decryptSecret } = require('./secretCrypto');
 
 const ANTHROPIC_URL = 'https://api.anthropic.com/v1/messages';
 const DEFAULT_MODEL = process.env.ANTHROPIC_MODEL || 'claude-opus-4-8';
+
+/**
+ * Resuelve la configuración de IA de una clínica: usa CallCenterConfig.ai si está
+ * habilitada y tiene key; si no, cae a las variables de entorno. Devuelve
+ * { apiKey, model } o { apiKey: null } si no hay forma de llamar a la IA.
+ */
+async function getAiConfig(clinicId) {
+  if (clinicId) {
+    const cfg = await CallCenterConfig.findOne({ clinic: clinicId }).select('ai').lean();
+    const ai = cfg?.ai;
+    if (ai?.enabled && ai?.apiKey) {
+      return { apiKey: decryptSecret(ai.apiKey), model: ai.model || DEFAULT_MODEL };
+    }
+  }
+  const envKey = process.env.ANTHROPIC_API_KEY;
+  return { apiKey: envKey || null, model: DEFAULT_MODEL };
+}
 
 const SYSTEM_PROMPT =
   'Eres un asistente del call center de una clínica estética en Ecuador. ' +
@@ -50,7 +69,7 @@ function extractText(data) {
  * Centraliza el manejo de errores y de `stop_reason:'refusal'`.
  * @returns {{ ok:boolean, text?:string, reason?:string }}
  */
-async function callClaude({ apiKey, system, userContent, maxTokens = 400 }) {
+async function callClaude({ apiKey, model, system, userContent, maxTokens = 400 }) {
   let res;
   try {
     res = await fetch(ANTHROPIC_URL, {
@@ -61,7 +80,7 @@ async function callClaude({ apiKey, system, userContent, maxTokens = 400 }) {
         'content-type': 'application/json',
       },
       body: JSON.stringify({
-        model: DEFAULT_MODEL,
+        model: model || DEFAULT_MODEL,
         max_tokens: maxTokens,
         system,
         messages: [{ role: 'user', content: userContent }],
@@ -86,8 +105,8 @@ async function callClaude({ apiKey, system, userContent, maxTokens = 400 }) {
  * @returns {{ ok:boolean, suggestion?:string, reason?:string }}
  */
 async function suggestReply({ clinicId, conversationId }) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return { ok: false, reason: 'IA no configurada (falta ANTHROPIC_API_KEY)' };
+  const { apiKey, model } = await getAiConfig(clinicId);
+  if (!apiKey) return { ok: false, reason: 'IA no configurada. Actívala en Configuración Call Center → IA.' };
 
   const conv = await Conversation.findOne({ _id: conversationId, clinic: clinicId })
     .populate('patient', 'firstName lastName');
@@ -105,6 +124,7 @@ async function suggestReply({ clinicId, conversationId }) {
 
   const r = await callClaude({
     apiKey,
+    model,
     system: SYSTEM_PROMPT,
     userContent: buildUserPrompt(messages, contactName),
     maxTokens: 400,
@@ -123,8 +143,8 @@ const SUMMARY_SYSTEM =
  * @returns {{ ok:boolean, summary?:string, reason?:string }}
  */
 async function summarizeConversation({ clinicId, conversationId }) {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return { ok: false, reason: 'IA no configurada (falta ANTHROPIC_API_KEY)' };
+  const { apiKey, model } = await getAiConfig(clinicId);
+  if (!apiKey) return { ok: false, reason: 'IA no configurada. Actívala en Configuración Call Center → IA.' };
 
   const conv = await Conversation.findOne({ _id: conversationId, clinic: clinicId });
   if (!conv) return { ok: false, reason: 'Conversación no encontrada' };
@@ -143,6 +163,7 @@ async function summarizeConversation({ clinicId, conversationId }) {
 
   const r = await callClaude({
     apiKey,
+    model,
     system: SUMMARY_SYSTEM,
     userContent: `Conversación:\n${transcript}\n\nResume la conversación.`,
     maxTokens: 500,
@@ -150,4 +171,21 @@ async function summarizeConversation({ clinicId, conversationId }) {
   return r.ok ? { ok: true, summary: r.text } : r;
 }
 
-module.exports = { buildUserPrompt, extractText, callClaude, suggestReply, summarizeConversation, DEFAULT_MODEL };
+/**
+ * Prueba la configuración de IA de una clínica con una llamada mínima.
+ * @returns {{ ok:boolean, reason?:string, model?:string }}
+ */
+async function testAiConnection(clinicId) {
+  const { apiKey, model } = await getAiConfig(clinicId);
+  if (!apiKey) return { ok: false, reason: 'No hay API key configurada (ni en config ni en entorno).' };
+  const r = await callClaude({
+    apiKey,
+    model,
+    system: 'Responde con la palabra "ok".',
+    userContent: 'ping',
+    maxTokens: 10,
+  });
+  return r.ok ? { ok: true, model } : { ok: false, reason: r.reason };
+}
+
+module.exports = { buildUserPrompt, extractText, callClaude, suggestReply, summarizeConversation, getAiConfig, testAiConnection, DEFAULT_MODEL };

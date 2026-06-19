@@ -1,5 +1,6 @@
 const Quotation = require('../models/Quotation');
 const Product = require('../models/Product');
+const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
 
 const POPULATE = [
   { path: 'patient', select: 'firstName lastName cedula phone email' },
@@ -430,6 +431,15 @@ exports.shareWhatsapp = async (req, res) => {
       q.shareToken = crypto.randomBytes(16).toString('hex');
       if (q.status === 'borrador') q.status = 'enviada';
       await q.save();
+    }
+
+    // Dispara workflows con trigger 'quotation_sent' (solo si hay paciente vinculado).
+    if (q.patient) {
+      emitDomainEvent(DOMAIN_EVENTS.QUOTATION_SENT, {
+        clinicId: String(q.clinic),
+        patientId: String(q.patient?._id || q.patient),
+        services: (q.items || []).map((it) => String(it.product?._id || it.product)).filter(Boolean),
+      });
     }
 
     const base = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}`;

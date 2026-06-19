@@ -86,15 +86,45 @@ const TRIGGER_TYPES = [
   'appointment_created',
   'appointment_attended',
   'appointment_no_show',
+  'appointment_cancelled',
   'treatment_abandoned',
   'patient_birthday',
   'sale_created',
+  'quotation_sent',
   // Disparadores de chat (reemplazan a MessageFlow):
   'inbound_message',
   'keyword',
   'new_conversation',
   'tag_added',
 ];
+
+// Nodo del grafo visual (editor estilo GoHighLevel). `type` es el tipo de paso
+// (mismos tipos que workflowStepSchema) o 'trigger' para el nodo inicial.
+// `data` lleva la configuración del paso (body, templateName, field/op/value, etc.).
+const workflowNodeSchema = new mongoose.Schema(
+  {
+    id: { type: String, required: true },
+    type: { type: String, required: true },
+    position: {
+      x: { type: Number, default: 0 },
+      y: { type: Number, default: 0 },
+    },
+    data: { type: mongoose.Schema.Types.Mixed, default: {} },
+  },
+  { _id: false }
+);
+
+// Arista dirigida. `sourceHandle` distingue las ramas de una condición:
+// 'yes' | 'no' (para condition/goal) o 'default' para pasos lineales.
+const workflowEdgeSchema = new mongoose.Schema(
+  {
+    id: { type: String, required: true },
+    source: { type: String, required: true },
+    target: { type: String, required: true },
+    sourceHandle: { type: String, default: 'default' },
+  },
+  { _id: false }
+);
 
 const workflowSchema = new mongoose.Schema(
   {
@@ -115,7 +145,11 @@ const workflowSchema = new mongoose.Schema(
       // Trigger 'tag_added': solo dispara si se añade esta etiqueta (vacío = cualquiera).
       tagFilter: { type: String, trim: true, default: '' },
     },
+    // Modelo lineal (legacy / compatibilidad). Los workflows nuevos usan nodes/edges.
     steps: { type: [workflowStepSchema], default: [] },
+    // Grafo visual con ramificaciones (editor react-flow).
+    nodes: { type: [workflowNodeSchema], default: [] },
+    edges: { type: [workflowEdgeSchema], default: [] },
     stats: {
       enrolled: { type: Number, default: 0 },
       completed: { type: Number, default: 0 },

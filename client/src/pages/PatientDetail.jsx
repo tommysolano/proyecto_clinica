@@ -5,6 +5,7 @@ import { downloadFile } from '../utils/download';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { fmtDate } from '../utils/date';
+import TagEditor from '../components/TagEditor';
 import {
   HiOutlineArrowLeft,
   HiOutlineUser,
@@ -139,6 +140,21 @@ export default function PatientDetail() {
                 </>
               )}
             </p>
+            <div className="mt-2">
+              <TagEditor
+                value={patient.tags || []}
+                onChange={async (next) => {
+                  const prev = patient.tags || [];
+                  setPatient({ ...patient, tags: next });
+                  try {
+                    await api.put(`/patients/${patient._id}`, { tags: next });
+                  } catch (err) {
+                    toast.error(err.response?.data?.message || 'No se pudieron guardar las etiquetas');
+                    setPatient({ ...patient, tags: prev });
+                  }
+                }}
+              />
+            </div>
           </div>
           {timerSeconds !== null && (
             <div className="flex flex-col items-end gap-1 ml-4 shrink-0">

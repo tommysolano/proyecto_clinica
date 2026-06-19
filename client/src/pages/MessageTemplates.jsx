@@ -7,8 +7,18 @@ import {
   HiOutlineTrash,
   HiOutlineArrowPath,
   HiOutlineDocumentText,
+  HiOutlinePhoto,
+  HiOutlineXMark,
+  HiOutlineExclamationTriangle,
 } from 'react-icons/hi2';
 import Modal from '../components/Modal';
+import WhatsappPreview from '../components/WhatsappPreview';
+
+const BUTTON_TYPES = [
+  { value: 'quick_reply', label: 'Respuesta rápida' },
+  { value: 'url', label: 'Enlace (URL)' },
+  { value: 'phone', label: 'Llamar' },
+];
 
 const CATEGORIES = [
   { value: 'MARKETING', label: 'Marketing (promocional)' },
@@ -29,9 +39,13 @@ const blank = () => ({
   name: '',
   language: 'es',
   category: 'MARKETING',
+  headerType: 'none',
+  headerText: '',
+  headerMediaUrl: '',
   body: '',
   footer: '',
   subject: '',
+  buttons: [],
 });
 
 export default function MessageTemplates() {
@@ -39,12 +53,58 @@ export default function MessageTemplates() {
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(null);
   const [syncing, setSyncing] = useState(false);
+  const [uploading, setUploading] = useState(false);
+
+  const uploadHeaderImage = async (file) => {
+    if (!file) return;
+    if (file.size > 1_800_000) {
+      toast.error('Imagen demasiado grande (máx ~1.8MB)');
+      return;
+    }
+    setUploading(true);
+    try {
+      const dataUrl = await new Promise((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(reader.result);
+        reader.onerror = reject;
+        reader.readAsDataURL(file);
+      });
+      const { data } = await api.post('/message-templates/upload-image', { dataUrl, name: file.name });
+      setEditing((prev) => ({ ...prev, headerType: 'image', headerMediaUrl: data.url }));
+      toast.success('Imagen subida');
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'No se pudo subir la imagen');
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const [alerts, setAlerts] = useState([]);
+
+  const loadAlerts = async () => {
+    try {
+      const { data } = await api.get('/message-templates/alerts', { params: { unread: true } });
+      setAlerts(data || []);
+    } catch {
+      /* noop */
+    }
+  };
+
+  const dismissAlert = async (id) => {
+    setAlerts((prev) => prev.filter((a) => a._id !== id));
+    try {
+      await api.post(`/message-templates/alerts/${id}/read`);
+    } catch {
+      /* noop */
+    }
+  };
 
   const load = async () => {
     setLoading(true);
     try {
       const { data } = await api.get('/message-templates');
       setList(data);
+      loadAlerts();
     } catch (e) {
       toast.error(e.response?.data?.message || 'Error al cargar plantillas');
     } finally {
@@ -91,7 +151,7 @@ export default function MessageTemplates() {
     setSyncing(true);
     try {
       const { data } = await api.post('/message-templates/sync-whatsapp');
-      toast.success(`Sincronizado: ${data.imported} importadas, ${data.updated} actualizadas`);
+      toast.success(`Sincronizado: ${data.imported} importadas, ${data.updated} actualizadas${data.alerts ? `, ${data.alerts} alerta(s)` : ''}`);
       load();
     } catch (e) {
       toast.error(e.response?.data?.message || 'Error al sincronizar con Meta');
@@ -127,6 +187,31 @@ export default function MessageTemplates() {
           </button>
         </div>
       </div>
+
+      {alerts.length > 0 && (
+        <div className="mb-4 space-y-2">
+          {alerts.map((a) => (
+            <div
+              key={a._id}
+              className={`flex items-start justify-between gap-3 rounded-xl border px-3 py-2 ${a.severity === 'error' ? 'bg-red-50 border-red-200' : 'bg-amber-50 border-amber-200'}`}
+            >
+              <div className="flex items-start gap-2">
+                <HiOutlineExclamationTriangle className={`w-5 h-5 mt-0.5 shrink-0 ${a.severity === 'error' ? 'text-red-500' : 'text-amber-500'}`} />
+                <div>
+                  <div className="text-sm font-semibold text-slate-800">{a.title}</div>
+                  {a.body && <div className="text-xs text-slate-600">{a.body}</div>}
+                </div>
+              </div>
+              <button
+                onClick={() => dismissAlert(a._id)}
+                className="text-xs text-slate-500 hover:text-slate-800 bg-transparent border-none cursor-pointer shrink-0"
+              >
+                Descartar
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       {loading ? (
         <p className="text-slate-400">Cargando…</p>
@@ -172,10 +257,12 @@ export default function MessageTemplates() {
         </div>
       )}
 
-      <Modal isOpen={!!editing} onClose={() => setEditing(null)} title={editing?._id ? 'Editar plantilla' : 'Nueva plantilla'} size="md">
+      <Modal isOpen={!!editing} onClose={() => setEditing(null)} title={editing?._id ? 'Editar plantilla' : 'Nueva plantilla'} size="xl">
         {editing && (
           <>
-            <div className="grid gap-3">
+            <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-5">
+              {/* Columna formulario */}
+              <div className="grid gap-3 content-start">
               <label className="text-sm">
                 <span className="text-slate-600">Nombre (sin espacios, minúsculas)</span>
                 <input
@@ -211,6 +298,67 @@ export default function MessageTemplates() {
                   <input value={editing.subject || ''} onChange={(e) => setEditing({ ...editing, subject: e.target.value })} className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
                 </label>
               )}
+
+              {/* Cabecera (solo WhatsApp) */}
+              {editing.channel === 'whatsapp' && (
+                <div className="border border-slate-100 rounded-lg p-3 bg-slate-50/60">
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs font-semibold text-slate-500 uppercase">Cabecera</span>
+                    <select
+                      value={editing.headerType || 'none'}
+                      onChange={(e) => setEditing({ ...editing, headerType: e.target.value })}
+                      className="border border-slate-200 rounded-lg px-2 py-1 text-xs bg-white"
+                    >
+                      <option value="none">Ninguna</option>
+                      <option value="text">Texto</option>
+                      <option value="image">Imagen</option>
+                      <option value="document">Documento</option>
+                    </select>
+                  </div>
+                  {editing.headerType === 'text' && (
+                    <input
+                      value={editing.headerText || ''}
+                      onChange={(e) => setEditing({ ...editing, headerText: e.target.value })}
+                      placeholder="Título de la cabecera"
+                      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                    />
+                  )}
+                  {(editing.headerType === 'image' || editing.headerType === 'document') && (
+                    <div className="flex items-center gap-3">
+                      {editing.headerMediaUrl ? (
+                        <div className="relative">
+                          <img src={editing.headerMediaUrl} alt="header" className="w-20 h-20 object-cover rounded-lg border border-slate-200" />
+                          <button
+                            type="button"
+                            onClick={() => setEditing({ ...editing, headerMediaUrl: '' })}
+                            className="absolute -top-1.5 -right-1.5 bg-white border border-slate-200 rounded-full p-0.5 cursor-pointer"
+                            title="Quitar"
+                          >
+                            <HiOutlineXMark className="w-3.5 h-3.5 text-rose-500" />
+                          </button>
+                        </div>
+                      ) : (
+                        <div className="w-20 h-20 rounded-lg border border-dashed border-slate-300 flex items-center justify-center text-slate-300">
+                          <HiOutlinePhoto className="w-7 h-7" />
+                        </div>
+                      )}
+                      <div className="flex-1">
+                        <label className="inline-flex items-center gap-1 px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer hover:border-emerald-400">
+                          <HiOutlinePhoto className="w-4 h-4" /> {uploading ? 'Subiendo…' : 'Subir imagen'}
+                          <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => uploadHeaderImage(e.target.files?.[0])} />
+                        </label>
+                        <input
+                          value={editing.headerMediaUrl || ''}
+                          onChange={(e) => setEditing({ ...editing, headerMediaUrl: e.target.value })}
+                          placeholder="…o pega una URL pública"
+                          className="w-full mt-1.5 border border-slate-200 rounded-lg px-2 py-1 text-xs"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+              )}
+
               <label className="text-sm">
                 <span className="text-slate-600">Cuerpo (usa variables como {'{{firstName}}'} o {'{{1}}'})</span>
                 <textarea
@@ -225,6 +373,60 @@ export default function MessageTemplates() {
                 <span className="text-slate-600">Pie (opcional)</span>
                 <input value={editing.footer || ''} onChange={(e) => setEditing({ ...editing, footer: e.target.value })} className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
               </label>
+
+              {/* Botones (solo WhatsApp) */}
+              {editing.channel === 'whatsapp' && (
+                <div className="border border-slate-100 rounded-lg p-3 bg-slate-50/60">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-xs font-semibold text-slate-500 uppercase">Botones (máx 3)</span>
+                    {(editing.buttons || []).length < 3 && (
+                      <button
+                        type="button"
+                        onClick={() => setEditing({ ...editing, buttons: [...(editing.buttons || []), { type: 'quick_reply', text: '', url: '' }] })}
+                        className="text-xs text-emerald-700 bg-white border border-emerald-200 rounded-lg px-2 py-1 cursor-pointer flex items-center gap-1"
+                      >
+                        <HiOutlinePlus className="w-3.5 h-3.5" /> Añadir
+                      </button>
+                    )}
+                  </div>
+                  {(editing.buttons || []).length === 0 && <p className="text-xs text-slate-400">Sin botones.</p>}
+                  <div className="grid gap-2">
+                    {(editing.buttons || []).map((b, i) => (
+                      <div key={i} className="flex items-center gap-2">
+                        <select
+                          value={b.type}
+                          onChange={(e) => setEditing({ ...editing, buttons: editing.buttons.map((x, j) => j === i ? { ...x, type: e.target.value } : x) })}
+                          className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white"
+                        >
+                          {BUTTON_TYPES.map((bt) => <option key={bt.value} value={bt.value}>{bt.label}</option>)}
+                        </select>
+                        <input
+                          value={b.text}
+                          onChange={(e) => setEditing({ ...editing, buttons: editing.buttons.map((x, j) => j === i ? { ...x, text: e.target.value } : x) })}
+                          placeholder="Texto del botón"
+                          className="flex-1 border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
+                        />
+                        {(b.type === 'url' || b.type === 'phone') && (
+                          <input
+                            value={b.url}
+                            onChange={(e) => setEditing({ ...editing, buttons: editing.buttons.map((x, j) => j === i ? { ...x, url: e.target.value } : x) })}
+                            placeholder={b.type === 'url' ? 'https://…' : '+593…'}
+                            className="flex-1 border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
+                          />
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => setEditing({ ...editing, buttons: editing.buttons.filter((_, j) => j !== i) })}
+                          className="p-1 text-slate-400 hover:text-rose-500 bg-transparent border-none cursor-pointer"
+                        >
+                          <HiOutlineTrash className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
               {editing.metaTemplateId ? (
                 <p className="text-xs text-amber-600">
                   Esta plantilla está ligada a Meta; el estado se gobierna por la sincronización.
@@ -239,6 +441,14 @@ export default function MessageTemplates() {
                   Tras crearla deberás registrarla/aprobarla en Meta para usarla fuera de la ventana de 24h.
                 </p>
               )}
+              </div>
+
+              {/* Columna preview */}
+              <div className="lg:sticky lg:top-0 h-max">
+                <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Previsualización</p>
+                <WhatsappPreview template={editing} />
+                <p className="text-[11px] text-slate-400 mt-2">Así se verá aproximadamente en WhatsApp. Las variables {'{{...}}'} se rellenan al enviar.</p>
+              </div>
             </div>
             <div className="flex justify-end gap-2 mt-6">
               <button onClick={() => setEditing(null)} className="px-4 py-2 border border-slate-200 rounded-lg text-sm bg-white cursor-pointer">Cancelar</button>

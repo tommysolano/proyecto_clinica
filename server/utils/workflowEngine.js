@@ -132,6 +132,221 @@ async function loadConversationForPatient(clinicId, phone) {
   return Conversation.findOne({ clinic: clinicId, phone: messaging.normalizePhone(phone) });
 }
 
+// ─────────── Ejecución de acciones (compartida por grafo) ───────────
+
+/**
+ * Ejecuta UNA acción de efecto secundario (no de control de flujo). La usa el
+ * runner de grafo. `convRef` = { current } comparte la conversación cargada
+ * perezosamente entre nodos. Replica la lógica del runner lineal.
+ */
+async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
+  const loadConv = async () => {
+    if (!convRef.current) convRef.current = await loadConversationForPatient(clinicId, phone);
+    return convRef.current;
+  };
+  switch (step.type) {
+    case 'send_message':
+      await messaging.send({ clinicId, channel: 'whatsapp', to: phone, patient, body: personalize(step.body, patient), isAutoReply: true });
+      break;
+    case 'send_template':
+      await messaging.send({ clinicId, channel: 'whatsapp', to: phone, patient, template: { name: step.templateName, language: step.templateLanguage || 'es', vars: [firstNameOf(patient)] }, isAutoReply: true });
+      break;
+    case 'send_email': {
+      const to = patient?.email;
+      if (to) await messaging.send({ clinicId, channel: 'email', to, patient, subject: personalize(step.emailSubject || 'Mensaje de tu clínica', patient), body: personalize(step.body, patient) });
+      break;
+    }
+    case 'assign_agent': {
+      const conversation = await loadConv();
+      if (conversation) {
+        let agent = null;
+        if (step.assignMode === 'user' && step.assignUser) agent = await User.findById(step.assignUser).select('_id name');
+        else agent = await pickRoundRobinAgent(clinicId);
+        if (agent) {
+          conversation.assignedTo = agent._id;
+          conversation.assignedToName = agent.name;
+          conversation.assignedAt = new Date();
+          await conversation.save();
+          emitToUser(agent._id, 'chat:assigned', { conversationId: conversation._id });
+        }
+      }
+      break;
+    }
+    case 'create_task': {
+      let assignTo = step.assignUser || null;
+      if (!assignTo) { const a = await pickRoundRobinAgent(clinicId); assignTo = a?._id || null; }
+      const offset = Number(step.taskDueOffsetMinutes || 0);
+      const task = await AgentTask.create({
+        clinic: clinicId,
+        title: personalize(step.taskTitle || 'Tarea automática', patient),
+        conversation: convRef.current?._id || null,
+        patient: patient?._id || null,
+        assignedTo: assignTo,
+        dueAt: offset ? new Date(Date.now() + offset * 60000) : null,
+      });
+      if (assignTo) emitToUser(assignTo, 'task:assigned', { id: task._id, title: task.title });
+      break;
+    }
+    case 'webhook':
+      if (step.webhookUrl) {
+        try {
+          const method = step.webhookMethod || 'POST';
+          const payload = {
+            event: 'workflow',
+            patient: patient ? { id: String(patient._id), firstName: patient.firstName, lastName: patient.lastName, phone: patient.phone, email: patient.email } : null,
+            conversationId: convRef.current?._id ? String(convRef.current._id) : null,
+            context: ctx,
+          };
+          await fetch(step.webhookUrl, { method, headers: { 'Content-Type': 'application/json' }, ...(method === 'POST' ? { body: JSON.stringify(payload) } : {}) });
+        } catch (err) { console.error('[workflowEngine] webhook error', err.message); }
+      }
+      break;
+    case 'request_review': {
+      const token = ReviewRequest.newToken();
+      await ReviewRequest.create({ clinic: clinicId, patient: patient?._id || null, appointment: ctx.appointmentId || null, conversation: convRef.current?._id || null, token, channel: 'whatsapp' });
+      const base = process.env.PUBLIC_API_URL || '';
+      const link = base ? `${base}/api/public/review/${token}` : '';
+      const text = personalize(step.body || '¡Hola {{nombre}}! ¿Cómo fue tu experiencia con nosotros? Califícanos aquí:', patient);
+      await messaging.send({ clinicId, channel: 'whatsapp', to: phone, patient, body: link ? `${text}\n${link}` : text, isAutoReply: true });
+      break;
+    }
+    case 'ai_reply': {
+      const conversation = await loadConv();
+      if (conversation) {
+        const { suggestReply } = require('./aiAssistant');
+        const r = await suggestReply({ clinicId, conversationId: conversation._id });
+        if (r.ok && r.suggestion) await messaging.send({ clinicId, channel: conversation.channel || 'whatsapp', to: phone, patient, conversation, body: r.suggestion, isAutoReply: true });
+      }
+      break;
+    }
+    case 'set_appointment_status':
+      if (ctx.appointmentId && step.appointmentStatus) {
+        const appt = await Appointment.findOne({ _id: ctx.appointmentId, clinic: clinicId });
+        if (appt && !['completada', 'asistida'].includes(appt.status)) {
+          appt.status = step.appointmentStatus;
+          await appt.save();
+          emitToClinic(clinicId, 'appointment:updated', appt);
+        }
+      }
+      break;
+    case 'add_tag':
+      if (step.tag && patient && !patient.tags.includes(step.tag)) { patient.tags.push(step.tag); await patient.save(); }
+      break;
+    case 'remove_tag':
+      if (step.tag && patient) { patient.tags = (patient.tags || []).filter((t) => t !== step.tag); await patient.save(); }
+      break;
+    case 'move_stage':
+      if (step.stage) {
+        const conversation = await loadConv();
+        if (conversation) {
+          conversation.opportunity = { ...(conversation.opportunity?.toObject ? conversation.opportunity.toObject() : conversation.opportunity || {}), isOpportunity: true, stage: step.stage };
+          await conversation.save();
+        }
+      }
+      break;
+    default:
+      break;
+  }
+}
+
+// ─────────── Helpers de grafo (nodes/edges) ───────────
+function getNode(workflow, id) {
+  return (workflow.nodes || []).find((n) => n.id === id) || null;
+}
+
+function findStartNode(workflow) {
+  const nodes = workflow.nodes || [];
+  const trigger = nodes.find((n) => n.type === 'trigger');
+  if (trigger) return trigger;
+  const targets = new Set((workflow.edges || []).map((e) => e.target));
+  return nodes.find((n) => !targets.has(n.id)) || nodes[0] || null;
+}
+
+/** Siguiente nodo siguiendo la arista del handle indicado (yes/no/default). */
+function nextNodeId(workflow, nodeId, handle = 'default') {
+  const edges = workflow.edges || [];
+  let edge = edges.find((e) => e.source === nodeId && (e.sourceHandle || 'default') === handle);
+  if (!edge && handle !== 'default') {
+    edge = edges.find((e) => e.source === nodeId && (e.sourceHandle || 'default') === 'default');
+  }
+  if (!edge && handle === 'default') {
+    edge = edges.find((e) => e.source === nodeId);
+  }
+  return edge ? edge.target : null;
+}
+
+/**
+ * Ejecuta una inscripción de un workflow de GRAFO recorriendo aristas desde
+ * `enrollment.currentNodeId` (o desde el nodo inicial). Las condiciones bifurcan
+ * por las aristas 'yes'/'no'. Persiste el estado en cada espera.
+ */
+async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ctx, conversation }) {
+  const convRef = { current: conversation };
+  let currentId = enrollment.currentNodeId;
+  if (!currentId) {
+    const start = findStartNode(workflow);
+    if (!start) { enrollment.status = 'done'; await enrollment.save(); return; }
+    currentId = start.type === 'trigger' ? nextNodeId(workflow, start.id) : start.id;
+  }
+  let transitions = 0;
+  const now = new Date();
+  while (currentId) {
+    if (++transitions > MAX_STEP_TRANSITIONS) break;
+    const node = getNode(workflow, currentId);
+    if (!node) break;
+    const data = node.data || {};
+    const type = node.type;
+
+    if (type === 'trigger') {
+      currentId = nextNodeId(workflow, currentId);
+    } else if (type === 'wait') {
+      const mins = Number(data.waitMinutes || 0);
+      if (mins > 0) {
+        enrollment.currentNodeId = nextNodeId(workflow, currentId);
+        enrollment.nextRunAt = new Date(Date.now() + mins * 60000);
+        enrollment.status = 'waiting';
+        await enrollment.save();
+        return;
+      }
+      currentId = nextNodeId(workflow, currentId);
+    } else if (type === 'wait_until') {
+      const target = computeWaitUntil(data, ctx);
+      const nxt = nextNodeId(workflow, currentId);
+      if (target && target.getTime() > now.getTime()) {
+        enrollment.currentNodeId = nxt;
+        enrollment.nextRunAt = target;
+        enrollment.status = 'waiting';
+        await enrollment.save();
+        return;
+      }
+      currentId = nxt;
+    } else if (type === 'wait_reply') {
+      enrollment.currentNodeId = nextNodeId(workflow, currentId);
+      enrollment.nextRunAt = new Date(Date.now() + Number(data.timeoutMinutes || 720) * 60000);
+      enrollment.status = 'waiting';
+      enrollment.waitingForReply = true;
+      enrollment.markModified('context');
+      await enrollment.save();
+      return;
+    } else if (type === 'condition') {
+      const pass = evaluateCondition(data, { patient, conversation: convRef.current, context: ctx });
+      currentId = nextNodeId(workflow, currentId, pass ? 'yes' : 'no');
+    } else if (type === 'goal') {
+      if (evaluateCondition(data, { patient, conversation: convRef.current, context: ctx })) break;
+      currentId = nextNodeId(workflow, currentId);
+    } else {
+      // eslint-disable-next-line no-await-in-loop
+      await performAction({ ...data, type }, { clinicId: enrollment.clinic, patient, phone, ctx, convRef });
+      currentId = nextNodeId(workflow, currentId);
+    }
+  }
+
+  enrollment.currentNodeId = null;
+  enrollment.status = 'done';
+  await enrollment.save();
+  await Workflow.updateOne({ _id: workflow._id }, { $inc: { 'stats.completed': 1 } });
+}
+
 /**
  * Ejecuta una inscripción desde su stepIndex hasta encontrar una espera o
  * terminar. Persiste el estado en cada parada.
@@ -153,6 +368,11 @@ async function executeEnrollment(enrollment) {
   // Estamos ejecutando activamente: ya no esperamos respuesta (se reactivará si
   // un próximo paso wait_reply vuelve a pausar).
   enrollment.waitingForReply = false;
+
+  // Workflows de grafo (nodes/edges): recorrido por aristas con ramificaciones.
+  if ((workflow.nodes || []).length > 0) {
+    return executeGraphEnrollment(enrollment, workflow, patient, { phone, ctx, conversation });
+  }
 
   let i = enrollment.stepIndex;
   let transitions = 0;
@@ -581,9 +801,11 @@ function subscribeDomainEvents() {
     [DOMAIN_EVENTS.APPOINTMENT_CREATED]: 'appointment_created',
     [DOMAIN_EVENTS.APPOINTMENT_ATTENDED]: 'appointment_attended',
     [DOMAIN_EVENTS.APPOINTMENT_NO_SHOW]: 'appointment_no_show',
+    [DOMAIN_EVENTS.APPOINTMENT_CANCELLED]: 'appointment_cancelled',
     [DOMAIN_EVENTS.TREATMENT_ABANDONED]: 'treatment_abandoned',
     [DOMAIN_EVENTS.PATIENT_BIRTHDAY]: 'patient_birthday',
     [DOMAIN_EVENTS.SALE_CREATED]: 'sale_created',
+    [DOMAIN_EVENTS.QUOTATION_SENT]: 'quotation_sent',
     [DOMAIN_EVENTS.TAG_ADDED]: 'tag_added',
   };
   Object.entries(map).forEach(([event, triggerType]) => {
@@ -599,6 +821,9 @@ module.exports = {
   pickRoundRobinAgent,
   personalize,
   executeEnrollment,
+  executeGraphEnrollment,
+  findStartNode,
+  nextNodeId,
   enrollForEvent,
   enrollForChatMessage,
   processDueEnrollments,

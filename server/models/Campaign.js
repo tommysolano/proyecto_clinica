@@ -19,6 +19,14 @@ const campaignSchema = new mongoose.Schema(
     body: { type: String, default: '' },
     subject: { type: String, default: '' }, // solo email
     scheduledFor: { type: Date, default: Date.now },
+    // Tope de destinatarios (null = sin tope). Recorta el segmento al crear.
+    maxRecipients: { type: Number, default: null, min: 1 },
+    // Envío por lotes (goteo): `batchSize` destinatarios cada `intervalMinutes`.
+    // batchSize=0 → todo de una vez.
+    drip: {
+      batchSize: { type: Number, default: 0, min: 0 },
+      intervalMinutes: { type: Number, default: 60, min: 1 },
+    },
     status: {
       type: String,
       enum: ['draft', 'scheduled', 'sending', 'done', 'cancelled'],

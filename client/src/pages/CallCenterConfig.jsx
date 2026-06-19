@@ -14,6 +14,7 @@ const TABS = [
   { key: 'instagram', label: 'Instagram', color: 'pink' },
   { key: 'tiktok', label: 'TikTok', color: 'slate' },
   { key: 'email', label: 'Email', color: 'amber' },
+  { key: 'ai', label: 'Inteligencia Artificial', color: 'violet' },
 ];
 
 const FIELD_DEFS = {
@@ -51,6 +52,10 @@ const FIELD_DEFS = {
     { key: 'fromName', label: 'Nombre remitente', sensitive: false },
     { key: 'replyTo', label: 'Responder a (opcional)', sensitive: false },
   ],
+  ai: [
+    { key: 'apiKey', label: 'API Key de Anthropic (Claude)', help: 'En console.anthropic.com → API Keys. Se guarda cifrada.', sensitive: true },
+    { key: 'model', label: 'Modelo', help: 'Por defecto: claude-opus-4-8', sensitive: false },
+  ],
 };
 
 export default function CallCenterConfig() {
@@ -60,6 +65,7 @@ export default function CallCenterConfig() {
     instagram: { enabled: false },
     tiktok: { enabled: false },
     email: { enabled: false },
+    ai: { enabled: false },
   });
   const [webhookUrls, setWebhookUrls] = useState(null);
   const [tab, setTab] = useState('whatsapp');
@@ -243,7 +249,7 @@ export default function CallCenterConfig() {
         </div>
 
         {/* URLs del webhook que el usuario debe pegar en Meta/TikTok */}
-        {webhookUrls && (
+        {webhookUrls && webhookUrls[tab] && (
           <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 text-xs space-y-2">
             <p className="font-semibold text-slate-700">URL del webhook (cópiala al panel del proveedor)</p>
             <div className="flex items-center gap-2 bg-white border border-slate-200 rounded-xl px-2 py-1.5">

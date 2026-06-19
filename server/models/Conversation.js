@@ -28,6 +28,8 @@ const opportunitySchema = new mongoose.Schema(
     ],
     expectedValue: { type: Number, default: 0, min: 0 },
     notes: { type: String, trim: true },
+    // Etiquetas propias de la oportunidad (independientes de las del contacto/paciente).
+    tags: { type: [String], default: [] },
     appointment: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment', default: null },
     convertedAt: { type: Date },
     lostReason: { type: String, trim: true },

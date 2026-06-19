@@ -33,6 +33,7 @@ const maskConfig = (cfg) => {
   out.instagram = maskChannel(out.instagram);
   out.tiktok = maskChannel(out.tiktok);
   out.email = maskChannel(out.email);
+  out.ai = maskChannel(out.ai);
   return out;
 };
 
@@ -80,7 +81,7 @@ exports.getWebhookUrls = async (req, res) => {
 exports.update = async (req, res) => {
   try {
     const { channel, data } = req.body;
-    if (!['whatsapp', 'messenger', 'instagram', 'tiktok', 'email'].includes(channel)) {
+    if (!['whatsapp', 'messenger', 'instagram', 'tiktok', 'email', 'ai'].includes(channel)) {
       return res.status(400).json({ message: 'Canal inválido' });
     }
     if (!data || typeof data !== 'object') {
@@ -185,6 +186,21 @@ exports.testConnection = async (req, res) => {
       });
     }
     res.status(400).json({ message: 'Canal no soportado' });
+  } catch (err) {
+    res.status(500).json({ message: 'Error de prueba', error: err.message });
+  }
+};
+
+/**
+ * POST /api/call-center-config/ai/test
+ * Prueba la conexión con la IA usando la config guardada (o el entorno).
+ */
+exports.testAi = async (req, res) => {
+  try {
+    const { testAiConnection } = require('../utils/aiAssistant');
+    const r = await testAiConnection(req.clinicId);
+    if (!r.ok) return res.status(400).json({ message: r.reason || 'No se pudo conectar con la IA' });
+    res.json({ ok: true, model: r.model });
   } catch (err) {
     res.status(500).json({ message: 'Error de prueba', error: err.message });
   }

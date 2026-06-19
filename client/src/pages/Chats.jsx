@@ -23,6 +23,7 @@ import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
 import SameSlotPanel from '../components/SameSlotPanel';
+import TagEditor from '../components/TagEditor';
 import { fmtDate } from '../utils/date';
 
 const STAGES = [
@@ -85,6 +86,8 @@ export default function Chats() {
   const [draft, setDraft] = useState('');
   const [suggesting, setSuggesting] = useState(false);
   const [templateDraft, setTemplateDraft] = useState({ name: '', language: 'es', vars: '' });
+  const [templates, setTemplates] = useState([]); // plantillas WhatsApp aprobadas
+  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
   // Mensajes guardados y galería
   const [savedReplies, setSavedReplies] = useState([]);
   const [slashOpen, setSlashOpen] = useState(false);
@@ -153,6 +156,11 @@ export default function Chats() {
     api.get('/chats/saved-replies').then((r) => setSavedReplies(r.data || [])).catch(() => {});
     api.get('/chats/gallery').then((r) => setGallery(r.data || [])).catch(() => {});
     api.get('/call-center/agents').then((r) => setAgents(r.data || [])).catch(() => {});
+    // Plantillas WhatsApp aprobadas por Meta (para enviar desde el chat).
+    api
+      .get('/message-templates', { params: { channel: 'whatsapp', status: 'approved' } })
+      .then((r) => setTemplates(r.data || []))
+      .catch(() => {});
     loadStats();
   }, []);
 
@@ -259,14 +267,17 @@ export default function Chats() {
     }
     const body = draft.trim();
     const templateName = templateDraft.name.trim();
-    if (!windowClosed && !body) return;
-    if (windowClosed && !templateName) {
-      toast.error('Selecciona una plantilla aprobada');
+    // Si hay una plantilla seleccionada se envía como plantilla (sirve tanto dentro
+    // como fuera de la ventana de 24h). Si no, se envía texto libre (solo dentro).
+    const useTemplate = !!templateName;
+    if (!useTemplate && windowClosed) {
+      toast.error('Ventana de 24h cerrada: selecciona una plantilla aprobada');
       return;
     }
-    if (!windowClosed) setDraft('');
+    if (!useTemplate && !body) return;
+    if (!useTemplate) setDraft('');
     try {
-      const payload = windowClosed
+      const payload = useTemplate
         ? {
             templateName,
             templateLanguage: templateDraft.language || 'es',
@@ -278,7 +289,7 @@ export default function Chats() {
         : { body };
       const r = await api.post(`/chats/${activeId}/messages`, payload);
       setMessages((prev) => [...prev, r.data]);
-      const preview = windowClosed ? `[Plantilla: ${templateName}]` : body;
+      const preview = useTemplate ? `[Plantilla: ${templateName}]` : body;
       setConversations((prev) =>
         prev.map((c) =>
           c._id === activeId
@@ -293,7 +304,7 @@ export default function Chats() {
       );
       if (r.data.deliveryStatus === 'failed') {
         toast.error(r.data.errorMessage || 'No se pudo enviar');
-      } else if (windowClosed) {
+      } else if (useTemplate) {
         setTemplateDraft({ name: '', language: 'es', vars: '' });
       }
     } catch (err) {
@@ -475,30 +486,40 @@ export default function Chats() {
                       Contacto en opt-out. No se enviaran mensajes de marketing.
                     </div>
                   )}
-                  {activeWindowClosed && !activeOptedOut && (
+                  {activeWindowClosed && !activeOptedOut && !templateDraft.name && (
                     <div className="mb-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
-                      Ventana de WhatsApp cerrada. Usa una plantilla aprobada.
+                      Ventana de 24h cerrada. Solo puedes enviar una <b>plantilla aprobada</b> — pulsa “Plantilla”.
                     </div>
                   )}
-                  {activeWindowClosed && !activeOptedOut && (
-                    <div className="mb-2 grid grid-cols-1 sm:grid-cols-[1fr_90px_1.4fr] gap-2">
-                      <input
-                        value={templateDraft.name}
-                        onChange={(e) => setTemplateDraft({ ...templateDraft, name: e.target.value })}
-                        placeholder="Nombre de plantilla"
-                        className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
-                      />
-                      <input
-                        value={templateDraft.language}
-                        onChange={(e) => setTemplateDraft({ ...templateDraft, language: e.target.value })}
-                        placeholder="es"
-                        className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
-                      />
+                  {/* Plantilla seleccionada: preview + variables */}
+                  {templateDraft.name && (
+                    <div className="mb-2 border border-emerald-200 bg-emerald-50/60 rounded-lg p-2">
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="text-xs font-semibold text-emerald-700 flex items-center gap-1">
+                          <HiOutlineDocumentDuplicate className="w-3.5 h-3.5" />
+                          Plantilla: {templateDraft.name}
+                        </span>
+                        <button
+                          type="button"
+                          onClick={() => setTemplateDraft({ name: '', language: 'es', vars: '' })}
+                          className="text-xs text-slate-500 hover:text-rose-600 bg-transparent border-none cursor-pointer flex items-center gap-0.5"
+                        >
+                          <HiOutlineXMark className="w-3.5 h-3.5" /> Quitar
+                        </button>
+                      </div>
+                      {(() => {
+                        const tpl = templates.find((t) => t.name === templateDraft.name);
+                        return tpl ? (
+                          <p className="text-xs text-slate-600 mt-1 whitespace-pre-wrap break-words bg-white border border-emerald-100 rounded p-2">
+                            {tpl.body}
+                          </p>
+                        ) : null;
+                      })()}
                       <input
                         value={templateDraft.vars}
                         onChange={(e) => setTemplateDraft({ ...templateDraft, vars: e.target.value })}
-                        placeholder="Variables separadas por coma"
-                        className="border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                        placeholder="Variables (separadas por coma) — ej. Juan, 12/06"
+                        className="w-full mt-2 border border-slate-200 rounded-lg px-3 py-1.5 text-sm"
                       />
                     </div>
                   )}
@@ -536,6 +557,36 @@ export default function Chats() {
                         )}
                       </div>
                     )}
+                    {templatePickerOpen && (
+                      <div className="absolute bottom-full left-0 mb-1 w-80 max-h-72 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg z-30">
+                        <div className="px-3 py-2 border-b border-slate-100 text-xs font-semibold text-slate-500 sticky top-0 bg-white">
+                          Plantillas aprobadas por Meta
+                        </div>
+                        {templates.length === 0 && (
+                          <div className="px-3 py-3 text-xs text-slate-400">
+                            No hay plantillas aprobadas. Créalas y apruébalas en Plantillas / Sincroniza con Meta.
+                          </div>
+                        )}
+                        {templates.map((t) => (
+                          <button
+                            key={t._id}
+                            type="button"
+                            onMouseDown={(e) => {
+                              e.preventDefault();
+                              setTemplateDraft({ name: t.name, language: t.language || 'es', vars: '' });
+                              setTemplatePickerOpen(false);
+                            }}
+                            className="w-full text-left px-3 py-2 hover:bg-emerald-50 border-b border-slate-50 text-sm bg-white cursor-pointer"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <span className="font-semibold text-slate-700 text-xs truncate">{t.name}</span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 shrink-0">Aprobada</span>
+                            </div>
+                            <div className="text-slate-500 text-xs truncate">{t.body}</div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
                     <button
                       type="button"
                       onClick={() => setGalleryOpen(true)}
@@ -543,6 +594,15 @@ export default function Chats() {
                       title="Galería de imágenes"
                     >
                       🖼
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setTemplatePickerOpen((v) => !v)}
+                      disabled={!!activeConv?.blocked || activeOptedOut}
+                      className={`px-2 py-2 border rounded-lg cursor-pointer disabled:opacity-50 flex items-center ${templateDraft.name ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                      title="Enviar plantilla aprobada"
+                    >
+                      <HiOutlineDocumentDuplicate className="w-4 h-4" />
                     </button>
                     <button
                       type="button"
@@ -576,9 +636,9 @@ export default function Chats() {
                           sendMessage();
                         }
                       }}
-                      placeholder="Escribe un mensaje... (usa / para mensajes guardados)"
+                      placeholder={templateDraft.name ? 'Se enviará la plantilla seleccionada…' : 'Escribe un mensaje... (usa / para mensajes guardados)'}
                       rows={2}
-                      disabled={!!activeConv?.blocked || activeWindowClosed || activeOptedOut}
+                      disabled={!!activeConv?.blocked || activeWindowClosed || activeOptedOut || !!templateDraft.name}
                       className="flex-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm resize-none disabled:bg-slate-100"
                     />
                     <button
@@ -594,7 +654,11 @@ export default function Chats() {
                       disabled={
                         !!activeConv?.blocked ||
                         activeOptedOut ||
-                        (activeWindowClosed ? !templateDraft.name.trim() : !draft.trim())
+                        (templateDraft.name.trim()
+                          ? false
+                          : activeWindowClosed
+                            ? true
+                            : !draft.trim())
                       }
                       className="px-3 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1"
                     >
@@ -1259,12 +1323,23 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
                 </div>
               </div>
             )}
+            {(op.tags || []).length > 0 && (
+              <div className="flex flex-wrap gap-1 mt-1">
+                {op.tags.map((t) => (
+                  <span key={t} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                    <HiOutlineTag className="w-2.5 h-2.5" />{t}
+                  </span>
+                ))}
+              </div>
+            )}
             {op.notes && <div className="text-xs text-slate-500 italic">"{op.notes}"</div>}
           </div>
         ) : (
           <div className="text-xs text-slate-400">No es una oportunidad aún.</div>
         )}
       </div>
+
+      <ConvTagsSection conv={conv} onUpdated={onUpdated} />
 
       <AiSummarySection conv={conv} />
 
@@ -1354,6 +1429,41 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
           {conv.blocked ? 'Desbloquear contacto' : 'Bloquear contacto'}
         </button>
       </div>
+    </div>
+  );
+}
+
+// Etiquetas del contacto/conversación (libres, para segmentar). Se guardan en
+// Conversation.tags vía PUT /chats/:id.
+function ConvTagsSection({ conv, onUpdated }) {
+  const [tags, setTags] = useState(conv.tags || []);
+  const [saving, setSaving] = useState(false);
+
+  // Sincroniza al cambiar de conversación.
+  useEffect(() => {
+    setTags(conv.tags || []);
+  }, [conv._id]);
+
+  const save = async (next) => {
+    setTags(next);
+    setSaving(true);
+    try {
+      const r = await api.put(`/chats/${conv._id}`, { tags: next });
+      onUpdated?.(r.data);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudieron guardar las etiquetas');
+      setTags(conv.tags || []);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div>
+      <div className="text-xs font-semibold text-slate-500 mb-1 flex items-center gap-1">
+        <HiOutlineTag className="w-3.5 h-3.5" /> Etiquetas {saving && <span className="text-[10px] text-slate-400">guardando…</span>}
+      </div>
+      <TagEditor value={tags} onChange={save} />
     </div>
   );
 }
@@ -1821,10 +1931,11 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
       stage: op.stage || 'nuevo',
       notes: op.notes || '',
       lostReason: op.lostReason || '',
+      tags: op.tags || [],
       interested: (op.interestedIn || []).map((s) => s.product?._id || s.product || '').filter(Boolean),
     }));
   }, [conv]);
-  const [items, setItems] = useState(initial.length > 0 ? initial : [{ stage: 'nuevo', notes: '', lostReason: '', interested: [] }]);
+  const [items, setItems] = useState(initial.length > 0 ? initial : [{ stage: 'nuevo', notes: '', lostReason: '', tags: [], interested: [] }]);
   const [saving, setSaving] = useState(false);
 
   // Calcular valor esperado desde inventario (precio del producto).
@@ -1846,6 +1957,7 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
           stage: it.stage,
           notes: it.notes,
           lostReason: it.stage === 'perdido' ? it.lostReason : '',
+          tags: it.tags || [],
           interestedIn: it.interested.filter(Boolean).map((id) => {
             const s = services.find((x) => x._id === id);
             return { product: id, name: s?.name };
@@ -1929,6 +2041,13 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
               </div>
             </div>
             <div>
+              <label className="text-xs font-semibold text-slate-600 block mb-1">Etiquetas</label>
+              <TagEditor
+                value={it.tags || []}
+                onChange={(next) => setItems((prev) => prev.map((x, i) => i === idx ? { ...x, tags: next } : x))}
+              />
+            </div>
+            <div>
               <label className="text-xs font-semibold text-slate-600 block mb-1">Notas</label>
               <textarea
                 value={it.notes}
@@ -1951,7 +2070,7 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
         ))}
         <button
           type="button"
-          onClick={() => setItems((prev) => [...prev, { stage: 'nuevo', notes: '', lostReason: '', interested: [] }])}
+          onClick={() => setItems((prev) => [...prev, { stage: 'nuevo', notes: '', lostReason: '', tags: [], interested: [] }])}
           className="w-full text-xs py-2 rounded-lg border border-dashed border-emerald-300 text-emerald-700 bg-emerald-50/40 hover:bg-emerald-100 cursor-pointer"
         >
           + Agregar otra oportunidad

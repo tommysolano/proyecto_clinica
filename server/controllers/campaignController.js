@@ -86,13 +86,36 @@ exports.create = async (req, res) => {
       return res.status(400).json({ message: 'El email requiere un asunto' });
     }
 
-    const { patients } = await resolveSegment(req.clinicId, seg.filters || {});
+    let { patients } = await resolveSegment(req.clinicId, seg.filters || {});
     if (patients.length === 0) {
       return res.status(400).json({ message: 'El segmento no tiene destinatarios' });
     }
+    // Solo destinatarios contactables por el canal elegido.
+    patients = patients.filter((p) => (channel === 'email' ? p.email : p.whatsapp || p.phone));
+    if (patients.length === 0) {
+      return res.status(400).json({ message: `Ningún paciente del segmento tiene ${channel === 'email' ? 'email' : 'WhatsApp/teléfono'}` });
+    }
 
-    const scheduledFor = req.body.scheduledFor ? new Date(req.body.scheduledFor) : new Date();
+    // Tope de destinatarios.
+    const maxRecipients = Number(req.body.maxRecipients) > 0 ? Math.floor(Number(req.body.maxRecipients)) : null;
+    if (maxRecipients && patients.length > maxRecipients) {
+      patients = patients.slice(0, maxRecipients);
+    }
+
+    // Goteo (drip): N por lote cada M minutos. batchSize=0 → todo junto.
+    const batchSize = Number(req.body.drip?.batchSize) > 0 ? Math.floor(Number(req.body.drip.batchSize)) : 0;
+    const intervalMinutes = Number(req.body.drip?.intervalMinutes) > 0 ? Math.floor(Number(req.body.drip.intervalMinutes)) : 60;
+
+    const baseTime = req.body.scheduledFor ? new Date(req.body.scheduledFor) : new Date();
+    const scheduledFor = baseTime; // inicio de la campaña (primer lote)
     const isFuture = scheduledFor.getTime() > Date.now() + 1000;
+
+    // Calcula el scheduledFor de cada paciente según su lote.
+    const scheduleForIndex = (i) => {
+      if (!batchSize) return scheduledFor;
+      const batch = Math.floor(i / batchSize);
+      return new Date(baseTime.getTime() + batch * intervalMinutes * 60000);
+    };
 
     const campaign = await Campaign.create({
       clinic: req.clinicId,
@@ -105,31 +128,31 @@ exports.create = async (req, res) => {
       body: body || '',
       subject,
       scheduledFor,
-      status: isFuture ? 'scheduled' : 'sending',
+      maxRecipients,
+      drip: { batchSize, intervalMinutes },
+      status: isFuture || batchSize ? 'scheduled' : 'sending',
       stats: { targeted: patients.length, queued: patients.length, sent: 0, failed: 0, skipped: 0 },
-      startedAt: isFuture ? null : new Date(),
+      startedAt: isFuture || batchSize ? null : new Date(),
       createdBy: req.user._id,
     });
 
-    // Encola un ScheduledMessage por paciente (idempotente).
-    const docs = patients
-      .filter((p) => (channel === 'email' ? p.email : p.whatsapp || p.phone))
-      .map((p) => ({
-        clinic: req.clinicId,
-        campaign: campaign._id,
-        channel,
-        to: channel === 'email' ? p.email : p.whatsapp || p.phone,
-        patient: p._id,
-        contactName: p.name || '',
-        body: template ? '' : personalize(body, p),
-        subject: channel === 'email' ? personalize(subject, p) : '',
-        templateName: template?.name || '',
-        templateLanguage: template?.language || 'es',
-        templateVars: template ? buildVars(template, p) : null,
-        scheduledFor,
-        status: 'queued',
-        idempotencyKey: `${campaign._id}:${p._id}`,
-      }));
+    // Encola un ScheduledMessage por paciente (idempotente), escalonado por lote.
+    const docs = patients.map((p, i) => ({
+      clinic: req.clinicId,
+      campaign: campaign._id,
+      channel,
+      to: channel === 'email' ? p.email : p.whatsapp || p.phone,
+      patient: p._id,
+      contactName: p.name || '',
+      body: template ? '' : personalize(body, p),
+      subject: channel === 'email' ? personalize(subject, p) : '',
+      templateName: template?.name || '',
+      templateLanguage: template?.language || 'es',
+      templateVars: template ? buildVars(template, p) : null,
+      scheduledFor: scheduleForIndex(i),
+      status: 'queued',
+      idempotencyKey: `${campaign._id}:${p._id}`,
+    }));
 
     if (docs.length) {
       await ScheduledMessage.insertMany(docs, { ordered: false }).catch((e) => {

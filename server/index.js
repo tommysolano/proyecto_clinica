@@ -122,6 +122,11 @@ connectDB().then(() => {
   setInterval(() => { workflowEngine.processDueEnrollments().catch(() => {}); }, 60 * 1000);
   // Job: cumpleaños del día (dispara workflows patient_birthday).
   require('./utils/birthdayJob').startBirthdayJob();
+  // Job: sincronizar plantillas de WhatsApp con Meta para detectar cambios de
+  // categoría/estado y alertar (cada 6h, primera corrida a los 30s del arranque).
+  const { syncAllClinicsTemplates } = require('./controllers/messageTemplateController');
+  setTimeout(() => { syncAllClinicsTemplates().catch(() => {}); }, 30 * 1000);
+  setInterval(() => { syncAllClinicsTemplates().catch(() => {}); }, 6 * 60 * 60 * 1000);
 }).catch((err) => {
   console.error('No se pudo conectar a MongoDB, abortando:', err.message);
   process.exit(1);

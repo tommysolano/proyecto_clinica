@@ -3,8 +3,12 @@ const Patient = require('../models/Patient');
 const booking = require('../controllers/bookingPublicController');
 const review = require('../controllers/reviewController');
 const emailTracking = require('../controllers/emailTrackingController');
+const media = require('../controllers/mediaController');
 
-// Endpoints públicos (sin auth). Hoy: baja de email + auto-agendamiento + reseñas.
+// Endpoints públicos (sin auth). Hoy: baja de email + auto-agendamiento + reseñas + media.
+
+// Media autoalojada (imágenes de cabecera de plantilla, etc.).
+router.get('/media/:id', media.serve);
 
 // Auto-agendamiento público.
 router.get('/booking/:token', booking.info);

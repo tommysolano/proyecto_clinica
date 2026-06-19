@@ -15,6 +15,8 @@ const workflowEnrollmentSchema = new mongoose.Schema(
     patient: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', default: null, index: true },
     conversation: { type: mongoose.Schema.Types.ObjectId, ref: 'Conversation', default: null },
     stepIndex: { type: Number, default: 0 },
+    // Nodo actual en workflows de grafo (nodes/edges). null en workflows lineales.
+    currentNodeId: { type: String, default: null },
     status: {
       type: String,
       enum: ['active', 'waiting', 'done', 'cancelled'],

@@ -71,6 +71,19 @@ const emailSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Inteligencia Artificial (sugerir respuesta, resumen, ai_reply en workflows).
+// La API key se cifra (secretCrypto) al guardar. Si no se configura aquí, se usa
+// la variable de entorno ANTHROPIC_API_KEY como respaldo.
+const aiSchema = new mongoose.Schema(
+  {
+    enabled: { type: Boolean, default: false },
+    provider: { type: String, enum: ['anthropic'], default: 'anthropic' },
+    apiKey: { type: String, default: '' },
+    model: { type: String, trim: true, default: 'claude-opus-4-8' },
+  },
+  { _id: false }
+);
+
 // Reputación: a dónde enviar a reseñar y a partir de qué rating se considera
 // "promotor" (se le pide reseña pública); por debajo, se captura feedback interno.
 const reputationSchema = new mongoose.Schema(
@@ -95,6 +108,7 @@ const callCenterConfigSchema = new mongoose.Schema(
     instagram: { type: instagramSchema, default: () => ({}) },
     tiktok: { type: tiktokSchema, default: () => ({}) },
     email: { type: emailSchema, default: () => ({}) },
+    ai: { type: aiSchema, default: () => ({}) },
     reputation: { type: reputationSchema, default: () => ({}) },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { computeWaitUntil, evaluateCondition, personalize, classifyReply } = require('../utils/workflowEngine');
+const { computeWaitUntil, evaluateCondition, personalize, classifyReply, findStartNode, nextNodeId } = require('../utils/workflowEngine');
 
 test('computeWaitUntil applies a negative offset (e.g. 24h before the appointment)', () => {
   const ctx = { appointmentDate: '2026-06-20T15:00:00Z' };
@@ -55,4 +55,41 @@ test('evaluateCondition reads lastReply from context', () => {
   assert.equal(evaluateCondition({ field: 'lastReply', op: 'eq', value: 'no' }, { context: { lastReply: 'yes' } }), false);
   assert.equal(evaluateCondition({ field: 'lastReply', op: 'exists' }, { context: { lastReply: 'other' } }), false);
   assert.equal(evaluateCondition({ field: 'lastReply', op: 'exists' }, { context: { lastReply: 'no' } }), true);
+});
+
+// ─────────── Grafo (nodes/edges) ───────────
+const graph = {
+  nodes: [
+    { id: 'trigger', type: 'trigger' },
+    { id: 'a', type: 'send_message' },
+    { id: 'cond', type: 'condition' },
+    { id: 'yes', type: 'send_message' },
+    { id: 'no', type: 'send_message' },
+  ],
+  edges: [
+    { id: 'e1', source: 'trigger', target: 'a', sourceHandle: 'default' },
+    { id: 'e2', source: 'a', target: 'cond', sourceHandle: 'default' },
+    { id: 'e3', source: 'cond', target: 'yes', sourceHandle: 'yes' },
+    { id: 'e4', source: 'cond', target: 'no', sourceHandle: 'no' },
+  ],
+};
+
+test('findStartNode returns the trigger node', () => {
+  assert.equal(findStartNode(graph).id, 'trigger');
+});
+
+test('findStartNode falls back to the node with no incoming edges', () => {
+  const g = { nodes: [{ id: 'x', type: 'send_message' }, { id: 'y', type: 'wait' }], edges: [{ source: 'x', target: 'y', sourceHandle: 'default' }] };
+  assert.equal(findStartNode(g).id, 'x');
+});
+
+test('nextNodeId follows default and yes/no branches', () => {
+  assert.equal(nextNodeId(graph, 'trigger'), 'a');
+  assert.equal(nextNodeId(graph, 'a'), 'cond');
+  assert.equal(nextNodeId(graph, 'cond', 'yes'), 'yes');
+  assert.equal(nextNodeId(graph, 'cond', 'no'), 'no');
+});
+
+test('nextNodeId returns null at a leaf node', () => {
+  assert.equal(nextNodeId(graph, 'yes'), null);
 });

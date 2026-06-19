@@ -20,9 +20,11 @@ const DOMAIN_EVENTS = {
   APPOINTMENT_CREATED: 'appointment.created',
   APPOINTMENT_ATTENDED: 'appointment.attended',
   APPOINTMENT_NO_SHOW: 'appointment.no_show',
+  APPOINTMENT_CANCELLED: 'appointment.cancelled',
   TREATMENT_ABANDONED: 'treatment.abandoned',
   PATIENT_BIRTHDAY: 'patient.birthday',
   SALE_CREATED: 'sale.created',
+  QUOTATION_SENT: 'quotation.sent',
   TAG_ADDED: 'patient.tag_added',
 };
 

@@ -28,6 +28,10 @@ const blank = () => ({
   subject: '',
   when: 'now', // 'now' | 'later'
   scheduledFor: '',
+  maxRecipients: '',
+  dripEnabled: false,
+  dripBatchSize: 50,
+  dripIntervalMinutes: 60,
 });
 
 export default function Campaigns() {
@@ -99,6 +103,10 @@ export default function Campaigns() {
         body: isEmail || c.mode === 'body' ? c.body : undefined,
         subject: isEmail ? c.subject : undefined,
         scheduledFor: c.when === 'later' ? c.scheduledFor : undefined,
+        maxRecipients: c.maxRecipients ? Number(c.maxRecipients) : undefined,
+        drip: c.dripEnabled
+          ? { batchSize: Number(c.dripBatchSize) || 0, intervalMinutes: Number(c.dripIntervalMinutes) || 60 }
+          : undefined,
       });
       toast.success('Campaña creada');
       setCreating(null);
@@ -281,6 +289,39 @@ export default function Campaigns() {
               {creating.when === 'later' && (
                 <input type="datetime-local" value={creating.scheduledFor} onChange={(e) => setCreating({ ...creating, scheduledFor: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2 text-sm" />
               )}
+
+              {/* Tope de destinatarios + goteo (drip) */}
+              <div className="border-t border-slate-100 pt-3 grid gap-2">
+                <label className="text-sm">
+                  <span className="text-slate-600">Máximo de personas (opcional)</span>
+                  <input
+                    type="number"
+                    min="1"
+                    value={creating.maxRecipients}
+                    onChange={(e) => setCreating({ ...creating, maxRecipients: e.target.value })}
+                    placeholder="Sin límite"
+                    className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                  />
+                </label>
+                <label className="flex items-center gap-2 text-sm">
+                  <input type="checkbox" checked={creating.dripEnabled} onChange={(e) => setCreating({ ...creating, dripEnabled: e.target.checked })} />
+                  Enviar por lotes (goteo)
+                </label>
+                {creating.dripEnabled && (
+                  <div className="flex items-center gap-2 text-sm flex-wrap pl-6">
+                    <span className="text-slate-600">Enviar</span>
+                    <input type="number" min="1" value={creating.dripBatchSize} onChange={(e) => setCreating({ ...creating, dripBatchSize: e.target.value })} className="w-20 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+                    <span className="text-slate-600">personas cada</span>
+                    <input type="number" min="1" value={creating.dripIntervalMinutes} onChange={(e) => setCreating({ ...creating, dripIntervalMinutes: e.target.value })} className="w-20 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+                    <span className="text-slate-600">minutos</span>
+                  </div>
+                )}
+                {creating.dripEnabled && Number(creating.dripBatchSize) > 0 && (
+                  <p className="text-[11px] text-slate-400 pl-6">
+                    Se escalonan los envíos en lotes de {creating.dripBatchSize} cada {creating.dripIntervalMinutes} min para no saturar el número y mejorar la entrega.
+                  </p>
+                )}
+              </div>
             </div>
 
             <div className="flex justify-end gap-2 mt-6">
