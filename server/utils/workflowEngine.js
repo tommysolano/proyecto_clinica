@@ -42,6 +42,37 @@ function getTriggers(wf) {
   return wf.trigger && wf.trigger.type ? [wf.trigger] : [];
 }
 
+/**
+ * Disparadores de un nodo trigger concreto (cada nodo trigger = un flujo). Si el
+ * nodo no trae su propia lista (workflows viejos de un solo flujo), cae a los
+ * disparadores a nivel workflow.
+ */
+function triggersOfNode(wf, node) {
+  const nt = node?.data?.triggers;
+  if (Array.isArray(nt) && nt.length) return nt;
+  return getTriggers(wf);
+}
+
+/**
+ * Flujos (nodos trigger) de un workflow de grafo que coinciden con un predicado.
+ * Devuelve [{ startNodeId, currentNodeId }] listo para inscribir. Para workflows
+ * lineales (legacy, sin nodes) devuelve un único flujo {null,null} si coincide.
+ */
+function matchingFlows(wf, matchFn) {
+  const triggerNodes = (wf.nodes || []).filter((n) => n.type === 'trigger');
+  if (!triggerNodes.length) {
+    return getTriggers(wf).some(matchFn) ? [{ startNodeId: null, currentNodeId: null }] : [];
+  }
+  const flows = [];
+  for (const tn of triggerNodes) {
+    if (!triggersOfNode(wf, tn).some(matchFn)) continue;
+    const startChild = nextNodeId(wf, tn.id);
+    if (!startChild) continue; // flujo sin pasos: nada que ejecutar
+    flows.push({ startNodeId: tn.id, currentNodeId: startChild });
+  }
+  return flows;
+}
+
 /** ¿Coincide un disparador con un evento de dominio (cita, venta, etc.)? */
 function triggerMatchesEvent(tr, eventType, payload, services) {
   if (!tr || tr.type !== eventType) return false;
@@ -666,42 +697,47 @@ async function enrollForEvent(eventType, payload = {}) {
   const services = (payload.services || []).map((s) => String(s));
 
   for (const wf of workflows) {
-    // Basta con que UN disparador del workflow coincida (con sus filtros).
-    if (!getTriggers(wf).some((tr) => triggerMatchesEvent(tr, eventType, payload, services))) continue;
-
-    // Anti-duplicado: ¿ya hay una inscripción viva para este paciente?
-    // eslint-disable-next-line no-await-in-loop
-    const existing = await WorkflowEnrollment.findOne({
-      workflow: wf._id,
-      patient: patient._id,
-      status: { $in: ['active', 'waiting'] },
-    });
-    if (existing) continue;
-
-    let enrollment;
-    try {
+    // Un workflow puede tener varios flujos (nodos trigger) independientes; cada
+    // flujo cuyo disparador coincida se inscribe por separado.
+    const flows = matchingFlows(wf, (tr) => triggerMatchesEvent(tr, eventType, payload, services));
+    for (const flow of flows) {
+      // Anti-duplicado: una inscripción viva por (workflow, paciente, flujo).
       // eslint-disable-next-line no-await-in-loop
-      enrollment = await WorkflowEnrollment.create({
-        clinic: clinicId,
+      const existing = await WorkflowEnrollment.findOne({
         workflow: wf._id,
         patient: patient._id,
-        stepIndex: 0,
-        status: 'active',
-        nextRunAt: new Date(),
-        context: {
-          phone,
-          appointmentId: payload.appointmentId || null,
-          appointmentDate: payload.appointmentDate || null,
-        },
+        startNodeId: flow.startNodeId,
+        status: { $in: ['active', 'waiting'] },
       });
-    } catch (e) {
-      if (e.code === 11000) continue; // carrera anti-duplicado
-      throw e;
+      if (existing) continue;
+
+      let enrollment;
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        enrollment = await WorkflowEnrollment.create({
+          clinic: clinicId,
+          workflow: wf._id,
+          patient: patient._id,
+          stepIndex: 0,
+          currentNodeId: flow.currentNodeId,
+          startNodeId: flow.startNodeId,
+          status: 'active',
+          nextRunAt: new Date(),
+          context: {
+            phone,
+            appointmentId: payload.appointmentId || null,
+            appointmentDate: payload.appointmentDate || null,
+          },
+        });
+      } catch (e) {
+        if (e.code === 11000) continue; // carrera anti-duplicado
+        throw e;
+      }
+      // eslint-disable-next-line no-await-in-loop
+      await Workflow.updateOne({ _id: wf._id }, { $inc: { 'stats.enrolled': 1 } });
+      // eslint-disable-next-line no-await-in-loop
+      await executeEnrollment(enrollment);
     }
-    // eslint-disable-next-line no-await-in-loop
-    await Workflow.updateOne({ _id: wf._id }, { $inc: { 'stats.enrolled': 1 } });
-    // eslint-disable-next-line no-await-in-loop
-    await executeEnrollment(enrollment);
   }
 }
 
@@ -733,42 +769,46 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
   const destPhone = phone || conversation.phone || '';
   let enrolled = 0;
   for (const wf of workflows) {
-    // Basta con que UN disparador de chat coincida (lógica OR).
-    if (!getTriggers(wf).some(matchesChat)) continue;
-
-    // Anti-duplicado: una inscripción viva por (workflow, conversación).
-    // eslint-disable-next-line no-await-in-loop
-    const existing = await WorkflowEnrollment.findOne({
-      workflow: wf._id,
-      conversation: conversation._id,
-      status: { $in: ['active', 'waiting'] },
-    });
-    if (existing) continue;
-
-    let enrollment;
-    try {
+    // Cada flujo (nodo trigger) de chat que coincida se inscribe por separado.
+    const flows = matchingFlows(wf, matchesChat);
+    for (const flow of flows) {
+      // Anti-duplicado: una inscripción viva por (workflow, conversación, flujo).
       // eslint-disable-next-line no-await-in-loop
-      enrollment = await WorkflowEnrollment.create({
-        clinic: clinicId,
+      const existing = await WorkflowEnrollment.findOne({
         workflow: wf._id,
-        patient: patient?._id || patient || null,
         conversation: conversation._id,
-        stepIndex: 0,
-        status: 'active',
-        nextRunAt: new Date(),
-        context: { phone: destPhone, conversationId: String(conversation._id) },
+        startNodeId: flow.startNodeId,
+        status: { $in: ['active', 'waiting'] },
       });
-    } catch (e) {
-      if (e.code === 11000) continue;
-      throw e;
+      if (existing) continue;
+
+      let enrollment;
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        enrollment = await WorkflowEnrollment.create({
+          clinic: clinicId,
+          workflow: wf._id,
+          patient: patient?._id || patient || null,
+          conversation: conversation._id,
+          stepIndex: 0,
+          currentNodeId: flow.currentNodeId,
+          startNodeId: flow.startNodeId,
+          status: 'active',
+          nextRunAt: new Date(),
+          context: { phone: destPhone, conversationId: String(conversation._id) },
+        });
+      } catch (e) {
+        if (e.code === 11000) continue;
+        throw e;
+      }
+      // eslint-disable-next-line no-await-in-loop
+      await Workflow.updateOne({ _id: wf._id }, { $inc: { 'stats.enrolled': 1 } });
+      // eslint-disable-next-line no-await-in-loop
+      await executeEnrollment(enrollment).catch((err) =>
+        console.error('[workflowEngine] chat enrollment error', enrollment._id, err.message)
+      );
+      enrolled++;
     }
-    // eslint-disable-next-line no-await-in-loop
-    await Workflow.updateOne({ _id: wf._id }, { $inc: { 'stats.enrolled': 1 } });
-    // eslint-disable-next-line no-await-in-loop
-    await executeEnrollment(enrollment).catch((err) =>
-      console.error('[workflowEngine] chat enrollment error', enrollment._id, err.message)
-    );
-    enrolled++;
   }
   return { enrolled };
 }
@@ -847,6 +887,8 @@ module.exports = {
   evaluateCondition,
   keywordMatchesTrigger,
   getTriggers,
+  triggersOfNode,
+  matchingFlows,
   triggerMatchesEvent,
   pickRoundRobinAgent,
   personalize,

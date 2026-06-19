@@ -11,7 +11,6 @@ const blank = () => ({
   name: '',
   folder: 'General',
   active: false,
-  triggers: [defaultTrigger()],
   steps: [],
   nodes: [],
   edges: [],
@@ -57,15 +56,23 @@ export default function WorkflowEditor() {
           setWf({ ...blank(), folder: folder || 'General' });
         } else {
           const { data } = await api.get(`/workflows/${id}`);
-          const triggers = Array.isArray(data.triggers) && data.triggers.length
+          // Disparadores a nivel workflow (legacy): se migran al nodo trigger del flujo.
+          const wfTriggers = Array.isArray(data.triggers) && data.triggers.length
             ? data.triggers.map((t) => ({ ...t }))
             : (data.trigger?.type ? [{ ...data.trigger }] : [defaultTrigger()]);
-          const triggerLabel = TRIGGERS.find((t) => t.value === triggers[0]?.type)?.label || 'Disparador';
+          const triggerLabel = TRIGGERS.find((t) => t.value === wfTriggers[0]?.type)?.label || 'Disparador';
           const hasGraph = Array.isArray(data.nodes) && data.nodes.length > 0;
           const graph = hasGraph
             ? { nodes: data.nodes.map((n) => ({ ...n, data: { ...n.data } })), edges: (data.edges || []).map((e) => ({ ...e })) }
             : stepsToGraph(data.steps || [], triggerLabel);
-          setWf({ ...data, triggers, steps: [], nodes: graph.nodes, edges: graph.edges });
+          // Si los nodos trigger no traen sus propios disparadores (workflows viejos),
+          // se les inyecta la lista a nivel workflow (un solo flujo).
+          graph.nodes = graph.nodes.map((n) =>
+            n.type === 'trigger' && !(n.data?.triggers?.length)
+              ? { ...n, data: { ...n.data, triggers: wfTriggers.map((t) => ({ ...t })) } }
+              : n
+          );
+          setWf({ ...data, steps: [], nodes: graph.nodes, edges: graph.edges });
         }
       } catch (e) {
         toast.error(e.response?.data?.message || 'Error al cargar');
@@ -78,10 +85,14 @@ export default function WorkflowEditor() {
 
   const save = async (close = true) => {
     if (!wf.name.trim()) return toast.error('Ponle un nombre al workflow');
-    const triggers = (wf.triggers || []).filter((t) => t?.type);
-    if (triggers.length === 0) return toast.error('Agrega al menos un disparador');
     const actionNodes = (wf.nodes || []).filter((n) => n.type !== 'trigger');
     if (actionNodes.length === 0) return toast.error('Agrega al menos un paso al diagrama');
+    // Unión de disparadores de todos los flujos (para el filtro/índice del motor).
+    const triggers = (wf.nodes || [])
+      .filter((n) => n.type === 'trigger')
+      .flatMap((n) => n.data?.triggers || [])
+      .filter((t) => t?.type);
+    if (triggers.length === 0) return toast.error('Cada flujo necesita al menos un disparador');
     setSaving(true);
     const payload = {
       ...wf,
@@ -151,8 +162,6 @@ export default function WorkflowEditor() {
           nodes={wf.nodes || []}
           edges={wf.edges || []}
           onChange={({ nodes, edges }) => setWf({ ...wf, nodes, edges })}
-          triggers={wf.triggers || []}
-          onTriggersChange={(triggers) => setWf({ ...wf, triggers })}
           templates={templates}
           agents={agents}
         />
