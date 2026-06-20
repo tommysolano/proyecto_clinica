@@ -31,7 +31,9 @@ export default function Payroll() {
   const updateItem = async (idx, patch) => {
     const items = [...selected.items]; items[idx] = { ...items[idx], ...patch };
     setSelected({ ...selected, items });
-    try { await api.put(`/payroll/${selected._id}/items/${idx}`, patch); } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+    const employeeId = items[idx].employee?._id || items[idx].employee;
+    try { const r = await api.put(`/payroll/${selected._id}/item`, { employeeId, patch }); setSelected(r.data); }
+    catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
   const close = async () => {
     if (!confirm('¿Cerrar planilla y generar asiento?')) return;
@@ -39,7 +41,7 @@ export default function Payroll() {
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
   const markPaid = async () => {
-    try { const r = await api.post(`/payroll/${selected._id}/mark-paid`); setSelected(r.data); load(); toast.success('Pagada'); }
+    try { const r = await api.post(`/payroll/${selected._id}/pay`); setSelected(r.data); load(); toast.success('Pagada'); }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
 
@@ -61,7 +63,7 @@ export default function Payroll() {
               {list.map((p) => (
                 <tr key={p._id} className="border-t cursor-pointer hover:bg-slate-50" onClick={() => open(p)}>
                   <td className="px-2 py-2 font-mono text-xs">{p.period}</td>
-                  <td className="px-2 py-2 text-right font-mono">${fmt(p.netoTotal)}</td>
+                  <td className="px-2 py-2 text-right font-mono">${fmt(p.totalNeto)}</td>
                   <td className="px-2 py-2 text-center text-xs">{p.status}</td>
                 </tr>
               ))}
@@ -88,12 +90,13 @@ export default function Payroll() {
                 <th className="px-1 py-1 text-right">IESS</th>
                 <th className="px-1 py-1 text-right">IR</th>
                 <th className="px-1 py-1 text-right">Prest</th>
+                <th className="px-1 py-1 text-right">Deducc.</th>
                 <th className="px-1 py-1 text-right">Neto</th>
               </tr></thead>
               <tbody>
                 {selected.items.map((it, i) => (
                   <tr key={i} className="border-t">
-                    <td className="px-1 py-1">{it.employee?.firstName || ''} {it.employee?.lastName || ''}</td>
+                    <td className="px-1 py-1">{it.employeeName || `${it.employee?.firstName || ''} ${it.employee?.lastName || ''}`.trim()}</td>
                     <td className="px-1 py-1 text-right font-mono">{fmt(it.baseSalary)}</td>
                     <td className="px-1 py-1 text-right font-mono">{fmt(it.decimoTercero)}</td>
                     <td className="px-1 py-1 text-right font-mono">{fmt(it.decimoCuarto)}</td>
@@ -105,6 +108,7 @@ export default function Payroll() {
                         <input type="number" step="0.01" value={it.prestamoEmpresa} onChange={(e) => updateItem(i, { prestamoEmpresa: +e.target.value })} className="w-16 border border-slate-200 rounded px-1 text-right" /> :
                         fmt(it.prestamoEmpresa)}
                     </td>
+                    <td className="px-1 py-1 text-right font-mono text-rose-600">{fmt((it.multas || 0) + (it.anticipos || 0) + (it.otherDeductions || 0))}</td>
                     <td className="px-1 py-1 text-right font-mono font-semibold">${fmt(it.netoPagar)}</td>
                   </tr>
                 ))}
