@@ -18,6 +18,8 @@ router.delete('/categories/:id', requireRole('admin'), c.deleteCategory);
 
 // Kardex y traslados
 router.get('/kardex', requireRole('admin', 'contabilidad'), c.getKardex);
+router.get('/warehouse-stock', requireRole('admin', 'contabilidad'), c.warehouseStock);
+router.get('/transfers', requireRole('admin', 'contabilidad'), c.listTransfers);
 router.post('/transfer', requireRole('admin', 'contabilidad'), c.transferStock);
 
 // Toma física

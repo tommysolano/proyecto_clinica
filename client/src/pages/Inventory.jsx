@@ -28,7 +28,7 @@ const emptyProduct = {
   availableInClinics: [],
   stockByClinic: [],
 };
-const emptyMovement = { product: '', type: 'entrada', quantity: '', reason: '' };
+const emptyMovement = { product: '', type: 'entrada', quantity: '', reason: '', warehouse: '' };
 
 export default function Inventory() {
   const { hasRole } = useAuth();
@@ -36,6 +36,7 @@ export default function Inventory() {
   const [products, setProducts] = useState([]);
   const [movements, setMovements] = useState([]);
   const [clinicsList, setClinicsList] = useState([]);
+  const [warehouses, setWarehouses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [categoryFilter, setCategoryFilter] = useState('');
@@ -102,6 +103,7 @@ export default function Inventory() {
   useEffect(() => { if (tab === 'movements') fetchMovements(); }, [tab]);
   useEffect(() => {
     api.get('/clinics').then((r) => setClinicsList(r.data || [])).catch(() => {});
+    api.get('/inventory-advanced/warehouses').then((r) => setWarehouses(r.data || [])).catch(() => {});
   }, []);
 
   // Product CRUD
@@ -219,7 +221,8 @@ export default function Inventory() {
 
   // Movement
   const openNewMovement = (productId = '') => {
-    setMovementForm({ ...emptyMovement, product: productId });
+    const mainWh = warehouses.find((w) => w.isMain) || warehouses[0];
+    setMovementForm({ ...emptyMovement, product: productId, warehouse: mainWh?._id || '' });
     setMovementModal(true);
   };
 
@@ -229,6 +232,7 @@ export default function Inventory() {
     try {
       await api.post('/inventory', {
         ...movementForm,
+        warehouse: movementForm.warehouse || null,
         quantity: parseInt(movementForm.quantity),
       });
       toast.success('Movimiento registrado');
@@ -429,7 +433,11 @@ export default function Inventory() {
                         </span>
                       </td>
                       <td className="px-6 py-3 text-sm text-right font-medium">{m.quantity}</td>
-                      <td className="px-6 py-3 text-sm text-slate-600 hidden md:table-cell">{m.reason || '—'}</td>
+                      <td className="px-6 py-3 text-sm text-slate-600 hidden md:table-cell">
+                        {m.type === 'traslado'
+                          ? `${m.warehouse?.name || '?'} → ${m.toWarehouse?.name || '?'}`
+                          : (m.reason || (m.warehouse?.name ? `Bodega: ${m.warehouse.name}` : '—'))}
+                      </td>
                       <td className="px-6 py-3 text-sm text-slate-600 hidden md:table-cell">{m.createdBy?.name || '—'}</td>
                     </tr>
                   ))
@@ -789,6 +797,15 @@ export default function Inventory() {
               ))}
             </select>
           </div>
+          {warehouses.length > 0 && (
+            <div>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Bodega</label>
+              <select value={movementForm.warehouse} onChange={(e) => setMovementForm({ ...movementForm, warehouse: e.target.value })} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50">
+                <option value="">Sin bodega (general)</option>
+                {warehouses.map((w) => <option key={w._id} value={w._id}>{w.code} - {w.name}</option>)}
+              </select>
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Tipo *</label>
@@ -803,6 +820,9 @@ export default function Inventory() {
               <input type="number" min="1" value={movementForm.quantity} onChange={(e) => setMovementForm({...movementForm, quantity: e.target.value})} required className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
             </div>
           </div>
+          {movementForm.type === 'ajuste' && (
+            <p className="text-[11px] text-slate-500 -mt-1">En un <strong>ajuste</strong>, la cantidad es el stock final que debe quedar en la bodega seleccionada (no lo que se suma).</p>
+          )}
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">Razón</label>
             <input value={movementForm.reason} onChange={(e) => setMovementForm({...movementForm, reason: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />

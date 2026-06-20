@@ -4,6 +4,7 @@ const PhysicalCount = require('../models/PhysicalCount');
 const FixedAsset = require('../models/FixedAsset');
 const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
+const InventoryLayer = require('../models/InventoryLayer');
 const BankAccount = require('../models/BankAccount');
 const { createEntry, findAccount, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
@@ -204,22 +205,121 @@ exports.getKardex = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
-/** Traslado de stock entre bodegas. body: { product, fromWarehouse, toWarehouse, quantity, reason } */
+/**
+ * Traslado de stock entre bodegas. body: { product, fromWarehouse, toWarehouse, quantity, reason }
+ * Mueve realmente las capas de inventario (kardex): consume FIFO de la bodega de
+ * origen y recrea capas equivalentes (mismo costo, lote y vencimiento) en la de
+ * destino, de modo que el valor del inventario y la trazabilidad se conservan.
+ * El stock global del producto no cambia (solo se reubica). Atómico en transacción.
+ */
 exports.transferStock = async (req, res) => {
   try {
     const { product, fromWarehouse, toWarehouse, quantity, reason } = req.body;
     if (!product || !fromWarehouse || !toWarehouse || !quantity) return res.status(400).json({ message: 'product, fromWarehouse, toWarehouse y quantity requeridos' });
-    if (fromWarehouse === toWarehouse) return res.status(400).json({ message: 'Las bodegas deben ser distintas' });
-    const prod = await Product.findOne({ _id: product, clinic: req.clinicId });
-    if (!prod) return res.status(404).json({ message: 'Producto no encontrado' });
-    const mov = await InventoryMovement.create({
-      clinic: req.clinicId, product, type: 'traslado',
-      warehouse: fromWarehouse, toWarehouse, quantity: Number(quantity),
-      reason: reason || 'Traslado entre bodegas', balanceAfter: prod.stock,
-      createdBy: req.user._id,
+    if (String(fromWarehouse) === String(toWarehouse)) return res.status(400).json({ message: 'Las bodegas deben ser distintas' });
+    const qty = kardex.round4(quantity);
+    if (qty <= 0) return res.status(400).json({ message: 'Cantidad inválida' });
+
+    const movId = await runInTransaction(async (session) => {
+      const prod = await Product.findOne({ _id: product, clinic: req.clinicId }).session(session);
+      if (!prod) throw Object.assign(new Error('Producto no encontrado'), { status: 404 });
+
+      // Capas vivas en la bodega de origen, en orden FIFO.
+      const layers = await InventoryLayer.find({
+        clinic: req.clinicId, product, warehouse: fromWarehouse, qtyRemaining: { $gt: 0 },
+      }).sort({ date: 1, createdAt: 1 }).session(session);
+
+      const { plan, totalCost, shortfall } = kardex.planConsumption(layers, qty);
+      if (shortfall > 0.00001) throw Object.assign(new Error('Stock insuficiente en la bodega de origen'), { status: 400 });
+
+      const byId = new Map(layers.map((l) => [String(l._id), l]));
+      for (const p of plan) {
+        const layer = byId.get(String(p.layerId));
+        if (!layer) continue;
+        // Descuenta de la capa de origen.
+        layer.qtyRemaining = kardex.round4(layer.qtyRemaining - p.qty);
+        if (layer.qtyRemaining <= 0.00001) { layer.qtyRemaining = 0; layer.exhausted = true; }
+        await layer.save({ session });
+        // Recrea una capa equivalente en la bodega de destino, preservando costo,
+        // lote, vencimiento y fecha (para mantener el orden/edad FIFO).
+        await kardex.receiveStock({
+          clinicId: req.clinicId, product, warehouse: toWarehouse,
+          lot: layer.lot || '', expiryDate: layer.expiryDate || null,
+          quantity: p.qty, unitCost: layer.unitCost, date: layer.date,
+          sourceModel: 'Transfer', sourceRef: layer._id, userId: req.user._id,
+        }, session);
+      }
+
+      const [mov] = await InventoryMovement.create([{
+        clinic: req.clinicId, product, type: 'traslado',
+        warehouse: fromWarehouse, toWarehouse, quantity: qty,
+        totalCost: kardex.round2(totalCost),
+        reason: reason || 'Traslado entre bodegas', balanceAfter: prod.stock,
+        createdBy: req.user._id,
+      }], { session });
+      return mov._id;
     });
+
+    const mov = await InventoryMovement.findById(movId).populate('warehouse toWarehouse', 'code name').populate('product', 'code name');
     res.status(201).json(mov);
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+};
+
+/**
+ * Existencias por bodega: para cada producto con capas vivas, el stock y valor en
+ * cada bodega (incluida la pseudo-bodega "Sin bodega" para capas sin asignar).
+ * query opcional: { warehouse } para filtrar a una sola bodega.
+ */
+exports.warehouseStock = async (req, res) => {
+  try {
+    const match = { clinic: new (require('mongoose').Types.ObjectId)(req.clinicId), qtyRemaining: { $gt: 0 } };
+    if (req.query.warehouse) match.warehouse = new (require('mongoose').Types.ObjectId)(req.query.warehouse);
+    const rows = await InventoryLayer.aggregate([
+      { $match: match },
+      { $group: {
+        _id: { product: '$product', warehouse: '$warehouse' },
+        qty: { $sum: '$qtyRemaining' },
+        value: { $sum: { $multiply: ['$qtyRemaining', '$unitCost'] } },
+      } },
+      { $group: {
+        _id: '$_id.product',
+        warehouses: { $push: { warehouse: '$_id.warehouse', qty: '$qty', value: '$value' } },
+        totalQty: { $sum: '$qty' },
+        totalValue: { $sum: '$value' },
+      } },
+    ]);
+    const productIds = rows.map((r) => r._id);
+    const products = await Product.find({ _id: { $in: productIds } }).select('code name unit category').lean();
+    const prodMap = new Map(products.map((p) => [String(p._id), p]));
+    const warehouses = await Warehouse.find({ clinic: req.clinicId }).select('code name').lean();
+    const whMap = new Map(warehouses.map((w) => [String(w._id), w]));
+    const out = rows.map((r) => ({
+      product: prodMap.get(String(r._id)) || { _id: r._id },
+      totalQty: kardex.round4(r.totalQty),
+      totalValue: kardex.round2(r.totalValue),
+      warehouses: r.warehouses
+        .map((w) => ({
+          warehouse: w.warehouse ? (whMap.get(String(w.warehouse)) || { _id: w.warehouse }) : null,
+          qty: kardex.round4(w.qty),
+          value: kardex.round2(w.value),
+        }))
+        .sort((a, b) => (a.warehouse?.code || '~').localeCompare(b.warehouse?.code || '~')),
+    })).sort((a, b) => (a.product.name || '').localeCompare(b.product.name || ''));
+    res.json(out);
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+/** Historial de traslados entre bodegas (más recientes primero). */
+exports.listTransfers = async (req, res) => {
+  try {
+    const items = await InventoryMovement.find({ clinic: req.clinicId, type: 'traslado' })
+      .populate('product', 'code name')
+      .populate('warehouse toWarehouse', 'code name')
+      .populate('createdBy', 'name')
+      .sort({ createdAt: -1 })
+      .limit(100);
+    res.json(items);
+  } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
 // ----- Toma física -----

@@ -1,5 +1,7 @@
 const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
+const kardex = require('../utils/kardex');
+const { runInTransaction } = require('../utils/accounting');
 
 exports.getProducts = async (req, res) => {
   try {
@@ -100,6 +102,7 @@ exports.getMovements = async (req, res) => {
 
     const movements = await InventoryMovement.find(query)
       .populate('product', 'name code')
+      .populate('warehouse toWarehouse', 'code name')
       .populate('createdBy', 'name')
       .sort({ createdAt: -1 })
       .limit(200);
@@ -110,48 +113,114 @@ exports.getMovements = async (req, res) => {
   }
 };
 
+/**
+ * Si el producto tiene stock pero ninguna capa de inventario viva (datos previos
+ * al kardex), crea una capa de apertura "Sin bodega" para conciliar, de modo que
+ * los movimientos posteriores no descarten ese stock heredado al recalcular el
+ * stock global desde las capas. Idempotente: solo actúa cuando no hay capas.
+ */
+async function reconcileOpeningLayer(clinicId, product, userId, session) {
+  const cur = await kardex.currentStock({ clinicId, product: product._id }, session);
+  if (cur.qty <= 0 && Number(product.stock) > 0) {
+    await kardex.receiveStock({
+      clinicId, product: product._id, warehouse: null,
+      quantity: Number(product.stock),
+      unitCost: Number(product.averageCost || product.purchasePrice || 0),
+      date: new Date('2000-01-01'), sourceModel: 'Opening', userId,
+    }, session);
+  }
+}
+
+/**
+ * Movimiento manual de inventario (entrada / salida / ajuste), opcionalmente en
+ * una bodega. Pasa por el sistema de capas (kardex) para que las existencias por
+ * bodega y la valoración FIFO sean reales. El stock global del producto queda como
+ * caché de la suma de capas vivas. Atómico en transacción.
+ */
 exports.createMovement = async (req, res) => {
   try {
-    const { product: productId, type, quantity, reason, reference } = req.body;
+    const { product: productId, type, quantity, reason, reference, warehouse, unitCost } = req.body;
     const qty = Number(quantity);
-    if (!qty || qty <= 0) {
-      return res.status(400).json({ message: 'Cantidad inválida' });
-    }
+    if (!qty || qty <= 0) return res.status(400).json({ message: 'Cantidad inválida' });
+    if (!['entrada', 'salida', 'ajuste'].includes(type)) return res.status(400).json({ message: 'Tipo inválido' });
+    const wh = warehouse || null;
 
-    const product = await Product.findOne({ _id: productId, clinic: req.clinicId });
-    if (!product) return res.status(404).json({ message: 'Producto no encontrado' });
+    const movId = await runInTransaction(async (session) => {
+      const product = await Product.findOne({ _id: productId, clinic: req.clinicId }).session(session);
+      if (!product) throw Object.assign(new Error('Producto no encontrado'), { status: 404 });
+      if (product.unlimited) throw Object.assign(new Error('Los productos/servicios ilimitados no manejan stock'), { status: 400 });
 
-    if (type === 'salida' && product.stock < qty) {
-      return res.status(400).json({ message: 'Stock insuficiente' });
-    }
+      await reconcileOpeningLayer(req.clinicId, product, req.user._id, session);
 
-    if (type === 'entrada') {
-      product.stock += qty;
-    } else if (type === 'salida') {
-      product.stock -= qty;
-    } else {
-      product.stock = qty;
-    }
-    await product.save();
+      const layerConsumption = [];
+      let movUnitCost = Number(unitCost) || Number(product.averageCost || product.purchasePrice || 0);
+      let movTotalCost = 0;
 
-    const movement = await InventoryMovement.create({
-      clinic: req.clinicId,
-      product: productId,
-      type,
-      quantity: qty,
-      balanceAfter: product.stock,
-      reason,
-      reference,
-      createdBy: req.user._id,
+      if (type === 'entrada') {
+        await kardex.receiveStock({
+          clinicId: req.clinicId, product: product._id, warehouse: wh,
+          quantity: qty, unitCost: movUnitCost, date: new Date(),
+          sourceModel: 'Adjustment', userId: req.user._id,
+        }, session);
+        movTotalCost = kardex.round2(qty * movUnitCost);
+      } else if (type === 'salida') {
+        const issue = await kardex.issueStock({
+          clinicId: req.clinicId, product: product._id, warehouse: wh,
+          quantity: qty, allowNegative: false,
+        }, session);
+        movTotalCost = issue.totalCost;
+        movUnitCost = qty > 0 ? kardex.round4(issue.totalCost / qty) : 0;
+        for (const c of issue.consumption) layerConsumption.push({ layer: c.layerId, qty: c.qty, unitCost: c.unitCost });
+      } else { // ajuste: fija el stock de la bodega (o "sin bodega") al valor indicado
+        const curWh = await kardex.currentStock({ clinicId: req.clinicId, product: product._id, warehouse: wh }, session);
+        const delta = kardex.round4(qty - curWh.qty);
+        if (delta > 0) {
+          await kardex.receiveStock({
+            clinicId: req.clinicId, product: product._id, warehouse: wh,
+            quantity: delta, unitCost: movUnitCost, date: new Date(),
+            sourceModel: 'Adjustment', userId: req.user._id,
+          }, session);
+          movTotalCost = kardex.round2(delta * movUnitCost);
+        } else if (delta < 0) {
+          const issue = await kardex.issueStock({
+            clinicId: req.clinicId, product: product._id, warehouse: wh,
+            quantity: -delta, allowNegative: false,
+          }, session);
+          movTotalCost = issue.totalCost;
+          for (const c of issue.consumption) layerConsumption.push({ layer: c.layerId, qty: c.qty, unitCost: c.unitCost });
+        }
+      }
+
+      // El stock global y el costo promedio pasan a ser caché de las capas vivas.
+      const cur = await kardex.currentStock({ clinicId: req.clinicId, product: product._id }, session);
+      product.stock = cur.qty;
+      product.averageCost = cur.averageCost;
+      await product.save({ session });
+
+      const [movement] = await InventoryMovement.create([{
+        clinic: req.clinicId,
+        product: productId,
+        type,
+        warehouse: wh,
+        quantity: qty,
+        unitCost: movUnitCost,
+        totalCost: movTotalCost,
+        balanceAfter: product.stock,
+        layerConsumption,
+        reason,
+        reference,
+        createdBy: req.user._id,
+      }], { session });
+      return movement._id;
     });
 
-    const populated = await movement
+    const populated = await InventoryMovement.findById(movId)
       .populate('product', 'name code stock')
-      .then((doc) => doc.populate('createdBy', 'name'));
-
+      .populate('warehouse toWarehouse', 'code name')
+      .populate('createdBy', 'name');
     res.status(201).json(populated);
   } catch (error) {
-    res.status(500).json({ message: 'Error al crear movimiento', error: error.message });
+    res.status(error.status || 500).json({ message: error.message || 'Error al crear movimiento' });
   }
 };
 
