@@ -13,7 +13,7 @@ const { emitToClinic } = require('../realtime');
 
 exports.getSales = async (req, res) => {
   try {
-    const { startDate, endDate, status, patient, product, page = 1, limit = 20 } = req.query;
+    const { startDate, endDate, status, patient, product, client, page = 1, limit = 20 } = req.query;
     const query = { clinic: req.clinicId };
 
     if (startDate && endDate) {
@@ -21,6 +21,8 @@ exports.getSales = async (req, res) => {
     }
     if (status) query.status = status;
     if (patient) query.patient = patient;
+    // Filtro por cliente: paciente registrado o nombre libre (consumidor final / walk-in).
+    if (client) query.clientName = { $regex: client, $options: 'i' };
     // Filtro por producto/servicio: solo trae ventas que contengan ese producto.
     if (product) query['items.product'] = product;
 
@@ -465,6 +467,160 @@ exports.createSale = async (req, res) => {
 };
 
 /**
+ * Reversa una venta dentro de una transacción: devuelve stock/kardex, reversa
+ * los asientos (venta, cobros, ingresos diferidos), anula movimientos bancarios,
+ * deshace el progreso de tratamientos y cierra la CxC. Reutilizable desde la
+ * anulación de venta y desde la anulación de la factura electrónica asociada.
+ *
+ * @param {object} opts.allowInvoiced  Si true, no bloquea cuando la venta tiene
+ *   factura AUTORIZADO (se usa al anular la propia factura electrónica).
+ */
+async function reverseSaleTx(session, { clinicId, saleId, userId, reversalDate, allowInvoiced = false }) {
+  const sale = await Sale.findOne({ _id: saleId, clinic: clinicId })
+    .populate('invoice')
+    .session(session);
+  if (!sale) throw Object.assign(new Error('Venta no encontrada'), { status: 404 });
+  if (sale.status === 'anulada') throw Object.assign(new Error('La venta ya esta anulada'), { status: 400 });
+  if (!allowInvoiced && sale.invoice && sale.invoice.estado === 'AUTORIZADO') {
+    throw Object.assign(
+      new Error('No se puede anular: tiene factura autorizada por el SRI. Anule primero la factura electronica.'),
+      { status: 400 }
+    );
+  }
+
+  await assertPeriodOpen(clinicId, reversalDate, { session });
+
+  // Kardex: devuelve a sus capas originales lo consumido por las salidas de esta venta.
+  const salidas = await InventoryMovement.find({
+    clinic: clinicId,
+    sourceModel: 'Sale',
+    sourceRef: sale._id,
+    type: 'salida',
+  }).session(session);
+  for (const mov of salidas) {
+    await kardex.reverseIssue({ consumption: (mov.layerConsumption || []).map((c) => ({ layerId: c.layer, qty: c.qty })) }, session);
+  }
+
+  for (const item of sale.items) {
+    if (item.category === 'servicio') continue;
+    const prod = await Product.findOne({ _id: item.product, clinic: clinicId })
+      .select('unlimited category stock averageCost purchasePrice')
+      .session(session);
+    if (prod && (prod.unlimited || prod.category === 'servicio')) continue;
+    await Product.updateOne(
+      { _id: item.product, clinic: clinicId },
+      { $inc: { stock: item.quantity } },
+      { session }
+    );
+    const cur = await kardex.currentStock({ clinicId, product: item.product }, session);
+    await Product.updateOne(
+      { _id: item.product, clinic: clinicId },
+      { $set: { averageCost: cur.averageCost } },
+      { session }
+    );
+    const unitCost = Number(prod?.averageCost || prod?.purchasePrice || 0);
+    await InventoryMovement.create([{
+      clinic: clinicId,
+      product: item.product,
+      type: 'entrada',
+      quantity: item.quantity,
+      unitCost,
+      totalCost: +(Number(item.quantity || 0) * unitCost).toFixed(2),
+      reason: 'Anulacion de venta',
+      reference: sale.saleNumber,
+      sourceModel: 'Sale',
+      sourceRef: sale._id,
+      createdBy: userId,
+    }], { session });
+  }
+
+  // Revertir cobros previos (venta a crédito): reversa cada asiento de COBRO y
+  // anula su movimiento bancario para que Clientes y caja/banco queden cuadrados.
+  const JournalEntry = require('../models/JournalEntry');
+  const BankTransaction = require('../models/BankTransaction');
+  const cobros = await JournalEntry.find({
+    clinic: clinicId,
+    sourceModel: 'Sale',
+    sourceRef: sale._id,
+    source: 'COBRO',
+    status: 'CONTABILIZADO',
+    isReversed: false,
+  }).session(session);
+  for (const cobro of cobros) {
+    await reverseEntry({
+      clinicId,
+      entryId: cobro._id,
+      userId,
+      reason: `Anulacion venta ${sale.saleNumber}`,
+      date: reversalDate,
+      session,
+    });
+  }
+  await BankTransaction.updateMany(
+    { clinic: clinicId, sourceModel: 'Sale', sourceRef: sale._id, voided: false },
+    { $set: { voided: true, voidedAt: reversalDate, voidedBy: userId } },
+    { session }
+  );
+
+  // Revertir el progreso de tratamiento que esta venta marcó como cumplido.
+  for (const item of sale.items) {
+    if (!item.treatment) continue;
+    const treatment = await Treatment.findOne({ _id: item.treatment, clinic: clinicId }).session(session);
+    if (!treatment) continue;
+    const idx = treatment.items.findIndex((x) => String(x.product) === String(item.product));
+    if (idx < 0) continue;
+    const before = treatment.items[idx].completionRefs.length;
+    treatment.items[idx].completionRefs = treatment.items[idx].completionRefs.filter(
+      (r) => !(r.type === 'sale' && String(r.ref) === String(sale._id))
+    );
+    if (treatment.items[idx].completionRefs.length !== before) {
+      treatment.items[idx].completed = Math.max(0, (treatment.items[idx].completed || 0) - item.quantity);
+    }
+    if (treatment.status === 'completado') treatment.status = 'activo';
+    await treatment.save({ session });
+  }
+
+  if (sale.journalEntry) {
+    await reverseEntry({
+      clinicId,
+      entryId: sale.journalEntry,
+      userId,
+      reason: 'Anulacion venta',
+      date: reversalDate,
+      session,
+    });
+  }
+  // Ingreso diferido: reversa los asientos de reconocimiento ya emitidos y anula los documentos.
+  const deferreds = await DeferredIncome.find({
+    clinic: clinicId, sourceModel: 'Sale', sourceRef: sale._id, status: { $ne: 'ANULADO' },
+  }).session(session);
+  for (const di of deferreds) {
+    const recEntries = await JournalEntry.find({
+      clinic: clinicId, sourceModel: 'DeferredIncome', sourceRef: di._id,
+      status: 'CONTABILIZADO', isReversed: false,
+    }).session(session);
+    for (const re of recEntries) {
+      await reverseEntry({
+        clinicId, entryId: re._id, userId,
+        reason: `Anulacion venta ${sale.saleNumber}`, date: reversalDate, session,
+      });
+    }
+    di.status = 'ANULADO';
+    await di.save({ session });
+  }
+
+  // Cartera: anula el documento de cobro (CxC) si la venta era a crédito.
+  await voidReceivable({ clinicId, sourceModel: 'Sale', sourceRef: sale._id }, { session });
+
+  sale.status = 'anulada';
+  sale.balance = 0;
+  await sale.save({ session });
+  return { message: 'Venta anulada exitosamente' };
+}
+
+exports.reverseSaleTx = reverseSaleTx;
+
+/**
  * Anula una venta. Si tenía factura emitida, debe anularse antes la factura
  * (proceso aparte por el SRI). Esta acción solo cubre la venta interna.
  */
@@ -472,149 +628,13 @@ exports.cancelSale = async (req, res) => {
   try {
     {
       const result = await runInTransaction(async (session) => {
-        const sale = await Sale.findOne({ _id: req.params.id, clinic: req.clinicId })
-          .populate('invoice')
-          .session(session);
-        if (!sale) throw Object.assign(new Error('Venta no encontrada'), { status: 404 });
-        if (sale.status === 'anulada') throw Object.assign(new Error('La venta ya esta anulada'), { status: 400 });
-        if (sale.invoice && sale.invoice.estado === 'AUTORIZADO') {
-          throw Object.assign(
-            new Error('No se puede anular: tiene factura autorizada por el SRI. Anule primero la factura electronica.'),
-            { status: 400 }
-          );
-        }
-
         const reversalDate = req.body.date ? new Date(req.body.date) : new Date();
-        await assertPeriodOpen(req.clinicId, reversalDate, { session });
-
-        // Kardex: devuelve a sus capas originales lo consumido por las salidas de esta venta.
-        const salidas = await InventoryMovement.find({
-          clinic: req.clinicId,
-          sourceModel: 'Sale',
-          sourceRef: sale._id,
-          type: 'salida',
-        }).session(session);
-        for (const mov of salidas) {
-          await kardex.reverseIssue({ consumption: (mov.layerConsumption || []).map((c) => ({ layerId: c.layer, qty: c.qty })) }, session);
-        }
-
-        for (const item of sale.items) {
-          if (item.category === 'servicio') continue;
-          const prod = await Product.findOne({ _id: item.product, clinic: req.clinicId })
-            .select('unlimited category stock averageCost purchasePrice')
-            .session(session);
-          if (prod && (prod.unlimited || prod.category === 'servicio')) continue;
-          await Product.updateOne(
-            { _id: item.product, clinic: req.clinicId },
-            { $inc: { stock: item.quantity } },
-            { session }
-          );
-          const cur = await kardex.currentStock({ clinicId: req.clinicId, product: item.product }, session);
-          await Product.updateOne(
-            { _id: item.product, clinic: req.clinicId },
-            { $set: { averageCost: cur.averageCost } },
-            { session }
-          );
-          const unitCost = Number(prod?.averageCost || prod?.purchasePrice || 0);
-          await InventoryMovement.create([{
-            clinic: req.clinicId,
-            product: item.product,
-            type: 'entrada',
-            quantity: item.quantity,
-            unitCost,
-            totalCost: +(Number(item.quantity || 0) * unitCost).toFixed(2),
-            reason: 'Anulacion de venta',
-            reference: sale.saleNumber,
-            sourceModel: 'Sale',
-            sourceRef: sale._id,
-            createdBy: req.user._id,
-          }], { session });
-        }
-
-        // Revertir cobros previos (venta a crédito): reversa cada asiento de COBRO y
-        // anula su movimiento bancario para que Clientes y caja/banco queden cuadrados.
-        const JournalEntry = require('../models/JournalEntry');
-        const BankTransaction = require('../models/BankTransaction');
-        const cobros = await JournalEntry.find({
-          clinic: req.clinicId,
-          sourceModel: 'Sale',
-          sourceRef: sale._id,
-          source: 'COBRO',
-          status: 'CONTABILIZADO',
-          isReversed: false,
-        }).session(session);
-        for (const cobro of cobros) {
-          await reverseEntry({
-            clinicId: req.clinicId,
-            entryId: cobro._id,
-            userId: req.user._id,
-            reason: `Anulacion venta ${sale.saleNumber}`,
-            date: reversalDate,
-            session,
-          });
-        }
-        await BankTransaction.updateMany(
-          { clinic: req.clinicId, sourceModel: 'Sale', sourceRef: sale._id, voided: false },
-          { $set: { voided: true, voidedAt: reversalDate, voidedBy: req.user._id } },
-          { session }
-        );
-
-        // Revertir el progreso de tratamiento que esta venta marcó como cumplido.
-        for (const item of sale.items) {
-          if (!item.treatment) continue;
-          const treatment = await Treatment.findOne({ _id: item.treatment, clinic: req.clinicId }).session(session);
-          if (!treatment) continue;
-          const idx = treatment.items.findIndex((x) => String(x.product) === String(item.product));
-          if (idx < 0) continue;
-          const before = treatment.items[idx].completionRefs.length;
-          treatment.items[idx].completionRefs = treatment.items[idx].completionRefs.filter(
-            (r) => !(r.type === 'sale' && String(r.ref) === String(sale._id))
-          );
-          if (treatment.items[idx].completionRefs.length !== before) {
-            treatment.items[idx].completed = Math.max(0, (treatment.items[idx].completed || 0) - item.quantity);
-          }
-          if (treatment.status === 'completado') treatment.status = 'activo';
-          await treatment.save({ session });
-        }
-
-        if (sale.journalEntry) {
-          await reverseEntry({
-            clinicId: req.clinicId,
-            entryId: sale.journalEntry,
-            userId: req.user._id,
-            reason: 'Anulacion venta',
-            date: reversalDate,
-            session,
-          });
-        }
-        // Ingreso diferido: reversa los asientos de reconocimiento ya emitidos y
-        // anula los documentos. El reverso del asiento principal deshace la
-        // acreditación original a "Ingresos diferidos".
-        const deferreds = await DeferredIncome.find({
-          clinic: req.clinicId, sourceModel: 'Sale', sourceRef: sale._id, status: { $ne: 'ANULADO' },
-        }).session(session);
-        for (const di of deferreds) {
-          const recEntries = await JournalEntry.find({
-            clinic: req.clinicId, sourceModel: 'DeferredIncome', sourceRef: di._id,
-            status: 'CONTABILIZADO', isReversed: false,
-          }).session(session);
-          for (const re of recEntries) {
-            await reverseEntry({
-              clinicId: req.clinicId, entryId: re._id, userId: req.user._id,
-              reason: `Anulacion venta ${sale.saleNumber}`, date: reversalDate, session,
-            });
-          }
-          di.status = 'ANULADO';
-          await di.save({ session });
-        }
-
-        // Cartera: anula el documento de cobro (CxC) si la venta era a crédito.
-        await voidReceivable({ clinicId: req.clinicId, sourceModel: 'Sale', sourceRef: sale._id }, { session });
-
-        sale.status = 'anulada';
-        sale.balance = 0;
-        await sale.save({ session });
-        return { message: 'Venta anulada exitosamente' };
+        return reverseSaleTx(session, {
+          clinicId: req.clinicId,
+          saleId: req.params.id,
+          userId: req.user._id,
+          reversalDate,
+        });
       });
       return res.json(result);
     }

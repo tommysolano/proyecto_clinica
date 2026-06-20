@@ -13,6 +13,7 @@ const ACCOUNT_ROLES = {
   clientes:             { group: 'Activo',  label: 'Clientes (CxC)',            code: '1.1.02.01' },
   tarjetasPorLiquidar:  { group: 'Activo',  label: 'Tarjetas por liquidar',     code: '1.1.02.02' },
   anticipoProveedores:  { group: 'Activo',  label: 'Anticipos a proveedores',   code: '1.1.02.03' },
+  cxcEmpleados:         { group: 'Activo',  label: 'Cuentas por cobrar empleados', code: '1.1.02.06' },
   ivaCompras:           { group: 'Activo',  label: 'IVA en compras (crédito tributario)', taxCode: 'IVA_COMPRAS' },
   ivaComprasNoCredito:  { group: 'Gasto',   label: 'IVA que se carga al gasto (no recuperable)', code: '6.3.03' },
   retIvaPorCobrar:      { group: 'Activo',  label: 'Retención IVA por cobrar',  code: '1.1.03.02' },
@@ -47,6 +48,7 @@ const ACCOUNT_ROLES = {
   comisionTarjeta:      { group: 'Gasto',   label: 'Comisiones tarjeta',        code: '6.1.17' },
   comisionesPersonal:   { group: 'Gasto',   label: 'Comisiones al personal',    code: '6.1.22' },
   mermaInventario:      { group: 'Gasto',   label: 'Mermas y ajustes de inventario', code: '6.1.23' },
+  consumoInterno:       { group: 'Gasto',   label: 'Consumo interno de insumos',  code: '6.1.24' },
   otrosGastos:          { group: 'Gasto',   label: 'Otros gastos administrativos', code: '6.1.99' },
   faltanteCaja:         { group: 'Gasto',   label: 'Faltantes de caja',         code: '6.1.21' },
 

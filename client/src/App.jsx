@@ -64,6 +64,7 @@ import ManagementReports from './pages/accounting/ManagementReports';
 import SriReports from './pages/accounting/SriReports';
 import Employees from './pages/accounting/Employees';
 import EmployeeLoans from './pages/accounting/EmployeeLoans';
+import Deductions from './pages/accounting/Deductions';
 import Payroll from './pages/accounting/Payroll';
 import CreditCardBatches from './pages/accounting/CreditCardBatches';
 import AuditLogs from './pages/accounting/AuditLogs';
@@ -425,6 +426,7 @@ function AppRoutes() {
                   ['sri-reports', SriReports],
                   ['employees', Employees],
                   ['loans', EmployeeLoans],
+                  ['deductions', Deductions],
                   ['payroll', Payroll],
                   ['credit-card-batches', CreditCardBatches],
                   ['card-settlements', CardSettlements],

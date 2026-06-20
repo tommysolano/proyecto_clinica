@@ -2,7 +2,10 @@ const Employee = require('../models/Employee');
 const EmployeeLoan = require('../models/EmployeeLoan');
 const Payroll = require('../models/Payroll');
 const PayrollConfig = require('../models/PayrollConfig');
+const User = require('../models/User');
+const EmployeeDeduction = require('../models/EmployeeDeduction');
 const { createEntry, findAccount, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
+const { getAccount } = require('../utils/accountMap');
 
 // Tasas legales Ecuador por defecto (se sobrescriben con PayrollConfig)
 const RATES = {
@@ -81,9 +84,42 @@ exports.getEmployee = async (req, res) => {
   if (!e) return res.status(404).json({ message: 'No encontrado' });
   res.json(e);
 };
+
+/**
+ * Lista los usuarios con cuenta en la clínica activa, indicando si ya tienen
+ * ficha de empleado. Sirve para "completar datos" y registrar como empleado a
+ * quienes solo tienen login en el sistema.
+ */
+exports.listLinkableUsers = async (req, res) => {
+  try {
+    const users = await User.find({ active: true, 'clinics.clinic': req.clinicId })
+      .select('name email phone cedula clinics')
+      .sort({ name: 1 });
+    const employees = await Employee.find({ clinic: req.clinicId, user: { $ne: null } }).select('user');
+    const linked = new Set(employees.map((e) => String(e.user)));
+    const result = users.map((u) => ({
+      _id: u._id,
+      name: u.name,
+      email: u.email,
+      phone: u.phone || '',
+      cedula: u.cedula || '',
+      role: u.getRoleForClinic(req.clinicId),
+      hasEmployee: linked.has(String(u._id)),
+    }));
+    res.json(result);
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
 exports.createEmployee = async (req, res) => {
   try {
     const data = { ...req.body, clinic: req.clinicId };
+    // Vínculo opcional con un usuario del sistema (login). Evita strings vacíos
+    // y que un mismo usuario quede vinculado a dos fichas de empleado.
+    if (!data.user) {
+      delete data.user;
+    } else {
+      const dup = await Employee.findOne({ clinic: req.clinicId, user: data.user });
+      if (dup) return res.status(400).json({ message: 'Ese usuario ya tiene una ficha de empleado' });
+    }
     // Si vienen datos de tipo NET pero no baseSalary, calcular el bruto inicial.
     if (data.salaryType === 'NET' && data.netSalary > 0 && !data.baseSalary) {
       data.baseSalary = grossUpFromNet(Number(data.netSalary));
@@ -109,6 +145,14 @@ exports.updateEmployee = async (req, res) => {
     const e = await Employee.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!e) return res.status(404).json({ message: 'No encontrado' });
     const patch = { ...req.body };
+    // El vínculo con usuario solo se aplica si viene un id válido; '' no debe
+    // intentar castearse a ObjectId (rompería el guardado en edición normal).
+    if (!patch.user) {
+      delete patch.user;
+    } else if (String(patch.user) !== String(e.user || '')) {
+      const dup = await Employee.findOne({ clinic: req.clinicId, user: patch.user, _id: { $ne: e._id } });
+      if (dup) return res.status(400).json({ message: 'Ese usuario ya tiene una ficha de empleado' });
+    }
     // Si se cambia a NET, recalcular baseSalary a partir de netSalary
     if (patch.salaryType === 'NET' && patch.netSalary && patch.netSalary > 0) {
       patch.baseSalary = grossUpFromNet(Number(patch.netSalary));
@@ -258,7 +302,17 @@ exports.generatePayroll = async (req, res) => {
       const annualBase = (base + decimoCuarto + fondosReserva) * 12 - iessPersonal * 12;
       const impuestoRenta = computeIRMonthly(annualBase);
 
-      const totalEgresos = +(iessPersonal + impuestoRenta + prestamoEmpresa).toFixed(2);
+      // Deducciones pendientes del empleado (consumo, multas, anticipos, etc.).
+      const deductions = await EmployeeDeduction.find({ clinic: req.clinicId, employee: emp._id, status: 'PENDIENTE' });
+      let multas = 0, anticipos = 0, otherDeductions = 0;
+      for (const dd of deductions) {
+        if (dd.type === 'MULTA') multas += dd.amount;
+        else if (dd.type === 'ANTICIPO') anticipos += dd.amount;
+        else otherDeductions += dd.amount; // CONSUMO / UNIFORME / OTRO
+      }
+      multas = +multas.toFixed(2); anticipos = +anticipos.toFixed(2); otherDeductions = +otherDeductions.toFixed(2);
+
+      const totalEgresos = +(iessPersonal + impuestoRenta + prestamoEmpresa + multas + anticipos + otherDeductions).toFixed(2);
       const netoPagar = +(totalIngresos - totalEgresos).toFixed(2);
       const provDecimoTercero = emp.decimoTerceroAcumulado === 'ACUMULADO' ? +(base / 12).toFixed(2) : 0;
       const provDecimoCuarto = emp.decimoCuartoAcumulado === 'ACUMULADO' ? +(R.SBU_2024 / 12).toFixed(2) : 0;
@@ -271,6 +325,7 @@ exports.generatePayroll = async (req, res) => {
         daysWorked: 30, baseSalary: base,
         decimoTercero, decimoCuarto, fondosReserva,
         totalIngresos, iessPersonal, impuestoRenta, prestamoEmpresa,
+        multas, anticipos, otherDeductions,
         totalEgresos, netoPagar,
         iessPatronal, iece, secap, provDecimoTercero, provDecimoCuarto, provVacaciones, provFondosReserva,
         totalProvisiones,
@@ -366,6 +421,12 @@ exports.closePayroll = async (req, res) => {
         if (totIR > 0) lines.push({ account: irXpagar._id, debit: 0, credit: +totIR.toFixed(2), description: 'Impuesto a la renta' });
         const totPrest = p.items.reduce((s, i) => s + (i.prestamoEmpresa || 0), 0);
         if (totPrest > 0) lines.push({ account: prestEmpresaXcobrar._id, debit: 0, credit: +totPrest.toFixed(2), description: 'Prestamos empleados' });
+        // Deducciones (consumo/multas/anticipos/otros): saldan la CxC empleados.
+        const totDeducciones = p.items.reduce((s, i) => s + (i.multas || 0) + (i.anticipos || 0) + (i.otherDeductions || 0), 0);
+        if (totDeducciones > 0) {
+          const cxcEmp = await getAccount(req.clinicId, 'cxcEmpleados', { session });
+          lines.push({ account: cxcEmp._id, debit: 0, credit: +totDeducciones.toFixed(2), description: 'Deducciones empleados (CxC)' });
+        }
         if (totProvBen > 0) lines.push({ account: provisiones._id, debit: 0, credit: +totProvBen.toFixed(2), description: 'Provisiones por pagar' });
         if (p.totalNeto > 0) lines.push({ account: sueldosXpagar._id, debit: 0, credit: +p.totalNeto.toFixed(2), description: 'Sueldos por pagar' });
 
@@ -381,6 +442,16 @@ exports.closePayroll = async (req, res) => {
           userId: req.user._id,
           session,
         });
+
+        // Marcar como aplicadas las deducciones pendientes de los empleados del rol.
+        if (totDeducciones > 0) {
+          const empIds = p.items.map((i) => i.employee);
+          await EmployeeDeduction.updateMany(
+            { clinic: req.clinicId, employee: { $in: empIds }, status: 'PENDIENTE' },
+            { $set: { status: 'APLICADO', appliedIn: p.period, appliedAt: new Date() } },
+            { session }
+          );
+        }
 
         for (const it of p.items) {
           if (it.prestamoEmpresa > 0) {

@@ -342,6 +342,58 @@ exports.list = async (req, res) => {
   }
 };
 
+/**
+ * Descarga masiva: genera los RIDE (PDF) de las facturas que cumplen el filtro
+ * y los entrega en un único archivo ZIP. Por defecto solo facturas AUTORIZADO.
+ */
+exports.bulkPdf = async (req, res) => {
+  try {
+    const { startDate, endDate, estado, patient, client } = req.query;
+    const query = { clinic: req.clinicId, estado: estado || 'AUTORIZADO' };
+    if (startDate && endDate) {
+      query.createdAt = { $gte: new Date(startDate), $lte: new Date(endDate + 'T23:59:59.999') };
+    }
+    if (client) query.razonSocialComprador = { $regex: client, $options: 'i' };
+    if (patient) {
+      const saleIds = await Sale.find({ clinic: req.clinicId, patient }).distinct('_id');
+      query.sale = { $in: saleIds };
+    }
+
+    const invoices = await Invoice.find(query).populate('sale').sort({ createdAt: -1 }).limit(300);
+    if (!invoices.length) return res.status(404).json({ message: 'No hay facturas para descargar con esos filtros' });
+
+    const config = await InvoicingConfig.findOne({ clinic: req.clinicId });
+    const clinic = await Clinic.findById(req.clinicId);
+    const { createZip } = require('../utils/zip');
+
+    const files = [];
+    for (const inv of invoices) {
+      try {
+        const pdf = await buildRidePdf({
+          invoice: inv,
+          sale: inv.sale,
+          config,
+          clinic,
+          autorizacion: { fechaAutorizacion: inv.fechaAutorizacion },
+        });
+        const num = `${inv.estab}-${inv.ptoEmi}-${String(inv.secuencial).padStart(9, '0')}`;
+        files.push({ name: `factura-${num}.pdf`, data: pdf });
+      } catch (e) {
+        // Saltar facturas cuyo PDF no se pueda generar; el resto continúa.
+        console.warn('No se pudo generar RIDE de factura', inv._id, e.message);
+      }
+    }
+    if (!files.length) return res.status(404).json({ message: 'No se pudo generar ningún PDF' });
+
+    const zip = createZip(files);
+    res.setHeader('Content-Type', 'application/zip');
+    res.setHeader('Content-Disposition', `attachment; filename="facturas-${Date.now()}.zip"`);
+    res.send(zip);
+  } catch (error) {
+    res.status(500).json({ message: 'Error al generar descarga masiva', error: error.message });
+  }
+};
+
 exports.get = async (req, res) => {
   try {
     const invoice = await Invoice.findOne({ _id: req.params.id, clinic: req.clinicId })
@@ -448,10 +500,38 @@ exports.anular = async (req, res) => {
     invoice.xmlAnulacion = xmlAnulacion;
     await invoice.save();
 
+    // Opcional: reversar también la venta asociada (asientos, inventario, CxC).
+    // Por defecto se reversa para que la contabilidad quede cuadrada al anular.
+    let saleReversed = false;
+    let saleWarning = null;
+    const anularVenta = req.body.anularVenta !== false; // default true
+    if (anularVenta && invoice.sale) {
+      try {
+        const { runInTransaction } = require('../utils/accounting');
+        const { reverseSaleTx } = require('./saleController');
+        await runInTransaction(async (session) => {
+          await reverseSaleTx(session, {
+            clinicId: req.clinicId,
+            saleId: invoice.sale,
+            userId: req.user._id,
+            reversalDate: new Date(),
+            allowInvoiced: true,
+          });
+        });
+        saleReversed = true;
+      } catch (e) {
+        // No revertimos la anulación de la factura: solo avisamos del problema
+        // con la venta (p. ej. ya estaba anulada o período cerrado).
+        saleWarning = e.message;
+      }
+    }
+
     res.json({
       message:
         'Factura marcada como anulada localmente. Recuerde que la anulación efectiva debe realizarse en el portal del SRI (https://srienlinea.sri.gob.ec).',
       invoice,
+      saleReversed,
+      saleWarning,
     });
   } catch (error) {
     res.status(500).json({ message: 'Error al anular factura', error: error.message });

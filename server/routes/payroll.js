@@ -1,10 +1,18 @@
 const router = require('express').Router();
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 const c = require('../controllers/payrollController');
+const d = require('../controllers/employeeDeductionController');
 
 router.use(auth, requireClinic);
 
+// Deducciones al personal y consumo interno (se ubican antes de las rutas con :id).
+router.get('/deductions', requireRole('admin', 'contabilidad'), d.listDeductions);
+router.post('/deductions', requireRole('admin', 'contabilidad'), d.createDeduction);
+router.post('/deductions/:id/void', requireRole('admin', 'contabilidad'), d.voidDeduction);
+router.post('/internal-consumption', requireRole('admin', 'contabilidad'), d.internalConsumption);
+
 router.get('/employees', requireRole('admin', 'contabilidad'), c.listEmployees);
+router.get('/linkable-users', requireRole('admin', 'contabilidad'), c.listLinkableUsers);
 router.get('/employees/:id', requireRole('admin', 'contabilidad'), c.getEmployee);
 router.post('/employees', requireRole('admin', 'contabilidad'), c.createEmployee);
 router.put('/employees/:id', requireRole('admin', 'contabilidad'), c.updateEmployee);

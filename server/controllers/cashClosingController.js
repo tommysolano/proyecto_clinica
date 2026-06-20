@@ -46,10 +46,15 @@ const dayRange = (dateStr) => {
   return { start, end };
 };
 
-/** Agrega las ventas (por método de pago) en un rango de fechas. */
-const salesByMethod = async (clinicId, start, end) => {
+/**
+ * Agrega las ventas (por método de pago) en un rango de fechas. Si se pasa
+ * `cashierId`, solo cuenta las ventas registradas por ese cajero (caja por cajero).
+ */
+const salesByMethod = async (clinicId, start, end, cashierId = null) => {
+  const match = { clinic: oid(clinicId), status: 'completada', createdAt: { $gte: start, $lte: end } };
+  if (cashierId) match.cashier = oid(cashierId);
   const rows = await Sale.aggregate([
-    { $match: { clinic: oid(clinicId), status: 'completada', createdAt: { $gte: start, $lte: end } } },
+    { $match: match },
     { $group: { _id: '$paymentMethod', total: { $sum: '$total' }, count: { $sum: 1 } } },
   ]);
   const byMethod = { efectivo: 0, tarjeta: 0, transferencia: 0 };
@@ -58,28 +63,30 @@ const salesByMethod = async (clinicId, start, end) => {
   return { byMethod, salesCount, totalSales };
 };
 
-/** Caja abierta actualmente (si existe), con su resumen en vivo. */
+/** Caja abierta del cajero actual (si existe), con su resumen en vivo. */
 exports.current = async (req, res) => {
   try {
-    const open = await CashClosing.findOne({ clinic: req.clinicId, status: 'ABIERTA' })
+    const open = await CashClosing.findOne({ clinic: req.clinicId, status: 'ABIERTA', openedBy: req.user._id })
       .populate('openedBy', 'name')
       .sort({ openedAt: -1 });
     if (!open) return res.json({ open: null });
     const now = new Date();
     const { byMethod, salesCount, totalSales } = await salesByMethod(req.clinicId, open.openedAt, now);
     const movementsNet = await cashMovementsNet(req.clinicId, open._id);
-    // Efectivo esperado = fondo inicial + neto de la cuenta Caja en el mayor.
+    // Efectivo esperado = fondo inicial + neto de la cuenta Caja en el mayor
+    // (incluye ventas de contado, cobros de crédito en efectivo, gastos de caja
+    //  chica, retiros y depósitos), sin doble conteo.
     const cashNet = await cajaLedgerNet(req.clinicId, open.openedAt, now);
     const expectedCash = +((open.openingBalance || 0) + cashNet).toFixed(2);
     res.json({ open, live: { byMethod, salesCount, totalSales, movementsNet, cashNet, expectedCash } });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
-/** Abre la caja con un fondo inicial. Solo puede haber una caja abierta a la vez. */
+/** Abre la caja del cajero actual con un fondo inicial. Una caja abierta por cajero. */
 exports.open = async (req, res) => {
   try {
-    const existing = await CashClosing.findOne({ clinic: req.clinicId, status: 'ABIERTA' });
-    if (existing) return res.status(400).json({ message: 'Ya hay una caja abierta. Ciérrala antes de abrir otra.' });
+    const existing = await CashClosing.findOne({ clinic: req.clinicId, status: 'ABIERTA', openedBy: req.user._id });
+    if (existing) return res.status(400).json({ message: 'Ya tienes una caja abierta. Ciérrala antes de abrir otra.' });
     const openingBalance = Number(req.body.openingBalance) || 0;
     const now = new Date();
     const closing = await CashClosing.create({
@@ -173,8 +180,8 @@ exports.close = async (req, res) => {
         const movementsNet = await cashMovementsNet(req.clinicId, closing._id);
         const countedCash = Number(req.body.countedCash) || 0;
         // Efectivo esperado = fondo inicial + neto de la cuenta Caja en el mayor
-        // (incluye ventas de contado, cobros de crédito en efectivo, anticipos,
-        //  gastos de caja chica, retiros y depósitos), sin doble conteo.
+        // (ventas de contado, cobros de crédito en efectivo, gastos de caja chica,
+        //  retiros y depósitos), sin doble conteo.
         const cashNet = await cajaLedgerNet(req.clinicId, closing.openedAt, closedAt, session);
         const expectedCash = +((closing.openingBalance || 0) + cashNet).toFixed(2);
         const difference = +(countedCash - expectedCash).toFixed(2);
@@ -261,8 +268,8 @@ exports.addMovement = async (req, res) => {
     const BankAccount = require('../models/BankAccount');
     const BankTransaction = require('../models/BankTransaction');
     const movementId = await runInTransaction(async (session) => {
-      const open = await CashClosing.findOne({ clinic: req.clinicId, status: 'ABIERTA' }).session(session);
-      if (!open) throw Object.assign(new Error('No hay caja abierta'), { status: 400 });
+      const open = await CashClosing.findOne({ clinic: req.clinicId, status: 'ABIERTA', openedBy: req.user._id }).session(session);
+      if (!open) throw Object.assign(new Error('No tienes una caja abierta'), { status: 400 });
 
       const { type, description } = req.body;
       if (!['INGRESO', 'EGRESO', 'GASTO', 'RETIRO', 'DEPOSITO'].includes(type)) {
@@ -360,7 +367,7 @@ exports.listMovements = async (req, res) => {
   try {
     let sessionId = req.query.session;
     if (!sessionId) {
-      const open = await CashClosing.findOne({ clinic: req.clinicId, status: 'ABIERTA' }).select('_id');
+      const open = await CashClosing.findOne({ clinic: req.clinicId, status: 'ABIERTA', openedBy: req.user._id }).select('_id');
       sessionId = open?._id;
     }
     if (!sessionId) return res.json([]);

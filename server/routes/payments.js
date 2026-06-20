@@ -6,6 +6,7 @@ router.use(auth, requireClinic);
 router.get('/', requireRole('admin', 'contabilidad', 'cajero'), c.list);
 router.get('/:id', requireRole('admin', 'contabilidad', 'cajero'), c.get);
 router.post('/', requireRole('admin', 'contabilidad', 'cajero'), c.create);
+router.post('/bulk', requireRole('admin', 'contabilidad'), c.createBulk);
 router.post('/:id/void', requireRole('admin', 'contabilidad'), c.void);
 
 module.exports = router;

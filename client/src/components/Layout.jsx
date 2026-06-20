@@ -130,6 +130,7 @@ const ACCT_GROUPS = [
       { path: '/accounting/employees', label: 'Empleados' },
       { path: '/accounting/payroll', label: 'Nómina' },
       { path: '/accounting/loans', label: 'Préstamos' },
+      { path: '/accounting/deductions', label: 'Deducciones / Consumo' },
       { path: '/accounting/decimos', label: 'Plantillas Décimos' },
       { path: '/accounting/payroll-config', label: 'Configuración' },
     ],

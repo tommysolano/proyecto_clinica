@@ -6,7 +6,16 @@ import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineUserGroup, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineClock } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 
-const EMPTY = { code: '', identificacion: '', tipoIdentificacion: 'CEDULA', firstName: '', lastName: '', email: '', phone: '', position: '', department: '', contractType: 'INDEFINIDO', paymentFrequency: 'MENSUAL', salaryType: 'GROSS', baseSalary: 460, netSalary: 0, salaryChangeReason: '', hireDate: today(), chargesFamily: 0, deductible: true, salaryOriginClinic: '', bankName: '', bankAccount: '', bankAccountType: '', receivesDecimoTercero: true, receivesDecimoCuarto: true, receivesFondosReserva: false, decimoTerceroAcumulado: 'MENSUALIZADO', decimoCuartoAcumulado: 'MENSUALIZADO', fondosReservaAcumulado: 'MENSUALIZADO' };
+const EMPTY = { code: '', identificacion: '', tipoIdentificacion: 'CEDULA', firstName: '', lastName: '', email: '', phone: '', position: '', department: '', contractType: 'INDEFINIDO', paymentFrequency: 'MENSUAL', salaryType: 'GROSS', baseSalary: 460, netSalary: 0, salaryChangeReason: '', hireDate: today(), chargesFamily: 0, deductible: true, salaryOriginClinic: '', bankName: '', bankAccount: '', bankAccountType: '', receivesDecimoTercero: true, receivesDecimoCuarto: true, receivesFondosReserva: false, decimoTerceroAcumulado: 'MENSUALIZADO', decimoCuartoAcumulado: 'MENSUALIZADO', fondosReservaAcumulado: 'MENSUALIZADO', user: '' };
+
+// Separa un nombre completo en nombres/apellidos (heurística simple ES).
+const splitName = (full = '') => {
+  const parts = full.trim().split(/\s+/);
+  if (parts.length <= 1) return { firstName: full.trim(), lastName: '' };
+  if (parts.length === 2) return { firstName: parts[0], lastName: parts[1] };
+  if (parts.length === 3) return { firstName: parts[0], lastName: parts.slice(1).join(' ') };
+  return { firstName: parts.slice(0, 2).join(' '), lastName: parts.slice(2).join(' ') };
+};
 
 // Estimación cliente del bruto a partir del neto (solo IESS 9.45%).
 const IESS_PERSONAL = 0.0945;
@@ -19,12 +28,33 @@ export default function Employees() {
   const [form, setForm] = useState(EMPTY);
   const [history, setHistory] = useState(null);
   const [clinics, setClinics] = useState([]);
+  const [users, setUsers] = useState([]);
 
   const load = async () => {
     try { const r = await api.get('/payroll/employees'); setList(r.data || []); }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+    try { const u = await api.get('/payroll/linkable-users'); setUsers(u.data || []); }
+    catch { /* sin permiso: ignorar */ }
   };
   useEffect(() => { load(); api.get('/clinics').then((r) => setClinics(r.data || [])).catch(() => {}); }, []);
+
+  // Abre el modal de alta precargado con los datos de un usuario del sistema.
+  const openFromUser = (u) => {
+    const { firstName, lastName } = splitName(u.name);
+    setEditing(null);
+    setForm({
+      ...EMPTY,
+      firstName, lastName,
+      email: u.email || '',
+      phone: u.phone || '',
+      identificacion: u.cedula || '',
+      code: u.cedula || '',
+      user: u._id,
+    });
+    setShow(true);
+  };
+
+  const pendingUsers = users.filter((u) => !u.hasEmployee);
 
   const submit = async (e) => {
     e.preventDefault();
@@ -56,6 +86,26 @@ export default function Employees() {
         <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineUserGroup className="text-emerald-600" /> Empleados</h1>
         <button onClick={() => { setEditing(null); setForm(EMPTY); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nuevo</button>
       </div>
+
+      {/* Usuarios del sistema sin ficha de empleado */}
+      {pendingUsers.length > 0 && (
+        <div className="bg-amber-50 border border-amber-200 rounded-2xl p-4">
+          <p className="text-sm font-semibold text-amber-800 mb-1">Usuarios del sistema sin ficha de empleado ({pendingUsers.length})</p>
+          <p className="text-xs text-amber-700 mb-3">Personas con cuenta/acceso al sistema que aún no están registradas como empleados. Completa sus datos para incluirlas en la nómina.</p>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+            {pendingUsers.map((u) => (
+              <div key={u._id} className="bg-white border border-amber-100 rounded-xl px-3 py-2 flex items-center justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-sm font-medium text-slate-800 truncate">{u.name}</p>
+                  <p className="text-xs text-slate-500 truncate">{u.email}{u.role ? ` · ${u.role}` : ''}</p>
+                </div>
+                <button onClick={() => openFromUser(u)} className="shrink-0 px-2.5 py-1.5 bg-emerald-600 text-white rounded-lg text-xs flex items-center gap-1"><HiOutlinePlus className="w-3.5 h-3.5" /> Registrar</button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
         <table className="tbl">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
@@ -94,6 +144,11 @@ export default function Employees() {
       </div>
       <Modal isOpen={show} onClose={() => setShow(false)} title={editing ? 'Editar empleado' : 'Nuevo empleado'} size="lg">
         <form onSubmit={submit} className="space-y-3">
+          {form.user && (
+            <div className="bg-emerald-50 border border-emerald-200 text-emerald-800 text-xs rounded-lg px-3 py-2">
+              Vinculado a un usuario del sistema. Completa los datos laborales para registrarlo como empleado.
+            </div>
+          )}
           <div className="grid grid-cols-2 gap-3">
             <Field label="Código" required><input required placeholder="Ej: EMP-01" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Tipo de identificación"><select value={form.tipoIdentificacion} onChange={(e) => setForm({ ...form, tipoIdentificacion: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>CEDULA</option><option>RUC</option><option>PASAPORTE</option></select></Field>

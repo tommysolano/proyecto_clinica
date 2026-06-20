@@ -8,11 +8,13 @@ const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOp
 const { getAccount } = require('../utils/accountMap');
 const { openReceivable, applyToReceivable, unapplyFromReceivable, openPayable, applyToPayable, unapplyFromPayable } = require('../utils/subledger');
 
-async function nextNumber(clinicId, type) {
+async function nextNumber(clinicId, type, session = null) {
   const prefix = type === 'COBRO' ? 'CB-' : 'PG-';
   const year = new Date().getFullYear();
   const re = new RegExp(`^${prefix}${year}-`);
-  const last = await Payment.findOne({ clinic: clinicId, number: re }).sort({ createdAt: -1 }).select('number');
+  let qy = Payment.findOne({ clinic: clinicId, number: re }).sort({ number: -1 }).select('number');
+  if (session) qy = qy.session(session);
+  const last = await qy;
   let n = 1;
   if (last) {
     const m = last.number.match(/(\d+)$/);
@@ -289,6 +291,173 @@ exports.create = async (req, res) => {
       const payment = await Payment.findById(paymentId);
       return res.status(201).json(payment);
     }
+  } catch (e) {
+    res.status(e.status || 400).json({ message: e.message });
+  }
+};
+
+/**
+ * Pago masivo a proveedores: recibe varias facturas de compra (de uno o varios
+ * proveedores) y crea un Payment por proveedor aplicando a sus facturas. Útil
+ * para liquidar muchas facturas de una sola vez con un mismo banco/método.
+ * Body: { date, method, bankAccount?, voucherNumber?, reference?, description?,
+ *         items: [{ purchaseInvoice, amount }] }
+ */
+exports.createBulk = async (req, res) => {
+  try {
+    const { date, method, bankAccount, voucherNumber, reference, description, items = [] } = req.body;
+    if (!method) return res.status(400).json({ message: 'method requerido' });
+    const norm = (items || [])
+      .map((i) => ({ ref: i.purchaseInvoice || i.docRef, amount: +(Number(i.amount) || 0).toFixed(2) }))
+      .filter((i) => i.ref && i.amount > 0);
+    if (!norm.length) return res.status(400).json({ message: 'Selecciona al menos una factura con monto' });
+
+    const result = await runInTransaction(async (session) => {
+      const txDate = date ? new Date(date) : new Date();
+      await assertPeriodOpen(req.clinicId, txDate, { session });
+
+      // Validar facturas y agrupar por proveedor.
+      const bySupplier = new Map();
+      let grandTotal = 0;
+      const seen = new Set();
+      for (const it of norm) {
+        if (seen.has(String(it.ref))) throw Object.assign(new Error('Factura repetida en la selección'), { status: 400 });
+        seen.add(String(it.ref));
+        const pi = await PurchaseInvoice.findOne({ _id: it.ref, clinic: req.clinicId })
+          .populate('supplier', 'razonSocial ruc')
+          .session(session);
+        if (!pi) throw Object.assign(new Error('Compra no encontrada'), { status: 400 });
+        if (pi.status === 'ANULADA') throw Object.assign(new Error(`No se puede pagar una compra anulada (${pi.serie || ''})`), { status: 400 });
+        await assertPeriodOpen(req.clinicId, pi.fechaEmision, { session });
+        const balance = Number(pi.balance ?? pi.total ?? 0);
+        if (it.amount > balance + 0.01) throw Object.assign(new Error(`El pago excede el saldo de ${pi.serie || 'la compra'}`), { status: 400 });
+        const supId = String(pi.supplier?._id || pi.supplier);
+        if (!bySupplier.has(supId)) bySupplier.set(supId, { name: pi.supplier?.razonSocial || '', ref: pi.supplier?._id || pi.supplier, list: [] });
+        bySupplier.get(supId).list.push({ pi, amount: it.amount });
+        grandTotal += it.amount;
+      }
+      grandTotal = +grandTotal.toFixed(2);
+
+      // Banco / validación de saldo total.
+      let bank = null;
+      if (bankAccount) {
+        bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId }).session(session);
+        if (!bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 404 });
+      }
+      if (method !== 'EFECTIVO') {
+        if (!bank) throw Object.assign(new Error('bankAccount requerido para este método'), { status: 400 });
+        if (!voucherNumber && !reference) throw Object.assign(new Error('Comprobante requerido para pagos bancarios'), { status: 400 });
+        const agg = await BankTransaction.aggregate([
+          { $match: { clinic: bank.clinic, bankAccount: bank._id, voided: false } },
+          { $group: { _id: null, total: { $sum: { $multiply: ['$amount', '$direction'] } } } },
+        ]).session(session);
+        const balance = (bank.initialBalance || 0) + (agg[0]?.total || 0);
+        if (balance < grandTotal) {
+          throw Object.assign(new Error(`Saldo insuficiente en ${bank.name} (disponible $${balance.toFixed(2)}, requerido $${grandTotal.toFixed(2)})`), { status: 400 });
+        }
+      }
+
+      const prov = await getAccount(req.clinicId, 'proveedores', { session });
+      const created = [];
+
+      for (const [, sup] of bySupplier) {
+        const apps = sup.list.map((x) => ({ docModel: 'PurchaseInvoice', docRef: x.pi._id, amount: x.amount }));
+        const appliedAmount = +apps.reduce((s, a) => s + a.amount, 0).toFixed(2);
+        const total = appliedAmount;
+        const number = await nextNumber(req.clinicId, 'PAGO', session);
+
+        const [payment] = await Payment.create([{
+          clinic: req.clinicId,
+          type: 'PAGO',
+          number,
+          date: txDate,
+          partyModel: 'Supplier',
+          partyRef: sup.ref,
+          partyName: sup.name,
+          method,
+          bankAccount: bank?._id || null,
+          reference,
+          total,
+          applications: apps,
+          appliedAmount,
+          advanceAmount: 0,
+          description: description || `Pago masivo a ${sup.name}`,
+          createdBy: req.user._id,
+        }], { session });
+
+        const lines = [{ account: prov._id, debit: appliedAmount, credit: 0, description: `Pago a ${sup.name}` }];
+        if (method === 'EFECTIVO') {
+          const caja = await getAccount(req.clinicId, 'caja', { session });
+          lines.push({ account: caja._id, debit: 0, credit: total, description: 'Pago en efectivo' });
+        } else {
+          lines.push({ account: bank.chartAccount, debit: 0, credit: total, description: `Pago ${method}` });
+        }
+
+        const entry = await createEntry({
+          clinicId: req.clinicId,
+          date: txDate,
+          description: `Pago masivo ${number} - ${sup.name}`,
+          source: 'PAGO',
+          sourceModel: 'Payment',
+          sourceRef: payment._id,
+          sourceAction: 'REGISTER',
+          lines,
+          userId: req.user._id,
+          session,
+        });
+
+        let bankTx = null;
+        if (bank) {
+          [bankTx] = await BankTransaction.create([{
+            clinic: req.clinicId,
+            bankAccount: bank._id,
+            date: txDate,
+            type: 'PAGO',
+            amount: total,
+            direction: -1,
+            description: `Pago masivo ${number} - ${sup.name}`,
+            reference,
+            voucherNumber: voucherNumber || '',
+            journalEntry: entry._id,
+            sourceModel: 'Payment',
+            sourceRef: payment._id,
+            createdBy: req.user._id,
+          }], { session });
+        }
+
+        payment.journalEntry = entry._id;
+        payment.bankTransaction = bankTx?._id || null;
+        await payment.save({ session });
+
+        for (const x of sup.list) {
+          const pi = x.pi;
+          const prevBalance = Number(pi.balance ?? pi.total ?? 0);
+          pi.balance = Math.max(0, prevBalance - x.amount);
+          if (pi.balance <= 0.005) {
+            pi.balance = 0;
+            pi.paid = true;
+            if (pi.status !== 'ANULADA') pi.status = 'PAGADA';
+          }
+          await pi.save({ session });
+          await openPayable({
+            clinic: req.clinicId,
+            party: { model: 'Supplier', ref: pi.supplier?._id || pi.supplier, name: sup.name },
+            sourceModel: 'PurchaseInvoice', sourceRef: pi._id, docType: 'COMPRA',
+            number: pi.serie || '', issueDate: pi.fechaEmision || new Date(),
+            total: +(Number(pi.total || 0) - Number(pi.retentionTotal || 0)).toFixed(2),
+            applied: +(Number(pi.total || 0) - Number(pi.retentionTotal || 0) - prevBalance).toFixed(2),
+            account: prov._id,
+          }, { session });
+          await applyToPayable({ clinicId: req.clinicId, sourceModel: 'PurchaseInvoice', sourceRef: pi._id, amount: x.amount }, { session });
+        }
+
+        created.push({ paymentId: payment._id, number, supplier: sup.name, total });
+      }
+
+      return { created, total: grandTotal };
+    });
+
+    return res.status(201).json({ ...result, count: result.created.length });
   } catch (e) {
     res.status(e.status || 400).json({ message: e.message });
   }

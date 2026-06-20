@@ -20,6 +20,8 @@ export default function SalesReports() {
   const [showCat, setShowCat] = useState(false);
   const [catForm, setCatForm] = useState({ name: '', description: '', products: [] });
   const [editCatId, setEditCatId] = useState(null);
+  const [prodSearch, setProdSearch] = useState('');
+  const [catProdSearch, setCatProdSearch] = useState('');
 
   const loadMeta = async () => {
     const [p, c] = await Promise.all([
@@ -112,16 +114,36 @@ export default function SalesReports() {
             ))}
           </div>
         )}
-        {/* Servicios multiselección */}
+        {/* Productos/servicios multiselección con buscador */}
         <details>
-          <summary className="cursor-pointer text-xs text-slate-500">Filtrar por servicios ({filters.products.length} seleccionados)</summary>
-          <div className="mt-2 max-h-40 overflow-y-auto grid grid-cols-2 md:grid-cols-4 gap-1">
-            {products.map((p) => (
-              <label key={p._id} className="flex items-center gap-1.5 text-xs">
-                <input type="checkbox" checked={filters.products.includes(p._id)} onChange={() => toggleProduct(p._id)} />
-                <span className="truncate">{p.name}</span>
-              </label>
-            ))}
+          <summary className="cursor-pointer text-xs text-slate-500">Filtrar por producto/servicio ({filters.products.length} seleccionados)</summary>
+          <div className="mt-2 space-y-2">
+            <div className="flex items-center gap-2">
+              <input
+                value={prodSearch}
+                onChange={(e) => setProdSearch(e.target.value)}
+                placeholder="Buscar producto o servicio..."
+                className="flex-1 border border-slate-200 rounded-xl px-3 py-2 text-xs"
+              />
+              {!!filters.products.length && (
+                <button type="button" onClick={() => setFilters((f) => ({ ...f, products: [] }))} className="text-xs text-rose-600">Limpiar ({filters.products.length})</button>
+              )}
+            </div>
+            <div className="max-h-40 overflow-y-auto grid grid-cols-2 md:grid-cols-4 gap-1">
+              {products
+                .filter((p) => {
+                  const q = prodSearch.trim().toLowerCase();
+                  if (!q) return true;
+                  return p.name?.toLowerCase().includes(q) || p.code?.toLowerCase().includes(q);
+                })
+                .map((p) => (
+                  <label key={p._id} className="flex items-center gap-1.5 text-xs">
+                    <input type="checkbox" checked={filters.products.includes(p._id)} onChange={() => toggleProduct(p._id)} />
+                    <span className="truncate" title={p.name}>{p.name}</span>
+                  </label>
+                ))}
+              {!products.length && <span className="text-xs text-slate-400">Sin productos.</span>}
+            </div>
           </div>
         </details>
       </div>
@@ -225,14 +247,26 @@ export default function SalesReports() {
             <Field label="Descripción"><input placeholder="Opcional" value={catForm.description} onChange={(e) => setCatForm({ ...catForm, description: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" /></Field>
           </div>
           <div>
-            <p className="text-xs text-slate-500 mb-1">Servicios incluidos ({catForm.products.length})</p>
+            <p className="text-xs text-slate-500 mb-1">Productos/servicios incluidos ({catForm.products.length})</p>
+            <input
+              value={catProdSearch}
+              onChange={(e) => setCatProdSearch(e.target.value)}
+              placeholder="Buscar producto o servicio..."
+              className="w-full border border-slate-200 rounded-xl px-3 py-2 text-xs mb-1"
+            />
             <div className="max-h-48 overflow-y-auto grid grid-cols-2 md:grid-cols-3 gap-1 border rounded-lg p-2">
-              {products.map((p) => (
-                <label key={p._id} className="flex items-center gap-1.5 text-xs">
-                  <input type="checkbox" checked={catForm.products.includes(p._id)} onChange={() => toggleCatProduct(p._id)} />
-                  <span className="truncate">{p.name}</span>
-                </label>
-              ))}
+              {products
+                .filter((p) => {
+                  const q = catProdSearch.trim().toLowerCase();
+                  if (!q) return true;
+                  return p.name?.toLowerCase().includes(q) || p.code?.toLowerCase().includes(q);
+                })
+                .map((p) => (
+                  <label key={p._id} className="flex items-center gap-1.5 text-xs">
+                    <input type="checkbox" checked={catForm.products.includes(p._id)} onChange={() => toggleCatProduct(p._id)} />
+                    <span className="truncate" title={p.name}>{p.name}</span>
+                  </label>
+                ))}
             </div>
           </div>
           <div className="flex justify-end gap-2">

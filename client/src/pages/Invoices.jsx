@@ -37,6 +37,7 @@ export default function Invoices() {
   const [detail, setDetail] = useState(null);
   const [anularTarget, setAnularTarget] = useState(null);
   const [motivo, setMotivo] = useState('');
+  const [anularVenta, setAnularVenta] = useState(true);
   const [busyId, setBusyId] = useState(null);
 
   const load = async () => {
@@ -90,8 +91,12 @@ export default function Invoices() {
     }
     setBusyId(anularTarget._id);
     try {
-      await api.post(`/invoices/${anularTarget._id}/anular`, { motivo });
+      const res = await api.post(`/invoices/${anularTarget._id}/anular`, { motivo, anularVenta });
       toast.success('Factura marcada como anulada');
+      if (anularVenta) {
+        if (res.data?.saleReversed) toast.success('Venta asociada reversada');
+        else if (res.data?.saleWarning) toast(`Venta no reversada: ${res.data.saleWarning}`, { icon: '⚠️', duration: 7000 });
+      }
       setAnularTarget(null);
       setMotivo('');
       load();
@@ -254,6 +259,7 @@ export default function Invoices() {
                           onClick={() => {
                             setAnularTarget(inv);
                             setMotivo('');
+                            setAnularVenta(true);
                           }}
                           className="p-1.5 rounded-lg hover:bg-red-50 text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer ml-1"
                           title="Anular factura"
@@ -374,6 +380,13 @@ export default function Invoices() {
               placeholder="Mínimo 10 caracteres"
             />
           </div>
+          <label className="flex items-start gap-2 text-sm text-slate-700">
+            <input type="checkbox" checked={anularVenta} onChange={(e) => setAnularVenta(e.target.checked)} className="mt-0.5" />
+            <span>
+              Anular también la venta asociada
+              <span className="block text-xs text-slate-500">Reversa los asientos contables, devuelve el inventario y cierra la cuenta por cobrar.</span>
+            </span>
+          </label>
           <div className="flex justify-end gap-2">
             <button
               onClick={() => {

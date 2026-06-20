@@ -16,6 +16,13 @@ export default function Payments() {
   const [invoices, setInvoices] = useState([]);
   const [form, setForm] = useState({ type: 'PAGO', date: today(), partyModel: 'Supplier', party: '', method: 'TRANSFERENCIA', bankAccount: '', applications: [], advanceAmount: 0, notes: '', voucherNumber: '', voucherUrl: '' });
 
+  // Pago masivo a proveedores
+  const [showBulk, setShowBulk] = useState(false);
+  const [bulkRows, setBulkRows] = useState([]); // { pi, checked, amount }
+  const [bulkForm, setBulkForm] = useState({ date: today(), method: 'TRANSFERENCIA', bankAccount: '', voucherNumber: '', reference: '' });
+  const [bulkSearch, setBulkSearch] = useState('');
+  const [bulkBusy, setBulkBusy] = useState(false);
+
   const load = async () => {
     try { const r = await api.get('/payments', { params: { type } }); setList(r.data?.items || r.data || []); }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
@@ -59,6 +66,42 @@ export default function Payments() {
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
 
+  const openBulk = async () => {
+    setBulkForm({ date: today(), method: 'TRANSFERENCIA', bankAccount: '', voucherNumber: '', reference: '' });
+    setBulkSearch('');
+    try {
+      const r = await api.get('/purchase-invoices', { params: { status: 'REGISTRADA', limit: 500 } });
+      const items = (r.data?.items || r.data || []).filter((p) => Number(p.balance ?? p.total ?? 0) > 0.005);
+      setBulkRows(items.map((pi) => ({ pi, checked: false, amount: +Number(pi.balance ?? pi.total ?? 0).toFixed(2) })));
+      setShowBulk(true);
+    } catch (e) { toast.error(e.response?.data?.message || 'Error al cargar compras'); }
+  };
+
+  const bulkSelected = bulkRows.filter((r) => r.checked);
+  const bulkTotal = bulkSelected.reduce((s, r) => s + (+r.amount || 0), 0);
+
+  const submitBulk = async (e) => {
+    e.preventDefault();
+    if (!bulkSelected.length) return toast.error('Selecciona al menos una factura');
+    if (bulkForm.method !== 'EFECTIVO' && !bulkForm.bankAccount) return toast.error('Selecciona el banco');
+    if (bulkForm.method !== 'EFECTIVO' && !bulkForm.voucherNumber && !bulkForm.reference) return toast.error('Ingresa el comprobante / referencia');
+    setBulkBusy(true);
+    try {
+      const payload = {
+        date: bulkForm.date,
+        method: bulkForm.method,
+        bankAccount: bulkForm.method === 'EFECTIVO' ? null : bulkForm.bankAccount,
+        voucherNumber: bulkForm.voucherNumber,
+        reference: bulkForm.reference,
+        items: bulkSelected.map((r) => ({ purchaseInvoice: r.pi._id, amount: +r.amount })),
+      };
+      const res = await api.post('/payments/bulk', payload);
+      toast.success(`${res.data?.count || 0} pago(s) creados por $${fmt(res.data?.total)}`);
+      setShowBulk(false); load();
+    } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
+    finally { setBulkBusy(false); }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -68,6 +111,9 @@ export default function Payments() {
             <button onClick={() => setType('COBRO')} className={`px-3 py-2 text-sm ${type === 'COBRO' ? 'bg-emerald-600 text-white' : 'bg-white'}`}>Cobros</button>
             <button onClick={() => setType('PAGO')} className={`px-3 py-2 text-sm ${type === 'PAGO' ? 'bg-emerald-600 text-white' : 'bg-white'}`}>Pagos</button>
           </div>
+          {type === 'PAGO' && (
+            <button onClick={openBulk} className="px-4 py-2 bg-sky-600 text-white rounded-xl shadow-sm shadow-sky-600/20 flex items-center gap-2"><HiOutlineCurrencyDollar /> Pago masivo</button>
+          )}
           <button onClick={() => openNew(type)} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nuevo</button>
         </div>
       </div>
@@ -151,6 +197,86 @@ export default function Payments() {
           </div>
           <Field label="Notas"><input placeholder="Observaciones / cheque #" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Registrar</button></div>
+        </form>
+      </Modal>
+
+      {/* Pago masivo a proveedores */}
+      <Modal isOpen={showBulk} onClose={() => setShowBulk(false)} title="Pago masivo a proveedores" size="xl">
+        <form onSubmit={submitBulk} className="space-y-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <Field label="Fecha" required><input type="date" required value={bulkForm.date} onChange={(e) => setBulkForm({ ...bulkForm, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Método">
+              <select value={bulkForm.method} onChange={(e) => setBulkForm({ ...bulkForm, method: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                <option>EFECTIVO</option><option>TRANSFERENCIA</option><option>CHEQUE</option><option>DEPOSITO</option>
+              </select>
+            </Field>
+            {bulkForm.method !== 'EFECTIVO' && (
+              <Field label="Banco" required>
+                <select required value={bulkForm.bankAccount} onChange={(e) => setBulkForm({ ...bulkForm, bankAccount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                  <option value="">Seleccione…</option>{banks.map((b) => <option key={b._id} value={b._id}>{b.name}</option>)}
+                </select>
+              </Field>
+            )}
+            {bulkForm.method !== 'EFECTIVO' && (
+              <Field label="N° Comprobante / referencia"><input value={bulkForm.voucherNumber} onChange={(e) => setBulkForm({ ...bulkForm, voucherNumber: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            )}
+          </div>
+
+          <input placeholder="Buscar por proveedor o serie..." value={bulkSearch} onChange={(e) => setBulkSearch(e.target.value)} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+
+          <div className="border rounded-xl overflow-auto max-h-80">
+            <table className="tbl text-sm">
+              <thead className="bg-slate-100 text-xs uppercase sticky top-0"><tr>
+                <th className="px-2 py-2 w-8"></th>
+                <th className="px-2 py-2 text-left">Proveedor</th>
+                <th className="px-2 py-2 text-left">Serie</th>
+                <th className="px-2 py-2 text-left">Fecha</th>
+                <th className="px-2 py-2 text-right">Saldo</th>
+                <th className="px-2 py-2 text-right">A pagar</th>
+              </tr></thead>
+              <tbody>
+                {bulkRows
+                  .filter((r) => {
+                    const q = bulkSearch.trim().toLowerCase();
+                    if (!q) return true;
+                    return (r.pi.supplier?.razonSocial || '').toLowerCase().includes(q) || (r.pi.serie || '').toLowerCase().includes(q);
+                  })
+                  .map((r) => {
+                    const balance = Number(r.pi.balance ?? r.pi.total ?? 0);
+                    return (
+                      <tr key={r.pi._id} className={`border-t ${r.checked ? 'bg-sky-50/50' : ''}`}>
+                        <td className="px-2 py-1 text-center">
+                          <input type="checkbox" checked={r.checked} onChange={() => setBulkRows((rows) => rows.map((x) => x.pi._id === r.pi._id ? { ...x, checked: !x.checked } : x))} />
+                        </td>
+                        <td className="px-2 py-1">{r.pi.supplier?.razonSocial || '—'}</td>
+                        <td className="px-2 py-1 font-mono text-xs">{r.pi.serie}</td>
+                        <td className="px-2 py-1 text-xs">{fmtDate(r.pi.fechaEmision)}</td>
+                        <td className="px-2 py-1 text-right font-mono">{fmt(balance)}</td>
+                        <td className="px-2 py-1 text-right">
+                          <input
+                            type="number" step="0.01" min="0" max={balance}
+                            value={r.amount}
+                            disabled={!r.checked}
+                            onChange={(e) => { const v = +e.target.value; setBulkRows((rows) => rows.map((x) => x.pi._id === r.pi._id ? { ...x, amount: v } : x)); }}
+                            className="w-24 border border-slate-200 rounded px-2 py-1 text-right disabled:bg-slate-100"
+                          />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                {!bulkRows.length && <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-400">No hay compras registradas con saldo pendiente.</td></tr>}
+              </tbody>
+            </table>
+          </div>
+
+          <div className="flex items-center justify-between">
+            <span className="text-sm text-slate-600">{bulkSelected.length} factura(s) seleccionada(s)</span>
+            <span className="font-semibold">Total a pagar: ${fmt(bulkTotal)}</span>
+          </div>
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={() => setShowBulk(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button>
+            <button disabled={bulkBusy} className="px-4 py-2 bg-sky-600 text-white rounded-xl shadow-sm shadow-sky-600/20 disabled:opacity-50">{bulkBusy ? 'Procesando...' : 'Registrar pagos'}</button>
+          </div>
         </form>
       </Modal>
     </div>

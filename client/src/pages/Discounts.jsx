@@ -36,9 +36,11 @@ export default function Discounts() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY);
   const [products, setProducts] = useState([]);
+  const [prodSearch, setProdSearch] = useState('');
 
   const toggleDay = (d) => setForm((f) => ({ ...f, daysOfWeek: f.daysOfWeek.includes(d) ? f.daysOfWeek.filter((x) => x !== d) : [...f.daysOfWeek, d] }));
   const toggleClinic = (id) => setForm((f) => ({ ...f, clinics: f.clinics.includes(id) ? f.clinics.filter((x) => x !== id) : [...f.clinics, id] }));
+  const toggleProduct = (id) => setForm((f) => ({ ...f, products: f.products.includes(id) ? f.products.filter((x) => x !== id) : [...f.products, id] }));
 
   const load = async () => {
     setLoading(true);
@@ -186,12 +188,35 @@ export default function Discounts() {
             </select>
           </label>
           {form.scope === 'specific' && (
-            <label className="block">
-              <span className="text-xs font-medium text-slate-600">Productos aplicables</span>
-              <select multiple value={form.products} onChange={(e) => setForm({ ...form, products: Array.from(e.target.selectedOptions, (o) => o.value) })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm h-32">
-                {products.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
-              </select>
-            </label>
+            <div className="block">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-medium text-slate-600">Productos/servicios aplicables ({form.products.length})</span>
+                {!!form.products.length && (
+                  <button type="button" onClick={() => setForm({ ...form, products: [] })} className="text-xs text-rose-600">Quitar todos</button>
+                )}
+              </div>
+              <input
+                value={prodSearch}
+                onChange={(e) => setProdSearch(e.target.value)}
+                placeholder="Buscar producto o servicio..."
+                className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
+              />
+              <div className="mt-1 max-h-40 overflow-y-auto border border-slate-200 rounded-xl p-2 grid grid-cols-1 sm:grid-cols-2 gap-1">
+                {products
+                  .filter((p) => {
+                    const q = prodSearch.trim().toLowerCase();
+                    if (!q) return true;
+                    return p.name?.toLowerCase().includes(q) || p.code?.toLowerCase().includes(q);
+                  })
+                  .map((p) => (
+                    <label key={p._id} className="flex items-center gap-1.5 text-xs cursor-pointer">
+                      <input type="checkbox" checked={form.products.includes(p._id)} onChange={() => toggleProduct(p._id)} />
+                      <span className="truncate" title={p.name}>{p.name}</span>
+                    </label>
+                  ))}
+                {!products.length && <span className="text-xs text-slate-400">Sin productos.</span>}
+              </div>
+            </div>
           )}
           <div className="grid grid-cols-2 gap-3">
             <label className="block">

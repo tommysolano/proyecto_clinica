@@ -41,7 +41,8 @@ export default function Sales() {
   const [detailModal, setDetailModal] = useState(null);
   const [saving, setSaving] = useState(false);
   const [invoicingId, setInvoicingId] = useState(null);
-  const [filter, setFilter] = useState({ startDate: '', endDate: '', product: '' });
+  const [filter, setFilter] = useState({ startDate: '', endDate: '', product: '', client: '' });
+  const [downloadingZip, setDownloadingZip] = useState(false);
   const [topProducts, setTopProducts] = useState([]);
   const [showChart, setShowChart] = useState(false);
 
@@ -85,6 +86,7 @@ export default function Sales() {
       if (filter.startDate) params.startDate = filter.startDate;
       if (filter.endDate) params.endDate = filter.endDate;
       if (filter.product) params.product = filter.product;
+      if (filter.client) params.client = filter.client;
       const res = await api.get('/sales', { params });
       setSales(res.data.sales);
     } catch {
@@ -407,6 +409,13 @@ export default function Sales() {
             onChange={(e) => setFilter({ ...filter, endDate: e.target.value })}
             className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50"
           />
+          <input
+            type="text"
+            value={filter.client}
+            onChange={(e) => setFilter({ ...filter, client: e.target.value })}
+            placeholder="Filtrar por cliente..."
+            className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50 min-w-[180px]"
+          />
           <div className="flex-1 min-w-[200px]">
             <ProductAutocomplete
               products={products}
@@ -415,6 +424,28 @@ export default function Sales() {
               placeholder="Filtrar por producto/servicio..."
             />
           </div>
+          <button
+            type="button"
+            onClick={async () => {
+              setDownloadingZip(true);
+              try {
+                const params = {};
+                if (filter.startDate) params.startDate = filter.startDate;
+                if (filter.endDate) params.endDate = filter.endDate;
+                if (filter.client) params.client = filter.client;
+                await downloadFile('/invoices/bulk-pdf', { params, filename: `facturas_${Date.now()}.zip` });
+              } catch (err) {
+                toast.error(err.message || 'Error al descargar facturas');
+              } finally {
+                setDownloadingZip(false);
+              }
+            }}
+            disabled={downloadingZip}
+            className="px-4 py-2.5 rounded-xl text-sm font-medium border bg-white text-emerald-700 border-emerald-200 hover:bg-emerald-50 cursor-pointer disabled:opacity-50"
+            title="Descargar en ZIP los PDF (RIDE) de las facturas autorizadas del filtro"
+          >
+            {downloadingZip ? 'Generando...' : 'Descargar facturas (ZIP)'}
+          </button>
           <button
             type="button"
             onClick={() => setShowChart((s) => !s)}

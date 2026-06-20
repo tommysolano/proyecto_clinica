@@ -7,6 +7,7 @@ router.use(auth, requireClinic);
 const allow = requireRole('admin', 'cajero', 'contabilidad');
 
 router.get('/', allow, ctrl.list);
+router.get('/bulk-pdf', allow, ctrl.bulkPdf);
 router.get('/:id', allow, ctrl.get);
 router.get('/:id/pdf', allow, ctrl.getRidePdf);
 router.post('/from-sale/:saleId', requireRole('admin', 'cajero'), ctrl.emitFromSale);
