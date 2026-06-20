@@ -5,6 +5,7 @@ import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineCube, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineArrowsRightLeft, HiOutlineChevronDown, HiOutlineChevronRight } from 'react-icons/hi2';
 import { fmt } from './_utils';
+import NumericInput from '../../components/NumericInput';
 
 const EMPTY_WH = { code: '', name: '', address: '', isMain: false, active: true };
 const EMPTY_TRANSFER = { product: '', fromWarehouse: '', toWarehouse: '', quantity: '', reason: '' };
@@ -258,7 +259,7 @@ export default function Warehouses() {
             </Field>
           </div>
           <Field label="Cantidad" required>
-            <input type="number" min="0.01" step="0.01" required value={tForm.quantity} onChange={(e) => setTForm({ ...tForm, quantity: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <NumericInput min="0.01" step="0.01" required value={tForm.quantity} onChange={(e) => setTForm({ ...tForm, quantity: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
           </Field>
           {tForm.product && tForm.fromWarehouse && (
             <p className={`text-xs ${availableInFrom > 0 ? 'text-slate-500' : 'text-rose-600'}`}>Disponible en origen: <b>{fmt(availableInFrom || 0)}</b></p>

@@ -5,6 +5,7 @@ import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import { HiOutlineDocumentText, HiOutlinePlus, HiOutlineNoSymbol } from 'react-icons/hi2';
 import { fmt, fmtDate } from './_utils';
+import NumericInput from '../../components/NumericInput';
 
 const STATUS_COLOR = { DISPONIBLE: 'bg-emerald-100 text-emerald-700', GIRADO: 'bg-amber-100 text-amber-700', COBRADO: 'bg-blue-100 text-blue-700', ANULADO: 'bg-rose-100 text-rose-700' };
 
@@ -70,8 +71,8 @@ export default function Checks() {
         <div className="space-y-3">
           <p className="text-sm text-slate-500">Crea un rango de cheques disponibles para la cuenta seleccionada.</p>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Desde Nº de cheque"><input type="number" value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-            <Field label="Hasta Nº de cheque"><input type="number" value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Desde Nº de cheque"><NumericInput value={range.from} onChange={(e) => setRange({ ...range, from: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Hasta Nº de cheque"><NumericInput value={range.to} onChange={(e) => setRange({ ...range, to: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           </div>
           <div className="flex justify-end gap-2"><button onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button onClick={generate} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Generar</button></div>
         </div>

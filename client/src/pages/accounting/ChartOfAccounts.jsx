@@ -8,12 +8,38 @@ const EMPTY = { code: '', name: '', type: 'ACTIVO', nature: 'DEBITO', parent: nu
 
 export default function ChartOfAccounts() {
   const [list, setList] = useState([]);
+  const [allAccounts, setAllAccounts] = useState([]); // catálogo completo para el selector de padre
   const [loading, setLoading] = useState(true);
   const [show, setShow] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY);
+  const [parentQuery, setParentQuery] = useState('');
   const [q, setQ] = useState('');
   const [filterType, setFilterType] = useState('');
+
+  const loadAll = async () => {
+    try { const r = await api.get('/chart-of-accounts'); setAllAccounts(r.data || []); } catch { /* noop */ }
+  };
+
+  // Al elegir una cuenta padre, el backend sugiere código/nivel/tipo/naturaleza.
+  const onSelectParent = async (parentId) => {
+    if (!parentId) { setForm((f) => ({ ...f, parent: null })); return; }
+    try {
+      const r = await api.get('/chart-of-accounts/next-code', { params: { parent: parentId } });
+      setForm((f) => ({ ...f, parent: parentId, code: r.data.code, level: r.data.level, type: r.data.type, nature: r.data.nature }));
+    } catch (e) { toast.error(e.response?.data?.message || 'No se pudo sugerir el código'); }
+  };
+
+  const openNew = async () => {
+    setEditing(null); setForm(EMPTY); setParentQuery('');
+    await loadAll();
+    setShow(true);
+  };
+  const openEdit = async (a) => {
+    setEditing(a); setForm({ ...a, parent: a.parent || null }); setParentQuery('');
+    await loadAll();
+    setShow(true);
+  };
 
   const load = async () => {
     setLoading(true);
@@ -64,7 +90,7 @@ export default function ChartOfAccounts() {
           <button onClick={seed} className="px-3 py-2 bg-amber-500 text-white rounded-lg flex items-center gap-2 hover:bg-amber-600">
             <HiOutlineSparkles className="w-4 h-4" /> Cargar plan inicial
           </button>
-          <button onClick={() => { setEditing(null); setForm(EMPTY); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 hover:bg-emerald-700">
+          <button onClick={openNew} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 hover:bg-emerald-700">
             <HiOutlinePlus className="w-4 h-4" /> Nueva cuenta
           </button>
         </div>
@@ -104,7 +130,7 @@ export default function ChartOfAccounts() {
                   <td className="px-3 py-2 text-center">{a.allowsMovement ? '✓' : '—'}</td>
                   <td className="px-3 py-2 text-center">{a.active ? '✓' : '—'}</td>
                   <td className="px-3 py-2 flex gap-1 justify-end">
-                    <button onClick={() => { setEditing(a); setForm({ ...a, parent: a.parent || null }); setShow(true); }} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded"><HiOutlinePencilSquare className="w-4 h-4" /></button>
+                    <button onClick={() => openEdit(a)} className="p-1.5 text-blue-600 hover:bg-blue-50 rounded"><HiOutlinePencilSquare className="w-4 h-4" /></button>
                     {!a.isSystem && <button onClick={() => remove(a)} className="p-1.5 text-rose-600 hover:bg-rose-50 rounded"><HiOutlineTrash className="w-4 h-4" /></button>}
                   </td>
                 </tr>
@@ -115,9 +141,38 @@ export default function ChartOfAccounts() {
 
       <Modal isOpen={show} onClose={() => setShow(false)} title={editing ? 'Editar cuenta' : 'Nueva cuenta'}>
         <form onSubmit={submit} className="space-y-3">
-          <div className="grid grid-cols-2 gap-3">
-            <div><label className="text-xs text-slate-600">Código *</label><input required value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
-            <div><label className="text-xs text-slate-600">Nivel</label><input type="number" min="1" max="6" value={form.level} onChange={(e) => setForm({ ...form, level: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
+          {/* Selector de cuenta padre: el código y el nivel se calculan solos. */}
+          <div>
+            <label className="text-xs text-slate-600">Cuenta padre</label>
+            <input
+              value={parentQuery}
+              onChange={(e) => setParentQuery(e.target.value)}
+              placeholder="Buscar la cuenta donde colgar la nueva (código o nombre)…"
+              className="w-full border border-slate-200 rounded-xl px-3.5 py-2 mb-1 text-sm"
+            />
+            <select
+              value={form.parent || ''}
+              onChange={(e) => onSelectParent(e.target.value)}
+              size={5}
+              className="w-full border border-slate-200 rounded-xl px-2 py-1 text-sm font-mono"
+            >
+              <option value="">— Cuenta raíz (sin padre, nivel 1) —</option>
+              {allAccounts
+                .filter((a) => !editing || a._id !== editing._id)
+                .filter((a) => {
+                  const s = parentQuery.trim().toLowerCase();
+                  return !s || a.code.toLowerCase().includes(s) || (a.name || '').toLowerCase().includes(s);
+                })
+                .slice(0, 200)
+                .map((a) => (
+                  <option key={a._id} value={a._id}>{' '.repeat((a.level - 1) * 2)}{a.code} · {a.name}</option>
+                ))}
+            </select>
+            <p className="text-[11px] text-slate-400 mt-1">Elige la cuenta donde quieres colgar la nueva (ej. para crear un banco, elige “1.1.01 Caja y bancos”). El código se asigna automáticamente.</p>
+          </div>
+          <div className="grid grid-cols-3 gap-3">
+            <div className="col-span-2"><label className="text-xs text-slate-600">Código *</label><input required value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value, level: e.target.value.split('.').length })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 font-mono" /></div>
+            <div><label className="text-xs text-slate-600">Nivel</label><input value={form.level} disabled className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 bg-slate-50 text-slate-500" /></div>
           </div>
           <div><label className="text-xs text-slate-600">Nombre *</label><input required value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
           <div className="grid grid-cols-2 gap-3">

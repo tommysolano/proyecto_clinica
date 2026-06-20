@@ -80,7 +80,6 @@ import SalesReports from './pages/accounting/SalesReports';
 import CashClosing from './pages/accounting/CashClosing';
 import AccountMapping from './pages/accounting/AccountMapping';
 import PeriodBalances from './pages/accounting/PeriodBalances';
-import BankImport from './pages/accounting/BankImport';
 import Budgets from './pages/accounting/Budgets';
 import Receivables from './pages/accounting/Receivables';
 import DeferredIncome from './pages/accounting/DeferredIncome';
@@ -405,7 +404,6 @@ function AppRoutes() {
                   ['cash', CashBox],
                   ['cash-closing', CashClosing],
                   ['reconciliations', Reconciliations],
-                  ['bank-import', BankImport],
                   ['suppliers', Suppliers],
                   ['payments', Payments],
                   ['cartera', Receivables],

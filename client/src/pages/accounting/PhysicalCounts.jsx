@@ -5,6 +5,7 @@ import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineClipboardDocumentCheck, HiOutlineCheck } from 'react-icons/hi2';
 import { fmt, fmtDate } from './_utils';
+import NumericInput from '../../components/NumericInput';
 
 export default function PhysicalCounts() {
   const [list, setList] = useState([]);
@@ -92,7 +93,7 @@ export default function PhysicalCounts() {
                     <td className="px-2 py-1 font-mono text-xs">{it.productCode}</td>
                     <td className="px-2 py-1">{it.productName}</td>
                     <td className="px-2 py-1 text-right font-mono">{it.systemQty}</td>
-                    <td className="px-2 py-1 text-right"><input type="number" disabled={selected.status !== 'BORRADOR'} value={it.countedQty} onChange={(e) => setCounted(i, e.target.value)} className="w-20 border border-slate-200 rounded px-1 py-0.5 text-right" /></td>
+                    <td className="px-2 py-1 text-right"><NumericInput disabled={selected.status !== 'BORRADOR'} value={it.countedQty} onChange={(e) => setCounted(i, e.target.value)} className="w-20 border border-slate-200 rounded px-1 py-0.5 text-right" /></td>
                     <td className={`px-2 py-1 text-right font-mono ${it.difference > 0 ? 'text-emerald-700' : it.difference < 0 ? 'text-rose-600' : ''}`}>{it.difference}</td>
                     <td className="px-2 py-1 text-right font-mono">{fmt(it.unitCost)}</td>
                   </tr>

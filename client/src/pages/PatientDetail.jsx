@@ -6,6 +6,7 @@ import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { fmtDate } from '../utils/date';
 import TagEditor from '../components/TagEditor';
+import NumericInput from '../components/NumericInput';
 import {
   HiOutlineArrowLeft,
   HiOutlineUser,
@@ -842,8 +843,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
               />
             </Field>
             <Field label="F. Cardíaca (lpm)">
-              <input
-                type="number"
+              <NumericInput
                 min={0}
                 value={form.vitalSigns.heartRate}
                 onChange={(e) =>
@@ -856,8 +856,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
               />
             </Field>
             <Field label="F. Respiratoria (rpm)">
-              <input
-                type="number"
+              <NumericInput
                 min={0}
                 value={form.vitalSigns.respiratoryRate}
                 onChange={(e) =>
@@ -870,8 +869,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
               />
             </Field>
             <Field label="Temperatura (°C)">
-              <input
-                type="number"
+              <NumericInput
                 step="0.1"
                 value={form.vitalSigns.temperature}
                 onChange={(e) =>
@@ -884,8 +882,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
               />
             </Field>
             <Field label="Sat. O₂ (%)">
-              <input
-                type="number"
+              <NumericInput
                 min={0}
                 max={100}
                 value={form.vitalSigns.oxygenSaturation}
@@ -899,8 +896,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
               />
             </Field>
             <Field label="Peso (kg)">
-              <input
-                type="number"
+              <NumericInput
                 step="0.1"
                 min={0}
                 value={form.vitalSigns.weight}
@@ -914,8 +910,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
               />
             </Field>
             <Field label="Talla (cm)">
-              <input
-                type="number"
+              <NumericInput
                 step="0.1"
                 min={0}
                 value={form.vitalSigns.height}
@@ -929,8 +924,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
               />
             </Field>
             <Field label="Glucosa (mg/dL)">
-              <input
-                type="number"
+              <NumericInput
                 min={0}
                 value={form.vitalSigns.glucose}
                 onChange={(e) =>
@@ -1014,8 +1008,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         </select>
                       </td>
                       <td className="px-2 py-1">
-                        <input
-                          type="number"
+                        <NumericInput
                           min={1}
                           value={row.quantity}
                           onChange={(e) => updateRow(idx, 'quantity', Number(e.target.value))}
@@ -1096,8 +1089,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                                     />
                                     <span>{cp?.name || 'Componente'}</span>
                                     {used && (
-                                      <input
-                                        type="number"
+                                      <NumericInput
                                         min={1}
                                         value={used.quantity}
                                         onChange={(e) => setComponentQty(idx, cid, e.target.value)}

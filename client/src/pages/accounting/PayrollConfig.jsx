@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlineCog6Tooth } from 'react-icons/hi2';
+import NumericInput from '../../components/NumericInput';
 
 const ACCOUNT_LABELS = {
   sueldos: 'Gasto sueldos',
@@ -38,12 +39,12 @@ export default function PayrollConfig() {
           <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Frecuencia de pago</span>
             <select value={cfg.paymentFrequency} onChange={(e) => setCfg({ ...cfg, paymentFrequency: e.target.value })} className={inputCls}><option value="MENSUAL">Mensual</option><option value="QUINCENAL">Quincenal</option></select>
           </label>
-          <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">SBU (Salario Básico Unificado)</span><input type="number" step="0.01" value={cfg.sbu} onChange={num('sbu')} className={inputCls} /></label>
-          <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">% IESS personal</span><input type="number" step="0.01" value={cfg.iessPersonal} onChange={num('iessPersonal')} className={inputCls} /></label>
-          <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">% IESS patronal</span><input type="number" step="0.01" value={cfg.iessPatronal} onChange={num('iessPatronal')} className={inputCls} /></label>
-          <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">% IECE</span><input type="number" step="0.01" value={cfg.iece} onChange={num('iece')} className={inputCls} /></label>
-          <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">% SECAP</span><input type="number" step="0.01" value={cfg.secap} onChange={num('secap')} className={inputCls} /></label>
-          <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">% Fondos de reserva</span><input type="number" step="0.01" value={cfg.fondosReserva} onChange={num('fondosReserva')} className={inputCls} /></label>
+          <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">SBU (Salario Básico Unificado)</span><NumericInput step="0.01" value={cfg.sbu} onChange={num('sbu')} className={inputCls} /></label>
+          <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">% IESS personal</span><NumericInput step="0.01" value={cfg.iessPersonal} onChange={num('iessPersonal')} className={inputCls} /></label>
+          <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">% IESS patronal</span><NumericInput step="0.01" value={cfg.iessPatronal} onChange={num('iessPatronal')} className={inputCls} /></label>
+          <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">% IECE</span><NumericInput step="0.01" value={cfg.iece} onChange={num('iece')} className={inputCls} /></label>
+          <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">% SECAP</span><NumericInput step="0.01" value={cfg.secap} onChange={num('secap')} className={inputCls} /></label>
+          <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">% Fondos de reserva</span><NumericInput step="0.01" value={cfg.fondosReserva} onChange={num('fondosReserva')} className={inputCls} /></label>
         </div>
       </div>
 

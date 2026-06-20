@@ -23,11 +23,16 @@ router.get('/cash-pending', requireRole('admin', 'contabilidad'), c.getCashPendi
 
 // Conciliación
 router.get('/reconciliations', requireRole('admin', 'contabilidad'), c.listReconciliations);
+router.get('/reconciliations/:id', requireRole('admin', 'contabilidad'), c.getReconciliation);
 router.post('/reconciliations', requireRole('admin', 'contabilidad'), c.startReconciliation);
 router.put('/reconciliations/:id', requireRole('admin', 'contabilidad'), c.updateReconciliation);
 router.post('/reconciliations/:id/close', requireRole('admin', 'contabilidad'), c.closeReconciliation);
+// Importar el extracto bancario (CSV/Excel) dentro de una conciliación
+router.post('/reconciliations/:id/import', requireRole('admin', 'contabilidad'), c.reconcileImport);
+router.post('/reconciliations/:id/create-movements', requireRole('admin', 'contabilidad'), c.reconcileCreateMovements);
 
 // Importación de estado de cuenta bancario + matching automático
+router.post('/statement/parse', requireRole('admin', 'contabilidad'), c.uploadStatementMiddleware, c.parseStatement);
 router.post('/statement/match', requireRole('admin', 'contabilidad'), c.statementMatch);
 router.post('/statement/apply', requireRole('admin', 'contabilidad'), c.statementApply);
 router.post('/recompute-balances', requireRole('admin', 'contabilidad'), c.recomputeBankBalances);

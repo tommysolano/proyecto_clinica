@@ -3,6 +3,7 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlineBanknotes, HiOutlinePlus, HiOutlineTrash } from 'react-icons/hi2';
 import { fmt } from './_utils';
+import NumericInput from '../../components/NumericInput';
 
 export default function Budgets() {
   const now = new Date();
@@ -57,7 +58,7 @@ export default function Budgets() {
         <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineBanknotes className="text-emerald-600" /> Presupuesto</h1>
         <div className="flex gap-2 items-center">
           <label className="text-xs text-slate-500 flex flex-col">Año
-            <input type="number" value={year} onChange={(e) => setYear(+e.target.value)} className="w-24 border border-slate-200 rounded-xl px-3.5 py-2 text-sm" />
+            <NumericInput value={year} onChange={(e) => setYear(+e.target.value)} className="w-24 border border-slate-200 rounded-xl px-3.5 py-2 text-sm" />
           </label>
           <div className="flex rounded-lg overflow-hidden border border-slate-200">
             <button onClick={() => setTab('edit')} className={`px-3 py-2 text-sm ${tab === 'edit' ? 'bg-emerald-600 text-white' : 'bg-white'}`}>Editar</button>
@@ -80,7 +81,7 @@ export default function Budgets() {
                 <option value="">Cuenta...</option>
                 {accounts.map((a) => <option key={a._id} value={a._id}>{a.code} — {a.name}</option>)}
               </select>
-              <input type="number" step="0.01" placeholder="Monto anual" value={l.annual} onChange={(e) => setLine(i, { annual: +e.target.value })} className="w-40 border border-slate-200 rounded-xl px-2 py-1.5 text-sm text-right" />
+              <NumericInput step="0.01" placeholder="Monto anual" value={l.annual} onChange={(e) => setLine(i, { annual: +e.target.value })} className="w-40 border border-slate-200 rounded-xl px-2 py-1.5 text-sm text-right" />
               <button onClick={() => delLine(i)} className="text-rose-600"><HiOutlineTrash className="w-5 h-5" /></button>
             </div>
           ))}

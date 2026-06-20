@@ -5,6 +5,7 @@ import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import { HiOutlineCalculator, HiOutlineLockOpen, HiOutlineLockClosed, HiOutlineEye, HiOutlinePlus } from 'react-icons/hi2';
 import { fmt, fmtDate } from './_utils';
+import NumericInput from '../../components/NumericInput';
 
 const MOV_EMPTY = { type: 'GASTO', amount: 0, description: '', bankAccount: '', counterpartAccount: '' };
 
@@ -187,7 +188,7 @@ export default function CashClosing() {
       <Modal isOpen={openModal} onClose={() => setOpenModal(false)} title="Abrir caja" size="sm">
         <form onSubmit={doOpen} className="space-y-3">
           <label className="text-xs text-slate-500 block">Fondo de caja inicial ($)
-            <input type="number" step="0.01" value={openForm.openingBalance} onChange={(e) => setOpenForm({ ...openForm, openingBalance: +e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-right" autoFocus />
+            <NumericInput step="0.01" value={openForm.openingBalance} onChange={(e) => setOpenForm({ ...openForm, openingBalance: +e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-right" autoFocus />
           </label>
           <label className="text-xs text-slate-500 block">Observaciones
             <textarea value={openForm.notes} onChange={(e) => setOpenForm({ ...openForm, notes: e.target.value })} rows={2} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
@@ -208,7 +209,7 @@ export default function CashClosing() {
             </div>
           )}
           <label className="text-xs text-slate-500 block">Efectivo físico contado ($)
-            <input type="number" step="0.01" value={closeForm.countedCash} onChange={(e) => setCloseForm({ ...closeForm, countedCash: +e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-right" autoFocus />
+            <NumericInput step="0.01" value={closeForm.countedCash} onChange={(e) => setCloseForm({ ...closeForm, countedCash: +e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-right" autoFocus />
           </label>
           <div className="bg-slate-50 rounded-lg p-3 flex flex-wrap justify-between gap-3 text-sm">
             <span>Efectivo esperado: <b className="font-mono">${fmt(expectedCash)}</b></span>
@@ -255,7 +256,7 @@ export default function CashClosing() {
             </select>
           </Field>
           <Field label="Monto ($)" required>
-            <input type="number" step="0.01" required placeholder="0.00" value={movForm.amount} onChange={(e) => setMovForm({ ...movForm, amount: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <NumericInput step="0.01" required placeholder="0.00" value={movForm.amount} onChange={(e) => setMovForm({ ...movForm, amount: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
           </Field>
           <Field label="Descripción">
             <input placeholder="Concepto del movimiento" value={movForm.description} onChange={(e) => setMovForm({ ...movForm, description: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />

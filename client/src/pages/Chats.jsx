@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import toast from 'react-hot-toast';
+import NumericInput from '../components/NumericInput';
 import {
   HiOutlineChatBubbleLeftRight,
   HiOutlineStar,
@@ -2582,17 +2583,17 @@ function QuotationFromChatModal({ conv, services, onClose, onCreated }) {
                   <tr key={it.product} className="border-t border-slate-100">
                     <td className="px-2 py-1.5">{it.name}</td>
                     <td className="px-2 py-1.5">
-                      <input type="number" min="1" value={it.quantity}
+                      <NumericInput min="1" value={it.quantity}
                         onChange={(e) => updateItem(idx, { quantity: Number(e.target.value) })}
                         className="w-full border border-slate-200 rounded px-1 py-0.5 text-center" />
                     </td>
                     <td className="px-2 py-1.5">
-                      <input type="number" step="0.01" value={it.unitPrice}
+                      <NumericInput step="0.01" value={it.unitPrice}
                         onChange={(e) => updateItem(idx, { unitPrice: Number(e.target.value) })}
                         className="w-full border border-slate-200 rounded px-1 py-0.5 text-right" />
                     </td>
                     <td className="px-2 py-1.5">
-                      <input type="number" min="0" max="100" value={it.discount}
+                      <NumericInput min="0" max="100" value={it.discount}
                         onChange={(e) => updateItem(idx, { discount: Number(e.target.value) })}
                         className="w-full border border-slate-200 rounded px-1 py-0.5 text-right" />
                     </td>

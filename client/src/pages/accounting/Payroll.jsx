@@ -5,6 +5,7 @@ import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineCalculator, HiOutlineLockClosed, HiOutlineCheck } from 'react-icons/hi2';
 import { fmt } from './_utils';
+import NumericInput from '../../components/NumericInput';
 
 export default function Payroll() {
   const [year, setYear] = useState(new Date().getFullYear());
@@ -50,7 +51,7 @@ export default function Payroll() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineCalculator className="text-emerald-600" /> Nómina</h1>
         <div className="flex gap-2 items-end">
-          <Field label="Año"><input type="number" value={year} onChange={(e) => setYear(+e.target.value)} className="w-24 border border-slate-200 rounded-xl px-3.5 py-2" /></Field>
+          <Field label="Año"><NumericInput value={year} onChange={(e) => setYear(+e.target.value)} className="w-24 border border-slate-200 rounded-xl px-3.5 py-2" /></Field>
           <button onClick={() => setShow(true)} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 h-[38px]"><HiOutlinePlus /> Generar período</button>
         </div>
       </div>
@@ -105,7 +106,7 @@ export default function Payroll() {
                     <td className="px-1 py-1 text-right font-mono text-rose-600">{fmt(it.impuestoRenta)}</td>
                     <td className="px-1 py-1 text-right">
                       {selected.status === 'BORRADOR' ?
-                        <input type="number" step="0.01" value={it.prestamoEmpresa} onChange={(e) => updateItem(i, { prestamoEmpresa: +e.target.value })} className="w-16 border border-slate-200 rounded px-1 text-right" /> :
+                        <NumericInput step="0.01" value={it.prestamoEmpresa} onChange={(e) => updateItem(i, { prestamoEmpresa: +e.target.value })} className="w-16 border border-slate-200 rounded px-1 text-right" /> :
                         fmt(it.prestamoEmpresa)}
                     </td>
                     <td className="px-1 py-1 text-right font-mono text-rose-600">{fmt((it.multas || 0) + (it.anticipos || 0) + (it.otherDeductions || 0))}</td>
@@ -121,8 +122,8 @@ export default function Payroll() {
       <Modal isOpen={show} onClose={() => setShow(false)} title="Generar nómina">
         <form onSubmit={generate} className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Año" required><input type="number" required value={form.year} onChange={(e) => setForm({ ...form, year: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-            <Field label="Mes (1-12)" required><input type="number" min="1" max="12" required value={form.month} onChange={(e) => setForm({ ...form, month: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Año" required><NumericInput required value={form.year} onChange={(e) => setForm({ ...form, year: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Mes (1-12)" required><NumericInput min="1" max="12" required value={form.month} onChange={(e) => setForm({ ...form, month: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           </div>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Generar</button></div>
         </form>

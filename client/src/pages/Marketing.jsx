@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
+import NumericInput from '../components/NumericInput';
 import {
   HiOutlineMegaphone,
   HiOutlineSparkles,
@@ -471,7 +472,7 @@ export default function Marketing() {
               {programsList.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
             </select>
             <span>Sin venir hace</span>
-            <input type="number" min="1" value={reminderDays} onChange={(e) => setReminderDays(Number(e.target.value))} className="w-16 border border-slate-200 rounded px-2 py-1 text-sm" />
+            <NumericInput min="1" value={reminderDays} onChange={(e) => setReminderDays(Number(e.target.value))} className="w-16 border border-slate-200 rounded px-2 py-1 text-sm" />
             <span>días</span>
             <button onClick={load} className="px-3 py-1 bg-emerald-600 text-white rounded text-sm cursor-pointer border-none">Actualizar</button>
             <button onClick={openWhatsappModal} className="px-3 py-1 bg-green-600 text-white rounded text-sm cursor-pointer border-none">

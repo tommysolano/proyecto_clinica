@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import NumericInput from './NumericInput';
 import ReactFlow, {
   Background,
   Controls,
@@ -720,14 +721,14 @@ function NodeConfig({ node, onChange, templates, agents }) {
   if (t === 'wait') return (
     <div className="flex items-center gap-2 text-sm">
       <span>Esperar</span>
-      <input type="number" value={d.waitMinutes || 0} onChange={(e) => set({ waitMinutes: Number(e.target.value) })} className="w-24 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+      <NumericInput value={d.waitMinutes || 0} onChange={(e) => set({ waitMinutes: Number(e.target.value) })} className="w-24 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
       <span>min</span>
     </div>
   );
   if (t === 'wait_until') return (
     <div className="flex items-center gap-2 text-sm flex-wrap">
       <span>Esperar</span>
-      <input type="number" value={Math.abs((d.offsetMinutes || 0) / 60)} onChange={(e) => set({ offsetMinutes: (d.offsetMinutes < 0 ? -1 : 1) * Number(e.target.value) * 60 })} className="w-16 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+      <NumericInput value={Math.abs((d.offsetMinutes || 0) / 60)} onChange={(e) => set({ offsetMinutes: (d.offsetMinutes < 0 ? -1 : 1) * Number(e.target.value) * 60 })} className="w-16 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
       <span>h</span>
       <select value={(d.offsetMinutes || 0) < 0 ? 'before' : 'after'} onChange={(e) => set({ offsetMinutes: (e.target.value === 'before' ? -1 : 1) * Math.abs(d.offsetMinutes || 0) })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
         <option value="before">antes de la cita</option>
@@ -738,7 +739,7 @@ function NodeConfig({ node, onChange, templates, agents }) {
   if (t === 'wait_reply') return (
     <div className="flex items-center gap-2 text-sm">
       <span>Esperar respuesta</span>
-      <input type="number" value={Math.round((d.timeoutMinutes || 720) / 60)} onChange={(e) => set({ timeoutMinutes: Number(e.target.value) * 60 })} className="w-16 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+      <NumericInput value={Math.round((d.timeoutMinutes || 720) / 60)} onChange={(e) => set({ timeoutMinutes: Number(e.target.value) * 60 })} className="w-16 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
       <span>h</span>
     </div>
   );
@@ -794,7 +795,7 @@ function NodeConfig({ node, onChange, templates, agents }) {
       <input value={d.taskTitle || ''} onChange={(e) => set({ taskTitle: e.target.value })} placeholder="Título de la tarea" className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
       <div className="flex items-center gap-1 text-sm">
         <span>Vence en</span>
-        <input type="number" value={Math.round((d.taskDueOffsetMinutes || 0) / 60)} onChange={(e) => set({ taskDueOffsetMinutes: Number(e.target.value) * 60 })} className="w-16 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+        <NumericInput value={Math.round((d.taskDueOffsetMinutes || 0) / 60)} onChange={(e) => set({ taskDueOffsetMinutes: Number(e.target.value) * 60 })} className="w-16 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
         <span>h</span>
       </div>
       <select value={d.assignUser || ''} onChange={(e) => set({ assignUser: e.target.value || null })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm">

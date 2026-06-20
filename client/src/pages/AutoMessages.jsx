@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
+import NumericInput from '../components/NumericInput';
 import {
   HiOutlinePlus,
   HiOutlinePencil,
@@ -533,7 +534,7 @@ function StepCard({ step, idx, total, onChange, onRemove, onMove }) {
       {step.type === 'wait' && (
         <label className="flex items-center gap-2 text-sm text-slate-600">
           Esperar
-          <input type="number" min="0" value={step.waitMinutes} onChange={(e) => onChange({ waitMinutes: Number(e.target.value) })} className="w-24 border border-slate-200 rounded-xl px-3 py-1.5 text-sm" />
+          <NumericInput min="0" value={step.waitMinutes} onChange={(e) => onChange({ waitMinutes: Number(e.target.value) })} className="w-24 border border-slate-200 rounded-xl px-3 py-1.5 text-sm" />
           minutos antes del siguiente paso
         </label>
       )}

@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineSquares2X2, HiOutlinePencilSquare, HiOutlineTrash } from 'react-icons/hi2';
+import NumericInput from '../../components/NumericInput';
 
 const EMPTY = { code: '', name: '', kind: 'INVENTARIO', parent: '', depreciationRate: 0, usefulLifeYears: 0, residualPercent: 0, assetAccount: '', depreciationAccount: '', accumDepreciationAccount: '', expenseAccount: '', incomeAccount: '' };
 
@@ -87,9 +88,9 @@ export default function InventoryCategories() {
               </select>
             </Field>
             {form.kind === 'ACTIVO_FIJO' && <>
-              <Field label="% Depreciación anual"><input type="number" step="0.01" value={form.depreciationRate} onChange={(e) => setForm({ ...form, depreciationRate: +e.target.value })} className={inputCls} /></Field>
-              <Field label="Vida útil (años)"><input type="number" value={form.usefulLifeYears} onChange={(e) => setForm({ ...form, usefulLifeYears: +e.target.value })} className={inputCls} /></Field>
-              <Field label="% Valor residual" className="col-span-2"><input type="number" step="0.01" value={form.residualPercent} onChange={(e) => setForm({ ...form, residualPercent: +e.target.value })} className={inputCls} /></Field>
+              <Field label="% Depreciación anual"><NumericInput step="0.01" value={form.depreciationRate} onChange={(e) => setForm({ ...form, depreciationRate: +e.target.value })} className={inputCls} /></Field>
+              <Field label="Vida útil (años)"><NumericInput value={form.usefulLifeYears} onChange={(e) => setForm({ ...form, usefulLifeYears: +e.target.value })} className={inputCls} /></Field>
+              <Field label="% Valor residual" className="col-span-2"><NumericInput step="0.01" value={form.residualPercent} onChange={(e) => setForm({ ...form, residualPercent: +e.target.value })} className={inputCls} /></Field>
             </>}
           </div>
           <p className="text-xs font-semibold text-slate-500 pt-1">Cuentas contables vinculadas</p>

@@ -5,6 +5,7 @@ import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineCurrencyDollar, HiOutlineXMark } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
+import NumericInput from '../../components/NumericInput';
 
 export default function Payments() {
   const [list, setList] = useState([]);
@@ -185,14 +186,14 @@ export default function Payments() {
                     else setForm({ ...form, applications: form.applications.filter((a) => a.docRef !== docId) });
                   }} />
                   <span className="flex-1">{d.serie || `${d.estab}-${d.ptoEmi}-${d.secuencial}`} - {fmtDate(d.fechaEmision || d.createdAt)} - Total ${fmt(d.total || d.importeTotal)}</span>
-                  {app && <input type="number" step="0.01" placeholder="Monto a aplicar" title="Monto a aplicar a este documento" value={app.amount} onChange={(e) => setForm({ ...form, applications: form.applications.map((a) => a.docRef === docId ? { ...a, amount: +e.target.value } : a) })} className="w-28 border border-slate-200 rounded px-2 py-1 text-right" />}
+                  {app && <NumericInput step="0.01" placeholder="Monto a aplicar" title="Monto a aplicar a este documento" value={app.amount} onChange={(e) => setForm({ ...form, applications: form.applications.map((a) => a.docRef === docId ? { ...a, amount: +e.target.value } : a) })} className="w-28 border border-slate-200 rounded px-2 py-1 text-right" />}
                 </div>
               );
             })}
           </div>
           <div className="flex items-center gap-3">
             <label className="text-sm">Anticipo:</label>
-            <input type="number" step="0.01" value={form.advanceAmount} onChange={(e) => setForm({ ...form, advanceAmount: +e.target.value })} className="w-32 border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <NumericInput step="0.01" value={form.advanceAmount} onChange={(e) => setForm({ ...form, advanceAmount: +e.target.value })} className="w-32 border border-slate-200 rounded-xl px-3.5 py-2.5" />
             <span className="ml-auto font-semibold">Total: ${fmt(totalApplied)}</span>
           </div>
           <Field label="Notas"><input placeholder="Observaciones / cheque #" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
@@ -253,8 +254,7 @@ export default function Payments() {
                         <td className="px-2 py-1 text-xs">{fmtDate(r.pi.fechaEmision)}</td>
                         <td className="px-2 py-1 text-right font-mono">{fmt(balance)}</td>
                         <td className="px-2 py-1 text-right">
-                          <input
-                            type="number" step="0.01" min="0" max={balance}
+                          <NumericInput step="0.01" min="0" max={balance}
                             value={r.amount}
                             disabled={!r.checked}
                             onChange={(e) => { const v = +e.target.value; setBulkRows((rows) => rows.map((x) => x.pi._id === r.pi._id ? { ...x, amount: v } : x)); }}

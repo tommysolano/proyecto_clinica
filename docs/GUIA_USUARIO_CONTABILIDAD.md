@@ -75,6 +75,11 @@ Todo el módulo vive en el **menú lateral izquierdo**, en grupos desplegables:
 - **Retención:** parte del pago que, por ley, **retienes** al proveedor (IVA o Renta) y entregas al SRI.
 - **Ingreso diferido:** dinero cobrado por un servicio **aún no prestado** (ej. paquetes de sesiones).
 - **Kardex:** historial de entradas/salidas de cada producto y su **costo** (valoración por capas FIFO).
+- **Bodega:** ubicación física donde se guarda el inventario (ej. "Bodega principal", "Vitrina recepción").
+  El stock de cada producto se reparte entre bodegas; el total del producto es la suma de todas.
+- **Traslado:** mover stock de una bodega a otra. No cambia el total del producto, solo lo **reubica**
+  (conserva costo, lote y vencimiento de cada unidad movida).
+- **Sin bodega:** stock que aún no está asignado a ninguna bodega (ej. inventario anterior a usar bodegas).
 - **Deducción al personal:** descuento que se aplica al empleado en el rol (consumo, multa, anticipo…).
 - **Consumo interno:** salida de inventario para uso de la clínica (no es venta); va a gasto.
 - **SRI:** la autoridad tributaria del Ecuador (facturación electrónica, ATS, 103/104, RDEP).
@@ -89,11 +94,14 @@ Todo el módulo vive en el **menú lateral izquierdo**, en grupos desplegables:
 | Registrar una **venta** y cobrarla | **Ventas** |
 | Filtrar ventas por **cliente** y **descargar facturas en lote** | **Ventas** (filtros + botón "Descargar facturas (ZIP)") |
 | Emitir / anular una **factura electrónica** | **Facturación** |
+| Registrar **entrada/salida/ajuste de stock** (con bodega) | **Inventario → Productos → Movimiento** |
+| Mover **stock entre bodegas** | **Inventario → Bodegas → Traslado** |
+| Ver **cuánto stock hay en cada bodega** | **Inventario → Bodegas → Existencias por bodega** |
 | Configurar **RUC, certificado y SRI** | **Config. SRI** |
 | **Abrir / cerrar mi caja** y registrar gastos de caja chica | **Caja (Apertura/Cierre)** |
 | Mover dinero de **caja a banco** | **Bancos → Caja** |
 | Registrar **cuentas y movimientos bancarios** | **Bancos → Cuentas Bancarias** |
-| **Conciliar** con el estado de cuenta | **Bancos → Conciliaciones** / **Importar Estado Cta.** |
+| **Conciliar** con el estado de cuenta (e **importar el extracto** CSV/Excel) | **Bancos → Conciliaciones** |
 | Registrar una **compra** y su **retención** | **Contabilidad → Compras** |
 | **Pagar muchas facturas de proveedor de una vez** | **Bancos → Pagos / Cobros → Pago masivo** |
 | Ver lo que me **deben / debo** | **Contabilidad → Cartera (CxC/CxP)** |
@@ -233,21 +241,55 @@ Arriba puedes **buscar**, filtrar por **categoría** y ver **stock bajo**.
 insumo, servicio, programa, otro), **precio de compra** y **precio de venta**, **stock** y **stock
 mínimo**, **unidad** e **IVA**. Marca **"ilimitado"** para servicios (no controlan stock).
 
-**Registrar un movimiento de stock** (pestaña Movimientos): **producto**, **tipo** (entrada/salida),
-**cantidad** y **motivo**.
+**Registrar un movimiento de stock** — botón **Movimiento** (modal):
+- **Producto \*** — el producto a mover.
+- **Bodega** — a qué bodega entra/sale el stock (por defecto, la bodega **Principal**). Déjala en
+  *"Sin bodega (general)"* si no manejas ubicaciones. *(Solo aparece si tienes bodegas creadas.)*
+- **Tipo \*** — *Entrada* (suma stock), *Salida* (resta stock) o *Ajuste*.
+- **Cantidad \*** — en *entrada/salida* es cuánto sumar/restar; en **ajuste** es el **stock final** que
+  debe quedar en esa bodega (el sistema calcula solo la diferencia).
+- **Razón** — concepto del movimiento.
+
+> El movimiento alimenta el **Kardex** (capas FIFO) y las **existencias por bodega**. El stock total del
+> producto es siempre la **suma de todas sus bodegas**.
 
 **Carga masiva por Excel:** botón de **carga masiva** → **descarga la plantilla**, llénala y **súbela**.
 El sistema informa cuántos productos se **crearon/actualizaron** y los **errores** por fila.
 > Si el Excel da error, ábrelo y **vuelve a guardarlo como .xlsx**.
 
 ### 5.6 Bodegas *(menú: Inventario → Bodegas)*
-**Para qué sirve:** las **ubicaciones físicas** del inventario.
+**Para qué sirve:** definir las **ubicaciones físicas** del inventario, ver **cuánto hay en cada una** y
+**mover stock** entre ellas. La página tiene **tres pestañas**: *Bodegas*, *Existencias por bodega* y
+*Traslados*. Arriba, el botón **Traslado** (aparece con 2 o más bodegas).
 
-**Nueva/editar bodega** (modal):
+> **¿Para qué sirve crear una bodega?** Para saber **dónde está físicamente** cada producto y controlar el
+> stock por ubicación (ej. bodega central vs. vitrina de recepción vs. cada consultorio). Una vez creada,
+> al registrar un **Movimiento** de inventario (Inventario → Productos) eliges en qué bodega entra/sale, y
+> con **Traslado** mueves stock de una a otra. El stock que tenías antes de usar bodegas aparece como
+> **"Sin bodega"** hasta que lo asignes (con un ajuste o un traslado).
+
+**Pestaña "Bodegas" — crear/editar** (botón **Nueva** / modal):
 - **Código \*** — ej. `BOD-01`.
 - **Nombre \*** — ej. "Bodega principal".
 - **Dirección** — ubicación física (opcional).
-- **☑ Principal** — márcala en la bodega por defecto.
+- **☑ Principal** — la bodega que se propone **por defecto** al registrar movimientos y traslados.
+> Eliminar una bodega no borra su stock: las existencias quedan como **"Sin bodega"**.
+
+**Pestaña "Existencias por bodega":** lista cada producto con capas de inventario, su **stock total**, su
+**valor** y el desglose de **cuánto hay en cada bodega** (incluida "Sin bodega"). Haz clic en la flecha de
+una fila para ver el detalle por bodega (stock y valor). Si está vacía, registra entradas con bodega en
+**Inventario → Movimiento** o en compras.
+
+**Pestaña "Traslados":** el **historial** de traslados (fecha, producto, origen → destino, cantidad, valor
+y usuario).
+
+**Hacer un traslado** — botón **Traslado** (modal):
+- **Producto \*** — qué producto mover.
+- **Bodega origen \*** / **Bodega destino \*** — deben ser **distintas**.
+- **Cantidad \*** — cuánto mover. Debajo se muestra el **disponible en origen**; no deja mover más de eso.
+- **Motivo** — opcional.
+> El traslado **no cambia** el stock total del producto, solo lo **reubica**, conservando el costo, lote y
+> vencimiento de cada unidad (la valoración del inventario se mantiene exacta).
 
 ### 5.7 Categorías de Inventario/Activos
 **Para qué sirve:** agrupar productos/activos y asignarles las **cuentas contables** que usan.
@@ -381,24 +423,25 @@ tuya, y cada cajero administra sus movimientos por separado.
 estado. 👁️ abre el detalle.
 
 ### 5.15 Conciliaciones
-**Para qué sirve:** **cuadrar** tus movimientos con el **estado de cuenta** del banco.
+**Para qué sirve:** **cuadrar** tus movimientos con el **estado de cuenta** del banco. La conciliación se
+hace **por fecha de corte** (como en Contífico): solo indicas la fecha **final**, no un rango. Importar el
+extracto del banco ahora se hace **dentro de esta misma pantalla** (ya no hay una página aparte).
 
 **Paso a paso:**
-1. **Nueva** (modal): **Cuenta bancaria \***, **Período desde \*** / **hasta \***, **Saldo del extracto
-   bancario**. Pulsa **Iniciar**. El sistema carga los movimientos del período como ítems.
-2. Selecciona la conciliación a la izquierda; en el panel derecho **marca ✓** cada movimiento que también
-   aparece en el extracto del banco. Puedes ajustar el **Saldo extracto**.
-3. **Guardar** para conservar el avance.
-4. Cuando todo cuadre, **Cerrar** (queda CERRADA y ya no se edita).
+1. **Nueva conciliación** (modal): **Cuenta bancaria \***, **Fecha de corte \*** (la fecha final hasta la
+   que concilias), **Saldo bancario (extracto)** y **Descripción** (ej. "P/R CONCILIACION BANCARIA 02-2026").
+   Pulsa **Iniciar**. El sistema trae **todos los movimientos del libro pendientes hasta esa fecha**.
+2. Arriba ves el panel **Información de la Conciliación**: Fecha de Corte, Cuenta de Banco, Descripción,
+   **Saldo Bancario**, **Saldo Contable** (lo que dice tu libro) y **Diferencia**.
+3. **Marca ✓** cada movimiento del libro que también aparece en el extracto del banco. O usa **Importar
+   extracto (CSV/Excel)** para que el sistema **empareje y marque solo** los que coinciden por monto y fecha.
+   - El extracto importado se lista abajo. Las líneas **sin coincidencia** puedes convertirlas en movimiento
+     con **Crear movimiento** (+ código de contrapartida opcional), y se agregan ya conciliadas.
+4. **Estados:** mientras trabajas queda en **Pendiente**; cuando terminas pulsa **Conciliar** y pasa a
+   **Conciliado** (ya no se edita). Usa **Guardar** para conservar el avance sin cerrar.
 
-### 5.16 Importar Estado de Cuenta
-**Para qué sirve:** subir el **CSV** del banco para conciliar más rápido.
-1. Elige la **Cuenta bancaria** y carga el **Archivo CSV** (o pega el texto). Formato por línea:
-   `fecha,descripción,referencia,monto` — **monto negativo = débito/retiro**.
-2. Pulsa **Conciliar.** El sistema marca las líneas que **coinciden** con tus movimientos y las que **no**.
-3. Para las **sin coincidencia**, marca **Crear movimiento** y, opcionalmente, escribe el **Código de
-   contrapartida** (cuenta contable) del movimiento a crear.
-4. **Aplicar conciliación.**
+> El **archivo del banco** puede ser **CSV o Excel** (.xlsx/.xls). El sistema detecta la fila de encabezados,
+> admite columnas separadas de **Débito/Crédito** y lee importes con miles y coma decimal (ej. `1.234,56`).
 
 ### 5.17 Cheques
 **Para qué sirve:** administrar chequeras por cuenta y el estado de cada cheque (Disponible / Girado /
@@ -581,12 +624,15 @@ de hoy y cuentas por pagar. Si hay **stock bajo**, una alerta abre el listado.
 **La pantalla:** botones **Cargar plan inicial** (siembra el plan por defecto, no sobrescribe) y **Nueva
 cuenta**; buscador por **código/nombre** y filtro por **tipo**.
 
-**Nueva/editar cuenta** (modal):
-- **Código \*** — ej. `1.1.01.01`.
-- **Nivel** — 1 a 6 (jerarquía; determina la sangría).
+**Nueva/editar cuenta** (modal): ya **no necesitas saber el código exacto ni el nivel**. Eliges dónde
+colgar la cuenta y el sistema arma el código solo.
+- **Cuenta padre** — busca y selecciona la cuenta bajo la cual quieres crear la nueva (ej. para un banco
+  nuevo, elige “1.1.01 Caja y bancos”). El **Código** y el **Nivel** se calculan automáticamente (toman el
+  siguiente número libre), y el **Tipo** y la **Naturaleza** se heredan del padre. Elige *“Cuenta raíz”* para
+  una cuenta de primer nivel.
+- **Código** — viene sugerido; puedes ajustarlo si lo necesitas. El **Nivel** se deriva del código (solo lectura).
 - **Nombre \***.
-- **Tipo** — Activo / Pasivo / Patrimonio / Ingreso / Gasto / Costo / Orden.
-- **Naturaleza** — Débito o Crédito.
+- **Tipo** / **Naturaleza** — preseleccionados según el padre; editables.
 - **☑ Permite movimiento** — solo las que lo permiten reciben asientos (las de agrupación, no).
 - **☑ Activa.**
 > Las cuentas del sistema no se pueden borrar (no muestran 🗑️).
@@ -723,6 +769,17 @@ si falló.
 **Para qué sirve:** los **estados financieros**. Elige **Desde/Hasta** y consulta **Estado de Resultados**,
 **Balance General** y **Flujo**. Clic en una cuenta para ver su detalle. Botón para exportar el **archivo
 plano para Supercías**.
+
+Los estados se presentan **jerárquicamente** (cuentas agrupadoras con **subtotales** por nivel, igual que
+Contífico/Supercías), no como lista plana:
+- **Estado de Resultados:** Ingresos − Costo de ventas = **Utilidad bruta**; − Gastos = **Utilidad
+  operacional**; luego la cascada tributaria **estimada**: **15% participación trabajadores** e **impuesto a
+  la renta** (porcentajes ajustables), hasta la **Utilidad neta del ejercicio**.
+- **Balance General:** Activo, Pasivo y Patrimonio con su estructura del plan de cuentas (corriente/no
+  corriente según tu catálogo), el **Resultado del ejercicio** dentro de Patrimonio y un aviso si el
+  balance **no cuadra** (Activo ≠ Pasivo + Patrimonio).
+> El 15% de participación y el impuesto a la renta son **estimaciones** del período; el valor definitivo
+> sale de la **conciliación tributaria anual**.
 
 ### 5.46 Rep. Gerenciales
 **Para qué sirve:** una **visión de negocio** (con opción de **agrupar**): ventas, costo de venta,
@@ -864,6 +921,19 @@ cerrar el rol del período.
 
 **¿Cómo registro que la clínica usó insumos del inventario (sin venderlos)?**
 **Deducciones / Consumo → pestaña Consumo interno.** Da salida del stock y lo lleva a gasto.
+
+**Creé una bodega pero, ¿para qué sirve y cómo le pongo stock?**
+La bodega es la **ubicación física** del inventario. Para meter stock en ella: **Inventario → Productos →
+Movimiento**, elige el producto, la **bodega** y *Entrada* con la cantidad. Para ver lo que hay en cada
+bodega, usa **Bodegas → Existencias por bodega**, y para mover entre bodegas, **Bodegas → Traslado**.
+
+**Tengo stock que aparece como "Sin bodega", ¿cómo lo asigno a una bodega?**
+Es el inventario que existía antes de usar bodegas. Asígnalo con un **Traslado** (de "Sin bodega" a la
+bodega que quieras) o con un **Movimiento de ajuste** en la bodega destino.
+
+**¿El traslado entre bodegas cambia mi stock total o mi contabilidad?**
+No. Solo **reubica** el stock; el total del producto y el valor del inventario no cambian (no genera
+asiento). Lo que sí controlas es **dónde** está físicamente cada unidad.
 
 **Tengo a alguien con cuenta en el sistema pero no en nómina.**
 En **Empleados**, la tarjeta ámbar "Usuarios sin ficha de empleado" lo lista; pulsa **Registrar** y

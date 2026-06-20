@@ -113,7 +113,6 @@ const ACCT_GROUPS = [
       { path: '/accounting/cash', label: 'Caja' },
       { path: '/accounting/cash-closing', label: 'Cierre de Caja' },
       { path: '/accounting/reconciliations', label: 'Conciliaciones' },
-      { path: '/accounting/bank-import', label: 'Importar Estado Cta.' },
       { path: '/accounting/checks', label: 'Cheques' },
       { path: '/accounting/payments', label: 'Pagos / Cobros' },
     ],

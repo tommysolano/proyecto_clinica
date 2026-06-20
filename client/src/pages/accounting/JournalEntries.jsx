@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import { HiOutlinePlus, HiOutlineArrowUturnLeft, HiOutlineEye, HiOutlineXMark, HiOutlineCheckCircle, HiOutlineTrash } from 'react-icons/hi2';
 import { fmt, fmtDate, today, startOfMonth, endOfMonth } from './_utils';
+import NumericInput from '../../components/NumericInput';
 
 const EMPTY = { date: today(), description: '', source: 'MANUAL', lines: [{ account: '', debit: 0, credit: 0, description: '' }, { account: '', debit: 0, credit: 0, description: '' }] };
 
@@ -137,8 +138,8 @@ export default function JournalEntries() {
                       </select>
                     </td>
                     <td className="p-1"><input value={l.description} onChange={(e) => setLine(i, { description: e.target.value })} className="w-full border border-slate-200 rounded px-2 py-1" /></td>
-                    <td className="p-1"><input type="number" step="0.01" value={l.debit} onChange={(e) => setLine(i, { debit: +e.target.value })} className="w-24 border border-slate-200 rounded px-2 py-1 text-right" /></td>
-                    <td className="p-1"><input type="number" step="0.01" value={l.credit} onChange={(e) => setLine(i, { credit: +e.target.value })} className="w-24 border border-slate-200 rounded px-2 py-1 text-right" /></td>
+                    <td className="p-1"><NumericInput step="0.01" value={l.debit} onChange={(e) => setLine(i, { debit: +e.target.value })} className="w-24 border border-slate-200 rounded px-2 py-1 text-right" /></td>
+                    <td className="p-1"><NumericInput step="0.01" value={l.credit} onChange={(e) => setLine(i, { credit: +e.target.value })} className="w-24 border border-slate-200 rounded px-2 py-1 text-right" /></td>
                     <td className="p-1"><button type="button" onClick={() => removeLine(i)} className="text-rose-600"><HiOutlineXMark /></button></td>
                   </tr>
                 ))}

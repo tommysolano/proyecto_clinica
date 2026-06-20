@@ -3,6 +3,7 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlineDocumentArrowDown } from 'react-icons/hi2';
 import { fmt, downloadBlob } from './_utils';
+import NumericInput from '../../components/NumericInput';
 
 export default function SriReports() {
   const [tab, setTab] = useState('F104');
@@ -56,8 +57,8 @@ export default function SriReports() {
           <button key={k} onClick={() => { setTab(k); setData(null); }} className={`px-3 py-2 rounded-lg text-xs ${tab === k ? 'bg-emerald-600 text-white' : 'bg-white border'}`}>{l}</button>)}
       </div>
       <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 items-end">
-        <div><label className="text-xs text-slate-500">Año</label><input type="number" value={year} onChange={(e) => setYear(+e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5 w-24" /></div>
-        <div><label className="text-xs text-slate-500">Mes</label><input type="number" min="1" max="12" value={month} onChange={(e) => setMonth(+e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5 w-20" /></div>
+        <div><label className="text-xs text-slate-500">Año</label><NumericInput value={year} onChange={(e) => setYear(+e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5 w-24" /></div>
+        <div><label className="text-xs text-slate-500">Mes</label><NumericInput min="1" max="12" value={month} onChange={(e) => setMonth(+e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5 w-20" /></div>
         <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">{tab === 'ATS' ? 'Descargar XML' : 'Generar'}</button>
         {tab === 'RDEP' && <button onClick={downloadRdepXml} className="px-4 py-2 bg-indigo-600 text-white rounded-lg flex items-center gap-1"><HiOutlineDocumentArrowDown className="w-4 h-4" /> Descargar XML</button>}
         {(tab === 'F103' || tab === 'F104') && (

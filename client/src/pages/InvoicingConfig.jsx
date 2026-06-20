@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
+import NumericInput from '../components/NumericInput';
 import {
   HiOutlineDocumentText,
   HiOutlineLockClosed,
@@ -246,8 +247,7 @@ export default function InvoicingConfig() {
             />
           </Field>
           <Field label="Secuencial inicial">
-            <input
-              type="number"
+            <NumericInput
               min={1}
               value={form.secuencial}
               disabled={!canEdit}

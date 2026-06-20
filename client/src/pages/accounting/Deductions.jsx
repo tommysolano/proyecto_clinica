@@ -5,6 +5,7 @@ import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import { HiOutlineReceiptPercent, HiOutlinePlus, HiOutlineTrash, HiOutlineArchiveBoxArrowDown } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
+import NumericInput from '../../components/NumericInput';
 
 const DED_TYPES = [
   ['CONSUMO', 'Consumo de productos/servicios'],
@@ -160,7 +161,7 @@ export default function Deductions() {
             </div>
             <div className="w-24">
               <label className="text-xs text-slate-500">Cantidad</label>
-              <input type="number" min="1" value={ciSel.quantity} onChange={(e) => setCiSel({ ...ciSel, quantity: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+              <NumericInput min="1" value={ciSel.quantity} onChange={(e) => setCiSel({ ...ciSel, quantity: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
             </div>
             <button type="button" onClick={addCiItem} className="px-4 py-2.5 bg-cyan-600 text-white rounded-xl text-sm">Agregar</button>
           </div>
@@ -200,7 +201,7 @@ export default function Deductions() {
                 {DED_TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
               </select>
             </Field>
-            <Field label="Monto ($)" required><input type="number" step="0.01" min="0" required value={form.amount} onChange={(e) => setForm({ ...form, amount: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-right" /></Field>
+            <Field label="Monto ($)" required><NumericInput step="0.01" min="0" required value={form.amount} onChange={(e) => setForm({ ...form, amount: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-right" /></Field>
           </div>
           <Field label="Fecha" required><input type="date" required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           <Field label="Cuenta contraparte (opcional)">

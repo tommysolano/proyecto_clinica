@@ -5,6 +5,7 @@ import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineBuildingLibrary, HiOutlineCalculator, HiOutlinePencilSquare, HiOutlineEye } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
+import NumericInput from '../../components/NumericInput';
 
 const EMPTY = {
   code: '', name: '', description: '', category: '', assetType: '',
@@ -184,11 +185,11 @@ export default function FixedAssets() {
             </Field>
             <Field label="Fecha de adquisición" required><input type="date" required value={form.acquisitionDate} onChange={(e) => setForm({ ...form, acquisitionDate: e.target.value })} className={inputCls} /></Field>
             <Field label="Inicio de depreciación" required><input type="date" required value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} className={inputCls} /></Field>
-            <Field label="Costo de adquisición"><input type="number" step="0.01" value={form.acquisitionCost} onChange={(e) => setForm({ ...form, acquisitionCost: +e.target.value })} className={inputCls} /></Field>
-            <Field label="% valor residual"><input type="number" step="0.01" value={form.residualPercent} onChange={(e) => setForm({ ...form, residualPercent: +e.target.value, residualValue: +(form.acquisitionCost * (+e.target.value / 100)).toFixed(2) })} className={inputCls} /></Field>
-            <Field label="Valor residual ($)"><input type="number" step="0.01" value={form.residualValue} onChange={(e) => setForm({ ...form, residualValue: +e.target.value })} className={inputCls} /></Field>
-            <Field label="% depreciación anual"><input type="number" step="0.01" value={form.depreciationRate} onChange={(e) => setForm({ ...form, depreciationRate: +e.target.value, usefulLifeMonths: Math.round(1200 / (+e.target.value || 1)) })} className={inputCls} /></Field>
-            <Field label="Vida útil (meses)"><input type="number" value={form.usefulLifeMonths} onChange={(e) => setForm({ ...form, usefulLifeMonths: +e.target.value })} className={inputCls} /></Field>
+            <Field label="Costo de adquisición"><NumericInput step="0.01" value={form.acquisitionCost} onChange={(e) => setForm({ ...form, acquisitionCost: +e.target.value })} className={inputCls} /></Field>
+            <Field label="% valor residual"><NumericInput step="0.01" value={form.residualPercent} onChange={(e) => setForm({ ...form, residualPercent: +e.target.value, residualValue: +(form.acquisitionCost * (+e.target.value / 100)).toFixed(2) })} className={inputCls} /></Field>
+            <Field label="Valor residual ($)"><NumericInput step="0.01" value={form.residualValue} onChange={(e) => setForm({ ...form, residualValue: +e.target.value })} className={inputCls} /></Field>
+            <Field label="% depreciación anual"><NumericInput step="0.01" value={form.depreciationRate} onChange={(e) => setForm({ ...form, depreciationRate: +e.target.value, usefulLifeMonths: Math.round(1200 / (+e.target.value || 1)) })} className={inputCls} /></Field>
+            <Field label="Vida útil (meses)"><NumericInput value={form.usefulLifeMonths} onChange={(e) => setForm({ ...form, usefulLifeMonths: +e.target.value })} className={inputCls} /></Field>
             <Field label="Serial"><input placeholder="Nº de serie" value={form.serial} onChange={(e) => setForm({ ...form, serial: e.target.value })} className={inputCls} /></Field>
           </div>
           <p className="text-xs font-semibold text-slate-500 pt-2">Cuentas contables ligadas (si no se setean, se usan las de la categoría)</p>
@@ -254,8 +255,8 @@ export default function FixedAssets() {
       <Modal isOpen={showDep} onClose={() => setShowDep(false)} title="Correr depreciación mensual">
         <p className="text-sm text-slate-500 mb-3">Genera un asiento contable consolidando la depreciación del mes seleccionado. Es idempotente por período.</p>
         <div className="grid grid-cols-2 gap-3 mb-3">
-          <Field label="Año"><input type="number" value={depForm.year} onChange={(e) => setDepForm({ ...depForm, year: +e.target.value })} className={inputCls} /></Field>
-          <Field label="Mes"><input type="number" min="1" max="12" value={depForm.month} onChange={(e) => setDepForm({ ...depForm, month: +e.target.value })} className={inputCls} /></Field>
+          <Field label="Año"><NumericInput value={depForm.year} onChange={(e) => setDepForm({ ...depForm, year: +e.target.value })} className={inputCls} /></Field>
+          <Field label="Mes"><NumericInput min="1" max="12" value={depForm.month} onChange={(e) => setDepForm({ ...depForm, month: +e.target.value })} className={inputCls} /></Field>
         </div>
         <div className="flex justify-end gap-2"><button onClick={() => setShowDep(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button onClick={runDep} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Procesar</button></div>
       </Modal>

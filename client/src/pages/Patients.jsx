@@ -6,6 +6,7 @@ import Modal from '../components/Modal';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
+import NumericInput from '../components/NumericInput';
 import {
   HiOutlinePlus,
   HiOutlinePencil,
@@ -516,9 +517,8 @@ export default function Patients() {
               />
             </Field>
             <Field label="Edad (si no tiene fecha)">
-              <input
+              <NumericInput
                 name="age"
-                type="number"
                 min="0"
                 max="150"
                 value={form.age}

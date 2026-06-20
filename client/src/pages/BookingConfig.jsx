@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlineCalendarDays, HiOutlineClipboard, HiOutlineArrowPath, HiOutlinePlus, HiOutlineTrash } from 'react-icons/hi2';
+import NumericInput from '../components/NumericInput';
 
 const DAYS = [
   { v: 1, l: 'Lun' }, { v: 2, l: 'Mar' }, { v: 3, l: 'Mié' }, { v: 4, l: 'Jue' },
@@ -95,12 +96,12 @@ export default function BookingConfig() {
         <div className="grid grid-cols-4 gap-3">
           <Field label="Desde"><input type="time" value={cfg.hourFrom} onChange={(e) => setCfg({ ...cfg, hourFrom: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm" /></Field>
           <Field label="Hasta"><input type="time" value={cfg.hourTo} onChange={(e) => setCfg({ ...cfg, hourTo: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm" /></Field>
-          <Field label="Duración slot (min)"><input type="number" value={cfg.slotMinutes} onChange={(e) => setCfg({ ...cfg, slotMinutes: Number(e.target.value) })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm" /></Field>
-          <Field label="Citas por slot"><input type="number" value={cfg.maxPerSlot} onChange={(e) => setCfg({ ...cfg, maxPerSlot: Number(e.target.value) })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm" /></Field>
+          <Field label="Duración slot (min)"><NumericInput value={cfg.slotMinutes} onChange={(e) => setCfg({ ...cfg, slotMinutes: Number(e.target.value) })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm" /></Field>
+          <Field label="Citas por slot"><NumericInput value={cfg.maxPerSlot} onChange={(e) => setCfg({ ...cfg, maxPerSlot: Number(e.target.value) })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm" /></Field>
         </div>
 
         <Field label="Reservable hasta (días adelante)">
-          <input type="number" value={cfg.horizonDays} onChange={(e) => setCfg({ ...cfg, horizonDays: Number(e.target.value) })} className="w-32 border border-slate-200 rounded-lg px-2 py-2 text-sm" />
+          <NumericInput value={cfg.horizonDays} onChange={(e) => setCfg({ ...cfg, horizonDays: Number(e.target.value) })} className="w-32 border border-slate-200 rounded-lg px-2 py-2 text-sm" />
         </Field>
 
         <div>
@@ -109,7 +110,7 @@ export default function BookingConfig() {
             {cfg.services.map((s, i) => (
               <div key={i} className="flex items-center gap-2">
                 <span className="flex-1 text-sm">{s.name}</span>
-                <input type="number" value={s.durationMinutes} onChange={(e) => { const ss = [...cfg.services]; ss[i] = { ...ss[i], durationMinutes: Number(e.target.value) }; setCfg({ ...cfg, services: ss }); }} className="w-20 border border-slate-200 rounded-lg px-2 py-1 text-sm" />
+                <NumericInput value={s.durationMinutes} onChange={(e) => { const ss = [...cfg.services]; ss[i] = { ...ss[i], durationMinutes: Number(e.target.value) }; setCfg({ ...cfg, services: ss }); }} className="w-20 border border-slate-200 rounded-lg px-2 py-1 text-sm" />
                 <span className="text-xs text-slate-400">min</span>
                 <button onClick={() => setCfg({ ...cfg, services: cfg.services.filter((_, j) => j !== i) })} className="p-1 text-red-400 bg-transparent border-none cursor-pointer"><HiOutlineTrash /></button>
               </div>

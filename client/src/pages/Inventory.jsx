@@ -5,6 +5,7 @@ import Modal from '../components/Modal';
 import PageHeader, { EmptyState } from '../components/PageHeader';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
+import NumericInput from '../components/NumericInput';
 import {
   HiOutlinePlus, HiOutlinePencil, HiOutlineTrash,
   HiOutlineMagnifyingGlass, HiOutlineArrowDown, HiOutlineArrowUp,
@@ -510,22 +511,22 @@ export default function Inventory() {
             {productForm.category !== 'servicio' && (
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1.5">Precio compra</label>
-                <input type="number" step="0.01" value={productForm.purchasePrice} onChange={(e) => setProductForm({...productForm, purchasePrice: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
+                <NumericInput step="0.01" value={productForm.purchasePrice} onChange={(e) => setProductForm({...productForm, purchasePrice: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
               </div>
             )}
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Precio venta *</label>
-              <input type="number" step="0.01" value={productForm.salePrice} onChange={(e) => setProductForm({...productForm, salePrice: e.target.value})} required className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
+              <NumericInput step="0.01" value={productForm.salePrice} onChange={(e) => setProductForm({...productForm, salePrice: e.target.value})} required className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
             </div>
             {productForm.category !== 'servicio' && (
               <>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1.5">Stock actual</label>
-                  <input type="number" value={productForm.stock} onChange={(e) => setProductForm({...productForm, stock: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
+                  <NumericInput value={productForm.stock} onChange={(e) => setProductForm({...productForm, stock: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1.5">Stock mínimo</label>
-                  <input type="number" value={productForm.minStock} onChange={(e) => setProductForm({...productForm, minStock: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
+                  <NumericInput value={productForm.minStock} onChange={(e) => setProductForm({...productForm, minStock: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
                 </div>
                 <div>
                   <label className="block text-sm font-medium text-slate-700 mb-1.5">Unidad</label>
@@ -535,7 +536,7 @@ export default function Inventory() {
             )}
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">IVA %</label>
-              <input type="number" min="0" step="0.01" value={productForm.taxRate} onChange={(e) => setProductForm({...productForm, taxRate: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
+              <NumericInput min="0" step="0.01" value={productForm.taxRate} onChange={(e) => setProductForm({...productForm, taxRate: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
               {(productForm.category === 'servicio' || productForm.category === 'programa') && (
                 <p className="text-[11px] text-slate-400 mt-1">Los servicios y programas no llevan IVA (0 por defecto). Puedes editarlo si lo necesitas.</p>
               )}
@@ -562,8 +563,7 @@ export default function Inventory() {
             {(productForm.category === 'servicio' || productForm.category === 'programa') && (
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1.5">Cupo máximo de citas por horario</label>
-                <input
-                  type="number"
+                <NumericInput
                   min="0"
                   value={productForm.maxAppointmentsPerDay}
                   onChange={(e) => setProductForm({ ...productForm, maxAppointmentsPerDay: e.target.value })}
@@ -609,7 +609,7 @@ export default function Inventory() {
                 {productForm.deferredIncome && (
                   <div>
                     <label className="block text-xs text-amber-800 mb-1">Sesiones incluidas en el paquete</label>
-                    <input type="number" min="0" value={productForm.sessionsIncluded}
+                    <NumericInput min="0" value={productForm.sessionsIncluded}
                       onChange={(e) => setProductForm({ ...productForm, sessionsIncluded: e.target.value })}
                       placeholder="Ej: 10"
                       className="w-40 px-3 py-2 border border-amber-300 rounded-xl text-sm bg-white" />
@@ -655,8 +655,7 @@ export default function Inventory() {
                           <option key={p._id} value={p._id}>{p.name}</option>
                         ))}
                     </select>
-                    <input
-                      type="number"
+                    <NumericInput
                       min={1}
                       value={row.quantity}
                       onChange={(e) => {
@@ -718,8 +717,7 @@ export default function Inventory() {
                     return (
                       <div key={c._id} className="flex items-center gap-2">
                         <span className="text-sm text-slate-700 flex-1 truncate">{c.nombreComercial || c.name}</span>
-                        <input
-                          type="number"
+                        <NumericInput
                           min="0"
                           value={row?.stock ?? ''}
                           placeholder="0"
@@ -817,7 +815,7 @@ export default function Inventory() {
             </div>
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Cantidad *</label>
-              <input type="number" min="1" value={movementForm.quantity} onChange={(e) => setMovementForm({...movementForm, quantity: e.target.value})} required className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
+              <NumericInput min="1" value={movementForm.quantity} onChange={(e) => setMovementForm({...movementForm, quantity: e.target.value})} required className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
             </div>
           </div>
           {movementForm.type === 'ajuste' && (
@@ -893,8 +891,7 @@ function ProductItemPicker({ label, products, rows, onChange, color = 'emerald' 
         return (
           <div key={row.product || idx} className="flex items-center gap-2 bg-white rounded-lg px-2 py-1.5 border border-slate-200">
             <span className="flex-1 text-sm text-slate-700">{p?.name || 'Producto'}</span>
-            <input
-              type="number"
+            <NumericInput
               min={1}
               value={row.quantity}
               onChange={(e) => {

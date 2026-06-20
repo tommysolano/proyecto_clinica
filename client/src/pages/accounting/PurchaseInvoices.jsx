@@ -5,6 +5,7 @@ import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineDocumentText, HiOutlineArrowDownTray, HiOutlineXMark } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
+import NumericInput from '../../components/NumericInput';
 
 const EMPTY_ITEM = { description: '', quantity: 1, unitPrice: 0, discount: 0, ivaRate: 15, account: '', accountSplits: [], product: null };
 const EMPTY = { supplier: '', docType: 'FACTURA', estab: '001', ptoEmi: '001', secuencial: '', serie: '', claveAcceso: '', autorizacion: '', fechaEmision: today(), fechaVencimiento: '', items: [{ ...EMPTY_ITEM }], retentions: [], retentionNumber: '' };
@@ -15,6 +16,7 @@ export default function PurchaseInvoices() {
   const [showImport, setShowImport] = useState(false);
   const [importMode, setImportMode] = useState('xml'); // 'xml' | 'txt'
   const [importTxt, setImportTxt] = useState('');
+  const [importTxtName, setImportTxtName] = useState('');
   const [xmlContents, setXmlContents] = useState([]); // array de strings XML
   const [suppliers, setSuppliers] = useState([]);
   const [accounts, setAccounts] = useState([]);
@@ -112,12 +114,19 @@ export default function PurchaseInvoices() {
         if (!xmlContents.length) return toast.error('Carga al menos un archivo XML');
         r = await api.post('/purchase-invoices/import-xml', { xmls: xmlContents });
       } else {
+        if (!importTxt.trim()) return toast.error('Carga un archivo .txt');
         r = await api.post('/purchase-invoices/import-txt', { text: importTxt });
       }
       const { created = 0, skipped = 0, errors = [] } = r.data || {};
-      toast.success(`${created} importadas${skipped ? `, ${skipped} repetidas` : ''}${errors.length ? `, ${errors.length} con error` : ''}`);
+      if (created === 0 && errors.length) {
+        // No se importó nada: muestra el detalle del primer error para que el usuario lo entienda.
+        const first = errors[0];
+        toast.error(`No se importó ninguna fila. ${errors.length} con error. Ej. línea ${first.line || first.index || '?'}: ${first.error || ''}`);
+      } else {
+        toast.success(`${created} importadas${skipped ? `, ${skipped} repetidas` : ''}${errors.length ? `, ${errors.length} con error` : ''}`);
+      }
       if (importMode === 'xml' && created) toast('Quedan POR AUTORIZAR. Revísalas y autorízalas.', { icon: 'ℹ️' });
-      setShowImport(false); setXmlContents([]); setImportTxt(''); load();
+      if (created > 0 || importMode === 'xml') { setShowImport(false); setXmlContents([]); setImportTxt(''); setImportTxtName(''); load(); }
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
 
@@ -229,9 +238,9 @@ export default function PurchaseInvoices() {
                 <Fragment key={i}>
                 <tr>
                   <td><input required value={it.description} onChange={(e) => setItem(i, { description: e.target.value })} className="w-full border border-slate-200 rounded px-2 py-1" /></td>
-                  <td><input type="number" step="0.01" value={it.quantity} onChange={(e) => setItem(i, { quantity: +e.target.value })} className="w-16 border border-slate-200 rounded px-1 py-1 text-right" /></td>
-                  <td><input type="number" step="0.01" value={it.unitPrice} onChange={(e) => setItem(i, { unitPrice: +e.target.value })} className="w-24 border border-slate-200 rounded px-1 py-1 text-right" /></td>
-                  <td><input type="number" step="0.01" value={it.discount} onChange={(e) => setItem(i, { discount: +e.target.value })} className="w-20 border border-slate-200 rounded px-1 py-1 text-right" /></td>
+                  <td><NumericInput step="0.01" value={it.quantity} onChange={(e) => setItem(i, { quantity: +e.target.value })} className="w-16 border border-slate-200 rounded px-1 py-1 text-right" /></td>
+                  <td><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(i, { unitPrice: +e.target.value })} className="w-24 border border-slate-200 rounded px-1 py-1 text-right" /></td>
+                  <td><NumericInput step="0.01" value={it.discount} onChange={(e) => setItem(i, { discount: +e.target.value })} className="w-20 border border-slate-200 rounded px-1 py-1 text-right" /></td>
                   <td><select value={it.ivaRate} onChange={(e) => setItem(i, { ivaRate: +e.target.value })} className="border border-slate-200 rounded px-1 py-1">
                     <option value={0}>0%</option><option value={12}>12%</option><option value={15}>15%</option><option value={-1}>No obj</option><option value={-2}>Exento</option>
                   </select></td>
@@ -256,7 +265,7 @@ export default function PurchaseInvoices() {
                           <select value={sp.account} onChange={(e) => setSplit(j, { account: e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs w-56">
                             <option value="">Cuenta...</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} {a.name}</option>)}
                           </select>
-                          <input type="number" step="0.01" placeholder="Monto" value={sp.amount} onChange={(e) => setSplit(j, { amount: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs w-28 text-right" />
+                          <NumericInput step="0.01" placeholder="Monto" value={sp.amount} onChange={(e) => setSplit(j, { amount: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs w-28 text-right" />
                           <input placeholder="Detalle (opcional)" value={sp.description} onChange={(e) => setSplit(j, { description: e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs flex-1" />
                           <button type="button" onClick={() => setItem(i, { accountSplits: splits.filter((_, x) => x !== j) })} className="text-rose-600 text-xs">×</button>
                         </div>
@@ -296,9 +305,9 @@ export default function PurchaseInvoices() {
               <div key={i} className="grid grid-cols-6 gap-2 mt-1 text-xs">
                 <select value={r.type} onChange={(e) => { const rs = [...form.retentions]; rs[i].type = e.target.value; setForm({ ...form, retentions: rs }); }} className="border rounded px-2 py-1"><option>IVA</option><option>RENTA</option></select>
                 <input placeholder="Código" value={r.code} onChange={(e) => { const rs = [...form.retentions]; rs[i].code = e.target.value; setForm({ ...form, retentions: rs }); }} className="border rounded px-2 py-1" />
-                <input type="number" step="0.01" placeholder="Base" value={r.baseAmount} onChange={(e) => { const rs = [...form.retentions]; rs[i].baseAmount = +e.target.value; rs[i].amount = +(rs[i].baseAmount * (rs[i].percentage || 0) / 100).toFixed(2); setForm({ ...form, retentions: rs }); }} className="border rounded px-2 py-1" />
-                <input type="number" step="0.01" placeholder="%" value={r.percentage} onChange={(e) => { const rs = [...form.retentions]; rs[i].percentage = +e.target.value; rs[i].amount = +(rs[i].baseAmount * rs[i].percentage / 100).toFixed(2); setForm({ ...form, retentions: rs }); }} className="border rounded px-2 py-1" />
-                <input type="number" step="0.01" placeholder="Monto" value={r.amount} onChange={(e) => { const rs = [...form.retentions]; rs[i].amount = +e.target.value; setForm({ ...form, retentions: rs }); }} className="border rounded px-2 py-1" />
+                <NumericInput step="0.01" placeholder="Base" value={r.baseAmount} onChange={(e) => { const rs = [...form.retentions]; rs[i].baseAmount = +e.target.value; rs[i].amount = +(rs[i].baseAmount * (rs[i].percentage || 0) / 100).toFixed(2); setForm({ ...form, retentions: rs }); }} className="border rounded px-2 py-1" />
+                <NumericInput step="0.01" placeholder="%" value={r.percentage} onChange={(e) => { const rs = [...form.retentions]; rs[i].percentage = +e.target.value; rs[i].amount = +(rs[i].baseAmount * rs[i].percentage / 100).toFixed(2); setForm({ ...form, retentions: rs }); }} className="border rounded px-2 py-1" />
+                <NumericInput step="0.01" placeholder="Monto" value={r.amount} onChange={(e) => { const rs = [...form.retentions]; rs[i].amount = +e.target.value; setForm({ ...form, retentions: rs }); }} className="border rounded px-2 py-1" />
                 <button type="button" onClick={() => setForm({ ...form, retentions: form.retentions.filter((_, x) => x !== i) })} className="text-rose-600">×</button>
               </div>
             ))}
@@ -333,15 +342,21 @@ export default function PurchaseInvoices() {
           </div>
         ) : (
           <div>
-            <p className="text-xs text-slate-500 mb-2">Formato por línea: RUC|RazonSocial|Tipo|Serie|Autorizacion|Fecha(DD/MM/YYYY)|Subtotal|IVA|Total</p>
+            <p className="text-xs text-slate-500 mb-2">Carga el archivo <b>.txt</b> del anexo del SRI. Formato por línea (separado por <code>|</code>, <code>;</code> o tabulación): <code>RUC|RazonSocial|Tipo|Serie|Autorizacion|Fecha(DD/MM/AAAA)|Subtotal|IVA|Total</code>. Se ignora la fila de encabezados.</p>
             <label className="block text-xs font-medium text-slate-600 mb-1">Cargar archivo .txt</label>
             <input
-              type="file" accept=".txt,text/plain"
-              onChange={(e) => { const f = e.target.files?.[0]; if (!f) return; const reader = new FileReader(); reader.onload = (ev) => setImportTxt(String(ev.target?.result || '')); reader.readAsText(f, 'utf-8'); }}
+              type="file" accept=".txt,text/plain,.csv,text/csv"
+              onChange={(e) => { const f = e.target.files?.[0]; if (!f) return; const reader = new FileReader(); reader.onload = (ev) => { setImportTxt(String(ev.target?.result || '')); setImportTxtName(f.name); }; reader.readAsText(f, 'utf-8'); e.target.value = ''; }}
               className="block w-full text-sm text-slate-600 file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border-0 file:bg-emerald-600 file:text-white file:cursor-pointer"
             />
-            <p className="text-xs text-slate-500 mb-1 mt-2">O pega el contenido aquí:</p>
-            <textarea value={importTxt} onChange={(e) => setImportTxt(e.target.value)} rows={8} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 font-mono text-xs" />
+            {importTxt.trim() ? (
+              <div className="mt-2 flex items-center justify-between text-sm bg-emerald-50 rounded-lg px-3 py-2">
+                <span>📄 <b>{importTxtName || 'archivo.txt'}</b>: {importTxt.split(/\r?\n/).filter((l) => l.trim()).length} línea(s) detectada(s).</span>
+                <button onClick={() => { setImportTxt(''); setImportTxtName(''); }} className="text-rose-600 text-xs">Quitar</button>
+              </div>
+            ) : (
+              <p className="text-xs text-slate-400 mt-2">Aún no has cargado ningún archivo.</p>
+            )}
           </div>
         )}
         <div className="flex justify-end gap-2 mt-3"><button onClick={() => setShowImport(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button onClick={submitImport} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Importar</button></div>

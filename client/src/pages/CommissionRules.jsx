@@ -3,6 +3,7 @@ import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import { HiOutlinePlus, HiOutlineTrash, HiOutlinePencil, HiOutlineTrophy, HiOutlineArrowDownTray, HiOutlineBanknotes } from 'react-icons/hi2';
+import NumericInput from '../components/NumericInput';
 
 const ROLES = [
   { value: 'doctor', label: 'Doctor' },
@@ -462,7 +463,7 @@ export default function CommissionRules() {
           </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="block text-sm">Monto de la comisión ($) <span className="text-slate-400 font-normal">(opcional)</span>
-              <input type="number" step="0.01" min="0" placeholder="0.00 — déjalo vacío para contar sin valor" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+              <NumericInput step="0.01" min="0" placeholder="0.00 — déjalo vacío para contar sin valor" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
             </label>
             <label className="block text-sm">Cuenta contable (gasto comisión)
               <select value={form.account} onChange={(e) => setForm({ ...form, account: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">

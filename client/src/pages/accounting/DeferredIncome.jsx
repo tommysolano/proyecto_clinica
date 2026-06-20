@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import { fmt, fmtDate } from './_utils';
 import { HiOutlineCheckCircle } from 'react-icons/hi2';
+import NumericInput from '../../components/NumericInput';
 
 const STATUS_CLS = {
   ABIERTO: 'bg-slate-100 text-slate-600',
@@ -105,14 +106,14 @@ export default function DeferredIncome() {
             {recDoc.sessionsTotal > 0 && (
               <div>
                 <label className="block text-slate-600 mb-1">Sesiones a reconocer</label>
-                <input type="number" min="1" max={recDoc.sessionsTotal - recDoc.sessionsUsed} value={recForm.sessions}
+                <NumericInput min="1" max={recDoc.sessionsTotal - recDoc.sessionsUsed} value={recForm.sessions}
                   onChange={(e) => setRecForm({ ...recForm, sessions: e.target.value, amount: '' })}
                   className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
               </div>
             )}
             <div>
               <label className="block text-slate-600 mb-1">…o monto exacto ($)</label>
-              <input type="number" step="0.01" min="0" value={recForm.amount}
+              <NumericInput step="0.01" min="0" value={recForm.amount}
                 onChange={(e) => setRecForm({ ...recForm, amount: e.target.value })}
                 placeholder="Dejar vacío para usar sesiones / saldo total"
                 className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />

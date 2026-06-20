@@ -132,29 +132,87 @@ async function getAccountBalances(clinicId, { startDate, endDate } = {}) {
   return Array.from(map.values());
 }
 
+/**
+ * Construye el árbol jerárquico del plan de cuentas (por prefijo de código) con
+ * los saldos rodados hacia arriba, igual que presentan Contífico/Supercías: cada
+ * cuenta agrupadora muestra el subtotal de sus cuentas hijas. Devuelve los nodos
+ * raíz cuyo `type` está en `types`, podando ramas sin saldo.
+ */
+function buildAccountTree(balances, types) {
+  const byCode = new Map();
+  const nodes = balances.map((a) => ({
+    _id: a._id, code: a.code, name: a.name, type: a.type, nature: a.nature,
+    level: a.level, allowsMovement: a.allowsMovement,
+    debit: a.debit || 0, credit: a.credit || 0,
+    own: a.allowsMovement ? (a.balance || 0) : 0, total: 0, children: [],
+  }));
+  nodes.sort((a, b) => String(a.code).localeCompare(String(b.code)));
+  for (const n of nodes) byCode.set(n.code, n);
+  const roots = [];
+  for (const n of nodes) {
+    const parentCode = String(n.code).includes('.') ? String(n.code).slice(0, String(n.code).lastIndexOf('.')) : null;
+    const parent = parentCode ? byCode.get(parentCode) : null;
+    if (parent) parent.children.push(n); else roots.push(n);
+  }
+  const rollup = (n) => {
+    let t = n.own;
+    for (const c of n.children) t += rollup(c);
+    n.total = +t.toFixed(2);
+    return n.total;
+  };
+  roots.forEach(rollup);
+  const prune = (n) => {
+    n.children = n.children.filter((c) => { prune(c); return Math.abs(c.total) > 0.004 || c.children.length; });
+  };
+  return roots
+    .filter((r) => types.includes(r.type))
+    .filter((r) => { prune(r); return Math.abs(r.total) > 0.004 || r.children.length; });
+}
+
+const round2 = (n) => +(Number(n) || 0).toFixed(2);
+
 // ---------- Estado de Resultados ----------
 exports.incomeStatement = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
+    // Tasas configurables (sociedades EC: 15% trabajadores, 25% IR por defecto).
+    const profitSharingRate = req.query.profitSharingRate !== undefined ? Number(req.query.profitSharingRate) : 0.15;
+    const incomeTaxRate = req.query.incomeTaxRate !== undefined ? Number(req.query.incomeTaxRate) : 0.25;
+
     const balances = await getAccountBalances(req.clinicId, { startDate, endDate });
     const ingresos = balances.filter((a) => a.type === 'INGRESO' && a.allowsMovement);
     const costos = balances.filter((a) => a.type === 'COSTO' && a.allowsMovement);
     const gastos = balances.filter((a) => a.type === 'GASTO' && a.allowsMovement);
-    const totalIngresos = ingresos.reduce((s, a) => s + a.balance, 0);
-    const totalCostos = costos.reduce((s, a) => s + a.balance, 0);
-    const totalGastos = gastos.reduce((s, a) => s + a.balance, 0);
-    const utilidadBruta = totalIngresos - totalCostos;
-    const utilidadOperacional = utilidadBruta - totalGastos;
+    const totalIngresos = round2(ingresos.reduce((s, a) => s + a.balance, 0));
+    const totalCostos = round2(costos.reduce((s, a) => s + a.balance, 0));
+    const totalGastos = round2(gastos.reduce((s, a) => s + a.balance, 0));
+    const utilidadBruta = round2(totalIngresos - totalCostos);
+    const utilidadOperacional = round2(utilidadBruta - totalGastos);
+
+    // Cascada tributaria (estimada) según normativa ecuatoriana.
+    const utilidadAntesParticipacion = utilidadOperacional;
+    const participacionTrabajadores = round2(Math.max(0, utilidadAntesParticipacion) * profitSharingRate);
+    const utilidadAntesImpuesto = round2(utilidadAntesParticipacion - participacionTrabajadores);
+    const impuestoRenta = round2(Math.max(0, utilidadAntesImpuesto) * incomeTaxRate);
+    const utilidadNeta = round2(utilidadAntesImpuesto - impuestoRenta);
+
     res.json({
+      // Árbol jerárquico (cuentas agrupadoras con subtotales) para presentación.
+      tree: buildAccountTree(balances, ['INGRESO', 'COSTO', 'GASTO']),
+      // Listas planas (compatibilidad).
       ingresos, costos, gastos,
       totalIngresos, totalCostos, totalGastos,
-      utilidadBruta, utilidadOperacional, utilidadNeta: utilidadOperacional,
-      totales: { totalIngresos, totalCostos, totalGastos, utilidadBruta, utilidadOperacional, utilidadNeta: utilidadOperacional },
+      utilidadBruta, utilidadOperacional,
+      // Cascada tributaria estimada.
+      profitSharingRate, incomeTaxRate,
+      utilidadAntesParticipacion, participacionTrabajadores, utilidadAntesImpuesto, impuestoRenta,
+      utilidadNeta,
+      totales: { totalIngresos, totalCostos, totalGastos, utilidadBruta, utilidadOperacional, utilidadNeta },
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
-// ---------- Balance General ----------
+// ---------- Balance General (Estado de Situación Financiera) ----------
 exports.balanceSheet = async (req, res) => {
   try {
     const { date } = req.query;
@@ -164,16 +222,24 @@ exports.balanceSheet = async (req, res) => {
     const patrimonio = balances.filter((a) => a.type === 'PATRIMONIO' && a.allowsMovement);
     const ingresos = balances.filter((a) => a.type === 'INGRESO');
     const gastos = balances.filter((a) => a.type === 'GASTO' || a.type === 'COSTO');
-    const totalActivos = activos.reduce((s, a) => s + a.balance, 0);
-    const totalPasivos = pasivos.reduce((s, a) => s + a.balance, 0);
-    const utilidad = ingresos.reduce((s, a) => s + a.balance, 0) - gastos.reduce((s, a) => s + a.balance, 0);
-    const totalPatrimonio = patrimonio.reduce((s, a) => s + a.balance, 0) + utilidad;
+    const totalActivos = round2(activos.reduce((s, a) => s + a.balance, 0));
+    const totalPasivos = round2(pasivos.reduce((s, a) => s + a.balance, 0));
+    const utilidad = round2(ingresos.reduce((s, a) => s + a.balance, 0) - gastos.reduce((s, a) => s + a.balance, 0));
+    const totalPatrimonio = round2(patrimonio.reduce((s, a) => s + a.balance, 0) + utilidad);
     res.json({
+      tree: {
+        activos: buildAccountTree(balances, ['ACTIVO']),
+        pasivos: buildAccountTree(balances, ['PASIVO']),
+        patrimonio: buildAccountTree(balances, ['PATRIMONIO']),
+      },
+      // Listas planas (compatibilidad).
       activos, pasivos, patrimonio,
       utilidadEjercicio: utilidad,
       totalActivos, totalPasivos, totalPatrimonio,
-      totalPasivoPatrimonio: totalPasivos + totalPatrimonio,
-      totales: { totalActivos, totalPasivos, totalPatrimonio, totalPasivoPatrimonio: totalPasivos + totalPatrimonio },
+      totalPasivoPatrimonio: round2(totalPasivos + totalPatrimonio),
+      // Descuadre = Activo − (Pasivo + Patrimonio). Debe ser 0.
+      descuadre: round2(totalActivos - (totalPasivos + totalPatrimonio)),
+      totales: { totalActivos, totalPasivos, totalPatrimonio, totalPasivoPatrimonio: round2(totalPasivos + totalPatrimonio) },
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };

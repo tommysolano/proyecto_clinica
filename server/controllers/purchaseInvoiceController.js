@@ -375,28 +375,41 @@ exports.importTxt = async (req, res) => {
   try {
     const raw = req.body?.content || req.body?.text;
     if (!raw) return res.status(400).json({ message: 'content vacío' });
-    const lines = raw.split(/\r?\n/).filter(Boolean);
+    const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    // Convierte un número con posibles separadores de miles y coma decimal a Number.
+    const num = (s) => {
+      let t = String(s == null ? '' : s).trim();
+      if (!t) return 0;
+      if (t.includes(',') && t.includes('.')) t = t.lastIndexOf(',') > t.lastIndexOf('.') ? t.replace(/\./g, '').replace(',', '.') : t.replace(/,/g, '');
+      else if (t.includes(',')) t = /,\d{1,2}$/.test(t) ? t.replace(',', '.') : t.replace(/,/g, '');
+      return parseFloat(t.replace(/[^0-9.\-]/g, '')) || 0;
+    };
     let created = 0;
     let skipped = 0;
     const errors = [];
     for (let i = 0; i < lines.length; i++) {
       const line = lines[i];
-      // Detección heurística: descarta cabecera si contiene "RUC" o "FECHA"
-      if (/^(RUC|FECHA|Tipo)/i.test(line)) continue;
-      const cols = line.split(/[\t|;]/).map((c) => c.trim());
-      if (cols.length < 6) { errors.push({ line: i + 1, error: 'Columnas insuficientes' }); continue; }
+      // Detección heurística: descarta cabecera si contiene "RUC"/"FECHA"/"Tipo" como primera columna.
+      if (/^(RUC|FECHA|Tipo|Comprobante|Establecimiento)/i.test(line)) continue;
+      const cols = line.split(/[\t|;,]/).map((c) => c.trim());
+      if (cols.length < 6) { errors.push({ line: i + 1, error: `Se esperaban al menos 6 columnas (RUC|Razón|Tipo|Serie|Autorización|Fecha|Subtotal|IVA|Total) y se encontraron ${cols.length}. Revisa el separador del archivo.` }); continue; }
       try {
         const [ruc, razon, tipo, serie, autorizacion, fechaStr, subtotalStr, ivaStr, totalStr] = cols;
+        if (!/^\d{10,13}$/.test(String(ruc || '').replace(/\D/g, ''))) { errors.push({ line: i + 1, error: `RUC inválido: "${ruc}"` }); continue; }
         let sup = await Supplier.findOne({ clinic: req.clinicId, ruc });
         if (!sup) {
           sup = await Supplier.create({ clinic: req.clinicId, ruc, razonSocial: razon || ruc });
         }
-        const fecha = new Date(fechaStr.split('/').reverse().join('-'));
+        // Acepta fecha DD/MM/AAAA, DD-MM-AAAA o AAAA-MM-DD.
+        const f = String(fechaStr || '').trim();
+        const m = f.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/);
+        const fecha = m ? new Date(`${m[3].length === 2 ? '20' + m[3] : m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`) : new Date(f);
+        if (isNaN(fecha)) { errors.push({ line: i + 1, error: `Fecha inválida: "${fechaStr}"` }); continue; }
         const dup = await PurchaseInvoice.findOne({ clinic: req.clinicId, supplier: sup._id, serie });
         if (dup) { skipped++; continue; }
-        const subtotal = parseFloat(subtotalStr) || 0;
-        const iva = parseFloat(ivaStr) || 0;
-        const total = parseFloat(totalStr) || (subtotal + iva);
+        const subtotal = num(subtotalStr);
+        const iva = num(ivaStr);
+        const total = num(totalStr) || (subtotal + iva);
         const ivaRate = subtotal > 0 ? Math.round((iva / subtotal) * 100) : 0;
         const itemDescription = `Compra a ${sup.razonSocial} (importado SRI)`;
         const data = {

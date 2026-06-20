@@ -5,6 +5,7 @@ import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineDocumentMinus, HiOutlineXMark } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
+import NumericInput from '../../components/NumericInput';
 
 const EMPTY = { kind: 'NC', direction: 'RECIBIDA', date: today(), serie: '', serieAfecta: '', motivo: '', items: [{ description: '', quantity: 1, unitPrice: 0, ivaRate: 15 }] };
 
@@ -94,8 +95,8 @@ export default function CreditDebitNotes() {
               {form.items.map((it, i) => (
                 <tr key={i}>
                   <td><input required value={it.description} onChange={(e) => setItem(i, { description: e.target.value })} className="w-full border border-slate-200 rounded px-2 py-1" /></td>
-                  <td><input type="number" step="0.01" value={it.quantity} onChange={(e) => setItem(i, { quantity: +e.target.value })} className="w-16 border border-slate-200 rounded px-1 py-1 text-right" /></td>
-                  <td><input type="number" step="0.01" value={it.unitPrice} onChange={(e) => setItem(i, { unitPrice: +e.target.value })} className="w-24 border border-slate-200 rounded px-1 py-1 text-right" /></td>
+                  <td><NumericInput step="0.01" value={it.quantity} onChange={(e) => setItem(i, { quantity: +e.target.value })} className="w-16 border border-slate-200 rounded px-1 py-1 text-right" /></td>
+                  <td><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(i, { unitPrice: +e.target.value })} className="w-24 border border-slate-200 rounded px-1 py-1 text-right" /></td>
                   <td><select value={it.ivaRate} onChange={(e) => setItem(i, { ivaRate: +e.target.value })} className="border border-slate-200 rounded px-1 py-1"><option value={0}>0%</option><option value={15}>15%</option></select></td>
                   <td><button type="button" onClick={() => setForm({ ...form, items: form.items.filter((_, x) => x !== i) })} className="text-rose-600"><HiOutlineXMark /></button></td>
                 </tr>

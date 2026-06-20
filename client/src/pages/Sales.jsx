@@ -7,6 +7,7 @@ import PageHeader, { EmptyState } from '../components/PageHeader';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { fmtDateTime } from '../utils/date';
+import NumericInput from '../components/NumericInput';
 import {
   HiOutlinePlus,
   HiOutlineEye,
@@ -876,8 +877,7 @@ export default function Sales() {
                   filter={(p) => p.active !== false}
                 />
               </div>
-              <input
-                type="number"
+              <NumericInput
                 min="1"
                 value={currentItem.quantity}
                 onChange={(e) =>
@@ -917,8 +917,7 @@ export default function Sales() {
                       <td className="py-2 text-slate-800">{item.productName}</td>
                       <td className="py-2 text-right">${item.unitPrice.toFixed(2)}</td>
                       <td className="py-2 text-center">
-                        <input
-                          type="number"
+                        <NumericInput
                           min="1"
                           value={item.quantity}
                           onChange={(e) => updateItemQty(idx, e.target.value)}
@@ -926,8 +925,7 @@ export default function Sales() {
                         />
                       </td>
                       <td className="py-2 text-right">
-                        <input
-                          type="number"
+                        <NumericInput
                           min="0"
                           step="0.01"
                           value={item.discount ?? 0}

@@ -11,6 +11,7 @@ import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
 import { fmtDateTime } from '../utils/date';
+import NumericInput from '../components/NumericInput';
 import {
   HiOutlinePlus,
   HiOutlinePencil,
@@ -1274,8 +1275,7 @@ export default function Appointments() {
                 Pagado por adelantado
               </label>
               {form.paidInAdvance && (
-                <input
-                  type="number"
+                <NumericInput
                   min={0}
                   step="0.01"
                   value={form.advanceAmount}

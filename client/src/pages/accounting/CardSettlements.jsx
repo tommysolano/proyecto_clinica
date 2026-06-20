@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import { HiOutlinePlus, HiOutlineCreditCard, HiOutlineCheckCircle, HiOutlineEye, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineXCircle, HiOutlineMagnifyingGlass } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
+import NumericInput from '../../components/NumericInput';
 
 // Códigos SRI frecuentes en liquidaciones de tarjeta (referenciales, editables)
 const SRI_RENTA = ['332', '343', '344', '304'];
@@ -245,7 +246,7 @@ export default function CardSettlements() {
               <input value={form.docNumber} onChange={(e) => setForm({ ...form, docNumber: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
             </label>
             <label className="text-xs text-slate-500">Comisión por liquidar ($)
-              <input type="number" step="0.01" value={form.commissionToSettle} onChange={(e) => setForm({ ...form, commissionToSettle: +e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-right" />
+              <NumericInput step="0.01" value={form.commissionToSettle} onChange={(e) => setForm({ ...form, commissionToSettle: +e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-right" />
             </label>
           </div>
 
@@ -351,13 +352,13 @@ export default function CardSettlements() {
                         <td className="px-0.5 py-0.5"><input value={t.recap} onChange={(e) => setTxn(i, { recap: e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-20" /></td>
                         <td className="px-0.5 py-0.5"><select value={t.account || ''} onChange={(e) => setTxn(i, { account: e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-40"><option value="">—</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code}</option>)}</select></td>
                         <td className="px-0.5 py-0.5"><select value={t.costCenter || ''} onChange={(e) => setTxn(i, { costCenter: e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-36"><option value="">—</option>{costCenters.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}</select></td>
-                        <td className="px-0.5 py-0.5"><input type="number" step="0.01" value={t.deposit} onChange={(e) => setTxn(i, { deposit: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-24 text-right" /></td>
-                        <td className="px-0.5 py-0.5"><input type="number" step="0.01" value={t.commission} onChange={(e) => setTxn(i, { commission: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-24 text-right" /></td>
-                        <td className="px-0.5 py-0.5"><input type="number" step="0.01" value={t.iva} onChange={(e) => setTxn(i, { iva: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-20 text-right" /></td>
-                        <td className="px-0.5 py-0.5"><input type="number" step="0.01" value={t.baseRetIr} onChange={(e) => setTxn(i, { baseRetIr: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-24 text-right" /></td>
-                        <td className="px-0.5 py-0.5"><input type="number" step="0.01" value={t.baseRetIva} onChange={(e) => setTxn(i, { baseRetIva: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-24 text-right" /></td>
-                        <td className="px-0.5 py-0.5"><input type="number" step="0.01" value={t.baseIr} onChange={(e) => setTxn(i, { baseIr: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-20 text-right" /></td>
-                        <td className="px-0.5 py-0.5"><input type="number" step="0.01" value={t.retIva} onChange={(e) => setTxn(i, { retIva: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-20 text-right" /></td>
+                        <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.deposit} onChange={(e) => setTxn(i, { deposit: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-24 text-right" /></td>
+                        <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.commission} onChange={(e) => setTxn(i, { commission: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-24 text-right" /></td>
+                        <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.iva} onChange={(e) => setTxn(i, { iva: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-20 text-right" /></td>
+                        <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.baseRetIr} onChange={(e) => setTxn(i, { baseRetIr: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-24 text-right" /></td>
+                        <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.baseRetIva} onChange={(e) => setTxn(i, { baseRetIva: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-24 text-right" /></td>
+                        <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.baseIr} onChange={(e) => setTxn(i, { baseIr: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-20 text-right" /></td>
+                        <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.retIva} onChange={(e) => setTxn(i, { retIva: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-20 text-right" /></td>
                         <td className="px-1 py-0.5 text-right font-mono font-semibold text-emerald-700">{fmt(toPay)}</td>
                         <td className="px-0.5 py-0.5 text-center"><button type="button" onClick={() => delTxn(i)} className="text-rose-600">×</button></td>
                       </tr>
@@ -394,9 +395,9 @@ export default function CardSettlements() {
                 <input placeholder="Autorización" value={r.authorization} onChange={(e) => setRet(i, { authorization: e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs" />
                 <select value={r.type} onChange={(e) => setRet(i, { type: e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs"><option value="RENTA">RENTA</option><option value="IVA">IVA</option></select>
                 <input placeholder="Cód. SRI" list={r.type === 'IVA' ? 'sri-iva' : 'sri-renta'} value={r.sriCode} onChange={(e) => setRet(i, { sriCode: e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs" />
-                <input type="number" step="0.01" placeholder="Base" value={r.base} onChange={(e) => setRet(i, { base: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs text-right" title="Base" />
-                <input type="number" step="0.01" placeholder="%" value={r.percentage} onChange={(e) => { const p = +e.target.value; setRet(i, { percentage: p, value: round((+r.base || 0) * p / 100) }); }} className="border border-slate-200 rounded px-1 py-1 text-xs text-right" title="%" />
-                <input type="number" step="0.01" placeholder="Valor" value={r.value} onChange={(e) => setRet(i, { value: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs text-right" title="Valor" />
+                <NumericInput step="0.01" placeholder="Base" value={r.base} onChange={(e) => setRet(i, { base: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs text-right" title="Base" />
+                <NumericInput step="0.01" placeholder="%" value={r.percentage} onChange={(e) => { const p = +e.target.value; setRet(i, { percentage: p, value: round((+r.base || 0) * p / 100) }); }} className="border border-slate-200 rounded px-1 py-1 text-xs text-right" title="%" />
+                <NumericInput step="0.01" placeholder="Valor" value={r.value} onChange={(e) => setRet(i, { value: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs text-right" title="Valor" />
                 <button type="button" onClick={() => delRet(i)} className="text-rose-600 text-sm">×</button>
               </div>
             ))}

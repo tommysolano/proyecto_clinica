@@ -147,44 +147,130 @@ export default function FinancialReports() {
   );
 }
 
-function IncomeStatement({ data, onAccountClick }) {
-  const totalIngresos = total(data, 'totalIngresos');
-  const totalCostos = total(data, 'totalCostos');
-  const totalGastos = total(data, 'totalGastos');
-  const utilidadBruta = total(data, 'utilidadBruta');
-  const utilidadNeta = total(data, 'utilidadNeta') || total(data, 'utilidadOperacional');
+// Aplana el árbol jerárquico en filas con sangría y subtotales (estilo Contífico).
+function renderTree(nodes, depth, onAccountClick) {
+  const rows = [];
+  for (const n of (nodes || [])) {
+    const isGroup = !n.allowsMovement || (n.children && n.children.length > 0);
+    rows.push(
+      <tr key={n.code} className={`border-t border-slate-100 ${isGroup ? 'bg-slate-50/60' : 'hover:bg-slate-50'}`}>
+        <td className="px-3 py-1.5 font-mono text-xs text-slate-500" style={{ paddingLeft: `${depth * 18 + 12}px` }}>{n.code}</td>
+        <td className={`px-3 py-1.5 ${isGroup ? 'font-semibold text-slate-700' : ''}`}>
+          {n.allowsMovement
+            ? <AccountButton account={n} onAccountClick={onAccountClick}>{n.name}</AccountButton>
+            : <span>{n.name}</span>}
+        </td>
+        <td className={`px-3 py-1.5 text-right font-mono ${isGroup ? 'font-semibold' : ''}`}>${fmt(n.total)}</td>
+      </tr>
+    );
+    if (n.children && n.children.length) rows.push(...renderTree(n.children, depth + 1, onAccountClick));
+  }
+  return rows;
+}
 
+function TreeSection({ title, nodes = [], total: totalValue = 0, totalClass = '', onAccountClick, extraRows = [] }) {
   return (
-    <div className="space-y-4">
-      <FinancialTable title="Ingresos" rows={data.ingresos} total={totalIngresos} totalClass="text-emerald-700" onAccountClick={onAccountClick} />
-      <FinancialTable title="Costo de ventas" rows={data.costos} total={totalCostos} totalClass="text-rose-600" onAccountClick={onAccountClick} />
-      <TotalBand label="Utilidad bruta" value={utilidadBruta} />
-      <FinancialTable title="Gastos" rows={data.gastos} total={totalGastos} totalClass="text-rose-600" onAccountClick={onAccountClick} />
-      <TotalBand label="Utilidad neta" value={utilidadNeta} prominent />
+    <section className="space-y-1">
+      <h3 className="font-semibold text-emerald-700 border-b pb-1">{title}</h3>
+      <div className="overflow-x-auto rounded-lg border border-slate-100">
+        <table className="tbl min-w-[560px]">
+          <thead className="bg-emerald-50 text-xs uppercase text-slate-600"><tr>
+            <th className="px-3 py-2 text-left w-32">Código</th>
+            <th className="px-3 py-2 text-left">Cuenta</th>
+            <th className="px-3 py-2 text-right w-40">Saldo</th>
+          </tr></thead>
+          <tbody>
+            {renderTree(nodes, 0, onAccountClick)}
+            {extraRows.map((r) => (
+              <tr key={r.label} className="border-t border-slate-100 bg-slate-50"><td colSpan={2} className="px-3 py-1.5 text-right font-semibold">{r.label}</td><td className="px-3 py-1.5 text-right font-mono font-semibold">${fmt(r.amount)}</td></tr>
+            ))}
+            {!nodes.length && !extraRows.length && <tr><td colSpan={3} className="px-3 py-6 text-center text-slate-400 text-xs">Sin cuentas con saldo en el rango.</td></tr>}
+          </tbody>
+          <tfoot className="bg-slate-100 font-bold"><tr>
+            <td colSpan={2} className="px-3 py-2 text-right">Total {title}</td>
+            <td className={`px-3 py-2 text-right font-mono ${totalClass}`}>${fmt(totalValue)}</td>
+          </tr></tfoot>
+        </table>
+      </div>
+    </section>
+  );
+}
+
+// Fila de la cascada tributaria del Estado de Resultados.
+function WaterfallRow({ label, value, sub }) {
+  return (
+    <div className={`flex justify-between px-3 py-1.5 text-sm ${sub ? 'text-slate-500' : 'text-slate-700'}`}>
+      <span>{label}</span><span className="font-mono">${fmt(value)}</span>
+    </div>
+  );
+}
+
+function IncomeStatement({ data, onAccountClick }) {
+  const tree = data.tree;
+  if (!Array.isArray(tree)) {
+    // Compatibilidad con respuestas antiguas (lista plana).
+    return (
+      <div className="space-y-4">
+        <FinancialTable title="Ingresos" rows={data.ingresos} total={total(data, 'totalIngresos')} totalClass="text-emerald-700" onAccountClick={onAccountClick} />
+        <FinancialTable title="Costo de ventas" rows={data.costos} total={total(data, 'totalCostos')} totalClass="text-rose-600" onAccountClick={onAccountClick} />
+        <TotalBand label="Utilidad bruta" value={total(data, 'utilidadBruta')} />
+        <FinancialTable title="Gastos" rows={data.gastos} total={total(data, 'totalGastos')} totalClass="text-rose-600" onAccountClick={onAccountClick} />
+        <TotalBand label="Utilidad neta" value={total(data, 'utilidadNeta') || total(data, 'utilidadOperacional')} prominent />
+      </div>
+    );
+  }
+  const irPct = Math.round((Number(data.incomeTaxRate) || 0.25) * 100);
+  const ptPct = Math.round((Number(data.profitSharingRate) || 0.15) * 100);
+  return (
+    <div className="space-y-3">
+      <TreeSection title="Ingresos" nodes={tree.filter((n) => n.type === 'INGRESO')} total={data.totalIngresos} totalClass="text-emerald-700" onAccountClick={onAccountClick} />
+      <TreeSection title="Costo de ventas" nodes={tree.filter((n) => n.type === 'COSTO')} total={data.totalCostos} totalClass="text-rose-600" onAccountClick={onAccountClick} />
+      <TotalBand label="Utilidad bruta" value={data.utilidadBruta} />
+      <TreeSection title="Gastos operativos" nodes={tree.filter((n) => n.type === 'GASTO')} total={data.totalGastos} totalClass="text-rose-600" onAccountClick={onAccountClick} />
+      <TotalBand label="Utilidad operacional" value={data.utilidadOperacional} />
+      <div className="rounded-lg border border-slate-100 divide-y divide-slate-100">
+        <WaterfallRow label="Utilidad antes de participación e impuestos" value={data.utilidadAntesParticipacion} />
+        <WaterfallRow label={`(−) ${ptPct}% participación trabajadores (estimado)`} value={-(data.participacionTrabajadores || 0)} sub />
+        <WaterfallRow label="Utilidad antes de impuesto a la renta" value={data.utilidadAntesImpuesto} />
+        <WaterfallRow label={`(−) Impuesto a la renta ${irPct}% (estimado)`} value={-(data.impuestoRenta || 0)} sub />
+      </div>
+      <TotalBand label="Utilidad neta del ejercicio" value={data.utilidadNeta} prominent />
+      <p className="text-[11px] text-slate-400">La participación de trabajadores ({ptPct}%) y el impuesto a la renta ({irPct}%) son <b>estimados</b> sobre la utilidad del período; el valor definitivo se calcula con la conciliación tributaria anual.</p>
     </div>
   );
 }
 
 function BalanceSheet({ data, onAccountClick }) {
+  const t = data.tree;
   const totalActivos = total(data, 'totalActivos');
   const totalPasivos = total(data, 'totalPasivos');
   const totalPatrimonio = total(data, 'totalPatrimonio');
   const totalPasivoPatrimonio = total(data, 'totalPasivoPatrimonio') || (totalPasivos + totalPatrimonio);
   const utilidad = Number(data.utilidadEjercicio) || 0;
+  const descuadre = Number(data.descuadre) || (totalActivos - totalPasivoPatrimonio);
 
+  if (!t || typeof t !== 'object') {
+    return (
+      <div className="space-y-4">
+        <FinancialTable title="Activos" rows={data.activos} total={totalActivos} totalClass="text-emerald-700" onAccountClick={onAccountClick} />
+        <FinancialTable title="Pasivos" rows={data.pasivos} total={totalPasivos} totalClass="text-rose-600" onAccountClick={onAccountClick} />
+        <FinancialTable title="Patrimonio" rows={data.patrimonio} total={totalPatrimonio} totalClass="text-blue-700" onAccountClick={onAccountClick} extraRows={money(utilidad) ? [{ label: 'Resultado del ejercicio', amount: utilidad }] : []} />
+        <TotalBand label="Pasivo + Patrimonio" value={totalPasivoPatrimonio} prominent />
+      </div>
+    );
+  }
   return (
-    <div className="space-y-4">
-      <FinancialTable title="Activos" rows={data.activos} total={totalActivos} totalClass="text-emerald-700" onAccountClick={onAccountClick} />
-      <FinancialTable title="Pasivos" rows={data.pasivos} total={totalPasivos} totalClass="text-rose-600" onAccountClick={onAccountClick} />
-      <FinancialTable
-        title="Patrimonio"
-        rows={data.patrimonio}
-        total={totalPatrimonio}
-        totalClass="text-blue-700"
-        onAccountClick={onAccountClick}
-        extraRows={money(utilidad) ? [{ label: 'Resultado del ejercicio', amount: utilidad }] : []}
-      />
-      <TotalBand label="Pasivo + Patrimonio" value={totalPasivoPatrimonio} prominent />
+    <div className="space-y-3">
+      <TreeSection title="Activos" nodes={t.activos || []} total={totalActivos} totalClass="text-emerald-700" onAccountClick={onAccountClick} />
+      <TreeSection title="Pasivos" nodes={t.pasivos || []} total={totalPasivos} totalClass="text-rose-600" onAccountClick={onAccountClick} />
+      <TreeSection title="Patrimonio" nodes={t.patrimonio || []} total={totalPatrimonio} totalClass="text-blue-700" onAccountClick={onAccountClick}
+        extraRows={money(utilidad) ? [{ label: 'Resultado del ejercicio', amount: utilidad }] : []} />
+      <TotalBand label="Total Pasivo + Patrimonio" value={totalPasivoPatrimonio} prominent />
+      {Math.abs(descuadre) > 0.01 && (
+        <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-3 py-2">
+          ⚠ El balance no cuadra por <b>${fmt(descuadre)}</b> (Activo ≠ Pasivo + Patrimonio). Revisa Salud Contable o recalcula saldos.
+        </div>
+      )}
     </div>
   );
 }

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
+import NumericInput from '../components/NumericInput';
 import {
   HiOutlinePlus,
   HiOutlinePencil,
@@ -220,11 +221,11 @@ export default function Segments() {
                   </label>
                   <label className="text-sm">
                     <span className="text-slate-600">Edad mín.</span>
-                    <input type="number" value={f.ageRange.min ?? ''} onChange={(e) => setF({ ageRange: { ...f.ageRange, min: e.target.value === '' ? null : Number(e.target.value) } })} className="w-full mt-1 border border-slate-200 rounded-lg px-2 py-2 text-sm" />
+                    <NumericInput value={f.ageRange.min ?? ''} onChange={(e) => setF({ ageRange: { ...f.ageRange, min: e.target.value === '' ? null : Number(e.target.value) } })} className="w-full mt-1 border border-slate-200 rounded-lg px-2 py-2 text-sm" />
                   </label>
                   <label className="text-sm">
                     <span className="text-slate-600">Edad máx.</span>
-                    <input type="number" value={f.ageRange.max ?? ''} onChange={(e) => setF({ ageRange: { ...f.ageRange, max: e.target.value === '' ? null : Number(e.target.value) } })} className="w-full mt-1 border border-slate-200 rounded-lg px-2 py-2 text-sm" />
+                    <NumericInput value={f.ageRange.max ?? ''} onChange={(e) => setF({ ageRange: { ...f.ageRange, max: e.target.value === '' ? null : Number(e.target.value) } })} className="w-full mt-1 border border-slate-200 rounded-lg px-2 py-2 text-sm" />
                   </label>
                 </div>
 
@@ -255,7 +256,7 @@ export default function Segments() {
                   </label>
                   <label className="text-sm">
                     <span className="text-slate-600">Inactivo ≥ N días</span>
-                    <input type="number" value={f.daysSinceLastVisit ?? ''} onChange={(e) => setF({ daysSinceLastVisit: e.target.value === '' ? null : Number(e.target.value) })} className="w-full mt-1 border border-slate-200 rounded-lg px-2 py-2 text-sm" placeholder="ej. 30" />
+                    <NumericInput value={f.daysSinceLastVisit ?? ''} onChange={(e) => setF({ daysSinceLastVisit: e.target.value === '' ? null : Number(e.target.value) })} className="w-full mt-1 border border-slate-200 rounded-lg px-2 py-2 text-sm" placeholder="ej. 30" />
                   </label>
                 </div>
 

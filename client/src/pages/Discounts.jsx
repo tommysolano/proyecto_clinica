@@ -6,6 +6,7 @@ import { useAuth } from '../context/AuthContext';
 import { HiOutlinePlus, HiOutlineTag, HiOutlineTrash, HiOutlinePencilSquare } from 'react-icons/hi2';
 import PageHeader, { EmptyState } from '../components/PageHeader';
 import { fmtDate } from '../utils/date';
+import NumericInput from '../components/NumericInput';
 
 const DAYS = [['Dom', 0], ['Lun', 1], ['Mar', 2], ['Mié', 3], ['Jue', 4], ['Vie', 5], ['Sáb', 6]];
 const AUDIENCES = [['todos', 'Todos'], ['nuevos', 'Pacientes nuevos'], ['recurrentes', 'Pacientes recurrentes'], ['cumpleanos', 'Cumpleañeros']];
@@ -177,7 +178,7 @@ export default function Discounts() {
             </label>
             <label className="block">
               <span className="text-xs font-medium text-slate-600">Valor</span>
-              <input type="number" step="0.01" required value={form.value} onChange={(e) => setForm({ ...form, value: Number(e.target.value) })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+              <NumericInput step="0.01" required value={form.value} onChange={(e) => setForm({ ...form, value: Number(e.target.value) })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
             </label>
           </div>
           <label className="block">
@@ -268,10 +269,10 @@ export default function Discounts() {
                 </select>
               </label>
               <label className="block"><span className="text-xs font-medium text-slate-600">Compra mínima ($)</span>
-                <input type="number" step="0.01" value={form.minAmount} onChange={(e) => setForm({ ...form, minAmount: Number(e.target.value) })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-right" />
+                <NumericInput step="0.01" value={form.minAmount} onChange={(e) => setForm({ ...form, minAmount: Number(e.target.value) })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-right" />
               </label>
               <label className="block"><span className="text-xs font-medium text-slate-600">Límite de usos <span className="text-slate-400">(0=∞)</span></span>
-                <input type="number" value={form.maxUses} onChange={(e) => setForm({ ...form, maxUses: Number(e.target.value) })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-right" />
+                <NumericInput value={form.maxUses} onChange={(e) => setForm({ ...form, maxUses: Number(e.target.value) })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-right" />
               </label>
             </div>
           </div>

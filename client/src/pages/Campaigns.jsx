@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
+import NumericInput from '../components/NumericInput';
 import {
   HiOutlinePlus,
   HiOutlineMegaphone,
@@ -294,8 +295,7 @@ export default function Campaigns() {
               <div className="border-t border-slate-100 pt-3 grid gap-2">
                 <label className="text-sm">
                   <span className="text-slate-600">Máximo de personas (opcional)</span>
-                  <input
-                    type="number"
+                  <NumericInput
                     min="1"
                     value={creating.maxRecipients}
                     onChange={(e) => setCreating({ ...creating, maxRecipients: e.target.value })}
@@ -310,9 +310,9 @@ export default function Campaigns() {
                 {creating.dripEnabled && (
                   <div className="flex items-center gap-2 text-sm flex-wrap pl-6">
                     <span className="text-slate-600">Enviar</span>
-                    <input type="number" min="1" value={creating.dripBatchSize} onChange={(e) => setCreating({ ...creating, dripBatchSize: e.target.value })} className="w-20 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+                    <NumericInput min="1" value={creating.dripBatchSize} onChange={(e) => setCreating({ ...creating, dripBatchSize: e.target.value })} className="w-20 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
                     <span className="text-slate-600">personas cada</span>
-                    <input type="number" min="1" value={creating.dripIntervalMinutes} onChange={(e) => setCreating({ ...creating, dripIntervalMinutes: e.target.value })} className="w-20 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+                    <NumericInput min="1" value={creating.dripIntervalMinutes} onChange={(e) => setCreating({ ...creating, dripIntervalMinutes: e.target.value })} className="w-20 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
                     <span className="text-slate-600">minutos</span>
                   </div>
                 )}

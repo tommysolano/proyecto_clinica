@@ -3,6 +3,7 @@ import api from '../api/axios';
 import { downloadFile } from '../utils/download';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
+import NumericInput from '../components/NumericInput';
 import {
   HiOutlinePlus,
   HiOutlinePencilSquare,
@@ -524,8 +525,7 @@ export default function Treatments() {
                       </option>
                     ))}
                   </select>
-                  <input
-                    type="number"
+                  <NumericInput
                     min="1"
                     value={it.quantity}
                     onChange={(e) => updateItem(idx, 'quantity', Number(e.target.value))}

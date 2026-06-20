@@ -5,6 +5,7 @@ import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineUserGroup, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineClock } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
+import NumericInput from '../../components/NumericInput';
 
 const EMPTY = { code: '', identificacion: '', tipoIdentificacion: 'CEDULA', firstName: '', lastName: '', email: '', phone: '', position: '', department: '', contractType: 'INDEFINIDO', paymentFrequency: 'MENSUAL', salaryType: 'GROSS', baseSalary: 460, netSalary: 0, salaryChangeReason: '', hireDate: today(), chargesFamily: 0, deductible: true, salaryOriginClinic: '', bankName: '', bankAccount: '', bankAccountType: '', receivesDecimoTercero: true, receivesDecimoCuarto: true, receivesFondosReserva: false, decimoTerceroAcumulado: 'MENSUALIZADO', decimoCuartoAcumulado: 'MENSUALIZADO', fondosReservaAcumulado: 'MENSUALIZADO', user: '' };
 
@@ -162,7 +163,7 @@ export default function Employees() {
             <Field label="Tipo de contrato"><select value={form.contractType} onChange={(e) => setForm({ ...form, contractType: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>INDEFINIDO</option><option>FIJO</option><option>EVENTUAL</option><option>JUVENIL</option></select></Field>
             <Field label="Frecuencia de pago"><select value={form.paymentFrequency} onChange={(e) => setForm({ ...form, paymentFrequency: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>MENSUAL</option><option>QUINCENAL</option></select></Field>
             <Field label="Fecha de ingreso" required><input type="date" required value={form.hireDate} onChange={(e) => setForm({ ...form, hireDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-            <Field label="Cargas familiares"><input type="number" value={form.chargesFamily} onChange={(e) => setForm({ ...form, chargesFamily: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Cargas familiares"><NumericInput value={form.chargesFamily} onChange={(e) => setForm({ ...form, chargesFamily: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           </div>
           {/* Sección de sueldo (NET/GROSS) */}
           <div className="bg-emerald-50/60 border border-emerald-100 rounded-xl p-3 space-y-3">
@@ -178,12 +179,12 @@ export default function Employees() {
               {form.salaryType === 'GROSS' ? (
                 <label className="text-xs flex flex-col gap-1">
                   <span className="text-slate-600">Sueldo bruto mensual</span>
-                  <input type="number" step="0.01" required value={form.baseSalary} onChange={(e) => setForm({ ...form, baseSalary: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+                  <NumericInput step="0.01" required value={form.baseSalary} onChange={(e) => setForm({ ...form, baseSalary: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
                 </label>
               ) : (
                 <label className="text-xs flex flex-col gap-1">
                   <span className="text-slate-600">Neto a recibir</span>
-                  <input type="number" step="0.01" required value={form.netSalary} onChange={(e) => setForm({ ...form, netSalary: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
+                  <NumericInput step="0.01" required value={form.netSalary} onChange={(e) => setForm({ ...form, netSalary: +e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" />
                 </label>
               )}
               <div className="text-xs text-slate-600">

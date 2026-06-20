@@ -5,6 +5,7 @@ import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineCreditCard, HiOutlineCheckCircle } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
+import NumericInput from '../../components/NumericInput';
 
 const EMPTY = { closeDate: today(), cardType: 'CREDITO', acquirer: '', commissionRate: 5, retentionRate: 0, ivaCommissionRate: 15, bankAccount: '', vouchers: [] };
 
@@ -78,9 +79,9 @@ export default function CreditCardBatches() {
             <Field label="Fecha de cierre" required><input type="date" required value={form.closeDate} onChange={(e) => setForm({ ...form, closeDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Tipo de tarjeta"><select value={form.cardType} onChange={(e) => setForm({ ...form, cardType: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>CREDITO</option><option>DEBITO</option></select></Field>
             <Field label="Adquirente" required className="col-span-2"><input required placeholder="Datafast / Medianet" value={form.acquirer} onChange={(e) => setForm({ ...form, acquirer: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-            <Field label="% comisión"><input type="number" step="0.01" value={form.commissionRate} onChange={(e) => setForm({ ...form, commissionRate: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-            <Field label="% retención"><input type="number" step="0.01" value={form.retentionRate} onChange={(e) => setForm({ ...form, retentionRate: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-            <Field label="% IVA comisión"><input type="number" step="0.01" value={form.ivaCommissionRate} onChange={(e) => setForm({ ...form, ivaCommissionRate: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="% comisión"><NumericInput step="0.01" value={form.commissionRate} onChange={(e) => setForm({ ...form, commissionRate: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="% retención"><NumericInput step="0.01" value={form.retentionRate} onChange={(e) => setForm({ ...form, retentionRate: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="% IVA comisión"><NumericInput step="0.01" value={form.ivaCommissionRate} onChange={(e) => setForm({ ...form, ivaCommissionRate: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Banco de acreditación" required><select required value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option value="">Seleccione…</option>{banks.map((b) => <option key={b._id} value={b._id}>{b.name}</option>)}</select></Field>
           </div>
           <div className="border rounded-lg p-3">
@@ -95,7 +96,7 @@ export default function CreditCardBatches() {
                 <input placeholder="Voucher #" value={v.voucherNumber} onChange={(e) => setVoucher(i, { voucherNumber: e.target.value })} className="border border-slate-200 rounded px-2 py-1 text-sm" />
                 <input placeholder="Lote" value={v.lote} onChange={(e) => setVoucher(i, { lote: e.target.value })} className="border border-slate-200 rounded px-2 py-1 text-sm" />
                 <input placeholder="Últ 4" value={v.cardLast4} onChange={(e) => setVoucher(i, { cardLast4: e.target.value })} className="border border-slate-200 rounded px-2 py-1 text-sm" />
-                <input type="number" step="0.01" placeholder="Monto bruto" value={v.grossAmount} onChange={(e) => setVoucher(i, { grossAmount: +e.target.value })} className="border border-slate-200 rounded px-2 py-1 text-sm text-right" />
+                <NumericInput step="0.01" placeholder="Monto bruto" value={v.grossAmount} onChange={(e) => setVoucher(i, { grossAmount: +e.target.value })} className="border border-slate-200 rounded px-2 py-1 text-sm text-right" />
                 <button type="button" onClick={() => setForm({ ...form, vouchers: form.vouchers.filter((_, x) => x !== i) })} className="text-rose-600 text-sm">×</button>
               </div>
             ))}

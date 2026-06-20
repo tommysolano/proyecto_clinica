@@ -7,6 +7,7 @@ import ProductAutocomplete from '../components/ProductAutocomplete';
 import PageHeader from '../components/PageHeader';
 import { useAuth } from '../context/AuthContext';
 import { fmtDate } from '../utils/date';
+import NumericInput from '../components/NumericInput';
 import {
   HiOutlinePlus,
   HiOutlineDocumentDuplicate,
@@ -370,9 +371,9 @@ export default function Quotations() {
                       placeholder="Buscar producto/servicio..."
                     />
                   </div>
-                  <input type="number" min="1" value={it.quantity} onChange={(e) => updateItem(idx, 'quantity', Number(e.target.value))} className="col-span-3 sm:col-span-1 border border-slate-200 rounded-xl px-2 py-2 text-sm bg-white text-center" />
-                  <input type="number" step="0.01" value={it.unitPrice} onChange={(e) => updateItem(idx, 'unitPrice', Number(e.target.value))} className="col-span-4 sm:col-span-2 border border-slate-200 rounded-xl px-2 py-2 text-sm bg-white text-right" />
-                  <input type="number" min="0" max="100" step="1" value={it.discount} onChange={(e) => updateItem(idx, 'discount', Number(e.target.value))} className="col-span-4 sm:col-span-2 border border-slate-200 rounded-xl px-2 py-2 text-sm bg-white text-right" />
+                  <NumericInput min="1" value={it.quantity} onChange={(e) => updateItem(idx, 'quantity', Number(e.target.value))} className="col-span-3 sm:col-span-1 border border-slate-200 rounded-xl px-2 py-2 text-sm bg-white text-center" />
+                  <NumericInput step="0.01" value={it.unitPrice} onChange={(e) => updateItem(idx, 'unitPrice', Number(e.target.value))} className="col-span-4 sm:col-span-2 border border-slate-200 rounded-xl px-2 py-2 text-sm bg-white text-right" />
+                  <NumericInput min="0" max="100" step="1" value={it.discount} onChange={(e) => updateItem(idx, 'discount', Number(e.target.value))} className="col-span-4 sm:col-span-2 border border-slate-200 rounded-xl px-2 py-2 text-sm bg-white text-right" />
                   <button type="button" onClick={() => setForm({ ...form, items: form.items.filter((_, i) => i !== idx) })} className="col-span-1 text-rose-600 hover:text-rose-800 bg-transparent border-none cursor-pointer text-lg">×</button>
                 </div>
               ))}

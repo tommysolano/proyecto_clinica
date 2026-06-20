@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import { HiOutlineCreditCard, HiOutlinePlus, HiOutlinePencilSquare, HiOutlineTrash } from 'react-icons/hi2';
+import NumericInput from '../../components/NumericInput';
 
 const EMPTY = { name: '', brand: 'VISA', acquirer: '', accountType: 'CREDITO', chartAccount: '', commissionRate: 0, retentionRate: 0, pos: [], active: true };
 
@@ -77,8 +78,8 @@ export default function CreditCards() {
             <Field label="Marca"><select value={form.brand} onChange={(e) => setForm({ ...form, brand: e.target.value })} className={inputCls}><option>VISA</option><option>MASTERCARD</option><option>AMEX</option><option>DINERS</option><option>DISCOVER</option><option>OTRA</option></select></Field>
             <Field label="Adquiriente"><input placeholder="Datafast, Medianet…" value={form.acquirer} onChange={(e) => setForm({ ...form, acquirer: e.target.value })} className={inputCls} /></Field>
             <Field label="Tipo de cuenta"><select value={form.accountType} onChange={(e) => setForm({ ...form, accountType: e.target.value })} className={inputCls}><option value="CREDITO">Crédito</option><option value="DEBITO">Débito</option><option value="CORRIENTE">Corriente</option></select></Field>
-            <Field label="% Comisión"><input type="number" step="0.01" value={form.commissionRate} onChange={(e) => setForm({ ...form, commissionRate: +e.target.value })} className={inputCls} /></Field>
-            <Field label="% Retención"><input type="number" step="0.01" value={form.retentionRate} onChange={(e) => setForm({ ...form, retentionRate: +e.target.value })} className={inputCls} /></Field>
+            <Field label="% Comisión"><NumericInput step="0.01" value={form.commissionRate} onChange={(e) => setForm({ ...form, commissionRate: +e.target.value })} className={inputCls} /></Field>
+            <Field label="% Retención"><NumericInput step="0.01" value={form.retentionRate} onChange={(e) => setForm({ ...form, retentionRate: +e.target.value })} className={inputCls} /></Field>
             <Field label="Cuenta contable" className="col-span-2"><select value={form.chartAccount} onChange={(e) => setForm({ ...form, chartAccount: e.target.value })} className={inputCls}><option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select></Field>
           </div>
           <div>
@@ -94,7 +95,7 @@ export default function CreditCards() {
                   <input placeholder="Código" value={p.code} onChange={(e) => updatePos(i, 'code', e.target.value)} className="col-span-3 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
                   <input placeholder="Nombre" value={p.name} onChange={(e) => updatePos(i, 'name', e.target.value)} className="col-span-3 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
                   <input placeholder="Terminal" value={p.terminal} onChange={(e) => updatePos(i, 'terminal', e.target.value)} className="col-span-3 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
-                  <input type="number" step="0.01" placeholder="% Com." value={p.commissionRate} onChange={(e) => updatePos(i, 'commissionRate', +e.target.value)} className="col-span-2 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
+                  <NumericInput step="0.01" placeholder="% Com." value={p.commissionRate} onChange={(e) => updatePos(i, 'commissionRate', +e.target.value)} className="col-span-2 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
                   <button type="button" onClick={() => removePos(i)} className="col-span-1 text-rose-600"><HiOutlineTrash className="w-4 h-4" /></button>
                 </div>
               ))}

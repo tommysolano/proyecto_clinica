@@ -6,6 +6,7 @@ import Field from '../../components/Field';
 import { Link } from 'react-router-dom';
 import { HiOutlinePlus, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineBanknotes, HiOutlineArrowsRightLeft } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
+import NumericInput from '../../components/NumericInput';
 
 const EMPTY = { name: '', bank: '', accountNumber: '', accountType: 'CORRIENTE', currency: 'USD', city: '', chartAccount: '', initialBalance: 0, nextCheckNumber: 1, active: true };
 
@@ -147,8 +148,8 @@ export default function BankAccounts() {
               </select>
             </Field>
             <Field label="Ciudad"><input placeholder="Ej: Guayaquil" value={form.city} onChange={(e) => setForm({ ...form, city: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-            <Field label="Saldo inicial"><input type="number" step="0.01" value={form.initialBalance} onChange={(e) => setForm({ ...form, initialBalance: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-            <Field label="Próximo cheque #"><input type="number" value={form.nextCheckNumber} onChange={(e) => setForm({ ...form, nextCheckNumber: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Saldo inicial"><NumericInput step="0.01" value={form.initialBalance} onChange={(e) => setForm({ ...form, initialBalance: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Próximo cheque #"><NumericInput value={form.nextCheckNumber} onChange={(e) => setForm({ ...form, nextCheckNumber: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Cuenta contable" required>
               <select required value={form.chartAccount} onChange={(e) => setForm({ ...form, chartAccount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
                 <option value="">Seleccione…</option>
@@ -176,7 +177,7 @@ export default function BankAccounts() {
               </select>
             </Field>
             <Field label="Fecha" required><input type="date" required value={movForm.date} onChange={(e) => setMovForm({ ...movForm, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-            <Field label="Monto" required><input type="number" step="0.01" required value={movForm.amount} onChange={(e) => setMovForm({ ...movForm, amount: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Monto" required><NumericInput step="0.01" required value={movForm.amount} onChange={(e) => setMovForm({ ...movForm, amount: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="N° Comprobante" required={['DEPOSITO', 'TRANSFERENCIA_IN', 'TRANSFERENCIA_OUT', 'CHEQUE_EMITIDO'].includes(movForm.type)}>
               <input
                 placeholder="Papeleta / transferencia / cheque"
