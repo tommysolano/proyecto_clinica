@@ -36,6 +36,19 @@ function getStore() {
   return mongoStore;
 }
 
+// Ruta al ejecutable de Chrome para whatsapp-web.js. Por defecto reutiliza el
+// MISMO Chromium que el proyecto ya usa para generar PDFs (puppeteer), evitando
+// que whatsapp-web.js busque el Chrome de su propio puppeteer (que no se descarga
+// en Render). En el VPS se puede forzar con PUPPETEER_EXECUTABLE_PATH.
+function resolveChromePath() {
+  if (process.env.PUPPETEER_EXECUTABLE_PATH) return process.env.PUPPETEER_EXECUTABLE_PATH;
+  try {
+    return require('puppeteer').executablePath();
+  } catch {
+    return undefined;
+  }
+}
+
 // Emite el estado de un número a la UI (sede del call center) y, opcional, al usuario.
 async function emitStatus(accountId, payload, userId) {
   try {
@@ -106,6 +119,7 @@ async function connect(accountId, { userId } = {}) {
       }),
       puppeteer: {
         headless: true,
+        executablePath: resolveChromePath() || undefined,
         args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
       },
     });
@@ -221,10 +235,14 @@ async function connect(accountId, { userId } = {}) {
   });
 
   client.initialize().catch(async (e) => {
-    console.error('[whatsapp-qr initialize]', e.message);
+    const noChrome = /Could not find Chrome|Failed to launch/i.test(e.message || '');
+    const short = noChrome
+      ? 'Chromium no disponible en este entorno: los números QR no se conectarán aquí. Usa Cloud API, o un servidor con Chrome (VPS). Puedes fijar PUPPETEER_EXECUTABLE_PATH.'
+      : (e.message || '').split('\n')[0];
+    console.error('[whatsapp-qr initialize]', short);
     clients.delete(key);
     await setAccountStatus(accountId, { status: 'auth_failure' });
-    await emitStatus(key, { status: 'auth_failure', error: e.message });
+    await emitStatus(key, { status: 'auth_failure', error: short });
   });
 
   return { ok: true, status: 'connecting' };
