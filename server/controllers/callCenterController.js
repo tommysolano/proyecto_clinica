@@ -262,13 +262,14 @@ exports.getAgentSummary = async (req, res) => {
 };
 
 /**
- * Lista de agentes call_center activos en la clínica (para selector de supervisor).
+ * Lista de agentes call_center activos (para asignación y selector de supervisor).
+ * El call center es único para toda la organización, así que se listan TODOS los
+ * agentes call_center, sin filtrar por sucursal.
  */
 exports.listAgents = async (req, res) => {
   try {
     const users = await User.find({
       active: true,
-      'clinics.clinic': req.clinicId,
       'clinics.role': 'call_center',
     }).select('name email');
     res.json(users);

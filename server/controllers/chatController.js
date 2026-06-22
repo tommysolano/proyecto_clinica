@@ -6,7 +6,7 @@ const User = require('../models/User');
 const Appointment = require('../models/Appointment');
 const Product = require('../models/Product');
 const Quotation = require('../models/Quotation');
-const { emitToClinic, emitToUser } = require('../realtime');
+const { emitToClinic, emitToUser, emitToCallCenter } = require('../realtime');
 const messaging = require('../utils/messaging');
 const { verifyMetaSignature } = require('../utils/metaWebhook');
 
@@ -272,9 +272,10 @@ exports.listInternalNotes = async (req, res) => {
  * Empata por el que tiene la asignación más antigua (reparto equitativo).
  */
 async function pickRoundRobinAgent(clinicId) {
+  // Call center único: cualquier agente call_center (de cualquier sucursal) entra
+  // al reparto; se balancea por conversaciones abiertas en la bandeja (sede).
   const agents = await User.find({
     active: true,
-    'clinics.clinic': clinicId,
     'clinics.role': 'call_center',
   }).select('_id name');
   if (!agents.length) return null;
@@ -724,7 +725,7 @@ async function applyFlowOpportunity(conv, stage) {
     conv.opportunities.push({ isOpportunity: true, stage: stage || 'nuevo', createdAt: new Date() });
   }
   await conv.save();
-  emitToClinic(conv.clinic, 'chat:opportunity', { conversationId: conv._id });
+  emitToCallCenter('chat:opportunity', { conversationId: conv._id });
 }
 
 /**
@@ -1358,7 +1359,7 @@ exports.simulateIncoming = async (req, res) => {
     if (conv.status === 'closed') conv.status = 'open';
     await conv.save();
 
-    emitToClinic(req.clinicId, 'chat:message', { conversationId: conv._id, message: msg });
+    emitToCallCenter('chat:message', { conversationId: conv._id, message: msg });
     const optedOut = await applyIncomingOptOut({
       clinicId: req.clinicId,
       conv,
@@ -1550,7 +1551,7 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   conv.unreadCount = (conv.unreadCount || 0) + 1;
   if (conv.status === 'closed') conv.status = 'open';
   await conv.save();
-  emitToClinic(clinicId, 'chat:message', { conversationId: conv._id, message: msg });
+  emitToCallCenter('chat:message', { conversationId: conv._id, message: msg });
 
   const optedOut = await applyIncomingOptOut({ clinicId, conv, incomingText: finalBody });
   if (optedOut) return;
@@ -1944,7 +1945,7 @@ exports.registerPatientFromChat = async (req, res) => {
     }
     await conv.save();
     emitToClinic(req.clinicId, 'patient:created', { id: patient._id });
-    emitToClinic(req.clinicId, 'chat:updated', { id: conv._id });
+    emitToCallCenter('chat:updated', { id: conv._id });
     res.status(201).json({ patient, conversation: conv });
   } catch (err) {
     res.status(500).json({ message: 'Error al registrar paciente', error: err.message });
@@ -2046,7 +2047,7 @@ exports.createAppointmentFromChat = async (req, res) => {
       });
       first = false; // solo la primera puede ser "primera visita"
       created.push(appointment);
-      emitToClinic(req.clinicId, 'appointment:created', { id: appointment._id });
+      emitToClinic(targetClinic, 'appointment:created', { id: appointment._id });
     }
 
     // Link primera cita a la oportunidad
@@ -2056,7 +2057,7 @@ exports.createAppointmentFromChat = async (req, res) => {
     conv.opportunity.appointment = created[0]?._id;
     conv.opportunity.convertedAt = new Date();
     await conv.save();
-    emitToClinic(req.clinicId, 'chat:updated', { id: conv._id });
+    emitToCallCenter('chat:updated', { id: conv._id });
 
     res.status(201).json({
       appointment: created[0],
@@ -2165,8 +2166,8 @@ exports.createQuotationFromChat = async (req, res) => {
     conv.lastMessagePreview = body.slice(0, 140);
     conv.lastMessageDirection = 'out';
     await conv.save();
-    emitToClinic(req.clinicId, 'chat:message', { conversationId: conv._id, message: msg });
-    emitToClinic(req.clinicId, 'chat:updated', { id: conv._id });
+    emitToCallCenter('chat:message', { conversationId: conv._id, message: msg });
+    emitToCallCenter('chat:updated', { id: conv._id });
 
     res.status(201).json({ quotation, pdfUrl, message: msg, conversation: conv });
   } catch (err) {

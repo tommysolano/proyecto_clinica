@@ -24,6 +24,9 @@ router.post('/webhook/tiktok/:clinicId', ctrl.webhookTiktokReceive);
 
 // El resto requiere auth + clínica
 router.use(auth, requireClinic);
+// Bandeja ÚNICA: todas las rutas del chat operan sobre la sede del call center,
+// para que todos los agentes (de cualquier sucursal) compartan la misma bandeja.
+router.use(require('../middleware/callCenterScope'));
 
 const CALL_CENTER_ROLES = ['admin', 'call_center', 'marketing'];
 

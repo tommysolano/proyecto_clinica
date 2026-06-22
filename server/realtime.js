@@ -65,6 +65,11 @@ function init(httpServer) {
     if (clinicId) socket.join(`clinic:${clinicId}`);
     socket.join(`user:${user._id}`);
     if (role) socket.join(`clinic:${clinicId}:role:${role}`);
+    // Call center ÚNICO: los agentes (de cualquier sucursal) comparten una sola
+    // bandeja. Se unen a una sala común para recibir los eventos de chat en vivo.
+    if (user.isSuperAdmin || ['admin', 'marketing', 'call_center'].includes(role)) {
+      socket.join('callcenter');
+    }
 
     socket.on('switch-clinic', (newClinicId) => {
       // El cliente cambió de clínica activa
@@ -109,4 +114,13 @@ function emitToRole(clinicId, role, event, payload) {
   io.to(`clinic:${clinicId}:role:${role}`).emit(event, payload);
 }
 
-module.exports = { init, getIO, emitToClinic, emitToUser, emitToRole };
+/**
+ * Emite a TODA la bandeja del call center (todos los agentes, sin importar su
+ * sucursal). Se usa para los eventos de chat, que son globales del call center.
+ */
+function emitToCallCenter(event, payload) {
+  if (!io) return;
+  io.to('callcenter').emit(event, payload);
+}
+
+module.exports = { init, getIO, emitToClinic, emitToUser, emitToRole, emitToCallCenter };

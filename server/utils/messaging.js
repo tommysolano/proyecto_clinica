@@ -4,7 +4,7 @@ const Patient = require('../models/Patient');
 const CallCenterConfig = require('../models/CallCenterConfig');
 const gateway = require('./whatsappGateway');
 const email = require('./emailProvider');
-const { emitToClinic } = require('../realtime');
+const { emitToCallCenter } = require('../realtime');
 
 const WHATSAPP_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DELIVERY_STATUSES = new Set(['queued', 'sent', 'delivered', 'read', 'failed']);
@@ -495,7 +495,7 @@ async function send({
   }
   await conv.save();
 
-  emitToClinic(clinicId, 'chat:message', { conversationId: conv._id, message: msg });
+  emitToCallCenter('chat:message', { conversationId: conv._id, message: msg });
 
   return {
     ok: providerResult.ok,
@@ -554,7 +554,7 @@ async function updateMessageStatus({
   if (errorMessage) msg.errorMessage = String(errorMessage);
   await msg.save();
 
-  emitToClinic(clinicId, 'chat:message:status', {
+  emitToCallCenter('chat:message:status', {
     conversationId: msg.conversation,
     messageId: msg._id,
     externalId: msg.externalId,

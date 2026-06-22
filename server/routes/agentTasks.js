@@ -3,6 +3,8 @@ const ctrl = require('../controllers/agentTaskController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
 router.use(auth, requireClinic);
+// Mismas tareas para todo el call center (bandeja única, no por sucursal).
+router.use(require('../middleware/callCenterScope'));
 
 const ROLES = ['admin', 'call_center', 'marketing'];
 
