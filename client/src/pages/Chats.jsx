@@ -65,6 +65,8 @@ function getWindow24hExpiresAt(conv) {
 
 function isWhatsappWindowClosed(conv) {
   if (!conv || conv.channel !== 'whatsapp') return false;
+  // Los números QR (WhatsApp Web) no tienen ventana de 24h: se puede escribir siempre.
+  if (conv.whatsappAccount?.connectionType === 'qr') return false;
   const expiresAt = getWindow24hExpiresAt(conv);
   return !expiresAt || expiresAt.getTime() <= Date.now();
 }
@@ -1398,6 +1400,13 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
         <div className="text-xs font-semibold text-slate-500 mb-1">Detalles</div>
         <div className="text-xs text-slate-600 space-y-0.5">
           <div>Canal: <span className="text-slate-800">{conv.channel}</span></div>
+          {conv.whatsappAccount?.label && (
+            <div>
+              Número:{' '}
+              <span className="text-slate-800">{conv.whatsappAccount.label}</span>
+              <span className="text-slate-400"> · {conv.whatsappAccount.connectionType === 'qr' ? 'QR' : 'Cloud API'}</span>
+            </div>
+          )}
           <div>Estado: <span className="text-slate-800">{conv.status}</span></div>
           <div>Creado: {(() => {
             const d = new Date(conv.createdAt);

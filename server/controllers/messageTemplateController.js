@@ -1,5 +1,4 @@
 const MessageTemplate = require('../models/MessageTemplate');
-const CallCenterConfig = require('../models/CallCenterConfig');
 const ChatGalleryImage = require('../models/ChatGalleryImage');
 
 const API_VERSION = process.env.WHATSAPP_API_VERSION || 'v20.0';
@@ -229,13 +228,14 @@ async function applyMetaTemplate(clinicId, mt, createdBy) {
  * por el job periódico. Devuelve un resumen.
  */
 async function syncTemplatesFromMeta(clinicId, createdBy = null) {
-  const cfg = await CallCenterConfig.findOne({ clinic: clinicId }).lean();
-  const wa = cfg?.whatsapp;
-  if (!wa?.accessToken || !wa?.businessAccountId) {
+  // Las plantillas viven en el WABA del número Cloud API por defecto (config global).
+  const gateway = require('../utils/whatsappGateway');
+  const account = await gateway.getDefaultCloudAccount();
+  if (!account?.accessToken || !account?.businessAccountId) {
     return { ok: false, reason: 'not_configured' };
   }
-  const accessToken = require('../utils/secretCrypto').decryptSecret(wa.accessToken);
-  const url = `https://graph.facebook.com/${API_VERSION}/${wa.businessAccountId}/message_templates?fields=name,status,category,language,components,rejected_reason,id&limit=200&access_token=${accessToken}`;
+  const accessToken = require('../utils/secretCrypto').decryptSecret(account.accessToken);
+  const url = `https://graph.facebook.com/${API_VERSION}/${account.businessAccountId}/message_templates?fields=name,status,category,language,components,rejected_reason,id&limit=200&access_token=${accessToken}`;
   const r = await fetch(url);
   const data = await r.json().catch(() => ({}));
   if (!r.ok) {
@@ -260,17 +260,17 @@ async function syncTemplatesFromMeta(clinicId, createdBy = null) {
  * Lo invoca un setInterval en index.js.
  */
 async function syncAllClinicsTemplates() {
-  const configs = await CallCenterConfig.find({
-    'whatsapp.businessAccountId': { $ne: '' },
-    'whatsapp.accessToken': { $ne: '' },
-  }).select('clinic').lean();
-  let total = 0;
-  for (const cfg of configs) {
-    // eslint-disable-next-line no-await-in-loop
-    const r = await syncTemplatesFromMeta(cfg.clinic).catch(() => ({ ok: false }));
-    if (r.ok) total += r.alerts || 0;
-  }
-  return { clinics: configs.length, alerts: total };
+  // WABA global: se sincroniza una sola vez, almacenando las plantillas bajo la
+  // clínica sede del call center.
+  const gateway = require('../utils/whatsappGateway');
+  const account = await gateway.getDefaultCloudAccount();
+  if (!account) return { clinics: 0, alerts: 0 };
+  const CallCenterWhatsappConfig = require('../models/CallCenterWhatsappConfig');
+  const singleton = await CallCenterWhatsappConfig.getSingleton();
+  const clinicId = singleton.callCenterClinic;
+  if (!clinicId) return { clinics: 0, alerts: 0 };
+  const r = await syncTemplatesFromMeta(clinicId).catch(() => ({ ok: false }));
+  return { clinics: 1, alerts: r.ok ? r.alerts || 0 : 0 };
 }
 
 /**

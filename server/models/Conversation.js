@@ -57,6 +57,9 @@ const conversationSchema = new mongoose.Schema(
     },
     // Identificador del usuario en el canal externo (ej: PSID de Messenger, IGSID, etc.)
     externalUserId: { type: String, trim: true, default: '' },
+    // Número de WhatsApp (global) por el que entró/responde esta conversación.
+    // Si está vacío, al responder se usa el número marcado como `isDefault`.
+    whatsappAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'WhatsappAccount', default: null },
     // Asignación
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     assignedToName: { type: String, trim: true },

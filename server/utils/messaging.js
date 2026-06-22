@@ -2,7 +2,7 @@ const Conversation = require('../models/Conversation');
 const Message = require('../models/Message');
 const Patient = require('../models/Patient');
 const CallCenterConfig = require('../models/CallCenterConfig');
-const wa = require('./whatsappCloud');
+const gateway = require('./whatsappGateway');
 const email = require('./emailProvider');
 const { emitToClinic } = require('../realtime');
 
@@ -237,19 +237,39 @@ async function postMetaMessage({ accessToken, url, payload }) {
   }
 }
 
-async function sendToProvider({ clinicId, channel, conv, body, templateInfo }) {
+// Renderiza una plantilla a texto plano para números QR (que no admiten plantillas
+// de Meta): sustituye {{1}},{{2}}… con los parámetros del componente body.
+async function renderTemplateText(templateInfo) {
+  const MessageTemplate = require('../models/MessageTemplate');
+  const tpl = await MessageTemplate.findOne({ channel: 'whatsapp', name: templateInfo.name })
+    .select('body')
+    .lean();
+  let text = tpl?.body || `[${templateInfo.name}]`;
+  const bodyComp = (templateInfo.components || []).find((c) => c.type === 'body');
+  const params = (bodyComp?.parameters || []).map((p) => p.text);
+  return text.replace(/\{\{\s*(\d+)\s*\}\}/g, (m, n) => params[Number(n) - 1] ?? m);
+}
+
+async function sendToProvider({ clinicId, channel, conv, body, templateInfo, account }) {
   if (channel === 'whatsapp') {
-    const { ok, creds, reason } = await wa.loadCreds(clinicId);
-    if (!ok) return { ok: false, errorCode: 'provider_unavailable', error: reason };
+    if (!account) {
+      return { ok: false, errorCode: 'provider_unavailable', error: 'Sin número de WhatsApp configurado' };
+    }
+    // Un número QR (sesión WhatsApp Web) no admite plantillas: se envía texto libre
+    // (renderizando la plantilla a texto si fuera necesario).
+    if (account.connectionType === 'qr') {
+      const text = body || (templateInfo ? await renderTemplateText(templateInfo) : '');
+      return gateway.sendText(account, conv.phone, text);
+    }
     return templateInfo
-      ? wa.sendTemplate(
-          creds,
+      ? gateway.sendTemplate(
+          account,
           conv.phone,
           templateInfo.name,
           templateInfo.language,
           templateInfo.components
         )
-      : wa.sendText(creds, conv.phone, body || '');
+      : gateway.sendText(account, conv.phone, body || '');
   }
 
   if (channel === 'messenger' || channel === 'instagram') {
@@ -398,11 +418,19 @@ async function send({
     if (consentReason) return { ok: false, skipped: true, reason: consentReason };
   }
 
+  // Resuelve el número (global) por el que se enviará: el de la conversación o el
+  // marcado por defecto. Determina además si aplica la ventana de 24h (solo Cloud API).
+  let account = null;
+  if (normalizedChannel === 'whatsapp') {
+    account = await gateway.resolveAccountForConversation(conv);
+    if (!account) return { ok: false, skipped: true, reason: 'provider_unavailable' };
+  }
+
   let templateInfo = normalizeTemplate(template, vars);
   if (templateInfo && normalizedChannel === 'whatsapp') {
     templateInfo = await enrichTemplateHeader(clinicId, templateInfo);
   }
-  if (normalizedChannel === 'whatsapp') {
+  if (normalizedChannel === 'whatsapp' && gateway.isCloud(account)) {
     const computedWindow = getWhatsappWindowExpiresAt(conv);
     if (!conv.window24hExpiresAt && computedWindow) {
       conv.window24hExpiresAt = computedWindow;
@@ -435,6 +463,7 @@ async function send({
     conv,
     body: textBody || preview,
     templateInfo,
+    account,
   });
 
   if (providerResult.ok) {
@@ -458,6 +487,8 @@ async function send({
   conv.lastMessageAt = msg.createdAt;
   conv.lastMessagePreview = preview.slice(0, 140);
   conv.lastMessageDirection = 'out';
+  // Recuerda por qué número salió, para que las próximas respuestas usen el mismo.
+  if (account && !conv.whatsappAccount) conv.whatsappAccount = account._id;
   if (sentBy) {
     conv.lastAgentReplyAt = new Date();
     if (!conv.firstResponseAt) conv.firstResponseAt = conv.lastAgentReplyAt;

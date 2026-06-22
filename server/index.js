@@ -122,6 +122,11 @@ connectDB().then(() => {
   setInterval(() => { workflowEngine.processDueEnrollments().catch(() => {}); }, 60 * 1000);
   // Job: cumpleaños del día (dispara workflows patient_birthday).
   require('./utils/birthdayJob').startBirthdayJob();
+  // Reconecta los números de WhatsApp por QR (whatsapp-web.js) con sesión guardada.
+  // A los 5s del arranque para no competir con la inicialización del resto.
+  setTimeout(() => {
+    require('./utils/whatsappQrManager').initEnabledOnBoot().catch(() => {});
+  }, 5 * 1000);
   // Job: sincronizar plantillas de WhatsApp con Meta para detectar cambios de
   // categoría/estado y alertar (cada 6h, primera corrida a los 30s del arranque).
   const { syncAllClinicsTemplates } = require('./controllers/messageTemplateController');

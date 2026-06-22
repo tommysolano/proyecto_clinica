@@ -1,45 +1,19 @@
 /**
  * Cliente liviano para WhatsApp Cloud API (Meta).
  *
- * Las credenciales se toman de la configuración por clínica guardada en
- * CallCenterConfig (pantalla /call-center-config), NO de variables de entorno.
+ * Las funciones reciben un objeto `creds` ({ accessToken, phoneNumberId, apiVersion })
+ * construido por whatsappGateway a partir de una WhatsappAccount (número global del
+ * call center). NO leen credenciales por clínica ni del entorno.
  *
- * Flujo típico:
- *   const { ok, creds, reason } = await wa.loadCreds(clinicId);
- *   if (ok) await wa.sendText(creds, to, 'hola');
+ * Flujo típico (vía gateway):
+ *   const creds = gateway.cloudCreds(account);
+ *   if (gateway.isCloud(account)) await wa.sendText(creds, to, 'hola');
  *
  * Si las credenciales no están configuradas, las funciones devuelven
  * { ok: false, simulated: true } sin lanzar, para no romper la UX.
  */
 
-const CallCenterConfig = require('../models/CallCenterConfig');
-const { decryptSecret } = require('./secretCrypto');
-
 const DEFAULT_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v20.0';
-
-/**
- * Carga las credenciales de WhatsApp de una clínica desde CallCenterConfig.
- * @param {string|ObjectId} clinicId
- * @returns {{ ok: boolean, creds?: object, reason?: string }}
- */
-async function loadCreds(clinicId) {
-  if (!clinicId) return { ok: false, reason: 'clinicId requerido' };
-  const cfg = await CallCenterConfig.findOne({ clinic: clinicId }).lean();
-  const wa = cfg && cfg.whatsapp;
-  if (!wa) return { ok: false, reason: 'WhatsApp no configurado para la clínica' };
-  if (!wa.enabled) return { ok: false, reason: 'El canal WhatsApp está inactivo' };
-  if (!wa.accessToken || !wa.phoneNumberId) {
-    return { ok: false, reason: 'Faltan credenciales de WhatsApp (accessToken / phoneNumberId)' };
-  }
-  return {
-    ok: true,
-    creds: {
-      accessToken: decryptSecret(wa.accessToken),
-      phoneNumberId: wa.phoneNumberId,
-      apiVersion: DEFAULT_API_VERSION,
-    },
-  };
-}
 
 /**
  * Descarga un media entrante de WhatsApp (imagen/audio/documento) por su id.
@@ -153,4 +127,4 @@ async function sendBulk(creds, recipients, builderFn) {
   return results;
 }
 
-module.exports = { loadCreds, isConfigured, sendText, sendTemplate, sendBulk, downloadMedia };
+module.exports = { DEFAULT_API_VERSION, isConfigured, sendText, sendTemplate, sendBulk, downloadMedia };

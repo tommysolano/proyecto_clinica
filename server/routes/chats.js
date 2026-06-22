@@ -6,9 +6,15 @@ const { auth, requireClinic, requireRole } = require('../middleware/auth');
 router.get('/webhook', ctrl.webhookVerify);
 router.post('/webhook', ctrl.webhookReceive);
 
-// Webhooks por canal con clinicId en URL (sin auth — los invoca Meta/TikTok).
+// Webhook ÚNICO global de WhatsApp (call center compartido por todas las sedes).
+// El número se identifica por phone_number_id; la sede sale de la config global.
+router.get('/webhook/whatsapp', ctrl.webhookWhatsappVerify);
+router.post('/webhook/whatsapp', ctrl.webhookWhatsappReceive);
+// Compatibilidad: la ruta antigua con :clinicId sigue funcionando (el param se ignora).
 router.get('/webhook/whatsapp/:clinicId', ctrl.webhookWhatsappVerify);
 router.post('/webhook/whatsapp/:clinicId', ctrl.webhookWhatsappReceive);
+
+// Webhooks por canal con clinicId en URL (sin auth — los invoca Meta/TikTok).
 router.get('/webhook/messenger/:clinicId', ctrl.webhookMessengerVerify);
 router.post('/webhook/messenger/:clinicId', ctrl.webhookMessengerReceive);
 router.get('/webhook/instagram/:clinicId', ctrl.webhookInstagramVerify);

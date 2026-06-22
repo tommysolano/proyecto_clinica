@@ -1,4 +1,7 @@
 const CallCenterConfig = require('../models/CallCenterConfig');
+const WhatsappAccount = require('../models/WhatsappAccount');
+const CallCenterWhatsappConfig = require('../models/CallCenterWhatsappConfig');
+const qrManager = require('../utils/whatsappQrManager');
 const { encryptSecret, decryptSecret } = require('../utils/secretCrypto');
 
 /**
@@ -61,7 +64,8 @@ exports.get = async (req, res) => {
 exports.getWebhookUrls = async (req, res) => {
   const base = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}/api`;
   res.json({
-    whatsapp: `${base}/chats/webhook/whatsapp/${req.clinicId}`,
+    // WhatsApp es global (call center compartido): una sola URL para todos los números Cloud API.
+    whatsapp: `${base}/chats/webhook/whatsapp`,
     messenger: `${base}/chats/webhook/messenger/${req.clinicId}`,
     instagram: `${base}/chats/webhook/instagram/${req.clinicId}`,
     tiktok: `${base}/chats/webhook/tiktok/${req.clinicId}`,
@@ -203,5 +207,197 @@ exports.testAi = async (req, res) => {
     res.json({ ok: true, model: r.model });
   } catch (err) {
     res.status(500).json({ message: 'Error de prueba', error: err.message });
+  }
+};
+
+// ═══════════ WhatsApp: números globales del call center (multi-número) ═══════════
+//
+// Los números son GLOBALES (no por clínica): el call center atiende a todas las
+// sedes. Cada número se conecta por Cloud API (Meta) o por QR (whatsapp-web.js).
+
+const maskWaAccount = (acc) => {
+  const o = acc.toObject ? acc.toObject() : { ...acc };
+  if (o.accessToken) o.accessToken = maskSecret(o.accessToken);
+  o.liveStatus = qrManager.getLiveStatus(o._id); // estado en memoria (QR)
+  return o;
+};
+
+const appConfigPayload = (req, cfg) => {
+  const base = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}/api`;
+  return {
+    appSecret: maskSecret(cfg.cloudApi?.appSecret || ''),
+    verifyToken: maskSecret(cfg.cloudApi?.verifyToken || ''),
+    callCenterClinic: cfg.callCenterClinic || null,
+    webhookUrl: `${base}/chats/webhook/whatsapp`,
+  };
+};
+
+exports.listWhatsappAccounts = async (req, res) => {
+  try {
+    const accounts = await WhatsappAccount.find().sort({ isDefault: -1, createdAt: 1 });
+    res.json(accounts.map(maskWaAccount));
+  } catch (err) {
+    res.status(500).json({ message: 'Error al listar números', error: err.message });
+  }
+};
+
+exports.createWhatsappAccount = async (req, res) => {
+  try {
+    const { label, connectionType, displayPhone, phoneNumberId, businessAccountId, accessToken } = req.body;
+    if (!['cloud_api', 'qr'].includes(connectionType)) {
+      return res.status(400).json({ message: 'Método de conexión inválido' });
+    }
+    if (!label || !String(label).trim()) {
+      return res.status(400).json({ message: 'El nombre del número es obligatorio' });
+    }
+    if (connectionType === 'cloud_api' && !phoneNumberId) {
+      return res.status(400).json({ message: 'Cloud API requiere Phone Number ID' });
+    }
+    const count = await WhatsappAccount.countDocuments();
+    const doc = await WhatsappAccount.create({
+      label: String(label).trim(),
+      connectionType,
+      displayPhone: displayPhone || '',
+      phoneNumberId: connectionType === 'cloud_api' ? phoneNumberId || '' : '',
+      businessAccountId: connectionType === 'cloud_api' ? businessAccountId || '' : '',
+      accessToken: connectionType === 'cloud_api' && accessToken ? encryptSecret(accessToken) : '',
+      isDefault: count === 0, // el primer número es el por defecto
+      enabled: true,
+      createdBy: req.user._id,
+    });
+    res.status(201).json(maskWaAccount(doc));
+  } catch (err) {
+    res.status(500).json({ message: 'Error al crear número', error: err.message });
+  }
+};
+
+exports.updateWhatsappAccount = async (req, res) => {
+  try {
+    const doc = await WhatsappAccount.findById(req.params.id);
+    if (!doc) return res.status(404).json({ message: 'Número no encontrado' });
+    for (const k of ['label', 'displayPhone', 'phoneNumberId', 'businessAccountId', 'enabled']) {
+      if (k in req.body) doc[k] = req.body[k];
+    }
+    // accessToken: ignora el valor enmascarado; cifra si llega uno nuevo.
+    if (typeof req.body.accessToken === 'string' && !req.body.accessToken.startsWith('••••')) {
+      doc.accessToken = req.body.accessToken ? encryptSecret(req.body.accessToken) : '';
+    }
+    await doc.save();
+    res.json(maskWaAccount(doc));
+  } catch (err) {
+    res.status(500).json({ message: 'Error al actualizar número', error: err.message });
+  }
+};
+
+exports.deleteWhatsappAccount = async (req, res) => {
+  try {
+    const doc = await WhatsappAccount.findById(req.params.id);
+    if (!doc) return res.status(404).json({ message: 'Número no encontrado' });
+    if (doc.connectionType === 'qr') await qrManager.disconnect(doc._id).catch(() => {});
+    const wasDefault = doc.isDefault;
+    await doc.deleteOne();
+    if (wasDefault) {
+      const next = await WhatsappAccount.findOne().sort({ createdAt: 1 });
+      if (next) { next.isDefault = true; await next.save(); }
+    }
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al eliminar número', error: err.message });
+  }
+};
+
+exports.setDefaultWhatsappAccount = async (req, res) => {
+  try {
+    const doc = await WhatsappAccount.findById(req.params.id);
+    if (!doc) return res.status(404).json({ message: 'Número no encontrado' });
+    await WhatsappAccount.updateMany({ _id: { $ne: doc._id } }, { isDefault: false });
+    doc.isDefault = true;
+    await doc.save();
+    res.json(maskWaAccount(doc));
+  } catch (err) {
+    res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
+exports.connectWhatsappAccount = async (req, res) => {
+  try {
+    const doc = await WhatsappAccount.findById(req.params.id);
+    if (!doc) return res.status(404).json({ message: 'Número no encontrado' });
+    if (doc.connectionType !== 'qr') {
+      return res.status(400).json({ message: 'Solo los números QR se conectan por escaneo' });
+    }
+    const r = await qrManager.connect(doc._id, { userId: req.user._id });
+    if (!r.ok) return res.status(400).json({ message: r.error || 'No se pudo iniciar la conexión' });
+    res.json({ ok: true, status: r.status });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al conectar', error: err.message });
+  }
+};
+
+exports.disconnectWhatsappAccount = async (req, res) => {
+  try {
+    const doc = await WhatsappAccount.findById(req.params.id);
+    if (!doc) return res.status(404).json({ message: 'Número no encontrado' });
+    await qrManager.disconnect(doc._id);
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al desconectar', error: err.message });
+  }
+};
+
+exports.testWhatsappAccount = async (req, res) => {
+  try {
+    const doc = await WhatsappAccount.findById(req.params.id);
+    if (!doc) return res.status(404).json({ message: 'Número no encontrado' });
+    if (doc.connectionType !== 'cloud_api') {
+      return res.status(400).json({ message: 'La prueba aplica a Cloud API. Para QR usa "Conectar".' });
+    }
+    if (!doc.accessToken || !doc.phoneNumberId) {
+      return res.status(400).json({ message: 'Falta accessToken o phoneNumberId' });
+    }
+    const r = await fetch(
+      `https://graph.facebook.com/v20.0/${doc.phoneNumberId}?fields=display_phone_number,verified_name`,
+      { headers: { Authorization: `Bearer ${decryptSecret(doc.accessToken)}` } }
+    );
+    const data = await r.json();
+    if (!r.ok) return res.status(400).json({ message: 'Token inválido', detail: data });
+    res.json({ ok: true, info: data });
+  } catch (err) {
+    res.status(500).json({ message: 'Error de prueba', error: err.message });
+  }
+};
+
+// Config a nivel de app (compartida): appSecret/verifyToken del webhook + sede.
+exports.getWhatsappAppConfig = async (req, res) => {
+  try {
+    const cfg = await CallCenterWhatsappConfig.getSingleton();
+    // Por comodidad, la sede por defecto es la clínica activa de quien configura.
+    if (!cfg.callCenterClinic) {
+      cfg.callCenterClinic = req.clinicId;
+      await cfg.save();
+    }
+    res.json(appConfigPayload(req, cfg));
+  } catch (err) {
+    res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
+exports.updateWhatsappAppConfig = async (req, res) => {
+  try {
+    const cfg = await CallCenterWhatsappConfig.getSingleton();
+    const cloud = cfg.cloudApi || {};
+    if (typeof req.body.appSecret === 'string' && !req.body.appSecret.startsWith('••••')) {
+      cloud.appSecret = req.body.appSecret ? encryptSecret(req.body.appSecret) : '';
+    }
+    if (typeof req.body.verifyToken === 'string' && !req.body.verifyToken.startsWith('••••')) {
+      cloud.verifyToken = req.body.verifyToken || '';
+    }
+    cfg.cloudApi = cloud;
+    if ('callCenterClinic' in req.body) cfg.callCenterClinic = req.body.callCenterClinic || null;
+    cfg.updatedBy = req.user._id;
+    await cfg.save();
+    res.json(appConfigPayload(req, cfg));
+  } catch (err) {
+    res.status(500).json({ message: 'Error', error: err.message });
   }
 };

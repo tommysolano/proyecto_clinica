@@ -66,6 +66,7 @@ exports.listConversations = async (req, res) => {
     const conversations = await Conversation.find(filter)
       .populate('patient', 'firstName lastName cedula phone whatsapp marketing')
       .populate('assignedTo', 'name email')
+      .populate('whatsappAccount', 'label connectionType displayPhone connectedPhone')
       .sort({ isFeatured: -1, lastMessageAt: -1 })
       .limit(300);
 
@@ -83,6 +84,7 @@ async function populateConversation(conv) {
     { path: 'patient', select: 'firstName lastName cedula phone whatsapp email marketing tags' },
     { path: 'assignedTo', select: 'name email' },
     { path: 'featuredBy', select: 'name' },
+    { path: 'whatsappAccount', select: 'label connectionType displayPhone connectedPhone' },
     { path: 'opportunity.appointment', select: 'date startTime status' },
     { path: 'opportunity.interestedIn.product', select: 'name salePrice' },
     { path: 'opportunities.interestedIn.product', select: 'name salePrice' },
@@ -95,6 +97,7 @@ exports.getConversation = async (req, res) => {
       .populate('patient', 'firstName lastName cedula phone whatsapp email marketing tags')
       .populate('assignedTo', 'name email')
       .populate('featuredBy', 'name')
+      .populate('whatsappAccount', 'label connectionType displayPhone connectedPhone')
       .populate('opportunity.appointment', 'date startTime status')
       .populate('opportunity.interestedIn.product', 'name salePrice')
       .populate('opportunities.interestedIn.product', 'name salePrice');
@@ -1473,7 +1476,7 @@ async function applyIncomingOptOut({ clinicId, conv, incomingText }) {
 
 // Procesa un evento "normalizado" (externalUserId, body, contactName) creando/
 // actualizando la conversación correspondiente.
-async function ingestExternalMessage({ clinicId, channel, externalUserId, body, contactName, externalId, phone, referral, media }) {
+async function ingestExternalMessage({ clinicId, channel, externalUserId, body, contactName, externalId, phone, referral, media, account }) {
   if (!externalUserId && !phone) return;
   const normalizedPhone = normalizePhone(phone || externalUserId);
   const findKey = phone
@@ -1502,6 +1505,10 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   if (referral && referral.adId && !conv.attribution?.adId) {
     conv.attribution = referral;
   }
+  // Recuerda por qué número (global) entró el mensaje, para responder por el mismo.
+  if (account && String(conv.whatsappAccount || '') !== String(account._id)) {
+    conv.whatsappAccount = account._id;
+  }
   if (conv.blocked) return;
 
   // Media entrante (imagen/audio/documento/video de WhatsApp): se descarga y
@@ -1509,11 +1516,15 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   let mediaUrl = null;
   let mediaType = null;
   let finalBody = body || '';
-  if (media && media.id && channel === 'whatsapp') {
-    const wa = require('../utils/whatsappCloud');
-    const { ok, creds } = await wa.loadCreds(clinicId);
-    if (ok) {
-      const dl = await wa.downloadMedia(creds, media.id);
+  if (media && channel === 'whatsapp') {
+    if (media.dataUrl) {
+      // Número QR: la media llega ya descargada inline (whatsapp-web.js).
+      mediaUrl = media.dataUrl;
+      mediaType = media.type;
+    } else if (media.id && account) {
+      // Cloud API: se descarga por id usando las credenciales del número.
+      const gateway = require('../utils/whatsappGateway');
+      const dl = await gateway.downloadMedia(account, media.id);
       if (dl.ok) {
         mediaUrl = dl.dataUrl;
         mediaType = media.type;
@@ -1563,6 +1574,9 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   await triggerFlows({ conv, clinicId, isNewConversation: isNew, incomingText: finalBody });
 }
 
+// Expuesto para que whatsappQrManager reutilice el mismo pipeline de ingesta.
+exports.ingestExternalMessage = ingestExternalMessage;
+
 // Verificación GET para canales Meta (whatsapp/messenger/instagram).
 // El proveedor envía hub.mode/hub.verify_token/hub.challenge.
 const metaVerify = (channel) => async (req, res) => {
@@ -1582,17 +1596,49 @@ const metaVerify = (channel) => async (req, res) => {
   }
 };
 
-exports.webhookWhatsappVerify = metaVerify('whatsapp');
 exports.webhookMessengerVerify = metaVerify('messenger');
 exports.webhookInstagramVerify = metaVerify('instagram');
 
+// Config global de WhatsApp (appSecret/verifyToken compartidos + clínica sede).
+async function getWhatsappAppConfig() {
+  const CallCenterWhatsappConfig = require('../models/CallCenterWhatsappConfig');
+  return CallCenterWhatsappConfig.getSingleton();
+}
+
+// Verificación GET del webhook único de WhatsApp (todos los números Cloud API).
+// El verifyToken es a nivel de app (config global), no por clínica.
+exports.webhookWhatsappVerify = async (req, res) => {
+  try {
+    const cfg = await getWhatsappAppConfig();
+    const expected = cfg?.cloudApi?.verifyToken;
+    const mode = req.query['hub.mode'];
+    const token = req.query['hub.verify_token'];
+    const challenge = req.query['hub.challenge'];
+    if (mode === 'subscribe' && token && token === expected) return res.status(200).send(challenge);
+    return res.status(403).send('Verification failed');
+  } catch {
+    return res.status(500).send('Error');
+  }
+};
+
 exports.webhookWhatsappReceive = async (req, res) => {
   try {
-    const { clinicId } = req.params;
-    const signature = await validateMetaWebhookRequest(req, clinicId, 'whatsapp');
+    const appCfg = await getWhatsappAppConfig();
+    const { decryptSecret } = require('../utils/secretCrypto');
+    const signature = verifyMetaSignature({
+      rawBody: req.rawBody || req.body,
+      signature: req.headers['x-hub-signature-256'],
+      appSecret: appCfg?.cloudApi?.appSecret ? decryptSecret(appCfg.cloudApi.appSecret) : '',
+    });
     if (!signature.ok) {
       return res.status(403).json({ message: 'Firma invalida', code: signature.reason });
     }
+    // El call center es global: las conversaciones viven en la clínica "sede".
+    const clinicId = appCfg?.callCenterClinic;
+    if (!clinicId) {
+      return res.status(400).json({ message: 'Sede del call center (callCenterClinic) no configurada' });
+    }
+    const gateway = require('../utils/whatsappGateway');
     const entries = Array.isArray(req.body.entry) ? req.body.entry : [];
     let statusUpdates = 0;
     for (const entry of entries) {
@@ -1606,6 +1652,9 @@ exports.webhookWhatsappReceive = async (req, res) => {
             .catch((e) => console.error('[whatsapp webhook template]', e.message));
           continue;
         }
+        // Identifica POR CUÁL número (global) llegó el evento, vía phone_number_id.
+        // eslint-disable-next-line no-await-in-loop
+        const account = await gateway.getCloudAccountByPhoneNumberId(value.metadata?.phone_number_id);
         if (Array.isArray(value.statuses) && value.statuses.length) {
           // eslint-disable-next-line no-await-in-loop
           statusUpdates += await processMetaStatuses(clinicId, value.statuses);
@@ -1628,6 +1677,7 @@ exports.webhookWhatsappReceive = async (req, res) => {
           await ingestExternalMessage({
             clinicId,
             channel: 'whatsapp',
+            account,
             phone: m.from,
             externalUserId: m.from,
             body: m.text?.body || m.button?.text || m.interactive?.button_reply?.title || '',
