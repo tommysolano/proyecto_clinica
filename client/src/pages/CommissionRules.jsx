@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import { HiOutlinePlus, HiOutlineTrash, HiOutlinePencil, HiOutlineTrophy, HiOutlineArrowDownTray, HiOutlineBanknotes } from 'react-icons/hi2';
 import NumericInput from '../components/NumericInput';
+import ProductAutocomplete from '../components/ProductAutocomplete';
 
 const ROLES = [
   { value: 'admin', label: 'Administrador' },
@@ -552,16 +553,15 @@ export default function CommissionRules() {
           <div className="grid grid-cols-2 gap-3">
             {/* Call center y marketing-ligado no se filtran por producto. */}
             {showSingleService && (
-              <label className="block text-sm">Producto / Servicio / Ítem
-                <select value={form.service} onChange={(e) => setForm({ ...form, service: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
-                  <option value="">Cualquier producto/servicio</option>
-                  {services.map((s) => (
-                    <option key={s._id} value={s._id}>
-                      {s.name} {s.category ? `(${s.category})` : ''}
-                    </option>
-                  ))}
-                </select>
-              </label>
+              <div className="block text-sm">Producto / Servicio / Ítem
+                <ProductAutocomplete
+                  products={services}
+                  value={form.service}
+                  onSelect={(p) => setForm({ ...form, service: p?._id || '' })}
+                  placeholder="Cualquiera — escribe para buscar"
+                  className="mt-1"
+                />
+              </div>
             )}
             {!isMarketingLink && (
               <label className="block text-sm">Pacientes
@@ -594,10 +594,13 @@ export default function CommissionRules() {
             <div className="bg-slate-50 rounded-lg p-3 space-y-2">
               {form.serviceAmounts.map((row, i) => (
                 <div key={i} className="flex flex-wrap items-center gap-2 bg-white border border-slate-200 rounded-lg p-2">
-                  <select value={row.service} onChange={(e) => updateSvcRow(i, { service: e.target.value })} className="flex-1 min-w-[180px] border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
-                    <option value="">— Servicio —</option>
-                    {services.map((s) => <option key={s._id} value={s._id}>{s.name} {s.category ? `(${s.category})` : ''}</option>)}
-                  </select>
+                  <ProductAutocomplete
+                    products={services}
+                    value={row.service}
+                    onSelect={(p) => updateSvcRow(i, { service: p?._id || '' })}
+                    placeholder="Buscar servicio..."
+                    className="flex-1 min-w-[180px]"
+                  />
                   <ModeToggle value={row.amountType} onChange={(v) => updateSvcRow(i, { amountType: v })} />
                   {row.amountType === 'percent' ? (
                     <NumericInput step="0.01" min="0" max="100" placeholder="%" value={row.percent} onChange={(e) => updateSvcRow(i, { percent: e.target.value })} className="w-24 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
