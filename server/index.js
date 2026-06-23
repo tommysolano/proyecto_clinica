@@ -128,10 +128,13 @@ connectDB().then(() => {
     require('./utils/whatsappQrManager').initEnabledOnBoot().catch(() => {});
   }, 5 * 1000);
   // Job: sincronizar plantillas de WhatsApp con Meta para detectar cambios de
-  // categoría/estado y alertar (cada 6h, primera corrida a los 30s del arranque).
+  // categoría/estado y alertar (recategorización = impacto en costo). El webhook
+  // notifica al instante; este sondeo es la red de seguridad. Frecuencia
+  // configurable con TEMPLATE_SYNC_INTERVAL_MIN (min 5, por defecto 60 minutos).
   const { syncAllClinicsTemplates } = require('./controllers/messageTemplateController');
+  const TPL_SYNC_MS = Math.max(5, Number(process.env.TEMPLATE_SYNC_INTERVAL_MIN) || 60) * 60 * 1000;
   setTimeout(() => { syncAllClinicsTemplates().catch(() => {}); }, 30 * 1000);
-  setInterval(() => { syncAllClinicsTemplates().catch(() => {}); }, 6 * 60 * 60 * 1000);
+  setInterval(() => { syncAllClinicsTemplates().catch(() => {}); }, TPL_SYNC_MS);
 }).catch((err) => {
   console.error('No se pudo conectar a MongoDB, abortando:', err.message);
   process.exit(1);

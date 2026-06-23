@@ -10,6 +10,7 @@ import {
   HiOutlinePhoto,
   HiOutlineXMark,
   HiOutlineExclamationTriangle,
+  HiOutlinePaperAirplane,
 } from 'react-icons/hi2';
 import Modal from '../components/Modal';
 import WhatsappPreview from '../components/WhatsappPreview';
@@ -54,6 +55,7 @@ export default function MessageTemplates() {
   const [editing, setEditing] = useState(null);
   const [syncing, setSyncing] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [submittingId, setSubmittingId] = useState(null);
 
   const uploadHeaderImage = async (file) => {
     if (!file) return;
@@ -144,6 +146,25 @@ export default function MessageTemplates() {
       load();
     } catch (e) {
       toast.error(e.response?.data?.message || 'Error al eliminar');
+    }
+  };
+
+  const submitToMeta = async (t) => {
+    if (
+      !window.confirm(
+        `¿Enviar "${t.name}" a Meta para aprobación?\n\nUna vez enviada no podrás cambiar su nombre. Meta puede tardar de minutos a 24h en aprobarla.`
+      )
+    )
+      return;
+    setSubmittingId(t._id);
+    try {
+      const { data } = await api.post(`/message-templates/${t._id}/submit`);
+      toast.success(`Enviada a Meta — estado: ${STATUS_BADGE[data.status]?.label || data.status}`);
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'No se pudo enviar a Meta');
+    } finally {
+      setSubmittingId(null);
     }
   };
 
@@ -244,6 +265,17 @@ export default function MessageTemplates() {
                   ) : null}
                 </div>
                 <div className="flex items-start gap-1 shrink-0">
+                  {t.channel === 'whatsapp' && (t.status === 'draft' || t.status === 'rejected') && (
+                    <button
+                      onClick={() => submitToMeta(t)}
+                      disabled={submittingId === t._id}
+                      title="Enviar a Meta para aprobación"
+                      className="px-2.5 py-1.5 text-xs bg-emerald-600 text-white rounded-lg cursor-pointer border-none disabled:opacity-50 flex items-center gap-1 whitespace-nowrap"
+                    >
+                      <HiOutlinePaperAirplane className="w-3.5 h-3.5" />
+                      {submittingId === t._id ? 'Enviando…' : 'Enviar a Meta'}
+                    </button>
+                  )}
                   <button onClick={() => setEditing(t)} className="p-2 text-slate-500 hover:text-emerald-600 bg-transparent border-none cursor-pointer">
                     <HiOutlinePencil />
                   </button>
@@ -438,7 +470,8 @@ export default function MessageTemplates() {
                 </p>
               ) : (
                 <p className="text-xs text-slate-400">
-                  Tras crearla deberás registrarla/aprobarla en Meta para usarla fuera de la ventana de 24h.
+                  Tras guardarla, pulsa <b>“Enviar a Meta”</b> en la lista para registrarla y que la
+                  apruebe. Solo las aprobadas sirven fuera de la ventana de 24h.
                 </p>
               )}
               </div>

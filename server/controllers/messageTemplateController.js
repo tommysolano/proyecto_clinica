@@ -162,6 +162,42 @@ async function raiseTemplateAlert(clinicId, { type, severity, title, body, meta 
 }
 
 /**
+ * Dirección del cambio de costo al recategorizar. MARKETING es la categoría más
+ * cara; UTILITY/AUTHENTICATION son más baratas. Pasar a MARKETING => sube el costo.
+ */
+function categoryCostDirection(from, to) {
+  if (to === 'MARKETING' && from && from !== 'MARKETING') return 'up';
+  if (from === 'MARKETING' && to && to !== 'MARKETING') return 'down';
+  return 'flat';
+}
+
+/**
+ * Alerta especializada de cambio de categoría con aviso de impacto en costo.
+ * Si Meta recategoriza a MARKETING, sube de severidad (error) porque encarece
+ * cada mensaje. `atCreation` distingue la recategorización al registrar la plantilla.
+ */
+async function raiseCategoryChangeAlert(clinicId, name, from, to, { atCreation = false } = {}) {
+  const dir = categoryCostDirection(from, to);
+  const costMsg =
+    dir === 'up'
+      ? ' ⚠️ Esto INCREMENTA el costo por mensaje (Marketing es más caro que Utility/Authentication).'
+      : dir === 'down'
+      ? ' Esto REDUCE el costo por mensaje.'
+      : '';
+  return raiseTemplateAlert(clinicId, {
+    type: 'template_category_changed',
+    severity: dir === 'up' ? 'error' : 'warning',
+    title: atCreation
+      ? `Meta categorizó la plantilla "${name}" como ${to}`
+      : `Plantilla "${name}" cambió de categoría a ${to}`,
+    body: atCreation
+      ? `Al registrarla, Meta la clasificó como ${to} (tú pediste ${from || '—'}).${costMsg}`
+      : `Meta cambió la categoría de ${from} a ${to}.${costMsg}`,
+    meta: { template: name, from, to, atCreation, costDirection: dir },
+  });
+}
+
+/**
  * Aplica el patch de Meta a una plantilla existente o la crea. Si cambia la
  * categoría o el estado, levanta una alerta. Devuelve { action, changed }.
  * PURO respecto a Meta: recibe el objeto `mt` ya descargado.
@@ -201,13 +237,7 @@ async function applyMetaTemplate(clinicId, mt, createdBy) {
   let changed = false;
   if (prevCategory && newCategory && prevCategory !== newCategory) {
     changed = true;
-    await raiseTemplateAlert(clinicId, {
-      type: 'template_category_changed',
-      severity: 'warning',
-      title: `Plantilla "${mt.name}" cambió de categoría`,
-      body: `Meta cambió la categoría de ${prevCategory} a ${newCategory}. Revisa el costo/uso de la plantilla.`,
-      meta: { template: mt.name, from: prevCategory, to: newCategory },
-    });
+    await raiseCategoryChangeAlert(clinicId, mt.name, prevCategory, newCategory);
   }
   if (prevStatus !== status && (status === 'rejected' || status === 'disabled')) {
     changed = true;
@@ -339,13 +369,7 @@ async function handleTemplateWebhook(clinicId, field, value = {}) {
     tpl.category = newCategory;
     tpl.syncedAt = new Date();
     await tpl.save();
-    await raiseTemplateAlert(clinicId, {
-      type: 'template_category_changed',
-      severity: 'warning',
-      title: `Plantilla "${name}" cambió de categoría`,
-      body: `Meta cambió la categoría de ${from} a ${newCategory}. Revisa el costo/uso de la plantilla.`,
-      meta: { template: name, from, to: newCategory },
-    });
+    await raiseCategoryChangeAlert(clinicId, name, from, newCategory);
     return true;
   }
 
@@ -373,7 +397,169 @@ async function handleTemplateWebhook(clinicId, field, value = {}) {
   return false;
 }
 
+// ═══════════ Envío de plantillas a Meta para aprobación ═══════════
+//
+// Meta exige placeholders POSICIONALES ({{1}}, {{2}}…). Nuestras plantillas pueden
+// usar variables nombradas ({{firstName}}) o numeradas: las convertimos a numeradas
+// en orden de aparición y construimos los `example` que Meta requiere.
+
+/**
+ * Convierte un texto con variables {{x}} a placeholders numerados {{1}},{{2}}…
+ * Devuelve el texto convertido, los ejemplos (en orden) y cuántas variables hay.
+ */
+function toNumberedText(text, variables = []) {
+  const order = [];
+  const seen = new Map();
+  const numbered = String(text || '').replace(/\{\{\s*([\w]+)\s*\}\}/g, (_m, key) => {
+    if (!seen.has(key)) {
+      seen.set(key, seen.size + 1);
+      order.push(key);
+    }
+    return `{{${seen.get(key)}}}`;
+  });
+  const exMap = new Map((variables || []).map((v) => [v.key, v.example]));
+  const examples = order.map((key, i) => {
+    const ex = exMap.get(key);
+    return ex && String(ex).trim() ? String(ex) : `ejemplo${i + 1}`;
+  });
+  return { numbered, examples, count: order.length };
+}
+
+/**
+ * Construye el array `components` que pide la Graph API a partir de una plantilla
+ * local (cabecera, cuerpo, pie y botones).
+ */
+function buildMetaComponents(tpl) {
+  const components = [];
+
+  // HEADER
+  if (tpl.headerType === 'text' && tpl.headerText) {
+    const { numbered, examples, count } = toNumberedText(tpl.headerText, tpl.variables);
+    const header = { type: 'HEADER', format: 'TEXT', text: numbered };
+    if (count > 0) header.example = { header_text: examples };
+    components.push(header);
+  } else if (['image', 'document', 'video'].includes(tpl.headerType) && tpl.headerMediaUrl) {
+    // Meta pide un "handle" del media; aceptamos pasar la URL pública autoalojada.
+    components.push({
+      type: 'HEADER',
+      format: tpl.headerType.toUpperCase(),
+      example: { header_handle: [tpl.headerMediaUrl] },
+    });
+  }
+
+  // BODY (obligatorio)
+  const { numbered, examples, count } = toNumberedText(tpl.body, tpl.variables);
+  const body = { type: 'BODY', text: numbered };
+  if (count > 0) body.example = { body_text: [examples] };
+  components.push(body);
+
+  // FOOTER
+  if (tpl.footer) components.push({ type: 'FOOTER', text: tpl.footer });
+
+  // BUTTONS
+  if (Array.isArray(tpl.buttons) && tpl.buttons.length) {
+    const buttons = tpl.buttons
+      .filter((b) => b && b.text)
+      .map((b) => {
+        if (b.type === 'url') return { type: 'URL', text: b.text, url: b.url || '' };
+        if (b.type === 'phone') return { type: 'PHONE_NUMBER', text: b.text, phone_number: b.url || '' };
+        return { type: 'QUICK_REPLY', text: b.text };
+      });
+    if (buttons.length) components.push({ type: 'BUTTONS', buttons });
+  }
+
+  return components;
+}
+
+/**
+ * Registra (POST) la plantilla en el WABA del número Cloud API por defecto.
+ * Devuelve { ok, data } o { ok:false, reason, error }.
+ */
+async function submitTemplateToMeta(tpl) {
+  const gateway = require('../utils/whatsappGateway');
+  const account = await gateway.getDefaultCloudAccount();
+  if (!account?.accessToken || !account?.businessAccountId) {
+    return { ok: false, reason: 'not_configured' };
+  }
+  const accessToken = require('../utils/secretCrypto').decryptSecret(account.accessToken);
+  const url = `https://graph.facebook.com/${API_VERSION}/${account.businessAccountId}/message_templates`;
+  const payload = {
+    name: tpl.name,
+    language: tpl.language || 'es',
+    category: tpl.category || 'MARKETING',
+    components: buildMetaComponents(tpl),
+  };
+  try {
+    const r = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${accessToken}` },
+      body: JSON.stringify(payload),
+    });
+    const data = await r.json().catch(() => ({}));
+    if (!r.ok) {
+      return {
+        ok: false,
+        reason: 'meta_error',
+        error: data?.error?.error_user_msg || data?.error?.message || `HTTP ${r.status}`,
+        data,
+      };
+    }
+    return { ok: true, data };
+  } catch (err) {
+    return { ok: false, reason: 'network', error: err.message };
+  }
+}
+
+/**
+ * POST /api/message-templates/:id/submit
+ * Envía la plantilla local a Meta para revisión. Tras enviarla queda en 'pending'
+ * y el resto del ciclo (aprobación/rechazo/recategorización) lo gobiernan el
+ * webhook y la sincronización periódica.
+ */
+exports.submit = async (req, res) => {
+  try {
+    const tpl = await MessageTemplate.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!tpl) return res.status(404).json({ message: 'Plantilla no encontrada' });
+    if (tpl.channel !== 'whatsapp') {
+      return res.status(400).json({ message: 'Solo las plantillas de WhatsApp se envían a Meta' });
+    }
+    if (tpl.status === 'pending' || tpl.status === 'approved') {
+      return res
+        .status(400)
+        .json({ message: `La plantilla ya está ${tpl.status === 'approved' ? 'aprobada' : 'en revisión'} en Meta` });
+    }
+
+    const result = await submitTemplateToMeta(tpl);
+    if (!result.ok) {
+      if (result.reason === 'not_configured') {
+        return res.status(400).json({
+          message: 'Falta el número Cloud API por defecto (WABA ID + Access Token) para enviar a Meta',
+        });
+      }
+      return res.status(502).json({ message: result.error || 'Meta rechazó la solicitud', detail: result.data?.error });
+    }
+
+    const created = result.data || {};
+    tpl.metaTemplateId = created.id || tpl.metaTemplateId;
+    tpl.status = META_STATUS_MAP[created.status] || 'pending';
+    tpl.rejectionReason = '';
+    tpl.syncedAt = new Date();
+    // Meta puede recategorizar al registrar (impacta en el costo): avisar si difiere.
+    if (created.category && created.category !== tpl.category) {
+      const from = tpl.category;
+      tpl.category = created.category;
+      await raiseCategoryChangeAlert(req.clinicId, tpl.name, from, created.category, { atCreation: true });
+    }
+    await tpl.save();
+    res.json(tpl);
+  } catch (err) {
+    res.status(500).json({ message: 'Error al enviar a Meta', error: err.message });
+  }
+};
+
 exports.applyMetaTemplate = applyMetaTemplate;
 exports.syncTemplatesFromMeta = syncTemplatesFromMeta;
 exports.syncAllClinicsTemplates = syncAllClinicsTemplates;
 exports.handleTemplateWebhook = handleTemplateWebhook;
+exports.submitTemplateToMeta = submitTemplateToMeta;
+exports.buildMetaComponents = buildMetaComponents;

@@ -393,6 +393,7 @@ async function send({
   sentByName,
   isAutoReply = false,
   ignoreOptOut = false,
+  source,
 }) {
   const normalizedChannel = channel || 'whatsapp';
 

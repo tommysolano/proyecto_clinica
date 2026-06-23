@@ -16,6 +16,7 @@ router.get('/alerts', requireRole(...ROLES), ctrl.listAlerts);
 router.post('/alerts/:id/read', requireRole(...ROLES), ctrl.markAlertRead);
 router.get('/:id', requireRole(...ROLES), ctrl.get);
 router.put('/:id', requireRole(...ROLES), ctrl.update);
+router.post('/:id/submit', requireRole(...ROLES), ctrl.submit);
 router.delete('/:id', requireRole(...ROLES), ctrl.remove);
 
 module.exports = router;
