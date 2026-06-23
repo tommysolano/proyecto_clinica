@@ -11,6 +11,7 @@ exports.listRules = async (req, res) => {
     const rules = await CommissionRule.find({ clinic: req.clinicId })
       .populate('user', 'name')
       .populate('service', 'name')
+      .populate('linkedCallCenter', 'name')
       .sort({ createdAt: -1 });
     res.json(rules);
   } catch (e) {
@@ -56,6 +57,8 @@ exports.deleteRule = async (req, res) => {
 };
 
 // ─────────── Cálculo de comisiones devengadas ───────────
+const num = (v) => Number(v) || 0;
+
 const inSchedule = (rule, appt) => {
   if (!rule.scheduleEnabled) return true;
   const d = new Date(appt.date);
@@ -67,25 +70,63 @@ const inSchedule = (rule, appt) => {
 };
 
 /**
+ * Resuelve la configuración de monto (fijo/porcentaje) que aplica a un producto
+ * dentro de una regla.
+ *   - Regla multi-servicio (serviceAmounts): devuelve la entrada del servicio, o
+ *     null si el producto no está en la lista (la regla NO aplica).
+ *   - Regla simple: devuelve la config global de la regla (respetando el filtro
+ *     `service` que se valida aparte por quien llama).
+ */
+const amountConfigFor = (rule, productId) => {
+  if (rule.serviceAmounts?.length) {
+    const m = rule.serviceAmounts.find((sa) => String(sa.service) === String(productId));
+    if (!m) return null;
+    return { amountType: m.amountType || 'fixed', amount: num(m.amount), percent: num(m.percent) };
+  }
+  return { amountType: rule.amountType || 'fixed', amount: num(rule.amount), percent: num(rule.percent) };
+};
+
+/**
+ * Valor de la comisión a partir de la config y el precio que paga el paciente.
+ *   - percent: porcentaje sobre `paidPrice` (que ya incluye la cantidad).
+ *   - fixed:   monto fijo × cantidad.
+ */
+const calcAmount = (cfg, paidPrice, qty = 1) => {
+  if (!cfg) return 0;
+  if (cfg.amountType === 'percent') return +((cfg.percent / 100) * num(paidPrice)).toFixed(2);
+  return +(cfg.amount * qty).toFixed(2);
+};
+
+/**
  * Calcula, sobre la marcha, las comisiones devengadas en un rango de fechas a
- * partir de las citas COMPLETADAS y las ventas, según las reglas activas.
- * Devuelve la lista completa de detalles (sin filtrar) y el número de reglas.
- * Cada detalle incluye la cuenta contable de la regla (ruleAccount) para poder
- * contabilizarla.
+ * partir de las citas (asistidas/completadas), ventas y derivaciones, según las
+ * reglas activas. Devuelve la lista completa de detalles (sin filtrar) y las
+ * reglas. Cada detalle incluye la cuenta contable de la regla (ruleAccount).
  */
 async function computeCommissions(clinicId, startDate, endDate) {
   const rules = await CommissionRule.find({ clinic: clinicId, active: true });
   if (!rules.length) return { rules: [], detail: [] };
 
+  // Citas asistidas o completadas. El call center devenga al ASISTIR; el doctor /
+  // enfermero / admin sólo cuando la cita se COMPLETA (fue atendida).
   const appts = await Appointment.find({
     clinic: clinicId,
-    status: 'completada',
+    status: { $in: ['asistida', 'completada'] },
     date: { $gte: startDate, $lte: endDate },
   })
     .populate('doctor', 'name clinics')
     .populate('attendedByNurse', 'name clinics')
     .populate('createdBy', 'name clinics')
-    .populate('patient', 'firstName lastName');
+    .populate('patient', 'firstName lastName')
+    .populate({ path: 'referral', populate: { path: 'fromDoctor', select: 'name clinics' } });
+
+  // Usuarios de la clínica (para targets por rol: admin / marketing).
+  const clinicUsers = await User.find({ 'clinics.clinic': clinicId }).select('name clinics');
+  const clinicUsersById = new Map(clinicUsers.map((u) => [String(u._id), u]));
+  const usersWithRole = (role) =>
+    clinicUsers.filter((u) => (u.clinics || []).some((c) => String(c.clinic) === String(clinicId) && c.role === role));
+  const adminUsers = usersWithRole('admin');
+  const marketingUsers = usersWithRole('marketing');
 
   // Resolver rol de un usuario en esta clínica
   const roleFor = (u) => {
@@ -101,45 +142,111 @@ async function computeCommissions(clinicId, startDate, endDate) {
     return rule.role === performerRole;
   };
 
+  // ¿La cita incluye un servicio que la regla exige? (filtro a nivel de cita).
+  const apptHasRuleService = (rule, appt) => {
+    const svcs = appt.services || [];
+    if (rule.serviceAmounts?.length) {
+      return svcs.some((s) => rule.serviceAmounts.some((sa) => String(sa.service) === String(s.product)));
+    }
+    if (rule.service) return svcs.some((s) => String(s.product) === String(rule.service));
+    return true;
+  };
+
   const detail = [];
   for (const appt of appts) {
-    const services = appt.services?.length ? appt.services : [{ product: null, name: '—' }];
-    // Candidatos según el evento de cada regla:
-    //  - appointment_performed: doctor o enfermero que atendió
-    //  - appointment_created: quien agendó la cita
+    const isCompleted = appt.status === 'completada';
+    const isAttended = appt.status === 'asistida' || isCompleted;
+    const services = appt.services?.length ? appt.services : [{ product: null, name: '—', price: 0 }];
     const performers = [appt.doctor, appt.attendedByNurse].filter(Boolean);
     const creator = appt.createdBy;
+    const patientName = appt.patient ? `${appt.patient.firstName} ${appt.patient.lastName}` : '—';
+    const apptTotal = (appt.services || []).reduce((a, s) => a + num(s.price), 0);
+
+    // ── Comisiones por SERVICIO de la cita (doctor/enfermero atiende; admin) ──
     for (const svc of services) {
       for (const rule of rules) {
-        if (rule.service && String(rule.service) !== String(svc.product)) continue;
         if (rule.patientScope === 'new' && !appt.isFirstVisit) continue;
         if (!inSchedule(rule, appt)) continue;
 
-        if (rule.trigger === 'appointment_created') {
-          const creatorRole = roleFor(creator);
-          if (!matchTarget(rule, creator, creatorRole)) continue;
-          detail.push({
-            userId: String(creator._id), userName: creator.name, userRole: creatorRole,
-            ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
-            amount: rule.amount, date: appt.date,
-            service: svc.name || '—',
-            patient: appt.patient ? `${appt.patient.firstName} ${appt.patient.lastName}` : '—',
-            source: 'cita agendada',
-          });
+        // Filtro de servicio + config de monto.
+        let cfg;
+        if (rule.serviceAmounts?.length) {
+          cfg = amountConfigFor(rule, svc.product);
+          if (!cfg) continue;
+        } else {
+          if (rule.service && String(rule.service) !== String(svc.product)) continue;
+          cfg = { amountType: rule.amountType || 'fixed', amount: num(rule.amount), percent: num(rule.percent) };
+        }
+
+        if (rule.trigger === 'admin_service') {
+          if (!isCompleted) continue;
+          const targets =
+            rule.targetType === 'user'
+              ? [clinicUsersById.get(String(rule.user))].filter(Boolean)
+              : adminUsers;
+          for (const adm of targets) {
+            detail.push({
+              userId: String(adm._id), userName: adm.name, userRole: roleFor(adm) || 'admin',
+              ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
+              amount: calcAmount(cfg, svc.price), date: appt.date,
+              service: svc.name || '—', patient: patientName, source: 'servicio atendido',
+            });
+          }
         } else if (!rule.trigger || rule.trigger === 'appointment_performed') {
+          if (!isCompleted) continue;
           for (const performer of performers) {
             const performerRole = roleFor(performer);
             if (!matchTarget(rule, performer, performerRole)) continue;
             detail.push({
               userId: String(performer._id), userName: performer.name, userRole: performerRole,
               ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
-              amount: rule.amount, date: appt.date,
-              service: svc.name || '—',
-              patient: appt.patient ? `${appt.patient.firstName} ${appt.patient.lastName}` : '—',
-              source: 'cita atendida',
+              amount: calcAmount(cfg, svc.price), date: appt.date,
+              service: svc.name || '—', patient: patientName, source: 'cita atendida',
             });
           }
         }
+      }
+    }
+
+    // ── Comisión del CALL CENTER: una vez por cita (no por servicio) ──
+    if (isAttended) {
+      for (const rule of rules) {
+        if (rule.trigger !== 'appointment_created') continue;
+        if (rule.patientScope === 'new' && !appt.isFirstVisit) continue;
+        if (!inSchedule(rule, appt)) continue;
+        const creatorRole = roleFor(creator);
+        if (!matchTarget(rule, creator, creatorRole)) continue;
+        if (!apptHasRuleService(rule, appt)) continue;
+        // Para % en call center se toma el total de servicios de la cita.
+        const cfg = rule.serviceAmounts?.length
+          ? amountConfigFor(rule, (appt.services || []).find((s) => rule.serviceAmounts.some((sa) => String(sa.service) === String(s.product)))?.product)
+          : { amountType: rule.amountType || 'fixed', amount: num(rule.amount), percent: num(rule.percent) };
+        detail.push({
+          userId: String(creator._id), userName: creator.name, userRole: creatorRole,
+          ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
+          amount: calcAmount(cfg, apptTotal), date: appt.date,
+          service: appt.services?.[0]?.name || '—', patient: patientName, source: 'cita agendada',
+        });
+      }
+    }
+
+    // ── Comisión por DERIVACIÓN: una vez por cita derivada completada ──
+    if (isCompleted && appt.origin === 'referral' && appt.referral?.fromDoctor) {
+      const fromDoc = appt.referral.fromDoctor;
+      const fromRole = roleFor(fromDoc);
+      for (const rule of rules) {
+        if (rule.trigger !== 'referral') continue;
+        if (rule.patientScope === 'new' && !appt.isFirstVisit) continue;
+        if (!inSchedule(rule, appt)) continue;
+        if (!matchTarget(rule, fromDoc, fromRole)) continue;
+        if (!apptHasRuleService(rule, appt)) continue;
+        const cfg = { amountType: rule.amountType || 'fixed', amount: num(rule.amount), percent: num(rule.percent) };
+        detail.push({
+          userId: String(fromDoc._id), userName: fromDoc.name, userRole: fromRole,
+          ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
+          amount: calcAmount(cfg, apptTotal), date: appt.date,
+          service: appt.services?.[0]?.name || '—', patient: patientName, source: 'derivación',
+        });
       }
     }
   }
@@ -162,23 +269,64 @@ async function computeCommissions(clinicId, startDate, endDate) {
       : sale.clientName || '—';
     for (const it of sale.items || []) {
       for (const rule of rules) {
-        if (rule.service && String(rule.service) !== String(it.product)) continue;
-        const qty = Number(it.quantity || 1);
+        if (rule.trigger !== 'sale' && rule.trigger !== 'recommendation') continue;
+        // Filtro de servicio + config de monto.
+        let cfg;
+        if (rule.serviceAmounts?.length) {
+          cfg = amountConfigFor(rule, it.product);
+          if (!cfg) continue;
+        } else {
+          if (rule.service && String(rule.service) !== String(it.product)) continue;
+          cfg = { amountType: rule.amountType || 'fixed', amount: num(rule.amount), percent: num(rule.percent) };
+        }
+        const qty = num(it.quantity) || 1;
+        // Precio que paga el paciente por la línea (incluye impuestos y cantidad).
+        const linePaid = num(it.lineTotal) || num(it.subtotal);
         let performer = null;
         let source = '';
         if (rule.trigger === 'sale') { performer = sale.createdBy; source = 'venta'; }
-        else if (rule.trigger === 'recommendation') { performer = sale.recommendedBy; source = 'recomendación'; }
-        else continue;
+        else { performer = sale.recommendedBy; source = 'recomendación'; }
         const performerRole = roleFor(performer);
         if (!matchTarget(rule, performer, performerRole)) continue;
         detail.push({
           userId: String(performer._id), userName: performer.name, userRole: performerRole,
           ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
-          amount: Number(rule.amount) * qty,
+          amount: calcAmount(cfg, linePaid, qty),
           date: sale.createdAt, service: it.productName || '—',
           patient: patientName, source,
         });
       }
+    }
+  }
+
+  // ─── Comisión del MARKETING ligado a un call center ───
+  // Depende de las comisiones del call center ya calculadas arriba (source
+  // 'cita agendada'). El marketing gana % sobre lo que devengó su agente, o un
+  // monto fijo por cada comisión generada por ese agente.
+  for (const rule of rules) {
+    if (rule.trigger !== 'call_center_commission' || !rule.linkedCallCenter) continue;
+    const agentId = String(rule.linkedCallCenter);
+    const agentDetails = detail.filter((d) => d.userId === agentId && d.source === 'cita agendada');
+    if (!agentDetails.length) continue;
+    const base = agentDetails.reduce((a, d) => a + num(d.amount), 0);
+    const count = agentDetails.length;
+    const amount =
+      (rule.amountType || 'fixed') === 'percent'
+        ? +((num(rule.percent) / 100) * base).toFixed(2)
+        : +(num(rule.amount) * count).toFixed(2);
+    if (amount <= 0 && count === 0) continue;
+    const agentName = clinicUsersById.get(agentId)?.name || 'Call center';
+    const targets =
+      rule.targetType === 'user'
+        ? [clinicUsersById.get(String(rule.user))].filter(Boolean)
+        : marketingUsers;
+    for (const t of targets) {
+      detail.push({
+        userId: String(t._id), userName: t.name, userRole: roleFor(t) || 'marketing',
+        ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
+        amount, date: endDate, service: '—',
+        patient: `Agente: ${agentName} (${count} comis.)`, source: 'comisión call center',
+      });
     }
   }
 

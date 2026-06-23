@@ -115,6 +115,7 @@ exports.getCommissions = async (req, res) => {
         } else if (r.role !== 'call_center') {
           return false;
         }
+        if (r.serviceAmounts?.length && !r.serviceAmounts.some((sa) => svcIds.includes(String(sa.service)))) return false;
         if (r.service && !svcIds.includes(String(r.service))) return false;
         if (r.patientScope === 'new' && !appt.isFirstVisit) return false;
         if (!inSchedule(r, appt)) return false;
@@ -122,7 +123,12 @@ exports.getCommissions = async (req, res) => {
       });
       if (!rule) continue;
 
-      const amount = Number(rule.amount) || 0;
+      // Monto: fijo en $ o porcentaje sobre el total de servicios de la cita.
+      const apptTotal = (appt.services || []).reduce((a, s) => a + (Number(s.price) || 0), 0);
+      const amount =
+        rule.amountType === 'percent'
+          ? +(((Number(rule.percent) || 0) / 100) * apptTotal).toFixed(2)
+          : Number(rule.amount) || 0;
       if (!agentMap.has(agentId)) {
         agentMap.set(agentId, {
           _id: agentId,

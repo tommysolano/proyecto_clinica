@@ -6,6 +6,7 @@ import { HiOutlinePlus, HiOutlineTrash, HiOutlinePencil, HiOutlineTrophy, HiOutl
 import NumericInput from '../components/NumericInput';
 
 const ROLES = [
+  { value: 'admin', label: 'Administrador' },
   { value: 'doctor', label: 'Doctor' },
   { value: 'optica', label: 'Óptica' },
   { value: 'enfermero', label: 'Enfermero/a' },
@@ -17,19 +18,23 @@ const ROLES = [
 // Eventos que devengan la comisión.
 const TRIGGERS = {
   appointment_performed: 'Cuando atiende una cita (pasa a completada)',
-  appointment_created: 'Cuando una cita que agendó pasa a completada',
+  appointment_created: 'Cuando una cita que agendó es asistida/completada',
   sale: 'Cuando registra una venta',
   recommendation: 'Cuando recomienda un producto/servicio vendido',
+  referral: 'Cuando deriva un paciente y la cita derivada se completa',
+  admin_service: 'Por cada servicio atendido en la clínica',
+  call_center_commission: 'Cuando su call center ligado gana comisión',
 };
 
 // Triggers sugeridos según el rol seleccionado (el modal se adapta al rol).
 const TRIGGERS_BY_ROLE = {
-  doctor: ['appointment_performed', 'recommendation'],
+  admin: ['admin_service'],
+  doctor: ['appointment_performed', 'recommendation', 'referral'],
   optica: ['appointment_performed', 'recommendation'],
   enfermero: ['appointment_performed', 'recommendation'],
   cajero: ['sale', 'recommendation'],
   call_center: ['appointment_created', 'recommendation'],
-  marketing: ['appointment_created', 'sale', 'recommendation'],
+  marketing: ['call_center_commission', 'appointment_created', 'sale', 'recommendation'],
 };
 const ALL_TRIGGERS = Object.keys(TRIGGERS);
 
@@ -40,7 +45,7 @@ const DAYS = [
 ];
 
 const ROLE_LABELS = {
-  doctor: 'Doctor', optica: 'Óptica', enfermero: 'Enfermero/a',
+  admin: 'Administrador', doctor: 'Doctor', optica: 'Óptica', enfermero: 'Enfermero/a',
   cajero: 'Cajero', call_center: 'Call Center', marketing: 'Marketing',
 };
 
@@ -62,13 +67,46 @@ const EMPTY = {
   name: '', active: true, targetType: 'role', user: '', role: 'doctor',
   trigger: 'appointment_performed',
   service: '', patientScope: 'all', scheduleEnabled: false, daysOfWeek: [],
-  startTime: '', endTime: '', amount: '', account: '',
+  startTime: '', endTime: '',
+  amountType: 'fixed', amount: '', percent: '',
+  multiService: false, serviceAmounts: [],
+  linkedCallCenter: '',
+  account: '',
 };
+
+// Fila vacía del editor multi-servicio.
+const EMPTY_SVC = { service: '', amountType: 'fixed', amount: '', percent: '' };
+
+// Etiqueta del monto de una regla para la tabla.
+const ruleAmountLabel = (r) => {
+  if ((r.serviceAmounts || []).length) return `${r.serviceAmounts.length} servicios`;
+  if (r.amountType === 'percent') return Number(r.percent) > 0 ? `${Number(r.percent)}%` : 'Por conteo';
+  return Number(r.amount) > 0 ? `$${Number(r.amount).toFixed(2)}` : 'Por conteo';
+};
+
+// Selector $ Fijo / % Porcentaje.
+function ModeToggle({ value, onChange }) {
+  return (
+    <div className="inline-flex rounded-lg border border-slate-200 overflow-hidden text-xs shrink-0">
+      {[['fixed', '$ Fijo'], ['percent', '%']].map(([v, l]) => (
+        <button
+          key={v}
+          type="button"
+          onClick={() => onChange(v)}
+          className={`px-2.5 py-1 cursor-pointer border-none ${value === v ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600'}`}
+        >
+          {l}
+        </button>
+      ))}
+    </div>
+  );
+}
 
 export default function CommissionRules() {
   const [tab, setTab] = useState('rules');
   const [rules, setRules] = useState([]);
   const [users, setUsers] = useState([]);
+  const [agents, setAgents] = useState([]); // agentes call center (para marketing ligado)
   const [services, setServices] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [modal, setModal] = useState(false);
@@ -99,6 +137,7 @@ export default function CommissionRules() {
       const list = Array.isArray(p.data) ? p.data : p.data?.products || [];
       // Aceptamos servicios, programas, items (medicamento, insumo) — todos pueden tener comisión.
       setServices(list.filter((x) => x.active !== false));
+      api.get('/call-center/agents').then((g) => setAgents(g.data || [])).catch(() => {});
       api.get('/chart-of-accounts', { params: { active: true } }).then((a) => setAccounts((a.data || []).filter((x) => x.allowsMovement))).catch(() => {});
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al cargar');
@@ -128,7 +167,18 @@ export default function CommissionRules() {
       trigger: r.trigger || 'appointment_performed',
       service: r.service?._id || r.service || '', patientScope: r.patientScope,
       scheduleEnabled: r.scheduleEnabled, daysOfWeek: r.daysOfWeek || [],
-      startTime: r.startTime || '', endTime: r.endTime || '', amount: r.amount ? String(r.amount) : '',
+      startTime: r.startTime || '', endTime: r.endTime || '',
+      amountType: r.amountType || 'fixed',
+      amount: r.amount ? String(r.amount) : '',
+      percent: r.percent ? String(r.percent) : '',
+      multiService: (r.serviceAmounts || []).length > 0,
+      serviceAmounts: (r.serviceAmounts || []).map((sa) => ({
+        service: sa.service?._id || sa.service || '',
+        amountType: sa.amountType || 'fixed',
+        amount: sa.amount ? String(sa.amount) : '',
+        percent: sa.percent ? String(sa.percent) : '',
+      })),
+      linkedCallCenter: r.linkedCallCenter?._id || r.linkedCallCenter || '',
       account: r.account?._id || r.account || '',
     });
     setModal(true);
@@ -139,20 +189,54 @@ export default function CommissionRules() {
   const selectedUser = users.find((u) => u._id === form.user);
   const userIsCallCenter = (selectedUser?.clinics || []).some((c) => c.role === 'call_center');
   const isCallCenter = form.targetType === 'role' ? form.role === 'call_center' : userIsCallCenter;
+  // Marketing ligado a un call center (gana sobre la comisión del agente).
+  const isMarketingLink = form.trigger === 'call_center_commission';
+  // Triggers que comisionan por SERVICIO (admiten varios servicios con montos distintos).
+  const canMultiService = ['appointment_performed', 'admin_service', 'sale', 'recommendation'].includes(form.trigger);
+  const usingMulti = canMultiService && form.multiService;
+  // Mostrar el selector de un servicio único.
+  const showSingleService = !isCallCenter && !isMarketingLink && !usingMulti;
+
+  // Helpers del editor multi-servicio.
+  const addSvcRow = () => setForm((f) => ({ ...f, serviceAmounts: [...f.serviceAmounts, { ...EMPTY_SVC }] }));
+  const updateSvcRow = (i, patch) =>
+    setForm((f) => ({ ...f, serviceAmounts: f.serviceAmounts.map((r, idx) => (idx === i ? { ...r, ...patch } : r)) }));
+  const removeSvcRow = (i) =>
+    setForm((f) => ({ ...f, serviceAmounts: f.serviceAmounts.filter((_, idx) => idx !== i) }));
 
   const submit = async (e) => {
     e.preventDefault();
     if (!form.name) { toast.error('El nombre es obligatorio'); return; }
+    if (isMarketingLink && !form.linkedCallCenter) { toast.error('Selecciona el call center al que está ligado'); return; }
+    if (usingMulti && form.serviceAmounts.filter((s) => s.service).length === 0) {
+      toast.error('Agrega al menos un servicio con su monto'); return;
+    }
     setSaving(true);
     try {
+      const serviceAmounts = usingMulti
+        ? form.serviceAmounts
+            .filter((s) => s.service)
+            .map((s) => ({
+              service: s.service,
+              amountType: s.amountType,
+              amount: parseFloat(s.amount) || 0,
+              percent: parseFloat(s.percent) || 0,
+            }))
+        : [];
       const body = {
         ...form,
+        amountType: form.amountType,
         amount: parseFloat(form.amount) || 0,
+        percent: parseFloat(form.percent) || 0,
+        serviceAmounts,
         user: form.targetType === 'user' ? form.user : null,
         role: form.targetType === 'role' ? form.role : '',
-        service: isCallCenter ? null : (form.service || null),
+        // En reglas multi-servicio el servicio único se ignora.
+        service: isCallCenter || isMarketingLink || usingMulti ? null : (form.service || null),
+        linkedCallCenter: isMarketingLink ? (form.linkedCallCenter || null) : null,
         account: form.account || null,
       };
+      delete body.multiService;
       if (editing) await api.put(`/commissions/rules/${editing}`, body);
       else await api.post('/commissions/rules', body);
       toast.success('Regla guardada');
@@ -259,9 +343,17 @@ export default function CommissionRules() {
                     <div>{r.targetType === 'user' ? (r.user?.name || 'Usuario') : `Rol: ${r.role}`}</div>
                     <div className="text-[11px] text-slate-400">{TRIGGERS[r.trigger] || TRIGGERS.appointment_performed}</div>
                   </td>
-                  <td className="px-3 py-2">{r.service?.name || 'Cualquier servicio'}</td>
+                  <td className="px-3 py-2">{
+                    (r.serviceAmounts || []).length
+                      ? `${r.serviceAmounts.length} servicios`
+                      : r.trigger === 'call_center_commission'
+                      ? `Call center: ${r.linkedCallCenter?.name || '—'}`
+                      : r.service?.name || 'Cualquier servicio'
+                  }</td>
                   <td className="px-3 py-2">{r.patientScope === 'new' ? 'Solo nuevos' : 'Todos'}</td>
-                  <td className="px-3 py-2 text-right">{Number(r.amount) > 0 ? `$${Number(r.amount).toFixed(2)}` : <span className="text-slate-400">Por conteo</span>}</td>
+                  <td className="px-3 py-2 text-right">{ruleAmountLabel(r) === 'Por conteo'
+                    ? <span className="text-slate-400">Por conteo</span>
+                    : ruleAmountLabel(r)}</td>
                   <td className="px-3 py-2 text-center">{r.active ? '✓' : '—'}</td>
                   <td className="px-3 py-2 text-right whitespace-nowrap">
                     <button onClick={() => openEdit(r)} className="p-1 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer"><HiOutlinePencil className="w-4 h-4" /></button>
@@ -432,17 +524,34 @@ export default function CommissionRules() {
             </select>
             <span className="block mt-1 text-xs text-slate-400">
               {form.trigger === 'appointment_created'
-                ? 'Ej.: el call center gana esta comisión cuando una cita que agendó se completa.'
+                ? 'El call center gana cuando una cita que agendó es asistida/completada. Se cuenta una vez por cita.'
                 : form.trigger === 'recommendation'
                 ? 'Se atribuye a quien figure como "recomendado por" en la venta.'
                 : form.trigger === 'sale'
                 ? 'Se gana al registrar la venta del producto/servicio.'
+                : form.trigger === 'referral'
+                ? 'El doctor que derivó al paciente gana cuando la cita derivada se completa.'
+                : form.trigger === 'admin_service'
+                ? 'El administrador gana por cada servicio atendido. Usa "varios servicios" para distinto monto por servicio.'
+                : form.trigger === 'call_center_commission'
+                ? 'El marketing gana en función de la comisión que devengue el call center al que está ligado.'
                 : 'Se gana al atender (doctor/enfermero) la cita que se completa.'}
             </span>
           </label>
+          {/* Marketing ligado a un call center */}
+          {isMarketingLink && (
+            <label className="block text-sm">Call center al que está ligado
+              <select value={form.linkedCallCenter} onChange={(e) => setForm({ ...form, linkedCallCenter: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
+                <option value="">— Seleccionar agente —</option>
+                {agents.map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
+              </select>
+              <span className="block mt-1 text-xs text-slate-400">El marketing ganará en función de lo que devengue este agente en el período.</span>
+            </label>
+          )}
+
           <div className="grid grid-cols-2 gap-3">
-            {/* El call center no se filtra por producto/servicio (comisiona por la cita agendada). */}
-            {!isCallCenter && (
+            {/* Call center y marketing-ligado no se filtran por producto. */}
+            {showSingleService && (
               <label className="block text-sm">Producto / Servicio / Ítem
                 <select value={form.service} onChange={(e) => setForm({ ...form, service: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
                   <option value="">Cualquier producto/servicio</option>
@@ -454,24 +563,84 @@ export default function CommissionRules() {
                 </select>
               </label>
             )}
-            <label className="block text-sm">Pacientes
-              <select value={form.patientScope} onChange={(e) => setForm({ ...form, patientScope: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
-                <option value="all">Todos los pacientes</option>
-                <option value="new">Solo pacientes nuevos</option>
-              </select>
-            </label>
+            {!isMarketingLink && (
+              <label className="block text-sm">Pacientes
+                <select value={form.patientScope} onChange={(e) => setForm({ ...form, patientScope: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
+                  <option value="all">Todos los pacientes</option>
+                  <option value="new">Solo pacientes nuevos</option>
+                </select>
+              </label>
+            )}
           </div>
-          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <label className="block text-sm">Monto de la comisión ($) <span className="text-slate-400 font-normal">(opcional)</span>
-              <NumericInput step="0.01" min="0" placeholder="0.00 — déjalo vacío para contar sin valor" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+
+          {/* Varios servicios con montos distintos (admin, etc.) */}
+          {canMultiService && (
+            <label className="flex items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={form.multiService}
+                onChange={(e) => setForm({
+                  ...form,
+                  multiService: e.target.checked,
+                  serviceAmounts: e.target.checked && form.serviceAmounts.length === 0 ? [{ ...EMPTY_SVC }] : form.serviceAmounts,
+                })}
+                className="w-4 h-4 accent-emerald-600"
+              />
+              Varios servicios con montos distintos
             </label>
-            <label className="block text-sm">Cuenta contable (gasto comisión)
-              <select value={form.account} onChange={(e) => setForm({ ...form, account: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
-                <option value="">Sin asignar</option>
-                {accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}
-              </select>
-            </label>
-          </div>
+          )}
+
+          {usingMulti ? (
+            <div className="bg-slate-50 rounded-lg p-3 space-y-2">
+              {form.serviceAmounts.map((row, i) => (
+                <div key={i} className="flex flex-wrap items-center gap-2 bg-white border border-slate-200 rounded-lg p-2">
+                  <select value={row.service} onChange={(e) => updateSvcRow(i, { service: e.target.value })} className="flex-1 min-w-[180px] border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+                    <option value="">— Servicio —</option>
+                    {services.map((s) => <option key={s._id} value={s._id}>{s.name} {s.category ? `(${s.category})` : ''}</option>)}
+                  </select>
+                  <ModeToggle value={row.amountType} onChange={(v) => updateSvcRow(i, { amountType: v })} />
+                  {row.amountType === 'percent' ? (
+                    <NumericInput step="0.01" min="0" max="100" placeholder="%" value={row.percent} onChange={(e) => updateSvcRow(i, { percent: e.target.value })} className="w-24 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+                  ) : (
+                    <NumericInput step="0.01" min="0" placeholder="$" value={row.amount} onChange={(e) => updateSvcRow(i, { amount: e.target.value })} className="w-24 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+                  )}
+                  <button type="button" onClick={() => removeSvcRow(i)} className="p-1 text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer"><HiOutlineTrash className="w-4 h-4" /></button>
+                </div>
+              ))}
+              <button type="button" onClick={addSvcRow} className="flex items-center gap-1 text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded-lg px-2.5 py-1.5 cursor-pointer border-solid">
+                <HiOutlinePlus className="w-3.5 h-3.5" /> Agregar servicio
+              </button>
+              <label className="block text-sm pt-1">Cuenta contable (gasto comisión)
+                <select value={form.account} onChange={(e) => setForm({ ...form, account: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
+                  <option value="">Sin asignar</option>
+                  {accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}
+                </select>
+              </label>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div className="text-sm">
+                <div className="flex items-center justify-between gap-2">
+                  <span>{form.amountType === 'percent' ? 'Porcentaje de comisión' : 'Monto de la comisión ($)'} <span className="text-slate-400 font-normal">(opcional)</span></span>
+                  <ModeToggle value={form.amountType} onChange={(v) => setForm({ ...form, amountType: v })} />
+                </div>
+                {form.amountType === 'percent' ? (
+                  <NumericInput step="0.01" min="0" max="100" placeholder="0 — % sobre lo que paga el paciente" value={form.percent} onChange={(e) => setForm({ ...form, percent: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+                ) : (
+                  <NumericInput step="0.01" min="0" placeholder="0.00 — déjalo vacío para contar sin valor" value={form.amount} onChange={(e) => setForm({ ...form, amount: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+                )}
+                {isMarketingLink && (
+                  <span className="block mt-1 text-xs text-slate-400">{form.amountType === 'percent' ? '% sobre la comisión total del agente.' : '$ por cada comisión que genere el agente.'}</span>
+                )}
+              </div>
+              <label className="block text-sm">Cuenta contable (gasto comisión)
+                <select value={form.account} onChange={(e) => setForm({ ...form, account: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
+                  <option value="">Sin asignar</option>
+                  {accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}
+                </select>
+              </label>
+            </div>
+          )}
           <label className="flex items-center gap-2 text-sm">
             <input type="checkbox" checked={form.scheduleEnabled} onChange={(e) => setForm({ ...form, scheduleEnabled: e.target.checked })} className="w-4 h-4 accent-emerald-600" />
             Aplicar solo en un horario específico
