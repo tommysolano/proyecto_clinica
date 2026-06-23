@@ -56,9 +56,12 @@ async function resolveServiceIds(clinicId, filters) {
   return null;
 }
 
+// CRM global: los cruces (tratamiento/inactividad/zona) abarcan TODA la organización,
+// no una sucursal, para que los segmentos/campañas alcancen a todos los pacientes.
+
 /** IDs de pacientes con un tratamiento que cumple estado/servicio. */
-async function patientIdsByTreatment(clinicObjId, filters, serviceIds) {
-  const treatmentMatch = { clinic: clinicObjId };
+async function patientIdsByTreatment(_clinicObjId, filters, serviceIds) {
+  const treatmentMatch = {};
   if (filters.treatmentStatus) treatmentMatch.status = filters.treatmentStatus;
   if (serviceIds) treatmentMatch['items.product'] = { $in: serviceIds };
   const rows = await Treatment.find(treatmentMatch).select('patient').lean();
@@ -66,10 +69,10 @@ async function patientIdsByTreatment(clinicObjId, filters, serviceIds) {
 }
 
 /** IDs de pacientes cuya última cita asistida fue hace >= N días. */
-async function patientIdsByInactivity(clinicObjId, days, now = new Date()) {
+async function patientIdsByInactivity(_clinicObjId, days, now = new Date()) {
   const cutoff = new Date(now.getTime() - Number(days) * 24 * 60 * 60 * 1000);
   const rows = await Appointment.aggregate([
-    { $match: { clinic: clinicObjId, status: { $in: ['asistida', 'completada'] } } },
+    { $match: { status: { $in: ['asistida', 'completada'] } } },
     { $group: { _id: '$patient', lastVisit: { $max: '$date' } } },
     { $match: { lastVisit: { $lte: cutoff } } },
   ]);
@@ -77,10 +80,8 @@ async function patientIdsByInactivity(clinicObjId, days, now = new Date()) {
 }
 
 /** IDs de pacientes con ventas en una zona facturada. */
-async function patientIdsByZone(clinicObjId, zone) {
-  const rows = await Sale.find({ clinic: clinicObjId, clientZone: zone })
-    .select('patient')
-    .lean();
+async function patientIdsByZone(_clinicObjId, zone) {
+  const rows = await Sale.find({ clientZone: zone }).select('patient').lean();
   return rows.map((s) => String(s.patient)).filter(Boolean);
 }
 
@@ -98,21 +99,21 @@ function intersectIdLists(lists) {
  * Devuelve { count, patients:[{ _id, name, phone, whatsapp, email, marketing }] }.
  */
 async function resolveSegment(clinicId, filters = {}, { limit = 5000 } = {}) {
-  const clinicObjId = new mongoose.Types.ObjectId(clinicId);
   const now = new Date();
-  const match = { ...buildPatientMatch(filters, now), clinic: clinicObjId };
+  // CRM global: el segmento abarca a los pacientes de TODA la organización (no por sucursal).
+  const match = buildPatientMatch(filters, now);
 
   // Restricciones que requieren cruzar colecciones → listas de patientId a intersectar.
   const crossLists = [];
   const serviceIds = await resolveServiceIds(clinicId, filters);
   if (filters.treatmentStatus || serviceIds) {
-    crossLists.push(await patientIdsByTreatment(clinicObjId, filters, serviceIds));
+    crossLists.push(await patientIdsByTreatment(null, filters, serviceIds));
   }
   if (filters.daysSinceLastVisit != null) {
-    crossLists.push(await patientIdsByInactivity(clinicObjId, filters.daysSinceLastVisit, now));
+    crossLists.push(await patientIdsByInactivity(null, filters.daysSinceLastVisit, now));
   }
   if (filters.zone) {
-    crossLists.push(await patientIdsByZone(clinicObjId, filters.zone));
+    crossLists.push(await patientIdsByZone(null, filters.zone));
   }
 
   const intersected = intersectIdLists(crossLists);

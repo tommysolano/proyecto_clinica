@@ -143,12 +143,13 @@ function extractProviderMessageId(result) {
   );
 }
 
+// CRM global: el paciente se busca en TODA la organización (no por sucursal), para
+// que las campañas/respuestas alcancen a pacientes de cualquier sede.
 async function findPatientByPhone(clinicId, phone) {
   const normalized = normalizePhone(phone);
   if (!normalized) return null;
   const tail = normalized.slice(-9);
   return Patient.findOne({
-    clinic: clinicId,
     $or: [
       { phone: { $regex: `${tail}$` } },
       { whatsapp: { $regex: `${tail}$` } },
@@ -160,7 +161,7 @@ async function resolvePatient({ clinicId, patient, conv, to }) {
   if (patient && patient._id && patient.marketing !== undefined) return patient;
   const patientId = patient?._id || patient || conv?.patient?._id || conv?.patient;
   if (patientId) {
-    const found = await Patient.findOne({ _id: patientId, clinic: clinicId });
+    const found = await Patient.findById(patientId);
     if (found) return found;
   }
   return findPatientByPhone(clinicId, to || conv?.phone);
@@ -315,7 +316,8 @@ function providerErrorMessage(result) {
 
 async function findPatientByEmail(clinicId, email) {
   if (!email) return null;
-  return Patient.findOne({ clinic: clinicId, email: String(email).toLowerCase().trim() });
+  // CRM global: busca por email en toda la organización.
+  return Patient.findOne({ email: String(email).toLowerCase().trim() });
 }
 
 /**
@@ -331,7 +333,7 @@ async function sendEmailChannel({ clinicId, to, patient, subject, body, ignoreOp
   else {
     const pid = patient?._id || patient;
     patientDoc = pid
-      ? await Patient.findOne({ _id: pid, clinic: clinicId })
+      ? await Patient.findById(pid)
       : await findPatientByEmail(clinicId, to);
   }
   if (!ignoreOptOut && patientDoc) {

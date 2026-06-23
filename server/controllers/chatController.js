@@ -119,13 +119,12 @@ exports.createConversation = async (req, res) => {
       return res.status(200).json(conv);
     }
 
-    // Vincular paciente si existe con ese teléfono
+    // Vincular paciente si existe con ese teléfono (CRM global: en toda la organización).
     let patient = null;
     if (req.body.patient) {
-      patient = await Patient.findOne({ _id: req.body.patient, clinic: req.clinicId });
+      patient = await Patient.findById(req.body.patient);
     } else {
       patient = await Patient.findOne({
-        clinic: req.clinicId,
         phone: { $regex: phone.slice(-9) + '$' },
       });
     }
@@ -1327,7 +1326,6 @@ exports.simulateIncoming = async (req, res) => {
     let isNewConversation = false;
     if (!conv) {
       const patient = await Patient.findOne({
-        clinic: req.clinicId,
         phone: { $regex: phone.slice(-9) + '$' },
       });
       conv = await Conversation.create({
@@ -1433,8 +1431,8 @@ async function findPatientForIncoming(clinicId, phone) {
   const normalized = normalizePhone(phone);
   if (!normalized) return null;
   const tail = normalized.slice(-9);
+  // CRM global: vincula al paciente esté en la sucursal que esté.
   return Patient.findOne({
-    clinic: clinicId,
     $or: [
       { phone: { $regex: `${tail}$` } },
       { whatsapp: { $regex: `${tail}$` } },
@@ -1446,7 +1444,7 @@ async function applyIncomingOptOut({ clinicId, conv, incomingText }) {
   if (!messaging.isOptOutText(incomingText)) return false;
   const patientId = conv.patient?._id || conv.patient;
   const patient = conv.patient
-    ? await Patient.findOne({ _id: patientId, clinic: clinicId })
+    ? await Patient.findById(patientId)
     : await findPatientForIncoming(clinicId, conv.phone);
   if (patient) {
     patient.marketing = {
@@ -1634,10 +1632,10 @@ exports.webhookWhatsappReceive = async (req, res) => {
     if (!signature.ok) {
       return res.status(403).json({ message: 'Firma invalida', code: signature.reason });
     }
-    // El call center es global: las conversaciones viven en la clínica "sede".
-    const clinicId = appCfg?.callCenterClinic;
+    // El call center es global: las conversaciones viven en la clínica ancla (auto).
+    const clinicId = await require('../utils/callCenterClinic').resolveCallCenterClinicId();
     if (!clinicId) {
-      return res.status(400).json({ message: 'Sede del call center (callCenterClinic) no configurada' });
+      return res.status(400).json({ message: 'No hay ninguna clínica registrada para el call center' });
     }
     const gateway = require('../utils/whatsappGateway');
     const entries = Array.isArray(req.body.entry) ? req.body.entry : [];

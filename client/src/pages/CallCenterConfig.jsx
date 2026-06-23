@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
-import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
 import Modal from '../components/Modal';
 import {
@@ -398,9 +397,8 @@ const blankAccount = () => ({
 });
 
 function WhatsappNumbersManager() {
-  const { clinics } = useAuth();
   const [appCfg, setAppCfg] = useState(null);
-  const [appDraft, setAppDraft] = useState({ appSecret: '', verifyToken: '', callCenterClinic: '' });
+  const [appDraft, setAppDraft] = useState({ appSecret: '', verifyToken: '' });
   const [savingApp, setSavingApp] = useState(false);
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -416,7 +414,7 @@ function WhatsappNumbersManager() {
         api.get('/call-center-config/whatsapp/accounts'),
       ]);
       setAppCfg(a.data);
-      setAppDraft({ appSecret: '', verifyToken: '', callCenterClinic: a.data.callCenterClinic || '' });
+      setAppDraft({ appSecret: '', verifyToken: '' });
       setAccounts(acc.data || []);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al cargar números de WhatsApp');
@@ -458,12 +456,12 @@ function WhatsappNumbersManager() {
   const saveApp = async () => {
     setSavingApp(true);
     try {
-      const payload = { callCenterClinic: appDraft.callCenterClinic || null };
+      const payload = {};
       if (appDraft.appSecret) payload.appSecret = appDraft.appSecret;
       if (appDraft.verifyToken) payload.verifyToken = appDraft.verifyToken;
       const r = await api.put('/call-center-config/whatsapp/app-config', payload);
       setAppCfg(r.data);
-      setAppDraft({ appSecret: '', verifyToken: '', callCenterClinic: r.data.callCenterClinic || '' });
+      setAppDraft({ appSecret: '', verifyToken: '' });
       toast.success('Configuración de WhatsApp guardada');
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al guardar');
@@ -606,7 +604,7 @@ function WhatsappNumbersManager() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <label className="block text-sm">
             <span className="text-slate-700 font-medium">App Secret</span>
             <input
@@ -630,20 +628,6 @@ function WhatsappNumbersManager() {
               className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono"
             />
             <span className="text-[11px] text-slate-400">El mismo que pongas en Meta.</span>
-          </label>
-          <label className="block text-sm">
-            <span className="text-slate-700 font-medium">Sede del call center (bandeja)</span>
-            <select
-              value={appDraft.callCenterClinic || ''}
-              onChange={(e) => setAppDraft({ ...appDraft, callCenterClinic: e.target.value })}
-              className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
-            >
-              <option value="">Selecciona…</option>
-              {(clinics || []).map((c) => (
-                <option key={c._id} value={c._id}>{c.name}</option>
-              ))}
-            </select>
-            <span className="text-[11px] text-slate-400">Dónde caen las conversaciones de WhatsApp.</span>
           </label>
         </div>
         <div className="flex justify-end">

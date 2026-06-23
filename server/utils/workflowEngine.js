@@ -409,7 +409,7 @@ async function executeEnrollment(enrollment) {
     return;
   }
   const patient = enrollment.patient
-    ? await Patient.findOne({ _id: enrollment.patient, clinic: enrollment.clinic })
+    ? await Patient.findById(enrollment.patient) // CRM global: paciente de cualquier sucursal
     : null;
   const ctx = enrollment.context || {};
   const phone = ctx.phone || patient?.whatsapp || patient?.phone || '';
@@ -679,8 +679,12 @@ async function executeEnrollment(enrollment) {
  * payload: { clinicId, patientId, appointmentId?, appointmentDate?, services?:[id], isFirstVisit? }
  */
 async function enrollForEvent(eventType, payload = {}) {
-  const { clinicId, patientId } = payload;
-  if (!clinicId || !patientId) return;
+  const { patientId } = payload;
+  if (!patientId) return;
+  // CRM global: los workflows viven en la clínica ancla del call center, y se disparan
+  // aunque el evento (cita/venta/cumpleaños) haya ocurrido en otra sucursal.
+  const clinicId = await require('./callCenterClinic').resolveCallCenterClinicId();
+  if (!clinicId) return;
   // Lógica OR: el evento coincide con `trigger` (legacy) o con cualquier `triggers[]`.
   const workflows = await Workflow.find({
     clinic: clinicId,
@@ -689,7 +693,7 @@ async function enrollForEvent(eventType, payload = {}) {
   });
   if (!workflows.length) return;
 
-  const patient = await Patient.findOne({ _id: patientId, clinic: clinicId });
+  const patient = await Patient.findById(patientId); // global
   if (!patient) return;
   const phone = patient.whatsapp || patient.phone || '';
   if (!phone) return;

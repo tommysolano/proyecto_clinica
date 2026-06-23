@@ -21,8 +21,7 @@
  */
 const mongoose = require('mongoose');
 const WhatsappAccount = require('../models/WhatsappAccount');
-const CallCenterWhatsappConfig = require('../models/CallCenterWhatsappConfig');
-const { emitToClinic, emitToUser } = require('../realtime');
+const { emitToCallCenter, emitToUser } = require('../realtime');
 
 // accountId(string) → { client, status }
 const clients = new Map();
@@ -49,13 +48,10 @@ function resolveChromePath() {
   }
 }
 
-// Emite el estado de un número a la UI (sede del call center) y, opcional, al usuario.
+// Emite el estado de un número a la UI del call center (sala global) y al usuario.
 async function emitStatus(accountId, payload, userId) {
   try {
-    const singleton = await CallCenterWhatsappConfig.getSingleton();
-    if (singleton.callCenterClinic) {
-      emitToClinic(singleton.callCenterClinic, 'whatsapp:status', { accountId: String(accountId), ...payload });
-    }
+    emitToCallCenter('whatsapp:status', { accountId: String(accountId), ...payload });
     if (userId) emitToUser(userId, 'whatsapp:status', { accountId: String(accountId), ...payload });
   } catch {
     /* noop */
@@ -142,10 +138,7 @@ async function connect(accountId, { userId } = {}) {
       /* noop */
     }
     const payload = { status: 'qr_pending', qr: dataUrl };
-    try {
-      const singleton = await CallCenterWhatsappConfig.getSingleton();
-      if (singleton.callCenterClinic) emitToClinic(singleton.callCenterClinic, 'whatsapp:qr', { accountId: key, ...payload });
-    } catch { /* noop */ }
+    emitToCallCenter('whatsapp:qr', { accountId: key, ...payload });
     if (userId) emitToUser(userId, 'whatsapp:qr', { accountId: key, ...payload });
   });
 
@@ -201,12 +194,12 @@ async function connect(accountId, { userId } = {}) {
       }
 
       const account2 = await WhatsappAccount.findById(accountId);
-      const singleton = await CallCenterWhatsappConfig.getSingleton();
-      if (!singleton.callCenterClinic) return;
+      const clinicId = await require('./callCenterClinic').resolveCallCenterClinicId();
+      if (!clinicId) return;
 
       const { ingestExternalMessage } = require('../controllers/chatController');
       await ingestExternalMessage({
-        clinicId: singleton.callCenterClinic,
+        clinicId,
         channel: 'whatsapp',
         account: account2,
         phone,
@@ -227,10 +220,10 @@ async function connect(accountId, { userId } = {}) {
       const status = ACK_STATUS[String(ack)];
       const externalId = msg.id?._serialized;
       if (!status || !externalId) return;
-      const singleton = await CallCenterWhatsappConfig.getSingleton();
-      if (!singleton.callCenterClinic) return;
+      const clinicId = await require('./callCenterClinic').resolveCallCenterClinicId();
+      if (!clinicId) return;
       const messaging = require('./messaging');
-      await messaging.updateMessageStatus({ clinicId: singleton.callCenterClinic, externalId, status });
+      await messaging.updateMessageStatus({ clinicId, externalId, status });
     } catch { /* noop */ }
   });
 

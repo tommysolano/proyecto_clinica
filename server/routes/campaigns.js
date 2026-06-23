@@ -3,6 +3,8 @@ const ctrl = require('../controllers/campaignController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
 router.use(auth, requireClinic);
+// CRM global: opera sobre la clínica ancla del call center (no por sucursal).
+router.use(require('../middleware/callCenterScope'));
 
 const ROLES = ['admin', 'marketing'];
 

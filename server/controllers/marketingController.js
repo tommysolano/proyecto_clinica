@@ -17,7 +17,6 @@ const messaging = require('../utils/messaging');
  */
 exports.dashboard = async (req, res) => {
   try {
-    const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
     const { startDate, endDate } = req.query;
     const dateMatch = {};
     if (startDate && endDate) {
@@ -27,13 +26,13 @@ exports.dashboard = async (req, res) => {
 
     // 1) Tratamientos: conteo por estado
     const treatmentsByStatus = await Treatment.aggregate([
-      { $match: { clinic: clinicObjId } },
+      { $match: {} },
       { $group: { _id: '$status', count: { $sum: 1 } } },
     ]);
 
     // 2) Servicios faltantes agregados (item.quantity - item.completed) por producto
     const missingServices = await Treatment.aggregate([
-      { $match: { clinic: clinicObjId, status: 'activo' } },
+      { $match: { status: 'activo' } },
       { $unwind: '$items' },
       {
         $project: {
@@ -57,7 +56,7 @@ exports.dashboard = async (req, res) => {
     ]);
 
     // 4) Estados de citas
-    const apptMatch = { clinic: clinicObjId };
+    const apptMatch = {};
     if (Object.keys(dateMatch).length) apptMatch.date = dateMatch;
     const apptStats = await Appointment.aggregate([
       { $match: apptMatch },
@@ -66,7 +65,6 @@ exports.dashboard = async (req, res) => {
 
     // 5) Pacientes con tratamiento incompleto (para campañas)
     const pendingTreatments = await Treatment.find({
-      clinic: clinicObjId,
       status: 'activo',
     })
       .populate('patient', 'firstName lastName phone email source')
@@ -83,7 +81,7 @@ exports.dashboard = async (req, res) => {
 
     // 6) Derivaciones por doctor (top)
     const refsByDoctor = await Referral.aggregate([
-      { $match: { clinic: clinicObjId } },
+      { $match: {} },
       { $group: { _id: '$fromDoctor', count: { $sum: 1 } } },
       { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'doctor' } },
       { $unwind: '$doctor' },
@@ -111,7 +109,6 @@ exports.dashboard = async (req, res) => {
  */
 exports.reminders = async (req, res) => {
   try {
-    const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
     const days = Number(req.query.daysSinceLastVisit || 14);
     const cutoff = new Date();
     cutoff.setDate(cutoff.getDate() - days);
@@ -127,7 +124,7 @@ exports.reminders = async (req, res) => {
       serviceIds = [new mongoose.Types.ObjectId(service)];
     }
 
-    const treatmentMatch = { clinic: clinicObjId, status: 'activo' };
+    const treatmentMatch = { status: 'activo' };
     if (serviceIds && serviceIds.length) {
       treatmentMatch['items.product'] = { $in: serviceIds };
     }
@@ -142,7 +139,6 @@ exports.reminders = async (req, res) => {
       if (t.progress >= 100) continue;
       // Última visita = última cita asistida/completada del paciente
       const last = await Appointment.findOne({
-        clinic: clinicObjId,
         patient: t.patient?._id,
         status: { $in: ['asistida', 'completada'] },
       })
@@ -201,11 +197,14 @@ exports.sendBulkWhatsapp = async (req, res) => {
         .replace(/\{\{\s*nombre\s*\}\}/gi, r.name || '')
         .replace(/\{\{\s*name\s*\}\}/gi, r.name || '');
 
+    // CRM global: las conversaciones caen en la bandeja única (clínica ancla).
+    const ccClinic = await require('../utils/callCenterClinic').resolveCallCenterClinicId();
+
     const results = [];
     for (const r of validRecipients) {
       // eslint-disable-next-line no-await-in-loop
       const result = await messaging.send({
-        clinicId: req.clinicId,
+        clinicId: ccClinic || req.clinicId,
         channel: 'whatsapp',
         to: r.whatsapp || r.phone,
         contactName: r.name || '',
@@ -248,7 +247,6 @@ exports.sendBulkWhatsapp = async (req, res) => {
  */
 exports.predictions = async (req, res) => {
   try {
-    const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
     const since = new Date();
     since.setMonth(since.getMonth() - 12);
 
@@ -256,7 +254,6 @@ exports.predictions = async (req, res) => {
     const byMonth = await Sale.aggregate([
       {
         $match: {
-          clinic: clinicObjId,
           status: 'completada',
           createdAt: { $gte: since },
         },
@@ -380,9 +377,8 @@ function resolveRange(query) {
  */
 exports.incompleteServices = async (req, res) => {
   try {
-    const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
     const data = await Treatment.aggregate([
-      { $match: { clinic: clinicObjId, status: { $in: ['abandonado', 'completado', 'activo'] } } },
+      { $match: { status: { $in: ['abandonado', 'completado', 'activo'] } } },
       { $unwind: '$items' },
       {
         $project: {
@@ -448,7 +444,6 @@ exports.incompleteServices = async (req, res) => {
  */
 exports.serviceEvolution = async (req, res) => {
   try {
-    const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
     const { service } = req.query;
     if (!service) {
       return res.status(400).json({ message: 'Falta el parámetro service (productId).' });
@@ -463,7 +458,6 @@ exports.serviceEvolution = async (req, res) => {
     const fromSales = await Sale.aggregate([
       {
         $match: {
-          clinic: clinicObjId,
           ...(Object.keys(dateMatch).length ? { createdAt: dateMatch } : {}),
         },
       },
@@ -482,7 +476,6 @@ exports.serviceEvolution = async (req, res) => {
     const fromAppts = await Appointment.aggregate([
       {
         $match: {
-          clinic: clinicObjId,
           'services.product': productId,
           ...(Object.keys(dateMatch).length ? { date: dateMatch } : {}),
         },
@@ -530,12 +523,11 @@ exports.serviceEvolution = async (req, res) => {
  */
 exports.heatmap = async (req, res) => {
   try {
-    const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
     const { GUAYAQUIL_ZONES, findZone } = require('../utils/guayaquilZones');
     const { from, to } = resolveRange(req.query);
     const { service, program } = req.query;
 
-    const saleMatch = { clinic: clinicObjId };
+    const saleMatch = {};
     if (from || to) {
       saleMatch.createdAt = {};
       if (from) saleMatch.createdAt.$gte = from;
@@ -635,9 +627,7 @@ exports.guayaquilZones = async (_req, res) => {
  */
 exports.programs = async (req, res) => {
   try {
-    const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
     const programs = await Product.find({
-      clinic: clinicObjId,
       category: 'programa',
       active: true,
     })
@@ -648,7 +638,7 @@ exports.programs = async (req, res) => {
 
     // Conteo total de uso (todas las fechas)
     const salesCount = await Sale.aggregate([
-      { $match: { clinic: clinicObjId } },
+      { $match: {} },
       { $unwind: '$items' },
       { $match: { 'items.product': { $in: programIds } } },
       { $group: { _id: '$items.product', count: { $sum: '$items.quantity' } } },
@@ -661,7 +651,7 @@ exports.programs = async (req, res) => {
     oneYearAgo.setDate(1);
     oneYearAgo.setHours(0, 0, 0, 0);
     const monthly = await Sale.aggregate([
-      { $match: { clinic: clinicObjId, createdAt: { $gte: oneYearAgo } } },
+      { $match: { createdAt: { $gte: oneYearAgo } } },
       { $unwind: '$items' },
       { $match: { 'items.product': { $in: programIds } } },
       {
@@ -710,7 +700,6 @@ exports.programs = async (req, res) => {
  */
 exports.nextWeek = async (req, res) => {
   try {
-    const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
     const today = new Date();
     today.setHours(0, 0, 0, 0);
     const sevenAhead = new Date(today);
@@ -720,7 +709,6 @@ exports.nextWeek = async (req, res) => {
     const scheduled = await Appointment.aggregate([
       {
         $match: {
-          clinic: clinicObjId,
           date: { $gte: today, $lte: sevenAhead },
           status: { $nin: ['cancelada'] },
         },
@@ -738,7 +726,6 @@ exports.nextWeek = async (req, res) => {
     const services = await Appointment.aggregate([
       {
         $match: {
-          clinic: clinicObjId,
           date: { $gte: today, $lte: sevenAhead },
           status: { $nin: ['cancelada'] },
         },
@@ -761,7 +748,6 @@ exports.nextWeek = async (req, res) => {
     const historical = await Appointment.aggregate([
       {
         $match: {
-          clinic: clinicObjId,
           date: { $gte: fourWeeksAgo, $lte: today },
         },
       },
@@ -791,10 +777,9 @@ exports.nextWeek = async (req, res) => {
  */
 exports.appointmentsBreakdown = async (req, res) => {
   try {
-    const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
     const { service, program } = req.query;
     const { from, to } = resolveRange(req.query);
-    const match = { clinic: clinicObjId };
+    const match = {};
     if (from || to) {
       match.date = {};
       if (from) match.date.$gte = from;
@@ -883,9 +868,8 @@ exports.appointmentsBreakdown = async (req, res) => {
  */
 exports.attribution = async (req, res) => {
   try {
-    const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
     const { from, to } = resolveRange(req.query);
-    const match = { clinic: clinicObjId, active: true };
+    const match = { active: true };
     if (from || to) {
       match.createdAt = {};
       if (from) match.createdAt.$gte = from;
@@ -909,7 +893,7 @@ exports.attribution = async (req, res) => {
     const allIds = groups.flatMap((g) => g.ids);
     const salesByPatient = allIds.length
       ? await Sale.aggregate([
-          { $match: { clinic: clinicObjId, patient: { $in: allIds } } },
+          { $match: { patient: { $in: allIds } } },
           { $group: { _id: '$patient', total: { $sum: '$total' } } },
         ])
       : [];
@@ -941,9 +925,8 @@ exports.attribution = async (req, res) => {
  */
 exports.referrers = async (req, res) => {
   try {
-    const clinicObjId = new mongoose.Types.ObjectId(req.clinicId);
     const { from, to } = resolveRange(req.query);
-    const match = { clinic: clinicObjId, source: 'referido' };
+    const match = { source: 'referido' };
     if (from || to) {
       match.createdAt = {};
       if (from) match.createdAt.$gte = from;

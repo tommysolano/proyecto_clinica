@@ -19,8 +19,8 @@ exports.attentionReport = async (req, res) => {
     const endDate = end ? new Date(end) : new Date();
     endDate.setHours(23, 59, 59, 999);
 
+    // CRM/marketing global: atenciones de TODA la organización (no por sucursal).
     const query = {
-      clinic: req.clinicId,
       status: 'completada',
       date: { $gte: startDate, $lte: endDate },
     };
@@ -91,7 +91,7 @@ exports.attentionReport = async (req, res) => {
  */
 exports.patientAdherence = async (req, res) => {
   try {
-    const treatments = await Treatment.find({ clinic: req.clinicId, patient: req.params.patientId })
+    const treatments = await Treatment.find({ patient: req.params.patientId })
       .populate('prescribedBy', 'name')
       .sort({ createdAt: -1 });
     const data = treatments.map((t) => ({

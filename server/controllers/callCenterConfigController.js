@@ -370,12 +370,8 @@ exports.testWhatsappAccount = async (req, res) => {
 // Config a nivel de app (compartida): appSecret/verifyToken del webhook + sede.
 exports.getWhatsappAppConfig = async (req, res) => {
   try {
+    // La clínica ancla del CRM se resuelve automáticamente (no se elige en la UI).
     const cfg = await CallCenterWhatsappConfig.getSingleton();
-    // Por comodidad, la sede por defecto es la clínica activa de quien configura.
-    if (!cfg.callCenterClinic) {
-      cfg.callCenterClinic = req.clinicId;
-      await cfg.save();
-    }
     res.json(appConfigPayload(req, cfg));
   } catch (err) {
     res.status(500).json({ message: 'Error', error: err.message });
@@ -396,6 +392,7 @@ exports.updateWhatsappAppConfig = async (req, res) => {
     if ('callCenterClinic' in req.body) cfg.callCenterClinic = req.body.callCenterClinic || null;
     cfg.updatedBy = req.user._id;
     await cfg.save();
+    require('../utils/callCenterClinic').clearCache();
     res.json(appConfigPayload(req, cfg));
   } catch (err) {
     res.status(500).json({ message: 'Error', error: err.message });
