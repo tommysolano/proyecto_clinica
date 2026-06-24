@@ -37,6 +37,7 @@ export default function PurchaseInvoices() {
   const [sort, setSort] = useState('fecha_desc');
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
+  const [pendingTotal, setPendingTotal] = useState(0); // total real de "por autorizar" (todas las páginas)
   const [journalInv, setJournalInv] = useState(null); // factura cuyo asiento se edita
   const [payInv, setPayInv] = useState(null); // factura a pagar
   const [payForm, setPayForm] = useState({ method: 'TRANSFERENCIA', bankAccount: '', voucherNumber: '', checkNumber: '', amount: 0, date: today() });
@@ -46,7 +47,16 @@ export default function PurchaseInvoices() {
       const r = await api.get('/purchase-invoices', { params: { q: search || undefined, status: statusFilter || undefined, sort, page, limit: PAGE_SIZE } });
       setList(r.data?.items || r.data || []);
       setTotal(r.data?.total ?? (r.data?.items?.length || 0));
+      loadPendingCount();
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+  };
+
+  // Total real de facturas pendientes de autorizar (de todas, no solo la página visible).
+  const loadPendingCount = async () => {
+    try {
+      const r = await api.get('/purchase-invoices', { params: { status: 'POR_AUTORIZAR', limit: 1 } });
+      setPendingTotal(r.data?.total ?? 0);
+    } catch { /* sin bloquear la vista */ }
   };
   useEffect(() => {
     api.get('/suppliers').then((r) => setSuppliers(r.data || []));
@@ -82,7 +92,6 @@ export default function PurchaseInvoices() {
   // Aplica una cuenta recurrente a todos los ítems que aún no tienen cuenta.
   const applyRecurring = (accId) => setForm((f) => ({ ...f, items: f.items.map((it) => ((it.accountSplits || []).length ? it : { ...it, account: accId })) }));
 
-  const pendingCount = list.filter((p) => p.status === 'POR_AUTORIZAR').length;
 
   const totals = (() => {
     let s0 = 0, s12 = 0, s15 = 0, sNo = 0, sEx = 0, iva = 0;
@@ -265,7 +274,7 @@ export default function PurchaseInvoices() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineDocumentText className="text-emerald-600" /> Compras
-          {pendingCount > 0 && <span className="text-xs font-medium px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">{pendingCount} por autorizar</span>}
+          {pendingTotal > 0 && <span className="text-xs font-medium px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">{pendingTotal} por autorizar</span>}
         </h1>
         <div className="flex gap-2">
           {hasRole('admin') && <button onClick={wipeAll} title="Borrar todas las compras de esta sucursal (reinicio)" className="px-4 py-2 bg-rose-600 text-white rounded-lg flex items-center gap-2"><HiOutlineXMark /> Reiniciar compras</button>}
