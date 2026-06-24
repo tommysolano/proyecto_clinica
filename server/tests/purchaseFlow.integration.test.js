@@ -99,4 +99,11 @@ test('flujo compras: import TXT (pendiente) → autorizar (CxP, recurrente) → 
       { params: { id: String(inv._id) } })
   );
   assert.equal(bad.statusCode, 400, 'debe rechazar asiento descuadrado');
+
+  // 4) Reimportar el MISMO archivo no duplica: todas se omiten (caso del usuario).
+  const reimport = await runController(purchaseCtrl.importTxt, mockReq(clinicId, userId, { content: SRI_TXT }));
+  assert.equal(reimport.statusCode, 200);
+  assert.equal(reimport.payload.created, 0, 'no debe crear duplicados');
+  assert.equal(reimport.payload.skipped, 2, 'las 2 ya estaban registradas');
+  assert.equal(await PurchaseInvoice.countDocuments({ clinic: clinicId }), 2, 'sigue habiendo solo 2 facturas');
 });

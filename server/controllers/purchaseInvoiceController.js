@@ -547,53 +547,94 @@ function parseSriReport(raw) {
  * Importa el reporte TXT del SRI. Crea/asocia el proveedor por RUC y deja cada factura
  * en estado POR_AUTORIZAR conservando los montos exactos del SRI: el contador asigna
  * cuentas/inventario antes de contabilizar.
+ *
+ * Trabaja por LOTES (pocas consultas en total) para no colgarse con archivos grandes
+ * sobre bases remotas lentas: 1 consulta de proveedores + insert de faltantes,
+ * 1 consulta de duplicados, 1 insertMany de las facturas nuevas.
  */
 exports.importTxt = async (req, res) => {
   try {
     const raw = req.body?.content || req.body?.text;
     if (!raw) return res.status(400).json({ message: 'content vacío' });
     const { rows, errors } = parseSriReport(raw);
-    if (!rows.length && !errors.length) return res.status(400).json({ message: 'archivo vacío' });
+    if (!rows.length) return res.json({ created: 0, skipped: 0, errors });
+
+    // 1) Proveedores: trae los existentes por RUC en una sola consulta; crea los faltantes.
+    const rucs = [...new Set(rows.map((r) => r.ruc))];
+    const existingSups = await Supplier.find({ clinic: req.clinicId, ruc: { $in: rucs } });
+    const supByRuc = new Map(existingSups.map((s) => [s.ruc, s]));
+    const newSupplierDocs = [];
+    for (const ruc of rucs) {
+      if (supByRuc.has(ruc)) continue;
+      const row = rows.find((r) => r.ruc === ruc);
+      newSupplierDocs.push({ clinic: req.clinicId, ruc, razonSocial: row?.razonSocial || ruc });
+    }
+    if (newSupplierDocs.length) {
+      const created = await Supplier.insertMany(newSupplierDocs, { ordered: false }).catch(async () => {
+        // Ante una carrera/duplicado, recarga el set completo.
+        return Supplier.find({ clinic: req.clinicId, ruc: { $in: rucs } });
+      });
+      for (const s of created) supByRuc.set(s.ruc, s);
+    }
+
+    // 2) Duplicados: una sola consulta por clave de acceso o (proveedor, serie).
+    const claves = [...new Set(rows.map((r) => r.claveAcceso).filter(Boolean))];
+    const serieKeys = rows
+      .map((r) => ({ supplier: supByRuc.get(r.ruc)?._id, serie: r.serie }))
+      .filter((x) => x.supplier && x.serie);
+    const dupOr = [];
+    if (claves.length) dupOr.push({ claveAcceso: { $in: claves } });
+    if (serieKeys.length) dupOr.push({ $or: serieKeys.map((s) => ({ supplier: s.supplier, serie: s.serie })) });
+    const existingInv = dupOr.length
+      ? await PurchaseInvoice.find({ clinic: req.clinicId, $or: dupOr }).select('claveAcceso supplier serie')
+      : [];
+    const existingClaves = new Set(existingInv.map((e) => e.claveAcceso).filter(Boolean));
+    const existingSerieKeys = new Set(existingInv.map((e) => `${e.supplier}|${e.serie}`));
+
+    // 3) Construye los documentos nuevos (deduplicando también dentro del propio archivo).
+    let skipped = 0;
+    const seenInFile = new Set();
+    const docs = [];
+    for (const r of rows) {
+      const sup = supByRuc.get(r.ruc);
+      if (!sup) { errors.push({ line: r.line, error: `No se pudo crear/encontrar el proveedor ${r.ruc}` }); continue; }
+      const serieKey = `${sup._id}|${r.serie}`;
+      const fileKey = r.claveAcceso || serieKey;
+      if (seenInFile.has(fileKey)) { skipped++; continue; }
+      seenInFile.add(fileKey);
+      if ((r.claveAcceso && existingClaves.has(r.claveAcceso)) || (r.serie && existingSerieKeys.has(serieKey))) { skipped++; continue; }
+      docs.push({
+        clinic: req.clinicId, supplier: sup._id,
+        docType: r.docType,
+        estab: r.estab, ptoEmi: r.ptoEmi, secuencial: r.secuencial,
+        serie: r.serie, claveAcceso: r.claveAcceso, autorizacion: r.claveAcceso,
+        fechaEmision: r.fechaEmision,
+        items: [{
+          description: `Compra a ${sup.razonSocial || r.razonSocial || r.ruc} (importado SRI)`,
+          quantity: 1, unitPrice: r.subtotal, discount: 0,
+          subtotal: r.subtotal, ivaRate: r.ivaRate, ivaAmount: r.iva,
+          account: sup.defaultExpenseAccount || null,
+        }],
+        // Conserva los montos EXACTOS del SRI (no se recalculan al importar).
+        subtotal0: r.ivaRate === 0 ? r.subtotal : 0,
+        subtotal12: r.ivaRate === 12 ? r.subtotal : 0,
+        subtotal15: r.ivaRate === 15 ? r.subtotal : 0,
+        subtotal: r.subtotal, iva: r.iva, total: r.total, balance: r.total,
+        status: 'POR_AUTORIZAR', importedFromTxt: true, createdBy: req.user._id,
+      });
+    }
 
     let created = 0;
-    let skipped = 0;
-    for (const r of rows) {
-      try {
-        let sup = await Supplier.findOne({ clinic: req.clinicId, ruc: r.ruc });
-        if (!sup) sup = await Supplier.create({ clinic: req.clinicId, ruc: r.ruc, razonSocial: r.razonSocial || r.ruc });
-        else if (r.razonSocial && (!sup.razonSocial || sup.razonSocial === sup.ruc)) { sup.razonSocial = r.razonSocial; await sup.save(); }
-
-        // Evita duplicados por clave de acceso o por serie del mismo proveedor.
-        if (r.serie || r.claveAcceso) {
-          const dupFilter = r.claveAcceso
-            ? { clinic: req.clinicId, $or: [{ claveAcceso: r.claveAcceso }, ...(r.serie ? [{ supplier: sup._id, serie: r.serie }] : [])] }
-            : { clinic: req.clinicId, supplier: sup._id, serie: r.serie };
-          const dup = await PurchaseInvoice.findOne(dupFilter);
-          if (dup) { skipped++; continue; }
-        }
-
-        await PurchaseInvoice.create({
-          clinic: req.clinicId, supplier: sup._id,
-          docType: r.docType,
-          estab: r.estab, ptoEmi: r.ptoEmi, secuencial: r.secuencial,
-          serie: r.serie, claveAcceso: r.claveAcceso, autorizacion: r.claveAcceso,
-          fechaEmision: r.fechaEmision,
-          items: [{
-            description: `Compra a ${sup.razonSocial || r.razonSocial || r.ruc} (importado SRI)`,
-            quantity: 1, unitPrice: r.subtotal, discount: 0,
-            subtotal: r.subtotal, ivaRate: r.ivaRate, ivaAmount: r.iva,
-            account: sup.defaultExpenseAccount || null,
-          }],
-          // Conserva los montos EXACTOS del SRI (no se recalculan al importar).
-          subtotal0: r.ivaRate === 0 ? r.subtotal : 0,
-          subtotal12: r.ivaRate === 12 ? r.subtotal : 0,
-          subtotal15: r.ivaRate === 15 ? r.subtotal : 0,
-          subtotal: r.subtotal, iva: r.iva, total: r.total, balance: r.total,
-          status: 'POR_AUTORIZAR', importedFromTxt: true, createdBy: req.user._id,
-        });
-        created++;
-      } catch (err) { errors.push({ line: r.line, error: err.message }); }
+    if (docs.length) {
+      const inserted = await PurchaseInvoice.insertMany(docs, { ordered: false }).catch((e) => {
+        // Con ordered:false, los duplicados que se colaron se cuentan como omitidos.
+        const ok = e?.insertedDocs?.length || 0;
+        skipped += docs.length - ok;
+        return e?.insertedDocs || [];
+      });
+      created = inserted.length;
     }
+
     res.json({ created, skipped, errors });
   } catch (e) {
     res.status(500).json({ message: e.message });
@@ -602,6 +643,72 @@ exports.importTxt = async (req, res) => {
 
 // Exporta el parser puro para pruebas unitarias.
 exports._parseSriReport = parseSriReport;
+
+/**
+ * Borra TODAS las facturas de compra de la clínica actual y sus artefactos
+ * (asientos, CxP, movimientos y capas de inventario), recalculando el stock.
+ * Pensado para limpiar importaciones erróneas cuando no hay acceso a consola (Render).
+ * Requiere body { confirm: 'BORRAR-COMPRAS' }. Si hay pagos aplicados, exige force:true.
+ */
+exports.wipeAll = async (req, res) => {
+  try {
+    if (req.body?.confirm !== 'BORRAR-COMPRAS') {
+      return res.status(400).json({ message: "Confirmación requerida: envía confirm: 'BORRAR-COMPRAS'" });
+    }
+    const JournalEntry = require('../models/JournalEntry');
+    const Payable = require('../models/Payable');
+    const InventoryLayer = require('../models/InventoryLayer');
+    const Payment = require('../models/Payment');
+
+    const invoices = await PurchaseInvoice.find({ clinic: req.clinicId }).select('_id items');
+    const invoiceIds = invoices.map((i) => i._id);
+    if (!invoiceIds.length) return res.json({ message: 'No hay compras para borrar', invoices: 0 });
+
+    // Bloquea si hay pagos vigentes aplicados a estas compras (quedarían colgados).
+    const paymentsWithPurchase = await Payment.countDocuments({
+      clinic: req.clinicId, status: { $ne: 'ANULADO' },
+      'applications.docModel': 'PurchaseInvoice', 'applications.docRef': { $in: invoiceIds },
+    });
+    if (paymentsWithPurchase && req.body?.force !== true) {
+      return res.status(409).json({
+        message: `Hay ${paymentsWithPurchase} pago(s) aplicados a estas compras. Anúlalos primero, o reintenta con force.`,
+        payments: paymentsWithPurchase,
+      });
+    }
+
+    // Productos afectados (para recalcular su stock tras borrar las capas).
+    const affected = new Set();
+    for (const inv of invoices) for (const it of inv.items || []) if (it.product) affected.add(String(it.product));
+    const refScope = { clinic: req.clinicId, sourceModel: 'PurchaseInvoice', sourceRef: { $in: invoiceIds } };
+    const layerProducts = await InventoryLayer.find(refScope).select('product');
+    for (const l of layerProducts) if (l.product) affected.add(String(l.product));
+
+    const [jr, pr, mr, lr, ir] = await Promise.all([
+      JournalEntry.deleteMany(refScope),
+      Payable.deleteMany(refScope),
+      InventoryMovement.deleteMany(refScope),
+      InventoryLayer.deleteMany(refScope),
+      PurchaseInvoice.deleteMany({ clinic: req.clinicId, _id: { $in: invoiceIds } }),
+    ]);
+
+    let recalced = 0;
+    for (const pid of affected) {
+      const prod = await Product.findOne({ _id: pid, clinic: req.clinicId });
+      if (!prod) continue;
+      const cur = await kardex.currentStock({ clinicId: req.clinicId, product: prod._id });
+      prod.stock = cur.qty;
+      prod.averageCost = cur.averageCost;
+      await prod.save();
+      recalced++;
+    }
+
+    res.json({
+      message: 'Compras borradas',
+      invoices: ir.deletedCount, journals: jr.deletedCount, payables: pr.deletedCount,
+      movements: mr.deletedCount, layers: lr.deletedCount, productsRecalculated: recalced,
+    });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
 
 /**
  * Importa facturas de compra desde XML del SRI (factura electrónica).

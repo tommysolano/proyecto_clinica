@@ -7,15 +7,18 @@ import { HiOutlinePlus, HiOutlineDocumentText, HiOutlineArrowDownTray, HiOutline
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import JournalEntryEditor from '../../components/JournalEntryEditor';
+import { useAuth } from '../../context/AuthContext';
 
 const EMPTY_ITEM = { description: '', quantity: 1, unitPrice: 0, discount: 0, ivaRate: 15, account: '', accountSplits: [], product: '', warehouse: '', lot: '', expiryDate: '' };
 const EMPTY = { supplier: '', docType: 'FACTURA', estab: '001', ptoEmi: '001', secuencial: '', serie: '', claveAcceso: '', autorizacion: '', fechaEmision: today(), fechaVencimiento: '', items: [{ ...EMPTY_ITEM }], retentions: [], retentionNumber: '' };
 
 export default function PurchaseInvoices() {
+  const { hasRole } = useAuth();
   const [list, setList] = useState([]);
   const [show, setShow] = useState(false);
   const [showImport, setShowImport] = useState(false);
   const [importMode, setImportMode] = useState('xml'); // 'xml' | 'txt'
+  const [importing, setImporting] = useState(false);
   const [importTxt, setImportTxt] = useState('');
   const [importTxtName, setImportTxtName] = useState('');
   const [xmlContents, setXmlContents] = useState([]); // array de strings XML
@@ -173,26 +176,51 @@ export default function PurchaseInvoices() {
   };
 
   const submitImport = async () => {
+    if (importing) return; // evita doble envío
+    if (importMode === 'xml' && !xmlContents.length) return toast.error('Carga al menos un archivo XML');
+    if (importMode === 'txt' && !importTxt.trim()) return toast.error('Carga un archivo .txt');
+    setImporting(true);
     try {
-      let r;
-      if (importMode === 'xml') {
-        if (!xmlContents.length) return toast.error('Carga al menos un archivo XML');
-        r = await api.post('/purchase-invoices/import-xml', { xmls: xmlContents });
-      } else {
-        if (!importTxt.trim()) return toast.error('Carga un archivo .txt');
-        r = await api.post('/purchase-invoices/import-txt', { text: importTxt });
-      }
+      const r = importMode === 'xml'
+        ? await api.post('/purchase-invoices/import-xml', { xmls: xmlContents }, { timeout: 120000 })
+        : await api.post('/purchase-invoices/import-txt', { text: importTxt }, { timeout: 120000 });
       const { created = 0, skipped = 0, errors = [] } = r.data || {};
       if (created === 0 && errors.length) {
-        // No se importó nada: muestra el detalle del primer error para que el usuario lo entienda.
         const first = errors[0];
         toast.error(`No se importó ninguna fila. ${errors.length} con error. Ej. línea ${first.line || first.index || '?'}: ${first.error || ''}`);
+      } else if (created === 0 && skipped > 0) {
+        toast(`Nada nuevo: las ${skipped} facturas del archivo ya estaban registradas.`, { icon: 'ℹ️' });
       } else {
-        toast.success(`${created} importadas${skipped ? `, ${skipped} repetidas` : ''}${errors.length ? `, ${errors.length} con error` : ''}`);
+        toast.success(`${created} importada(s)${skipped ? `, ${skipped} repetida(s)` : ''}${errors.length ? `, ${errors.length} con error` : ''}`);
+        if (created) toast('Quedan POR AUTORIZAR. Revísalas y autorízalas.', { icon: 'ℹ️' });
       }
-      if (importMode === 'xml' && created) toast('Quedan POR AUTORIZAR. Revísalas y autorízalas.', { icon: 'ℹ️' });
-      if (created > 0 || importMode === 'xml') { setShowImport(false); setXmlContents([]); setImportTxt(''); setImportTxtName(''); load(); }
-    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+      // Siempre cierra el modal y recarga la lista para que el usuario vea el resultado.
+      setShowImport(false); setXmlContents([]); setImportTxt(''); setImportTxtName(''); load();
+    } catch (e) {
+      const msg = e.code === 'ECONNABORTED' ? 'La importación tardó demasiado. Intenta con un archivo más pequeño o reintenta.' : (e.response?.data?.message || 'Error al importar');
+      toast.error(msg);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  // Reinicio de compras: borra todas las facturas de esta sucursal (importaciones erróneas).
+  const wipeAll = async () => {
+    const phrase = window.prompt('⚠ Esto BORRARÁ todas las facturas de COMPRAS de esta sucursal y sus asientos, CxP e inventario asociados. Esta acción no se puede deshacer.\n\nEscribe BORRAR-COMPRAS para confirmar:');
+    if (phrase !== 'BORRAR-COMPRAS') { if (phrase !== null) toast.error('Texto de confirmación incorrecto'); return; }
+    const callWipe = async (force) => api.post('/purchase-invoices/wipe', { confirm: 'BORRAR-COMPRAS', ...(force ? { force: true } : {}) });
+    try {
+      const r = await callWipe(false);
+      toast.success(`Borradas ${r.data.invoices} compra(s)`);
+      load();
+    } catch (e) {
+      if (e.response?.status === 409 && window.confirm(`${e.response.data.message}\n\n¿Borrar de todas formas (los pagos quedarán inconsistentes)?`)) {
+        try { const r2 = await callWipe(true); toast.success(`Borradas ${r2.data.invoices} compra(s)`); load(); }
+        catch (e2) { toast.error(e2.response?.data?.message || 'Error'); }
+      } else {
+        toast.error(e.response?.data?.message || 'Error');
+      }
+    }
   };
 
   const onXmlFiles = (files) => {
@@ -212,6 +240,7 @@ export default function PurchaseInvoices() {
           {pendingCount > 0 && <span className="text-xs font-medium px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">{pendingCount} por autorizar</span>}
         </h1>
         <div className="flex gap-2">
+          {hasRole('admin') && <button onClick={wipeAll} title="Borrar todas las compras de esta sucursal (reinicio)" className="px-4 py-2 bg-rose-600 text-white rounded-lg flex items-center gap-2"><HiOutlineXMark /> Reiniciar compras</button>}
           <button onClick={() => { setImportMode('xml'); setShowImport(true); }} className="px-4 py-2 bg-amber-500 text-white rounded-lg flex items-center gap-2"><HiOutlineArrowDownTray /> Importar SRI</button>
           <button onClick={() => { setForm(EMPTY); setAuthorizeId(null); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
         </div>
@@ -455,7 +484,7 @@ export default function PurchaseInvoices() {
             )}
           </div>
         )}
-        <div className="flex justify-end gap-2 mt-3"><button onClick={() => setShowImport(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button onClick={submitImport} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Importar</button></div>
+        <div className="flex justify-end gap-2 mt-3"><button onClick={() => setShowImport(false)} disabled={importing} className="px-4 py-2 bg-slate-200 rounded-xl disabled:opacity-50">Cancelar</button><button onClick={submitImport} disabled={importing} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 disabled:opacity-60">{importing ? 'Importando…' : 'Importar'}</button></div>
       </Modal>
 
       {/* Editor del asiento contable (debe/haber) de la compra */}
