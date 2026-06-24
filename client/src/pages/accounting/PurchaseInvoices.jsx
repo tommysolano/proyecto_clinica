@@ -1,4 +1,4 @@
-import { useEffect, useState, Fragment } from 'react';
+import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
@@ -7,6 +7,7 @@ import { HiOutlinePlus, HiOutlineDocumentText, HiOutlineArrowDownTray, HiOutline
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import JournalEntryEditor from '../../components/JournalEntryEditor';
+import SearchableSelect from '../../components/SearchableSelect';
 import { useAuth } from '../../context/AuthContext';
 
 const EMPTY_ITEM = { description: '', quantity: 1, unitPrice: 0, discount: 0, ivaRate: 15, account: '', accountSplits: [], product: '', warehouse: '', lot: '', expiryDate: '' };
@@ -92,6 +93,7 @@ export default function PurchaseInvoices() {
 
   const submit = async (e) => {
     e.preventDefault();
+    if (!form.supplier) return toast.error('Selecciona un proveedor');
     for (const it of form.items) {
       if ((it.accountSplits || []).length) {
         const base = +((it.quantity || 0) * (it.unitPrice || 0) - (it.discount || 0)).toFixed(2);
@@ -297,26 +299,31 @@ export default function PurchaseInvoices() {
         </table>
       </div>
 
-      <Modal isOpen={show} onClose={() => { setShow(false); setAuthorizeId(null); }} title={authorizeId ? 'Verificar y autorizar factura' : 'Nueva factura de compra'} size="xl">
+      <Modal isOpen={show} onClose={() => { setShow(false); setAuthorizeId(null); }} title={authorizeId ? 'Verificar y autorizar factura' : 'Nueva factura de compra'} size="2xl">
         <form onSubmit={submit} className="space-y-3">
           {authorizeId && <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2">Factura cargada automáticamente. Verifica los datos y asigna la cuenta contable de cada ítem antes de autorizar; al autorizar se contabilizará.</div>}
-          <div className="grid grid-cols-4 gap-3">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-2.5">
             <Field label="Proveedor" required className="col-span-2">
-              <select required value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
-                <option value="">Seleccione…</option>
-                {suppliers.map((s) => <option key={s._id} value={s._id}>{s.ruc} - {s.razonSocial}</option>)}
-              </select>
+              <SearchableSelect
+                options={suppliers}
+                value={form.supplier}
+                onChange={(v) => setForm({ ...form, supplier: v })}
+                getLabel={(s) => `${s.ruc} - ${s.razonSocial}`}
+                getSearchText={(s) => `${s.ruc} ${s.razonSocial} ${s.nombreComercial || ''}`}
+                placeholder="Seleccione un proveedor…"
+                searchPlaceholder="Buscar por RUC o nombre…"
+              />
             </Field>
             <Field label="Tipo de documento">
-              <select value={form.docType} onChange={(e) => setForm({ ...form, docType: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+              <select value={form.docType} onChange={(e) => setForm({ ...form, docType: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white">
                 <option>FACTURA</option><option>NOTA_VENTA</option><option>LIQUIDACION</option><option>NOTA_DEBITO_REC</option><option>NOTA_CREDITO_REC</option>
               </select>
             </Field>
-            <Field label="Fecha de emisión" required><input type="date" required value={form.fechaEmision} onChange={(e) => setForm({ ...form, fechaEmision: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-            <Field label="Establecimiento"><input placeholder="001" value={form.estab} onChange={(e) => setForm({ ...form, estab: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-            <Field label="Punto de emisión"><input placeholder="001" value={form.ptoEmi} onChange={(e) => setForm({ ...form, ptoEmi: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-            <Field label="Secuencial" required><input required placeholder="000000123" value={form.secuencial} onChange={(e) => setForm({ ...form, secuencial: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-            <Field label="N° de autorización SRI"><input placeholder="Opcional" value={form.autorizacion} onChange={(e) => setForm({ ...form, autorizacion: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Fecha de emisión" required><input type="date" required value={form.fechaEmision} onChange={(e) => setForm({ ...form, fechaEmision: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+            <Field label="Establecimiento"><input placeholder="001" value={form.estab} onChange={(e) => setForm({ ...form, estab: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+            <Field label="Punto de emisión"><input placeholder="001" value={form.ptoEmi} onChange={(e) => setForm({ ...form, ptoEmi: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+            <Field label="Secuencial" required><input required placeholder="000000123" value={form.secuencial} onChange={(e) => setForm({ ...form, secuencial: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+            <Field label="N° de autorización SRI"><input placeholder="Opcional" value={form.autorizacion} onChange={(e) => setForm({ ...form, autorizacion: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
           </div>
           {recurring.accounts.length > 0 && (
             <div className="flex flex-wrap items-center gap-1.5 text-xs bg-emerald-50/60 border border-emerald-100 rounded-lg px-2 py-1.5">
@@ -329,85 +336,82 @@ export default function PurchaseInvoices() {
             </div>
           )}
           <div className="text-[11px] text-slate-400">El IVA y la cuenta de Proveedores (CxP) se calculan automáticamente. El contador solo escoge la cuenta de gasto (o distribuye en varias).</div>
-          <table className="tbl">
-            <thead className="bg-slate-100 text-xs"><tr>
-              <th className="px-2 py-1">Descripción</th><th>Cant.</th><th>P.U.</th><th>Desc.</th><th>IVA%</th><th>Cuenta gasto</th><th>Producto (inventario)</th><th>Bodega</th><th></th>
-            </tr></thead>
-            <tbody>
-              {form.items.map((it, i) => {
-                const splits = it.accountSplits || [];
-                const hasSplits = splits.length > 0;
-                const itemBase = +((it.quantity || 0) * (it.unitPrice || 0) - (it.discount || 0)).toFixed(2);
-                const splitSum = +splits.reduce((s, sp) => s + (+sp.amount || 0), 0).toFixed(2);
-                const splitOk = Math.abs(splitSum - itemBase) < 0.01;
-                const setSplit = (j, patch) => { const sp = [...splits]; sp[j] = { ...sp[j], ...patch }; setItem(i, { accountSplits: sp }); };
-                return (
-                <Fragment key={i}>
-                <tr>
-                  <td><input required value={it.description} onChange={(e) => setItem(i, { description: e.target.value })} className="w-full border border-slate-200 rounded px-2 py-1" /></td>
-                  <td><NumericInput step="0.01" value={it.quantity} onChange={(e) => setItem(i, { quantity: +e.target.value })} className="w-16 border border-slate-200 rounded px-1 py-1 text-right" /></td>
-                  <td><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(i, { unitPrice: +e.target.value })} className="w-24 border border-slate-200 rounded px-1 py-1 text-right" /></td>
-                  <td><NumericInput step="0.01" value={it.discount} onChange={(e) => setItem(i, { discount: +e.target.value })} className="w-20 border border-slate-200 rounded px-1 py-1 text-right" /></td>
-                  <td><select value={it.ivaRate} onChange={(e) => setItem(i, { ivaRate: +e.target.value })} className="border border-slate-200 rounded px-1 py-1">
-                    <option value={0}>0%</option><option value={12}>12%</option><option value={15}>15%</option><option value={-1}>No obj</option><option value={-2}>Exento</option>
-                  </select></td>
-                  <td>
-                    {hasSplits ? (
-                      <span className="text-xs text-slate-500 italic">Distribuido ({splits.length})</span>
-                    ) : (
-                      <select required value={it.account} onChange={(e) => setItem(i, { account: e.target.value })} className="w-48 border border-slate-200 rounded px-1 py-1 text-xs">
-                        <option value="">--</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} {a.name}</option>)}
+          <div className="space-y-3">
+            {form.items.map((it, i) => {
+              const splits = it.accountSplits || [];
+              const hasSplits = splits.length > 0;
+              const itemBase = +((it.quantity || 0) * (it.unitPrice || 0) - (it.discount || 0)).toFixed(2);
+              const splitSum = +splits.reduce((s, sp) => s + (+sp.amount || 0), 0).toFixed(2);
+              const splitOk = Math.abs(splitSum - itemBase) < 0.01;
+              const setSplit = (j, patch) => { const sp = [...splits]; sp[j] = { ...sp[j], ...patch }; setItem(i, { accountSplits: sp }); };
+              return (
+                <div key={i} className="border border-slate-200 rounded-xl p-3 bg-slate-50/40 space-y-2.5">
+                  <div className="flex items-start gap-2">
+                    <Field label={`Descripción${form.items.length > 1 ? ` · ítem ${i + 1}` : ''}`} required className="flex-1">
+                      <input required value={it.description} onChange={(e) => setItem(i, { description: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Detalle del bien o servicio" />
+                    </Field>
+                    {form.items.length > 1 && (
+                      <button type="button" onClick={() => setForm({ ...form, items: form.items.filter((_, x) => x !== i) })} className="mt-6 shrink-0 text-rose-500 hover:text-rose-600" title="Quitar ítem"><HiOutlineXMark className="w-5 h-5" /></button>
+                    )}
+                  </div>
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
+                    <Field label="Cantidad"><NumericInput step="0.01" value={it.quantity} onChange={(e) => setItem(i, { quantity: +e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm text-right" /></Field>
+                    <Field label="P. unitario"><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(i, { unitPrice: +e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm text-right" /></Field>
+                    <Field label="Descuento"><NumericInput step="0.01" value={it.discount} onChange={(e) => setItem(i, { discount: +e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm text-right" /></Field>
+                    <Field label="IVA %">
+                      <select value={it.ivaRate} onChange={(e) => setItem(i, { ivaRate: +e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm bg-white">
+                        <option value={0}>0%</option><option value={12}>12%</option><option value={15}>15%</option><option value={-1}>No obj</option><option value={-2}>Exento</option>
                       </select>
-                    )}
-                    <button type="button" title="Distribuir en varias cuentas" onClick={() => setItem(i, { accountSplits: hasSplits ? [] : [{ account: it.account || '', amount: itemBase, description: '' }] })} className="ml-1 text-[11px] text-sky-600">{hasSplits ? 'simple' : '➗ varias'}</button>
-                  </td>
-                  <td>
-                    <select value={it.product || ''} onChange={(e) => setItem(i, { product: e.target.value })} className="w-44 border border-slate-200 rounded px-1 py-1 text-xs">
-                      <option value="">— sin inventario —</option>
-                      {products.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
-                    </select>
-                    {it.product && (
-                      <div className="flex gap-1 mt-1">
-                        <input placeholder="Lote" value={it.lot || ''} onChange={(e) => setItem(i, { lot: e.target.value })} className="w-20 border border-slate-200 rounded px-1 py-0.5 text-[11px]" />
-                        <input type="date" title="Caducidad" value={it.expiryDate ? String(it.expiryDate).slice(0, 10) : ''} onChange={(e) => setItem(i, { expiryDate: e.target.value })} className="w-28 border border-slate-200 rounded px-1 py-0.5 text-[11px]" />
-                      </div>
-                    )}
-                  </td>
-                  <td>
-                    <select value={it.warehouse || ''} onChange={(e) => setItem(i, { warehouse: e.target.value })} disabled={!it.product} className="w-32 border border-slate-200 rounded px-1 py-1 text-xs disabled:bg-slate-50">
-                      <option value="">General</option>
-                      {warehouses.map((w) => <option key={w._id} value={w._id}>{w.name}</option>)}
-                    </select>
-                  </td>
-                  <td><button type="button" onClick={() => setForm({ ...form, items: form.items.filter((_, x) => x !== i) })} className="text-rose-600"><HiOutlineXMark /></button></td>
-                </tr>
-                {hasSplits && (
-                  <tr className="bg-slate-50">
-                    <td colSpan={9} className="px-3 py-2">
-                      <div className="text-xs font-semibold text-slate-600 mb-1">Distribución de cuentas del ítem (subtotal {fmt(itemBase)})</div>
+                    </Field>
+                    <Field label="Subtotal"><div className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm text-right bg-slate-100 font-mono text-slate-700">{fmt(itemBase)}</div></Field>
+                  </div>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                    <Field label="Cuenta de gasto" required={!hasSplits}>
+                      {hasSplits ? (
+                        <div className="flex items-center justify-between border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white text-slate-500 italic">
+                          Distribuido en {splits.length} cuentas
+                          <button type="button" onClick={() => setItem(i, { accountSplits: [] })} className="not-italic text-sky-600 text-xs">usar una</button>
+                        </div>
+                      ) : (
+                        <div className="flex items-center gap-2">
+                          <SearchableSelect options={accounts} value={it.account} onChange={(v) => setItem(i, { account: v })} getLabel={(a) => `${a.code} ${a.name}`} placeholder="Elegir cuenta…" searchPlaceholder="Buscar por código o nombre…" className="flex-1" />
+                          <button type="button" title="Distribuir en varias cuentas" onClick={() => setItem(i, { accountSplits: [{ account: it.account || '', amount: itemBase, description: '' }] })} className="text-xs text-sky-600 whitespace-nowrap">➗ varias</button>
+                        </div>
+                      )}
+                    </Field>
+                    <Field label="Producto (inventario, opcional)" hint="Solo si es insumo/medicamento que entra a stock">
+                      <SearchableSelect options={products} value={it.product} onChange={(v) => setItem(i, { product: v, warehouse: v ? it.warehouse : '' })} getLabel={(p) => p.name} placeholder="— sin inventario —" searchPlaceholder="Buscar producto…" allowClear />
+                    </Field>
+                  </div>
+                  {it.product && (
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                      <Field label="Bodega"><SearchableSelect options={[{ _id: '', name: 'General' }, ...warehouses]} value={it.warehouse} onChange={(v) => setItem(i, { warehouse: v })} getLabel={(w) => w.name} placeholder="General" searchPlaceholder="Buscar bodega…" /></Field>
+                      <Field label="Lote"><input value={it.lot || ''} onChange={(e) => setItem(i, { lot: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm" placeholder="Opcional" /></Field>
+                      <Field label="Caducidad"><input type="date" value={it.expiryDate ? String(it.expiryDate).slice(0, 10) : ''} onChange={(e) => setItem(i, { expiryDate: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm" /></Field>
+                    </div>
+                  )}
+                  {hasSplits && (
+                    <div className="bg-white border border-slate-200 rounded-lg p-2.5">
+                      <div className="text-xs font-semibold text-slate-600 mb-1.5">Distribución de cuentas (subtotal {fmt(itemBase)})</div>
                       {splits.map((sp, j) => (
-                        <div key={j} className="flex items-center gap-2 mb-1">
-                          <select value={sp.account} onChange={(e) => setSplit(j, { account: e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs w-56">
-                            <option value="">Cuenta...</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} {a.name}</option>)}
-                          </select>
-                          <NumericInput step="0.01" placeholder="Monto" value={sp.amount} onChange={(e) => setSplit(j, { amount: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs w-28 text-right" />
-                          <input placeholder="Detalle (opcional)" value={sp.description} onChange={(e) => setSplit(j, { description: e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs flex-1" />
-                          <button type="button" onClick={() => setItem(i, { accountSplits: splits.filter((_, x) => x !== j) })} className="text-rose-600 text-xs">×</button>
+                        <div key={j} className="flex items-center gap-2 mb-1.5">
+                          <SearchableSelect options={accounts} value={sp.account} onChange={(v) => setSplit(j, { account: v })} getLabel={(a) => `${a.code} ${a.name}`} placeholder="Cuenta…" searchPlaceholder="Buscar cuenta…" className="flex-1" size="sm" />
+                          <NumericInput step="0.01" placeholder="Monto" value={sp.amount} onChange={(e) => setSplit(j, { amount: +e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs w-28 text-right" />
+                          <input placeholder="Detalle" value={sp.description} onChange={(e) => setSplit(j, { description: e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs flex-1 min-w-0" />
+                          <button type="button" onClick={() => setItem(i, { accountSplits: splits.filter((_, x) => x !== j) })} className="text-rose-500 shrink-0">×</button>
                         </div>
                       ))}
                       <div className="flex items-center gap-3 mt-1">
                         <button type="button" onClick={() => setItem(i, { accountSplits: [...splits, { account: '', amount: +(itemBase - splitSum).toFixed(2), description: '' }] })} className="text-emerald-600 text-xs">+ cuenta</button>
                         <span className={`text-xs ${splitOk ? 'text-emerald-600' : 'text-rose-600'}`}>Suma: {fmt(splitSum)} / {fmt(itemBase)} {splitOk ? '✓' : '✗'}</span>
                       </div>
-                    </td>
-                  </tr>
-                )}
-                </Fragment>
+                    </div>
+                  )}
+                </div>
               );
-              })}
-            </tbody>
-          </table>
-          <button type="button" onClick={() => setForm({ ...form, items: [...form.items, { ...EMPTY_ITEM }] })} className="text-emerald-600 text-sm flex items-center gap-1"><HiOutlinePlus /> Línea</button>
+            })}
+          </div>
+          <button type="button" onClick={() => setForm({ ...form, items: [...form.items, { ...EMPTY_ITEM }] })} className="text-emerald-600 text-sm flex items-center gap-1"><HiOutlinePlus /> Agregar ítem</button>
 
           <div className="bg-slate-50 p-3 rounded grid grid-cols-4 gap-3 text-sm">
             <div>Subt 0%: <b>{fmt(totals.s0)}</b></div>
@@ -518,10 +522,7 @@ export default function PurchaseInvoices() {
               <Field label="Fecha"><input type="date" value={payForm.date} onChange={(e) => setPayForm({ ...payForm, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
               {payForm.method !== 'EFECTIVO' && (
                 <Field label="Cuenta bancaria" required className="col-span-2">
-                  <select value={payForm.bankAccount} onChange={(e) => setPayForm({ ...payForm, bankAccount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
-                    <option value="">Seleccione…</option>
-                    {banks.map((b) => <option key={b._id} value={b._id}>{b.name} — {b.bank}</option>)}
-                  </select>
+                  <SearchableSelect options={banks} value={payForm.bankAccount} onChange={(v) => setPayForm({ ...payForm, bankAccount: v })} getLabel={(b) => `${b.name} — ${b.bank}`} placeholder="Seleccione…" searchPlaceholder="Buscar banco…" />
                 </Field>
               )}
               {payForm.method === 'TRANSFERENCIA' && (
