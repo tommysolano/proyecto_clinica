@@ -3,13 +3,14 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
-import { HiOutlinePlus, HiOutlineDocumentText, HiOutlineArrowDownTray, HiOutlineXMark } from 'react-icons/hi2';
+import { HiOutlinePlus, HiOutlineDocumentText, HiOutlineArrowDownTray, HiOutlineXMark, HiOutlineTrash } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import JournalEntryEditor from '../../components/JournalEntryEditor';
 import SearchableSelect from '../../components/SearchableSelect';
 import { useAuth } from '../../context/AuthContext';
 
+const PAGE_SIZE = 100;
 const EMPTY_ITEM = { description: '', quantity: 1, unitPrice: 0, discount: 0, ivaRate: 15, account: '', accountSplits: [], product: '', warehouse: '', lot: '', expiryDate: '' };
 const EMPTY = { supplier: '', docType: 'FACTURA', estab: '001', ptoEmi: '001', secuencial: '', serie: '', claveAcceso: '', autorizacion: '', fechaEmision: today(), fechaVencimiento: '', items: [{ ...EMPTY_ITEM }], retentions: [], retentionNumber: '' };
 
@@ -33,14 +34,18 @@ export default function PurchaseInvoices() {
   const [authorizeId, setAuthorizeId] = useState(null);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [sort, setSort] = useState('fecha_desc');
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
   const [journalInv, setJournalInv] = useState(null); // factura cuyo asiento se edita
   const [payInv, setPayInv] = useState(null); // factura a pagar
   const [payForm, setPayForm] = useState({ method: 'TRANSFERENCIA', bankAccount: '', voucherNumber: '', checkNumber: '', amount: 0, date: today() });
 
   const load = async () => {
     try {
-      const r = await api.get('/purchase-invoices', { params: { q: search || undefined, status: statusFilter || undefined, limit: 100 } });
+      const r = await api.get('/purchase-invoices', { params: { q: search || undefined, status: statusFilter || undefined, sort, page, limit: PAGE_SIZE } });
       setList(r.data?.items || r.data || []);
+      setTotal(r.data?.total ?? (r.data?.items?.length || 0));
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
   useEffect(() => {
@@ -51,8 +56,11 @@ export default function PurchaseInvoices() {
     api.get('/banks/accounts').then((r) => setBanks(r.data || [])).catch(() => {});
     load();
   }, []);
+  // Al cambiar búsqueda/estado/orden, vuelve a la primera página.
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t); }, [search, statusFilter]);
+  useEffect(() => { setPage(1); }, [search, statusFilter, sort]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t); }, [search, statusFilter, sort, page]);
 
   // Cuentas recurrentes del proveedor: sugiere y autocompleta la cuenta de gasto.
   useEffect(() => {
@@ -148,6 +156,24 @@ export default function PurchaseInvoices() {
     if (!confirm('¿Anular?')) return;
     try { await api.post(`/purchase-invoices/${p._id}/void`); load(); }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+  };
+
+  // Elimina una factura individual (y sus asientos/CxP/inventario asociados).
+  const removeOne = async (p) => {
+    if (!confirm(`¿Eliminar la factura ${p.serie || ''} de ${p.supplier?.razonSocial || ''}? Esta acción no se puede deshacer.`)) return;
+    const call = (force) => api.delete(`/purchase-invoices/${p._id}`, force ? { params: { force: 'true' } } : undefined);
+    try {
+      await call(false);
+      toast.success('Factura eliminada');
+      load();
+    } catch (e) {
+      if (e.response?.status === 409 && confirm(`${e.response.data.message}\n\n¿Eliminar de todas formas?`)) {
+        try { await call(true); toast.success('Factura eliminada'); load(); }
+        catch (e2) { toast.error(e2.response?.data?.message || 'Error'); }
+      } else {
+        toast.error(e.response?.data?.message || 'Error');
+      }
+    }
   };
 
   const openPay = (p) => {
@@ -258,6 +284,16 @@ export default function PurchaseInvoices() {
           <option value="PAGADA">Pagada</option>
           <option value="ANULADA">Anulada</option>
         </select>
+        <select aria-label="Ordenar" value={sort} onChange={(e) => setSort(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" title="Ordenar la lista">
+          <optgroup label="Por fecha">
+            <option value="fecha_desc">Más recientes primero</option>
+            <option value="fecha_asc">Más antiguas primero</option>
+          </optgroup>
+          <optgroup label="Por monto">
+            <option value="total_desc">Monto: de mayor a menor</option>
+            <option value="total_asc">Monto: de menor a mayor</option>
+          </optgroup>
+        </select>
       </div>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
         <table className="tbl">
@@ -290,13 +326,24 @@ export default function PurchaseInvoices() {
                     {p.status !== 'ANULADA' && p.retentionTotal > 0 && !p.retentionVoucher && (
                       <button onClick={() => emitRetention(p)} className="text-indigo-600 text-xs font-medium hover:underline">Emitir retención</button>
                     )}
-                    {p.status === 'REGISTRADA' && <button onClick={() => voidIt(p)} className="text-rose-600" title="Anular"><HiOutlineXMark className="w-4 h-4" /></button>}
+                    {p.status === 'REGISTRADA' && <button onClick={() => voidIt(p)} className="text-amber-600" title="Anular (reversa el asiento, conserva el registro)"><HiOutlineXMark className="w-4 h-4" /></button>}
+                    <button onClick={() => removeOne(p)} className="text-rose-600" title="Eliminar factura"><HiOutlineTrash className="w-4 h-4" /></button>
                   </div>
                 </td>
               </tr>
             ))}
           </tbody>
         </table>
+        <div className="flex items-center justify-between gap-3 px-3 py-2.5 border-t border-slate-100 text-sm text-slate-600">
+          <span>{total} factura(s){total > PAGE_SIZE ? ` · mostrando ${(page - 1) * PAGE_SIZE + 1}–${Math.min(page * PAGE_SIZE, total)}` : ''}</span>
+          {total > PAGE_SIZE && (
+            <div className="flex items-center gap-2">
+              <button disabled={page <= 1} onClick={() => setPage((p) => Math.max(1, p - 1))} className="px-3 py-1 rounded-lg border border-slate-200 disabled:opacity-40 hover:bg-slate-50">Anterior</button>
+              <span className="text-xs">Página {page} de {Math.max(1, Math.ceil(total / PAGE_SIZE))}</span>
+              <button disabled={page >= Math.ceil(total / PAGE_SIZE)} onClick={() => setPage((p) => p + 1)} className="px-3 py-1 rounded-lg border border-slate-200 disabled:opacity-40 hover:bg-slate-50">Siguiente</button>
+            </div>
+          )}
+        </div>
       </div>
 
       <Modal isOpen={show} onClose={() => { setShow(false); setAuthorizeId(null); }} title={authorizeId ? 'Verificar y autorizar factura' : 'Nueva factura de compra'} size="2xl">

@@ -9,6 +9,7 @@ router.get('/:id', requireRole('admin', 'contabilidad'), c.get);
 router.post('/', requireRole('admin', 'contabilidad'), c.create);
 router.put('/:id', requireRole('admin', 'contabilidad'), c.update);
 router.post('/:id/void', requireRole('admin', 'contabilidad'), c.void);
+router.delete('/:id', requireRole('admin', 'contabilidad'), c.remove);
 router.post('/:id/authorize', requireRole('admin', 'contabilidad'), c.authorize);
 router.post('/:id/journal', requireRole('admin', 'contabilidad'), c.editJournal);
 // Reinicio de compras (limpiar importaciones erróneas) — solo admin, con confirmación

@@ -117,7 +117,7 @@ function calcTotals(invoice) {
 }
 
 exports.list = async (req, res) => {
-  const { startDate, endDate, supplier, status, docType, q, page = 1, limit = 20 } = req.query;
+  const { startDate, endDate, supplier, status, docType, q, sort = 'fecha_desc', page = 1, limit = 20 } = req.query;
   const filter = { clinic: req.clinicId };
   if (supplier) filter.supplier = supplier;
   if (status) filter.status = status;
@@ -136,10 +136,18 @@ exports.list = async (req, res) => {
       ...(sups.length ? [{ supplier: { $in: sups.map((s) => s._id) } }] : []),
     ];
   }
+  // Reordenamiento: por fecha (recientes/antiguas) o por monto (mayor/menor).
+  const sortMap = {
+    fecha_desc: { fechaEmision: -1 },
+    fecha_asc: { fechaEmision: 1 },
+    total_desc: { total: -1 },
+    total_asc: { total: 1 },
+  };
+  const sortBy = sortMap[sort] || sortMap.fecha_desc;
   const total = await PurchaseInvoice.countDocuments(filter);
   const items = await PurchaseInvoice.find(filter)
     .populate('supplier', 'ruc razonSocial')
-    .sort({ fechaEmision: -1 }).skip((page - 1) * limit).limit(parseInt(limit));
+    .sort(sortBy).skip((page - 1) * limit).limit(parseInt(limit));
   res.json({ items, total, pages: Math.ceil(total / limit), currentPage: parseInt(page) });
 };
 
@@ -650,64 +658,85 @@ exports._parseSriReport = parseSriReport;
  * Pensado para limpiar importaciones erróneas cuando no hay acceso a consola (Render).
  * Requiere body { confirm: 'BORRAR-COMPRAS' }. Si hay pagos aplicados, exige force:true.
  */
+/**
+ * Borra de raíz un conjunto de facturas de compra y sus artefactos (asientos, CxP,
+ * movimientos y capas de inventario), recalculando el stock de los productos afectados.
+ * Lanza 409 si hay pagos vigentes aplicados (salvo force). Compartido por wipeAll y remove.
+ */
+async function purgePurchaseInvoices(clinicId, invoices, { force = false } = {}) {
+  const JournalEntry = require('../models/JournalEntry');
+  const Payable = require('../models/Payable');
+  const InventoryLayer = require('../models/InventoryLayer');
+  const Payment = require('../models/Payment');
+
+  const invoiceIds = invoices.map((i) => i._id);
+  if (!invoiceIds.length) return { invoices: 0, journals: 0, payables: 0, movements: 0, layers: 0, productsRecalculated: 0 };
+
+  const paymentsWithPurchase = await Payment.countDocuments({
+    clinic: clinicId, status: { $ne: 'ANULADO' },
+    'applications.docModel': 'PurchaseInvoice', 'applications.docRef': { $in: invoiceIds },
+  });
+  if (paymentsWithPurchase && !force) {
+    throw Object.assign(new Error(`Hay ${paymentsWithPurchase} pago(s) aplicados. Anúlalos primero, o reintenta con force.`), { status: 409, payments: paymentsWithPurchase });
+  }
+
+  const affected = new Set();
+  for (const inv of invoices) for (const it of inv.items || []) if (it.product) affected.add(String(it.product));
+  const refScope = { clinic: clinicId, sourceModel: 'PurchaseInvoice', sourceRef: { $in: invoiceIds } };
+  const layerProducts = await InventoryLayer.find(refScope).select('product');
+  for (const l of layerProducts) if (l.product) affected.add(String(l.product));
+
+  const [jr, pr, mr, lr, ir] = await Promise.all([
+    JournalEntry.deleteMany(refScope),
+    Payable.deleteMany(refScope),
+    InventoryMovement.deleteMany(refScope),
+    InventoryLayer.deleteMany(refScope),
+    PurchaseInvoice.deleteMany({ clinic: clinicId, _id: { $in: invoiceIds } }),
+  ]);
+
+  let recalced = 0;
+  for (const pid of affected) {
+    const prod = await Product.findOne({ _id: pid, clinic: clinicId });
+    if (!prod) continue;
+    const cur = await kardex.currentStock({ clinicId, product: prod._id });
+    prod.stock = cur.qty;
+    prod.averageCost = cur.averageCost;
+    await prod.save();
+    recalced++;
+  }
+  return {
+    invoices: ir.deletedCount, journals: jr.deletedCount, payables: pr.deletedCount,
+    movements: mr.deletedCount, layers: lr.deletedCount, productsRecalculated: recalced,
+  };
+}
+
 exports.wipeAll = async (req, res) => {
   try {
     if (req.body?.confirm !== 'BORRAR-COMPRAS') {
       return res.status(400).json({ message: "Confirmación requerida: envía confirm: 'BORRAR-COMPRAS'" });
     }
-    const JournalEntry = require('../models/JournalEntry');
-    const Payable = require('../models/Payable');
-    const InventoryLayer = require('../models/InventoryLayer');
-    const Payment = require('../models/Payment');
-
     const invoices = await PurchaseInvoice.find({ clinic: req.clinicId }).select('_id items');
-    const invoiceIds = invoices.map((i) => i._id);
-    if (!invoiceIds.length) return res.json({ message: 'No hay compras para borrar', invoices: 0 });
+    if (!invoices.length) return res.json({ message: 'No hay compras para borrar', invoices: 0 });
+    const result = await purgePurchaseInvoices(req.clinicId, invoices, { force: req.body?.force === true });
+    res.json({ message: 'Compras borradas', ...result });
+  } catch (e) {
+    res.status(e.status || 500).json({ message: e.message, ...(e.payments ? { payments: e.payments } : {}) });
+  }
+};
 
-    // Bloquea si hay pagos vigentes aplicados a estas compras (quedarían colgados).
-    const paymentsWithPurchase = await Payment.countDocuments({
-      clinic: req.clinicId, status: { $ne: 'ANULADO' },
-      'applications.docModel': 'PurchaseInvoice', 'applications.docRef': { $in: invoiceIds },
-    });
-    if (paymentsWithPurchase && req.body?.force !== true) {
-      return res.status(409).json({
-        message: `Hay ${paymentsWithPurchase} pago(s) aplicados a estas compras. Anúlalos primero, o reintenta con force.`,
-        payments: paymentsWithPurchase,
-      });
-    }
-
-    // Productos afectados (para recalcular su stock tras borrar las capas).
-    const affected = new Set();
-    for (const inv of invoices) for (const it of inv.items || []) if (it.product) affected.add(String(it.product));
-    const refScope = { clinic: req.clinicId, sourceModel: 'PurchaseInvoice', sourceRef: { $in: invoiceIds } };
-    const layerProducts = await InventoryLayer.find(refScope).select('product');
-    for (const l of layerProducts) if (l.product) affected.add(String(l.product));
-
-    const [jr, pr, mr, lr, ir] = await Promise.all([
-      JournalEntry.deleteMany(refScope),
-      Payable.deleteMany(refScope),
-      InventoryMovement.deleteMany(refScope),
-      InventoryLayer.deleteMany(refScope),
-      PurchaseInvoice.deleteMany({ clinic: req.clinicId, _id: { $in: invoiceIds } }),
-    ]);
-
-    let recalced = 0;
-    for (const pid of affected) {
-      const prod = await Product.findOne({ _id: pid, clinic: req.clinicId });
-      if (!prod) continue;
-      const cur = await kardex.currentStock({ clinicId: req.clinicId, product: prod._id });
-      prod.stock = cur.qty;
-      prod.averageCost = cur.averageCost;
-      await prod.save();
-      recalced++;
-    }
-
-    res.json({
-      message: 'Compras borradas',
-      invoices: ir.deletedCount, journals: jr.deletedCount, payables: pr.deletedCount,
-      movements: mr.deletedCount, layers: lr.deletedCount, productsRecalculated: recalced,
-    });
-  } catch (e) { res.status(500).json({ message: e.message }); }
+/**
+ * Borra UNA factura de compra (y sus artefactos). Útil para eliminar un comprobante
+ * individual mal importado sin tener que reiniciar todas las compras.
+ */
+exports.remove = async (req, res) => {
+  try {
+    const inv = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId }).select('_id items serie');
+    if (!inv) return res.status(404).json({ message: 'No encontrada' });
+    const result = await purgePurchaseInvoices(req.clinicId, [inv], { force: req.body?.force === true || req.query?.force === 'true' });
+    res.json({ message: `Factura ${inv.serie || ''} eliminada`, ...result });
+  } catch (e) {
+    res.status(e.status || 500).json({ message: e.message, ...(e.payments ? { payments: e.payments } : {}) });
+  }
 };
 
 /**
