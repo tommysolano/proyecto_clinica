@@ -18,7 +18,8 @@ export default function BankAccounts() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY);
   const [selected, setSelected] = useState(null);
-  const [movements, setMovements] = useState([]);
+  const [ledger, setLedger] = useState(null);
+  const [ledgerFilter, setLedgerFilter] = useState({ startDate: '', cutDate: '' });
   const [showMov, setShowMov] = useState(false);
   const [movForm, setMovForm] = useState({ bankAccount: '', date: today(), type: 'DEPOSITO', amount: 0, counterpartAccount: '', description: '', reference: '', voucherNumber: '', voucherUrl: '' });
 
@@ -33,9 +34,21 @@ export default function BankAccounts() {
     load();
   }, []);
 
-  const loadMovements = async (id) => {
-    try { const r = await api.get('/banks/transactions', { params: { bankAccount: id } }); setMovements(r.data?.items || r.data || []); }
-    catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+  const loadLedger = async (id, filter = ledgerFilter) => {
+    try {
+      const params = {};
+      if (filter.startDate) params.startDate = filter.startDate;
+      if (filter.cutDate) params.cutDate = filter.cutDate;
+      const r = await api.get(`/banks/accounts/${id}/ledger`, { params });
+      setLedger(r.data || null);
+    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+  };
+
+  const selectAccount = (a) => {
+    setSelected(a);
+    const reset = { startDate: '', cutDate: '' };
+    setLedgerFilter(reset);
+    loadLedger(a._id, reset);
   };
 
   const submit = async (e) => {
@@ -60,7 +73,7 @@ export default function BankAccounts() {
       await api.post('/banks/transactions', movForm);
       toast.success('Movimiento registrado');
       setShowMov(false);
-      if (selected) loadMovements(selected._id);
+      if (selected) loadLedger(selected._id);
       load();
     } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
   };
@@ -91,7 +104,7 @@ export default function BankAccounts() {
 
       <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
         {accounts.map((a) => (
-          <div key={a._id} className={`bg-white rounded-xl p-4 shadow-sm border ${selected?._id === a._id ? 'border-emerald-500' : 'border-emerald-100'} cursor-pointer`} onClick={() => { setSelected(a); loadMovements(a._id); }}>
+          <div key={a._id} className={`bg-white rounded-xl p-4 shadow-sm border ${selected?._id === a._id ? 'border-emerald-500' : 'border-emerald-100'} cursor-pointer`} onClick={() => selectAccount(a)}>
             <div className="flex justify-between">
               <div>
                 <p className="font-semibold">{a.name}</p>
@@ -110,29 +123,54 @@ export default function BankAccounts() {
 
       {selected && (
         <div className="bg-white rounded-xl p-4 shadow-sm border border-emerald-100">
-          <div className="flex justify-between items-center mb-3">
-            <h2 className="font-semibold">Movimientos · {selected.name}</h2>
-            <button onClick={() => { setMovForm({ bankAccount: selected._id, date: today(), type: 'DEPOSITO', amount: 0, counterpartAccount: '', description: '', reference: '', voucherNumber: '', voucherUrl: '' }); setShowMov(true); }} className="px-3 py-1.5 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm">+ Movimiento</button>
+          <div className="flex flex-wrap justify-between items-center gap-2 mb-3">
+            <h2 className="font-semibold">Libro del banco · {selected.name}</h2>
+            <div className="flex flex-wrap items-end gap-2">
+              <label className="text-xs text-slate-500 flex flex-col">Desde
+                <input type="date" value={ledgerFilter.startDate} onChange={(e) => { const f = { ...ledgerFilter, startDate: e.target.value }; setLedgerFilter(f); loadLedger(selected._id, f); }} className="border border-slate-200 rounded-lg px-2 py-1 text-sm" />
+              </label>
+              <label className="text-xs text-slate-500 flex flex-col">Corte (hasta)
+                <input type="date" value={ledgerFilter.cutDate} onChange={(e) => { const f = { ...ledgerFilter, cutDate: e.target.value }; setLedgerFilter(f); loadLedger(selected._id, f); }} className="border border-slate-200 rounded-lg px-2 py-1 text-sm" />
+              </label>
+              <button onClick={() => { setMovForm({ bankAccount: selected._id, date: today(), type: 'DEPOSITO', amount: 0, counterpartAccount: '', description: '', reference: '', voucherNumber: '', voucherUrl: '' }); setShowMov(true); }} className="px-3 py-1.5 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm">+ Movimiento</button>
+            </div>
           </div>
-          <table className="tbl">
-            <thead className="bg-slate-50 text-xs uppercase"><tr>
-              <th className="px-2 py-1 text-left">Fecha</th><th className="px-2 py-1 text-left">Tipo</th>
-              <th className="px-2 py-1 text-left">Descripción</th><th className="px-2 py-1 text-left">Ref</th>
-              <th className="px-2 py-1 text-right">Monto</th><th className="px-2 py-1 text-center">Concil.</th>
-            </tr></thead>
-            <tbody>
-              {movements.map((m) => (
-                <tr key={m._id} className={`border-t ${m.voided ? 'line-through text-slate-400' : ''}`}>
-                  <td className="px-2 py-1">{fmtDate(m.date)}</td>
-                  <td className="px-2 py-1 text-xs">{m.type}</td>
-                  <td className="px-2 py-1">{m.description}</td>
-                  <td className="px-2 py-1 text-xs">{m.reference || m.checkNumber}</td>
-                  <td className={`px-2 py-1 text-right font-mono ${m.direction > 0 ? 'text-emerald-700' : 'text-rose-600'}`}>{m.direction > 0 ? '+' : '-'}${fmt(m.amount)}</td>
-                  <td className="px-2 py-1 text-center">{m.reconciled ? '✓' : '—'}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+          {ledger && (
+            <>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3 text-sm">
+                <div className="bg-slate-50 rounded-lg px-3 py-2">Saldo inicial<br /><b>${fmt(ledger.opening)}</b></div>
+                <div className="bg-emerald-50 rounded-lg px-3 py-2 text-emerald-700">Entradas (ventas/cobros)<br /><b>${fmt(ledger.totalIn)}</b></div>
+                <div className="bg-rose-50 rounded-lg px-3 py-2 text-rose-700">Salidas (pagos/cheques)<br /><b>${fmt(ledger.totalOut)}</b></div>
+                <div className="bg-sky-50 rounded-lg px-3 py-2 text-sky-700">Saldo al corte<br /><b>${fmt(ledger.closing)}</b></div>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="tbl">
+                  <thead className="bg-slate-50 text-xs uppercase"><tr>
+                    <th className="px-2 py-1 text-left">Fecha</th><th className="px-2 py-1 text-left">Tipo</th>
+                    <th className="px-2 py-1 text-left">Descripción</th><th className="px-2 py-1 text-left">Comprobante</th>
+                    <th className="px-2 py-1 text-right">Entrada</th><th className="px-2 py-1 text-right">Salida</th>
+                    <th className="px-2 py-1 text-right">Saldo</th><th className="px-2 py-1 text-center">Concil.</th>
+                  </tr></thead>
+                  <tbody>
+                    <tr className="border-t bg-slate-50/60"><td colSpan={6} className="px-2 py-1 text-xs text-slate-500 italic">Saldo inicial</td><td className="px-2 py-1 text-right font-mono font-semibold">${fmt(ledger.opening)}</td><td></td></tr>
+                    {(ledger.rows || []).map((m) => (
+                      <tr key={m._id} className="border-t">
+                        <td className="px-2 py-1">{fmtDate(m.date)}</td>
+                        <td className="px-2 py-1 text-xs">{m.type}</td>
+                        <td className="px-2 py-1">{m.description}</td>
+                        <td className="px-2 py-1 text-xs">{m.voucherNumber || m.checkNumber || m.reference || '—'}</td>
+                        <td className="px-2 py-1 text-right font-mono text-emerald-700">{m.inflow ? `$${fmt(m.inflow)}` : ''}</td>
+                        <td className="px-2 py-1 text-right font-mono text-rose-600">{m.outflow ? `$${fmt(m.outflow)}` : ''}</td>
+                        <td className="px-2 py-1 text-right font-mono font-semibold">${fmt(m.runningBalance)}</td>
+                        <td className="px-2 py-1 text-center">{m.reconciled ? '✓' : '—'}</td>
+                      </tr>
+                    ))}
+                    {(ledger.rows || []).length === 0 && <tr><td colSpan={8} className="px-2 py-4 text-center text-slate-400 text-sm">Sin movimientos en el rango.</td></tr>}
+                  </tbody>
+                </table>
+              </div>
+            </>
+          )}
         </div>
       )}
 

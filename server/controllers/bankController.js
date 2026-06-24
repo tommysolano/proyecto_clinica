@@ -541,6 +541,28 @@ exports.updateReconciliation = async (req, res) => {
     const rec = await Reconciliation.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!rec) return res.status(404).json({ message: 'No encontrada' });
     if (rec.status === 'CONCILIADO') return res.status(400).json({ message: 'Ya cerrada' });
+
+    // El contador puede mover la fecha de corte: se recargan los movimientos del libro
+    // pendientes hasta el nuevo corte y se recalcula el saldo contable.
+    if (req.body.cutDate) {
+      const bank = await BankAccount.findOne({ _id: rec.bankAccount, clinic: req.clinicId });
+      if (!bank) return res.status(404).json({ message: 'Cuenta no encontrada' });
+      const cut = new Date(req.body.cutDate);
+      const txs = await BankTransaction.find({
+        clinic: req.clinicId, bankAccount: bank._id, voided: false, reconciled: false,
+        date: { $lte: cut },
+      }).sort({ date: 1 });
+      // Conserva los flags de match ya marcados para movimientos que sigan en rango.
+      const prevFlags = new Map(rec.items.map((it) => [String(it.transaction), it]));
+      rec.items = txs.map((t) => {
+        const prev = prevFlags.get(String(t._id));
+        return { transaction: t._id, matched: prev ? !!prev.matched : false, statementRef: prev?.statementRef || '' };
+      });
+      rec.cutDate = cut;
+      rec.periodEnd = cut;
+      rec.bookBalance = await bookBalanceAt(req.clinicId, bank, cut);
+    }
+
     // Solo persistimos los flags de match (no se reescriben las transacciones).
     if (Array.isArray(req.body.items)) {
       const flags = new Map(req.body.items.map((i) => [String(i.transaction?._id || i.transaction), i]));
@@ -556,6 +578,57 @@ exports.updateReconciliation = async (req, res) => {
     await rec.save();
     res.json(await populatedReconciliation(rec._id));
   } catch (e) { res.status(400).json({ message: e.message }); }
+};
+
+/**
+ * Libro del banco: todos los movimientos de una cuenta (cobros/ventas depositadas, pagos,
+ * cheques, transferencias) con saldo corrido hasta la fecha de corte. Devuelve el saldo
+ * inicial (antes del rango), las filas con runningBalance y el saldo final al corte.
+ * Query: ?startDate&endDate (o cutDate como fin).
+ */
+exports.bankLedger = async (req, res) => {
+  try {
+    const bank = await BankAccount.findOne({ _id: req.params.id, clinic: req.clinicId }).populate('chartAccount', 'code name');
+    if (!bank) return res.status(404).json({ message: 'Cuenta no encontrada' });
+    const startDate = req.query.startDate ? new Date(req.query.startDate) : null;
+    const endDate = req.query.endDate || req.query.cutDate ? new Date(req.query.endDate || req.query.cutDate) : null;
+
+    // Saldo de apertura = saldo inicial de la cuenta + movimientos anteriores a startDate.
+    let opening = bank.initialBalance || 0;
+    if (startDate) {
+      const aggPrev = await BankTransaction.aggregate([
+        { $match: { clinic: bank.clinic, bankAccount: bank._id, voided: false, date: { $lt: startDate } } },
+        { $group: { _id: null, total: { $sum: { $multiply: ['$amount', '$direction'] } } } },
+      ]);
+      opening = +((bank.initialBalance || 0) + (aggPrev[0]?.total || 0)).toFixed(2);
+    }
+
+    const filter = { clinic: bank.clinic, bankAccount: bank._id, voided: false };
+    if (startDate || endDate) {
+      filter.date = {};
+      if (startDate) filter.date.$gte = startDate;
+      if (endDate) filter.date.$lte = endDate;
+    }
+    const txs = await BankTransaction.find(filter).sort({ date: 1, createdAt: 1 });
+    let running = opening;
+    const rows = txs.map((t) => {
+      const signed = +(Number(t.amount || 0) * Number(t.direction || 0)).toFixed(2);
+      running = +(running + signed).toFixed(2);
+      return {
+        _id: t._id, date: t.date, type: t.type, description: t.description, reference: t.reference,
+        voucherNumber: t.voucherNumber, checkNumber: t.checkNumber,
+        inflow: t.direction > 0 ? t.amount : 0,
+        outflow: t.direction < 0 ? t.amount : 0,
+        reconciled: t.reconciled, runningBalance: running,
+      };
+    });
+    const totalIn = +rows.reduce((s, r) => s + (r.inflow || 0), 0).toFixed(2);
+    const totalOut = +rows.reduce((s, r) => s + (r.outflow || 0), 0).toFixed(2);
+    res.json({
+      bankAccount: { _id: bank._id, name: bank.name, bank: bank.bank, accountNumber: bank.accountNumber, chartAccount: bank.chartAccount },
+      opening, rows, totalIn, totalOut, closing: running, count: rows.length,
+    });
+  } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
 exports.closeReconciliation = async (req, res) => {

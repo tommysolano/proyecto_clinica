@@ -3,11 +3,70 @@ const Supplier = require('../models/Supplier');
 const ChartOfAccount = require('../models/ChartOfAccount');
 const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
+const RecurringAccount = require('../models/RecurringAccount');
 const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { openPayable, voidPayable } = require('../utils/subledger');
 const kardex = require('../utils/kardex');
 const { parsePurchaseInvoiceXml } = require('../utils/sriXmlParser');
+
+/**
+ * Memoriza las cuentas de gasto usadas en una compra como "cuentas recurrentes"
+ * (a nivel clínica y por proveedor) e incrementa su contador de uso. También deja
+ * la última cuenta como `defaultExpenseAccount` del proveedor.
+ */
+async function rememberRecurringAccounts(inv, session) {
+  const accountIds = new Set();
+  for (const it of inv.items || []) {
+    if (it.account) accountIds.add(String(it.account));
+    for (const sp of it.accountSplits || []) if (sp.account) accountIds.add(String(sp.account));
+  }
+  if (!accountIds.size) return;
+  for (const accId of accountIds) {
+    for (const supplier of [null, inv.supplier]) {
+      await RecurringAccount.updateOne(
+        { clinic: inv.clinic, supplier: supplier || null, account: accId },
+        { $inc: { useCount: 1 }, $set: { lastUsedAt: new Date() } },
+        { upsert: true, session }
+      );
+    }
+  }
+  // Recuerda la última cuenta como predeterminada del proveedor para la próxima compra.
+  const last = [...accountIds][accountIds.size - 1];
+  await Supplier.updateOne({ _id: inv.supplier, clinic: inv.clinic }, { defaultExpenseAccount: last }, { session });
+}
+
+/**
+ * Cuentas recurrentes para sugerir en el formulario de compra: la predeterminada del
+ * proveedor + las más usadas (por proveedor y a nivel clínica). GET ?supplier=
+ */
+exports.recurringAccounts = async (req, res) => {
+  try {
+    const { supplier } = req.query;
+    const orFilter = [{ clinic: req.clinicId, supplier: null }];
+    if (supplier) orFilter.push({ clinic: req.clinicId, supplier });
+    const recs = await RecurringAccount.find({ $or: orFilter })
+      .populate('account', 'code name allowsMovement')
+      .sort({ useCount: -1, lastUsedAt: -1 })
+      .limit(40);
+    // Deduplica por cuenta priorizando las del proveedor / más usadas.
+    const seen = new Set();
+    const out = [];
+    for (const r of recs) {
+      if (!r.account || !r.account.allowsMovement) continue;
+      const key = String(r.account._id);
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ _id: r.account._id, code: r.account.code, name: r.account.name, useCount: r.useCount, forSupplier: !!r.supplier });
+    }
+    let defaultAccount = null;
+    if (supplier) {
+      const sup = await Supplier.findOne({ _id: supplier, clinic: req.clinicId }).populate('defaultExpenseAccount', 'code name');
+      if (sup?.defaultExpenseAccount) defaultAccount = { _id: sup.defaultExpenseAccount._id, code: sup.defaultExpenseAccount.code, name: sup.defaultExpenseAccount.name };
+    }
+    res.json({ defaultAccount, accounts: out.slice(0, 12) });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
 
 /**
  * Abre el documento de cuentas por pagar (CxP) de una compra: el saldo a pagar
@@ -105,13 +164,10 @@ exports.create = async (req, res) => {
           if (data.items?.length) data.items[0].account = sup.defaultExpenseAccount;
         }
         const [inv] = await PurchaseInvoice.create([data], { session });
-        if (inv.items?.[0]?.account) {
-          sup.defaultExpenseAccount = inv.items[0].account;
-          await sup.save({ session });
-        }
         await postPurchaseJournal(inv, req, session);
         await postInventoryEntries(inv, req, session);
         await openPayableForInvoice(inv, sup, req, session);
+        await rememberRecurringAccounts(inv, session);
         return inv._id;
       });
       const inv = await PurchaseInvoice.findById(invoiceId);
@@ -366,74 +422,186 @@ async function revertInventoryEntries(inv, req, session) {
   }
 }
 
+// Convierte un número con posibles separadores de miles y coma/punto decimal a Number.
+// Acepta decimales con punto inicial (".42"), comas decimales ("1,50") y miles.
+function parseSriNumber(s) {
+  let t = String(s == null ? '' : s).trim();
+  if (!t) return 0;
+  if (t.includes(',') && t.includes('.')) t = t.lastIndexOf(',') > t.lastIndexOf('.') ? t.replace(/\./g, '').replace(',', '.') : t.replace(/,/g, '');
+  else if (t.includes(',')) t = /,\d{1,2}$/.test(t) ? t.replace(',', '.') : t.replace(/,/g, '');
+  return parseFloat(t.replace(/[^0-9.\-]/g, '')) || 0;
+}
+
+// Quita tildes y normaliza un encabezado a MAYÚSCULA_CON_GUIONES (RAZÓN Social → RAZON_SOCIAL).
+function normHeaderKey(s) {
+  return String(s || '').normalize('NFD').replace(/[̀-ͯ]/g, '').toUpperCase().replace(/[^A-Z0-9]+/g, '_').replace(/^_|_$/g, '');
+}
+
+// Parsea una fecha del SRI (DD/MM/AAAA[ hh:mm:ss] o AAAA-MM-DD) a Date local, ignorando la hora.
+function parseSriDate(s) {
+  const f = String(s || '').trim().split(/\s+/)[0]; // descarta la hora si viene "01/06/2026 10:03:32"
+  if (!f) return null;
+  const dmy = f.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/);
+  if (dmy) { const y = dmy[3].length === 2 ? '20' + dmy[3] : dmy[3]; const d = new Date(`${y}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}T00:00:00`); return isNaN(d) ? null : d; }
+  const ymd = f.match(/^(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})$/);
+  if (ymd) { const d = new Date(`${ymd[1]}-${ymd[2].padStart(2, '0')}-${ymd[3].padStart(2, '0')}T00:00:00`); return isNaN(d) ? null : d; }
+  const d = new Date(f);
+  return isNaN(d) ? null : d;
+}
+
+// Aproxima la tarifa de IVA a la más cercana del catálogo (0/12/15) a partir de iva/base.
+function snapIvaRate(iva, base) {
+  if (!(iva > 0) || !(base > 0)) return 0;
+  const pct = (iva / base) * 100;
+  return [12, 15].reduce((a, b) => (Math.abs(b - pct) < Math.abs(a - pct) ? b : a));
+}
+
+// Mapea el tipo de comprobante del SRI a nuestro docType.
+function mapDocType(tipo) {
+  const t = normHeaderKey(tipo);
+  if (t.includes('NOTA_DE_CREDITO') || t === 'NC' || t.includes('NOTA_CREDITO')) return 'NOTA_CREDITO_REC';
+  if (t.includes('NOTA_DE_DEBITO') || t === 'ND' || t.includes('NOTA_DEBITO')) return 'NOTA_DEBITO_REC';
+  if (t.includes('LIQUIDACION')) return 'LIQUIDACION';
+  if (t.includes('NOTA_DE_VENTA')) return 'NOTA_VENTA';
+  return 'FACTURA';
+}
+
+// Sinónimos de encabezado → posición oficial del reporte "Comprobantes recibidos" del SRI.
+const SRI_COLUMNS = {
+  ruc:      { keys: ['RUC_EMISOR', 'RUC', 'IDENTIFICACION_EMISOR', 'RUC_O_CEDULA_EMISOR'], pos: 0 },
+  razon:    { keys: ['RAZON_SOCIAL_EMISOR', 'RAZON_SOCIAL', 'NOMBRE_EMISOR'], pos: 1 },
+  tipo:     { keys: ['TIPO_COMPROBANTE', 'COMPROBANTE', 'TIPO'], pos: 2 },
+  serie:    { keys: ['SERIE_COMPROBANTE', 'SERIE', 'NUMERO_COMPROBANTE', 'NUMERO'], pos: 3 },
+  clave:    { keys: ['CLAVE_ACCESO', 'CLAVE_DE_ACCESO', 'NUMERO_AUTORIZACION', 'AUTORIZACION'], pos: 4 },
+  fechaAut: { keys: ['FECHA_AUTORIZACION'], pos: 5 },
+  fechaEmi: { keys: ['FECHA_EMISION', 'FECHA'], pos: 6 },
+  receptor: { keys: ['IDENTIFICACION_RECEPTOR', 'RUC_RECEPTOR'], pos: 7 },
+  subtotal: { keys: ['VALOR_SIN_IMPUESTOS', 'SUBTOTAL', 'BASE_IMPONIBLE', 'VALOR_SIN_IMPUESTO'], pos: 8 },
+  iva:      { keys: ['IVA', 'VALOR_IVA', 'IMPUESTO_IVA'], pos: 9 },
+  total:    { keys: ['IMPORTE_TOTAL', 'TOTAL', 'VALOR_TOTAL'], pos: 10 },
+  docMod:   { keys: ['NUMERO_DOCUMENTO_MODIFICADO', 'DOCUMENTO_MODIFICADO'], pos: 11 },
+};
+
 /**
- * Importa archivo TXT del SRI (consulta de comprobantes recibidos).
- * Espera líneas con: RUC|RazonSocial|Tipo|Serie|Autorizacion|Fecha|Subtotal|IVA|Total
- * El formato real del SRI varía (TSV con cabecera); este parser es flexible.
+ * Parser PURO (sin DB) del reporte TXT del SRI de "Comprobantes electrónicos recibidos".
+ * Formato real: TSV (tab) con cabecera y columnas
+ *   RUC_EMISOR | RAZON_SOCIAL_EMISOR | TIPO_COMPROBANTE | SERIE_COMPROBANTE | CLAVE_ACCESO |
+ *   FECHA_AUTORIZACION | FECHA_EMISION | IDENTIFICACION_RECEPTOR | VALOR_SIN_IMPUESTOS | IVA |
+ *   IMPORTE_TOTAL | NUMERO_DOCUMENTO_MODIFICADO
+ * Mapea por NOMBRE de cabecera (tolerante a reordenamientos y archivos de terceros); si no
+ * hay cabecera, usa el orden posicional oficial. Devuelve { rows, errors }.
+ */
+function parseSriReport(raw) {
+  const rawLines = String(raw || '').split(/\r?\n/).map((l) => l.replace(/\s+$/, '')).filter((l) => l.trim());
+  if (!rawLines.length) return { rows: [], errors: [] };
+
+  // Detecta el separador: tab prioritario; luego ';', '|' y por último ',' (sin romper decimales).
+  const sample = rawLines[0];
+  const delimiter = sample.includes('\t') ? '\t' : (sample.includes(';') ? ';' : (sample.includes('|') ? '|' : ','));
+  const split = (line) => line.split(delimiter).map((c) => c.trim());
+
+  // ¿La primera fila es cabecera? (contiene nombres conocidos del reporte SRI)
+  const firstCells = split(rawLines[0]).map(normHeaderKey);
+  const headerKeys = new Set(Object.values(SRI_COLUMNS).flatMap((c) => c.keys));
+  const hasHeader = firstCells.some((h) => headerKeys.has(h));
+  const idx = {};
+  if (hasHeader) firstCells.forEach((h, i) => { if (idx[h] === undefined) idx[h] = i; });
+
+  // Resuelve el valor de una columna lógica: por cabecera si existe, si no por posición.
+  const pick = (cols, key) => {
+    const def = SRI_COLUMNS[key];
+    if (hasHeader) { for (const k of def.keys) { if (idx[k] !== undefined) return cols[idx[k]]; } return undefined; }
+    return cols[def.pos];
+  };
+
+  const rows = [];
+  const errors = [];
+  const startRow = hasHeader ? 1 : 0;
+  for (let i = startRow; i < rawLines.length; i++) {
+    const cols = split(rawLines[i]);
+    if (cols.length < 4) { errors.push({ line: i + 1, error: `Fila con muy pocas columnas (${cols.length}). Revisa el separador del archivo.` }); continue; }
+    const ruc = String(pick(cols, 'ruc') || '').replace(/\D/g, '');
+    if (!/^\d{10,13}$/.test(ruc)) { errors.push({ line: i + 1, error: `RUC inválido: "${pick(cols, 'ruc')}"` }); continue; }
+    const fecha = parseSriDate(pick(cols, 'fechaEmi')) || parseSriDate(pick(cols, 'fechaAut'));
+    if (!fecha) { errors.push({ line: i + 1, error: `Fecha inválida: "${pick(cols, 'fechaEmi') || pick(cols, 'fechaAut')}"` }); continue; }
+    const serie = String(pick(cols, 'serie') || '').trim();
+    const sm = serie.match(/^(\d{1,3})-(\d{1,3})-(\d+)$/);
+    const subtotal = parseSriNumber(pick(cols, 'subtotal'));
+    const iva = parseSriNumber(pick(cols, 'iva'));
+    const total = parseSriNumber(pick(cols, 'total')) || +(subtotal + iva).toFixed(2);
+    rows.push({
+      line: i + 1,
+      ruc,
+      razonSocial: String(pick(cols, 'razon') || '').trim(),
+      docType: mapDocType(pick(cols, 'tipo')),
+      serie, estab: sm ? sm[1] : '', ptoEmi: sm ? sm[2] : '', secuencial: sm ? sm[3] : '',
+      claveAcceso: String(pick(cols, 'clave') || '').trim(),
+      fechaEmision: fecha,
+      subtotal, iva, total, ivaRate: snapIvaRate(iva, subtotal),
+    });
+  }
+  return { rows, errors };
+}
+
+/**
+ * Importa el reporte TXT del SRI. Crea/asocia el proveedor por RUC y deja cada factura
+ * en estado POR_AUTORIZAR conservando los montos exactos del SRI: el contador asigna
+ * cuentas/inventario antes de contabilizar.
  */
 exports.importTxt = async (req, res) => {
   try {
     const raw = req.body?.content || req.body?.text;
     if (!raw) return res.status(400).json({ message: 'content vacío' });
-    const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
-    // Convierte un número con posibles separadores de miles y coma decimal a Number.
-    const num = (s) => {
-      let t = String(s == null ? '' : s).trim();
-      if (!t) return 0;
-      if (t.includes(',') && t.includes('.')) t = t.lastIndexOf(',') > t.lastIndexOf('.') ? t.replace(/\./g, '').replace(',', '.') : t.replace(/,/g, '');
-      else if (t.includes(',')) t = /,\d{1,2}$/.test(t) ? t.replace(',', '.') : t.replace(/,/g, '');
-      return parseFloat(t.replace(/[^0-9.\-]/g, '')) || 0;
-    };
+    const { rows, errors } = parseSriReport(raw);
+    if (!rows.length && !errors.length) return res.status(400).json({ message: 'archivo vacío' });
+
     let created = 0;
     let skipped = 0;
-    const errors = [];
-    for (let i = 0; i < lines.length; i++) {
-      const line = lines[i];
-      // Detección heurística: descarta cabecera si contiene "RUC"/"FECHA"/"Tipo" como primera columna.
-      if (/^(RUC|FECHA|Tipo|Comprobante|Establecimiento)/i.test(line)) continue;
-      const cols = line.split(/[\t|;,]/).map((c) => c.trim());
-      if (cols.length < 6) { errors.push({ line: i + 1, error: `Se esperaban al menos 6 columnas (RUC|Razón|Tipo|Serie|Autorización|Fecha|Subtotal|IVA|Total) y se encontraron ${cols.length}. Revisa el separador del archivo.` }); continue; }
+    for (const r of rows) {
       try {
-        const [ruc, razon, tipo, serie, autorizacion, fechaStr, subtotalStr, ivaStr, totalStr] = cols;
-        if (!/^\d{10,13}$/.test(String(ruc || '').replace(/\D/g, ''))) { errors.push({ line: i + 1, error: `RUC inválido: "${ruc}"` }); continue; }
-        let sup = await Supplier.findOne({ clinic: req.clinicId, ruc });
-        if (!sup) {
-          sup = await Supplier.create({ clinic: req.clinicId, ruc, razonSocial: razon || ruc });
+        let sup = await Supplier.findOne({ clinic: req.clinicId, ruc: r.ruc });
+        if (!sup) sup = await Supplier.create({ clinic: req.clinicId, ruc: r.ruc, razonSocial: r.razonSocial || r.ruc });
+        else if (r.razonSocial && (!sup.razonSocial || sup.razonSocial === sup.ruc)) { sup.razonSocial = r.razonSocial; await sup.save(); }
+
+        // Evita duplicados por clave de acceso o por serie del mismo proveedor.
+        if (r.serie || r.claveAcceso) {
+          const dupFilter = r.claveAcceso
+            ? { clinic: req.clinicId, $or: [{ claveAcceso: r.claveAcceso }, ...(r.serie ? [{ supplier: sup._id, serie: r.serie }] : [])] }
+            : { clinic: req.clinicId, supplier: sup._id, serie: r.serie };
+          const dup = await PurchaseInvoice.findOne(dupFilter);
+          if (dup) { skipped++; continue; }
         }
-        // Acepta fecha DD/MM/AAAA, DD-MM-AAAA o AAAA-MM-DD.
-        const f = String(fechaStr || '').trim();
-        const m = f.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/);
-        const fecha = m ? new Date(`${m[3].length === 2 ? '20' + m[3] : m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}`) : new Date(f);
-        if (isNaN(fecha)) { errors.push({ line: i + 1, error: `Fecha inválida: "${fechaStr}"` }); continue; }
-        const dup = await PurchaseInvoice.findOne({ clinic: req.clinicId, supplier: sup._id, serie });
-        if (dup) { skipped++; continue; }
-        const subtotal = num(subtotalStr);
-        const iva = num(ivaStr);
-        const total = num(totalStr) || (subtotal + iva);
-        const ivaRate = subtotal > 0 ? Math.round((iva / subtotal) * 100) : 0;
-        const itemDescription = `Compra a ${sup.razonSocial} (importado SRI)`;
-        const data = {
+
+        await PurchaseInvoice.create({
           clinic: req.clinicId, supplier: sup._id,
-          docType: tipo === 'NC' ? 'NOTA_CREDITO_REC' : 'FACTURA',
-          serie, autorizacion, fechaEmision: fecha,
+          docType: r.docType,
+          estab: r.estab, ptoEmi: r.ptoEmi, secuencial: r.secuencial,
+          serie: r.serie, claveAcceso: r.claveAcceso, autorizacion: r.claveAcceso,
+          fechaEmision: r.fechaEmision,
           items: [{
-            description: itemDescription, quantity: 1, unitPrice: subtotal,
-            subtotal, ivaRate: ivaRate || 0, ivaAmount: iva,
+            description: `Compra a ${sup.razonSocial || r.razonSocial || r.ruc} (importado SRI)`,
+            quantity: 1, unitPrice: r.subtotal, discount: 0,
+            subtotal: r.subtotal, ivaRate: r.ivaRate, ivaAmount: r.iva,
             account: sup.defaultExpenseAccount || null,
           }],
-          importedFromTxt: true, createdBy: req.user._id,
-        };
-        calcTotals(data);
-        const inv = await PurchaseInvoice.create(data);
-        if (inv.items[0].account) await postPurchaseJournal(inv, req);
+          // Conserva los montos EXACTOS del SRI (no se recalculan al importar).
+          subtotal0: r.ivaRate === 0 ? r.subtotal : 0,
+          subtotal12: r.ivaRate === 12 ? r.subtotal : 0,
+          subtotal15: r.ivaRate === 15 ? r.subtotal : 0,
+          subtotal: r.subtotal, iva: r.iva, total: r.total, balance: r.total,
+          status: 'POR_AUTORIZAR', importedFromTxt: true, createdBy: req.user._id,
+        });
         created++;
-      } catch (err) { errors.push({ line: i + 1, error: err.message }); }
+      } catch (err) { errors.push({ line: r.line, error: err.message }); }
     }
     res.json({ created, skipped, errors });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
 };
+
+// Exporta el parser puro para pruebas unitarias.
+exports._parseSriReport = parseSriReport;
 
 /**
  * Importa facturas de compra desde XML del SRI (factura electrónica).
@@ -499,10 +667,47 @@ exports.authorize = async (req, res) => {
         await inv.save({ session });
         await postPurchaseJournal(inv, req, session, 'AUTHORIZE');
         await postInventoryEntries(inv, req, session);
+        const supForPayable = await Supplier.findById(inv.supplier).session(session);
+        await openPayableForInvoice(inv, supForPayable, req, session);
+        await rememberRecurringAccounts(inv, session);
         return inv._id;
       });
       const inv = await PurchaseInvoice.findById(invoiceId);
       return res.json(inv);
     }
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+};
+
+/**
+ * Edición manual del asiento contable (debe/haber) de una compra registrada.
+ * El contador puede modificar libremente las líneas; se reversa el asiento actual y se
+ * crea uno nuevo cuadrado (partida doble validada en createEntry). Body: { lines:[{account|accountCode, debit, credit, description}], date? }
+ */
+exports.editJournal = async (req, res) => {
+  try {
+    const lines = req.body?.lines;
+    if (!Array.isArray(lines) || lines.length < 2) return res.status(400).json({ message: 'El asiento debe tener al menos 2 líneas' });
+    const invoiceId = await runInTransaction(async (session) => {
+      const inv = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+      if (!inv) throw Object.assign(new Error('No encontrada'), { status: 404 });
+      if (inv.status === 'ANULADA') throw Object.assign(new Error('La compra está anulada'), { status: 400 });
+      if (inv.status === 'POR_AUTORIZAR') throw Object.assign(new Error('Autoriza la compra antes de editar su asiento'), { status: 400 });
+      await assertPeriodOpen(req.clinicId, inv.fechaEmision, { session });
+      const reversalDate = req.body.date ? new Date(req.body.date) : new Date();
+      await assertPeriodOpen(req.clinicId, reversalDate, { session });
+      if (inv.journalEntry) {
+        await reverseEntry({ clinicId: req.clinicId, entryId: inv.journalEntry, userId: req.user._id, reason: 'Edición manual de asiento de compra', date: reversalDate, session });
+      }
+      const entry = await createEntry({
+        clinicId: req.clinicId, date: inv.fechaEmision, description: `Compra ${inv.serie || ''} (asiento editado)`,
+        source: 'COMPRA', sourceRef: inv._id, sourceModel: 'PurchaseInvoice', sourceAction: `EDIT:${Date.now()}`,
+        lines, userId: req.user._id, session,
+      });
+      inv.journalEntry = entry._id;
+      await inv.save({ session });
+      return inv._id;
+    });
+    const inv = await PurchaseInvoice.findById(invoiceId).populate('journalEntry');
+    return res.json(inv);
   } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };

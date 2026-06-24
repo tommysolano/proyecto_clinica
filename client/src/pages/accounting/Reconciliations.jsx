@@ -35,6 +35,17 @@ export default function Reconciliations() {
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
 
+  // Mueve la fecha de corte: recarga los movimientos del libro y recalcula el saldo contable.
+  const changeCutDate = async (val) => {
+    if (!val) return;
+    setBusy(true);
+    try {
+      const r = await api.put(`/banks/reconciliations/${selected._id}`, { cutDate: val });
+      setSelected(r.data); load(); toast.success('Fecha de corte actualizada');
+    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+    finally { setBusy(false); }
+  };
+
   const start = async (e) => {
     e.preventDefault();
     try {
@@ -147,7 +158,12 @@ export default function Reconciliations() {
                 {statusBadge(selected.status)}
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
-                <div className="flex justify-between"><span className="text-slate-500">Fecha de Corte:</span><b>{fmtDate(selected.cutDate || selected.periodEnd)}</b></div>
+                <div className="flex justify-between items-center"><span className="text-slate-500">Fecha de Corte:</span>
+                  {isDraft ? (
+                    <input type="date" value={String(selected.cutDate || selected.periodEnd || '').slice(0, 10)} onChange={(e) => changeCutDate(e.target.value)} disabled={busy}
+                      className="w-36 border border-slate-200 rounded px-2 py-1 text-sm text-right disabled:bg-slate-50" />
+                  ) : <b>{fmtDate(selected.cutDate || selected.periodEnd)}</b>}
+                </div>
                 <div className="flex justify-between items-center"><span className="text-slate-500">Saldo Bancario:</span>
                   <NumericInput allowNegative value={selected.statementBalance ?? ''} disabled={!isDraft}
                     onChange={(e) => setSelected({ ...selected, statementBalance: e.target.value })}

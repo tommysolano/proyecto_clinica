@@ -16,7 +16,9 @@ import {
   HiOutlineDocumentText,
   HiOutlineBanknotes,
   HiOutlineArrowDownTray,
+  HiOutlineCalculator,
 } from 'react-icons/hi2';
+import JournalEntryEditor from '../components/JournalEntryEditor';
 
 const paymentMethods = {
   efectivo: 'Efectivo',
@@ -27,9 +29,11 @@ const paymentMethods = {
 
 export default function Sales() {
   const { hasRole } = useAuth();
+  const [journalSale, setJournalSale] = useState(null); // venta cuyo asiento se edita
   const canCreate = hasRole('admin', 'cajero');
   const canCancel = hasRole('admin');
   const canInvoice = hasRole('admin', 'cajero');
+  const canAccounting = hasRole('admin', 'contabilidad');
   // El cajero crea ventas pero NO ve el historial (solo admin/contabilidad).
   const canViewHistory = hasRole('admin', 'contabilidad');
 
@@ -568,6 +572,15 @@ export default function Sales() {
                           title="Registrar cobro"
                         >
                           <HiOutlineBanknotes className="w-4 h-4" />
+                        </button>
+                      )}
+                      {canAccounting && s.status === 'completada' && s.journalEntry && (
+                        <button
+                          onClick={() => setJournalSale(s)}
+                          className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700 bg-transparent border-none cursor-pointer"
+                          title="Ver / editar asiento contable"
+                        >
+                          <HiOutlineCalculator className="w-4 h-4" />
                         </button>
                       )}
                       {canCancel && s.status === 'completada' && (
@@ -1139,6 +1152,17 @@ export default function Sales() {
           </div>
         )}
       </Modal>
+
+      {journalSale && (
+        <JournalEntryEditor
+          isOpen={!!journalSale}
+          onClose={() => setJournalSale(null)}
+          entryId={journalSale.journalEntry?._id || journalSale.journalEntry}
+          postUrl={`/sales/${journalSale._id}/journal`}
+          title={`Asiento de venta ${journalSale.saleNumber || ''}`}
+          onSaved={fetchSales}
+        />
+      )}
 
       <style>{`
         .lbl { display:block; font-size:0.875rem; font-weight:500; color:#334155; margin-bottom:0.375rem; }

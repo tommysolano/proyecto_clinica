@@ -25,6 +25,9 @@ const purchaseItemSchema = new mongoose.Schema(
     accountSplits: { type: [accountSplitSchema], default: [] },
     product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null },
     warehouse: { type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse', default: null },
+    // Lote y caducidad opcionales para insumos/medicamentos (kardex FIFO por capas).
+    lot: { type: String, default: '' },
+    expiryDate: { type: Date, default: null },
   },
   { _id: false }
 );

@@ -13,6 +13,8 @@ router.post('/accounts', requireRole('admin', 'contabilidad'), c.createAccount);
 router.put('/accounts/:id', requireRole('admin', 'contabilidad'), c.updateAccount);
 router.delete('/accounts/:id', requireRole('admin'), c.deleteAccount);
 router.get('/balances', requireRole('admin', 'contabilidad'), c.balances);
+// Libro del banco: movimientos con saldo corrido hasta el corte (ventas/cobros y pagos)
+router.get('/accounts/:id/ledger', requireRole('admin', 'contabilidad'), c.bankLedger);
 
 // Movimientos
 router.get('/transactions', requireRole('admin', 'contabilidad'), c.listMovements);

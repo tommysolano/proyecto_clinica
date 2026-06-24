@@ -6,8 +6,9 @@ import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineDocumentText, HiOutlineArrowDownTray, HiOutlineXMark } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
+import JournalEntryEditor from '../../components/JournalEntryEditor';
 
-const EMPTY_ITEM = { description: '', quantity: 1, unitPrice: 0, discount: 0, ivaRate: 15, account: '', accountSplits: [], product: null };
+const EMPTY_ITEM = { description: '', quantity: 1, unitPrice: 0, discount: 0, ivaRate: 15, account: '', accountSplits: [], product: '', warehouse: '', lot: '', expiryDate: '' };
 const EMPTY = { supplier: '', docType: 'FACTURA', estab: '001', ptoEmi: '001', secuencial: '', serie: '', claveAcceso: '', autorizacion: '', fechaEmision: today(), fechaVencimiento: '', items: [{ ...EMPTY_ITEM }], retentions: [], retentionNumber: '' };
 
 export default function PurchaseInvoices() {
@@ -20,10 +21,17 @@ export default function PurchaseInvoices() {
   const [xmlContents, setXmlContents] = useState([]); // array de strings XML
   const [suppliers, setSuppliers] = useState([]);
   const [accounts, setAccounts] = useState([]);
+  const [products, setProducts] = useState([]);
+  const [warehouses, setWarehouses] = useState([]);
+  const [banks, setBanks] = useState([]);
+  const [recurring, setRecurring] = useState({ defaultAccount: null, accounts: [] });
   const [form, setForm] = useState(EMPTY);
   const [authorizeId, setAuthorizeId] = useState(null);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
+  const [journalInv, setJournalInv] = useState(null); // factura cuyo asiento se edita
+  const [payInv, setPayInv] = useState(null); // factura a pagar
+  const [payForm, setPayForm] = useState({ method: 'TRANSFERENCIA', bankAccount: '', voucherNumber: '', checkNumber: '', amount: 0, date: today() });
 
   const load = async () => {
     try {
@@ -34,10 +42,33 @@ export default function PurchaseInvoices() {
   useEffect(() => {
     api.get('/suppliers').then((r) => setSuppliers(r.data || []));
     api.get('/chart-of-accounts').then((r) => setAccounts((r.data || []).filter((a) => a.allowsMovement && (a.code?.startsWith('6.') || a.code?.startsWith('1.1.04') || a.code?.startsWith('1.2.')))));
+    api.get('/products').then((r) => setProducts((r.data?.items || r.data || []).filter((p) => !p.unlimited && p.category !== 'servicio'))).catch(() => {});
+    api.get('/inventory-advanced/warehouses').then((r) => setWarehouses(r.data || [])).catch(() => {});
+    api.get('/banks/accounts').then((r) => setBanks(r.data || [])).catch(() => {});
     load();
   }, []);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t); }, [search, statusFilter]);
+
+  // Cuentas recurrentes del proveedor: sugiere y autocompleta la cuenta de gasto.
+  useEffect(() => {
+    if (!form.supplier) { setRecurring({ defaultAccount: null, accounts: [] }); return; }
+    let active = true;
+    api.get('/purchase-invoices/recurring-accounts', { params: { supplier: form.supplier } })
+      .then((r) => {
+        if (!active) return;
+        const data = r.data || { defaultAccount: null, accounts: [] };
+        setRecurring(data);
+        if (data.defaultAccount) {
+          setForm((f) => ({ ...f, items: f.items.map((it) => (it.account || (it.accountSplits || []).length ? it : { ...it, account: data.defaultAccount._id })) }));
+        }
+      })
+      .catch(() => {});
+    return () => { active = false; };
+  }, [form.supplier]);
+
+  // Aplica una cuenta recurrente a todos los ítems que aún no tienen cuenta.
+  const applyRecurring = (accId) => setForm((f) => ({ ...f, items: f.items.map((it) => ((it.accountSplits || []).length ? it : { ...it, account: accId })) }));
 
   const pendingCount = list.filter((p) => p.status === 'POR_AUTORIZAR').length;
 
@@ -68,7 +99,14 @@ export default function PurchaseInvoices() {
     }
     try {
       const serie = form.serie || `${form.estab}-${form.ptoEmi}-${form.secuencial}`;
-      const payload = { ...form, serie, fechaEmision: new Date(form.fechaEmision) };
+      // Normaliza producto/bodega/caducidad vacíos a null (evita cast de ObjectId '').
+      const items = form.items.map((it) => ({
+        ...it,
+        product: it.product || null,
+        warehouse: it.warehouse || null,
+        expiryDate: it.expiryDate || null,
+      }));
+      const payload = { ...form, items, serie, fechaEmision: new Date(form.fechaEmision) };
       if (authorizeId) {
         await api.post(`/purchase-invoices/${authorizeId}/authorize`, payload);
         toast.success('Factura autorizada y contabilizada');
@@ -88,7 +126,7 @@ export default function PurchaseInvoices() {
         ...EMPTY, ...d,
         supplier: d.supplier?._id || d.supplier || '',
         fechaEmision: d.fechaEmision ? d.fechaEmision.slice(0, 10) : today(),
-        items: (d.items || []).map((it) => ({ ...EMPTY_ITEM, ...it, account: it.account?._id || it.account || '', accountSplits: (it.accountSplits || []).map((s) => ({ ...s, account: s.account?._id || s.account || '' })) })),
+        items: (d.items || []).map((it) => ({ ...EMPTY_ITEM, ...it, account: it.account?._id || it.account || '', product: it.product?._id || it.product || '', warehouse: it.warehouse?._id || it.warehouse || '', expiryDate: it.expiryDate ? String(it.expiryDate).slice(0, 10) : '', accountSplits: (it.accountSplits || []).map((s) => ({ ...s, account: s.account?._id || s.account || '' })) })),
         retentions: d.retentions || [],
       });
       setAuthorizeId(p._id); setShow(true);
@@ -105,6 +143,33 @@ export default function PurchaseInvoices() {
     if (!confirm('¿Anular?')) return;
     try { await api.post(`/purchase-invoices/${p._id}/void`); load(); }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+  };
+
+  const openPay = (p) => {
+    setPayInv(p);
+    setPayForm({ method: 'TRANSFERENCIA', bankAccount: '', voucherNumber: '', checkNumber: '', amount: +(p.balance ?? p.total ?? 0).toFixed(2), date: today() });
+  };
+
+  const submitPay = async () => {
+    const p = payInv;
+    const amount = +payForm.amount;
+    if (!(amount > 0)) return toast.error('Monto inválido');
+    if (payForm.method !== 'EFECTIVO' && !payForm.bankAccount) return toast.error('Selecciona la cuenta bancaria');
+    if (payForm.method === 'TRANSFERENCIA' && !payForm.voucherNumber) return toast.error('Ingresa el N° de comprobante de la transferencia');
+    if (payForm.method === 'CHEQUE' && !payForm.checkNumber) return toast.error('Ingresa el N° de cheque');
+    try {
+      await api.post('/payments', {
+        type: 'PAGO', date: payForm.date,
+        partyModel: 'Supplier', partyRef: p.supplier?._id || p.supplier, partyName: p.supplier?.razonSocial || '',
+        method: payForm.method,
+        bankAccount: payForm.method === 'EFECTIVO' ? null : payForm.bankAccount,
+        voucherNumber: payForm.method === 'TRANSFERENCIA' ? payForm.voucherNumber : undefined,
+        checkNumber: payForm.method === 'CHEQUE' ? payForm.checkNumber : undefined,
+        applications: [{ docModel: 'PurchaseInvoice', docRef: p._id, amount }],
+      });
+      toast.success('Pago registrado');
+      setPayInv(null); load();
+    } catch (e) { toast.error(e.response?.data?.message || 'Error al registrar el pago'); }
   };
 
   const submitImport = async () => {
@@ -189,6 +254,8 @@ export default function PurchaseInvoices() {
                 <td className="px-3 py-2 text-right">
                   <div className="flex items-center justify-end gap-2">
                     {p.status === 'POR_AUTORIZAR' && <button onClick={() => openAuthorize(p)} className="text-emerald-600 text-xs font-medium hover:underline">Verificar / Autorizar</button>}
+                    {p.status === 'REGISTRADA' && p.balance > 0 && <button onClick={() => openPay(p)} className="text-sky-600 text-xs font-medium hover:underline">Pagar</button>}
+                    {(p.status === 'REGISTRADA' || p.status === 'PAGADA') && p.journalEntry && <button onClick={() => setJournalInv(p)} className="text-slate-600 text-xs font-medium hover:underline">Asiento</button>}
                     {p.status !== 'ANULADA' && p.retentionTotal > 0 && !p.retentionVoucher && (
                       <button onClick={() => emitRetention(p)} className="text-indigo-600 text-xs font-medium hover:underline">Emitir retención</button>
                     )}
@@ -222,9 +289,20 @@ export default function PurchaseInvoices() {
             <Field label="Secuencial" required><input required placeholder="000000123" value={form.secuencial} onChange={(e) => setForm({ ...form, secuencial: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="N° de autorización SRI"><input placeholder="Opcional" value={form.autorizacion} onChange={(e) => setForm({ ...form, autorizacion: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           </div>
+          {recurring.accounts.length > 0 && (
+            <div className="flex flex-wrap items-center gap-1.5 text-xs bg-emerald-50/60 border border-emerald-100 rounded-lg px-2 py-1.5">
+              <span className="text-slate-500 font-medium">Cuentas frecuentes:</span>
+              {recurring.accounts.map((a) => (
+                <button type="button" key={a._id} onClick={() => applyRecurring(a._id)} title={`Usar ${a.code} ${a.name} en los ítems sin cuenta`} className="px-2 py-0.5 rounded-full bg-white text-emerald-700 border border-emerald-200 hover:bg-emerald-100">
+                  {a.code} {a.name}{a.forSupplier ? ' ★' : ''}
+                </button>
+              ))}
+            </div>
+          )}
+          <div className="text-[11px] text-slate-400">El IVA y la cuenta de Proveedores (CxP) se calculan automáticamente. El contador solo escoge la cuenta de gasto (o distribuye en varias).</div>
           <table className="tbl">
             <thead className="bg-slate-100 text-xs"><tr>
-              <th className="px-2 py-1">Descripción</th><th>Cant.</th><th>P.U.</th><th>Desc.</th><th>IVA%</th><th>Cuenta gasto</th><th></th>
+              <th className="px-2 py-1">Descripción</th><th>Cant.</th><th>P.U.</th><th>Desc.</th><th>IVA%</th><th>Cuenta gasto</th><th>Producto (inventario)</th><th>Bodega</th><th></th>
             </tr></thead>
             <tbody>
               {form.items.map((it, i) => {
@@ -254,11 +332,29 @@ export default function PurchaseInvoices() {
                     )}
                     <button type="button" title="Distribuir en varias cuentas" onClick={() => setItem(i, { accountSplits: hasSplits ? [] : [{ account: it.account || '', amount: itemBase, description: '' }] })} className="ml-1 text-[11px] text-sky-600">{hasSplits ? 'simple' : '➗ varias'}</button>
                   </td>
+                  <td>
+                    <select value={it.product || ''} onChange={(e) => setItem(i, { product: e.target.value })} className="w-44 border border-slate-200 rounded px-1 py-1 text-xs">
+                      <option value="">— sin inventario —</option>
+                      {products.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
+                    </select>
+                    {it.product && (
+                      <div className="flex gap-1 mt-1">
+                        <input placeholder="Lote" value={it.lot || ''} onChange={(e) => setItem(i, { lot: e.target.value })} className="w-20 border border-slate-200 rounded px-1 py-0.5 text-[11px]" />
+                        <input type="date" title="Caducidad" value={it.expiryDate ? String(it.expiryDate).slice(0, 10) : ''} onChange={(e) => setItem(i, { expiryDate: e.target.value })} className="w-28 border border-slate-200 rounded px-1 py-0.5 text-[11px]" />
+                      </div>
+                    )}
+                  </td>
+                  <td>
+                    <select value={it.warehouse || ''} onChange={(e) => setItem(i, { warehouse: e.target.value })} disabled={!it.product} className="w-32 border border-slate-200 rounded px-1 py-1 text-xs disabled:bg-slate-50">
+                      <option value="">General</option>
+                      {warehouses.map((w) => <option key={w._id} value={w._id}>{w.name}</option>)}
+                    </select>
+                  </td>
                   <td><button type="button" onClick={() => setForm({ ...form, items: form.items.filter((_, x) => x !== i) })} className="text-rose-600"><HiOutlineXMark /></button></td>
                 </tr>
                 {hasSplits && (
                   <tr className="bg-slate-50">
-                    <td colSpan={7} className="px-3 py-2">
+                    <td colSpan={9} className="px-3 py-2">
                       <div className="text-xs font-semibold text-slate-600 mb-1">Distribución de cuentas del ítem (subtotal {fmt(itemBase)})</div>
                       {splits.map((sp, j) => (
                         <div key={j} className="flex items-center gap-2 mb-1">
@@ -342,7 +438,7 @@ export default function PurchaseInvoices() {
           </div>
         ) : (
           <div>
-            <p className="text-xs text-slate-500 mb-2">Carga el archivo <b>.txt</b> del anexo del SRI. Formato por línea (separado por <code>|</code>, <code>;</code> o tabulación): <code>RUC|RazonSocial|Tipo|Serie|Autorizacion|Fecha(DD/MM/AAAA)|Subtotal|IVA|Total</code>. Se ignora la fila de encabezados.</p>
+            <p className="text-xs text-slate-500 mb-2">Carga el archivo <b>.txt</b> del reporte del SRI <b>“Comprobantes electrónicos recibidos”</b> (separado por tabulación). Columnas: <code>RUC_EMISOR · RAZON_SOCIAL_EMISOR · TIPO_COMPROBANTE · SERIE_COMPROBANTE · CLAVE_ACCESO · FECHA_AUTORIZACION · FECHA_EMISION · IDENTIFICACION_RECEPTOR · VALOR_SIN_IMPUESTOS · IVA · IMPORTE_TOTAL</code>. Se reconoce la cabecera automáticamente. Las facturas quedan <b>POR AUTORIZAR</b> para asignar cuentas/inventario.</p>
             <label className="block text-xs font-medium text-slate-600 mb-1">Cargar archivo .txt</label>
             <input
               type="file" accept=".txt,text/plain,.csv,text/csv"
@@ -360,6 +456,56 @@ export default function PurchaseInvoices() {
           </div>
         )}
         <div className="flex justify-end gap-2 mt-3"><button onClick={() => setShowImport(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button onClick={submitImport} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Importar</button></div>
+      </Modal>
+
+      {/* Editor del asiento contable (debe/haber) de la compra */}
+      {journalInv && (
+        <JournalEntryEditor
+          isOpen={!!journalInv}
+          onClose={() => setJournalInv(null)}
+          entryId={journalInv.journalEntry?._id || journalInv.journalEntry}
+          postUrl={`/purchase-invoices/${journalInv._id}/journal`}
+          title={`Asiento de compra ${journalInv.serie || ''}`}
+          onSaved={load}
+        />
+      )}
+
+      {/* Pago de la factura (CxP) → genera el movimiento bancario para conciliación */}
+      <Modal isOpen={!!payInv} onClose={() => setPayInv(null)} title={`Pagar compra ${payInv?.serie || ''}`} size="md">
+        {payInv && (
+          <div className="space-y-3">
+            <div className="bg-slate-50 rounded-lg px-3 py-2 text-sm flex justify-between">
+              <span>{payInv.supplier?.razonSocial}</span>
+              <span>Saldo: <b>${fmt(payInv.balance ?? payInv.total)}</b></span>
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <Field label="Método">
+                <select value={payForm.method} onChange={(e) => setPayForm({ ...payForm, method: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                  <option value="TRANSFERENCIA">Transferencia</option>
+                  <option value="CHEQUE">Cheque</option>
+                  <option value="EFECTIVO">Efectivo</option>
+                </select>
+              </Field>
+              <Field label="Fecha"><input type="date" value={payForm.date} onChange={(e) => setPayForm({ ...payForm, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+              {payForm.method !== 'EFECTIVO' && (
+                <Field label="Cuenta bancaria" required className="col-span-2">
+                  <select value={payForm.bankAccount} onChange={(e) => setPayForm({ ...payForm, bankAccount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                    <option value="">Seleccione…</option>
+                    {banks.map((b) => <option key={b._id} value={b._id}>{b.name} — {b.bank}</option>)}
+                  </select>
+                </Field>
+              )}
+              {payForm.method === 'TRANSFERENCIA' && (
+                <Field label="N° comprobante" required className="col-span-2"><input value={payForm.voucherNumber} onChange={(e) => setPayForm({ ...payForm, voucherNumber: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" placeholder="N° de transferencia" /></Field>
+              )}
+              {payForm.method === 'CHEQUE' && (
+                <Field label="N° de cheque" required className="col-span-2"><input value={payForm.checkNumber} onChange={(e) => setPayForm({ ...payForm, checkNumber: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" placeholder="N° de cheque" /></Field>
+              )}
+              <Field label="Monto a pagar" required className="col-span-2"><NumericInput step="0.01" value={payForm.amount} onChange={(e) => setPayForm({ ...payForm, amount: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-right" /></Field>
+            </div>
+            <div className="flex justify-end gap-2"><button onClick={() => setPayInv(null)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button onClick={submitPay} className="px-4 py-2 bg-sky-600 text-white rounded-xl shadow-sm shadow-sky-600/20">Registrar pago</button></div>
+          </div>
+        )}
       </Modal>
     </div>
   );
