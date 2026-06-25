@@ -19,10 +19,17 @@ const inventoryCategorySchema = new mongoose.Schema(
     depreciationRate: { type: Number, default: 0 }, // % anual
     usefulLifeYears: { type: Number, default: 0 },
     residualPercent: { type: Number, default: 0 }, // % valor residual
+    // No depreciar (p. ej. terrenos): el activo no genera depreciación.
+    noDepreciate: { type: Boolean, default: false },
+    // Clasificación del gasto/tipo (como en Contífico): Gastos Ventas, Gastos Admin., etc.
+    expenseType: { type: String, default: '' },
     // Cuentas contables vinculadas
     assetAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount' },
     depreciationAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount' },
     accumDepreciationAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount' },
+    // Deterioro (impairment): cuenta de activo y de gasto por deterioro.
+    impairmentAssetAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount' },
+    impairmentExpenseAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount' },
     expenseAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount' },
     incomeAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount' },
     active: { type: Boolean, default: true },

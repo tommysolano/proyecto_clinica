@@ -3,6 +3,7 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlineBookOpen } from 'react-icons/hi2';
 import { fmt, fmtDate, startOfMonth, today } from './_utils';
+import SearchableSelect from '../../components/SearchableSelect';
 
 export default function Ledger() {
   const [accounts, setAccounts] = useState([]);
@@ -27,10 +28,16 @@ export default function Ledger() {
       <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 flex-wrap items-end">
         <div className="flex-1 min-w-64">
           <label className="text-xs text-slate-500">Cuenta</label>
-          <select value={account} onChange={(e) => setAccount(e.target.value)} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
-            <option value="">--</option>
-            {accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}
-          </select>
+          <SearchableSelect
+            options={accounts}
+            value={account}
+            onChange={setAccount}
+            getLabel={(a) => `${a.code} - ${a.name}`}
+            getSearchText={(a) => `${a.code} ${a.name}`}
+            placeholder="Seleccione una cuenta…"
+            searchPlaceholder="Buscar por código o nombre…"
+            allowClear
+          />
         </div>
         <div><label className="text-xs text-slate-500">Desde</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
         <div><label className="text-xs text-slate-500">Hasta</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>

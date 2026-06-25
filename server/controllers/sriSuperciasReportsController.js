@@ -15,6 +15,7 @@ const ChartOfAccount = require('../models/ChartOfAccount');
 const Invoice = require('../models/Invoice');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
 const Clinic = require('../models/Clinic');
+const { startOfDay, endOfDay } = require('../utils/dates');
 
 function escXml(s) {
   return String(s == null ? '' : s).replace(/[<>&"']/g, (c) => ({
@@ -30,8 +31,8 @@ async function getBalances(clinicId, { startDate, endDate } = {}) {
   const match = { clinic: clinicId, status: 'CONTABILIZADO' };
   if (startDate || endDate) {
     match.date = {};
-    if (startDate) match.date.$gte = new Date(startDate);
-    if (endDate) match.date.$lte = new Date(endDate);
+    if (startDate) match.date.$gte = startOfDay(startDate);
+    if (endDate) match.date.$lte = endOfDay(endDate);
   }
   const agg = await JournalEntry.aggregate([
     { $match: match },

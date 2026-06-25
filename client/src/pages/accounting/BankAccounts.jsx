@@ -90,7 +90,8 @@ export default function BankAccounts() {
   // submitTransfer reservado para compatibilidad — la lógica completa está en /accounting/cash.
   void submitTransfer;
 
-  const balanceOf = (id) => balances.find((b) => String(b.bankAccount) === String(id))?.balance || 0;
+  // /banks/balances devuelve { _id, bookBalance } por cuenta (no bankAccount/balance).
+  const balanceOf = (id) => balances.find((b) => String(b._id) === String(id))?.bookBalance || 0;
 
   return (
     <div className="space-y-4">

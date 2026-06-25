@@ -11,8 +11,20 @@ import SearchableSelect from '../../components/SearchableSelect';
 import { useAuth } from '../../context/AuthContext';
 
 const PAGE_SIZE = 100;
-const EMPTY_ITEM = { description: '', quantity: 1, unitPrice: 0, discount: 0, ivaRate: 15, account: '', accountSplits: [], product: '', warehouse: '', lot: '', expiryDate: '' };
-const EMPTY = { supplier: '', docType: 'FACTURA', estab: '001', ptoEmi: '001', secuencial: '', serie: '', claveAcceso: '', autorizacion: '', fechaEmision: today(), fechaVencimiento: '', items: [{ ...EMPTY_ITEM }], retentions: [], retentionNumber: '' };
+// Captura de activo fijo en la línea (espejo del modal "Nuevo activo fijo").
+const EMPTY_FA = { category: '', assetType: '', code: '', name: '', serial: '', location: '', locationClinic: '', acquisitionDate: '', startDate: '', depreciationRate: 0, usefulLifeMonths: 0, residualPercent: 0, assetAccount: '', depreciationAccount: '', accumDepreciationAccount: '' };
+const EMPTY_ITEM = { description: '', quantity: 1, unitPrice: 0, discount: 0, ivaRate: 15, account: '', accountSplits: [], lineType: 'GASTO', costCenter: '', fixedAsset: { ...EMPTY_FA }, product: '', warehouse: '', lot: '', expiryDate: '' };
+const EMPTY = { supplier: '', docType: 'FACTURA', estab: '001', ptoEmi: '001', secuencial: '', serie: '', claveAcceso: '', autorizacion: '', fechaEmision: today(), fechaVencimiento: '', creditDays: 0, costCenter: '', items: [{ ...EMPTY_ITEM }], retentions: [], retentionNumber: '' };
+
+// Vencimiento = fecha de emisión + días de crédito (YYYY-MM-DD).
+const addDays = (dateStr, days) => {
+  if (!dateStr || !(+days > 0)) return '';
+  const d = new Date(`${dateStr}T00:00:00`);
+  if (isNaN(d)) return '';
+  d.setDate(d.getDate() + Number(days));
+  return d.toISOString().slice(0, 10);
+};
+const LINE_TYPES = [['GASTO', 'Gasto'], ['INVENTARIO', 'Inventario'], ['ACTIVO_FIJO', 'Activo fijo']];
 
 export default function PurchaseInvoices() {
   const { hasRole } = useAuth();
@@ -29,9 +41,13 @@ export default function PurchaseInvoices() {
   const [products, setProducts] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
   const [banks, setBanks] = useState([]);
+  const [costCenters, setCostCenters] = useState([]);
+  const [assetCategories, setAssetCategories] = useState([]); // categorías de activo fijo (con tipos)
+  const [clinics, setClinics] = useState([]);
   const [recurring, setRecurring] = useState({ defaultAccount: null, accounts: [] });
   const [form, setForm] = useState(EMPTY);
   const [authorizeId, setAuthorizeId] = useState(null);
+  const [editId, setEditId] = useState(null); // factura REGISTRADA en edición
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState('');
   const [sort, setSort] = useState('fecha_desc');
@@ -64,6 +80,9 @@ export default function PurchaseInvoices() {
     api.get('/products').then((r) => setProducts((r.data?.items || r.data || []).filter((p) => !p.unlimited && p.category !== 'servicio'))).catch(() => {});
     api.get('/inventory-advanced/warehouses').then((r) => setWarehouses(r.data || [])).catch(() => {});
     api.get('/banks/accounts').then((r) => setBanks(r.data || [])).catch(() => {});
+    api.get('/cost-centers', { params: { active: true } }).then((r) => setCostCenters(r.data || [])).catch(() => {});
+    api.get('/inventory-advanced/categories', { params: { kind: 'ACTIVO_FIJO' } }).then((r) => setAssetCategories(r.data?.items || r.data || [])).catch(() => {});
+    api.get('/clinics').then((r) => setClinics(r.data?.items || r.data || [])).catch(() => {});
     load();
   }, []);
   // Al cambiar búsqueda/estado/orden, vuelve a la primera página.
@@ -92,6 +111,33 @@ export default function PurchaseInvoices() {
   // Aplica una cuenta recurrente a todos los ítems que aún no tienen cuenta.
   const applyRecurring = (accId) => setForm((f) => ({ ...f, items: f.items.map((it) => ((it.accountSplits || []).length ? it : { ...it, account: accId })) }));
 
+  // Al elegir proveedor: prefija sus días de crédito y recalcula el vencimiento.
+  const onSelectSupplier = (v) => {
+    const sup = suppliers.find((s) => String(s._id) === String(v));
+    const creditDays = sup?.creditDays || 0;
+    setForm((f) => ({ ...f, supplier: v, creditDays: creditDays || f.creditDays, fechaVencimiento: (creditDays || f.creditDays) ? addDays(f.fechaEmision, creditDays || f.creditDays) : f.fechaVencimiento }));
+  };
+
+  // Centro de costo por defecto de la factura: se copia a las líneas que no tengan uno.
+  const setInvoiceCostCenter = (cc) => setForm((f) => ({ ...f, costCenter: cc, items: f.items.map((it) => (it.costCenter ? it : { ...it, costCenter: cc })) }));
+
+  // Al elegir categoría de activo fijo en una línea: prefija cuentas y parámetros (como en Activos Fijos).
+  const onItemAssetCategory = (i, catId) => {
+    const c = assetCategories.find((x) => String(x._id) === String(catId));
+    const fa = {
+      ...(form.items[i].fixedAsset || {}),
+      category: catId, assetType: '',
+      depreciationRate: c?.depreciationRate || 0,
+      usefulLifeMonths: (c?.usefulLifeYears || 10) * 12,
+      residualPercent: c?.residualPercent || 0,
+      assetAccount: c?.assetAccount?._id || c?.assetAccount || '',
+      depreciationAccount: c?.depreciationAccount?._id || c?.depreciationAccount || '',
+      accumDepreciationAccount: c?.accumDepreciationAccount?._id || c?.accumDepreciationAccount || '',
+    };
+    setItem(i, { fixedAsset: fa, account: fa.assetAccount || form.items[i].account });
+  };
+  const setFa = (i, patch) => setItem(i, { fixedAsset: { ...(form.items[i].fixedAsset || {}), ...patch } });
+
 
   const totals = (() => {
     let s0 = 0, s12 = 0, s15 = 0, sNo = 0, sEx = 0, iva = 0;
@@ -112,6 +158,8 @@ export default function PurchaseInvoices() {
     e.preventDefault();
     if (!form.supplier) return toast.error('Selecciona un proveedor');
     for (const it of form.items) {
+      if (it.lineType === 'INVENTARIO' && !it.product) return toast.error('En las líneas de inventario, selecciona el producto');
+      if (it.lineType === 'ACTIVO_FIJO' && !(it.fixedAsset?.name || it.description)) return toast.error('El activo fijo necesita un nombre o descripción');
       if ((it.accountSplits || []).length) {
         const base = +((it.quantity || 0) * (it.unitPrice || 0) - (it.discount || 0)).toFixed(2);
         const sum = +(it.accountSplits.reduce((s, sp) => s + (+sp.amount || 0), 0)).toFixed(2);
@@ -121,26 +169,45 @@ export default function PurchaseInvoices() {
     }
     try {
       const serie = form.serie || `${form.estab}-${form.ptoEmi}-${form.secuencial}`;
-      // Normaliza producto/bodega/caducidad vacíos a null (evita cast de ObjectId '').
-      const items = form.items.map((it) => ({
-        ...it,
-        product: it.product || null,
-        warehouse: it.warehouse || null,
-        expiryDate: it.expiryDate || null,
-      }));
-      const payload = { ...form, items, serie, fechaEmision: new Date(form.fechaEmision) };
+      // Normaliza referencias vacías a null (evita cast de ObjectId '') según el tipo de línea.
+      const items = form.items.map((it) => {
+        const base = {
+          ...it,
+          costCenter: it.costCenter || null,
+          product: it.lineType === 'INVENTARIO' ? (it.product || null) : null,
+          warehouse: it.lineType === 'INVENTARIO' ? (it.warehouse || null) : null,
+          expiryDate: it.lineType === 'INVENTARIO' ? (it.expiryDate || null) : null,
+        };
+        if (it.lineType === 'ACTIVO_FIJO') {
+          const fa = it.fixedAsset || {};
+          base.fixedAsset = {
+            ...fa,
+            category: fa.category || null, assetType: fa.assetType || null, locationClinic: fa.locationClinic || null,
+            assetAccount: fa.assetAccount || null, depreciationAccount: fa.depreciationAccount || null, accumDepreciationAccount: fa.accumDepreciationAccount || null,
+            acquisitionDate: fa.acquisitionDate || null, startDate: fa.startDate || null,
+          };
+        } else {
+          base.fixedAsset = null;
+        }
+        return base;
+      });
+      const payload = { ...form, items, serie, costCenter: form.costCenter || null, fechaVencimiento: form.fechaVencimiento || null, fechaEmision: new Date(form.fechaEmision) };
       if (authorizeId) {
         await api.post(`/purchase-invoices/${authorizeId}/authorize`, payload);
-        toast.success('Factura autorizada y contabilizada');
+        toast.success('Factura contabilizada');
+      } else if (editId) {
+        await api.put(`/purchase-invoices/${editId}`, payload);
+        toast.success('Cambios guardados');
       } else {
         await api.post('/purchase-invoices', payload);
         toast.success('Registrada');
       }
-      setShow(false); setForm(EMPTY); setAuthorizeId(null); load();
+      setShow(false); setForm(EMPTY); setAuthorizeId(null); setEditId(null); load();
     } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
   };
 
-  const openAuthorize = async (p) => {
+  // Carga una factura existente en el form. mode: 'authorize' (contabilizar) | 'edit'.
+  const loadIntoForm = async (p, mode) => {
     try {
       const r = await api.get(`/purchase-invoices/${p._id}`);
       const d = r.data;
@@ -148,12 +215,18 @@ export default function PurchaseInvoices() {
         ...EMPTY, ...d,
         supplier: d.supplier?._id || d.supplier || '',
         fechaEmision: d.fechaEmision ? d.fechaEmision.slice(0, 10) : today(),
-        items: (d.items || []).map((it) => ({ ...EMPTY_ITEM, ...it, account: it.account?._id || it.account || '', product: it.product?._id || it.product || '', warehouse: it.warehouse?._id || it.warehouse || '', expiryDate: it.expiryDate ? String(it.expiryDate).slice(0, 10) : '', accountSplits: (it.accountSplits || []).map((s) => ({ ...s, account: s.account?._id || s.account || '' })) })),
+        fechaVencimiento: d.fechaVencimiento ? String(d.fechaVencimiento).slice(0, 10) : '',
+        costCenter: d.costCenter?._id || d.costCenter || '',
+        items: (d.items || []).map((it) => ({ ...EMPTY_ITEM, ...it, lineType: it.lineType || (it.product ? 'INVENTARIO' : 'GASTO'), fixedAsset: it.fixedAsset ? { ...EMPTY_FA, ...it.fixedAsset, category: it.fixedAsset.category?._id || it.fixedAsset.category || '', assetType: it.fixedAsset.assetType?._id || it.fixedAsset.assetType || '', locationClinic: it.fixedAsset.locationClinic?._id || it.fixedAsset.locationClinic || '', assetAccount: it.fixedAsset.assetAccount?._id || it.fixedAsset.assetAccount || '', acquisitionDate: it.fixedAsset.acquisitionDate ? String(it.fixedAsset.acquisitionDate).slice(0, 10) : '', startDate: it.fixedAsset.startDate ? String(it.fixedAsset.startDate).slice(0, 10) : '' } : { ...EMPTY_FA }, account: it.account?._id || it.account || '', product: it.product?._id || it.product || '', warehouse: it.warehouse?._id || it.warehouse || '', costCenter: it.costCenter?._id || it.costCenter || '', expiryDate: it.expiryDate ? String(it.expiryDate).slice(0, 10) : '', accountSplits: (it.accountSplits || []).map((s) => ({ ...s, account: s.account?._id || s.account || '' })) })),
         retentions: d.retentions || [],
       });
-      setAuthorizeId(p._id); setShow(true);
+      if (mode === 'edit') { setEditId(p._id); setAuthorizeId(null); }
+      else { setAuthorizeId(p._id); setEditId(null); }
+      setShow(true);
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
+  const openAuthorize = (p) => loadIntoForm(p, 'authorize');
+  const openEdit = (p) => loadIntoForm(p, 'edit');
 
   const emitRetention = async (p) => {
     if (!confirm('¿Emitir el comprobante de retención electrónico de esta compra?')) return;
@@ -229,7 +302,7 @@ export default function PurchaseInvoices() {
         toast(`Nada nuevo: las ${skipped} facturas del archivo ya estaban registradas.`, { icon: 'ℹ️' });
       } else {
         toast.success(`${created} importada(s)${skipped ? `, ${skipped} repetida(s)` : ''}${errors.length ? `, ${errors.length} con error` : ''}`);
-        if (created) toast('Quedan POR AUTORIZAR. Revísalas y autorízalas.', { icon: 'ℹ️' });
+        if (created) toast('Quedan POR CONTABILIZAR. Revísalas y contabilízalas.', { icon: 'ℹ️' });
       }
       // Siempre cierra el modal y recarga la lista para que el usuario vea el resultado.
       setShowImport(false); setXmlContents([]); setImportTxt(''); setImportTxtName(''); load();
@@ -274,12 +347,12 @@ export default function PurchaseInvoices() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineDocumentText className="text-emerald-600" /> Compras
-          {pendingTotal > 0 && <span className="text-xs font-medium px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">{pendingTotal} por autorizar</span>}
+          {pendingTotal > 0 && <span className="text-xs font-medium px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">{pendingTotal} por contabilizar</span>}
         </h1>
         <div className="flex gap-2">
           {hasRole('admin') && <button onClick={wipeAll} title="Borrar todas las compras de esta sucursal (reinicio)" className="px-4 py-2 bg-rose-600 text-white rounded-lg flex items-center gap-2"><HiOutlineXMark /> Reiniciar compras</button>}
           <button onClick={() => { setImportMode('xml'); setShowImport(true); }} className="px-4 py-2 bg-amber-500 text-white rounded-lg flex items-center gap-2"><HiOutlineArrowDownTray /> Importar SRI</button>
-          <button onClick={() => { setForm(EMPTY); setAuthorizeId(null); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
+          <button onClick={() => { setForm(EMPTY); setAuthorizeId(null); setEditId(null); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
         </div>
       </div>
 
@@ -288,7 +361,7 @@ export default function PurchaseInvoices() {
         <input aria-label="Buscar factura de compra" placeholder="Buscar por proveedor, RUC, serie, autorización, clave de acceso..." value={search} onChange={(e) => setSearch(e.target.value)} className="flex-1 min-w-[260px] border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
         <select aria-label="Filtrar por estado" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
           <option value="">Todos los estados</option>
-          <option value="POR_AUTORIZAR">Por autorizar</option>
+          <option value="POR_AUTORIZAR">Por contabilizar</option>
           <option value="REGISTRADA">Registrada</option>
           <option value="PAGADA">Pagada</option>
           <option value="ANULADA">Anulada</option>
@@ -325,11 +398,12 @@ export default function PurchaseInvoices() {
                 <td className="px-3 py-2 text-right font-mono font-semibold">{fmt(p.total)}</td>
                 <td className="px-3 py-2 text-right font-mono">{fmt(p.retentionTotal)}</td>
                 <td className="px-3 py-2 text-center text-xs">
-                  <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${p.status === 'POR_AUTORIZAR' ? 'bg-amber-100 text-amber-700' : p.status === 'REGISTRADA' ? 'bg-emerald-100 text-emerald-700' : p.status === 'PAGADA' ? 'bg-sky-100 text-sky-700' : 'bg-rose-100 text-rose-700'}`}>{p.status === 'POR_AUTORIZAR' ? 'POR AUTORIZAR' : p.status}{p.importedFromXml ? ' · XML' : ''}</span>
+                  <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${p.status === 'POR_AUTORIZAR' ? 'bg-amber-100 text-amber-700' : p.status === 'REGISTRADA' ? 'bg-emerald-100 text-emerald-700' : p.status === 'PAGADA' ? 'bg-sky-100 text-sky-700' : 'bg-rose-100 text-rose-700'}`}>{p.status === 'POR_AUTORIZAR' ? 'POR CONTABILIZAR' : p.status}{p.importedFromXml ? ' · XML' : ''}</span>
                 </td>
                 <td className="px-3 py-2 text-right">
                   <div className="flex items-center justify-end gap-2">
-                    {p.status === 'POR_AUTORIZAR' && <button onClick={() => openAuthorize(p)} className="text-emerald-600 text-xs font-medium hover:underline">Verificar / Autorizar</button>}
+                    {p.status === 'POR_AUTORIZAR' && <button onClick={() => openAuthorize(p)} className="text-emerald-600 text-xs font-medium hover:underline">Verificar / Contabilizar</button>}
+                    {p.status === 'REGISTRADA' && <button onClick={() => openEdit(p)} className="text-slate-600 text-xs font-medium hover:underline">Editar</button>}
                     {p.status === 'REGISTRADA' && p.balance > 0 && <button onClick={() => openPay(p)} className="text-sky-600 text-xs font-medium hover:underline">Pagar</button>}
                     {(p.status === 'REGISTRADA' || p.status === 'PAGADA') && p.journalEntry && <button onClick={() => setJournalInv(p)} className="text-slate-600 text-xs font-medium hover:underline">Asiento</button>}
                     {p.status !== 'ANULADA' && p.retentionTotal > 0 && !p.retentionVoucher && (
@@ -355,15 +429,15 @@ export default function PurchaseInvoices() {
         </div>
       </div>
 
-      <Modal isOpen={show} onClose={() => { setShow(false); setAuthorizeId(null); }} title={authorizeId ? 'Verificar y autorizar factura' : 'Nueva factura de compra'} size="2xl">
+      <Modal isOpen={show} onClose={() => { setShow(false); setAuthorizeId(null); setEditId(null); }} title={authorizeId ? 'Verificar y contabilizar factura' : editId ? 'Editar factura de compra' : 'Nueva factura de compra'} size="2xl">
         <form onSubmit={submit} className="space-y-3">
-          {authorizeId && <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2">Factura cargada automáticamente. Verifica los datos y asigna la cuenta contable de cada ítem antes de autorizar; al autorizar se contabilizará.</div>}
+          {authorizeId && <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2">Factura cargada automáticamente. Verifica los datos y asigna la cuenta contable de cada ítem antes de contabilizar.</div>}
           <div className="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-2.5">
             <Field label="Proveedor" required className="col-span-2">
               <SearchableSelect
                 options={suppliers}
                 value={form.supplier}
-                onChange={(v) => setForm({ ...form, supplier: v })}
+                onChange={onSelectSupplier}
                 getLabel={(s) => `${s.ruc} - ${s.razonSocial}`}
                 getSearchText={(s) => `${s.ruc} ${s.razonSocial} ${s.nombreComercial || ''}`}
                 placeholder="Seleccione un proveedor…"
@@ -375,11 +449,16 @@ export default function PurchaseInvoices() {
                 <option>FACTURA</option><option>NOTA_VENTA</option><option>LIQUIDACION</option><option>NOTA_DEBITO_REC</option><option>NOTA_CREDITO_REC</option>
               </select>
             </Field>
-            <Field label="Fecha de emisión" required><input type="date" required value={form.fechaEmision} onChange={(e) => setForm({ ...form, fechaEmision: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+            <Field label="Fecha de emisión" required><input type="date" required value={form.fechaEmision} onChange={(e) => setForm((f) => ({ ...f, fechaEmision: e.target.value, fechaVencimiento: f.creditDays ? addDays(e.target.value, f.creditDays) : f.fechaVencimiento }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
             <Field label="Establecimiento"><input placeholder="001" value={form.estab} onChange={(e) => setForm({ ...form, estab: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
             <Field label="Punto de emisión"><input placeholder="001" value={form.ptoEmi} onChange={(e) => setForm({ ...form, ptoEmi: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
             <Field label="Secuencial" required><input required placeholder="000000123" value={form.secuencial} onChange={(e) => setForm({ ...form, secuencial: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
             <Field label="N° de autorización SRI"><input placeholder="Opcional" value={form.autorizacion} onChange={(e) => setForm({ ...form, autorizacion: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+            <Field label="Días de crédito"><NumericInput value={form.creditDays} onChange={(e) => setForm((f) => ({ ...f, creditDays: +e.target.value, fechaVencimiento: +e.target.value > 0 ? addDays(f.fechaEmision, +e.target.value) : '' }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-right" /></Field>
+            <Field label="Vencimiento"><input type="date" value={form.fechaVencimiento || ''} onChange={(e) => setForm({ ...form, fechaVencimiento: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+            <Field label="Centro de costo (factura)" className="col-span-2">
+              <SearchableSelect options={costCenters} value={form.costCenter} onChange={setInvoiceCostCenter} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="— sin centro —" searchPlaceholder="Buscar centro…" allowClear />
+            </Field>
           </div>
           {recurring.accounts.length > 0 && (
             <div className="flex flex-wrap items-center gap-1.5 text-xs bg-emerald-50/60 border border-emerald-100 rounded-lg px-2 py-1.5">
@@ -410,6 +489,16 @@ export default function PurchaseInvoices() {
                       <button type="button" onClick={() => setForm({ ...form, items: form.items.filter((_, x) => x !== i) })} className="mt-6 shrink-0 text-rose-500 hover:text-rose-600" title="Quitar ítem"><HiOutlineXMark className="w-5 h-5" /></button>
                     )}
                   </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Field label="Tipo de línea">
+                      <select value={it.lineType || 'GASTO'} onChange={(e) => setItem(i, { lineType: e.target.value, accountSplits: e.target.value === 'GASTO' ? it.accountSplits : [], product: e.target.value === 'INVENTARIO' ? it.product : '' })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm bg-white">
+                        {LINE_TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+                      </select>
+                    </Field>
+                    <Field label="Centro de costo (línea)">
+                      <SearchableSelect options={costCenters} value={it.costCenter} onChange={(v) => setItem(i, { costCenter: v })} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="— sin centro —" searchPlaceholder="Buscar centro…" allowClear size="sm" />
+                    </Field>
+                  </div>
                   <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
                     <Field label="Cantidad"><NumericInput step="0.01" value={it.quantity} onChange={(e) => setItem(i, { quantity: +e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm text-right" /></Field>
                     <Field label="P. unitario"><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(i, { unitPrice: +e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm text-right" /></Field>
@@ -422,7 +511,7 @@ export default function PurchaseInvoices() {
                     <Field label="Subtotal"><div className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm text-right bg-slate-100 font-mono text-slate-700">{fmt(itemBase)}</div></Field>
                   </div>
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <Field label="Cuenta de gasto" required={!hasSplits}>
+                    <Field label={it.lineType === 'INVENTARIO' ? 'Cuenta de inventario (activo)' : it.lineType === 'ACTIVO_FIJO' ? 'Cuenta de activo fijo' : 'Cuenta de gasto'} required={!hasSplits}>
                       {hasSplits ? (
                         <div className="flex items-center justify-between border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white text-slate-500 italic">
                           Distribuido en {splits.length} cuentas
@@ -431,20 +520,25 @@ export default function PurchaseInvoices() {
                       ) : (
                         <div className="flex items-center gap-2">
                           <SearchableSelect options={accounts} value={it.account} onChange={(v) => setItem(i, { account: v })} getLabel={(a) => `${a.code} ${a.name}`} placeholder="Elegir cuenta…" searchPlaceholder="Buscar por código o nombre…" className="flex-1" />
-                          <button type="button" title="Distribuir en varias cuentas" onClick={() => setItem(i, { accountSplits: [{ account: it.account || '', amount: itemBase, description: '' }] })} className="text-xs text-sky-600 whitespace-nowrap">➗ varias</button>
+                          {it.lineType === 'GASTO' && <button type="button" title="Distribuir en varias cuentas" onClick={() => setItem(i, { accountSplits: [{ account: it.account || '', amount: itemBase, description: '' }] })} className="text-xs text-sky-600 whitespace-nowrap">➗ varias</button>}
                         </div>
                       )}
                     </Field>
-                    <Field label="Producto (inventario, opcional)" hint="Solo si es insumo/medicamento que entra a stock">
-                      <SearchableSelect options={products} value={it.product} onChange={(v) => setItem(i, { product: v, warehouse: v ? it.warehouse : '' })} getLabel={(p) => p.name} placeholder="— sin inventario —" searchPlaceholder="Buscar producto…" allowClear />
-                    </Field>
+                    {it.lineType === 'INVENTARIO' && (
+                      <Field label="Producto" required hint="Insumo/medicamento que entra a stock">
+                        <SearchableSelect options={products} value={it.product} onChange={(v) => setItem(i, { product: v, warehouse: v ? it.warehouse : '' })} getLabel={(p) => p.name} placeholder="Selecciona producto…" searchPlaceholder="Buscar producto…" allowClear />
+                      </Field>
+                    )}
                   </div>
-                  {it.product && (
+                  {it.lineType === 'INVENTARIO' && it.product && (
                     <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
                       <Field label="Bodega"><SearchableSelect options={[{ _id: '', name: 'General' }, ...warehouses]} value={it.warehouse} onChange={(v) => setItem(i, { warehouse: v })} getLabel={(w) => w.name} placeholder="General" searchPlaceholder="Buscar bodega…" /></Field>
                       <Field label="Lote"><input value={it.lot || ''} onChange={(e) => setItem(i, { lot: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm" placeholder="Opcional" /></Field>
                       <Field label="Caducidad"><input type="date" value={it.expiryDate ? String(it.expiryDate).slice(0, 10) : ''} onChange={(e) => setItem(i, { expiryDate: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm" /></Field>
                     </div>
+                  )}
+                  {it.lineType === 'ACTIVO_FIJO' && (
+                    <FixedAssetFields i={i} fa={it.fixedAsset || {}} categories={assetCategories} clinics={clinics} accounts={accounts} onCategory={onItemAssetCategory} setFa={setFa} />
                   )}
                   {hasSplits && (
                     <div className="bg-white border border-slate-200 rounded-lg p-2.5">
@@ -500,7 +594,7 @@ export default function PurchaseInvoices() {
             <Field label="N° comprobante de retención" className="mt-2"><input placeholder="Opcional" value={form.retentionNumber} onChange={(e) => setForm({ ...form, retentionNumber: e.target.value })} className="block w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           </div>
 
-          <div className="flex justify-end gap-2"><button type="button" onClick={() => { setShow(false); setAuthorizeId(null); }} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">{authorizeId ? 'Autorizar y contabilizar' : 'Registrar'}</button></div>
+          <div className="flex justify-end gap-2"><button type="button" onClick={() => { setShow(false); setAuthorizeId(null); setEditId(null); }} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">{authorizeId ? 'Contabilizar' : editId ? 'Guardar cambios' : 'Registrar'}</button></div>
         </form>
       </Modal>
 
@@ -511,7 +605,7 @@ export default function PurchaseInvoices() {
         </div>
         {importMode === 'xml' ? (
           <div>
-            <p className="text-xs text-slate-500 mb-2">Carga uno o varios archivos XML de facturas electrónicas recibidas. Se cargarán como <b>POR AUTORIZAR</b> para que el área contable las verifique antes de contabilizar.</p>
+            <p className="text-xs text-slate-500 mb-2">Carga uno o varios archivos XML de facturas electrónicas recibidas. Se cargarán como <b>POR CONTABILIZAR</b> para que el área contable las verifique antes de contabilizar.</p>
             <input
               aria-label="Cargar archivos XML"
               type="file" accept=".xml,text/xml,application/xml" multiple
@@ -527,7 +621,7 @@ export default function PurchaseInvoices() {
           </div>
         ) : (
           <div>
-            <p className="text-xs text-slate-500 mb-2">Carga el archivo <b>.txt</b> del reporte del SRI <b>“Comprobantes electrónicos recibidos”</b> (separado por tabulación). Columnas: <code>RUC_EMISOR · RAZON_SOCIAL_EMISOR · TIPO_COMPROBANTE · SERIE_COMPROBANTE · CLAVE_ACCESO · FECHA_AUTORIZACION · FECHA_EMISION · IDENTIFICACION_RECEPTOR · VALOR_SIN_IMPUESTOS · IVA · IMPORTE_TOTAL</code>. Se reconoce la cabecera automáticamente. Las facturas quedan <b>POR AUTORIZAR</b> para asignar cuentas/inventario.</p>
+            <p className="text-xs text-slate-500 mb-2">Carga el archivo <b>.txt</b> del reporte del SRI <b>“Comprobantes electrónicos recibidos”</b> (separado por tabulación). Columnas: <code>RUC_EMISOR · RAZON_SOCIAL_EMISOR · TIPO_COMPROBANTE · SERIE_COMPROBANTE · CLAVE_ACCESO · FECHA_AUTORIZACION · FECHA_EMISION · IDENTIFICACION_RECEPTOR · VALOR_SIN_IMPUESTOS · IVA · IMPORTE_TOTAL</code>. Se reconoce la cabecera automáticamente. Las facturas quedan <b>POR CONTABILIZAR</b> para asignar cuentas/inventario.</p>
             <label className="block text-xs font-medium text-slate-600 mb-1">Cargar archivo .txt</label>
             <input
               type="file" accept=".txt,text/plain,.csv,text/csv"
@@ -593,6 +687,39 @@ export default function PurchaseInvoices() {
           </div>
         )}
       </Modal>
+    </div>
+  );
+}
+
+// Campos de captura de activo fijo en una línea de compra (espejo del modal "Nuevo activo fijo").
+function FixedAssetFields({ i, fa, categories, clinics, onCategory, setFa }) {
+  const roots = categories.filter((c) => !c.parent);
+  const types = categories.filter((c) => c.parent && String(c.parent) === String(fa.category));
+  const inp = 'w-full border border-slate-200 rounded-lg px-2 py-2 text-sm';
+  return (
+    <div className="bg-white border border-slate-200 rounded-lg p-2.5 space-y-2">
+      <div className="text-xs font-semibold text-slate-600">Datos del activo fijo</div>
+      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
+        <Field label="Categoría">
+          <SearchableSelect options={roots} value={fa.category || ''} onChange={(v) => onCategory(i, v)} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="Seleccione…" searchPlaceholder="Buscar categoría…" allowClear size="sm" />
+        </Field>
+        <Field label="Tipo de activo">
+          <SearchableSelect options={types} value={fa.assetType || ''} onChange={(v) => setFa(i, { assetType: v })} getLabel={(c) => c.name} placeholder={types.length ? 'Seleccione…' : 'Sin tipos'} searchPlaceholder="Buscar tipo…" allowClear size="sm" />
+        </Field>
+        <Field label="Código"><input value={fa.code || ''} onChange={(e) => setFa(i, { code: e.target.value })} placeholder="Auto (AF-####)" className={inp} /></Field>
+        <Field label="Nombre"><input value={fa.name || ''} onChange={(e) => setFa(i, { name: e.target.value })} placeholder="Ej: Ecógrafo" className={inp} /></Field>
+        <Field label="Serial"><input value={fa.serial || ''} onChange={(e) => setFa(i, { serial: e.target.value })} className={inp} /></Field>
+        <Field label="Sede / clínica">
+          <SearchableSelect options={clinics} value={fa.locationClinic || ''} onChange={(v) => setFa(i, { locationClinic: v })} getLabel={(c) => c.name} placeholder="Seleccione…" searchPlaceholder="Buscar sede…" allowClear size="sm" />
+        </Field>
+        <Field label="Ubicación (área)"><input value={fa.location || ''} onChange={(e) => setFa(i, { location: e.target.value })} placeholder="Ej: Consultorio 2" className={inp} /></Field>
+        <Field label="% Depreciación anual"><NumericInput step="0.01" value={fa.depreciationRate || 0} onChange={(e) => setFa(i, { depreciationRate: +e.target.value, usefulLifeMonths: Math.round(1200 / (+e.target.value || 1)) })} className={inp} /></Field>
+        <Field label="Vida útil (meses)"><NumericInput value={fa.usefulLifeMonths || 0} onChange={(e) => setFa(i, { usefulLifeMonths: +e.target.value })} className={inp} /></Field>
+        <Field label="% Valor residual"><NumericInput step="0.01" value={fa.residualPercent || 0} onChange={(e) => setFa(i, { residualPercent: +e.target.value })} className={inp} /></Field>
+        <Field label="Fecha adquisición"><input type="date" value={fa.acquisitionDate ? String(fa.acquisitionDate).slice(0, 10) : ''} onChange={(e) => setFa(i, { acquisitionDate: e.target.value })} className={inp} /></Field>
+        <Field label="Inicio depreciación"><input type="date" value={fa.startDate ? String(fa.startDate).slice(0, 10) : ''} onChange={(e) => setFa(i, { startDate: e.target.value })} className={inp} /></Field>
+      </div>
+      <p className="text-[11px] text-slate-400">El costo se toma del subtotal de la línea. La cuenta de activo fijo se prefija desde la categoría. Al contabilizar se crea el activo automáticamente.</p>
     </div>
   );
 }

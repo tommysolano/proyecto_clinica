@@ -19,6 +19,8 @@ const supplierSchema = new mongoose.Schema(
     // Cuenta contable de gasto/activo por defecto al ingresar facturas (memoria)
     defaultExpenseAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },
     defaultPayableAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },
+    // Días de crédito por defecto del proveedor (para calcular el vencimiento de la factura)
+    creditDays: { type: Number, default: 0 },
     // Régimen tributario
     isSpecialContributor: { type: Boolean, default: false },
     isWithholdingAgent: { type: Boolean, default: false },

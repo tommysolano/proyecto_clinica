@@ -4,6 +4,9 @@ const User = require('../models/User');
 const CommissionPosting = require('../models/CommissionPosting');
 const { createEntry, reverseEntry } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
+const ExcelJS = require('exceljs');
+
+const ROLE_LABELS = { admin: 'Administrador', doctor: 'Médico', nurse: 'Enfermero/a', call_center: 'Call center', marketing: 'Marketing', contabilidad: 'Contabilidad' };
 
 // ─────────── CRUD de reglas ───────────
 exports.listRules = async (req, res) => {
@@ -189,7 +192,7 @@ async function computeCommissions(clinicId, startDate, endDate) {
               userId: String(adm._id), userName: adm.name, userRole: roleFor(adm) || 'admin',
               ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
               amount: calcAmount(cfg, svc.price), date: appt.date,
-              service: svc.name || '—', patient: patientName, source: 'servicio atendido',
+              service: svc.name || '—', patient: patientName, source: 'servicio atendido', apptId: String(appt._id),
             });
           }
         } else if (!rule.trigger || rule.trigger === 'appointment_performed') {
@@ -201,7 +204,7 @@ async function computeCommissions(clinicId, startDate, endDate) {
               userId: String(performer._id), userName: performer.name, userRole: performerRole,
               ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
               amount: calcAmount(cfg, svc.price), date: appt.date,
-              service: svc.name || '—', patient: patientName, source: 'cita atendida',
+              service: svc.name || '—', patient: patientName, source: 'cita atendida', apptId: String(appt._id),
             });
           }
         }
@@ -225,7 +228,7 @@ async function computeCommissions(clinicId, startDate, endDate) {
           userId: String(creator._id), userName: creator.name, userRole: creatorRole,
           ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
           amount: calcAmount(cfg, apptTotal), date: appt.date,
-          service: appt.services?.[0]?.name || '—', patient: patientName, source: 'cita agendada',
+          service: appt.services?.[0]?.name || '—', patient: patientName, source: 'cita agendada', apptId: String(appt._id),
         });
       }
     }
@@ -245,7 +248,7 @@ async function computeCommissions(clinicId, startDate, endDate) {
           userId: String(fromDoc._id), userName: fromDoc.name, userRole: fromRole,
           ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
           amount: calcAmount(cfg, apptTotal), date: appt.date,
-          service: appt.services?.[0]?.name || '—', patient: patientName, source: 'derivación',
+          service: appt.services?.[0]?.name || '—', patient: patientName, source: 'derivación', apptId: String(appt._id),
         });
       }
     }
@@ -293,7 +296,7 @@ async function computeCommissions(clinicId, startDate, endDate) {
           ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
           amount: calcAmount(cfg, linePaid, qty),
           date: sale.createdAt, service: it.productName || '—',
-          patient: patientName, source,
+          patient: patientName, source, invoiceNumber: sale.saleNumber || '',
         });
       }
     }
@@ -327,6 +330,17 @@ async function computeCommissions(clinicId, startDate, endDate) {
         amount, date: endDate, service: '—',
         patient: `Agente: ${agentName} (${count} comis.)`, source: 'comisión call center',
       });
+    }
+  }
+
+  // Nº de factura/venta de las comisiones por cita: se busca la venta ligada a la cita.
+  const apptIds = [...new Set(detail.filter((d) => d.apptId && !d.invoiceNumber).map((d) => d.apptId))];
+  if (apptIds.length) {
+    const apptSales = await Sale.find({ clinic: clinicId, status: { $ne: 'anulada' }, appointment: { $in: apptIds } })
+      .select('appointment saleNumber');
+    const numByAppt = new Map(apptSales.map((s) => [String(s.appointment), s.saleNumber || '']));
+    for (const d of detail) {
+      if (d.apptId && !d.invoiceNumber) d.invoiceNumber = numByAppt.get(d.apptId) || '';
     }
   }
 
@@ -379,6 +393,81 @@ exports.report = async (req, res) => {
     });
   } catch (e) {
     res.status(500).json({ message: 'Error al calcular comisiones', error: e.message });
+  }
+};
+
+/**
+ * Exporta el detalle de comisiones a Excel con formato (dos hojas: resumen por usuario y
+ * detalle con Nº de factura asociada). Mismos filtros que `report` (start/end/user/role).
+ */
+exports.reportExcel = async (req, res) => {
+  try {
+    const { start, end, user, role: roleFilter } = req.query;
+    const { startDate, endDate } = parseRange(start, end);
+    const { detail } = await computeCommissions(req.clinicId, startDate, endDate);
+    const filtered = user
+      ? detail.filter((d) => d.userId === String(user))
+      : roleFilter
+      ? detail.filter((d) => d.userRole === roleFilter)
+      : detail;
+    const { byUser, total } = summarize(filtered);
+
+    const wb = new ExcelJS.Workbook();
+    wb.creator = 'Sistema clínica';
+    wb.created = new Date();
+    const headerFill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF065F46' } };
+    const headerFont = { bold: true, color: { argb: 'FFFFFFFF' } };
+    const money = '"$"#,##0.00';
+    const styleHeader = (ws) => ws.getRow(1).eachCell((c) => {
+      c.fill = headerFill; c.font = headerFont;
+      c.alignment = { horizontal: 'center', vertical: 'middle' };
+      c.border = { bottom: { style: 'thin', color: { argb: 'FFD1D5DB' } } };
+    });
+
+    // Hoja 1 — Resumen por usuario
+    const s1 = wb.addWorksheet('Resumen por usuario', { views: [{ state: 'frozen', ySplit: 1 }] });
+    s1.columns = [
+      { header: 'Usuario', key: 'userName', width: 34 },
+      { header: 'Comisiones', key: 'count', width: 14 },
+      { header: 'Valor ($)', key: 'total', width: 16, style: { numFmt: money } },
+    ];
+    byUser.forEach((u) => s1.addRow({ userName: u.userName, count: u.count, total: +Number(u.total).toFixed(2) }));
+    const t1 = s1.addRow({ userName: 'TOTAL', count: filtered.length, total: +Number(total).toFixed(2) });
+    t1.eachCell((c) => { c.font = { bold: true }; });
+    styleHeader(s1);
+
+    // Hoja 2 — Detalle (con Nº de factura)
+    const s2 = wb.addWorksheet('Detalle', { views: [{ state: 'frozen', ySplit: 1 }] });
+    s2.columns = [
+      { header: 'Fecha', key: 'date', width: 12, style: { numFmt: 'dd/mm/yyyy' } },
+      { header: 'Factura', key: 'invoiceNumber', width: 16 },
+      { header: 'Usuario', key: 'userName', width: 28 },
+      { header: 'Rol', key: 'role', width: 16 },
+      { header: 'Regla', key: 'ruleName', width: 26 },
+      { header: 'Servicio', key: 'service', width: 26 },
+      { header: 'Paciente', key: 'patient', width: 26 },
+      { header: 'Origen', key: 'source', width: 16 },
+      { header: 'Valor ($)', key: 'amount', width: 14, style: { numFmt: money } },
+    ];
+    [...filtered].sort((a, b) => new Date(b.date) - new Date(a.date)).forEach((d) => s2.addRow({
+      date: d.date ? new Date(d.date) : null,
+      invoiceNumber: d.invoiceNumber || '',
+      userName: d.userName,
+      role: ROLE_LABELS[d.userRole] || d.userRole || '',
+      ruleName: d.ruleName, service: d.service, patient: d.patient, source: d.source,
+      amount: +Number(d.amount || 0).toFixed(2),
+    }));
+    const t2 = s2.addRow({ patient: 'TOTAL', amount: +Number(total).toFixed(2) });
+    t2.eachCell((c) => { c.font = { bold: true }; });
+    styleHeader(s2);
+
+    const fname = `comisiones_${start || ''}_${end || ''}.xlsx`;
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${fname}"`);
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (e) {
+    res.status(500).json({ message: 'Error al exportar comisiones', error: e.message });
   }
 };
 

@@ -4,6 +4,8 @@ const ChartOfAccount = require('../models/ChartOfAccount');
 const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
 const RecurringAccount = require('../models/RecurringAccount');
+const FixedAsset = require('../models/FixedAsset');
+const InventoryCategory = require('../models/InventoryCategory');
 const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { openPayable, voidPayable } = require('../utils/subledger');
@@ -174,6 +176,7 @@ exports.create = async (req, res) => {
         const [inv] = await PurchaseInvoice.create([data], { session });
         await postPurchaseJournal(inv, req, session);
         await postInventoryEntries(inv, req, session);
+        await syncFixedAssetsForInvoice(inv, req, session);
         await openPayableForInvoice(inv, sup, req, session);
         await rememberRecurringAccounts(inv, session);
         return inv._id;
@@ -199,7 +202,7 @@ async function postPurchaseJournal(inv, req, session, sourceAction = 'POST') {
       }
       for (const sp of it.accountSplits) {
         if (!sp.account || !(Number(sp.amount) > 0)) continue;
-        lines.push({ account: sp.account, debit: +(Number(sp.amount)).toFixed(2), credit: 0, description: sp.description || it.description });
+        lines.push({ account: sp.account, debit: +(Number(sp.amount)).toFixed(2), credit: 0, description: sp.description || it.description, costCenter: it.costCenter || inv.costCenter || null });
       }
       continue;
     }
@@ -220,7 +223,7 @@ async function postPurchaseJournal(inv, req, session, sourceAction = 'POST') {
       }
     }
     if (!accountId) continue;
-    lines.push({ account: accountId, debit: it.subtotal, credit: 0, description: it.description });
+    lines.push({ account: accountId, debit: it.subtotal, credit: 0, description: it.description, costCenter: it.costCenter || inv.costCenter || null });
   }
   if (inv.iva > 0) {
     // IVA con derecho a crédito tributario (deducible) vs IVA no recuperable que se carga al gasto.
@@ -327,6 +330,78 @@ async function postInventoryEntries(inv, req, session) {
   }
 }
 
+/**
+ * Crea los activos fijos de las líneas marcadas como ACTIVO_FIJO al contabilizar la
+ * factura. Es idempotente: borra los activos previos de esta factura que aún no tengan
+ * depreciación y los vuelve a crear (para reflejar ediciones). Reusa la misma lógica de
+ * derivación de `inventoryAdvancedController.createAsset`.
+ */
+async function syncFixedAssetsForInvoice(inv, req, session) {
+  const assetItems = (inv.items || []).filter((it) => it.lineType === 'ACTIVO_FIJO');
+  // Limpia activos previos (sin depreciación) de esta factura para recrearlos.
+  await FixedAsset.deleteMany({
+    clinic: req.clinicId, purchaseInvoice: inv._id,
+    $or: [{ accumulatedDepreciation: { $lte: 0 } }, { accumulatedDepreciation: null }],
+  }).session(session || null);
+  if (!assetItems.length) return;
+
+  const baseCount = await FixedAsset.countDocuments({ clinic: req.clinicId }).session(session || null);
+  let seq = 0;
+  for (const it of assetItems) {
+    const fa = it.fixedAsset || {};
+    let cat = null;
+    if (fa.category) cat = await InventoryCategory.findOne({ _id: fa.category, clinic: req.clinicId }).session(session || null);
+    const cost = +Number(it.subtotal || 0).toFixed(2);
+    const depRate = Number(fa.depreciationRate || cat?.depreciationRate || 0);
+    const noDep = !!cat?.noDepreciate;
+    const usefulLifeMonths = noDep ? 0 : (Number(fa.usefulLifeMonths) || (depRate > 0 ? Math.round(1200 / depRate) : 0) || 120);
+    const residualPercent = Number(fa.residualPercent || cat?.residualPercent || 0);
+    const residualValue = +(cost * (residualPercent / 100)).toFixed(2);
+    const monthly = (noDep || !usefulLifeMonths) ? 0 : +((cost - residualValue) / usefulLifeMonths).toFixed(2);
+    seq += 1;
+    const code = (fa.code && String(fa.code).trim()) || `AF-${String(baseCount + seq).padStart(4, '0')}`;
+    const acqDate = fa.acquisitionDate || inv.fechaEmision || new Date();
+    const [asset] = await FixedAsset.create([{
+      clinic: req.clinicId,
+      code,
+      name: (fa.name && String(fa.name).trim()) || it.description,
+      category: fa.category || null,
+      assetType: fa.assetType || null,
+      serial: fa.serial || '',
+      location: fa.location || '',
+      locationClinic: fa.locationClinic || null,
+      responsible: fa.responsible || null,
+      assetAccount: fa.assetAccount || it.account || cat?.assetAccount || null,
+      depreciationAccount: fa.depreciationAccount || cat?.depreciationAccount || null,
+      accumDepreciationAccount: fa.accumDepreciationAccount || cat?.accumDepreciationAccount || null,
+      purchaseInvoice: inv._id,
+      acquisitionDate: acqDate,
+      acquisitionCost: cost,
+      residualValue,
+      residualPercent,
+      depreciationRate: depRate,
+      usefulLifeMonths: usefulLifeMonths || 0,
+      startDate: fa.startDate || acqDate,
+      monthlyDepreciation: monthly,
+      bookValue: cost,
+      createdBy: req.user._id,
+    }], { session });
+    it.fixedAsset = { ...fa, createdAsset: asset._id };
+  }
+  await inv.save({ session });
+}
+
+/**
+ * Borra los activos fijos creados por esta factura que aún no tengan depreciación.
+ * Se usa al anular: si alguno ya se depreció, se conserva (debe darse de baja a mano).
+ */
+async function removeFixedAssetsForInvoice(inv, req, session) {
+  await FixedAsset.deleteMany({
+    clinic: req.clinicId, purchaseInvoice: inv._id,
+    $or: [{ accumulatedDepreciation: { $lte: 0 } }, { accumulatedDepreciation: null }],
+  }).session(session || null);
+}
+
 exports.update = async (req, res) => {
   try {
     {
@@ -354,6 +429,7 @@ exports.update = async (req, res) => {
         await inv.save({ session });
         await postPurchaseJournal(inv, req, session, `UPDATE:${Date.now()}`);
         await postInventoryEntries(inv, req, session);
+        await syncFixedAssetsForInvoice(inv, req, session);
         const supForPayable = await Supplier.findById(inv.supplier).session(session);
         await openPayableForInvoice(inv, supForPayable, req, session);
         return inv._id;
@@ -385,6 +461,7 @@ exports.void = async (req, res) => {
           });
         }
         await revertInventoryEntries(inv, req, session);
+        await removeFixedAssetsForInvoice(inv, req, session);
         await voidPayable({ clinicId: req.clinicId, sourceModel: 'PurchaseInvoice', sourceRef: inv._id }, { session });
         inv.status = 'ANULADA';
         await inv.save({ session });
@@ -692,6 +769,8 @@ async function purgePurchaseInvoices(clinicId, invoices, { force = false } = {})
     InventoryMovement.deleteMany(refScope),
     InventoryLayer.deleteMany(refScope),
     PurchaseInvoice.deleteMany({ clinic: clinicId, _id: { $in: invoiceIds } }),
+    // Activos fijos creados por estas facturas (sin depreciación; con depreciación se conservan).
+    FixedAsset.deleteMany({ clinic: clinicId, purchaseInvoice: { $in: invoiceIds }, $or: [{ accumulatedDepreciation: { $lte: 0 } }, { accumulatedDepreciation: null }] }),
   ]);
 
   let recalced = 0;
@@ -803,6 +882,7 @@ exports.authorize = async (req, res) => {
         await inv.save({ session });
         await postPurchaseJournal(inv, req, session, 'AUTHORIZE');
         await postInventoryEntries(inv, req, session);
+        await syncFixedAssetsForInvoice(inv, req, session);
         const supForPayable = await Supplier.findById(inv.supplier).session(session);
         await openPayableForInvoice(inv, supForPayable, req, session);
         await rememberRecurringAccounts(inv, session);

@@ -45,10 +45,6 @@ const DAYS = [
   { v: 5, l: 'Vie' }, { v: 6, l: 'Sáb' }, { v: 0, l: 'Dom' },
 ];
 
-const ROLE_LABELS = {
-  admin: 'Administrador', doctor: 'Doctor', optica: 'Óptica', enfermero: 'Enfermero/a',
-  cajero: 'Cajero', call_center: 'Call Center', marketing: 'Marketing',
-};
 
 function downloadCsv(rows, filename) {
   const escape = (v) => {
@@ -262,20 +258,21 @@ export default function CommissionRules() {
     downloadCsv([header, ...rows], `comisiones_resumen_${start}_${end}.csv`);
   };
 
-  const downloadDetail = () => {
-    if (!report) return;
-    const header = ['Fecha', 'Usuario', 'Rol', 'Regla', 'Servicio', 'Paciente', 'Origen', 'Valor ($)'];
-    const rows = report.detail.map((d) => [
-      d.date ? new Date(d.date).toLocaleDateString('es-EC') : '',
-      d.userName,
-      ROLE_LABELS[d.userRole] || d.userRole || '',
-      d.ruleName,
-      d.service,
-      d.patient,
-      d.source,
-      Number(d.amount || 0).toFixed(2),
-    ]);
-    downloadCsv([header, ...rows], `comisiones_detalle_${start}_${end}.csv`);
+  // Descarga el detalle completo en Excel con formato (incluye Nº de factura asociada).
+  const downloadDetail = async () => {
+    try {
+      const params = { start, end };
+      if (filterMode === 'user' && userFilter) params.user = userFilter;
+      if (filterMode === 'role' && roleFilter) params.role = roleFilter;
+      const res = await api.get('/commissions/report.xlsx', { params, responseType: 'blob' });
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+      const a = document.createElement('a');
+      a.href = url; a.download = `comisiones_detalle_${start}_${end}.xlsx`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al exportar');
+    }
   };
 
   const remove = async (id) => {
@@ -447,7 +444,7 @@ export default function CommissionRules() {
                       className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-700 bg-slate-50 border border-slate-200 rounded-lg hover:bg-slate-100 cursor-pointer border-solid"
                     >
                       <HiOutlineArrowDownTray className="w-3.5 h-3.5" />
-                      Descargar detalle completo
+                      Descargar detalle (Excel)
                     </button>
                   </div>
                 </div>

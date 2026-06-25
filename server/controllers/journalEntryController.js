@@ -1,6 +1,7 @@
 const JournalEntry = require('../models/JournalEntry');
 const ChartOfAccount = require('../models/ChartOfAccount');
 const { createEntry, reverseEntry, applyToBalances, nextEntryNumber, assertPeriodOpen, getOrCreatePeriod } = require('../utils/accounting');
+const { startOfDay, endOfDay } = require('../utils/dates');
 
 /** Hidrata y valida líneas de un asiento (para borradores). */
 async function hydrateLines(clinicId, lines) {
@@ -149,12 +150,12 @@ exports.ledger = async (req, res) => {
     if (!acc) return res.status(404).json({ message: 'Cuenta no encontrada' });
 
     const dateFilter = {};
-    if (startDate) dateFilter.$gte = new Date(startDate);
-    if (endDate) dateFilter.$lte = new Date(endDate);
+    if (startDate) dateFilter.$gte = startOfDay(startDate);
+    if (endDate) dateFilter.$lte = endOfDay(endDate);
 
     // Saldo inicial: movimientos anteriores
     const initFilter = { clinic: req.clinicId, status: 'CONTABILIZADO', 'lines.account': acc._id };
-    if (startDate) initFilter.date = { $lt: new Date(startDate) };
+    if (startDate) initFilter.date = { $lt: startOfDay(startDate) };
     const init = await JournalEntry.aggregate([
       { $match: initFilter },
       { $unwind: '$lines' },
@@ -198,8 +199,8 @@ exports.trialBalance = async (req, res) => {
     const match = { clinic: req.clinicId, status: 'CONTABILIZADO' };
     if (startDate || endDate) {
       match.date = {};
-      if (startDate) match.date.$gte = new Date(startDate);
-      if (endDate) match.date.$lte = new Date(endDate);
+      if (startDate) match.date.$gte = startOfDay(startDate);
+      if (endDate) match.date.$lte = endOfDay(endDate);
     }
     const agg = await JournalEntry.aggregate([
       { $match: match },

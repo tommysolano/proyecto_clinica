@@ -6,7 +6,8 @@ import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineSquares2X2, HiOutlinePencilSquare, HiOutlineTrash } from 'react-icons/hi2';
 import NumericInput from '../../components/NumericInput';
 
-const EMPTY = { code: '', name: '', kind: 'INVENTARIO', parent: '', depreciationRate: 0, usefulLifeYears: 0, residualPercent: 0, assetAccount: '', depreciationAccount: '', accumDepreciationAccount: '', expenseAccount: '', incomeAccount: '' };
+const EMPTY = { code: '', name: '', kind: 'INVENTARIO', parent: '', depreciationRate: 0, usefulLifeYears: 0, residualPercent: 0, noDepreciate: false, expenseType: '', assetAccount: '', depreciationAccount: '', accumDepreciationAccount: '', impairmentAssetAccount: '', impairmentExpenseAccount: '', expenseAccount: '', incomeAccount: '' };
+const EXPENSE_TYPES = ['Gastos Ventas', 'Gastos Administrativos', 'Costo de Ventas', 'Otros'];
 
 export default function InventoryCategories() {
   const [list, setList] = useState([]);
@@ -29,7 +30,7 @@ export default function InventoryCategories() {
   const submit = async (e) => {
     e.preventDefault();
     const payload = { ...form };
-    ['parent', 'assetAccount', 'depreciationAccount', 'accumDepreciationAccount', 'expenseAccount', 'incomeAccount'].forEach((k) => { if (!payload[k]) payload[k] = null; });
+    ['parent', 'assetAccount', 'depreciationAccount', 'accumDepreciationAccount', 'impairmentAssetAccount', 'impairmentExpenseAccount', 'expenseAccount', 'incomeAccount'].forEach((k) => { if (!payload[k]) payload[k] = null; });
     try {
       if (editing) await api.put(`/inventory-advanced/categories/${editing._id}`, payload);
       else await api.post('/inventory-advanced/categories', payload);
@@ -40,7 +41,7 @@ export default function InventoryCategories() {
 
   const openEdit = (c) => {
     setEditing(c);
-    setForm({ ...EMPTY, ...c, parent: idOf(c.parent), assetAccount: idOf(c.assetAccount), depreciationAccount: idOf(c.depreciationAccount), accumDepreciationAccount: idOf(c.accumDepreciationAccount), expenseAccount: idOf(c.expenseAccount), incomeAccount: idOf(c.incomeAccount) });
+    setForm({ ...EMPTY, ...c, parent: idOf(c.parent), assetAccount: idOf(c.assetAccount), depreciationAccount: idOf(c.depreciationAccount), accumDepreciationAccount: idOf(c.accumDepreciationAccount), impairmentAssetAccount: idOf(c.impairmentAssetAccount), impairmentExpenseAccount: idOf(c.impairmentExpenseAccount), expenseAccount: idOf(c.expenseAccount), incomeAccount: idOf(c.incomeAccount) });
     setShow(true);
   };
 
@@ -88,9 +89,19 @@ export default function InventoryCategories() {
               </select>
             </Field>
             {form.kind === 'ACTIVO_FIJO' && <>
-              <Field label="% Depreciación anual"><NumericInput step="0.01" value={form.depreciationRate} onChange={(e) => setForm({ ...form, depreciationRate: +e.target.value })} className={inputCls} /></Field>
-              <Field label="Vida útil (años)"><NumericInput value={form.usefulLifeYears} onChange={(e) => setForm({ ...form, usefulLifeYears: +e.target.value })} className={inputCls} /></Field>
-              <Field label="% Valor residual" className="col-span-2"><NumericInput step="0.01" value={form.residualPercent} onChange={(e) => setForm({ ...form, residualPercent: +e.target.value })} className={inputCls} /></Field>
+              <Field label="Tipo">
+                <select value={form.expenseType} onChange={(e) => setForm({ ...form, expenseType: e.target.value })} className={inputCls}>
+                  <option value="">Seleccione…</option>
+                  {EXPENSE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </Field>
+              <Field label="% Depreciación anual"><NumericInput step="0.01" value={form.depreciationRate} disabled={form.noDepreciate} onChange={(e) => setForm({ ...form, depreciationRate: +e.target.value })} className={inputCls} /></Field>
+              <Field label="Vida útil (años)"><NumericInput value={form.usefulLifeYears} disabled={form.noDepreciate} onChange={(e) => setForm({ ...form, usefulLifeYears: +e.target.value })} className={inputCls} /></Field>
+              <Field label="% Valor residual"><NumericInput step="0.01" value={form.residualPercent} onChange={(e) => setForm({ ...form, residualPercent: +e.target.value })} className={inputCls} /></Field>
+              <label className="col-span-2 flex items-center gap-2 text-sm text-slate-600">
+                <input type="checkbox" checked={!!form.noDepreciate} onChange={(e) => setForm({ ...form, noDepreciate: e.target.checked })} />
+                No Depreciar (aplica para terrenos)
+              </label>
             </>}
           </div>
           <p className="text-xs font-semibold text-slate-500 pt-1">Cuentas contables vinculadas</p>
@@ -100,6 +111,8 @@ export default function InventoryCategories() {
                 <Field label="Cuenta de activo"><select value={form.assetAccount} onChange={(e) => setForm({ ...form, assetAccount: e.target.value })} className={inputCls}><option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select></Field>
                 <Field label="Gasto depreciación"><select value={form.depreciationAccount} onChange={(e) => setForm({ ...form, depreciationAccount: e.target.value })} className={inputCls}><option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select></Field>
                 <Field label="Depreciación acumulada" className="col-span-2"><select value={form.accumDepreciationAccount} onChange={(e) => setForm({ ...form, accumDepreciationAccount: e.target.value })} className={inputCls}><option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select></Field>
+                <Field label="Cta. Activo Deterioro"><select value={form.impairmentAssetAccount} onChange={(e) => setForm({ ...form, impairmentAssetAccount: e.target.value })} className={inputCls}><option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select></Field>
+                <Field label="Cta. Gasto Deterioro"><select value={form.impairmentExpenseAccount} onChange={(e) => setForm({ ...form, impairmentExpenseAccount: e.target.value })} className={inputCls}><option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select></Field>
               </>
             ) : (
               <>

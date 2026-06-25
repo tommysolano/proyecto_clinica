@@ -5,6 +5,7 @@ import Modal from '../../components/Modal';
 import { HiOutlinePlus, HiOutlineCreditCard, HiOutlineCheckCircle, HiOutlineEye, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineXCircle, HiOutlineMagnifyingGlass } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
+import SearchableSelect from '../../components/SearchableSelect';
 
 // Códigos SRI frecuentes en liquidaciones de tarjeta (referenciales, editables)
 const SRI_RENTA = ['332', '343', '344', '304'];
@@ -233,9 +234,18 @@ export default function CardSettlements() {
               </select>
             </label>
             <label className="text-xs text-slate-500">Proveedor (adquirente)
-              <select value={form.supplier} onChange={(e) => setForm({ ...form, supplier: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
-                <option value="">Selecciona...</option>{suppliers.map((s) => <option key={s._id} value={s._id}>{s.razonSocial || s.nombreComercial}</option>)}
-              </select>
+              <div className="mt-1">
+                <SearchableSelect
+                  options={suppliers}
+                  value={form.supplier}
+                  onChange={(v) => setForm({ ...form, supplier: v })}
+                  getLabel={(s) => s.razonSocial || s.nombreComercial || s.ruc}
+                  getSearchText={(s) => `${s.ruc || ''} ${s.razonSocial || ''} ${s.nombreComercial || ''}`}
+                  placeholder="Selecciona..."
+                  searchPlaceholder="Buscar por RUC o nombre…"
+                  allowClear
+                />
+              </div>
             </label>
             <label className="text-xs text-slate-500">Banco (acreditación)
               <select value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">

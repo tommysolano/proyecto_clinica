@@ -2,7 +2,7 @@ import { useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlineDocumentArrowDown } from 'react-icons/hi2';
-import { fmt, downloadBlob } from './_utils';
+import { fmt, fmtDate, downloadBlob } from './_utils';
 import NumericInput from '../../components/NumericInput';
 
 export default function SriReports() {
@@ -73,7 +73,7 @@ export default function SriReports() {
           <button
             onClick={async () => {
               try { const r = await api.get('/accounting-reports/sri/purchases-sales.xlsx', { params: { year, month }, responseType: 'blob' }); downloadBlob(r.data, `compras_ventas_${year}_${String(month).padStart(2, '0')}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); }
-              catch (e) { toast.error('Error al exportar'); }
+              catch { toast.error('Error al exportar'); }
             }}
             className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-1"
           >
@@ -82,23 +82,179 @@ export default function SriReports() {
         )}
       </div>
       {data && (
-        <div className="bg-white rounded-xl p-4 shadow-sm overflow-auto">
-          {Array.isArray(data) ? (
-            <table className="tbl">
-              <thead className="bg-emerald-50 text-xs uppercase"><tr>{Object.keys(data[0] || {}).map((k) => <th key={k} className="px-2 py-1 text-left">{k}</th>)}</tr></thead>
-              <tbody>
-                {data.map((row, i) => (
-                  <tr key={i} className="border-t">
-                    {Object.values(row).map((v, j) => <td key={j} className="px-2 py-1 text-xs">{typeof v === 'number' ? fmt(v) : String(v ?? '')}</td>)}
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          ) : (
-            <pre className="text-xs whitespace-pre-wrap">{JSON.stringify(data, null, 2)}</pre>
-          )}
+        <div className="space-y-4">
+          {tab === 'VC' && <PurchasesSales data={data} />}
+          {tab === 'F104' && <Form104 data={data} />}
+          {tab === 'F103' && <RetentionTable title="Retenciones en la fuente (Form. 103)" data={data} cols={[['code', 'Código'], ['description', 'Descripción'], ['base', 'Base', true], ['amount', 'Valor retenido', true]]} />}
+          {tab === 'RET' && <RetentionTable title="Retenciones recibidas" data={data} cols={[['type', 'Tipo'], ['sriCode', 'Código SRI'], ['count', '# Comprob.'], ['base', 'Base', true], ['value', 'Valor', true]]} />}
+          {tab === 'RDEP' && <Rdep data={data} />}
         </div>
       )}
     </div>
+  );
+}
+
+function Section({ title, subtitle, children }) {
+  return (
+    <div className="bg-white rounded-xl p-4 shadow-sm overflow-auto">
+      {title && <h2 className="font-semibold text-slate-800 mb-1">{title}</h2>}
+      {subtitle && <p className="text-xs text-slate-500 mb-2">{subtitle}</p>}
+      {children}
+    </div>
+  );
+}
+
+// Libro de Compras y Ventas (tab VC): dos tablas con las columnas del SRI.
+function PurchasesSales({ data }) {
+  const ventas = data?.ventas || [];
+  const compras = data?.compras || [];
+  const sum = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
+  return (
+    <>
+      <Section title={`Ventas (${ventas.length})`} subtitle="Comprobantes de venta autorizados del período.">
+        <table className="tbl text-xs">
+          <thead className="bg-emerald-50 uppercase"><tr>
+            <th className="px-2 py-1 text-left">Fecha</th><th className="px-2 py-1 text-left">Comprobante</th>
+            <th className="px-2 py-1 text-left">Cliente</th><th className="px-2 py-1 text-left">Identificación</th>
+            <th className="px-2 py-1 text-right">Subtotal</th><th className="px-2 py-1 text-right">IVA</th><th className="px-2 py-1 text-right">Total</th>
+          </tr></thead>
+          <tbody>
+            {ventas.map((v, i) => (
+              <tr key={i} className="border-t">
+                <td className="px-2 py-1">{fmtDate(v.fechaEmision || v.createdAt)}</td>
+                <td className="px-2 py-1 font-mono">{[v.estab, v.ptoEmi, v.secuencial].filter(Boolean).join('-')}</td>
+                <td className="px-2 py-1">{v.razonSocialComprador || '—'}</td>
+                <td className="px-2 py-1 font-mono">{v.identificacionComprador || '—'}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(v.totalSinImpuestos ?? v.subtotal)}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(v.totalImpuesto)}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(v.importeTotal ?? v.total)}</td>
+              </tr>
+            ))}
+            {ventas.length === 0 && <tr><td colSpan={7} className="px-2 py-4 text-center text-slate-400">Sin ventas en el período.</td></tr>}
+          </tbody>
+          {ventas.length > 0 && <tfoot className="bg-slate-100 font-bold"><tr>
+            <td colSpan={4} className="px-2 py-1 text-right">TOTALES</td>
+            <td className="px-2 py-1 text-right font-mono">{fmt(sum(ventas, (v) => v.totalSinImpuestos ?? v.subtotal ?? 0))}</td>
+            <td className="px-2 py-1 text-right font-mono">{fmt(sum(ventas, (v) => v.totalImpuesto ?? 0))}</td>
+            <td className="px-2 py-1 text-right font-mono">{fmt(sum(ventas, (v) => v.importeTotal ?? v.total ?? 0))}</td>
+          </tr></tfoot>}
+        </table>
+      </Section>
+      <Section title={`Compras (${compras.length})`} subtitle="Comprobantes recibidos de proveedores del período.">
+        <table className="tbl text-xs">
+          <thead className="bg-emerald-50 uppercase"><tr>
+            <th className="px-2 py-1 text-left">Fecha</th><th className="px-2 py-1 text-left">Comprobante</th>
+            <th className="px-2 py-1 text-left">Proveedor</th><th className="px-2 py-1 text-left">RUC</th>
+            <th className="px-2 py-1 text-right">Subtotal</th><th className="px-2 py-1 text-right">IVA</th>
+            <th className="px-2 py-1 text-right">Retención</th><th className="px-2 py-1 text-right">Total</th>
+          </tr></thead>
+          <tbody>
+            {compras.map((c, i) => (
+              <tr key={i} className="border-t">
+                <td className="px-2 py-1">{fmtDate(c.fechaEmision)}</td>
+                <td className="px-2 py-1 font-mono">{c.serie || '—'}</td>
+                <td className="px-2 py-1">{c.supplier?.razonSocial || '—'}</td>
+                <td className="px-2 py-1 font-mono">{c.supplier?.ruc || '—'}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(c.subtotal)}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(c.iva)}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(c.retentionTotal)}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(c.total)}</td>
+              </tr>
+            ))}
+            {compras.length === 0 && <tr><td colSpan={8} className="px-2 py-4 text-center text-slate-400">Sin compras en el período.</td></tr>}
+          </tbody>
+          {compras.length > 0 && <tfoot className="bg-slate-100 font-bold"><tr>
+            <td colSpan={4} className="px-2 py-1 text-right">TOTALES</td>
+            <td className="px-2 py-1 text-right font-mono">{fmt(sum(compras, (c) => c.subtotal ?? 0))}</td>
+            <td className="px-2 py-1 text-right font-mono">{fmt(sum(compras, (c) => c.iva ?? 0))}</td>
+            <td className="px-2 py-1 text-right font-mono">{fmt(sum(compras, (c) => c.retentionTotal ?? 0))}</td>
+            <td className="px-2 py-1 text-right font-mono">{fmt(sum(compras, (c) => c.total ?? 0))}</td>
+          </tr></tfoot>}
+        </table>
+      </Section>
+    </>
+  );
+}
+
+// Preliquidación del Formulario 104 (IVA).
+function Form104({ data }) {
+  const rows = [
+    ['Ventas — base imponible', data?.ventas?.base],
+    ['Ventas — IVA generado', data?.ventas?.iva],
+    ['Compras — base imponible', data?.compras?.base],
+    ['Compras — IVA', data?.compras?.iva],
+    ['Compras — IVA con crédito tributario', data?.compras?.ivaCredito],
+    ['Compras — IVA sin crédito (al gasto)', data?.compras?.ivaNoCredito],
+    ['Retención de IVA que nos hicieron', data?.compras?.retIVA],
+  ];
+  return (
+    <Section title={`Formulario 104 — IVA · ${data?.periodo || ''}`} subtitle={data?.nota}>
+      <table className="tbl text-sm max-w-xl">
+        <tbody>
+          {rows.map(([label, val], i) => (
+            <tr key={i} className="border-t"><td className="px-3 py-2">{label}</td><td className="px-3 py-2 text-right font-mono">{fmt(val)}</td></tr>
+          ))}
+          <tr className="border-t bg-emerald-50 font-bold"><td className="px-3 py-2">IVA por pagar (estimado)</td><td className="px-3 py-2 text-right font-mono">{fmt(data?.ivaPorPagar)}</td></tr>
+        </tbody>
+      </table>
+    </Section>
+  );
+}
+
+// Tabla genérica de retenciones (Form. 103 / recibidas). cols: [key, label, isMoney?].
+function RetentionTable({ title, data, cols }) {
+  const rows = data?.rows || [];
+  return (
+    <Section title={`${title} · ${data?.periodo || ''}`}>
+      <table className="tbl text-sm">
+        <thead className="bg-emerald-50 text-xs uppercase"><tr>
+          {cols.map(([k, label, money]) => <th key={k} className={`px-3 py-2 ${money ? 'text-right' : 'text-left'}`}>{label}</th>)}
+        </tr></thead>
+        <tbody>
+          {rows.map((r, i) => (
+            <tr key={i} className="border-t">
+              {cols.map(([k, , money]) => <td key={k} className={`px-3 py-2 ${money ? 'text-right font-mono' : ''}`}>{money ? fmt(r[k]) : String(r[k] ?? '')}</td>)}
+            </tr>
+          ))}
+          {rows.length === 0 && <tr><td colSpan={cols.length} className="px-3 py-4 text-center text-slate-400">Sin datos en el período.</td></tr>}
+        </tbody>
+        <tfoot className="bg-slate-100 font-bold"><tr>
+          <td colSpan={cols.length - 1} className="px-3 py-2 text-right">TOTAL</td>
+          <td className="px-3 py-2 text-right font-mono">{fmt(data?.total)}</td>
+        </tr></tfoot>
+      </table>
+    </Section>
+  );
+}
+
+// RDEP — retenciones en relación de dependencia (anual).
+function Rdep({ data }) {
+  const rows = data?.empleados || [];
+  return (
+    <Section title={`RDEP — Relación de dependencia · ${data?.year || ''}`}>
+      <table className="tbl text-sm">
+        <thead className="bg-emerald-50 text-xs uppercase"><tr>
+          <th className="px-3 py-2 text-left">Identificación</th><th className="px-3 py-2 text-left">Nombre</th>
+          <th className="px-3 py-2 text-right">Sueldos</th><th className="px-3 py-2 text-right">Ingreso exento</th>
+          <th className="px-3 py-2 text-right">Aporte IESS</th><th className="px-3 py-2 text-right">Imp. renta retenido</th>
+        </tr></thead>
+        <tbody>
+          {rows.map((e, i) => (
+            <tr key={i} className="border-t">
+              <td className="px-3 py-2 font-mono">{e.identificacion}</td><td className="px-3 py-2">{e.nombre}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmt(e.sueldo)}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmt(e.ingresoExento)}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmt(e.aporteIess)}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmt(e.impuestoRenta)}</td>
+            </tr>
+          ))}
+          {rows.length === 0 && <tr><td colSpan={6} className="px-3 py-4 text-center text-slate-400">Sin roles cerrados en el año.</td></tr>}
+        </tbody>
+        <tfoot className="bg-slate-100 font-bold"><tr>
+          <td colSpan={5} className="px-3 py-2 text-right">TOTAL IMP. RENTA RETENIDO</td>
+          <td className="px-3 py-2 text-right font-mono">{fmt(data?.total)}</td>
+        </tr></tfoot>
+      </table>
+    </Section>
   );
 }

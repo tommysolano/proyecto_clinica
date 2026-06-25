@@ -116,14 +116,7 @@ exports.create = async (req, res) => {
           if (!voucherNumber && !voucherUrl && !reference && !checkNumber) {
             throw Object.assign(new Error('Comprobante requerido para pagos bancarios'), { status: 400 });
           }
-          const agg = await BankTransaction.aggregate([
-            { $match: { clinic: bank.clinic, bankAccount: bank._id, voided: false } },
-            { $group: { _id: null, total: { $sum: { $multiply: ['$amount', '$direction'] } } } },
-          ]).session(session);
-          const balance = (bank.initialBalance || 0) + (agg[0]?.total || 0);
-          if (balance < total) {
-            throw Object.assign(new Error(`Saldo insuficiente en ${bank.name} (disponible $${balance.toFixed(2)})`), { status: 400 });
-          }
+          // Se permite pagar aunque el saldo del banco quede en negativo (sin bloqueo).
         }
 
         const number = await nextNumber(req.clinicId, type);
@@ -347,14 +340,7 @@ exports.createBulk = async (req, res) => {
       if (method !== 'EFECTIVO') {
         if (!bank) throw Object.assign(new Error('bankAccount requerido para este método'), { status: 400 });
         if (!voucherNumber && !reference) throw Object.assign(new Error('Comprobante requerido para pagos bancarios'), { status: 400 });
-        const agg = await BankTransaction.aggregate([
-          { $match: { clinic: bank.clinic, bankAccount: bank._id, voided: false } },
-          { $group: { _id: null, total: { $sum: { $multiply: ['$amount', '$direction'] } } } },
-        ]).session(session);
-        const balance = (bank.initialBalance || 0) + (agg[0]?.total || 0);
-        if (balance < grandTotal) {
-          throw Object.assign(new Error(`Saldo insuficiente en ${bank.name} (disponible $${balance.toFixed(2)}, requerido $${grandTotal.toFixed(2)})`), { status: 400 });
-        }
+        // Se permite pagar aunque el saldo del banco quede en negativo (sin bloqueo).
       }
 
       const prov = await getAccount(req.clinicId, 'proveedores', { session });

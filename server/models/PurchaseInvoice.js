@@ -10,6 +10,32 @@ const accountSplitSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Datos del activo fijo capturados en la línea de compra cuando lineType = ACTIVO_FIJO.
+// Reflejan el modal "Nuevo activo fijo"; al contabilizar se crea el FixedAsset.
+const fixedAssetCaptureSchema = new mongoose.Schema(
+  {
+    category: { type: mongoose.Schema.Types.ObjectId, ref: 'InventoryCategory', default: null },
+    assetType: { type: mongoose.Schema.Types.ObjectId, ref: 'InventoryCategory', default: null },
+    code: { type: String, default: '' },
+    name: { type: String, default: '' },
+    serial: { type: String, default: '' },
+    location: { type: String, default: '' },
+    locationClinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', default: null },
+    responsible: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    acquisitionDate: { type: Date, default: null },
+    startDate: { type: Date, default: null },
+    depreciationRate: { type: Number, default: 0 },
+    usefulLifeMonths: { type: Number, default: 0 },
+    residualPercent: { type: Number, default: 0 },
+    assetAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },
+    depreciationAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },
+    accumDepreciationAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },
+    // Referencia al FixedAsset creado (idempotencia al re-contabilizar/editar).
+    createdAsset: { type: mongoose.Schema.Types.ObjectId, ref: 'FixedAsset', default: null },
+  },
+  { _id: false }
+);
+
 const purchaseItemSchema = new mongoose.Schema(
   {
     description: { type: String, required: true },
@@ -23,6 +49,12 @@ const purchaseItemSchema = new mongoose.Schema(
     // Permite distribuir el ítem en varias cuentas contables. Si tiene elementos,
     // se usa en lugar de `account` y la suma de los montos debe igualar el subtotal.
     accountSplits: { type: [accountSplitSchema], default: [] },
+    // Clasificación de la línea: GASTO (cuenta de gasto), INVENTARIO (cuenta de activo
+    // + producto que sube stock) o ACTIVO_FIJO (crea un activo fijo al contabilizar).
+    lineType: { type: String, enum: ['GASTO', 'INVENTARIO', 'ACTIVO_FIJO'], default: 'GASTO' },
+    // Centro de costo de la línea (opcional). Se propaga al asiento contable.
+    costCenter: { type: mongoose.Schema.Types.ObjectId, ref: 'CostCenter', default: null },
+    fixedAsset: { type: fixedAssetCaptureSchema, default: null },
     product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null },
     warehouse: { type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse', default: null },
     // Lote y caducidad opcionales para insumos/medicamentos (kardex FIFO por capas).
@@ -60,6 +92,10 @@ const purchaseInvoiceSchema = new mongoose.Schema(
     fechaEmision: { type: Date, required: true },
     fechaRegistro: { type: Date, default: Date.now },
     fechaVencimiento: { type: Date, default: null },
+    // Días de crédito acordados (para informar/recalcular el vencimiento).
+    creditDays: { type: Number, default: 0 },
+    // Centro de costo por defecto de la factura (se copia a las líneas sin centro).
+    costCenter: { type: mongoose.Schema.Types.ObjectId, ref: 'CostCenter', default: null },
     autorizacion: { type: String, default: '' },
     items: { type: [purchaseItemSchema], default: [] },
     subtotal0: { type: Number, default: 0 },

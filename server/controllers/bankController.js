@@ -186,14 +186,7 @@ exports.createMovement = async (req, res) => {
           if (!other) throw Object.assign(new Error('Cuenta contraparte no encontrada'), { status: 404 });
           const out = direction < 0 ? bank : other;
           const inn = direction > 0 ? bank : other;
-          const outBalanceAgg = await BankTransaction.aggregate([
-            { $match: { clinic: out.clinic, bankAccount: out._id, voided: false } },
-            { $group: { _id: null, total: { $sum: { $multiply: ['$amount', '$direction'] } } } },
-          ]).session(session);
-          const outBalance = (out.initialBalance || 0) + (outBalanceAgg[0]?.total || 0);
-          if (outBalance < txAmount) {
-            throw Object.assign(new Error(`Saldo insuficiente en ${out.name} (disponible $${outBalance.toFixed(2)})`), { status: 400 });
-          }
+          // Se permite la transferencia aunque el saldo origen quede en negativo (sin bloqueo).
 
           const [mainTx] = await BankTransaction.create([{
             clinic: req.clinicId,
@@ -245,16 +238,7 @@ exports.createMovement = async (req, res) => {
           return { transaction: mainTx, journalEntry: entry, counterpartTx };
         }
 
-        if (direction < 0) {
-          const agg = await BankTransaction.aggregate([
-            { $match: { clinic: bank.clinic, bankAccount: bank._id, voided: false } },
-            { $group: { _id: null, total: { $sum: { $multiply: ['$amount', '$direction'] } } } },
-          ]).session(session);
-          const balance = (bank.initialBalance || 0) + (agg[0]?.total || 0);
-          if (balance < txAmount) {
-            throw Object.assign(new Error(`Saldo insuficiente en ${bank.name} (disponible $${balance.toFixed(2)})`), { status: 400 });
-          }
-        }
+        // Se permite el egreso aunque el saldo del banco quede en negativo (sin bloqueo).
 
         if (type === 'CHEQUE_EMITIDO') {
           realCheckNumber = checkNumber || String(bank.nextCheckNumber);

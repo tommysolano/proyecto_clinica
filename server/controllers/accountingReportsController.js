@@ -8,6 +8,7 @@ const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
 const AccountBalance = require('../models/AccountBalance');
 const { recomputeBalances } = require('../utils/accounting');
+const { startOfDay, endOfDay } = require('../utils/dates');
 const ExcelJS = require('exceljs');
 const mongoose = require('mongoose');
 
@@ -38,18 +39,6 @@ function periodFormat(granularity) {
 function asObjectId(value) {
   if (!value || !mongoose.Types.ObjectId.isValid(value)) return value;
   return new mongoose.Types.ObjectId(value);
-}
-
-function startOfDay(value) {
-  if (!value) return null;
-  if (value instanceof Date) return value;
-  return new Date(`${value}T00:00:00.000`);
-}
-
-function endOfDay(value) {
-  if (!value) return null;
-  if (value instanceof Date) return value;
-  return new Date(`${value}T23:59:59.999`);
 }
 
 function accountBalanceFromNature(account, debit, credit) {
@@ -460,7 +449,7 @@ exports.salesSummary = async (req, res) => {
     if (startDate || endDate) {
       match.createdAt = {};
       if (startDate) match.createdAt.$gte = new Date(startDate);
-      if (endDate) match.createdAt.$lte = new Date(endDate);
+      if (endDate) match.createdAt.$lte = endOfDay(endDate);
     }
     const total = await Sale.aggregate([
       { $match: match },
@@ -476,7 +465,7 @@ exports.salesByProduct = async (req, res) => {
   if (startDate || endDate) {
     match.createdAt = {};
     if (startDate) match.createdAt.$gte = new Date(startDate);
-    if (endDate) match.createdAt.$lte = new Date(endDate);
+    if (endDate) match.createdAt.$lte = endOfDay(endDate);
   }
   const rows = await Sale.aggregate([
     { $match: match }, { $unwind: '$items' },
@@ -493,7 +482,7 @@ exports.salesByCashier = async (req, res) => {
   if (startDate || endDate) {
     match.createdAt = {};
     if (startDate) match.createdAt.$gte = new Date(startDate);
-    if (endDate) match.createdAt.$lte = new Date(endDate);
+    if (endDate) match.createdAt.$lte = endOfDay(endDate);
   }
   const rows = await Sale.aggregate([
     { $match: match },
@@ -580,7 +569,7 @@ exports.costOfSales = async (req, res) => {
   if (startDate || endDate) {
     match.createdAt = {};
     if (startDate) match.createdAt.$gte = new Date(startDate);
-    if (endDate) match.createdAt.$lte = new Date(endDate);
+    if (endDate) match.createdAt.$lte = endOfDay(endDate);
   }
   const sales = await Sale.find(match).populate('items.product', 'purchasePrice');
   let cost = 0;
@@ -602,8 +591,8 @@ exports.nonDeductibleExpenses = async (req, res) => {
   const match = { clinic: req.clinicId, status: 'CONTABILIZADO', 'lines.account': { $in: ids } };
   if (startDate || endDate) {
     match.date = {};
-    if (startDate) match.date.$gte = new Date(startDate);
-    if (endDate) match.date.$lte = new Date(endDate);
+    if (startDate) match.date.$gte = startOfDay(startDate);
+    if (endDate) match.date.$lte = endOfDay(endDate);
   }
   const agg = await JournalEntry.aggregate([
     { $match: match }, { $unwind: '$lines' },

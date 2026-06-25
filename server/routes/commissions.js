@@ -10,6 +10,7 @@ router.post('/rules', requireRole('admin', 'contabilidad'), ctrl.createRule);
 router.put('/rules/:id', requireRole('admin', 'contabilidad'), ctrl.updateRule);
 router.delete('/rules/:id', requireRole('admin', 'contabilidad'), ctrl.deleteRule);
 router.get('/report', requireRole('admin', 'contabilidad'), ctrl.report);
+router.get('/report.xlsx', requireRole('admin', 'contabilidad'), ctrl.reportExcel);
 
 // Contabilización de comisiones devengadas (genera asiento contable).
 router.get('/postings', requireRole('admin', 'contabilidad'), ctrl.listPostings);
