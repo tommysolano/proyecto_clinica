@@ -12,6 +12,7 @@ const H = require('./_integrationHelpers');
 
 const sale = require('../controllers/saleController');
 const purchase = require('../controllers/purchaseInvoiceController');
+const journal = require('../controllers/journalEntryController');
 const payment = require('../controllers/paymentController');
 const cash = require('../controllers/cashClosingController');
 const health = require('../controllers/accountingHealthController');
@@ -56,6 +57,32 @@ test('FLUJO 1 — Venta de contado (efectivo) con producto: stock, kardex, COGS 
 
   const led = await H.assertLedgerBalanced(clinicId);
   assert.ok(led.balanced, `mayor descuadrado ${led.debit} vs ${led.credit}`);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('Balance de comprobación: clinicId string (JWT) devuelve filas y cuadra', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const prod = await H.makeProduct(clinicId, { category: 'insumo', purchasePrice: 40, stock: 0 });
+  const sup = await H.makeSupplier(clinicId);
+  // Compra que genera un asiento CONTABILIZADO con fecha de hoy.
+  await H.runController(purchase.create, H.mockReq(clinicId, userId, {
+    supplier: sup._id, fechaEmision: new Date(),
+    items: [{ description: 'Insumo', product: prod._id, quantity: 10, unitPrice: 40, ivaRate: 15, subtotal: 400 }],
+  }));
+
+  // El balance de comprobación se consulta con clinicId STRING (como viene del JWT):
+  // `aggregate` no castea string→ObjectId, así que sin la conversión devolvería vacío.
+  const todayStr = new Date().toISOString().slice(0, 10);
+  const monthAgo = new Date(Date.now() - 30 * 86400000).toISOString().slice(0, 10);
+  const r = await H.runController(
+    journal.trialBalance,
+    H.mockReq(String(clinicId), userId, {}, { query: { startDate: monthAgo, endDate: todayStr } })
+  );
+  assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
+  assert.ok((r.payload.rows || []).length > 0, 'el balance de comprobación no devolvió filas');
+  assert.ok(r.payload.totals.debit > 0 && r.payload.totals.credit > 0, 'totales en cero');
+  // Partida doble: débitos = créditos.
+  assert.ok(Math.abs(r.payload.totals.debit - r.payload.totals.credit) < 0.01, 'balance descuadrado');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

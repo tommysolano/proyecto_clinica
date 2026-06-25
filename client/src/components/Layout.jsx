@@ -100,7 +100,7 @@ const ACCT_GROUPS = [
     key: 'inventario', label: 'Inventario', icon: HiOutlineCube, items: [
       { path: '/inventory', label: 'Productos' },
       { path: '/accounting/warehouses', label: 'Bodegas' },
-      { path: '/accounting/inv-categories', label: 'Categorías Inv.' },
+      { path: '/accounting/inv-categories', label: 'Categorías y Tipos' },
       { path: '/accounting/inv-consolidated', label: 'Inv. Consolidado' },
       { path: '/accounting/counts', label: 'Tomas Físicas' },
       { path: '/accounting/assets', label: 'Activos Fijos' },

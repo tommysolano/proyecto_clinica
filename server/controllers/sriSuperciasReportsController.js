@@ -16,6 +16,7 @@ const Invoice = require('../models/Invoice');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
 const Clinic = require('../models/Clinic');
 const { startOfDay, endOfDay } = require('../utils/dates');
+const { asObjectId } = require('../utils/objectId');
 
 function escXml(s) {
   return String(s == null ? '' : s).replace(/[<>&"']/g, (c) => ({
@@ -28,7 +29,7 @@ function escXml(s) {
 }
 
 async function getBalances(clinicId, { startDate, endDate } = {}) {
-  const match = { clinic: clinicId, status: 'CONTABILIZADO' };
+  const match = { clinic: asObjectId(clinicId), status: 'CONTABILIZADO' };
   if (startDate || endDate) {
     match.date = {};
     if (startDate) match.date.$gte = startOfDay(startDate);

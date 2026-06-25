@@ -2,6 +2,7 @@ const JournalEntry = require('../models/JournalEntry');
 const ChartOfAccount = require('../models/ChartOfAccount');
 const { createEntry, reverseEntry, applyToBalances, nextEntryNumber, assertPeriodOpen, getOrCreatePeriod } = require('../utils/accounting');
 const { startOfDay, endOfDay } = require('../utils/dates');
+const { asObjectId } = require('../utils/objectId');
 
 /** Hidrata y valida líneas de un asiento (para borradores). */
 async function hydrateLines(clinicId, lines) {
@@ -153,8 +154,8 @@ exports.ledger = async (req, res) => {
     if (startDate) dateFilter.$gte = startOfDay(startDate);
     if (endDate) dateFilter.$lte = endOfDay(endDate);
 
-    // Saldo inicial: movimientos anteriores
-    const initFilter = { clinic: req.clinicId, status: 'CONTABILIZADO', 'lines.account': acc._id };
+    // Saldo inicial: movimientos anteriores (aggregate requiere ObjectId, no string).
+    const initFilter = { clinic: asObjectId(req.clinicId), status: 'CONTABILIZADO', 'lines.account': acc._id };
     if (startDate) initFilter.date = { $lt: startOfDay(startDate) };
     const init = await JournalEntry.aggregate([
       { $match: initFilter },
@@ -196,7 +197,8 @@ exports.ledger = async (req, res) => {
 exports.trialBalance = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
-    const match = { clinic: req.clinicId, status: 'CONTABILIZADO' };
+    // `aggregate` no castea el clinicId (string del JWT) a ObjectId: hay que convertirlo.
+    const match = { clinic: asObjectId(req.clinicId), status: 'CONTABILIZADO' };
     if (startDate || endDate) {
       match.date = {};
       if (startDate) match.date.$gte = startOfDay(startDate);

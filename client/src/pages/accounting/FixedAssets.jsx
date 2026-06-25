@@ -3,7 +3,8 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
-import { HiOutlinePlus, HiOutlineBuildingLibrary, HiOutlineCalculator, HiOutlinePencilSquare, HiOutlineEye } from 'react-icons/hi2';
+import { Link } from 'react-router-dom';
+import { HiOutlinePlus, HiOutlineBuildingLibrary, HiOutlineCalculator, HiOutlinePencilSquare, HiOutlineEye, HiOutlineSquares2X2 } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 
@@ -120,6 +121,7 @@ export default function FixedAssets() {
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineBuildingLibrary className="text-emerald-600" /> Activos Fijos</h1>
         <div className="flex gap-2">
+          <Link to="/accounting/inv-categories?kind=ACTIVO_FIJO" className="px-4 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg flex items-center gap-2 hover:bg-slate-50"><HiOutlineSquares2X2 /> Categorías y tipos</Link>
           <button onClick={() => setShowDep(true)} className="px-4 py-2 bg-amber-500 text-white rounded-lg flex items-center gap-2"><HiOutlineCalculator /> Correr depreciación</button>
           <button onClick={openNew} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nuevo</button>
         </div>

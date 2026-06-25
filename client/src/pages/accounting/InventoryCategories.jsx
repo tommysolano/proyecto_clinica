@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
@@ -7,7 +8,9 @@ import { HiOutlinePlus, HiOutlineSquares2X2, HiOutlinePencilSquare, HiOutlineTra
 import NumericInput from '../../components/NumericInput';
 
 const EMPTY = { code: '', name: '', kind: 'INVENTARIO', parent: '', depreciationRate: 0, usefulLifeYears: 0, residualPercent: 0, noDepreciate: false, expenseType: '', assetAccount: '', depreciationAccount: '', accumDepreciationAccount: '', impairmentAssetAccount: '', impairmentExpenseAccount: '', expenseAccount: '', incomeAccount: '' };
-const EXPENSE_TYPES = ['Gastos Ventas', 'Gastos Administrativos', 'Costo de Ventas', 'Otros'];
+// Sugerencias para el "Tipo" (clasificación contable). El campo es de texto libre:
+// el usuario puede elegir una sugerencia o escribir cualquier otra.
+const EXPENSE_TYPES = ['Gastos Ventas', 'Gastos Administrativos', 'Costo de Ventas', 'Gastos Financieros', 'Gastos No Deducibles'];
 
 export default function InventoryCategories() {
   const [list, setList] = useState([]);
@@ -15,6 +18,9 @@ export default function InventoryCategories() {
   const [show, setShow] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY);
+  const [searchParams] = useSearchParams();
+  // Al entrar desde Activos Fijos (?kind=ACTIVO_FIJO) las nuevas categorías nacen como activo fijo.
+  const defaultKind = searchParams.get('kind') === 'ACTIVO_FIJO' ? 'ACTIVO_FIJO' : 'INVENTARIO';
 
   const load = async () => {
     try { const r = await api.get('/inventory-advanced/categories'); setList(r.data || []); }
@@ -53,7 +59,7 @@ export default function InventoryCategories() {
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineSquares2X2 className="text-emerald-600" /> Categorías Inventario/Activos</h1>
-        <button onClick={() => { setEditing(null); setForm(EMPTY); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
+        <button onClick={() => { setEditing(null); setForm({ ...EMPTY, kind: defaultKind }); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
       </div>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
         <table className="tbl">
@@ -80,9 +86,9 @@ export default function InventoryCategories() {
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <Field label="Código" required><input required placeholder="Ej: INV-01" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className={inputCls} /></Field>
-            <Field label="Tipo"><select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value, parent: '' })} className={inputCls}><option>INVENTARIO</option><option>ACTIVO_FIJO</option></select></Field>
+            <Field label="Clase"><select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value, parent: '' })} className={inputCls}><option value="INVENTARIO">Inventario</option><option value="ACTIVO_FIJO">Activo fijo</option></select></Field>
             <Field label="Nombre" required className="col-span-2"><input required placeholder="Ej: Medicamentos" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} /></Field>
-            <Field label="Categoría padre" className="col-span-2">
+            <Field label="Categoría padre" hint="Elige una categoría para crear un TIPO (subcategoría) dentro de ella. Déjalo en blanco para una categoría raíz." className="col-span-2">
               <select value={form.parent} onChange={(e) => setForm({ ...form, parent: e.target.value })} className={inputCls}>
                 <option value="">Categoría raíz (sin padre)</option>
                 {parentOptions.map((c) => <option key={c._id} value={c._id}>{c.code} - {c.name}</option>)}
@@ -90,10 +96,10 @@ export default function InventoryCategories() {
             </Field>
             {form.kind === 'ACTIVO_FIJO' && <>
               <Field label="Tipo">
-                <select value={form.expenseType} onChange={(e) => setForm({ ...form, expenseType: e.target.value })} className={inputCls}>
-                  <option value="">Seleccione…</option>
-                  {EXPENSE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                </select>
+                <input list="cat-expense-types" value={form.expenseType} onChange={(e) => setForm({ ...form, expenseType: e.target.value })} placeholder="Gastos Ventas… o escribe otro" className={inputCls} />
+                <datalist id="cat-expense-types">
+                  {EXPENSE_TYPES.map((t) => <option key={t} value={t} />)}
+                </datalist>
               </Field>
               <Field label="% Depreciación anual"><NumericInput step="0.01" value={form.depreciationRate} disabled={form.noDepreciate} onChange={(e) => setForm({ ...form, depreciationRate: +e.target.value })} className={inputCls} /></Field>
               <Field label="Vida útil (años)"><NumericInput value={form.usefulLifeYears} disabled={form.noDepreciate} onChange={(e) => setForm({ ...form, usefulLifeYears: +e.target.value })} className={inputCls} /></Field>
