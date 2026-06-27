@@ -1,6 +1,9 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import { createPortal } from 'react-dom';
 import { HiOutlineXMark } from 'react-icons/hi2';
+
+// Pila de modales abiertos: con modales apilados, Escape solo cierra el de arriba.
+const modalStack = [];
 
 export default function Modal({ isOpen, onClose, title, children, size = 'md' }) {
   const sizes = {
@@ -19,12 +22,25 @@ export default function Modal({ isOpen, onClose, title, children, size = 'md' })
     return () => { document.body.style.overflow = prev; };
   }, [isOpen]);
 
+  // Mantener una referencia viva a onClose sin reordenar la pila en cada render.
+  const onCloseRef = useRef(onClose);
+  useEffect(() => { onCloseRef.current = onClose; });
+
   useEffect(() => {
     if (!isOpen) return;
-    const handler = (e) => { if (e.key === 'Escape') onClose(); };
+    const token = { close: () => onCloseRef.current?.() };
+    modalStack.push(token);
+    const handler = (e) => {
+      // Solo el modal superior responde a Escape (no cierra los de abajo).
+      if (e.key === 'Escape' && modalStack[modalStack.length - 1] === token) token.close();
+    };
     document.addEventListener('keydown', handler);
-    return () => document.removeEventListener('keydown', handler);
-  }, [isOpen, onClose]);
+    return () => {
+      document.removeEventListener('keydown', handler);
+      const idx = modalStack.indexOf(token);
+      if (idx >= 0) modalStack.splice(idx, 1);
+    };
+  }, [isOpen]);
 
   if (!isOpen) return null;
 

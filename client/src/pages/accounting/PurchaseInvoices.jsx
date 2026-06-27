@@ -8,6 +8,7 @@ import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import JournalEntryEditor from '../../components/JournalEntryEditor';
 import SearchableSelect from '../../components/SearchableSelect';
+import ProductFormModal from '../../components/ProductFormModal';
 import { useAuth } from '../../context/AuthContext';
 
 const PAGE_SIZE = 100;
@@ -54,6 +55,7 @@ export default function PurchaseInvoices() {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [pendingTotal, setPendingTotal] = useState(0); // total real de "por autorizar" (todas las páginas)
+  const [newProductItemIdx, setNewProductItemIdx] = useState(null); // línea que dispara "Nuevo producto"
   const [journalInv, setJournalInv] = useState(null); // factura cuyo asiento se edita
   const [payInv, setPayInv] = useState(null); // factura a pagar
   const [payForm, setPayForm] = useState({ method: 'TRANSFERENCIA', bankAccount: '', voucherNumber: '', checkNumber: '', amount: 0, date: today() });
@@ -74,10 +76,16 @@ export default function PurchaseInvoices() {
       setPendingTotal(r.data?.total ?? 0);
     } catch { /* sin bloquear la vista */ }
   };
+  // Catálogo de productos físicos (los que pueden entrar a stock por compra).
+  const loadProducts = () =>
+    api.get('/products')
+      .then((r) => setProducts((r.data?.items || r.data || []).filter((p) => !p.unlimited && p.category !== 'servicio')))
+      .catch(() => {});
+
   useEffect(() => {
     api.get('/suppliers').then((r) => setSuppliers(r.data || []));
     api.get('/chart-of-accounts').then((r) => setAccounts((r.data || []).filter((a) => a.allowsMovement && (a.code?.startsWith('6.') || a.code?.startsWith('1.1.04') || a.code?.startsWith('1.2.')))));
-    api.get('/products').then((r) => setProducts((r.data?.items || r.data || []).filter((p) => !p.unlimited && p.category !== 'servicio'))).catch(() => {});
+    loadProducts();
     api.get('/inventory-advanced/warehouses').then((r) => setWarehouses(r.data || [])).catch(() => {});
     api.get('/banks/accounts').then((r) => setBanks(r.data || [])).catch(() => {});
     api.get('/cost-centers', { params: { active: true } }).then((r) => setCostCenters(r.data || [])).catch(() => {});
@@ -343,6 +351,21 @@ export default function PurchaseInvoices() {
     const items = [...form.items]; items[i] = { ...items[i], ...patch }; setForm({ ...form, items });
   };
 
+  // Tras crear un producto desde la factura: refresca catálogo y lo autoselecciona en la línea.
+  const handleNewProductSaved = async (saved) => {
+    await loadProducts();
+    const idx = newProductItemIdx;
+    if (idx != null && saved?._id) {
+      setForm((prev) => {
+        const items = [...prev.items];
+        const cur = items[idx] || {};
+        items[idx] = { ...cur, product: saved._id, description: cur.description || saved.name };
+        return { ...prev, items };
+      });
+    }
+    setNewProductItemIdx(null);
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -525,8 +548,15 @@ export default function PurchaseInvoices() {
                       )}
                     </Field>
                     {it.lineType === 'INVENTARIO' && (
-                      <Field label="Producto" required hint="Insumo/medicamento que entra a stock">
-                        <SearchableSelect options={products} value={it.product} onChange={(v) => setItem(i, { product: v, warehouse: v ? it.warehouse : '' })} getLabel={(p) => p.name} placeholder="Selecciona producto…" searchPlaceholder="Buscar producto…" allowClear />
+                      <Field label="Producto" required hint="Insumo que entra a stock">
+                        <div className="flex items-center gap-2">
+                          <div className="flex-1 min-w-0">
+                            <SearchableSelect options={products} value={it.product} onChange={(v) => setItem(i, { product: v, warehouse: v ? it.warehouse : '' })} getLabel={(p) => p.name} placeholder="Selecciona producto…" searchPlaceholder="Buscar producto…" allowClear />
+                          </div>
+                          <button type="button" onClick={() => setNewProductItemIdx(i)} title="Crear producto nuevo en inventario" className="shrink-0 px-2.5 py-2 text-sm rounded-lg border border-emerald-200 text-emerald-700 hover:bg-emerald-50 flex items-center gap-1 whitespace-nowrap bg-white cursor-pointer">
+                            <HiOutlinePlus className="w-4 h-4" /> Nuevo
+                          </button>
+                        </div>
                       </Field>
                     )}
                   </div>
@@ -687,6 +717,21 @@ export default function PurchaseInvoices() {
           </div>
         )}
       </Modal>
+
+      {/* Crear producto nuevo al vuelo desde una línea de inventario */}
+      <ProductFormModal
+        isOpen={newProductItemIdx !== null}
+        onClose={() => setNewProductItemIdx(null)}
+        editingProduct={null}
+        initialValues={newProductItemIdx !== null ? {
+          name: form.items[newProductItemIdx]?.description || '',
+          purchasePrice: form.items[newProductItemIdx]?.unitPrice || '',
+          taxRate: form.items[newProductItemIdx]?.ivaRate ?? 15,
+        } : null}
+        products={products}
+        clinicsList={clinics}
+        onSaved={handleNewProductSaved}
+      />
     </div>
   );
 }
