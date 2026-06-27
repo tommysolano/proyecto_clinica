@@ -6,6 +6,7 @@ import PageHeader, { EmptyState } from '../components/PageHeader';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import NumericInput from '../components/NumericInput';
+import SearchableSelect from '../components/SearchableSelect';
 import {
   HiOutlinePlus, HiOutlinePencil, HiOutlineTrash,
   HiOutlineMagnifyingGlass, HiOutlineArrowDown, HiOutlineArrowUp,
@@ -341,16 +342,18 @@ export default function Inventory() {
                   <option key={k} value={k}>{v}</option>
                 ))}
               </select>
-              <select
-                value={categoriaFilter}
-                onChange={(e) => setCategoriaFilter(e.target.value)}
-                className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
-              >
-                <option value="">Todas las categorías</option>
-                {PRODUCT_CATEGORIES.map((c) => (
-                  <option key={c} value={c}>{c}</option>
-                ))}
-              </select>
+              <div className="w-full sm:w-56">
+                <SearchableSelect
+                  options={PRODUCT_CATEGORIES}
+                  value={categoriaFilter}
+                  onChange={(v) => setCategoriaFilter(v)}
+                  getLabel={(o) => o}
+                  getValue={(o) => o}
+                  placeholder="Todas las categorías"
+                  searchPlaceholder="Buscar categoría…"
+                  allowClear
+                />
+              </div>
               <button
                 onClick={() => setShowLowStock(!showLowStock)}
                 className={`flex items-center gap-2 px-4 py-2.5 rounded-xl text-sm font-medium cursor-pointer border transition-colors ${
@@ -555,12 +558,16 @@ export default function Inventory() {
             </div>
             <div className="sm:col-span-2">
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Categoría</label>
-              <select value={productForm.categoria} onChange={(e) => setProductForm({ ...productForm, categoria: e.target.value })} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50">
-                <option value="">— Sin categoría —</option>
-                {PRODUCT_CATEGORIES.map((c) => (
-                  <option key={c} value={c}>{c}</option>
-                ))}
-              </select>
+              <SearchableSelect
+                options={PRODUCT_CATEGORIES}
+                value={productForm.categoria}
+                onChange={(v) => setProductForm({ ...productForm, categoria: v })}
+                getLabel={(o) => o}
+                getValue={(o) => o}
+                placeholder="— Sin categoría —"
+                searchPlaceholder="Buscar categoría…"
+                allowClear
+              />
             </div>
             <div className="sm:col-span-2">
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Nombre *</label>
