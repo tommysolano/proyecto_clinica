@@ -67,8 +67,8 @@ const PRODUCTS = [
   { name: 'Crema hidratante',           code: 'PROD-CRH', category: 'insumo',    salePrice: 22, taxRate: 15, stock: 30, minStock: 5 },
   { name: 'Protector solar SPF 50',     code: 'PROD-PSL', category: 'insumo',    salePrice: 28, taxRate: 15, stock: 25, minStock: 5 },
   { name: 'Sérum vitamina C',           code: 'PROD-SVC', category: 'insumo',    salePrice: 35, taxRate: 15, stock: 18, minStock: 3 },
-  // Medicamentos
-  { name: 'Paracetamol 500mg',          code: 'MED-PAR',  category: 'medicamento', salePrice: 5, taxRate: 0, stock: 100, minStock: 20 },
+  // Medicamentos (ahora tipo 'insumo')
+  { name: 'Paracetamol 500mg',          code: 'MED-PAR',  category: 'insumo', salePrice: 5, taxRate: 0, stock: 100, minStock: 20 },
 ];
 
 const PROGRAM_BLUEPRINT = {

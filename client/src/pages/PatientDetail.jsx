@@ -553,7 +553,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
         setProducts(
           list.filter((p) =>
             p.isComposite ||
-            ['medicamento', 'insumo', 'servicio', 'programa'].includes(String(p.category || '').toLowerCase())
+            ['insumo', 'servicio', 'programa'].includes(String(p.category || '').toLowerCase())
           )
         );
       })

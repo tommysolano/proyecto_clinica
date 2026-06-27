@@ -1,11 +1,73 @@
 const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
+const Counter = require('../models/Counter');
 const kardex = require('../utils/kardex');
 const { runInTransaction } = require('../utils/accounting');
 
+// Código automático de producto: prefijo + secuencia por clínica.
+const CODE_PREFIX = 'P';
+const CODE_PAD = 5;
+const CODE_KEY = 'product-code';
+
+// Siembra el contador la primera vez a partir del mayor código P##### existente,
+// para no chocar con productos previos. Idempotente.
+async function ensureCodeCounter(clinicId) {
+  let counter = await Counter.findOne({ clinic: clinicId, key: CODE_KEY });
+  if (counter) return counter;
+  const last = await Product.findOne({
+    clinic: clinicId,
+    code: new RegExp(`^${CODE_PREFIX}\\d+$`),
+  })
+    .sort({ code: -1 })
+    .select('code');
+  let start = 0;
+  if (last) {
+    const m = last.code.match(/(\d+)$/);
+    if (m) start = parseInt(m[1], 10);
+  }
+  try {
+    counter = await Counter.create({ clinic: clinicId, key: CODE_KEY, seq: start });
+  } catch (e) {
+    if (e.code !== 11000) throw e;
+    counter = await Counter.findOne({ clinic: clinicId, key: CODE_KEY });
+  }
+  return counter;
+}
+
+const fmtCode = (n) => `${CODE_PREFIX}${String(n).padStart(CODE_PAD, '0')}`;
+
+// Genera (y reserva) el siguiente código libre de forma atómica. Reintenta si el
+// código generado coincidiera con uno ingresado manualmente.
+async function nextProductCode(clinicId) {
+  await ensureCodeCounter(clinicId);
+  for (let i = 0; i < 50; i++) {
+    const updated = await Counter.findOneAndUpdate(
+      { clinic: clinicId, key: CODE_KEY },
+      { $inc: { seq: 1 } },
+      { new: true, upsert: true }
+    );
+    const code = fmtCode(updated.seq);
+    const clash = await Product.findOne({ clinic: clinicId, code }).select('_id');
+    if (!clash) return code;
+  }
+  throw Object.assign(new Error('No se pudo generar un código de producto único'), { status: 500 });
+}
+
+// Calcula el siguiente código SIN reservarlo (solo para previsualizar en la UI).
+async function peekProductCode(clinicId) {
+  const counter = await ensureCodeCounter(clinicId);
+  let seq = counter ? counter.seq : 0;
+  for (let i = 1; i <= 50; i++) {
+    const code = fmtCode(seq + i);
+    const clash = await Product.findOne({ clinic: clinicId, code }).select('_id');
+    if (!clash) return code;
+  }
+  return fmtCode(seq + 1);
+}
+
 exports.getProducts = async (req, res) => {
   try {
-    const { search, category, lowStock } = req.query;
+    const { search, category, categoria, lowStock } = req.query;
     const query = { clinic: req.clinicId, active: true };
 
     if (search) {
@@ -15,6 +77,7 @@ exports.getProducts = async (req, res) => {
       ];
     }
     if (category) query.category = category;
+    if (categoria) query.categoria = categoria;
     if (lowStock === 'true') {
       query.unlimited = { $ne: true };
       query.$expr = { $lte: ['$stock', '$minStock'] };
@@ -46,16 +109,32 @@ const syncStockFromClinics = (body) => {
 
 exports.createProduct = async (req, res) => {
   try {
-    const existing = await Product.findOne({ clinic: req.clinicId, code: req.body.code });
-    if (existing) {
-      return res.status(400).json({ message: 'Ya existe un producto con ese código' });
+    let code = String(req.body.code || '').trim();
+    if (!code) {
+      // Sin código → el sistema lo genera automáticamente.
+      code = await nextProductCode(req.clinicId);
+    } else {
+      const existing = await Product.findOne({ clinic: req.clinicId, code });
+      if (existing) {
+        return res.status(400).json({ message: 'Ya existe un producto con ese código' });
+      }
     }
 
     syncStockFromClinics(req.body);
-    const product = await Product.create({ ...req.body, clinic: req.clinicId });
+    const product = await Product.create({ ...req.body, clinic: req.clinicId, code });
     res.status(201).json(product);
   } catch (error) {
-    res.status(500).json({ message: 'Error al crear producto', error: error.message });
+    res.status(error.status || 500).json({ message: error.message || 'Error al crear producto', error: error.message });
+  }
+};
+
+// Previsualiza el próximo código automático (no lo reserva).
+exports.previewNextCode = async (req, res) => {
+  try {
+    const code = await peekProductCode(req.clinicId);
+    res.json({ code });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al generar código' });
   }
 };
 

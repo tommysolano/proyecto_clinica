@@ -12,10 +12,12 @@ import {
   HiOutlineExclamationTriangle, HiOutlineCube, HiOutlineArrowDownTray,
 } from 'react-icons/hi2';
 import { fmtDateTime } from '../utils/date';
+import { PRODUCT_TYPES, PRODUCT_CATEGORIES } from '../constants/productCategories';
 
-const categories = { medicamento: 'Medicamento', insumo: 'Insumo', servicio: 'Servicio', programa: 'Programa', otro: 'Otro' };
+// Tipos de producto (en la UI: "Tipo").
+const types = PRODUCT_TYPES;
 const emptyProduct = {
-  code: '', name: '', description: '', category: 'otro',
+  code: '', name: '', description: '', category: 'insumo', categoria: '',
   purchasePrice: '', salePrice: '', stock: '', minStock: '5', unit: 'unidad', taxRate: '15',
   maxAppointmentsPerDay: '0',
   excludeFromFirstVisit: false,
@@ -40,7 +42,8 @@ export default function Inventory() {
   const [warehouses, setWarehouses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [categoryFilter, setCategoryFilter] = useState('');
+  const [categoryFilter, setCategoryFilter] = useState(''); // filtro por tipo
+  const [categoriaFilter, setCategoriaFilter] = useState(''); // filtro por categoría
   const [showLowStock, setShowLowStock] = useState(false);
   const [tab, setTab] = useState('products');
 
@@ -49,6 +52,15 @@ export default function Inventory() {
   const [editingProduct, setEditingProduct] = useState(null);
   const [productForm, setProductForm] = useState(emptyProduct);
   const [saving, setSaving] = useState(false);
+  const [autoCode, setAutoCode] = useState(true); // generar código automáticamente
+  const [nextCodePreview, setNextCodePreview] = useState('');
+
+  const fetchNextCode = async () => {
+    try {
+      const res = await api.get('/products/next-code');
+      setNextCodePreview(res.data?.code || '');
+    } catch { setNextCodePreview(''); }
+  };
 
   // Movement modal
   const [movementModal, setMovementModal] = useState(false);
@@ -83,7 +95,7 @@ export default function Inventory() {
   const fetchProducts = async () => {
     try {
       const res = await api.get('/products', {
-        params: { search, category: categoryFilter, lowStock: showLowStock || undefined },
+        params: { search, category: categoryFilter, categoria: categoriaFilter, lowStock: showLowStock || undefined },
       });
       setProducts(res.data);
     } catch {
@@ -100,7 +112,7 @@ export default function Inventory() {
     } catch {}
   };
 
-  useEffect(() => { fetchProducts(); }, [search, categoryFilter, showLowStock]);
+  useEffect(() => { fetchProducts(); }, [search, categoryFilter, categoriaFilter, showLowStock]);
   useEffect(() => { if (tab === 'movements') fetchMovements(); }, [tab]);
   useEffect(() => {
     api.get('/clinics').then((r) => setClinicsList(r.data || [])).catch(() => {});
@@ -111,14 +123,19 @@ export default function Inventory() {
   const openNewProduct = () => {
     setEditingProduct(null);
     setProductForm(emptyProduct);
+    setAutoCode(true);
+    setNextCodePreview('');
+    fetchNextCode();
     setProductModal(true);
   };
 
   const openEditProduct = (p) => {
     setEditingProduct(p._id);
+    setAutoCode(false); // al editar, el código se mantiene/edita manualmente
+    setNextCodePreview('');
     setProductForm({
       code: p.code, name: p.name, description: p.description || '',
-      category: p.category, purchasePrice: String(p.purchasePrice),
+      category: p.category, categoria: p.categoria || '', purchasePrice: String(p.purchasePrice),
       salePrice: String(p.salePrice), stock: String(p.stock),
       minStock: String(p.minStock), unit: p.unit, taxRate: String(p.taxRate),
       maxAppointmentsPerDay: String(p.maxAppointmentsPerDay ?? 0),
@@ -157,6 +174,8 @@ export default function Inventory() {
       const unlimited = isService || productForm.category === 'programa';
       const data = {
         ...productForm,
+        // Código vacío → el backend lo genera automáticamente.
+        code: autoCode ? '' : (productForm.code || '').trim(),
         purchasePrice: isService ? 0 : parseFloat(productForm.purchasePrice) || 0,
         salePrice: parseFloat(productForm.salePrice),
         stock: isService ? 0 : parseInt(productForm.stock) || 0,
@@ -197,8 +216,8 @@ export default function Inventory() {
         await api.put(`/products/${editingProduct}`, data);
         toast.success('Producto actualizado');
       } else {
-        await api.post('/products', data);
-        toast.success('Producto creado');
+        const res = await api.post('/products', data);
+        toast.success(`Producto creado${res.data?.code ? ` (código ${res.data.code})` : ''}`);
       }
       setProductModal(false);
       fetchProducts();
@@ -317,9 +336,19 @@ export default function Inventory() {
                 onChange={(e) => setCategoryFilter(e.target.value)}
                 className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
               >
-                <option value="">Todas las categorías</option>
-                {Object.entries(categories).map(([k, v]) => (
+                <option value="">Todos los tipos</option>
+                {Object.entries(types).map(([k, v]) => (
                   <option key={k} value={k}>{v}</option>
+                ))}
+              </select>
+              <select
+                value={categoriaFilter}
+                onChange={(e) => setCategoriaFilter(e.target.value)}
+                className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
+              >
+                <option value="">Todas las categorías</option>
+                {PRODUCT_CATEGORIES.map((c) => (
+                  <option key={c} value={c}>{c}</option>
                 ))}
               </select>
               <button
@@ -344,7 +373,8 @@ export default function Inventory() {
                   <tr className="bg-emerald-50/50 border-b border-emerald-100">
                     <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Código</th>
                     <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Producto</th>
-                    <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider hidden md:table-cell">Categoría</th>
+                    <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider hidden md:table-cell">Tipo</th>
+                    <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider hidden lg:table-cell">Categoría</th>
                     <th className="text-right px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Precio</th>
                     <th className="text-right px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Stock</th>
                     <th className="text-right px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Acciones</th>
@@ -352,15 +382,16 @@ export default function Inventory() {
                 </thead>
                 <tbody>
                   {loading ? (
-                    <tr><td colSpan="6" className="text-center py-10 text-slate-500">Cargando...</td></tr>
+                    <tr><td colSpan="7" className="text-center py-10 text-slate-500">Cargando...</td></tr>
                   ) : products.length === 0 ? (
-                    <tr><td colSpan="6"><EmptyState icon={HiOutlineCube} title="No se encontraron productos" hint="Ajusta la búsqueda o crea un nuevo producto." /></td></tr>
+                    <tr><td colSpan="7"><EmptyState icon={HiOutlineCube} title="No se encontraron productos" hint="Ajusta la búsqueda o crea un nuevo producto." /></td></tr>
                   ) : (
                     products.map((p) => (
                       <tr key={p._id} className="border-b border-emerald-50 hover:bg-emerald-50/30 transition-colors">
                         <td className="px-6 py-3.5 text-sm text-slate-600 font-mono">{p.code}</td>
                         <td className="px-6 py-3.5 text-sm font-medium text-slate-800">{p.name}</td>
-                        <td className="px-6 py-3.5 text-sm text-slate-600 hidden md:table-cell capitalize">{categories[p.category]}</td>
+                        <td className="px-6 py-3.5 text-sm text-slate-600 hidden md:table-cell capitalize">{types[p.category] || p.category}</td>
+                        <td className="px-6 py-3.5 text-sm text-slate-600 hidden lg:table-cell">{p.categoria || '—'}</td>
                         <td className="px-6 py-3.5 text-sm text-slate-800 text-right">${p.salePrice.toFixed(2)}</td>
                         <td className="px-6 py-3.5 text-right">
                           {p.unlimited ? (
@@ -479,14 +510,36 @@ export default function Inventory() {
         <form onSubmit={handleProductSubmit} className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">Código *</label>
-              <input name="code" value={productForm.code} onChange={(e) => setProductForm({...productForm, code: e.target.value})} required className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Código {!autoCode && '*'}</label>
+              <input
+                name="code"
+                value={autoCode ? '' : productForm.code}
+                onChange={(e) => setProductForm({ ...productForm, code: e.target.value })}
+                required={!autoCode}
+                disabled={autoCode}
+                placeholder={autoCode ? (nextCodePreview ? `Automático: ${nextCodePreview}` : 'Se generará automáticamente') : 'Ej: P00001'}
+                className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50 disabled:bg-slate-100 disabled:text-slate-400 disabled:cursor-not-allowed"
+              />
+              {!editingProduct && (
+                <label className="flex items-center gap-2 mt-1.5 text-xs text-slate-600 cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={autoCode}
+                    onChange={(e) => {
+                      setAutoCode(e.target.checked);
+                      if (e.target.checked && !nextCodePreview) fetchNextCode();
+                    }}
+                    className="w-3.5 h-3.5 accent-emerald-600 cursor-pointer"
+                  />
+                  Generar código automáticamente
+                </label>
+              )}
             </div>
             <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">Categoría</label>
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Tipo</label>
               <select value={productForm.category} onChange={(e) => {
                 const category = e.target.value;
-                // Servicios y programas no llevan IVA: al elegir esa categoría se pone
+                // Servicios y programas no llevan IVA: al elegir ese tipo se pone
                 // el IVA en 0 automáticamente (el usuario aún puede editarlo después).
                 const isExempt = category === 'servicio' || category === 'programa';
                 setProductForm((prev) => ({
@@ -495,8 +548,17 @@ export default function Inventory() {
                   taxRate: isExempt ? '0' : prev.taxRate,
                 }));
               }} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50">
-                {Object.entries(categories).map(([k, v]) => (
+                {Object.entries(types).map(([k, v]) => (
                   <option key={k} value={k}>{v}</option>
+                ))}
+              </select>
+            </div>
+            <div className="sm:col-span-2">
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Categoría</label>
+              <select value={productForm.categoria} onChange={(e) => setProductForm({ ...productForm, categoria: e.target.value })} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50">
+                <option value="">— Sin categoría —</option>
+                {PRODUCT_CATEGORIES.map((c) => (
+                  <option key={c} value={c}>{c}</option>
                 ))}
               </select>
             </div>

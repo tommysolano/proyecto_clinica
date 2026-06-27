@@ -9,6 +9,7 @@ const BankAccount = require('../models/BankAccount');
 const { createEntry, findAccount, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const kardex = require('../utils/kardex');
+const { PRODUCT_TYPES, PRODUCT_CATEGORIES, normalizeCategoria } = require('../utils/productCategories');
 const ExcelJS = require('exceljs');
 const multer = require('multer');
 
@@ -18,7 +19,8 @@ exports.uploadMiddleware = multer({ storage: multer.memoryStorage(), limits: { f
 const PRODUCT_TEMPLATE_COLUMNS = [
   { header: 'codigo', key: 'code', width: 16 },
   { header: 'nombre', key: 'name', width: 32 },
-  { header: 'categoria', key: 'category', width: 16 },
+  { header: 'tipo', key: 'category', width: 14 },
+  { header: 'categoria', key: 'categoria', width: 24 },
   { header: 'unidad', key: 'unit', width: 12 },
   { header: 'precio_compra', key: 'purchasePrice', width: 14 },
   { header: 'precio_venta', key: 'salePrice', width: 14 },
@@ -37,10 +39,11 @@ exports.downloadProductTemplate = async (req, res) => {
     ws.getRow(1).font = { bold: true };
     ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } };
     // Fila de ejemplo
-    ws.addRow({ code: 'P001', name: 'Producto ejemplo', category: 'insumo', unit: 'unidad', purchasePrice: 5, salePrice: 10, stock: 100, minStock: 10, taxRate: 15, unlimited: 'NO' });
+    ws.addRow({ code: 'P001', name: 'Producto ejemplo', category: 'insumo', categoria: 'AMPOLLAS', unit: 'unidad', purchasePrice: 5, salePrice: 10, stock: 100, minStock: 10, taxRate: 15, unlimited: 'NO' });
     // Hoja de ayuda
     const help = wb.addWorksheet('Instrucciones');
-    help.addRow(['categoria: medicamento, insumo, servicio, programa, otro']);
+    help.addRow([`tipo: ${PRODUCT_TYPES.join(', ')}`]);
+    help.addRow([`categoria: ${PRODUCT_CATEGORIES.join(' | ')}`]);
     help.addRow(['ilimitado: SI (servicios sin stock) o NO']);
     help.addRow(['iva: 0, 12 o 15']);
     help.addRow(['No borre la fila de encabezados. Puede borrar la fila de ejemplo.']);
@@ -80,7 +83,12 @@ exports.importProductsExcel = async (req, res) => {
       return res.status(400).json({ message: 'La plantilla debe tener al menos las columnas codigo y nombre' });
     }
 
-    const validCats = ['medicamento', 'insumo', 'servicio', 'programa', 'otro'];
+    // 'medicamento'/'otro' (valores antiguos) se mapean a 'insumo'.
+    const normalizeTipo = (raw) => {
+      const v = String(raw || '').toLowerCase().trim();
+      if (PRODUCT_TYPES.includes(v)) return v;
+      return 'insumo';
+    };
     let created = 0, updated = 0;
     const errors = [];
     for (let r = 2; r <= ws.rowCount; r++) {
@@ -96,7 +104,8 @@ exports.importProductsExcel = async (req, res) => {
       const product = {
         code: String(data.code).trim(),
         name: String(data.name).trim(),
-        category: validCats.includes(String(data.category || '').toLowerCase()) ? String(data.category).toLowerCase() : 'otro',
+        category: normalizeTipo(data.category),
+        categoria: normalizeCategoria(data.categoria),
         unit: data.unit ? String(data.unit).trim() : 'unidad',
         purchasePrice: Number(data.purchasePrice) || 0,
         salePrice: Number(data.salePrice) || 0,

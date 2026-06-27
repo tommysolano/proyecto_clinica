@@ -19,11 +19,16 @@ const productSchema = new mongoose.Schema(
       trim: true,
     },
     description: { type: String, trim: true },
+    // TIPO del producto (en la UI se muestra como "Tipo"). Solo 3 valores.
+    // 'medicamento' se unificó con 'insumo' (no hay distinción de negocio).
     category: {
       type: String,
-      enum: ['medicamento', 'insumo', 'servicio', 'programa', 'otro'],
-      default: 'otro',
+      enum: ['insumo', 'servicio', 'programa'],
+      default: 'insumo',
     },
+    // CATEGORÍA comercial del producto (campo "Categoría" en la UI). Texto libre
+    // restringido por el desplegable del front (ver utils/productCategories.js).
+    categoria: { type: String, default: '', trim: true },
     // Para 'programa' (pack de servicios): lista de servicios incluidos.
     programServices: [
       {
