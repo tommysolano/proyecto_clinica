@@ -20,6 +20,16 @@ async function loadEnabledConfig(token) {
   return cfg;
 }
 
+// Busca un producto reservable (servicio o programa) por su id de Product.
+// Devuelve { product, name, durationMinutes } o null.
+function findBookable(cfg, productId) {
+  const svc = (cfg.services || []).find((s) => String(s.product) === String(productId));
+  if (svc) return { product: svc.product, name: svc.name, durationMinutes: svc.durationMinutes };
+  const prog = (cfg.programs || []).find((p) => String(p.product) === String(productId));
+  if (prog) return { product: prog.product, name: prog.name || 'Programa', durationMinutes: prog.durationMinutes };
+  return null;
+}
+
 // GET /api/public/booking/:token  → info para renderizar la página de reserva.
 exports.info = async (req, res) => {
   try {
@@ -28,8 +38,8 @@ exports.info = async (req, res) => {
     const clinic = await Clinic.findById(cfg.clinic).select('name nombreComercial address phone');
     res.json({
       clinicName: clinic?.nombreComercial || clinic?.name || 'Clínica',
-      address: clinic?.address || '',
-      phone: clinic?.phone || '',
+      address: cfg.addressText || clinic?.address || '',
+      phone: cfg.phoneText || clinic?.phone || '',
       days: cfg.days,
       horizonDays: cfg.horizonDays,
       slotMinutes: cfg.slotMinutes,
@@ -38,6 +48,25 @@ exports.info = async (req, res) => {
         name: s.name,
         durationMinutes: s.durationMinutes,
       })),
+      // Contenido de la landing pública.
+      tagline: cfg.tagline || '',
+      coverImageUrl: cfg.coverImageUrl || '',
+      logoUrl: cfg.logoUrl || '',
+      primaryColor: cfg.primaryColor || '#059669',
+      aboutTitle: cfg.aboutTitle || '',
+      about: cfg.about || '',
+      highlights: cfg.highlights || [],
+      gallery: cfg.gallery || [],
+      programsTitle: cfg.programsTitle || '',
+      programs: (cfg.programs || []).map((p) => ({
+        product: p.product,
+        name: p.name,
+        description: p.description,
+        imageUrl: p.imageUrl,
+        priceLabel: p.priceLabel,
+        durationMinutes: p.durationMinutes,
+      })),
+      instagram: cfg.instagram || '',
     });
   } catch (err) {
     res.status(500).json({ message: 'Error', error: err.message });
@@ -61,7 +90,7 @@ async function computeSlots(cfg, dateStr, service) {
   horizon.setDate(horizon.getDate() + cfg.horizonDays);
   if (day < today || day > horizon) return { slots: [] };
 
-  const svc = (cfg.services || []).find((s) => String(s.product) === String(service));
+  const svc = findBookable(cfg, service);
   if (!svc) return { error: 'Servicio no disponible' };
 
   // Citas ya agendadas ese día (cualquier hora), no canceladas.
@@ -125,7 +154,7 @@ exports.book = async (req, res) => {
     if (!firstName || !lastName) return res.status(400).json({ message: 'Nombre y apellido son obligatorios' });
     if (!phone) return res.status(400).json({ message: 'El teléfono es obligatorio' });
 
-    const svc = (cfg.services || []).find((s) => String(s.product) === String(service));
+    const svc = findBookable(cfg, service);
     if (!svc) return res.status(400).json({ message: 'Servicio no disponible' });
 
     // Re-validar disponibilidad del slot (evita carreras / manipulación).

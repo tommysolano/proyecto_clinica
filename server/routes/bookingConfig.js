@@ -10,6 +10,7 @@ const ROLES = ['admin', 'marketing'];
 
 router.get('/', requireRole(...ROLES), ctrl.get);
 router.put('/', requireRole(...ROLES), ctrl.update);
+router.post('/upload-image', requireRole(...ROLES), ctrl.uploadImage);
 router.post('/regenerate-token', requireRole(...ROLES), ctrl.regenerateToken);
 
 module.exports = router;

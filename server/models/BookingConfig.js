@@ -13,6 +13,21 @@ const bookingServiceSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Programa reservable que se muestra como "tarjeta" en la landing (estilo
+// "Experiencias" de OpenTable). Referencia a un Product (category 'programa')
+// con datos de presentación propios para la página pública.
+const bookingProgramSchema = new mongoose.Schema(
+  {
+    product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
+    name: { type: String, trim: true, default: '' },
+    description: { type: String, trim: true, default: '' },
+    imageUrl: { type: String, trim: true, default: '' },
+    priceLabel: { type: String, trim: true, default: '' },
+    durationMinutes: { type: Number, default: 60, min: 5 },
+  },
+  { _id: false }
+);
+
 const bookingConfigSchema = new mongoose.Schema(
   {
     clinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', required: true, unique: true, index: true },
@@ -33,6 +48,31 @@ const bookingConfigSchema = new mongoose.Schema(
       type: String,
       default: '¡Gracias! Tu cita quedó registrada. Te enviaremos la confirmación por WhatsApp.',
     },
+
+    // ── Contenido de la landing pública (estilo OpenTable) ──────────────────
+    // Subtítulo bajo el nombre de la clínica.
+    tagline: { type: String, trim: true, default: 'Reserva tu cita en línea' },
+    // Imagen de portada (hero) a pantalla completa. URL pública autoalojada.
+    coverImageUrl: { type: String, trim: true, default: '' },
+    // Logo opcional mostrado sobre el hero / en la tarjeta de reserva.
+    logoUrl: { type: String, trim: true, default: '' },
+    // Color de acento (botones, chips). Hex.
+    primaryColor: { type: String, trim: true, default: '#059669' },
+    // Sección "Acerca de".
+    aboutTitle: { type: String, trim: true, default: 'Acerca de nosotros' },
+    about: { type: String, trim: true, default: '' },
+    // Chips/etiquetas destacadas (p.ej. "Atención personalizada").
+    highlights: { type: [String], default: [] },
+    // Galería de fotos (URLs públicas autoalojadas).
+    gallery: { type: [String], default: [] },
+    // Sección de programas reservables ("Experiencias").
+    programsTitle: { type: String, trim: true, default: 'Nuestros programas' },
+    programs: { type: [bookingProgramSchema], default: [] },
+    // Contacto mostrado en el pie (si vacío, se usa el de la clínica).
+    addressText: { type: String, trim: true, default: '' },
+    phoneText: { type: String, trim: true, default: '' },
+    instagram: { type: String, trim: true, default: '' },
+
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }
