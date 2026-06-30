@@ -86,6 +86,18 @@ export default function BookingConfig() {
     setAddProduct('');
   };
 
+  // Añade de golpe todos los servicios que aún no estén en la lista.
+  const addAllServices = () => {
+    const existing = new Set(cfg.services.map((s) => String(s.product)));
+    const toAdd = serviceProducts
+      .filter((p) => !existing.has(String(p._id)))
+      .map((p) => ({ product: p._id, name: p.name, durationMinutes: 30 }));
+    if (toAdd.length === 0) { toast('Ya están todos los servicios añadidos'); return; }
+    set({ services: [...cfg.services, ...toAdd] });
+    setAddProduct('');
+    toast.success(`${toAdd.length} servicio(s) añadido(s)`);
+  };
+
   const addProgramItem = () => {
     if (!addProgram) return;
     const p = programProducts.find((x) => x._id === addProgram);
@@ -97,6 +109,21 @@ export default function BookingConfig() {
       }],
     });
     setAddProgram('');
+  };
+
+  // Añade de golpe todos los programas que aún no estén en la lista.
+  const addAllPrograms = () => {
+    const existing = new Set((cfg.programs || []).map((s) => String(s.product)));
+    const toAdd = programProducts
+      .filter((p) => !existing.has(String(p._id)))
+      .map((p) => ({
+        product: p._id, name: p.name, description: p.description || '',
+        imageUrl: '', priceLabel: p.salePrice ? `$${p.salePrice}` : '', durationMinutes: 60,
+      }));
+    if (toAdd.length === 0) { toast('Ya están todos los programas añadidos'); return; }
+    set({ programs: [...(cfg.programs || []), ...toAdd] });
+    setAddProgram('');
+    toast.success(`${toAdd.length} programa(s) añadido(s)`);
   };
   const updateProgram = (i, patch) => {
     const programs = [...(cfg.programs || [])];
@@ -214,6 +241,7 @@ export default function BookingConfig() {
             {programProducts.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
           </select>
           <button onClick={addProgramItem} className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white cursor-pointer flex items-center gap-1"><HiOutlinePlus /> Añadir</button>
+          <button onClick={addAllPrograms} disabled={programProducts.length === 0} className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white cursor-pointer flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed">Añadir todos</button>
         </div>
         {programProducts.length === 0 && <p className="text-xs text-amber-600 mt-1">No hay productos de tipo "programa". Créalos en Inventario para poder reservarlos.</p>}
       </Section>
@@ -288,6 +316,7 @@ export default function BookingConfig() {
               {serviceProducts.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
             </select>
             <button onClick={addService} className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white cursor-pointer flex items-center gap-1"><HiOutlinePlus /> Añadir</button>
+            <button onClick={addAllServices} disabled={serviceProducts.length === 0} className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white cursor-pointer flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed">Añadir todos</button>
           </div>
         </div>
 
