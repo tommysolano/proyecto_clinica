@@ -231,6 +231,22 @@ export default function BookingConfig() {
         </div>
       </Section>
 
+      {/* ── Contacto (pie de la página) ──────────────────────── */}
+      <Section title="Contacto">
+        <p className="text-xs text-slate-400 -mt-1">Se muestra al pie de la página pública. Si dejas un campo vacío, se usa el dato de la clínica.</p>
+        <Field label="Dirección">
+          <input value={cfg.addressText || ''} onChange={(e) => set({ addressText: e.target.value })} placeholder="Av. Principal y calle Secundaria, Guayaquil" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+        </Field>
+        <div className="grid sm:grid-cols-2 gap-4">
+          <Field label="Teléfono / WhatsApp">
+            <input value={cfg.phoneText || ''} onChange={(e) => set({ phoneText: e.target.value })} placeholder="0987654321" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+          </Field>
+          <Field label="Instagram">
+            <input value={cfg.instagram || ''} onChange={(e) => set({ instagram: e.target.value })} placeholder="@miclinica" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+          </Field>
+        </div>
+      </Section>
+
       {/* ── Disponibilidad ───────────────────────────────────── */}
       <Section title="Disponibilidad">
         <div>
