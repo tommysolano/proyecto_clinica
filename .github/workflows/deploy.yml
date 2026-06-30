@@ -1,0 +1,26 @@
+name: Deploy a VPS
+
+# Se ejecuta automaticamente en cada push a la rama main.
+on:
+  push:
+    branches: [main]
+  # Permite lanzarlo a mano desde la pestaña "Actions" de GitHub.
+  workflow_dispatch:
+
+# Evita que dos despliegues corran a la vez si haces varios push seguidos.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Desplegar por SSH en el VPS
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script_stop: true
+          script: bash /var/www/clinica/deploy.sh
