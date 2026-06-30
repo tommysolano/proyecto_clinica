@@ -1,5 +1,5 @@
 /**
- * wipe-products.js  —  BORRADO TOTAL DE PRODUCTOS E INVENTARIO (un solo uso)
+ * wipe-products.js  —  BORRADO TOTAL DE PRODUCTOS E INVENTARIO
  *
  * Elimina, en TODAS las clínicas:
  *   - Product            (catálogo de productos/servicios/programas)
@@ -8,9 +8,14 @@
  *
  * ⚠️  ES IRREVERSIBLE. No hay papelera ni undo. Haz un respaldo de la BD antes.
  *
+ * 🔒  ESTÁ DESACTIVADO A PROPÓSITO. Aunque uses --commit, NO borrará nada a menos
+ *     que actives el interruptor con la variable de entorno  WIPE_ENABLED=1.
+ *     Así queda guardado por si se necesita en el futuro, sin riesgo de
+ *     ejecutarlo por accidente.
+ *
  * Uso:
- *   node wipe-products.js            → SIMULACIÓN: solo muestra cuántos borraría.
- *   node wipe-products.js --commit   → BORRA de verdad.
+ *   node wipe-products.js                          → SIMULACIÓN: solo cuenta.
+ *   WIPE_ENABLED=1 node wipe-products.js --commit  → BORRA de verdad.
  *
  * Requiere MONGODB_URI en .env o como variable de entorno.
  */
@@ -24,6 +29,8 @@ const InventoryMovement = require('./models/InventoryMovement');
 
 const MONGODB_URI = process.env.MONGODB_URI;
 const COMMIT = process.argv.includes('--commit');
+// Interruptor de seguridad: el script queda INACTIVO salvo que se active aquí.
+const ENABLED = process.env.WIPE_ENABLED === '1';
 
 if (!MONGODB_URI) {
   console.error('❌  Falta MONGODB_URI en las variables de entorno.');
@@ -32,7 +39,7 @@ if (!MONGODB_URI) {
 
 async function main() {
   await mongoose.connect(MONGODB_URI);
-  console.log('✅  Conectado a MongoDB');
+  console.log(`✅  Conectado a MongoDB → cluster: ${mongoose.connection.host}  ·  base: ${mongoose.connection.name}`);
 
   const collections = [
     { label: 'Productos (Product)', model: Product },
@@ -52,8 +59,17 @@ async function main() {
 
   if (!COMMIT) {
     console.log(`\n🟡  SIMULACIÓN: se borrarían ${total} registros en total.`);
-    console.log('    Vuelve a ejecutar con  --commit  para borrar de verdad:');
-    console.log('       node wipe-products.js --commit\n');
+    console.log('    Para borrar de verdad (script desactivado por defecto):');
+    console.log('       WIPE_ENABLED=1 node wipe-products.js --commit\n');
+    await mongoose.disconnect();
+    return;
+  }
+
+  // Interruptor de seguridad: bloquea el borrado salvo que se active a propósito.
+  if (!ENABLED) {
+    console.log('\n🔒  Script DESACTIVADO. No se borró nada.');
+    console.log('    Para activarlo, exporta WIPE_ENABLED=1 antes de --commit:');
+    console.log('       WIPE_ENABLED=1 node wipe-products.js --commit\n');
     await mongoose.disconnect();
     return;
   }
