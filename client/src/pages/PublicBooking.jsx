@@ -28,20 +28,6 @@ export default function PublicBooking() {
 
   const accent = info?.primaryColor || '#059669';
 
-  // Fechas seleccionables: hoy .. horizonDays, solo días laborables.
-  const dateOptions = [];
-  if (info) {
-    const today = new Date();
-    for (let i = 0; i <= (info.horizonDays || 30); i++) {
-      const d = new Date(today);
-      d.setDate(d.getDate() + i);
-      if (info.days.includes(d.getDay())) {
-        const iso = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-        dateOptions.push({ iso, label: d.toLocaleDateString('es-EC', { weekday: 'short', day: 'numeric', month: 'short' }) });
-      }
-    }
-  }
-
   const loadSlots = async (d, svc) => {
     setSlots(null);
     setSlot('');
@@ -203,26 +189,23 @@ export default function PublicBooking() {
 
                 <div className="grid gap-4">
                   <Field label="Servicio">
-                    <select value={service} onChange={(e) => { setService(e.target.value); loadSlots(date, e.target.value); }} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm">
-                      <option value="">Selecciona…</option>
-                      {services.length > 0 && (
-                        <optgroup label="Servicios">
-                          {services.map((s) => <option key={String(s.product)} value={s.product}>{s.name} ({s.durationMinutes} min)</option>)}
-                        </optgroup>
-                      )}
-                      {programs.length > 0 && (
-                        <optgroup label="Programas">
-                          {programs.map((p) => <option key={String(p.product)} value={p.product}>{p.name} ({p.durationMinutes} min)</option>)}
-                        </optgroup>
-                      )}
-                    </select>
+                    <ServiceCombobox
+                      services={services}
+                      programs={programs}
+                      value={service}
+                      onChange={(id) => { setService(id); loadSlots(date, id); }}
+                      accent={accent}
+                    />
                   </Field>
 
                   <Field label="Fecha">
-                    <select value={date} onChange={(e) => { setDate(e.target.value); loadSlots(e.target.value, service); }} disabled={!service} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm disabled:bg-slate-50">
-                      <option value="">Selecciona…</option>
-                      {dateOptions.map((d) => <option key={d.iso} value={d.iso}>{d.label}</option>)}
-                    </select>
+                    <DateCalendar
+                      value={date}
+                      onChange={(iso) => { setDate(iso); loadSlots(iso, service); }}
+                      allowedDays={info.days || []}
+                      horizonDays={info.horizonDays}
+                      accent={accent}
+                    />
                   </Field>
 
                   {date && service && (
@@ -291,6 +274,137 @@ function Field({ label, children }) {
       <span className="text-slate-600">{label}</span>
       <div className="mt-1">{children}</div>
     </label>
+  );
+}
+
+// Buscador autocompletable de servicios/programas: el usuario escribe y la
+// lista se filtra en vivo, en vez de desplegar todo el catálogo.
+function ServiceCombobox({ services, programs, value, onChange, accent }) {
+  const [query, setQuery] = useState('');
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+
+  const options = [
+    ...services.map((s) => ({ id: String(s.product), name: s.name, duration: s.durationMinutes, group: 'Servicios' })),
+    ...programs.map((p) => ({ id: String(p.product), name: p.name, duration: p.durationMinutes, group: 'Programas' })),
+  ];
+  const selected = options.find((o) => o.id === String(value));
+
+  useEffect(() => {
+    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    return () => document.removeEventListener('mousedown', onDoc);
+  }, []);
+
+  const q = query.trim().toLowerCase();
+  const filtered = q ? options.filter((o) => o.name.toLowerCase().includes(q)) : options;
+  const groups = ['Servicios', 'Programas'].filter((g) => filtered.some((o) => o.group === g));
+
+  const pick = (o) => { onChange(o.id); setQuery(''); setOpen(false); };
+
+  return (
+    <div ref={ref} className="relative">
+      <div className="relative">
+        <input
+          value={open ? query : (selected ? selected.name : '')}
+          onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+          onFocus={() => { setQuery(''); setOpen(true); }}
+          placeholder="Escribe para buscar un servicio…"
+          className="w-full border border-slate-200 rounded-lg pl-3 pr-8 py-2 text-sm"
+        />
+        <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 pointer-events-none">
+          {selected && !open ? '▾' : '🔍'}
+        </span>
+      </div>
+      {open && (
+        <div className="absolute z-20 mt-1 w-full max-h-60 overflow-auto rounded-lg border border-slate-200 bg-white shadow-lg">
+          {filtered.length === 0 ? (
+            <p className="px-3 py-3 text-sm text-slate-400">Sin coincidencias</p>
+          ) : (
+            groups.map((g) => (
+              <div key={g}>
+                <p className="px-3 pt-2 pb-1 text-[11px] font-semibold uppercase tracking-wide text-slate-400">{g}</p>
+                {filtered.filter((o) => o.group === g).map((o) => (
+                  <button
+                    key={o.id}
+                    type="button"
+                    onClick={() => pick(o)}
+                    className="w-full text-left px-3 py-2 text-sm cursor-pointer border-none bg-transparent hover:bg-slate-50 flex items-center justify-between gap-2"
+                    style={o.id === String(value) ? { background: `${accent}14`, color: accent } : undefined}
+                  >
+                    <span>{o.name}</span>
+                    {o.duration ? <span className="text-xs text-slate-400 shrink-0">{o.duration} min</span> : null}
+                  </button>
+                ))}
+              </div>
+            ))
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Calendario mensual: se elige el día directamente. Días pasados, fuera del
+// horizonte de reserva o no laborables salen desactivados.
+function DateCalendar({ value, onChange, allowedDays, horizonDays, accent }) {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const maxDate = new Date(today); maxDate.setDate(maxDate.getDate() + (horizonDays || 30));
+  const [view, setView] = useState(() => {
+    const base = value ? new Date(value + 'T12:00') : today;
+    return new Date(base.getFullYear(), base.getMonth(), 1);
+  });
+
+  const daysInMonth = new Date(view.getFullYear(), view.getMonth() + 1, 0).getDate();
+  const leading = (view.getDay() + 6) % 7; // rejilla empieza en lunes
+  const cells = [];
+  for (let i = 0; i < leading; i++) cells.push(null);
+  for (let d = 1; d <= daysInMonth; d++) cells.push(new Date(view.getFullYear(), view.getMonth(), d));
+
+  const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  const isAllowed = (d) => d >= today && d <= maxDate && (allowedDays || []).includes(d.getDay());
+
+  const canPrev = view.getFullYear() > today.getFullYear() || (view.getFullYear() === today.getFullYear() && view.getMonth() > today.getMonth());
+  const maxMonth = new Date(maxDate.getFullYear(), maxDate.getMonth(), 1);
+  const canNext = view < maxMonth;
+  const goMonth = (delta) => setView(new Date(view.getFullYear(), view.getMonth() + delta, 1));
+
+  return (
+    <div className="border border-slate-200 rounded-lg p-3 select-none">
+      <div className="flex items-center justify-between mb-2">
+        <button type="button" disabled={!canPrev} onClick={() => goMonth(-1)}
+          className="w-7 h-7 rounded-md text-slate-500 enabled:hover:bg-slate-100 enabled:cursor-pointer disabled:text-slate-300 border-none bg-transparent">‹</button>
+        <span className="text-sm font-medium text-slate-700 capitalize">
+          {view.toLocaleDateString('es-EC', { month: 'long', year: 'numeric' })}
+        </span>
+        <button type="button" disabled={!canNext} onClick={() => goMonth(1)}
+          className="w-7 h-7 rounded-md text-slate-500 enabled:hover:bg-slate-100 enabled:cursor-pointer disabled:text-slate-300 border-none bg-transparent">›</button>
+      </div>
+      <div className="grid grid-cols-7 gap-1 text-center text-[11px] text-slate-400 mb-1">
+        {['lu', 'ma', 'mi', 'ju', 'vi', 'sá', 'do'].map((d, i) => <span key={i}>{d}</span>)}
+      </div>
+      <div className="grid grid-cols-7 gap-1">
+        {cells.map((d, i) => {
+          if (!d) return <span key={i} />;
+          const selected = value === iso(d);
+          const allowed = isAllowed(d);
+          return (
+            <button
+              key={i}
+              type="button"
+              disabled={!allowed}
+              onClick={() => onChange(iso(d))}
+              className={`h-9 rounded-lg text-sm border-none ${
+                allowed ? 'text-slate-700 hover:bg-slate-100 cursor-pointer' : 'text-slate-300 cursor-not-allowed line-through'
+              }`}
+              style={selected ? { background: accent, color: '#fff' } : { background: 'transparent' }}
+            >
+              {d.getDate()}
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
