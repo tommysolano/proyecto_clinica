@@ -41,10 +41,21 @@ export default function BookingConfig() {
         api.get('/booking-config'),
         api.get('/products').catch(() => ({ data: [] })),
       ]);
-      setCfg(c.data);
       const all = Array.isArray(p.data) ? p.data : p.data?.items || [];
-      setServiceProducts(all.filter((x) => x.category !== 'programa'));
+      // Solo servicios son reservables aquí; los insumos no. Los programas tienen
+      // su propia sección ("Programas reservables") con programProducts.
+      const services = all.filter((x) => x.category === 'servicio');
+      setServiceProducts(services);
       setProgramProducts(all.filter((x) => x.category === 'programa'));
+      // Auto-limpieza: quita de la config los "servicios reservables" que ya no
+      // son de tipo servicio (insumos colados por el bug de "Añadir todos").
+      // Solo si el catálogo cargó, para no vaciar la lista por un fallo de red.
+      if (all.length) {
+        const serviceIds = new Set(services.map((s) => String(s._id)));
+        setCfg({ ...c.data, services: (c.data.services || []).filter((s) => serviceIds.has(String(s.product))) });
+      } else {
+        setCfg(c.data);
+      }
     } catch (e) {
       toast.error(e.response?.data?.message || 'Error al cargar');
     }
