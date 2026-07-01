@@ -109,6 +109,14 @@ export default function BookingConfig() {
     toast.success(`${toAdd.length} servicio(s) añadido(s)`);
   };
 
+  // Vacía la lista de servicios reservables (con confirmación).
+  const removeAllServices = () => {
+    if (!cfg.services.length) return;
+    if (!window.confirm('¿Eliminar todos los servicios reservables?')) return;
+    set({ services: [] });
+    toast.success('Servicios reservables eliminados');
+  };
+
   const addProgramItem = () => {
     if (!addProgram) return;
     const p = programProducts.find((x) => x._id === addProgram);
@@ -309,18 +317,30 @@ export default function BookingConfig() {
         </Field>
 
         <div>
-          <p className="text-sm text-slate-600 mb-2">Servicios reservables</p>
-          <div className="grid gap-2 mb-2">
-            {cfg.services.map((s, i) => (
-              <div key={i} className="flex items-center gap-2">
-                <span className="flex-1 text-sm">{s.name}</span>
-                <NumericInput value={s.durationMinutes} onChange={(e) => { const ss = [...cfg.services]; ss[i] = { ...ss[i], durationMinutes: Number(e.target.value) }; set({ services: ss }); }} className="w-20 border border-slate-200 rounded-lg px-2 py-1 text-sm" />
-                <span className="text-xs text-slate-400">min</span>
-                <button onClick={() => set({ services: cfg.services.filter((_, j) => j !== i) })} className="p-1 text-red-400 bg-transparent border-none cursor-pointer"><HiOutlineTrash /></button>
-              </div>
-            ))}
-            {cfg.services.length === 0 && <p className="text-xs text-slate-400">Agrega al menos un servicio para poder reservar.</p>}
+          <div className="flex items-center justify-between mb-2">
+            <p className="text-sm text-slate-600">
+              Servicios reservables{cfg.services.length > 0 ? ` (${cfg.services.length})` : ''}
+            </p>
+            {cfg.services.length > 0 && (
+              <button onClick={removeAllServices} className="text-xs text-red-500 hover:text-red-600 bg-transparent border-none cursor-pointer flex items-center gap-1">
+                <HiOutlineTrash className="w-3.5 h-3.5" /> Eliminar todos
+              </button>
+            )}
           </div>
+          {cfg.services.length === 0 ? (
+            <p className="text-xs text-slate-400 mb-2">Agrega al menos un servicio para poder reservar.</p>
+          ) : (
+            <div className="grid gap-2 mb-2 max-h-64 overflow-y-auto pr-1">
+              {cfg.services.map((s, i) => (
+                <div key={i} className="flex items-center gap-2">
+                  <span className="flex-1 min-w-0 text-sm truncate">{s.name}</span>
+                  <NumericInput value={s.durationMinutes} onChange={(e) => { const ss = [...cfg.services]; ss[i] = { ...ss[i], durationMinutes: Number(e.target.value) }; set({ services: ss }); }} className="w-20 border border-slate-200 rounded-lg px-2 py-1 text-sm" />
+                  <span className="text-xs text-slate-400">min</span>
+                  <button onClick={() => set({ services: cfg.services.filter((_, j) => j !== i) })} className="p-1 text-red-400 bg-transparent border-none cursor-pointer"><HiOutlineTrash /></button>
+                </div>
+              ))}
+            </div>
+          )}
           <div className="flex gap-2">
             <select value={addProduct} onChange={(e) => setAddProduct(e.target.value)} className="flex-1 min-w-0 border border-slate-200 rounded-lg px-2 py-2 text-sm">
               <option value="">Añadir servicio…</option>
