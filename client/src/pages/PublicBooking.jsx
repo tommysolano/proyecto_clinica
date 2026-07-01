@@ -19,6 +19,7 @@ export default function PublicBooking() {
   const [submitting, setSubmitting] = useState(false);
   const [done, setDone] = useState(null);
   const [lightbox, setLightbox] = useState(null);
+  const [programModal, setProgramModal] = useState(null);
   const reserveRef = useRef(null);
 
   useEffect(() => {
@@ -124,31 +125,13 @@ export default function PublicBooking() {
               <h2 className="text-xl font-bold text-slate-800 mb-4">{info.programsTitle || 'Nuestros programas'}</h2>
               <div className="grid sm:grid-cols-2 gap-5">
                 {programs.map((p) => (
-                  <article key={String(p.product)} className="rounded-2xl border border-slate-200 overflow-hidden flex flex-col bg-white shadow-sm">
-                    {p.imageUrl && (
-                      <img src={p.imageUrl} alt={p.name} className="w-full h-40 object-cover" />
-                    )}
-                    <div className="p-4 flex flex-col flex-1">
-                      <h3 className="font-semibold text-slate-800">{p.name}</h3>
-                      <div className="flex flex-wrap gap-3 mt-2 text-xs text-slate-500">
-                        {p.priceLabel && <span className="font-medium text-slate-700">{p.priceLabel}</span>}
-                        {p.durationMinutes ? <span>· {p.durationMinutes} min</span> : null}
-                      </div>
-                      {p.description && (
-                        <div
-                          className="text-sm text-slate-600 mt-2 flex-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5"
-                          dangerouslySetInnerHTML={{ __html: sanitizeHtml(p.description) }}
-                        />
-                      )}
-                      <button
-                        onClick={() => pickService(p.product)}
-                        className="mt-4 py-2 rounded-lg text-sm font-medium text-white border-none cursor-pointer self-start px-5"
-                        style={{ background: accent }}
-                      >
-                        Reservar
-                      </button>
-                    </div>
-                  </article>
+                  <ProgramCard
+                    key={String(p.product)}
+                    p={p}
+                    accent={accent}
+                    onReserve={pickService}
+                    onOpen={() => setProgramModal(p)}
+                  />
                 ))}
               </div>
             </section>
@@ -270,6 +253,15 @@ export default function PublicBooking() {
           <img src={lightbox} alt="foto" className="max-w-full max-h-full rounded-lg" />
         </div>
       )}
+
+      {programModal && (
+        <ProgramModal
+          p={programModal}
+          accent={accent}
+          onReserve={(id) => { setProgramModal(null); pickService(id); }}
+          onClose={() => setProgramModal(null)}
+        />
+      )}
     </div>
   );
 }
@@ -280,6 +272,109 @@ function Field({ label, children }) {
       <span className="text-slate-600">{label}</span>
       <div className="mt-1">{children}</div>
     </label>
+  );
+}
+
+// Tarjeta de programa de altura fija. La descripción se recorta con "…" y solo
+// se muestra "Ver más" cuando el texto realmente desborda; abre el modal.
+function ProgramCard({ p, accent, onReserve, onOpen }) {
+  const descRef = useRef(null);
+  const [overflow, setOverflow] = useState(false);
+
+  useEffect(() => {
+    const el = descRef.current;
+    if (!el) return;
+    const check = () => setOverflow(el.scrollHeight > el.clientHeight + 1);
+    check();
+    window.addEventListener('resize', check);
+    return () => window.removeEventListener('resize', check);
+  }, [p.description]);
+
+  return (
+    <article className="rounded-2xl border border-slate-200 overflow-hidden flex flex-col bg-white shadow-sm h-[420px]">
+      {p.imageUrl && (
+        <button type="button" onClick={onOpen} className="block p-0 border-none cursor-pointer shrink-0">
+          <img src={p.imageUrl} alt={p.name} className="w-full h-40 object-cover" />
+        </button>
+      )}
+      <div className="p-4 flex flex-col flex-1 min-h-0">
+        <h3
+          onClick={onOpen}
+          className="font-semibold text-slate-800 line-clamp-2 cursor-pointer"
+        >
+          {p.name}
+        </h3>
+        <div className="flex flex-wrap gap-3 mt-2 text-xs text-slate-500 shrink-0">
+          {p.priceLabel && <span className="font-medium text-slate-700">{p.priceLabel}</span>}
+          {p.durationMinutes ? <span>· {p.durationMinutes} min</span> : null}
+        </div>
+        {p.description && (
+          <div
+            ref={descRef}
+            className="text-sm text-slate-600 mt-2 line-clamp-6 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5"
+            dangerouslySetInnerHTML={{ __html: sanitizeHtml(p.description) }}
+          />
+        )}
+        <div className="mt-auto pt-3 flex items-center gap-4 shrink-0">
+          <button
+            onClick={() => onReserve(p.product)}
+            className="py-2 rounded-lg text-sm font-medium text-white border-none cursor-pointer px-5"
+            style={{ background: accent }}
+          >
+            Reservar
+          </button>
+          {overflow && (
+            <button
+              onClick={onOpen}
+              className="text-sm font-medium bg-transparent border-none cursor-pointer p-0 hover:underline"
+              style={{ color: accent }}
+            >
+              Ver más
+            </button>
+          )}
+        </div>
+      </div>
+    </article>
+  );
+}
+
+// Modal con toda la info del programa + opción de reservar.
+function ProgramModal({ p, accent, onReserve, onClose }) {
+  useEffect(() => {
+    const onEsc = (e) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', onEsc);
+    return () => document.removeEventListener('keydown', onEsc);
+  }, [onClose]);
+
+  return (
+    <div onClick={onClose} className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+      <div onClick={(e) => e.stopPropagation()} className="bg-white rounded-2xl max-w-lg w-full max-h-[90vh] overflow-hidden flex flex-col shadow-2xl">
+        {p.imageUrl && <img src={p.imageUrl} alt={p.name} className="w-full h-52 object-cover shrink-0" />}
+        <div className="p-5 overflow-y-auto">
+          <h3 className="text-lg font-bold text-slate-800">{p.name}</h3>
+          <div className="flex flex-wrap gap-3 mt-2 text-sm text-slate-500">
+            {p.priceLabel && <span className="font-medium text-slate-700">{p.priceLabel}</span>}
+            {p.durationMinutes ? <span>· {p.durationMinutes} min</span> : null}
+          </div>
+          {p.description && (
+            <div
+              className="text-sm text-slate-600 mt-3 leading-relaxed [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5"
+              dangerouslySetInnerHTML={{ __html: sanitizeHtml(p.description) }}
+            />
+          )}
+        </div>
+        <div className="p-4 border-t border-slate-100 flex justify-end gap-2 shrink-0">
+          <button onClick={onClose} className="px-4 py-2 rounded-lg text-sm bg-slate-100 text-slate-600 border-none cursor-pointer">Cerrar</button>
+          <button
+            onClick={() => onReserve(p.product)}
+            className="px-5 py-2 rounded-lg text-sm font-medium text-white border-none cursor-pointer"
+            style={{ background: accent }}
+          >
+            Reservar
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
