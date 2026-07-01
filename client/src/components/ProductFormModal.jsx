@@ -383,22 +383,20 @@ export default function ProductFormModal({
               )}
               {(productForm.programServices || []).map((row, idx) => (
                 <div key={idx} className="grid grid-cols-12 gap-2 items-center">
-                  <select
-                    value={row.product}
-                    onChange={(e) => {
-                      const arr = [...productForm.programServices];
-                      arr[idx] = { ...arr[idx], product: e.target.value };
-                      setProductForm({ ...productForm, programServices: arr });
-                    }}
-                    className="col-span-8 px-2 py-1.5 border border-slate-200 rounded text-sm bg-white"
-                  >
-                    <option value="">— Seleccionar servicio —</option>
-                    {products
-                      .filter((p) => p._id !== editingId && (p.category === 'servicio' || p.unlimited))
-                      .map((p) => (
-                        <option key={p._id} value={p._id}>{p.name}</option>
-                      ))}
-                  </select>
+                  <div className="col-span-8">
+                    <SearchableSelect
+                      options={products.filter((p) => p._id !== editingId && (p.category === 'servicio' || p.unlimited))}
+                      value={row.product}
+                      onChange={(v) => {
+                        const arr = [...productForm.programServices];
+                        arr[idx] = { ...arr[idx], product: v };
+                        setProductForm({ ...productForm, programServices: arr });
+                      }}
+                      placeholder="— Seleccionar servicio —"
+                      searchPlaceholder="Buscar servicio por nombre…"
+                      size="sm"
+                    />
+                  </div>
                   <NumericInput
                     min={1}
                     value={row.quantity}
