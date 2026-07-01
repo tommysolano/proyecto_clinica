@@ -6,6 +6,7 @@ import {
   HiOutlineTrash, HiOutlinePhoto, HiOutlineArrowTopRightOnSquare,
 } from 'react-icons/hi2';
 import NumericInput from '../components/NumericInput';
+import SearchableSelect from '../components/SearchableSelect';
 
 const DAYS = [
   { v: 1, l: 'Lun' }, { v: 2, l: 'Mar' }, { v: 3, l: 'Mié' }, { v: 4, l: 'Jue' },
@@ -342,10 +343,15 @@ export default function BookingConfig() {
             </div>
           )}
           <div className="flex gap-2">
-            <select value={addProduct} onChange={(e) => setAddProduct(e.target.value)} className="flex-1 min-w-0 border border-slate-200 rounded-lg px-2 py-2 text-sm">
-              <option value="">Añadir servicio…</option>
-              {serviceProducts.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
-            </select>
+            <SearchableSelect
+              options={serviceProducts}
+              value={addProduct}
+              onChange={setAddProduct}
+              placeholder="Añadir servicio…"
+              searchPlaceholder="Buscar servicio…"
+              allowClear
+              className="flex-1 min-w-0"
+            />
             <button onClick={addService} className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white cursor-pointer flex items-center gap-1"><HiOutlinePlus /> Añadir</button>
             <button onClick={addAllServices} disabled={serviceProducts.length === 0} className="px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white cursor-pointer flex items-center gap-1 disabled:opacity-50 disabled:cursor-not-allowed">Añadir todos</button>
           </div>
