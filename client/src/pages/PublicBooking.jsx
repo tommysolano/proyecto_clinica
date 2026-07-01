@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import api from '../api/axios';
+import { sanitizeHtml } from '../utils/sanitizeHtml';
 
 // Página pública de auto-agendamiento (sin autenticación): /book/:token
 // Estilo landing (inspirado en OpenTable): hero con portada, acerca de,
@@ -133,7 +134,12 @@ export default function PublicBooking() {
                         {p.priceLabel && <span className="font-medium text-slate-700">{p.priceLabel}</span>}
                         {p.durationMinutes ? <span>· {p.durationMinutes} min</span> : null}
                       </div>
-                      {p.description && <p className="text-sm text-slate-600 mt-2 flex-1">{p.description}</p>}
+                      {p.description && (
+                        <div
+                          className="text-sm text-slate-600 mt-2 flex-1 [&_ul]:list-disc [&_ul]:pl-5 [&_ol]:list-decimal [&_ol]:pl-5"
+                          dangerouslySetInnerHTML={{ __html: sanitizeHtml(p.description) }}
+                        />
+                      )}
                       <button
                         onClick={() => pickService(p.product)}
                         className="mt-4 py-2 rounded-lg text-sm font-medium text-white border-none cursor-pointer self-start px-5"

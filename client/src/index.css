@@ -200,3 +200,10 @@ thead th { letter-spacing: 0.02em; }
 @media (prefers-reduced-motion: reduce) {
   .skeleton { animation: none; }
 }
+
+/* Placeholder para el editor de texto enriquecido (contentEditable no lo trae) */
+.rich-editor:empty:before {
+  content: attr(data-placeholder);
+  color: #94a3b8;
+  pointer-events: none;
+}

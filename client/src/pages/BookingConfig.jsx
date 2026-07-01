@@ -7,6 +7,7 @@ import {
 } from 'react-icons/hi2';
 import NumericInput from '../components/NumericInput';
 import SearchableSelect from '../components/SearchableSelect';
+import RichTextEditor from '../components/RichTextEditor';
 
 const DAYS = [
   { v: 1, l: 'Lun' }, { v: 2, l: 'Mar' }, { v: 3, l: 'Mié' }, { v: 4, l: 'Jue' },
@@ -241,7 +242,7 @@ export default function BookingConfig() {
                   <input value={p.name} onChange={(e) => updateProgram(i, { name: e.target.value })} placeholder="Nombre del programa" className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm font-medium" />
                   <button onClick={() => set({ programs: cfg.programs.filter((_, j) => j !== i) })} className="p-1 text-red-400 bg-transparent border-none cursor-pointer"><HiOutlineTrash /></button>
                 </div>
-                <textarea value={p.description} onChange={(e) => updateProgram(i, { description: e.target.value })} rows={2} placeholder="Descripción breve…" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                <RichTextEditor value={p.description} onChange={(html) => updateProgram(i, { description: html })} placeholder="Descripción breve…" />
                 <div className="grid grid-cols-2 gap-2">
                   <label className="text-xs text-slate-500">Precio (texto)
                     <input value={p.priceLabel} onChange={(e) => updateProgram(i, { priceLabel: e.target.value })} placeholder="$54.99 por persona" className="w-full mt-1 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
