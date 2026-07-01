@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Link } from 'react-router-dom';
 import api from '../api/axios';
+import useDebounce from '../hooks/useDebounce';
 import { downloadFile } from '../utils/download';
 import Modal from '../components/Modal';
 import toast from 'react-hot-toast';
@@ -53,6 +54,7 @@ export default function Patients() {
   const [patients, setPatients] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounce(search, 300);
   const [onlyNew, setOnlyNew] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -95,27 +97,32 @@ export default function Patients() {
       .finally(() => setLoadingApts(false));
   }, [aptForm.date, aptForm.enabled]);
 
+  // Solo la respuesta de la última búsqueda actualiza la lista: descarta
+  // respuestas fuera de orden que sobrescribirían con datos obsoletos.
+  const reqRef = useRef(0);
   const fetchPatients = async () => {
+    const reqId = ++reqRef.current;
     try {
-      const params = { search, page, limit: 15 };
+      const params = { search: debouncedSearch, page, limit: 15 };
       if (onlyNew) params.isNew = 'true';
       const res = await api.get('/patients', { params });
+      if (reqId !== reqRef.current) return; // respuesta obsoleta: descartar
       setPatients(res.data.patients);
       setTotalPages(res.data.pages);
     } catch {
-      toast.error('Error al cargar pacientes');
+      if (reqId === reqRef.current) toast.error('Error al cargar pacientes');
     } finally {
-      setLoading(false);
+      if (reqId === reqRef.current) setLoading(false);
     }
   };
 
   useEffect(() => {
     fetchPatients();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [search, page, onlyNew]);
+  }, [debouncedSearch, page, onlyNew]);
 
-  useSocketEvent('patient:created', () => fetchPatients(), [search, page, onlyNew]);
-  useSocketEvent('patient:updated', () => fetchPatients(), [search, page, onlyNew]);
+  useSocketEvent('patient:created', () => fetchPatients(), [debouncedSearch, page, onlyNew]);
+  useSocketEvent('patient:updated', () => fetchPatients(), [debouncedSearch, page, onlyNew]);
 
   // Autocompletado por cédula: al ingresar 10 dígitos consultamos el SRI para
   // llenar nombres/apellidos. La fecha de nacimiento y el género no están en

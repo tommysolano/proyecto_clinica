@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
@@ -60,13 +60,18 @@ export default function PurchaseInvoices() {
   const [payInv, setPayInv] = useState(null); // factura a pagar
   const [payForm, setPayForm] = useState({ method: 'TRANSFERENCIA', bankAccount: '', voucherNumber: '', checkNumber: '', amount: 0, date: today() });
 
+  // Solo la respuesta de la última búsqueda actualiza la lista: descarta
+  // respuestas fuera de orden que sobrescribirían con datos obsoletos.
+  const reqRef = useRef(0);
   const load = async () => {
+    const reqId = ++reqRef.current;
     try {
       const r = await api.get('/purchase-invoices', { params: { q: search || undefined, status: statusFilter || undefined, sort, page, limit: PAGE_SIZE } });
+      if (reqId !== reqRef.current) return; // respuesta obsoleta: descartar
       setList(r.data?.items || r.data || []);
       setTotal(r.data?.total ?? (r.data?.items?.length || 0));
       loadPendingCount();
-    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+    } catch (e) { if (reqId === reqRef.current) toast.error(e.response?.data?.message || 'Error'); }
   };
 
   // Total real de facturas pendientes de autorizar (de todas, no solo la página visible).

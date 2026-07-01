@@ -1,5 +1,6 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import api from '../api/axios';
+import useDebounce from '../hooks/useDebounce';
 import { downloadFile } from '../utils/download';
 import Modal from '../components/Modal';
 import PageHeader, { EmptyState } from '../components/PageHeader';
@@ -29,6 +30,7 @@ export default function Inventory() {
   const [warehouses, setWarehouses] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounce(search, 300);
   const [categoryFilter, setCategoryFilter] = useState(''); // filtro por tipo
   const [categoriaFilter, setCategoriaFilter] = useState(''); // filtro por categoría
   const [showLowStock, setShowLowStock] = useState(false);
@@ -69,16 +71,22 @@ export default function Inventory() {
     finally { setBulkUploading(false); }
   };
 
+  // Contador de peticiones: solo la respuesta de la última búsqueda actualiza
+  // la lista. Evita que una respuesta antigua (fuera de orden) sobrescriba los
+  // resultados con datos obsoletos, p. ej. "vuelve a mostrar todos".
+  const reqRef = useRef(0);
   const fetchProducts = async () => {
+    const reqId = ++reqRef.current;
     try {
       const res = await api.get('/products', {
-        params: { search, category: categoryFilter, categoria: categoriaFilter, lowStock: showLowStock || undefined },
+        params: { search: debouncedSearch, category: categoryFilter, categoria: categoriaFilter, lowStock: showLowStock || undefined },
       });
+      if (reqId !== reqRef.current) return; // respuesta obsoleta: descartar
       setProducts(res.data);
     } catch {
-      toast.error('Error al cargar productos');
+      if (reqId === reqRef.current) toast.error('Error al cargar productos');
     } finally {
-      setLoading(false);
+      if (reqId === reqRef.current) setLoading(false);
     }
   };
 
@@ -89,7 +97,7 @@ export default function Inventory() {
     } catch {}
   };
 
-  useEffect(() => { fetchProducts(); }, [search, categoryFilter, categoriaFilter, showLowStock]);
+  useEffect(() => { fetchProducts(); }, [debouncedSearch, categoryFilter, categoriaFilter, showLowStock]);
   useEffect(() => { if (tab === 'movements') fetchMovements(); }, [tab]);
   useEffect(() => {
     api.get('/clinics').then((r) => setClinicsList(r.data || [])).catch(() => {});

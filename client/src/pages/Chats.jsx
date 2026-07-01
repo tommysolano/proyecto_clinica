@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import toast from 'react-hot-toast';
 import NumericInput from '../components/NumericInput';
+import useDebounce from '../hooks/useDebounce';
 import {
   HiOutlineChatBubbleLeftRight,
   HiOutlineStar,
@@ -83,6 +84,7 @@ export default function Chats() {
   const [activeId, setActiveId] = useState(null);
   const [messages, setMessages] = useState([]);
   const [search, setSearch] = useState('');
+  const debouncedSearch = useDebounce(search, 300);
   const [stats, setStats] = useState(null);
   const [services, setServices] = useState([]);
   const [loading, setLoading] = useState(false);
@@ -110,15 +112,20 @@ export default function Chats() {
   const isAdmin = role === 'admin' || user?.isSuperAdmin;
   const canAutoAssign = isSupervisor || isAdmin;
 
+  // Solo la respuesta de la última búsqueda actualiza la lista: descarta
+  // respuestas fuera de orden que sobrescribirían con datos obsoletos.
+  const convReqRef = useRef(0);
   const loadConversations = async (params = {}) => {
+    const reqId = ++convReqRef.current;
     try {
       setLoading(true);
       const r = await api.get('/chats', { params });
+      if (reqId !== convReqRef.current) return; // respuesta obsoleta: descartar
       setConversations(r.data || []);
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al cargar chats');
+      if (reqId === convReqRef.current) toast.error(err.response?.data?.message || 'Error al cargar chats');
     } finally {
-      setLoading(false);
+      if (reqId === convReqRef.current) setLoading(false);
     }
   };
 
@@ -173,10 +180,10 @@ export default function Chats() {
     if (tab === 'featured') params.featured = 'true';
     if (tab === 'opportunities') params.opportunity = 'true';
     if (tab === 'unread') params.unread = 'true';
-    if (search) params.q = search;
+    if (debouncedSearch) params.q = debouncedSearch;
     loadConversations(params);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, search]);
+  }, [tab, debouncedSearch]);
 
   useEffect(() => {
     if (activeId) loadMessages(activeId);
@@ -195,10 +202,10 @@ export default function Chats() {
       if (tab === 'mine') params.assigned = 'me';
       if (tab === 'featured') params.featured = 'true';
       if (tab === 'opportunities') params.opportunity = 'true';
-      if (search) params.q = search;
+      if (debouncedSearch) params.q = debouncedSearch;
       loadConversations(params);
     },
-    [activeId, tab, search]
+    [activeId, tab, debouncedSearch]
   );
   useSocketEvent(
     'chat:message:status',
