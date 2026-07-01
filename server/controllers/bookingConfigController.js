@@ -71,8 +71,15 @@ exports.uploadImage = async (req, res) => {
       size: dataUrl.length,
       createdBy: req.user._id,
     });
-    const base = process.env.PUBLIC_API_URL || '';
-    const url = base ? `${base}/api/public/media/${img._id}` : `/api/public/media/${img._id}`;
+    // PUBLIC_API_URL, por convención del repo, ya incluye "/api" al final. Como
+    // abajo añadimos "/api/public/...", eso producía URLs con "/api/api/..." (la
+    // imagen daba 404 y el <img> fallaba en silencio). Normalizamos: quitamos el
+    // "/api" final (si lo trae) y el slash, y reconstruimos con un solo "/api".
+    // Si PUBLIC_API_URL no está seteado, caemos al host de la petición (URL
+    // absoluta, para que funcione aunque el front esté en otro origen).
+    let base = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}/api`;
+    base = base.replace(/\/+$/, '').replace(/\/api$/, '');
+    const url = `${base}/api/public/media/${img._id}`;
     res.status(201).json({ id: img._id, url });
   } catch (err) {
     res.status(500).json({ message: 'Error al subir imagen', error: err.message });

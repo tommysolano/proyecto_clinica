@@ -26,8 +26,12 @@ exports.uploadHeaderImage = async (req, res) => {
       size: dataUrl.length,
       createdBy: req.user._id,
     });
-    const base = process.env.PUBLIC_API_URL || '';
-    const url = base ? `${base}/api/public/media/${img._id}` : `/api/public/media/${img._id}`;
+    // PUBLIC_API_URL ya incluye "/api" por convención; normalizamos para no
+    // duplicarlo (…/api/api/… daba 404) y devolvemos siempre una URL absoluta,
+    // necesaria porque Meta descarga esta imagen desde fuera.
+    let base = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}/api`;
+    base = base.replace(/\/+$/, '').replace(/\/api$/, '');
+    const url = `${base}/api/public/media/${img._id}`;
     res.status(201).json({ id: img._id, url });
   } catch (err) {
     res.status(500).json({ message: 'Error al subir imagen', error: err.message });
