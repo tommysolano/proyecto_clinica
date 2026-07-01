@@ -95,6 +95,11 @@ export default function ProductFormModal({
   const [saving, setSaving] = useState(false);
   const [autoCode, setAutoCode] = useState(true);
   const [nextCodePreview, setNextCodePreview] = useState('');
+  // Catálogo propio para los selectores internos (servicios/insumos/componentes).
+  // Se trae SIEMPRE completo, sin filtros, de modo que el buscador del modal sea
+  // independiente del buscador de la página que lo abre (p. ej. el filtro del
+  // inventario). El prop `products` solo se usa como fallback mientras carga.
+  const [catalog, setCatalog] = useState([]);
 
   const fetchNextCode = async () => {
     try {
@@ -117,6 +122,24 @@ export default function ProductFormModal({
       fetchNextCode();
     }
   }, [isOpen]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Trae el catálogo completo cada vez que se abre el modal, sin heredar el
+  // filtro del padre. Así los selectores muestran todos los productos.
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    api.get('/products')
+      .then((r) => {
+        if (cancelled) return;
+        const list = Array.isArray(r.data) ? r.data : (r.data?.items || r.data?.products || []);
+        setCatalog(list);
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, [isOpen]);
+
+  // Lista base para los selectores: catálogo completo; cae al prop mientras carga.
+  const pickerProducts = catalog.length ? catalog : products;
 
   const handleProductSubmit = async (e) => {
     e.preventDefault();
@@ -385,7 +408,7 @@ export default function ProductFormModal({
                 <div key={idx} className="grid grid-cols-12 gap-2 items-center">
                   <div className="col-span-8">
                     <SearchableSelect
-                      options={products.filter((p) => p._id !== editingId && (p.category === 'servicio' || p.unlimited))}
+                      options={pickerProducts.filter((p) => p._id !== editingId && (p.category === 'servicio' || p.unlimited))}
                       value={row.product}
                       onChange={(v) => {
                         const arr = [...productForm.programServices];
@@ -426,7 +449,7 @@ export default function ProductFormModal({
               <ProductItemPicker
                 label="Items relacionados al servicio (insumos que se utilizan)"
                 color="emerald"
-                products={products.filter((p) => p._id !== editingId && p.category !== 'servicio' && p.category !== 'programa')}
+                products={pickerProducts.filter((p) => p._id !== editingId && p.category !== 'servicio' && p.category !== 'programa')}
                 rows={productForm.serviceItems}
                 onChange={(rows) => setProductForm({ ...productForm, serviceItems: rows })}
               />
@@ -439,7 +462,7 @@ export default function ProductFormModal({
               <ProductItemPicker
                 label="Componentes posibles (ej. ampollas que pueden ir en este suero)"
                 color="amber"
-                products={products.filter((p) => p._id !== editingId && !p.isComposite)}
+                products={pickerProducts.filter((p) => p._id !== editingId && !p.isComposite)}
                 rows={productForm.components}
                 onChange={(rows) => setProductForm({ ...productForm, components: rows })}
               />
