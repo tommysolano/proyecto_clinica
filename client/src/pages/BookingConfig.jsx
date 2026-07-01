@@ -236,7 +236,7 @@ export default function BookingConfig() {
           {(cfg.programs || []).length === 0 && <p className="text-xs text-slate-400">Aún no agregas programas. Los clientes podrán reservarlos desde la página.</p>}
         </div>
         <div className="flex gap-2 mt-2">
-          <select value={addProgram} onChange={(e) => setAddProgram(e.target.value)} className="flex-1 border border-slate-200 rounded-lg px-2 py-2 text-sm">
+          <select value={addProgram} onChange={(e) => setAddProgram(e.target.value)} className="flex-1 min-w-0 border border-slate-200 rounded-lg px-2 py-2 text-sm">
             <option value="">Añadir programa…</option>
             {programProducts.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
           </select>
@@ -286,7 +286,7 @@ export default function BookingConfig() {
           </div>
         </div>
 
-        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 min-w-0">
           <Field label="Desde"><input type="time" value={cfg.hourFrom} onChange={(e) => set({ hourFrom: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm" /></Field>
           <Field label="Hasta"><input type="time" value={cfg.hourTo} onChange={(e) => set({ hourTo: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm" /></Field>
           <Field label="Duración slot (min)"><NumericInput value={cfg.slotMinutes} onChange={(e) => set({ slotMinutes: Number(e.target.value) })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm" /></Field>
@@ -311,7 +311,7 @@ export default function BookingConfig() {
             {cfg.services.length === 0 && <p className="text-xs text-slate-400">Agrega al menos un servicio para poder reservar.</p>}
           </div>
           <div className="flex gap-2">
-            <select value={addProduct} onChange={(e) => setAddProduct(e.target.value)} className="flex-1 border border-slate-200 rounded-lg px-2 py-2 text-sm">
+            <select value={addProduct} onChange={(e) => setAddProduct(e.target.value)} className="flex-1 min-w-0 border border-slate-200 rounded-lg px-2 py-2 text-sm">
               <option value="">Añadir servicio…</option>
               {serviceProducts.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
             </select>
@@ -334,7 +334,7 @@ export default function BookingConfig() {
 
 function Section({ title, children }) {
   return (
-    <div className="grid gap-4 border border-slate-200 rounded-xl p-4 bg-white mb-4">
+    <div className="grid grid-cols-1 gap-4 border border-slate-200 rounded-xl p-4 bg-white mb-4">
       <h2 className="text-sm font-semibold text-slate-700">{title}</h2>
       {children}
     </div>
@@ -343,7 +343,7 @@ function Section({ title, children }) {
 
 function Field({ label, children }) {
   return (
-    <label className="text-sm block">
+    <label className="text-sm block min-w-0">
       <span className="text-slate-600">{label}</span>
       <div className="mt-1">{children}</div>
     </label>
