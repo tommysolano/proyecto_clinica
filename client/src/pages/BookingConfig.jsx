@@ -331,7 +331,7 @@ export default function BookingConfig() {
           {cfg.services.length === 0 ? (
             <p className="text-xs text-slate-400 mb-2">Agrega al menos un servicio para poder reservar.</p>
           ) : (
-            <div className="grid gap-2 mb-2 max-h-64 overflow-y-auto pr-1">
+            <div className="grid gap-2 mb-2 max-h-64 overflow-y-auto overflow-x-hidden pr-1">
               {cfg.services.map((s, i) => (
                 <div key={i} className="flex items-center gap-2">
                   <span className="flex-1 min-w-0 text-sm truncate">{s.name}</span>
