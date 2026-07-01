@@ -89,8 +89,9 @@ exports.importProductsExcel = async (req, res) => {
       if (PRODUCT_TYPES.includes(v)) return v;
       return 'insumo';
     };
-    let created = 0, updated = 0;
-    const errors = [];
+    // 1) Parsear TODAS las filas primero. Si un código se repite en el archivo,
+    //    la última fila gana (igual que el comportamiento anterior fila-por-fila).
+    const byCode = new Map();
     for (let r = 2; r <= ws.rowCount; r++) {
       const row = ws.getRow(r);
       const data = {};
@@ -101,8 +102,9 @@ exports.importProductsExcel = async (req, res) => {
         data[key] = v;
       });
       if (!data.code || !data.name) continue;
-      const product = {
-        code: String(data.code).trim(),
+      const code = String(data.code).trim();
+      byCode.set(code, {
+        code,
         name: String(data.name).trim(),
         category: normalizeTipo(data.category),
         categoria: normalizeCategoria(data.categoria),
@@ -113,12 +115,55 @@ exports.importProductsExcel = async (req, res) => {
         minStock: Number(data.minStock) || 0,
         taxRate: data.taxRate !== undefined && data.taxRate !== null && data.taxRate !== '' ? Number(data.taxRate) : 15,
         unlimited: ['SI', 'SÍ', 'TRUE', '1', 'X'].includes(String(data.unlimited || '').trim().toUpperCase()),
-      };
-      try {
-        const exists = await Product.findOne({ clinic: req.clinicId, code: product.code });
-        if (exists) { Object.assign(exists, product); await exists.save(); updated++; }
-        else { await Product.create({ ...product, clinic: req.clinicId }); created++; }
-      } catch (e) { errors.push(`Fila ${r}: ${e.message}`); }
+      });
+    }
+    const products = [...byCode.values()];
+
+    // 2) Insertar/actualizar en bloque. Antes se hacían 2 consultas por fila
+    //    (findOne + save), o sea ~2·N viajes secuenciales a Mongo, lo que con
+    //    cientos de filas superaba el timeout del proxy (504). Ahora son 3
+    //    operaciones en total: 1 consulta de existencias + 1 insertMany + 1 bulkWrite.
+    let created = 0, updated = 0;
+    const errors = [];
+    if (products.length) {
+      // Una sola consulta (usa el índice único { clinic, code }) para saber cuáles ya existen.
+      const existing = await Product.find({ clinic: req.clinicId, code: { $in: products.map((p) => p.code) } })
+        .select('code').lean();
+      const existingCodes = new Set(existing.map((d) => d.code));
+
+      const toInsert = [];
+      const updateOps = [];
+      for (const p of products) {
+        if (existingCodes.has(p.code)) {
+          // $set SOLO de los campos editables: preserva stock por clínica, cuentas contables, etc.
+          updateOps.push({ updateOne: { filter: { clinic: req.clinicId, code: p.code }, update: { $set: p } } });
+        } else {
+          toInsert.push({ ...p, clinic: req.clinicId });
+        }
+      }
+
+      // Nuevos: insertMany aplica los defaults y validadores del esquema en un solo viaje.
+      if (toInsert.length) {
+        try {
+          const inserted = await Product.insertMany(toInsert, { ordered: false });
+          created = inserted.length;
+        } catch (e) {
+          created = Array.isArray(e.insertedDocs) ? e.insertedDocs.length : 0;
+          const writeErrors = e.writeErrors || (e.result && e.result.writeErrors) || [];
+          writeErrors.forEach((we) => {
+            const idx = typeof we.index === 'number' ? we.index : undefined;
+            const code = idx != null && toInsert[idx] ? toInsert[idx].code : '';
+            errors.push(`${code}: ${we.errmsg || (we.err && we.err.errmsg) || 'no se pudo crear'}`);
+          });
+          if (!writeErrors.length) errors.push(e.message);
+        }
+      }
+
+      // Existentes: un solo bulkWrite para todas las actualizaciones.
+      if (updateOps.length) {
+        const res2 = await Product.bulkWrite(updateOps, { ordered: false });
+        updated = typeof res2.matchedCount === 'number' ? res2.matchedCount : updateOps.length;
+      }
     }
     res.json({ created, updated, errors });
   } catch (e) { res.status(400).json({ message: e.message }); }
