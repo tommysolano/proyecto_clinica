@@ -75,8 +75,9 @@ exports.create = async (req, res) => {
   try {
     const { items = [] } = req.body;
     const productIds = items.map((it) => it.product).filter(Boolean);
+    // Catálogo compartido entre sucursales: se resuelve por _id, no por sucursal dueña.
     const products = productIds.length
-      ? await Product.find({ _id: { $in: productIds }, clinic: req.clinicId })
+      ? await Product.find({ _id: { $in: productIds } })
       : [];
     const prodById = new Map(products.map((p) => [String(p._id), p]));
 

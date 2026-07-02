@@ -68,13 +68,31 @@ async function peekProductCode(clinicId) {
 exports.getProducts = async (req, res) => {
   try {
     const { search, category, categoria, lowStock } = req.query;
-    const query = { clinic: req.clinicId, active: true };
+    // Catálogo COMPARTIDO por toda la organización: un producto no pertenece a una
+    // sola sucursal. `availableInClinics` decide en qué sucursales se ofrece: vacío
+    // (o ausente) = disponible en TODAS; con clínicas = solo en esas. Por eso el
+    // listado se filtra por disponibilidad, no por la sucursal dueña (antes solo se
+    // veían los productos de la sucursal que los creó, ocultándolos en las demás).
+    const query = {
+      active: true,
+      $and: [
+        {
+          $or: [
+            { availableInClinics: { $exists: false } },
+            { availableInClinics: { $size: 0 } },
+            { availableInClinics: req.clinicId },
+          ],
+        },
+      ],
+    };
 
     if (search) {
-      query.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { code: { $regex: search, $options: 'i' } },
-      ];
+      query.$and.push({
+        $or: [
+          { name: { $regex: search, $options: 'i' } },
+          { code: { $regex: search, $options: 'i' } },
+        ],
+      });
     }
     if (category) query.category = category;
     if (categoria) query.categoria = categoria;
@@ -92,7 +110,8 @@ exports.getProducts = async (req, res) => {
 
 exports.getProduct = async (req, res) => {
   try {
-    const product = await Product.findOne({ _id: req.params.id, clinic: req.clinicId });
+    // Catálogo compartido: el producto se puede consultar desde cualquier sucursal.
+    const product = await Product.findOne({ _id: req.params.id });
     if (!product) return res.status(404).json({ message: 'Producto no encontrado' });
     res.json(product);
   } catch (error) {
@@ -114,7 +133,8 @@ exports.createProduct = async (req, res) => {
       // Sin código → el sistema lo genera automáticamente.
       code = await nextProductCode(req.clinicId);
     } else {
-      const existing = await Product.findOne({ clinic: req.clinicId, code });
+      // Código único en todo el catálogo compartido (no solo dentro de una sucursal).
+      const existing = await Product.findOne({ code });
       if (existing) {
         return res.status(400).json({ message: 'Ya existe un producto con ese código' });
       }
@@ -141,8 +161,9 @@ exports.previewNextCode = async (req, res) => {
 exports.updateProduct = async (req, res) => {
   try {
     syncStockFromClinics(req.body);
+    // Catálogo compartido: editable desde cualquier sucursal.
     const product = await Product.findOneAndUpdate(
-      { _id: req.params.id, clinic: req.clinicId },
+      { _id: req.params.id },
       req.body,
       { new: true, runValidators: true }
     );
@@ -155,8 +176,9 @@ exports.updateProduct = async (req, res) => {
 
 exports.deleteProduct = async (req, res) => {
   try {
+    // Catálogo compartido: se puede desactivar desde cualquier sucursal.
     const product = await Product.findOneAndUpdate(
-      { _id: req.params.id, clinic: req.clinicId },
+      { _id: req.params.id },
       { active: false },
       { new: true }
     );

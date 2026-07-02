@@ -68,7 +68,8 @@ exports.create = async (req, res) => {
       return res.status(400).json({ message: 'Agrega al menos un ítem' });
     }
     const ids = items.map((i) => i.product).filter(Boolean);
-    const products = await Product.find({ _id: { $in: ids }, clinic: req.clinicId });
+    // Catálogo compartido entre sucursales: se resuelve por _id, no por sucursal dueña.
+    const products = await Product.find({ _id: { $in: ids } });
     const byId = new Map(products.map((p) => [String(p._id), p]));
 
     const enriched = items.map((it) => {

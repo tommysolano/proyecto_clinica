@@ -121,13 +121,14 @@ exports.createSale = async (req, res) => {
         await assertPeriodOpen(req.clinicId, saleDate, { session });
 
         const txProductIds = [...new Set(items.map((i) => String(i.product)))];
+        // Catálogo compartido: el producto se resuelve por _id en toda la organización
+        // (no por la sucursal dueña). El stock, en cambio, se descuenta por sucursal.
         const txProducts = await Product.find({
           _id: { $in: txProductIds },
-          clinic: req.clinicId,
           active: true,
         }).session(session);
         if (txProducts.length !== txProductIds.length) {
-          throw Object.assign(new Error('Algun producto no existe en esta clinica'), { status: 400 });
+          throw Object.assign(new Error('Algun producto no existe o esta inactivo'), { status: 400 });
         }
 
         const txProductMap = new Map(txProducts.map((p) => [String(p._id), p]));

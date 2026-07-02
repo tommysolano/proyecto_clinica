@@ -110,8 +110,9 @@ exports.getAppointments = async (req, res) => {
       // servicio marcado como `nursingService` (p.ej. sueroterapia). La cita
       // aparece para TODOS los enfermeros del consultorio hasta que uno la
       // reclame con POST /:id/nurse-claim.
+      // Catálogo compartido: los servicios de enfermería se identifican en toda la
+      // organización (no por sucursal dueña); la cita ya está acotada a la sucursal.
       const nursingProductIds = await Product.find({
-        clinic: req.clinicId,
         nursingService: true,
       }).distinct('_id');
       query['services.product'] = { $in: nursingProductIds };
@@ -183,7 +184,10 @@ const buildServicesSnapshot = async (clinicId, items) => {
     .map((s) => (typeof s === 'string' ? s : s.product))
     .filter(Boolean);
   if (ids.length === 0) return [];
-  const products = await Product.find({ _id: { $in: ids }, clinic: clinicId }).select(
+  // Catálogo compartido entre sucursales: se resuelve el servicio por _id, no por la
+  // sucursal dueña. La disponibilidad por sucursal (availableInClinics) se valida
+  // aparte en createAppointment.
+  const products = await Product.find({ _id: { $in: ids } }).select(
     'name salePrice'
   );
   const byId = new Map(products.map((p) => [String(p._id), p]));
@@ -703,8 +707,9 @@ exports.getTodayAppointments = async (req, res) => {
     }
     // El call center puede ver TODAS las citas del día.
     if (req.role === 'enfermero') {
+      // Catálogo compartido: los servicios de enfermería se identifican en toda la
+      // organización (no por sucursal dueña); la cita ya está acotada a la sucursal.
       const nursingProductIds = await Product.find({
-        clinic: req.clinicId,
         nursingService: true,
       }).distinct('_id');
       query['services.product'] = { $in: nursingProductIds };
