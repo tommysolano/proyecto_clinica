@@ -202,6 +202,10 @@ export default function Appointments() {
       }
       if (filter.isFirstVisit) params.isFirstVisit = filter.isFirstVisit;
       if (filter.patientQuery && filter.patientQuery.trim()) params.q = filter.patientQuery.trim();
+      // Vista unificada: trae las citas de TODAS las sucursales del usuario para que
+      // ninguna quede oculta por la sucursal activa (la cita puede tener otra
+      // "sucursal destino"). Cada tarjeta muestra a qué sucursal pertenece.
+      params.clinic = 'all';
       const res = await api.get('/appointments', { params });
       const list = (res.data || []).map((a) => ({
         ...a,
@@ -924,6 +928,11 @@ export default function Appointments() {
                           {apt.isFirstVisit && (
                             <span className="px-2 py-0.5 rounded-full text-[10px] font-bold bg-amber-100 text-amber-700 uppercase">
                               Nuevo
+                            </span>
+                          )}
+                          {clinics.length > 1 && apt.clinic && (
+                            <span className="px-2 py-0.5 rounded-full text-[10px] font-semibold bg-indigo-100 text-indigo-700">
+                              {apt.clinic.nombreComercial || apt.clinic.name}
                             </span>
                           )}
                         </div>

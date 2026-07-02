@@ -64,18 +64,27 @@ exports.getAppointments = async (req, res) => {
       q,
       clinic: clinicParam,
     } = req.query;
-    // Por defecto consultamos la clínica activa del usuario, pero si el cliente
-    // envía un `clinic` distinto y el usuario tiene acceso a esa clínica (típico
-    // call_center que opera para varias), respetamos esa clínica destino.
-    // Esto permite mostrar disponibilidad correcta al agendar para otra sede.
-    let queryClinicId = req.clinicId;
-    if (clinicParam && String(clinicParam) !== String(req.clinicId)) {
+    // Conjunto de sucursales a consultar:
+    //  - `clinic=all` → VISTA UNIFICADA: todas las sucursales a las que el usuario
+    //    tiene acceso (superadmin = todas). Así ninguna cita queda "escondida" por
+    //    la sucursal activa (p.ej. una cita creada con "sucursal destino" distinta).
+    //  - `clinic=<id>` (distinto al activo, con acceso) → esa sucursal (call center
+    //    agendando para otra sede).
+    //  - por defecto → la sucursal activa del usuario.
+    const accessibleClinicIds = (req.user.clinics || []).map((c) => c.clinic);
+    let clinicScope; // valor para query.clinic; null = sin filtro (todas, solo superadmin)
+    if (clinicParam === 'all') {
+      clinicScope = req.user.isSuperAdmin ? null : { $in: accessibleClinicIds };
+    } else if (clinicParam && String(clinicParam) !== String(req.clinicId)) {
       const allowed =
         req.user.isSuperAdmin ||
-        (req.user.clinics || []).some((c) => String(c.clinic) === String(clinicParam));
-      if (allowed) queryClinicId = clinicParam;
+        accessibleClinicIds.some((c) => String(c) === String(clinicParam));
+      clinicScope = allowed ? clinicParam : req.clinicId;
+    } else {
+      clinicScope = req.clinicId;
     }
-    const query = { clinic: queryClinicId };
+    const query = {};
+    if (clinicScope !== null) query.clinic = clinicScope;
 
     if (startDate && endDate) {
       const start = parseLocalDate(startDate);
@@ -127,7 +136,7 @@ exports.getAppointments = async (req, res) => {
       const term = String(q).trim();
       const regex = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
       const matched = await Patient.find({
-        clinic: req.clinicId,
+        ...(clinicScope !== null ? { clinic: clinicScope } : {}),
         $or: [
           { firstName: regex },
           { lastName: regex },
@@ -150,6 +159,7 @@ exports.getAppointments = async (req, res) => {
       .populate('attendedByNurse', POPULATE_DOCTOR)
       .populate('createdBy', POPULATE_CREATOR)
       .populate('room', 'name code')
+      .populate('clinic', 'name nombreComercial')
       .populate('services.product', 'name code salePrice category nursingService')
       .sort({ date: 1, startTime: 1 });
 
@@ -162,16 +172,24 @@ exports.getAppointments = async (req, res) => {
 
 exports.getAppointment = async (req, res) => {
   try {
-    const appointment = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId })
+    // Vista unificada: la cita puede pertenecer a cualquier sucursal del usuario.
+    const appointment = await Appointment.findOne({ _id: req.params.id })
       .populate('patient', POPULATE_PATIENT + ' address')
       .populate('doctor', POPULATE_DOCTOR)
       .populate('createdBy', POPULATE_CREATOR)
+      .populate('clinic', 'name nombreComercial')
       .populate('rescheduleHistory.rescheduledBy', 'name email')
       .populate('referral', 'fromDoctor toDoctor specialty reason status')
       .populate('treatmentRef', 'name status')
       .populate('services.product', 'name code salePrice category nursingService');
 
     if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
+    // Verificar acceso: la sucursal de la cita debe estar entre las del usuario.
+    const apptClinicId = String(appointment.clinic?._id || appointment.clinic);
+    const canAccess =
+      req.user.isSuperAdmin ||
+      (req.user.clinics || []).some((c) => String(c.clinic) === apptClinicId);
+    if (!canAccess) return res.status(404).json({ message: 'Cita no encontrada' });
     res.json(appointment);
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener cita' });

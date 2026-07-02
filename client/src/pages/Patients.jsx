@@ -218,8 +218,10 @@ export default function Patients() {
       if (aptForm.enabled && !editing && createdId) {
         try {
           const aptClinic = aptForm.clinic || activeClinic?._id;
-          // Sala y servicios pertenecen a la sucursal activa; si se agenda en otra
-          // sucursal, se omiten para evitar referencias cruzadas inválidas.
+          // El catálogo de servicios es COMPARTIDO entre sucursales, así que los
+          // servicios se conservan siempre (aunque se agende en otra sucursal). La
+          // sala (consultorio) sí es propia de cada sucursal: solo se envía si la
+          // cita es en la sucursal activa.
           const sameClinic = !aptForm.clinic || String(aptForm.clinic) === String(activeClinic?._id);
           await api.post('/appointments', {
             patient: createdId,
@@ -229,7 +231,7 @@ export default function Patients() {
             room: sameClinic ? aptForm.room || undefined : undefined,
             reason: aptForm.reason,
             status: 'pendiente',
-            services: sameClinic ? aptForm.services.map((id) => ({ product: id })) : [],
+            services: (aptForm.services || []).map((id) => ({ product: id })),
           });
           toast.success('Cita agendada');
         } catch (err) {
