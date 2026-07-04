@@ -1,8 +1,74 @@
 const JournalEntry = require('../models/JournalEntry');
 const ChartOfAccount = require('../models/ChartOfAccount');
+const BankAccount = require('../models/BankAccount');
+const BankTransaction = require('../models/BankTransaction');
 const { createEntry, reverseEntry, applyToBalances, nextEntryNumber, assertPeriodOpen, getOrCreatePeriod } = require('../utils/accounting');
+const { getAccountAndDescendants } = require('../utils/accountHierarchy');
 const { startOfDay, endOfDay } = require('../utils/dates');
 const { asObjectId } = require('../utils/objectId');
+
+/**
+ * Resumen bancario para el Libro Mayor: si alguna de las cuentas consultadas
+ * (padre o hijas) es la `chartAccount` de una cuenta bancaria, devuelve el saldo
+ * inicial / entradas / salidas / saldo final de cada banco en el rango, más el
+ * consolidado. Devuelve null si ninguna cuenta corresponde a un banco.
+ */
+async function buildBankSummary(clinicId, accountIds, startDate, endDate) {
+  const banks = await BankAccount.find({ clinic: clinicId, chartAccount: { $in: accountIds } })
+    .select('name bank accountNumber initialBalance chartAccount')
+    .lean();
+  if (!banks.length) return null;
+
+  const clinicObjId = asObjectId(clinicId);
+  const start = startOfDay(startDate);
+  const end = endOfDay(endDate);
+
+  const accounts = [];
+  for (const b of banks) {
+    let opening = b.initialBalance || 0;
+    if (start) {
+      const prev = await BankTransaction.aggregate([
+        { $match: { clinic: clinicObjId, bankAccount: b._id, voided: false, date: { $lt: start } } },
+        { $group: { _id: null, total: { $sum: { $multiply: ['$amount', '$direction'] } } } },
+      ]);
+      opening = +((b.initialBalance || 0) + (prev[0]?.total || 0)).toFixed(2);
+    }
+    const rangeMatch = { clinic: clinicObjId, bankAccount: b._id, voided: false };
+    if (start || end) {
+      rangeMatch.date = {};
+      if (start) rangeMatch.date.$gte = start;
+      if (end) rangeMatch.date.$lte = end;
+    }
+    const agg = await BankTransaction.aggregate([
+      { $match: rangeMatch },
+      { $group: {
+        _id: null,
+        inflow: { $sum: { $cond: [{ $gt: ['$direction', 0] }, '$amount', 0] } },
+        outflow: { $sum: { $cond: [{ $lt: ['$direction', 0] }, '$amount', 0] } },
+      } },
+    ]);
+    const inflow = +(agg[0]?.inflow || 0).toFixed(2);
+    const outflow = +(agg[0]?.outflow || 0).toFixed(2);
+    accounts.push({
+      bankAccountId: b._id,
+      name: b.name,
+      bank: b.bank,
+      accountNumber: b.accountNumber,
+      chartAccount: b.chartAccount,
+      opening,
+      inflow,
+      outflow,
+      closing: +(opening + inflow - outflow).toFixed(2),
+    });
+  }
+  accounts.sort((a, b) => String(a.name).localeCompare(String(b.name)));
+  const totals = accounts.reduce(
+    (t, r) => ({ opening: t.opening + r.opening, inflow: t.inflow + r.inflow, outflow: t.outflow + r.outflow, closing: t.closing + r.closing }),
+    { opening: 0, inflow: 0, outflow: 0, closing: 0 }
+  );
+  Object.keys(totals).forEach((k) => { totals[k] = +totals[k].toFixed(2); });
+  return { accounts, totals };
+}
 
 /** Hidrata y valida líneas de un asiento (para borradores). */
 async function hydrateLines(clinicId, lines) {
@@ -142,52 +208,110 @@ exports.reverse = async (req, res) => {
   }
 };
 
-/** Libro mayor por cuenta. */
+/**
+ * Libro mayor por cuenta. Soporta cuentas PADRE (agrupadoras): al consultar una
+ * cuenta padre incluye la cuenta seleccionada + TODAS sus descendientes, de modo
+ * que el saldo y los movimientos reflejan a las cuentas hijas (p.ej. "Bancos"
+ * muestra el movimiento consolidado de todas las cuentas bancarias).
+ * Cada fila indica la cuenta HIJA realmente afectada y el asiento/documento origen.
+ */
 exports.ledger = async (req, res) => {
   try {
     const { account, startDate, endDate, costCenter } = req.query;
     if (!account) return res.status(400).json({ message: 'account requerido' });
-    const acc = await ChartOfAccount.findOne({ _id: account, clinic: req.clinicId });
-    if (!acc) return res.status(404).json({ message: 'Cuenta no encontrada' });
 
-    const dateFilter = {};
-    if (startDate) dateFilter.$gte = startOfDay(startDate);
-    if (endDate) dateFilter.$lte = endOfDay(endDate);
+    const hier = await getAccountAndDescendants({ clinicId: req.clinicId, accountId: account });
+    if (!hier) return res.status(404).json({ message: 'Cuenta no encontrada' });
+    const { root, accounts, ids, isParent } = hier;
 
-    // Saldo inicial: movimientos anteriores (aggregate requiere ObjectId, no string).
-    const initFilter = { clinic: asObjectId(req.clinicId), status: 'CONTABILIZADO', 'lines.account': acc._id };
-    if (startDate) initFilter.date = { $lt: startOfDay(startDate) };
-    const init = await JournalEntry.aggregate([
-      { $match: initFilter },
-      { $unwind: '$lines' },
-      { $match: { 'lines.account': acc._id, ...(costCenter ? { 'lines.costCenter': require('mongoose').Types.ObjectId.createFromHexString(costCenter) } : {}) } },
-      { $group: { _id: null, d: { $sum: '$lines.debit' }, c: { $sum: '$lines.credit' } } },
-    ]);
-    const opening = acc.nature === 'DEBITO' ? (init[0]?.d || 0) - (init[0]?.c || 0) : (init[0]?.c || 0) - (init[0]?.d || 0);
+    const accById = new Map(accounts.map((a) => [String(a._id), a]));
+    const clinicObjId = asObjectId(req.clinicId);
+    const ccObjId = costCenter ? asObjectId(costCenter) : null;
 
-    const match = { clinic: req.clinicId, status: 'CONTABILIZADO', 'lines.account': acc._id };
-    if (startDate || endDate) match.date = dateFilter;
-    const entries = await JournalEntry.find(match).sort({ date: 1, number: 1 });
+    // Saldo inicial: movimientos anteriores al rango, agrupados por cuenta para
+    // respetar la naturaleza (DEBITO/CREDITO) de cada cuenta hija.
+    let opening = 0;
+    if (startDate) {
+      const init = await JournalEntry.aggregate([
+        { $match: { clinic: clinicObjId, status: 'CONTABILIZADO', date: { $lt: startOfDay(startDate) }, 'lines.account': { $in: ids } } },
+        { $unwind: '$lines' },
+        { $match: { 'lines.account': { $in: ids }, ...(ccObjId ? { 'lines.costCenter': ccObjId } : {}) } },
+        { $group: { _id: '$lines.account', d: { $sum: '$lines.debit' }, c: { $sum: '$lines.credit' } } },
+      ]);
+      for (const g of init) {
+        const a = accById.get(String(g._id));
+        if (!a) continue;
+        opening += a.nature === 'DEBITO' ? (g.d - g.c) : (g.c - g.d);
+      }
+      opening = +opening.toFixed(2);
+    }
+
+    const match = { clinic: req.clinicId, status: 'CONTABILIZADO', 'lines.account': { $in: ids } };
+    if (startDate || endDate) {
+      match.date = {};
+      if (startDate) match.date.$gte = startOfDay(startDate);
+      if (endDate) match.date.$lte = endOfDay(endDate);
+    }
+    const entries = await JournalEntry.find(match).sort({ date: 1, number: 1 }).lean();
 
     const rows = [];
     let saldo = opening;
+    let debit = 0;
+    let credit = 0;
     for (const e of entries) {
-      for (const l of e.lines) {
-        if (String(l.account) !== String(acc._id)) continue;
+      for (const l of e.lines || []) {
+        const a = accById.get(String(l.account));
+        if (!a) continue;
         if (costCenter && String(l.costCenter || '') !== String(costCenter)) continue;
-        const delta = acc.nature === 'DEBITO' ? (l.debit - l.credit) : (l.credit - l.debit);
-        saldo += delta;
+        const ld = Number(l.debit) || 0;
+        const lc = Number(l.credit) || 0;
+        const delta = a.nature === 'DEBITO' ? (ld - lc) : (lc - ld);
+        saldo = +(saldo + delta).toFixed(2);
+        debit += ld;
+        credit += lc;
         rows.push({
           date: e.date,
           number: e.number,
+          // Datos para navegar al asiento / documento origen del movimiento.
+          entryId: e._id,
+          source: e.source,
+          sourceModel: e.sourceModel,
+          sourceRef: e.sourceRef,
+          sourceAction: e.sourceAction,
+          // Cuenta HIJA realmente afectada (útil al consultar una cuenta padre).
+          accountId: a._id,
+          accountCode: a.code,
+          accountName: a.name,
           description: l.description || e.description,
-          debit: l.debit,
-          credit: l.credit,
+          debit: ld,
+          credit: lc,
           saldo,
         });
       }
     }
-    res.json({ account: { _id: acc._id, code: acc.code, name: acc.name, nature: acc.nature }, opening, rows });
+    debit = +debit.toFixed(2);
+    credit = +credit.toFixed(2);
+    // El saldo final es el saldo corrido de la última fila (misma base de redondeo
+    // que ve el usuario); el movimiento neto se deriva de él.
+    const closing = saldo;
+    const movement = +(closing - opening).toFixed(2);
+
+    const bankSummary = await buildBankSummary(req.clinicId, ids, startDate, endDate);
+
+    res.json({
+      account: { _id: root._id, code: root.code, name: root.name, type: root.type, nature: root.nature, allowsMovement: root.allowsMovement },
+      isParent,
+      includedAccounts: accounts
+        .map((a) => ({ _id: a._id, code: a.code, name: a.name, nature: a.nature }))
+        .sort((x, y) => String(x.code).localeCompare(String(y.code))),
+      opening,
+      debit,
+      credit,
+      movement,
+      closing,
+      rows,
+      bankSummary,
+    });
   } catch (e) {
     res.status(500).json({ message: e.message });
   }
