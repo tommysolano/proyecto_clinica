@@ -6,6 +6,7 @@ import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineCalculator, HiOutlineLockClosed, HiOutlineCheck } from 'react-icons/hi2';
 import { fmt } from './_utils';
 import NumericInput from '../../components/NumericInput';
+import useDocDeepLink from '../../hooks/useDocDeepLink';
 
 export default function Payroll() {
   const [year, setYear] = useState(new Date().getFullYear());
@@ -29,6 +30,12 @@ export default function Payroll() {
   const open = async (p) => {
     const r = await api.get(`/payroll/${p._id}`); setSelected(r.data);
   };
+
+  // Deep-link desde el Libro Mayor (?doc=<id>): abre la planilla de nómina.
+  useDocDeepLink(async (id) => {
+    try { await open({ _id: id }); }
+    catch (e) { toast.error(e.response?.data?.message || 'No se encontró la planilla'); }
+  });
   const updateItem = async (idx, patch) => {
     const items = [...selected.items]; items[idx] = { ...items[idx], ...patch };
     setSelected({ ...selected, items });

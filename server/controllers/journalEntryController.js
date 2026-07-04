@@ -228,22 +228,21 @@ exports.ledger = async (req, res) => {
     const clinicObjId = asObjectId(req.clinicId);
     const ccObjId = costCenter ? asObjectId(costCenter) : null;
 
-    // Saldo inicial: movimientos anteriores al rango, agrupados por cuenta para
-    // respetar la naturaleza (DEBITO/CREDITO) de cada cuenta hija.
+    // Saldo inicial: débitos/créditos de todas las cuentas incluidas anteriores al
+    // rango. El SALDO sigue la naturaleza de la cuenta RAÍZ consultada (coherente
+    // para cuentas agrupadoras); no se mezcla la naturaleza de cada hija, para no
+    // ocultar errores de clasificación ni generar saldos raros.
     let opening = 0;
     if (startDate) {
       const init = await JournalEntry.aggregate([
         { $match: { clinic: clinicObjId, status: 'CONTABILIZADO', date: { $lt: startOfDay(startDate) }, 'lines.account': { $in: ids } } },
         { $unwind: '$lines' },
         { $match: { 'lines.account': { $in: ids }, ...(ccObjId ? { 'lines.costCenter': ccObjId } : {}) } },
-        { $group: { _id: '$lines.account', d: { $sum: '$lines.debit' }, c: { $sum: '$lines.credit' } } },
+        { $group: { _id: null, d: { $sum: '$lines.debit' }, c: { $sum: '$lines.credit' } } },
       ]);
-      for (const g of init) {
-        const a = accById.get(String(g._id));
-        if (!a) continue;
-        opening += a.nature === 'DEBITO' ? (g.d - g.c) : (g.c - g.d);
-      }
-      opening = +opening.toFixed(2);
+      const d = init[0]?.d || 0;
+      const c = init[0]?.c || 0;
+      opening = +(root.nature === 'DEBITO' ? d - c : c - d).toFixed(2);
     }
 
     const match = { clinic: req.clinicId, status: 'CONTABILIZADO', 'lines.account': { $in: ids } };
@@ -265,7 +264,8 @@ exports.ledger = async (req, res) => {
         if (costCenter && String(l.costCenter || '') !== String(costCenter)) continue;
         const ld = Number(l.debit) || 0;
         const lc = Number(l.credit) || 0;
-        const delta = a.nature === 'DEBITO' ? (ld - lc) : (lc - ld);
+        // El saldo corrido sigue la naturaleza de la cuenta RAÍZ consultada.
+        const delta = root.nature === 'DEBITO' ? (ld - lc) : (lc - ld);
         saldo = +(saldo + delta).toFixed(2);
         debit += ld;
         credit += lc;

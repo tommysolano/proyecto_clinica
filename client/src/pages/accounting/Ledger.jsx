@@ -7,35 +7,35 @@ import { fmt, fmtDate, startOfMonth, today } from './_utils';
 import SearchableSelect from '../../components/SearchableSelect';
 import Modal from '../../components/Modal';
 
-// Mapa de documento origen (sourceModel del asiento) → sección del sistema.
+// Mapa de documento origen (sourceModel del asiento) → etiqueta legible y, cuando
+// existe deep-link real en la página destino, la ruta + `deep:true`. Solo los
+// `deep:true` muestran el botón "Ir a…" (la página lee ?doc=<id> y abre el
+// documento); el resto se consulta desde el modal del asiento.
 const SOURCE_ROUTES = {
-  Sale: { path: '/sales', label: 'Venta' },
-  Invoice: { path: '/invoices', label: 'Factura de venta' },
-  PurchaseInvoice: { path: '/accounting/purchases', label: 'Factura de compra' },
-  Payment: { path: '/accounting/payments', label: 'Pago / Cobro' },
-  BankTransaction: { path: '/accounting/banks', label: 'Movimiento bancario' },
-  CashDeposit: { path: '/accounting/banks', label: 'Depósito de efectivo' },
-  Reconciliation: { path: '/accounting/reconciliations', label: 'Conciliación' },
-  CashClosing: { path: '/accounting/cash-closing', label: 'Cierre de caja' },
-  CashMovement: { path: '/accounting/cash-closing', label: 'Movimiento de caja' },
-  Payroll: { path: '/accounting/payroll', label: 'Nómina' },
-  CommissionPosting: { path: '/accounting/payroll', label: 'Comisiones del personal' },
-  CreditDebitNote: { path: '/accounting/credit-debit-notes', label: 'Nota de crédito / débito' },
-  RetentionVoucher: { path: '/accounting/retention-vouchers', label: 'Comprobante de retención' },
-  FixedAsset: { path: '/accounting/assets', label: 'Activo fijo (depreciación)' },
-  DeferredIncome: { path: '/accounting/deferred-income', label: 'Ingreso diferido' },
-  CardSettlement: { path: '/accounting/card-settlements', label: 'Liquidación de tarjeta' },
-  CreditCardBatch: { path: '/accounting/credit-card-batches', label: 'Lote de tarjeta' },
-  EmployeeDeduction: { path: '/accounting/deductions', label: 'Deducción de empleado' },
-  PhysicalCount: { path: '/accounting/counts', label: 'Toma física de inventario' },
-  JournalEntry: { path: '/accounting/journal', label: 'Asiento (reversa)' },
+  Sale: { path: '/sales', label: 'Venta', deep: true },
+  PurchaseInvoice: { path: '/accounting/purchases', label: 'Factura de compra', deep: true },
+  FixedAsset: { path: '/accounting/assets', label: 'Activo fijo (depreciación)', deep: true },
+  Payroll: { path: '/accounting/payroll', label: 'Nómina', deep: true },
+  // Sin deep-link (solo etiqueta): el asiento se ve en el modal.
+  Invoice: { label: 'Factura de venta' },
+  Payment: { label: 'Pago / Cobro' },
+  BankTransaction: { label: 'Movimiento bancario' },
+  CashDeposit: { label: 'Depósito de efectivo' },
+  Reconciliation: { label: 'Conciliación' },
+  CashClosing: { label: 'Cierre de caja' },
+  CashMovement: { label: 'Movimiento de caja' },
+  CommissionPosting: { label: 'Comisiones del personal' },
+  CreditDebitNote: { label: 'Nota de crédito / débito' },
+  RetentionVoucher: { label: 'Comprobante de retención' },
+  DeferredIncome: { label: 'Ingreso diferido' },
+  CardSettlement: { label: 'Liquidación de tarjeta' },
+  CreditCardBatch: { label: 'Lote de tarjeta' },
+  EmployeeDeduction: { label: 'Deducción de empleado' },
+  PhysicalCount: { label: 'Toma física de inventario' },
+  JournalEntry: { label: 'Asiento (reversa)' },
 };
 
-const sourceLabel = (row) => {
-  const map = SOURCE_ROUTES[row.sourceModel];
-  if (map) return map.label;
-  return row.source || 'Asiento manual';
-};
+const sourceLabel = (row) => SOURCE_ROUTES[row.sourceModel]?.label || row.source || 'Asiento manual';
 
 export default function Ledger() {
   const navigate = useNavigate();
@@ -78,10 +78,9 @@ export default function Ledger() {
 
   const goToSource = (e) => {
     const map = SOURCE_ROUTES[e?.sourceModel];
-    if (!map) return;
-    // Se navega a la sección del documento; se pasa el id como referencia por si
-    // la vista lo usa para resaltar/abrir el documento concreto.
-    navigate(e.sourceRef ? `${map.path}?doc=${e.sourceRef}` : map.path);
+    // Solo navegamos a documentos con deep-link real (la página abre el ?doc=<id>).
+    if (!map?.deep || !e.sourceRef) return;
+    navigate(`${map.path}?doc=${e.sourceRef}`);
   };
 
   const bankSummary = data?.bankSummary;
@@ -230,7 +229,7 @@ export default function Ledger() {
             </div>
             {entry.description && <p className="text-sm text-slate-600">{entry.description}</p>}
 
-            {SOURCE_ROUTES[entry.sourceModel] && (
+            {SOURCE_ROUTES[entry.sourceModel]?.deep && entry.sourceRef && (
               <button
                 onClick={() => goToSource(entry)}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm bg-slate-700 text-white rounded-lg"

@@ -8,6 +8,7 @@ import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { fmtDateTime } from '../utils/date';
 import NumericInput from '../components/NumericInput';
+import useDocDeepLink from '../hooks/useDocDeepLink';
 import {
   HiOutlinePlus,
   HiOutlineEye,
@@ -360,6 +361,9 @@ export default function Sales() {
       toast.error('Error al cargar detalle');
     }
   };
+
+  // Deep-link desde el Libro Mayor (?doc=<id>): abre el detalle de la venta.
+  useDocDeepLink((id) => openDetail(id));
 
   const collectSale = async (s) => {
     const input = window.prompt(`Saldo pendiente: $${(s.balance || 0).toFixed(2)}\nMonto a cobrar (efectivo):`, (s.balance || 0).toFixed(2));

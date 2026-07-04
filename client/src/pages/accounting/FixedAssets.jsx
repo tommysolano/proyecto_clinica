@@ -7,6 +7,7 @@ import { Link } from 'react-router-dom';
 import { HiOutlinePlus, HiOutlineBuildingLibrary, HiOutlineCalculator, HiOutlinePencilSquare, HiOutlineEye, HiOutlineSquares2X2 } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
+import useDocDeepLink from '../../hooks/useDocDeepLink';
 
 const EMPTY = {
   code: '', name: '', description: '', category: '', assetType: '',
@@ -108,6 +109,9 @@ export default function FixedAssets() {
     try { const r = await api.get(`/inventory-advanced/assets/${a._id}`); setDetail(r.data); }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
+
+  // Deep-link desde el Libro Mayor (?doc=<id>): abre el detalle del activo fijo.
+  useDocDeepLink((id) => openDetail({ _id: id }));
 
   const runDep = async () => {
     try { const r = await api.post('/inventory-advanced/assets/run-depreciation', depForm); toast.success(`Depreciado: $${fmt(r.data.totalDepreciation)}`); setShowDep(false); load(); }

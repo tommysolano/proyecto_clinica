@@ -10,6 +10,7 @@ import JournalEntryEditor from '../../components/JournalEntryEditor';
 import SearchableSelect from '../../components/SearchableSelect';
 import ProductFormModal from '../../components/ProductFormModal';
 import { useAuth } from '../../context/AuthContext';
+import useDocDeepLink from '../../hooks/useDocDeepLink';
 
 const PAGE_SIZE = 100;
 // Captura de activo fijo en la línea (espejo del modal "Nuevo activo fijo").
@@ -240,6 +241,9 @@ export default function PurchaseInvoices() {
   };
   const openAuthorize = (p) => loadIntoForm(p, 'authorize');
   const openEdit = (p) => loadIntoForm(p, 'edit');
+
+  // Deep-link desde el Libro Mayor (?doc=<id>): abre la factura de compra.
+  useDocDeepLink((id) => loadIntoForm({ _id: id }, 'edit'));
 
   const emitRetention = async (p) => {
     if (!confirm('¿Emitir el comprobante de retención electrónico de esta compra?')) return;
