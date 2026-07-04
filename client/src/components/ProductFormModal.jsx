@@ -10,7 +10,7 @@ import { PRODUCT_TYPES, PRODUCT_CATEGORIES } from '../constants/productCategorie
 const types = PRODUCT_TYPES;
 
 const emptyProduct = {
-  code: '', name: '', description: '', category: 'insumo', categoria: '',
+  code: '', name: '', description: '', category: 'insumo', categoria: '', inventoryCategory: '',
   purchasePrice: '', salePrice: '', stock: '', minStock: '5', unit: 'unidad', taxRate: '15',
   maxAppointmentsPerDay: '0',
   excludeFromFirstVisit: false,
@@ -29,7 +29,9 @@ const emptyProduct = {
 function mapProductToForm(p) {
   return {
     code: p.code, name: p.name, description: p.description || '',
-    category: p.category, categoria: p.categoria || '', purchasePrice: String(p.purchasePrice),
+    category: p.category, categoria: p.categoria || '',
+    inventoryCategory: p.inventoryCategory?._id || p.inventoryCategory || '',
+    purchasePrice: String(p.purchasePrice),
     salePrice: String(p.salePrice), stock: String(p.stock),
     minStock: String(p.minStock), unit: p.unit, taxRate: String(p.taxRate),
     maxAppointmentsPerDay: String(p.maxAppointmentsPerDay ?? 0),
@@ -100,6 +102,8 @@ export default function ProductFormModal({
   // independiente del buscador de la página que lo abre (p. ej. el filtro del
   // inventario). El prop `products` solo se usa como fallback mientras carga.
   const [catalog, setCatalog] = useState([]);
+  // Categorías contables de inventario (fuente principal para productos físicos).
+  const [invCategories, setInvCategories] = useState([]);
 
   const fetchNextCode = async () => {
     try {
@@ -138,8 +142,24 @@ export default function ProductFormModal({
     return () => { cancelled = true; };
   }, [isOpen]);
 
+  // Categorías contables de inventario (kind INVENTARIO) para el selector de insumos.
+  useEffect(() => {
+    if (!isOpen) return;
+    let cancelled = false;
+    api.get('/inventory-advanced/categories', { params: { kind: 'INVENTARIO' } })
+      .then((r) => { if (!cancelled) setInvCategories((r.data || []).filter((c) => c.active !== false)); })
+      .catch(() => { if (!cancelled) setInvCategories([]); });
+    return () => { cancelled = true; };
+  }, [isOpen]);
+
   // Lista base para los selectores: catálogo completo; cae al prop mientras carga.
   const pickerProducts = catalog.length ? catalog : products;
+
+  const isInsumo = productForm.category === 'insumo';
+  const selectedCat = invCategories.find((c) => c._id === productForm.inventoryCategory) || null;
+  const acctLabel = (a) => (a && (a.code || a.name) ? `${a.code || ''} ${a.name || ''}`.trim() : null);
+  // Producto legacy: insumo existente con `categoria` de texto pero sin categoría contable.
+  const legacyNoCategory = !!editingId && isInsumo && !productForm.inventoryCategory && !!productForm.categoria;
 
   const handleProductSubmit = async (e) => {
     e.preventDefault();
@@ -148,8 +168,18 @@ export default function ProductFormModal({
       const isService = productForm.category === 'servicio';
       // Un servicio (o programa) se considera ilimitado: no maneja stock físico.
       const unlimited = isService || productForm.category === 'programa';
+      // Al CREAR un insumo se exige categoría contable; al editar un producto legacy
+      // se permite guardar (solo se muestra la advertencia) para no romper flujos.
+      if (!editingId && !unlimited && !productForm.inventoryCategory) {
+        toast.error('Seleccione una categoría contable de inventario para el insumo.');
+        return; // el finally restablece saving
+      }
+      // La categoría contable de inventario es la fuente principal solo para físicos.
+      // Servicios/programas no la usan (se envía null). `categoria` queda como legacy.
+      const inventoryCategory = !unlimited ? (productForm.inventoryCategory || null) : null;
       const data = {
         ...productForm,
+        inventoryCategory,
         // Código vacío → el backend lo genera automáticamente.
         code: autoCode ? '' : (productForm.code || '').trim(),
         purchasePrice: isService ? 0 : parseFloat(productForm.purchasePrice) || 0,
@@ -254,19 +284,64 @@ export default function ProductFormModal({
               ))}
             </select>
           </div>
-          <div className="sm:col-span-2">
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">Categoría</label>
-            <SearchableSelect
-              options={PRODUCT_CATEGORIES}
-              value={productForm.categoria}
-              onChange={(v) => setProductForm({ ...productForm, categoria: v })}
-              getLabel={(o) => o}
-              getValue={(o) => o}
-              placeholder="— Sin categoría —"
-              searchPlaceholder="Buscar categoría…"
-              allowClear
-            />
-          </div>
+          {isInsumo ? (
+            <div className="sm:col-span-2">
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">
+                Categoría contable <span className="text-rose-500">*</span>
+              </label>
+              <SearchableSelect
+                options={invCategories}
+                value={productForm.inventoryCategory}
+                onChange={(v) => setProductForm({ ...productForm, inventoryCategory: v })}
+                getLabel={(c) => `${c.code ? c.code + ' - ' : ''}${c.name}`}
+                getValue={(c) => c._id}
+                getSearchText={(c) => `${c.code || ''} ${c.name}`}
+                placeholder="— Seleccione una categoría de inventario —"
+                searchPlaceholder="Buscar categoría contable…"
+                allowClear
+              />
+              {invCategories.length === 0 && (
+                <p className="text-[11px] text-amber-600 mt-1">
+                  No hay categorías de inventario configuradas. Créalas en <strong>Contabilidad → Categorías de Inventario</strong>.
+                </p>
+              )}
+              {selectedCat && (
+                <div className="mt-2 text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-2 space-y-0.5">
+                  <p>Inventario/Activo: <span className="font-mono text-slate-700">{acctLabel(selectedCat.assetAccount) || '— sin configurar —'}</span></p>
+                  <p>Costo/Gasto: <span className="font-mono text-slate-700">{acctLabel(selectedCat.expenseAccount) || '— sin configurar —'}</span></p>
+                  <p>Ingreso por venta: <span className="font-mono text-slate-700">{acctLabel(selectedCat.incomeAccount) || '— sin configurar —'}</span></p>
+                </div>
+              )}
+              {selectedCat && !selectedCat.assetAccount && (
+                <p className="text-[11px] text-rose-600 mt-1 font-medium">⚠ La categoría no tiene cuenta de inventario configurada.</p>
+              )}
+              {selectedCat && (!selectedCat.expenseAccount || !selectedCat.incomeAccount) && (
+                <p className="text-[11px] text-amber-600 mt-1">
+                  La categoría no tiene {(!selectedCat.expenseAccount && !selectedCat.incomeAccount) ? 'cuenta de costo ni de ingreso' : (!selectedCat.expenseAccount ? 'cuenta de costo/gasto' : 'cuenta de ingreso')} configurada.
+                </p>
+              )}
+              {legacyNoCategory && (
+                <p className="text-[11px] text-amber-700 mt-1 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
+                  ⚠ Categoría antigua sin configuración contable{productForm.categoria ? ` ("${productForm.categoria}")` : ''}. Debe asignarse una categoría contable.
+                </p>
+              )}
+            </div>
+          ) : (
+            <div className="sm:col-span-2">
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Categoría</label>
+              <SearchableSelect
+                options={PRODUCT_CATEGORIES}
+                value={productForm.categoria}
+                onChange={(v) => setProductForm({ ...productForm, categoria: v })}
+                getLabel={(o) => o}
+                getValue={(o) => o}
+                placeholder="— Sin categoría —"
+                searchPlaceholder="Buscar categoría…"
+                allowClear
+              />
+              <p className="text-[11px] text-slate-400 mt-1">Los servicios y programas no usan categoría contable de inventario.</p>
+            </div>
+          )}
           <div className="sm:col-span-2">
             <label className="block text-sm font-medium text-slate-700 mb-1.5">Nombre *</label>
             <input value={productForm.name} onChange={(e) => setProductForm({...productForm, name: e.target.value})} required className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />

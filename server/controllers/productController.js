@@ -1,8 +1,73 @@
 const Product = require('../models/Product');
+const InventoryCategory = require('../models/InventoryCategory');
 const InventoryMovement = require('../models/InventoryMovement');
 const Counter = require('../models/Counter');
 const kardex = require('../utils/kardex');
 const { runInTransaction } = require('../utils/accounting');
+
+/** Normaliza texto (mayúsculas/acentos/espacios) para comparar nombres de categoría. */
+function normName(s) {
+  return String(s || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '') // quita tildes/diacríticos
+    .toUpperCase().replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * Un producto es físico/inventariable cuando es de tipo `insumo` y no es ilimitado.
+ * Los servicios y programas (ilimitados) no manejan inventario.
+ */
+function isPhysicalProduct(effCategory, effUnlimited) {
+  return effCategory === 'insumo' && effUnlimited !== true;
+}
+
+/**
+ * Resuelve y valida la categoría contable de inventario (`InventoryCategory`,
+ * kind INVENTARIO) de un producto y sincroniza el campo legacy `categoria`.
+ * Muta `body`. Reglas:
+ *   - Si llega `inventoryCategory`: debe existir, pertenecer a la clínica, estar
+ *     activa y ser kind INVENTARIO (error claro si no).
+ *   - Si solo llega `categoria` (texto legacy): intenta resolver una categoría
+ *     por nombre normalizado; si existe la asigna a `inventoryCategory`.
+ *   - Si el producto es físico y `enforce`, exige una categoría contable.
+ *   - Si se resuelve una categoría, copia su `name` a `categoria` (compat visual).
+ *
+ * @param {boolean} enforce  exigir categoría para productos físicos (true en create).
+ * @param {Object|null} existing  producto actual (para inferir tipo en updates parciales).
+ */
+async function applyInventoryCategory(clinicId, body, { enforce, existing = null } = {}) {
+  // '' desde el front = sin categoría → null. (undefined en update = no se toca.)
+  if (body.inventoryCategory === '') body.inventoryCategory = null;
+  const effCategory = body.category !== undefined ? body.category : existing?.category;
+  const effUnlimited = body.unlimited !== undefined ? body.unlimited : existing?.unlimited;
+  const physical = isPhysicalProduct(effCategory, effUnlimited);
+
+  let category = null;
+  const provided = body.inventoryCategory != null && body.inventoryCategory !== '';
+  if (provided) {
+    category = await InventoryCategory.findOne({ _id: body.inventoryCategory, clinic: clinicId });
+    if (!category) throw Object.assign(new Error('La categoría de inventario no existe o no pertenece a la clínica'), { status: 400 });
+    if (category.active === false) throw Object.assign(new Error(`La categoría de inventario "${category.name}" está inactiva`), { status: 400 });
+    if (category.kind !== 'INVENTARIO') throw Object.assign(new Error(`La categoría "${category.name}" no es de tipo INVENTARIO`), { status: 400 });
+  } else if (body.categoria) {
+    // Compatibilidad legacy: resolver por nombre normalizado dentro de la clínica.
+    const target = normName(body.categoria);
+    const candidates = await InventoryCategory.find({ clinic: clinicId, kind: 'INVENTARIO', active: true });
+    category = candidates.find((c) => normName(c.name) === target) || null;
+    if (category) body.inventoryCategory = category._id;
+    else if (physical && enforce) {
+      throw Object.assign(new Error(`No existe una categoría contable de inventario "${body.categoria}". Créala en Categorías de Inventario y asígnala.`), { status: 400 });
+    }
+  }
+
+  // Exigir categoría contable para productos físicos (solo en create / cuando enforce).
+  const effInventoryCategory = category || (existing && existing.inventoryCategory);
+  if (enforce && physical && !effInventoryCategory) {
+    throw Object.assign(new Error('Los productos de inventario (insumos) requieren una categoría contable de inventario.'), { status: 400 });
+  }
+
+  // Sincronizar el campo legacy `categoria` con el nombre de la categoría contable.
+  if (category) body.categoria = category.name;
+}
 
 // Código automático de producto: prefijo + secuencia por clínica.
 const CODE_PREFIX = 'P';
@@ -65,9 +130,20 @@ async function peekProductCode(clinicId) {
   return fmtCode(seq + 1);
 }
 
+// Populate de la categoría contable de inventario + sus cuentas (activo/costo/ingreso).
+const INVENTORY_CATEGORY_POPULATE = {
+  path: 'inventoryCategory',
+  select: 'code name kind active assetAccount expenseAccount incomeAccount',
+  populate: [
+    { path: 'assetAccount', select: 'code name' },
+    { path: 'expenseAccount', select: 'code name' },
+    { path: 'incomeAccount', select: 'code name' },
+  ],
+};
+
 exports.getProducts = async (req, res) => {
   try {
-    const { search, category, categoria, lowStock } = req.query;
+    const { search, category, categoria, inventoryCategory, lowStock } = req.query;
     // Catálogo COMPARTIDO por toda la organización: un producto no pertenece a una
     // sola sucursal. `availableInClinics` decide en qué sucursales se ofrece: vacío
     // (o ausente) = disponible en TODAS; con clínicas = solo en esas. Por eso el
@@ -95,13 +171,17 @@ exports.getProducts = async (req, res) => {
       });
     }
     if (category) query.category = category;
+    // Filtro principal por categoría contable; `categoria` (texto) queda como legacy.
+    if (inventoryCategory) query.inventoryCategory = inventoryCategory;
     if (categoria) query.categoria = categoria;
     if (lowStock === 'true') {
       query.unlimited = { $ne: true };
       query.$expr = { $lte: ['$stock', '$minStock'] };
     }
 
-    const products = await Product.find(query).sort({ name: 1 });
+    const products = await Product.find(query)
+      .populate(INVENTORY_CATEGORY_POPULATE)
+      .sort({ name: 1 });
     res.json(products);
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener productos' });
@@ -111,7 +191,7 @@ exports.getProducts = async (req, res) => {
 exports.getProduct = async (req, res) => {
   try {
     // Catálogo compartido: el producto se puede consultar desde cualquier sucursal.
-    const product = await Product.findOne({ _id: req.params.id });
+    const product = await Product.findOne({ _id: req.params.id }).populate(INVENTORY_CATEGORY_POPULATE);
     if (!product) return res.status(404).json({ message: 'Producto no encontrado' });
     res.json(product);
   } catch (error) {
@@ -141,6 +221,8 @@ exports.createProduct = async (req, res) => {
     }
 
     syncStockFromClinics(req.body);
+    // Valida/resuelve la categoría contable de inventario (obligatoria para insumos).
+    await applyInventoryCategory(req.clinicId, req.body, { enforce: true });
     const product = await Product.create({ ...req.body, clinic: req.clinicId, code });
     res.status(201).json(product);
   } catch (error) {
@@ -160,17 +242,21 @@ exports.previewNextCode = async (req, res) => {
 
 exports.updateProduct = async (req, res) => {
   try {
-    syncStockFromClinics(req.body);
     // Catálogo compartido: editable desde cualquier sucursal.
+    const existing = await Product.findOne({ _id: req.params.id });
+    if (!existing) return res.status(404).json({ message: 'Producto no encontrado' });
+    syncStockFromClinics(req.body);
+    // Valida/resuelve la categoría contable si se envía; NO bloquea la edición de
+    // productos legacy sin categoría (enforce:false) para no romper flujos existentes.
+    await applyInventoryCategory(req.clinicId, req.body, { enforce: false, existing });
     const product = await Product.findOneAndUpdate(
       { _id: req.params.id },
       req.body,
       { new: true, runValidators: true }
-    );
-    if (!product) return res.status(404).json({ message: 'Producto no encontrado' });
+    ).populate(INVENTORY_CATEGORY_POPULATE);
     res.json(product);
   } catch (error) {
-    res.status(500).json({ message: 'Error al actualizar producto' });
+    res.status(error.status || 500).json({ message: error.message || 'Error al actualizar producto' });
   }
 };
 

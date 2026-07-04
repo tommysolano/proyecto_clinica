@@ -4,7 +4,7 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
-import { HiOutlinePlus, HiOutlineSquares2X2, HiOutlinePencilSquare, HiOutlineTrash } from 'react-icons/hi2';
+import { HiOutlinePlus, HiOutlineSquares2X2, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineExclamationTriangle } from 'react-icons/hi2';
 import NumericInput from '../../components/NumericInput';
 import SearchableSelect from '../../components/SearchableSelect';
 
@@ -54,6 +54,14 @@ export default function InventoryCategories() {
 
   const parentOptions = list.filter((c) => c.kind === form.kind && !c.parent && c._id !== editing?._id);
   const nameById = (id) => list.find((c) => c._id === id)?.name || '';
+  // Cuentas que le faltan a una categoría INVENTARIO (para alertas visuales).
+  const INV_ACCOUNT_LABELS = { assetAccount: 'inventario', expenseAccount: 'costo/gasto', incomeAccount: 'ingreso' };
+  const invMissing = (c) => (c.kind === 'INVENTARIO'
+    ? Object.keys(INV_ACCOUNT_LABELS).filter((k) => !idOf(c[k]))
+    : []);
+  const formInvMissing = form.kind === 'INVENTARIO'
+    ? Object.keys(INV_ACCOUNT_LABELS).filter((k) => !form[k])
+    : [];
   const inputCls = 'w-full border border-slate-200 rounded-xl px-3.5 py-2.5';
 
   // Campo de cuenta contable con buscador (reutilizado en todas las cuentas del modal).
@@ -85,7 +93,14 @@ export default function InventoryCategories() {
             {list.map((c) => (
               <tr key={c._id} className="border-t">
                 <td className="px-3 py-2 font-mono">{c.code}</td>
-                <td className="px-3 py-2">{c.parent ? '↳ ' : ''}{c.name}</td>
+                <td className="px-3 py-2">
+                  {c.parent ? '↳ ' : ''}{c.name}
+                  {invMissing(c).length > 0 && (
+                    <span title={`Faltan cuentas: ${invMissing(c).map((k) => INV_ACCOUNT_LABELS[k]).join(', ')}`} className="ml-2 inline-flex items-center gap-1 text-[11px] text-amber-600 align-middle">
+                      <HiOutlineExclamationTriangle className="w-3.5 h-3.5" /> sin {invMissing(c).map((k) => INV_ACCOUNT_LABELS[k]).join('/')}
+                    </span>
+                  )}
+                </td>
                 <td className="px-3 py-2 text-xs">{c.kind}</td>
                 <td className="px-3 py-2 text-xs text-slate-500">{c.parent ? nameById(idOf(c.parent)) : '—'}</td>
                 <td className="px-3 py-2 text-right">{c.depreciationRate || '—'}%</td>
@@ -148,6 +163,12 @@ export default function InventoryCategories() {
                 {acctField('Cuenta de inventario', 'assetAccount')}
                 {acctField('Costo / gasto', 'expenseAccount')}
                 {acctField('Ingreso por venta', 'incomeAccount', 'col-span-2')}
+                {formInvMissing.length > 0 && (
+                  <p className="col-span-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1 flex items-center gap-1">
+                    <HiOutlineExclamationTriangle className="w-3.5 h-3.5 shrink-0" />
+                    Faltan cuentas por configurar: {formInvMissing.map((k) => INV_ACCOUNT_LABELS[k]).join(', ')}. Los productos de esta categoría no tendrán cuentas contables completas.
+                  </p>
+                )}
               </>
             )}
           </div>
