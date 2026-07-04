@@ -10,6 +10,7 @@ const { createEntry, findAccount, runInTransaction, assertPeriodOpen } = require
 const { getAccount } = require('../utils/accountMap');
 const kardex = require('../utils/kardex');
 const { PRODUCT_TYPES, PRODUCT_CATEGORIES, normalizeCategoria } = require('../utils/productCategories');
+const { isPhysicalProduct, buildInventoryCategoryIndex, resolveInventoryCategoryForRow, normName } = require('../utils/productCategoryResolver');
 const ExcelJS = require('exceljs');
 const multer = require('multer');
 
@@ -20,6 +21,7 @@ const PRODUCT_TEMPLATE_COLUMNS = [
   { header: 'codigo', key: 'code', width: 16 },
   { header: 'nombre', key: 'name', width: 32 },
   { header: 'tipo', key: 'category', width: 14 },
+  { header: 'categoria_contable', key: 'categoriaContable', width: 26 },
   { header: 'categoria', key: 'categoria', width: 24 },
   { header: 'unidad', key: 'unit', width: 12 },
   { header: 'precio_compra', key: 'purchasePrice', width: 14 },
@@ -30,6 +32,38 @@ const PRODUCT_TEMPLATE_COLUMNS = [
   { header: 'ilimitado', key: 'unlimited', width: 10 },
 ];
 
+// Encabezados aceptados por columna (además del oficial). Se comparan normalizados
+// (mayúsculas, sin tildes, guiones bajos → espacios) para tolerar variantes.
+const HEADER_ALIASES = {
+  code: ['codigo', 'code'],
+  name: ['nombre', 'name'],
+  category: ['tipo', 'category'],
+  // Categoría contable (InventoryCategory INVENTARIO): fuente principal de físicos.
+  categoriaContable: ['categoria contable', 'categoriacontable'],
+  inventoryCategory: ['inventorycategory', 'inventory category'],
+  inventoryCategoryId: ['inventorycategoryid', 'inventory category id'],
+  // Categoría comercial legacy (texto).
+  categoria: ['categoria'],
+  unit: ['unidad', 'unit'],
+  purchasePrice: ['precio compra', 'preciocompra', 'purchaseprice'],
+  salePrice: ['precio venta', 'precioventa', 'saleprice'],
+  stock: ['stock'],
+  minStock: ['stock minimo', 'stockminimo', 'minstock'],
+  taxRate: ['iva', 'taxrate'],
+  unlimited: ['ilimitado', 'unlimited'],
+};
+
+// Normaliza un encabezado para el matching por alias (guiones bajos = espacios).
+const normHeader = (s) => normName(String(s || '').replace(/_/g, ' '));
+// Índice alias-normalizado → key.
+const HEADER_LOOKUP = (() => {
+  const m = new Map();
+  for (const [key, aliases] of Object.entries(HEADER_ALIASES)) {
+    for (const a of aliases) m.set(normHeader(a), key);
+  }
+  return m;
+})();
+
 /** Descarga la plantilla Excel para carga masiva de productos. */
 exports.downloadProductTemplate = async (req, res) => {
   try {
@@ -39,13 +73,15 @@ exports.downloadProductTemplate = async (req, res) => {
     ws.getRow(1).font = { bold: true };
     ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } };
     // Fila de ejemplo
-    ws.addRow({ code: 'P001', name: 'Producto ejemplo', category: 'insumo', categoria: 'AMPOLLAS', unit: 'unidad', purchasePrice: 5, salePrice: 10, stock: 100, minStock: 10, taxRate: 15, unlimited: 'NO' });
+    ws.addRow({ code: 'P001', name: 'Producto ejemplo', category: 'insumo', categoriaContable: 'Ampollas', categoria: 'AMPOLLAS', unit: 'unidad', purchasePrice: 5, salePrice: 10, stock: 100, minStock: 10, taxRate: 15, unlimited: 'NO' });
     // Hoja de ayuda
     const help = wb.addWorksheet('Instrucciones');
     help.addRow([`tipo: ${PRODUCT_TYPES.join(', ')}`]);
-    help.addRow([`categoria: ${PRODUCT_CATEGORIES.join(' | ')}`]);
+    help.addRow(['categoria_contable: nombre EXACTO de una Categoría de Inventario (Contabilidad → Categorías de Inventario). OBLIGATORIA para insumos (productos físicos). También se acepta la columna "inventoryCategory" con el ID de la categoría.']);
+    help.addRow([`categoria (comercial, opcional/legacy): ${PRODUCT_CATEGORIES.join(' | ')}`]);
     help.addRow(['ilimitado: SI (servicios sin stock) o NO']);
     help.addRow(['iva: 0, 12 o 15']);
+    help.addRow(['Servicios y programas NO requieren categoria_contable.']);
     help.addRow(['No borre la fila de encabezados. Puede borrar la fila de ejemplo.']);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename="plantilla_productos.xlsx"');
@@ -72,12 +108,11 @@ exports.importProductsExcel = async (req, res) => {
     const ws = wb.worksheets[0];
     if (!ws) return res.status(400).json({ message: 'El archivo no tiene hojas' });
 
-    // Mapear encabezados (fila 1) a claves
+    // Mapear encabezados (fila 1) a claves, tolerando alias y variantes.
     const headerMap = {};
     ws.getRow(1).eachCell((cell, col) => {
-      const h = String(cell.value || '').trim().toLowerCase();
-      const def = PRODUCT_TEMPLATE_COLUMNS.find((c) => c.header === h);
-      if (def) headerMap[col] = def.key;
+      const key = HEADER_LOOKUP.get(normHeader(cell.value));
+      if (key) headerMap[col] = key;
     });
     if (!Object.values(headerMap).includes('code') || !Object.values(headerMap).includes('name')) {
       return res.status(400).json({ message: 'La plantilla debe tener al menos las columnas codigo y nombre' });
@@ -91,6 +126,7 @@ exports.importProductsExcel = async (req, res) => {
     };
     // 1) Parsear TODAS las filas primero. Si un código se repite en el archivo,
     //    la última fila gana (igual que el comportamiento anterior fila-por-fila).
+    //    `_cat*` guardan los valores crudos de categoría para resolver luego.
     const byCode = new Map();
     for (let r = 2; r <= ws.rowCount; r++) {
       const row = ws.getRow(r);
@@ -107,7 +143,6 @@ exports.importProductsExcel = async (req, res) => {
         code,
         name: String(data.name).trim(),
         category: normalizeTipo(data.category),
-        categoria: normalizeCategoria(data.categoria),
         unit: data.unit ? String(data.unit).trim() : 'unidad',
         purchasePrice: Number(data.purchasePrice) || 0,
         salePrice: Number(data.salePrice) || 0,
@@ -115,16 +150,39 @@ exports.importProductsExcel = async (req, res) => {
         minStock: Number(data.minStock) || 0,
         taxRate: data.taxRate !== undefined && data.taxRate !== null && data.taxRate !== '' ? Number(data.taxRate) : 15,
         unlimited: ['SI', 'SÍ', 'TRUE', '1', 'X'].includes(String(data.unlimited || '').trim().toUpperCase()),
+        // Crudos para resolver categoría contable (no se persisten con estos nombres).
+        _catId: data.inventoryCategory || data.inventoryCategoryId || '',
+        _catText: data.categoriaContable || data.categoria || '',
+        _rawCategoria: data.categoria || '',
       });
     }
-    const products = [...byCode.values()];
+
+    // Resolver la categoría contable de inventario por fila (sin crear categorías).
+    // Físico sin categoría válida → error de fila (no se crea legacy silencioso).
+    const catIndex = await buildInventoryCategoryIndex(req.clinicId);
+    const products = [];
+    const rowErrors = [];
+    for (const p of byCode.values()) {
+      const physical = isPhysicalProduct(p.category, p.unlimited);
+      const { category, error } = resolveInventoryCategoryForRow({ index: catIndex, physical, idValue: p._catId, textValue: p._catText });
+      if (error) { rowErrors.push(`${p.code}: ${error}`); continue; }
+      if (category) {
+        p.inventoryCategory = category._id;
+        p.categoria = category.name; // sincroniza legacy con el nombre de la categoría
+      } else {
+        // No físico o sin categoría: conserva la categoría comercial legacy (normalizada).
+        p.categoria = normalizeCategoria(p._rawCategoria);
+      }
+      delete p._catId; delete p._catText; delete p._rawCategoria;
+      products.push(p);
+    }
 
     // 2) Insertar/actualizar en bloque. Antes se hacían 2 consultas por fila
     //    (findOne + save), o sea ~2·N viajes secuenciales a Mongo, lo que con
     //    cientos de filas superaba el timeout del proxy (504). Ahora son 3
     //    operaciones en total: 1 consulta de existencias + 1 insertMany + 1 bulkWrite.
     let created = 0, updated = 0;
-    const errors = [];
+    const errors = [...rowErrors];
     if (products.length) {
       // Una sola consulta (usa el índice único { clinic, code }) para saber cuáles ya existen.
       const existing = await Product.find({ clinic: req.clinicId, code: { $in: products.map((p) => p.code) } })
@@ -854,24 +912,48 @@ exports.runDepreciation = async (req, res) => {
 
 /**
  * Importación masiva de productos (CSV/JSON simple).
- * body: { rows: [{ code, name, category, salePrice, purchasePrice, stock, taxRate, unlimited }] }
+ * body: { rows: [{ code, name, category, salePrice, purchasePrice, stock, taxRate, unlimited,
+ *                  inventoryCategory | inventoryCategoryId | categoriaContable | categoria }] }
+ *
+ * Para productos físicos (insumo no ilimitado) resuelve la categoría contable de
+ * inventario (por id o por nombre normalizado). Si no la encuentra, rechaza la fila
+ * con error (no crea productos legacy silenciosamente). Errores parciales: continúa
+ * con las demás filas y los reporta en `errors`.
  */
 exports.importProducts = async (req, res) => {
   try {
     const rows = req.body?.rows || [];
+    const catIndex = await buildInventoryCategoryIndex(req.clinicId);
     let created = 0, updated = 0;
+    const errors = [];
     for (const r of rows) {
       if (!r.code || !r.name) continue;
+      const physical = isPhysicalProduct(r.category, r.unlimited);
+      const idValue = r.inventoryCategory || r.inventoryCategoryId || '';
+      const textValue = r.categoriaContable || r['categoría contable'] || r.categoria || r['categoría'] || '';
+      const { category, error } = resolveInventoryCategoryForRow({ index: catIndex, physical, idValue, textValue });
+      if (error) { errors.push(`${r.code}: ${error}`); continue; }
+
+      // Se descartan los alias crudos y el id de categoría sin resolver (evita
+      // castear un ObjectId inválido). inventoryCategory solo se persiste si resolvió.
+      const { inventoryCategory, inventoryCategoryId, categoriaContable, ...clean } = r;
+      delete clean['categoría contable'];
+      delete clean['categoría'];
+      if (category) {
+        clean.inventoryCategory = category._id;
+        clean.categoria = category.name; // sincroniza legacy
+      }
+
       const exists = await Product.findOne({ clinic: req.clinicId, code: r.code });
       if (exists) {
-        Object.assign(exists, r);
+        Object.assign(exists, clean);
         await exists.save(); updated++;
       } else {
-        await Product.create({ ...r, clinic: req.clinicId });
+        await Product.create({ ...clean, clinic: req.clinicId });
         created++;
       }
     }
-    res.json({ created, updated });
+    res.json({ created, updated, errors });
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 

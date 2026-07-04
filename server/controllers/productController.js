@@ -4,21 +4,7 @@ const InventoryMovement = require('../models/InventoryMovement');
 const Counter = require('../models/Counter');
 const kardex = require('../utils/kardex');
 const { runInTransaction } = require('../utils/accounting');
-
-/** Normaliza texto (mayúsculas/acentos/espacios) para comparar nombres de categoría. */
-function normName(s) {
-  return String(s || '')
-    .normalize('NFD').replace(/[̀-ͯ]/g, '') // quita tildes/diacríticos
-    .toUpperCase().replace(/\s+/g, ' ').trim();
-}
-
-/**
- * Un producto es físico/inventariable cuando es de tipo `insumo` y no es ilimitado.
- * Los servicios y programas (ilimitados) no manejan inventario.
- */
-function isPhysicalProduct(effCategory, effUnlimited) {
-  return effCategory === 'insumo' && effUnlimited !== true;
-}
+const { normName, isPhysicalProduct } = require('../utils/productCategoryResolver');
 
 /**
  * Resuelve y valida la categoría contable de inventario (`InventoryCategory`,
