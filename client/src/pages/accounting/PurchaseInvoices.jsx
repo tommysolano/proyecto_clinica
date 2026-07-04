@@ -3,7 +3,7 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
-import { HiOutlinePlus, HiOutlineDocumentText, HiOutlineArrowDownTray, HiOutlineXMark, HiOutlineTrash } from 'react-icons/hi2';
+import { HiOutlinePlus, HiOutlineDocumentText, HiOutlineArrowDownTray, HiOutlineXMark, HiOutlineTrash, HiOutlineExclamationTriangle, HiOutlineCube, HiOutlineBanknotes, HiOutlineBuildingOffice2 } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import JournalEntryEditor from '../../components/JournalEntryEditor';
@@ -13,10 +13,24 @@ import { useAuth } from '../../context/AuthContext';
 import useDocDeepLink from '../../hooks/useDocDeepLink';
 
 const PAGE_SIZE = 100;
-// Captura de activo fijo en la línea (espejo del modal "Nuevo activo fijo").
+// Captura de activo fijo (los datos contables —cuentas, depreciación, vida útil,
+// residual— NO se piden: se derivan de la categoría de activo fijo).
 const EMPTY_FA = { category: '', assetType: '', code: '', name: '', serial: '', location: '', locationClinic: '', acquisitionDate: '', startDate: '', depreciationRate: 0, usefulLifeMonths: 0, residualPercent: 0, assetAccount: '', depreciationAccount: '', accumDepreciationAccount: '' };
-const EMPTY_ITEM = { description: '', quantity: 1, unitPrice: 0, discount: 0, ivaRate: 15, account: '', accountSplits: [], lineType: 'GASTO', costCenter: '', fixedAsset: { ...EMPTY_FA }, product: '', warehouse: '', lot: '', expiryDate: '' };
-const EMPTY = { supplier: '', docType: 'FACTURA', estab: '001', ptoEmi: '001', secuencial: '', serie: '', claveAcceso: '', autorizacion: '', fechaEmision: today(), fechaVencimiento: '', creditDays: 0, costCenter: '', items: [{ ...EMPTY_ITEM }], retentions: [], retentionNumber: '' };
+const EMPTY = { supplier: '', docType: 'FACTURA', estab: '001', ptoEmi: '001', secuencial: '', serie: '', claveAcceso: '', autorizacion: '', fechaEmision: today(), fechaVencimiento: '', creditDays: 0, costCenter: '', notes: '', items: [], retentions: [], retentionNumber: '' };
+
+// Contador para claves de fila del formulario (no se envían al backend).
+let _uidc = 0;
+const uid = () => `it_${Date.now().toString(36)}_${(_uidc++).toString(36)}`;
+const emptyRetention = () => ({ type: 'RENTA', code: '', baseAmount: 0, percentage: 0, amount: 0 });
+const makeItem = (lineType) => ({
+  _uid: uid(), lineType,
+  description: '', quantity: 1, unitPrice: 0, discount: 0, ivaRate: 15,
+  account: '', accountSplits: [],
+  product: '', inventoryCategory: '', warehouse: '', lot: '', expiryDate: '',
+  costCenter: '', fixedAsset: { ...EMPTY_FA }, retention: emptyRetention(),
+});
+// Subtotal (base) de una línea.
+const lineBase = (it) => +(((it.quantity || 0) * (it.unitPrice || 0)) - (it.discount || 0)).toFixed(2);
 
 // Vencimiento = fecha de emisión + días de crédito (YYYY-MM-DD).
 const addDays = (dateStr, days) => {
@@ -26,7 +40,6 @@ const addDays = (dateStr, days) => {
   d.setDate(d.getDate() + Number(days));
   return d.toISOString().slice(0, 10);
 };
-const LINE_TYPES = [['GASTO', 'Gasto'], ['INVENTARIO', 'Inventario'], ['ACTIVO_FIJO', 'Activo fijo']];
 
 export default function PurchaseInvoices() {
   const { hasRole } = useAuth();
@@ -56,33 +69,31 @@ export default function PurchaseInvoices() {
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
   const [pendingTotal, setPendingTotal] = useState(0); // total real de "por autorizar" (todas las páginas)
-  const [newProductItemIdx, setNewProductItemIdx] = useState(null); // línea que dispara "Nuevo producto"
+  const [newProductItemUid, setNewProductItemUid] = useState(null); // línea que dispara "Nuevo producto"
   const [journalInv, setJournalInv] = useState(null); // factura cuyo asiento se edita
   const [payInv, setPayInv] = useState(null); // factura a pagar
   const [payForm, setPayForm] = useState({ method: 'TRANSFERENCIA', bankAccount: '', voucherNumber: '', checkNumber: '', amount: 0, date: today() });
 
-  // Solo la respuesta de la última búsqueda actualiza la lista: descarta
-  // respuestas fuera de orden que sobrescribirían con datos obsoletos.
+  // Solo la respuesta de la última búsqueda actualiza la lista.
   const reqRef = useRef(0);
   const load = async () => {
     const reqId = ++reqRef.current;
     try {
       const r = await api.get('/purchase-invoices', { params: { q: search || undefined, status: statusFilter || undefined, sort, page, limit: PAGE_SIZE } });
-      if (reqId !== reqRef.current) return; // respuesta obsoleta: descartar
+      if (reqId !== reqRef.current) return;
       setList(r.data?.items || r.data || []);
       setTotal(r.data?.total ?? (r.data?.items?.length || 0));
       loadPendingCount();
     } catch (e) { if (reqId === reqRef.current) toast.error(e.response?.data?.message || 'Error'); }
   };
 
-  // Total real de facturas pendientes de autorizar (de todas, no solo la página visible).
   const loadPendingCount = async () => {
     try {
       const r = await api.get('/purchase-invoices', { params: { status: 'POR_AUTORIZAR', limit: 1 } });
       setPendingTotal(r.data?.total ?? 0);
     } catch { /* sin bloquear la vista */ }
   };
-  // Catálogo de productos físicos (los que pueden entrar a stock por compra).
+  // Catálogo de productos físicos (con su categoría contable poblada para mostrar la cuenta).
   const loadProducts = () =>
     api.get('/products')
       .then((r) => setProducts((r.data?.items || r.data || []).filter((p) => !p.unlimited && p.category !== 'servicio')))
@@ -90,7 +101,7 @@ export default function PurchaseInvoices() {
 
   useEffect(() => {
     api.get('/suppliers').then((r) => setSuppliers(r.data || []));
-    api.get('/chart-of-accounts').then((r) => setAccounts((r.data || []).filter((a) => a.allowsMovement && (a.code?.startsWith('6.') || a.code?.startsWith('1.1.04') || a.code?.startsWith('1.2.')))));
+    api.get('/chart-of-accounts').then((r) => setAccounts((r.data || []).filter((a) => a.allowsMovement && (a.code?.startsWith('6.') || a.code?.startsWith('5.') || a.code?.startsWith('1.1.04') || a.code?.startsWith('1.2.')))));
     loadProducts();
     api.get('/inventory-advanced/warehouses').then((r) => setWarehouses(r.data || [])).catch(() => {});
     api.get('/banks/accounts').then((r) => setBanks(r.data || [])).catch(() => {});
@@ -99,13 +110,12 @@ export default function PurchaseInvoices() {
     api.get('/clinics').then((r) => setClinics(r.data?.items || r.data || [])).catch(() => {});
     load();
   }, []);
-  // Al cambiar búsqueda/estado/orden, vuelve a la primera página.
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { setPage(1); }, [search, statusFilter, sort]);
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { const t = setTimeout(load, 300); return () => clearTimeout(t); }, [search, statusFilter, sort, page]);
 
-  // Cuentas recurrentes del proveedor: sugiere y autocompleta la cuenta de gasto.
+  // Cuentas recurrentes del proveedor: sugiere/autocompleta la cuenta de GASTO.
   useEffect(() => {
     if (!form.supplier) { setRecurring({ defaultAccount: null, accounts: [] }); return; }
     let active = true;
@@ -115,48 +125,90 @@ export default function PurchaseInvoices() {
         const data = r.data || { defaultAccount: null, accounts: [] };
         setRecurring(data);
         if (data.defaultAccount) {
-          setForm((f) => ({ ...f, items: f.items.map((it) => (it.account || (it.accountSplits || []).length ? it : { ...it, account: data.defaultAccount._id })) }));
+          setForm((f) => ({ ...f, items: f.items.map((it) => (it.lineType === 'GASTO' && !it.account && !(it.accountSplits || []).length ? { ...it, account: data.defaultAccount._id } : it)) }));
         }
       })
       .catch(() => {});
     return () => { active = false; };
   }, [form.supplier]);
 
-  // Aplica una cuenta recurrente a todos los ítems que aún no tienen cuenta.
-  const applyRecurring = (accId) => setForm((f) => ({ ...f, items: f.items.map((it) => ((it.accountSplits || []).length ? it : { ...it, account: accId })) }));
+  // Aplica una cuenta recurrente a las líneas de GASTO que aún no tienen cuenta.
+  const applyRecurring = (accId) => setForm((f) => ({ ...f, items: f.items.map((it) => (it.lineType === 'GASTO' && !(it.accountSplits || []).length ? { ...it, account: accId } : it)) }));
 
-  // Al elegir proveedor: prefija sus días de crédito y recalcula el vencimiento.
   const onSelectSupplier = (v) => {
     const sup = suppliers.find((s) => String(s._id) === String(v));
     const creditDays = sup?.creditDays || 0;
     setForm((f) => ({ ...f, supplier: v, creditDays: creditDays || f.creditDays, fechaVencimiento: (creditDays || f.creditDays) ? addDays(f.fechaEmision, creditDays || f.creditDays) : f.fechaVencimiento }));
   };
 
-  // Centro de costo por defecto de la factura: se copia a las líneas que no tengan uno.
   const setInvoiceCostCenter = (cc) => setForm((f) => ({ ...f, costCenter: cc, items: f.items.map((it) => (it.costCenter ? it : { ...it, costCenter: cc })) }));
 
-  // Al elegir categoría de activo fijo en una línea: prefija cuentas y parámetros (como en Activos Fijos).
-  const onItemAssetCategory = (i, catId) => {
-    const c = assetCategories.find((x) => String(x._id) === String(catId));
-    const fa = {
-      ...(form.items[i].fixedAsset || {}),
-      category: catId, assetType: '',
-      depreciationRate: c?.depreciationRate || 0,
-      usefulLifeMonths: (c?.usefulLifeYears || 10) * 12,
-      residualPercent: c?.residualPercent || 0,
-      assetAccount: c?.assetAccount?._id || c?.assetAccount || '',
-      depreciationAccount: c?.depreciationAccount?._id || c?.depreciationAccount || '',
-      accumDepreciationAccount: c?.accumDepreciationAccount?._id || c?.accumDepreciationAccount || '',
-    };
-    setItem(i, { fixedAsset: fa, account: fa.assetAccount || form.items[i].account });
-  };
-  const setFa = (i, patch) => setItem(i, { fixedAsset: { ...(form.items[i].fixedAsset || {}), ...patch } });
+  // ---- Manipulación de líneas por _uid ----
+  const setItem = (u, patch) => setForm((f) => ({ ...f, items: f.items.map((it) => (it._uid === u ? { ...it, ...patch } : it)) }));
+  const removeItem = (u) => setForm((f) => ({ ...f, items: f.items.filter((it) => it._uid !== u) }));
+  const addItem = (lineType) => setForm((f) => {
+    const it = makeItem(lineType);
+    if (lineType === 'GASTO' && recurring.defaultAccount) it.account = recurring.defaultAccount._id;
+    if (f.costCenter) it.costCenter = f.costCenter;
+    return { ...f, items: [...f.items, it] };
+  });
+  // Retención por línea (preparación visual): recalcula base/monto desde el subtotal.
+  const setLineRetention = (u, patch) => setForm((f) => ({
+    ...f,
+    items: f.items.map((it) => {
+      if (it._uid !== u) return it;
+      const ret = { ...emptyRetention(), ...it.retention, ...patch };
+      ret.baseAmount = lineBase(it);
+      ret.amount = +(ret.baseAmount * (Number(ret.percentage) || 0) / 100).toFixed(2);
+      return { ...it, retention: ret };
+    }),
+  }));
 
+  // Al elegir producto en una línea de inventario: autoselecciona su categoría contable.
+  const onPickProduct = (u, productId) => {
+    const prod = products.find((p) => String(p._id) === String(productId));
+    setForm((f) => ({
+      ...f,
+      items: f.items.map((it) => (it._uid === u ? {
+        ...it, product: productId || '',
+        inventoryCategory: prod?.inventoryCategory?._id || prod?.inventoryCategory || '',
+        description: it.description || prod?.name || '',
+        unitPrice: it.unitPrice || prod?.purchasePrice || 0,
+        warehouse: productId ? it.warehouse : '',
+      } : it)),
+    }));
+  };
+
+  // Al elegir categoría de activo fijo: prefija cuentas/parámetros ocultos (desde la categoría).
+  const onItemAssetCategory = (u, catId) => {
+    const c = assetCategories.find((x) => String(x._id) === String(catId));
+    setForm((f) => ({
+      ...f,
+      items: f.items.map((it) => (it._uid === u ? {
+        ...it,
+        fixedAsset: {
+          ...(it.fixedAsset || {}), category: catId, assetType: '',
+          depreciationRate: c?.depreciationRate || 0,
+          usefulLifeMonths: (c?.usefulLifeYears || 10) * 12,
+          residualPercent: c?.residualPercent || 0,
+          assetAccount: c?.assetAccount?._id || c?.assetAccount || '',
+          depreciationAccount: c?.depreciationAccount?._id || c?.depreciationAccount || '',
+          accumDepreciationAccount: c?.accumDepreciationAccount?._id || c?.accumDepreciationAccount || '',
+        },
+      } : it)),
+    }));
+  };
+  const setFa = (u, patch) => setForm((f) => ({ ...f, items: f.items.map((it) => (it._uid === u ? { ...it, fixedAsset: { ...(it.fixedAsset || {}), ...patch } } : it)) }));
+
+  const gastoItems = form.items.filter((it) => it.lineType === 'GASTO');
+  const invItems = form.items.filter((it) => it.lineType === 'INVENTARIO');
+  const afItems = form.items.filter((it) => it.lineType === 'ACTIVO_FIJO');
 
   const totals = (() => {
-    let s0 = 0, s12 = 0, s15 = 0, sNo = 0, sEx = 0, iva = 0;
+    let s0 = 0, s12 = 0, s15 = 0, sNo = 0, sEx = 0, iva = 0, discount = 0;
     for (const it of form.items) {
-      const base = (it.quantity * it.unitPrice) - (it.discount || 0);
+      const base = lineBase(it);
+      discount += it.discount || 0;
       if (it.ivaRate === 0) s0 += base;
       else if (it.ivaRate === 12) { s12 += base; iva += base * 0.12; }
       else if (it.ivaRate === 15) { s15 += base; iva += base * 0.15; }
@@ -165,34 +217,50 @@ export default function PurchaseInvoices() {
     }
     const subtotal = s0 + s12 + s15 + sNo + sEx;
     const retTotal = (form.retentions || []).reduce((s, r) => s + (+r.amount || 0), 0);
-    return { s0, s12, s15, sNo, sEx, subtotal, iva, total: subtotal + iva, retTotal, balance: subtotal + iva - retTotal };
+    const lineRetTotal = form.items.reduce((s, it) => s + (+it.retention?.amount || 0), 0);
+    return { s0, s12, s15, sNo, sEx, subtotal, subtotalConIva: s12 + s15, iva: +iva.toFixed(2), discount, total: +(subtotal + iva).toFixed(2), retTotal: +retTotal.toFixed(2), lineRetTotal: +lineRetTotal.toFixed(2), balance: +(subtotal + iva - retTotal).toFixed(2) };
   })();
 
   const submit = async (e) => {
     e.preventDefault();
     if (!form.supplier) return toast.error('Selecciona un proveedor');
+    if (!form.items.length) return toast.error('Agrega al menos una línea (producto, gasto o activo fijo)');
     for (const it of form.items) {
-      if (it.lineType === 'INVENTARIO' && !it.product) return toast.error('En las líneas de inventario, selecciona el producto');
-      if (it.lineType === 'ACTIVO_FIJO' && !(it.fixedAsset?.name || it.description)) return toast.error('El activo fijo necesita un nombre o descripción');
-      if ((it.accountSplits || []).length) {
-        const base = +((it.quantity || 0) * (it.unitPrice || 0) - (it.discount || 0)).toFixed(2);
-        const sum = +(it.accountSplits.reduce((s, sp) => s + (+sp.amount || 0), 0)).toFixed(2);
-        if (Math.abs(sum - base) > 0.01) return toast.error(`La distribución de "${it.description || 'ítem'}" no cuadra (${fmt(sum)} ≠ ${fmt(base)})`);
-        if (it.accountSplits.some((sp) => !sp.account)) return toast.error('Hay cuentas sin seleccionar en la distribución');
+      if (it.lineType === 'INVENTARIO' && !it.product) return toast.error('En productos/inventario, selecciona el producto en cada línea');
+      if (it.lineType === 'ACTIVO_FIJO' && !(it.fixedAsset?.category)) return toast.error('En activos fijos, selecciona la categoría de activo fijo');
+      if (it.lineType === 'ACTIVO_FIJO' && !(it.fixedAsset?.name || it.description)) return toast.error('El activo fijo necesita un nombre');
+      if (it.lineType === 'GASTO') {
+        const hasSplits = (it.accountSplits || []).length > 0;
+        if (!it.account && !hasSplits) return toast.error('Cada gasto necesita una cuenta contable (o una distribución)');
+        if (hasSplits) {
+          const base = lineBase(it);
+          const sum = +(it.accountSplits.reduce((s, sp) => s + (+sp.amount || 0), 0)).toFixed(2);
+          if (Math.abs(sum - base) > 0.01) return toast.error(`La distribución de "${it.description || 'gasto'}" no cuadra (${fmt(sum)} ≠ ${fmt(base)})`);
+          if (it.accountSplits.some((sp) => !sp.account)) return toast.error('Hay cuentas sin seleccionar en la distribución');
+        }
       }
     }
     try {
       const serie = form.serie || `${form.estab}-${form.ptoEmi}-${form.secuencial}`;
-      // Normaliza referencias vacías a null (evita cast de ObjectId '') según el tipo de línea.
       const items = form.items.map((it) => {
+        const hasRet = it.retention && (+it.retention.percentage > 0 || +it.retention.amount > 0);
         const base = {
-          ...it,
+          lineType: it.lineType,
+          description: it.description || (it.lineType === 'ACTIVO_FIJO' ? (it.fixedAsset?.name || '') : ''),
+          quantity: Number(it.quantity) || (it.lineType === 'INVENTARIO' ? 0 : 1),
+          unitPrice: Number(it.unitPrice) || 0,
+          discount: Number(it.discount) || 0,
+          ivaRate: it.ivaRate,
           costCenter: it.costCenter || null,
-          product: it.lineType === 'INVENTARIO' ? (it.product || null) : null,
-          warehouse: it.lineType === 'INVENTARIO' ? (it.warehouse || null) : null,
-          expiryDate: it.lineType === 'INVENTARIO' ? (it.expiryDate || null) : null,
+          retention: hasRet ? { ...it.retention, baseAmount: lineBase(it) } : null,
         };
-        if (it.lineType === 'ACTIVO_FIJO') {
+        if (it.lineType === 'INVENTARIO') {
+          base.product = it.product || null;
+          base.inventoryCategory = it.inventoryCategory || null;
+          base.warehouse = it.warehouse || null;
+          base.lot = it.lot || '';
+          base.expiryDate = it.expiryDate || null;
+        } else if (it.lineType === 'ACTIVO_FIJO') {
           const fa = it.fixedAsset || {};
           base.fixedAsset = {
             ...fa,
@@ -200,8 +268,9 @@ export default function PurchaseInvoices() {
             assetAccount: fa.assetAccount || null, depreciationAccount: fa.depreciationAccount || null, accumDepreciationAccount: fa.accumDepreciationAccount || null,
             acquisitionDate: fa.acquisitionDate || null, startDate: fa.startDate || null,
           };
-        } else {
-          base.fixedAsset = null;
+        } else { // GASTO
+          base.account = it.account || null;
+          base.accountSplits = (it.accountSplits || []).map((s) => ({ account: s.account || null, amount: Number(s.amount) || 0, description: s.description || '' }));
         }
         return base;
       });
@@ -220,7 +289,6 @@ export default function PurchaseInvoices() {
     } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
   };
 
-  // Carga una factura existente en el form. mode: 'authorize' (contabilizar) | 'edit'.
   const loadIntoForm = async (p, mode) => {
     try {
       const r = await api.get(`/purchase-invoices/${p._id}`);
@@ -231,7 +299,30 @@ export default function PurchaseInvoices() {
         fechaEmision: d.fechaEmision ? d.fechaEmision.slice(0, 10) : today(),
         fechaVencimiento: d.fechaVencimiento ? String(d.fechaVencimiento).slice(0, 10) : '',
         costCenter: d.costCenter?._id || d.costCenter || '',
-        items: (d.items || []).map((it) => ({ ...EMPTY_ITEM, ...it, lineType: it.lineType || (it.product ? 'INVENTARIO' : 'GASTO'), fixedAsset: it.fixedAsset ? { ...EMPTY_FA, ...it.fixedAsset, category: it.fixedAsset.category?._id || it.fixedAsset.category || '', assetType: it.fixedAsset.assetType?._id || it.fixedAsset.assetType || '', locationClinic: it.fixedAsset.locationClinic?._id || it.fixedAsset.locationClinic || '', assetAccount: it.fixedAsset.assetAccount?._id || it.fixedAsset.assetAccount || '', acquisitionDate: it.fixedAsset.acquisitionDate ? String(it.fixedAsset.acquisitionDate).slice(0, 10) : '', startDate: it.fixedAsset.startDate ? String(it.fixedAsset.startDate).slice(0, 10) : '' } : { ...EMPTY_FA }, account: it.account?._id || it.account || '', product: it.product?._id || it.product || '', warehouse: it.warehouse?._id || it.warehouse || '', costCenter: it.costCenter?._id || it.costCenter || '', expiryDate: it.expiryDate ? String(it.expiryDate).slice(0, 10) : '', accountSplits: (it.accountSplits || []).map((s) => ({ ...s, account: s.account?._id || s.account || '' })) })),
+        notes: d.notes || '',
+        items: (d.items || []).map((it) => ({
+          ...makeItem(it.lineType || (it.product ? 'INVENTARIO' : (it.fixedAsset ? 'ACTIVO_FIJO' : 'GASTO'))),
+          ...it,
+          _uid: uid(),
+          lineType: it.lineType || (it.product ? 'INVENTARIO' : (it.fixedAsset?.category || it.fixedAsset?.name ? 'ACTIVO_FIJO' : 'GASTO')),
+          account: it.account?._id || it.account || '',
+          product: it.product?._id || it.product || '',
+          inventoryCategory: it.inventoryCategory?._id || it.inventoryCategory || '',
+          warehouse: it.warehouse?._id || it.warehouse || '',
+          costCenter: it.costCenter?._id || it.costCenter || '',
+          expiryDate: it.expiryDate ? String(it.expiryDate).slice(0, 10) : '',
+          retention: it.retention ? { ...emptyRetention(), ...it.retention } : emptyRetention(),
+          accountSplits: (it.accountSplits || []).map((s) => ({ ...s, account: s.account?._id || s.account || '' })),
+          fixedAsset: it.fixedAsset ? {
+            ...EMPTY_FA, ...it.fixedAsset,
+            category: it.fixedAsset.category?._id || it.fixedAsset.category || '',
+            assetType: it.fixedAsset.assetType?._id || it.fixedAsset.assetType || '',
+            locationClinic: it.fixedAsset.locationClinic?._id || it.fixedAsset.locationClinic || '',
+            assetAccount: it.fixedAsset.assetAccount?._id || it.fixedAsset.assetAccount || '',
+            acquisitionDate: it.fixedAsset.acquisitionDate ? String(it.fixedAsset.acquisitionDate).slice(0, 10) : '',
+            startDate: it.fixedAsset.startDate ? String(it.fixedAsset.startDate).slice(0, 10) : '',
+          } : { ...EMPTY_FA },
+        })),
         retentions: d.retentions || [],
       });
       if (mode === 'edit') { setEditId(p._id); setAuthorizeId(null); }
@@ -257,7 +348,6 @@ export default function PurchaseInvoices() {
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
 
-  // Elimina una factura individual (y sus asientos/CxP/inventario asociados).
   const removeOne = async (p) => {
     if (!confirm(`¿Eliminar la factura ${p.serie || ''} de ${p.supplier?.razonSocial || ''}? Esta acción no se puede deshacer.`)) return;
     const call = (force) => api.delete(`/purchase-invoices/${p._id}`, force ? { params: { force: 'true' } } : undefined);
@@ -303,7 +393,7 @@ export default function PurchaseInvoices() {
   };
 
   const submitImport = async () => {
-    if (importing) return; // evita doble envío
+    if (importing) return;
     if (importMode === 'xml' && !xmlContents.length) return toast.error('Carga al menos un archivo XML');
     if (importMode === 'txt' && !importTxt.trim()) return toast.error('Carga un archivo .txt');
     setImporting(true);
@@ -319,9 +409,8 @@ export default function PurchaseInvoices() {
         toast(`Nada nuevo: las ${skipped} facturas del archivo ya estaban registradas.`, { icon: 'ℹ️' });
       } else {
         toast.success(`${created} importada(s)${skipped ? `, ${skipped} repetida(s)` : ''}${errors.length ? `, ${errors.length} con error` : ''}`);
-        if (created) toast('Quedan POR CONTABILIZAR. Revísalas y contabilízalas.', { icon: 'ℹ️' });
+        if (created) toast('Quedan POR CONTABILIZAR. Clasifica sus líneas (gasto/inventario/activo) y contabilízalas.', { icon: 'ℹ️' });
       }
-      // Siempre cierra el modal y recarga la lista para que el usuario vea el resultado.
       setShowImport(false); setXmlContents([]); setImportTxt(''); setImportTxtName(''); load();
     } catch (e) {
       const msg = e.code === 'ECONNABORTED' ? 'La importación tardó demasiado. Intenta con un archivo más pequeño o reintenta.' : (e.response?.data?.message || 'Error al importar');
@@ -331,7 +420,6 @@ export default function PurchaseInvoices() {
     }
   };
 
-  // Reinicio de compras: borra todas las facturas de esta sucursal (importaciones erróneas).
   const wipeAll = async () => {
     const phrase = window.prompt('⚠ Esto BORRARÁ todas las facturas de COMPRAS de esta sucursal y sus asientos, CxP e inventario asociados. Esta acción no se puede deshacer.\n\nEscribe BORRAR-COMPRAS para confirmar:');
     if (phrase !== 'BORRAR-COMPRAS') { if (phrase !== null) toast.error('Texto de confirmación incorrecto'); return; }
@@ -356,24 +444,24 @@ export default function PurchaseInvoices() {
     Promise.all(arr.map((f) => f.text())).then((texts) => setXmlContents((prev) => [...prev, ...texts]));
   };
 
-  const setItem = (i, patch) => {
-    const items = [...form.items]; items[i] = { ...items[i], ...patch }; setForm({ ...form, items });
-  };
-
   // Tras crear un producto desde la factura: refresca catálogo y lo autoselecciona en la línea.
   const handleNewProductSaved = async (saved) => {
     await loadProducts();
-    const idx = newProductItemIdx;
-    if (idx != null && saved?._id) {
-      setForm((prev) => {
-        const items = [...prev.items];
-        const cur = items[idx] || {};
-        items[idx] = { ...cur, product: saved._id, description: cur.description || saved.name };
-        return { ...prev, items };
-      });
+    const u = newProductItemUid;
+    if (u != null && saved?._id) {
+      setForm((prev) => ({
+        ...prev,
+        items: prev.items.map((it) => (it._uid === u ? {
+          ...it, product: saved._id,
+          inventoryCategory: saved.inventoryCategory?._id || saved.inventoryCategory || '',
+          description: it.description || saved.name,
+        } : it)),
+      }));
     }
-    setNewProductItemIdx(null);
+    setNewProductItemUid(null);
   };
+
+  const inputCls = 'w-full border border-slate-200 rounded-lg px-2 py-2 text-sm';
 
   return (
     <div className="space-y-4">
@@ -384,7 +472,7 @@ export default function PurchaseInvoices() {
         <div className="flex gap-2">
           {hasRole('admin') && <button onClick={wipeAll} title="Borrar todas las compras de esta sucursal (reinicio)" className="px-4 py-2 bg-rose-600 text-white rounded-lg flex items-center gap-2"><HiOutlineXMark /> Reiniciar compras</button>}
           <button onClick={() => { setImportMode('xml'); setShowImport(true); }} className="px-4 py-2 bg-amber-500 text-white rounded-lg flex items-center gap-2"><HiOutlineArrowDownTray /> Importar SRI</button>
-          <button onClick={() => { setForm(EMPTY); setAuthorizeId(null); setEditId(null); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
+          <button onClick={() => { setForm({ ...EMPTY, items: [] }); setAuthorizeId(null); setEditId(null); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
         </div>
       </div>
 
@@ -462,162 +550,205 @@ export default function PurchaseInvoices() {
       </div>
 
       <Modal isOpen={show} onClose={() => { setShow(false); setAuthorizeId(null); setEditId(null); }} title={authorizeId ? 'Verificar y contabilizar factura' : editId ? 'Editar factura de compra' : 'Nueva factura de compra'} size="2xl">
-        <form onSubmit={submit} className="space-y-3">
-          {authorizeId && <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2">Factura cargada automáticamente. Verifica los datos y asigna la cuenta contable de cada ítem antes de contabilizar.</div>}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-2.5">
-            <Field label="Proveedor" required className="col-span-2">
-              <SearchableSelect
-                options={suppliers}
-                value={form.supplier}
-                onChange={onSelectSupplier}
-                getLabel={(s) => `${s.ruc} - ${s.razonSocial}`}
-                getSearchText={(s) => `${s.ruc} ${s.razonSocial} ${s.nombreComercial || ''}`}
-                placeholder="Seleccione un proveedor…"
-                searchPlaceholder="Buscar por RUC o nombre…"
-              />
-            </Field>
-            <Field label="Tipo de documento">
-              <select value={form.docType} onChange={(e) => setForm({ ...form, docType: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white">
-                <option>FACTURA</option><option>NOTA_VENTA</option><option>LIQUIDACION</option><option>NOTA_DEBITO_REC</option><option>NOTA_CREDITO_REC</option>
-              </select>
-            </Field>
-            <Field label="Fecha de emisión" required><input type="date" required value={form.fechaEmision} onChange={(e) => setForm((f) => ({ ...f, fechaEmision: e.target.value, fechaVencimiento: f.creditDays ? addDays(e.target.value, f.creditDays) : f.fechaVencimiento }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
-            <Field label="Establecimiento"><input placeholder="001" value={form.estab} onChange={(e) => setForm({ ...form, estab: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
-            <Field label="Punto de emisión"><input placeholder="001" value={form.ptoEmi} onChange={(e) => setForm({ ...form, ptoEmi: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
-            <Field label="Secuencial" required><input required placeholder="000000123" value={form.secuencial} onChange={(e) => setForm({ ...form, secuencial: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
-            <Field label="N° de autorización SRI"><input placeholder="Opcional" value={form.autorizacion} onChange={(e) => setForm({ ...form, autorizacion: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
-            <Field label="Días de crédito"><NumericInput value={form.creditDays} onChange={(e) => setForm((f) => ({ ...f, creditDays: +e.target.value, fechaVencimiento: +e.target.value > 0 ? addDays(f.fechaEmision, +e.target.value) : '' }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-right" /></Field>
-            <Field label="Vencimiento"><input type="date" value={form.fechaVencimiento || ''} onChange={(e) => setForm({ ...form, fechaVencimiento: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
-            <Field label="Centro de costo (factura)" className="col-span-2">
-              <SearchableSelect options={costCenters} value={form.costCenter} onChange={setInvoiceCostCenter} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="— sin centro —" searchPlaceholder="Buscar centro…" allowClear />
-            </Field>
-          </div>
-          {recurring.accounts.length > 0 && (
-            <div className="flex flex-wrap items-center gap-1.5 text-xs bg-emerald-50/60 border border-emerald-100 rounded-lg px-2 py-1.5">
-              <span className="text-slate-500 font-medium">Cuentas frecuentes:</span>
-              {recurring.accounts.map((a) => (
-                <button type="button" key={a._id} onClick={() => applyRecurring(a._id)} title={`Usar ${a.code} ${a.name} en los ítems sin cuenta`} className="px-2 py-0.5 rounded-full bg-white text-emerald-700 border border-emerald-200 hover:bg-emerald-100">
-                  {a.code} {a.name}{a.forSupplier ? ' ★' : ''}
-                </button>
-              ))}
+        <form onSubmit={submit} className="space-y-4">
+          {authorizeId && <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2">Factura cargada automáticamente. Clasifica cada renglón (Productos, Gastos o Activos fijos) y verifica los datos antes de contabilizar.</div>}
+
+          {/* ── 1. Datos generales ── */}
+          <SectionCard title="Datos de la factura" icon={HiOutlineDocumentText}>
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-2.5">
+              <Field label="Proveedor" required className="col-span-2">
+                <SearchableSelect options={suppliers} value={form.supplier} onChange={onSelectSupplier} getLabel={(s) => `${s.ruc} - ${s.razonSocial}`} getSearchText={(s) => `${s.ruc} ${s.razonSocial} ${s.nombreComercial || ''}`} placeholder="Seleccione un proveedor…" searchPlaceholder="Buscar por RUC o nombre…" />
+              </Field>
+              <Field label="Tipo de documento">
+                <select value={form.docType} onChange={(e) => setForm({ ...form, docType: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white">
+                  <option>FACTURA</option><option>NOTA_VENTA</option><option>LIQUIDACION</option><option>NOTA_DEBITO_REC</option><option>NOTA_CREDITO_REC</option>
+                </select>
+              </Field>
+              <Field label="Fecha de emisión" required><input type="date" required value={form.fechaEmision} onChange={(e) => setForm((f) => ({ ...f, fechaEmision: e.target.value, fechaVencimiento: f.creditDays ? addDays(e.target.value, f.creditDays) : f.fechaVencimiento }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+              <Field label="Establecimiento"><input placeholder="001" value={form.estab} onChange={(e) => setForm({ ...form, estab: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+              <Field label="Punto de emisión"><input placeholder="001" value={form.ptoEmi} onChange={(e) => setForm({ ...form, ptoEmi: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+              <Field label="Secuencial" required><input required placeholder="000000123" value={form.secuencial} onChange={(e) => setForm({ ...form, secuencial: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+              <Field label="N° de autorización SRI"><input placeholder="Opcional" value={form.autorizacion} onChange={(e) => setForm({ ...form, autorizacion: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+              <Field label="Días de crédito"><NumericInput value={form.creditDays} onChange={(e) => setForm((f) => ({ ...f, creditDays: +e.target.value, fechaVencimiento: +e.target.value > 0 ? addDays(f.fechaEmision, +e.target.value) : '' }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-right" /></Field>
+              <Field label="Vencimiento"><input type="date" value={form.fechaVencimiento || ''} onChange={(e) => setForm({ ...form, fechaVencimiento: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+              <Field label="Forma de pago (SRI)"><input placeholder="Opcional" value={form.paymentMethodSri || ''} onChange={(e) => setForm({ ...form, paymentMethodSri: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+              <Field label="Centro de costo (factura)" className="col-span-2">
+                <SearchableSelect options={costCenters} value={form.costCenter} onChange={setInvoiceCostCenter} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="— sin centro —" searchPlaceholder="Buscar centro…" allowClear />
+              </Field>
+              <Field label="Observación (factura)" className="col-span-2 md:col-span-4"><input placeholder="Descripción general de la factura (opcional)" value={form.notes || ''} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
             </div>
-          )}
-          <div className="text-[11px] text-slate-400">El IVA y la cuenta de Proveedores (CxP) se calculan automáticamente. El contador solo escoge la cuenta de gasto (o distribuye en varias).</div>
-          <div className="space-y-3">
-            {form.items.map((it, i) => {
-              const splits = it.accountSplits || [];
-              const hasSplits = splits.length > 0;
-              const itemBase = +((it.quantity || 0) * (it.unitPrice || 0) - (it.discount || 0)).toFixed(2);
-              const splitSum = +splits.reduce((s, sp) => s + (+sp.amount || 0), 0).toFixed(2);
-              const splitOk = Math.abs(splitSum - itemBase) < 0.01;
-              const setSplit = (j, patch) => { const sp = [...splits]; sp[j] = { ...sp[j], ...patch }; setItem(i, { accountSplits: sp }); };
-              return (
-                <div key={i} className="border border-slate-200 rounded-xl p-3 bg-slate-50/40 space-y-2.5">
-                  <div className="flex items-start gap-2">
-                    <Field label={`Descripción${form.items.length > 1 ? ` · ítem ${i + 1}` : ''}`} required className="flex-1">
-                      <input required value={it.description} onChange={(e) => setItem(i, { description: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" placeholder="Detalle del bien o servicio" />
-                    </Field>
-                    {form.items.length > 1 && (
-                      <button type="button" onClick={() => setForm({ ...form, items: form.items.filter((_, x) => x !== i) })} className="mt-6 shrink-0 text-rose-500 hover:text-rose-600" title="Quitar ítem"><HiOutlineXMark className="w-5 h-5" /></button>
-                    )}
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <Field label="Tipo de línea">
-                      <select value={it.lineType || 'GASTO'} onChange={(e) => setItem(i, { lineType: e.target.value, accountSplits: e.target.value === 'GASTO' ? it.accountSplits : [], product: e.target.value === 'INVENTARIO' ? it.product : '' })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm bg-white">
-                        {LINE_TYPES.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-                      </select>
-                    </Field>
-                    <Field label="Centro de costo (línea)">
-                      <SearchableSelect options={costCenters} value={it.costCenter} onChange={(v) => setItem(i, { costCenter: v })} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="— sin centro —" searchPlaceholder="Buscar centro…" allowClear size="sm" />
-                    </Field>
-                  </div>
-                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2">
-                    <Field label="Cantidad"><NumericInput step="0.01" value={it.quantity} onChange={(e) => setItem(i, { quantity: +e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm text-right" /></Field>
-                    <Field label="P. unitario"><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(i, { unitPrice: +e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm text-right" /></Field>
-                    <Field label="Descuento"><NumericInput step="0.01" value={it.discount} onChange={(e) => setItem(i, { discount: +e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm text-right" /></Field>
-                    <Field label="IVA %">
-                      <select value={it.ivaRate} onChange={(e) => setItem(i, { ivaRate: +e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm bg-white">
-                        <option value={0}>0%</option><option value={12}>12%</option><option value={15}>15%</option><option value={-1}>No obj</option><option value={-2}>Exento</option>
-                      </select>
-                    </Field>
-                    <Field label="Subtotal"><div className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm text-right bg-slate-100 font-mono text-slate-700">{fmt(itemBase)}</div></Field>
-                  </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                    <Field label={it.lineType === 'INVENTARIO' ? 'Cuenta de inventario (activo)' : it.lineType === 'ACTIVO_FIJO' ? 'Cuenta de activo fijo' : 'Cuenta de gasto'} required={!hasSplits}>
-                      {hasSplits ? (
-                        <div className="flex items-center justify-between border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white text-slate-500 italic">
-                          Distribuido en {splits.length} cuentas
-                          <button type="button" onClick={() => setItem(i, { accountSplits: [] })} className="not-italic text-sky-600 text-xs">usar una</button>
-                        </div>
-                      ) : (
-                        <div className="flex items-center gap-2">
-                          <SearchableSelect options={accounts} value={it.account} onChange={(v) => setItem(i, { account: v })} getLabel={(a) => `${a.code} ${a.name}`} placeholder="Elegir cuenta…" searchPlaceholder="Buscar por código o nombre…" className="flex-1" />
-                          {it.lineType === 'GASTO' && <button type="button" title="Distribuir en varias cuentas" onClick={() => setItem(i, { accountSplits: [{ account: it.account || '', amount: itemBase, description: '' }] })} className="text-xs text-sky-600 whitespace-nowrap">➗ varias</button>}
-                        </div>
-                      )}
-                    </Field>
-                    {it.lineType === 'INVENTARIO' && (
-                      <Field label="Producto" required hint="Insumo que entra a stock">
-                        <div className="flex items-center gap-2">
-                          <div className="flex-1 min-w-0">
-                            <SearchableSelect options={products} value={it.product} onChange={(v) => setItem(i, { product: v, warehouse: v ? it.warehouse : '' })} getLabel={(p) => p.name} placeholder="Selecciona producto…" searchPlaceholder="Buscar producto…" allowClear />
-                          </div>
-                          <button type="button" onClick={() => setNewProductItemIdx(i)} title="Crear producto nuevo en inventario" className="shrink-0 px-2.5 py-2 text-sm rounded-lg border border-emerald-200 text-emerald-700 hover:bg-emerald-50 flex items-center gap-1 whitespace-nowrap bg-white cursor-pointer">
-                            <HiOutlinePlus className="w-4 h-4" /> Nuevo
-                          </button>
-                        </div>
-                      </Field>
-                    )}
-                  </div>
-                  {it.lineType === 'INVENTARIO' && it.product && (
-                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
-                      <Field label="Bodega"><SearchableSelect options={[{ _id: '', name: 'General' }, ...warehouses]} value={it.warehouse} onChange={(v) => setItem(i, { warehouse: v })} getLabel={(w) => w.name} placeholder="General" searchPlaceholder="Buscar bodega…" /></Field>
-                      <Field label="Lote"><input value={it.lot || ''} onChange={(e) => setItem(i, { lot: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm" placeholder="Opcional" /></Field>
-                      <Field label="Caducidad"><input type="date" value={it.expiryDate ? String(it.expiryDate).slice(0, 10) : ''} onChange={(e) => setItem(i, { expiryDate: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm" /></Field>
-                    </div>
-                  )}
-                  {it.lineType === 'ACTIVO_FIJO' && (
-                    <FixedAssetFields i={i} fa={it.fixedAsset || {}} categories={assetCategories} clinics={clinics} accounts={accounts} onCategory={onItemAssetCategory} setFa={setFa} />
-                  )}
-                  {hasSplits && (
-                    <div className="bg-white border border-slate-200 rounded-lg p-2.5">
-                      <div className="text-xs font-semibold text-slate-600 mb-1.5">Distribución de cuentas (subtotal {fmt(itemBase)})</div>
-                      {splits.map((sp, j) => (
-                        <div key={j} className="flex items-center gap-2 mb-1.5">
-                          <SearchableSelect options={accounts} value={sp.account} onChange={(v) => setSplit(j, { account: v })} getLabel={(a) => `${a.code} ${a.name}`} placeholder="Cuenta…" searchPlaceholder="Buscar cuenta…" className="flex-1" size="sm" />
-                          <NumericInput step="0.01" placeholder="Monto" value={sp.amount} onChange={(e) => setSplit(j, { amount: +e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs w-28 text-right" />
-                          <input placeholder="Detalle" value={sp.description} onChange={(e) => setSplit(j, { description: e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs flex-1 min-w-0" />
-                          <button type="button" onClick={() => setItem(i, { accountSplits: splits.filter((_, x) => x !== j) })} className="text-rose-500 shrink-0">×</button>
-                        </div>
-                      ))}
-                      <div className="flex items-center gap-3 mt-1">
-                        <button type="button" onClick={() => setItem(i, { accountSplits: [...splits, { account: '', amount: +(itemBase - splitSum).toFixed(2), description: '' }] })} className="text-emerald-600 text-xs">+ cuenta</button>
-                        <span className={`text-xs ${splitOk ? 'text-emerald-600' : 'text-rose-600'}`}>Suma: {fmt(splitSum)} / {fmt(itemBase)} {splitOk ? '✓' : '✗'}</span>
-                      </div>
-                    </div>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-          <button type="button" onClick={() => setForm({ ...form, items: [...form.items, { ...EMPTY_ITEM }] })} className="text-emerald-600 text-sm flex items-center gap-1"><HiOutlinePlus /> Agregar ítem</button>
+          </SectionCard>
 
-          <div className="bg-slate-50 p-3 rounded grid grid-cols-4 gap-3 text-sm">
-            <div>Subt 0%: <b>{fmt(totals.s0)}</b></div>
-            <div>Subt 12%: <b>{fmt(totals.s12)}</b></div>
-            <div>Subt 15%: <b>{fmt(totals.s15)}</b></div>
-            <div>No obj/Exe: <b>{fmt(totals.sNo + totals.sEx)}</b></div>
-            <div>IVA: <b>{fmt(totals.iva)}</b></div>
-            <div>Retenc: <b>{fmt(totals.retTotal)}</b></div>
-            <div className="col-span-2 text-right">Total: <b className="text-lg">${fmt(totals.total)}</b> → Saldo: <b>${fmt(totals.balance)}</b></div>
-          </div>
-
-          <div className="border-t pt-2">
-            <p className="text-sm font-semibold">Retenciones</p>
-            {form.retentions.length > 0 && (
-              <div className="grid grid-cols-6 gap-2 mt-1 text-[11px] text-slate-400 uppercase px-1">
-                <span>Tipo</span><span>Código</span><span>Base</span><span>%</span><span>Monto</span><span></span>
+          {/* ── 2. Productos / Inventario ── */}
+          <SectionCard title="Productos / Inventario" icon={HiOutlineCube} onAdd={() => addItem('INVENTARIO')} addLabel="Agregar producto" count={invItems.length}>
+            {invItems.length === 0 ? (
+              <EmptyHint>Sin productos de inventario. Usa “Agregar producto” si la factura incluye insumos que entran a stock.</EmptyHint>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="text-[11px] uppercase text-slate-400"><tr className="text-left">
+                    <th className="py-1 pr-2">Producto</th><th className="py-1 px-2">Categoría contable</th><th className="py-1 px-2">Bodega</th>
+                    <th className="py-1 px-2 text-right">Cant.</th><th className="py-1 px-2 text-right">Precio</th><th className="py-1 px-2">IVA</th>
+                    <th className="py-1 px-2 text-right">Ret %</th><th className="py-1 px-2 text-right">Subtotal</th><th></th>
+                  </tr></thead>
+                  <tbody>
+                    {invItems.map((it) => {
+                      const prod = products.find((p) => String(p._id) === String(it.product));
+                      const cat = prod?.inventoryCategory;
+                      const assetAcc = cat?.assetAccount;
+                      const missing = prod && (!cat || !assetAcc);
+                      return (
+                        <tr key={it._uid} className="border-t border-slate-100 align-top">
+                          <td className="py-1.5 pr-2 min-w-[200px]">
+                            <div className="flex items-center gap-1.5">
+                              <div className="flex-1 min-w-0"><SearchableSelect options={products} value={it.product} onChange={(v) => onPickProduct(it._uid, v)} getLabel={(p) => p.name} getSearchText={(p) => `${p.name} ${p.code}`} placeholder="Selecciona producto…" searchPlaceholder="Buscar producto…" allowClear size="sm" /></div>
+                              <button type="button" onClick={() => setNewProductItemUid(it._uid)} title="Crear producto nuevo" className="shrink-0 p-1.5 rounded-lg border border-emerald-200 text-emerald-700 hover:bg-emerald-50 bg-white"><HiOutlinePlus className="w-4 h-4" /></button>
+                            </div>
+                          </td>
+                          <td className="py-1.5 px-2 text-xs min-w-[150px]">
+                            {cat ? (
+                              <div>
+                                <div className="text-slate-700">{cat.name}</div>
+                                <div className="text-[11px] text-slate-400 font-mono">{assetAcc ? `${assetAcc.code || ''} ${assetAcc.name || ''}`.trim() : '—'}</div>
+                              </div>
+                            ) : <span className="text-slate-400">—</span>}
+                            {missing && <div className="text-[11px] text-rose-600 flex items-center gap-1 mt-0.5"><HiOutlineExclamationTriangle className="w-3.5 h-3.5" /> {cat ? 'Categoría sin cuenta de inventario' : 'Producto sin categoría contable'}</div>}
+                          </td>
+                          <td className="py-1.5 px-2 min-w-[110px]"><SearchableSelect options={[{ _id: '', name: 'General' }, ...warehouses]} value={it.warehouse} onChange={(v) => setItem(it._uid, { warehouse: v })} getLabel={(w) => w.name} placeholder="General" searchPlaceholder="Buscar bodega…" size="sm" /></td>
+                          <td className="py-1.5 px-2 w-20"><NumericInput step="0.01" value={it.quantity} onChange={(e) => setItem(it._uid, { quantity: +e.target.value })} className={`${inputCls} text-right`} /></td>
+                          <td className="py-1.5 px-2 w-24"><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(it._uid, { unitPrice: +e.target.value })} className={`${inputCls} text-right`} /></td>
+                          <td className="py-1.5 px-2 w-20"><IvaSelect value={it.ivaRate} onChange={(v) => setItem(it._uid, { ivaRate: v })} /></td>
+                          <td className="py-1.5 px-2 w-16"><NumericInput step="0.01" value={it.retention?.percentage || 0} onChange={(e) => setLineRetention(it._uid, { percentage: +e.target.value })} className={`${inputCls} text-right`} /></td>
+                          <td className="py-1.5 px-2 text-right font-mono text-slate-700 w-24">{fmt(lineBase(it))}</td>
+                          <td className="py-1.5 pl-1"><button type="button" onClick={() => removeItem(it._uid)} className="text-rose-500 hover:text-rose-600"><HiOutlineXMark className="w-4 h-4" /></button></td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+                <p className="text-[11px] text-slate-400 mt-1.5">La cuenta de inventario se toma de la categoría contable del producto (no se edita aquí).</p>
               </div>
+            )}
+          </SectionCard>
+
+          {/* ── 3. Cuentas / Gastos ── */}
+          <SectionCard title="Cuentas / Gastos" icon={HiOutlineBanknotes} onAdd={() => addItem('GASTO')} addLabel="Agregar gasto" count={gastoItems.length}>
+            {recurring.accounts.length > 0 && (
+              <div className="flex flex-wrap items-center gap-1.5 text-xs bg-emerald-50/60 border border-emerald-100 rounded-lg px-2 py-1.5 mb-2">
+                <span className="text-slate-500 font-medium">Cuentas frecuentes:</span>
+                {recurring.accounts.map((a) => (
+                  <button type="button" key={a._id} onClick={() => applyRecurring(a._id)} title={`Usar ${a.code} ${a.name} en los gastos sin cuenta`} className="px-2 py-0.5 rounded-full bg-white text-emerald-700 border border-emerald-200 hover:bg-emerald-100">{a.code} {a.name}{a.forSupplier ? ' ★' : ''}</button>
+                ))}
+              </div>
+            )}
+            {gastoItems.length === 0 ? (
+              <EmptyHint>Sin gastos. Usa “Agregar gasto” para transporte, servicios, comisiones, etc.</EmptyHint>
+            ) : (
+              <div className="space-y-2">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="text-[11px] uppercase text-slate-400"><tr className="text-left">
+                      <th className="py-1 pr-2">Cuenta</th><th className="py-1 px-2">Descripción</th><th className="py-1 px-2 text-right">Valor</th>
+                      <th className="py-1 px-2">IVA</th><th className="py-1 px-2">Centro de costo</th><th className="py-1 px-2 text-right">Ret %</th><th></th>
+                    </tr></thead>
+                    <tbody>
+                      {gastoItems.map((it) => {
+                        const splits = it.accountSplits || [];
+                        const hasSplits = splits.length > 0;
+                        const base = lineBase(it);
+                        const splitSum = +splits.reduce((s, sp) => s + (+sp.amount || 0), 0).toFixed(2);
+                        const splitOk = Math.abs(splitSum - base) < 0.01;
+                        const setSplit = (j, patch) => { const sp = [...splits]; sp[j] = { ...sp[j], ...patch }; setItem(it._uid, { accountSplits: sp }); };
+                        return (
+                          <RowGroup key={it._uid}>
+                            <tr className="border-t border-slate-100 align-top">
+                              <td className="py-1.5 pr-2 min-w-[190px]">
+                                {hasSplits ? (
+                                  <div className="flex items-center justify-between border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white text-slate-500 italic">Distribuido en {splits.length}<button type="button" onClick={() => setItem(it._uid, { accountSplits: [] })} className="not-italic text-sky-600">una</button></div>
+                                ) : (
+                                  <div className="flex items-center gap-1">
+                                    <div className="flex-1 min-w-0"><SearchableSelect options={accounts} value={it.account} onChange={(v) => setItem(it._uid, { account: v })} getLabel={(a) => `${a.code} ${a.name}`} getSearchText={(a) => `${a.code} ${a.name}`} placeholder="Cuenta de gasto…" searchPlaceholder="Buscar cuenta…" size="sm" /></div>
+                                    <button type="button" title="Distribuir en varias cuentas" onClick={() => setItem(it._uid, { accountSplits: [{ account: it.account || '', amount: base, description: '' }] })} className="text-xs text-sky-600 shrink-0">➗</button>
+                                  </div>
+                                )}
+                              </td>
+                              <td className="py-1.5 px-2 min-w-[160px]"><input value={it.description} onChange={(e) => setItem(it._uid, { description: e.target.value })} placeholder="Detalle del gasto" className={inputCls} /></td>
+                              <td className="py-1.5 px-2 w-24"><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(it._uid, { unitPrice: +e.target.value, quantity: 1 })} className={`${inputCls} text-right`} /></td>
+                              <td className="py-1.5 px-2 w-20"><IvaSelect value={it.ivaRate} onChange={(v) => setItem(it._uid, { ivaRate: v })} /></td>
+                              <td className="py-1.5 px-2 min-w-[130px]"><SearchableSelect options={costCenters} value={it.costCenter} onChange={(v) => setItem(it._uid, { costCenter: v })} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="— sin centro —" searchPlaceholder="Buscar centro…" allowClear size="sm" /></td>
+                              <td className="py-1.5 px-2 w-16"><NumericInput step="0.01" value={it.retention?.percentage || 0} onChange={(e) => setLineRetention(it._uid, { percentage: +e.target.value })} className={`${inputCls} text-right`} /></td>
+                              <td className="py-1.5 pl-1"><button type="button" onClick={() => removeItem(it._uid)} className="text-rose-500 hover:text-rose-600"><HiOutlineXMark className="w-4 h-4" /></button></td>
+                            </tr>
+                            {hasSplits && (
+                              <tr className="bg-slate-50/60"><td colSpan={7} className="px-2 py-2">
+                                <div className="text-[11px] font-semibold text-slate-600 mb-1">Distribución de cuentas (valor {fmt(base)})</div>
+                                {splits.map((sp, j) => (
+                                  <div key={j} className="flex items-center gap-2 mb-1.5">
+                                    <div className="flex-1 min-w-0"><SearchableSelect options={accounts} value={sp.account} onChange={(v) => setSplit(j, { account: v })} getLabel={(a) => `${a.code} ${a.name}`} placeholder="Cuenta…" searchPlaceholder="Buscar cuenta…" size="sm" /></div>
+                                    <NumericInput step="0.01" placeholder="Monto" value={sp.amount} onChange={(e) => setSplit(j, { amount: +e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs w-28 text-right" />
+                                    <input placeholder="Detalle" value={sp.description} onChange={(e) => setSplit(j, { description: e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs flex-1 min-w-0" />
+                                    <button type="button" onClick={() => setItem(it._uid, { accountSplits: splits.filter((_, x) => x !== j) })} className="text-rose-500 shrink-0">×</button>
+                                  </div>
+                                ))}
+                                <div className="flex items-center gap-3 mt-1">
+                                  <button type="button" onClick={() => setItem(it._uid, { accountSplits: [...splits, { account: '', amount: +(base - splitSum).toFixed(2), description: '' }] })} className="text-emerald-600 text-xs">+ cuenta</button>
+                                  <span className={`text-xs ${splitOk ? 'text-emerald-600' : 'text-rose-600'}`}>Suma: {fmt(splitSum)} / {fmt(base)} {splitOk ? '✓' : '✗'}</span>
+                                </div>
+                              </td></tr>
+                            )}
+                          </RowGroup>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+          </SectionCard>
+
+          {/* ── 4. Activos fijos ── */}
+          <SectionCard title="Activos fijos" icon={HiOutlineBuildingOffice2} onAdd={() => addItem('ACTIVO_FIJO')} addLabel="Agregar activo fijo" count={afItems.length}>
+            {afItems.length === 0 ? (
+              <EmptyHint>Sin activos fijos. Usa “Agregar activo fijo” si la factura incluye equipos/muebles a capitalizar.</EmptyHint>
+            ) : (
+              <div className="space-y-3">
+                {afItems.map((it) => {
+                  const fa = it.fixedAsset || {};
+                  const roots = assetCategories.filter((c) => !c.parent);
+                  const types = assetCategories.filter((c) => c.parent && String(c.parent) === String(fa.category));
+                  return (
+                    <div key={it._uid} className="border border-slate-200 rounded-xl p-3 bg-slate-50/40 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-semibold text-slate-500">Activo fijo</span>
+                        <button type="button" onClick={() => removeItem(it._uid)} className="text-rose-500 hover:text-rose-600"><HiOutlineXMark className="w-4 h-4" /></button>
+                      </div>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                        <Field label="Categoría de activo fijo" required className="col-span-2">
+                          <SearchableSelect options={roots} value={fa.category || ''} onChange={(v) => onItemAssetCategory(it._uid, v)} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="Seleccione…" searchPlaceholder="Buscar categoría…" allowClear size="sm" />
+                        </Field>
+                        <Field label="Tipo de activo"><SearchableSelect options={types} value={fa.assetType || ''} onChange={(v) => setFa(it._uid, { assetType: v })} getLabel={(c) => c.name} placeholder={types.length ? 'Seleccione…' : 'Sin tipos'} searchPlaceholder="Buscar tipo…" allowClear size="sm" /></Field>
+                        <Field label="Código"><input value={fa.code || ''} onChange={(e) => setFa(it._uid, { code: e.target.value })} placeholder="Auto (AF-####)" className={inputCls} /></Field>
+                        <Field label="Nombre" required className="col-span-2"><input value={fa.name || ''} onChange={(e) => setFa(it._uid, { name: e.target.value })} placeholder="Ej: Ecógrafo" className={inputCls} /></Field>
+                        <Field label="Serie"><input value={fa.serial || ''} onChange={(e) => setFa(it._uid, { serial: e.target.value })} className={inputCls} /></Field>
+                        <Field label="Sede / clínica"><SearchableSelect options={clinics} value={fa.locationClinic || ''} onChange={(v) => setFa(it._uid, { locationClinic: v })} getLabel={(c) => c.name} placeholder="Seleccione…" searchPlaceholder="Buscar sede…" allowClear size="sm" /></Field>
+                        <Field label="Ubicación (área)" className="col-span-2"><input value={fa.location || ''} onChange={(e) => setFa(it._uid, { location: e.target.value })} placeholder="Ej: Consultorio 2" className={inputCls} /></Field>
+                        <Field label="Valor"><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(it._uid, { unitPrice: +e.target.value, quantity: 1 })} className={`${inputCls} text-right`} /></Field>
+                        <Field label="IVA"><IvaSelect value={it.ivaRate} onChange={(v) => setItem(it._uid, { ivaRate: v })} /></Field>
+                        <Field label="Ret %"><NumericInput step="0.01" value={it.retention?.percentage || 0} onChange={(e) => setLineRetention(it._uid, { percentage: +e.target.value })} className={`${inputCls} text-right`} /></Field>
+                      </div>
+                      <p className="text-[11px] text-slate-400">Las cuentas (activo, depreciación), la vida útil y el % residual se toman de la categoría. Al contabilizar se crea el activo automáticamente.</p>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </SectionCard>
+
+          {/* ── 5. Retenciones ── */}
+          <SectionCard title="Retenciones" icon={HiOutlineBanknotes}>
+            <p className="text-[11px] text-slate-400 mb-2">Retenciones que se contabilizan (SRI). El cálculo automático desde el catálogo llega en el siguiente bloque; por ahora se ingresan aquí.</p>
+            {form.retentions.length > 0 && (
+              <div className="grid grid-cols-6 gap-2 text-[11px] text-slate-400 uppercase px-1"><span>Tipo</span><span>Código</span><span>Base</span><span>%</span><span>Monto</span><span></span></div>
             )}
             {form.retentions.map((r, i) => (
               <div key={i} className="grid grid-cols-6 gap-2 mt-1 text-xs">
@@ -631,6 +762,23 @@ export default function PurchaseInvoices() {
             ))}
             <button type="button" onClick={() => setForm({ ...form, retentions: [...form.retentions, { type: 'RENTA', code: '', baseAmount: 0, percentage: 0, amount: 0 }] })} className="text-emerald-600 text-xs mt-1">+ Retención</button>
             <Field label="N° comprobante de retención" className="mt-2"><input placeholder="Opcional" value={form.retentionNumber} onChange={(e) => setForm({ ...form, retentionNumber: e.target.value })} className="block w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            {totals.lineRetTotal > 0 && (
+              <div className="mt-3 text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+                <span className="font-semibold text-slate-600">Retención por línea (preparación):</span> total ${fmt(totals.lineRetTotal)} — se usará al automatizar el catálogo SRI en el próximo bloque.
+              </div>
+            )}
+          </SectionCard>
+
+          {/* ── 6. Totales ── */}
+          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
+            <div>Subtotal 0%: <b>{fmt(totals.s0)}</b></div>
+            <div>Subtotal con IVA: <b>{fmt(totals.subtotalConIva)}</b></div>
+            <div>No obj/Exento: <b>{fmt(totals.sNo + totals.sEx)}</b></div>
+            <div>Descuentos: <b>{fmt(totals.discount)}</b></div>
+            <div>IVA: <b>{fmt(totals.iva)}</b></div>
+            <div>Total factura: <b>${fmt(totals.total)}</b></div>
+            <div>Retenciones: <b>{fmt(totals.retTotal)}</b></div>
+            <div className="text-right">Total a pagar: <b className="text-lg">${fmt(totals.balance)}</b></div>
           </div>
 
           <div className="flex justify-end gap-2"><button type="button" onClick={() => { setShow(false); setAuthorizeId(null); setEditId(null); }} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">{authorizeId ? 'Contabilizar' : editId ? 'Guardar cambios' : 'Registrar'}</button></div>
@@ -644,34 +792,19 @@ export default function PurchaseInvoices() {
         </div>
         {importMode === 'xml' ? (
           <div>
-            <p className="text-xs text-slate-500 mb-2">Carga uno o varios archivos XML de facturas electrónicas recibidas. Se cargarán como <b>POR CONTABILIZAR</b> para que el área contable las verifique antes de contabilizar.</p>
-            <input
-              aria-label="Cargar archivos XML"
-              type="file" accept=".xml,text/xml,application/xml" multiple
-              onChange={(e) => onXmlFiles(e.target.files)}
-              className="block w-full text-sm text-slate-600 file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border-0 file:bg-emerald-600 file:text-white file:cursor-pointer"
-            />
+            <p className="text-xs text-slate-500 mb-2">Carga uno o varios archivos XML de facturas electrónicas recibidas. Se cargarán como <b>POR CONTABILIZAR</b> (sin cuenta asignada) para que el área contable clasifique cada línea antes de contabilizar.</p>
+            <input aria-label="Cargar archivos XML" type="file" accept=".xml,text/xml,application/xml" multiple onChange={(e) => onXmlFiles(e.target.files)} className="block w-full text-sm text-slate-600 file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border-0 file:bg-emerald-600 file:text-white file:cursor-pointer" />
             {!!xmlContents.length && (
-              <div className="mt-2 flex items-center justify-between text-sm bg-emerald-50 rounded-lg px-3 py-2">
-                <span>{xmlContents.length} archivo(s) XML listos para importar</span>
-                <button onClick={() => setXmlContents([])} className="text-rose-600 text-xs">Limpiar</button>
-              </div>
+              <div className="mt-2 flex items-center justify-between text-sm bg-emerald-50 rounded-lg px-3 py-2"><span>{xmlContents.length} archivo(s) XML listos para importar</span><button onClick={() => setXmlContents([])} className="text-rose-600 text-xs">Limpiar</button></div>
             )}
           </div>
         ) : (
           <div>
-            <p className="text-xs text-slate-500 mb-2">Carga el archivo <b>.txt</b> del reporte del SRI <b>“Comprobantes electrónicos recibidos”</b> (separado por tabulación). Columnas: <code>RUC_EMISOR · RAZON_SOCIAL_EMISOR · TIPO_COMPROBANTE · SERIE_COMPROBANTE · CLAVE_ACCESO · FECHA_AUTORIZACION · FECHA_EMISION · IDENTIFICACION_RECEPTOR · VALOR_SIN_IMPUESTOS · IVA · IMPORTE_TOTAL</code>. Se reconoce la cabecera automáticamente. Las facturas quedan <b>POR CONTABILIZAR</b> para asignar cuentas/inventario.</p>
+            <p className="text-xs text-slate-500 mb-2">Carga el archivo <b>.txt</b> del reporte del SRI <b>“Comprobantes electrónicos recibidos”</b> (separado por tabulación). Las facturas quedan <b>POR CONTABILIZAR</b> para clasificar sus líneas y asignar cuentas/inventario.</p>
             <label className="block text-xs font-medium text-slate-600 mb-1">Cargar archivo .txt</label>
-            <input
-              type="file" accept=".txt,text/plain,.csv,text/csv"
-              onChange={(e) => { const f = e.target.files?.[0]; if (!f) return; const reader = new FileReader(); reader.onload = (ev) => { setImportTxt(String(ev.target?.result || '')); setImportTxtName(f.name); }; reader.readAsText(f, 'utf-8'); e.target.value = ''; }}
-              className="block w-full text-sm text-slate-600 file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border-0 file:bg-emerald-600 file:text-white file:cursor-pointer"
-            />
+            <input type="file" accept=".txt,text/plain,.csv,text/csv" onChange={(e) => { const f = e.target.files?.[0]; if (!f) return; const reader = new FileReader(); reader.onload = (ev) => { setImportTxt(String(ev.target?.result || '')); setImportTxtName(f.name); }; reader.readAsText(f, 'utf-8'); e.target.value = ''; }} className="block w-full text-sm text-slate-600 file:mr-3 file:px-3 file:py-1.5 file:rounded-md file:border-0 file:bg-emerald-600 file:text-white file:cursor-pointer" />
             {importTxt.trim() ? (
-              <div className="mt-2 flex items-center justify-between text-sm bg-emerald-50 rounded-lg px-3 py-2">
-                <span>📄 <b>{importTxtName || 'archivo.txt'}</b>: {importTxt.split(/\r?\n/).filter((l) => l.trim()).length} línea(s) detectada(s).</span>
-                <button onClick={() => { setImportTxt(''); setImportTxtName(''); }} className="text-rose-600 text-xs">Quitar</button>
-              </div>
+              <div className="mt-2 flex items-center justify-between text-sm bg-emerald-50 rounded-lg px-3 py-2"><span>📄 <b>{importTxtName || 'archivo.txt'}</b>: {importTxt.split(/\r?\n/).filter((l) => l.trim()).length} línea(s) detectada(s).</span><button onClick={() => { setImportTxt(''); setImportTxtName(''); }} className="text-rose-600 text-xs">Quitar</button></div>
             ) : (
               <p className="text-xs text-slate-400 mt-2">Aún no has cargado ningún archivo.</p>
             )}
@@ -682,37 +815,21 @@ export default function PurchaseInvoices() {
 
       {/* Editor del asiento contable (debe/haber) de la compra */}
       {journalInv && (
-        <JournalEntryEditor
-          isOpen={!!journalInv}
-          onClose={() => setJournalInv(null)}
-          entryId={journalInv.journalEntry?._id || journalInv.journalEntry}
-          postUrl={`/purchase-invoices/${journalInv._id}/journal`}
-          title={`Asiento de compra ${journalInv.serie || ''}`}
-          onSaved={load}
-        />
+        <JournalEntryEditor isOpen={!!journalInv} onClose={() => setJournalInv(null)} entryId={journalInv.journalEntry?._id || journalInv.journalEntry} postUrl={`/purchase-invoices/${journalInv._id}/journal`} title={`Asiento de compra ${journalInv.serie || ''}`} onSaved={load} />
       )}
 
       {/* Pago de la factura (CxP) → genera el movimiento bancario para conciliación */}
       <Modal isOpen={!!payInv} onClose={() => setPayInv(null)} title={`Pagar compra ${payInv?.serie || ''}`} size="md">
         {payInv && (
           <div className="space-y-3">
-            <div className="bg-slate-50 rounded-lg px-3 py-2 text-sm flex justify-between">
-              <span>{payInv.supplier?.razonSocial}</span>
-              <span>Saldo: <b>${fmt(payInv.balance ?? payInv.total)}</b></span>
-            </div>
+            <div className="bg-slate-50 rounded-lg px-3 py-2 text-sm flex justify-between"><span>{payInv.supplier?.razonSocial}</span><span>Saldo: <b>${fmt(payInv.balance ?? payInv.total)}</b></span></div>
             <div className="grid grid-cols-2 gap-3">
               <Field label="Método">
-                <select value={payForm.method} onChange={(e) => setPayForm({ ...payForm, method: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
-                  <option value="TRANSFERENCIA">Transferencia</option>
-                  <option value="CHEQUE">Cheque</option>
-                  <option value="EFECTIVO">Efectivo</option>
-                </select>
+                <select value={payForm.method} onChange={(e) => setPayForm({ ...payForm, method: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option value="TRANSFERENCIA">Transferencia</option><option value="CHEQUE">Cheque</option><option value="EFECTIVO">Efectivo</option></select>
               </Field>
               <Field label="Fecha"><input type="date" value={payForm.date} onChange={(e) => setPayForm({ ...payForm, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
               {payForm.method !== 'EFECTIVO' && (
-                <Field label="Cuenta bancaria" required className="col-span-2">
-                  <SearchableSelect options={banks} value={payForm.bankAccount} onChange={(v) => setPayForm({ ...payForm, bankAccount: v })} getLabel={(b) => `${b.name} — ${b.bank}`} placeholder="Seleccione…" searchPlaceholder="Buscar banco…" />
-                </Field>
+                <Field label="Cuenta bancaria" required className="col-span-2"><SearchableSelect options={banks} value={payForm.bankAccount} onChange={(v) => setPayForm({ ...payForm, bankAccount: v })} getLabel={(b) => `${b.name} — ${b.bank}`} placeholder="Seleccione…" searchPlaceholder="Buscar banco…" /></Field>
               )}
               {payForm.method === 'TRANSFERENCIA' && (
                 <Field label="N° comprobante" required className="col-span-2"><input value={payForm.voucherNumber} onChange={(e) => setPayForm({ ...payForm, voucherNumber: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" placeholder="N° de transferencia" /></Field>
@@ -729,13 +846,13 @@ export default function PurchaseInvoices() {
 
       {/* Crear producto nuevo al vuelo desde una línea de inventario */}
       <ProductFormModal
-        isOpen={newProductItemIdx !== null}
-        onClose={() => setNewProductItemIdx(null)}
+        isOpen={newProductItemUid !== null}
+        onClose={() => setNewProductItemUid(null)}
         editingProduct={null}
-        initialValues={newProductItemIdx !== null ? {
-          name: form.items[newProductItemIdx]?.description || '',
-          purchasePrice: form.items[newProductItemIdx]?.unitPrice || '',
-          taxRate: form.items[newProductItemIdx]?.ivaRate ?? 15,
+        initialValues={newProductItemUid !== null ? {
+          name: form.items.find((it) => it._uid === newProductItemUid)?.description || '',
+          purchasePrice: form.items.find((it) => it._uid === newProductItemUid)?.unitPrice || '',
+          taxRate: form.items.find((it) => it._uid === newProductItemUid)?.ivaRate ?? 15,
         } : null}
         products={products}
         clinicsList={clinics}
@@ -745,35 +862,25 @@ export default function PurchaseInvoices() {
   );
 }
 
-// Campos de captura de activo fijo en una línea de compra (espejo del modal "Nuevo activo fijo").
-function FixedAssetFields({ i, fa, categories, clinics, onCategory, setFa }) {
-  const roots = categories.filter((c) => !c.parent);
-  const types = categories.filter((c) => c.parent && String(c.parent) === String(fa.category));
-  const inp = 'w-full border border-slate-200 rounded-lg px-2 py-2 text-sm';
+// Bloque/sección del formulario con encabezado y botón opcional "+ Agregar".
+function SectionCard({ title, icon: Icon, children, onAdd, addLabel, count }) {
   return (
-    <div className="bg-white border border-slate-200 rounded-lg p-2.5 space-y-2">
-      <div className="text-xs font-semibold text-slate-600">Datos del activo fijo</div>
-      <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
-        <Field label="Categoría">
-          <SearchableSelect options={roots} value={fa.category || ''} onChange={(v) => onCategory(i, v)} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="Seleccione…" searchPlaceholder="Buscar categoría…" allowClear size="sm" />
-        </Field>
-        <Field label="Tipo de activo">
-          <SearchableSelect options={types} value={fa.assetType || ''} onChange={(v) => setFa(i, { assetType: v })} getLabel={(c) => c.name} placeholder={types.length ? 'Seleccione…' : 'Sin tipos'} searchPlaceholder="Buscar tipo…" allowClear size="sm" />
-        </Field>
-        <Field label="Código"><input value={fa.code || ''} onChange={(e) => setFa(i, { code: e.target.value })} placeholder="Auto (AF-####)" className={inp} /></Field>
-        <Field label="Nombre"><input value={fa.name || ''} onChange={(e) => setFa(i, { name: e.target.value })} placeholder="Ej: Ecógrafo" className={inp} /></Field>
-        <Field label="Serial"><input value={fa.serial || ''} onChange={(e) => setFa(i, { serial: e.target.value })} className={inp} /></Field>
-        <Field label="Sede / clínica">
-          <SearchableSelect options={clinics} value={fa.locationClinic || ''} onChange={(v) => setFa(i, { locationClinic: v })} getLabel={(c) => c.name} placeholder="Seleccione…" searchPlaceholder="Buscar sede…" allowClear size="sm" />
-        </Field>
-        <Field label="Ubicación (área)"><input value={fa.location || ''} onChange={(e) => setFa(i, { location: e.target.value })} placeholder="Ej: Consultorio 2" className={inp} /></Field>
-        <Field label="% Depreciación anual"><NumericInput step="0.01" value={fa.depreciationRate || 0} onChange={(e) => setFa(i, { depreciationRate: +e.target.value, usefulLifeMonths: Math.round(1200 / (+e.target.value || 1)) })} className={inp} /></Field>
-        <Field label="Vida útil (meses)"><NumericInput value={fa.usefulLifeMonths || 0} onChange={(e) => setFa(i, { usefulLifeMonths: +e.target.value })} className={inp} /></Field>
-        <Field label="% Valor residual"><NumericInput step="0.01" value={fa.residualPercent || 0} onChange={(e) => setFa(i, { residualPercent: +e.target.value })} className={inp} /></Field>
-        <Field label="Fecha adquisición"><input type="date" value={fa.acquisitionDate ? String(fa.acquisitionDate).slice(0, 10) : ''} onChange={(e) => setFa(i, { acquisitionDate: e.target.value })} className={inp} /></Field>
-        <Field label="Inicio depreciación"><input type="date" value={fa.startDate ? String(fa.startDate).slice(0, 10) : ''} onChange={(e) => setFa(i, { startDate: e.target.value })} className={inp} /></Field>
+    <div className="border border-slate-200 rounded-xl overflow-hidden">
+      <div className="flex items-center justify-between bg-slate-50 px-3 py-2 border-b border-slate-200">
+        <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-1.5">{Icon && <Icon className="w-4 h-4 text-emerald-600" />}{title}{typeof count === 'number' && count > 0 && <span className="text-[11px] font-normal text-slate-400">({count})</span>}</h3>
+        {onAdd && <button type="button" onClick={onAdd} className="text-emerald-600 text-xs font-medium flex items-center gap-1 hover:underline"><HiOutlinePlus className="w-4 h-4" /> {addLabel}</button>}
       </div>
-      <p className="text-[11px] text-slate-400">El costo se toma del subtotal de la línea. La cuenta de activo fijo se prefija desde la categoría. Al contabilizar se crea el activo automáticamente.</p>
+      <div className="p-3">{children}</div>
     </div>
+  );
+}
+const EmptyHint = ({ children }) => <p className="text-xs text-slate-400 italic">{children}</p>;
+// Agrupa filas relacionadas (línea + su distribución) sin romper el <tbody>.
+const RowGroup = ({ children }) => <>{children}</>;
+function IvaSelect({ value, onChange }) {
+  return (
+    <select value={value} onChange={(e) => onChange(+e.target.value)} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm bg-white">
+      <option value={0}>0%</option><option value={12}>12%</option><option value={15}>15%</option><option value={-1}>No obj</option><option value={-2}>Exento</option>
+    </select>
   );
 }

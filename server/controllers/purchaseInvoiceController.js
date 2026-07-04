@@ -19,7 +19,10 @@ const { parsePurchaseInvoiceXml } = require('../utils/sriXmlParser');
  */
 async function rememberRecurringAccounts(inv, session) {
   const accountIds = new Set();
+  // Solo se memorizan cuentas de líneas GASTO: las cuentas de INVENTARIO/ACTIVO_FIJO
+  // provienen de la categoría (no son "cuentas de gasto recurrentes" del proveedor).
   for (const it of inv.items || []) {
+    if (it.lineType && it.lineType !== 'GASTO') continue;
     if (it.account) accountIds.add(String(it.account));
     for (const sp of it.accountSplits || []) if (sp.account) accountIds.add(String(sp.account));
   }
@@ -118,6 +121,70 @@ function calcTotals(invoice) {
   invoice.balance = +(invoice.total - invoice.retentionTotal).toFixed(2);
 }
 
+/**
+ * Determina el tipo de línea. `GASTO` es el DEFAULT del esquema y por tanto
+ * ambiguo en datos legacy: si la línea tiene producto o datos de activo fijo, esos
+ * datos mandan sobre un `lineType` que podría ser el default. Un `lineType`
+ * explícito INVENTARIO/ACTIVO_FIJO también se respeta.
+ */
+function inferLineType(it) {
+  const fa = it.fixedAsset;
+  if (it.lineType === 'ACTIVO_FIJO' || (fa && (fa.category || fa.name || fa.code || fa.assetAccount))) return 'ACTIVO_FIJO';
+  if (it.lineType === 'INVENTARIO' || it.product) return 'INVENTARIO';
+  return 'GASTO';
+}
+
+/**
+ * Clasifica cada línea (infiere `lineType`) y valida según su tipo antes de
+ * contabilizar. Separa responsabilidades:
+ *   - GASTO: requiere cuenta o distribución; la cuenta por defecto del proveedor
+ *     SOLO se aplica aquí. Admite distribución (accountSplits) y retención.
+ *   - INVENTARIO: requiere producto y cantidad; resuelve la categoría contable
+ *     desde el producto; NO requiere cuenta manual; NO admite distribución.
+ *   - ACTIVO_FIJO: requiere valor y categoría de activo (o datos/cuenta legacy);
+ *     NO requiere cuenta manual; NO admite distribución.
+ *
+ * @param {boolean} requireGastoAccount  exige cuenta/split en GASTO (contabilización).
+ */
+async function classifyAndValidateItems(items, { clinicId, supplier, session, requireGastoAccount = true }) {
+  for (const it of items || []) {
+    it.lineType = inferLineType(it);
+    const label = it.description || '(sin descripción)';
+    const value = Number(it.subtotal) || ((Number(it.quantity) || 0) * (Number(it.unitPrice) || 0) - (Number(it.discount) || 0));
+
+    if (it.lineType === 'INVENTARIO') {
+      if (Array.isArray(it.accountSplits) && it.accountSplits.length) {
+        throw Object.assign(new Error(`La línea de inventario "${label}" no admite distribución de cuentas`), { status: 400 });
+      }
+      if (!it.product) throw Object.assign(new Error(`La línea de inventario "${label}" requiere un producto`), { status: 400 });
+      if (!(Number(it.quantity) > 0)) throw Object.assign(new Error(`La línea de inventario "${label}" requiere una cantidad`), { status: 400 });
+      // Resuelve la categoría contable desde el producto si la línea no la trae.
+      if (!it.inventoryCategory) {
+        const prod = await Product.findOne({ _id: it.product, clinic: clinicId }).select('inventoryCategory').session(session || null);
+        if (prod?.inventoryCategory) it.inventoryCategory = prod.inventoryCategory;
+      }
+    } else if (it.lineType === 'ACTIVO_FIJO') {
+      if (Array.isArray(it.accountSplits) && it.accountSplits.length) {
+        throw Object.assign(new Error(`La línea de activo fijo "${label}" no admite distribución de cuentas`), { status: 400 });
+      }
+      if (!(value > 0)) throw Object.assign(new Error(`El activo fijo "${label}" requiere un valor`), { status: 400 });
+      const fa = it.fixedAsset || {};
+      const hasCategory = !!fa.category;
+      const hasLegacyAccount = !!(fa.assetAccount || it.account);
+      if (!hasCategory && !hasLegacyAccount) {
+        throw Object.assign(new Error(`El activo fijo "${label}" requiere una categoría de activo fijo`), { status: 400 });
+      }
+    } else { // GASTO
+      const hasSplits = Array.isArray(it.accountSplits) && it.accountSplits.length > 0;
+      // Cuenta por defecto del proveedor: SOLO para gasto sin cuenta ni distribución.
+      if (!it.account && !hasSplits && supplier?.defaultExpenseAccount) it.account = supplier.defaultExpenseAccount;
+      if (requireGastoAccount && !it.account && !hasSplits) {
+        throw Object.assign(new Error(`La línea de gasto "${label}" requiere una cuenta contable o una distribución de cuentas`), { status: 400 });
+      }
+    }
+  }
+}
+
 exports.list = async (req, res) => {
   const { startDate, endDate, supplier, status, docType, q, sort = 'fecha_desc', page = 1, limit = 20 } = req.query;
   const filter = { clinic: req.clinicId };
@@ -170,9 +237,9 @@ exports.create = async (req, res) => {
         await assertPeriodOpen(req.clinicId, data.fechaEmision || new Date(), { session });
         const sup = await Supplier.findOne({ _id: data.supplier, clinic: req.clinicId }).session(session);
         if (!sup) throw Object.assign(new Error('Proveedor no encontrado'), { status: 400 });
-        if ((!data.items?.length || !data.items[0].account) && sup.defaultExpenseAccount) {
-          if (data.items?.length) data.items[0].account = sup.defaultExpenseAccount;
-        }
+        // Clasifica/valida por tipo de línea (la cuenta por defecto del proveedor
+        // se aplica SOLO a líneas GASTO, dentro del helper).
+        await classifyAndValidateItems(data.items, { clinicId: req.clinicId, supplier: sup, session });
         const [inv] = await PurchaseInvoice.create([data], { session });
         await postPurchaseJournal(inv, req, session);
         await postInventoryEntries(inv, req, session);
@@ -207,20 +274,30 @@ async function postPurchaseJournal(inv, req, session, sourceAction = 'POST') {
       continue;
     }
     let accountId = it.account;
-    // Si el ítem está ligado a un producto físico (no servicio/ilimitado) y NO se eligió
-    // una cuenta manualmente, debitar la cuenta de inventario (activo).
-    if (it.product && !it.account) {
-      const prod = await Product.findOne({ _id: it.product, clinic: req.clinicId }).session(session || null);
+    // INVENTARIO: la cuenta de activo (inventario) NO se pide manual; se resuelve desde
+    // la categoría contable del producto → cuenta legacy del producto → default (1.1.04.01).
+    if (!accountId && (it.lineType === 'INVENTARIO' || (it.product && it.lineType !== 'ACTIVO_FIJO'))) {
+      const prod = await Product.findOne({ _id: it.product, clinic: req.clinicId })
+        .populate('inventoryCategory', 'assetAccount').session(session || null);
       if (prod && !prod.unlimited && prod.category !== 'servicio') {
-        if (prod.inventoryAccount) {
-          accountId = prod.inventoryAccount;
-        } else {
+        accountId = prod.inventoryCategory?.assetAccount || prod.inventoryAccount || null;
+        if (!accountId) {
           if (!inventoryDefault) inventoryDefault = await getAccount(req.clinicId, 'inventario', { session });
           if (inventoryDefault) accountId = inventoryDefault._id;
         }
-        // Persistir el account decidido para que el ítem refleje la cuenta usada
-        it.account = accountId;
+        it.account = accountId; // refleja la cuenta usada
       }
+    }
+    // ACTIVO_FIJO: la cuenta de activo NO se pide manual; viene de la captura o de la
+    // categoría de activo fijo (assetAccount).
+    if (!accountId && it.lineType === 'ACTIVO_FIJO') {
+      const fa = it.fixedAsset || {};
+      accountId = fa.assetAccount || null;
+      if (!accountId && fa.category) {
+        const cat = await InventoryCategory.findOne({ _id: fa.category, clinic: req.clinicId }).session(session || null);
+        accountId = cat?.assetAccount || null;
+      }
+      if (accountId) it.account = accountId;
     }
     if (!accountId) continue;
     lines.push({ account: accountId, debit: it.subtotal, credit: 0, description: it.description, costCenter: it.costCenter || inv.costCenter || null });
@@ -426,6 +503,8 @@ exports.update = async (req, res) => {
         Object.assign(inv, req.body);
         if (inv.fechaEmision) inv.fechaEmision = new Date(inv.fechaEmision);
         calcTotals(inv);
+        const supForItems = await Supplier.findById(inv.supplier).session(session);
+        await classifyAndValidateItems(inv.items, { clinicId: req.clinicId, supplier: supForItems, session });
         await inv.save({ session });
         await postPurchaseJournal(inv, req, session, `UPDATE:${Date.now()}`);
         await postInventoryEntries(inv, req, session);
@@ -698,7 +777,8 @@ exports.importTxt = async (req, res) => {
           description: `Compra a ${sup.razonSocial || r.razonSocial || r.ruc} (importado SRI)`,
           quantity: 1, unitPrice: r.subtotal, discount: 0,
           subtotal: r.subtotal, ivaRate: r.ivaRate, ivaAmount: r.iva,
-          account: sup.defaultExpenseAccount || null,
+          // Sin cuenta ni clasificación: el contador clasifica al contabilizar.
+          account: null, lineType: 'GASTO',
         }],
         // Conserva los montos EXACTOS del SRI (no se recalculan al importar).
         subtotal0: r.ivaRate === 0 ? r.subtotal : 0,
@@ -844,7 +924,9 @@ exports.importXml = async (req, res) => {
           estab: p.estab, ptoEmi: p.ptoEmi, secuencial: p.secuencial, serie: p.serie,
           claveAcceso: p.claveAcceso, xmlClaveAcceso: p.claveAcceso, autorizacion: p.autorizacion,
           fechaEmision: p.fechaEmision,
-          items: p.items.map((it) => ({ ...it, account: sup.defaultExpenseAccount || null })),
+          // Se deja SIN cuenta y SIN clasificar: el contador decide luego si cada línea
+          // es gasto/inventario/activo (no se contamina con la cuenta de gasto por defecto).
+          items: p.items.map((it) => ({ ...it, account: null, lineType: 'GASTO' })),
           status: 'POR_AUTORIZAR', importedFromXml: true, createdBy: req.user._id,
         };
         calcTotals(data);
@@ -874,8 +956,10 @@ exports.authorize = async (req, res) => {
           calcTotals(inv);
         }
         await assertPeriodOpen(req.clinicId, inv.fechaEmision, { session });
-        const sinCuenta = (inv.items || []).some((it) => !it.account && !(it.accountSplits || []).length && !it.product);
-        if (sinCuenta) throw Object.assign(new Error('Asigna una cuenta contable a cada item antes de autorizar'), { status: 400 });
+        // Valida por tipo de línea: GASTO exige cuenta/distribución; INVENTARIO/ACTIVO_FIJO
+        // no requieren cuenta manual (se resuelven de producto/categoría).
+        const supForItems = await Supplier.findById(inv.supplier).session(session);
+        await classifyAndValidateItems(inv.items, { clinicId: req.clinicId, supplier: supForItems, session });
         inv.status = 'REGISTRADA';
         inv.authorizedBy = req.user._id;
         inv.authorizedAt = new Date();

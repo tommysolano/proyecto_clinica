@@ -36,6 +36,19 @@ const fixedAssetCaptureSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Retención capturada por línea (preparación visual: estructura base/%/monto).
+// La contabilización de retenciones sigue usando `PurchaseInvoice.retentions` (cabecera).
+const lineRetentionSchema = new mongoose.Schema(
+  {
+    type: { type: String, enum: ['IVA', 'RENTA'], default: 'RENTA' },
+    code: { type: String, default: '' },
+    baseAmount: { type: Number, default: 0 },
+    percentage: { type: Number, default: 0 },
+    amount: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
 const purchaseItemSchema = new mongoose.Schema(
   {
     description: { type: String, required: true },
@@ -48,13 +61,19 @@ const purchaseItemSchema = new mongoose.Schema(
     account: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount' },
     // Permite distribuir el ítem en varias cuentas contables. Si tiene elementos,
     // se usa en lugar de `account` y la suma de los montos debe igualar el subtotal.
+    // Solo aplica a líneas GASTO (INVENTARIO/ACTIVO_FIJO no admiten distribución).
     accountSplits: { type: [accountSplitSchema], default: [] },
     // Clasificación de la línea: GASTO (cuenta de gasto), INVENTARIO (cuenta de activo
     // + producto que sube stock) o ACTIVO_FIJO (crea un activo fijo al contabilizar).
     lineType: { type: String, enum: ['GASTO', 'INVENTARIO', 'ACTIVO_FIJO'], default: 'GASTO' },
     // Centro de costo de la línea (opcional). Se propaga al asiento contable.
     costCenter: { type: mongoose.Schema.Types.ObjectId, ref: 'CostCenter', default: null },
+    // Categoría contable del producto (líneas INVENTARIO). Denormalizada del producto;
+    // fuente de la cuenta de inventario (no se pide cuenta manual).
+    inventoryCategory: { type: mongoose.Schema.Types.ObjectId, ref: 'InventoryCategory', default: null },
     fixedAsset: { type: fixedAssetCaptureSchema, default: null },
+    // Retención de la línea (estructura visual; ver lineRetentionSchema).
+    retention: { type: lineRetentionSchema, default: null },
     product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null },
     warehouse: { type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse', default: null },
     // Lote y caducidad opcionales para insumos/medicamentos (kardex FIFO por capas).
