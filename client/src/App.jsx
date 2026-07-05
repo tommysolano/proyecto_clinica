@@ -53,6 +53,7 @@ import Reconciliations from './pages/accounting/Reconciliations';
 import Suppliers from './pages/accounting/Suppliers';
 import Payments from './pages/accounting/Payments';
 import PurchaseInvoices from './pages/accounting/PurchaseInvoices';
+import RetentionRules from './pages/accounting/RetentionRules';
 import CreditDebitNotes from './pages/accounting/CreditDebitNotes';
 import Warehouses from './pages/accounting/Warehouses';
 import InventoryCategories from './pages/accounting/InventoryCategories';
@@ -410,6 +411,7 @@ function AppRoutes() {
                   ['deferred-income', DeferredIncome],
                   ['purchases', PurchaseInvoices],
                   ['credit-debit-notes', CreditDebitNotes],
+                  ['retention-rules', RetentionRules],
                   ['retention-vouchers', RetentionVouchers],
                   ['accounting-health', AccountingHealth],
                   ['profitability', Profitability],

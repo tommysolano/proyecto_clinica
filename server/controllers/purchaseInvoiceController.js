@@ -265,16 +265,27 @@ async function classifyAndValidateItems(items, { clinicId, supplier, session, st
  * claro si no cumple.
  */
 async function resolveRetentionRule({ clinicId, ruleId, code, type, date, session }) {
-  const q = { clinic: clinicId };
-  if (ruleId) q._id = ruleId;
-  else { q.code = String(code).trim(); if (type) q.type = type; }
-  const rule = await RetentionRule.findOne(q).session(session || null);
-  if (!rule) throw Object.assign(new Error(`La regla de retención (${ruleId || code}) no existe o no pertenece a la clínica`), { status: 400 });
-  if (!rule.active) throw Object.assign(new Error(`La regla de retención ${rule.code} está inactiva`), { status: 400 });
   const d = date ? new Date(date) : new Date();
-  if (rule.validFrom && d < new Date(rule.validFrom)) throw Object.assign(new Error(`La regla de retención ${rule.code} aún no está vigente`), { status: 400 });
-  if (rule.validTo && d > new Date(rule.validTo)) throw Object.assign(new Error(`La regla de retención ${rule.code} ya no está vigente`), { status: 400 });
-  return rule;
+  const vigente = (r) => (!r.validFrom || d >= new Date(r.validFrom)) && (!r.validTo || d <= new Date(r.validTo));
+  if (ruleId) {
+    const rule = await RetentionRule.findOne({ clinic: clinicId, _id: ruleId }).session(session || null);
+    if (!rule) throw Object.assign(new Error(`La regla de retención (${ruleId}) no existe o no pertenece a la clínica`), { status: 400 });
+    if (!rule.active) throw Object.assign(new Error(`La regla de retención ${rule.code} está inactiva`), { status: 400 });
+    if (rule.validFrom && d < new Date(rule.validFrom)) throw Object.assign(new Error(`La regla de retención ${rule.code} aún no está vigente`), { status: 400 });
+    if (rule.validTo && d > new Date(rule.validTo)) throw Object.assign(new Error(`La regla de retención ${rule.code} ya no está vigente`), { status: 400 });
+    return rule;
+  }
+  // Búsqueda por código (fallback, p.ej. import): puede haber versiones históricas del
+  // mismo código; se elige la ACTIVA vigente a la fecha del documento.
+  const q = { clinic: clinicId, code: String(code).trim() };
+  if (type) q.type = type;
+  const rules = await RetentionRule.find(q).session(session || null);
+  if (!rules.length) throw Object.assign(new Error(`La regla de retención (${code}) no existe o no pertenece a la clínica`), { status: 400 });
+  const activos = rules.filter((r) => r.active);
+  if (!activos.length) throw Object.assign(new Error(`La regla de retención ${code} está inactiva`), { status: 400 });
+  const match = activos.filter(vigente).sort((a, b) => (new Date(b.validFrom || 0)) - (new Date(a.validFrom || 0)))[0];
+  if (!match) throw Object.assign(new Error(`La regla de retención ${code} no está vigente a la fecha`), { status: 400 });
+  return match;
 }
 
 /**

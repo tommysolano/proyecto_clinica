@@ -40,7 +40,11 @@ const retentionRuleSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// Un código de retención es único por clínica y tipo.
-retentionRuleSchema.index({ clinic: 1, type: 1, code: 1 }, { unique: true });
+// Índice de búsqueda por clínica/tipo/código (NO único): permite versiones históricas
+// del mismo código en vigencias distintas. La no-duplicación de reglas ACTIVAS con
+// vigencia solapada se valida a nivel de aplicación (ver retentionRuleController).
+// NOTA prod: si existe el índice único anterior { clinic,type,code } debe eliminarse
+// con server/scripts/dropRetentionRuleUniqueIndex.js para habilitar el versionado.
+retentionRuleSchema.index({ clinic: 1, type: 1, code: 1 });
 
 module.exports = mongoose.model('RetentionRule', retentionRuleSchema);

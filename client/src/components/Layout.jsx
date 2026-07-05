@@ -139,6 +139,7 @@ const ACCT_GROUPS = [
       { path: '/accounting/dashboard', label: 'Dashboard Contable' },
       { path: '/accounting/chart', label: 'Plan de Cuentas' },
       { path: '/accounting/account-mapping', label: 'Config. Cuentas' },
+      { path: '/accounting/retention-rules', label: 'Config. Retenciones' },
       { path: '/accounting/cost-centers', label: 'Centros de Costo' },
       { path: '/accounting/periods', label: 'Períodos Fiscales' },
       { path: '/accounting/journal', label: 'Asientos' },
