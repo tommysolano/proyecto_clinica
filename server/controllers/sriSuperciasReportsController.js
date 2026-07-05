@@ -17,6 +17,20 @@ const PurchaseInvoice = require('../models/PurchaseInvoice');
 const Clinic = require('../models/Clinic');
 const { startOfDay, endOfDay } = require('../utils/dates');
 const { asObjectId } = require('../utils/objectId');
+const { resolveReportRange, isMonthlyRange, invoiceFiscalDate, inRange } = require('../utils/reportDateRange');
+
+/** Ventas AUTORIZADAS cuya fecha fiscal (fechaEmision, fallback createdAt) cae en el rango. */
+async function salesInRange(clinicId, start, end) {
+  const invoices = await Invoice.find({ clinic: clinicId, estado: 'AUTORIZADO' }).lean();
+  return invoices.filter((inv) => inRange(invoiceFiscalDate(inv), start, end));
+}
+
+/** Mensaje 400 cuando se pide un XML oficial mensual con un rango no mensual. */
+function monthlyGuard(range, res, formLabel) {
+  if (isMonthlyRange(range)) return false;
+  res.status(400).json({ message: `El XML oficial del ${formLabel} debe generarse por mes; para rangos use el reporte visual.` });
+  return true;
+}
 
 function escXml(s) {
   return String(s == null ? '' : s).replace(/[<>&"']/g, (c) => ({
@@ -111,19 +125,15 @@ exports.incomeStatementTxt = async (req, res) => {
  */
 exports.form104Xml = async (req, res) => {
   try {
-    const { year, month } = req.query;
-    const y = parseInt(year);
-    const m = parseInt(month);
-    if (!y || !m) return res.status(400).json({ message: 'year y month requeridos' });
-    const start = new Date(y, m - 1, 1);
-    const end = new Date(y, m, 0, 23, 59, 59);
+    const range = resolveReportRange(req.query);
+    if (monthlyGuard(range, res, 'Formulario 104')) return;
+    const y = range.year;
+    const m = range.month;
+    const start = range.start;
+    const end = range.end;
     const clinic = await Clinic.findById(req.clinicId);
 
-    const ventas = await Invoice.find({
-      clinic: req.clinicId,
-      estado: 'AUTORIZADO',
-      createdAt: { $gte: start, $lte: end },
-    });
+    const ventas = await salesInRange(req.clinicId, start, end);
     const v = ventas.reduce(
       (acc, i) => {
         acc.base += i.totalSinImpuestos || 0;
@@ -173,7 +183,7 @@ exports.form104Xml = async (req, res) => {
     );
     res.send(xml);
   } catch (e) {
-    res.status(500).json({ message: e.message });
+    res.status(e.status || 500).json({ message: e.message });
   }
 };
 
@@ -183,12 +193,12 @@ exports.form104Xml = async (req, res) => {
  */
 exports.form103Xml = async (req, res) => {
   try {
-    const { year, month } = req.query;
-    const y = parseInt(year);
-    const m = parseInt(month);
-    if (!y || !m) return res.status(400).json({ message: 'year y month requeridos' });
-    const start = new Date(y, m - 1, 1);
-    const end = new Date(y, m, 0, 23, 59, 59);
+    const range = resolveReportRange(req.query);
+    if (monthlyGuard(range, res, 'Formulario 103')) return;
+    const y = range.year;
+    const m = range.month;
+    const start = range.start;
+    const end = range.end;
     const clinic = await Clinic.findById(req.clinicId);
     const compras = await PurchaseInvoice.find({
       clinic: req.clinicId,
@@ -230,6 +240,6 @@ exports.form103Xml = async (req, res) => {
     );
     res.send(xml);
   } catch (e) {
-    res.status(500).json({ message: e.message });
+    res.status(e.status || 500).json({ message: e.message });
   }
 };

@@ -129,11 +129,13 @@ function mockReq(clinicId, userId, body = {}, extra = {}) {
 
 /** Simula res capturando status + payload. Devuelve { res, result(). } */
 function mockRes() {
-  const state = { statusCode: 200, payload: undefined, done: false };
+  const state = { statusCode: 200, payload: undefined, done: false, headers: {} };
   const res = {
     status(code) { state.statusCode = code; return res; },
     json(payload) { state.payload = payload; state.done = true; return res; },
     send(payload) { state.payload = payload; state.done = true; return res; },
+    // Endpoints que devuelven archivos (XML/TXT/Excel) fijan headers; no-op que registra.
+    setHeader(name, value) { state.headers[name] = value; return res; },
   };
   return { res, state };
 }

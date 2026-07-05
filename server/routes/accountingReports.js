@@ -49,6 +49,7 @@ router.get('/sri/purchases-sales', c.purchaseSalesList);
 router.get('/sri/purchases-sales.xlsx', c.purchaseSalesExcel);
 router.get('/sri/form-104', c.form104);
 router.get('/sri/form-103', c.form103);
+router.get('/sri/ats-preview', c.atsPreview);
 router.get('/sri/ats', c.ats);
 router.get('/sri/rdep', c.rdep);
 router.get('/sri/retentions-received', c.retentionsReceived);

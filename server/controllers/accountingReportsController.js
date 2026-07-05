@@ -9,8 +9,38 @@ const InventoryMovement = require('../models/InventoryMovement');
 const AccountBalance = require('../models/AccountBalance');
 const { recomputeBalances } = require('../utils/accounting');
 const { startOfDay, endOfDay } = require('../utils/dates');
+const {
+  resolveReportRange, isMonthlyRange, invoiceFiscalDate, purchaseFiscalDate, inRange,
+} = require('../utils/reportDateRange');
 const ExcelJS = require('exceljs');
 const mongoose = require('mongoose');
+
+/**
+ * Ventas fiscalmente en el período: facturas AUTORIZADAS cuya fecha FISCAL
+ * (Invoice.fechaEmision 'DD/MM/YYYY', con fallback createdAt) cae en [start, end].
+ * Se filtra en JS porque fechaEmision es String y no admite rango en Mongo.
+ */
+async function fetchSalesInRange(clinicId, start, end) {
+  const invoices = await Invoice.find({ clinic: clinicId, estado: 'AUTORIZADO' }).lean();
+  return invoices.filter((inv) => inRange(invoiceFiscalDate(inv), start, end));
+}
+
+/** Compras (no anuladas) cuya fecha de emisión (Date) cae en [start, end]. */
+function purchasesInRangeQuery(clinicId, start, end) {
+  return { clinic: clinicId, status: { $ne: 'ANULADA' }, fechaEmision: { $gte: start, $lte: end } };
+}
+
+/** Objeto período serializable para las respuestas (etiqueta + metadatos). */
+function periodMeta(range) {
+  return {
+    start: range.start,
+    end: range.end,
+    label: range.label,
+    periodType: range.periodType,
+    year: range.year,
+    month: range.month,
+  };
+}
 
 const sendWorkbook = async (res, wb, filename) => {
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
@@ -1062,16 +1092,13 @@ exports.purchaseSalesExcel = async (req, res) => {
 
 // ---------- Reportes SRI ----------
 exports.purchaseSalesList = async (req, res) => {
-  const { year, month } = req.query;
-  const y = parseInt(year) || new Date().getFullYear();
-  const m = parseInt(month) || (new Date().getMonth() + 1);
-  const start = new Date(y, m - 1, 1);
-  const end = new Date(y, m, 0, 23, 59, 59);
-  const ventas = await Invoice.find({ clinic: req.clinicId, estado: 'AUTORIZADO',
-    createdAt: { $gte: start, $lte: end } });
-  const compras = await PurchaseInvoice.find({ clinic: req.clinicId, status: { $ne: 'ANULADA' },
-    fechaEmision: { $gte: start, $lte: end } }).populate('supplier', 'ruc razonSocial');
-  res.json({ ventas, compras });
+  try {
+    const range = resolveReportRange(req.query);
+    const ventas = await fetchSalesInRange(req.clinicId, range.start, range.end);
+    const compras = await PurchaseInvoice.find(purchasesInRangeQuery(req.clinicId, range.start, range.end))
+      .populate('supplier', 'ruc razonSocial');
+    res.json({ ventas, compras, period: periodMeta(range) });
+  } catch (e) { res.status(e.status || 500).json({ message: e.message }); }
 };
 
 /** Formulario 104 - IVA mensual (resumen para llenado). */
@@ -1124,21 +1151,16 @@ exports.profitabilityByDoctor = async (req, res) => {
 
 exports.form104 = async (req, res) => {
   try {
-    const { year, month } = req.query;
-    const y = parseInt(year), m = parseInt(month);
-    const start = new Date(y, m - 1, 1);
-    const end = new Date(y, m, 0, 23, 59, 59);
+    const range = resolveReportRange(req.query);
 
-    const ventas = await Invoice.find({ clinic: req.clinicId, estado: 'AUTORIZADO',
-      createdAt: { $gte: start, $lte: end } });
+    const ventas = await fetchSalesInRange(req.clinicId, range.start, range.end);
     const v = ventas.reduce((acc, i) => {
       acc.base += i.totalSinImpuestos || 0;
       acc.iva += i.totalImpuesto || 0;
       return acc;
     }, { base: 0, iva: 0 });
 
-    const compras = await PurchaseInvoice.find({ clinic: req.clinicId, status: { $ne: 'ANULADA' },
-      fechaEmision: { $gte: start, $lte: end } });
+    const compras = await PurchaseInvoice.find(purchasesInRangeQuery(req.clinicId, range.start, range.end));
     const c = compras.reduce((acc, p) => {
       acc.base += p.subtotal || 0;
       acc.iva += p.iva || 0;
@@ -1151,26 +1173,26 @@ exports.form104 = async (req, res) => {
     }, { base: 0, iva: 0, ivaCredito: 0, ivaNoCredito: 0, retIVA: 0 });
 
     res.json({
-      periodo: `${y}-${String(m).padStart(2, '0')}`,
+      periodo: range.label,
+      period: periodMeta(range),
       ventas: v, compras: c,
       // Solo el IVA con crédito tributario reduce el IVA por pagar.
       ivaPorPagar: +(v.iva - c.ivaCredito - c.retIVA).toFixed(2),
       isPreliminary: true,
       nota: 'Preliquidación. Validar contra el formato oficial vigente del SRI antes de declarar.',
     });
-  } catch (e) { res.status(500).json({ message: e.message }); }
+  } catch (e) { res.status(e.status || 500).json({ message: e.message }); }
 };
 
 /** Formulario 103 - Retenciones en la fuente. */
 exports.form103 = async (req, res) => {
   try {
-    const { year, month } = req.query;
-    const y = parseInt(year), m = parseInt(month);
-    const start = new Date(y, m - 1, 1);
-    const end = new Date(y, m, 0, 23, 59, 59);
-    const compras = await PurchaseInvoice.find({ clinic: req.clinicId, status: { $ne: 'ANULADA' },
-      fechaEmision: { $gte: start, $lte: end } });
+    const range = resolveReportRange(req.query);
+    const compras = await PurchaseInvoice.find(purchasesInRangeQuery(req.clinicId, range.start, range.end));
     const byCode = {};
+    // Fuente ÚNICA: las retenciones de CABECERA (`p.retentions`), que ya vienen
+    // agrupadas desde las retenciones por línea. No se recorre `item.retentions`
+    // para evitar doble conteo (línea + cabecera).
     for (const p of compras) {
       for (const r of p.retentions || []) {
         if (r.type !== 'RENTA') continue;
@@ -1180,8 +1202,8 @@ exports.form103 = async (req, res) => {
         byCode[key].amount += r.amount || 0;
       }
     }
-    res.json({ periodo: `${y}-${String(m).padStart(2, '0')}`, rows: Object.values(byCode), total: Object.values(byCode).reduce((s, r) => s + r.amount, 0) });
-  } catch (e) { res.status(500).json({ message: e.message }); }
+    res.json({ periodo: range.label, period: periodMeta(range), rows: Object.values(byCode), total: Object.values(byCode).reduce((s, r) => s + r.amount, 0) });
+  } catch (e) { res.status(e.status || 500).json({ message: e.message }); }
 };
 
 /**
@@ -1244,11 +1266,8 @@ exports.rdep = async (req, res) => {
 exports.retentionsReceived = async (req, res) => {
   try {
     const CardSettlement = require('../models/CardSettlement');
-    const { year, month } = req.query;
-    const y = parseInt(year) || new Date().getFullYear();
-    const start = month ? new Date(y, parseInt(month) - 1, 1) : new Date(y, 0, 1);
-    const end = month ? new Date(y, parseInt(month), 0, 23, 59, 59) : new Date(y, 11, 31, 23, 59, 59);
-    const settlements = await CardSettlement.find({ clinic: req.clinicId, status: 'CONTABILIZADO', issueDate: { $gte: start, $lte: end } });
+    const range = resolveReportRange(req.query);
+    const settlements = await CardSettlement.find({ clinic: req.clinicId, status: 'CONTABILIZADO', issueDate: { $gte: range.start, $lte: range.end } });
     const byCode = {};
     let total = 0;
     for (const s of settlements) {
@@ -1261,23 +1280,86 @@ exports.retentionsReceived = async (req, res) => {
         total += r.value || 0;
       }
     }
-    res.json({ periodo: month ? `${y}-${String(month).padStart(2, '0')}` : `${y}`, rows: Object.values(byCode), total: +total.toFixed(2) });
-  } catch (e) { res.status(500).json({ message: e.message }); }
+    res.json({ periodo: range.label, period: periodMeta(range), rows: Object.values(byCode), total: +total.toFixed(2) });
+  } catch (e) { res.status(e.status || 500).json({ message: e.message }); }
+};
+
+/**
+ * ATS visual (JSON) por rango: compras y ventas del período, con desglose de
+ * retenciones, para revisar/conciliar antes de generar el XML oficial (mensual).
+ * Acepta cualquier período (mensual, semestral, anual, personalizado).
+ */
+exports.atsPreview = async (req, res) => {
+  try {
+    const range = resolveReportRange(req.query);
+    const ventasDocs = await fetchSalesInRange(req.clinicId, range.start, range.end);
+    const comprasDocs = await PurchaseInvoice.find(purchasesInRangeQuery(req.clinicId, range.start, range.end))
+      .populate('supplier', 'ruc razonSocial tipoIdentificacion');
+
+    const compras = comprasDocs.map((c) => {
+      const retIva = (c.retentions || []).filter((r) => r.type === 'IVA').reduce((s, r) => s + (r.amount || 0), 0);
+      const retRenta = (c.retentions || []).filter((r) => r.type === 'RENTA').reduce((s, r) => s + (r.amount || 0), 0);
+      return {
+        fecha: c.fechaEmision,
+        serie: c.serie || [c.estab, c.ptoEmi, c.secuencial].filter(Boolean).join('-'),
+        proveedor: c.supplier?.razonSocial || '',
+        ruc: c.supplier?.ruc || '',
+        baseNoObjeto: +(c.subtotalNoObjeto || 0).toFixed(2),
+        base0: +(c.subtotal0 || 0).toFixed(2),
+        baseGrav: +((c.subtotal12 || 0) + (c.subtotal15 || 0)).toFixed(2),
+        iva: +(c.iva || 0).toFixed(2),
+        retIva: +retIva.toFixed(2),
+        retRenta: +retRenta.toFixed(2),
+        total: +(c.total || 0).toFixed(2),
+      };
+    });
+
+    const byClient = {};
+    for (const v of ventasDocs) {
+      const k = v.identificacionComprador || '9999999999999';
+      if (!byClient[k]) byClient[k] = { idCliente: k, razonSocial: v.razonSocialComprador || 'CONSUMIDOR FINAL', numComprobantes: 0, base: 0, iva: 0, total: 0 };
+      byClient[k].numComprobantes += 1;
+      byClient[k].base += v.totalSinImpuestos || 0;
+      byClient[k].iva += v.totalImpuesto || 0;
+      byClient[k].total += v.importeTotal || 0;
+    }
+    const ventas = Object.values(byClient).map((v) => ({
+      ...v, base: +v.base.toFixed(2), iva: +v.iva.toFixed(2), total: +v.total.toFixed(2),
+    }));
+
+    const totals = {
+      comprasBase: +compras.reduce((s, c) => s + c.base0 + c.baseGrav + c.baseNoObjeto, 0).toFixed(2),
+      comprasIva: +compras.reduce((s, c) => s + c.iva, 0).toFixed(2),
+      comprasRetIva: +compras.reduce((s, c) => s + c.retIva, 0).toFixed(2),
+      comprasRetRenta: +compras.reduce((s, c) => s + c.retRenta, 0).toFixed(2),
+      comprasTotal: +compras.reduce((s, c) => s + c.total, 0).toFixed(2),
+      ventasBase: +ventas.reduce((s, v) => s + v.base, 0).toFixed(2),
+      ventasIva: +ventas.reduce((s, v) => s + v.iva, 0).toFixed(2),
+      ventasTotal: +ventas.reduce((s, v) => s + v.total, 0).toFixed(2),
+    };
+
+    res.json({ period: periodMeta(range), monthlyXmlAvailable: isMonthlyRange(range), compras, ventas, totals });
+  } catch (e) { res.status(e.status || 500).json({ message: e.message }); }
 };
 
 /**
  * ATS - Anexo Transaccional Simplificado.
  * Genera XML simplificado (estructura básica del SRI v2.0.0).
+ * El ATS oficial es MENSUAL: se bloquea cualquier período no mensual.
  */
 exports.ats = async (req, res) => {
   try {
-    const { year, month } = req.query;
-    const y = parseInt(year), m = parseInt(month);
-    const start = new Date(y, m - 1, 1);
-    const end = new Date(y, m, 0, 23, 59, 59);
+    const range = resolveReportRange(req.query);
+    if (!isMonthlyRange(range)) {
+      return res.status(400).json({ message: 'El ATS XML debe generarse por mes; para rangos use el reporte visual.' });
+    }
+    const y = range.year;
+    const m = range.month;
+    const start = range.start;
+    const end = range.end;
     const Clinic = require('../models/Clinic');
     const clinic = await Clinic.findById(req.clinicId);
-    const ventas = await Invoice.find({ clinic: req.clinicId, estado: 'AUTORIZADO', createdAt: { $gte: start, $lte: end } });
+    const ventas = await fetchSalesInRange(req.clinicId, start, end);
     const compras = await PurchaseInvoice.find({ clinic: req.clinicId, status: { $ne: 'ANULADA' }, fechaEmision: { $gte: start, $lte: end } }).populate('supplier');
 
     const esc = (s) => String(s || '').replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
@@ -1345,7 +1427,7 @@ exports.ats = async (req, res) => {
     const byClient = {};
     for (const v of ventas) {
       const k = v.identificacionComprador || '9999999999999';
-      if (!byClient[k]) byClient[k] = { ...v.toObject(), base: 0, iva: 0, total: 0, count: 0 };
+      if (!byClient[k]) byClient[k] = { ...v, base: 0, iva: 0, total: 0, count: 0 };
       byClient[k].base += v.totalSinImpuestos || 0;
       byClient[k].iva += v.totalImpuesto || 0;
       byClient[k].total += v.importeTotal || 0;
