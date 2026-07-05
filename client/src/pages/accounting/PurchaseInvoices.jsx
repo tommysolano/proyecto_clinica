@@ -21,7 +21,24 @@ const EMPTY = { supplier: '', docType: 'FACTURA', estab: '001', ptoEmi: '001', s
 // Contador para claves de fila del formulario (no se envían al backend).
 let _uidc = 0;
 const uid = () => `it_${Date.now().toString(36)}_${(_uidc++).toString(36)}`;
-const emptyRetention = () => ({ type: 'RENTA', code: '', baseAmount: 0, percentage: 0, amount: 0 });
+// Selección de retención por línea (basada en catálogo): se guarda la regla escogida;
+// el backend recalcula base/monto/cuenta. base/amount aquí son SOLO estimación visual.
+const emptyRetention = () => ({ rule: '', type: 'RENTA', code: '', description: '', rate: 0, base: 0, amount: 0 });
+
+// Base estimada de retención en el cliente (informativa; el backend es la fuente).
+const retentionBaseForDisplay = (it, baseType) => {
+  const b = +(((it.quantity || 0) * (it.unitPrice || 0)) - (it.discount || 0)).toFixed(2);
+  const iva = it.ivaRate > 0 ? +(b * it.ivaRate / 100).toFixed(2) : 0;
+  if (baseType === 'IVA') return iva;
+  if (baseType === 'SUBTOTAL_IVA') return it.ivaRate > 0 ? b : 0;
+  if (baseType === 'SUBTOTAL_0') return it.ivaRate === 0 ? b : 0;
+  return b; // SUBTOTAL_TOTAL
+};
+const estimateRetention = (it, rule) => {
+  if (!rule) return { base: 0, amount: 0 };
+  const base = retentionBaseForDisplay(it, rule.baseType);
+  return { base, amount: +(base * (Number(rule.rate) || 0) / 100).toFixed(2) };
+};
 const makeItem = (lineType) => ({
   _uid: uid(), lineType,
   description: '', quantity: 1, unitPrice: 0, discount: 0, ivaRate: 15,
@@ -58,6 +75,7 @@ export default function PurchaseInvoices() {
   const [banks, setBanks] = useState([]);
   const [costCenters, setCostCenters] = useState([]);
   const [assetCategories, setAssetCategories] = useState([]); // categorías de activo fijo (con tipos)
+  const [retentionRules, setRetentionRules] = useState([]); // catálogo de retenciones (activas)
   const [clinics, setClinics] = useState([]);
   const [recurring, setRecurring] = useState({ defaultAccount: null, accounts: [] });
   const [form, setForm] = useState(EMPTY);
@@ -107,6 +125,7 @@ export default function PurchaseInvoices() {
     api.get('/banks/accounts').then((r) => setBanks(r.data || [])).catch(() => {});
     api.get('/cost-centers', { params: { active: true } }).then((r) => setCostCenters(r.data || [])).catch(() => {});
     api.get('/inventory-advanced/categories', { params: { kind: 'ACTIVO_FIJO' } }).then((r) => setAssetCategories(r.data?.items || r.data || [])).catch(() => {});
+    api.get('/retention-rules', { params: { active: true } }).then((r) => setRetentionRules(r.data || [])).catch(() => {});
     api.get('/clinics').then((r) => setClinics(r.data?.items || r.data || [])).catch(() => {});
     load();
   }, []);
@@ -152,15 +171,17 @@ export default function PurchaseInvoices() {
     if (f.costCenter) it.costCenter = f.costCenter;
     return { ...f, items: [...f.items, it] };
   });
-  // Retención por línea (preparación visual): recalcula base/monto desde el subtotal.
-  const setLineRetention = (u, patch) => setForm((f) => ({
+  // Retención por línea desde el catálogo: al escoger la regla se guarda su snapshot y se
+  // estima base/monto (informativo). El backend recalcula al guardar.
+  const setLineRetentionRule = (u, ruleId) => setForm((f) => ({
     ...f,
     items: f.items.map((it) => {
       if (it._uid !== u) return it;
-      const ret = { ...emptyRetention(), ...it.retention, ...patch };
-      ret.baseAmount = lineBase(it);
-      ret.amount = +(ret.baseAmount * (Number(ret.percentage) || 0) / 100).toFixed(2);
-      return { ...it, retention: ret };
+      if (!ruleId) return { ...it, retention: emptyRetention() };
+      const rule = retentionRules.find((r) => String(r._id) === String(ruleId));
+      if (!rule) return { ...it, retention: emptyRetention() };
+      const { base, amount } = estimateRetention(it, rule);
+      return { ...it, retention: { rule: rule._id, type: rule.type, code: rule.code, description: rule.description || '', rate: rule.rate, base, amount } };
     }),
   }));
 
@@ -204,6 +225,54 @@ export default function PurchaseInvoices() {
   const invItems = form.items.filter((it) => it.lineType === 'INVENTARIO');
   const afItems = form.items.filter((it) => it.lineType === 'ACTIVO_FIJO');
 
+  // Estimación viva de la retención de una línea (informativa; el backend recalcula).
+  const ruleById = (id) => retentionRules.find((r) => String(r._id) === String(id));
+  const lineRetInfo = (it) => {
+    if (!it.retention?.rule) return null;
+    const rule = ruleById(it.retention.rule);
+    if (rule) { const { base, amount } = estimateRetention(it, rule); return { type: rule.type, code: rule.code, description: rule.description, rate: rule.rate, base, amount, account: rule.payableAccount }; }
+    // Regla no cargada (p.ej. compra legacy): usa el snapshot guardado.
+    const r = it.retention;
+    return { type: r.type, code: r.code, description: r.description, rate: r.rate || r.percentage || 0, base: r.base ?? r.baseAmount ?? 0, amount: r.amount || 0, account: r.account };
+  };
+  // Resumen de retenciones DERIVADO de las líneas (o de la cabecera legacy si no hay líneas).
+  const retSummary = (() => {
+    const map = new Map();
+    let anyLine = false;
+    for (const it of form.items) {
+      const info = lineRetInfo(it);
+      if (!info || !(info.amount > 0)) continue;
+      anyLine = true;
+      const key = `${info.type}|${info.code}`;
+      if (!map.has(key)) map.set(key, { ...info, base: 0, amount: 0 });
+      const g = map.get(key);
+      g.base = +(g.base + info.base).toFixed(2);
+      g.amount = +(g.amount + info.amount).toFixed(2);
+    }
+    if (anyLine) return [...map.values()];
+    // Legacy: retenciones de cabecera capturadas manualmente.
+    return (form.retentions || []).map((r) => ({ type: r.type, code: r.code, description: r.description || '', rate: r.percentage || 0, base: r.baseAmount || 0, amount: r.amount || 0, account: r.account }));
+  })();
+
+  // Selector compacto de retención por línea (catálogo). Muestra el monto estimado.
+  const retCell = (it) => {
+    const info = lineRetInfo(it);
+    return (
+      <div className="min-w-[150px]">
+        <select value={it.retention?.rule || ''} onChange={(e) => setLineRetentionRule(it._uid, e.target.value)} className={`${inputCls} text-xs`}>
+          <option value="">Sin retención</option>
+          <optgroup label="Renta">
+            {retentionRules.filter((r) => r.type === 'RENTA').map((r) => <option key={r._id} value={r._id}>{r.code} · {r.rate}% · {r.description}</option>)}
+          </optgroup>
+          <optgroup label="IVA">
+            {retentionRules.filter((r) => r.type === 'IVA').map((r) => <option key={r._id} value={r._id}>{r.code} · {r.rate}% · {r.description}</option>)}
+          </optgroup>
+        </select>
+        {info && info.amount > 0 && <div className="text-[11px] text-slate-400 mt-0.5 text-right">≈ {fmt(info.amount)}</div>}
+      </div>
+    );
+  };
+
   const totals = (() => {
     let s0 = 0, s12 = 0, s15 = 0, sNo = 0, sEx = 0, iva = 0, discount = 0;
     for (const it of form.items) {
@@ -216,9 +285,8 @@ export default function PurchaseInvoices() {
       else if (it.ivaRate === -2) sEx += base;
     }
     const subtotal = s0 + s12 + s15 + sNo + sEx;
-    const retTotal = (form.retentions || []).reduce((s, r) => s + (+r.amount || 0), 0);
-    const lineRetTotal = form.items.reduce((s, it) => s + (+it.retention?.amount || 0), 0);
-    return { s0, s12, s15, sNo, sEx, subtotal, subtotalConIva: s12 + s15, iva: +iva.toFixed(2), discount, total: +(subtotal + iva).toFixed(2), retTotal: +retTotal.toFixed(2), lineRetTotal: +lineRetTotal.toFixed(2), balance: +(subtotal + iva - retTotal).toFixed(2) };
+    const retTotal = +(retSummary.reduce((s, r) => s + (+r.amount || 0), 0)).toFixed(2);
+    return { s0, s12, s15, sNo, sEx, subtotal, subtotalConIva: s12 + s15, iva: +iva.toFixed(2), discount, total: +(subtotal + iva).toFixed(2), retTotal, balance: +(subtotal + iva - retTotal).toFixed(2) };
   })();
 
   const submit = async (e) => {
@@ -243,7 +311,10 @@ export default function PurchaseInvoices() {
     try {
       const serie = form.serie || `${form.estab}-${form.ptoEmi}-${form.secuencial}`;
       const items = form.items.map((it) => {
-        const hasRet = it.retention && (+it.retention.percentage > 0 || +it.retention.amount > 0);
+        // Solo se envía la SELECCIÓN de retención (regla/código); el backend recalcula.
+        const retSel = it.retention?.rule
+          ? { rule: it.retention.rule, code: it.retention.code, type: it.retention.type }
+          : null;
         const base = {
           lineType: it.lineType,
           description: it.description || (it.lineType === 'ACTIVO_FIJO' ? (it.fixedAsset?.name || '') : ''),
@@ -252,7 +323,7 @@ export default function PurchaseInvoices() {
           discount: Number(it.discount) || 0,
           ivaRate: it.ivaRate,
           costCenter: it.costCenter || null,
-          retention: hasRet ? { ...it.retention, baseAmount: lineBase(it) } : null,
+          retention: retSel,
         };
         if (it.lineType === 'INVENTARIO') {
           base.product = it.product || null;
@@ -311,7 +382,7 @@ export default function PurchaseInvoices() {
           warehouse: it.warehouse?._id || it.warehouse || '',
           costCenter: it.costCenter?._id || it.costCenter || '',
           expiryDate: it.expiryDate ? String(it.expiryDate).slice(0, 10) : '',
-          retention: it.retention ? { ...emptyRetention(), ...it.retention } : emptyRetention(),
+          retention: it.retention ? { ...emptyRetention(), ...it.retention, rule: it.retention.rule?._id || it.retention.rule || '', account: it.retention.account?._id || it.retention.account || null } : emptyRetention(),
           accountSplits: (it.accountSplits || []).map((s) => ({ ...s, account: s.account?._id || s.account || '' })),
           fixedAsset: it.fixedAsset ? {
             ...EMPTY_FA, ...it.fixedAsset,
@@ -589,7 +660,7 @@ export default function PurchaseInvoices() {
                   <thead className="text-[11px] uppercase text-slate-400"><tr className="text-left">
                     <th className="py-1 pr-2">Producto</th><th className="py-1 px-2">Categoría contable</th><th className="py-1 px-2">Bodega</th>
                     <th className="py-1 px-2 text-right">Cant.</th><th className="py-1 px-2 text-right">Precio</th><th className="py-1 px-2">IVA</th>
-                    <th className="py-1 px-2 text-right">Ret %</th><th className="py-1 px-2 text-right">Subtotal</th><th></th>
+                    <th className="py-1 px-2">Retención</th><th className="py-1 px-2 text-right">Subtotal</th><th></th>
                   </tr></thead>
                   <tbody>
                     {invItems.map((it) => {
@@ -618,7 +689,7 @@ export default function PurchaseInvoices() {
                           <td className="py-1.5 px-2 w-20"><NumericInput step="0.01" value={it.quantity} onChange={(e) => setItem(it._uid, { quantity: +e.target.value })} className={`${inputCls} text-right`} /></td>
                           <td className="py-1.5 px-2 w-24"><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(it._uid, { unitPrice: +e.target.value })} className={`${inputCls} text-right`} /></td>
                           <td className="py-1.5 px-2 w-20"><IvaSelect value={it.ivaRate} onChange={(v) => setItem(it._uid, { ivaRate: v })} /></td>
-                          <td className="py-1.5 px-2 w-16"><NumericInput step="0.01" value={it.retention?.percentage || 0} onChange={(e) => setLineRetention(it._uid, { percentage: +e.target.value })} className={`${inputCls} text-right`} /></td>
+                          <td className="py-1.5 px-2">{retCell(it)}</td>
                           <td className="py-1.5 px-2 text-right font-mono text-slate-700 w-24">{fmt(lineBase(it))}</td>
                           <td className="py-1.5 pl-1"><button type="button" onClick={() => removeItem(it._uid)} className="text-rose-500 hover:text-rose-600"><HiOutlineXMark className="w-4 h-4" /></button></td>
                         </tr>
@@ -649,7 +720,7 @@ export default function PurchaseInvoices() {
                   <table className="w-full text-sm">
                     <thead className="text-[11px] uppercase text-slate-400"><tr className="text-left">
                       <th className="py-1 pr-2">Cuenta</th><th className="py-1 px-2">Descripción</th><th className="py-1 px-2 text-right">Valor</th>
-                      <th className="py-1 px-2">IVA</th><th className="py-1 px-2">Centro de costo</th><th className="py-1 px-2 text-right">Ret %</th><th></th>
+                      <th className="py-1 px-2">IVA</th><th className="py-1 px-2">Centro de costo</th><th className="py-1 px-2">Retención</th><th></th>
                     </tr></thead>
                     <tbody>
                       {gastoItems.map((it) => {
@@ -676,7 +747,7 @@ export default function PurchaseInvoices() {
                               <td className="py-1.5 px-2 w-24"><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(it._uid, { unitPrice: +e.target.value, quantity: 1 })} className={`${inputCls} text-right`} /></td>
                               <td className="py-1.5 px-2 w-20"><IvaSelect value={it.ivaRate} onChange={(v) => setItem(it._uid, { ivaRate: v })} /></td>
                               <td className="py-1.5 px-2 min-w-[130px]"><SearchableSelect options={costCenters} value={it.costCenter} onChange={(v) => setItem(it._uid, { costCenter: v })} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="— sin centro —" searchPlaceholder="Buscar centro…" allowClear size="sm" /></td>
-                              <td className="py-1.5 px-2 w-16"><NumericInput step="0.01" value={it.retention?.percentage || 0} onChange={(e) => setLineRetention(it._uid, { percentage: +e.target.value })} className={`${inputCls} text-right`} /></td>
+                              <td className="py-1.5 px-2">{retCell(it)}</td>
                               <td className="py-1.5 pl-1"><button type="button" onClick={() => removeItem(it._uid)} className="text-rose-500 hover:text-rose-600"><HiOutlineXMark className="w-4 h-4" /></button></td>
                             </tr>
                             {hasSplits && (
@@ -734,7 +805,7 @@ export default function PurchaseInvoices() {
                         <Field label="Ubicación (área)" className="col-span-2"><input value={fa.location || ''} onChange={(e) => setFa(it._uid, { location: e.target.value })} placeholder="Ej: Consultorio 2" className={inputCls} /></Field>
                         <Field label="Valor"><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(it._uid, { unitPrice: +e.target.value, quantity: 1 })} className={`${inputCls} text-right`} /></Field>
                         <Field label="IVA"><IvaSelect value={it.ivaRate} onChange={(v) => setItem(it._uid, { ivaRate: v })} /></Field>
-                        <Field label="Ret %"><NumericInput step="0.01" value={it.retention?.percentage || 0} onChange={(e) => setLineRetention(it._uid, { percentage: +e.target.value })} className={`${inputCls} text-right`} /></Field>
+                        <Field label="Retención">{retCell(it)}</Field>
                       </div>
                       <p className="text-[11px] text-slate-400">Las cuentas (activo, depreciación), la vida útil y el % residual se toman de la categoría. Al contabilizar se crea el activo automáticamente.</p>
                     </div>
@@ -744,29 +815,39 @@ export default function PurchaseInvoices() {
             )}
           </SectionCard>
 
-          {/* ── 5. Retenciones ── */}
+          {/* ── 5. Retenciones (resumen derivado de las líneas) ── */}
           <SectionCard title="Retenciones" icon={HiOutlineBanknotes}>
-            <p className="text-[11px] text-slate-400 mb-2">Retenciones que se contabilizan (SRI). El cálculo automático desde el catálogo llega en el siguiente bloque; por ahora se ingresan aquí.</p>
-            {form.retentions.length > 0 && (
-              <div className="grid grid-cols-6 gap-2 text-[11px] text-slate-400 uppercase px-1"><span>Tipo</span><span>Código</span><span>Base</span><span>%</span><span>Monto</span><span></span></div>
-            )}
-            {form.retentions.map((r, i) => (
-              <div key={i} className="grid grid-cols-6 gap-2 mt-1 text-xs">
-                <select value={r.type} onChange={(e) => { const rs = [...form.retentions]; rs[i].type = e.target.value; setForm({ ...form, retentions: rs }); }} className="border rounded px-2 py-1"><option>IVA</option><option>RENTA</option></select>
-                <input placeholder="Código" value={r.code} onChange={(e) => { const rs = [...form.retentions]; rs[i].code = e.target.value; setForm({ ...form, retentions: rs }); }} className="border rounded px-2 py-1" />
-                <NumericInput step="0.01" placeholder="Base" value={r.baseAmount} onChange={(e) => { const rs = [...form.retentions]; rs[i].baseAmount = +e.target.value; rs[i].amount = +(rs[i].baseAmount * (rs[i].percentage || 0) / 100).toFixed(2); setForm({ ...form, retentions: rs }); }} className="border rounded px-2 py-1" />
-                <NumericInput step="0.01" placeholder="%" value={r.percentage} onChange={(e) => { const rs = [...form.retentions]; rs[i].percentage = +e.target.value; rs[i].amount = +(rs[i].baseAmount * rs[i].percentage / 100).toFixed(2); setForm({ ...form, retentions: rs }); }} className="border rounded px-2 py-1" />
-                <NumericInput step="0.01" placeholder="Monto" value={r.amount} onChange={(e) => { const rs = [...form.retentions]; rs[i].amount = +e.target.value; setForm({ ...form, retentions: rs }); }} className="border rounded px-2 py-1" />
-                <button type="button" onClick={() => setForm({ ...form, retentions: form.retentions.filter((_, x) => x !== i) })} className="text-rose-600">×</button>
+            <p className="text-[11px] text-slate-400 mb-2">Resumen de las retenciones seleccionadas por línea (catálogo SRI). El backend recalcula base y monto al guardar. Para cambiarlas, ajusta la retención en cada línea.</p>
+            {retSummary.length === 0 ? (
+              <EmptyHint>Sin retenciones. Elige el código de retención en cada línea (Productos, Gastos o Activos fijos).</EmptyHint>
+            ) : (
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="text-[11px] uppercase text-slate-400"><tr className="text-left">
+                    <th className="py-1 pr-2">Tipo</th><th className="py-1 px-2">Código</th><th className="py-1 px-2">Descripción</th>
+                    <th className="py-1 px-2 text-right">Base</th><th className="py-1 px-2 text-right">%</th><th className="py-1 px-2 text-right">Monto</th><th className="py-1 px-2">Cuenta</th>
+                  </tr></thead>
+                  <tbody>
+                    {retSummary.map((r, i) => {
+                      const acc = r.account && typeof r.account === 'object' ? `${r.account.code || ''} ${r.account.name || ''}`.trim() : null;
+                      return (
+                        <tr key={`${r.type}-${r.code}-${i}`} className="border-t border-slate-100">
+                          <td className="py-1.5 pr-2">{r.type}</td>
+                          <td className="py-1.5 px-2 font-mono">{r.code}</td>
+                          <td className="py-1.5 px-2 text-slate-600">{r.description || '—'}</td>
+                          <td className="py-1.5 px-2 text-right font-mono">{fmt(r.base)}</td>
+                          <td className="py-1.5 px-2 text-right font-mono">{r.rate}%</td>
+                          <td className="py-1.5 px-2 text-right font-mono">{fmt(r.amount)}</td>
+                          <td className="py-1.5 px-2 text-[11px] text-slate-400 font-mono">{acc || 'Según tipo (por pagar)'}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot><tr className="border-t border-slate-200 font-semibold"><td colSpan={5} className="py-1.5 px-2 text-right">Total retenido</td><td className="py-1.5 px-2 text-right font-mono">{fmt(totals.retTotal)}</td><td></td></tr></tfoot>
+                </table>
               </div>
-            ))}
-            <button type="button" onClick={() => setForm({ ...form, retentions: [...form.retentions, { type: 'RENTA', code: '', baseAmount: 0, percentage: 0, amount: 0 }] })} className="text-emerald-600 text-xs mt-1">+ Retención</button>
-            <Field label="N° comprobante de retención" className="mt-2"><input placeholder="Opcional" value={form.retentionNumber} onChange={(e) => setForm({ ...form, retentionNumber: e.target.value })} className="block w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-            {totals.lineRetTotal > 0 && (
-              <div className="mt-3 text-xs bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
-                <span className="font-semibold text-slate-600">Retención por línea (preparación):</span> total ${fmt(totals.lineRetTotal)} — se usará al automatizar el catálogo SRI en el próximo bloque.
-              </div>
             )}
+            <Field label="N° comprobante de retención" className="mt-3"><input placeholder="Opcional" value={form.retentionNumber} onChange={(e) => setForm({ ...form, retentionNumber: e.target.value })} className="block w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           </SectionCard>
 
           {/* ── 6. Totales ── */}

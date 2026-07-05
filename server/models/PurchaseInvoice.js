@@ -36,15 +36,24 @@ const fixedAssetCaptureSchema = new mongoose.Schema(
   { _id: false }
 );
 
-// Retención capturada por línea (preparación visual: estructura base/%/monto).
-// La contabilización de retenciones sigue usando `PurchaseInvoice.retentions` (cabecera).
+// Retención por LÍNEA basada en catálogo (RetentionRule). El usuario escoge el código
+// (rule); el backend calcula base/monto y resuelve la cuenta. Guarda snapshot de
+// código/descripción/rate/cuenta para auditoría histórica (si la regla cambia después,
+// la factura ya contabilizada conserva el snapshot). `baseAmount`/`percentage` se
+// conservan como alias legacy de `base`/`rate`.
 const lineRetentionSchema = new mongoose.Schema(
   {
+    rule: { type: mongoose.Schema.Types.ObjectId, ref: 'RetentionRule', default: null },
     type: { type: String, enum: ['IVA', 'RENTA'], default: 'RENTA' },
     code: { type: String, default: '' },
+    description: { type: String, default: '' },
+    rate: { type: Number, default: 0 },
+    base: { type: Number, default: 0 },
+    amount: { type: Number, default: 0 },
+    account: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },
+    // Alias legacy (bloque anterior): se mantienen sincronizados con base/rate.
     baseAmount: { type: Number, default: 0 },
     percentage: { type: Number, default: 0 },
-    amount: { type: Number, default: 0 },
   },
   { _id: false }
 );
@@ -83,6 +92,11 @@ const purchaseItemSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Retención de CABECERA. En compras nuevas se DERIVA (agrupada) de las retenciones por
+// línea; en compras legacy es la captura manual antigua. Los reportes SRI (103/104/ATS)
+// leen este arreglo, así que es la fuente única para contabilizar/reportar (no se suma
+// además por línea, para evitar doble conteo). `account`/`rule` se agregan para
+// contabilizar cada código con su cuenta.
 const retentionItemSchema = new mongoose.Schema(
   {
     type: { type: String, enum: ['IVA', 'RENTA'], required: true },
@@ -91,6 +105,8 @@ const retentionItemSchema = new mongoose.Schema(
     baseAmount: Number,
     percentage: Number,
     amount: Number,
+    account: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },
+    rule: { type: mongoose.Schema.Types.ObjectId, ref: 'RetentionRule', default: null },
   },
   { _id: false }
 );
@@ -157,8 +173,22 @@ const purchaseInvoiceSchema = new mongoose.Schema(
     authorizedAt: { type: Date, default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
-  { timestamps: true }
+  { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } }
 );
+
+// Resumen de retenciones derivado de la cabecera (misma fuente que se contabiliza),
+// con la forma que consume el frontend: { type, code, description, rate, base, amount, account }.
+purchaseInvoiceSchema.virtual('retentionSummary').get(function () {
+  return (this.retentions || []).map((r) => ({
+    type: r.type,
+    code: r.code || '',
+    description: r.description || '',
+    rate: Number(r.percentage) || 0,
+    base: Number(r.baseAmount) || 0,
+    amount: Number(r.amount) || 0,
+    account: r.account || null,
+  }));
+});
 
 purchaseInvoiceSchema.index({ clinic: 1, supplier: 1, serie: 1 }, { unique: true, partialFilterExpression: { serie: { $type: 'string' } } });
 

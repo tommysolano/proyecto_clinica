@@ -6,11 +6,13 @@ const InventoryMovement = require('../models/InventoryMovement');
 const RecurringAccount = require('../models/RecurringAccount');
 const FixedAsset = require('../models/FixedAsset');
 const InventoryCategory = require('../models/InventoryCategory');
+const RetentionRule = require('../models/RetentionRule');
 const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { openPayable, voidPayable } = require('../utils/subledger');
 const kardex = require('../utils/kardex');
 const { parsePurchaseInvoiceXml } = require('../utils/sriXmlParser');
+const { computeRetention, groupLineRetentions } = require('../utils/retentionCalculator');
 
 /**
  * Memoriza las cuentas de gasto usadas en una compra como "cuentas recurrentes"
@@ -257,6 +259,76 @@ async function classifyAndValidateItems(items, { clinicId, supplier, session, st
   }
 }
 
+/**
+ * Busca la regla de retención (catálogo) por id o por código+tipo, validando que sea de
+ * la clínica, esté activa y esté vigente a la fecha de la factura. Bloquea con mensaje
+ * claro si no cumple.
+ */
+async function resolveRetentionRule({ clinicId, ruleId, code, type, date, session }) {
+  const q = { clinic: clinicId };
+  if (ruleId) q._id = ruleId;
+  else { q.code = String(code).trim(); if (type) q.type = type; }
+  const rule = await RetentionRule.findOne(q).session(session || null);
+  if (!rule) throw Object.assign(new Error(`La regla de retención (${ruleId || code}) no existe o no pertenece a la clínica`), { status: 400 });
+  if (!rule.active) throw Object.assign(new Error(`La regla de retención ${rule.code} está inactiva`), { status: 400 });
+  const d = date ? new Date(date) : new Date();
+  if (rule.validFrom && d < new Date(rule.validFrom)) throw Object.assign(new Error(`La regla de retención ${rule.code} aún no está vigente`), { status: 400 });
+  if (rule.validTo && d > new Date(rule.validTo)) throw Object.assign(new Error(`La regla de retención ${rule.code} ya no está vigente`), { status: 400 });
+  return rule;
+}
+
+/**
+ * Resuelve la cuenta de retención por pagar de una regla: `rule.payableAccount` (validada
+ * de la clínica) o, como fallback controlado, la cuenta de accountMap por tipo
+ * (retIvaPorPagar / retRentaPorPagar). Bloquea si la cuenta configurada no existe/es de
+ * otra clínica o si no se puede resolver ninguna.
+ */
+async function resolveRetentionPayableAccount(rule, { clinicId, session }) {
+  if (rule.payableAccount) {
+    const acc = await ChartOfAccount.findOne({ _id: rule.payableAccount, clinic: clinicId }).session(session || null);
+    if (!acc) throw Object.assign(new Error(`La cuenta de retención por pagar de la regla ${rule.code} no existe o no pertenece a la clínica`), { status: 400 });
+    return acc;
+  }
+  const role = rule.type === 'IVA' ? 'retIvaPorPagar' : 'retRentaPorPagar';
+  const acc = await getAccount(clinicId, role, { session });
+  if (!acc) throw Object.assign(new Error(`No hay cuenta de retención (${role}) configurada para contabilizar la retención ${rule.code}`), { status: 400 });
+  return acc;
+}
+
+/**
+ * Resuelve las retenciones por LÍNEA (recalcula base/monto/cuenta desde el catálogo,
+ * ignorando lo que envíe el frontend) y DERIVA la cabecera `inv.retentions` agrupada.
+ * La cabecera es la única fuente que se contabiliza/reporta (evita doble conteo).
+ *
+ * Reglas de compatibilidad:
+ *   - Compras del flujo nuevo (`strictAccounts === true`): las retenciones son SIEMPRE
+ *     por línea; la cabecera se re-deriva (aunque quede vacía) para no arrastrar
+ *     retenciones manuales obsoletas.
+ *   - Compras legacy: si hay retenciones por línea, se derivan; si no, se conserva la
+ *     captura manual de cabecera (`inv.retentions`).
+ */
+async function applyLineRetentions(inv, { clinicId, session }) {
+  let hasLine = false;
+  for (const it of inv.items || []) {
+    const sel = it.retention;
+    if (!sel || (!sel.rule && !sel.code)) { it.retention = null; continue; }
+    const rule = await resolveRetentionRule({ clinicId, ruleId: sel.rule, code: sel.code, type: sel.type, date: inv.fechaEmision, session });
+    const account = await resolveRetentionPayableAccount(rule, { clinicId, session });
+    const { base, amount } = computeRetention(it, rule);
+    it.retention = {
+      rule: rule._id, type: rule.type, code: rule.code, description: rule.description || '',
+      rate: rule.rate, base, amount, account: account._id,
+      baseAmount: base, percentage: rule.rate, // alias legacy
+    };
+    if (amount > 0) hasLine = true;
+  }
+  if (inv.strictAccounts === true || hasLine) {
+    inv.retentions = groupLineRetentions(inv.items);
+  }
+  inv.retentionTotal = +((inv.retentions || []).reduce((s, r) => s + (Number(r.amount) || 0), 0)).toFixed(2);
+  inv.balance = +((Number(inv.total) || 0) - inv.retentionTotal).toFixed(2);
+}
+
 exports.list = async (req, res) => {
   const { startDate, endDate, supplier, status, docType, q, sort = 'fecha_desc', page = 1, limit = 20 } = req.query;
   const filter = { clinic: req.clinicId };
@@ -316,6 +388,8 @@ exports.create = async (req, res) => {
         // inventario/activo deben resolver su cuenta desde la categoría contable.
         await classifyAndValidateItems(data.items, { clinicId: req.clinicId, supplier: sup, session, strict: true });
         const [inv] = await PurchaseInvoice.create([data], { session });
+        // Retenciones por línea desde catálogo (recalcula base/monto y deriva la cabecera).
+        await applyLineRetentions(inv, { clinicId: req.clinicId, session });
         await postPurchaseJournal(inv, req, session);
         await postInventoryEntries(inv, req, session);
         await syncFixedAssetsForInvoice(inv, req, session);
@@ -382,14 +456,20 @@ async function postPurchaseJournal(inv, req, session, sourceAction = 'POST') {
     ? await ChartOfAccount.findById(sup.defaultPayableAccount).session(session || null)
     : await getAccount(req.clinicId, 'proveedores', { session });
   lines.push({ account: provAcc._id, debit: 0, credit: inv.total, description: `Factura ${inv.serie || ''}` });
-  // Retenciones (si se ingresan al mismo tiempo): se reducen las CxP del proveedor y se acreditan retenciones por pagar
+  // Retenciones: reducen las CxP del proveedor y se acreditan a retenciones por pagar.
+  // `inv.retentions` es la fuente ÚNICA (derivada de las líneas en compras nuevas o
+  // manual en legacy), así que no hay doble conteo. Cada código usa su propia cuenta
+  // (snapshot de la regla) o, como fallback, la cuenta por rol según el tipo.
   if (inv.retentionTotal > 0) {
-    // Quitamos del crédito al proveedor y subimos retención por pagar
     lines[lines.length - 1].credit = +(lines[lines.length - 1].credit - inv.retentionTotal).toFixed(2);
     for (const r of inv.retentions) {
-      const role = r.type === 'IVA' ? 'retIvaPorPagar' : 'retRentaPorPagar';
-      const acc = await getAccount(req.clinicId, role, { session });
-      lines.push({ account: acc._id, debit: 0, credit: r.amount, description: `Ret ${r.type} ${r.code || ''}` });
+      if (!(Number(r.amount) > 0)) continue;
+      let accId = r.account;
+      if (!accId) {
+        const role = r.type === 'IVA' ? 'retIvaPorPagar' : 'retRentaPorPagar';
+        accId = (await getAccount(req.clinicId, role, { session }))._id;
+      }
+      lines.push({ account: accId, debit: 0, credit: +Number(r.amount).toFixed(2), description: `Ret ${r.type} ${r.code || ''}` });
     }
   }
   const entry = await createEntry({
@@ -576,6 +656,7 @@ exports.update = async (req, res) => {
         if (!Array.isArray(req.body.items)) {
           await classifyAndValidateItems(inv.items, { clinicId: req.clinicId, supplier: supForItems, session, strict: strictUpdate });
         }
+        await applyLineRetentions(inv, { clinicId: req.clinicId, session });
         await inv.save({ session });
         await postPurchaseJournal(inv, req, session, `UPDATE:${Date.now()}`);
         await postInventoryEntries(inv, req, session);
@@ -1042,6 +1123,7 @@ exports.authorize = async (req, res) => {
         inv.authorizedBy = req.user._id;
         inv.authorizedAt = new Date();
         inv.strictAccounts = true; // contabilizada bajo el flujo estricto
+        await applyLineRetentions(inv, { clinicId: req.clinicId, session });
         await inv.save({ session });
         await postPurchaseJournal(inv, req, session, 'AUTHORIZE');
         await postInventoryEntries(inv, req, session);

@@ -79,6 +79,7 @@ app.use('/api/suppliers', require('./routes/suppliers'));
 app.use('/api/payments', require('./routes/payments'));
 app.use('/api/subledger', require('./routes/subledger'));
 app.use('/api/purchase-invoices', require('./routes/purchaseInvoices'));
+app.use('/api/retention-rules', require('./routes/retentionRules'));
 app.use('/api/retention-vouchers', require('./routes/retentionVouchers'));
 app.use('/api/credit-debit-notes', require('./routes/creditDebitNotes'));
 app.use('/api/inventory-advanced', require('./routes/inventoryAdvanced'));

@@ -123,6 +123,11 @@ exports.remove = async (req, res) => {
 exports.seed = async (req, res) => {
   try {
     const r = await seedChartOfAccounts(req.clinicId);
+    // Junto con el plan de cuentas, sembrar el catálogo base de retenciones (idempotente).
+    try {
+      const { seedRetentionRules } = require('../utils/retentionRules');
+      await seedRetentionRules(req.clinicId, { createdBy: req.user?._id || null });
+    } catch { /* el catálogo de retenciones no bloquea el seed del plan de cuentas */ }
     res.json(r);
   } catch (e) {
     res.status(500).json({ message: e.message });
