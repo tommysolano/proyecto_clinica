@@ -303,7 +303,9 @@ exports.create = async (req, res) => {
   try {
     {
       const invoiceId = await runInTransaction(async (session) => {
-        const data = { ...req.body, clinic: req.clinicId, createdBy: req.user._id };
+        // `strictAccounts` lo fija el servidor (no el cliente): marca que esta compra
+        // nace bajo el flujo estricto, para que futuras ediciones NO caigan al genérico.
+        const data = { ...req.body, clinic: req.clinicId, createdBy: req.user._id, strictAccounts: true };
         if (data.fechaEmision) data.fechaEmision = new Date(data.fechaEmision);
         calcTotals(data);
         await assertPeriodOpen(req.clinicId, data.fechaEmision || new Date(), { session });
@@ -535,6 +537,14 @@ exports.update = async (req, res) => {
         const inv = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
         if (!inv) throw Object.assign(new Error('No encontrada'), { status: 404 });
         if (inv.status !== 'REGISTRADA') throw Object.assign(new Error('No editable en su estado'), { status: 400 });
+        // ¿Documento LEGACY real? Solo entonces se tolera el fallback de cuentas al editar.
+        // El marcador autoritativo es `strictAccounts`: toda compra creada/autorizada bajo
+        // el flujo nuevo lo trae en true; las anteriores (asiento ya generado, item.account
+        // guardado, etc.) lo tienen falso. Así, una compra del flujo nuevo se valida
+        // ESTRICTO también al editar: si pierde la categoría/cuenta, falla con mensaje claro
+        // en vez de caer al genérico.
+        const isLegacyDoc = inv.strictAccounts !== true;
+        const strictUpdate = !isLegacyDoc;
         await assertPeriodOpen(req.clinicId, inv.fechaEmision, { session });
         const nextDate = req.body.fechaEmision ? new Date(req.body.fechaEmision) : inv.fechaEmision;
         await assertPeriodOpen(req.clinicId, nextDate, { session });
@@ -549,19 +559,22 @@ exports.update = async (req, res) => {
           });
         }
         await revertInventoryEntries(inv, req, session);
-        // Edición de documento EXISTENTE: strict:false (compatibilidad legacy). La
-        // clasificación se hace sobre los ítems CRUDOS del body (antes del casteo) para
-        // conservar la señal de `lineType` explícito vs ausente; si no vienen ítems en el
-        // body, se reclasifican los ya almacenados.
+        // Edición: `strictUpdate` según sea documento nuevo (estricto) o legacy real
+        // (tolerante). La clasificación se hace sobre los ítems CRUDOS del body (antes del
+        // casteo) para conservar la señal de `lineType` explícito vs ausente; si no vienen
+        // ítems en el body, se reclasifican los ya almacenados.
         const supForItems = await Supplier.findById(req.body.supplier || inv.supplier).session(session);
         if (Array.isArray(req.body.items)) {
-          await classifyAndValidateItems(req.body.items, { clinicId: req.clinicId, supplier: supForItems, session, strict: false });
+          await classifyAndValidateItems(req.body.items, { clinicId: req.clinicId, supplier: supForItems, session, strict: strictUpdate });
         }
         Object.assign(inv, req.body);
         if (inv.fechaEmision) inv.fechaEmision = new Date(inv.fechaEmision);
+        // `strictAccounts` lo controla el servidor: no se deja pisar por el body y se
+        // conserva/afianza según la naturaleza del documento (nuevo permanece estricto).
+        inv.strictAccounts = strictUpdate;
         calcTotals(inv);
         if (!Array.isArray(req.body.items)) {
-          await classifyAndValidateItems(inv.items, { clinicId: req.clinicId, supplier: supForItems, session, strict: false });
+          await classifyAndValidateItems(inv.items, { clinicId: req.clinicId, supplier: supForItems, session, strict: strictUpdate });
         }
         await inv.save({ session });
         await postPurchaseJournal(inv, req, session, `UPDATE:${Date.now()}`);
@@ -1028,6 +1041,7 @@ exports.authorize = async (req, res) => {
         inv.status = 'REGISTRADA';
         inv.authorizedBy = req.user._id;
         inv.authorizedAt = new Date();
+        inv.strictAccounts = true; // contabilizada bajo el flujo estricto
         await inv.save({ session });
         await postPurchaseJournal(inv, req, session, 'AUTHORIZE');
         await postInventoryEntries(inv, req, session);

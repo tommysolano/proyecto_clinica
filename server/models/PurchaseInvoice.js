@@ -143,6 +143,12 @@ const purchaseInvoiceSchema = new mongoose.Schema(
     deductible: { type: Boolean, default: true },
     journalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
     retentionJournalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
+    // Marca que la compra se contabilizó bajo el flujo ESTRICTO (cuentas de
+    // inventario/activo resueltas SOLO desde la categoría contable). Se fija en
+    // create/authorize. Los documentos legacy (creados antes de esta regla) no lo
+    // tienen (false) y por eso al editarse siguen la ruta tolerante. Ver
+    // classifyAndValidateItems({ strict }) y exports.update.
+    strictAccounts: { type: Boolean, default: false },
     importedFromTxt: { type: Boolean, default: false },
     importedFromXml: { type: Boolean, default: false },
     // Datos crudos del XML del SRI para auditoría/verificación
