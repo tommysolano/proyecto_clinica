@@ -271,3 +271,141 @@ test('12) sin doble conteo si llegan retención de cabecera Y por línea (nueva)
   assert.equal(await H.accountBalanceByCode(clinicId, '2.1.01.01'), -99, 'CxP = 100 - 1');
   assert.ok((await H.assertLedgerBalanced(clinicId)).balanced);
 });
+
+// ── Múltiples retenciones por línea (RENTA + IVA) ──────────────────────────────
+test('13) una línea con RENTA + IVA: calcula ambas, CxP neto y asiento cuadran', async () => {
+  const { clinicId, userId, invCat, ruleBienes, ruleIva } = await setup();
+  const sup = await H.makeSupplier(clinicId);
+  const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id });
+  // Inventario 100 + IVA 15. Renta 2% de 100 = 2; IVA 30% de 15 = 4.5. CxP = 108.5.
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
+    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    items: [{ description: 'Insumo', lineType: 'INVENTARIO', product: prod._id, quantity: 10, unitPrice: 10, ivaRate: 15, subtotal: 100,
+      retentions: [{ rule: String(ruleBienes._id) }, { rule: String(ruleIva._id) }] }],
+  }));
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  const inv = await PurchaseInvoice.findById(r.payload._id);
+  assert.equal(inv.items[0].retentions.length, 2, 'dos retenciones en la línea');
+  assert.equal(inv.retentionTotal, 6.5);
+  assert.equal(inv.balance, 108.5);
+  assert.equal(await H.accountBalanceByCode(clinicId, '1.1.04.01'), 100);
+  assert.equal(await H.accountBalanceByCode(clinicId, '2.1.02.04'), -2, 'retención renta');
+  assert.equal(await H.accountBalanceByCode(clinicId, '2.1.02.03'), -4.5, 'retención IVA');
+  assert.equal(await H.accountBalanceByCode(clinicId, '2.1.01.01'), -108.5, 'CxP neto = 115 - 6.5');
+  assert.ok((await H.assertLedgerBalanced(clinicId)).balanced);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('14) resumen agrupa retenciones de varias líneas por type/code', async () => {
+  const { clinicId, userId, gasto, invCat, ruleBienes, ruleTransp, ruleIva } = await setup();
+  const sup = await H.makeSupplier(clinicId);
+  const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id });
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
+    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    items: [
+      { description: 'Insumo', lineType: 'INVENTARIO', product: prod._id, quantity: 10, unitPrice: 10, ivaRate: 15, subtotal: 100, retentions: [{ rule: String(ruleBienes._id) }, { rule: String(ruleIva._id) }] }, // 312:2, 721:4.5
+      { description: 'Transporte', lineType: 'GASTO', account: gasto._id, quantity: 1, unitPrice: 100, ivaRate: 0, subtotal: 100, retentions: [{ rule: String(ruleBienes._id) }, { rule: String(ruleTransp._id) }] }, // 312:2, 310:1
+    ],
+  }));
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  const inv = await PurchaseInvoice.findById(r.payload._id);
+  // Códigos: 312 (renta, dos líneas → base 200, monto 4), 310 (renta 1), 721 (iva 4.5)
+  const r312 = inv.retentions.find((x) => x.code === '312');
+  const r310 = inv.retentions.find((x) => x.code === '310');
+  const r721 = inv.retentions.find((x) => x.code === '721');
+  assert.equal(r312.baseAmount, 200); assert.equal(r312.amount, 4);
+  assert.equal(r310.amount, 1);
+  assert.equal(r721.amount, 4.5);
+  assert.equal(inv.retentionTotal, 9.5);
+  assert.ok((await H.assertLedgerBalanced(clinicId)).balanced);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('15) backend ignora base/monto/rate falsos en AMBAS retenciones de la línea', async () => {
+  const { clinicId, userId, invCat, ruleBienes, ruleIva } = await setup();
+  const sup = await H.makeSupplier(clinicId);
+  const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id });
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
+    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    items: [{ description: 'Insumo', lineType: 'INVENTARIO', product: prod._id, quantity: 10, unitPrice: 10, ivaRate: 15, subtotal: 100,
+      retentions: [
+        { rule: String(ruleBienes._id), base: 9999, amount: 9999, rate: 99 },
+        { rule: String(ruleIva._id), base: 8888, amount: 8888, rate: 88 },
+      ] }],
+  }));
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  const inv = await PurchaseInvoice.findById(r.payload._id);
+  const rr = inv.items[0].retentions;
+  const renta = rr.find((x) => x.type === 'RENTA');
+  const iva = rr.find((x) => x.type === 'IVA');
+  assert.equal(renta.base, 100); assert.equal(renta.rate, 2); assert.equal(renta.amount, 2);
+  assert.equal(iva.base, 15); assert.equal(iva.rate, 30); assert.equal(iva.amount, 4.5);
+  assert.equal(inv.retentionTotal, 6.5);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('16) no permite duplicar el mismo type+code en la misma línea', async () => {
+  const { clinicId, userId, gasto, ruleBienes } = await setup();
+  const sup = await H.makeSupplier(clinicId);
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
+    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    items: [{ description: 'Gasto', lineType: 'GASTO', account: gasto._id, quantity: 1, unitPrice: 100, ivaRate: 0, subtotal: 100,
+      retentions: [{ rule: String(ruleBienes._id) }, { rule: String(ruleBienes._id) }] }], // 312 duplicado
+  }));
+  assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
+  assert.match(r.payload.message, /duplicada/i);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('17) permite RENTA + IVA (tipos distintos) en la misma línea', async () => {
+  const { clinicId, userId, gasto, ruleTransp, ruleIva } = await setup();
+  const sup = await H.makeSupplier(clinicId);
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
+    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    items: [{ description: 'Servicio', lineType: 'GASTO', account: gasto._id, quantity: 1, unitPrice: 100, ivaRate: 15, subtotal: 100,
+      retentions: [{ rule: String(ruleTransp._id) }, { rule: String(ruleIva._id) }] }], // 310 renta + 721 iva
+  }));
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  const inv = await PurchaseInvoice.findById(r.payload._id);
+  assert.equal(inv.items[0].retentions.length, 2);
+  assert.equal(inv.retentionTotal, +(1 + 15 * 0.30).toFixed(2)); // 1 + 4.5 = 5.5
+  assert.ok((await H.assertLedgerBalanced(clinicId)).balanced);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('18) compra legacy con item.retention SINGULAR sigue funcionando (se normaliza a array)', async () => {
+  const { clinicId, userId, gasto, ruleTransp } = await setup();
+  const sup = await H.makeSupplier(clinicId);
+  // Simula un cliente/datos viejos que mandan `retention` singular (no array).
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
+    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    items: [{ description: 'Transporte', lineType: 'GASTO', account: gasto._id, quantity: 1, unitPrice: 100, ivaRate: 0, subtotal: 100, retention: { rule: String(ruleTransp._id) } }],
+  }));
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  const inv = await PurchaseInvoice.findById(r.payload._id);
+  assert.equal(inv.items[0].retentions.length, 1, 'el singular se normaliza a retentions[]');
+  assert.equal(inv.items[0].retention.code, '310', 'y se conserva el singular por compat');
+  assert.equal(inv.retentionTotal, 1);
+  assert.equal(await H.accountBalanceByCode(clinicId, '2.1.01.01'), -99);
+  assert.ok((await H.assertLedgerBalanced(clinicId)).balanced);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('19) el Formulario 103 toma AMBAS retenciones RENTA (dos códigos) por línea', async () => {
+  const { clinicId, userId, gasto, invCat, ruleBienes, ruleTransp } = await setup();
+  const sup = await H.makeSupplier(clinicId);
+  const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id });
+  await H.runController(purchase.create, H.mockReq(clinicId, userId, {
+    supplier: sup._id, fechaEmision: new Date('2026-06-15'),
+    items: [{ description: 'Insumo', lineType: 'INVENTARIO', product: prod._id, quantity: 10, unitPrice: 10, ivaRate: 0, subtotal: 100,
+      retentions: [{ rule: String(ruleBienes._id) }, { rule: String(ruleTransp._id) }] }], // 312 + 310 (ambas RENTA)
+  }));
+  const res = await H.runController(reports.form103, H.mockReq(clinicId, userId, {}, { query: { year: '2026', month: '6' } }));
+  assert.equal(res.statusCode, 200, JSON.stringify(res.payload));
+  const r312 = res.payload.rows.find((x) => x.code === '312');
+  const r310 = res.payload.rows.find((x) => x.code === '310');
+  assert.ok(r312 && r310, 'ambos códigos RENTA en el 103');
+  assert.equal(r312.amount, 2);
+  assert.equal(r310.amount, 1);
+  assert.equal(res.payload.total, 3);
+});

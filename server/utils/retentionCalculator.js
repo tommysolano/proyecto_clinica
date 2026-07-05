@@ -57,37 +57,48 @@ function computeRetention(it, rule) {
 }
 
 /**
- * Agrupa las retenciones de las líneas por (type, code, account) para el resumen /
- * cabecera. Devuelve filas con los campos que consumen los reportes (baseAmount,
- * percentage, amount) más `account`/`rule` para contabilizar.
+ * Retenciones de una línea normalizadas a arreglo: usa `it.retentions[]` (nuevo) si
+ * tiene elementos; si no, cae al singular legacy `it.retention`. Devuelve [] si no hay.
+ */
+function lineRetentionList(it) {
+  if (Array.isArray(it.retentions) && it.retentions.length) return it.retentions;
+  if (it.retention && (it.retention.rule || it.retention.code || Number(it.retention.amount) > 0)) return [it.retention];
+  return [];
+}
+
+/**
+ * Agrupa TODAS las retenciones de TODAS las líneas por (type, code, account) para el
+ * resumen / cabecera. Devuelve filas con los campos que consumen los reportes
+ * (baseAmount, percentage, amount) más `account`/`rule` para contabilizar.
  */
 function groupLineRetentions(items) {
   const map = new Map();
   for (const it of items || []) {
-    const r = it.retention;
-    if (!r || !(Number(r.amount) > 0)) continue;
-    const acc = r.account ? String(r.account) : '';
-    const key = `${r.type}|${r.code}|${acc}`;
-    if (!map.has(key)) {
-      map.set(key, {
-        type: r.type,
-        code: r.code || '',
-        description: r.description || '',
-        rate: Number(r.rate) || Number(r.percentage) || 0,
-        percentage: Number(r.rate) || Number(r.percentage) || 0,
-        base: 0,
-        baseAmount: 0,
-        amount: 0,
-        account: r.account || null,
-        rule: r.rule || null,
-      });
+    for (const r of lineRetentionList(it)) {
+      if (!r || !(Number(r.amount) > 0)) continue;
+      const acc = r.account ? String(r.account) : '';
+      const key = `${r.type}|${r.code}|${acc}`;
+      if (!map.has(key)) {
+        map.set(key, {
+          type: r.type,
+          code: r.code || '',
+          description: r.description || '',
+          rate: Number(r.rate) || Number(r.percentage) || 0,
+          percentage: Number(r.rate) || Number(r.percentage) || 0,
+          base: 0,
+          baseAmount: 0,
+          amount: 0,
+          account: r.account || null,
+          rule: r.rule || null,
+        });
+      }
+      const g = map.get(key);
+      g.base = round2(g.base + (Number(r.base) || Number(r.baseAmount) || 0));
+      g.baseAmount = g.base;
+      g.amount = round2(g.amount + (Number(r.amount) || 0));
     }
-    const g = map.get(key);
-    g.base = round2(g.base + (Number(r.base) || Number(r.baseAmount) || 0));
-    g.baseAmount = g.base;
-    g.amount = round2(g.amount + (Number(r.amount) || 0));
   }
   return [...map.values()];
 }
 
-module.exports = { round2, lineBase, lineIva, computeRetentionBase, computeRetention, groupLineRetentions };
+module.exports = { round2, lineBase, lineIva, computeRetentionBase, computeRetention, lineRetentionList, groupLineRetentions };

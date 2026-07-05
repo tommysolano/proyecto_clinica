@@ -23,8 +23,6 @@ let _uidc = 0;
 const uid = () => `it_${Date.now().toString(36)}_${(_uidc++).toString(36)}`;
 // Selección de retención por línea (basada en catálogo): se guarda la regla escogida;
 // el backend recalcula base/monto/cuenta. base/amount aquí son SOLO estimación visual.
-const emptyRetention = () => ({ rule: '', type: 'RENTA', code: '', description: '', rate: 0, base: 0, amount: 0 });
-
 // Base estimada de retención en el cliente (informativa; el backend es la fuente).
 const retentionBaseForDisplay = (it, baseType) => {
   const b = +(((it.quantity || 0) * (it.unitPrice || 0)) - (it.discount || 0)).toFixed(2);
@@ -44,7 +42,7 @@ const makeItem = (lineType) => ({
   description: '', quantity: 1, unitPrice: 0, discount: 0, ivaRate: 15,
   account: '', accountSplits: [],
   product: '', inventoryCategory: '', warehouse: '', lot: '', expiryDate: '',
-  costCenter: '', fixedAsset: { ...EMPTY_FA }, retention: emptyRetention(),
+  costCenter: '', fixedAsset: { ...EMPTY_FA }, retentions: [], // varias retenciones por línea (RENTA + IVA, etc.)
 });
 // Subtotal (base) de una línea.
 const lineBase = (it) => +(((it.quantity || 0) * (it.unitPrice || 0)) - (it.discount || 0)).toFixed(2);
@@ -171,18 +169,27 @@ export default function PurchaseInvoices() {
     if (f.costCenter) it.costCenter = f.costCenter;
     return { ...f, items: [...f.items, it] };
   });
-  // Retención por línea desde el catálogo: al escoger la regla se guarda su snapshot y se
-  // estima base/monto (informativo). El backend recalcula al guardar.
-  const setLineRetentionRule = (u, ruleId) => setForm((f) => ({
+  // Agrega una retención (regla del catálogo) a una línea. Evita duplicar type+code.
+  const addLineRetention = (u, ruleId) => {
+    if (!ruleId) return;
+    const rule = retentionRules.find((r) => String(r._id) === String(ruleId));
+    if (!rule) return;
+    setForm((f) => ({
+      ...f,
+      items: f.items.map((it) => {
+        if (it._uid !== u) return it;
+        const rets = it.retentions || [];
+        if (rets.some((x) => x.type === rule.type && String(x.code) === String(rule.code))) {
+          toast.error(`La línea ya tiene la retención ${rule.type} ${rule.code}`);
+          return it;
+        }
+        return { ...it, retentions: [...rets, { rule: rule._id, type: rule.type, code: rule.code, description: rule.description || '', rate: rule.rate }] };
+      }),
+    }));
+  };
+  const removeLineRetention = (u, idx) => setForm((f) => ({
     ...f,
-    items: f.items.map((it) => {
-      if (it._uid !== u) return it;
-      if (!ruleId) return { ...it, retention: emptyRetention() };
-      const rule = retentionRules.find((r) => String(r._id) === String(ruleId));
-      if (!rule) return { ...it, retention: emptyRetention() };
-      const { base, amount } = estimateRetention(it, rule);
-      return { ...it, retention: { rule: rule._id, type: rule.type, code: rule.code, description: rule.description || '', rate: rule.rate, base, amount } };
-    }),
+    items: f.items.map((it) => (it._uid === u ? { ...it, retentions: (it.retentions || []).filter((_, i) => i !== idx) } : it)),
   }));
 
   // Al elegir producto en una línea de inventario: autoselecciona su categoría contable.
@@ -225,42 +232,56 @@ export default function PurchaseInvoices() {
   const invItems = form.items.filter((it) => it.lineType === 'INVENTARIO');
   const afItems = form.items.filter((it) => it.lineType === 'ACTIVO_FIJO');
 
-  // Estimación viva de la retención de una línea (informativa; el backend recalcula).
+  // Retenciones de una línea normalizadas a arreglo (soporta el singular legacy).
   const ruleById = (id) => retentionRules.find((r) => String(r._id) === String(id));
-  const lineRetInfo = (it) => {
-    if (!it.retention?.rule) return null;
-    const rule = ruleById(it.retention.rule);
+  const lineRetList = (it) => {
+    if (Array.isArray(it.retentions) && it.retentions.length) return it.retentions;
+    if (it.retention && (it.retention.rule || it.retention.code)) return [it.retention];
+    return [];
+  };
+  // Estimación viva de UNA retención (informativa; el backend recalcula al guardar).
+  const retInfoOne = (it, r) => {
+    const rule = r.rule ? ruleById(r.rule) : null;
     if (rule) { const { base, amount } = estimateRetention(it, rule); return { type: rule.type, code: rule.code, description: rule.description, rate: rule.rate, base, amount, account: rule.payableAccount }; }
-    // Regla no cargada (p.ej. compra legacy): usa el snapshot guardado.
-    const r = it.retention;
     return { type: r.type, code: r.code, description: r.description, rate: r.rate || r.percentage || 0, base: r.base ?? r.baseAmount ?? 0, amount: r.amount || 0, account: r.account };
   };
-  // Resumen de retenciones DERIVADO de las líneas (o de la cabecera legacy si no hay líneas).
+  // Resumen de retenciones DERIVADO de todas las líneas (o de la cabecera legacy si no hay).
   const retSummary = (() => {
     const map = new Map();
     let anyLine = false;
     for (const it of form.items) {
-      const info = lineRetInfo(it);
-      if (!info || !(info.amount > 0)) continue;
-      anyLine = true;
-      const key = `${info.type}|${info.code}`;
-      if (!map.has(key)) map.set(key, { ...info, base: 0, amount: 0 });
-      const g = map.get(key);
-      g.base = +(g.base + info.base).toFixed(2);
-      g.amount = +(g.amount + info.amount).toFixed(2);
+      for (const r of lineRetList(it)) {
+        const info = retInfoOne(it, r);
+        if (!info || !(info.amount > 0)) continue;
+        anyLine = true;
+        const key = `${info.type}|${info.code}`;
+        if (!map.has(key)) map.set(key, { ...info, base: 0, amount: 0 });
+        const g = map.get(key);
+        g.base = +(g.base + info.base).toFixed(2);
+        g.amount = +(g.amount + info.amount).toFixed(2);
+      }
     }
     if (anyLine) return [...map.values()];
     // Legacy: retenciones de cabecera capturadas manualmente.
     return (form.retentions || []).map((r) => ({ type: r.type, code: r.code, description: r.description || '', rate: r.percentage || 0, base: r.baseAmount || 0, amount: r.amount || 0, account: r.account }));
   })();
 
-  // Selector compacto de retención por línea (catálogo). Muestra el monto estimado.
+  // Retenciones por línea (varias): chips de las seleccionadas + selector para agregar.
   const retCell = (it) => {
-    const info = lineRetInfo(it);
+    const rets = lineRetList(it);
     return (
-      <div className="min-w-[150px]">
-        <select value={it.retention?.rule || ''} onChange={(e) => setLineRetentionRule(it._uid, e.target.value)} className={`${inputCls} text-xs`}>
-          <option value="">Sin retención</option>
+      <div className="min-w-[170px] space-y-1">
+        {rets.map((r, i) => {
+          const info = retInfoOne(it, r);
+          return (
+            <span key={`${r.type}-${r.code}-${i}`} className={`inline-flex items-center gap-1 text-[11px] rounded-full px-2 py-0.5 border ${r.type === 'IVA' ? 'bg-sky-50 border-sky-200 text-sky-700' : 'bg-amber-50 border-amber-200 text-amber-700'}`} title={info.description || ''}>
+              {r.type} {r.code} {info.rate}% <span className="font-mono">≈{fmt(info.amount)}</span>
+              <button type="button" onClick={() => removeLineRetention(it._uid, i)} className="text-rose-500 hover:text-rose-600">×</button>
+            </span>
+          );
+        })}
+        <select value="" onChange={(e) => { addLineRetention(it._uid, e.target.value); e.target.value = ''; }} className={`${inputCls} text-xs`}>
+          <option value="">+ Retención…</option>
           <optgroup label="Renta">
             {retentionRules.filter((r) => r.type === 'RENTA').map((r) => <option key={r._id} value={r._id}>{r.code} · {r.rate}% · {r.description}</option>)}
           </optgroup>
@@ -268,7 +289,6 @@ export default function PurchaseInvoices() {
             {retentionRules.filter((r) => r.type === 'IVA').map((r) => <option key={r._id} value={r._id}>{r.code} · {r.rate}% · {r.description}</option>)}
           </optgroup>
         </select>
-        {info && info.amount > 0 && <div className="text-[11px] text-slate-400 mt-0.5 text-right">≈ {fmt(info.amount)}</div>}
       </div>
     );
   };
@@ -311,10 +331,10 @@ export default function PurchaseInvoices() {
     try {
       const serie = form.serie || `${form.estab}-${form.ptoEmi}-${form.secuencial}`;
       const items = form.items.map((it) => {
-        // Solo se envía la SELECCIÓN de retención (regla/código); el backend recalcula.
-        const retSel = it.retention?.rule
-          ? { rule: it.retention.rule, code: it.retention.code, type: it.retention.type }
-          : null;
+        // Solo se envía la SELECCIÓN de retenciones (regla/código); el backend recalcula.
+        const retSel = lineRetList(it)
+          .filter((r) => r.rule || r.code)
+          .map((r) => ({ rule: r.rule || null, code: r.code, type: r.type }));
         const base = {
           lineType: it.lineType,
           description: it.description || (it.lineType === 'ACTIVO_FIJO' ? (it.fixedAsset?.name || '') : ''),
@@ -323,7 +343,7 @@ export default function PurchaseInvoices() {
           discount: Number(it.discount) || 0,
           ivaRate: it.ivaRate,
           costCenter: it.costCenter || null,
-          retention: retSel,
+          retentions: retSel,
         };
         if (it.lineType === 'INVENTARIO') {
           base.product = it.product || null;
@@ -382,7 +402,10 @@ export default function PurchaseInvoices() {
           warehouse: it.warehouse?._id || it.warehouse || '',
           costCenter: it.costCenter?._id || it.costCenter || '',
           expiryDate: it.expiryDate ? String(it.expiryDate).slice(0, 10) : '',
-          retention: it.retention ? { ...emptyRetention(), ...it.retention, rule: it.retention.rule?._id || it.retention.rule || '', account: it.retention.account?._id || it.retention.account || null } : emptyRetention(),
+          // Normaliza retenciones: usa el arreglo si viene; si no, envuelve el singular legacy.
+          retentions: (Array.isArray(it.retentions) && it.retentions.length ? it.retentions : (it.retention ? [it.retention] : []))
+            .filter((r) => r && (r.rule || r.code))
+            .map((r) => ({ rule: r.rule?._id || r.rule || '', type: r.type, code: r.code, description: r.description || '', rate: r.rate ?? r.percentage ?? 0, account: r.account?._id || r.account || null })),
           accountSplits: (it.accountSplits || []).map((s) => ({ ...s, account: s.account?._id || s.account || '' })),
           fixedAsset: it.fixedAsset ? {
             ...EMPTY_FA, ...it.fixedAsset,

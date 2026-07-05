@@ -12,7 +12,7 @@ const { getAccount } = require('../utils/accountMap');
 const { openPayable, voidPayable } = require('../utils/subledger');
 const kardex = require('../utils/kardex');
 const { parsePurchaseInvoiceXml } = require('../utils/sriXmlParser');
-const { computeRetention, groupLineRetentions } = require('../utils/retentionCalculator');
+const { computeRetention, groupLineRetentions, lineRetentionList } = require('../utils/retentionCalculator');
 
 /**
  * Memoriza las cuentas de gasto usadas en una compra como "cuentas recurrentes"
@@ -296,31 +296,46 @@ async function resolveRetentionPayableAccount(rule, { clinicId, session }) {
 }
 
 /**
- * Resuelve las retenciones por LÍNEA (recalcula base/monto/cuenta desde el catálogo,
- * ignorando lo que envíe el frontend) y DERIVA la cabecera `inv.retentions` agrupada.
- * La cabecera es la única fuente que se contabiliza/reporta (evita doble conteo).
+ * Resuelve las retenciones por LÍNEA (varias por línea: p.ej. RENTA + IVA), recalculando
+ * base/monto/cuenta desde el catálogo (ignora lo que envíe el frontend) y DERIVA la
+ * cabecera `inv.retentions` agrupada. La cabecera es la única fuente que se
+ * contabiliza/reporta (evita doble conteo).
  *
- * Reglas de compatibilidad:
- *   - Compras del flujo nuevo (`strictAccounts === true`): las retenciones son SIEMPRE
- *     por línea; la cabecera se re-deriva (aunque quede vacía) para no arrastrar
- *     retenciones manuales obsoletas.
- *   - Compras legacy: si hay retenciones por línea, se derivan; si no, se conserva la
+ * Entrada por línea: `it.retentions[]` (nuevo). Si llega el singular legacy
+ * `it.retention`, se normaliza a arreglo. No se permite duplicar `type+code` en la misma
+ * línea (sí RENTA + IVA, o códigos distintos).
+ *
+ * Compatibilidad:
+ *   - Compras del flujo nuevo (`strictAccounts === true`): retenciones SIEMPRE por línea;
+ *     la cabecera se re-deriva (aunque quede vacía) para no arrastrar retenciones
+ *     manuales obsoletas.
+ *   - Compras legacy: si hay retenciones por línea se derivan; si no, se conserva la
  *     captura manual de cabecera (`inv.retentions`).
  */
 async function applyLineRetentions(inv, { clinicId, session }) {
   let hasLine = false;
   for (const it of inv.items || []) {
-    const sel = it.retention;
-    if (!sel || (!sel.rule && !sel.code)) { it.retention = null; continue; }
-    const rule = await resolveRetentionRule({ clinicId, ruleId: sel.rule, code: sel.code, type: sel.type, date: inv.fechaEmision, session });
-    const account = await resolveRetentionPayableAccount(rule, { clinicId, session });
-    const { base, amount } = computeRetention(it, rule);
-    it.retention = {
-      rule: rule._id, type: rule.type, code: rule.code, description: rule.description || '',
-      rate: rule.rate, base, amount, account: account._id,
-      baseAmount: base, percentage: rule.rate, // alias legacy
-    };
-    if (amount > 0) hasLine = true;
+    const label = it.description || '(sin descripción)';
+    const sels = lineRetentionList(it); // arreglo o singular legacy → arreglo
+    const resolved = [];
+    const seen = new Set();
+    for (const sel of sels) {
+      if (!sel || (!sel.rule && !sel.code)) continue;
+      const rule = await resolveRetentionRule({ clinicId, ruleId: sel.rule, code: sel.code, type: sel.type, date: inv.fechaEmision, session });
+      const dupKey = `${rule.type}|${rule.code}`;
+      if (seen.has(dupKey)) throw Object.assign(new Error(`La línea "${label}" tiene la retención ${rule.type} ${rule.code} duplicada`), { status: 400 });
+      seen.add(dupKey);
+      const account = await resolveRetentionPayableAccount(rule, { clinicId, session });
+      const { base, amount } = computeRetention(it, rule);
+      resolved.push({
+        rule: rule._id, type: rule.type, code: rule.code, description: rule.description || '',
+        rate: rule.rate, base, amount, account: account._id,
+        baseAmount: base, percentage: rule.rate, // alias legacy
+      });
+      if (amount > 0) hasLine = true;
+    }
+    it.retentions = resolved;
+    it.retention = resolved[0] || null; // compat singular (primer elemento)
   }
   if (inv.strictAccounts === true || hasLine) {
     inv.retentions = groupLineRetentions(inv.items);

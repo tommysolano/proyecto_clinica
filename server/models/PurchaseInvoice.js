@@ -81,7 +81,11 @@ const purchaseItemSchema = new mongoose.Schema(
     // fuente de la cuenta de inventario (no se pide cuenta manual).
     inventoryCategory: { type: mongoose.Schema.Types.ObjectId, ref: 'InventoryCategory', default: null },
     fixedAsset: { type: fixedAssetCaptureSchema, default: null },
-    // Retención de la línea (estructura visual; ver lineRetentionSchema).
+    // Retenciones de la línea (varias: p.ej. RENTA + IVA sobre el mismo concepto).
+    // Fuente principal en compras nuevas. Ver lineRetentionSchema.
+    retentions: { type: [lineRetentionSchema], default: [] },
+    // Retención singular LEGACY (commit anterior). Se conserva por compatibilidad; el
+    // backend la convierte a `retentions[]` para cálculo/resumen/asiento.
     retention: { type: lineRetentionSchema, default: null },
     product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null },
     warehouse: { type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse', default: null },
