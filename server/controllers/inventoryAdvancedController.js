@@ -9,8 +9,10 @@ const BankAccount = require('../models/BankAccount');
 const { createEntry, findAccount, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const kardex = require('../utils/kardex');
+const ChartOfAccount = require('../models/ChartOfAccount');
 const { PRODUCT_TYPES, PRODUCT_CATEGORIES, normalizeCategoria } = require('../utils/productCategories');
 const { isPhysicalProduct, buildInventoryCategoryIndex, resolveInventoryCategoryForRow, normName } = require('../utils/productCategoryResolver');
+const { normalizeAssetConfig, assetCategoryIssues } = require('../utils/fixedAssetConfig');
 const ExcelJS = require('exceljs');
 const multer = require('multer');
 
@@ -258,16 +260,46 @@ exports.listCategories = async (req, res) => {
     .sort({ code: 1 });
   res.json(items);
 };
+// Verifica que una cuenta exista, sea de la clínica y permita movimiento.
+async function assertMovementAccount(clinicId, accountId, label) {
+  if (!accountId) throw Object.assign(new Error(`Falta la ${label}`), { status: 400 });
+  const acc = await ChartOfAccount.findOne({ _id: accountId, clinic: clinicId });
+  if (!acc) throw Object.assign(new Error(`La ${label} no existe o no pertenece a la clínica`), { status: 400 });
+  if (acc.allowsMovement === false) throw Object.assign(new Error(`La ${label} no permite movimiento`), { status: 400 });
+}
+
+/**
+ * Valida una categoría de ACTIVO_FIJO antes de guardarla: cuenta de activo obligatoria
+ * y de movimiento; si es depreciable, exige cuentas de depreciación, vida útil, %
+ * residual y tipo de gasto. Evita guardar categorías que luego rompan compras/depreciación.
+ */
+async function validateAssetCategory(clinicId, cat) {
+  await assertMovementAccount(clinicId, cat.assetAccount, 'cuenta de activo');
+  const cfg = normalizeAssetConfig(cat);
+  if (!cfg.noDepreciate) {
+    await assertMovementAccount(clinicId, cat.depreciationAccount, 'cuenta de gasto de depreciación');
+    await assertMovementAccount(clinicId, cat.accumDepreciationAccount, 'cuenta de depreciación acumulada');
+    if (!(cfg.usefulLifeMonths > 0)) throw Object.assign(new Error('La vida útil (meses) debe ser mayor a 0'), { status: 400 });
+    if (!(cfg.residualPercent >= 0 && cfg.residualPercent <= 100)) throw Object.assign(new Error('El % residual debe estar entre 0 y 100'), { status: 400 });
+    if (!cat.expenseType) throw Object.assign(new Error('El tipo de gasto es obligatorio (Administrativo/Ventas/Costos/Otro)'), { status: 400 });
+  }
+}
+
 exports.createCategory = async (req, res) => {
-  try { const c = await InventoryCategory.create({ ...req.body, clinic: req.clinicId }); res.status(201).json(c); }
-  catch (e) { res.status(400).json({ message: e.message }); }
+  try {
+    if (req.body.kind === 'ACTIVO_FIJO') await validateAssetCategory(req.clinicId, req.body);
+    const c = await InventoryCategory.create({ ...req.body, clinic: req.clinicId });
+    res.status(201).json(c);
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
 exports.updateCategory = async (req, res) => {
   try {
     const c = await InventoryCategory.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!c) return res.status(404).json({ message: 'No encontrada' });
+    const merged = { ...c.toObject(), ...req.body };
+    if (merged.kind === 'ACTIVO_FIJO') await validateAssetCategory(req.clinicId, merged);
     Object.assign(c, req.body); await c.save(); res.json(c);
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
 exports.deleteCategory = async (req, res) => {
   const c = await InventoryCategory.findOne({ _id: req.params.id, clinic: req.clinicId });
@@ -637,42 +669,62 @@ exports.getAsset = async (req, res) => {
   res.json(a);
 };
 
+// Campos DESCRIPTIVOS que el usuario puede definir/editar en un activo. Las cuentas y
+// parámetros contables NO se editan: se copian (snapshot) de la categoría.
+const ASSET_DESCRIPTIVE = ['code', 'name', 'description', 'assetType', 'serial', 'location', 'locationClinic', 'responsible', 'purchaseInvoice', 'notes'];
+
 exports.createAsset = async (req, res) => {
   try {
-    const data = { ...req.body, clinic: req.clinicId, createdBy: req.user._id };
-    if (data.acquisitionDate) data.acquisitionDate = new Date(data.acquisitionDate);
-    if (data.startDate) data.startDate = new Date(data.startDate);
-    else data.startDate = data.acquisitionDate;
-    // Si llega residualPercent, calcular residualValue a partir del costo
-    if (data.residualPercent && !data.residualValue) {
-      data.residualValue = +(data.acquisitionCost * (data.residualPercent / 100)).toFixed(2);
-    }
-    const depreciableBase = data.acquisitionCost - (data.residualValue || 0);
-    data.usefulLifeMonths = data.usefulLifeMonths || Math.round(12 / ((data.depreciationRate || 1) / 100));
-    data.monthlyDepreciation = +(depreciableBase / data.usefulLifeMonths).toFixed(2);
-    data.bookValue = data.acquisitionCost;
+    const b = req.body || {};
+    if (!b.category) return res.status(400).json({ message: 'Debe seleccionar la categoría de activo fijo' });
+    const cat = await InventoryCategory.findOne({ _id: b.category, clinic: req.clinicId, kind: 'ACTIVO_FIJO' });
+    if (!cat) return res.status(400).json({ message: 'La categoría de activo fijo no existe o no pertenece a la clínica' });
+    const issues = assetCategoryIssues(cat);
+    if (issues.length) return res.status(400).json({ message: `La categoría de activo fijo no tiene configuración contable completa (falta: ${issues.join(', ')})` });
+
+    const cfg = normalizeAssetConfig(cat);
+    const cost = +Number(b.acquisitionCost || 0).toFixed(2);
+    if (!(cost > 0)) return res.status(400).json({ message: 'El costo de adquisición debe ser mayor a 0' });
+    const acquisitionDate = b.acquisitionDate ? new Date(b.acquisitionDate) : new Date();
+    const residualValue = +(cost * (cfg.residualPercent / 100)).toFixed(2);
+    const monthly = (cfg.noDepreciate || !cfg.usefulLifeMonths) ? 0 : +((cost - residualValue) / cfg.usefulLifeMonths).toFixed(2);
+
+    const data = {
+      clinic: req.clinicId, createdBy: req.user._id,
+      category: cat._id,
+      acquisitionCost: cost,
+      acquisitionDate,
+      startDate: b.startDate ? new Date(b.startDate) : acquisitionDate,
+      // Snapshot desde la categoría (NO desde el body).
+      assetAccount: cfg.assetAccount,
+      depreciationAccount: cfg.depreciationAccount,
+      accumDepreciationAccount: cfg.accumDepreciationAccount,
+      usefulLifeMonths: cfg.usefulLifeMonths,
+      residualPercent: cfg.residualPercent,
+      depreciationRate: cfg.depreciationRate,
+      expenseType: cfg.expenseType,
+      residualValue,
+      monthlyDepreciation: monthly,
+      bookValue: cost,
+    };
+    for (const k of ASSET_DESCRIPTIVE) if (b[k] !== undefined) data[k] = b[k] || null;
+    data.code = (b.code && String(b.code).trim()) || `AF-${String((await FixedAsset.countDocuments({ clinic: req.clinicId })) + 1).padStart(4, '0')}`;
+    data.name = (b.name && String(b.name).trim()) || cat.name;
     const a = await FixedAsset.create(data);
     res.status(201).json(a);
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
 
 exports.updateAsset = async (req, res) => {
   try {
     const a = await FixedAsset.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!a) return res.status(404).json({ message: 'No encontrado' });
-    Object.assign(a, req.body);
-    if (a.residualPercent && req.body.residualPercent !== undefined) {
-      a.residualValue = +(a.acquisitionCost * (a.residualPercent / 100)).toFixed(2);
-    }
-    // Recalcular depreciación mensual si cambian parámetros base
-    if (['acquisitionCost', 'residualValue', 'residualPercent', 'usefulLifeMonths', 'depreciationRate'].some((k) => req.body[k] !== undefined)) {
-      a.usefulLifeMonths = a.usefulLifeMonths || Math.round(1200 / (a.depreciationRate || 10));
-      const base = a.acquisitionCost - (a.residualValue || 0);
-      a.monthlyDepreciation = +(base / a.usefulLifeMonths).toFixed(2);
-    }
+    // Solo se editan campos descriptivos: las cuentas/parámetros contables son snapshot
+    // de la categoría y NO se alteran desde aquí (no hay modo avanzado de override).
+    for (const k of ASSET_DESCRIPTIVE) if (req.body[k] !== undefined) a[k] = req.body[k] || null;
     await a.save();
     res.json(a);
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
 
 exports.deleteAsset = async (req, res) => {

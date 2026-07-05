@@ -27,7 +27,6 @@ export default function FixedAssets() {
   const [list, setList] = useState([]);
   const [categories, setCategories] = useState([]);
   const [clinics, setClinics] = useState([]);
-  const [accounts, setAccounts] = useState([]);
   const [purchases, setPurchases] = useState([]);
   const [show, setShow] = useState(false);
   const [editing, setEditing] = useState(null);
@@ -43,7 +42,6 @@ export default function FixedAssets() {
   useEffect(() => {
     api.get('/inventory-advanced/categories', { params: { kind: 'ACTIVO_FIJO' } }).then((r) => setCategories(asList(r.data))).catch(() => {});
     api.get('/clinics').then((r) => setClinics(asList(r.data))).catch(() => {});
-    api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setAccounts(asList(r.data).filter((a) => a.allowsMovement))).catch(() => {});
     api.get('/purchase-invoices').then((r) => setPurchases(asList(r.data))).catch(() => {});
     load();
   }, []);
@@ -71,18 +69,26 @@ export default function FixedAssets() {
     setShow(true);
   };
 
-  const onSelectCategory = (id) => {
-    const c = categories.find((x) => x._id === id);
-    setForm((f) => ({
-      ...f, category: id, assetType: '',
-      depreciationRate: c?.depreciationRate || f.depreciationRate,
-      usefulLifeMonths: (c?.usefulLifeYears || 10) * 12,
-      residualPercent: c?.residualPercent || f.residualPercent,
-      assetAccount: c?.assetAccount?._id || c?.assetAccount || f.assetAccount,
-      depreciationAccount: c?.depreciationAccount?._id || c?.depreciationAccount || f.depreciationAccount,
-      accumDepreciationAccount: c?.accumDepreciationAccount?._id || c?.accumDepreciationAccount || f.accumDepreciationAccount,
-    }));
-  };
+  // Al elegir categoría solo se fija la categoría: cuentas, vida útil, residual y tipo de
+  // gasto los define la categoría (se muestran solo lectura; el backend los copia).
+  const onSelectCategory = (id) => setForm((f) => ({ ...f, category: id, assetType: '' }));
+
+  // Config contable/depreciación de la categoría seleccionada (solo lectura).
+  const catConfig = (() => {
+    const c = categories.find((x) => String(x._id) === String(form.category));
+    if (!c) return null;
+    const months = c.usefulLifeMonths || (c.usefulLifeYears ? c.usefulLifeYears * 12 : 0);
+    const accName = (a) => (a && typeof a === 'object' ? `${a.code || ''} ${a.name || ''}`.trim() : null);
+    const missing = [];
+    if (!c.assetAccount) missing.push('cuenta de activo');
+    if (!c.noDepreciate) {
+      if (!c.depreciationAccount) missing.push('gasto depreciación');
+      if (!c.accumDepreciationAccount) missing.push('dep. acumulada');
+      if (!months) missing.push('vida útil');
+      if (!c.expenseType) missing.push('tipo de gasto');
+    }
+    return { noDepreciate: !!c.noDepreciate, months, residualPercent: c.residualPercent || 0, expenseType: c.expenseType || '', assetAccount: accName(c.assetAccount), depreciationAccount: accName(c.depreciationAccount), accumDepreciationAccount: accName(c.accumDepreciationAccount), missing };
+  })();
 
   const onSelectPurchase = (id) => {
     const p = purchases.find((x) => x._id === id);
@@ -96,8 +102,17 @@ export default function FixedAssets() {
 
   const submit = async (e) => {
     e.preventDefault();
-    const payload = { ...form };
-    ['assetType', 'locationClinic', 'purchaseInvoice', 'assetAccount', 'depreciationAccount', 'accumDepreciationAccount'].forEach((k) => { if (!payload[k]) payload[k] = null; });
+    if (!editing && !form.category) return toast.error('Selecciona la categoría de activo fijo');
+    if (!editing && catConfig?.missing?.length) return toast.error(`La categoría tiene configuración incompleta: falta ${catConfig.missing.join(', ')}`);
+    // Solo se envían datos descriptivos + valor/fechas/categoría; las cuentas y parámetros
+    // de depreciación los define la categoría (el backend los copia como snapshot).
+    const payload = {
+      code: form.code, name: form.name, description: form.description,
+      category: form.category || null, assetType: form.assetType || null,
+      serial: form.serial, location: form.location, locationClinic: form.locationClinic || null,
+      purchaseInvoice: form.purchaseInvoice || null,
+      acquisitionCost: form.acquisitionCost, acquisitionDate: form.acquisitionDate, startDate: form.startDate,
+    };
     try {
       if (editing) await api.put(`/inventory-advanced/assets/${editing._id}`, payload);
       else await api.post('/inventory-advanced/assets', payload);
@@ -192,30 +207,28 @@ export default function FixedAssets() {
             <Field label="Fecha de adquisición" required><input type="date" required value={form.acquisitionDate} onChange={(e) => setForm({ ...form, acquisitionDate: e.target.value })} className={inputCls} /></Field>
             <Field label="Inicio de depreciación" required><input type="date" required value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} className={inputCls} /></Field>
             <Field label="Costo de adquisición"><NumericInput step="0.01" value={form.acquisitionCost} onChange={(e) => setForm({ ...form, acquisitionCost: +e.target.value })} className={inputCls} /></Field>
-            <Field label="% valor residual"><NumericInput step="0.01" value={form.residualPercent} onChange={(e) => setForm({ ...form, residualPercent: +e.target.value, residualValue: +(form.acquisitionCost * (+e.target.value / 100)).toFixed(2) })} className={inputCls} /></Field>
-            <Field label="Valor residual ($)"><NumericInput step="0.01" value={form.residualValue} onChange={(e) => setForm({ ...form, residualValue: +e.target.value })} className={inputCls} /></Field>
-            <Field label="% depreciación anual"><NumericInput step="0.01" value={form.depreciationRate} onChange={(e) => setForm({ ...form, depreciationRate: +e.target.value, usefulLifeMonths: Math.round(1200 / (+e.target.value || 1)) })} className={inputCls} /></Field>
-            <Field label="Vida útil (meses)"><NumericInput value={form.usefulLifeMonths} onChange={(e) => setForm({ ...form, usefulLifeMonths: +e.target.value })} className={inputCls} /></Field>
             <Field label="Serial"><input placeholder="Nº de serie" value={form.serial} onChange={(e) => setForm({ ...form, serial: e.target.value })} className={inputCls} /></Field>
           </div>
-          <p className="text-xs font-semibold text-slate-500 pt-2">Cuentas contables ligadas (si no se setean, se usan las de la categoría)</p>
-          <div className="grid grid-cols-3 gap-3">
-            <Field label="Cuenta de activo">
-              <select value={form.assetAccount} onChange={(e) => setForm({ ...form, assetAccount: e.target.value })} className={inputCls}>
-                <option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}
-              </select>
-            </Field>
-            <Field label="Gasto depreciación">
-              <select value={form.depreciationAccount} onChange={(e) => setForm({ ...form, depreciationAccount: e.target.value })} className={inputCls}>
-                <option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}
-              </select>
-            </Field>
-            <Field label="Dep. acumulada">
-              <select value={form.accumDepreciationAccount} onChange={(e) => setForm({ ...form, accumDepreciationAccount: e.target.value })} className={inputCls}>
-                <option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}
-              </select>
-            </Field>
-          </div>
+          {/* Configuración contable/depreciación: la define la categoría (solo lectura). */}
+          {catConfig ? (
+            <div className={`rounded-xl border px-3 py-2 text-xs ${catConfig.missing.length ? 'bg-rose-50 border-rose-200' : 'bg-slate-50 border-slate-200'}`}>
+              <p className="font-semibold text-slate-500 mb-1">Configuración de la categoría (solo lectura)</p>
+              {catConfig.missing.length ? (
+                <p className="text-rose-600">Configuración incompleta: falta {catConfig.missing.join(', ')}. Corrige la categoría antes de crear el activo.</p>
+              ) : (
+                <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-0.5 text-slate-600 font-mono">
+                  <span>Activo: {catConfig.assetAccount || '—'}</span>
+                  <span>Gasto dep.: {catConfig.noDepreciate ? 'No deprecia' : (catConfig.depreciationAccount || '—')}</span>
+                  <span>Dep. acum.: {catConfig.noDepreciate ? '—' : (catConfig.accumDepreciationAccount || '—')}</span>
+                  <span>Vida útil: {catConfig.noDepreciate ? '—' : `${catConfig.months} meses`}</span>
+                  <span>Residual: {catConfig.noDepreciate ? '—' : `${catConfig.residualPercent}%`}</span>
+                  <span>Tipo gasto: {catConfig.expenseType || '—'}</span>
+                </div>
+              )}
+            </div>
+          ) : (
+            <p className="text-xs text-slate-400">Selecciona una categoría para ver su configuración contable y de depreciación.</p>
+          )}
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button></div>
         </form>
       </Modal>

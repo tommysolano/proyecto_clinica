@@ -28,7 +28,9 @@ async function setup() {
   const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
   const gasto = await ChartOfAccount.findOne({ clinic: clinicId, code: '6.1.99' });
   const assetAcc = await ChartOfAccount.create({ clinic: clinicId, code: '1.2.05.99', name: 'Equipos (test)', type: 'ACTIVO', nature: 'DEBITO', allowsMovement: true });
-  const afCat = await InventoryCategory.create({ clinic: clinicId, code: 'AF-TST', name: 'Equipos médicos', kind: 'ACTIVO_FIJO', assetAccount: assetAcc._id, depreciationRate: 10, usefulLifeYears: 10 });
+  const depAcc = await ChartOfAccount.create({ clinic: clinicId, code: '5.2.99', name: 'Gasto depreciación (test)', type: 'GASTO', nature: 'DEBITO', allowsMovement: true });
+  const accumAcc = await ChartOfAccount.create({ clinic: clinicId, code: '1.2.99.01', name: 'Dep. acumulada (test)', type: 'ACTIVO', nature: 'CREDITO', allowsMovement: true });
+  const afCat = await InventoryCategory.create({ clinic: clinicId, code: 'AF-TST', name: 'Equipos médicos', kind: 'ACTIVO_FIJO', assetAccount: assetAcc._id, depreciationAccount: depAcc._id, accumDepreciationAccount: accumAcc._id, depreciationRate: 10, usefulLifeYears: 10, residualPercent: 0, expenseType: 'ADMINISTRATIVO' });
   // Categoría de INVENTARIO con cuenta de activo = 1.1.04.01 (la cuenta de inventario
   // sale de aquí; ya no hay fallback genérico en compras nuevas).
   const invAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '1.1.04.01' });

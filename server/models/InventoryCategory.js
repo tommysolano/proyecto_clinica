@@ -17,11 +17,13 @@ const inventoryCategorySchema = new mongoose.Schema(
     parent: { type: mongoose.Schema.Types.ObjectId, ref: 'InventoryCategory', default: null },
     // Para activos fijos:
     depreciationRate: { type: Number, default: 0 }, // % anual
-    usefulLifeYears: { type: Number, default: 0 },
+    usefulLifeYears: { type: Number, default: 0 }, // legacy; se normaliza a meses
+    usefulLifeMonths: { type: Number, default: 0 }, // fuente preferida de vida útil
     residualPercent: { type: Number, default: 0 }, // % valor residual
     // No depreciar (p. ej. terrenos): el activo no genera depreciación.
     noDepreciate: { type: Boolean, default: false },
-    // Clasificación del gasto/tipo (como en Contífico): Gastos Ventas, Gastos Admin., etc.
+    // Clasificación del gasto para el estado de resultados. Valores nuevos:
+    // ADMINISTRATIVO / VENTAS / COSTOS / OTRO (se conservan textos legacy por compat).
     expenseType: { type: String, default: '' },
     // Cuentas contables vinculadas
     assetAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount' },

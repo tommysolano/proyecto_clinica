@@ -13,6 +13,7 @@ const { openPayable, voidPayable } = require('../utils/subledger');
 const kardex = require('../utils/kardex');
 const { parsePurchaseInvoiceXml } = require('../utils/sriXmlParser');
 const { computeRetention, groupLineRetentions, lineRetentionList } = require('../utils/retentionCalculator');
+const { normalizeAssetConfig, assetCategoryIssues } = require('../utils/fixedAssetConfig');
 
 /**
  * Memoriza las cuentas de gasto usadas en una compra como "cuentas recurrentes"
@@ -239,10 +240,25 @@ async function classifyAndValidateItems(items, { clinicId, supplier, session, st
         throw Object.assign(new Error(`La línea de activo fijo "${label}" no admite distribución de cuentas`), { status: 400 });
       }
       if (!(value > 0)) throw Object.assign(new Error(`El activo fijo "${label}" requiere un valor`), { status: 400 });
-      // Activo fijo NO acepta cuenta manual en compras nuevas: la manda la categoría.
-      if (strict) { it.account = null; it.accountSplits = []; if (it.fixedAsset) it.fixedAsset.assetAccount = null; }
+      // Activo fijo NO acepta cuenta manual ni parámetros contables en compras nuevas:
+      // TODO lo contable lo manda la categoría (se limpian los datos contables de la captura).
+      if (strict) {
+        it.account = null; it.accountSplits = [];
+        if (it.fixedAsset) {
+          it.fixedAsset.assetAccount = null; it.fixedAsset.depreciationAccount = null; it.fixedAsset.accumDepreciationAccount = null;
+          it.fixedAsset.depreciationRate = 0; it.fixedAsset.usefulLifeMonths = 0; it.fixedAsset.residualPercent = 0;
+        }
+      }
       const acc = await resolveFixedAssetAccount(it, { clinicId, session, strict });
       it.account = acc || null;
+      // En compras nuevas, la categoría debe estar COMPLETA (incluida la config de
+      // depreciación si el activo se deprecia); si no, se bloquea con mensaje claro.
+      if (strict) {
+        const fa = it.fixedAsset || {};
+        const cat = fa.category ? await InventoryCategory.findOne({ _id: fa.category, clinic: clinicId }).session(session || null) : null;
+        const rest = assetCategoryIssues(cat).filter((x) => x !== 'cuenta de activo'); // la cuenta de activo ya la valida resolveFixedAssetAccount
+        if (rest.length) throw Object.assign(new Error(`La categoría de activo fijo no tiene configuración contable completa (falta: ${rest.join(', ')})`), { status: 400 });
+      }
     } else { // GASTO
       // No reclasificar en silencio: si el usuario marcó GASTO, se ignora cualquier
       // producto/activo colgado (no sube stock ni crea activo).
@@ -565,14 +581,15 @@ async function postInventoryEntries(inv, req, session) {
 }
 
 /**
- * Crea los activos fijos de las líneas marcadas como ACTIVO_FIJO al contabilizar la
- * factura. Es idempotente: borra los activos previos de esta factura que aún no tengan
- * depreciación y los vuelve a crear (para reflejar ediciones). Reusa la misma lógica de
- * derivación de `inventoryAdvancedController.createAsset`.
+ * Crea los activos fijos de las líneas ACTIVO_FIJO al contabilizar la factura. Toda la
+ * configuración contable y de depreciación se COPIA (snapshot) desde la categoría —NO se
+ * usan los parámetros que pudiera enviar el frontend—. Del `fixedAsset` de la línea solo
+ * se toman datos DESCRIPTIVOS (nombre, código, serie, sede, ubicación, responsable,
+ * fechas). Idempotente: borra los activos previos de esta factura sin depreciación y los
+ * recrea (para reflejar ediciones).
  */
 async function syncFixedAssetsForInvoice(inv, req, session) {
   const assetItems = (inv.items || []).filter((it) => it.lineType === 'ACTIVO_FIJO');
-  // Limpia activos previos (sin depreciación) de esta factura para recrearlos.
   await FixedAsset.deleteMany({
     clinic: req.clinicId, purchaseInvoice: inv._id,
     $or: [{ accumulatedDepreciation: { $lte: 0 } }, { accumulatedDepreciation: null }],
@@ -583,15 +600,14 @@ async function syncFixedAssetsForInvoice(inv, req, session) {
   let seq = 0;
   for (const it of assetItems) {
     const fa = it.fixedAsset || {};
-    let cat = null;
-    if (fa.category) cat = await InventoryCategory.findOne({ _id: fa.category, clinic: req.clinicId }).session(session || null);
+    const cat = fa.category ? await InventoryCategory.findOne({ _id: fa.category, clinic: req.clinicId }).session(session || null) : null;
+    if (!cat) throw Object.assign(new Error('La línea de activo fijo requiere una categoría de activo fijo'), { status: 400 });
+    const issues = assetCategoryIssues(cat);
+    if (issues.length) throw Object.assign(new Error(`La categoría de activo fijo no tiene configuración contable completa (falta: ${issues.join(', ')})`), { status: 400 });
+    const cfg = normalizeAssetConfig(cat); // fuente ÚNICA de la config contable/depreciación
     const cost = +Number(it.subtotal || 0).toFixed(2);
-    const depRate = Number(fa.depreciationRate || cat?.depreciationRate || 0);
-    const noDep = !!cat?.noDepreciate;
-    const usefulLifeMonths = noDep ? 0 : (Number(fa.usefulLifeMonths) || (depRate > 0 ? Math.round(1200 / depRate) : 0) || 120);
-    const residualPercent = Number(fa.residualPercent || cat?.residualPercent || 0);
-    const residualValue = +(cost * (residualPercent / 100)).toFixed(2);
-    const monthly = (noDep || !usefulLifeMonths) ? 0 : +((cost - residualValue) / usefulLifeMonths).toFixed(2);
+    const residualValue = +(cost * (cfg.residualPercent / 100)).toFixed(2);
+    const monthly = (cfg.noDepreciate || !cfg.usefulLifeMonths) ? 0 : +((cost - residualValue) / cfg.usefulLifeMonths).toFixed(2);
     seq += 1;
     const code = (fa.code && String(fa.code).trim()) || `AF-${String(baseCount + seq).padStart(4, '0')}`;
     const acqDate = fa.acquisitionDate || inv.fechaEmision || new Date();
@@ -599,23 +615,26 @@ async function syncFixedAssetsForInvoice(inv, req, session) {
       clinic: req.clinicId,
       code,
       name: (fa.name && String(fa.name).trim()) || it.description,
-      category: fa.category || null,
+      // Descriptivos (de la captura de la línea):
+      category: cat._id,
       assetType: fa.assetType || null,
       serial: fa.serial || '',
       location: fa.location || '',
       locationClinic: fa.locationClinic || null,
       responsible: fa.responsible || null,
-      assetAccount: fa.assetAccount || it.account || cat?.assetAccount || null,
-      depreciationAccount: fa.depreciationAccount || cat?.depreciationAccount || null,
-      accumDepreciationAccount: fa.accumDepreciationAccount || cat?.accumDepreciationAccount || null,
       purchaseInvoice: inv._id,
       acquisitionDate: acqDate,
       acquisitionCost: cost,
-      residualValue,
-      residualPercent,
-      depreciationRate: depRate,
-      usefulLifeMonths: usefulLifeMonths || 0,
       startDate: fa.startDate || acqDate,
+      // Snapshot contable/depreciación (de la CATEGORÍA):
+      assetAccount: cfg.assetAccount,
+      depreciationAccount: cfg.depreciationAccount,
+      accumDepreciationAccount: cfg.accumDepreciationAccount,
+      usefulLifeMonths: cfg.usefulLifeMonths,
+      residualPercent: cfg.residualPercent,
+      depreciationRate: cfg.depreciationRate,
+      expenseType: cfg.expenseType,
+      residualValue,
       monthlyDepreciation: monthly,
       bookValue: cost,
       createdBy: req.user._id,

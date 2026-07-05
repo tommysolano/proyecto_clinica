@@ -38,6 +38,9 @@ const fixedAssetSchema = new mongoose.Schema(
     residualPercent: { type: Number, default: 0 }, // % usado para calcular residual
     depreciationRate: { type: Number, required: true },
     usefulLifeMonths: { type: Number, required: true },
+    // Snapshot del tipo de gasto (ADMINISTRATIVO/VENTAS/COSTOS/OTRO) copiado de la
+    // categoría al crear el activo (historial: si la categoría cambia, el activo conserva).
+    expenseType: { type: String, default: '' },
     startDate: { type: Date, required: true }, // inicio depreciación
     accumulatedDepreciation: { type: Number, default: 0 },
     bookValue: { type: Number, default: 0 },

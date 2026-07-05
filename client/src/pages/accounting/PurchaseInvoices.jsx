@@ -208,23 +208,36 @@ export default function PurchaseInvoices() {
   };
 
   // Al elegir categoría de activo fijo: prefija cuentas/parámetros ocultos (desde la categoría).
-  const onItemAssetCategory = (u, catId) => {
+  // Al elegir la categoría de activo fijo NO se copian cuentas ni parámetros contables al
+  // formulario: los define la categoría y se muestran solo lectura. El backend los toma
+  // de la categoría al contabilizar.
+  const onItemAssetCategory = (u, catId) => setForm((f) => ({
+    ...f,
+    items: f.items.map((it) => (it._uid === u ? {
+      ...it,
+      fixedAsset: { ...(it.fixedAsset || {}), category: catId, assetType: '' },
+    } : it)),
+  }));
+
+  // Configuración contable/depreciación de una categoría de activo fijo (solo lectura).
+  const assetCatConfig = (catId) => {
     const c = assetCategories.find((x) => String(x._id) === String(catId));
-    setForm((f) => ({
-      ...f,
-      items: f.items.map((it) => (it._uid === u ? {
-        ...it,
-        fixedAsset: {
-          ...(it.fixedAsset || {}), category: catId, assetType: '',
-          depreciationRate: c?.depreciationRate || 0,
-          usefulLifeMonths: (c?.usefulLifeYears || 10) * 12,
-          residualPercent: c?.residualPercent || 0,
-          assetAccount: c?.assetAccount?._id || c?.assetAccount || '',
-          depreciationAccount: c?.depreciationAccount?._id || c?.depreciationAccount || '',
-          accumDepreciationAccount: c?.accumDepreciationAccount?._id || c?.accumDepreciationAccount || '',
-        },
-      } : it)),
-    }));
+    if (!c) return null;
+    const months = c.usefulLifeMonths || (c.usefulLifeYears ? c.usefulLifeYears * 12 : 0);
+    const accName = (a) => (a && typeof a === 'object' ? `${a.code || ''} ${a.name || ''}`.trim() : (a ? '—' : null));
+    const missing = [];
+    if (!c.assetAccount) missing.push('cuenta de activo');
+    if (!c.noDepreciate) {
+      if (!c.depreciationAccount) missing.push('gasto depreciación');
+      if (!c.accumDepreciationAccount) missing.push('dep. acumulada');
+      if (!months) missing.push('vida útil');
+      if (!c.expenseType) missing.push('tipo de gasto');
+    }
+    return {
+      noDepreciate: !!c.noDepreciate, months, residualPercent: c.residualPercent || 0, expenseType: c.expenseType || '',
+      assetAccount: accName(c.assetAccount), depreciationAccount: accName(c.depreciationAccount), accumDepreciationAccount: accName(c.accumDepreciationAccount),
+      missing,
+    };
   };
   const setFa = (u, patch) => setForm((f) => ({ ...f, items: f.items.map((it) => (it._uid === u ? { ...it, fixedAsset: { ...(it.fixedAsset || {}), ...patch } } : it)) }));
 
@@ -353,10 +366,12 @@ export default function PurchaseInvoices() {
           base.expiryDate = it.expiryDate || null;
         } else if (it.lineType === 'ACTIVO_FIJO') {
           const fa = it.fixedAsset || {};
+          // Solo datos DESCRIPTIVOS: las cuentas/parámetros contables los define la
+          // categoría (el backend los ignora si se envían).
           base.fixedAsset = {
-            ...fa,
-            category: fa.category || null, assetType: fa.assetType || null, locationClinic: fa.locationClinic || null,
-            assetAccount: fa.assetAccount || null, depreciationAccount: fa.depreciationAccount || null, accumDepreciationAccount: fa.accumDepreciationAccount || null,
+            category: fa.category || null, assetType: fa.assetType || null,
+            code: fa.code || '', name: fa.name || it.description || '', serial: fa.serial || '',
+            location: fa.location || '', locationClinic: fa.locationClinic || null, responsible: fa.responsible || null,
             acquisitionDate: fa.acquisitionDate || null, startDate: fa.startDate || null,
           };
         } else { // GASTO
@@ -810,6 +825,7 @@ export default function PurchaseInvoices() {
                   const fa = it.fixedAsset || {};
                   const roots = assetCategories.filter((c) => !c.parent);
                   const types = assetCategories.filter((c) => c.parent && String(c.parent) === String(fa.category));
+                  const cfg = assetCatConfig(fa.category);
                   return (
                     <div key={it._uid} className="border border-slate-200 rounded-xl p-3 bg-slate-50/40 space-y-2">
                       <div className="flex items-center justify-between">
@@ -830,6 +846,23 @@ export default function PurchaseInvoices() {
                         <Field label="IVA"><IvaSelect value={it.ivaRate} onChange={(v) => setItem(it._uid, { ivaRate: v })} /></Field>
                         <Field label="Retención">{retCell(it)}</Field>
                       </div>
+                      {cfg && (
+                        <div className={`rounded-lg border px-2.5 py-2 text-[11px] ${cfg.missing.length ? 'bg-rose-50 border-rose-200' : 'bg-white border-slate-200'}`}>
+                          <div className="font-semibold text-slate-500 mb-1">Configuración de la categoría (solo lectura)</div>
+                          {cfg.missing.length ? (
+                            <div className="text-rose-600 flex items-center gap-1"><HiOutlineExclamationTriangle className="w-3.5 h-3.5" /> Configuración incompleta: falta {cfg.missing.join(', ')}. No se podrá contabilizar.</div>
+                          ) : (
+                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-0.5 text-slate-600 font-mono">
+                              <span>Activo: {cfg.assetAccount || '—'}</span>
+                              <span>Gasto dep.: {cfg.noDepreciate ? 'No deprecia' : (cfg.depreciationAccount || '—')}</span>
+                              <span>Dep. acum.: {cfg.noDepreciate ? '—' : (cfg.accumDepreciationAccount || '—')}</span>
+                              <span>Vida útil: {cfg.noDepreciate ? '—' : `${cfg.months} meses`}</span>
+                              <span>Residual: {cfg.noDepreciate ? '—' : `${cfg.residualPercent}%`}</span>
+                              <span>Tipo gasto: {cfg.expenseType || '—'}</span>
+                            </div>
+                          )}
+                        </div>
+                      )}
                       <p className="text-[11px] text-slate-400">Las cuentas (activo, depreciación), la vida útil y el % residual se toman de la categoría. Al contabilizar se crea el activo automáticamente.</p>
                     </div>
                   );
