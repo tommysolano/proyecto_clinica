@@ -2,10 +2,16 @@ const Employee = require('../models/Employee');
 const EmployeeLoan = require('../models/EmployeeLoan');
 const Payroll = require('../models/Payroll');
 const PayrollConfig = require('../models/PayrollConfig');
+const PayrollDepartment = require('../models/PayrollDepartment');
+const PayrollPosition = require('../models/PayrollPosition');
+const PayrollConcept = require('../models/PayrollConcept');
+const BankAccount = require('../models/BankAccount');
+const BankTransaction = require('../models/BankTransaction');
 const User = require('../models/User');
 const EmployeeDeduction = require('../models/EmployeeDeduction');
 const { createEntry, findAccount, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
+const { recomputeItem, buildPayrollEntryLines, resolveConfigAccounts } = require('../utils/payrollPosting');
 
 // Tasas legales Ecuador por defecto (se sobrescriben con PayrollConfig)
 const RATES = {
@@ -109,9 +115,17 @@ exports.listLinkableUsers = async (req, res) => {
     res.json(result);
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
+// Normaliza referencias opcionales: '' no debe castearse a ObjectId.
+function cleanEmployeeRefs(obj) {
+  ['departmentRef', 'positionRef', 'paymentBankAccount', 'salaryOriginClinic', 'costCenter'].forEach((k) => {
+    if (obj[k] === '' || obj[k] === undefined) obj[k] = null;
+  });
+}
+
 exports.createEmployee = async (req, res) => {
   try {
     const data = { ...req.body, clinic: req.clinicId };
+    cleanEmployeeRefs(data);
     // Vínculo opcional con un usuario del sistema (login). Evita strings vacíos
     // y que un mismo usuario quede vinculado a dos fichas de empleado.
     if (!data.user) {
@@ -145,6 +159,7 @@ exports.updateEmployee = async (req, res) => {
     const e = await Employee.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!e) return res.status(404).json({ message: 'No encontrado' });
     const patch = { ...req.body };
+    cleanEmployeeRefs(patch);
     // El vínculo con usuario solo se aplica si viene un id válido; '' no debe
     // intentar castearse a ObjectId (rompería el guardado en edición normal).
     if (!patch.user) {
@@ -270,6 +285,9 @@ exports.generatePayroll = async (req, res) => {
     }
     const employees = await Employee.find({ clinic: req.clinicId, active: true, hireDate: { $lte: endOfMonth } });
     const R = await getRates(req.clinicId);
+    // Departamentos parametrizados (para el snapshot de tipo de gasto en cada ítem).
+    const depts = await PayrollDepartment.find({ clinic: req.clinicId });
+    const deptById = new Map(depts.map((d) => [String(d._id), d]));
 
     const items = [];
     for (const emp of employees) {
@@ -320,16 +338,21 @@ exports.generatePayroll = async (req, res) => {
       const provFondosReserva = eligibleFondos && emp.fondosReservaAcumulado === 'ACUMULADO' ? +(base * R.FONDOS_RESERVA).toFixed(2) : 0;
       const totalProvisiones = +(iessPatronal + iece + secap + provDecimoTercero + provDecimoCuarto + provVacaciones + provFondosReserva).toFixed(2);
 
-      items.push({
+      const dept = emp.departmentRef ? deptById.get(String(emp.departmentRef)) : null;
+      const item = {
         employee: emp._id, employeeName: `${emp.firstName} ${emp.lastName}`, identificacion: emp.identificacion,
-        daysWorked: 30, baseSalary: base,
+        departmentRef: emp.departmentRef || null, departmentType: dept?.type || '',
+        daysWorked: 30, absenceDays: 0, monthlySalary: base, baseSalary: base,
         decimoTercero, decimoCuarto, fondosReserva,
         totalIngresos, iessPersonal, impuestoRenta, prestamoEmpresa,
         multas, anticipos, otherDeductions,
         totalEgresos, netoPagar,
         iessPatronal, iece, secap, provDecimoTercero, provDecimoCuarto, provVacaciones, provFondosReserva,
         totalProvisiones,
-      });
+        earnings: [], deductions: [],
+      };
+      recomputeItem(item); // consolida totales (base prorrateada + rubros flexibles)
+      items.push(item);
     }
 
     const totals = items.reduce((a, i) => ({
@@ -375,185 +398,97 @@ exports.updatePayrollItem = async (req, res) => {
     const { employeeId, patch } = req.body;
     const it = p.items.find((i) => String(i.employee) === String(employeeId));
     if (!it) return res.status(404).json({ message: 'Item no encontrado' });
+    // No se aceptan cuentas contables manuales en el rol: se ignora cualquier
+    // intento de fijar cuenta; las cuentas salen de departamento/concepto al cerrar.
+    delete patch.account; delete patch.accounts;
     Object.assign(it, patch);
-    it.totalIngresos = +(it.baseSalary + it.overtime + it.bonuses + it.commissions + it.decimoTercero + it.decimoCuarto + it.fondosReserva + it.vacaciones + it.otherIncome).toFixed(2);
-    it.totalEgresos = +(it.iessPersonal + it.impuestoRenta + it.prestamoIess + it.prestamoEmpresa + it.anticipos + it.multas + it.otherDeductions).toFixed(2);
-    it.netoPagar = +(it.totalIngresos - it.totalEgresos).toFixed(2);
-    p.totalIngresos = p.items.reduce((s, x) => s + x.totalIngresos, 0);
-    p.totalEgresos = p.items.reduce((s, x) => s + x.totalEgresos, 0);
-    p.totalNeto = p.items.reduce((s, x) => s + x.netoPagar, 0);
+    if (!it.monthlySalary) it.monthlySalary = it.baseSalary; // legacy sin sueldo contractual
+    recomputeItem(it); // prorratea por días trabajados + suma rubros flexibles
+    p.totalIngresos = +p.items.reduce((s, x) => s + (x.totalIngresos || 0), 0).toFixed(2);
+    p.totalEgresos = +p.items.reduce((s, x) => s + (x.totalEgresos || 0), 0).toFixed(2);
+    p.totalNeto = +p.items.reduce((s, x) => s + (x.netoPagar || 0), 0).toFixed(2);
+    p.totalProvisiones = +p.items.reduce((s, x) => s + (x.totalProvisiones || 0), 0).toFixed(2);
     await p.save();
     res.json(p);
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 
-/** Cierra rol y genera asiento contable + marca cuotas de préstamos pagadas. */
+/**
+ * Cierra rol y genera el asiento contable PARAMETRIZADO. Las cuentas de gasto se
+ * resuelven por DEPARTAMENTO (Admin/Ventas/Costos) y las obligaciones/provisiones
+ * desde la configuración; nunca se capturan a mano. Bloquea el cierre si falta una
+ * cuenta crítica (p.ej. la cuenta de sueldos del departamento). Trazabilidad:
+ * source NOMINA · sourceModel Payroll · sourceRef rol · sourceAction CLOSE.
+ */
 exports.closePayroll = async (req, res) => {
   try {
-    {
-      const payrollId = await runInTransaction(async (session) => {
-        const p = await Payroll.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
-        if (!p) throw Object.assign(new Error('No encontrado'), { status: 404 });
-        if (p.status !== 'BORRADOR') throw Object.assign(new Error('No es borrador'), { status: 400 });
-        const payrollDate = new Date(p.year, p.month - 1, 28);
-        await assertPeriodOpen(req.clinicId, payrollDate, { session });
+    const payrollId = await runInTransaction(async (session) => {
+      const p = await Payroll.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+      if (!p) throw Object.assign(new Error('No encontrado'), { status: 404 });
+      if (p.status !== 'BORRADOR') throw Object.assign(new Error('No es borrador'), { status: 400 });
+      const payrollDate = new Date(p.year, p.month - 1, 28);
+      await assertPeriodOpen(req.clinicId, payrollDate, { session });
 
-        const cfg = await PayrollConfig.findOne({ clinic: req.clinicId }).session(session);
-        const acc = cfg?.accounts || {};
-        const sueldos = await findAccount(req.clinicId, { code: acc.sueldos || '6.1.01' }, { session });
-        const beneficios = await findAccount(req.clinicId, { code: acc.beneficios || '6.1.02' }, { session });
-        const iessPat = await findAccount(req.clinicId, { code: acc.iessPatronal || '6.1.03' }, { session });
-        const iessXpagar = await findAccount(req.clinicId, { code: acc.iessPorPagar || '2.1.03.02' }, { session });
-        const sueldosXpagar = await findAccount(req.clinicId, { code: acc.sueldosPorPagar || '2.1.03.01' }, { session });
-        const irXpagar = await findAccount(req.clinicId, { code: acc.irPorPagar || '2.1.02.05' }, { session });
-        const prestEmpresaXcobrar = await findAccount(req.clinicId, { code: acc.prestamosPorCobrar || '1.1.02.04' }, { session });
-        const provisiones = await findAccount(req.clinicId, { code: acc.provisionesPorPagar || '2.1.03.03' }, { session });
+      // Construye las líneas (agrega por cuenta; valida config crítica).
+      const { lines } = await buildPayrollEntryLines(p, { clinicId: req.clinicId, session });
 
-        const lines = [];
-        if (p.totalIngresos > 0) lines.push({ account: sueldos._id, debit: p.totalIngresos, credit: 0, description: 'Sueldos y beneficios' });
-        const totIessPat = p.items.reduce((s, i) => s + (i.iessPatronal || 0) + (i.iece || 0) + (i.secap || 0), 0);
-        const totProvBen = p.items.reduce((s, i) => s + (i.provDecimoTercero || 0) + (i.provDecimoCuarto || 0) + (i.provVacaciones || 0) + (i.provFondosReserva || 0), 0);
-        if (totIessPat > 0) lines.push({ account: iessPat._id, debit: +totIessPat.toFixed(2), credit: 0, description: 'Aporte patronal IESS' });
-        if (totProvBen > 0) lines.push({ account: beneficios._id, debit: +totProvBen.toFixed(2), credit: 0, description: 'Provision beneficios sociales' });
-        const totIessPer = p.items.reduce((s, i) => s + (i.iessPersonal || 0), 0);
-        if (totIessPer + totIessPat > 0) lines.push({ account: iessXpagar._id, debit: 0, credit: +(totIessPer + totIessPat).toFixed(2), description: 'IESS por pagar' });
-        const totIR = p.items.reduce((s, i) => s + (i.impuestoRenta || 0), 0);
-        if (totIR > 0) lines.push({ account: irXpagar._id, debit: 0, credit: +totIR.toFixed(2), description: 'Impuesto a la renta' });
-        const totPrest = p.items.reduce((s, i) => s + (i.prestamoEmpresa || 0), 0);
-        if (totPrest > 0) lines.push({ account: prestEmpresaXcobrar._id, debit: 0, credit: +totPrest.toFixed(2), description: 'Prestamos empleados' });
-        // Deducciones (consumo/multas/anticipos/otros): saldan la CxC empleados.
-        const totDeducciones = p.items.reduce((s, i) => s + (i.multas || 0) + (i.anticipos || 0) + (i.otherDeductions || 0), 0);
-        if (totDeducciones > 0) {
-          const cxcEmp = await getAccount(req.clinicId, 'cxcEmpleados', { session });
-          lines.push({ account: cxcEmp._id, debit: 0, credit: +totDeducciones.toFixed(2), description: 'Deducciones empleados (CxC)' });
-        }
-        if (totProvBen > 0) lines.push({ account: provisiones._id, debit: 0, credit: +totProvBen.toFixed(2), description: 'Provisiones por pagar' });
-        if (p.totalNeto > 0) lines.push({ account: sueldosXpagar._id, debit: 0, credit: +p.totalNeto.toFixed(2), description: 'Sueldos por pagar' });
-
-        const entry = await createEntry({
-          clinicId: req.clinicId,
-          date: payrollDate,
-          description: `Rol de pagos ${p.period}`,
-          source: 'NOMINA',
-          sourceRef: p._id,
-          sourceModel: 'Payroll',
-          sourceAction: 'CLOSE',
-          lines,
-          userId: req.user._id,
-          session,
-        });
-
-        // Marcar como aplicadas las deducciones pendientes de los empleados del rol.
-        if (totDeducciones > 0) {
-          const empIds = p.items.map((i) => i.employee);
-          await EmployeeDeduction.updateMany(
-            { clinic: req.clinicId, employee: { $in: empIds }, status: 'PENDIENTE' },
-            { $set: { status: 'APLICADO', appliedIn: p.period, appliedAt: new Date() } },
-            { session }
-          );
-        }
-
-        for (const it of p.items) {
-          if (it.prestamoEmpresa > 0) {
-            const loans = await EmployeeLoan.find({ clinic: req.clinicId, employee: it.employee, status: 'ACTIVO' }).session(session);
-            let remaining = it.prestamoEmpresa;
-            for (const loan of loans) {
-              for (const inst of loan.installments) {
-                if (inst.paid || remaining <= 0) continue;
-                if (inst.amount <= remaining + 0.01) {
-                  inst.paid = true;
-                  inst.paidIn = p.period;
-                  inst.paidAt = new Date();
-                  loan.paidAmount = +(loan.paidAmount + inst.amount).toFixed(2);
-                  loan.balance = +(loan.principal - loan.paidAmount).toFixed(2);
-                  remaining -= inst.amount;
-                }
-              }
-              if (loan.balance <= 0.01) loan.status = 'CANCELADO';
-              await loan.save({ session });
-              if (remaining <= 0) break;
-            }
-          }
-        }
-
-        p.status = 'CERRADO';
-        p.journalEntry = entry._id;
-        p.closedAt = new Date();
-        p.closedBy = req.user._id;
-        await p.save({ session });
-        return p._id;
+      const entry = await createEntry({
+        clinicId: req.clinicId,
+        date: payrollDate,
+        description: `Rol de pagos ${p.period}`,
+        source: 'NOMINA',
+        sourceRef: p._id,
+        sourceModel: 'Payroll',
+        sourceAction: 'CLOSE',
+        lines,
+        userId: req.user._id,
+        session,
       });
-      const payroll = await Payroll.findById(payrollId);
-      return res.json(payroll);
-    }
 
-    const p = await Payroll.findOne({ _id: req.params.id, clinic: req.clinicId });
-    if (!p) return res.status(404).json({ message: 'No encontrado' });
-    if (p.status !== 'BORRADOR') return res.status(400).json({ message: 'No es borrador' });
+      // Marcar como aplicadas las deducciones pendientes de los empleados del rol.
+      const totDeducciones = p.items.reduce((s, i) => s + (i.multas || 0) + (i.anticipos || 0) + (i.otherDeductions || 0), 0);
+      if (totDeducciones > 0) {
+        const empIds = p.items.map((i) => i.employee);
+        await EmployeeDeduction.updateMany(
+          { clinic: req.clinicId, employee: { $in: empIds }, status: 'PENDIENTE' },
+          { $set: { status: 'APLICADO', appliedIn: p.period, appliedAt: new Date() } },
+          { session }
+        );
+      }
 
-    // Cuentas (desde configuración, con fallback a códigos por defecto)
-    const cfg = await PayrollConfig.findOne({ clinic: req.clinicId });
-    const acc = cfg?.accounts || {};
-    const sueldos = await findAccount(req.clinicId, { code: acc.sueldos || '6.1.01' });
-    const beneficios = await findAccount(req.clinicId, { code: acc.beneficios || '6.1.02' });
-    const iessPat = await findAccount(req.clinicId, { code: acc.iessPatronal || '6.1.03' });
-    const iessXpagar = await findAccount(req.clinicId, { code: acc.iessPorPagar || '2.1.03.02' });
-    const sueldosXpagar = await findAccount(req.clinicId, { code: acc.sueldosPorPagar || '2.1.03.01' });
-    const irXpagar = await findAccount(req.clinicId, { code: acc.irPorPagar || '2.1.02.05' });
-    const prestEmpresaXcobrar = await findAccount(req.clinicId, { code: acc.prestamosPorCobrar || '1.1.02.04' });
-    const provisiones = await findAccount(req.clinicId, { code: acc.provisionesPorPagar || '2.1.03.03' });
-
-    const lines = [];
-    if (p.totalIngresos > 0) lines.push({ account: sueldos._id, debit: p.totalIngresos, credit: 0, description: 'Sueldos y beneficios' });
-    const totIessPat = p.items.reduce((s, i) => s + (i.iessPatronal || 0) + (i.iece || 0) + (i.secap || 0), 0);
-    const totProvBen = p.items.reduce((s, i) => s + (i.provDecimoTercero || 0) + (i.provDecimoCuarto || 0) + (i.provVacaciones || 0) + (i.provFondosReserva || 0), 0);
-    if (totIessPat > 0) lines.push({ account: iessPat._id, debit: +totIessPat.toFixed(2), credit: 0, description: 'Aporte patronal IESS' });
-    if (totProvBen > 0) lines.push({ account: beneficios._id, debit: +totProvBen.toFixed(2), credit: 0, description: 'Provisión beneficios sociales' });
-
-    const totIessPer = p.items.reduce((s, i) => s + (i.iessPersonal || 0), 0);
-    if (totIessPer + totIessPat > 0) lines.push({ account: iessXpagar._id, debit: 0, credit: +(totIessPer + totIessPat).toFixed(2), description: 'IESS por pagar' });
-    const totIR = p.items.reduce((s, i) => s + (i.impuestoRenta || 0), 0);
-    if (totIR > 0) lines.push({ account: irXpagar._id, debit: 0, credit: +totIR.toFixed(2), description: 'Impuesto a la renta' });
-    const totPrest = p.items.reduce((s, i) => s + (i.prestamoEmpresa || 0), 0);
-    if (totPrest > 0) lines.push({ account: prestEmpresaXcobrar._id, debit: 0, credit: +totPrest.toFixed(2), description: 'Préstamos empleados' });
-    if (totProvBen > 0) lines.push({ account: provisiones._id, debit: 0, credit: +totProvBen.toFixed(2), description: 'Provisiones por pagar' });
-    if (p.totalNeto > 0) lines.push({ account: sueldosXpagar._id, debit: 0, credit: +p.totalNeto.toFixed(2), description: 'Sueldos por pagar' });
-
-    const entry = await createEntry({
-      clinicId: req.clinicId, date: new Date(p.year, p.month - 1, 28),
-      description: `Rol de pagos ${p.period}`, source: 'NOMINA',
-      sourceRef: p._id, sourceModel: 'Payroll',
-      lines, userId: req.user._id,
-    });
-
-    // Marcar cuotas de préstamos
-    for (const it of p.items) {
-      if (it.prestamoEmpresa > 0) {
-        const loans = await EmployeeLoan.find({ clinic: req.clinicId, employee: it.employee, status: 'ACTIVO' });
-        let remaining = it.prestamoEmpresa;
-        for (const l of loans) {
-          for (const inst of l.installments) {
-            if (inst.paid || remaining <= 0) continue;
-            if (inst.amount <= remaining + 0.01) {
-              inst.paid = true; inst.paidIn = p.period; inst.paidAt = new Date();
-              l.paidAmount = +(l.paidAmount + inst.amount).toFixed(2);
-              l.balance = +(l.principal - l.paidAmount).toFixed(2);
-              remaining -= inst.amount;
+      // Marcar cuotas de préstamos cubiertas por el descuento del período.
+      for (const it of p.items) {
+        if (it.prestamoEmpresa > 0) {
+          const loans = await EmployeeLoan.find({ clinic: req.clinicId, employee: it.employee, status: 'ACTIVO' }).session(session);
+          let remaining = it.prestamoEmpresa;
+          for (const loan of loans) {
+            for (const inst of loan.installments) {
+              if (inst.paid || remaining <= 0) continue;
+              if (inst.amount <= remaining + 0.01) {
+                inst.paid = true;
+                inst.paidIn = p.period;
+                inst.paidAt = new Date();
+                loan.paidAmount = +(loan.paidAmount + inst.amount).toFixed(2);
+                loan.balance = +(loan.principal - loan.paidAmount).toFixed(2);
+                remaining -= inst.amount;
+              }
             }
+            if (loan.balance <= 0.01) loan.status = 'CANCELADO';
+            await loan.save({ session });
+            if (remaining <= 0) break;
           }
-          if (l.balance <= 0.01) l.status = 'CANCELADO';
-          await l.save();
-          if (remaining <= 0) break;
         }
       }
-    }
 
-    p.status = 'CERRADO';
-    p.journalEntry = entry._id;
-    p.closedAt = new Date();
-    p.closedBy = req.user._id;
-    await p.save();
-    res.json(p);
+      p.status = 'CERRADO';
+      p.journalEntry = entry._id;
+      p.closedAt = new Date();
+      p.closedBy = req.user._id;
+      await p.save({ session });
+      return p._id;
+    });
+    const payroll = await Payroll.findById(payrollId);
+    return res.json(payroll);
   } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
 
@@ -598,11 +533,222 @@ exports.generateDecimos = async (req, res) => {
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 
+/**
+ * Paga un rol CERRADO. Si se indica `bankAccountId`, genera el asiento de pago
+ * (DEBE Sueldos por pagar · HABER Banco) y una BankTransaction que se refleja en el
+ * libro de bancos y el mayor (source PAGO · sourceModel Payroll · sourceAction PAY).
+ * Si NO se indica banco, solo marca PAGADO (compat legacy, sin afectación bancaria).
+ */
 exports.markPaid = async (req, res) => {
-  const p = await Payroll.findOne({ _id: req.params.id, clinic: req.clinicId });
-  if (!p) return res.status(404).json({ message: 'No encontrado' });
-  if (p.status !== 'CERRADO') return res.status(400).json({ message: 'Debe estar cerrado' });
-  p.status = 'PAGADO';
-  await p.save();
-  res.json(p);
+  try {
+    const { bankAccountId, date, reference } = req.body || {};
+    // Sin banco: comportamiento legacy (solo cambia el estado).
+    if (!bankAccountId) {
+      const p = await Payroll.findOne({ _id: req.params.id, clinic: req.clinicId });
+      if (!p) return res.status(404).json({ message: 'No encontrado' });
+      if (p.status !== 'CERRADO') return res.status(400).json({ message: 'Debe estar cerrado' });
+      p.status = 'PAGADO';
+      p.paidAt = new Date();
+      p.paidBy = req.user._id;
+      await p.save();
+      return res.json(p);
+    }
+
+    const payrollId = await runInTransaction(async (session) => {
+      const p = await Payroll.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+      if (!p) throw Object.assign(new Error('No encontrado'), { status: 404 });
+      if (p.status !== 'CERRADO') throw Object.assign(new Error('Debe estar cerrado'), { status: 400 });
+      const amount = +(p.totalNeto || 0).toFixed(2);
+      if (amount <= 0) throw Object.assign(new Error('El rol no tiene neto por pagar'), { status: 400 });
+
+      const bank = await BankAccount.findOne({ _id: bankAccountId, clinic: req.clinicId }).session(session);
+      if (!bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 400 });
+      if (!bank.chartAccount) throw Object.assign(new Error('La cuenta bancaria no tiene cuenta contable asociada'), { status: 400 });
+
+      const cfg = await PayrollConfig.findOne({ clinic: req.clinicId }).session(session);
+      const general = await resolveConfigAccounts(req.clinicId, cfg, session);
+      const txDate = date ? new Date(date) : new Date();
+
+      const entry = await createEntry({
+        clinicId: req.clinicId,
+        date: txDate,
+        description: `Pago de nómina ${p.period}`,
+        source: 'PAGO',
+        sourceRef: p._id,
+        sourceModel: 'Payroll',
+        sourceAction: 'PAY',
+        lines: [
+          { account: general.sueldosPorPagar._id, debit: amount, credit: 0, description: 'Pago sueldos por pagar' },
+          { account: bank.chartAccount, debit: 0, credit: amount, description: `Pago nómina ${p.period}` },
+        ],
+        userId: req.user._id,
+        session,
+      });
+
+      const [bankTx] = await BankTransaction.create([{
+        clinic: req.clinicId,
+        bankAccount: bank._id,
+        date: txDate,
+        type: 'PAGO',
+        amount,
+        direction: -1,
+        description: `Pago de nómina ${p.period}`,
+        reference: reference || p.code || '',
+        journalEntry: entry._id,
+        sourceModel: 'Payroll',
+        sourceRef: p._id,
+        createdBy: req.user._id,
+      }], { session });
+
+      p.status = 'PAGADO';
+      p.paymentJournalEntry = entry._id;
+      p.paymentBankTransaction = bankTx._id;
+      p.paymentBankAccount = bank._id;
+      p.paidAt = txDate;
+      p.paidBy = req.user._id;
+      await p.save({ session });
+      return p._id;
+    });
+    const payroll = await Payroll.findById(payrollId);
+    res.json(payroll);
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
+
+// ═══════════════════════ Catálogos parametrizados ═══════════════════════
+
+// ---- Departamentos ----
+exports.listDepartments = async (req, res) => {
+  const items = await PayrollDepartment.find({ clinic: req.clinicId })
+    .populate('accounts.sueldos accounts.beneficios accounts.iessPatronal', 'code name')
+    .sort({ name: 1 });
+  res.json(items);
+};
+exports.createDepartment = async (req, res) => {
+  try {
+    const data = { ...req.body, clinic: req.clinicId };
+    ['sueldos', 'beneficios', 'iessPatronal'].forEach((k) => { if (data.accounts && !data.accounts[k]) data.accounts[k] = null; });
+    const d = await PayrollDepartment.create(data);
+    res.status(201).json(d);
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
+exports.updateDepartment = async (req, res) => {
+  try {
+    const d = await PayrollDepartment.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!d) return res.status(404).json({ message: 'No encontrado' });
+    const patch = { ...req.body }; delete patch.clinic;
+    Object.assign(d, patch);
+    await d.save();
+    res.json(d);
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
+
+// ---- Cargos ----
+exports.listPositions = async (req, res) => {
+  const items = await PayrollPosition.find({ clinic: req.clinicId }).populate('department', 'name type').sort({ name: 1 });
+  res.json(items);
+};
+exports.createPosition = async (req, res) => {
+  try {
+    const data = { ...req.body, clinic: req.clinicId };
+    if (!data.department) data.department = null;
+    const p = await PayrollPosition.create(data);
+    res.status(201).json(p);
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
+exports.updatePosition = async (req, res) => {
+  try {
+    const p = await PayrollPosition.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!p) return res.status(404).json({ message: 'No encontrado' });
+    const patch = { ...req.body }; delete patch.clinic;
+    if (patch.department === '') patch.department = null;
+    Object.assign(p, patch);
+    await p.save();
+    res.json(p);
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
+
+// ---- Conceptos (rubros) ----
+exports.listConcepts = async (req, res) => {
+  const filter = { clinic: req.clinicId };
+  if (req.query.type) filter.type = req.query.type;
+  const items = await PayrollConcept.find(filter)
+    .populate('defaultAccount payableAccount', 'code name')
+    .sort({ type: 1, code: 1 });
+  res.json(items);
+};
+exports.createConcept = async (req, res) => {
+  try {
+    const data = { ...req.body, clinic: req.clinicId };
+    if (!data.defaultAccount) data.defaultAccount = null;
+    if (!data.payableAccount) data.payableAccount = null;
+    const c = await PayrollConcept.create(data);
+    res.status(201).json(c);
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
+exports.updateConcept = async (req, res) => {
+  try {
+    const c = await PayrollConcept.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!c) return res.status(404).json({ message: 'No encontrado' });
+    const patch = { ...req.body }; delete patch.clinic;
+    if (patch.defaultAccount === '') patch.defaultAccount = null;
+    if (patch.payableAccount === '') patch.payableAccount = null;
+    Object.assign(c, patch);
+    await c.save();
+    res.json(c);
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
+
+/**
+ * Catálogo estándar de conceptos de nómina (Ecuador). Sin cuentas asignadas: el
+ * contador las mapea después. Idempotente: no duplica códigos existentes.
+ */
+const STANDARD_CONCEPTS = [
+  // Ingresos
+  { code: 'ING-SUELDO', name: 'Sueldo', type: 'INGRESO', category: 'SUELDO', affectsIess: true, affectsDecimos: true, affectsIncomeTax: true },
+  { code: 'ING-TRANSPORTE', name: 'Transporte', type: 'INGRESO', category: 'BONO' },
+  { code: 'ING-COMISIONES', name: 'Comisiones', type: 'INGRESO', category: 'COMISION', affectsIess: true, affectsDecimos: true, affectsIncomeTax: true },
+  { code: 'ING-BONIFICACION', name: 'Bonificación', type: 'INGRESO', category: 'BONO', affectsIncomeTax: true },
+  { code: 'ING-ALIMENTACION', name: 'Alimentación', type: 'INGRESO', category: 'BONO' },
+  { code: 'ING-VIVIENDA', name: 'Vivienda', type: 'INGRESO', category: 'BONO' },
+  { code: 'ING-HE25', name: 'Horas extra 25%', type: 'INGRESO', category: 'HORAS_EXTRAS', rate: 25, affectsIess: true, affectsDecimos: true, affectsIncomeTax: true },
+  { code: 'ING-HE50', name: 'Horas extra 50%', type: 'INGRESO', category: 'HORAS_EXTRAS', rate: 50, affectsIess: true, affectsDecimos: true, affectsIncomeTax: true },
+  { code: 'ING-HE100', name: 'Horas extra 100%', type: 'INGRESO', category: 'HORAS_EXTRAS', rate: 100, affectsIess: true, affectsDecimos: true, affectsIncomeTax: true },
+  { code: 'ING-VACACIONES', name: 'Vacaciones', type: 'INGRESO', category: 'VACACIONES' },
+  { code: 'ING-FONDOS-RESERVA', name: 'Fondos de reserva', type: 'INGRESO', category: 'FONDOS_RESERVA', rate: 8.33 },
+  { code: 'ING-DECIMO-TERCERO', name: 'Décimo tercero', type: 'INGRESO', category: 'DECIMO' },
+  { code: 'ING-DECIMO-CUARTO', name: 'Décimo cuarto', type: 'INGRESO', category: 'DECIMO' },
+  // Egresos
+  { code: 'EGR-ANTICIPO', name: 'Anticipo', type: 'EGRESO', category: 'ANTICIPO' },
+  { code: 'EGR-PREST-HIPOTECARIO', name: 'Préstamo hipotecario', type: 'EGRESO', category: 'PRESTAMO' },
+  { code: 'EGR-PREST-QUIROGRAFARIO', name: 'Préstamo quirografario', type: 'EGRESO', category: 'PRESTAMO' },
+  { code: 'EGR-PREST-PERSONAL', name: 'Préstamo personal', type: 'EGRESO', category: 'PRESTAMO' },
+  { code: 'EGR-MULTAS', name: 'Multas', type: 'EGRESO', category: 'MULTA' },
+  { code: 'EGR-SEGURO', name: 'Seguro', type: 'EGRESO', category: 'DESCUENTO' },
+  { code: 'EGR-CELULAR', name: 'Celular', type: 'EGRESO', category: 'DESCUENTO' },
+  { code: 'EGR-AUSENCIAS', name: 'Ausencias', type: 'EGRESO', category: 'AUSENCIA' },
+  { code: 'EGR-EXT-CONYUGAL', name: 'Extensión conyugal', type: 'EGRESO', category: 'DESCUENTO' },
+  { code: 'EGR-IMPUESTO-RENTA', name: 'Impuesto a la renta', type: 'EGRESO', category: 'IMPUESTO', affectsIncomeTax: true },
+  { code: 'EGR-OTROS', name: 'Otros descuentos', type: 'EGRESO', category: 'DESCUENTO' },
+  // Obligaciones / provisiones
+  { code: 'OBL-IESS-PERSONAL', name: 'IESS personal', type: 'OBLIGACION', category: 'IESS', rate: 9.45 },
+  { code: 'OBL-IESS-PATRONAL', name: 'Aporte patronal', type: 'OBLIGACION', category: 'IESS', rate: 11.15 },
+  { code: 'OBL-SECAP-IECE', name: 'SECAP/IECE', type: 'OBLIGACION', category: 'IESS', rate: 1 },
+  { code: 'PRV-SUELDOS-PAGAR', name: 'Sueldos por pagar', type: 'OBLIGACION', category: 'POR_PAGAR' },
+  { code: 'PRV-DECIMO-TERCERO', name: 'Décimo tercero por pagar', type: 'PROVISION', category: 'DECIMO' },
+  { code: 'PRV-DECIMO-CUARTO', name: 'Décimo cuarto por pagar', type: 'PROVISION', category: 'DECIMO' },
+  { code: 'PRV-FONDOS-RESERVA', name: 'Fondos de reserva por pagar', type: 'PROVISION', category: 'FONDOS_RESERVA' },
+  { code: 'PRV-VACACIONES', name: 'Vacaciones por pagar', type: 'PROVISION', category: 'VACACIONES' },
+];
+
+exports.seedConcepts = async (req, res) => {
+  try {
+    const existing = await PayrollConcept.find({ clinic: req.clinicId }).select('code');
+    const have = new Set(existing.map((c) => c.code));
+    const toCreate = STANDARD_CONCEPTS.filter((c) => !have.has(c.code)).map((c) => ({ ...c, clinic: req.clinicId }));
+    if (toCreate.length) await PayrollConcept.insertMany(toCreate);
+    const all = await PayrollConcept.find({ clinic: req.clinicId }).sort({ type: 1, code: 1 });
+    res.json({ created: toCreate.length, total: all.length, concepts: all });
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
+
+module.exports.STANDARD_CONCEPTS = STANDARD_CONCEPTS;

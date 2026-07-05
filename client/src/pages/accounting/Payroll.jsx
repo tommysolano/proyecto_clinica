@@ -14,12 +14,15 @@ export default function Payroll() {
   const [show, setShow] = useState(false);
   const [form, setForm] = useState({ year: new Date().getFullYear(), month: new Date().getMonth() + 1 });
   const [selected, setSelected] = useState(null);
+  const [banks, setBanks] = useState([]);
+  const [payModal, setPayModal] = useState(null); // { bankAccountId, date }
 
   const load = async () => {
     try { const r = await api.get('/payroll', { params: { year } }); setList(r.data || []); }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, [year]);
+  useEffect(() => { api.get('/banks/accounts').then((r) => setBanks(r.data || [])).catch(() => {}); }, []);
 
   const generate = async (e) => {
     e.preventDefault();
@@ -48,9 +51,19 @@ export default function Payroll() {
     try { const r = await api.post(`/payroll/${selected._id}/close`); setSelected(r.data); load(); toast.success('Cerrada'); }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
+  // Pago sin banco (legacy: solo cambia el estado).
   const markPaid = async () => {
+    if (!confirm('¿Marcar como pagada sin registrar movimiento bancario?')) return;
     try { const r = await api.post(`/payroll/${selected._id}/pay`); setSelected(r.data); load(); toast.success('Pagada'); }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+  };
+  // Pago desde banco: genera asiento + transacción bancaria.
+  const payFromBank = async () => {
+    if (!payModal?.bankAccountId) { toast.error('Selecciona un banco'); return; }
+    try {
+      const r = await api.post(`/payroll/${selected._id}/pay`, { bankAccountId: payModal.bankAccountId, date: payModal.date });
+      setSelected(r.data); setPayModal(null); load(); toast.success('Nómina pagada desde banco');
+    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
 
   return (
@@ -85,12 +98,14 @@ export default function Payroll() {
               <h2 className="font-semibold">Nómina {selected.period} — {selected.status}</h2>
               <div className="flex gap-2">
                 {selected.status === 'BORRADOR' && <button onClick={close} className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm flex items-center gap-1"><HiOutlineLockClosed /> Cerrar</button>}
-                {selected.status === 'CERRADO' && <button onClick={markPaid} className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm flex items-center gap-1"><HiOutlineCheck /> Marcar pagado</button>}
+                {selected.status === 'CERRADO' && <button onClick={() => setPayModal({ bankAccountId: banks[0]?._id || '', date: new Date().toISOString().slice(0, 10) })} className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm flex items-center gap-1"><HiOutlineCheck /> Pagar desde banco</button>}
+                {selected.status === 'CERRADO' && <button onClick={markPaid} className="px-3 py-1.5 bg-slate-200 text-slate-700 rounded text-sm">Marcar pagado (sin banco)</button>}
               </div>
             </div>
             <table className="tbl text-xs">
               <thead className="bg-slate-100"><tr>
                 <th className="px-1 py-1 text-left">Empleado</th>
+                <th className="px-1 py-1 text-right">Faltas</th>
                 <th className="px-1 py-1 text-right">Sueldo</th>
                 <th className="px-1 py-1 text-right">D3</th>
                 <th className="px-1 py-1 text-right">D4</th>
@@ -105,6 +120,11 @@ export default function Payroll() {
                 {selected.items.map((it, i) => (
                   <tr key={i} className="border-t">
                     <td className="px-1 py-1">{it.employeeName || `${it.employee?.firstName || ''} ${it.employee?.lastName || ''}`.trim()}</td>
+                    <td className="px-1 py-1 text-right">
+                      {selected.status === 'BORRADOR'
+                        ? <NumericInput min="0" max="30" value={it.absenceDays || 0} onChange={(e) => updateItem(i, { absenceDays: +e.target.value })} className="w-12 border border-slate-200 rounded px-1 text-right" />
+                        : (it.absenceDays || 0)}
+                    </td>
                     <td className="px-1 py-1 text-right font-mono">{fmt(it.baseSalary)}</td>
                     <td className="px-1 py-1 text-right font-mono">{fmt(it.decimoTercero)}</td>
                     <td className="px-1 py-1 text-right font-mono">{fmt(it.decimoCuarto)}</td>
@@ -125,6 +145,23 @@ export default function Payroll() {
           </div>
         )}
       </div>
+
+      <Modal isOpen={!!payModal} onClose={() => setPayModal(null)} title="Pagar nómina desde banco">
+        {payModal && (
+          <div className="space-y-3">
+            <p className="text-sm text-slate-600">Neto a pagar: <b>${fmt(selected?.totalNeto)}</b></p>
+            <Field label="Banco" required>
+              <select value={payModal.bankAccountId} onChange={(e) => setPayModal({ ...payModal, bankAccountId: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                <option value="">Seleccione…</option>
+                {banks.map((b) => <option key={b._id} value={b._id}>{b.name} · {b.bank} {b.accountNumber}</option>)}
+              </select>
+            </Field>
+            <Field label="Fecha de pago"><input type="date" value={payModal.date} onChange={(e) => setPayModal({ ...payModal, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <p className="text-xs text-slate-500">Se generará el asiento (Sueldos por pagar → Banco) y una transacción bancaria.</p>
+            <div className="flex justify-end gap-2"><button onClick={() => setPayModal(null)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button onClick={payFromBank} className="px-4 py-2 bg-blue-600 text-white rounded-xl">Pagar</button></div>
+          </div>
+        )}
+      </Modal>
 
       <Modal isOpen={show} onClose={() => setShow(false)} title="Generar nómina">
         <form onSubmit={generate} className="space-y-3">

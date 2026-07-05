@@ -14,8 +14,16 @@ const employeeSchema = new mongoose.Schema(
     birthDate: Date,
     hireDate: { type: Date, required: true },
     exitDate: Date,
+    // Cargo/departamento LEGACY como texto libre (se conservan por compatibilidad).
     position: String,
     department: String,
+    // Cargo/departamento PARAMETRIZADO (catálogo). Para efectos contables se usan
+    // estas referencias; los strings de arriba quedan solo como respaldo legacy.
+    departmentRef: { type: mongoose.Schema.Types.ObjectId, ref: 'PayrollDepartment', default: null },
+    positionRef: { type: mongoose.Schema.Types.ObjectId, ref: 'PayrollPosition', default: null },
+    // Forma de pago del sueldo y banco del sistema desde el que se paga (opcional).
+    paymentMethod: { type: String, enum: ['TRANSFERENCIA', 'CHEQUE', 'EFECTIVO'], default: 'TRANSFERENCIA' },
+    paymentBankAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'BankAccount', default: null },
     contractType: { type: String, enum: ['INDEFINIDO', 'FIJO', 'EVENTUAL', 'PRACTICAS', 'TIEMPO_PARCIAL'], default: 'INDEFINIDO' },
     paymentFrequency: { type: String, enum: ['MENSUAL', 'QUINCENAL', 'SEMANAL'], default: 'MENSUAL' },
     // Tipo de sueldo pactado en el contrato.

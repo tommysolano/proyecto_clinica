@@ -26,6 +26,18 @@ router.get('/config', requireRole('admin', 'contabilidad'), c.getConfig);
 router.put('/config', requireRole('admin', 'contabilidad'), c.updateConfig);
 router.get('/decimos', requireRole('admin', 'contabilidad'), c.generateDecimos);
 
+// Catálogos parametrizados (departamentos, cargos, conceptos/rubros)
+router.get('/departments', requireRole('admin', 'contabilidad'), c.listDepartments);
+router.post('/departments', requireRole('admin', 'contabilidad'), c.createDepartment);
+router.put('/departments/:id', requireRole('admin', 'contabilidad'), c.updateDepartment);
+router.get('/positions', requireRole('admin', 'contabilidad'), c.listPositions);
+router.post('/positions', requireRole('admin', 'contabilidad'), c.createPosition);
+router.put('/positions/:id', requireRole('admin', 'contabilidad'), c.updatePosition);
+router.get('/concepts', requireRole('admin', 'contabilidad'), c.listConcepts);
+router.post('/concepts', requireRole('admin', 'contabilidad'), c.createConcept);
+router.post('/concepts/seed', requireRole('admin', 'contabilidad'), c.seedConcepts);
+router.put('/concepts/:id', requireRole('admin', 'contabilidad'), c.updateConcept);
+
 router.get('/', requireRole('admin', 'contabilidad'), c.listPayrolls);
 router.get('/:id', requireRole('admin', 'contabilidad'), c.getPayroll);
 router.post('/generate', requireRole('admin', 'contabilidad'), c.generatePayroll);

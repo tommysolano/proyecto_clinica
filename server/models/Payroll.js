@@ -1,12 +1,30 @@
 const mongoose = require('mongoose');
 
+// Rubro flexible del rol (ingreso/egreso agregado por el usuario). La cuenta NO
+// se captura aquí: se resuelve desde el PayrollConcept al cerrar. Guarda snapshot
+// de código/nombre/monto para auditoría.
+const payrollLineSchema = new mongoose.Schema(
+  {
+    concept: { type: mongoose.Schema.Types.ObjectId, ref: 'PayrollConcept', default: null },
+    code: { type: String, default: '' },
+    name: { type: String, default: '' },
+    amount: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
 const payrollItemSchema = new mongoose.Schema(
   {
     employee: { type: mongoose.Schema.Types.ObjectId, ref: 'Employee', required: true },
     employeeName: String,
     identificacion: String,
+    // Snapshot del departamento (clasifica el gasto en el P&L y resuelve la cuenta).
+    departmentRef: { type: mongoose.Schema.Types.ObjectId, ref: 'PayrollDepartment', default: null },
+    departmentType: { type: String, default: '' }, // ADMINISTRATIVO/VENTAS/COSTOS/OTRO snapshot
     daysWorked: { type: Number, default: 30 },
-    baseSalary: { type: Number, default: 0 },
+    absenceDays: { type: Number, default: 0 }, // faltas injustificadas (reducen el sueldo)
+    monthlySalary: { type: Number, default: 0 }, // sueldo contractual completo (para prorrateo)
+    baseSalary: { type: Number, default: 0 },    // sueldo GANADO del período (tras ausencias)
     // Ingresos
     overtime: { type: Number, default: 0 },
     bonuses: { type: Number, default: 0 },
@@ -15,7 +33,13 @@ const payrollItemSchema = new mongoose.Schema(
     decimoCuarto: { type: Number, default: 0 },
     fondosReserva: { type: Number, default: 0 },
     vacaciones: { type: Number, default: 0 },
+    // Vacaciones GOZADAS pagadas contra la provisión acumulada (debita Vacaciones
+    // por pagar en vez de gasto; no se acumula provisión como si no se tomaran).
+    vacacionesContraProvision: { type: Number, default: 0 },
     otherIncome: { type: Number, default: 0 },
+    // Rubros flexibles agregados por el usuario (cuenta desde el concepto).
+    earnings: { type: [payrollLineSchema], default: [] },
+    deductions: { type: [payrollLineSchema], default: [] },
     totalIngresos: { type: Number, default: 0 },
     // Egresos
     iessPersonal: { type: Number, default: 0 }, // 9.45%
@@ -58,6 +82,12 @@ const payrollSchema = new mongoose.Schema(
     journalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry' },
     closedAt: Date,
     closedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // Pago del rol (desde banco o caja): asiento y transacción bancaria.
+    paymentJournalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
+    paymentBankTransaction: { type: mongoose.Schema.Types.ObjectId, ref: 'BankTransaction', default: null },
+    paymentBankAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'BankAccount', default: null },
+    paidAt: Date,
+    paidBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }

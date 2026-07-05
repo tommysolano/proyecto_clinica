@@ -7,7 +7,7 @@ import { HiOutlinePlus, HiOutlineUserGroup, HiOutlinePencilSquare, HiOutlineTras
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 
-const EMPTY = { code: '', identificacion: '', tipoIdentificacion: 'CEDULA', firstName: '', lastName: '', email: '', phone: '', position: '', department: '', contractType: 'INDEFINIDO', paymentFrequency: 'MENSUAL', salaryType: 'GROSS', baseSalary: 460, netSalary: 0, salaryChangeReason: '', hireDate: today(), chargesFamily: 0, deductible: true, salaryOriginClinic: '', bankName: '', bankAccount: '', bankAccountType: '', receivesDecimoTercero: true, receivesDecimoCuarto: true, receivesFondosReserva: false, decimoTerceroAcumulado: 'MENSUALIZADO', decimoCuartoAcumulado: 'MENSUALIZADO', fondosReservaAcumulado: 'MENSUALIZADO', user: '' };
+const EMPTY = { code: '', identificacion: '', tipoIdentificacion: 'CEDULA', firstName: '', lastName: '', email: '', phone: '', position: '', department: '', departmentRef: '', positionRef: '', paymentMethod: 'TRANSFERENCIA', contractType: 'INDEFINIDO', paymentFrequency: 'MENSUAL', salaryType: 'GROSS', baseSalary: 460, netSalary: 0, salaryChangeReason: '', hireDate: today(), chargesFamily: 0, deductible: true, salaryOriginClinic: '', bankName: '', bankAccount: '', bankAccountType: '', receivesDecimoTercero: true, receivesDecimoCuarto: true, receivesFondosReserva: false, decimoTerceroAcumulado: 'MENSUALIZADO', decimoCuartoAcumulado: 'MENSUALIZADO', fondosReservaAcumulado: 'MENSUALIZADO', user: '' };
 
 // Separa un nombre completo en nombres/apellidos (heurística simple ES).
 const splitName = (full = '') => {
@@ -30,6 +30,8 @@ export default function Employees() {
   const [history, setHistory] = useState(null);
   const [clinics, setClinics] = useState([]);
   const [users, setUsers] = useState([]);
+  const [depts, setDepts] = useState([]);
+  const [positions, setPositions] = useState([]);
 
   const load = async () => {
     try { const r = await api.get('/payroll/employees'); setList(r.data || []); }
@@ -37,7 +39,15 @@ export default function Employees() {
     try { const u = await api.get('/payroll/linkable-users'); setUsers(u.data || []); }
     catch { /* sin permiso: ignorar */ }
   };
-  useEffect(() => { load(); api.get('/clinics').then((r) => setClinics(r.data || [])).catch(() => {}); }, []);
+  useEffect(() => {
+    load();
+    api.get('/clinics').then((r) => setClinics(r.data || [])).catch(() => {});
+    api.get('/payroll/departments').then((r) => setDepts(r.data || [])).catch(() => {});
+    api.get('/payroll/positions').then((r) => setPositions(r.data || [])).catch(() => {});
+  }, []);
+
+  // Cargos filtrados por el departamento elegido (o todos si no hay depto).
+  const positionsForDept = form.departmentRef ? positions.filter((p) => String(p.department?._id || p.department) === String(form.departmentRef)) : positions;
 
   // Abre el modal de alta precargado con los datos de un usuario del sistema.
   const openFromUser = (u) => {
@@ -124,7 +134,11 @@ export default function Employees() {
                 <td className="px-3 py-2 font-mono text-xs">{e.code}</td>
                 <td className="px-3 py-2 font-mono text-xs">{e.identificacion}</td>
                 <td className="px-3 py-2">{e.firstName} {e.lastName}</td>
-                <td className="px-3 py-2 text-xs">{e.position}</td>
+                <td className="px-3 py-2 text-xs">
+                  {e.departmentRef
+                    ? (depts.find((d) => String(d._id) === String(e.departmentRef))?.name || e.position || '—')
+                    : <span className="text-amber-600" title="Sin departamento parametrizado">⚠ {e.department || e.position || 'Sin depto.'}</span>}
+                </td>
                 <td className="px-3 py-2 text-xs">{fmtDate(e.hireDate)}</td>
                 <td className="px-3 py-2 text-xs text-center">
                   <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${e.salaryType === 'NET' ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-slate-700'}`}>
@@ -158,13 +172,30 @@ export default function Employees() {
             <Field label="Apellidos" required><input required value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Email"><input placeholder="correo@dominio.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Teléfono"><input placeholder="09xxxxxxxx" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-            <Field label="Cargo"><input value={form.position} onChange={(e) => setForm({ ...form, position: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-            <Field label="Departamento"><input value={form.department} onChange={(e) => setForm({ ...form, department: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Departamento">
+              <select value={form.departmentRef || ''} onChange={(e) => setForm({ ...form, departmentRef: e.target.value, positionRef: '' })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                <option value="">Seleccione…</option>
+                {depts.map((d) => <option key={d._id} value={d._id}>{d.name}{d.type ? ` (${d.type})` : ''}</option>)}
+              </select>
+            </Field>
+            <Field label="Cargo">
+              <select value={form.positionRef || ''} onChange={(e) => setForm({ ...form, positionRef: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                <option value="">Seleccione…</option>
+                {positionsForDept.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
+              </select>
+            </Field>
             <Field label="Tipo de contrato"><select value={form.contractType} onChange={(e) => setForm({ ...form, contractType: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>INDEFINIDO</option><option>FIJO</option><option>EVENTUAL</option><option>JUVENIL</option></select></Field>
             <Field label="Frecuencia de pago"><select value={form.paymentFrequency} onChange={(e) => setForm({ ...form, paymentFrequency: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>MENSUAL</option><option>QUINCENAL</option></select></Field>
+            <Field label="Forma de pago"><select value={form.paymentMethod} onChange={(e) => setForm({ ...form, paymentMethod: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option value="TRANSFERENCIA">Transferencia</option><option value="CHEQUE">Cheque</option><option value="EFECTIVO">Efectivo</option></select></Field>
             <Field label="Fecha de ingreso" required><input type="date" required value={form.hireDate} onChange={(e) => setForm({ ...form, hireDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Cargas familiares"><NumericInput value={form.chargesFamily} onChange={(e) => setForm({ ...form, chargesFamily: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           </div>
+          {editing && !form.departmentRef && (form.department || form.position) && (
+            <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2">
+              Empleado con departamento/cargo legacy en texto libre{form.department ? ` («${form.department}»)` : ''}. Selecciona un
+              departamento y cargo del catálogo para que el rol clasifique el gasto correctamente en la contabilidad.
+            </div>
+          )}
           {/* Sección de sueldo (NET/GROSS) */}
           <div className="bg-emerald-50/60 border border-emerald-100 rounded-xl p-3 space-y-3">
             <div className="text-sm font-semibold text-emerald-800">Sueldo</div>
