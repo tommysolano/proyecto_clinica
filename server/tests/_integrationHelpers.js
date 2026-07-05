@@ -12,6 +12,7 @@ const { seedChartOfAccounts, getOrCreatePeriod } = require('../utils/accounting'
 const Product = require('../models/Product');
 const Supplier = require('../models/Supplier');
 const ChartOfAccount = require('../models/ChartOfAccount');
+const InventoryCategory = require('../models/InventoryCategory');
 
 let replset = null;
 
@@ -39,13 +40,33 @@ async function seedClinic({ date = new Date() } = {}) {
   return { clinicId, userId };
 }
 
+/**
+ * Categoría de inventario por defecto (find-or-create) con cuenta de activo = 1.1.04.01.
+ * Refleja la regla nueva: un producto físico de inventario debe tener categoría contable
+ * con `assetAccount` (las compras nuevas resuelven la cuenta desde ahí, sin fallback).
+ */
+async function defaultInventoryCategory(clinicId) {
+  const existing = await InventoryCategory.findOne({ clinic: clinicId, code: 'INV-DEF' });
+  if (existing) return existing;
+  const invAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '1.1.04.01' });
+  return InventoryCategory.create({ clinic: clinicId, code: 'INV-DEF', name: 'Inventario (test)', kind: 'INVENTARIO', assetAccount: invAcc?._id || null });
+}
+
 async function makeProduct(clinicId, overrides = {}) {
   const code = overrides.code || `P${Math.random().toString(36).slice(2, 8)}`;
+  const category = overrides.category || 'insumo';
+  const unlimited = overrides.unlimited ?? false;
+  // Productos físicos de inventario reciben una categoría contable por defecto si el
+  // test no especificó una (para que las compras nuevas puedan resolver la cuenta).
+  let inventoryCategory = overrides.inventoryCategory;
+  if (inventoryCategory === undefined && category === 'insumo' && !unlimited) {
+    inventoryCategory = (await defaultInventoryCategory(clinicId))._id;
+  }
   return Product.create({
     clinic: clinicId,
     code,
     name: overrides.name || 'Producto',
-    category: overrides.category || 'insumo',
+    category,
     salePrice: overrides.salePrice ?? 100,
     purchasePrice: overrides.purchasePrice ?? 0,
     stock: overrides.stock ?? 0,
@@ -53,8 +74,9 @@ async function makeProduct(clinicId, overrides = {}) {
     taxCategory: overrides.taxCategory || 'IVA_15',
     taxRate: overrides.taxRate ?? 15,
     priceIncludesVat: overrides.priceIncludesVat ?? true,
-    unlimited: overrides.unlimited ?? false,
+    unlimited,
     ...overrides,
+    inventoryCategory: inventoryCategory ?? null,
   });
 }
 

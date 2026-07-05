@@ -29,8 +29,15 @@ async function setup() {
   const gasto = await ChartOfAccount.findOne({ clinic: clinicId, code: '6.1.99' });
   const assetAcc = await ChartOfAccount.create({ clinic: clinicId, code: '1.2.05.99', name: 'Equipos (test)', type: 'ACTIVO', nature: 'DEBITO', allowsMovement: true });
   const afCat = await InventoryCategory.create({ clinic: clinicId, code: 'AF-TST', name: 'Equipos médicos', kind: 'ACTIVO_FIJO', assetAccount: assetAcc._id, depreciationRate: 10, usefulLifeYears: 10 });
-  return { clinicId, userId, gasto, assetAcc, afCat };
+  // Categoría de INVENTARIO con cuenta de activo = 1.1.04.01 (la cuenta de inventario
+  // sale de aquí; ya no hay fallback genérico en compras nuevas).
+  const invAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '1.1.04.01' });
+  const invCat = await InventoryCategory.create({ clinic: clinicId, code: 'INV-TST', name: 'Insumos médicos', kind: 'INVENTARIO', assetAccount: invAcc._id });
+  return { clinicId, userId, gasto, assetAcc, afCat, invAcc, invCat };
 }
+// Producto de inventario CON categoría contable configurada (caso normal).
+const makeInvProduct = (clinicId, invCat, overrides = {}) =>
+  H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id, ...overrides });
 const gastoLine = (acc, val = 100) => ({ description: 'Transporte', lineType: 'GASTO', quantity: 1, unitPrice: val, ivaRate: 0, subtotal: val, account: acc });
 const invLine = (product, qty = 10, price = 5) => ({ description: 'Insumo', lineType: 'INVENTARIO', product, quantity: qty, unitPrice: price, ivaRate: 0, subtotal: qty * price });
 const afLine = (catId, val = 1000) => ({ description: 'Ecógrafo', lineType: 'ACTIVO_FIJO', quantity: 1, unitPrice: val, ivaRate: 0, subtotal: val, fixedAsset: { category: catId, name: 'Ecógrafo' } });
@@ -48,9 +55,9 @@ test('compra solo gasto: contabiliza y cuadra', async () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 test('compra solo inventario: usa cuenta de inventario (sin cuenta manual) y sube stock', async () => {
-  const { clinicId, userId } = await setup();
+  const { clinicId, userId, invCat } = await setup();
   const sup = await H.makeSupplier(clinicId);
-  const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0 });
+  const prod = await makeInvProduct(clinicId, invCat);
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: new Date('2026-06-05'), items: [invLine(prod._id, 10, 5)] }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
   assert.equal(await H.accountBalanceByCode(clinicId, '1.1.04.01'), 50, 'inventario debitado');
@@ -76,9 +83,9 @@ test('compra solo activo fijo: usa cuenta de la categoría y crea el activo', as
 
 // ─────────────────────────────────────────────────────────────────────────────
 test('compra MIXTA: gasto + inventario + activo fijo cuadra y los totales son correctos', async () => {
-  const { clinicId, userId, gasto, afCat, assetAcc } = await setup();
+  const { clinicId, userId, gasto, afCat, assetAcc, invCat } = await setup();
   const sup = await H.makeSupplier(clinicId);
-  const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0 });
+  const prod = await makeInvProduct(clinicId, invCat);
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
     supplier: sup._id, fechaEmision: new Date('2026-06-05'),
     items: [gastoLine(gasto._id, 100), invLine(prod._id, 10, 5), afLine(afCat._id, 1000)],
@@ -98,9 +105,9 @@ test('compra MIXTA: gasto + inventario + activo fijo cuadra y los totales son co
 
 // ─────────────────────────────────────────────────────────────────────────────
 test('cuenta recurrente del proveedor SOLO se aplica a gasto (no a inventario ni activo)', async () => {
-  const { clinicId, userId, gasto, afCat, assetAcc } = await setup();
+  const { clinicId, userId, gasto, afCat, assetAcc, invCat } = await setup();
   const sup = await Supplier.create({ clinic: clinicId, ruc: '0990004196001', razonSocial: 'Prov', defaultExpenseAccount: gasto._id });
-  const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0 });
+  const prod = await makeInvProduct(clinicId, invCat);
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
     supplier: sup._id, fechaEmision: new Date('2026-06-05'),
     items: [
@@ -176,4 +183,88 @@ test('edición de compra ANTIGUA (item con producto sin lineType) sigue funciona
   assert.equal(inv.subtotal, 32);
   assert.ok((await H.assertLedgerBalanced(clinicId)).balanced);
   assert.equal((await Product.findById(prod._id)).stock, 8);
+});
+
+// ── Resolución ESTRICTA de cuentas en compras NUEVAS (sin fallback silencioso) ──
+test('compra NUEVA de inventario con categoría SIN cuenta de inventario debe fallar', async () => {
+  const { clinicId, userId } = await setup();
+  const sup = await H.makeSupplier(clinicId);
+  const catNoAcc = await InventoryCategory.create({ clinic: clinicId, code: 'INV-SINCTA', name: 'Sin cuenta', kind: 'INVENTARIO' });
+  const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: catNoAcc._id });
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: new Date('2026-06-05'), items: [invLine(prod._id, 10, 5)] }));
+  assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
+  assert.match(r.payload.message, /cuenta de inventario/i);
+  // No debe haber contabilizado ni movido stock.
+  assert.equal(await H.accountBalanceByCode(clinicId, '1.1.04.01'), 0);
+  assert.equal((await Product.findById(prod._id)).stock, 0);
+});
+
+test('compra NUEVA de inventario cuyo producto NO tiene categoría debe fallar', async () => {
+  const { clinicId, userId } = await setup();
+  const sup = await H.makeSupplier(clinicId);
+  const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: null }); // sin inventoryCategory
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: new Date('2026-06-05'), items: [invLine(prod._id, 10, 5)] }));
+  assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
+  assert.match(r.payload.message, /categoría de inventario/i);
+  assert.equal(await H.accountBalanceByCode(clinicId, '1.1.04.01'), 0);
+});
+
+test('compra NUEVA de activo fijo con categoría SIN cuenta de activo debe fallar', async () => {
+  const { clinicId, userId } = await setup();
+  const sup = await H.makeSupplier(clinicId);
+  const afNoAcc = await InventoryCategory.create({ clinic: clinicId, code: 'AF-SINCTA', name: 'AF sin cuenta', kind: 'ACTIVO_FIJO' });
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: new Date('2026-06-05'), items: [afLine(afNoAcc._id, 1000)] }));
+  assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
+  assert.match(r.payload.message, /cuenta de activo/i);
+  assert.equal(await FixedAsset.countDocuments({ clinic: clinicId }), 0, 'no debe crear el activo');
+});
+
+test('compra NUEVA de activo fijo SIN categoría debe fallar', async () => {
+  const { clinicId, userId } = await setup();
+  const sup = await H.makeSupplier(clinicId);
+  const item = { description: 'Ecógrafo', lineType: 'ACTIVO_FIJO', quantity: 1, unitPrice: 1000, ivaRate: 0, subtotal: 1000, fixedAsset: { name: 'Ecógrafo' } };
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: new Date('2026-06-05'), items: [item] }));
+  assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
+  assert.match(r.payload.message, /categoría de activo fijo/i);
+  assert.equal(await FixedAsset.countDocuments({ clinic: clinicId }), 0);
+});
+
+test('gasto con product colgado pero lineType GASTO NO se convierte en inventario', async () => {
+  const { clinicId, userId, gasto, invCat } = await setup();
+  const sup = await H.makeSupplier(clinicId);
+  const prod = await makeInvProduct(clinicId, invCat, { stock: 3 });
+  // Línea marcada explícitamente GASTO pero arrastrando un product: debe respetarse GASTO.
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
+    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    items: [{ description: 'Servicio con product colgado', lineType: 'GASTO', quantity: 1, unitPrice: 100, ivaRate: 0, subtotal: 100, account: gasto._id, product: prod._id }],
+  }));
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  const inv = await PurchaseInvoice.findById(r.payload._id);
+  assert.equal(inv.items[0].lineType, 'GASTO', 'la línea sigue siendo GASTO');
+  assert.equal(inv.items[0].product, null, 'se limpia el producto colgado');
+  assert.equal(await H.accountBalanceByCode(clinicId, '6.1.99'), 100, 'debita al gasto');
+  assert.equal(await H.accountBalanceByCode(clinicId, '1.1.04.01'), 0, 'NO debita inventario');
+  assert.equal((await Product.findById(prod._id)).stock, 3, 'NO mueve stock');
+});
+
+test('compra LEGACY con cuenta legacy en la línea de inventario sigue contabilizando al editar', async () => {
+  const { clinicId, userId } = await setup();
+  const sup = await H.makeSupplier(clinicId);
+  const legacyAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '1.1.04.02' }); // cuenta de inventario legacy
+  const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: null }); // sin categoría (legacy)
+  // Factura antigua ya REGISTRADA, sin asiento, con la cuenta legacy YA asignada en la línea.
+  const legacy = await PurchaseInvoice.create({
+    clinic: clinicId, supplier: sup._id, fechaEmision: new Date('2026-06-05'), serie: '001-001-000000777',
+    items: [{ description: 'Insumo legacy', product: prod._id, account: legacyAcc._id, quantity: 5, unitPrice: 4, subtotal: 20, ivaRate: 0 }],
+    subtotal: 20, total: 20, balance: 20, status: 'REGISTRADA',
+  });
+  const upd = await H.runController(purchase.update, H.mockReq(clinicId, userId, {
+    fechaEmision: new Date('2026-06-05'),
+    items: [{ description: 'Insumo legacy', product: prod._id, account: legacyAcc._id, quantity: 5, unitPrice: 4, subtotal: 20, ivaRate: 0 }],
+  }, { params: { id: String(legacy._id) } }));
+  assert.equal(upd.statusCode, 200, JSON.stringify(upd.payload));
+  // Debe respetar la cuenta legacy de la línea (no genérica) al contabilizar.
+  assert.equal(await H.accountBalanceByCode(clinicId, '1.1.04.02'), 20, 'usa la cuenta legacy de la línea');
+  assert.equal(await H.accountBalanceByCode(clinicId, '1.1.04.01'), 0, 'no usa la genérica');
+  assert.ok((await H.assertLedgerBalanced(clinicId)).balanced);
 });
