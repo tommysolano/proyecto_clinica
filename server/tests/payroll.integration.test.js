@@ -19,6 +19,14 @@ const Payroll = require('../models/Payroll');
 const BankAccount = require('../models/BankAccount');
 const BankTransaction = require('../models/BankTransaction');
 const JournalEntry = require('../models/JournalEntry');
+const PayrollIncomeTaxTable = require('../models/PayrollIncomeTaxTable');
+const { DEFAULT_IR_RANGES_2024 } = require('../utils/payrollTax');
+
+// Tabla de IR activa para el año (idempotente); el cierre la exige si hay ingreso.
+async function ensureIrTable(clinicId, year = 2026) {
+  const exists = await PayrollIncomeTaxTable.findOne({ clinic: clinicId, year, active: true });
+  if (!exists) await PayrollIncomeTaxTable.create({ clinic: clinicId, year, periodType: 'ANNUAL', active: true, ranges: DEFAULT_IR_RANGES_2024 });
+}
 
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
@@ -92,10 +100,11 @@ test('3-4) crea conceptos de ingreso y egreso con cuenta configurada', async () 
   assert.equal(String(rEgr.payload.payableAccount), String(cxc._id));
 });
 
-// Helper: genera y cierra un rol para un empleado, devolviendo el payroll cerrado.
+// Helper: genera un rol y asegura la tabla de IR (para poder cerrar).
 async function generateAndClose(clinicId, userId, { year = 2026, month = 6 } = {}) {
   const gen = await H.runController(payroll.generatePayroll, H.mockReq(clinicId, userId, { year, month }));
   assert.equal(gen.statusCode, 200, JSON.stringify(gen.payload));
+  await ensureIrTable(clinicId, year);
   return gen.payload;
 }
 
@@ -286,4 +295,110 @@ test('16) el seed de conceptos es idempotente', async () => {
   const r2 = await H.runController(payroll.seedConcepts, H.mockReq(clinicId, userId, {}));
   assert.equal(r2.payload.created, 0, 'segunda corrida no crea duplicados');
   assert.equal(r2.payload.total, total1);
+});
+
+// ═══════════ Correcciones: tabla IR parametrizable + recálculo IESS/IR ═══════════
+
+// A) Crear tabla IR por año + seed idempotente.
+test('A) crea tabla IR por año y el seed es idempotente', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-15') });
+  const create = await H.runController(payroll.createIncomeTaxTable, H.mockReq(clinicId, userId, {
+    year: 2026, periodType: 'ANNUAL', ranges: [{ from: 0, to: 11722, baseTax: 0, excessRate: 0 }, { from: 11722, to: null, baseTax: 0, excessRate: 5 }],
+  }));
+  assert.equal(create.statusCode, 201);
+  assert.equal(create.payload.active, true);
+  const s1 = await H.runController(payroll.seedIncomeTaxTable, H.mockReq(clinicId, userId, { year: 2027 }));
+  assert.equal(s1.payload.created, true);
+  const s2 = await H.runController(payroll.seedIncomeTaxTable, H.mockReq(clinicId, userId, { year: 2027 }));
+  assert.equal(s2.payload.created, false, 'no duplica tabla del año');
+});
+
+// B) El cierre usa la tabla IR configurada (no hardcode): IR > 0 para sueldo alto.
+test('B) el rol calcula IR con la tabla configurada', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-15') });
+  const admin = await makeDept(clinicId, { name: 'Admin' });
+  await makeEmployee(clinicId, { departmentRef: admin._id, baseSalary: 2000, receivesDecimoTercero: false, receivesDecimoCuarto: false });
+  await ensureIrTable(clinicId, 2026);
+  const gen = await H.runController(payroll.generatePayroll, H.mockReq(clinicId, userId, { year: 2026, month: 6 }));
+  assert.equal(gen.statusCode, 200);
+  const ir = gen.payload.items[0].impuestoRenta;
+  assert.ok(ir > 0, `IR debe ser > 0 con la tabla (fue ${ir})`);
+  const r = await H.runController(payroll.closePayroll, req(clinicId, userId, {}, { id: String(gen.payload._id) }));
+  assert.equal(r.statusCode, 200);
+  assert.ok(Math.abs(await H.accountBalanceByCode(clinicId, '2.1.02.05')) > 0, 'IR por pagar acreditado');
+  assert.ok((await H.assertLedgerBalanced(clinicId)).balanced);
+});
+
+// C) El cierre falla si falta la tabla IR y hay ingreso sujeto a IR.
+test('C) cierre falla si no hay tabla IR configurada', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-15') });
+  const admin = await makeDept(clinicId, { name: 'Admin' });
+  await makeEmployee(clinicId, { departmentRef: admin._id, baseSalary: 600 });
+  const gen = await H.runController(payroll.generatePayroll, H.mockReq(clinicId, userId, { year: 2026, month: 6 }));
+  // NO se siembra tabla IR.
+  const r = await H.runController(payroll.closePayroll, req(clinicId, userId, {}, { id: String(gen.payload._id) }));
+  assert.equal(r.statusCode, 400);
+  assert.match(r.payload.message, /tabla de impuesto a la renta/i);
+});
+
+// D) Editar ausencia recalcula sueldo, IESS, IR y neto (no queda IESS viejo).
+test('D) editar ausencia recalcula sueldo/IESS/neto', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-15') });
+  const admin = await makeDept(clinicId, { name: 'Admin' });
+  const emp = await makeEmployee(clinicId, { departmentRef: admin._id, baseSalary: 600, receivesDecimoTercero: false, receivesDecimoCuarto: false });
+  const gen = await H.runController(payroll.generatePayroll, H.mockReq(clinicId, userId, { year: 2026, month: 6 }));
+  const iessAntes = gen.payload.items[0].iessPersonal;
+  const upd = await H.runController(payroll.updatePayrollItem, req(clinicId, userId,
+    { employeeId: String(emp._id), patch: { absenceDays: 6 } }, { id: String(gen.payload._id) }));
+  assert.equal(upd.statusCode, 200);
+  const it = upd.payload.items[0];
+  assert.equal(it.baseSalary, 480, '600 * 24/30');
+  assert.ok(it.iessPersonal < iessAntes, 'IESS se recalcula tras la ausencia');
+  assert.equal(it.iessPersonal, +(480 * 0.0945).toFixed(2));
+});
+
+// E) Editar comisión (concepto que grava IESS) recalcula IESS y neto.
+test('E) comisión con concepto que afecta IESS recalcula IESS', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-15') });
+  const admin = await makeDept(clinicId, { name: 'Admin' });
+  const comAcc = await acc(clinicId, '6.1.22');
+  const rc = await H.runController(payroll.createConcept, H.mockReq(clinicId, userId, { code: 'ING-COM', name: 'Comisión', type: 'INGRESO', affectsIess: true, affectsIncomeTax: true, defaultAccount: String(comAcc._id) }));
+  const conceptId = rc.payload._id;
+  const emp = await makeEmployee(clinicId, { departmentRef: admin._id, baseSalary: 600, receivesDecimoTercero: false, receivesDecimoCuarto: false });
+  const gen = await H.runController(payroll.generatePayroll, H.mockReq(clinicId, userId, { year: 2026, month: 6 }));
+  const iessAntes = gen.payload.items[0].iessPersonal;
+  const upd = await H.runController(payroll.updatePayrollItem, req(clinicId, userId,
+    { employeeId: String(emp._id), patch: { earnings: [{ concept: String(conceptId), code: 'ING-COM', name: 'Comisión', amount: 200 }] } },
+    { id: String(gen.payload._id) }));
+  assert.equal(upd.statusCode, 200);
+  const it = upd.payload.items[0];
+  assert.equal(it.iessPersonal, +((600 + 200) * 0.0945).toFixed(2), 'IESS incluye la comisión');
+  assert.ok(it.iessPersonal > iessAntes);
+});
+
+// F) Concepto usado sin cuenta bloquea el cierre.
+test('F) concepto sin cuenta configurada bloquea el cierre', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-15') });
+  const admin = await makeDept(clinicId, { name: 'Admin' });
+  const rc = await H.runController(payroll.createConcept, H.mockReq(clinicId, userId, { code: 'ING-X', name: 'Bono sin cuenta', type: 'INGRESO' }));
+  const emp = await makeEmployee(clinicId, { departmentRef: admin._id, baseSalary: 600 });
+  const gen = await H.runController(payroll.generatePayroll, H.mockReq(clinicId, userId, { year: 2026, month: 6 }));
+  await ensureIrTable(clinicId, 2026);
+  await H.runController(payroll.updatePayrollItem, req(clinicId, userId,
+    { employeeId: String(emp._id), patch: { earnings: [{ concept: String(rc.payload._id), code: 'ING-X', name: 'Bono sin cuenta', amount: 80 }] } },
+    { id: String(gen.payload._id) }));
+  const r = await H.runController(payroll.closePayroll, req(clinicId, userId, {}, { id: String(gen.payload._id) }));
+  assert.equal(r.statusCode, 400);
+  assert.match(r.payload.message, /no tiene cuenta de gasto/i);
+});
+
+// G) La provisión de vacaciones usa la cuenta configurada (vacaciones por pagar).
+test('G) provisión de vacaciones acredita la cuenta configurada', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-15') });
+  const admin = await makeDept(clinicId, { name: 'Admin' });
+  await makeEmployee(clinicId, { departmentRef: admin._id, baseSalary: 600 });
+  const p = await generateAndClose(clinicId, userId);
+  const r = await H.runController(payroll.closePayroll, req(clinicId, userId, {}, { id: String(p._id) }));
+  assert.equal(r.statusCode, 200);
+  assert.ok((await H.accountBalanceByCode(clinicId, '2.1.03.06')) < 0, 'vacaciones por pagar acreditada (provisión)');
 });

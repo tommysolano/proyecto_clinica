@@ -23,6 +23,8 @@ const payrollItemSchema = new mongoose.Schema(
     departmentType: { type: String, default: '' }, // ADMINISTRATIVO/VENTAS/COSTOS/OTRO snapshot
     daysWorked: { type: Number, default: 30 },
     absenceDays: { type: Number, default: 0 }, // faltas injustificadas (reducen el sueldo)
+    // Elegibilidad de fondos de reserva (snapshot al generar; ≥1 año o activado).
+    eligibleFondos: { type: Boolean, default: false },
     monthlySalary: { type: Number, default: 0 }, // sueldo contractual completo (para prorrateo)
     baseSalary: { type: Number, default: 0 },    // sueldo GANADO del período (tras ausencias)
     // Ingresos

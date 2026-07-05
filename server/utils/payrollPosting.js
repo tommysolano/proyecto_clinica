@@ -10,6 +10,7 @@
 const { ensureAccountByCode, findAccount } = require('./accounting');
 const PayrollConfig = require('../models/PayrollConfig');
 const PayrollDepartment = require('../models/PayrollDepartment');
+const PayrollConcept = require('../models/PayrollConcept');
 const ChartOfAccount = require('../models/ChartOfAccount');
 
 const r2 = (n) => +(Number(n) || 0).toFixed(2);
@@ -28,16 +29,41 @@ async function accById(clinicId, id, session) {
   return ChartOfAccount.findOne({ _id: id, clinic: clinicId }).session(session || null);
 }
 
+const { computeIncomeTax } = require('./payrollTax');
+
 /**
- * Recalcula los totales de un ítem del rol. `daysWorked` (30 − ausencias) prorratea
- * el sueldo del mes; las vacaciones NO reducen días. Suma los rubros flexibles.
+ * MOTOR ÚNICO de cálculo de un ítem del rol. Recalcula, desde una sola fuente:
+ *  - sueldo GANADO prorrateado por días trabajados (30 − ausencias; vacaciones NO
+ *    reducen días);
+ *  - décimos/fondos mensualizados (ingreso) o acumulados (provisión) según el
+ *    empleado;
+ *  - base imponible IESS (sueldo + rubros marcados `affectsIess`), IESS personal/
+ *    patronal/IECE/SECAP con las TASAS configurables;
+ *  - impuesto a la renta con la TABLA parametrizable (o 0 si no hay tabla → el
+ *    cierre luego lo bloquea);
+ *  - provisiones de beneficios;
+ *  - totales de ingresos/egresos, neto y provisiones (incluye rubros flexibles).
+ *
+ * @param {object} item
+ * @param {object} ctx { employee, rates, taxTable, conceptMap, sbu }
+ *   rates: { IESS_PERSONAL, IESS_PATRONAL, IECE, SECAP, FONDOS_RESERVA } (fracciones)
+ *   taxTable: doc de PayrollIncomeTaxTable | null
+ *   conceptMap: Map(conceptId → { affectsIess, affectsIncomeTax })
  */
-function recomputeItem(item) {
+function recomputeItem(item, ctx = {}) {
+  const { employee = {}, rates = {}, taxTable = null, conceptMap = new Map(), sbu = 0 } = ctx;
+  const R = {
+    IESS_PERSONAL: rates.IESS_PERSONAL || 0,
+    IESS_PATRONAL: rates.IESS_PATRONAL || 0,
+    IECE: rates.IECE || 0,
+    SECAP: rates.SECAP || 0,
+    FONDOS_RESERVA: rates.FONDOS_RESERVA || 0,
+  };
+
+  // Días trabajados (ausencias reducen; vacaciones no).
   const monthly = Number(item.monthlySalary) || Number(item.baseSalary) || 0;
   let days = item.daysWorked;
-  if (item.absenceDays != null && item.absenceDays !== '') {
-    days = 30 - Number(item.absenceDays);
-  }
+  if (item.absenceDays != null && item.absenceDays !== '') days = 30 - Number(item.absenceDays);
   if (days == null || days === '' || Number.isNaN(Number(days))) days = 30;
   days = Math.max(0, Math.min(30, Number(days)));
   item.daysWorked = days;
@@ -45,24 +71,70 @@ function recomputeItem(item) {
   const earnedBase = r2(monthly * (days / 30));
   item.baseSalary = earnedBase;
 
-  const earn = (item.earnings || []).reduce((s, e) => s + (Number(e.amount) || 0), 0);
-  const ded = (item.deductions || []).reduce((s, d) => s + (Number(d.amount) || 0), 0);
+  // Rubros flexibles y sus flags de afectación (desde el catálogo de conceptos).
+  const earnings = item.earnings || [];
+  const deductions = item.deductions || [];
+  const flagOf = (line) => (line.concept ? conceptMap.get(String(line.concept)) : null) || {};
+  const earn = earnings.reduce((s, e) => s + (Number(e.amount) || 0), 0);
+  const ded = deductions.reduce((s, d) => s + (Number(d.amount) || 0), 0);
+  const earnIess = earnings.reduce((s, e) => s + (flagOf(e).affectsIess ? (Number(e.amount) || 0) : 0), 0);
+  const earnIr = earnings.reduce((s, e) => s + (flagOf(e).affectsIncomeTax ? (Number(e.amount) || 0) : 0), 0);
 
+  // Extras fijos legacy que gravan (normalmente 0; el flujo nuevo usa earnings[]).
+  const gravaFijo = (Number(item.overtime) || 0) + (Number(item.commissions) || 0) + (Number(item.bonuses) || 0);
+
+  // Décimos / fondos mensualizados (ingreso) o acumulados (provisión).
+  const emp = employee || {};
+  const d3Mens = emp.receivesDecimoTercero !== false && emp.decimoTerceroAcumulado === 'MENSUALIZADO';
+  const d4Mens = emp.receivesDecimoCuarto !== false && emp.decimoCuartoAcumulado === 'MENSUALIZADO';
+  const eligibleFondos = item.eligibleFondos != null ? item.eligibleFondos : (emp.receivesFondosReserva || false);
+  const frMens = eligibleFondos && emp.fondosReservaAcumulado === 'MENSUALIZADO';
+  item.decimoTercero = d3Mens ? r2(earnedBase / 12) : 0;
+  item.decimoCuarto = d4Mens ? r2((sbu || 0) / 12) : 0;
+  item.fondosReserva = frMens ? r2(earnedBase * R.FONDOS_RESERVA) : 0;
+
+  // Base imponible IESS (décimos/fondos/vacaciones NO gravan).
+  const iessBase = r2(earnedBase + gravaFijo + earnIess);
+  item.iessPersonal = r2(iessBase * R.IESS_PERSONAL);
+  item.iessPatronal = r2(iessBase * R.IESS_PATRONAL);
+  item.iece = r2(iessBase * R.IECE);
+  item.secap = r2(iessBase * R.SECAP);
+
+  // Impuesto a la renta desde la tabla parametrizable (0 si no hay tabla).
+  const taxableMonthly = r2(earnedBase + gravaFijo + earnIr);
+  let ir = 0;
+  if (taxTable) {
+    if (taxTable.periodType === 'MONTHLY') {
+      const t = computeIncomeTax(Math.max(0, taxableMonthly - item.iessPersonal), taxTable);
+      ir = t == null ? 0 : t;
+    } else {
+      const annual = Math.max(0, taxableMonthly * 12 - item.iessPersonal * 12);
+      const t = computeIncomeTax(annual, taxTable);
+      ir = t == null ? 0 : r2(t / 12);
+    }
+  }
+  item.impuestoRenta = r2(ir);
+
+  // Provisiones (acumulados) sobre el sueldo ganado.
+  item.provDecimoTercero = emp.decimoTerceroAcumulado === 'ACUMULADO' ? r2(earnedBase / 12) : 0;
+  item.provDecimoCuarto = emp.decimoCuartoAcumulado === 'ACUMULADO' ? r2((sbu || 0) / 12) : 0;
+  item.provVacaciones = r2(earnedBase / 24);
+  item.provFondosReserva = (eligibleFondos && emp.fondosReservaAcumulado === 'ACUMULADO') ? r2(earnedBase * R.FONDOS_RESERVA) : 0;
+
+  // Totales.
   item.totalIngresos = r2(
-    earnedBase + (item.overtime || 0) + (item.bonuses || 0) + (item.commissions || 0)
-    + (item.decimoTercero || 0) + (item.decimoCuarto || 0) + (item.fondosReserva || 0)
-    + (item.vacaciones || 0) + (item.otherIncome || 0) + earn
+    earnedBase + gravaFijo + item.decimoTercero + item.decimoCuarto + item.fondosReserva
+    + (Number(item.vacaciones) || 0) + (Number(item.otherIncome) || 0) + earn
   );
   item.totalEgresos = r2(
-    (item.iessPersonal || 0) + (item.impuestoRenta || 0) + (item.prestamoIess || 0)
-    + (item.prestamoEmpresa || 0) + (item.anticipos || 0) + (item.multas || 0)
-    + (item.otherDeductions || 0) + ded
+    item.iessPersonal + item.impuestoRenta + (Number(item.prestamoIess) || 0)
+    + (Number(item.prestamoEmpresa) || 0) + (Number(item.anticipos) || 0) + (Number(item.multas) || 0)
+    + (Number(item.otherDeductions) || 0) + ded
   );
   item.netoPagar = r2(item.totalIngresos - item.totalEgresos);
   item.totalProvisiones = r2(
-    (item.iessPatronal || 0) + (item.iece || 0) + (item.secap || 0)
-    + (item.provDecimoTercero || 0) + (item.provDecimoCuarto || 0)
-    + (item.provVacaciones || 0) + (item.provFondosReserva || 0)
+    item.iessPatronal + item.iece + item.secap
+    + item.provDecimoTercero + item.provDecimoCuarto + item.provVacaciones + item.provFondosReserva
   );
   return item;
 }
@@ -146,17 +218,33 @@ async function buildPayrollEntryLines(payroll, { clinicId, session } = {}) {
     row.credit = r2(row.credit + (credit || 0));
   };
 
+  const conceptCache = new Map();
+  const loadConcept = async (id) => {
+    const k = String(id);
+    if (!conceptCache.has(k)) conceptCache.set(k, await PayrollConcept.findOne({ _id: id, clinic: clinicId }).session(session || null));
+    return conceptCache.get(k);
+  };
+
   for (const it of payroll.items || []) {
     const dept = await resolveDeptExpenseAccounts(clinicId, it.departmentRef, general, deptCache, session);
 
-    // Ingresos que van a la cuenta de sueldos del departamento (todo lo que no
-    // tenga cuenta de concepto propia), menos las vacaciones contra provisión.
+    // Ingresos que van a la cuenta de sueldos del departamento (rubros sin concepto),
+    // menos las vacaciones contra provisión. Un rubro CON concepto exige la cuenta
+    // del concepto (bloquea el cierre si falta).
     const conceptEarnAcct = [];
     let earnToDept = 0;
     for (const e of it.earnings || []) {
-      const acc = await accById(clinicId, e.concept ? (await conceptAccount(clinicId, e.concept, 'defaultAccount', session)) : null, session);
-      if (acc) conceptEarnAcct.push({ acc, amount: Number(e.amount) || 0, name: e.name });
-      else earnToDept += Number(e.amount) || 0;
+      const amt = Number(e.amount) || 0;
+      if (amt <= 0) continue;
+      if (e.concept) {
+        const c = await loadConcept(e.concept);
+        const accDoc = c && c.defaultAccount ? await accById(clinicId, c.defaultAccount, session) : null;
+        if (!accDoc) {
+          const err = new Error(`El concepto «${e.name || c?.name || e.code || 'ingreso'}» no tiene cuenta de gasto configurada.`);
+          err.status = 400; throw err;
+        }
+        conceptEarnAcct.push({ acc: accDoc, amount: amt, name: e.name });
+      } else earnToDept += amt;
     }
     const vacContra = Number(it.vacacionesContraProvision) || 0;
     const salaryExpense = r2(
@@ -185,7 +273,15 @@ async function buildPayrollEntryLines(payroll, { clinicId, session } = {}) {
     for (const d of it.deductions || []) {
       const amt = Number(d.amount) || 0;
       if (amt <= 0) continue;
-      const acc = (d.concept ? await accById(clinicId, await conceptAccount(clinicId, d.concept, 'payableAccount', session), session) : null) || general.cxcEmpleados;
+      let acc = general.cxcEmpleados;
+      if (d.concept) {
+        const c = await loadConcept(d.concept);
+        acc = c && c.payableAccount ? await accById(clinicId, c.payableAccount, session) : null;
+        if (!acc) {
+          const err = new Error(`El concepto «${d.name || c?.name || d.code || 'descuento'}» no tiene cuenta por pagar configurada.`);
+          err.status = 400; throw err;
+        }
+      }
       add(acc, 0, amt, d.name || 'Descuento');
     }
 
@@ -214,14 +310,6 @@ async function buildPayrollEntryLines(payroll, { clinicId, session } = {}) {
     throw err;
   }
   return { lines, config: general };
-}
-
-// Cache-less lookup del campo de cuenta de un concepto (defaultAccount/payableAccount).
-const PayrollConcept = require('../models/PayrollConcept');
-async function conceptAccount(clinicId, conceptId, field, session) {
-  if (!conceptId) return null;
-  const c = await PayrollConcept.findOne({ _id: conceptId, clinic: clinicId }).session(session || null);
-  return c ? c[field] || null : null;
 }
 
 module.exports = { recomputeItem, buildPayrollEntryLines, resolveConfigAccounts, accByCode };

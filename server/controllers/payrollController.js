@@ -9,9 +9,17 @@ const BankAccount = require('../models/BankAccount');
 const BankTransaction = require('../models/BankTransaction');
 const User = require('../models/User');
 const EmployeeDeduction = require('../models/EmployeeDeduction');
+const PayrollIncomeTaxTable = require('../models/PayrollIncomeTaxTable');
 const { createEntry, findAccount, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { recomputeItem, buildPayrollEntryLines, resolveConfigAccounts } = require('../utils/payrollPosting');
+const { DEFAULT_IR_RANGES_2024, getActiveIncomeTaxTable } = require('../utils/payrollTax');
+
+/** Mapa conceptId → flags de afectación (para el motor de cálculo del ítem). */
+async function loadConceptFlags(clinicId, session) {
+  const concepts = await PayrollConcept.find({ clinic: clinicId }).select('affectsIess affectsIncomeTax').session(session || null);
+  return new Map(concepts.map((c) => [String(c._id), { affectsIess: c.affectsIess, affectsIncomeTax: c.affectsIncomeTax }]));
+}
 
 // Tasas legales Ecuador por defecto (se sobrescriben con PayrollConfig)
 const RATES = {
@@ -238,34 +246,8 @@ exports.updateLoan = async (req, res) => {
 };
 
 // ----- Rol de pagos -----
-function computeIESS(income) { return +(income * RATES.IESS_PERSONAL).toFixed(2); }
-function computeIESSPatronal(income) { return +(income * RATES.IESS_PATRONAL).toFixed(2); }
-
-/** Calcula impuesto a la renta mensual proyectado (tabla 2024 simplificada). */
-function computeIRMonthly(annualBase) {
-  // Tabla IR personas naturales 2024 (proyección)
-  const tabla = [
-    { hasta: 11722, base: 0, fraccion: 0 },
-    { hasta: 14930, base: 0, fraccion: 5 },
-    { hasta: 19385, base: 160, fraccion: 10 },
-    { hasta: 25638, base: 606, fraccion: 12 },
-    { hasta: 33738, base: 1356, fraccion: 15 },
-    { hasta: 44721, base: 2571, fraccion: 20 },
-    { hasta: 59537, base: 4768, fraccion: 25 },
-    { hasta: 79388, base: 8472, fraccion: 30 },
-    { hasta: 105580, base: 14427, fraccion: 35 },
-    { hasta: Infinity, base: 23594, fraccion: 37 },
-  ];
-  for (const r of tabla) {
-    if (annualBase <= r.hasta) {
-      const prev = tabla[tabla.indexOf(r) - 1];
-      const fraccionExcedente = prev ? annualBase - prev.hasta : annualBase;
-      const ir = r.base + (fraccionExcedente * r.fraccion / 100);
-      return Math.max(0, +(ir / 12).toFixed(2));
-    }
-  }
-  return 0;
-}
+// El IR ya NO se calcula con tabla hardcodeada: el motor recomputeItem usa la
+// tabla parametrizable (PayrollIncomeTaxTable) vía utils/payrollTax.
 
 /**
  * Genera (o regenera) borrador de rol para un período.
@@ -288,37 +270,21 @@ exports.generatePayroll = async (req, res) => {
     // Departamentos parametrizados (para el snapshot de tipo de gasto en cada ítem).
     const depts = await PayrollDepartment.find({ clinic: req.clinicId });
     const deptById = new Map(depts.map((d) => [String(d._id), d]));
+    // Contexto del motor de cálculo (fuente única): tasas, tabla IR y flags de conceptos.
+    const taxTable = await getActiveIncomeTaxTable(req.clinicId, y);
+    const conceptMap = await loadConceptFlags(req.clinicId);
+    const ctx = { rates: R, taxTable, conceptMap, sbu: R.SBU_2024 };
 
     const items = [];
     for (const emp of employees) {
       const yearsWorked = (endOfMonth - new Date(emp.hireDate)) / (1000 * 60 * 60 * 24 * 365);
       const eligibleFondos = emp.receivesFondosReserva || yearsWorked >= 1;
-
       const base = effectiveBaseSalary(emp);
-      const decimoTercero = emp.receivesDecimoTercero && emp.decimoTerceroAcumulado === 'MENSUALIZADO' ? +(base / 12).toFixed(2) : 0;
-      const decimoCuarto = emp.receivesDecimoCuarto && emp.decimoCuartoAcumulado === 'MENSUALIZADO' ? +(R.SBU_2024 / 12).toFixed(2) : 0;
-      const fondosReserva = eligibleFondos && emp.fondosReservaAcumulado === 'MENSUALIZADO' ? +(base * R.FONDOS_RESERVA).toFixed(2) : 0;
 
-      const totalIngresos = +(base + decimoTercero + decimoCuarto + fondosReserva).toFixed(2);
-
-      // Aporte IESS sobre ingreso afecto (no incluye décimos ni fondos)
-      const iessBase = base;
-      const iessPersonal = +(iessBase * R.IESS_PERSONAL).toFixed(2);
-      const iessPatronal = +(iessBase * R.IESS_PATRONAL).toFixed(2);
-      const iece = +(iessBase * R.IECE).toFixed(2);
-      const secap = +(iessBase * R.SECAP).toFixed(2);
-
-      // Préstamos vigentes
+      // Préstamos vigentes (cuota pendiente del período).
       const loans = await EmployeeLoan.find({ clinic: req.clinicId, employee: emp._id, status: 'ACTIVO' });
       let prestamoEmpresa = 0;
-      for (const l of loans) {
-        const pend = l.installments.find((i) => !i.paid);
-        if (pend) prestamoEmpresa += pend.amount;
-      }
-
-      // IR mensual proyectado
-      const annualBase = (base + decimoCuarto + fondosReserva) * 12 - iessPersonal * 12;
-      const impuestoRenta = computeIRMonthly(annualBase);
+      for (const l of loans) { const pend = l.installments.find((i) => !i.paid); if (pend) prestamoEmpresa += pend.amount; }
 
       // Deducciones pendientes del empleado (consumo, multas, anticipos, etc.).
       const deductions = await EmployeeDeduction.find({ clinic: req.clinicId, employee: emp._id, status: 'PENDIENTE' });
@@ -328,30 +294,19 @@ exports.generatePayroll = async (req, res) => {
         else if (dd.type === 'ANTICIPO') anticipos += dd.amount;
         else otherDeductions += dd.amount; // CONSUMO / UNIFORME / OTRO
       }
-      multas = +multas.toFixed(2); anticipos = +anticipos.toFixed(2); otherDeductions = +otherDeductions.toFixed(2);
-
-      const totalEgresos = +(iessPersonal + impuestoRenta + prestamoEmpresa + multas + anticipos + otherDeductions).toFixed(2);
-      const netoPagar = +(totalIngresos - totalEgresos).toFixed(2);
-      const provDecimoTercero = emp.decimoTerceroAcumulado === 'ACUMULADO' ? +(base / 12).toFixed(2) : 0;
-      const provDecimoCuarto = emp.decimoCuartoAcumulado === 'ACUMULADO' ? +(R.SBU_2024 / 12).toFixed(2) : 0;
-      const provVacaciones = +(base / 24).toFixed(2);
-      const provFondosReserva = eligibleFondos && emp.fondosReservaAcumulado === 'ACUMULADO' ? +(base * R.FONDOS_RESERVA).toFixed(2) : 0;
-      const totalProvisiones = +(iessPatronal + iece + secap + provDecimoTercero + provDecimoCuarto + provVacaciones + provFondosReserva).toFixed(2);
 
       const dept = emp.departmentRef ? deptById.get(String(emp.departmentRef)) : null;
       const item = {
         employee: emp._id, employeeName: `${emp.firstName} ${emp.lastName}`, identificacion: emp.identificacion,
         departmentRef: emp.departmentRef || null, departmentType: dept?.type || '',
         daysWorked: 30, absenceDays: 0, monthlySalary: base, baseSalary: base,
-        decimoTercero, decimoCuarto, fondosReserva,
-        totalIngresos, iessPersonal, impuestoRenta, prestamoEmpresa,
-        multas, anticipos, otherDeductions,
-        totalEgresos, netoPagar,
-        iessPatronal, iece, secap, provDecimoTercero, provDecimoCuarto, provVacaciones, provFondosReserva,
-        totalProvisiones,
+        eligibleFondos,
+        prestamoEmpresa: +prestamoEmpresa.toFixed(2),
+        multas: +multas.toFixed(2), anticipos: +anticipos.toFixed(2), otherDeductions: +otherDeductions.toFixed(2),
         earnings: [], deductions: [],
       };
-      recomputeItem(item); // consolida totales (base prorrateada + rubros flexibles)
+      // MOTOR ÚNICO: décimos/fondos, IESS, IR (tabla), provisiones y totales.
+      recomputeItem(item, { ...ctx, employee: emp });
       items.push(item);
     }
 
@@ -403,7 +358,13 @@ exports.updatePayrollItem = async (req, res) => {
     delete patch.account; delete patch.accounts;
     Object.assign(it, patch);
     if (!it.monthlySalary) it.monthlySalary = it.baseSalary; // legacy sin sueldo contractual
-    recomputeItem(it); // prorratea por días trabajados + suma rubros flexibles
+    // Recalcula TODO con el motor único: base prorrateada, IESS, IR (tabla), décimos,
+    // provisiones y totales. Así no queda un rol con sueldo nuevo pero IESS/IR viejo.
+    const R = await getRates(req.clinicId);
+    const taxTable = await getActiveIncomeTaxTable(req.clinicId, p.year);
+    const conceptMap = await loadConceptFlags(req.clinicId);
+    const employee = await Employee.findById(it.employee);
+    recomputeItem(it, { rates: R, taxTable, conceptMap, sbu: R.SBU_2024, employee });
     p.totalIngresos = +p.items.reduce((s, x) => s + (x.totalIngresos || 0), 0).toFixed(2);
     p.totalEgresos = +p.items.reduce((s, x) => s + (x.totalEgresos || 0), 0).toFixed(2);
     p.totalNeto = +p.items.reduce((s, x) => s + (x.netoPagar || 0), 0).toFixed(2);
@@ -428,6 +389,17 @@ exports.closePayroll = async (req, res) => {
       if (p.status !== 'BORRADOR') throw Object.assign(new Error('No es borrador'), { status: 400 });
       const payrollDate = new Date(p.year, p.month - 1, 28);
       await assertPeriodOpen(req.clinicId, payrollDate, { session });
+
+      // Bloqueo: si hay empleados con ingreso (sujetos a IR) y NO hay tabla de
+      // impuesto a la renta configurada para el año, no se cierra con valores
+      // obsoletos (se exige configurar la tabla).
+      const hasTaxableIncome = (p.items || []).some((i) => (i.totalIngresos || 0) > 0);
+      if (hasTaxableIncome) {
+        const taxTable = await getActiveIncomeTaxTable(req.clinicId, p.year, { session });
+        if (!taxTable) {
+          throw Object.assign(new Error(`No hay tabla de impuesto a la renta configurada para el año ${p.year}. Configúrela antes de cerrar el rol.`), { status: 400 });
+        }
+      }
 
       // Construye las líneas (agrega por cuenta; valida config crítica).
       const { lines } = await buildPayrollEntryLines(p, { clinicId: req.clinicId, session });
@@ -748,6 +720,58 @@ exports.seedConcepts = async (req, res) => {
     if (toCreate.length) await PayrollConcept.insertMany(toCreate);
     const all = await PayrollConcept.find({ clinic: req.clinicId }).sort({ type: 1, code: 1 });
     res.json({ created: toCreate.length, total: all.length, concepts: all });
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
+
+// ---- Tabla de impuesto a la renta (parametrizable por año) ----
+exports.listIncomeTaxTables = async (req, res) => {
+  const items = await PayrollIncomeTaxTable.find({ clinic: req.clinicId }).sort({ year: -1, active: -1 });
+  res.json(items);
+};
+exports.createIncomeTaxTable = async (req, res) => {
+  try {
+    const data = { ...req.body, clinic: req.clinicId };
+    if (!data.year) return res.status(400).json({ message: 'year requerido' });
+    // Solo una tabla ACTIVA por año: si esta entra activa, desactiva las previas.
+    if (data.active !== false) {
+      await PayrollIncomeTaxTable.updateMany({ clinic: req.clinicId, year: data.year, active: true }, { $set: { active: false } });
+      data.active = true;
+    }
+    const t = await PayrollIncomeTaxTable.create(data);
+    res.status(201).json(t);
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
+exports.updateIncomeTaxTable = async (req, res) => {
+  try {
+    const t = await PayrollIncomeTaxTable.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!t) return res.status(404).json({ message: 'No encontrado' });
+    const patch = { ...req.body }; delete patch.clinic;
+    // Al activar esta tabla, desactiva otras del mismo año.
+    if (patch.active === true) {
+      await PayrollIncomeTaxTable.updateMany({ clinic: req.clinicId, year: patch.year || t.year, active: true, _id: { $ne: t._id } }, { $set: { active: false } });
+    }
+    Object.assign(t, patch);
+    await t.save();
+    res.json(t);
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
+
+/**
+ * Siembra la tabla de IR de un año con los rangos por defecto (SRI 2024) SOLO si
+ * no existe una tabla activa para ese año. Idempotente. El contador debe validar
+ * los valores vigentes.
+ */
+exports.seedIncomeTaxTable = async (req, res) => {
+  try {
+    const year = parseInt(req.body?.year || req.query?.year) || new Date().getFullYear();
+    const existing = await PayrollIncomeTaxTable.findOne({ clinic: req.clinicId, year, active: true });
+    if (existing) return res.json({ created: false, table: existing, warning: 'Ya existe una tabla activa; valida los valores vigentes.' });
+    const t = await PayrollIncomeTaxTable.create({
+      clinic: req.clinicId, year, periodType: 'ANNUAL', active: true,
+      ranges: DEFAULT_IR_RANGES_2024,
+      notes: 'Semilla SRI 2024. VALIDAR los valores vigentes del año antes de declarar.',
+    });
+    res.status(201).json({ created: true, table: t, warning: 'Semilla SRI 2024: valida/actualiza los valores vigentes del año.' });
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 

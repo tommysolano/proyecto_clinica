@@ -22,7 +22,7 @@ const ACCOUNT_LABELS = {
 };
 
 const inputCls = 'border border-slate-200 rounded-xl px-3.5 py-2.5 w-full';
-const TABS = [['params', 'Parámetros'], ['accounts', 'Cuentas'], ['depts', 'Departamentos'], ['positions', 'Cargos'], ['concepts', 'Conceptos']];
+const TABS = [['params', 'Parámetros'], ['accounts', 'Cuentas'], ['depts', 'Departamentos'], ['positions', 'Cargos'], ['concepts', 'Conceptos'], ['incometax', 'Impuesto Renta']];
 
 export default function PayrollConfig() {
   const [tab, setTab] = useState('params');
@@ -31,13 +31,15 @@ export default function PayrollConfig() {
   const [depts, setDepts] = useState([]);
   const [positions, setPositions] = useState([]);
   const [concepts, setConcepts] = useState([]);
+  const [irTables, setIrTables] = useState([]);
 
   const loadCfg = () => api.get('/payroll/config').then((r) => setCfg(r.data)).catch((e) => toast.error(e.response?.data?.message || 'Error'));
   const loadDepts = () => api.get('/payroll/departments').then((r) => setDepts(r.data || [])).catch(() => {});
   const loadPositions = () => api.get('/payroll/positions').then((r) => setPositions(r.data || [])).catch(() => {});
   const loadConcepts = () => api.get('/payroll/concepts').then((r) => setConcepts(r.data || [])).catch(() => {});
+  const loadIrTables = () => api.get('/payroll/income-tax').then((r) => setIrTables(r.data || [])).catch(() => {});
   useEffect(() => {
-    loadCfg(); loadDepts(); loadPositions(); loadConcepts();
+    loadCfg(); loadDepts(); loadPositions(); loadConcepts(); loadIrTables();
     api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setAccounts((r.data || []).filter((a) => a.allowsMovement))).catch(() => {});
   }, []);
 
@@ -91,6 +93,7 @@ export default function PayrollConfig() {
       {tab === 'depts' && <Departments accounts={accounts} depts={depts} reload={loadDepts} />}
       {tab === 'positions' && <Positions depts={depts} positions={positions} reload={loadPositions} />}
       {tab === 'concepts' && <Concepts accounts={accounts} concepts={concepts} reload={loadConcepts} />}
+      {tab === 'incometax' && <IncomeTax tables={irTables} reload={loadIrTables} />}
     </div>
   );
 }
@@ -247,6 +250,93 @@ function Concepts({ accounts, concepts, reload }) {
             </tr>
           ))}
           {concepts.length === 0 && <tr><td colSpan={5} className="px-3 py-4 text-center text-slate-400">Sin conceptos. Usa «Sembrar estándar».</td></tr>}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+// ---- Tabla de impuesto a la renta (por año, rangos editables) ----
+function IncomeTax({ tables, reload }) {
+  const EMPTY_RANGE = { from: 0, to: '', baseTax: 0, excessRate: 0 };
+  const [year, setYear] = useState(new Date().getFullYear());
+  const [periodType, setPeriodType] = useState('ANNUAL');
+  const [ranges, setRanges] = useState([{ ...EMPTY_RANGE }]);
+  const [editing, setEditing] = useState(null);
+
+  const setRange = (i, k, v) => setRanges(ranges.map((r, idx) => (idx === i ? { ...r, [k]: v } : r)));
+  const addRange = () => setRanges([...ranges, { ...EMPTY_RANGE }]);
+  const removeRange = (i) => setRanges(ranges.filter((_, idx) => idx !== i));
+
+  const seed = async () => {
+    try { const r = await api.post('/payroll/income-tax/seed', { year }); toast[r.data.created ? 'success' : 'error'](r.data.warning || 'Listo'); reload(); }
+    catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+  };
+  const save = async () => {
+    try {
+      const payload = { year: +year, periodType, active: true, ranges: ranges.map((r) => ({ from: +r.from || 0, to: r.to === '' || r.to == null ? null : +r.to, baseTax: +r.baseTax || 0, excessRate: +r.excessRate || 0 })) };
+      if (editing) await api.put(`/payroll/income-tax/${editing}`, payload);
+      else await api.post('/payroll/income-tax', payload);
+      toast.success('Tabla guardada'); setEditing(null); setRanges([{ ...EMPTY_RANGE }]); reload();
+    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+  };
+  const edit = (t) => { setEditing(t._id); setYear(t.year); setPeriodType(t.periodType); setRanges((t.ranges || []).map((r) => ({ from: r.from, to: r.to == null ? '' : r.to, baseTax: r.baseTax, excessRate: r.excessRate }))); };
+  const toggle = async (t) => { try { await api.put(`/payroll/income-tax/${t._id}`, { active: !t.active }); reload(); } catch (e) { toast.error(e.response?.data?.message || 'Error'); } };
+
+  return (
+    <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4 space-y-4">
+      <div className="flex justify-between items-center">
+        <h2 className="font-semibold text-slate-700">Impuesto a la renta (tabla por año)</h2>
+        <button onClick={seed} className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs">Sembrar tabla SRI 2024</button>
+      </div>
+      <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+        Los rangos son configurables. La semilla usa la tabla SRI 2024: <b>valida/actualiza los valores vigentes</b> del año antes de declarar.
+      </p>
+
+      <div className="flex gap-3 items-end flex-wrap">
+        <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Año</span><NumericInput value={year} onChange={(e) => setYear(+e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5 w-24" /></label>
+        <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Tipo</span>
+          <select value={periodType} onChange={(e) => setPeriodType(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option value="ANNUAL">Anual</option><option value="MONTHLY">Mensual</option></select>
+        </label>
+      </div>
+
+      <table className="tbl text-sm">
+        <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-2 py-1 text-right">Desde</th><th className="px-2 py-1 text-right">Hasta</th><th className="px-2 py-1 text-right">Impuesto base</th><th className="px-2 py-1 text-right">% excedente</th><th></th></tr></thead>
+        <tbody>
+          {ranges.map((r, i) => (
+            <tr key={i} className="border-t">
+              <td className="px-2 py-1"><NumericInput value={r.from} onChange={(e) => setRange(i, 'from', e.target.value)} className="w-24 border rounded px-1 text-right" /></td>
+              <td className="px-2 py-1"><input value={r.to} placeholder="∞" onChange={(e) => setRange(i, 'to', e.target.value)} className="w-24 border rounded px-1 text-right" /></td>
+              <td className="px-2 py-1"><NumericInput value={r.baseTax} onChange={(e) => setRange(i, 'baseTax', e.target.value)} className="w-24 border rounded px-1 text-right" /></td>
+              <td className="px-2 py-1"><NumericInput value={r.excessRate} onChange={(e) => setRange(i, 'excessRate', e.target.value)} className="w-20 border rounded px-1 text-right" /></td>
+              <td className="px-2 py-1 text-right"><button onClick={() => removeRange(i)} className="text-rose-600 text-xs">Quitar</button></td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <div className="flex gap-2">
+        <button onClick={addRange} className="px-3 py-1.5 bg-slate-200 rounded-lg text-xs">+ Rango</button>
+        <button onClick={save} className="px-4 py-2 bg-emerald-600 text-white rounded-xl">{editing ? 'Actualizar tabla' : 'Guardar tabla'}</button>
+        {editing && <button onClick={() => { setEditing(null); setRanges([{ ...EMPTY_RANGE }]); }} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button>}
+      </div>
+
+      <h3 className="font-semibold text-slate-700 text-sm pt-2">Tablas registradas</h3>
+      <table className="tbl text-sm">
+        <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Año</th><th className="px-3 py-2 text-left">Tipo</th><th className="px-3 py-2 text-center">Rangos</th><th className="px-3 py-2 text-center">Activa</th><th></th></tr></thead>
+        <tbody>
+          {tables.map((t) => (
+            <tr key={t._id} className="border-t">
+              <td className="px-3 py-2 font-mono">{t.year}</td>
+              <td className="px-3 py-2 text-xs">{t.periodType}</td>
+              <td className="px-3 py-2 text-center">{t.ranges?.length || 0}</td>
+              <td className="px-3 py-2 text-center">{t.active ? <span className="text-emerald-600">✓</span> : '—'}</td>
+              <td className="px-3 py-2 text-right flex gap-2 justify-end">
+                <button onClick={() => edit(t)} className="text-blue-600 text-xs">Editar</button>
+                <button onClick={() => toggle(t)} className="text-slate-600 text-xs">{t.active ? 'Desactivar' : 'Activar'}</button>
+              </td>
+            </tr>
+          ))}
+          {tables.length === 0 && <tr><td colSpan={5} className="px-3 py-4 text-center text-slate-400">Sin tablas. Usa «Sembrar tabla SRI 2024».</td></tr>}
         </tbody>
       </table>
     </div>

@@ -38,6 +38,12 @@ router.post('/concepts', requireRole('admin', 'contabilidad'), c.createConcept);
 router.post('/concepts/seed', requireRole('admin', 'contabilidad'), c.seedConcepts);
 router.put('/concepts/:id', requireRole('admin', 'contabilidad'), c.updateConcept);
 
+// Tabla de impuesto a la renta parametrizable
+router.get('/income-tax', requireRole('admin', 'contabilidad'), c.listIncomeTaxTables);
+router.post('/income-tax', requireRole('admin', 'contabilidad'), c.createIncomeTaxTable);
+router.post('/income-tax/seed', requireRole('admin', 'contabilidad'), c.seedIncomeTaxTable);
+router.put('/income-tax/:id', requireRole('admin', 'contabilidad'), c.updateIncomeTaxTable);
+
 router.get('/', requireRole('admin', 'contabilidad'), c.listPayrolls);
 router.get('/:id', requireRole('admin', 'contabilidad'), c.getPayroll);
 router.post('/generate', requireRole('admin', 'contabilidad'), c.generatePayroll);
