@@ -20,6 +20,7 @@ import {
   HiOutlinePrinter,
   HiOutlineArrowDownTray,
   HiOutlineShoppingBag,
+  HiOutlinePencilSquare,
 } from 'react-icons/hi2';
 
 const TABS = [
@@ -478,6 +479,7 @@ function ItemsTable({
   productOptions, // productos elegibles para esta variante
   allProducts,    // catálogo completo (para resolver compuestos)
   onAdd,
+  onAddManual,    // si se pasa, habilita agregar ítems de texto libre (manual)
   onUpdate,
   onRemove,
   onToggleComponent,
@@ -502,13 +504,25 @@ function ItemsTable({
     <div className="md:col-span-3">
       <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
         <label className="text-sm font-medium text-slate-700">{label}</label>
-        <button
-          type="button"
-          onClick={onAdd}
-          className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-emerald-600 text-white border-none cursor-pointer whitespace-nowrap"
-        >
-          <HiOutlinePlus className="w-3 h-3" /> Agregar ítem
-        </button>
+        <div className="flex items-center gap-2">
+          {onAddManual && (
+            <button
+              type="button"
+              onClick={onAddManual}
+              className="flex items-center gap-1 text-xs px-2 py-1 rounded border border-slate-300 bg-white text-slate-600 hover:border-emerald-400 hover:text-emerald-700 cursor-pointer whitespace-nowrap"
+              title="Escribir un medicamento que la clínica no vende"
+            >
+              <HiOutlinePencilSquare className="w-3 h-3" /> Manual
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={onAdd}
+            className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-emerald-600 text-white border-none cursor-pointer whitespace-nowrap"
+          >
+            <HiOutlinePlus className="w-3 h-3" /> Agregar ítem
+          </button>
+        </div>
       </div>
       {items.length === 0 && (
         <p className="text-xs text-slate-400 italic">{emptyMsg}</p>
@@ -532,17 +546,28 @@ function ItemsTable({
                 <Fragment key={idx}>
                   <tr className="border-t border-slate-100">
                     <td className="px-2 py-1 min-w-[180px]">
-                      <SearchableSelect
-                        options={productOptions}
-                        value={row.product}
-                        onChange={(val) => onUpdate(idx, 'product', val)}
-                        getLabel={productLabel}
-                        getSearchText={productSearchText}
-                        placeholder="— Seleccionar —"
-                        searchPlaceholder={searchPlaceholder}
-                        size="sm"
-                        menuMinWidth={280}
-                      />
+                      {row.manual ? (
+                        <input
+                          type="text"
+                          value={row.name}
+                          onChange={(e) => onUpdate(idx, 'name', e.target.value)}
+                          placeholder="Medicamento (manual)"
+                          className="input text-xs py-1"
+                          autoFocus
+                        />
+                      ) : (
+                        <SearchableSelect
+                          options={productOptions}
+                          value={row.product}
+                          onChange={(val) => onUpdate(idx, 'product', val)}
+                          getLabel={productLabel}
+                          getSearchText={productSearchText}
+                          placeholder="— Seleccionar —"
+                          searchPlaceholder={searchPlaceholder}
+                          size="sm"
+                          menuMinWidth={280}
+                        />
+                      )}
                     </td>
                     <td className="px-2 py-1">
                       <NumericInput
@@ -791,8 +816,10 @@ function SeguimientosTab({ patientId, appointmentId }) {
     });
   };
 
-  const addRow = (listKey) =>
-    setForm((f) => ({ ...f, [listKey]: [...f[listKey], emptyRow()] }));
+  // manual=true agrega una fila de texto libre (medicamento que la clínica no
+  // vende / no está en inventario): no lleva `product`, solo `name`.
+  const addRow = (listKey, manual = false) =>
+    setForm((f) => ({ ...f, [listKey]: [...f[listKey], { ...emptyRow(), manual }] }));
   const removeRow = (listKey, idx) =>
     setForm((f) => ({
       ...f,
@@ -868,10 +895,16 @@ function SeguimientosTab({ patientId, appointmentId }) {
       Object.values(form.opticaRx?.od || {}).some((v) => String(v).trim()) ||
       Object.values(form.opticaRx?.oi || {}).some((v) => String(v).trim())
     );
+    // Un ítem es válido si tiene producto del inventario O un nombre (manual).
     const allItems = [...form.recetaItems, ...form.derivacionItems];
+    const hasName = (it) => it.name && it.name.trim();
     if (!isOptica || !hasOpticaRx) {
-      if (!allItems.length || allItems.some((it) => !it.product)) {
+      if (!allItems.length) {
         toast.error('Debe agregar al menos un ítem en Receta o Derivaciones');
+        return;
+      }
+      if (allItems.some((it) => !it.product && !hasName(it))) {
+        toast.error('Complete el producto/medicamento de cada ítem o elimine los vacíos');
         return;
       }
     }
@@ -1131,6 +1164,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
           productOptions={recetaProducts}
           allProducts={products}
           onAdd={() => addRow('recetaItems')}
+          onAddManual={() => addRow('recetaItems', true)}
           onUpdate={(idx, key, val) => updateRow('recetaItems', idx, key, val)}
           onRemove={(idx) => removeRow('recetaItems', idx)}
           onToggleComponent={(idx, comp, checked) => toggleComponent('recetaItems', idx, comp, checked)}

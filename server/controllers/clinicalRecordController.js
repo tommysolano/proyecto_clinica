@@ -164,7 +164,9 @@ exports.addFollowUp = async (req, res) => {
     }
 
     // --- Hidratar recetaItems con snapshot de nombre/categoría y marcar servicios ---
-    const items = itemsRaw;
+    // Se descartan filas totalmente vacías. Un ítem manual (medicamento que la
+    // clínica no vende) llega sin `product` pero con `name`, y es válido.
+    const items = itemsRaw.filter((it) => it.product || (it.name && it.name.trim()));
     const productIds = items.map((it) => it.product).filter(Boolean);
     let productsById = {};
     if (productIds.length) {
