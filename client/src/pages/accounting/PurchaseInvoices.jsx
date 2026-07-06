@@ -56,10 +56,21 @@ const addDays = (dateStr, days) => {
   return d.toISOString().slice(0, 10);
 };
 
+// N° de comprobante como un solo campo ("001-001-000000123") en vez de tres campos
+// técnicos (establecimiento / punto de emisión / secuencial). Se parte al guardar
+// para conservar el payload que espera el backend (estab/ptoEmi/secuencial + serie).
+const joinComprobante = (estab, ptoEmi, secuencial) =>
+  [estab, ptoEmi, secuencial].some((x) => x != null && x !== '') ? `${estab || ''}-${ptoEmi || ''}-${secuencial || ''}` : '';
+const parseComprobante = (v) => {
+  const [estab = '', ptoEmi = '', secuencial = ''] = String(v || '').split('-').map((s) => s.trim());
+  return { estab, ptoEmi, secuencial };
+};
+
 export default function PurchaseInvoices() {
   const { hasRole } = useAuth();
   const [list, setList] = useState([]);
   const [show, setShow] = useState(false);
+  const [showAdvanced, setShowAdvanced] = useState(false); // datos SRI opcionales del comprobante
   const [showImport, setShowImport] = useState(false);
   const [importMode, setImportMode] = useState('xml'); // 'xml' | 'txt'
   const [importing, setImporting] = useState(false);
@@ -325,6 +336,9 @@ export default function PurchaseInvoices() {
   const submit = async (e) => {
     e.preventDefault();
     if (!form.supplier) return toast.error('Selecciona un proveedor');
+    // El N° de comprobante ahora es un solo campo (001-001-000000123): exige el secuencial
+    // salvo que la factura ya traiga una serie (documentos importados/editados).
+    if (!form.serie && !(form.secuencial || '').trim()) return toast.error('Ingresa el N° de comprobante (formato 001-001-000000123)');
     if (!form.items.length) return toast.error('Agrega al menos una línea (producto, gasto o activo fijo)');
     for (const it of form.items) {
       if (it.lineType === 'INVENTARIO' && !it.product) return toast.error('En productos/inventario, selecciona el producto en cada línea');
@@ -436,6 +450,7 @@ export default function PurchaseInvoices() {
       });
       if (mode === 'edit') { setEditId(p._id); setAuthorizeId(null); }
       else { setAuthorizeId(p._id); setEditId(null); }
+      setShowAdvanced(!!(d.autorizacion || d.paymentMethodSri || d.claveAcceso));
       setShow(true);
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
@@ -581,7 +596,7 @@ export default function PurchaseInvoices() {
         <div className="flex gap-2">
           {hasRole('admin') && <button onClick={wipeAll} title="Borrar todas las compras de esta sucursal (reinicio)" className="px-4 py-2 bg-rose-600 text-white rounded-lg flex items-center gap-2"><HiOutlineXMark /> Reiniciar compras</button>}
           <button onClick={() => { setImportMode('xml'); setShowImport(true); }} className="px-4 py-2 bg-amber-500 text-white rounded-lg flex items-center gap-2"><HiOutlineArrowDownTray /> Importar SRI</button>
-          <button onClick={() => { setForm({ ...EMPTY, items: [] }); setAuthorizeId(null); setEditId(null); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
+          <button onClick={() => { setForm({ ...EMPTY, items: [] }); setAuthorizeId(null); setEditId(null); setShowAdvanced(false); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
         </div>
       </div>
 
@@ -664,28 +679,36 @@ export default function PurchaseInvoices() {
 
           {/* ── 1. Datos generales ── */}
           <SectionCard title="Datos de la factura" icon={HiOutlineDocumentText}>
-            <div className="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-2.5">
-              <Field label="Proveedor" required className="col-span-2">
+            <div className="grid grid-cols-2 md:grid-cols-6 gap-x-3 gap-y-2.5">
+              <Field label="Proveedor" required className="col-span-2 md:col-span-3">
                 <SearchableSelect options={suppliers} value={form.supplier} onChange={onSelectSupplier} getLabel={(s) => `${s.ruc} - ${s.razonSocial}`} getSearchText={(s) => `${s.ruc} ${s.razonSocial} ${s.nombreComercial || ''}`} placeholder="Seleccione un proveedor…" searchPlaceholder="Buscar por RUC o nombre…" />
               </Field>
-              <Field label="Tipo de documento">
+              <Field label="N° de comprobante" required className="col-span-2 md:col-span-2" hint="Formato 001-001-000000123">
+                <input required placeholder="001-001-000000123" value={joinComprobante(form.estab, form.ptoEmi, form.secuencial) || form.serie || ''} onChange={(e) => setForm((f) => ({ ...f, ...parseComprobante(e.target.value), serie: '' }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-mono" />
+              </Field>
+              <Field label="Tipo">
                 <select value={form.docType} onChange={(e) => setForm({ ...form, docType: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm bg-white">
-                  <option>FACTURA</option><option>NOTA_VENTA</option><option>LIQUIDACION</option><option>NOTA_DEBITO_REC</option><option>NOTA_CREDITO_REC</option>
+                  <option value="FACTURA">Factura</option><option value="NOTA_VENTA">Nota de venta</option><option value="LIQUIDACION">Liquidación</option><option value="NOTA_DEBITO_REC">Nota débito</option><option value="NOTA_CREDITO_REC">Nota crédito</option>
                 </select>
               </Field>
-              <Field label="Fecha de emisión" required><input type="date" required value={form.fechaEmision} onChange={(e) => setForm((f) => ({ ...f, fechaEmision: e.target.value, fechaVencimiento: f.creditDays ? addDays(e.target.value, f.creditDays) : f.fechaVencimiento }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
-              <Field label="Establecimiento"><input placeholder="001" value={form.estab} onChange={(e) => setForm({ ...form, estab: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
-              <Field label="Punto de emisión"><input placeholder="001" value={form.ptoEmi} onChange={(e) => setForm({ ...form, ptoEmi: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
-              <Field label="Secuencial" required><input required placeholder="000000123" value={form.secuencial} onChange={(e) => setForm({ ...form, secuencial: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
-              <Field label="N° de autorización SRI"><input placeholder="Opcional" value={form.autorizacion} onChange={(e) => setForm({ ...form, autorizacion: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+              <Field label="Fecha de emisión" required className="col-span-1 md:col-span-2"><input type="date" required value={form.fechaEmision} onChange={(e) => setForm((f) => ({ ...f, fechaEmision: e.target.value, fechaVencimiento: f.creditDays ? addDays(e.target.value, f.creditDays) : f.fechaVencimiento }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
               <Field label="Días de crédito"><NumericInput value={form.creditDays} onChange={(e) => setForm((f) => ({ ...f, creditDays: +e.target.value, fechaVencimiento: +e.target.value > 0 ? addDays(f.fechaEmision, +e.target.value) : '' }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-right" /></Field>
               <Field label="Vencimiento"><input type="date" value={form.fechaVencimiento || ''} onChange={(e) => setForm({ ...form, fechaVencimiento: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
-              <Field label="Forma de pago (SRI)"><input placeholder="Opcional" value={form.paymentMethodSri || ''} onChange={(e) => setForm({ ...form, paymentMethodSri: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
-              <Field label="Centro de costo (factura)" className="col-span-2">
+              <Field label="Centro de costo (factura)" className="col-span-2 md:col-span-2">
                 <SearchableSelect options={costCenters} value={form.costCenter} onChange={setInvoiceCostCenter} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="— sin centro —" searchPlaceholder="Buscar centro…" allowClear />
               </Field>
-              <Field label="Observación (factura)" className="col-span-2 md:col-span-4"><input placeholder="Descripción general de la factura (opcional)" value={form.notes || ''} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+              <Field label="Observación (factura)" className="col-span-2 md:col-span-6"><input placeholder="Descripción general de la factura (opcional)" value={form.notes || ''} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
             </div>
+            {/* Campos SRI menos usados: ocultos por defecto para no saturar la pantalla. */}
+            <button type="button" onClick={() => setShowAdvanced((v) => !v)} className="mt-3 text-xs font-medium text-emerald-700 hover:underline flex items-center gap-1">
+              {showAdvanced ? '− Ocultar datos adicionales' : '+ Datos adicionales (autorización SRI, forma de pago)'}
+            </button>
+            {showAdvanced && (
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-2.5 mt-2 pt-3 border-t border-slate-100">
+                <Field label="N° de autorización SRI" className="col-span-2"><input placeholder="Opcional" value={form.autorizacion} onChange={(e) => setForm({ ...form, autorizacion: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+                <Field label="Forma de pago (SRI)" className="col-span-2"><input placeholder="Opcional" value={form.paymentMethodSri || ''} onChange={(e) => setForm({ ...form, paymentMethodSri: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+              </div>
+            )}
           </SectionCard>
 
           {/* ── 2. Productos / Inventario ── */}
@@ -907,15 +930,20 @@ export default function PurchaseInvoices() {
           </SectionCard>
 
           {/* ── 6. Totales ── */}
-          <div className="bg-slate-50 border border-slate-200 rounded-xl p-3 grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm">
-            <div>Subtotal 0%: <b>{fmt(totals.s0)}</b></div>
-            <div>Subtotal con IVA: <b>{fmt(totals.subtotalConIva)}</b></div>
-            <div>No obj/Exento: <b>{fmt(totals.sNo + totals.sEx)}</b></div>
-            <div>Descuentos: <b>{fmt(totals.discount)}</b></div>
-            <div>IVA: <b>{fmt(totals.iva)}</b></div>
-            <div>Total factura: <b>${fmt(totals.total)}</b></div>
-            <div>Retenciones: <b>{fmt(totals.retTotal)}</b></div>
-            <div className="text-right">Total a pagar: <b className="text-lg">${fmt(totals.balance)}</b></div>
+          <div className="rounded-xl border border-slate-200 overflow-hidden grid grid-cols-1 sm:grid-cols-3">
+            <div className="sm:col-span-2 p-4 grid grid-cols-2 gap-x-6 gap-y-1.5 text-sm bg-white">
+              <span className="text-slate-500">Subtotal 0%</span><span className="text-right font-mono">{fmt(totals.s0)}</span>
+              <span className="text-slate-500">Subtotal con IVA</span><span className="text-right font-mono">{fmt(totals.subtotalConIva)}</span>
+              {(totals.sNo + totals.sEx) > 0 && (<><span className="text-slate-500">No objeto / Exento</span><span className="text-right font-mono">{fmt(totals.sNo + totals.sEx)}</span></>)}
+              {totals.discount > 0 && (<><span className="text-slate-500">Descuentos</span><span className="text-right font-mono">-{fmt(totals.discount)}</span></>)}
+              <span className="text-slate-500">IVA</span><span className="text-right font-mono">{fmt(totals.iva)}</span>
+              <span className="text-slate-600 font-medium border-t border-slate-100 pt-1.5 mt-0.5">Total factura</span><span className="text-right font-mono font-semibold border-t border-slate-100 pt-1.5 mt-0.5">${fmt(totals.total)}</span>
+              {totals.retTotal > 0 && (<><span className="text-amber-700">(−) Retenciones</span><span className="text-right font-mono text-amber-700">-{fmt(totals.retTotal)}</span></>)}
+            </div>
+            <div className="bg-emerald-50 p-4 flex flex-col justify-center items-end border-t sm:border-t-0 sm:border-l border-slate-200">
+              <span className="text-[11px] uppercase tracking-wide text-emerald-700/70">Total a pagar</span>
+              <span className="text-2xl font-bold text-emerald-700 font-mono">${fmt(totals.balance)}</span>
+            </div>
           </div>
 
           <div className="flex justify-end gap-2"><button type="button" onClick={() => { setShow(false); setAuthorizeId(null); setEditId(null); }} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">{authorizeId ? 'Contabilizar' : editId ? 'Guardar cambios' : 'Registrar'}</button></div>
