@@ -43,6 +43,7 @@ export default function FixedAssets() {
     api.get('/inventory-advanced/categories', { params: { kind: 'ACTIVO_FIJO' } }).then((r) => setCategories(asList(r.data))).catch(() => {});
     api.get('/clinics').then((r) => setClinics(asList(r.data))).catch(() => {});
     api.get('/purchase-invoices').then((r) => setPurchases(asList(r.data))).catch(() => {});
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- carga inicial: el setState ocurre tras el await (asíncrono, seguro).
     load();
   }, []);
 
@@ -252,6 +253,7 @@ export default function FixedAssets() {
               <div><span className="text-slate-500">Dep. mensual:</span> ${fmt(detail.monthlyDepreciation)}</div>
               <div><span className="text-slate-500">Valor residual:</span> ${fmt(detail.residualValue)}</div>
               <div><span className="text-slate-500">Factura compra:</span> {detail.purchaseInvoice?.serie || '—'}</div>
+              <div><span className="text-slate-500">Asiento de compra:</span> {detail.journalEntry?.number || '—'}</div>
             </div>
             <div>
               <p className="text-sm font-semibold text-slate-700 mb-1">Historial de depreciación</p>

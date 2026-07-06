@@ -32,6 +32,8 @@ const fixedAssetSchema = new mongoose.Schema(
     accumDepreciationAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },
     // Factura de compra de la que proviene el activo
     purchaseInvoice: { type: mongoose.Schema.Types.ObjectId, ref: 'PurchaseInvoice', default: null },
+    // Asiento contable de compra/alta que originó el activo (navegación mayor ↔ activo).
+    journalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
     acquisitionDate: { type: Date, required: true },
     acquisitionCost: { type: Number, required: true },
     residualValue: { type: Number, default: 0 },

@@ -92,6 +92,8 @@ test('5) compra nueva de activo fijo con categoría válida crea asiento correct
   assert.ok((await H.assertLedgerBalanced(clinicId)).balanced);
   const asset = await FixedAsset.findOne({ clinic: clinicId, purchaseInvoice: r.payload._id });
   assert.ok(asset);
+  assert.ok(asset.journalEntry, 'el activo queda vinculado al asiento de compra');
+  assert.equal(String(asset.journalEntry), String(r.payload.journalEntry), 'mismo asiento que la factura');
 });
 
 test('6) compra nueva de activo fijo con categoría incompleta falla', async () => {
@@ -193,6 +195,26 @@ test('12) la depreciación no baja del valor residual', async () => {
   const after = await FixedAsset.findById(a._id);
   assert.equal(after.accumulatedDepreciation, 1000);
   assert.equal(after.bookValue, 0, 'no baja del residual (0)');
+});
+
+test('13b) no duplica la depreciación del mismo período (idempotente)', async () => {
+  const { clinicId, userId, cat, depAcc, accumAcc } = await setup();
+  const sup = await H.makeSupplier(clinicId);
+  await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: new Date('2026-06-05'), items: [afLine(cat._id, 1000)] }));
+  const first = await H.runController(inv.runDepreciation, H.mockReq(clinicId, userId, { year: 2026, month: 6 }));
+  assert.equal(first.statusCode, 200, JSON.stringify(first.payload));
+  assert.equal(first.payload.totalDepreciation, 100);
+  // Segunda corrida del MISMO período: no debe volver a depreciar.
+  const second = await H.runController(inv.runDepreciation, H.mockReq(clinicId, userId, { year: 2026, month: 6 }));
+  assert.equal(second.statusCode, 200, JSON.stringify(second.payload));
+  assert.equal(second.payload.processed, 0, 'no procesa activos ya depreciados en el período');
+  assert.equal(second.payload.totalDepreciation, 0);
+  // El acumulado y el mayor NO se duplican.
+  const a = await FixedAsset.findOne({ clinic: clinicId });
+  assert.equal(a.accumulatedDepreciation, 100, 'acumulado no se duplica');
+  assert.equal(await H.accountBalanceByCode(clinicId, depAcc.code), 100, 'gasto no se duplica');
+  assert.equal(await H.accountBalanceByCode(clinicId, accumAcc.code), -100, 'dep. acumulada no se duplica');
+  assert.equal(await JournalEntry.countDocuments({ clinic: clinicId, source: 'DEPRECIACION' }), 1, 'un solo asiento de depreciación');
 });
 
 // ── Creación / edición manual de activos ─────────────────────────────────────

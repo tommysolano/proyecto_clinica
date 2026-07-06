@@ -664,7 +664,8 @@ exports.getAsset = async (req, res) => {
     .populate('locationClinic', 'name nombreComercial')
     .populate('assetAccount depreciationAccount accumDepreciationAccount', 'code name')
     .populate('responsible', 'name')
-    .populate('purchaseInvoice', 'serie fechaEmision total');
+    .populate('purchaseInvoice', 'serie fechaEmision total')
+    .populate('journalEntry', 'number date');
   if (!a) return res.status(404).json({ message: 'No encontrado' });
   res.json(a);
 };
@@ -906,61 +907,6 @@ exports.runDepreciation = async (req, res) => {
       });
       return res.json(result);
     }
-    const y = parseInt(year);
-    const m = parseInt(month);
-    if (!y || !m || m < 1 || m > 12) return res.status(400).json({ message: 'year y month inválidos' });
-    const period = `${y}-${String(m).padStart(2, '0')}`;
-    const endOfMonth = new Date(y, m, 0, 23, 59, 59);
-
-    const assets = await FixedAsset.find({ clinic: req.clinicId, status: 'ACTIVO' }).populate('category');
-    let totalDep = 0;
-    const lines = [];
-    for (const a of assets) {
-      if (a.lastDepreciationPeriod >= period) continue;
-      if (new Date(a.startDate) > endOfMonth) continue;
-      const remainingBase = (a.acquisitionCost - (a.residualValue || 0)) - a.accumulatedDepreciation;
-      if (remainingBase <= 0) continue;
-      const dep = Math.min(a.monthlyDepreciation, remainingBase);
-      a.accumulatedDepreciation = +(a.accumulatedDepreciation + dep).toFixed(2);
-      a.bookValue = +(a.acquisitionCost - a.accumulatedDepreciation).toFixed(2);
-      a.lastDepreciationPeriod = period;
-      a.history.push({
-        period, date: endOfMonth, amount: dep,
-        accumulated: a.accumulatedDepreciation, bookValue: a.bookValue,
-      });
-      await a.save();
-      totalDep += dep;
-      const depAccount = a.depreciationAccount || a.category?.depreciationAccount;
-      const accumAccount = a.accumDepreciationAccount || a.category?.accumDepreciationAccount;
-      if (depAccount) {
-        lines.push({ account: depAccount, debit: dep, credit: 0, description: `Depreciación ${a.code} ${period}` });
-      }
-      if (accumAccount) {
-        lines.push({ account: accumAccount, debit: 0, credit: dep, description: `Depreciación acumulada ${a.code}` });
-      }
-    }
-    let entry = null;
-    if (lines.length) {
-      // Consolidar por cuenta
-      const map = new Map();
-      for (const l of lines) {
-        const key = `${l.account}-${l.debit > 0 ? 'D' : 'C'}`;
-        const cur = map.get(key) || { account: l.account, debit: 0, credit: 0, description: 'Depreciación mensual' };
-        cur.debit += l.debit; cur.credit += l.credit;
-        map.set(key, cur);
-      }
-      entry = await createEntry({
-        clinicId: req.clinicId, date: endOfMonth,
-        description: `Depreciación ${period}`, source: 'DEPRECIACION',
-        lines: Array.from(map.values()), userId: req.user._id,
-      });
-      await FixedAsset.updateMany(
-        { clinic: req.clinicId, lastDepreciationPeriod: period, status: 'ACTIVO' },
-        { $set: { 'history.$[h].journalEntry': entry._id } },
-        { arrayFilters: [{ 'h.period': period }] }
-      );
-    }
-    res.json({ period, processed: assets.length, totalDepreciation: totalDep, journalEntry: entry });
   } catch (e) {
     res.status(e.status || 400).json({ message: e.message });
   }

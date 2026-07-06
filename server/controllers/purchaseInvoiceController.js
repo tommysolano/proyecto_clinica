@@ -668,6 +668,7 @@ async function syncFixedAssetsForInvoice(inv, req, session) {
       locationClinic: fa.locationClinic || null,
       responsible: fa.responsible || null,
       purchaseInvoice: inv._id,
+      journalEntry: inv.journalEntry || null, // asiento de compra (ya creado por postPurchaseJournal)
       acquisitionDate: acqDate,
       acquisitionCost: cost,
       startDate: fa.startDate || acqDate,

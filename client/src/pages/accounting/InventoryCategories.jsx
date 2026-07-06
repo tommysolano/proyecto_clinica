@@ -27,6 +27,7 @@ export default function InventoryCategories() {
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
   useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- carga inicial: el setState ocurre tras el await (asíncrono, seguro).
     load();
     api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setAccounts((r.data || []).filter((a) => a.allowsMovement))).catch(() => {});
   }, []);
@@ -167,41 +168,45 @@ export default function InventoryCategories() {
                 allowClear
               />
             </Field>
-            {form.kind === 'ACTIVO_FIJO' && <>
-              <Field label="Tipo de gasto" required={!form.noDepreciate}>
-                <select value={form.expenseType} onChange={(e) => setForm({ ...form, expenseType: e.target.value })} className={inputCls}>
-                  <option value="">Seleccione…</option>
-                  {EXPENSE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
-                  {form.expenseType && !EXPENSE_TYPES.includes(form.expenseType) && <option value={form.expenseType}>{form.expenseType} (legacy)</option>}
-                </select>
-              </Field>
-              <Field label="Vida útil (meses)"><NumericInput value={form.usefulLifeMonths} disabled={form.noDepreciate} onChange={(e) => setForm({ ...form, usefulLifeMonths: +e.target.value })} className={inputCls} /></Field>
-              <Field label="% Valor residual"><NumericInput step="0.01" value={form.residualPercent} disabled={form.noDepreciate} onChange={(e) => setForm({ ...form, residualPercent: +e.target.value })} className={inputCls} /></Field>
-              <Field label="% Depreciación anual" hint="Opcional: si lo dejas en 0 se calcula desde la vida útil."><NumericInput step="0.01" value={form.depreciationRate} disabled={form.noDepreciate} onChange={(e) => setForm({ ...form, depreciationRate: +e.target.value })} className={inputCls} /></Field>
-              <label className="col-span-2 flex items-center gap-2 text-sm text-slate-600">
-                <input type="checkbox" checked={!!form.noDepreciate} onChange={(e) => setForm({ ...form, noDepreciate: e.target.checked })} />
-                No Depreciar (aplica para terrenos)
-              </label>
-            </>}
           </div>
-          <p className="text-xs font-semibold text-slate-500 pt-1">Cuentas contables vinculadas</p>
-          <div className="grid grid-cols-2 gap-3">
-            {form.kind === 'ACTIVO_FIJO' ? (
-              <>
+          {form.kind === 'ACTIVO_FIJO' ? (
+            <div className="rounded-xl border border-slate-200 p-3 space-y-3">
+              <div>
+                <p className="text-sm font-semibold text-slate-700">Configuración contable del activo fijo</p>
+                <p className="text-[11px] text-slate-400">Estas cuentas y parámetros se copian al activo al comprarlo o crearlo; el usuario no los edita en la factura.</p>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <Field label="Tipo de gasto" required={!form.noDepreciate} hint="Clasificación para el estado de resultados.">
+                  <select value={form.expenseType} onChange={(e) => setForm({ ...form, expenseType: e.target.value })} className={inputCls}>
+                    <option value="">Seleccione…</option>
+                    {EXPENSE_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                    {form.expenseType && !EXPENSE_TYPES.includes(form.expenseType) && <option value={form.expenseType}>{form.expenseType} (legacy)</option>}
+                  </select>
+                </Field>
+                <Field label="Vida útil (meses)" required={!form.noDepreciate}><NumericInput value={form.usefulLifeMonths} disabled={form.noDepreciate} onChange={(e) => setForm({ ...form, usefulLifeMonths: +e.target.value })} className={inputCls} /></Field>
+                <Field label="% Valor residual"><NumericInput step="0.01" value={form.residualPercent} disabled={form.noDepreciate} onChange={(e) => setForm({ ...form, residualPercent: +e.target.value })} className={inputCls} /></Field>
+                <Field label="% Depreciación anual" hint="Opcional: si lo dejas en 0 se calcula desde la vida útil."><NumericInput step="0.01" value={form.depreciationRate} disabled={form.noDepreciate} onChange={(e) => setForm({ ...form, depreciationRate: +e.target.value })} className={inputCls} /></Field>
+                <label className="col-span-2 flex items-center gap-2 text-sm text-slate-600">
+                  <input type="checkbox" checked={!!form.noDepreciate} onChange={(e) => setForm({ ...form, noDepreciate: e.target.checked })} />
+                  No depreciar (p. ej. terrenos)
+                </label>
                 {acctField('Cuenta de activo', 'assetAccount')}
-                {acctField('Gasto depreciación', 'depreciationAccount')}
+                {acctField('Gasto de depreciación', 'depreciationAccount')}
                 {acctField('Depreciación acumulada', 'accumDepreciationAccount', 'col-span-2')}
-                {acctField('Cta. Activo Deterioro', 'impairmentAssetAccount')}
-                {acctField('Cta. Gasto Deterioro', 'impairmentExpenseAccount')}
+                {acctField('Cta. activo deterioro (opcional)', 'impairmentAssetAccount')}
+                {acctField('Cta. gasto deterioro (opcional)', 'impairmentExpenseAccount')}
                 {formAfMissing.length > 0 && (
                   <p className="col-span-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1 flex items-center gap-1">
                     <HiOutlineExclamationTriangle className="w-3.5 h-3.5 shrink-0" />
                     Configuración incompleta: falta {formAfMissing.join(', ')}. No se podrán comprar ni depreciar activos de esta categoría.
                   </p>
                 )}
-              </>
-            ) : (
-              <>
+              </div>
+            </div>
+          ) : (
+            <>
+              <p className="text-xs font-semibold text-slate-500 pt-1">Cuentas contables vinculadas</p>
+              <div className="grid grid-cols-2 gap-3">
                 {acctField('Cuenta de inventario', 'assetAccount')}
                 {acctField('Costo / gasto', 'expenseAccount')}
                 {acctField('Ingreso por venta', 'incomeAccount', 'col-span-2')}
@@ -211,9 +216,9 @@ export default function InventoryCategories() {
                     Faltan cuentas por configurar: {formInvMissing.map((k) => INV_ACCOUNT_LABELS[k]).join(', ')}. Los productos de esta categoría no tendrán cuentas contables completas.
                   </p>
                 )}
-              </>
-            )}
-          </div>
+              </div>
+            </>
+          )}
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button></div>
         </form>
       </Modal>
