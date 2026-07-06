@@ -41,14 +41,15 @@ async function makeInvoice(clinicId, { fechaEmision, createdAt, base = 100, iva 
   return inv;
 }
 
-async function makePurchase(clinicId, supplierId, { fechaEmision, createdAt, subtotal = 100, iva = 15, retentions = [], items = [] } = {}) {
+async function makePurchase(clinicId, supplierId, { fechaEmision, createdAt, subtotal = 100, iva = 15, retentions = [], items = [], deductible = true, vatCreditAmount } = {}) {
   const retentionTotal = retentions.reduce((s, r) => s + (r.amount || 0), 0);
+  const credit = vatCreditAmount != null ? vatCreditAmount : (deductible === false ? 0 : iva);
   const pi = await PurchaseInvoice.create({
     clinic: clinicId, supplier: supplierId, docType: 'FACTURA',
     estab: '001', ptoEmi: '001', secuencial: String(++seq).padStart(9, '0'),
     serie: `001-001-${String(seq).padStart(9, '0')}`,
     fechaEmision, subtotal, subtotal15: subtotal, iva, total: subtotal + iva - retentionTotal,
-    vatCreditAmount: iva,
+    deductible, vatCreditAmount: credit, vatNonCreditAmount: iva - credit,
     retentions, retentionTotal, balance: subtotal + iva - retentionTotal,
     status: 'REGISTRADA', items,
   });
@@ -227,6 +228,80 @@ test('VC: purchases-sales devuelve ventas/compras del rango + etiqueta', async (
   assert.equal(r.payload.ventas.length, 1);
   assert.equal(r.payload.compras.length, 1);
   assert.equal(r.payload.period.label, 'Junio 2026');
+});
+
+// ── F104: visual y XML netean el MISMO IVA crédito (compra no deducible) ───────
+test('F104: visual y XML usan el mismo IVA crédito; el IVA no deducible NO da crédito', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const sup = await H.makeSupplier(clinicId);
+  await makeInvoice(clinicId, { fechaEmision: '10/06/2026', base: 200, iva: 30 }); // venta: IVA generado 30
+  await makePurchase(clinicId, sup._id, { fechaEmision: new Date(2026, 5, 5), subtotal: 100, iva: 15, deductible: true });  // crédito 15
+  await makePurchase(clinicId, sup._id, { fechaEmision: new Date(2026, 5, 6), subtotal: 100, iva: 15, deductible: false }); // sin crédito
+  const q = { query: { periodType: 'MONTHLY', year: 2026, month: 6 } };
+
+  const visual = await H.runController(reports.form104, H.mockReq(clinicId, userId, {}, q));
+  assert.equal(visual.statusCode, 200, JSON.stringify(visual.payload));
+  assert.equal(visual.payload.compras.ivaCredito, 15, 'solo la compra deducible da crédito');
+  assert.equal(visual.payload.compras.ivaNoCredito, 15);
+  assert.equal(visual.payload.ivaPorPagar, 15, '30 IVA ventas - 15 crédito - 0 ret');
+
+  const xml = await H.runController(sriXml.form104Xml, H.mockReq(clinicId, userId, {}, q));
+  assert.equal(xml.statusCode, 200);
+  const s = String(xml.payload);
+  const grab = (tag) => Number((s.match(new RegExp(`<${tag}>([\\d.]+)</${tag}>`)) || [])[1]);
+  assert.equal(grab('ivaCreditoTributario'), 15, 'el XML usa el mismo IVA crédito que el visual');
+  assert.equal(grab('ivaPorPagar'), 15, 'el XML netea igual (no toma el IVA no deducible como crédito)');
+  assert.equal(grab('ivaPorPagar'), visual.payload.ivaPorPagar, 'visual == XML');
+});
+
+// ── F103: agrupa DOS códigos distintos por separado ───────────────────────────
+test('form103 agrupa dos códigos SRI distintos por separado', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const sup = await H.makeSupplier(clinicId);
+  await makePurchase(clinicId, sup._id, {
+    fechaEmision: new Date(2026, 5, 10), subtotal: 1000, iva: 150,
+    retentions: [
+      { type: 'RENTA', code: '312', description: 'Bienes', baseAmount: 1000, percentage: 1.75, amount: 17.5 },
+      { type: 'RENTA', code: '307', description: 'Servicios', baseAmount: 500, percentage: 2, amount: 10 },
+    ],
+  });
+  const r = await H.runController(reports.form103, H.mockReq(clinicId, userId, {}, { query: { periodType: 'MONTHLY', year: 2026, month: 6 } }));
+  assert.equal(r.statusCode, 200);
+  assert.equal(r.payload.rows.length, 2, 'dos códigos distintos');
+  const byCode = Object.fromEntries(r.payload.rows.map((x) => [x.code, x]));
+  assert.equal(byCode['312'].amount, 17.5);
+  assert.equal(byCode['307'].amount, 10);
+  assert.equal(r.payload.total, 27.5);
+});
+
+// ── Ventas NO autorizadas: no entran al reporte y se cuentan como pendientes ───
+test('ventas NO autorizadas no entran al reporte SRI y se informan como pendientes', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  await makeInvoice(clinicId, { fechaEmision: '10/06/2026', base: 100, iva: 15, estado: 'AUTORIZADO' });
+  await makeInvoice(clinicId, { fechaEmision: '11/06/2026', base: 999, iva: 150, estado: 'EN_PROCESO' }); // no autorizada
+  await makeInvoice(clinicId, { fechaEmision: '12/06/2026', base: 500, iva: 75, estado: 'ANULADA' });      // anulada: no cuenta
+  const q = { query: { periodType: 'MONTHLY', year: 2026, month: 6 } };
+  const r = await H.runController(reports.purchaseSalesList, H.mockReq(clinicId, userId, {}, q));
+  assert.equal(r.statusCode, 200);
+  assert.equal(r.payload.ventas.length, 1, 'solo la autorizada');
+  assert.equal(r.payload.ventas[0].totalSinImpuestos, 100);
+  assert.equal(r.payload.salesPending, 1, 'la EN_PROCESO cuenta como pendiente; la ANULADA no');
+  const f = await H.runController(reports.form104, H.mockReq(clinicId, userId, {}, q));
+  assert.equal(f.payload.ventas.base, 100, 'F104 tampoco incluye la no autorizada');
+});
+
+// ── Rango personalizado (CUSTOM) ──────────────────────────────────────────────
+test('rango personalizado (CUSTOM) devuelve compras y ventas solo del rango', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-01-01') });
+  const sup = await H.makeSupplier(clinicId);
+  await makeInvoice(clinicId, { fechaEmision: '15/03/2026', base: 100, iva: 15 });
+  await makeInvoice(clinicId, { fechaEmision: '20/07/2026', base: 999, iva: 150 }); // fuera del rango
+  await makePurchase(clinicId, sup._id, { fechaEmision: new Date(2026, 2, 18), subtotal: 80, iva: 12 });
+  const r = await H.runController(reports.purchaseSalesList, H.mockReq(clinicId, userId, {}, { query: { periodType: 'CUSTOM', startDate: '2026-03-01', endDate: '2026-03-31' } }));
+  assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
+  assert.equal(r.payload.ventas.length, 1, 'solo marzo');
+  assert.equal(r.payload.compras.length, 1);
+  assert.match(r.payload.period.label, /01\/03\/2026 - 31\/03\/2026/);
 });
 
 // ── período inválido en endpoint JSON → 400 ───────────────────────────────────

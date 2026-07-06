@@ -1,9 +1,24 @@
 import { useState } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
-import { HiOutlineDocumentArrowDown } from 'react-icons/hi2';
+import { HiOutlineDocumentArrowDown, HiOutlineInformationCircle } from 'react-icons/hi2';
 import { fmt, fmtDate, downloadBlob } from './_utils';
 import NumericInput from '../../components/NumericInput';
+
+// Nota explicativa: en los reportes SRI las ventas provienen SOLO de facturas electrónicas
+// AUTORIZADAS. Si hay ventas registradas sin autorizar, se avisa para que no parezca un bug.
+function SalesAuthNote({ pending }) {
+  return (
+    <div className="text-xs rounded-lg px-3 py-2 mb-2 bg-sky-50 border border-sky-200 text-sky-800 flex items-start gap-1.5">
+      <HiOutlineInformationCircle className="w-4 h-4 shrink-0 mt-0.5" />
+      <span>
+        Este reporte incluye <b>solo ventas con factura electrónica autorizada</b>. Las ventas sin factura autorizada no aparecen en reportes SRI.
+        {pending > 0 && <> <b className="text-amber-700">Hay {pending} venta(s) registrada(s) sin autorizar</b> en este período; por eso no se muestran aquí.</>}
+      </span>
+    </div>
+  );
+}
 
 const PERIOD_TYPES = [
   ['MONTHLY', 'Mensual'],
@@ -179,13 +194,12 @@ function Section({ title, subtitle, children }) {
 function PurchasesSales({ data }) {
   const ventas = data?.ventas || [];
   const compras = data?.compras || [];
+  const pending = data?.salesPending || 0;
   const sum = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
   return (
     <>
       <Section title={`Ventas (${ventas.length})`} subtitle="Comprobantes de venta autorizados del período (por fecha de emisión).">
-        {ventas.length === 0 && (
-          <p className="text-xs text-slate-500 mb-2">Las ventas aparecerán cuando existan comprobantes autorizados en el período seleccionado.</p>
-        )}
+        <SalesAuthNote pending={pending} />
         <table className="tbl text-xs">
           <thead className="bg-emerald-50 uppercase"><tr>
             <th className="px-2 py-1 text-left">Fecha</th><th className="px-2 py-1 text-left">Comprobante</th>
@@ -204,7 +218,7 @@ function PurchasesSales({ data }) {
                 <td className="px-2 py-1 text-right font-mono">{fmt(v.importeTotal ?? v.total)}</td>
               </tr>
             ))}
-            {ventas.length === 0 && <tr><td colSpan={7} className="px-2 py-4 text-center text-slate-400">Sin ventas en el período.</td></tr>}
+            {ventas.length === 0 && <tr><td colSpan={7} className="px-2 py-4 text-center text-slate-400">{pending > 0 ? `No hay ventas autorizadas; hay ${pending} sin autorizar que no se reportan.` : 'No hay ventas autorizadas en este período.'}</td></tr>}
           </tbody>
           {ventas.length > 0 && <tfoot className="bg-slate-100 font-bold"><tr>
             <td colSpan={4} className="px-2 py-1 text-right">TOTALES</td>
@@ -226,7 +240,7 @@ function PurchasesSales({ data }) {
             {compras.map((c, i) => (
               <tr key={i} className="border-t">
                 <td className="px-2 py-1">{fmtDate(c.fechaEmision)}</td>
-                <td className="px-2 py-1 font-mono">{c.serie || '—'}</td>
+                <td className="px-2 py-1 font-mono">{c._id ? <Link to={`/accounting/purchases?doc=${c._id}`} className="text-emerald-700 hover:underline" title="Abrir factura de compra">{c.serie || '—'}</Link> : (c.serie || '—')}</td>
                 <td className="px-2 py-1">{c.supplier?.razonSocial || '—'}</td>
                 <td className="px-2 py-1 font-mono">{c.supplier?.ruc || '—'}</td>
                 <td className="px-2 py-1 text-right font-mono">{fmt(c.subtotal)}</td>
@@ -280,6 +294,7 @@ function AtsPreview({ data }) {
   const compras = data?.compras || [];
   const ventas = data?.ventas || [];
   const t = data?.totals || {};
+  const pending = data?.salesPending || 0;
   return (
     <>
       <Section title={`ATS — Compras (${compras.length})`} subtitle="Detalle de compras del período con retenciones (base para el ATS).">
@@ -318,9 +333,7 @@ function AtsPreview({ data }) {
         </table>
       </Section>
       <Section title={`ATS — Ventas (${ventas.length})`} subtitle="Ventas agrupadas por cliente (comprobantes autorizados).">
-        {ventas.length === 0 && (
-          <p className="text-xs text-slate-500 mb-2">Las ventas aparecerán cuando existan comprobantes autorizados en el período seleccionado.</p>
-        )}
+        <SalesAuthNote pending={pending} />
         <table className="tbl text-xs">
           <thead className="bg-emerald-50 uppercase"><tr>
             <th className="px-2 py-1 text-left">Identificación</th><th className="px-2 py-1 text-left">Cliente</th>
@@ -338,7 +351,7 @@ function AtsPreview({ data }) {
                 <td className="px-2 py-1 text-right font-mono">{fmt(v.total)}</td>
               </tr>
             ))}
-            {ventas.length === 0 && <tr><td colSpan={6} className="px-2 py-4 text-center text-slate-400">Sin ventas en el período.</td></tr>}
+            {ventas.length === 0 && <tr><td colSpan={6} className="px-2 py-4 text-center text-slate-400">{pending > 0 ? `No hay ventas autorizadas; hay ${pending} sin autorizar que no se reportan.` : 'No hay ventas autorizadas en este período.'}</td></tr>}
           </tbody>
           {ventas.length > 0 && <tfoot className="bg-slate-100 font-bold"><tr>
             <td colSpan={3} className="px-2 py-1 text-right">TOTALES</td>

@@ -25,6 +25,19 @@ async function fetchSalesInRange(clinicId, start, end) {
   return invoices.filter((inv) => inRange(invoiceFiscalDate(inv), start, end));
 }
 
+/**
+ * Cuenta las facturas de venta REGISTRADAS pero NO autorizadas cuya fecha fiscal cae en
+ * el rango (estados de proceso: en cola, recibida, en proceso, no autorizado, devuelta,
+ * error). Sirve para que la UI aclare por qué esas ventas no aparecen en el reporte SRI
+ * (solo entran las AUTORIZADAS). No cuenta las ANULADA.
+ */
+async function countPendingSalesInRange(clinicId, start, end) {
+  const pendingStates = ['EN_COLA', 'RECIBIDA', 'EN_PROCESO', 'NO_AUTORIZADO', 'DEVUELTA', 'ERROR'];
+  const invoices = await Invoice.find({ clinic: clinicId, estado: { $in: pendingStates } })
+    .select('estado fechaEmision createdAt').lean();
+  return invoices.filter((inv) => inRange(invoiceFiscalDate(inv), start, end)).length;
+}
+
 /** Compras (no anuladas) cuya fecha de emisión (Date) cae en [start, end]. */
 function purchasesInRangeQuery(clinicId, start, end) {
   return { clinic: clinicId, status: { $ne: 'ANULADA' }, fechaEmision: { $gte: start, $lte: end } };
@@ -1097,7 +1110,8 @@ exports.purchaseSalesList = async (req, res) => {
     const ventas = await fetchSalesInRange(req.clinicId, range.start, range.end);
     const compras = await PurchaseInvoice.find(purchasesInRangeQuery(req.clinicId, range.start, range.end))
       .populate('supplier', 'ruc razonSocial');
-    res.json({ ventas, compras, period: periodMeta(range) });
+    const salesPending = await countPendingSalesInRange(req.clinicId, range.start, range.end);
+    res.json({ ventas, compras, period: periodMeta(range), salesPending });
   } catch (e) { res.status(e.status || 500).json({ message: e.message }); }
 };
 
@@ -1338,7 +1352,8 @@ exports.atsPreview = async (req, res) => {
       ventasTotal: +ventas.reduce((s, v) => s + v.total, 0).toFixed(2),
     };
 
-    res.json({ period: periodMeta(range), monthlyXmlAvailable: isMonthlyRange(range), compras, ventas, totals });
+    const salesPending = await countPendingSalesInRange(req.clinicId, range.start, range.end);
+    res.json({ period: periodMeta(range), monthlyXmlAvailable: isMonthlyRange(range), compras, ventas, totals, salesPending });
   } catch (e) { res.status(e.status || 500).json({ message: e.message }); }
 };
 

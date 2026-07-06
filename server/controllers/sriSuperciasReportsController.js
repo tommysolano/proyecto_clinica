@@ -152,15 +152,21 @@ exports.form104Xml = async (req, res) => {
       (acc, p) => {
         acc.base += p.subtotal || 0;
         acc.iva += p.iva || 0;
+        // IVA con derecho a crédito tributario (excluye el no deducible / no recuperable).
+        // MISMO criterio que el reporte visual (accountingReportsController.form104): así el
+        // XML y el visual netean igual y no toman como crédito el IVA no deducible.
+        const creditIva = p.deductible === false ? 0 : (p.vatCreditAmount || p.iva || 0);
+        acc.ivaCredito += creditIva;
         acc.retIVA += (p.retentions || [])
           .filter((r) => r.type === 'IVA')
           .reduce((s, r) => s + (r.amount || 0), 0);
         return acc;
       },
-      { base: 0, iva: 0, retIVA: 0 }
+      { base: 0, iva: 0, ivaCredito: 0, retIVA: 0 }
     );
 
-    const ivaPagar = +(v.iva - c.iva - c.retIVA).toFixed(2);
+    // Solo el IVA con crédito tributario reduce el IVA por pagar (igual que el visual).
+    const ivaPagar = +(v.iva - c.ivaCredito - c.retIVA).toFixed(2);
     let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<form104>\n';
     xml += `  <ruc>${escXml(clinic?.ruc)}</ruc>\n`;
     xml += `  <razonSocial>${escXml(clinic?.razonSocial || clinic?.name)}</razonSocial>\n`;
@@ -172,6 +178,7 @@ exports.form104Xml = async (req, res) => {
     xml += '  <compras>\n';
     xml += `    <baseImponible>${c.base.toFixed(2)}</baseImponible>\n`;
     xml += `    <iva>${c.iva.toFixed(2)}</iva>\n`;
+    xml += `    <ivaCreditoTributario>${c.ivaCredito.toFixed(2)}</ivaCreditoTributario>\n`;
     xml += `    <retencionIva>${c.retIVA.toFixed(2)}</retencionIva>\n`;
     xml += '  </compras>\n';
     xml += `  <ivaPorPagar>${ivaPagar.toFixed(2)}</ivaPorPagar>\n`;
