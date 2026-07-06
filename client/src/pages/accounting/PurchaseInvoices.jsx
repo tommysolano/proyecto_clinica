@@ -3,7 +3,7 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
-import { HiOutlinePlus, HiOutlineDocumentText, HiOutlineArrowDownTray, HiOutlineXMark, HiOutlineTrash, HiOutlineExclamationTriangle, HiOutlineCube, HiOutlineBanknotes, HiOutlineBuildingOffice2 } from 'react-icons/hi2';
+import { HiOutlinePlus, HiOutlineDocumentText, HiOutlineArrowDownTray, HiOutlineXMark, HiOutlineTrash, HiOutlineExclamationTriangle, HiOutlineCube, HiOutlineBanknotes, HiOutlineBuildingOffice2, HiOutlineCheck, HiOutlineEllipsisVertical } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import JournalEntryEditor from '../../components/JournalEntryEditor';
@@ -17,6 +17,14 @@ const PAGE_SIZE = 100;
 // residual— NO se piden: se derivan de la categoría de activo fijo).
 const EMPTY_FA = { category: '', assetType: '', code: '', name: '', serial: '', location: '', locationClinic: '', acquisitionDate: '', startDate: '', depreciationRate: 0, usefulLifeMonths: 0, residualPercent: 0, assetAccount: '', depreciationAccount: '', accumDepreciationAccount: '' };
 const EMPTY = { supplier: '', docType: 'FACTURA', estab: '001', ptoEmi: '001', secuencial: '', serie: '', claveAcceso: '', autorizacion: '', fechaEmision: today(), fechaVencimiento: '', creditDays: 0, costCenter: '', notes: '', items: [], retentions: [], retentionNumber: '' };
+
+// Tipos de línea que puede contener una factura. La UI muestra solo las secciones
+// activadas (experiencia progresiva) — ver `activeSections` / "¿Qué contiene esta factura?".
+const LINE_TYPES = [
+  { t: 'GASTO', label: 'Gasto / cuenta', icon: HiOutlineBanknotes },
+  { t: 'INVENTARIO', label: 'Productos / inventario', icon: HiOutlineCube },
+  { t: 'ACTIVO_FIJO', label: 'Activo fijo', icon: HiOutlineBuildingOffice2 },
+];
 
 // Contador para claves de fila del formulario (no se envían al backend).
 let _uidc = 0;
@@ -71,6 +79,8 @@ export default function PurchaseInvoices() {
   const [list, setList] = useState([]);
   const [show, setShow] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false); // datos SRI opcionales del comprobante
+  const [activeSections, setActiveSections] = useState(['GASTO']); // secciones de línea visibles (progresivo)
+  const [rowMenuUid, setRowMenuUid] = useState(null); // fila de gasto con el menú avanzado (⋮) abierto
   const [showImport, setShowImport] = useState(false);
   const [importMode, setImportMode] = useState('xml'); // 'xml' | 'txt'
   const [importing, setImporting] = useState(false);
@@ -256,6 +266,21 @@ export default function PurchaseInvoices() {
   const invItems = form.items.filter((it) => it.lineType === 'INVENTARIO');
   const afItems = form.items.filter((it) => it.lineType === 'ACTIVO_FIJO');
 
+  // Una sección es visible si el usuario la activó o si ya tiene líneas (p.ej. al editar/importar).
+  const visibleSections = {
+    GASTO: activeSections.includes('GASTO') || gastoItems.length > 0,
+    INVENTARIO: activeSections.includes('INVENTARIO') || invItems.length > 0,
+    ACTIVO_FIJO: activeSections.includes('ACTIVO_FIJO') || afItems.length > 0,
+  };
+  // Chip de "¿Qué contiene esta factura?": activa la sección (y agrega su primera línea) o,
+  // si está activa y sin líneas, la oculta. Con líneas no se puede ocultar (no se pierde nada).
+  const toggleSection = (t) => {
+    const has = form.items.some((it) => it.lineType === t);
+    const on = activeSections.includes(t) || has;
+    if (on) { if (!has) setActiveSections((s) => s.filter((x) => x !== t)); }
+    else { setActiveSections((s) => (s.includes(t) ? s : [...s, t])); addItem(t); }
+  };
+
   // Retenciones de una línea normalizadas a arreglo (soporta el singular legacy).
   const ruleById = (id) => retentionRules.find((r) => String(r._id) === String(id));
   const lineRetList = (it) => {
@@ -339,8 +364,15 @@ export default function PurchaseInvoices() {
     // El N° de comprobante ahora es un solo campo (001-001-000000123): exige el secuencial
     // salvo que la factura ya traiga una serie (documentos importados/editados).
     if (!form.serie && !(form.secuencial || '').trim()) return toast.error('Ingresa el N° de comprobante (formato 001-001-000000123)');
-    if (!form.items.length) return toast.error('Agrega al menos una línea (producto, gasto o activo fijo)');
-    for (const it of form.items) {
+    // Ignora líneas de gasto totalmente vacías (p.ej. la línea inicial sugerida que no se usó)
+    // para no bloquear facturas que terminaron siendo solo de producto o activo fijo.
+    const cleanItems = form.items.filter((it) => {
+      if (it.lineType !== 'GASTO') return true;
+      const hasSplits = (it.accountSplits || []).length > 0;
+      return it.account || hasSplits || (it.description || '').trim() || lineBase(it) > 0;
+    });
+    if (!cleanItems.length) return toast.error('Agrega al menos una línea (producto, gasto o activo fijo)');
+    for (const it of cleanItems) {
       if (it.lineType === 'INVENTARIO' && !it.product) return toast.error('En productos/inventario, selecciona el producto en cada línea');
       if (it.lineType === 'ACTIVO_FIJO' && !(it.fixedAsset?.category)) return toast.error('En activos fijos, selecciona la categoría de activo fijo');
       if (it.lineType === 'ACTIVO_FIJO' && !(it.fixedAsset?.name || it.description)) return toast.error('El activo fijo necesita un nombre');
@@ -357,7 +389,7 @@ export default function PurchaseInvoices() {
     }
     try {
       const serie = form.serie || `${form.estab}-${form.ptoEmi}-${form.secuencial}`;
-      const items = form.items.map((it) => {
+      const items = cleanItems.map((it) => {
         // Solo se envía la SELECCIÓN de retenciones (regla/código); el backend recalcula.
         const retSel = lineRetList(it)
           .filter((r) => r.rule || r.code)
@@ -450,6 +482,10 @@ export default function PurchaseInvoices() {
       });
       if (mode === 'edit') { setEditId(p._id); setAuthorizeId(null); }
       else { setAuthorizeId(p._id); setEditId(null); }
+      // Muestra solo las secciones que la factura realmente trae (o Gasto por defecto).
+      const loadedTypes = [...new Set((d.items || []).map((it) => it.lineType || (it.product ? 'INVENTARIO' : (it.fixedAsset?.category || it.fixedAsset?.name ? 'ACTIVO_FIJO' : 'GASTO'))))];
+      setActiveSections(loadedTypes.length ? loadedTypes : ['GASTO']);
+      setRowMenuUid(null);
       setShowAdvanced(!!(d.autorizacion || d.paymentMethodSri || d.claveAcceso));
       setShow(true);
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
@@ -596,7 +632,7 @@ export default function PurchaseInvoices() {
         <div className="flex gap-2">
           {hasRole('admin') && <button onClick={wipeAll} title="Borrar todas las compras de esta sucursal (reinicio)" className="px-4 py-2 bg-rose-600 text-white rounded-lg flex items-center gap-2"><HiOutlineXMark /> Reiniciar compras</button>}
           <button onClick={() => { setImportMode('xml'); setShowImport(true); }} className="px-4 py-2 bg-amber-500 text-white rounded-lg flex items-center gap-2"><HiOutlineArrowDownTray /> Importar SRI</button>
-          <button onClick={() => { setForm({ ...EMPTY, items: [] }); setAuthorizeId(null); setEditId(null); setShowAdvanced(false); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
+          <button onClick={() => { setForm({ ...EMPTY, items: [makeItem('GASTO')] }); setActiveSections(['GASTO']); setRowMenuUid(null); setAuthorizeId(null); setEditId(null); setShowAdvanced(false); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
         </div>
       </div>
 
@@ -711,17 +747,37 @@ export default function PurchaseInvoices() {
             )}
           </SectionCard>
 
-          {/* ── 2. Productos / Inventario ── */}
+          {/* ── ¿Qué contiene esta factura? — activa solo las secciones que apliquen ── */}
+          <div className="border border-slate-200 rounded-xl px-3 py-2.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <span className="text-sm font-semibold text-slate-700 mr-1">¿Qué contiene esta factura?</span>
+              {LINE_TYPES.map(({ t, label, icon: Icon }) => {
+                const on = visibleSections[t];
+                const has = form.items.some((it) => it.lineType === t);
+                return (
+                  <button type="button" key={t} onClick={() => toggleSection(t)}
+                    title={on ? (has ? 'Tiene líneas: elimínalas para ocultar la sección' : 'Ocultar sección') : 'Agregar este tipo de línea'}
+                    className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm border transition ${on ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200 hover:border-emerald-300 hover:text-emerald-700'}`}>
+                    {Icon && <Icon className="w-4 h-4" />} {label} {on && <HiOutlineCheck className="w-3.5 h-3.5" />}
+                  </button>
+                );
+              })}
+            </div>
+            <p className="text-[11px] text-slate-400 mt-2">Activa solo lo que trae la factura. Puedes combinar varias para una factura mixta.</p>
+          </div>
+
+          {/* ── Productos / Inventario (solo si aplica) ── */}
+          {visibleSections.INVENTARIO && (
           <SectionCard title="Productos / Inventario" icon={HiOutlineCube} onAdd={() => addItem('INVENTARIO')} addLabel="Agregar producto" count={invItems.length}>
             {invItems.length === 0 ? (
-              <EmptyHint>Sin productos de inventario. Usa “Agregar producto” si la factura incluye insumos que entran a stock.</EmptyHint>
+              <EmptyHint>Sin productos aún. Usa “Agregar producto” para insumos que entran a stock.</EmptyHint>
             ) : (
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead className="text-[11px] uppercase text-slate-400"><tr className="text-left">
-                    <th className="py-1 pr-2">Producto</th><th className="py-1 px-2">Categoría contable</th><th className="py-1 px-2">Bodega</th>
-                    <th className="py-1 px-2 text-right">Cant.</th><th className="py-1 px-2 text-right">Precio</th><th className="py-1 px-2">IVA</th>
-                    <th className="py-1 px-2">Retención</th><th className="py-1 px-2 text-right">Subtotal</th><th></th>
+                    <th className="py-1 pr-2">Producto</th><th className="py-1 px-2">Bodega</th>
+                    <th className="py-1 px-2 text-right">Cant.</th><th className="py-1 px-2 text-right">Precio</th><th className="py-1 px-2 text-right">Desc.</th><th className="py-1 px-2">IVA</th>
+                    <th className="py-1 px-2">Centro de costo</th><th className="py-1 px-2">Retención</th><th className="py-1 px-2 text-right">Total</th><th></th>
                   </tr></thead>
                   <tbody>
                     {invItems.map((it) => {
@@ -736,20 +792,14 @@ export default function PurchaseInvoices() {
                               <div className="flex-1 min-w-0"><SearchableSelect options={products} value={it.product} onChange={(v) => onPickProduct(it._uid, v)} getLabel={(p) => p.name} getSearchText={(p) => `${p.name} ${p.code}`} placeholder="Selecciona producto…" searchPlaceholder="Buscar producto…" allowClear size="sm" /></div>
                               <button type="button" onClick={() => setNewProductItemUid(it._uid)} title="Crear producto nuevo" className="shrink-0 p-1.5 rounded-lg border border-emerald-200 text-emerald-700 hover:bg-emerald-50 bg-white"><HiOutlinePlus className="w-4 h-4" /></button>
                             </div>
-                          </td>
-                          <td className="py-1.5 px-2 text-xs min-w-[150px]">
-                            {cat ? (
-                              <div>
-                                <div className="text-slate-700">{cat.name}</div>
-                                <div className="text-[11px] text-slate-400 font-mono">{assetAcc ? `${assetAcc.code || ''} ${assetAcc.name || ''}`.trim() : '—'}</div>
-                              </div>
-                            ) : <span className="text-slate-400">—</span>}
-                            {missing && <div className="text-[11px] text-rose-600 flex items-center gap-1 mt-0.5"><HiOutlineExclamationTriangle className="w-3.5 h-3.5" /> {cat ? 'Categoría sin cuenta de inventario' : 'Producto sin categoría contable'}</div>}
+                            {missing && <div className="text-[11px] text-rose-600 flex items-center gap-1 mt-1"><HiOutlineExclamationTriangle className="w-3.5 h-3.5" /> {cat ? 'La categoría del producto no tiene cuenta de inventario' : 'El producto no tiene categoría contable'}</div>}
                           </td>
                           <td className="py-1.5 px-2 min-w-[110px]"><SearchableSelect options={[{ _id: '', name: 'General' }, ...warehouses]} value={it.warehouse} onChange={(v) => setItem(it._uid, { warehouse: v })} getLabel={(w) => w.name} placeholder="General" searchPlaceholder="Buscar bodega…" size="sm" /></td>
                           <td className="py-1.5 px-2 w-20"><NumericInput step="0.01" value={it.quantity} onChange={(e) => setItem(it._uid, { quantity: +e.target.value })} className={`${inputCls} text-right`} /></td>
                           <td className="py-1.5 px-2 w-24"><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(it._uid, { unitPrice: +e.target.value })} className={`${inputCls} text-right`} /></td>
+                          <td className="py-1.5 px-2 w-20"><NumericInput step="0.01" value={it.discount} onChange={(e) => setItem(it._uid, { discount: +e.target.value })} className={`${inputCls} text-right`} /></td>
                           <td className="py-1.5 px-2 w-20"><IvaSelect value={it.ivaRate} onChange={(v) => setItem(it._uid, { ivaRate: v })} /></td>
+                          <td className="py-1.5 px-2 min-w-[130px]"><SearchableSelect options={costCenters} value={it.costCenter} onChange={(v) => setItem(it._uid, { costCenter: v })} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="— sin centro —" searchPlaceholder="Buscar centro…" allowClear size="sm" /></td>
                           <td className="py-1.5 px-2">{retCell(it)}</td>
                           <td className="py-1.5 px-2 text-right font-mono text-slate-700 w-24">{fmt(lineBase(it))}</td>
                           <td className="py-1.5 pl-1"><button type="button" onClick={() => removeItem(it._uid)} className="text-rose-500 hover:text-rose-600"><HiOutlineXMark className="w-4 h-4" /></button></td>
@@ -758,12 +808,14 @@ export default function PurchaseInvoices() {
                     })}
                   </tbody>
                 </table>
-                <p className="text-[11px] text-slate-400 mt-1.5">La cuenta de inventario se toma de la categoría contable del producto (no se edita aquí).</p>
+                <p className="text-[11px] text-slate-400 mt-1.5">La cuenta de inventario se toma automáticamente de la categoría del producto.</p>
               </div>
             )}
           </SectionCard>
+          )}
 
-          {/* ── 3. Cuentas / Gastos ── */}
+          {/* ── Cuentas / Gastos (solo si aplica) ── */}
+          {visibleSections.GASTO && (
           <SectionCard title="Cuentas / Gastos" icon={HiOutlineBanknotes} onAdd={() => addItem('GASTO')} addLabel="Agregar gasto" count={gastoItems.length}>
             {recurring.accounts.length > 0 && (
               <div className="flex flex-wrap items-center gap-1.5 text-xs bg-emerald-50/60 border border-emerald-100 rounded-lg px-2 py-1.5 mb-2">
@@ -774,74 +826,88 @@ export default function PurchaseInvoices() {
               </div>
             )}
             {gastoItems.length === 0 ? (
-              <EmptyHint>Sin gastos. Usa “Agregar gasto” para transporte, servicios, comisiones, etc.</EmptyHint>
+              <EmptyHint>Sin gastos aún. Usa “Agregar gasto” para transporte, servicios, comisiones, etc.</EmptyHint>
             ) : (
-              <div className="space-y-2">
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead className="text-[11px] uppercase text-slate-400"><tr className="text-left">
-                      <th className="py-1 pr-2">Cuenta</th><th className="py-1 px-2">Descripción</th><th className="py-1 px-2 text-right">Valor</th>
-                      <th className="py-1 px-2">IVA</th><th className="py-1 px-2">Centro de costo</th><th className="py-1 px-2">Retención</th><th></th>
-                    </tr></thead>
-                    <tbody>
-                      {gastoItems.map((it) => {
-                        const splits = it.accountSplits || [];
-                        const hasSplits = splits.length > 0;
-                        const base = lineBase(it);
-                        const splitSum = +splits.reduce((s, sp) => s + (+sp.amount || 0), 0).toFixed(2);
-                        const splitOk = Math.abs(splitSum - base) < 0.01;
-                        const setSplit = (j, patch) => { const sp = [...splits]; sp[j] = { ...sp[j], ...patch }; setItem(it._uid, { accountSplits: sp }); };
-                        return (
-                          <RowGroup key={it._uid}>
-                            <tr className="border-t border-slate-100 align-top">
-                              <td className="py-1.5 pr-2 min-w-[190px]">
-                                {hasSplits ? (
-                                  <div className="flex items-center justify-between border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white text-slate-500 italic">Distribuido en {splits.length}<button type="button" onClick={() => setItem(it._uid, { accountSplits: [] })} className="not-italic text-sky-600">una</button></div>
-                                ) : (
-                                  <div className="flex items-center gap-1">
-                                    <div className="flex-1 min-w-0"><SearchableSelect options={accounts} value={it.account} onChange={(v) => setItem(it._uid, { account: v })} getLabel={(a) => `${a.code} ${a.name}`} getSearchText={(a) => `${a.code} ${a.name}`} placeholder="Cuenta de gasto…" searchPlaceholder="Buscar cuenta…" size="sm" /></div>
-                                    <button type="button" title="Distribuir en varias cuentas" onClick={() => setItem(it._uid, { accountSplits: [{ account: it.account || '', amount: base, description: '' }] })} className="text-xs text-sky-600 shrink-0">➗</button>
-                                  </div>
-                                )}
-                              </td>
-                              <td className="py-1.5 px-2 min-w-[160px]"><input value={it.description} onChange={(e) => setItem(it._uid, { description: e.target.value })} placeholder="Detalle del gasto" className={inputCls} /></td>
-                              <td className="py-1.5 px-2 w-24"><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(it._uid, { unitPrice: +e.target.value, quantity: 1 })} className={`${inputCls} text-right`} /></td>
-                              <td className="py-1.5 px-2 w-20"><IvaSelect value={it.ivaRate} onChange={(v) => setItem(it._uid, { ivaRate: v })} /></td>
-                              <td className="py-1.5 px-2 min-w-[130px]"><SearchableSelect options={costCenters} value={it.costCenter} onChange={(v) => setItem(it._uid, { costCenter: v })} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="— sin centro —" searchPlaceholder="Buscar centro…" allowClear size="sm" /></td>
-                              <td className="py-1.5 px-2">{retCell(it)}</td>
-                              <td className="py-1.5 pl-1"><button type="button" onClick={() => removeItem(it._uid)} className="text-rose-500 hover:text-rose-600"><HiOutlineXMark className="w-4 h-4" /></button></td>
-                            </tr>
-                            {hasSplits && (
-                              <tr className="bg-slate-50/60"><td colSpan={7} className="px-2 py-2">
-                                <div className="text-[11px] font-semibold text-slate-600 mb-1">Distribución de cuentas (valor {fmt(base)})</div>
-                                {splits.map((sp, j) => (
-                                  <div key={j} className="flex items-center gap-2 mb-1.5">
-                                    <div className="flex-1 min-w-0"><SearchableSelect options={accounts} value={sp.account} onChange={(v) => setSplit(j, { account: v })} getLabel={(a) => `${a.code} ${a.name}`} placeholder="Cuenta…" searchPlaceholder="Buscar cuenta…" size="sm" /></div>
-                                    <NumericInput step="0.01" placeholder="Monto" value={sp.amount} onChange={(e) => setSplit(j, { amount: +e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs w-28 text-right" />
-                                    <input placeholder="Detalle" value={sp.description} onChange={(e) => setSplit(j, { description: e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs flex-1 min-w-0" />
-                                    <button type="button" onClick={() => setItem(it._uid, { accountSplits: splits.filter((_, x) => x !== j) })} className="text-rose-500 shrink-0">×</button>
-                                  </div>
-                                ))}
-                                <div className="flex items-center gap-3 mt-1">
-                                  <button type="button" onClick={() => setItem(it._uid, { accountSplits: [...splits, { account: '', amount: +(base - splitSum).toFixed(2), description: '' }] })} className="text-emerald-600 text-xs">+ cuenta</button>
-                                  <span className={`text-xs ${splitOk ? 'text-emerald-600' : 'text-rose-600'}`}>Suma: {fmt(splitSum)} / {fmt(base)} {splitOk ? '✓' : '✗'}</span>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="text-[11px] uppercase text-slate-400"><tr className="text-left">
+                    <th className="py-1 pr-2">Cuenta</th><th className="py-1 px-2">Descripción</th><th className="py-1 px-2 text-right">Valor</th>
+                    <th className="py-1 px-2">IVA</th><th className="py-1 px-2">Centro de costo</th><th className="py-1 px-2">Retención</th><th></th>
+                  </tr></thead>
+                  <tbody>
+                    {gastoItems.map((it) => {
+                      const splits = it.accountSplits || [];
+                      const hasSplits = splits.length > 0;
+                      const base = lineBase(it);
+                      const splitSum = +splits.reduce((s, sp) => s + (+sp.amount || 0), 0).toFixed(2);
+                      const splitOk = Math.abs(splitSum - base) < 0.01;
+                      const setSplit = (j, patch) => { const sp = [...splits]; sp[j] = { ...sp[j], ...patch }; setItem(it._uid, { accountSplits: sp }); };
+                      return (
+                        <RowGroup key={it._uid}>
+                          <tr className="border-t border-slate-100 align-top">
+                            <td className="py-1.5 pr-2 min-w-[190px]">
+                              {hasSplits ? (
+                                <div className="text-xs text-slate-500 border border-slate-200 rounded-lg px-2 py-2 bg-slate-50">Cuentas distribuidas (ver abajo)</div>
+                              ) : (
+                                <SearchableSelect options={accounts} value={it.account} onChange={(v) => setItem(it._uid, { account: v })} getLabel={(a) => `${a.code} ${a.name}`} getSearchText={(a) => `${a.code} ${a.name}`} placeholder="Cuenta de gasto…" searchPlaceholder="Buscar cuenta…" size="sm" />
+                              )}
+                            </td>
+                            <td className="py-1.5 px-2 min-w-[160px]"><input value={it.description} onChange={(e) => setItem(it._uid, { description: e.target.value })} placeholder="Detalle del gasto" className={inputCls} /></td>
+                            <td className="py-1.5 px-2 w-24"><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(it._uid, { unitPrice: +e.target.value, quantity: 1 })} className={`${inputCls} text-right`} /></td>
+                            <td className="py-1.5 px-2 w-20"><IvaSelect value={it.ivaRate} onChange={(v) => setItem(it._uid, { ivaRate: v })} /></td>
+                            <td className="py-1.5 px-2 min-w-[130px]"><SearchableSelect options={costCenters} value={it.costCenter} onChange={(v) => setItem(it._uid, { costCenter: v })} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="— sin centro —" searchPlaceholder="Buscar centro…" allowClear size="sm" /></td>
+                            <td className="py-1.5 px-2">{retCell(it)}</td>
+                            <td className="py-1.5 pl-1">
+                              <div className="flex items-center justify-end gap-1">
+                                {!hasSplits && <button type="button" onClick={() => setRowMenuUid(rowMenuUid === it._uid ? null : it._uid)} title="Opciones avanzadas" className="text-slate-400 hover:text-slate-600"><HiOutlineEllipsisVertical className="w-4 h-4" /></button>}
+                                <button type="button" onClick={() => removeItem(it._uid)} title="Eliminar" className="text-rose-500 hover:text-rose-600"><HiOutlineXMark className="w-4 h-4" /></button>
+                              </div>
+                            </td>
+                          </tr>
+                          {rowMenuUid === it._uid && !hasSplits && (
+                            <tr className="bg-slate-50/60"><td colSpan={7} className="px-2 py-2">
+                              <div className="flex flex-wrap items-center gap-2 text-xs">
+                                <span className="font-semibold text-slate-500">Opciones avanzadas:</span>
+                                <button type="button" onClick={() => { setItem(it._uid, { accountSplits: [{ account: it.account || '', amount: base, description: it.description || '' }] }); setRowMenuUid(null); }} className="px-2 py-1 rounded-lg border border-slate-200 bg-white text-slate-600 hover:border-emerald-300 hover:text-emerald-700">Dividir en varias cuentas contables</button>
+                                <span className="text-slate-400">Solo para casos especiales (un gasto que se reparte entre varias cuentas).</span>
+                              </div>
+                            </td></tr>
+                          )}
+                          {hasSplits && (
+                            <tr className="bg-slate-50/60"><td colSpan={7} className="px-2 py-2">
+                              <div className="flex items-center justify-between mb-1">
+                                <div className="text-[11px] font-semibold text-slate-600">Distribución en varias cuentas (valor {fmt(base)})</div>
+                                <button type="button" onClick={() => setItem(it._uid, { accountSplits: [] })} className="text-xs text-sky-600">Usar una sola cuenta</button>
+                              </div>
+                              {splits.map((sp, j) => (
+                                <div key={j} className="flex items-center gap-2 mb-1.5">
+                                  <div className="flex-1 min-w-0"><SearchableSelect options={accounts} value={sp.account} onChange={(v) => setSplit(j, { account: v })} getLabel={(a) => `${a.code} ${a.name}`} placeholder="Cuenta…" searchPlaceholder="Buscar cuenta…" size="sm" /></div>
+                                  <NumericInput step="0.01" placeholder="Monto" value={sp.amount} onChange={(e) => setSplit(j, { amount: +e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs w-28 text-right" />
+                                  <input placeholder="Detalle" value={sp.description} onChange={(e) => setSplit(j, { description: e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs flex-1 min-w-0" />
+                                  <button type="button" onClick={() => setItem(it._uid, { accountSplits: splits.filter((_, x) => x !== j) })} className="text-rose-500 shrink-0">×</button>
                                 </div>
-                              </td></tr>
-                            )}
-                          </RowGroup>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
+                              ))}
+                              <div className="flex items-center gap-3 mt-1">
+                                <button type="button" onClick={() => setItem(it._uid, { accountSplits: [...splits, { account: '', amount: +(base - splitSum).toFixed(2), description: '' }] })} className="text-emerald-600 text-xs">+ cuenta</button>
+                                <span className={`text-xs ${splitOk ? 'text-emerald-600' : 'text-rose-600'}`}>Suma: {fmt(splitSum)} / {fmt(base)} {splitOk ? '✓' : '✗'}</span>
+                              </div>
+                            </td></tr>
+                          )}
+                        </RowGroup>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             )}
           </SectionCard>
+          )}
 
-          {/* ── 4. Activos fijos ── */}
+          {/* ── Activos fijos (solo si aplica) ── */}
+          {visibleSections.ACTIVO_FIJO && (
           <SectionCard title="Activos fijos" icon={HiOutlineBuildingOffice2} onAdd={() => addItem('ACTIVO_FIJO')} addLabel="Agregar activo fijo" count={afItems.length}>
             {afItems.length === 0 ? (
-              <EmptyHint>Sin activos fijos. Usa “Agregar activo fijo” si la factura incluye equipos/muebles a capitalizar.</EmptyHint>
+              <EmptyHint>Sin activos fijos aún. Usa “Agregar activo fijo” para equipos/muebles a capitalizar.</EmptyHint>
             ) : (
               <div className="space-y-3">
                 {afItems.map((it) => {
@@ -867,67 +933,70 @@ export default function PurchaseInvoices() {
                         <Field label="Ubicación (área)" className="col-span-2"><input value={fa.location || ''} onChange={(e) => setFa(it._uid, { location: e.target.value })} placeholder="Ej: Consultorio 2" className={inputCls} /></Field>
                         <Field label="Valor"><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(it._uid, { unitPrice: +e.target.value, quantity: 1 })} className={`${inputCls} text-right`} /></Field>
                         <Field label="IVA"><IvaSelect value={it.ivaRate} onChange={(v) => setItem(it._uid, { ivaRate: v })} /></Field>
+                        <Field label="Centro de costo"><SearchableSelect options={costCenters} value={it.costCenter} onChange={(v) => setItem(it._uid, { costCenter: v })} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="— sin centro —" searchPlaceholder="Buscar centro…" allowClear size="sm" /></Field>
                         <Field label="Retención">{retCell(it)}</Field>
                       </div>
-                      {cfg && (
-                        <div className={`rounded-lg border px-2.5 py-2 text-[11px] ${cfg.missing.length ? 'bg-rose-50 border-rose-200' : 'bg-white border-slate-200'}`}>
-                          <div className="font-semibold text-slate-500 mb-1">Configuración de la categoría (solo lectura)</div>
-                          {cfg.missing.length ? (
-                            <div className="text-rose-600 flex items-center gap-1"><HiOutlineExclamationTriangle className="w-3.5 h-3.5" /> Configuración incompleta: falta {cfg.missing.join(', ')}. No se podrá contabilizar.</div>
-                          ) : (
-                            <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-0.5 text-slate-600 font-mono">
-                              <span>Activo: {cfg.assetAccount || '—'}</span>
-                              <span>Gasto dep.: {cfg.noDepreciate ? 'No deprecia' : (cfg.depreciationAccount || '—')}</span>
-                              <span>Dep. acum.: {cfg.noDepreciate ? '—' : (cfg.accumDepreciationAccount || '—')}</span>
-                              <span>Vida útil: {cfg.noDepreciate ? '—' : `${cfg.months} meses`}</span>
-                              <span>Residual: {cfg.noDepreciate ? '—' : `${cfg.residualPercent}%`}</span>
-                              <span>Tipo gasto: {cfg.expenseType || '—'}</span>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                      <p className="text-[11px] text-slate-400">Las cuentas (activo, depreciación), la vida útil y el % residual se toman de la categoría. Al contabilizar se crea el activo automáticamente.</p>
+                      {cfg && (cfg.missing.length ? (
+                        <div className="rounded-lg border px-2.5 py-2 text-[11px] bg-rose-50 border-rose-200 text-rose-600 flex items-center gap-1"><HiOutlineExclamationTriangle className="w-3.5 h-3.5" /> La categoría tiene configuración contable incompleta: falta {cfg.missing.join(', ')}. No se podrá contabilizar.</div>
+                      ) : (
+                        <details className="rounded-lg border border-slate-200 bg-white px-2.5 py-2 text-[11px]">
+                          <summary className="cursor-pointer text-slate-500 font-medium">Ver configuración contable (automática desde la categoría)</summary>
+                          <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-4 gap-y-0.5 text-slate-600 font-mono mt-1.5">
+                            <span>Activo: {cfg.assetAccount || '—'}</span>
+                            <span>Gasto dep.: {cfg.noDepreciate ? 'No deprecia' : (cfg.depreciationAccount || '—')}</span>
+                            <span>Dep. acum.: {cfg.noDepreciate ? '—' : (cfg.accumDepreciationAccount || '—')}</span>
+                            <span>Vida útil: {cfg.noDepreciate ? '—' : `${cfg.months} meses`}</span>
+                            <span>Residual: {cfg.noDepreciate ? '—' : `${cfg.residualPercent}%`}</span>
+                            <span>Tipo gasto: {cfg.expenseType || '—'}</span>
+                          </div>
+                        </details>
+                      ))}
                     </div>
                   );
                 })}
               </div>
             )}
           </SectionCard>
+          )}
 
-          {/* ── 5. Retenciones (resumen derivado de las líneas) ── */}
-          <SectionCard title="Retenciones" icon={HiOutlineBanknotes}>
-            <p className="text-[11px] text-slate-400 mb-2">Resumen de las retenciones seleccionadas por línea (catálogo SRI). El backend recalcula base y monto al guardar. Para cambiarlas, ajusta la retención en cada línea.</p>
-            {retSummary.length === 0 ? (
-              <EmptyHint>Sin retenciones. Elige el código de retención en cada línea (Productos, Gastos o Activos fijos).</EmptyHint>
-            ) : (
-              <div className="overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="text-[11px] uppercase text-slate-400"><tr className="text-left">
-                    <th className="py-1 pr-2">Tipo</th><th className="py-1 px-2">Código</th><th className="py-1 px-2">Descripción</th>
-                    <th className="py-1 px-2 text-right">Base</th><th className="py-1 px-2 text-right">%</th><th className="py-1 px-2 text-right">Monto</th><th className="py-1 px-2">Cuenta</th>
-                  </tr></thead>
-                  <tbody>
-                    {retSummary.map((r, i) => {
-                      const acc = r.account && typeof r.account === 'object' ? `${r.account.code || ''} ${r.account.name || ''}`.trim() : null;
-                      return (
+          {/* ── Retenciones: resumen compacto de solo lectura (solo si hay retenciones) ── */}
+          {retSummary.length > 0 && (
+            <div className="border border-slate-200 rounded-xl overflow-hidden">
+              <div className="flex flex-wrap items-center gap-2 bg-slate-50 px-3 py-2 border-b border-slate-200">
+                <HiOutlineBanknotes className="w-4 h-4 text-emerald-600" />
+                <h3 className="text-sm font-semibold text-slate-700">Retenciones</h3>
+                <span className="text-[11px] text-slate-400">Automáticas: se calculan del código elegido en cada línea.</span>
+              </div>
+              <div className="p-3 space-y-2">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead className="text-[11px] uppercase text-slate-400"><tr className="text-left">
+                      <th className="py-1 pr-2">Código</th><th className="py-1 px-2">Concepto</th>
+                      <th className="py-1 px-2 text-right">Base</th><th className="py-1 px-2 text-right">%</th><th className="py-1 px-2 text-right">Valor</th>
+                    </tr></thead>
+                    <tbody>
+                      {retSummary.map((r, i) => (
                         <tr key={`${r.type}-${r.code}-${i}`} className="border-t border-slate-100">
-                          <td className="py-1.5 pr-2">{r.type}</td>
-                          <td className="py-1.5 px-2 font-mono">{r.code}</td>
+                          <td className="py-1.5 pr-2 font-mono">{r.type} {r.code}</td>
                           <td className="py-1.5 px-2 text-slate-600">{r.description || '—'}</td>
                           <td className="py-1.5 px-2 text-right font-mono">{fmt(r.base)}</td>
                           <td className="py-1.5 px-2 text-right font-mono">{r.rate}%</td>
                           <td className="py-1.5 px-2 text-right font-mono">{fmt(r.amount)}</td>
-                          <td className="py-1.5 px-2 text-[11px] text-slate-400 font-mono">{acc || 'Según tipo (por pagar)'}</td>
                         </tr>
-                      );
-                    })}
-                  </tbody>
-                  <tfoot><tr className="border-t border-slate-200 font-semibold"><td colSpan={5} className="py-1.5 px-2 text-right">Total retenido</td><td className="py-1.5 px-2 text-right font-mono">{fmt(totals.retTotal)}</td><td></td></tr></tfoot>
-                </table>
+                      ))}
+                    </tbody>
+                    <tfoot><tr className="border-t border-slate-200 font-semibold"><td colSpan={4} className="py-1.5 px-2 text-right">Total retenido</td><td className="py-1.5 px-2 text-right font-mono">{fmt(totals.retTotal)}</td></tr></tfoot>
+                  </table>
+                </div>
+                <details className="text-[11px]">
+                  <summary className="cursor-pointer text-slate-500">Datos adicionales de retención</summary>
+                  <div className="mt-2 max-w-xs">
+                    <Field label="N° comprobante de retención (opcional)"><input placeholder="Opcional" value={form.retentionNumber} onChange={(e) => setForm({ ...form, retentionNumber: e.target.value })} className="block w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" /></Field>
+                  </div>
+                </details>
               </div>
-            )}
-            <Field label="N° comprobante de retención" className="mt-3"><input placeholder="Opcional" value={form.retentionNumber} onChange={(e) => setForm({ ...form, retentionNumber: e.target.value })} className="block w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-          </SectionCard>
+            </div>
+          )}
 
           {/* ── 6. Totales ── */}
           <div className="rounded-xl border border-slate-200 overflow-hidden grid grid-cols-1 sm:grid-cols-3">
