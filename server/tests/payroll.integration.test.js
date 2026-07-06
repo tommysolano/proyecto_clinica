@@ -443,3 +443,38 @@ test('H2) pago manual en efectivo (confirmNoBank) liquida contra Caja con asient
   assert.equal(await BankTransaction.countDocuments({ clinic: clinicId, sourceModel: 'Payroll', sourceRef: p._id }), 0, 'sin movimiento bancario');
   assert.ok((await H.assertLedgerBalanced(clinicId)).balanced);
 });
+
+// ── I) Ingreso flexible que NO aporta al IESS: suma al ingreso pero no al IESS ──
+test('I) ingreso flexible sin affectsIess suma al ingreso pero NO cambia el IESS', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-15') });
+  const admin = await makeDept(clinicId, { name: 'Admin' });
+  const bonoAcc = await acc(clinicId, '6.1.02');
+  const rc = await H.runController(payroll.createConcept, H.mockReq(clinicId, userId, { code: 'ING-BONO', name: 'Bono no IESS', type: 'INGRESO', affectsIess: false, defaultAccount: String(bonoAcc._id) }));
+  const emp = await makeEmployee(clinicId, { departmentRef: admin._id, baseSalary: 600, receivesDecimoTercero: false, receivesDecimoCuarto: false });
+  const gen = await H.runController(payroll.generatePayroll, H.mockReq(clinicId, userId, { year: 2026, month: 6 }));
+  const iessAntes = gen.payload.items[0].iessPersonal;
+  const ingAntes = gen.payload.items[0].totalIngresos;
+  const upd = await H.runController(payroll.updatePayrollItem, req(clinicId, userId,
+    { employeeId: String(emp._id), patch: { earnings: [{ concept: String(rc.payload._id), code: 'ING-BONO', name: 'Bono', amount: 300 }] } },
+    { id: String(gen.payload._id) }));
+  assert.equal(upd.statusCode, 200, JSON.stringify(upd.payload));
+  const it = upd.payload.items[0];
+  assert.equal(it.iessPersonal, iessAntes, 'el bono no gravado no cambia el IESS');
+  assert.equal(it.totalIngresos, +(ingAntes + 300).toFixed(2), 'sí suma al ingreso total');
+});
+
+// ── J) Pagar un rol ya PAGADO se bloquea (no duplica pago ni movimiento bancario) ──
+test('J) pagar un rol ya PAGADO se bloquea (idempotencia de pago)', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-15') });
+  const admin = await makeDept(clinicId, { name: 'Admin' });
+  await makeEmployee(clinicId, { departmentRef: admin._id, baseSalary: 600 });
+  const bankAcc = await acc(clinicId, '1.1.01.03');
+  const bank = await BankAccount.create({ clinic: clinicId, name: 'Cta', bank: 'Pichincha', accountNumber: '1', chartAccount: bankAcc._id });
+  const p = await generateAndClose(clinicId, userId);
+  await H.runController(payroll.closePayroll, req(clinicId, userId, {}, { id: String(p._id) }));
+  const pay1 = await H.runController(payroll.markPaid, req(clinicId, userId, { bankAccountId: String(bank._id) }, { id: String(p._id) }));
+  assert.equal(pay1.statusCode, 200);
+  const pay2 = await H.runController(payroll.markPaid, req(clinicId, userId, { bankAccountId: String(bank._id) }, { id: String(p._id) }));
+  assert.equal(pay2.statusCode, 400, 'no permite pagar dos veces');
+  assert.equal(await BankTransaction.countDocuments({ clinic: clinicId, sourceModel: 'Payroll', sourceRef: p._id }), 1, 'un solo movimiento bancario');
+});
