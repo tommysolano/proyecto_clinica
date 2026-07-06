@@ -37,9 +37,38 @@ const recetaItemSchema = new mongoose.Schema(
   { _id: true }
 );
 
+// Casilla del formulario MSP: una categoría fija (por `key`, ver mspCatalogs.js)
+// con marca y detalle. `marked` significa "presente" en antecedentes (C/D) y
+// "patológico" en revisión de sistemas (G) y examen físico (H).
+const mspCheckSchema = new mongoose.Schema(
+  {
+    key: { type: String, required: true },
+    marked: { type: Boolean, default: false },
+    detail: { type: String, trim: true, default: '' },
+  },
+  { _id: false }
+);
+
+// I. Diagnóstico. Hasta 6 por consulta; cada uno con código CIE-10 y si es
+// presuntivo (PRE) y/o definitivo (DEF).
+const diagnosticoSchema = new mongoose.Schema(
+  {
+    descripcion: { type: String, trim: true, default: '' },
+    cie: { type: String, trim: true, default: '' },            // código CIE-10 (ej. J00)
+    cieDescripcion: { type: String, trim: true, default: '' }, // snapshot del nombre del código
+    presuntivo: { type: Boolean, default: false },
+    definitivo: { type: Boolean, default: false },
+  },
+  { _id: false }
+);
+
 const followUpSchema = new mongoose.Schema(
   {
     fecha: { type: Date, required: true, default: Date.now },
+    // B. Motivo de consulta: primera vez o subsecuente.
+    tipoConsulta: { type: String, enum: ['primera', 'subsecuente', ''], default: '' },
+    // E. Enfermedad o problema actual (cronología, localización, características…).
+    enfermedadActual: { type: String, trim: true, default: '' },
     // Tipo de entrada de seguimiento: '' (consulta normal del doctor) o
     // 'enfermeria' (aplicación de servicio registrada automáticamente por enfermería).
     kind: { type: String, default: '' },
@@ -57,17 +86,33 @@ const followUpSchema = new mongoose.Schema(
     recetaItems: { type: [recetaItemSchema], default: [] },
     // Reemplaza al campo "treatment" (ref). Ahora se captura como texto.
     observaciones: { type: String, trim: true },
-    // Signos vitales del paciente
+    // F. Constantes vitales y antropometría del paciente.
     vitalSigns: {
+      hora: { type: String, trim: true, default: '' },          // HH:mm
       temperature: { type: Number, default: null },        // °C
       bloodPressure: { type: String, trim: true, default: '' }, // "120/80"
-      heartRate: { type: Number, default: null },          // lpm
+      heartRate: { type: Number, default: null },          // pulso lpm
       respiratoryRate: { type: Number, default: null },    // rpm
-      oxygenSaturation: { type: Number, default: null },   // %
+      oxygenSaturation: { type: Number, default: null },   // pulsioximetría %
       weight: { type: Number, default: null },             // kg
       height: { type: Number, default: null },             // cm
-      glucose: { type: Number, default: null },            // mg/dL
+      abdominalPerimeter: { type: Number, default: null }, // perímetro abdominal cm
+      capillaryHemoglobin: { type: Number, default: null },// hemoglobina capilar g/dL
+      glucose: { type: Number, default: null },            // glucosa capilar mg/dL
     },
+    // G. Revisión actual de órganos y sistemas (10 casillas MSP).
+    revisionSistemas: { type: [mspCheckSchema], default: [] },
+    // H. Examen físico: regional (15) + sistémico (10) + hallazgos descritos.
+    examenFisico: {
+      regional: { type: [mspCheckSchema], default: [] },
+      sistemico: { type: [mspCheckSchema], default: [] },
+      hallazgos: { type: String, trim: true, default: '' },
+    },
+    // I. Diagnóstico(s) con CIE-10 (hasta 6).
+    diagnosticos: { type: [diagnosticoSchema], default: [] },
+    // J. Plan de tratamiento (diagnóstico, terapéutico y educacional). La receta
+    // e insumos siguen en recetaItems; esto es el plan narrado del MSP.
+    planTratamiento: { type: String, trim: true, default: '' },
     // Archivos PDF subidos por el doctor (ecografías, bioresonancias, etc.)
     attachments: [
       {
@@ -135,7 +180,13 @@ const clinicalRecordSchema = new mongoose.Schema(
     tomaMedicamentos: { type: yesNoDetailSchema, default: () => ({}) },
     tieneAlergias: { type: yesNoDetailSchema, default: () => ({}) },
     tieneCirugias: { type: yesNoDetailSchema, default: () => ({}) },
-    // Antecedentes ampliados
+    // C. Antecedentes patológicos personales (10 categorías MSP).
+    patologicosPersonales: { type: [mspCheckSchema], default: [] },
+    // D. Antecedentes patológicos familiares (10 categorías MSP).
+    patologicosFamiliares: { type: [mspCheckSchema], default: [] },
+    // Encabezado de C: datos clínico-quirúrgicos, obstétricos y alérgicos relevantes.
+    datosRelevantes: { type: String, trim: true, default: '' },
+    // Antecedentes libres (LEGACY — origen de migración a las listas estructuradas).
     antecedentesFamiliares: { type: String, trim: true, default: '' },
     antecedentesPatologicos: { type: String, trim: true, default: '' },
     // Seguimiento

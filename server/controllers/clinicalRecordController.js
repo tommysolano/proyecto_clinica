@@ -104,6 +104,10 @@ exports.updateByPatient = async (req, res) => {
       'tomaMedicamentos',
       'tieneAlergias',
       'tieneCirugias',
+      // Antecedentes patológicos MSP (C personales / D familiares) + datos relevantes.
+      'patologicosPersonales',
+      'patologicosFamiliares',
+      'datosRelevantes',
     ];
     const update = { updatedBy: req.user._id };
     for (const k of allowed) {
@@ -141,7 +145,39 @@ exports.addFollowUp = async (req, res) => {
       treatment,         // legacy: id de tratamiento manual (sigue soportado)
       vitalSigns,        // signos vitales (opcional)
       opticaRx,          // datos ópticos (rol optica): { od:{...}, oi:{...} }
+      // --- Campos del formulario MSP HCU-form.002 ---
+      tipoConsulta,      // B: 'primera' | 'subsecuente'
+      enfermedadActual,  // E: enfermedad o problema actual
+      revisionSistemas,  // G: [{ key, marked, detail }]
+      examenFisico,      // H: { regional:[...], sistemico:[...], hallazgos }
+      diagnosticos,      // I: [{ descripcion, cie, cieDescripcion, presuntivo, definitivo }]
+      planTratamiento,   // J: texto del plan
     } = req.body;
+
+    // --- Saneadores de las secciones MSP (solo se guardan claves con contenido) ---
+    const sanitizeChecks = (arr) =>
+      (Array.isArray(arr) ? arr : [])
+        .filter((c) => c && c.key)
+        .map((c) => ({ key: String(c.key), marked: !!c.marked, detail: String(c.detail || '').trim() }));
+    const sanitizeExamen = (ex) => {
+      if (!ex || typeof ex !== 'object') return undefined;
+      return {
+        regional: sanitizeChecks(ex.regional),
+        sistemico: sanitizeChecks(ex.sistemico),
+        hallazgos: String(ex.hallazgos || '').trim(),
+      };
+    };
+    const sanitizeDiagnosticos = (arr) =>
+      (Array.isArray(arr) ? arr : [])
+        .filter((d) => d && (String(d.descripcion || '').trim() || String(d.cie || '').trim()))
+        .slice(0, 6)
+        .map((d) => ({
+          descripcion: String(d.descripcion || '').trim(),
+          cie: String(d.cie || '').trim().toUpperCase(),
+          cieDescripcion: String(d.cieDescripcion || '').trim(),
+          presuntivo: !!d.presuntivo,
+          definitivo: !!d.definitivo,
+        }));
 
     if (!descripcion && !req.body.motivoConsulta) {
       return res.status(400).json({ message: 'El motivo de consulta es requerido' });
@@ -269,6 +305,7 @@ exports.addFollowUp = async (req, res) => {
             recetaItems: hydratedItems,
             observaciones: observaciones || '',
             vitalSigns: vitalSigns && typeof vitalSigns === 'object' ? {
+              hora: vitalSigns.hora || '',
               temperature: vitalSigns.temperature ?? null,
               bloodPressure: vitalSigns.bloodPressure || '',
               heartRate: vitalSigns.heartRate ?? null,
@@ -276,8 +313,17 @@ exports.addFollowUp = async (req, res) => {
               oxygenSaturation: vitalSigns.oxygenSaturation ?? null,
               weight: vitalSigns.weight ?? null,
               height: vitalSigns.height ?? null,
+              abdominalPerimeter: vitalSigns.abdominalPerimeter ?? null,
+              capillaryHemoglobin: vitalSigns.capillaryHemoglobin ?? null,
               glucose: vitalSigns.glucose ?? null,
             } : undefined,
+            // Secciones MSP (B, E, G, H, I, J).
+            tipoConsulta: ['primera', 'subsecuente'].includes(tipoConsulta) ? tipoConsulta : '',
+            enfermedadActual: String(enfermedadActual || '').trim(),
+            revisionSistemas: sanitizeChecks(revisionSistemas),
+            examenFisico: sanitizeExamen(examenFisico),
+            diagnosticos: sanitizeDiagnosticos(diagnosticos),
+            planTratamiento: String(planTratamiento || '').trim(),
             treatment: autoTreatmentId,
             autoTreatmentCreated: autoTreatmentId && !treatment ? autoTreatmentId : undefined,
             opticaRx: opticaRx && typeof opticaRx === 'object' ? opticaRx : undefined,
