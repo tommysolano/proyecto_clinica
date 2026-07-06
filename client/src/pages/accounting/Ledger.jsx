@@ -6,36 +6,7 @@ import { HiOutlineBookOpen, HiOutlineArrowTopRightOnSquare, HiOutlineBuildingLib
 import { fmt, fmtDate, startOfMonth, today } from './_utils';
 import SearchableSelect from '../../components/SearchableSelect';
 import Modal from '../../components/Modal';
-
-// Mapa de documento origen (sourceModel del asiento) → etiqueta legible y, cuando
-// existe deep-link real en la página destino, la ruta + `deep:true`. Solo los
-// `deep:true` muestran el botón "Ir a…" (la página lee ?doc=<id> y abre el
-// documento); el resto se consulta desde el modal del asiento.
-const SOURCE_ROUTES = {
-  Sale: { path: '/sales', label: 'Venta', deep: true },
-  PurchaseInvoice: { path: '/accounting/purchases', label: 'Factura de compra', deep: true },
-  FixedAsset: { path: '/accounting/assets', label: 'Activo fijo (depreciación)', deep: true },
-  Payroll: { path: '/accounting/payroll', label: 'Nómina', deep: true },
-  // Sin deep-link (solo etiqueta): el asiento se ve en el modal.
-  Invoice: { label: 'Factura de venta' },
-  Payment: { label: 'Pago / Cobro' },
-  BankTransaction: { label: 'Movimiento bancario' },
-  CashDeposit: { label: 'Depósito de efectivo' },
-  Reconciliation: { label: 'Conciliación' },
-  CashClosing: { label: 'Cierre de caja' },
-  CashMovement: { label: 'Movimiento de caja' },
-  CommissionPosting: { label: 'Comisiones del personal' },
-  CreditDebitNote: { label: 'Nota de crédito / débito' },
-  RetentionVoucher: { label: 'Comprobante de retención' },
-  DeferredIncome: { label: 'Ingreso diferido' },
-  CardSettlement: { label: 'Liquidación de tarjeta' },
-  CreditCardBatch: { label: 'Lote de tarjeta' },
-  EmployeeDeduction: { label: 'Deducción de empleado' },
-  PhysicalCount: { label: 'Toma física de inventario' },
-  JournalEntry: { label: 'Asiento (reversa)' },
-};
-
-const sourceLabel = (row) => SOURCE_ROUTES[row.sourceModel]?.label || row.source || 'Asiento manual';
+import { SOURCE_ROUTES, sourceLabel, sourceActionLabel, sourceDeepLink } from './sourceDocs';
 
 export default function Ledger() {
   const navigate = useNavigate();
@@ -76,11 +47,10 @@ export default function Ledger() {
     }
   };
 
-  const goToSource = (e) => {
-    const map = SOURCE_ROUTES[e?.sourceModel];
+  const goToSource = (row) => {
     // Solo navegamos a documentos con deep-link real (la página abre el ?doc=<id>).
-    if (!map?.deep || !e.sourceRef) return;
-    navigate(`${map.path}?doc=${e.sourceRef}`);
+    const url = sourceDeepLink(row);
+    if (url) navigate(url);
   };
 
   const bankSummary = data?.bankSummary;
@@ -160,7 +130,20 @@ export default function Ledger() {
                       </td>
                       <td className="px-2 py-1 font-mono text-[11px] text-slate-600 whitespace-nowrap">{m.accountCode}</td>
                       <td className="px-2 py-1 text-xs">{m.description}</td>
-                      <td className="px-2 py-1 text-xs text-slate-500">{sourceLabel(m)}</td>
+                      <td className="px-2 py-1 text-xs">
+                        {sourceDeepLink(m) ? (
+                          <button
+                            onClick={(ev) => { ev.stopPropagation(); goToSource(m); }}
+                            className="inline-flex items-center gap-1 text-emerald-700 hover:underline"
+                            title={sourceActionLabel(m)}
+                          >
+                            {sourceLabel(m)}
+                            <HiOutlineArrowTopRightOnSquare className="w-3 h-3" />
+                          </button>
+                        ) : (
+                          <span className="text-slate-500">{sourceLabel(m)}</span>
+                        )}
+                      </td>
                       <td className="px-2 py-1 text-right font-mono">{m.debit ? fmt(m.debit) : ''}</td>
                       <td className="px-2 py-1 text-right font-mono">{m.credit ? fmt(m.credit) : ''}</td>
                       <td className="px-2 py-1 text-right font-mono font-semibold">{fmt(m.saldo)}</td>
@@ -224,19 +207,25 @@ export default function Ledger() {
           <div className="space-y-3">
             <div className="text-sm flex flex-wrap gap-x-4 gap-y-1">
               <span><b>Fecha:</b> {fmtDate(entry.date)}</span>
-              <span><b>Origen:</b> {SOURCE_ROUTES[entry.sourceModel]?.label || entry.source}</span>
+              <span><b>Origen:</b> {sourceLabel(entry)}</span>
               {entry.status && <span><b>Estado:</b> {entry.status}</span>}
             </div>
             {entry.description && <p className="text-sm text-slate-600">{entry.description}</p>}
 
-            {SOURCE_ROUTES[entry.sourceModel]?.deep && entry.sourceRef && (
+            {sourceDeepLink(entry) ? (
               <button
                 onClick={() => goToSource(entry)}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm bg-slate-700 text-white rounded-lg"
               >
                 <HiOutlineArrowTopRightOnSquare className="w-4 h-4" />
-                Ir a {SOURCE_ROUTES[entry.sourceModel].label}
+                {sourceActionLabel(entry)}
               </button>
+            ) : (
+              <p className="text-xs text-slate-400">
+                {entry.sourceModel
+                  ? `Documento origen: ${sourceLabel(entry)} (sin navegación directa; consúltelo en su módulo).`
+                  : 'Sin documento origen enlazado (asiento manual o antiguo).'}
+              </p>
             )}
 
             <table className="tbl border">

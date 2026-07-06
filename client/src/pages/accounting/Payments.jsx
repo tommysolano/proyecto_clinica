@@ -1,16 +1,20 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
-import { HiOutlinePlus, HiOutlineCurrencyDollar, HiOutlineXMark } from 'react-icons/hi2';
+import { HiOutlinePlus, HiOutlineCurrencyDollar, HiOutlineXMark, HiOutlineEye, HiOutlineArrowTopRightOnSquare } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
+import useDocDeepLink from '../../hooks/useDocDeepLink';
 
 export default function Payments() {
+  const navigate = useNavigate();
   const [list, setList] = useState([]);
   const [type, setType] = useState('PAGO');
   const [show, setShow] = useState(false);
+  const [detail, setDetail] = useState(null);
   const [suppliers, setSuppliers] = useState([]);
   const [banks, setBanks] = useState([]);
   const [purchases, setPurchases] = useState([]);
@@ -39,6 +43,15 @@ export default function Payments() {
     setForm({ type: t, date: today(), partyModel: t === 'PAGO' ? 'Supplier' : 'Patient', party: '', method: 'TRANSFERENCIA', bankAccount: '', applications: [], advanceAmount: 0, notes: '', voucherNumber: '', voucherUrl: '' });
     setShow(true);
   };
+
+  // Detalle de un pago/cobro (para navegar desde el Libro Mayor con ?doc=<id>).
+  const openDetail = async (id) => {
+    try { const r = await api.get(`/payments/${id}`); setDetail(r.data); }
+    catch (e) { toast.error(e.response?.data?.message || 'No se encontró el pago'); }
+  };
+
+  // Deep-link desde el Libro Mayor / asiento (?doc=<idPago>): abre el detalle del pago.
+  useDocDeepLink((id) => openDetail(id));
 
   const loadDocs = async (partyId) => {
     if (form.type === 'PAGO') {
@@ -128,18 +141,74 @@ export default function Payments() {
           <tbody>
             {list.map((p) => (
               <tr key={p._id} className={`border-t ${p.status === 'ANULADO' ? 'text-slate-400 line-through' : ''}`}>
-                <td className="px-3 py-2 font-mono">{p.number}</td>
+                <td className="px-3 py-2 font-mono">
+                  <button onClick={() => openDetail(p._id)} className="text-emerald-700 hover:underline" title="Ver detalle">{p.number}</button>
+                </td>
                 <td className="px-3 py-2">{fmtDate(p.date)}</td>
                 <td className="px-3 py-2 text-xs">{p.method}</td>
                 <td className="px-3 py-2 text-right font-mono">${fmt(p.appliedAmount)}</td>
                 <td className="px-3 py-2 text-right font-mono">${fmt(p.advanceAmount)}</td>
                 <td className="px-3 py-2 text-center text-xs">{p.status}</td>
-                <td className="px-3 py-2 text-right">{p.status === 'REGISTRADO' && <button onClick={() => voidPay(p)} className="text-rose-600"><HiOutlineXMark className="w-4 h-4" /></button>}</td>
+                <td className="px-3 py-2 text-right flex gap-1 justify-end">
+                  <button onClick={() => openDetail(p._id)} className="text-blue-600" title="Ver detalle"><HiOutlineEye className="w-4 h-4" /></button>
+                  {p.status === 'REGISTRADO' && <button onClick={() => voidPay(p)} className="text-rose-600" title="Anular"><HiOutlineXMark className="w-4 h-4" /></button>}
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
+      <Modal isOpen={!!detail} onClose={() => setDetail(null)} title={`Detalle ${detail?.number || ''}`} size="lg">
+        {detail && (
+          <div className="space-y-3 text-sm">
+            <div className="flex flex-wrap gap-x-5 gap-y-1">
+              <span><b>Tipo:</b> {detail.type === 'PAGO' ? 'Pago a proveedor' : 'Cobro a cliente'}</span>
+              <span><b>Fecha:</b> {fmtDate(detail.date)}</span>
+              <span><b>Método:</b> {detail.method}</span>
+              <span><b>Estado:</b> {detail.status}</span>
+            </div>
+            <div className="flex flex-wrap gap-x-5 gap-y-1">
+              {detail.partyName && <span><b>{detail.type === 'PAGO' ? 'Proveedor' : 'Cliente'}:</b> {detail.partyName}</span>}
+              {detail.bankAccount && <span><b>Banco:</b> {detail.bankAccount.name} {detail.bankAccount.bank ? `(${detail.bankAccount.bank})` : ''}</span>}
+              {detail.reference && <span><b>Comprobante:</b> {detail.reference}</span>}
+            </div>
+            <div className="flex flex-wrap gap-x-5 gap-y-1">
+              <span><b>Aplicado:</b> ${fmt(detail.appliedAmount)}</span>
+              <span><b>Anticipo:</b> ${fmt(detail.advanceAmount)}</span>
+            </div>
+
+            {detail.journalEntry && (
+              <button
+                onClick={() => { setDetail(null); navigate(`/accounting/journal?doc=${detail.journalEntry._id}`); }}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm bg-slate-700 text-white rounded-lg"
+              >
+                <HiOutlineArrowTopRightOnSquare className="w-4 h-4" /> Ver asiento contable {detail.journalEntry.number || ''}
+              </button>
+            )}
+
+            {(detail.applications || []).length > 0 && (
+              <div className="border rounded-lg overflow-hidden">
+                <table className="tbl text-xs">
+                  <thead className="bg-slate-100"><tr>
+                    <th className="px-2 py-1 text-left">Documento aplicado</th>
+                    <th className="px-2 py-1 text-right">Monto</th>
+                  </tr></thead>
+                  <tbody>
+                    {detail.applications.map((a, i) => (
+                      <tr key={i} className="border-t">
+                        <td className="px-2 py-1">{a.docModel === 'PurchaseInvoice' ? 'Factura de compra' : a.docModel === 'Invoice' ? 'Factura de venta' : a.docModel} · {String(a.docRef).slice(-6)}</td>
+                        <td className="px-2 py-1 text-right font-mono">${fmt(a.amount)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
+            {detail.description && <p className="text-slate-600"><b>Notas:</b> {detail.description}</p>}
+          </div>
+        )}
+      </Modal>
 
       <Modal isOpen={show} onClose={() => setShow(false)} title={`Nuevo ${form.type === 'PAGO' ? 'pago' : 'cobro'}`} size="xl">
         <form onSubmit={submit} className="space-y-3">

@@ -1,20 +1,31 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
-import { HiOutlinePlus, HiOutlineArrowUturnLeft, HiOutlineEye, HiOutlineXMark, HiOutlineCheckCircle, HiOutlineTrash } from 'react-icons/hi2';
+import { HiOutlinePlus, HiOutlineArrowUturnLeft, HiOutlineEye, HiOutlineXMark, HiOutlineCheckCircle, HiOutlineTrash, HiOutlineArrowTopRightOnSquare } from 'react-icons/hi2';
 import { fmt, fmtDate, today, startOfMonth, endOfMonth } from './_utils';
 import NumericInput from '../../components/NumericInput';
+import useDocDeepLink from '../../hooks/useDocDeepLink';
+import { sourceLabel, sourceActionLabel, sourceDeepLink } from './sourceDocs';
 
 const EMPTY = { date: today(), description: '', source: 'MANUAL', lines: [{ account: '', debit: 0, credit: 0, description: '' }, { account: '', debit: 0, credit: 0, description: '' }] };
 
 export default function JournalEntries() {
+  const navigate = useNavigate();
   const [list, setList] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [show, setShow] = useState(false);
   const [form, setForm] = useState(EMPTY);
   const [filters, setFilters] = useState({ startDate: startOfMonth(), endDate: endOfMonth(), status: '', q: '' });
   const [viewing, setViewing] = useState(null);
+
+  // Deep-link (?doc=<idAsiento>): abre el asiento aunque no esté en el filtro actual.
+  const openById = async (id) => {
+    try { const r = await api.get(`/journal-entries/${id}`); setViewing(r.data); }
+    catch (e) { toast.error(e.response?.data?.message || 'No se encontró el asiento'); }
+  };
+  useDocDeepLink(openById);
 
   const load = async () => {
     try {
@@ -25,7 +36,7 @@ export default function JournalEntries() {
   useEffect(() => {
     api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setAccounts((r.data || []).filter((a) => a.allowsMovement)));
     load();
-    // eslint-disable-next-line
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const addLine = () => setForm({ ...form, lines: [...form.lines, { account: '', debit: 0, credit: 0, description: '' }] });
@@ -166,8 +177,18 @@ export default function JournalEntries() {
       <Modal isOpen={!!viewing} onClose={() => setViewing(null)} title={`Asiento ${viewing?.number}`} size="xl">
         {viewing && (
           <div>
-            <p className="text-sm"><b>Fecha:</b> {fmtDate(viewing.date)} | <b>Origen:</b> {viewing.source}</p>
-            <p className="text-sm mb-3">{viewing.description}</p>
+            <p className="text-sm"><b>Fecha:</b> {fmtDate(viewing.date)} | <b>Origen:</b> {sourceLabel(viewing)}</p>
+            <p className="text-sm mb-2">{viewing.description}</p>
+            {sourceDeepLink(viewing) ? (
+              <button
+                onClick={() => { const url = sourceDeepLink(viewing); setViewing(null); navigate(url); }}
+                className="mb-3 inline-flex items-center gap-1.5 px-3 py-1.5 text-sm bg-slate-700 text-white rounded-lg"
+              >
+                <HiOutlineArrowTopRightOnSquare className="w-4 h-4" /> {sourceActionLabel(viewing)}
+              </button>
+            ) : (
+              viewing.sourceModel && <p className="mb-3 text-xs text-slate-400">Documento origen: {sourceLabel(viewing)} (sin navegación directa).</p>
+            )}
             <table className="tbl border">
               <thead className="bg-slate-100"><tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Cuenta</th><th className="p-2 text-right">Débito</th><th className="p-2 text-right">Crédito</th></tr></thead>
               <tbody>
