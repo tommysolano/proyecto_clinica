@@ -286,14 +286,10 @@ export default function PurchaseInvoices() {
   };
   // Chip de "¿Qué contiene esta factura?": alterna un tipo de línea.
   //  - Inactivo → se activa y se agrega su primera línea (vacía).
-  //  - Activo → se desactiva y se quitan sus líneas. Si tiene datos, se pide confirmación.
-  //  - No se puede quitar el último tipo activo (la factura necesita al menos uno).
+  //  - Activo → se desactiva y se quitan sus líneas (sin confirmación).
+  //  - Se pueden quitar las 3: si al contabilizar no queda ninguna línea, el submit avisa el error.
   const toggleSection = (t) => {
     if (activeSections.includes(t)) {
-      if (activeSections.length <= 1) return toast.error('La factura debe tener al menos un tipo de línea');
-      const label = LINE_TYPES.find((x) => x.t === t)?.label || 'la sección';
-      const hasData = form.items.some((it) => it.lineType === t && lineHasData(it));
-      if (hasData && !window.confirm(`"${label}" tiene líneas con datos. ¿Quitarla y descartar esas líneas?`)) return;
       setActiveSections((s) => s.filter((x) => x !== t));
       setForm((f) => ({ ...f, items: f.items.filter((it) => it.lineType !== t) }));
       setRowMenuUid(null);
