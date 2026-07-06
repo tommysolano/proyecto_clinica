@@ -8,6 +8,14 @@ import { fmtDate } from '../utils/date';
 import TagEditor from '../components/TagEditor';
 import NumericInput from '../components/NumericInput';
 import SearchableSelect from '../components/SearchableSelect';
+import Cie10Select from '../components/Cie10Select';
+import {
+  ANTECEDENTES_CATEGORIAS,
+  REVISION_SISTEMAS,
+  EXAMEN_REGIONAL,
+  EXAMEN_SISTEMICO,
+  calcIMC,
+} from '../constants/mspCatalogs';
 import {
   HiOutlineArrowLeft,
   HiOutlineUser,
@@ -21,6 +29,7 @@ import {
   HiOutlineArrowDownTray,
   HiOutlineShoppingBag,
   HiOutlinePencilSquare,
+  HiOutlineChevronDown,
 } from 'react-icons/hi2';
 
 const TABS = [
@@ -316,6 +325,9 @@ function FichaTab({ patientId }) {
         tomaMedicamentos: record.tomaMedicamentos,
         tieneAlergias: record.tieneAlergias,
         tieneCirugias: record.tieneCirugias,
+        patologicosPersonales: record.patologicosPersonales || [],
+        patologicosFamiliares: record.patologicosFamiliares || [],
+        datosRelevantes: record.datosRelevantes || '',
       };
       const res = await api.put(`/clinical-records/${patientId}`, payload);
       setRecord(res.data);
@@ -412,6 +424,40 @@ function FichaTab({ patientId }) {
         />
       </div>
 
+      {/* C. Antecedentes patológicos personales (10 categorías MSP) */}
+      <div className="space-y-3 pt-2 border-t border-slate-100">
+        <div>
+          <h3 className="font-semibold text-slate-800">Antecedentes patológicos personales</h3>
+          <p className="text-xs text-slate-400">Marque las presentes y describa. Datos clínico-quirúrgicos, obstétricos y alérgicos relevantes.</p>
+        </div>
+        <MspChecklist
+          catalog={ANTECEDENTES_CATEGORIAS}
+          value={record.patologicosPersonales}
+          onChange={(v) => update('patologicosPersonales', v)}
+        />
+        <Field label="Datos relevantes (clínico-quirúrgicos, obstétricos, alérgicos)">
+          <textarea
+            rows={2}
+            value={record.datosRelevantes || ''}
+            onChange={(e) => update('datosRelevantes', e.target.value)}
+            className="input resize-none"
+          />
+        </Field>
+      </div>
+
+      {/* D. Antecedentes patológicos familiares (10 categorías MSP) */}
+      <div className="space-y-3 pt-2 border-t border-slate-100">
+        <div>
+          <h3 className="font-semibold text-slate-800">Antecedentes patológicos familiares</h3>
+          <p className="text-xs text-slate-400">Marque las presentes en familiares directos y describa.</p>
+        </div>
+        <MspChecklist
+          catalog={ANTECEDENTES_CATEGORIAS}
+          value={record.patologicosFamiliares}
+          onChange={(v) => update('patologicosFamiliares', v)}
+        />
+      </div>
+
       <div className="flex justify-end pt-3 border-t border-slate-100">
         <button
           onClick={save}
@@ -463,6 +509,152 @@ function YesNo({ label, item, onChange }) {
           placeholder="Detalle (cuáles, cuándo, etc.)"
           className="input mt-3 resize-none"
         />
+      )}
+    </div>
+  );
+}
+
+// ─────────────── Componentes MSP compartidos ───────────────
+// Rejilla de casillas del formulario MSP (antecedentes C/D, revisión de sistemas
+// G, examen físico H). `value` es un array [{ key, marked, detail }]; solo se
+// emiten las casillas marcadas o con detalle. `markLabel` describe qué significa
+// marcar (p.ej. "presente" o "patología").
+function MspChecklist({ catalog, value = [], onChange, cols = 'md:grid-cols-3 lg:grid-cols-5' }) {
+  const byKey = Object.fromEntries((value || []).map((c) => [c.key, c]));
+  const emit = (nextByKey) => {
+    const arr = catalog
+      .map((cat) => nextByKey[cat.key])
+      .filter((c) => c && (c.marked || (c.detail && c.detail.trim())));
+    onChange(arr);
+  };
+  const toggle = (key) => {
+    const cur = byKey[key] || { key, marked: false, detail: '' };
+    emit({ ...byKey, [key]: { ...cur, key, marked: !cur.marked } });
+  };
+  const setDetail = (key, detail) => {
+    const cur = byKey[key] || { key, marked: false, detail: '' };
+    emit({ ...byKey, [key]: { ...cur, key, detail } });
+  };
+  return (
+    <div className={`grid grid-cols-2 ${cols} gap-2`}>
+      {catalog.map((cat) => {
+        const cur = byKey[cat.key];
+        const marked = !!cur?.marked;
+        return (
+          <div
+            key={cat.key}
+            className={`rounded-lg border p-2 transition-colors ${
+              marked ? 'border-emerald-300 bg-emerald-50' : 'border-slate-200 bg-white'
+            }`}
+          >
+            <label className="flex items-center gap-2 cursor-pointer text-xs font-medium text-slate-700">
+              <input
+                type="checkbox"
+                checked={marked}
+                onChange={() => toggle(cat.key)}
+                className="accent-emerald-600 cursor-pointer"
+              />
+              <span>{cat.label}</span>
+            </label>
+            {marked && (
+              <input
+                type="text"
+                value={cur?.detail || ''}
+                onChange={(e) => setDetail(cat.key, e.target.value)}
+                placeholder="Describa…"
+                className="input mt-2 text-xs py-1"
+              />
+            )}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Sección plegable (para mantener el seguimiento ágil: examen físico, revisión,
+// etc., se abren solo cuando el médico los necesita).
+function Collapsible({ title, hint, defaultOpen = false, children }) {
+  const [open, setOpen] = useState(defaultOpen);
+  return (
+    <div className="border border-slate-200 rounded-xl overflow-hidden">
+      <button
+        type="button"
+        onClick={() => setOpen((o) => !o)}
+        className="w-full flex items-center justify-between px-4 py-3 bg-slate-100 hover:bg-slate-200 cursor-pointer border-none text-left transition-colors"
+      >
+        <span className="text-sm font-semibold text-slate-700">
+          {title}
+          {hint && <span className="ml-2 text-xs font-normal text-slate-400">{hint}</span>}
+        </span>
+        <HiOutlineChevronDown className={`w-5 h-5 text-slate-500 transition-transform ${open ? 'rotate-180' : ''}`} />
+      </button>
+      {open && <div className="p-4 bg-white">{children}</div>}
+    </div>
+  );
+}
+
+// I. Editor de diagnósticos con CIE-10 (hasta 6). Cada fila: descripción,
+// buscador CIE-10, y marcas PRE (presuntivo) / DEF (definitivo).
+function DiagnosticosEditor({ value = [], onChange }) {
+  const rows = value.length ? value : [];
+  const update = (idx, patch) => onChange(rows.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  const add = () =>
+    onChange([...rows, { descripcion: '', cie: '', cieDescripcion: '', presuntivo: false, definitivo: false }]);
+  const remove = (idx) => onChange(rows.filter((_, i) => i !== idx));
+  return (
+    <div className="space-y-2">
+      {rows.length === 0 && (
+        <p className="text-xs text-slate-400">Sin diagnósticos. Agregue al menos uno para cumplir el formato.</p>
+      )}
+      {rows.map((r, idx) => (
+        <div key={idx} className="grid grid-cols-1 md:grid-cols-12 gap-2 items-start bg-slate-50 rounded-lg p-2">
+          <div className="md:col-span-5">
+            <input
+              type="text"
+              value={r.descripcion || ''}
+              onChange={(e) => update(idx, { descripcion: e.target.value })}
+              placeholder={`Diagnóstico ${idx + 1}`}
+              className="input text-xs"
+            />
+          </div>
+          <div className="md:col-span-5">
+            <Cie10Select
+              code={r.cie}
+              description={r.cieDescripcion}
+              onChange={({ code, description }) =>
+                update(idx, {
+                  cie: code,
+                  cieDescripcion: description,
+                  // Si aún no hay descripción escrita, usa la del CIE seleccionado.
+                  descripcion: r.descripcion || description,
+                })
+              }
+            />
+          </div>
+          <div className="md:col-span-2 flex items-center gap-2 justify-between">
+            <label className="flex items-center gap-1 text-[11px] text-slate-600 cursor-pointer" title="Presuntivo">
+              <input type="checkbox" checked={!!r.presuntivo} onChange={(e) => update(idx, { presuntivo: e.target.checked })} className="accent-amber-500 cursor-pointer" />
+              PRE
+            </label>
+            <label className="flex items-center gap-1 text-[11px] text-slate-600 cursor-pointer" title="Definitivo">
+              <input type="checkbox" checked={!!r.definitivo} onChange={(e) => update(idx, { definitivo: e.target.checked })} className="accent-emerald-600 cursor-pointer" />
+              DEF
+            </label>
+            <button type="button" onClick={() => remove(idx)} className="text-slate-400 hover:text-red-600 bg-transparent border-none cursor-pointer p-0">
+              <HiOutlineTrash className="w-4 h-4" />
+            </button>
+          </div>
+        </div>
+      ))}
+      {rows.length < 6 && (
+        <button
+          type="button"
+          onClick={add}
+          className="inline-flex items-center gap-1 text-xs text-emerald-700 hover:text-emerald-800 bg-transparent border-none cursor-pointer"
+        >
+          <HiOutlinePlus className="w-4 h-4" /> Agregar diagnóstico
+        </button>
       )}
     </div>
   );
@@ -708,13 +900,20 @@ function SeguimientosTab({ patientId, appointmentId }) {
   });
   const emptyForm = () => ({
     fecha: new Date().toISOString().substring(0, 10),
+    tipoConsulta: '',        // B: primera | subsecuente
     descripcion: '',
+    enfermedadActual: '',    // E
     estudioSintomas: '',
     observaciones: '',
+    planTratamiento: '',     // J
     recetaItems: [],       // solo insumos/medicamentos
     derivacionItems: [],   // servicios/programas
+    revisionSistemas: [],  // G
+    examenFisico: { regional: [], sistemico: [], hallazgos: '' }, // H
+    diagnosticos: [],      // I
     opticaRx: emptyOpticaRx(),
     vitalSigns: {
+      hora: '',
       temperature: '',
       bloodPressure: '',
       heartRate: '',
@@ -722,6 +921,8 @@ function SeguimientosTab({ patientId, appointmentId }) {
       oxygenSaturation: '',
       weight: '',
       height: '',
+      abdominalPerimeter: '',
+      capillaryHemoglobin: '',
       glucose: '',
     },
   });
@@ -912,6 +1113,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
     try {
       const vs = form.vitalSigns || {};
       const vitalSigns = {
+        hora: vs.hora || '',
         temperature: vs.temperature === '' ? null : Number(vs.temperature),
         bloodPressure: vs.bloodPressure || '',
         heartRate: vs.heartRate === '' ? null : Number(vs.heartRate),
@@ -919,6 +1121,8 @@ function SeguimientosTab({ patientId, appointmentId }) {
         oxygenSaturation: vs.oxygenSaturation === '' ? null : Number(vs.oxygenSaturation),
         weight: vs.weight === '' ? null : Number(vs.weight),
         height: vs.height === '' ? null : Number(vs.height),
+        abdominalPerimeter: vs.abdominalPerimeter === '' ? null : Number(vs.abdominalPerimeter),
+        capillaryHemoglobin: vs.capillaryHemoglobin === '' ? null : Number(vs.capillaryHemoglobin),
         glucose: vs.glucose === '' ? null : Number(vs.glucose),
       };
       const payload = {
@@ -1032,6 +1236,41 @@ function SeguimientosTab({ patientId, appointmentId }) {
             required
           />
         </Field>
+        {/* B. Primera vez / subsecuente */}
+        <div className="md:col-span-3">
+          <label className="text-sm font-medium text-slate-700 block mb-1.5">Tipo de consulta</label>
+          <div className="flex gap-2">
+            {[
+              { v: 'primera', l: 'Primera' },
+              { v: 'subsecuente', l: 'Subsecuente' },
+            ].map((opt) => (
+              <button
+                key={opt.v}
+                type="button"
+                onClick={() => setForm((f) => ({ ...f, tipoConsulta: f.tipoConsulta === opt.v ? '' : opt.v }))}
+                className={`px-4 py-1.5 rounded-lg text-xs font-medium cursor-pointer border ${
+                  form.tipoConsulta === opt.v
+                    ? 'bg-emerald-600 text-white border-emerald-600'
+                    : 'bg-white text-slate-600 border-slate-200'
+                }`}
+              >
+                {opt.l}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* E. Enfermedad o problema actual */}
+        <Field label="Enfermedad o problema actual" className="md:col-span-3">
+          <textarea
+            rows={2}
+            value={form.enfermedadActual}
+            onChange={(e) => setForm((f) => ({ ...f, enfermedadActual: e.target.value }))}
+            placeholder="Cronología, localización, características, intensidad, frecuencia, factores agravantes…"
+            className="input resize-none"
+          />
+        </Field>
+
         <Field label="Estudio o síntomas" className="md:col-span-3">
           <textarea
             rows={2}
@@ -1047,6 +1286,19 @@ function SeguimientosTab({ patientId, appointmentId }) {
             Signos vitales
           </label>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-2 bg-white rounded-lg border border-slate-200 p-3">
+            <Field label="Hora">
+              <input
+                type="time"
+                value={form.vitalSigns.hora}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    vitalSigns: { ...f.vitalSigns, hora: e.target.value },
+                  }))
+                }
+                className="input text-sm"
+              />
+            </Field>
             <Field label="T. Arterial">
               <input
                 type="text"
@@ -1155,7 +1407,96 @@ function SeguimientosTab({ patientId, appointmentId }) {
                 className="input text-sm"
               />
             </Field>
+            <Field label="Perímetro abdominal (cm)">
+              <NumericInput
+                step="0.1"
+                min={0}
+                value={form.vitalSigns.abdominalPerimeter}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    vitalSigns: { ...f.vitalSigns, abdominalPerimeter: e.target.value },
+                  }))
+                }
+                className="input text-sm"
+              />
+            </Field>
+            <Field label="Hemoglobina cap. (g/dL)">
+              <NumericInput
+                step="0.1"
+                min={0}
+                value={form.vitalSigns.capillaryHemoglobin}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    vitalSigns: { ...f.vitalSigns, capillaryHemoglobin: e.target.value },
+                  }))
+                }
+                className="input text-sm"
+              />
+            </Field>
+            <Field label="IMC (Kg/m²)">
+              <input
+                type="text"
+                readOnly
+                value={calcIMC(form.vitalSigns.weight, form.vitalSigns.height) || '—'}
+                className="input text-sm bg-slate-50 text-slate-500"
+                title="Calculado con peso y talla"
+              />
+            </Field>
           </div>
+        </div>
+
+        {/* G. Revisión actual de órganos y sistemas (colapsable) */}
+        <div className="md:col-span-3">
+          <Collapsible title="Revisión de órganos y sistemas" hint="marque los que presenten patología">
+            <MspChecklist
+              catalog={REVISION_SISTEMAS}
+              value={form.revisionSistemas}
+              onChange={(v) => setForm((f) => ({ ...f, revisionSistemas: v }))}
+            />
+          </Collapsible>
+        </div>
+
+        {/* H. Examen físico regional + sistémico (colapsable) */}
+        <div className="md:col-span-3">
+          <Collapsible title="Examen físico" hint="regional y sistémico">
+            <div className="space-y-4">
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Regional</p>
+                <MspChecklist
+                  catalog={EXAMEN_REGIONAL}
+                  value={form.examenFisico.regional}
+                  onChange={(v) => setForm((f) => ({ ...f, examenFisico: { ...f.examenFisico, regional: v } }))}
+                />
+              </div>
+              <div>
+                <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Sistémico</p>
+                <MspChecklist
+                  catalog={EXAMEN_SISTEMICO}
+                  value={form.examenFisico.sistemico}
+                  onChange={(v) => setForm((f) => ({ ...f, examenFisico: { ...f.examenFisico, sistemico: v } }))}
+                />
+              </div>
+              <Field label="Hallazgos del examen físico">
+                <textarea
+                  rows={2}
+                  value={form.examenFisico.hallazgos}
+                  onChange={(e) => setForm((f) => ({ ...f, examenFisico: { ...f.examenFisico, hallazgos: e.target.value } }))}
+                  className="input resize-none"
+                />
+              </Field>
+            </div>
+          </Collapsible>
+        </div>
+
+        {/* I. Diagnósticos con CIE-10 */}
+        <div className="md:col-span-3">
+          <label className="text-sm font-medium text-slate-700 block mb-2">Diagnósticos (CIE-10)</label>
+          <DiagnosticosEditor
+            value={form.diagnosticos}
+            onChange={(v) => setForm((f) => ({ ...f, diagnosticos: v }))}
+          />
         </div>
 
         <ItemsTable
@@ -1182,6 +1523,17 @@ function SeguimientosTab({ patientId, appointmentId }) {
           onToggleComponent={(idx, comp, checked) => toggleComponent('derivacionItems', idx, comp, checked)}
           onSetComponentQty={(idx, pid, qty) => setComponentQty('derivacionItems', idx, pid, qty)}
         />
+
+        {/* J. Plan de tratamiento (narrado; la receta e insumos van arriba) */}
+        <Field label="Plan de tratamiento" className="md:col-span-3">
+          <textarea
+            rows={2}
+            value={form.planTratamiento}
+            onChange={(e) => setForm((f) => ({ ...f, planTratamiento: e.target.value }))}
+            placeholder="Diagnóstico, terapéutico y educacional"
+            className="input resize-none"
+          />
+        </Field>
 
         <Field label="Observaciones" className="md:col-span-3">
           <textarea
@@ -1352,10 +1704,31 @@ function SeguimientosTab({ patientId, appointmentId }) {
                     {fu.kind === 'enfermeria' && (
                       <span className="inline-block mb-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-700">Enfermería</span>
                     )}
+                    {fu.tipoConsulta && (
+                      <span className="inline-block mb-1 ml-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600 capitalize">{fu.tipoConsulta}</span>
+                    )}
                     <div className="font-medium">{fu.descripcion || fu.motivoConsulta}</div>
+                    {fu.enfermedadActual && (
+                      <div className="mt-1 text-xs text-slate-600">
+                        <b>Enfermedad actual:</b> {fu.enfermedadActual}
+                      </div>
+                    )}
                     {fu.estudioSintomas && (
                       <div className="mt-1 text-xs text-slate-600">
                         <b>Estudio/síntomas:</b> {fu.estudioSintomas}
+                      </div>
+                    )}
+                    {Array.isArray(fu.diagnosticos) && fu.diagnosticos.length > 0 && (
+                      <div className="mt-2 bg-rose-50 border border-rose-200 rounded p-2">
+                        <p className="text-[11px] font-semibold text-rose-600 uppercase mb-1">Diagnósticos</p>
+                        <ul className="text-xs text-slate-700 space-y-0.5">
+                          {fu.diagnosticos.map((d, i) => (
+                            <li key={i}>
+                              {d.cie && <span className="font-mono font-semibold text-rose-700">{d.cie}</span>} {d.descripcion || d.cieDescripcion}
+                              {d.definitivo ? ' · DEF' : d.presuntivo ? ' · PRE' : ''}
+                            </li>
+                          ))}
+                        </ul>
                       </div>
                     )}
                     {Array.isArray(fu.recetaItems) && fu.recetaItems.length > 0 && (() => {
@@ -1403,7 +1776,15 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         {vs.oxygenSaturation && <span>SatO₂: {vs.oxygenSaturation}%</span>}
                         {vs.weight && <span>Peso: {vs.weight}kg</span>}
                         {vs.height && <span>Talla: {vs.height}cm</span>}
+                        {calcIMC(vs.weight, vs.height) && <span>IMC: {calcIMC(vs.weight, vs.height)}</span>}
+                        {vs.abdominalPerimeter && <span>P.Abd: {vs.abdominalPerimeter}cm</span>}
+                        {vs.capillaryHemoglobin && <span>Hb: {vs.capillaryHemoglobin}g/dL</span>}
                         {vs.glucose && <span>Glu: {vs.glucose}mg/dL</span>}
+                      </div>
+                    )}
+                    {fu.planTratamiento && (
+                      <div className="mt-2 text-xs text-slate-600">
+                        <b>Plan de tratamiento:</b> {fu.planTratamiento}
                       </div>
                     )}
                     {fu.observaciones && (
