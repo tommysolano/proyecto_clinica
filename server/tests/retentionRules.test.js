@@ -77,6 +77,17 @@ test('seed idempotente: segunda vez no crea duplicados', async () => {
   assert.equal(second.payload.existing, first.payload.created);
 });
 
+test('list auto-siembra el catálogo cuando la clínica no tiene ninguna regla', async () => {
+  const { clinicId, userId } = await setup();
+  assert.equal(await RetentionRule.countDocuments({ clinic: clinicId }), 0, 'arranca sin reglas');
+  const r = await H.runController(ctrl.list, H.mockReq(clinicId, userId, {}, { query: { active: 'true' } }));
+  assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
+  assert.ok(r.payload.length > 0, 'devuelve reglas reales sembradas');
+  // Trae códigos concretos seleccionables de ambos tipos (no solo "Renta"/"IVA").
+  assert.ok(r.payload.some((x) => x.type === 'RENTA' && x.code && x.rate >= 0));
+  assert.ok(r.payload.some((x) => x.type === 'IVA' && x.code && x.rate >= 0));
+});
+
 test('no permite dos reglas ACTIVAS del mismo tipo+código con vigencia solapada', async () => {
   const { clinicId, userId } = await setup();
   const a = await H.runController(ctrl.create, H.mockReq(clinicId, userId, { type: 'RENTA', code: '312', rate: 1.75, baseType: 'SUBTOTAL_TOTAL', validFrom: '2024-01-01', validTo: '2024-12-31' }));

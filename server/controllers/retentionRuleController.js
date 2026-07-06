@@ -56,6 +56,14 @@ async function assertNoOverlap(clinicId, data, excludeId) {
 /** GET /retention-rules?type=&active= — lista el catálogo de la clínica. */
 exports.list = async (req, res) => {
   try {
+    // Auto-reparación: si la clínica no tiene NINGUNA regla (nunca se sembró el catálogo),
+    // se siembra el conjunto base para que el selector de retenciones en compras no aparezca
+    // vacío. Es idempotente y respeta ediciones (solo actúa cuando no existe ninguna regla).
+    const anyExists = await RetentionRule.exists({ clinic: req.clinicId });
+    if (!anyExists) {
+      try { await seedRetentionRules(req.clinicId, { createdBy: req.user?._id || null }); }
+      catch { /* si falla el seed, no se bloquea la lista */ }
+    }
     const filter = { clinic: req.clinicId };
     if (req.query.type) filter.type = req.query.type;
     if (req.query.active === 'true') filter.active = true;

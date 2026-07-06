@@ -16,6 +16,9 @@ const norm = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toL
  *  - getLabel / getValue / getSearchText: accessors (defaults razonables)
  *  - placeholder, searchPlaceholder, disabled, allowClear, required, className, size('sm'|'md')
  *  - renderOption: (opt) => node  (opcional, para opciones enriquecidas)
+ *  - menuMinWidth: ancho mínimo del panel en px (útil dentro de celdas de tabla angostas;
+ *    el panel nunca es más angosto que esto ni se sale de la ventana). Default 0 = ancho del trigger.
+ *  - wrapOptions: si true, las opciones largas se muestran en varias líneas (no se truncan).
  */
 export default function SearchableSelect({
   options = [],
@@ -32,6 +35,8 @@ export default function SearchableSelect({
   className = '',
   renderOption,
   size = 'md',
+  menuMinWidth = 0,
+  wrapOptions = false,
 }) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
@@ -59,9 +64,15 @@ export default function SearchableSelect({
     const spaceBelow = window.innerHeight - r.bottom;
     const wanted = Math.min(320, 52 + Math.max(1, filtered.length) * 34);
     const openUp = spaceBelow < wanted && r.top > spaceBelow;
+    // El panel nunca es más angosto que el trigger ni que `menuMinWidth`, y se ajusta
+    // para no salirse de la ventana (se reubica a la izquierda si haría overflow).
+    const margin = 8;
+    const width = Math.min(Math.max(r.width, menuMinWidth || 0), window.innerWidth - margin * 2);
+    let left = r.left;
+    if (left + width > window.innerWidth - margin) left = Math.max(margin, window.innerWidth - margin - width);
     setCoords({
-      left: r.left,
-      width: r.width,
+      left,
+      width,
       top: openUp ? undefined : r.bottom + 4,
       bottom: openUp ? window.innerHeight - r.top + 4 : undefined,
       maxH: Math.max(160, (openUp ? r.top : spaceBelow) - 12),
@@ -150,9 +161,9 @@ export default function SearchableSelect({
                   key={v || i}
                   onMouseEnter={() => setHighlight(i)}
                   onClick={() => choose(o)}
-                  className={`w-full text-left px-3 py-2 text-sm flex items-center justify-between gap-2 ${i === highlight ? 'bg-emerald-50' : ''} ${isSel ? 'text-emerald-700 font-medium' : 'text-slate-700'}`}
+                  className={`w-full text-left px-3 py-2 text-sm flex ${wrapOptions ? 'items-start' : 'items-center'} justify-between gap-2 ${i === highlight ? 'bg-emerald-50' : ''} ${isSel ? 'text-emerald-700 font-medium' : 'text-slate-700'}`}
                 >
-                  <span className="truncate">{renderOption ? renderOption(o) : getLabel(o)}</span>
+                  <span className={wrapOptions ? 'break-words min-w-0' : 'truncate'}>{renderOption ? renderOption(o) : getLabel(o)}</span>
                   {isSel && <HiOutlineCheck className="w-4 h-4 shrink-0 text-emerald-600" />}
                 </button>
               );

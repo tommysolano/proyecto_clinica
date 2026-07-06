@@ -190,11 +190,16 @@ export default function PurchaseInvoices() {
     if (f.costCenter) it.costCenter = f.costCenter;
     return { ...f, items: [...f.items, it] };
   });
-  // Agrega una retención (regla del catálogo) a una línea. Evita duplicar type+code.
+  // Agrega una retención (regla del catálogo) a una línea. Evita duplicar type+code y no
+  // permite retención de IVA en una línea sin IVA (la base sería 0). El backend recalcula.
   const addLineRetention = (u, ruleId) => {
     if (!ruleId) return;
     const rule = retentionRules.find((r) => String(r._id) === String(ruleId));
     if (!rule) return;
+    const line = form.items.find((it) => it._uid === u);
+    if (rule.type === 'IVA' && !(Number(line?.ivaRate) > 0)) {
+      return toast.error('No se puede aplicar retención de IVA a una línea sin IVA');
+    }
     setForm((f) => ({
       ...f,
       items: f.items.map((it) => {
@@ -266,19 +271,36 @@ export default function PurchaseInvoices() {
   const invItems = form.items.filter((it) => it.lineType === 'INVENTARIO');
   const afItems = form.items.filter((it) => it.lineType === 'ACTIVO_FIJO');
 
-  // Una sección es visible si el usuario la activó o si ya tiene líneas (p.ej. al editar/importar).
+  // La visibilidad de cada sección refleja EXACTAMENTE la intención del usuario (los chips).
+  // Al desactivar un tipo se eliminan sus líneas, así que `activeSections` es la única fuente.
   const visibleSections = {
-    GASTO: activeSections.includes('GASTO') || gastoItems.length > 0,
-    INVENTARIO: activeSections.includes('INVENTARIO') || invItems.length > 0,
-    ACTIVO_FIJO: activeSections.includes('ACTIVO_FIJO') || afItems.length > 0,
+    GASTO: activeSections.includes('GASTO'),
+    INVENTARIO: activeSections.includes('INVENTARIO'),
+    ACTIVO_FIJO: activeSections.includes('ACTIVO_FIJO'),
   };
-  // Chip de "¿Qué contiene esta factura?": activa la sección (y agrega su primera línea) o,
-  // si está activa y sin líneas, la oculta. Con líneas no se puede ocultar (no se pierde nada).
+  // ¿La línea tiene datos reales (no es un placeholder vacío recién agregado)?
+  const lineHasData = (it) => {
+    if (it.lineType === 'INVENTARIO') return !!it.product || lineBase(it) > 0;
+    if (it.lineType === 'ACTIVO_FIJO') return !!(it.fixedAsset?.category || it.fixedAsset?.name || (it.description || '').trim()) || lineBase(it) > 0;
+    return !!it.account || (it.accountSplits || []).length > 0 || (it.description || '').trim() !== '' || lineBase(it) > 0; // GASTO
+  };
+  // Chip de "¿Qué contiene esta factura?": alterna un tipo de línea.
+  //  - Inactivo → se activa y se agrega su primera línea (vacía).
+  //  - Activo → se desactiva y se quitan sus líneas. Si tiene datos, se pide confirmación.
+  //  - No se puede quitar el último tipo activo (la factura necesita al menos uno).
   const toggleSection = (t) => {
-    const has = form.items.some((it) => it.lineType === t);
-    const on = activeSections.includes(t) || has;
-    if (on) { if (!has) setActiveSections((s) => s.filter((x) => x !== t)); }
-    else { setActiveSections((s) => (s.includes(t) ? s : [...s, t])); addItem(t); }
+    if (activeSections.includes(t)) {
+      if (activeSections.length <= 1) return toast.error('La factura debe tener al menos un tipo de línea');
+      const label = LINE_TYPES.find((x) => x.t === t)?.label || 'la sección';
+      const hasData = form.items.some((it) => it.lineType === t && lineHasData(it));
+      if (hasData && !window.confirm(`"${label}" tiene líneas con datos. ¿Quitarla y descartar esas líneas?`)) return;
+      setActiveSections((s) => s.filter((x) => x !== t));
+      setForm((f) => ({ ...f, items: f.items.filter((it) => it.lineType !== t) }));
+      setRowMenuUid(null);
+    } else {
+      setActiveSections((s) => [...s, t]);
+      addItem(t); // primera línea (vacía) para que la sección sea operativa
+    }
   };
 
   // Retenciones de una línea normalizadas a arreglo (soporta el singular legacy).
@@ -315,11 +337,19 @@ export default function PurchaseInvoices() {
     return (form.retentions || []).map((r) => ({ type: r.type, code: r.code, description: r.description || '', rate: r.percentage || 0, base: r.baseAmount || 0, amount: r.amount || 0, account: r.account }));
   })();
 
-  // Retenciones por línea (varias): chips de las seleccionadas + selector para agregar.
+  // Etiqueta de una regla de retención: "312 · Renta · 1.75% · Compra de bienes muebles".
+  const retentionLabel = (r) => `${r.code} · ${r.type === 'IVA' ? 'IVA' : 'Renta'} · ${r.rate}% · ${r.description || ''}`.trim();
+  // Retenciones por línea (varias): chips de las seleccionadas + buscador de reglas del catálogo.
   const retCell = (it) => {
     const rets = lineRetList(it);
+    const lineIva = Number(it.ivaRate) > 0;
+    const selectedKeys = new Set(rets.map((r) => `${r.type}|${r.code}`));
+    // Solo reglas reales del catálogo; se ocultan las ya elegidas y las de IVA si la línea no tiene IVA.
+    const opts = retentionRules
+      .filter((r) => (r.type === 'IVA' ? lineIva : true))
+      .filter((r) => !selectedKeys.has(`${r.type}|${r.code}`));
     return (
-      <div className="min-w-[170px] space-y-1">
+      <div className="min-w-[180px] space-y-1">
         {rets.map((r, i) => {
           const info = retInfoOne(it, r);
           return (
@@ -329,15 +359,22 @@ export default function PurchaseInvoices() {
             </span>
           );
         })}
-        <select value="" onChange={(e) => { addLineRetention(it._uid, e.target.value); e.target.value = ''; }} className={`${inputCls} text-xs`}>
-          <option value="">+ Retención…</option>
-          <optgroup label="Renta">
-            {retentionRules.filter((r) => r.type === 'RENTA').map((r) => <option key={r._id} value={r._id}>{r.code} · {r.rate}% · {r.description}</option>)}
-          </optgroup>
-          <optgroup label="IVA">
-            {retentionRules.filter((r) => r.type === 'IVA').map((r) => <option key={r._id} value={r._id}>{r.code} · {r.rate}% · {r.description}</option>)}
-          </optgroup>
-        </select>
+        {retentionRules.length === 0 ? (
+          <span className="text-[11px] text-slate-400 italic">Catálogo de retenciones vacío</span>
+        ) : (
+          <SearchableSelect
+            options={opts}
+            value=""
+            onChange={(v) => addLineRetention(it._uid, v)}
+            getLabel={retentionLabel}
+            getSearchText={(r) => `${r.code} ${r.type} ${r.rate} ${r.description || ''}`}
+            placeholder="+ Agregar retención…"
+            searchPlaceholder="Buscar código o concepto SRI…"
+            size="sm"
+            menuMinWidth={320}
+            wrapOptions
+          />
+        )}
       </div>
     );
   };
@@ -364,13 +401,9 @@ export default function PurchaseInvoices() {
     // El N° de comprobante ahora es un solo campo (001-001-000000123): exige el secuencial
     // salvo que la factura ya traiga una serie (documentos importados/editados).
     if (!form.serie && !(form.secuencial || '').trim()) return toast.error('Ingresa el N° de comprobante (formato 001-001-000000123)');
-    // Ignora líneas de gasto totalmente vacías (p.ej. la línea inicial sugerida que no se usó)
-    // para no bloquear facturas que terminaron siendo solo de producto o activo fijo.
-    const cleanItems = form.items.filter((it) => {
-      if (it.lineType !== 'GASTO') return true;
-      const hasSplits = (it.accountSplits || []).length > 0;
-      return it.account || hasSplits || (it.description || '').trim() || lineBase(it) > 0;
-    });
+    // Ignora líneas placeholder totalmente vacías (p.ej. la línea inicial de una sección
+    // recién activada que no se llegó a usar) para no bloquear el guardado.
+    const cleanItems = form.items.filter(lineHasData);
     if (!cleanItems.length) return toast.error('Agrega al menos una línea (producto, gasto o activo fijo)');
     for (const it of cleanItems) {
       if (it.lineType === 'INVENTARIO' && !it.product) return toast.error('En productos/inventario, selecciona el producto en cada línea');
@@ -482,8 +515,16 @@ export default function PurchaseInvoices() {
       });
       if (mode === 'edit') { setEditId(p._id); setAuthorizeId(null); }
       else { setAuthorizeId(p._id); setEditId(null); }
-      // Muestra solo las secciones que la factura realmente trae (o Gasto por defecto).
-      const loadedTypes = [...new Set((d.items || []).map((it) => it.lineType || (it.product ? 'INVENTARIO' : (it.fixedAsset?.category || it.fixedAsset?.name ? 'ACTIVO_FIJO' : 'GASTO'))))];
+      // Activa solo las secciones cuyas líneas traen datos reales (no placeholders vacíos).
+      const rawType = (it) => it.lineType || (it.product ? 'INVENTARIO' : ((it.fixedAsset?.category || it.fixedAsset?.name) ? 'ACTIVO_FIJO' : 'GASTO'));
+      const rawHasData = (it) => {
+        const value = Number(it.subtotal) || ((Number(it.quantity) || 0) * (Number(it.unitPrice) || 0) - (Number(it.discount) || 0));
+        const lt = rawType(it);
+        if (lt === 'INVENTARIO') return !!it.product || value > 0;
+        if (lt === 'ACTIVO_FIJO') return !!(it.fixedAsset?.category || it.fixedAsset?.name || (it.description || '').trim()) || value > 0;
+        return !!it.account || (it.accountSplits || []).length > 0 || (it.description || '').trim() !== '' || value > 0;
+      };
+      const loadedTypes = [...new Set((d.items || []).filter(rawHasData).map(rawType))];
       setActiveSections(loadedTypes.length ? loadedTypes : ['GASTO']);
       setRowMenuUid(null);
       setShowAdvanced(!!(d.autorizacion || d.paymentMethodSri || d.claveAcceso));
@@ -753,17 +794,16 @@ export default function PurchaseInvoices() {
               <span className="text-sm font-semibold text-slate-700 mr-1">¿Qué contiene esta factura?</span>
               {LINE_TYPES.map(({ t, label, icon: Icon }) => {
                 const on = visibleSections[t];
-                const has = form.items.some((it) => it.lineType === t);
                 return (
                   <button type="button" key={t} onClick={() => toggleSection(t)}
-                    title={on ? (has ? 'Tiene líneas: elimínalas para ocultar la sección' : 'Ocultar sección') : 'Agregar este tipo de línea'}
+                    title={on ? 'Clic para quitar este tipo de línea' : 'Clic para agregar este tipo de línea'}
                     className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-sm border transition ${on ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200 hover:border-emerald-300 hover:text-emerald-700'}`}>
                     {Icon && <Icon className="w-4 h-4" />} {label} {on && <HiOutlineCheck className="w-3.5 h-3.5" />}
                   </button>
                 );
               })}
             </div>
-            <p className="text-[11px] text-slate-400 mt-2">Activa solo lo que trae la factura. Puedes combinar varias para una factura mixta.</p>
+            <p className="text-[11px] text-slate-400 mt-2">Activa solo lo que trae la factura; toca de nuevo un tipo para quitarlo. Puedes combinar varios para una factura mixta.</p>
           </div>
 
           {/* ── Productos / Inventario (solo si aplica) ── */}
@@ -789,7 +829,7 @@ export default function PurchaseInvoices() {
                         <tr key={it._uid} className="border-t border-slate-100 align-top">
                           <td className="py-1.5 pr-2 min-w-[200px]">
                             <div className="flex items-center gap-1.5">
-                              <div className="flex-1 min-w-0"><SearchableSelect options={products} value={it.product} onChange={(v) => onPickProduct(it._uid, v)} getLabel={(p) => p.name} getSearchText={(p) => `${p.name} ${p.code}`} placeholder="Selecciona producto…" searchPlaceholder="Buscar producto…" allowClear size="sm" /></div>
+                              <div className="flex-1 min-w-0"><SearchableSelect options={products} value={it.product} onChange={(v) => onPickProduct(it._uid, v)} getLabel={(p) => p.name} getSearchText={(p) => `${p.name} ${p.code || ''}`} renderOption={(p) => (<span className="block">{p.name}{p.code ? <span className="block text-[11px] text-slate-400 font-mono">{p.code}</span> : null}</span>)} placeholder="Selecciona producto…" searchPlaceholder="Buscar producto…" allowClear size="sm" menuMinWidth={340} wrapOptions /></div>
                               <button type="button" onClick={() => setNewProductItemUid(it._uid)} title="Crear producto nuevo" className="shrink-0 p-1.5 rounded-lg border border-emerald-200 text-emerald-700 hover:bg-emerald-50 bg-white"><HiOutlinePlus className="w-4 h-4" /></button>
                             </div>
                             {missing && <div className="text-[11px] text-rose-600 flex items-center gap-1 mt-1"><HiOutlineExclamationTriangle className="w-3.5 h-3.5" /> {cat ? 'La categoría del producto no tiene cuenta de inventario' : 'El producto no tiene categoría contable'}</div>}
