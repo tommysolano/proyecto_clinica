@@ -5,173 +5,174 @@ import shiluvLogo from '../Shiluv-logo-4.png';
 import {
   HiOutlineHome,
   HiOutlineUsers,
-  HiOutlineFunnel,
   HiOutlineCalendarDays,
-  HiOutlineClipboardDocumentList,
-  HiOutlineCalendar,
-  HiOutlineCube,
+  HiOutlineHeart,
   HiOutlineShoppingCart,
-  HiOutlineDocumentText,
+  HiOutlineCube,
+  HiOutlineTruck,
+  HiOutlineCurrencyDollar,
+  HiOutlineBanknotes,
+  HiOutlineBuildingLibrary,
+  HiOutlineCreditCard,
+  HiOutlineUserGroup,
+  HiOutlineCalculator,
+  HiOutlineMegaphone,
+  HiOutlineDocumentChartBar,
+  HiOutlineCog6Tooth,
+  HiOutlineUserCircle,
   HiOutlineArrowRightOnRectangle,
   HiOutlineBars3,
   HiOutlineXMark,
-  HiOutlineUserCircle,
-  HiOutlineBuildingOffice2,
-  HiOutlineUserGroup,
-  HiOutlineCog6Tooth,
-  HiOutlineSparkles,
-  HiOutlineMegaphone,
-  HiOutlineArrowsRightLeft,
-  HiOutlineHeart,
-  HiOutlineDocumentDuplicate,
-  HiOutlineTag,
-  HiOutlineNoSymbol,
-  HiOutlineBuildingStorefront,
-  HiOutlineCalculator,
-  HiOutlineBookOpen,
-  HiOutlineBanknotes,
-  HiOutlineScale,
-  HiOutlineDocumentChartBar,
-  HiOutlineChartBar,
-  HiOutlineDocumentArrowDown,
-  HiOutlineShieldCheck,
-  HiOutlineCreditCard,
-  HiOutlineTruck,
-  HiOutlineCurrencyDollar,
-  HiOutlineDocumentMinus,
-  HiOutlineClipboardDocumentCheck,
-  HiOutlineBuildingLibrary,
-  HiOutlineSquares2X2,
   HiOutlineChevronDown,
   HiOutlineChevronRight,
-  HiOutlineChatBubbleLeftRight,
-  HiOutlineTrophy,
-  HiOutlineBolt,
 } from 'react-icons/hi2';
 
-// Cada item declara qué roles pueden verlo. superOnly = solo isSuperAdmin.
-const ALL_ITEMS = [
-  { path: '/', label: 'Dashboard', icon: HiOutlineHome, roles: ['admin', 'cajero', 'contabilidad', 'doctor', 'optica', 'call_center', 'marketing', 'enfermero'] },
-  { path: '/patients', label: 'Pacientes', icon: HiOutlineUsers, roles: ['admin', 'cajero', 'marketing', 'enfermero', 'call_center'] },
-  { path: '/appointments', label: 'Citas y Calendario', icon: HiOutlineCalendar, roles: ['admin', 'cajero', 'doctor', 'optica', 'call_center', 'enfermero', 'marketing'] },
-  { path: '/treatments', label: 'Tratamientos', icon: HiOutlineHeart, roles: ['admin', 'cajero', 'marketing', 'enfermero'] },
-  { path: '/referrals', label: 'Derivaciones', icon: HiOutlineArrowsRightLeft, roles: ['admin', 'marketing', 'cajero'] },
-  { path: '/quotations', label: 'Cotizaciones', icon: HiOutlineDocumentDuplicate, roles: ['admin', 'cajero', 'call_center', 'contabilidad', 'marketing'] },
-  { path: '/chats', label: 'Chats / WhatsApp', icon: HiOutlineChatBubbleLeftRight, roles: ['admin', 'call_center', 'marketing'] },
-  { path: '/opportunities', label: 'Oportunidades', icon: HiOutlineMegaphone, roles: ['admin', 'call_center', 'marketing'] },
-  { path: '/tasks', label: 'Tareas', icon: HiOutlineClipboardDocumentList, roles: ['admin', 'call_center', 'marketing'] },
-  { path: '/auto-messages', label: 'Mensajes automáticos (legacy)', icon: HiOutlineBolt, roles: ['admin', 'call_center', 'marketing'] },
-  { path: '/message-templates', label: 'Plantillas de mensaje', icon: HiOutlineDocumentText, roles: ['admin', 'marketing'] },
-  { path: '/segments', label: 'Segmentos', icon: HiOutlineFunnel, roles: ['admin', 'marketing'] },
-  { path: '/booking-config', label: 'Auto-agendamiento', icon: HiOutlineCalendarDays, roles: ['admin', 'marketing'] },
-  { path: '/campaigns', label: 'Campañas', icon: HiOutlineMegaphone, roles: ['admin', 'marketing'] },
-  { path: '/workflows', label: 'Automatizaciones', icon: HiOutlineBolt, roles: ['admin', 'marketing'] },
-  { path: '/attribution', label: 'Atribución / ROI', icon: HiOutlineChartBar, roles: ['admin', 'marketing'] },
-  { path: '/reputation', label: 'Reputación', icon: HiOutlineTrophy, roles: ['admin', 'marketing'] },
-  { path: '/call-center-config', label: 'Configuración Call Center', icon: HiOutlineCog6Tooth, roles: ['admin', 'marketing'] },
-  { path: '/analytics', label: 'Analíticas', icon: HiOutlineChartBar, roles: ['admin', 'marketing'] },
-  { path: '/commission-rules', label: 'Reglas de Comisión', icon: HiOutlineTrophy, roles: ['admin', 'contabilidad'] },
-  { path: '/inventory', label: 'Inventario', icon: HiOutlineCube, roles: ['admin', 'contabilidad'] },
-  { path: '/sales', label: 'Ventas', icon: HiOutlineShoppingCart, roles: ['admin', 'contabilidad', 'cajero'] },
-  { path: '/cash-register', label: 'Caja (Apertura/Cierre)', icon: HiOutlineCalculator, roles: ['admin', 'cajero', 'contabilidad'] },
-  { path: '/invoices', label: 'Facturación', icon: HiOutlineDocumentText, roles: ['admin', 'cajero', 'contabilidad'] },
-  { path: '/marketing', label: 'Marketing', icon: HiOutlineMegaphone, roles: ['admin', 'marketing'] },
-  { path: '/reports', label: 'Reportes de atención', icon: HiOutlineChartBar, roles: ['admin', 'marketing'] },
-  { path: '/discounts', label: 'Descuentos', icon: HiOutlineTag, roles: ['admin', 'cajero', 'contabilidad'] },
-  { path: '/rooms', label: 'Consultorios', icon: HiOutlineBuildingStorefront, roles: ['admin'] },
-  { path: '/blocks', label: 'Bloqueos', icon: HiOutlineNoSymbol, roles: ['admin'] },
-  { path: '/users', label: 'Usuarios', icon: HiOutlineUserGroup, roles: ['admin'] },
-  { path: '/invoicing-config', label: 'Config. SRI', icon: HiOutlineCog6Tooth, roles: ['admin', 'contabilidad'] },
-  { path: '/clinics', label: 'Sucursales', icon: HiOutlineBuildingOffice2, roles: [], superOnly: true },
-  { path: '/settings', label: 'Configuración', icon: HiOutlineCog6Tooth, roles: ['admin', 'cajero', 'contabilidad', 'doctor', 'optica', 'call_center', 'marketing', 'enfermero'] },
-];
-
-// Menú contable agrupado (visible para admin/contabilidad).
-const ACCT_GROUPS = [
+// Menú unificado por grupos. Cada ítem declara qué roles pueden verlo
+// (superOnly = solo isSuperAdmin). Un grupo se muestra si el rol ve al menos
+// uno de sus ítems. El super-admin ve todo.
+const MENU_GROUPS = [
   {
-    key: 'ventas', label: 'Ventas', icon: HiOutlineShoppingCart, items: [
-      { path: '/sales', label: 'Ventas' },
-      { path: '/quotations', label: 'Cotizaciones' },
-      { path: '/invoices', label: 'Facturación' },
-      { path: '/discounts', label: 'Descuentos' },
+    key: 'personas', label: 'Personas', icon: HiOutlineUsers, items: [
+      { path: '/patients', label: 'Clientes', roles: ['admin', 'cajero', 'call_center', 'marketing', 'enfermero'] },
+      { path: '/accounting/suppliers', label: 'Proveedores', roles: ['admin', 'contabilidad'] },
+    ],
+  },
+  {
+    key: 'agenda', label: 'Agenda', icon: HiOutlineCalendarDays, items: [
+      { path: '/appointments', label: 'Calendario y Citas', roles: ['admin', 'cajero', 'doctor', 'optica', 'call_center', 'enfermero', 'marketing'] },
+      { path: '/tasks', label: 'Tareas', roles: ['admin', 'call_center', 'marketing'] },
+    ],
+  },
+  {
+    key: 'clinica', label: 'Clínica', icon: HiOutlineHeart, items: [
+      { path: '/treatments', label: 'Tratamientos', roles: ['admin', 'cajero', 'marketing', 'enfermero'] },
+      { path: '/referrals', label: 'Derivaciones', roles: ['admin', 'marketing', 'cajero'] },
+    ],
+  },
+  {
+    key: 'comercial', label: 'Comercial', icon: HiOutlineShoppingCart, items: [
+      { path: '/quotations', label: 'Cotizaciones', roles: ['admin', 'cajero', 'call_center', 'contabilidad', 'marketing'] },
+      { path: '/sales', label: 'Ventas', roles: ['admin', 'cajero', 'contabilidad'] },
+      { path: '/invoices', label: 'Facturación', roles: ['admin', 'cajero', 'contabilidad'] },
+      { path: '/discounts', label: 'Descuentos', roles: ['admin', 'cajero', 'contabilidad'] },
+      { path: '/commission-rules', label: 'Reglas de Comisión', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/credit-debit-notes', label: 'NC / ND Clientes', roles: ['admin', 'contabilidad'] },
     ],
   },
   {
     key: 'inventario', label: 'Inventario', icon: HiOutlineCube, items: [
-      { path: '/inventory', label: 'Productos' },
-      { path: '/accounting/warehouses', label: 'Bodegas' },
-      { path: '/accounting/inv-categories', label: 'Categorías y Tipos' },
-      { path: '/accounting/inv-consolidated', label: 'Inv. Consolidado' },
-      { path: '/accounting/counts', label: 'Tomas Físicas' },
-      { path: '/accounting/assets', label: 'Activos Fijos' },
-      { path: '/accounting/kardex', label: 'Kardex' },
+      { path: '/inventory', label: 'Productos', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/inv-categories', label: 'Categorías', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/warehouses', label: 'Bodegas', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/kardex', label: 'Kardex', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/inv-consolidated', label: 'Inv. Consolidado', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/counts', label: 'Tomas Físicas', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/assets', label: 'Activos Fijos', roles: ['admin', 'contabilidad'] },
     ],
   },
   {
-    key: 'bancos', label: 'Bancos', icon: HiOutlineBanknotes, items: [
-      { path: '/accounting/banks', label: 'Cuentas Bancarias' },
-      { path: '/accounting/cash', label: 'Caja' },
-      { path: '/accounting/cash-closing', label: 'Cierre de Caja' },
-      { path: '/accounting/reconciliations', label: 'Conciliaciones' },
-      { path: '/accounting/checks', label: 'Cheques' },
-      { path: '/accounting/payments', label: 'Pagos / Cobros' },
+    key: 'compras', label: 'Compras', icon: HiOutlineTruck, items: [
+      { path: '/accounting/purchases', label: 'Compras', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/credit-debit-notes', label: 'NC / ND Proveedores', roles: ['admin', 'contabilidad'] },
+    ],
+  },
+  {
+    // CxC y CxP se unifican por ahora en la página Cartera existente; cuando
+    // se construyan las páginas hijas (cobros, vencimientos, anticipos, etc.)
+    // se separan en dos grupos.
+    key: 'cartera', label: 'CxC / CxP', icon: HiOutlineCurrencyDollar, items: [
+      { path: '/accounting/cartera', label: 'Cartera (Clientes/Proveedores)', roles: ['admin', 'contabilidad'] },
+    ],
+  },
+  {
+    key: 'tesoreria', label: 'Tesorería', icon: HiOutlineBanknotes, items: [
+      { path: '/cash-register', label: 'Caja (Apertura/Cierre)', roles: ['admin', 'contabilidad', 'cajero'] },
+      { path: '/accounting/cash', label: 'Movimientos de Caja', roles: ['admin', 'contabilidad'] },
+    ],
+  },
+  {
+    key: 'bancos', label: 'Bancos', icon: HiOutlineBuildingLibrary, items: [
+      { path: '/accounting/banks', label: 'Cuentas Bancarias', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/reconciliations', label: 'Conciliaciones', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/checks', label: 'Cheques', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/payments', label: 'Pagos / Cobros', roles: ['admin', 'contabilidad'] },
     ],
   },
   {
     key: 'tarjetas', label: 'Tarjetas de Crédito', icon: HiOutlineCreditCard, items: [
-      { path: '/accounting/cards', label: 'Tarjetas / POS' },
-      { path: '/accounting/credit-card-batches', label: 'Lotes' },
-      { path: '/accounting/card-settlements', label: 'Liquidaciones' },
+      { path: '/accounting/cards', label: 'Tarjetas / POS', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/credit-card-batches', label: 'Lotes', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/card-settlements', label: 'Liquidaciones', roles: ['admin', 'contabilidad'] },
     ],
   },
   {
     key: 'rrhh', label: 'Recursos Humanos', icon: HiOutlineUserGroup, items: [
-      { path: '/accounting/employees', label: 'Empleados' },
-      { path: '/accounting/payroll', label: 'Nómina' },
-      { path: '/accounting/loans', label: 'Préstamos' },
-      { path: '/accounting/deductions', label: 'Deducciones / Consumo' },
-      { path: '/accounting/decimos', label: 'Plantillas Décimos' },
-      { path: '/accounting/payroll-config', label: 'Configuración' },
+      { path: '/accounting/employees', label: 'Empleados', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/payroll', label: 'Nómina', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/loans', label: 'Préstamos', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/deductions', label: 'Deducciones / Consumo', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/decimos', label: 'Plantillas Décimos', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/payroll-config', label: 'Configuración', roles: ['admin', 'contabilidad'] },
     ],
   },
   {
     key: 'contabilidad', label: 'Contabilidad', icon: HiOutlineCalculator, items: [
-      { path: '/accounting/dashboard', label: 'Dashboard Contable' },
-      { path: '/accounting/chart', label: 'Plan de Cuentas' },
-      { path: '/accounting/account-mapping', label: 'Config. Cuentas' },
-      { path: '/accounting/retention-rules', label: 'Config. Retenciones' },
-      { path: '/accounting/cost-centers', label: 'Centros de Costo' },
-      { path: '/accounting/periods', label: 'Períodos Fiscales' },
-      { path: '/accounting/journal', label: 'Asientos' },
-      { path: '/accounting/ledger', label: 'Consultas Mayor' },
-      { path: '/accounting/trial-balance', label: 'Balance Comprobación' },
-      { path: '/accounting/period-balances', label: 'Saldos por Período' },
-      { path: '/accounting/suppliers', label: 'Personas' },
-      { path: '/accounting/cartera', label: 'Cartera (CxC/CxP)' },
-      { path: '/accounting/deferred-income', label: 'Ingresos Diferidos' },
-      { path: '/accounting/purchases', label: 'Compras' },
-      { path: '/accounting/credit-debit-notes', label: 'NC / ND' },
-      { path: '/accounting/retention-vouchers', label: 'Retenciones' },
-      { path: '/accounting/accounting-health', label: 'Salud Contable' },
+      { path: '/accounting/chart', label: 'Plan de Cuentas', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/account-mapping', label: 'Config. Cuentas', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/retention-rules', label: 'Config. Retenciones', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/cost-centers', label: 'Centros de Costo', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/periods', label: 'Períodos Fiscales', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/journal', label: 'Asientos', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/ledger', label: 'Consultas Mayor', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/trial-balance', label: 'Balance Comprobación', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/period-balances', label: 'Saldos por Período', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/deferred-income', label: 'Ingresos Diferidos', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/retention-vouchers', label: 'Retenciones', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/budgets', label: 'Presupuesto', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/cash-flow', label: 'Flujo de Caja', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/accounting-health', label: 'Salud Contable', roles: ['admin', 'contabilidad'] },
+    ],
+  },
+  {
+    key: 'marketing', label: 'Marketing & CRM', icon: HiOutlineMegaphone, items: [
+      { path: '/marketing', label: 'Marketing', roles: ['admin', 'marketing'] },
+      { path: '/chats', label: 'Chats / WhatsApp', roles: ['admin', 'call_center', 'marketing'] },
+      { path: '/opportunities', label: 'Oportunidades', roles: ['admin', 'call_center', 'marketing'] },
+      { path: '/campaigns', label: 'Campañas', roles: ['admin', 'marketing'] },
+      { path: '/segments', label: 'Segmentos', roles: ['admin', 'marketing'] },
+      { path: '/message-templates', label: 'Plantillas de Mensaje', roles: ['admin', 'marketing'] },
+      { path: '/workflows', label: 'Automatizaciones', roles: ['admin', 'marketing'] },
+      { path: '/attribution', label: 'Atribución / ROI', roles: ['admin', 'marketing'] },
+      { path: '/reputation', label: 'Reputación', roles: ['admin', 'marketing'] },
+      { path: '/booking-config', label: 'Auto-agendamiento', roles: ['admin', 'marketing'] },
+      { path: '/analytics', label: 'Analíticas', roles: ['admin', 'marketing'] },
+      { path: '/call-center-config', label: 'Config. Call Center', roles: ['admin', 'marketing'] },
+      { path: '/reports', label: 'Reportes de Atención', roles: ['admin', 'marketing'] },
     ],
   },
   {
     key: 'reporteria', label: 'Reportería', icon: HiOutlineDocumentChartBar, items: [
-      { path: '/accounting/sales-reports', label: 'Rep. Ventas' },
-      { path: '/accounting/financial-reports', label: 'Rep. Financieros' },
-      { path: '/accounting/management-reports', label: 'Rep. Gerenciales' },
-      { path: '/accounting/profitability', label: 'Rentabilidad x Médico' },
-      { path: '/accounting/budgets', label: 'Presupuesto' },
-      { path: '/accounting/cash-flow', label: 'Flujo de Caja' },
-      { path: '/accounting/sri-reports', label: 'Rep. SRI' },
-      { path: '/accounting/audit-logs', label: 'Auditoría' },
+      { path: '/accounting/sales-reports', label: 'Rep. Ventas', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/financial-reports', label: 'Rep. Financieros', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/management-reports', label: 'Rep. Gerenciales', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/sri-reports', label: 'Rep. SRI', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/profitability', label: 'Rentabilidad x Médico', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/audit-logs', label: 'Auditoría', roles: ['admin', 'contabilidad'] },
+    ],
+  },
+  {
+    key: 'configuracion', label: 'Configuración', icon: HiOutlineCog6Tooth, items: [
+      { path: '/invoicing-config', label: 'Config. SRI', roles: ['admin', 'contabilidad'] },
+      { path: '/users', label: 'Usuarios', roles: ['admin'] },
+      { path: '/rooms', label: 'Consultorios', roles: ['admin'] },
+      { path: '/blocks', label: 'Bloqueos', roles: ['admin'] },
+      { path: '/clinics', label: 'Sucursales', roles: [], superOnly: true },
     ],
   },
 ];
 
-// Rutas que viven dentro de los grupos contables (se ocultan del menú plano
-// para admin/contabilidad y así evitar duplicados).
-const GROUPED_PATHS = new Set(ACCT_GROUPS.flatMap((g) => g.items.map((i) => i.path)));
+const isPathActive = (pathname, path) =>
+  pathname === path || (path !== '/' && pathname.startsWith(path));
 
 export default function Layout({ children }) {
   const { user, role, activeClinic, clinics, selectClinic, logout } = useAuth();
@@ -209,27 +210,28 @@ export default function Layout({ children }) {
     }
   };
 
-  const showAccounting = user?.isSuperAdmin || role === 'admin' || role === 'contabilidad';
+  // ¿El usuario puede ver este ítem del menú?
+  const canSee = (item) => {
+    if (item.superOnly) return !!user?.isSuperAdmin;
+    if (user?.isSuperAdmin) return true;
+    if (!role) return false;
+    return item.roles?.includes(role);
+  };
+
+  // Grupos visibles con sus ítems filtrados por rol.
+  const visibleGroups = MENU_GROUPS
+    .map((g) => ({ ...g, items: g.items.filter(canSee) }))
+    .filter((g) => g.items.length > 0);
 
   // Título de la página actual (derivado de la ruta) para mostrarlo en el header.
   const TITLE_MAP = [
-    ...ALL_ITEMS.map((i) => ({ path: i.path, label: i.label })),
-    ...ACCT_GROUPS.flatMap((g) => g.items.map((it) => ({ path: it.path, label: it.label }))),
+    ...MENU_GROUPS.flatMap((g) => g.items.map((it) => ({ path: it.path, label: it.label }))),
+    { path: '/settings', label: 'Configuración de Cuenta' },
   ];
   const matchedTitle = TITLE_MAP
     .filter((p) => p.path !== '/' && location.pathname.startsWith(p.path))
     .sort((a, b) => b.path.length - a.path.length)[0];
   const pageTitle = location.pathname === '/' ? 'Inicio' : (matchedTitle?.label || 'Shiluv');
-
-  const menuItems = ALL_ITEMS.filter((item) => {
-    // Para usuarios con menú contable, ocultar los items que ya viven en los grupos
-    // y Settings (que aparece en sección separada al final del sidebar).
-    if (showAccounting && (GROUPED_PATHS.has(item.path) || item.path === '/settings')) return false;
-    if (item.superOnly) return user?.isSuperAdmin;
-    if (user?.isSuperAdmin) return true;
-    if (!role) return false;
-    return item.roles.includes(role);
-  });
 
   return (
     <div className="flex h-screen overflow-hidden bg-body">
@@ -288,101 +290,83 @@ export default function Layout({ children }) {
           <p className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold px-3 mb-2">
             Menú principal
           </p>
-          {menuItems.map((item) => {
-            const Icon = item.icon;
-            const isActive =
-              location.pathname === item.path ||
-              (item.path !== '/' && location.pathname.startsWith(item.path));
+
+          {/* Dashboard: botón único, contenido según el rol */}
+          <Link
+            to="/"
+            onClick={() => setSidebarOpen(false)}
+            className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-medium no-underline ${
+              location.pathname === '/'
+                ? 'bg-emerald-500/15 text-white shadow-lg shadow-black/10'
+                : 'text-slate-300 hover:bg-white/10 hover:text-white'
+            }`}
+          >
+            <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${location.pathname === '/' ? 'bg-emerald-500' : 'bg-white/5'}`}>
+              <HiOutlineHome className="w-[18px] h-[18px]" />
+            </div>
+            Dashboard
+          </Link>
+
+          {visibleGroups.map((group) => {
+            const GroupIcon = group.icon;
+            const groupActive = group.items.some((it) => isPathActive(location.pathname, it.path));
+            const isOpen = group.key in openGroups ? openGroups[group.key] : groupActive;
             return (
-              <Link
-                key={item.path}
-                to={item.path}
-                onClick={() => setSidebarOpen(false)}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-medium no-underline ${
-                  isActive
-                    ? 'bg-emerald-500/15 text-white shadow-lg shadow-black/10'
-                    : 'text-slate-300 hover:bg-white/10 hover:text-white'
-                }`}
-              >
-                <div
-                  className={`w-8 h-8 rounded-lg flex items-center justify-center ${
-                    isActive ? 'bg-emerald-500' : 'bg-white/5'
+              <div key={group.key}>
+                <button
+                  onClick={() => toggleGroup(group.key)}
+                  className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-medium bg-transparent border-none cursor-pointer ${
+                    groupActive ? 'text-white' : 'text-slate-300 hover:bg-white/10 hover:text-white'
                   }`}
                 >
-                  <Icon className="w-[18px] h-[18px]" />
-                </div>
-                {item.label}
-              </Link>
+                  <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${groupActive ? 'bg-emerald-500' : 'bg-white/5'}`}>
+                    <GroupIcon className="w-[18px] h-[18px]" />
+                  </div>
+                  <span className="flex-1 text-left">{group.label}</span>
+                  {isOpen ? <HiOutlineChevronDown className="w-4 h-4" /> : <HiOutlineChevronRight className="w-4 h-4" />}
+                </button>
+                {isOpen && (
+                  <div className="ml-3 mt-1 space-y-0.5 border-l border-white/10 pl-2">
+                    {group.items.map((it) => {
+                      const isActive = location.pathname === it.path;
+                      return (
+                        <Link
+                          key={`${group.key}-${it.path}`}
+                          to={it.path}
+                          onClick={() => setSidebarOpen(false)}
+                          className={`flex items-center gap-2 px-2 py-1.5 rounded-lg text-[12px] no-underline ${
+                            isActive ? 'bg-emerald-500/15 text-white' : 'text-slate-400 hover:bg-white/10 hover:text-white'
+                          }`}
+                        >
+                          <span className="truncate">{it.label}</span>
+                        </Link>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
             );
           })}
-          {showAccounting && (
-            <div className="mt-4 space-y-1">
-              <p className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold px-3 mb-1">
-                Contabilidad
-              </p>
-              {ACCT_GROUPS.map((group) => {
-                const GroupIcon = group.icon;
-                const isOpen = !!openGroups[group.key];
-                const groupActive = group.items.some((it) => location.pathname === it.path);
-                return (
-                  <div key={group.key}>
-                    <button
-                      onClick={() => toggleGroup(group.key)}
-                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-medium bg-transparent border-none cursor-pointer ${
-                        groupActive ? 'text-white' : 'text-slate-300 hover:bg-white/10 hover:text-white'
-                      }`}
-                    >
-                      <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${groupActive ? 'bg-emerald-500' : 'bg-white/5'}`}>
-                        <GroupIcon className="w-[18px] h-[18px]" />
-                      </div>
-                      <span className="flex-1 text-left">{group.label}</span>
-                      {isOpen ? <HiOutlineChevronDown className="w-4 h-4" /> : <HiOutlineChevronRight className="w-4 h-4" />}
-                    </button>
-                    {isOpen && (
-                      <div className="ml-3 mt-1 space-y-0.5 border-l border-white/10 pl-2">
-                        {group.items.map((it) => {
-                          const isActive = location.pathname === it.path;
-                          return (
-                            <Link
-                              key={it.path}
-                              to={it.path}
-                              onClick={() => setSidebarOpen(false)}
-                              className={`flex items-center gap-2 px-2 py-1.5 rounded-lg text-[12px] no-underline ${
-                                isActive ? 'bg-emerald-500/15 text-white' : 'text-slate-400 hover:bg-white/10 hover:text-white'
-                              }`}
-                            >
-                              <span className="truncate">{it.label}</span>
-                            </Link>
-                          );
-                        })}
-                      </div>
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          {showAccounting && (
-            <div className="mt-4 space-y-1">
-              <p className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold px-3 mb-1">
-                Mi Cuenta
-              </p>
-              <Link
-                to="/settings"
-                onClick={() => setSidebarOpen(false)}
-                className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-medium no-underline ${
-                  location.pathname === '/settings'
-                    ? 'bg-emerald-500/15 text-white shadow-lg shadow-black/10'
-                    : 'text-slate-300 hover:bg-white/10 hover:text-white'
-                }`}
-              >
-                <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${location.pathname === '/settings' ? 'bg-emerald-500' : 'bg-white/5'}`}>
-                  <HiOutlineCog6Tooth className="w-[18px] h-[18px]" />
-                </div>
-                Configuración de Cuenta
-              </Link>
-            </div>
-          )}
+
+          <div className="mt-4 space-y-1">
+            <p className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold px-3 mb-1">
+              Mi Cuenta
+            </p>
+            <Link
+              to="/settings"
+              onClick={() => setSidebarOpen(false)}
+              className={`flex items-center gap-3 px-3 py-2.5 rounded-xl text-[13px] font-medium no-underline ${
+                location.pathname === '/settings'
+                  ? 'bg-emerald-500/15 text-white shadow-lg shadow-black/10'
+                  : 'text-slate-300 hover:bg-white/10 hover:text-white'
+              }`}
+            >
+              <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${location.pathname === '/settings' ? 'bg-emerald-500' : 'bg-white/5'}`}>
+                <HiOutlineUserCircle className="w-[18px] h-[18px]" />
+              </div>
+              Configuración de Cuenta
+            </Link>
+          </div>
         </nav>
 
         <div className="px-4 py-4 border-t border-white/10 mx-2">

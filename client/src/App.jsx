@@ -6,7 +6,13 @@ import PrivateRoute from './components/PrivateRoute';
 import RoleRoute from './components/RoleRoute';
 import Layout from './components/Layout';
 import Login from './pages/Login';
-import Dashboard from './pages/Dashboard';
+import DashboardAdmin from './pages/dashboards/DashboardAdmin';
+import DashboardCajero from './pages/dashboards/DashboardCajero';
+import DashboardDoctor from './pages/dashboards/DashboardDoctor';
+import DashboardOptica from './pages/dashboards/DashboardOptica';
+import DashboardCallCenter from './pages/dashboards/DashboardCallCenter';
+import DashboardMarketing from './pages/dashboards/DashboardMarketing';
+import DashboardEnfermero from './pages/dashboards/DashboardEnfermero';
 import Patients from './pages/Patients';
 import PatientDetail from './pages/PatientDetail';
 import Appointments from './pages/Appointments';
@@ -23,7 +29,6 @@ import Marketing from './pages/Marketing';
 import Chats from './pages/Chats';
 import OpportunitiesGlobal from './pages/OpportunitiesGlobal';
 import Analytics from './pages/Analytics';
-import AutoMessages from './pages/AutoMessages';
 import MessageTemplates from './pages/MessageTemplates';
 import Segments from './pages/Segments';
 import Campaigns from './pages/Campaigns';
@@ -95,13 +100,23 @@ function SuperAdminRoute({ children }) {
   return children;
 }
 
-function RootRoute() {
+// Dashboard por rol. Nadie ve un dashboard genérico: cada rol tiene el suyo.
+// Contabilidad reutiliza el dashboard contable existente; el resto de roles
+// tiene su propio componente de bienvenida (contenido específico se agrega luego).
+function RoleDashboard() {
   const { role, user, loading } = useAuth();
   if (loading) return null;
-  if (!user?.isSuperAdmin && role === 'contabilidad') {
-    return <Navigate to="/accounting/dashboard" replace />;
+  if (!user?.isSuperAdmin && role === 'contabilidad') return <AccountingDashboard />;
+  switch (role) {
+    case 'cajero': return <DashboardCajero />;
+    case 'doctor': return <DashboardDoctor />;
+    case 'optica': return <DashboardOptica />;
+    case 'call_center': return <DashboardCallCenter />;
+    case 'marketing': return <DashboardMarketing />;
+    case 'enfermero': return <DashboardEnfermero />;
+    case 'admin':
+    default: return <DashboardAdmin />;
   }
-  return <Dashboard />;
 }
 
 function AppRoutes() {
@@ -115,7 +130,7 @@ function AppRoutes() {
           <PrivateRoute>
             <Layout>
               <Routes>
-                <Route path="/" element={<RootRoute />} />
+                <Route path="/" element={<RoleDashboard />} />
 
                 <Route
                   path="/patients"
@@ -243,14 +258,6 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'marketing']}>
                       <Analytics />
-                    </RoleRoute>
-                  }
-                />
-                <Route
-                  path="/auto-messages"
-                  element={
-                    <RoleRoute roles={['admin', 'call_center', 'marketing']}>
-                      <AutoMessages />
                     </RoleRoute>
                   }
                 />
