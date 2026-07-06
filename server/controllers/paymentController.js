@@ -56,7 +56,19 @@ exports.get = async (req, res) => {
  * Crea cobro o pago, aplica a documentos, opcional anticipo.
  */
 exports.create = async (req, res) => {
+  // Idempotencia: clave provista por el cliente (body o header `Idempotency-Key`) para
+  // no registrar dos veces el mismo cobro/pago por doble-submit o reintento de red.
+  const idempotencyKey = (req.body?.idempotencyKey
+    || req.headers?.['idempotency-key']
+    || (typeof req.get === 'function' && req.get('Idempotency-Key'))
+    || '').toString().trim() || null;
   try {
+    // Replay directo: si la clave ya se usó en esta clínica, devolvemos el pago
+    // existente SIN crear otro asiento, BankTransaction ni re-aplicar CxP/CxC.
+    if (idempotencyKey) {
+      const existing = await Payment.findOne({ clinic: req.clinicId, idempotencyKey });
+      if (existing) return res.status(200).json({ ...existing.toObject(), idempotentReplay: true });
+    }
     {
       const paymentId = await runInTransaction(async (session) => {
         const { type, date, partyModel, partyRef, partyName, partyId,
@@ -141,6 +153,7 @@ exports.create = async (req, res) => {
           appliedAmount,
           advanceAmount,
           description,
+          idempotencyKey,
           createdBy: req.user._id,
         }], { session });
 
@@ -288,6 +301,12 @@ exports.create = async (req, res) => {
       return res.status(201).json(payment);
     }
   } catch (e) {
+    // Carrera de idempotencia: otra petición con la misma clave ganó (índice único).
+    // Recuperamos y devolvemos el pago existente en vez de fallar.
+    if (e.code === 11000 && idempotencyKey) {
+      const existing = await Payment.findOne({ clinic: req.clinicId, idempotencyKey });
+      if (existing) return res.status(200).json({ ...existing.toObject(), idempotentReplay: true });
+    }
     res.status(e.status || 400).json({ message: e.message });
   }
 };

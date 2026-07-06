@@ -38,11 +38,20 @@ const paymentSchema = new mongoose.Schema(
     status: { type: String, enum: ['REGISTRADO', 'ANULADO'], default: 'REGISTRADO' },
     journalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
     bankTransaction: { type: mongoose.Schema.Types.ObjectId, ref: 'BankTransaction', default: null },
+    // Clave de idempotencia (opcional): la envía el cliente por body o header
+    // `Idempotency-Key`. Evita que un doble clic / reintento de red registre el mismo
+    // cobro o pago dos veces. Ver el índice único parcial de abajo.
+    idempotencyKey: { type: String, trim: true, default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }
 );
 
 paymentSchema.index({ clinic: 1, number: 1 }, { unique: true });
+// Único por clínica SOLO cuando hay clave: dos pagos sin clave (legacy) no colisionan.
+paymentSchema.index(
+  { clinic: 1, idempotencyKey: 1 },
+  { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } }
+);
 
 module.exports = mongoose.model('Payment', paymentSchema);

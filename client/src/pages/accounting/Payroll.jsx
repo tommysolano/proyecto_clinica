@@ -51,10 +51,11 @@ export default function Payroll() {
     try { const r = await api.post(`/payroll/${selected._id}/close`); setSelected(r.data); load(); toast.success('Cerrada'); }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
-  // Pago sin banco (legacy: solo cambia el estado).
+  // Pago manual/efectivo (sin banco): genera el asiento de liquidación contra Caja
+  // (D Sueldos por pagar / H Caja). Requiere confirmación explícita.
   const markPaid = async () => {
-    if (!confirm('¿Marcar como pagada sin registrar movimiento bancario?')) return;
-    try { const r = await api.post(`/payroll/${selected._id}/pay`); setSelected(r.data); load(); toast.success('Pagada'); }
+    if (!confirm('¿Registrar el pago en EFECTIVO (contra Caja)? Se generará el asiento Sueldos por pagar → Caja.')) return;
+    try { const r = await api.post(`/payroll/${selected._id}/pay`, { confirmNoBank: true }); setSelected(r.data); load(); toast.success('Pagada (efectivo)'); }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
   // Pago desde banco: genera asiento + transacción bancaria.
@@ -99,7 +100,7 @@ export default function Payroll() {
               <div className="flex gap-2">
                 {selected.status === 'BORRADOR' && <button onClick={close} className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm flex items-center gap-1"><HiOutlineLockClosed /> Cerrar</button>}
                 {selected.status === 'CERRADO' && <button onClick={() => setPayModal({ bankAccountId: banks[0]?._id || '', date: new Date().toISOString().slice(0, 10) })} className="px-3 py-1.5 bg-blue-600 text-white rounded text-sm flex items-center gap-1"><HiOutlineCheck /> Pagar desde banco</button>}
-                {selected.status === 'CERRADO' && <button onClick={markPaid} className="px-3 py-1.5 bg-slate-200 text-slate-700 rounded text-sm">Marcar pagado (sin banco)</button>}
+                {selected.status === 'CERRADO' && <button onClick={markPaid} className="px-3 py-1.5 bg-slate-200 text-slate-700 rounded text-sm" title="Genera el asiento Sueldos por pagar → Caja">Pagar en efectivo (Caja)</button>}
               </div>
             </div>
             <table className="tbl text-xs">

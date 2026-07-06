@@ -402,3 +402,44 @@ test('G) provisión de vacaciones acredita la cuenta configurada', async () => {
   assert.equal(r.statusCode, 200);
   assert.ok((await H.accountBalanceByCode(clinicId, '2.1.03.06')) < 0, 'vacaciones por pagar acreditada (provisión)');
 });
+
+// ═══════════ Endurecimiento: pago de nómina sin banco (C) ═══════════
+
+// H1) Sin banco y SIN confirmación explícita: se bloquea (no deja PAGADO sin asiento).
+test('H1) pago sin banco sin confirmación se bloquea (no PAGADO silencioso)', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-15') });
+  const admin = await makeDept(clinicId, { name: 'Admin' });
+  await makeEmployee(clinicId, { departmentRef: admin._id, baseSalary: 600 });
+  const p = await generateAndClose(clinicId, userId);
+  await H.runController(payroll.closePayroll, req(clinicId, userId, {}, { id: String(p._id) }));
+  const r = await H.runController(payroll.markPaid, req(clinicId, userId, {}, { id: String(p._id) }));
+  assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
+  assert.match(r.payload.message, /requiere un banco|confirmNoBank/i);
+  const reloaded = await Payroll.findById(p._id);
+  assert.equal(reloaded.status, 'CERRADO', 'no se marcó PAGADO');
+  assert.equal(reloaded.paymentJournalEntry ?? null, null, 'no quedó sin asiento');
+});
+
+// H2) Sin banco CON confirmNoBank: genera el asiento D Sueldos por pagar / H Caja.
+test('H2) pago manual en efectivo (confirmNoBank) liquida contra Caja con asiento', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-15') });
+  const admin = await makeDept(clinicId, { name: 'Admin' });
+  await makeEmployee(clinicId, { departmentRef: admin._id, baseSalary: 600 });
+  const p = await generateAndClose(clinicId, userId);
+  const closed = await H.runController(payroll.closePayroll, req(clinicId, userId, {}, { id: String(p._id) }));
+  assert.equal(closed.statusCode, 200);
+  const neto = closed.payload.totalNeto;
+
+  const pay = await H.runController(payroll.markPaid, req(clinicId, userId, { confirmNoBank: true, date: '2026-06-30' }, { id: String(p._id) }));
+  assert.equal(pay.statusCode, 200, JSON.stringify(pay.payload));
+  assert.equal(pay.payload.status, 'PAGADO');
+  assert.ok(pay.payload.paymentJournalEntry, 'quedó con asiento de liquidación');
+
+  const payEntry = await JournalEntry.findById(pay.payload.paymentJournalEntry);
+  assert.equal(payEntry.source, 'PAGO');
+  assert.equal(payEntry.sourceModel, 'Payroll');
+  // Caja acreditada por el neto (H Caja); sin BankTransaction.
+  assert.equal(await H.accountBalanceByCode(clinicId, '1.1.01.01'), -neto, 'Caja acreditada por el neto');
+  assert.equal(await BankTransaction.countDocuments({ clinic: clinicId, sourceModel: 'Payroll', sourceRef: p._id }), 0, 'sin movimiento bancario');
+  assert.ok((await H.assertLedgerBalanced(clinicId)).balanced);
+});

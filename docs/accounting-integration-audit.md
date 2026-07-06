@@ -10,6 +10,11 @@
 > integración. **No** re-implementa módulos (ver §K de limitaciones).
 >
 > **Fecha de auditoría:** 2026-07-05. **Rama:** `main`.
+>
+> **Actualización (cierre de críticos):** se implementaron los pendientes críticos
+> **A** (idempotencia de pagos) y **B** (bloqueo de doble registro de compras), y se
+> **endureció** **C** (pago de nómina sin banco). Ver §A-idempotencia, §B-duplicados y
+> §Nómina. Las tablas de esta auditoría ya reflejan el estado corregido.
 
 ---
 
@@ -106,7 +111,7 @@ Trazabilidad = `source` / `sourceModel` / `sourceRef` / `sourceAction` del `Jour
 
 | Acción | Asiento | Trazabilidad | Estado | Corrección |
 |---|---|---|---|---|
-| Cobro (COBRO) | D caja/banco/tarjeta · H clientes; (H anticipoClientes) | `COBRO/Payment/{id}/REGISTER` + `BankTransaction` | ✅ | Falta idempotencyKey (ver §D) |
+| Cobro (COBRO) | D caja/banco/tarjeta · H clientes; (H anticipoClientes) | `COBRO/Payment/{id}/REGISTER` + `BankTransaction` | ✅ | Idempotencia por `idempotencyKey` (ver §A-idempotencia) |
 | Aplicación a `Receivable` | reduce saldo del documento | subledger | ✅ | — |
 | Anular cobro | Reversa asiento, anula BankTx, des-aplica `Receivable` | reversos | ✅ | — |
 
@@ -114,7 +119,8 @@ Trazabilidad = `source` / `sourceModel` / `sourceRef` / `sourceAction` del `Jour
 
 | Acción | Asiento | Trazabilidad | Estado | Corrección |
 |---|---|---|---|---|
-| Pago (PAGO) individual/masivo | D proveedores · H caja/banco; `BankTransaction` si banco | `PAGO/Payment/{id}/REGISTER` | ✅ | Falta idempotencyKey + guard `bank.chartAccount` (ver §D/§F) |
+| Pago (PAGO) individual | D proveedores · H caja/banco; `BankTransaction` si banco | `PAGO/Payment/{id}/REGISTER` | ✅ | Idempotencia por `idempotencyKey` (§A-idempotencia); guard `bank.chartAccount` |
+| Pago masivo (`createBulk`) | 1 pago por proveedor | `PAGO/Payment/{id}/REGISTER` | ✅ | Sin `idempotencyKey` (acción de escritorio, menor riesgo de doble-submit) — ver Limitaciones |
 | Aplicación a `Payable` | reduce saldo, marca PAGADA | subledger | ✅ | — |
 | Anular pago | Reversa asiento, anula BankTx, des-aplica `Payable` | reversos | ✅ | — |
 
@@ -144,7 +150,7 @@ Las retenciones **no** generan asiento propio: se acreditan dentro del asiento d
 | Generar rol (borrador) | Sin asiento | — | — | ✅ | — |
 | Cerrar rol | D gastos por **departamento** (Admin/Ventas/Costos) · H sueldos por pagar, IESS, IR, provisiones | Cuentas de `PayrollDepartment`/`PayrollConcept`/config | `NOMINA/Payroll/{id}/CLOSE` | ✅ Bloquea si falta cuenta crítica o tabla IR | — |
 | Pagar rol desde banco | D sueldos por pagar · H banco; `BankTransaction` | config + `bank.chartAccount` | `PAGO/Payroll/{id}/PAY` | ✅ | — |
-| Pagar rol **sin** banco (legacy) | **Sin asiento**: solo cambia estado a PAGADO | — | — | ⚠️ Deja la obligación "sueldos por pagar" sin liquidar; ver §D/§Pendientes |
+| Pagar rol **sin** banco | **ENDURECIDO**: bloquea salvo pago manual explícito (`confirmNoBank`), que genera D sueldos por pagar · H **caja** | rol `caja` + config | `PAGO/Payroll/{id}/PAY` | ✅ Ya no deja la obligación abierta | Ver §Nómina-sin-banco |
 
 ### Reportes SRI — [`sriSuperciasReportsController.js`](../server/controllers/sriSuperciasReportsController.js) / [`salesReportsController.js`](../server/controllers/salesReportsController.js)
 
@@ -257,20 +263,75 @@ en esta auditoría:
 | Nómina cerrada dos veces | ✅ | Guard `status !== 'BORRADOR'` + idempotencia `Payroll/{id}/CLOSE` |
 | Nómina pagada dos veces | ✅ | Guard `status !== 'CERRADO'` + idempotencia `Payroll/{id}/PAY` |
 | Venta facturada y cobrada duplicada | ✅ | Factura no genera asiento propio; cobro aplica a saldo con validación de exceso |
-| XML importado y luego registrado manual | ⚠️ **Parcial** | El import dedup por clave de acceso; pero un alta **manual** con la misma serie/clave no está bloqueada de forma dura. Ver Pendiente D1 |
-| **Pago de proveedor registrado dos veces** | ⚠️ **No** | `Payment` **no tiene** `idempotencyKey`. Doble-submit → 2 pagos → 2 asientos → sobre-pago. Ver Pendiente D2 |
+| XML importado y luego registrado manual | ✅ **CORREGIDO** | `findDuplicatePurchaseInvoice` bloquea el alta manual / la autorización de un comprobante ya registrado (por clave/autorización/proveedor+serie/estab-pto-secuencial). Ver §B-duplicados |
+| **Pago de proveedor registrado dos veces** | ✅ **CORREGIDO** | `Payment.idempotencyKey` + índice único parcial: el doble-submit devuelve el pago existente sin recrear asiento/BankTransaction/aplicación. Ver §A-idempotencia |
 
-**Hallazgos:**
+**Hallazgos (resueltos):**
 
-- **D1 (Importante).** Alta manual de compra no valida unicidad de `claveAcceso`/`serie`+proveedor
-  contra documentos ya importados. Riesgo: doble registro de la misma factura (import + manual).
-  **Recomendación:** índice único parcial `{clinic, claveAcceso}` (cuando exista) y validación de
-  `{clinic, supplier, serie}` en `create`.
-- **D2 (Importante).** `paymentController.create`/`createBulk` no aceptan `idempotencyKey`. Un
-  doble-submit del cajero puede duplicar el pago. **Recomendación:** replicar el patrón de venta
-  (`idempotencyKey` + índice único parcial en `Payment`).
+- **D1 (Importante → CORREGIDO).** El alta manual y la autorización de compras ahora validan
+  duplicidad con `findDuplicatePurchaseInvoice` (§B). El import (XML/TXT) usa la misma regla.
+- **D2 (Crítico → CORREGIDO).** `paymentController.create` acepta `idempotencyKey` (body o header
+  `Idempotency-Key`) con índice único parcial en `Payment` (§A).
 
 ---
+
+## D-bis. Cierre de pendientes críticos (implementado)
+
+### §A-idempotencia — Idempotencia de pagos/cobros
+
+**Modelo** [`Payment.js`](../server/models/Payment.js): campo `idempotencyKey: String` (default `null`)
++ índice único **parcial** `{ clinic: 1, idempotencyKey: 1 }` con
+`partialFilterExpression: { idempotencyKey: { $type: 'string' } }` (dos pagos **sin** clave no
+colisionan; la unicidad es por clínica).
+
+**Controlador** [`paymentController.create`](../server/controllers/paymentController.js):
+1. Lee la clave de `req.body.idempotencyKey` **o** del header `Idempotency-Key`.
+2. **Pre-check:** si ya existe un `Payment` con esa clave en la clínica → responde `200` con el pago
+   existente y `idempotentReplay: true`, **sin** crear otro asiento, `BankTransaction` ni re-aplicar
+   CxP/CxC.
+3. Al crear, persiste `idempotencyKey` en el `Payment`.
+4. **Carrera:** si dos peticiones concurrentes usan la misma clave, el índice único hace fallar a la
+   perdedora (`E11000`); el `catch` la recupera y devuelve el pago existente (`200`).
+5. **Sin clave:** comportamiento legacy intacto (cada submit crea un pago).
+
+Alcance: cubre `create` (cobro/pago individual, donde está el riesgo de doble-clic del cajero).
+`createBulk` (pago masivo, acción de escritorio) no lleva clave por diseño (varios pagos por una
+llamada). `collectSale` ya era idempotente vía `sourceAction=COLLECT:{key}`.
+
+Respuesta de replay: `{ ...payment, idempotentReplay: true }` con `status 200` (vs `201` al crear).
+
+### §B-duplicados — Bloqueo de doble registro de compras
+
+Helper [`findDuplicatePurchaseInvoice`](../server/controllers/purchaseInvoiceController.js) (exportado
+como `_findDuplicatePurchaseInvoice` para pruebas). Considera **duplicado** a una compra **no anulada**
+que comparta identidad de comprobante, de más a menos fuerte:
+`claveAcceso` (≥10) → `autorizacion` (≥10) → `supplier + serie` → `supplier + estab + ptoEmi + secuencial`.
+
+Usos:
+- **`create` (manual):** si hay duplicado `REGISTRADA/PAGADA` → `409` con referencia a la existente;
+  si es `POR_AUTORIZAR` (ya importado) → `200` devolviendo esa factura (`duplicate: true`) para
+  completarla/autorizarla en vez de crear otra. En el intento duplicado **no** se crea asiento, CxP,
+  inventario ni activo (el chequeo ocurre antes de la transacción).
+- **`authorize`:** bloquea (`409`) autorizar un `POR_AUTORIZAR` cuyo comprobante ya está registrado.
+- **`importXml`:** dedup por la misma regla (antes solo clave/serie, sin excluir anuladas).
+- `importTxt`: conserva su dedup por lotes (clave + proveedor+serie) por rendimiento.
+
+Refuerzo de base de datos existente: `PurchaseInvoice` ya tenía índice único parcial
+`{clinic, supplier, serie}` y `claveAcceso` indexado — el helper añade la **claridad** de mensaje y
+cobertura de identidades que el índice no cubre (clave con serie distinta, estab-pto-secuencial).
+
+Mensaje: *"Ya existe una compra registrada para este proveedor y número de comprobante."* + `existing`.
+
+### §Nómina-sin-banco — Pago de nómina sin banco (endurecido)
+
+Antes: pagar un rol **sin** banco marcaba `PAGADO` **sin ningún asiento**, dejando "Sueldos por pagar"
+abierto indefinidamente. Ahora [`payrollController.markPaid`](../server/controllers/payrollController.js):
+- Sin `bankAccountId` y **sin** `confirmNoBank` → **`400`** ("requiere un banco… o confirma pago manual").
+- Sin banco **con** `confirmNoBank: true` → registra un pago **manual/efectivo** que **sí genera** el
+  asiento de liquidación **D Sueldos por pagar / H Caja** (rol `caja`), idempotente por
+  `sourceAction=PAY`. Así la obligación queda liquidada y no hay `PAGADO` sin asiento.
+- **Compatibilidad:** el botón del frontend ("Pagar en efectivo (Caja)") ahora envía `confirmNoBank`;
+  las nóminas ya `PAGADO` no se tocan.
 
 ## E. Fechas fiscales y contables
 
@@ -410,6 +471,16 @@ que codifica invariantes globales de la auditoría:
 Los flujos J1–J9 del pedido quedan cubiertos entre los tests existentes y el nuevo (ver mapeo en
 el propio archivo de test).
 
+**Añadido al cerrar los críticos:**
+- [`paymentIdempotency.test.js`](../server/tests/paymentIdempotency.test.js) — doble-submit con misma
+  clave (un solo Payment/asiento/BankTransaction/aplicación CxP), banco, pre-check de carrera, misma
+  clave en otra clínica, y comportamiento legacy sin clave.
+- [`purchaseDuplicate.test.js`](../server/tests/purchaseDuplicate.test.js) — helper (clave/serie/estab-pto-secuencial,
+  excluye anuladas, sin falsos positivos), import+manual retorna existente, 409 sin asiento en
+  duplicado, autorización de duplicado bloqueada, re-registro permitido tras anular.
+- `payroll.integration.test.js` (H1/H2) — pago sin banco bloqueado sin confirmación; con
+  `confirmNoBank` liquida contra Caja con asiento (sin BankTransaction).
+
 ---
 
 ## K. Correcciones aplicadas en esta auditoría
@@ -419,6 +490,9 @@ el propio archivo de test).
 | K1 | `inventoryAdvancedController.js` (`disposeAsset`) | Cuentas de baja de activo por **rol** (`caja`/`otrosGastos`/`otrosIngresos`) en vez de códigos fijos `1.1.01.01`/`6.1.99`/`4.2.02` | Elimina hardcode (grieta G1); respeta remapeo del contador |
 | K2 | `models/Payment.js` | `applications.docModel` acepta `'Sale'` además de `Invoice`/`PurchaseInvoice` | El cobro de una venta directa (`Sale`) por el flujo de `Payment` fallaba la validación de esquema (bug latente) |
 | K3 | `paymentController.js` (`create`) + `disposeAsset` | Guarda **defensiva**: exige `bank.chartAccount` con mensaje claro | Endurecimiento (F1). Redundante con el esquema (`chartAccount` es `required`), pero robusto ante datos migrados |
+| K4 | `models/Payment.js` + `paymentController.create` | **Idempotencia de pagos/cobros** (`idempotencyKey` + índice único parcial + replay) | Evita pagos/cobros duplicados por doble-submit (crítico D2). Ver §A-idempotencia |
+| K5 | `purchaseInvoiceController.js` (`create`/`authorize`/`importXml`) | **Bloqueo de doble registro de compras** (`findDuplicatePurchaseInvoice`) | Evita registrar dos veces la misma factura (import + manual) (crítico/importante D1). Ver §B-duplicados |
+| K6 | `payrollController.markPaid` + `client/.../Payroll.jsx` | **Endurece pago de nómina sin banco**: exige confirmación y genera asiento D Sueldos por pagar / H Caja | Ya no deja la obligación abierta sin liquidar (importante C). Ver §Nómina-sin-banco |
 
 > Se respetó la consigna de **no rehacer módulos**. No se tocaron flujos productivos de venta,
 > compra ni nómina más allá de guardas puntuales.
@@ -435,15 +509,18 @@ estructurales, y los de mayor riesgo tienen guardas o corrección.
 
 **🔴 Crítico antes de producción**
 - Ejecutar los scripts de §I en orden y correr salud contable + `recomputeBalances`.
-- **D2** — Idempotencia de pagos (`Payment.idempotencyKey`) para evitar pagos duplicados por
-  doble-submit. (Corrección de esquema pendiente + índice único parcial.)
+- Asegurar que se creen los **índices nuevos** al desplegar: `Payment {clinic, idempotencyKey}`
+  (único parcial). Con `autoIndex` activo Mongoose los crea al iniciar; en colecciones grandes,
+  construirlos explícitamente (`Payment.syncIndexes()`) en ventana de baja carga.
+- ~~**D2** — Idempotencia de pagos~~ → **IMPLEMENTADO** (§A-idempotencia).
 
 **🟠 Importante**
-- **D1** — Bloqueo duro de doble registro compra (import XML + alta manual con misma clave/serie).
-- **Nómina pago sin banco** — el camino legacy marca PAGADO sin asiento; decidir si se elimina o
-  se exige banco (deja "sueldos por pagar" abierto).
+- ~~**D1** — Bloqueo duro de doble registro compra~~ → **IMPLEMENTADO** (§B-duplicados).
+- ~~**Nómina pago sin banco**~~ → **ENDURECIDO** (§Nómina-sin-banco).
 - **Deep-links §C** — implementar Payment, BankTransaction y RetentionVoucher (receta incluida).
 - **E1** — Fecha fiscal del comprobante de retención = fecha de la compra.
+- **Pago masivo idempotente** — `createBulk` no lleva `idempotencyKey` (ver Limitaciones); evaluar
+  si se requiere para lotes grandes.
 
 **🟢 Mejora futura**
 - **B1** — `DepreciationRun` para deep-link de depreciación a todo el lote.
@@ -460,7 +537,14 @@ completo · reestructuración mayor de estados financieros.
 - Los deep-links pendientes son trabajo de UI **no verificable** sin ejecutar el frontend; se
   documentaron con receta en lugar de implementarlos a ciegas.
 - Los formularios SRI son **preliquidación** (formato simplificado), no el esquema oficial.
-- La idempotencia de pagos requiere un cambio de esquema + índice; se dejó documentado como
-  crítico en lugar de introducirlo sin migración de índice validada.
+- **Idempotencia de pagos:** cubre `create` (cobro/pago individual). El **pago masivo** (`createBulk`)
+  no lleva clave por diseño (una llamada crea varios pagos); es una acción de escritorio con menor
+  riesgo de doble-clic. Si se requiere, se puede añadir una clave de lote.
+- **Bloqueo de duplicados de compra:** el re-registro tras **anular** solo es posible si el nuevo
+  comprobante no colisiona con el índice único de BD `{clinic, supplier, serie}` (que sí cuenta
+  anuladas). Es decir, se puede re-registrar con **otra serie** (caso normal); re-usar exactamente la
+  misma serie de un documento anulado requeriría eliminarla. Documentado, no bloqueante en la práctica.
+- **Índice `Payment.idempotencyKey`:** debe existir en producción para que el guard sea efectivo bajo
+  concurrencia (ver Crítico).
 </content>
 </invoke>

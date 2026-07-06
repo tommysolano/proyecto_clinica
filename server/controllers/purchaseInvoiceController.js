@@ -371,6 +371,33 @@ async function applyLineRetentions(inv, { clinicId, session }) {
   inv.balance = +((Number(inv.total) || 0) - inv.retentionTotal).toFixed(2);
 }
 
+/**
+ * Busca una compra ACTIVA (no anulada) que sea el MISMO comprobante que el que se intenta
+ * registrar/importar, para bloquear duplicados (p.ej. importada por XML/SRI y luego
+ * registrada a mano). Identidad del comprobante, de más a menos fuerte:
+ *   - clave de acceso (única por documento electrónico);
+ *   - número de autorización;
+ *   - proveedor + serie (estab-ptoEmi-secuencial);
+ *   - proveedor + estab + ptoEmi + secuencial.
+ * NO cuenta las ANULADA (esas sí permiten volver a registrar). `excludeId` excluye la
+ * propia factura (al autorizar). Devuelve el documento duplicado o null.
+ */
+async function findDuplicatePurchaseInvoice({ clinicId, supplier, serie, claveAcceso, autorizacion, estab, ptoEmi, secuencial, excludeId }, session) {
+  const or = [];
+  const clave = String(claveAcceso || '').trim();
+  if (clave.length >= 10) or.push({ claveAcceso: clave });
+  const auth = String(autorizacion || '').trim();
+  if (auth.length >= 10) or.push({ autorizacion: auth });
+  const serieStr = String(serie || '').trim();
+  if (supplier && serieStr) or.push({ supplier, serie: serieStr });
+  if (supplier && estab && ptoEmi && secuencial) or.push({ supplier, estab: String(estab), ptoEmi: String(ptoEmi), secuencial: String(secuencial) });
+  if (!or.length) return null;
+  const q = { clinic: clinicId, status: { $ne: 'ANULADA' }, $or: or };
+  if (excludeId) q._id = { $ne: excludeId };
+  return PurchaseInvoice.findOne(q).session(session || null);
+}
+exports._findDuplicatePurchaseInvoice = findDuplicatePurchaseInvoice;
+
 exports.list = async (req, res) => {
   const { startDate, endDate, supplier, status, docType, q, sort = 'fecha_desc', page = 1, limit = 20 } = req.query;
   const filter = { clinic: req.clinicId };
@@ -415,6 +442,24 @@ exports.get = async (req, res) => {
 
 exports.create = async (req, res) => {
   try {
+    // Bloqueo de doble registro: si ya existe el mismo comprobante (activo) se evita
+    // registrarlo otra vez (no se crea asiento, CxP, inventario ni activo fijo).
+    //  - POR_AUTORIZAR (ya importado): se devuelve esa factura para completarla/autorizarla.
+    //  - REGISTRADA/PAGADA: se bloquea con 409 y referencia a la existente.
+    const dup = await findDuplicatePurchaseInvoice({
+      clinicId: req.clinicId, supplier: req.body.supplier,
+      serie: req.body.serie, claveAcceso: req.body.claveAcceso, autorizacion: req.body.autorizacion,
+      estab: req.body.estab, ptoEmi: req.body.ptoEmi, secuencial: req.body.secuencial,
+    });
+    if (dup) {
+      if (dup.status === 'POR_AUTORIZAR') {
+        return res.status(200).json({ ...dup.toObject(), duplicate: true, message: 'Ya existe esta compra importada (pendiente de autorización). Complétala y autorízala en vez de crear otra.' });
+      }
+      return res.status(409).json({
+        message: 'Ya existe una compra registrada para este proveedor y número de comprobante.',
+        existing: { _id: dup._id, serie: dup.serie, status: dup.status, claveAcceso: dup.claveAcceso || '' },
+      });
+    }
     {
       const invoiceId = await runInTransaction(async (session) => {
         // `strictAccounts` lo fija el servidor (no el cliente): marca que esta compra
@@ -1113,8 +1158,12 @@ exports.importXml = async (req, res) => {
         if (!p.ruc) { errors.push({ index: i + 1, error: 'XML sin RUC' }); continue; }
         let sup = await Supplier.findOne({ clinic: req.clinicId, ruc: p.ruc });
         if (!sup) sup = await Supplier.create({ clinic: req.clinicId, ruc: p.ruc, razonSocial: p.razonSocial || p.ruc });
-        // Evitar duplicados por clave de acceso o serie
-        const dup = await PurchaseInvoice.findOne({ clinic: req.clinicId, $or: [{ claveAcceso: p.claveAcceso }, { supplier: sup._id, serie: p.serie }] });
+        // Evitar duplicados (clave de acceso / autorización / proveedor+serie / estab-pto-secuencial),
+        // sin contar comprobantes anulados. Misma regla que el registro manual y la autorización.
+        const dup = await findDuplicatePurchaseInvoice({
+          clinicId: req.clinicId, supplier: sup._id, serie: p.serie, claveAcceso: p.claveAcceso,
+          autorizacion: p.autorizacion, estab: p.estab, ptoEmi: p.ptoEmi, secuencial: p.secuencial,
+        });
         if (dup) { skipped++; continue; }
         const data = {
           clinic: req.clinicId, supplier: sup._id, docType: 'FACTURA',
@@ -1146,6 +1195,14 @@ exports.authorize = async (req, res) => {
         const inv = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
         if (!inv) throw Object.assign(new Error('No encontrada'), { status: 404 });
         if (inv.status !== 'POR_AUTORIZAR') throw Object.assign(new Error('La factura no esta pendiente de autorizacion'), { status: 400 });
+        // No autorizar (contabilizar) un duplicado de un comprobante ya registrado.
+        const dupAuth = await findDuplicatePurchaseInvoice({
+          clinicId: req.clinicId, supplier: inv.supplier, serie: inv.serie, claveAcceso: inv.claveAcceso,
+          autorizacion: inv.autorizacion, estab: inv.estab, ptoEmi: inv.ptoEmi, secuencial: inv.secuencial, excludeId: inv._id,
+        }, session);
+        if (dupAuth && dupAuth.status !== 'POR_AUTORIZAR') {
+          throw Object.assign(new Error('Ya existe una compra registrada con este mismo comprobante; no se puede autorizar un duplicado.'), { status: 409 });
+        }
         // Autorizar = contabilizar por primera vez => strict: inventario/activo deben
         // resolver su cuenta desde la categoría contable (sin cuenta manual ni genérica).
         // Se clasifica sobre los ítems CRUDOS del body si vinieron (conserva `lineType`

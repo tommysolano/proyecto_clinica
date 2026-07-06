@@ -514,16 +514,49 @@ exports.generateDecimos = async (req, res) => {
 exports.markPaid = async (req, res) => {
   try {
     const { bankAccountId, date, reference } = req.body || {};
-    // Sin banco: comportamiento legacy (solo cambia el estado).
+    // Sin banco: ENDURECIDO. Antes marcaba PAGADO sin ningún asiento, dejando "Sueldos
+    // por pagar" abierto indefinidamente. Ahora solo se admite un pago MANUAL/EFECTIVO
+    // EXPLÍCITO (confirmNoBank), que igualmente genera el asiento de liquidación
+    // (D Sueldos por pagar / H Caja) para no dejar la obligación sin liquidar.
     if (!bankAccountId) {
-      const p = await Payroll.findOne({ _id: req.params.id, clinic: req.clinicId });
-      if (!p) return res.status(404).json({ message: 'No encontrado' });
-      if (p.status !== 'CERRADO') return res.status(400).json({ message: 'Debe estar cerrado' });
-      p.status = 'PAGADO';
-      p.paidAt = new Date();
-      p.paidBy = req.user._id;
-      await p.save();
-      return res.json(p);
+      if (!(req.body?.confirmNoBank === true || req.body?.force === true)) {
+        return res.status(400).json({
+          message: 'El pago de nómina requiere un banco. Usa "Pagar desde banco", o confirma un pago manual en efectivo (confirmNoBank), que se contabilizará contra Caja.',
+        });
+      }
+      const payrollId = await runInTransaction(async (session) => {
+        const p = await Payroll.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+        if (!p) throw Object.assign(new Error('No encontrado'), { status: 404 });
+        if (p.status !== 'CERRADO') throw Object.assign(new Error('Debe estar cerrado'), { status: 400 });
+        const amount = +(p.totalNeto || 0).toFixed(2);
+        if (amount <= 0) throw Object.assign(new Error('El rol no tiene neto por pagar'), { status: 400 });
+
+        const cfg = await PayrollConfig.findOne({ clinic: req.clinicId }).session(session);
+        const general = await resolveConfigAccounts(req.clinicId, cfg, session);
+        const caja = await getAccount(req.clinicId, 'caja', { session });
+        const txDate = date ? new Date(date) : new Date();
+
+        // Idempotente por sourceAction 'PAY' (mismo que el pago desde banco).
+        const entry = await createEntry({
+          clinicId: req.clinicId, date: txDate,
+          description: `Pago de nómina ${p.period} (efectivo/manual)`,
+          source: 'PAGO', sourceRef: p._id, sourceModel: 'Payroll', sourceAction: 'PAY',
+          lines: [
+            { account: general.sueldosPorPagar._id, debit: amount, credit: 0, description: 'Pago sueldos por pagar' },
+            { account: caja._id, debit: 0, credit: amount, description: `Pago nómina ${p.period} (efectivo)` },
+          ],
+          userId: req.user._id, session,
+        });
+
+        p.status = 'PAGADO';
+        p.paymentJournalEntry = entry._id;
+        p.paidAt = txDate;
+        p.paidBy = req.user._id;
+        await p.save({ session });
+        return p._id;
+      });
+      const payroll = await Payroll.findById(payrollId);
+      return res.json(payroll);
     }
 
     const payrollId = await runInTransaction(async (session) => {
