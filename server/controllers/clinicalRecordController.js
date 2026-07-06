@@ -135,7 +135,8 @@ exports.addFollowUp = async (req, res) => {
       recomendaciones,
       estudioSintomas,
       receta,            // texto libre legacy (opcional)
-      recetaItems,       // array estructurado de items (medicamentos/servicios) desde inventario
+      recetaItems,       // array de insumos/medicamentos desde inventario
+      derivacionItems,   // array de servicios/programas desde inventario
       observaciones,     // reemplaza el antiguo "tratamiento asociado"
       treatment,         // legacy: id de tratamiento manual (sigue soportado)
       vitalSigns,        // signos vitales (opcional)
@@ -146,15 +147,20 @@ exports.addFollowUp = async (req, res) => {
       return res.status(400).json({ message: 'El motivo de consulta es requerido' });
     }
 
-    // Validación: la receta es obligatoria para guardar el seguimiento.
-    const itemsRaw = Array.isArray(recetaItems) ? recetaItems : [];
+    // Validación: se requiere al menos un ítem (Receta o Derivaciones) para guardar.
+    // Ambas listas se procesan igual; el tipo (servicio vs insumo) se deriva de la
+    // categoría del producto más abajo, así que se unifican en un solo arreglo.
+    const itemsRaw = [
+      ...(Array.isArray(recetaItems) ? recetaItems : []),
+      ...(Array.isArray(derivacionItems) ? derivacionItems : []),
+    ];
     const hasReceta =
       itemsRaw.some((it) => (it.product || (it.name && it.name.trim()))) ||
       (typeof receta === 'string' && receta.trim().length > 0);
     if (!hasReceta) {
       return res
         .status(400)
-        .json({ message: 'Debe registrar al menos un ítem en la receta antes de guardar el seguimiento' });
+        .json({ message: 'Debe registrar al menos un ítem en Receta o Derivaciones antes de guardar el seguimiento' });
     }
 
     // --- Hidratar recetaItems con snapshot de nombre/categoría y marcar servicios ---
@@ -496,7 +502,10 @@ exports.printFollowUp = async (req, res) => {
           </tr>
         </tbody>
       </table>` : '';
-    const items = (fu.recetaItems || [])
+    // Los ítems se guardan juntos en recetaItems; se separan por `isService`
+    // (servicios/programas = Derivaciones, el resto = Receta de insumos).
+    const recetaRows = (fu.recetaItems || [])
+      .filter((it) => !it.isService)
       .map(
         (it) => `
         <tr>
@@ -505,6 +514,17 @@ exports.printFollowUp = async (req, res) => {
           <td style="padding:6px 8px;border:1px solid #e2e8f0">${it.dose || '—'}</td>
           <td style="padding:6px 8px;border:1px solid #e2e8f0">${it.frequency || '—'}</td>
           <td style="padding:6px 8px;border:1px solid #e2e8f0">${it.duration || '—'}</td>
+          <td style="padding:6px 8px;border:1px solid #e2e8f0">${it.instructions || '—'}</td>
+        </tr>`
+      )
+      .join('');
+    const derivacionRows = (fu.recetaItems || [])
+      .filter((it) => it.isService)
+      .map(
+        (it) => `
+        <tr>
+          <td style="padding:6px 8px;border:1px solid #e2e8f0">${it.name || '—'}</td>
+          <td style="padding:6px 8px;border:1px solid #e2e8f0;text-align:center">${it.quantity || 1}</td>
           <td style="padding:6px 8px;border:1px solid #e2e8f0">${it.instructions || '—'}</td>
         </tr>`
       )
@@ -540,15 +560,22 @@ exports.printFollowUp = async (req, res) => {
 
   ${(fu.estudioSintomas || fu.recomendaciones) ? `<div class="box"><div class="label">Estudio o síntomas</div><div>${fu.estudioSintomas || fu.recomendaciones}</div></div>` : ''}
 
-  ${items ? `<div class="label" style="margin-top:8px">Receta</div>
+  ${recetaRows ? `<div class="label" style="margin-top:8px">Receta</div>
     <table><thead><tr>
-      <th>Medicamento / Servicio</th>
+      <th>Medicamento / Insumo</th>
       <th style="text-align:center">Cant.</th>
       <th>Dosis</th>
       <th>Frecuencia</th>
       <th>Duración</th>
       <th>Indicaciones</th>
-    </tr></thead><tbody>${items}</tbody></table>` : ''}
+    </tr></thead><tbody>${recetaRows}</tbody></table>` : ''}
+
+  ${derivacionRows ? `<div class="label" style="margin-top:8px">Derivaciones</div>
+    <table><thead><tr>
+      <th>Servicio / Programa</th>
+      <th style="text-align:center">Cant.</th>
+      <th>Indicaciones</th>
+    </tr></thead><tbody>${derivacionRows}</tbody></table>` : ''}
 
   ${fu.receta ? `<div class="box" style="margin-top:10px"><div class="label">Receta (notas adicionales)</div><div style="white-space:pre-wrap">${fu.receta}</div></div>` : ''}
 

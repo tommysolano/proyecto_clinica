@@ -467,6 +467,227 @@ function YesNo({ label, item, onChange }) {
 }
 
 // ──────────────────── Seguimientos ────────────────────
+// Tabla editable de ítems. Se reutiliza para la Receta (insumos/medicamentos,
+// variant="receta") y para las Derivaciones (servicios/programas,
+// variant="derivacion"). La variante define columnas y textos; la lógica de
+// productos compuestos es idéntica en ambas.
+function ItemsTable({
+  variant,
+  items,
+  productOptions, // productos elegibles para esta variante
+  allProducts,    // catálogo completo (para resolver compuestos y selección previa)
+  search,
+  onSearch,
+  onAdd,
+  onUpdate,
+  onRemove,
+  onToggleComponent,
+  onSetComponentQty,
+}) {
+  const isReceta = variant === 'receta';
+  const label = isReceta ? 'Receta' : 'Derivaciones';
+  const searchPlaceholder = isReceta
+    ? 'Buscar medicamento o insumo...'
+    : 'Buscar servicio o programa...';
+  const emptyMsg = isReceta
+    ? 'Sin ítems. Agrega medicamentos o insumos.'
+    : 'Sin ítems. Agrega servicios o programas.';
+  const productColLabel = isReceta ? 'Medicamento / Insumo' : 'Servicio / Programa';
+  const colSpan = isReceta ? 7 : 4;
+
+  const filtered = search.trim()
+    ? productOptions.filter((p) => {
+        const q = search.trim().toLowerCase();
+        return (
+          String(p.name || '').toLowerCase().includes(q) ||
+          String(p.code || '').toLowerCase().includes(q) ||
+          String(p.category || '').toLowerCase().includes(q)
+        );
+      })
+    : productOptions;
+
+  return (
+    <div className="md:col-span-3">
+      <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+        <label className="text-sm font-medium text-slate-700">{label}</label>
+        <div className="flex items-center gap-2 flex-1 max-w-md ml-auto">
+          <input
+            type="search"
+            value={search}
+            onChange={(e) => onSearch(e.target.value)}
+            placeholder={searchPlaceholder}
+            className="input text-xs py-1.5 flex-1"
+          />
+          <button
+            type="button"
+            onClick={onAdd}
+            className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-emerald-600 text-white border-none cursor-pointer whitespace-nowrap"
+          >
+            <HiOutlinePlus className="w-3 h-3" /> Agregar ítem
+          </button>
+        </div>
+      </div>
+      {items.length === 0 && (
+        <p className="text-xs text-slate-400 italic">{emptyMsg}</p>
+      )}
+      {search.trim() && (
+        <p className="text-[11px] text-slate-500 mb-1">
+          {filtered.length} resultado(s) para "{search}"
+        </p>
+      )}
+      {items.length > 0 && (
+        <div className="overflow-x-auto bg-white rounded-lg border border-slate-200">
+          <table className="tbl text-xs">
+            <thead className="bg-slate-100 text-slate-600">
+              <tr>
+                <th className="text-left px-2 py-1.5">{productColLabel}</th>
+                <th className="text-left px-2 py-1.5 w-16">Cant.</th>
+                {isReceta && <th className="text-left px-2 py-1.5">Dosis</th>}
+                {isReceta && <th className="text-left px-2 py-1.5">Frecuencia</th>}
+                {isReceta && <th className="text-left px-2 py-1.5">Duración</th>}
+                <th className="text-left px-2 py-1.5">Indicaciones</th>
+                <th className="px-2 py-1.5 w-8"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((row, idx) => (
+                <Fragment key={idx}>
+                  <tr className="border-t border-slate-100">
+                    <td className="px-2 py-1">
+                      <select
+                        value={row.product}
+                        onChange={(e) => onUpdate(idx, 'product', e.target.value)}
+                        className="input text-xs py-1"
+                      >
+                        <option value="">— Seleccionar —</option>
+                        {filtered.map((p) => (
+                          <option key={p._id} value={p._id}>
+                            {p.name} ({p.category})
+                          </option>
+                        ))}
+                        {/* Si la fila ya tiene un producto que quedó fuera del filtro, lo conservamos */}
+                        {row.product &&
+                          !filtered.some((p) => p._id === row.product) &&
+                          allProducts.find((p) => p._id === row.product) && (
+                            <option value={row.product}>
+                              {allProducts.find((p) => p._id === row.product).name}
+                            </option>
+                          )}
+                      </select>
+                    </td>
+                    <td className="px-2 py-1">
+                      <NumericInput
+                        min={1}
+                        value={row.quantity}
+                        onChange={(e) => onUpdate(idx, 'quantity', Number(e.target.value))}
+                        className="input text-xs py-1"
+                      />
+                    </td>
+                    {isReceta && (
+                      <td className="px-2 py-1">
+                        <input
+                          type="text"
+                          value={row.dose}
+                          onChange={(e) => onUpdate(idx, 'dose', e.target.value)}
+                          className="input text-xs py-1"
+                          placeholder="500mg"
+                        />
+                      </td>
+                    )}
+                    {isReceta && (
+                      <td className="px-2 py-1">
+                        <input
+                          type="text"
+                          value={row.frequency}
+                          onChange={(e) => onUpdate(idx, 'frequency', e.target.value)}
+                          className="input text-xs py-1"
+                          placeholder="c/8h"
+                        />
+                      </td>
+                    )}
+                    {isReceta && (
+                      <td className="px-2 py-1">
+                        <input
+                          type="text"
+                          value={row.duration}
+                          onChange={(e) => onUpdate(idx, 'duration', e.target.value)}
+                          className="input text-xs py-1"
+                          placeholder="7 días"
+                        />
+                      </td>
+                    )}
+                    <td className="px-2 py-1">
+                      <input
+                        type="text"
+                        value={row.instructions}
+                        onChange={(e) => onUpdate(idx, 'instructions', e.target.value)}
+                        className="input text-xs py-1"
+                      />
+                    </td>
+                    <td className="px-2 py-1 text-right">
+                      <button
+                        type="button"
+                        onClick={() => onRemove(idx)}
+                        className="p-1 text-red-500 bg-transparent border-none cursor-pointer"
+                      >
+                        <HiOutlineTrash className="w-3 h-3" />
+                      </button>
+                    </td>
+                  </tr>
+                  {row.isComposite && (() => {
+                    const prod = allProducts.find((p) => p._id === row.product);
+                    const comps = prod?.components || [];
+                    return (
+                      <tr key={`${idx}-comp`} className="bg-amber-50/60">
+                        <td colSpan={colSpan} className="px-3 py-2">
+                          <p className="text-[11px] font-semibold text-amber-800 mb-1">
+                            Componentes de "{row.name}" — elige cuáles {isReceta ? 'recetar' : 'aplicar'}:
+                          </p>
+                          {comps.length === 0 && (
+                            <p className="text-[11px] text-slate-500">Este producto compuesto no tiene componentes configurados.</p>
+                          )}
+                          <div className="flex flex-wrap gap-2">
+                            {comps.map((c) => {
+                              const cp = allProducts.find((p) => p._id === (c.product?._id || c.product));
+                              const cid = c.product?._id || c.product;
+                              const used = (row.componentsUsed || []).find((u) => String(u.product) === String(cid));
+                              return (
+                                <label key={cid} className="flex items-center gap-1 bg-white border border-amber-200 rounded px-2 py-1 text-[11px] cursor-pointer">
+                                  <input
+                                    type="checkbox"
+                                    checked={!!used}
+                                    onChange={(e) =>
+                                      onToggleComponent(idx, { product: cid, name: cp?.name || '', quantity: c.quantity || 1 }, e.target.checked)
+                                    }
+                                    className="w-3 h-3 accent-amber-600"
+                                  />
+                                  <span>{cp?.name || 'Componente'}</span>
+                                  {used && (
+                                    <NumericInput
+                                      min={1}
+                                      value={used.quantity}
+                                      onChange={(e) => onSetComponentQty(idx, cid, e.target.value)}
+                                      className="w-12 px-1 py-0.5 border border-slate-200 rounded text-[11px]"
+                                    />
+                                  )}
+                                </label>
+                              );
+                            })}
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })()}
+                </Fragment>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function SeguimientosTab({ patientId, appointmentId }) {
   const { hasRole, user } = useAuth();
   const isOptica = hasRole('optica');
@@ -496,7 +717,8 @@ function SeguimientosTab({ patientId, appointmentId }) {
     descripcion: '',
     estudioSintomas: '',
     observaciones: '',
-    recetaItems: [],
+    recetaItems: [],       // solo insumos/medicamentos
+    derivacionItems: [],   // servicios/programas
     opticaRx: emptyOpticaRx(),
     vitalSigns: {
       temperature: '',
@@ -512,6 +734,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
   const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
   const [productSearch, setProductSearch] = useState('');
+  const [derivacionSearch, setDerivacionSearch] = useState('');
   const [uploadingFuId, setUploadingFuId] = useState(null);
   // PDFs seleccionados ANTES de guardar el seguimiento. Se subirán automáticamente
   // tras crear el seguimiento.
@@ -561,9 +784,11 @@ function SeguimientosTab({ patientId, appointmentId }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [patientId]);
 
-  const updateRow = (idx, key, val) => {
+  // Los handlers reciben `listKey` porque el formulario tiene DOS listas:
+  // 'recetaItems' (insumos/medicamentos) y 'derivacionItems' (servicios/programas).
+  const updateRow = (listKey, idx, key, val) => {
     setForm((f) => {
-      const items = [...f.recetaItems];
+      const items = [...f[listKey]];
       items[idx] = { ...items[idx], [key]: val };
       if (key === 'product') {
         const p = products.find((x) => x._id === val);
@@ -571,53 +796,50 @@ function SeguimientosTab({ patientId, appointmentId }) {
         items[idx].isComposite = !!p?.isComposite;
         items[idx].componentsUsed = [];
       }
-      return { ...f, recetaItems: items };
+      return { ...f, [listKey]: items };
     });
   };
 
-  // Alterna un componente de un item compuesto en la receta.
-  const toggleComponent = (idx, comp, checked) => {
+  // Alterna un componente de un item compuesto.
+  const toggleComponent = (listKey, idx, comp, checked) => {
     setForm((f) => {
-      const items = [...f.recetaItems];
+      const items = [...f[listKey]];
       const used = [...(items[idx].componentsUsed || [])];
       const pos = used.findIndex((c) => String(c.product) === String(comp.product));
       if (checked && pos < 0) used.push({ product: comp.product, name: comp.name, quantity: comp.quantity || 1 });
       if (!checked && pos >= 0) used.splice(pos, 1);
       items[idx] = { ...items[idx], componentsUsed: used };
-      return { ...f, recetaItems: items };
+      return { ...f, [listKey]: items };
     });
   };
 
-  const setComponentQty = (idx, productId, qty) => {
+  const setComponentQty = (listKey, idx, productId, qty) => {
     setForm((f) => {
-      const items = [...f.recetaItems];
+      const items = [...f[listKey]];
       const used = (items[idx].componentsUsed || []).map((c) =>
         String(c.product) === String(productId) ? { ...c, quantity: Number(qty) } : c
       );
       items[idx] = { ...items[idx], componentsUsed: used };
-      return { ...f, recetaItems: items };
+      return { ...f, [listKey]: items };
     });
   };
 
-  const addRow = () =>
-    setForm((f) => ({ ...f, recetaItems: [...f.recetaItems, emptyRow()] }));
-  const removeRow = (idx) =>
+  const addRow = (listKey) =>
+    setForm((f) => ({ ...f, [listKey]: [...f[listKey], emptyRow()] }));
+  const removeRow = (listKey, idx) =>
     setForm((f) => ({
       ...f,
-      recetaItems: f.recetaItems.filter((_, i) => i !== idx),
+      [listKey]: f[listKey].filter((_, i) => i !== idx),
     }));
 
-  // Productos filtrados por búsqueda (nombre o código)
-  const filteredProducts = productSearch.trim()
-    ? products.filter((p) => {
-        const q = productSearch.trim().toLowerCase();
-        return (
-          String(p.name || '').toLowerCase().includes(q) ||
-          String(p.code || '').toLowerCase().includes(q) ||
-          String(p.category || '').toLowerCase().includes(q)
-        );
-      })
-    : products;
+  // Catálogo dividido: la Receta solo lista insumos/medicamentos; las
+  // Derivaciones listan servicios y programas.
+  const recetaProducts = products.filter(
+    (p) => String(p.category || '').toLowerCase() === 'insumo'
+  );
+  const derivacionProducts = products.filter((p) =>
+    ['servicio', 'programa'].includes(String(p.category || '').toLowerCase())
+  );
 
   // Subida de PDFs adjuntos a un seguimiento existente
   const uploadAttachment = async (fuId, file) => {
@@ -679,12 +901,10 @@ function SeguimientosTab({ patientId, appointmentId }) {
       Object.values(form.opticaRx?.od || {}).some((v) => String(v).trim()) ||
       Object.values(form.opticaRx?.oi || {}).some((v) => String(v).trim())
     );
+    const allItems = [...form.recetaItems, ...form.derivacionItems];
     if (!isOptica || !hasOpticaRx) {
-      if (
-        !form.recetaItems.length ||
-        form.recetaItems.some((it) => !it.product)
-      ) {
-        toast.error('Debe agregar al menos un ítem de receta (medicamento/servicio)');
+      if (!allItems.length || allItems.some((it) => !it.product)) {
+        toast.error('Debe agregar al menos un ítem en Receta o Derivaciones');
         return;
       }
     }
@@ -730,6 +950,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
       setForm(emptyForm());
       setPendingFiles([]);
       setProductSearch('');
+      setDerivacionSearch('');
       toast.success(
         appointmentId
           ? 'Seguimiento guardado. Cita finalizada.'
@@ -939,178 +1160,33 @@ function SeguimientosTab({ patientId, appointmentId }) {
           </div>
         </div>
 
-        <div className="md:col-span-3">
-          <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
-            <label className="text-sm font-medium text-slate-700">Receta *</label>
-            <div className="flex items-center gap-2 flex-1 max-w-md ml-auto">
-              <input
-                type="search"
-                value={productSearch}
-                onChange={(e) => setProductSearch(e.target.value)}
-                placeholder="Buscar medicamento o servicio..."
-                className="input text-xs py-1.5 flex-1"
-              />
-              <button
-                type="button"
-                onClick={addRow}
-                className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-emerald-600 text-white border-none cursor-pointer whitespace-nowrap"
-              >
-                <HiOutlinePlus className="w-3 h-3" /> Agregar ítem
-              </button>
-            </div>
-          </div>
-          {form.recetaItems.length === 0 && (
-            <p className="text-xs text-slate-400 italic">Sin ítems. Agrega medicamentos o servicios.</p>
-          )}
-          {productSearch.trim() && (
-            <p className="text-[11px] text-slate-500 mb-1">
-              {filteredProducts.length} resultado(s) para "{productSearch}"
-            </p>
-          )}
-          {form.recetaItems.length > 0 && (
-            <div className="overflow-x-auto bg-white rounded-lg border border-slate-200">
-              <table className="tbl text-xs">
-                <thead className="bg-slate-100 text-slate-600">
-                  <tr>
-                    <th className="text-left px-2 py-1.5">Producto / Servicio</th>
-                    <th className="text-left px-2 py-1.5 w-16">Cant.</th>
-                    <th className="text-left px-2 py-1.5">Dosis</th>
-                    <th className="text-left px-2 py-1.5">Frecuencia</th>
-                    <th className="text-left px-2 py-1.5">Duración</th>
-                    <th className="text-left px-2 py-1.5">Indicaciones</th>
-                    <th className="px-2 py-1.5 w-8"></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {form.recetaItems.map((row, idx) => (
-                    <Fragment key={idx}>
-                    <tr className="border-t border-slate-100">
-                      <td className="px-2 py-1">
-                        <select
-                          value={row.product}
-                          onChange={(e) => updateRow(idx, 'product', e.target.value)}
-                          className="input text-xs py-1"
-                        >
-                          <option value="">— Seleccionar —</option>
-                          {filteredProducts.map((p) => (
-                            <option key={p._id} value={p._id}>
-                              {p.name} ({p.category})
-                            </option>
-                          ))}
-                          {/* Si la fila ya tiene un producto que quedó fuera del filtro, lo conservamos */}
-                          {row.product &&
-                            !filteredProducts.some((p) => p._id === row.product) &&
-                            products.find((p) => p._id === row.product) && (
-                              <option value={row.product}>
-                                {products.find((p) => p._id === row.product).name}
-                              </option>
-                            )}
-                        </select>
-                      </td>
-                      <td className="px-2 py-1">
-                        <NumericInput
-                          min={1}
-                          value={row.quantity}
-                          onChange={(e) => updateRow(idx, 'quantity', Number(e.target.value))}
-                          className="input text-xs py-1"
-                        />
-                      </td>
-                      <td className="px-2 py-1">
-                        <input
-                          type="text"
-                          value={row.dose}
-                          onChange={(e) => updateRow(idx, 'dose', e.target.value)}
-                          className="input text-xs py-1"
-                          placeholder="500mg"
-                        />
-                      </td>
-                      <td className="px-2 py-1">
-                        <input
-                          type="text"
-                          value={row.frequency}
-                          onChange={(e) => updateRow(idx, 'frequency', e.target.value)}
-                          className="input text-xs py-1"
-                          placeholder="c/8h"
-                        />
-                      </td>
-                      <td className="px-2 py-1">
-                        <input
-                          type="text"
-                          value={row.duration}
-                          onChange={(e) => updateRow(idx, 'duration', e.target.value)}
-                          className="input text-xs py-1"
-                          placeholder="7 días"
-                        />
-                      </td>
-                      <td className="px-2 py-1">
-                        <input
-                          type="text"
-                          value={row.instructions}
-                          onChange={(e) => updateRow(idx, 'instructions', e.target.value)}
-                          className="input text-xs py-1"
-                        />
-                      </td>
-                      <td className="px-2 py-1 text-right">
-                        <button
-                          type="button"
-                          onClick={() => removeRow(idx)}
-                          className="p-1 text-red-500 bg-transparent border-none cursor-pointer"
-                        >
-                          <HiOutlineTrash className="w-3 h-3" />
-                        </button>
-                      </td>
-                    </tr>
-                    {row.isComposite && (() => {
-                      const prod = products.find((p) => p._id === row.product);
-                      const comps = prod?.components || [];
-                      return (
-                        <tr key={`${idx}-comp`} className="bg-amber-50/60">
-                          <td colSpan={7} className="px-3 py-2">
-                            <p className="text-[11px] font-semibold text-amber-800 mb-1">
-                              Componentes de "{row.name}" — elige cuáles recetar:
-                            </p>
-                            {comps.length === 0 && (
-                              <p className="text-[11px] text-slate-500">Este producto compuesto no tiene componentes configurados.</p>
-                            )}
-                            <div className="flex flex-wrap gap-2">
-                              {comps.map((c) => {
-                                const cp = products.find((p) => p._id === (c.product?._id || c.product));
-                                const cid = c.product?._id || c.product;
-                                const used = (row.componentsUsed || []).find((u) => String(u.product) === String(cid));
-                                return (
-                                  <label key={cid} className="flex items-center gap-1 bg-white border border-amber-200 rounded px-2 py-1 text-[11px] cursor-pointer">
-                                    <input
-                                      type="checkbox"
-                                      checked={!!used}
-                                      onChange={(e) =>
-                                        toggleComponent(idx, { product: cid, name: cp?.name || '', quantity: c.quantity || 1 }, e.target.checked)
-                                      }
-                                      className="w-3 h-3 accent-amber-600"
-                                    />
-                                    <span>{cp?.name || 'Componente'}</span>
-                                    {used && (
-                                      <NumericInput
-                                        min={1}
-                                        value={used.quantity}
-                                        onChange={(e) => setComponentQty(idx, cid, e.target.value)}
-                                        className="w-12 px-1 py-0.5 border border-slate-200 rounded text-[11px]"
-                                      />
-                                    )}
-                                  </label>
-                                );
-                              })}
-                            </div>
-                          </td>
-                        </tr>
-                      );
-                    })()}
-                    </Fragment>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-          )}
-        </div>
+        <ItemsTable
+          variant="receta"
+          items={form.recetaItems}
+          productOptions={recetaProducts}
+          allProducts={products}
+          search={productSearch}
+          onSearch={setProductSearch}
+          onAdd={() => addRow('recetaItems')}
+          onUpdate={(idx, key, val) => updateRow('recetaItems', idx, key, val)}
+          onRemove={(idx) => removeRow('recetaItems', idx)}
+          onToggleComponent={(idx, comp, checked) => toggleComponent('recetaItems', idx, comp, checked)}
+          onSetComponentQty={(idx, pid, qty) => setComponentQty('recetaItems', idx, pid, qty)}
+        />
+
+        <ItemsTable
+          variant="derivacion"
+          items={form.derivacionItems}
+          productOptions={derivacionProducts}
+          allProducts={products}
+          search={derivacionSearch}
+          onSearch={setDerivacionSearch}
+          onAdd={() => addRow('derivacionItems')}
+          onUpdate={(idx, key, val) => updateRow('derivacionItems', idx, key, val)}
+          onRemove={(idx) => removeRow('derivacionItems', idx)}
+          onToggleComponent={(idx, comp, checked) => toggleComponent('derivacionItems', idx, comp, checked)}
+          onSetComponentQty={(idx, pid, qty) => setComponentQty('derivacionItems', idx, pid, qty)}
+        />
 
         <Field label="Observaciones" className="md:col-span-3">
           <textarea
@@ -1287,23 +1363,42 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         <b>Estudio/síntomas:</b> {fu.estudioSintomas}
                       </div>
                     )}
-                    {Array.isArray(fu.recetaItems) && fu.recetaItems.length > 0 && (
-                      <div className="mt-2 bg-slate-50 border border-slate-200 rounded p-2">
-                        <p className="text-[11px] font-semibold text-slate-600 uppercase mb-1">Receta</p>
-                        <ul className="text-xs text-slate-700 space-y-0.5">
-                          {fu.recetaItems.map((it, i) => (
-                            <li key={i}>
-                              <b>{it.name}</b>
-                              {it.dose ? ` · ${it.dose}` : ''}
-                              {it.frequency ? ` · ${it.frequency}` : ''}
-                              {it.duration ? ` · ${it.duration}` : ''}
-                              {it.instructions ? ` — ${it.instructions}` : ''}
-                              {it.quantity ? ` (x${it.quantity})` : ''}
-                            </li>
-                          ))}
-                        </ul>
-                      </div>
-                    )}
+                    {Array.isArray(fu.recetaItems) && fu.recetaItems.length > 0 && (() => {
+                      // Los ítems se guardan juntos; se separan por `isService`
+                      // (servicios/programas = Derivaciones, el resto = Receta).
+                      const recetaOnly = fu.recetaItems.filter((it) => !it.isService);
+                      const derivOnly = fu.recetaItems.filter((it) => it.isService);
+                      const renderItem = (it, i) => (
+                        <li key={i}>
+                          <b>{it.name}</b>
+                          {it.dose ? ` · ${it.dose}` : ''}
+                          {it.frequency ? ` · ${it.frequency}` : ''}
+                          {it.duration ? ` · ${it.duration}` : ''}
+                          {it.instructions ? ` — ${it.instructions}` : ''}
+                          {it.quantity ? ` (x${it.quantity})` : ''}
+                        </li>
+                      );
+                      return (
+                        <>
+                          {recetaOnly.length > 0 && (
+                            <div className="mt-2 bg-slate-50 border border-slate-200 rounded p-2">
+                              <p className="text-[11px] font-semibold text-slate-600 uppercase mb-1">Receta</p>
+                              <ul className="text-xs text-slate-700 space-y-0.5">
+                                {recetaOnly.map(renderItem)}
+                              </ul>
+                            </div>
+                          )}
+                          {derivOnly.length > 0 && (
+                            <div className="mt-2 bg-indigo-50 border border-indigo-200 rounded p-2">
+                              <p className="text-[11px] font-semibold text-indigo-600 uppercase mb-1">Derivaciones</p>
+                              <ul className="text-xs text-slate-700 space-y-0.5">
+                                {derivOnly.map(renderItem)}
+                              </ul>
+                            </div>
+                          )}
+                        </>
+                      );
+                    })()}
                     {hasVitals && (
                       <div className="mt-2 text-[11px] text-slate-600 bg-emerald-50 border border-emerald-100 rounded p-2 flex flex-wrap gap-x-3 gap-y-0.5">
                         {vs.bloodPressure && <span>TA: {vs.bloodPressure}</span>}
