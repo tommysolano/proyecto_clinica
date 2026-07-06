@@ -111,6 +111,9 @@ exports.create = async (req, res) => {
         let bank = null;
         if (bankAccount) bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId }).session(session);
         if (bankAccount && !bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 404 });
+        // El asiento debita/acredita la cuenta contable del banco: sin ella el asiento
+        // quedaría con una cuenta indefinida. Se bloquea con mensaje claro (F1).
+        if (bank && !bank.chartAccount) throw Object.assign(new Error('La cuenta bancaria no tiene cuenta contable asociada'), { status: 400 });
 
         if (type === 'PAGO' && method !== 'EFECTIVO' && bank) {
           if (!voucherNumber && !voucherUrl && !reference && !checkNumber) {

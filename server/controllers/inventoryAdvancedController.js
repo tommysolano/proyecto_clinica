@@ -761,9 +761,11 @@ exports.disposeAsset = async (req, res) => {
         if (req.body.bankAccount) {
           const bank = await BankAccount.findOne({ _id: req.body.bankAccount, clinic: req.clinicId }).session(session);
           if (!bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 404 });
+          if (!bank.chartAccount) throw Object.assign(new Error('La cuenta bancaria no tiene cuenta contable asociada'), { status: 400 });
           proceedsAccount = bank.chartAccount;
         } else {
-          proceedsAccount = (await findAccount(req.clinicId, { code: '1.1.01.01' }, { session }))._id;
+          // Sin banco: el ingreso por la venta entra por Caja (rol configurable, no código fijo).
+          proceedsAccount = (await getAccount(req.clinicId, 'caja', { session }))._id;
         }
       }
 
@@ -776,12 +778,14 @@ exports.disposeAsset = async (req, res) => {
       if (accumulated > 0) lines.push({ account: accumAccount, debit: accumulated, credit: 0, description: `Depreciacion acumulada ${asset.code}` });
       if (disposalValue > 0) lines.push({ account: proceedsAccount, debit: disposalValue, credit: 0, description: `Venta/baja activo ${asset.code}` });
       if (loss > 0) {
-        const lossAcc = await findAccount(req.clinicId, { code: '6.1.99' }, { session });
+        // Pérdida en baja: gasto por rol configurable (no código fijo).
+        const lossAcc = await getAccount(req.clinicId, 'otrosGastos', { session });
         lines.push({ account: lossAcc._id, debit: loss, credit: 0, description: `Perdida baja activo ${asset.code}` });
       }
       lines.push({ account: assetAccount, debit: 0, credit: cost, description: `Baja activo ${asset.code}` });
       if (gain > 0) {
-        const gainAcc = await findAccount(req.clinicId, { code: '4.2.02' }, { session });
+        // Ganancia en baja: otros ingresos por rol configurable (no código fijo).
+        const gainAcc = await getAccount(req.clinicId, 'otrosIngresos', { session });
         lines.push({ account: gainAcc._id, debit: 0, credit: gain, description: `Ganancia baja activo ${asset.code}` });
       }
 

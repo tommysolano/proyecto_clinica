@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 const applicationSchema = new mongoose.Schema(
   {
-    docModel: { type: String, enum: ['Invoice', 'PurchaseInvoice'], required: true },
+    docModel: { type: String, enum: ['Invoice', 'PurchaseInvoice', 'Sale'], required: true },
     docRef: { type: mongoose.Schema.Types.ObjectId, required: true, refPath: 'applications.docModel' },
     docNumber: String,
     amount: { type: Number, required: true, min: 0 },
