@@ -7,6 +7,7 @@ import { useAuth } from '../context/AuthContext';
 import { fmtDate } from '../utils/date';
 import TagEditor from '../components/TagEditor';
 import NumericInput from '../components/NumericInput';
+import SearchableSelect from '../components/SearchableSelect';
 import {
   HiOutlineArrowLeft,
   HiOutlineUser,
@@ -475,9 +476,7 @@ function ItemsTable({
   variant,
   items,
   productOptions, // productos elegibles para esta variante
-  allProducts,    // catálogo completo (para resolver compuestos y selección previa)
-  search,
-  onSearch,
+  allProducts,    // catálogo completo (para resolver compuestos)
   onAdd,
   onUpdate,
   onRemove,
@@ -494,46 +493,25 @@ function ItemsTable({
     : 'Sin ítems. Agrega servicios o programas.';
   const productColLabel = isReceta ? 'Medicamento / Insumo' : 'Servicio / Programa';
   const colSpan = isReceta ? 7 : 4;
-
-  const filtered = search.trim()
-    ? productOptions.filter((p) => {
-        const q = search.trim().toLowerCase();
-        return (
-          String(p.name || '').toLowerCase().includes(q) ||
-          String(p.code || '').toLowerCase().includes(q) ||
-          String(p.category || '').toLowerCase().includes(q)
-        );
-      })
-    : productOptions;
+  // Cada fila usa un combobox con buscador integrado (SearchableSelect), así que
+  // no hace falta un buscador compartido para toda la tabla.
+  const productLabel = (p) => `${p.name}${p.category ? ` (${p.category})` : ''}`;
+  const productSearchText = (p) => `${p.name || ''} ${p.code || ''} ${p.category || ''}`;
 
   return (
     <div className="md:col-span-3">
       <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
         <label className="text-sm font-medium text-slate-700">{label}</label>
-        <div className="flex items-center gap-2 flex-1 max-w-md ml-auto">
-          <input
-            type="search"
-            value={search}
-            onChange={(e) => onSearch(e.target.value)}
-            placeholder={searchPlaceholder}
-            className="input text-xs py-1.5 flex-1"
-          />
-          <button
-            type="button"
-            onClick={onAdd}
-            className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-emerald-600 text-white border-none cursor-pointer whitespace-nowrap"
-          >
-            <HiOutlinePlus className="w-3 h-3" /> Agregar ítem
-          </button>
-        </div>
+        <button
+          type="button"
+          onClick={onAdd}
+          className="flex items-center gap-1 text-xs px-2 py-1 rounded bg-emerald-600 text-white border-none cursor-pointer whitespace-nowrap"
+        >
+          <HiOutlinePlus className="w-3 h-3" /> Agregar ítem
+        </button>
       </div>
       {items.length === 0 && (
         <p className="text-xs text-slate-400 italic">{emptyMsg}</p>
-      )}
-      {search.trim() && (
-        <p className="text-[11px] text-slate-500 mb-1">
-          {filtered.length} resultado(s) para "{search}"
-        </p>
       )}
       {items.length > 0 && (
         <div className="overflow-x-auto bg-white rounded-lg border border-slate-200">
@@ -553,27 +531,18 @@ function ItemsTable({
               {items.map((row, idx) => (
                 <Fragment key={idx}>
                   <tr className="border-t border-slate-100">
-                    <td className="px-2 py-1">
-                      <select
+                    <td className="px-2 py-1 min-w-[180px]">
+                      <SearchableSelect
+                        options={productOptions}
                         value={row.product}
-                        onChange={(e) => onUpdate(idx, 'product', e.target.value)}
-                        className="input text-xs py-1"
-                      >
-                        <option value="">— Seleccionar —</option>
-                        {filtered.map((p) => (
-                          <option key={p._id} value={p._id}>
-                            {p.name} ({p.category})
-                          </option>
-                        ))}
-                        {/* Si la fila ya tiene un producto que quedó fuera del filtro, lo conservamos */}
-                        {row.product &&
-                          !filtered.some((p) => p._id === row.product) &&
-                          allProducts.find((p) => p._id === row.product) && (
-                            <option value={row.product}>
-                              {allProducts.find((p) => p._id === row.product).name}
-                            </option>
-                          )}
-                      </select>
+                        onChange={(val) => onUpdate(idx, 'product', val)}
+                        getLabel={productLabel}
+                        getSearchText={productSearchText}
+                        placeholder="— Seleccionar —"
+                        searchPlaceholder={searchPlaceholder}
+                        size="sm"
+                        menuMinWidth={280}
+                      />
                     </td>
                     <td className="px-2 py-1">
                       <NumericInput
@@ -733,8 +702,6 @@ function SeguimientosTab({ patientId, appointmentId }) {
   });
   const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
-  const [productSearch, setProductSearch] = useState('');
-  const [derivacionSearch, setDerivacionSearch] = useState('');
   const [uploadingFuId, setUploadingFuId] = useState(null);
   // PDFs seleccionados ANTES de guardar el seguimiento. Se subirán automáticamente
   // tras crear el seguimiento.
@@ -949,8 +916,6 @@ function SeguimientosTab({ patientId, appointmentId }) {
       }
       setForm(emptyForm());
       setPendingFiles([]);
-      setProductSearch('');
-      setDerivacionSearch('');
       toast.success(
         appointmentId
           ? 'Seguimiento guardado. Cita finalizada.'
@@ -1165,8 +1130,6 @@ function SeguimientosTab({ patientId, appointmentId }) {
           items={form.recetaItems}
           productOptions={recetaProducts}
           allProducts={products}
-          search={productSearch}
-          onSearch={setProductSearch}
           onAdd={() => addRow('recetaItems')}
           onUpdate={(idx, key, val) => updateRow('recetaItems', idx, key, val)}
           onRemove={(idx) => removeRow('recetaItems', idx)}
@@ -1179,8 +1142,6 @@ function SeguimientosTab({ patientId, appointmentId }) {
           items={form.derivacionItems}
           productOptions={derivacionProducts}
           allProducts={products}
-          search={derivacionSearch}
-          onSearch={setDerivacionSearch}
           onAdd={() => addRow('derivacionItems')}
           onUpdate={(idx, key, val) => updateRow('derivacionItems', idx, key, val)}
           onRemove={(idx) => removeRow('derivacionItems', idx)}
