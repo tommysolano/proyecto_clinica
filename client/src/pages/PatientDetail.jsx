@@ -1200,6 +1200,20 @@ function SeguimientosTab({ patientId, appointmentId }) {
     }
   };
 
+  // Abre la hoja oficial MSP HCU-form.002 (anamnesis + examen físico).
+  const openMspForm = async (fuId) => {
+    try {
+      const res = await api.get(
+        `/clinical-records/${patientId}/follow-ups/${fuId}/msp`,
+        { responseType: 'blob' }
+      );
+      const url = URL.createObjectURL(new Blob([res.data], { type: 'application/pdf' }));
+      window.open(url, '_blank');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al generar el formulario MSP');
+    }
+  };
+
   if (loading) return <div className="text-slate-500 text-sm">Cargando...</div>;
   if (!record) return null;
 
@@ -1854,6 +1868,13 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         className="p-1 text-slate-500 hover:text-emerald-600 cursor-pointer bg-transparent border-none"
                       >
                         <HiOutlinePrinter className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => openMspForm(fu._id)}
+                        title="Hoja MSP HCU-form.002"
+                        className="px-1.5 py-1 text-[10px] font-bold text-slate-500 hover:text-emerald-600 cursor-pointer bg-transparent border border-slate-200 rounded"
+                      >
+                        HCU
                       </button>
                       {canDelete && (
                         <button

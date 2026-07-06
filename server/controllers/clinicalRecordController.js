@@ -2,6 +2,12 @@ const ClinicalRecord = require('../models/ClinicalRecord');
 const Patient = require('../models/Patient');
 const Product = require('../models/Product');
 const Treatment = require('../models/Treatment');
+const {
+  ANTECEDENTES_CATEGORIAS,
+  REVISION_SISTEMAS,
+  EXAMEN_REGIONAL,
+  EXAMEN_SISTEMICO,
+} = require('../constants/mspCatalogs');
 const { emitToClinic } = require('../realtime');
 const path = require('path');
 const fs = require('fs');
@@ -660,5 +666,234 @@ exports.printFollowUp = async (req, res) => {
   } catch (error) {
     console.error('Error generando PDF de seguimiento:', error);
     res.status(500).json({ message: 'Error al generar PDF', error: error.message });
+  }
+};
+
+/**
+ * Genera la hoja oficial MSP HCU-form.002 / 2021 (Consulta Externa) de una
+ * consulta: ensambla la Ficha (A datos, C/D antecedentes) con el seguimiento
+ * (B motivo, E enfermedad actual, F constantes, G revisión, H examen físico,
+ * I diagnósticos, J plan, K profesional).
+ */
+exports.printMspForm = async (req, res) => {
+  try {
+    const { patientId, followUpId } = req.params;
+    const record = await ClinicalRecord.findOne({
+      clinic: req.clinicId,
+      patient: patientId,
+    }).populate('followUps.createdBy', 'name specialty signatureImage cedula');
+    if (!record) return res.status(404).json({ message: 'Ficha no encontrada' });
+    const fu = record.followUps.id(followUpId);
+    if (!fu) return res.status(404).json({ message: 'Seguimiento no encontrado' });
+
+    const patient = await Patient.findById(patientId);
+    const Clinic = require('../models/Clinic');
+    const clinic = await Clinic.findById(req.clinicId);
+
+    const esc = (s) =>
+      String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+    const val = (s) => (s == null || s === '' ? '&nbsp;' : esc(s));
+    const fmtDate = (d) => {
+      if (!d) return '';
+      const x = new Date(d);
+      return `${String(x.getDate()).padStart(2, '0')}/${String(x.getMonth() + 1).padStart(2, '0')}/${x.getFullYear()}`;
+    };
+
+    // Nombres/apellidos: el modelo guarda firstName/lastName combinados.
+    const nombres = (patient?.firstName || '').split(/\s+/);
+    const apellidos = (patient?.lastName || '').split(/\s+/);
+    const edad = record.edad ?? patient?.computedAge ?? patient?.age ?? '';
+    const sexo = patient?.gender ? patient.gender.charAt(0).toUpperCase() : '';
+
+    const mapChecks = (arr) => Object.fromEntries((arr || []).map((c) => [c.key, c]));
+    // Rejilla de casillas MSP (numeradas), 5 por fila; debajo, detalles de las marcadas.
+    const renderChecks = (catalog, arr) => {
+      const m = mapChecks(arr);
+      const cells = catalog.map((cat, i) => {
+        const c = m[cat.key];
+        const on = c && c.marked;
+        return `<td class="chk${on ? ' on' : ''}"><span class="cn">${i + 1}.</span> ${esc(cat.label)} <span class="mk">${on ? '✕' : ''}</span></td>`;
+      });
+      let rows = '';
+      const perRow = 5;
+      for (let i = 0; i < cells.length; i += perRow) {
+        let row = cells.slice(i, i + perRow).join('');
+        // Completa la última fila para mantener el ancho uniforme.
+        const missing = perRow - (cells.length - i < perRow ? cells.length - i : perRow);
+        if (missing > 0 && i + perRow >= cells.length) row += '<td class="chk empty"></td>'.repeat(missing);
+        rows += `<tr>${row}</tr>`;
+      }
+      const details = catalog
+        .map((cat) => {
+          const c = m[cat.key];
+          return c && (c.marked || c.detail) ? `<div><b>${esc(cat.label)}:</b> ${esc(c.detail || '—')}</div>` : '';
+        })
+        .join('');
+      return `<table class="checks">${rows}</table>${details ? `<div class="det">${details}</div>` : ''}`;
+    };
+
+    const vs = fu.vitalSigns || {};
+    const imc = vs.weight && vs.height ? (Number(vs.weight) / Math.pow(Number(vs.height) / 100, 2)).toFixed(2) : '';
+
+    // Receta / derivaciones (parte del plan de tratamiento).
+    const recetaItems = (fu.recetaItems || []).filter((it) => !it.isService);
+    const derivItems = (fu.recetaItems || []).filter((it) => it.isService);
+    const recetaHtml = recetaItems.length
+      ? `<div class="sub">Receta</div><table class="grid"><tr><th>Medicamento / Insumo</th><th>Cant.</th><th>Dosis</th><th>Frecuencia</th><th>Duración</th><th>Indicaciones</th></tr>${recetaItems
+          .map((it) => `<tr><td>${val(it.name)}</td><td class="c">${it.quantity || 1}</td><td>${val(it.dose)}</td><td>${val(it.frequency)}</td><td>${val(it.duration)}</td><td>${val(it.instructions)}</td></tr>`)
+          .join('')}</table>`
+      : '';
+    const derivHtml = derivItems.length
+      ? `<div class="sub">Derivaciones</div><table class="grid"><tr><th>Servicio / Programa</th><th>Cant.</th><th>Indicaciones</th></tr>${derivItems
+          .map((it) => `<tr><td>${val(it.name)}</td><td class="c">${it.quantity || 1}</td><td>${val(it.instructions)}</td></tr>`)
+          .join('')}</table>`
+      : '';
+
+    // I. Diagnósticos (rellena a 6 filas como la hoja oficial).
+    const dx = fu.diagnosticos || [];
+    let dxRows = '';
+    for (let i = 0; i < Math.max(6, dx.length); i++) {
+      const d = dx[i] || {};
+      dxRows += `<tr><td class="c">${i + 1}.</td><td>${val(d.descripcion || d.cieDescripcion)}</td><td class="c">${val(d.cie)}</td><td class="c">${d.presuntivo ? '✕' : '&nbsp;'}</td><td class="c">${d.definitivo ? '✕' : '&nbsp;'}</td></tr>`;
+    }
+
+    const doc = fu.createdBy || {};
+
+    const html = `<!DOCTYPE html><html><head><meta charset="utf-8"/>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: Arial, Helvetica, sans-serif; color:#111; font-size:10px; margin:0; }
+  .bar { background:#d9d9ef; font-weight:bold; font-size:12px; padding:4px 6px; border:1px solid #444; margin-top:8px; }
+  .bar .note { float:right; font-size:7.5px; font-weight:normal; color:#333; max-width:45%; text-align:right; }
+  table { width:100%; border-collapse:collapse; }
+  .info td { border:1px solid #888; padding:3px 5px; vertical-align:top; }
+  .info .lbl { background:#d7ecd7; font-weight:bold; font-size:8px; white-space:nowrap; }
+  .box { border:1px solid #888; border-top:none; padding:5px 6px; min-height:26px; white-space:pre-wrap; }
+  .checks { margin-top:2px; }
+  .checks td { border:1px solid #999; padding:3px 4px; font-size:8px; width:20%; vertical-align:top; height:22px; }
+  .checks td.on { background:#d7ecd7; font-weight:bold; }
+  .checks td.empty { background:#f4f4f4; }
+  .checks .cn { color:#555; font-weight:bold; }
+  .checks .mk { float:right; color:#046a04; font-weight:bold; }
+  .det { border:1px solid #888; border-top:none; padding:4px 6px; font-size:8px; line-height:1.5; }
+  .grid th, .grid td { border:1px solid #999; padding:3px 5px; font-size:8.5px; text-align:left; }
+  .grid th { background:#ececf7; }
+  .grid td.c, .grid th.c { text-align:center; }
+  .vit th, .vit td { border:1px solid #999; padding:3px 2px; font-size:7.5px; text-align:center; }
+  .vit th { background:#d7ecd7; }
+  .sub { font-weight:bold; font-size:9px; margin:6px 0 2px; }
+  .page2 { page-break-before: always; }
+  .sign td { border:1px solid #888; padding:4px 6px; font-size:8px; height:40px; vertical-align:top; }
+  .sign .lbl { background:#d7ecd7; font-weight:bold; text-align:center; }
+  .title { text-align:right; font-weight:bold; font-size:12px; margin-top:6px; }
+  .foot { font-size:7px; color:#666; margin-top:4px; }
+</style></head><body>
+
+  <!-- A. DATOS DEL ESTABLECIMIENTO Y USUARIO / PACIENTE -->
+  <div class="bar">A. DATOS DEL ESTABLECIMIENTO Y USUARIO / PACIENTE</div>
+  <table class="info">
+    <tr>
+      <td class="lbl">Institución del sistema</td><td>&nbsp;</td>
+      <td class="lbl">Establecimiento de salud</td><td>${val(clinic?.nombreComercial || clinic?.name)}</td>
+      <td class="lbl">N.º historia clínica única</td><td>${val(patient?.cedula)}</td>
+    </tr>
+    <tr>
+      <td class="lbl">Primer apellido</td><td>${val(apellidos[0])}</td>
+      <td class="lbl">Segundo apellido</td><td>${val(apellidos.slice(1).join(' '))}</td>
+      <td class="lbl">Sexo</td><td>${val(sexo)}</td>
+    </tr>
+    <tr>
+      <td class="lbl">Primer nombre</td><td>${val(nombres[0])}</td>
+      <td class="lbl">Segundo nombre</td><td>${val(nombres.slice(1).join(' '))}</td>
+      <td class="lbl">Edad (años)</td><td>${val(edad)}</td>
+    </tr>
+  </table>
+
+  <!-- B. MOTIVO DE CONSULTA -->
+  <div class="bar">B. MOTIVO DE CONSULTA <span class="note">${fu.tipoConsulta === 'primera' ? 'PRIMERA [✕]' : 'PRIMERA [ ]'} &nbsp; ${fu.tipoConsulta === 'subsecuente' ? 'SUBSECUENTE [✕]' : 'SUBSECUENTE [ ]'}</span></div>
+  <div class="box">${val(fu.descripcion || fu.motivoConsulta)}</div>
+
+  <!-- C. ANTECEDENTES PATOLÓGICOS PERSONALES -->
+  <div class="bar">C. ANTECEDENTES PATOLÓGICOS PERSONALES <span class="note">Datos clínico-quirúrgicos, obstétricos, alérgicos relevantes</span></div>
+  ${renderChecks(ANTECEDENTES_CATEGORIAS, record.patologicosPersonales)}
+  ${record.datosRelevantes ? `<div class="det"><b>Relevantes:</b> ${esc(record.datosRelevantes)}</div>` : ''}
+
+  <!-- D. ANTECEDENTES PATOLÓGICOS FAMILIARES -->
+  <div class="bar">D. ANTECEDENTES PATOLÓGICOS FAMILIARES</div>
+  ${renderChecks(ANTECEDENTES_CATEGORIAS, record.patologicosFamiliares)}
+
+  <!-- E. ENFERMEDAD O PROBLEMA ACTUAL -->
+  <div class="bar">E. ENFERMEDAD O PROBLEMA ACTUAL <span class="note">Cronología · localización · características · intensidad · frecuencia · factores agravantes</span></div>
+  <div class="box">${val(fu.enfermedadActual)}${fu.estudioSintomas ? `\n\nEstudio o síntomas: ${esc(fu.estudioSintomas)}` : ''}</div>
+
+  <!-- F. CONSTANTES VITALES Y ANTROPOMETRÍA -->
+  <div class="bar">F. CONSTANTES VITALES Y ANTROPOMETRÍA</div>
+  <table class="vit">
+    <tr><th>Fecha</th><th>Hora</th><th>Temp (°C)</th><th>P. Arterial</th><th>Pulso/min</th><th>F. Resp/min</th><th>Peso (Kg)</th><th>Talla (cm)</th><th>IMC</th><th>P. Abdom.</th><th>Hb cap.</th><th>Glucosa</th><th>SatO₂ %</th></tr>
+    <tr><td>${fmtDate(fu.fecha)}</td><td>${val(vs.hora)}</td><td>${val(vs.temperature)}</td><td>${val(vs.bloodPressure)}</td><td>${val(vs.heartRate)}</td><td>${val(vs.respiratoryRate)}</td><td>${val(vs.weight)}</td><td>${val(vs.height)}</td><td>${val(imc)}</td><td>${val(vs.abdominalPerimeter)}</td><td>${val(vs.capillaryHemoglobin)}</td><td>${val(vs.glucose)}</td><td>${val(vs.oxygenSaturation)}</td></tr>
+  </table>
+
+  <!-- G. REVISIÓN ACTUAL DE ÓRGANOS Y SISTEMAS -->
+  <div class="bar">G. REVISIÓN ACTUAL DE ÓRGANOS Y SISTEMAS <span class="note">Marcar cuando presente patología y describa</span></div>
+  ${renderChecks(REVISION_SISTEMAS, fu.revisionSistemas)}
+
+  <!-- PÁGINA 2 -->
+  <div class="page2"></div>
+
+  <!-- H. EXAMEN FÍSICO -->
+  <div class="bar">H. EXAMEN FÍSICO — REGIONAL <span class="note">Marcar cuando presente patología y describa</span></div>
+  ${renderChecks(EXAMEN_REGIONAL, fu.examenFisico?.regional)}
+  <div class="bar">H. EXAMEN FÍSICO — SISTÉMICO</div>
+  ${renderChecks(EXAMEN_SISTEMICO, fu.examenFisico?.sistemico)}
+  ${fu.examenFisico?.hallazgos ? `<div class="det"><b>Hallazgos:</b> ${esc(fu.examenFisico.hallazgos)}</div>` : ''}
+
+  <!-- I. DIAGNÓSTICO -->
+  <div class="bar">I. DIAGNÓSTICO <span class="note">PRE = presuntivo · DEF = definitivo</span></div>
+  <table class="grid"><tr><th class="c">#</th><th>Descripción</th><th class="c">CIE</th><th class="c">PRE</th><th class="c">DEF</th></tr>${dxRows}</table>
+
+  <!-- J. PLAN DE TRATAMIENTO -->
+  <div class="bar">J. PLAN DE TRATAMIENTO <span class="note">Diagnóstico, terapéutico y educacional</span></div>
+  <div class="box">${val(fu.planTratamiento)}</div>
+  ${recetaHtml}
+  ${derivHtml}
+
+  <!-- K. DATOS DEL PROFESIONAL RESPONSABLE -->
+  <div class="bar">K. DATOS DEL PROFESIONAL RESPONSABLE</div>
+  <table class="sign">
+    <tr>
+      <td class="lbl">Fecha</td><td class="lbl">Nombre y apellidos</td><td class="lbl">N.º documento</td><td class="lbl">Firma / Sello</td>
+    </tr>
+    <tr>
+      <td>${fmtDate(fu.fecha)}</td>
+      <td>${val(doc.name)}${doc.specialty ? `<br/><span style="font-size:7px;color:#555">${esc(doc.specialty)}</span>` : ''}</td>
+      <td>${val(doc.cedula)}</td>
+      <td>${doc.signatureImage ? `<img src="${doc.signatureImage}" style="max-height:34px"/>` : '&nbsp;'}</td>
+    </tr>
+  </table>
+
+  <div class="title">CONSULTA EXTERNA — HCU-form.002 / 2021</div>
+  <div class="foot">Generado el ${new Date().toLocaleString('es-EC')}</div>
+</body></html>`;
+
+    const puppeteer = require('puppeteer');
+    const browser = await puppeteer.launch({
+      headless: 'new',
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
+    const page = await browser.newPage();
+    await page.setContent(html, { waitUntil: 'networkidle0' });
+    const pdf = await page.pdf({
+      format: 'A4',
+      margin: { top: '10mm', bottom: '10mm', left: '8mm', right: '8mm' },
+      printBackground: true,
+    });
+    await browser.close();
+
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="HCU002_${followUpId}.pdf"`);
+    res.end(pdf);
+  } catch (error) {
+    console.error('Error generando HCU-form.002:', error);
+    res.status(500).json({ message: 'Error al generar el formulario MSP', error: error.message });
   }
 };

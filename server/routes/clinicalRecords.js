@@ -5,6 +5,7 @@ const {
   addFollowUp,
   deleteFollowUp,
   printFollowUp,
+  printMspForm,
   uploadAttachmentMiddleware,
   uploadFollowUpAttachment,
   downloadFollowUpAttachment,
@@ -20,6 +21,7 @@ router.get('/:patientId', allRoles, getOrCreateByPatient);
 router.put('/:patientId', allRoles, updateByPatient);
 router.post('/:patientId/follow-ups', allRoles, addFollowUp);
 router.get('/:patientId/follow-ups/:followUpId/print', allRoles, printFollowUp);
+router.get('/:patientId/follow-ups/:followUpId/msp', allRoles, printMspForm);
 router.delete('/:patientId/follow-ups/:followUpId', requireRole('admin', 'doctor'), deleteFollowUp);
 
 // Adjuntos PDF (ecografías, bioresonancias, etc.) por seguimiento.
