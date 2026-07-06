@@ -25,6 +25,7 @@ import {
   HiOutlineXMark,
   HiOutlineChevronDown,
   HiOutlineChevronRight,
+  HiOutlineMagnifyingGlass,
 } from 'react-icons/hi2';
 
 // Menú unificado por grupos. Cada ítem declara qué roles pueden verlo
@@ -171,8 +172,13 @@ const MENU_GROUPS = [
   },
 ];
 
+const ALL_ROLES = ['admin', 'cajero', 'contabilidad', 'doctor', 'optica', 'call_center', 'marketing', 'enfermero'];
+
 const isPathActive = (pathname, path) =>
   pathname === path || (path !== '/' && pathname.startsWith(path));
+
+// Normaliza para buscar sin acentos ni mayúsculas.
+const norm = (s) => (s || '').normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase().trim();
 
 export default function Layout({ children }) {
   const { user, role, activeClinic, clinics, selectClinic, logout } = useAuth();
@@ -193,6 +199,13 @@ export default function Layout({ children }) {
   };
   const [openGroups, setOpenGroups] = useState({});
   const toggleGroup = (key) => setOpenGroups((g) => ({ ...g, [key]: !g[key] }));
+  const [query, setQuery] = useState('');
+
+  // Al navegar desde el buscador: cierra el overlay móvil y limpia la búsqueda.
+  const handleNavigate = () => {
+    setSidebarOpen(false);
+    setQuery('');
+  };
 
   const handleLogout = () => {
     logout();
@@ -222,6 +235,20 @@ export default function Layout({ children }) {
   const visibleGroups = MENU_GROUPS
     .map((g) => ({ ...g, items: g.items.filter(canSee) }))
     .filter((g) => g.items.length > 0);
+
+  // Lista plana de todas las opciones visibles (incluye Dashboard y Mi Cuenta)
+  // para el buscador del menú.
+  const searchItems = [
+    { path: '/', label: 'Dashboard', group: 'Inicio', roles: ALL_ROLES },
+    ...MENU_GROUPS.flatMap((g) =>
+      g.items.map((it) => ({ path: it.path, label: it.label, group: g.label, roles: it.roles, superOnly: it.superOnly }))
+    ),
+    { path: '/settings', label: 'Configuración de Cuenta', group: 'Mi Cuenta', roles: ALL_ROLES },
+  ].filter(canSee);
+  const nq = norm(query);
+  const searchResults = nq
+    ? searchItems.filter((it) => norm(it.label).includes(nq) || norm(it.group).includes(nq))
+    : [];
 
   // Título de la página actual (derivado de la ruta) para mostrarlo en el header.
   const TITLE_MAP = [
@@ -287,6 +314,53 @@ export default function Layout({ children }) {
         )}
 
         <nav className="flex-1 px-4 py-2 space-y-1 overflow-y-auto">
+          {/* Buscador del menú */}
+          <div className="relative mb-3">
+            <HiOutlineMagnifyingGlass className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+            <input
+              type="text"
+              value={query}
+              onChange={(e) => setQuery(e.target.value)}
+              placeholder="Buscar opción..."
+              className="w-full bg-white/10 text-white placeholder-slate-400 border border-white/15 rounded-xl pl-9 pr-8 py-2 text-[13px] focus:outline-none focus:border-emerald-400/60"
+            />
+            {query && (
+              <button
+                type="button"
+                onClick={() => setQuery('')}
+                title="Limpiar"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white bg-transparent border-none cursor-pointer p-1"
+              >
+                <HiOutlineXMark className="w-4 h-4" />
+              </button>
+            )}
+          </div>
+
+          {query ? (
+            /* Resultados de búsqueda */
+            <div className="space-y-0.5">
+              {searchResults.length === 0 ? (
+                <p className="text-[12px] text-slate-500 px-3 py-3">Sin resultados para “{query}”.</p>
+              ) : (
+                searchResults.map((it) => (
+                  <Link
+                    key={`${it.group}-${it.path}-${it.label}`}
+                    to={it.path}
+                    onClick={handleNavigate}
+                    className={`flex flex-col px-3 py-2 rounded-lg no-underline ${
+                      isPathActive(location.pathname, it.path)
+                        ? 'bg-emerald-500/15 text-white'
+                        : 'text-slate-300 hover:bg-white/10 hover:text-white'
+                    }`}
+                  >
+                    <span className="text-[13px] font-medium">{it.label}</span>
+                    <span className="text-[10px] text-slate-500">{it.group}</span>
+                  </Link>
+                ))
+              )}
+            </div>
+          ) : (
+          <>
           <p className="text-[10px] uppercase tracking-wider text-slate-500 font-semibold px-3 mb-2">
             Menú principal
           </p>
@@ -367,6 +441,8 @@ export default function Layout({ children }) {
               Configuración de Cuenta
             </Link>
           </div>
+          </>
+          )}
         </nav>
 
         <div className="px-4 py-4 border-t border-white/10 mx-2">
