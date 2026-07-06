@@ -26,6 +26,18 @@ const payrollConceptSchema = new mongoose.Schema(
     affectsDecimos: { type: Boolean, default: false },
     affectsIncomeTax: { type: Boolean, default: false },
     isReimbursement: { type: Boolean, default: false }, // reembolso: no es ingreso gravado
+    // Clasificacion tributaria/RDEP. Son flags compatibles: documentos antiguos
+    // quedan en false/undefined y el reporte emite advertencias cuando no alcanza.
+    isTaxableIncome: { type: Boolean, default: false },
+    isNonTaxableIncome: { type: Boolean, default: false },
+    isDecimoTercero: { type: Boolean, default: false },
+    isDecimoCuarto: { type: Boolean, default: false },
+    isFondosReserva: { type: Boolean, default: false },
+    isVacation: { type: Boolean, default: false },
+    isOtherNonTaxable: { type: Boolean, default: false },
+    isDiscount: { type: Boolean, default: false },
+    isPersonalIess: { type: Boolean, default: false },
+    isIncomeTaxWithholding: { type: Boolean, default: false },
     // Cuentas (refs al plan). El rol NUNCA pide cuenta manual: sale de aquí.
     defaultAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null }, // gasto (INGRESO/PROVISION)
     payableAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null }, // por pagar / CxC (EGRESO/PROVISION/OBLIGACION)

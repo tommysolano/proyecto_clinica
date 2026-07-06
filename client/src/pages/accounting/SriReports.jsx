@@ -405,29 +405,64 @@ function RetentionTable({ title, data, cols }) {
 // RDEP — retenciones en relación de dependencia (anual).
 function Rdep({ data }) {
   const rows = data?.empleados || [];
+  const totals = data?.totals || {};
+  const warnings = data?.warnings || [];
+  const payrolls = data?.payrolls || {};
+  const emptyMessage = warnings.find((w) => w.code === 'YEAR_WITHOUT_DATA')?.message || 'No hay nóminas cerradas para este año.';
+  const summary = [
+    ['Empleados', totals.empleados ?? rows.length],
+    ['Roles incluidos', payrolls.included ?? totals.rolesCerrados ?? 0],
+    ['Borradores excluidos', payrolls.draftExcluded ?? 0],
+    ['IR retenido', fmt(totals.impuestoRenta ?? data?.total ?? 0)],
+  ];
   return (
-    <Section title={`RDEP — Relación de dependencia · ${data?.year || ''}`}>
-      <table className="tbl text-sm">
+    <Section title={`RDEP — Relación de dependencia · ${data?.year || ''}`} subtitle={data?.nota}>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2 mb-3">
+        {summary.map(([label, value]) => (
+          <div key={label} className="border border-slate-200 rounded-lg px-3 py-2 bg-slate-50">
+            <div className="text-[11px] uppercase text-slate-500">{label}</div>
+            <div className="font-semibold text-slate-800">{value}</div>
+          </div>
+        ))}
+      </div>
+
+      {warnings.length > 0 && (
+        <div className="mb-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 space-y-1">
+          {warnings.map((w, i) => <div key={`${w.code}-${i}`}>{w.message}</div>)}
+        </div>
+      )}
+
+      <table className="tbl text-xs">
         <thead className="bg-emerald-50 text-xs uppercase"><tr>
           <th className="px-3 py-2 text-left">Identificación</th><th className="px-3 py-2 text-left">Nombre</th>
-          <th className="px-3 py-2 text-right">Sueldos</th><th className="px-3 py-2 text-right">Ingreso exento</th>
-          <th className="px-3 py-2 text-right">Aporte IESS</th><th className="px-3 py-2 text-right">Imp. renta retenido</th>
+          <th className="px-3 py-2 text-center">Roles</th><th className="px-3 py-2 text-right">Sueldo base</th>
+          <th className="px-3 py-2 text-right">Ing. gravados</th><th className="px-3 py-2 text-right">Ing. no gravados</th>
+          <th className="px-3 py-2 text-right">IESS personal</th><th className="px-3 py-2 text-right">IR retenido</th>
+          <th className="px-3 py-2 text-right">Otros desc.</th>
         </tr></thead>
         <tbody>
           {rows.map((e, i) => (
             <tr key={i} className="border-t">
               <td className="px-3 py-2 font-mono">{e.identificacion}</td><td className="px-3 py-2">{e.nombre}</td>
-              <td className="px-3 py-2 text-right font-mono">{fmt(e.sueldo)}</td>
-              <td className="px-3 py-2 text-right font-mono">{fmt(e.ingresoExento)}</td>
-              <td className="px-3 py-2 text-right font-mono">{fmt(e.aporteIess)}</td>
+              <td className="px-3 py-2 text-center font-mono">{e.rolesCerrados?.length || 0}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmt(e.sueldoBase)}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmt(e.ingresosGravados ?? e.sueldo)}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmt(e.ingresosNoGravados ?? e.ingresoExento)}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmt(e.aporteIessPersonal ?? e.aporteIess)}</td>
               <td className="px-3 py-2 text-right font-mono">{fmt(e.impuestoRenta)}</td>
+              <td className="px-3 py-2 text-right font-mono">{fmt(e.otrosDescuentos)}</td>
             </tr>
           ))}
-          {rows.length === 0 && <tr><td colSpan={6} className="px-3 py-4 text-center text-slate-400">Sin roles cerrados en el año.</td></tr>}
+          {rows.length === 0 && <tr><td colSpan={9} className="px-3 py-4 text-center text-slate-500">{emptyMessage}</td></tr>}
         </tbody>
         <tfoot className="bg-slate-100 font-bold"><tr>
-          <td colSpan={5} className="px-3 py-2 text-right">TOTAL IMP. RENTA RETENIDO</td>
-          <td className="px-3 py-2 text-right font-mono">{fmt(data?.total)}</td>
+          <td colSpan={3} className="px-3 py-2 text-right">TOTALES</td>
+          <td className="px-3 py-2 text-right font-mono">{fmt(totals.sueldoBase)}</td>
+          <td className="px-3 py-2 text-right font-mono">{fmt(totals.ingresosGravados)}</td>
+          <td className="px-3 py-2 text-right font-mono">{fmt(totals.ingresosNoGravados)}</td>
+          <td className="px-3 py-2 text-right font-mono">{fmt(totals.aporteIessPersonal)}</td>
+          <td className="px-3 py-2 text-right font-mono">{fmt(totals.impuestoRenta ?? data?.total)}</td>
+          <td className="px-3 py-2 text-right font-mono">{fmt(totals.otrosDescuentos)}</td>
         </tr></tfoot>
       </table>
     </Section>

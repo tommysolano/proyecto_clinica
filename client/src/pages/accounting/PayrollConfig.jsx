@@ -201,10 +201,30 @@ function Positions({ depts, positions, reload }) {
 }
 
 // ---- Conceptos (rubros) ----
+const CONCEPT_RDEP_FLAGS = [
+  ['isTaxableIncome', 'Ing. gravado'],
+  ['isNonTaxableIncome', 'Ing. no gravado'],
+  ['affectsIess', 'Aporta IESS'],
+  ['affectsIncomeTax', 'Afecta IR'],
+  ['affectsDecimos', 'Afecta decimos'],
+  ['isDecimoTercero', 'Decimo tercero'],
+  ['isDecimoCuarto', 'Decimo cuarto'],
+  ['isFondosReserva', 'Fondos reserva'],
+  ['isVacation', 'Vacaciones'],
+  ['isReimbursement', 'Reembolso'],
+  ['isOtherNonTaxable', 'Otro no gravado'],
+  ['isDiscount', 'Descuento'],
+  ['isPersonalIess', 'IESS personal'],
+  ['isIncomeTaxWithholding', 'IR retenido'],
+];
+
 function Concepts({ accounts, concepts, reload }) {
-  const EMPTY = { code: '', name: '', type: 'INGRESO', category: '', rate: 0, defaultAccount: '', payableAccount: '', active: true };
+  const flagDefaults = Object.fromEntries(CONCEPT_RDEP_FLAGS.map(([k]) => [k, false]));
+  const EMPTY = { code: '', name: '', type: 'INGRESO', category: '', rate: 0, defaultAccount: '', payableAccount: '', active: true, ...flagDefaults };
   const [form, setForm] = useState(EMPTY);
   const [editing, setEditing] = useState(null);
+  const toggleFlag = (k) => setForm({ ...form, [k]: !form[k] });
+  const flagSummary = (c) => CONCEPT_RDEP_FLAGS.filter(([k]) => c[k]).map(([, label]) => label).join(', ');
   const save = async () => {
     try {
       if (editing) await api.put(`/payroll/concepts/${editing}`, form);
@@ -233,12 +253,20 @@ function Concepts({ accounts, concepts, reload }) {
         <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Cuenta gasto (ingreso/provisión)</span><AccountSelect value={form.defaultAccount} onChange={(v) => setForm({ ...form, defaultAccount: v })} accounts={accounts} /></label>
         <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Cuenta por pagar / CxC (egreso)</span><AccountSelect value={form.payableAccount} onChange={(v) => setForm({ ...form, payableAccount: v })} accounts={accounts} /></label>
       </div>
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+        {CONCEPT_RDEP_FLAGS.map(([k, label]) => (
+          <label key={k} className="text-xs flex items-center gap-2 border border-slate-200 rounded-lg px-2 py-1.5 bg-slate-50">
+            <input type="checkbox" checked={!!form[k]} onChange={() => toggleFlag(k)} />
+            <span className="text-slate-700">{label}</span>
+          </label>
+        ))}
+      </div>
       <div className="flex gap-2">
         <button onClick={save} className="px-4 py-2 bg-emerald-600 text-white rounded-xl flex items-center gap-1"><HiOutlinePlus /> {editing ? 'Actualizar' : 'Agregar'}</button>
         {editing && <button onClick={() => { setEditing(null); setForm(EMPTY); }} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button>}
       </div>
       <table className="tbl text-sm">
-        <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Código</th><th className="px-3 py-2 text-left">Nombre</th><th className="px-3 py-2 text-left">Tipo</th><th className="px-3 py-2 text-left">Cuenta</th><th></th></tr></thead>
+        <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Código</th><th className="px-3 py-2 text-left">Nombre</th><th className="px-3 py-2 text-left">Tipo</th><th className="px-3 py-2 text-left">Cuenta</th><th className="px-3 py-2 text-left">Clasificación</th><th></th></tr></thead>
         <tbody>
           {concepts.map((c) => (
             <tr key={c._id} className="border-t">
@@ -246,10 +274,11 @@ function Concepts({ accounts, concepts, reload }) {
               <td className="px-3 py-2">{c.name}</td>
               <td className="px-3 py-2 text-xs">{c.type}</td>
               <td className="px-3 py-2 text-xs">{c.defaultAccount ? `${c.defaultAccount.code}` : (c.payableAccount ? `${c.payableAccount.code}` : <span className="text-slate-400">—</span>)}</td>
-              <td className="px-3 py-2 text-right"><button onClick={() => { setEditing(c._id); setForm({ code: c.code, name: c.name, type: c.type, category: c.category || '', rate: c.rate || 0, defaultAccount: c.defaultAccount?._id || '', payableAccount: c.payableAccount?._id || '', active: c.active }); }} className="text-blue-600 text-xs">Editar</button></td>
+              <td className="px-3 py-2 text-[11px] text-slate-600 max-w-xs">{flagSummary(c) || <span className="text-amber-600">Sin clasificación RDEP</span>}</td>
+              <td className="px-3 py-2 text-right"><button onClick={() => { setEditing(c._id); setForm({ code: c.code, name: c.name, type: c.type, category: c.category || '', rate: c.rate || 0, defaultAccount: c.defaultAccount?._id || '', payableAccount: c.payableAccount?._id || '', active: c.active, ...Object.fromEntries(CONCEPT_RDEP_FLAGS.map(([k]) => [k, !!c[k]])) }); }} className="text-blue-600 text-xs">Editar</button></td>
             </tr>
           ))}
-          {concepts.length === 0 && <tr><td colSpan={5} className="px-3 py-4 text-center text-slate-400">Sin conceptos. Usa «Sembrar estándar».</td></tr>}
+          {concepts.length === 0 && <tr><td colSpan={6} className="px-3 py-4 text-center text-slate-400">Sin conceptos. Usa «Sembrar estándar».</td></tr>}
         </tbody>
       </table>
     </div>

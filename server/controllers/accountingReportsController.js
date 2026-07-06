@@ -1237,51 +1237,345 @@ exports.form103 = async (req, res) => {
  * Agrega los roles de pago del año por empleado: ingreso gravado, aporte IESS
  * personal e impuesto a la renta retenido.
  */
+const RDEP_INCLUDED_STATUSES = ['CERRADO', 'PAGADO'];
+const RDEP_WARNING = {
+  DRAFT_PAYROLLS_EXCLUDED: 'Hay roles en borrador que no se incluyen.',
+  YEAR_WITHOUT_DATA: 'No hay nominas cerradas para este anio.',
+  EMPLOYEE_MISSING_ID: 'Hay empleados sin identificacion completa.',
+  EMPLOYEE_MISSING_HIRE_DATE: 'Hay empleados sin fecha de ingreso.',
+  EMPLOYEE_MISSING_DEPARTMENT: 'Hay empleados sin departamento.',
+  EMPLOYEE_MISSING_POSITION: 'Hay empleados sin cargo.',
+  MISSING_INCOME_TAX_TABLE: 'No hay tabla de impuesto a la renta configurada para este anio.',
+  UNCLASSIFIED_CONCEPTS: 'Hay conceptos sin clasificacion tributaria.',
+  LEGACY_TOTALS_DERIVED: 'Hay roles antiguos con totales que no se pudieron clasificar por completo.',
+};
+
+const rdepRound = (n) => +(Number(n) || 0).toFixed(2);
+const rdepUpper = (s) => String(s || '').trim().toUpperCase();
+const rdepDate = (d) => (d ? new Date(d).toISOString().slice(0, 10) : '');
+
+function rdepWarningCollector() {
+  const seen = new Set();
+  const warnings = [];
+  return {
+    add(code, message, extra = {}) {
+      const key = `${code}|${extra.employeeId || ''}|${extra.payrollId || ''}|${extra.conceptId || ''}|${extra.field || ''}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      warnings.push({ code, message, severity: extra.severity || 'warning', ...extra });
+    },
+    list() { return warnings; },
+  };
+}
+
+function rdepNewEmployeeRow({ key, item, employee, department, position }) {
+  const nombre = (item.employeeName || `${employee?.firstName || ''} ${employee?.lastName || ''}`.trim()).trim();
+  const identificacion = item.identificacion || employee?.identificacion || '';
+  return {
+    key,
+    employeeId: employee?._id ? String(employee._id) : (item.employee ? String(item.employee) : ''),
+    identificacion,
+    tipoIdentificacion: employee?.tipoIdentificacion || '',
+    nombre,
+    fechaIngreso: rdepDate(employee?.hireDate),
+    fechaSalida: rdepDate(employee?.exitDate),
+    departamento: department?.name || employee?.department || item.departmentType || '',
+    cargo: position?.name || employee?.position || '',
+    periodoFiscal: null,
+    sueldoBase: 0,
+    sueldo: 0,
+    ingresosGravados: 0,
+    ingresosNoGravados: 0,
+    ingresoExento: 0,
+    decimoTercero: 0,
+    decimoCuarto: 0,
+    fondosReserva: 0,
+    vacaciones: 0,
+    aporteIessPersonal: 0,
+    aporteIessPatronal: 0,
+    aporteIess: 0,
+    impuestoRenta: 0,
+    baseImponible: 0,
+    otrosIngresos: 0,
+    otrosDescuentos: 0,
+    totalIngresos: 0,
+    totalEgresos: 0,
+    netoPagado: 0,
+    mesesTrabajados: 0,
+    rolesCerrados: [],
+    _months: new Set(),
+  };
+}
+
+function rdepConceptId(line) {
+  return line?.concept ? String(line.concept) : '';
+}
+
+function rdepClassifyIncome(line, concept) {
+  const code = rdepUpper(concept?.code || line?.code);
+  const category = rdepUpper(concept?.category || '');
+  if (concept?.isDecimoTercero || code.includes('DECIMO-TERCERO')) return 'decimoTercero';
+  if (concept?.isDecimoCuarto || code.includes('DECIMO-CUARTO')) return 'decimoCuarto';
+  if (concept?.isFondosReserva || code.includes('FONDOS-RESERVA') || category === 'FONDOS_RESERVA') return 'fondosReserva';
+  if (concept?.isVacation || code.includes('VACACIONES') || category === 'VACACIONES') return 'vacaciones';
+  if (concept?.isTaxableIncome || concept?.affectsIncomeTax) return 'gravado';
+  if (concept?.isNonTaxableIncome || concept?.isOtherNonTaxable || concept?.isReimbursement) return 'noGravado';
+  return 'sinClasificar';
+}
+
+function rdepClassifyDeduction(line, concept) {
+  const code = rdepUpper(concept?.code || line?.code);
+  const category = rdepUpper(concept?.category || '');
+  if (concept?.isPersonalIess || code.includes('IESS-PERSONAL')) return 'aporteIessPersonal';
+  if (concept?.isIncomeTaxWithholding || code.includes('IMPUESTO-RENTA') || category === 'IMPUESTO') return 'impuestoRenta';
+  if (concept?.isDiscount || concept?.type === 'EGRESO' || ['ANTICIPO', 'PRESTAMO', 'MULTA', 'DESCUENTO', 'AUSENCIA'].includes(category)) return 'descuento';
+  return 'sinClasificar';
+}
+
+function rdepAddIncome(row, bucket, amount) {
+  const value = rdepRound(amount);
+  if (value <= 0) return;
+  if (bucket === 'decimoTercero') { row.decimoTercero += value; row.ingresosNoGravados += value; return; }
+  if (bucket === 'decimoCuarto') { row.decimoCuarto += value; row.ingresosNoGravados += value; return; }
+  if (bucket === 'fondosReserva') { row.fondosReserva += value; row.ingresosNoGravados += value; return; }
+  if (bucket === 'vacaciones') { row.vacaciones += value; row.ingresosNoGravados += value; return; }
+  if (bucket === 'gravado') { row.ingresosGravados += value; return; }
+  if (bucket === 'noGravado') { row.ingresosNoGravados += value; return; }
+  row.otrosIngresos += value;
+}
+
+function rdepAddDeduction(row, bucket, amount) {
+  const value = rdepRound(amount);
+  if (value <= 0) return;
+  if (bucket === 'aporteIessPersonal') { row.aporteIessPersonal += value; return; }
+  if (bucket === 'impuestoRenta') { row.impuestoRenta += value; return; }
+  row.otrosDescuentos += value;
+}
+
 exports.rdep = async (req, res) => {
   try {
     const Payroll = require('../models/Payroll');
+    const Employee = require('../models/Employee');
+    const PayrollConcept = require('../models/PayrollConcept');
+    const PayrollDepartment = require('../models/PayrollDepartment');
+    const PayrollPosition = require('../models/PayrollPosition');
+    const PayrollIncomeTaxTable = require('../models/PayrollIncomeTaxTable');
     const Clinic = require('../models/Clinic');
     const year = parseInt(req.query.year) || new Date().getFullYear();
-    const clinic = await Clinic.findById(req.clinicId);
-    const rolls = await Payroll.find({ clinic: req.clinicId, year, status: { $in: ['CERRADO', 'PAGADO'] } });
+    const warnings = rdepWarningCollector();
 
+    const allRolls = await Payroll.find({ clinic: req.clinicId, year }).lean();
+    const statusCounts = allRolls.reduce((acc, p) => {
+      acc[p.status || 'SIN_ESTADO'] = (acc[p.status || 'SIN_ESTADO'] || 0) + 1;
+      return acc;
+    }, {});
+    const rolls = allRolls.filter((p) => RDEP_INCLUDED_STATUSES.includes(p.status));
+    const draftExcluded = allRolls.filter((p) => p.status === 'BORRADOR').length;
+    if (draftExcluded > 0) {
+      warnings.add('DRAFT_PAYROLLS_EXCLUDED', RDEP_WARNING.DRAFT_PAYROLLS_EXCLUDED, { count: draftExcluded });
+    }
+    if (!rolls.length) warnings.add('YEAR_WITHOUT_DATA', RDEP_WARNING.YEAR_WITHOUT_DATA, { year, severity: 'info' });
+
+    const employeeIds = [...new Set(rolls.flatMap((p) => (p.items || []).map((it) => String(it.employee || '')).filter((id) => mongoose.Types.ObjectId.isValid(id))))];
+    const conceptIds = [...new Set(rolls.flatMap((p) => (p.items || []).flatMap((it) => [...(it.earnings || []), ...(it.deductions || [])].map(rdepConceptId))).filter((id) => mongoose.Types.ObjectId.isValid(id)))];
+    const [clinic, employees, departments, positions, concepts, taxTable] = await Promise.all([
+      Clinic.findById(req.clinicId).lean(),
+      employeeIds.length ? Employee.find({ clinic: req.clinicId, _id: { $in: employeeIds } }).lean() : [],
+      PayrollDepartment.find({ clinic: req.clinicId }).lean(),
+      PayrollPosition.find({ clinic: req.clinicId }).lean(),
+      conceptIds.length ? PayrollConcept.find({ clinic: req.clinicId, _id: { $in: conceptIds } }).lean() : [],
+      PayrollIncomeTaxTable.findOne({ clinic: req.clinicId, year, active: true }).lean(),
+    ]);
+    if (rolls.length && !taxTable) warnings.add('MISSING_INCOME_TAX_TABLE', RDEP_WARNING.MISSING_INCOME_TAX_TABLE, { year });
+
+    const employeesById = new Map(employees.map((e) => [String(e._id), e]));
+    const deptById = new Map(departments.map((d) => [String(d._id), d]));
+    const posById = new Map(positions.map((p) => [String(p._id), p]));
+    const conceptById = new Map(concepts.map((c) => [String(c._id), c]));
     const byEmp = new Map();
+
     for (const p of rolls) {
       for (const it of p.items || []) {
-        const key = it.identificacion || String(it.employee);
-        if (!byEmp.has(key)) byEmp.set(key, { identificacion: it.identificacion || '', nombre: it.employeeName || '', sueldo: 0, iess: 0, impuestoRenta: 0, exento: 0 });
-        const e = byEmp.get(key);
-        const exento = (it.decimoTercero || 0) + (it.decimoCuarto || 0) + (it.fondosReserva || 0);
-        e.sueldo += (it.totalIngresos || 0) - exento;
-        e.exento += exento;
-        e.iess += it.iessPersonal || 0;
-        e.impuestoRenta += it.impuestoRenta || 0;
+        const employeeId = it.employee ? String(it.employee) : '';
+        const employee = employeesById.get(employeeId);
+        const department = deptById.get(String(employee?.departmentRef || it.departmentRef || ''));
+        const position = posById.get(String(employee?.positionRef || ''));
+        const key = employeeId || it.identificacion || it.employeeName || `item-${byEmp.size + 1}`;
+        if (!byEmp.has(key)) byEmp.set(key, rdepNewEmployeeRow({ key, item: it, employee, department, position }));
+        const row = byEmp.get(key);
+        row.periodoFiscal = year;
+        row.rolesCerrados.push({ payrollId: String(p._id), code: p.code || '', period: p.period || `${p.year}-${String(p.month).padStart(2, '0')}`, month: p.month, status: p.status });
+        if (p.month) row._months.add(p.month);
+
+        const warnCtx = { employeeId: row.employeeId, employeeName: row.nombre };
+        if (!employee && employeeId) warnings.add('EMPLOYEE_NOT_FOUND', 'El rol referencia un empleado que no existe o no pertenece a la clinica.', { ...warnCtx, payrollId: String(p._id) });
+        if (!row.identificacion) warnings.add('EMPLOYEE_MISSING_ID', RDEP_WARNING.EMPLOYEE_MISSING_ID, warnCtx);
+        if (!row.fechaIngreso) warnings.add('EMPLOYEE_MISSING_HIRE_DATE', RDEP_WARNING.EMPLOYEE_MISSING_HIRE_DATE, warnCtx);
+        if (!row.departamento) warnings.add('EMPLOYEE_MISSING_DEPARTMENT', RDEP_WARNING.EMPLOYEE_MISSING_DEPARTMENT, warnCtx);
+        if (!row.cargo) warnings.add('EMPLOYEE_MISSING_POSITION', RDEP_WARNING.EMPLOYEE_MISSING_POSITION, warnCtx);
+
+        let classifiedIncome = 0;
+        const taxableFixed = rdepRound((it.baseSalary || 0) + (it.overtime || 0) + (it.bonuses || 0) + (it.commissions || 0));
+        row.sueldoBase += rdepRound(it.baseSalary || 0);
+        rdepAddIncome(row, 'gravado', taxableFixed);
+        classifiedIncome += taxableFixed;
+
+        for (const [bucket, value] of [
+          ['decimoTercero', it.decimoTercero],
+          ['decimoCuarto', it.decimoCuarto],
+          ['fondosReserva', it.fondosReserva],
+          ['vacaciones', it.vacaciones],
+        ]) {
+          const amount = rdepRound(value);
+          rdepAddIncome(row, bucket, amount);
+          classifiedIncome += amount;
+        }
+
+        const otherIncome = rdepRound(it.otherIncome || 0);
+        if (otherIncome > 0) {
+          rdepAddIncome(row, 'sinClasificar', otherIncome);
+          classifiedIncome += otherIncome;
+          warnings.add('UNCLASSIFIED_CONCEPTS', RDEP_WARNING.UNCLASSIFIED_CONCEPTS, { ...warnCtx, payrollId: String(p._id), field: 'otherIncome' });
+        }
+
+        for (const line of it.earnings || []) {
+          const amount = rdepRound(line.amount);
+          if (amount <= 0) continue;
+          const conceptId = rdepConceptId(line);
+          const concept = conceptId ? conceptById.get(conceptId) : null;
+          const bucket = rdepClassifyIncome(line, concept);
+          rdepAddIncome(row, bucket, amount);
+          classifiedIncome += amount;
+          if (!concept || bucket === 'sinClasificar') {
+            warnings.add('UNCLASSIFIED_CONCEPTS', RDEP_WARNING.UNCLASSIFIED_CONCEPTS, {
+              ...warnCtx,
+              payrollId: String(p._id),
+              conceptId,
+              conceptCode: line.code || concept?.code || '',
+              conceptName: line.name || concept?.name || '',
+            });
+          }
+        }
+
+        const actualIncome = rdepRound(it.totalIngresos);
+        if (actualIncome > classifiedIncome + 0.01) {
+          const diff = rdepRound(actualIncome - classifiedIncome);
+          rdepAddIncome(row, 'sinClasificar', diff);
+          classifiedIncome += diff;
+          warnings.add('LEGACY_TOTALS_DERIVED', RDEP_WARNING.LEGACY_TOTALS_DERIVED, { ...warnCtx, payrollId: String(p._id), field: 'totalIngresos' });
+        }
+        row.totalIngresos += actualIncome > 0 ? actualIncome : classifiedIncome;
+
+        let classifiedDeductions = 0;
+        for (const [bucket, value] of [
+          ['aporteIessPersonal', it.iessPersonal],
+          ['impuestoRenta', it.impuestoRenta],
+        ]) {
+          const amount = rdepRound(value);
+          rdepAddDeduction(row, bucket, amount);
+          classifiedDeductions += amount;
+        }
+        row.aporteIessPatronal += rdepRound(it.iessPatronal || 0);
+
+        const fixedDiscounts = rdepRound((it.prestamoIess || 0) + (it.prestamoEmpresa || 0) + (it.anticipos || 0) + (it.multas || 0) + (it.otherDeductions || 0));
+        rdepAddDeduction(row, 'descuento', fixedDiscounts);
+        classifiedDeductions += fixedDiscounts;
+
+        for (const line of it.deductions || []) {
+          const amount = rdepRound(line.amount);
+          if (amount <= 0) continue;
+          const conceptId = rdepConceptId(line);
+          const concept = conceptId ? conceptById.get(conceptId) : null;
+          const bucket = rdepClassifyDeduction(line, concept);
+          rdepAddDeduction(row, bucket, amount);
+          classifiedDeductions += amount;
+          if (!concept || bucket === 'sinClasificar') {
+            warnings.add('UNCLASSIFIED_CONCEPTS', RDEP_WARNING.UNCLASSIFIED_CONCEPTS, {
+              ...warnCtx,
+              payrollId: String(p._id),
+              conceptId,
+              conceptCode: line.code || concept?.code || '',
+              conceptName: line.name || concept?.name || '',
+            });
+          }
+        }
+
+        const actualDeductions = rdepRound(it.totalEgresos);
+        if (actualDeductions > classifiedDeductions + 0.01) {
+          const diff = rdepRound(actualDeductions - classifiedDeductions);
+          rdepAddDeduction(row, 'descuento', diff);
+          classifiedDeductions += diff;
+          warnings.add('LEGACY_TOTALS_DERIVED', RDEP_WARNING.LEGACY_TOTALS_DERIVED, { ...warnCtx, payrollId: String(p._id), field: 'totalEgresos' });
+        }
+        row.totalEgresos += actualDeductions > 0 ? actualDeductions : classifiedDeductions;
+        row.netoPagado += it.netoPagar != null ? rdepRound(it.netoPagar) : rdepRound((actualIncome || classifiedIncome) - (actualDeductions || classifiedDeductions));
       }
     }
-    const empleados = [...byEmp.values()].map((e) => ({
-      identificacion: e.identificacion, nombre: e.nombre,
-      sueldo: +e.sueldo.toFixed(2), ingresoExento: +e.exento.toFixed(2),
-      aporteIess: +e.iess.toFixed(2), impuestoRenta: +e.impuestoRenta.toFixed(2),
-    }));
+    const moneyFields = ['sueldoBase', 'sueldo', 'ingresosGravados', 'ingresosNoGravados', 'ingresoExento', 'decimoTercero', 'decimoCuarto', 'fondosReserva', 'vacaciones', 'aporteIessPersonal', 'aporteIessPatronal', 'aporteIess', 'impuestoRenta', 'baseImponible', 'otrosIngresos', 'otrosDescuentos', 'totalIngresos', 'totalEgresos', 'netoPagado'];
+    const empleados = [...byEmp.values()].map((row) => {
+      row.mesesTrabajados = row._months.size;
+      delete row._months;
+      row.ingresosGravados = rdepRound(row.ingresosGravados);
+      row.ingresosNoGravados = rdepRound(row.ingresosNoGravados);
+      row.sueldo = row.ingresosGravados; // compat con el RDEP anterior
+      row.ingresoExento = row.ingresosNoGravados;
+      row.aporteIess = row.aporteIessPersonal;
+      row.baseImponible = rdepRound(Math.max(0, row.ingresosGravados - row.aporteIessPersonal));
+      for (const field of moneyFields) row[field] = rdepRound(row[field]);
+      return row;
+    }).sort((a, b) => a.nombre.localeCompare(b.nombre));
+
+    const totals = empleados.reduce((acc, e) => {
+      for (const field of moneyFields) acc[field] = rdepRound((acc[field] || 0) + (e[field] || 0));
+      acc.empleados += 1;
+      acc.rolesCerrados += e.rolesCerrados.length;
+      return acc;
+    }, { empleados: 0, rolesCerrados: 0 });
+    totals.mesesTrabajados = empleados.reduce((s, e) => s + e.mesesTrabajados, 0);
+    const warningsPayload = warnings.list();
 
     if (req.query.format === 'xml') {
       const esc = (s) => String(s || '').replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
-      let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<rdep>\n';
+      let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<rdep preliminar="true">\n';
       xml += `  <Anio>${year}</Anio>\n  <IdInformante>${esc(clinic?.ruc)}</IdInformante>\n  <razonSocial>${esc(clinic?.razonSocial || clinic?.name)}</razonSocial>\n`;
+      xml += '  <nota>Vista previa preliminar generada desde nominas cerradas/pagadas; validar contra el formato oficial vigente del SRI.</nota>\n';
       xml += '  <empleados>\n';
       for (const e of empleados) {
         xml += '    <empleado>\n';
-        xml += `      <tipoIdentificacion>C</tipoIdentificacion>\n      <identificacion>${esc(e.identificacion)}</identificacion>\n      <nombre>${esc(e.nombre)}</nombre>\n`;
-        xml += `      <sueldos>${e.sueldo.toFixed(2)}</sueldos>\n      <ingresoExento>${e.ingresoExento.toFixed(2)}</ingresoExento>\n`;
-        xml += `      <aporteIess>${e.aporteIess.toFixed(2)}</aporteIess>\n      <impuestoRentaRetenido>${e.impuestoRenta.toFixed(2)}</impuestoRentaRetenido>\n`;
+        xml += `      <tipoIdentificacion>${esc(e.tipoIdentificacion || 'CEDULA')}</tipoIdentificacion>\n      <identificacion>${esc(e.identificacion)}</identificacion>\n      <nombre>${esc(e.nombre)}</nombre>\n`;
+        xml += `      <fechaIngreso>${esc(e.fechaIngreso)}</fechaIngreso>\n      <fechaSalida>${esc(e.fechaSalida)}</fechaSalida>\n      <mesesTrabajados>${e.mesesTrabajados}</mesesTrabajados>\n`;
+        xml += `      <sueldoBase>${e.sueldoBase.toFixed(2)}</sueldoBase>\n      <ingresosGravados>${e.ingresosGravados.toFixed(2)}</ingresosGravados>\n      <ingresosNoGravados>${e.ingresosNoGravados.toFixed(2)}</ingresosNoGravados>\n`;
+        xml += `      <decimoTercero>${e.decimoTercero.toFixed(2)}</decimoTercero>\n      <decimoCuarto>${e.decimoCuarto.toFixed(2)}</decimoCuarto>\n      <fondosReserva>${e.fondosReserva.toFixed(2)}</fondosReserva>\n      <vacaciones>${e.vacaciones.toFixed(2)}</vacaciones>\n`;
+        xml += `      <aporteIessPersonal>${e.aporteIessPersonal.toFixed(2)}</aporteIessPersonal>\n      <impuestoRentaRetenido>${e.impuestoRenta.toFixed(2)}</impuestoRentaRetenido>\n`;
+        xml += `      <otrosIngresos>${e.otrosIngresos.toFixed(2)}</otrosIngresos>\n      <otrosDescuentos>${e.otrosDescuentos.toFixed(2)}</otrosDescuentos>\n`;
         xml += '    </empleado>\n';
       }
-      xml += '  </empleados>\n</rdep>\n';
+      xml += '  </empleados>\n  <advertencias>\n';
+      for (const w of warningsPayload) xml += `    <advertencia codigo="${esc(w.code)}">${esc(w.message)}</advertencia>\n`;
+      xml += '  </advertencias>\n</rdep>\n';
       res.setHeader('Content-Type', 'application/xml');
       res.setHeader('Content-Disposition', `attachment; filename="RDEP-${year}.xml"`);
       return res.send(xml);
     }
-    res.json({ year, empleados, total: empleados.reduce((s, e) => s + e.impuestoRenta, 0) });
+
+    res.json({
+      year,
+      period: { label: `Anio fiscal ${year}`, periodType: 'ANNUAL', year },
+      source: 'Payroll',
+      includedStatuses: RDEP_INCLUDED_STATUSES,
+      isPreliminary: true,
+      nota: 'Vista previa preliminar generada desde nominas cerradas/pagadas. Validar contra el formato oficial vigente del SRI antes de declarar.',
+      payrolls: {
+        totalInYear: allRolls.length,
+        included: rolls.length,
+        draftExcluded,
+        statusCounts,
+      },
+      empleados,
+      totals,
+      total: totals.impuestoRenta || 0,
+      warnings: warningsPayload,
+    });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 

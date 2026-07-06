@@ -16,6 +16,13 @@ const reports = require('../controllers/accountingReportsController');
 const sriXml = require('../controllers/sriSuperciasReportsController');
 const Invoice = require('../models/Invoice');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
+const Employee = require('../models/Employee');
+const Payroll = require('../models/Payroll');
+const PayrollConcept = require('../models/PayrollConcept');
+const PayrollDepartment = require('../models/PayrollDepartment');
+const PayrollPosition = require('../models/PayrollPosition');
+const PayrollIncomeTaxTable = require('../models/PayrollIncomeTaxTable');
+const { DEFAULT_IR_RANGES_2024 } = require('../utils/payrollTax');
 
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
@@ -58,6 +65,187 @@ async function makePurchase(clinicId, supplierId, { fechaEmision, createdAt, sub
   if (createdAt) { await PurchaseInvoice.updateOne({ _id: pi._id }, { $set: { createdAt } }); }
   return pi;
 }
+
+async function makePayrollOrg(clinicId) {
+  const dept = await PayrollDepartment.create({ clinic: clinicId, name: `Admin ${seq++}`, type: 'ADMINISTRATIVO' });
+  const position = await PayrollPosition.create({ clinic: clinicId, name: `Cargo ${seq++}`, department: dept._id });
+  return { dept, position };
+}
+
+async function makeRdepEmployee(clinicId, overrides = {}) {
+  const org = overrides.org || await makePayrollOrg(clinicId);
+  seq += 1;
+  return Employee.create({
+    clinic: clinicId,
+    code: overrides.code || `RDEP-${seq}`,
+    identificacion: overrides.identificacion || `17${String(seq).padStart(8, '0')}`,
+    firstName: overrides.firstName || 'Ana',
+    lastName: overrides.lastName || `Rdep${seq}`,
+    hireDate: overrides.hireDate || new Date('2024-01-15'),
+    baseSalary: overrides.baseSalary ?? 1000,
+    departmentRef: overrides.departmentRef ?? org.dept._id,
+    positionRef: overrides.positionRef ?? org.position._id,
+    ...overrides,
+    org: undefined,
+  });
+}
+
+async function makeRdepConcept(clinicId, overrides = {}) {
+  seq += 1;
+  return PayrollConcept.create({
+    clinic: clinicId,
+    code: overrides.code || `RDEP-CON-${seq}`,
+    name: overrides.name || `Concepto ${seq}`,
+    type: overrides.type || 'INGRESO',
+    ...overrides,
+  });
+}
+
+async function makeRdepPayroll(clinicId, employee, { year = 2026, month = 1, status = 'CERRADO', item = {} } = {}) {
+  const baseItem = {
+    employee: employee._id,
+    employeeName: `${employee.firstName} ${employee.lastName}`,
+    identificacion: employee.identificacion || '',
+    departmentRef: employee.departmentRef || null,
+    daysWorked: 30,
+    monthlySalary: item.monthlySalary ?? item.baseSalary ?? employee.baseSalary ?? 0,
+    baseSalary: item.baseSalary ?? employee.baseSalary ?? 0,
+    iessPersonal: item.iessPersonal ?? 94.5,
+    iessPatronal: item.iessPatronal ?? 111.5,
+    impuestoRenta: item.impuestoRenta ?? 12,
+    totalIngresos: item.totalIngresos ?? ((item.baseSalary ?? employee.baseSalary ?? 0) + (item.decimoTercero || 0) + (item.decimoCuarto || 0) + (item.fondosReserva || 0) + (item.vacaciones || 0) + (item.otherIncome || 0) + (item.earnings || []).reduce((s, x) => s + (x.amount || 0), 0)),
+    totalEgresos: item.totalEgresos ?? ((item.iessPersonal ?? 94.5) + (item.impuestoRenta ?? 12) + (item.otherDeductions || 0) + (item.deductions || []).reduce((s, x) => s + (x.amount || 0), 0)),
+    netoPagar: item.netoPagar ?? 0,
+    ...item,
+  };
+  baseItem.netoPagar = baseItem.netoPagar || +(baseItem.totalIngresos - baseItem.totalEgresos).toFixed(2);
+  return Payroll.create({
+    clinic: clinicId,
+    code: `ROL-RDEP-${year}${String(month).padStart(2, '0')}-${seq++}`,
+    year,
+    month,
+    period: `${year}-${String(month).padStart(2, '0')}`,
+    status,
+    items: [baseItem],
+    totalIngresos: baseItem.totalIngresos,
+    totalEgresos: baseItem.totalEgresos,
+    totalNeto: baseItem.netoPagar,
+  });
+}
+
+async function ensureRdepTaxTable(clinicId, year = 2026) {
+  return PayrollIncomeTaxTable.create({ clinic: clinicId, year, periodType: 'ANNUAL', active: true, ranges: DEFAULT_IR_RANGES_2024 });
+}
+
+test('RDEP: incluye solo nominas cerradas/pagadas, excluye borradores y agrupa por empleado', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-01-01') });
+  await ensureRdepTaxTable(clinicId, 2026);
+  const emp = await makeRdepEmployee(clinicId, { firstName: 'Ana', lastName: 'Contable', baseSalary: 1000 });
+
+  await makeRdepPayroll(clinicId, emp, {
+    month: 1,
+    status: 'CERRADO',
+    item: { baseSalary: 1000, decimoTercero: 100, iessPersonal: 94.5, impuestoRenta: 10, totalIngresos: 1100, totalEgresos: 104.5 },
+  });
+  await makeRdepPayroll(clinicId, emp, {
+    month: 2,
+    status: 'PAGADO',
+    item: { baseSalary: 500, iessPersonal: 47.25, impuestoRenta: 5, totalIngresos: 500, totalEgresos: 52.25 },
+  });
+  await makeRdepPayroll(clinicId, emp, {
+    month: 3,
+    status: 'BORRADOR',
+    item: { baseSalary: 9999, iessPersonal: 999, impuestoRenta: 999, totalIngresos: 9999, totalEgresos: 1998 },
+  });
+
+  const r = await H.runController(reports.rdep, H.mockReq(clinicId, userId, {}, { query: { year: 2026 } }));
+  assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
+  assert.equal(r.payload.empleados.length, 1);
+  assert.equal(r.payload.payrolls.included, 2);
+  assert.equal(r.payload.payrolls.draftExcluded, 1);
+  assert.equal(r.payload.empleados[0].sueldoBase, 1500);
+  assert.equal(r.payload.empleados[0].ingresosGravados, 1500);
+  assert.equal(r.payload.empleados[0].decimoTercero, 100);
+  assert.equal(r.payload.empleados[0].aporteIessPersonal, 141.75);
+  assert.equal(r.payload.empleados[0].impuestoRenta, 15);
+  assert.ok(r.payload.warnings.some((w) => w.code === 'DRAFT_PAYROLLS_EXCLUDED'));
+
+  const xml = await H.runController(reports.rdep, H.mockReq(clinicId, userId, {}, { query: { year: 2026, format: 'xml' } }));
+  assert.equal(xml.statusCode, 200);
+  assert.match(String(xml.payload), /<rdep preliminar="true">/);
+  assert.match(String(xml.payload), /<impuestoRentaRetenido>15\.00<\/impuestoRentaRetenido>/);
+});
+
+test('RDEP: clasifica ingresos gravados, no gravados, IESS personal, IR y conceptos sin clasificar', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-01-01') });
+  await ensureRdepTaxTable(clinicId, 2026);
+  const emp = await makeRdepEmployee(clinicId, { baseSalary: 1000 });
+  const taxable = await makeRdepConcept(clinicId, { code: 'RDEP-TAX', name: 'Bono gravado', isTaxableIncome: true, affectsIncomeTax: true });
+  const nonTaxable = await makeRdepConcept(clinicId, { code: 'RDEP-NOTAX', name: 'Reembolso', isNonTaxableIncome: true, isReimbursement: true });
+  const discount = await makeRdepConcept(clinicId, { code: 'RDEP-DESC', name: 'Descuento', type: 'EGRESO', isDiscount: true });
+
+  await makeRdepPayroll(clinicId, emp, {
+    item: {
+      baseSalary: 1000,
+      decimoTercero: 100,
+      iessPersonal: 100,
+      impuestoRenta: 15,
+      earnings: [
+        { concept: taxable._id, code: taxable.code, name: taxable.name, amount: 200 },
+        { concept: nonTaxable._id, code: nonTaxable.code, name: nonTaxable.name, amount: 50 },
+        { code: 'SIN-CLAS', name: 'Sin clasificar', amount: 25 },
+      ],
+      deductions: [{ concept: discount._id, code: discount.code, name: discount.name, amount: 30 }],
+      totalIngresos: 1375,
+      totalEgresos: 145,
+    },
+  });
+
+  const r = await H.runController(reports.rdep, H.mockReq(clinicId, userId, {}, { query: { year: 2026 } }));
+  assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
+  const e = r.payload.empleados[0];
+  assert.equal(e.ingresosGravados, 1200);
+  assert.equal(e.ingresosNoGravados, 150);
+  assert.equal(e.otrosIngresos, 25);
+  assert.equal(e.aporteIessPersonal, 100);
+  assert.equal(e.aporteIessPatronal, 111.5);
+  assert.equal(e.impuestoRenta, 15);
+  assert.equal(e.otrosDescuentos, 30);
+  assert.ok(r.payload.warnings.some((w) => w.code === 'UNCLASSIFIED_CONCEPTS'));
+});
+
+test('RDEP: advierte empleado sin identificacion y anio sin nominas cerradas', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-01-01') });
+  await ensureRdepTaxTable(clinicId, 2026);
+  const emp = await makeRdepEmployee(clinicId);
+  await Employee.updateOne({ _id: emp._id }, { $unset: { identificacion: '' } });
+  await makeRdepPayroll(clinicId, emp, { item: { identificacion: '', baseSalary: 600, totalIngresos: 600, totalEgresos: 60, iessPersonal: 60, impuestoRenta: 0 } });
+
+  const r = await H.runController(reports.rdep, H.mockReq(clinicId, userId, {}, { query: { year: 2026 } }));
+  assert.equal(r.statusCode, 200);
+  assert.ok(r.payload.warnings.some((w) => w.code === 'EMPLOYEE_MISSING_ID'));
+
+  const empty = await H.runController(reports.rdep, H.mockReq(clinicId, userId, {}, { query: { year: 2027 } }));
+  assert.equal(empty.statusCode, 200);
+  assert.equal(empty.payload.empleados.length, 0);
+  assert.ok(empty.payload.warnings.some((w) => w.code === 'YEAR_WITHOUT_DATA'));
+});
+
+test('RDEP: roles antiguos sin desglose no rompen y conservan totales con advertencia', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-01-01') });
+  await ensureRdepTaxTable(clinicId, 2026);
+  const emp = await makeRdepEmployee(clinicId);
+  await makeRdepPayroll(clinicId, emp, {
+    item: { baseSalary: 0, iessPersonal: 0, impuestoRenta: 0, totalIngresos: 800, totalEgresos: 120, netoPagar: 680 },
+  });
+
+  const r = await H.runController(reports.rdep, H.mockReq(clinicId, userId, {}, { query: { year: 2026 } }));
+  assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
+  assert.equal(r.payload.empleados[0].totalIngresos, 800);
+  assert.equal(r.payload.empleados[0].otrosIngresos, 800);
+  assert.equal(r.payload.empleados[0].otrosDescuentos, 120);
+  assert.ok(r.payload.warnings.some((w) => w.code === 'LEGACY_TOTALS_DERIVED'));
+});
 
 // ── 7) Ventas por fecha fiscal (fechaEmision), no createdAt ────────────────────
 test('7) ventas: se filtran por fechaEmision, no por createdAt', async () => {
