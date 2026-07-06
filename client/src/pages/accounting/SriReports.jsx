@@ -198,32 +198,39 @@ function PurchasesSales({ data }) {
   const sum = (arr, f) => arr.reduce((s, x) => s + f(x), 0);
   return (
     <>
-      <Section title={`Ventas (${ventas.length})`} subtitle="Comprobantes de venta autorizados del período (por fecha de emisión).">
+      <Section title={`Ventas (${ventas.length})`} subtitle="Comprobantes de venta autorizados del período (por fecha de emisión). Base separada por tarifa 0% y 15%.">
         <SalesAuthNote pending={pending} />
         <table className="tbl text-xs">
           <thead className="bg-emerald-50 uppercase"><tr>
             <th className="px-2 py-1 text-left">Fecha</th><th className="px-2 py-1 text-left">Comprobante</th>
             <th className="px-2 py-1 text-left">Cliente</th><th className="px-2 py-1 text-left">Identificación</th>
-            <th className="px-2 py-1 text-right">Subtotal</th><th className="px-2 py-1 text-right">IVA</th><th className="px-2 py-1 text-right">Total</th>
+            <th className="px-2 py-1 text-right">Base 0%</th><th className="px-2 py-1 text-right">Base 15%</th>
+            <th className="px-2 py-1 text-right">IVA</th><th className="px-2 py-1 text-right">Total</th>
           </tr></thead>
           <tbody>
-            {ventas.map((v, i) => (
+            {ventas.map((v, i) => {
+              const tb = v.taxBreakdown || {};
+              const doc = [v.estab, v.ptoEmi, v.secuencial].filter(Boolean).join('-');
+              return (
               <tr key={i} className="border-t">
                 <td className="px-2 py-1">{fmtDate(v.fechaEmision || v.createdAt)}</td>
-                <td className="px-2 py-1 font-mono">{[v.estab, v.ptoEmi, v.secuencial].filter(Boolean).join('-')}</td>
+                <td className="px-2 py-1 font-mono">{v._id ? <Link to={`/invoices?doc=${v._id}`} className="text-emerald-700 hover:underline" title="Abrir factura electrónica">{doc || '—'}</Link> : (doc || '—')}</td>
                 <td className="px-2 py-1">{v.razonSocialComprador || '—'}</td>
                 <td className="px-2 py-1 font-mono">{v.identificacionComprador || '—'}</td>
-                <td className="px-2 py-1 text-right font-mono">{fmt(v.totalSinImpuestos ?? v.subtotal)}</td>
-                <td className="px-2 py-1 text-right font-mono">{fmt(v.totalImpuesto)}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(tb.base0 ?? 0)}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(tb.baseGravada ?? 0)}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(tb.iva ?? v.totalImpuesto)}</td>
                 <td className="px-2 py-1 text-right font-mono">{fmt(v.importeTotal ?? v.total)}</td>
               </tr>
-            ))}
-            {ventas.length === 0 && <tr><td colSpan={7} className="px-2 py-4 text-center text-slate-400">{pending > 0 ? `No hay ventas autorizadas; hay ${pending} sin autorizar que no se reportan.` : 'No hay ventas autorizadas en este período.'}</td></tr>}
+              );
+            })}
+            {ventas.length === 0 && <tr><td colSpan={8} className="px-2 py-4 text-center text-slate-400">{pending > 0 ? `No hay ventas autorizadas; hay ${pending} sin autorizar que no se reportan.` : 'No hay ventas autorizadas en este período.'}</td></tr>}
           </tbody>
           {ventas.length > 0 && <tfoot className="bg-slate-100 font-bold"><tr>
             <td colSpan={4} className="px-2 py-1 text-right">TOTALES</td>
-            <td className="px-2 py-1 text-right font-mono">{fmt(sum(ventas, (v) => v.totalSinImpuestos ?? v.subtotal ?? 0))}</td>
-            <td className="px-2 py-1 text-right font-mono">{fmt(sum(ventas, (v) => v.totalImpuesto ?? 0))}</td>
+            <td className="px-2 py-1 text-right font-mono">{fmt(sum(ventas, (v) => v.taxBreakdown?.base0 ?? 0))}</td>
+            <td className="px-2 py-1 text-right font-mono">{fmt(sum(ventas, (v) => v.taxBreakdown?.baseGravada ?? 0))}</td>
+            <td className="px-2 py-1 text-right font-mono">{fmt(sum(ventas, (v) => v.taxBreakdown?.iva ?? v.totalImpuesto ?? 0))}</td>
             <td className="px-2 py-1 text-right font-mono">{fmt(sum(ventas, (v) => v.importeTotal ?? v.total ?? 0))}</td>
           </tr></tfoot>}
         </table>
@@ -267,7 +274,9 @@ function PurchasesSales({ data }) {
 // Preliquidación del Formulario 104 (IVA).
 function Form104({ data }) {
   const rows = [
-    ['Ventas — base imponible', data?.ventas?.base],
+    ['Ventas — base tarifa 0%', data?.ventas?.base0],
+    ['Ventas — base gravada (15%)', data?.ventas?.baseGravada],
+    ['Ventas — base imponible total', data?.ventas?.base],
     ['Ventas — IVA generado', data?.ventas?.iva],
     ['Compras — base imponible', data?.compras?.base],
     ['Compras — IVA', data?.compras?.iva],
@@ -332,13 +341,13 @@ function AtsPreview({ data }) {
           </tr></tfoot>}
         </table>
       </Section>
-      <Section title={`ATS — Ventas (${ventas.length})`} subtitle="Ventas agrupadas por cliente (comprobantes autorizados).">
+      <Section title={`ATS — Ventas (${ventas.length})`} subtitle="Ventas agrupadas por cliente (comprobantes autorizados). Base separada por tarifa 0% y 15%.">
         <SalesAuthNote pending={pending} />
         <table className="tbl text-xs">
           <thead className="bg-emerald-50 uppercase"><tr>
             <th className="px-2 py-1 text-left">Identificación</th><th className="px-2 py-1 text-left">Cliente</th>
-            <th className="px-2 py-1 text-right"># Comprob.</th><th className="px-2 py-1 text-right">Base</th>
-            <th className="px-2 py-1 text-right">IVA</th><th className="px-2 py-1 text-right">Total</th>
+            <th className="px-2 py-1 text-right"># Comprob.</th><th className="px-2 py-1 text-right">Base 0%</th>
+            <th className="px-2 py-1 text-right">Base 15%</th><th className="px-2 py-1 text-right">IVA</th><th className="px-2 py-1 text-right">Total</th>
           </tr></thead>
           <tbody>
             {ventas.map((v, i) => (
@@ -346,16 +355,18 @@ function AtsPreview({ data }) {
                 <td className="px-2 py-1 font-mono">{v.idCliente}</td>
                 <td className="px-2 py-1">{v.razonSocial}</td>
                 <td className="px-2 py-1 text-right font-mono">{v.numComprobantes}</td>
-                <td className="px-2 py-1 text-right font-mono">{fmt(v.base)}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(v.base0)}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(v.baseGrav)}</td>
                 <td className="px-2 py-1 text-right font-mono">{fmt(v.iva)}</td>
                 <td className="px-2 py-1 text-right font-mono">{fmt(v.total)}</td>
               </tr>
             ))}
-            {ventas.length === 0 && <tr><td colSpan={6} className="px-2 py-4 text-center text-slate-400">{pending > 0 ? `No hay ventas autorizadas; hay ${pending} sin autorizar que no se reportan.` : 'No hay ventas autorizadas en este período.'}</td></tr>}
+            {ventas.length === 0 && <tr><td colSpan={7} className="px-2 py-4 text-center text-slate-400">{pending > 0 ? `No hay ventas autorizadas; hay ${pending} sin autorizar que no se reportan.` : 'No hay ventas autorizadas en este período.'}</td></tr>}
           </tbody>
           {ventas.length > 0 && <tfoot className="bg-slate-100 font-bold"><tr>
             <td colSpan={3} className="px-2 py-1 text-right">TOTALES</td>
-            <td className="px-2 py-1 text-right font-mono">{fmt(t.ventasBase)}</td>
+            <td className="px-2 py-1 text-right font-mono">{fmt(t.ventasBase0)}</td>
+            <td className="px-2 py-1 text-right font-mono">{fmt(t.ventasBaseGrav)}</td>
             <td className="px-2 py-1 text-right font-mono">{fmt(t.ventasIva)}</td>
             <td className="px-2 py-1 text-right font-mono">{fmt(t.ventasTotal)}</td>
           </tr></tfoot>}

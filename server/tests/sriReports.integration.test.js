@@ -22,7 +22,7 @@ test.after(async () => { await H.stopDb(); });
 test.beforeEach(async () => { await H.resetDb(); });
 
 let seq = 0;
-async function makeInvoice(clinicId, { fechaEmision, createdAt, base = 100, iva = 15, estado = 'AUTORIZADO', ident = '1790012345001', razon = 'Cliente SA' } = {}) {
+async function makeInvoice(clinicId, { fechaEmision, createdAt, base = 100, iva = 15, estado = 'AUTORIZADO', ident = '1790012345001', razon = 'Cliente SA', taxBreakdown } = {}) {
   seq += 1;
   const inv = await Invoice.create({
     clinic: clinicId,
@@ -36,6 +36,8 @@ async function makeInvoice(clinicId, { fechaEmision, createdAt, base = 100, iva 
     razonSocialComprador: razon,
     subtotal: base, iva, total: base + iva,
     totalSinImpuestos: base, totalImpuesto: iva, importeTotal: base + iva,
+    // Snapshot por tarifa (facturas nuevas). Si se omite, el reporte deriva por fallback.
+    ...(taxBreakdown ? { taxBreakdown: { computed: true, ...taxBreakdown } } : {}),
   });
   if (createdAt) { await Invoice.updateOne({ _id: inv._id }, { $set: { createdAt } }); }
   return inv;
@@ -309,4 +311,132 @@ test('form104 con custom sin fechas → 400', async () => {
   const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
   const r = await H.runController(reports.form104, H.mockReq(clinicId, userId, {}, { query: { periodType: 'CUSTOM' } }));
   assert.equal(r.statusCode, 400);
+});
+
+// ═══════════════ Ventas separadas por tarifa (0% vs 15%) ═══════════════════════
+
+const { breakdownFromSale, breakdownFromItems } = require('../utils/invoiceTaxBreakdown');
+const monthQ = { query: { periodType: 'MONTHLY', year: 2026, month: 6 } };
+
+// ── util: desglose por tarifa desde ítems (fuente de emisión) ─────────────────
+test('util: breakdownFromItems separa 0% y 15% y detalla por tarifa', async () => {
+  const tb = breakdownFromItems([
+    { taxCategory: 'IVA_0', taxRate: 0, taxBase: 100, taxAmount: 0, taxCodeSri: '0' },
+    { taxCategory: 'IVA_15', taxRate: 15, taxBase: 200, taxAmount: 30, taxCodeSri: '4' },
+  ]);
+  assert.equal(tb.base0, 100);
+  assert.equal(tb.baseGravada, 200);
+  assert.equal(tb.iva, 30);
+  assert.equal(tb.baseTotal, 300);
+  assert.equal(tb.rates.length, 2);
+});
+
+// ── util: desglose desde una venta sin ítems (usa totales resumidos) ──────────
+test('util: breakdownFromSale deriva la base gravada restando 0%/exento/no objeto', async () => {
+  const tb = breakdownFromSale({ subtotal0: 100, subtotalExento: 0, subtotalNoObjeto: 0, taxableSubtotal: 300, taxAmount: 30 });
+  assert.equal(tb.base0, 100);
+  assert.equal(tb.baseGravada, 200, '300 total - 100 (0%) = 200 gravada');
+  assert.equal(tb.iva, 30);
+});
+
+// ── F104 visual: factura SOLO 0% ──────────────────────────────────────────────
+test('F104 visual: factura solo tarifa 0% reporta base0 y sin IVA', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  await makeInvoice(clinicId, { fechaEmision: '10/06/2026', base: 100, iva: 0, taxBreakdown: { base0: 100, baseGravada: 0, iva: 0 } });
+  const r = await H.runController(reports.form104, H.mockReq(clinicId, userId, {}, monthQ));
+  assert.equal(r.payload.ventas.base0, 100);
+  assert.equal(r.payload.ventas.baseGravada, 0);
+  assert.equal(r.payload.ventas.base, 100);
+  assert.equal(r.payload.ventas.iva, 0);
+});
+
+// ── F104 visual: factura SOLO 15% ─────────────────────────────────────────────
+test('F104 visual: factura solo tarifa 15% reporta base gravada e IVA', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  await makeInvoice(clinicId, { fechaEmision: '10/06/2026', base: 200, iva: 30, taxBreakdown: { base0: 0, baseGravada: 200, iva: 30 } });
+  const r = await H.runController(reports.form104, H.mockReq(clinicId, userId, {}, monthQ));
+  assert.equal(r.payload.ventas.base0, 0);
+  assert.equal(r.payload.ventas.baseGravada, 200);
+  assert.equal(r.payload.ventas.iva, 30);
+});
+
+// ── F104 visual: factura MIXTA 0% + 15% ───────────────────────────────────────
+test('F104 visual: factura mixta separa base 0% y base gravada', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  await makeInvoice(clinicId, { fechaEmision: '10/06/2026', base: 300, iva: 30, taxBreakdown: { base0: 100, baseGravada: 200, iva: 30 } });
+  const r = await H.runController(reports.form104, H.mockReq(clinicId, userId, {}, monthQ));
+  assert.equal(r.payload.ventas.base0, 100, 'ventas 0% = 100');
+  assert.equal(r.payload.ventas.baseGravada, 200, 'ventas 15% = 200');
+  assert.equal(r.payload.ventas.base, 300, 'base total = 300');
+  assert.equal(r.payload.ventas.iva, 30, 'IVA generado = 30');
+});
+
+// ── F104 XML: factura mixta ───────────────────────────────────────────────────
+test('F104 XML: factura mixta emite baseTarifa0 y baseGravada separadas', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  await makeInvoice(clinicId, { fechaEmision: '10/06/2026', base: 300, iva: 30, taxBreakdown: { base0: 100, baseGravada: 200, iva: 30 } });
+  const r = await H.runController(sriXml.form104Xml, H.mockReq(clinicId, userId, {}, monthQ));
+  assert.equal(r.statusCode, 200);
+  const s = String(r.payload);
+  const grab = (tag) => Number((s.match(new RegExp(`<${tag}>([\\d.]+)</${tag}>`)) || [])[1]);
+  assert.equal(grab('baseTarifa0'), 100);
+  assert.equal(grab('baseGravada'), 200);
+  // El IVA de ventas aparece dentro de <ventas>…<iva>30</iva>
+  assert.match(s, /<ventas>[\s\S]*<iva>30\.00<\/iva>[\s\S]*<\/ventas>/);
+});
+
+// ── ATS XML: factura mixta separa base 0% (baseImponible) de gravada ──────────
+test('ATS XML: factura mixta pone base 0% en baseImponible y gravada en baseImpGrav', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  await makeInvoice(clinicId, { fechaEmision: '10/06/2026', base: 300, iva: 30, taxBreakdown: { base0: 100, baseGravada: 200, iva: 30 } });
+  const r = await H.runController(reports.ats, H.mockReq(clinicId, userId, {}, monthQ));
+  assert.equal(r.statusCode, 200);
+  const s = String(r.payload);
+  const dv = s.match(/<detalleVentas>[\s\S]*?<\/detalleVentas>/)[0];
+  assert.match(dv, /<baseImponible>100\.00<\/baseImponible>/, '0% va en baseImponible');
+  assert.match(dv, /<baseImpGrav>200\.00<\/baseImpGrav>/, 'gravada va en baseImpGrav');
+  assert.match(dv, /<montoIva>30\.00<\/montoIva>/);
+});
+
+// ── ATS visual: factura mixta expone base0/baseGrav por cliente y en totales ──
+test('ATS visual: factura mixta separa base0 y baseGrav en ventas y totales', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  await makeInvoice(clinicId, { fechaEmision: '10/06/2026', base: 300, iva: 30, ident: '0102030405', taxBreakdown: { base0: 100, baseGravada: 200, iva: 30 } });
+  const r = await H.runController(reports.atsPreview, H.mockReq(clinicId, userId, {}, monthQ));
+  assert.equal(r.statusCode, 200);
+  assert.equal(r.payload.ventas[0].base0, 100);
+  assert.equal(r.payload.ventas[0].baseGrav, 200);
+  assert.equal(r.payload.totals.ventasBase0, 100);
+  assert.equal(r.payload.totals.ventasBaseGrav, 200);
+  assert.equal(r.payload.totals.ventasBase, 300, 'base total sigue disponible');
+});
+
+// ── purchase-sales list: cada venta trae su desglose por tarifa ───────────────
+test('VC: cada venta incluye taxBreakdown (0%/gravada) para la lista', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  await makeInvoice(clinicId, { fechaEmision: '10/06/2026', base: 300, iva: 30, taxBreakdown: { base0: 100, baseGravada: 200, iva: 30 } });
+  const r = await H.runController(reports.purchaseSalesList, H.mockReq(clinicId, userId, {}, monthQ));
+  assert.equal(r.statusCode, 200);
+  assert.equal(r.payload.ventas[0].taxBreakdown.base0, 100);
+  assert.equal(r.payload.ventas[0].taxBreakdown.baseGravada, 200);
+});
+
+// ── Fallback: factura ANTIGUA sin snapshot con IVA>0 ⇒ toda la base es gravada ─
+test('fallback: factura sin snapshot con IVA>0 asume base gravada', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  await makeInvoice(clinicId, { fechaEmision: '10/06/2026', base: 150, iva: 22.5 }); // sin taxBreakdown
+  const r = await H.runController(reports.form104, H.mockReq(clinicId, userId, {}, monthQ));
+  assert.equal(r.payload.ventas.base0, 0);
+  assert.equal(r.payload.ventas.baseGravada, 150, 'sin snapshot y con IVA: toda la base es gravada');
+  assert.equal(r.payload.ventas.iva, 22.5);
+});
+
+// ── Fallback: factura ANTIGUA sin snapshot y sin IVA ⇒ toda la base es 0% ──────
+test('fallback: factura sin snapshot y sin IVA asume base 0%', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  await makeInvoice(clinicId, { fechaEmision: '10/06/2026', base: 80, iva: 0 }); // sin taxBreakdown
+  const r = await H.runController(reports.form104, H.mockReq(clinicId, userId, {}, monthQ));
+  assert.equal(r.payload.ventas.base0, 80, 'sin snapshot y sin IVA: toda la base es 0%');
+  assert.equal(r.payload.ventas.baseGravada, 0);
+  assert.equal(r.payload.ventas.iva, 0);
 });

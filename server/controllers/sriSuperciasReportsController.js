@@ -18,6 +18,7 @@ const Clinic = require('../models/Clinic');
 const { startOfDay, endOfDay } = require('../utils/dates');
 const { asObjectId } = require('../utils/objectId');
 const { resolveReportRange, isMonthlyRange, invoiceFiscalDate, inRange } = require('../utils/reportDateRange');
+const { invoiceTaxBreakdown } = require('../utils/invoiceTaxBreakdown');
 
 /** Ventas AUTORIZADAS cuya fecha fiscal (fechaEmision, fallback createdAt) cae en el rango. */
 async function salesInRange(clinicId, start, end) {
@@ -134,13 +135,18 @@ exports.form104Xml = async (req, res) => {
     const clinic = await Clinic.findById(req.clinicId);
 
     const ventas = await salesInRange(req.clinicId, start, end);
+    // Ventas separadas por tarifa (0% vs gravada 15%) desde el snapshot de cada
+    // factura (fallback por totales en facturas antiguas). base = base0 + baseGravada.
     const v = ventas.reduce(
       (acc, i) => {
-        acc.base += i.totalSinImpuestos || 0;
-        acc.iva += i.totalImpuesto || 0;
+        const tb = invoiceTaxBreakdown(i);
+        acc.base += tb.baseTotal;
+        acc.base0 += tb.base0;
+        acc.baseGravada += tb.baseGravada;
+        acc.iva += tb.iva;
         return acc;
       },
-      { base: 0, iva: 0 }
+      { base: 0, base0: 0, baseGravada: 0, iva: 0 }
     );
 
     const compras = await PurchaseInvoice.find({
@@ -173,6 +179,8 @@ exports.form104Xml = async (req, res) => {
     xml += `  <periodoFiscal>${String(m).padStart(2, '0')}/${y}</periodoFiscal>\n`;
     xml += '  <ventas>\n';
     xml += `    <baseImponible>${v.base.toFixed(2)}</baseImponible>\n`;
+    xml += `    <baseTarifa0>${v.base0.toFixed(2)}</baseTarifa0>\n`;
+    xml += `    <baseGravada>${v.baseGravada.toFixed(2)}</baseGravada>\n`;
     xml += `    <iva>${v.iva.toFixed(2)}</iva>\n`;
     xml += '  </ventas>\n';
     xml += '  <compras>\n';

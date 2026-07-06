@@ -5,6 +5,7 @@ import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import PageHeader, { EmptyState } from '../components/PageHeader';
 import { useAuth } from '../context/AuthContext';
+import useDocDeepLink from '../hooks/useDocDeepLink';
 import { fmtDate, fmtDateTime } from '../utils/date';
 import {
   HiOutlineDocumentText,
@@ -115,6 +116,9 @@ export default function Invoices() {
       toast.error(err.response?.data?.message || 'Error al cargar detalle');
     }
   };
+
+  // Deep-link desde reportes SRI (venta → factura): /invoices?doc=<idFactura> abre el detalle.
+  useDocDeepLink((id) => verDetalle({ _id: id }));
 
   return (
     <div className="space-y-6 max-w-6xl mx-auto">

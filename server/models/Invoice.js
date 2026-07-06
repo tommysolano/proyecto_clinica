@@ -10,6 +10,35 @@ const sriMessageSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Detalle por tarifa de IVA dentro del desglose tributario de la factura.
+const invoiceTaxRateSchema = new mongoose.Schema(
+  {
+    // Código SRI de porcentaje: 0=0%, 2=12%, 3=14%, 4=15%, 6=no objeto, 7=exento.
+    codigoPorcentaje: String,
+    rate: { type: Number, default: 0 },
+    base: { type: Number, default: 0 },
+    iva: { type: Number, default: 0 },
+  },
+  { _id: false }
+);
+
+// Snapshot tributario de la VENTA por tarifa de IVA, congelado al emitir la factura
+// para que los reportes SRI (F104/ATS) separen ventas 0% y 15% sin depender de la
+// venta origen (que podría cambiar). `computed:true` marca que es un snapshot real
+// (no un fallback derivado de totales). Ver utils/invoiceTaxBreakdown.js.
+const invoiceTaxBreakdownSchema = new mongoose.Schema(
+  {
+    base0: { type: Number, default: 0 }, // base tarifa 0%
+    baseGravada: { type: Number, default: 0 }, // base con IVA (>0%, típ. 15%)
+    baseExento: { type: Number, default: 0 },
+    baseNoObjeto: { type: Number, default: 0 },
+    iva: { type: Number, default: 0 }, // IVA generado sobre la base gravada
+    rates: { type: [invoiceTaxRateSchema], default: undefined },
+    computed: { type: Boolean, default: true },
+  },
+  { _id: false }
+);
+
 const invoiceSchema = new mongoose.Schema(
   {
     clinic: {
@@ -70,6 +99,9 @@ const invoiceSchema = new mongoose.Schema(
     totalDescuento: { type: Number, default: 0 },
     totalImpuesto: { type: Number, default: 0 },
     importeTotal: { type: Number, default: 0 },
+    // Desglose por tarifa de IVA (snapshot al emitir). Ausente en facturas antiguas:
+    // los reportes lo derivan por fallback desde totalSinImpuestos/totalImpuesto.
+    taxBreakdown: { type: invoiceTaxBreakdownSchema, default: undefined },
     balance: { type: Number, default: 0 },
     paid: { type: Boolean, default: false },
     formaPago: { type: String },

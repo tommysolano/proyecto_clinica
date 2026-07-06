@@ -12,6 +12,7 @@ const { startOfDay, endOfDay } = require('../utils/dates');
 const {
   resolveReportRange, isMonthlyRange, invoiceFiscalDate, purchaseFiscalDate, inRange,
 } = require('../utils/reportDateRange');
+const { invoiceTaxBreakdown } = require('../utils/invoiceTaxBreakdown');
 const ExcelJS = require('exceljs');
 const mongoose = require('mongoose');
 
@@ -1077,15 +1078,19 @@ exports.purchaseSalesExcel = async (req, res) => {
     wv.columns = [
       { header: 'Fecha', key: 'date', width: 14 }, { header: 'Comprobante', key: 'doc', width: 22 },
       { header: 'RUC/CI Cliente', key: 'id', width: 16 }, { header: 'Cliente', key: 'name', width: 30 },
-      { header: 'Base imponible', key: 'base', width: 14 }, { header: 'IVA', key: 'iva', width: 12 }, { header: 'Total', key: 'total', width: 14 },
+      { header: 'Base 0%', key: 'base0', width: 12 }, { header: 'Base 15%', key: 'baseGrav', width: 12 },
+      { header: 'IVA', key: 'iva', width: 12 }, { header: 'Total', key: 'total', width: 14 },
     ];
     wv.getRow(1).font = { bold: true };
-    (data.ventas || []).forEach((v) => wv.addRow({
-      date: v.fechaEmision || (v.createdAt ? new Date(v.createdAt).toLocaleDateString('es-EC') : ''),
-      doc: `${v.estab || ''}-${v.ptoEmi || ''}-${v.secuencial || ''}`,
-      id: v.identificacionComprador, name: v.razonSocialComprador,
-      base: v.totalSinImpuestos || 0, iva: v.totalImpuesto || 0, total: v.importeTotal || 0,
-    }));
+    (data.ventas || []).forEach((v) => {
+      const tb = v.taxBreakdown || {};
+      wv.addRow({
+        date: v.fechaEmision || (v.createdAt ? new Date(v.createdAt).toLocaleDateString('es-EC') : ''),
+        doc: `${v.estab || ''}-${v.ptoEmi || ''}-${v.secuencial || ''}`,
+        id: v.identificacionComprador, name: v.razonSocialComprador,
+        base0: tb.base0 || 0, baseGrav: tb.baseGravada || 0, iva: tb.iva ?? v.totalImpuesto ?? 0, total: v.importeTotal || 0,
+      });
+    });
     const wc = wb.addWorksheet('Compras');
     wc.columns = [
       { header: 'Fecha', key: 'date', width: 14 }, { header: 'Serie', key: 'serie', width: 20 },
@@ -1107,7 +1112,9 @@ exports.purchaseSalesExcel = async (req, res) => {
 exports.purchaseSalesList = async (req, res) => {
   try {
     const range = resolveReportRange(req.query);
-    const ventas = await fetchSalesInRange(req.clinicId, range.start, range.end);
+    // Cada venta lleva su desglose por tarifa (0% / gravada) para la lista y el Excel.
+    const ventas = (await fetchSalesInRange(req.clinicId, range.start, range.end))
+      .map((v) => ({ ...v, taxBreakdown: invoiceTaxBreakdown(v) }));
     const compras = await PurchaseInvoice.find(purchasesInRangeQuery(req.clinicId, range.start, range.end))
       .populate('supplier', 'ruc razonSocial');
     const salesPending = await countPendingSalesInRange(req.clinicId, range.start, range.end);
@@ -1168,11 +1175,16 @@ exports.form104 = async (req, res) => {
     const range = resolveReportRange(req.query);
 
     const ventas = await fetchSalesInRange(req.clinicId, range.start, range.end);
+    // Ventas separadas por tarifa (0% vs gravada). base = base0 + baseGravada.
     const v = ventas.reduce((acc, i) => {
-      acc.base += i.totalSinImpuestos || 0;
-      acc.iva += i.totalImpuesto || 0;
+      const tb = invoiceTaxBreakdown(i);
+      acc.base += tb.baseTotal;
+      acc.base0 += tb.base0;
+      acc.baseGravada += tb.baseGravada;
+      acc.iva += tb.iva;
       return acc;
-    }, { base: 0, iva: 0 });
+    }, { base: 0, base0: 0, baseGravada: 0, iva: 0 });
+    ['base', 'base0', 'baseGravada', 'iva'].forEach((k) => { v[k] = +v[k].toFixed(2); });
 
     const compras = await PurchaseInvoice.find(purchasesInRangeQuery(req.clinicId, range.start, range.end));
     const c = compras.reduce((acc, p) => {
@@ -1330,15 +1342,18 @@ exports.atsPreview = async (req, res) => {
 
     const byClient = {};
     for (const v of ventasDocs) {
+      const tb = invoiceTaxBreakdown(v);
       const k = v.identificacionComprador || '9999999999999';
-      if (!byClient[k]) byClient[k] = { idCliente: k, razonSocial: v.razonSocialComprador || 'CONSUMIDOR FINAL', numComprobantes: 0, base: 0, iva: 0, total: 0 };
+      if (!byClient[k]) byClient[k] = { idCliente: k, razonSocial: v.razonSocialComprador || 'CONSUMIDOR FINAL', numComprobantes: 0, base: 0, base0: 0, baseGrav: 0, iva: 0, total: 0 };
       byClient[k].numComprobantes += 1;
-      byClient[k].base += v.totalSinImpuestos || 0;
-      byClient[k].iva += v.totalImpuesto || 0;
+      byClient[k].base += tb.baseTotal;
+      byClient[k].base0 += tb.base0;
+      byClient[k].baseGrav += tb.baseGravada;
+      byClient[k].iva += tb.iva;
       byClient[k].total += v.importeTotal || 0;
     }
     const ventas = Object.values(byClient).map((v) => ({
-      ...v, base: +v.base.toFixed(2), iva: +v.iva.toFixed(2), total: +v.total.toFixed(2),
+      ...v, base: +v.base.toFixed(2), base0: +v.base0.toFixed(2), baseGrav: +v.baseGrav.toFixed(2), iva: +v.iva.toFixed(2), total: +v.total.toFixed(2),
     }));
 
     const totals = {
@@ -1348,6 +1363,8 @@ exports.atsPreview = async (req, res) => {
       comprasRetRenta: +compras.reduce((s, c) => s + c.retRenta, 0).toFixed(2),
       comprasTotal: +compras.reduce((s, c) => s + c.total, 0).toFixed(2),
       ventasBase: +ventas.reduce((s, v) => s + v.base, 0).toFixed(2),
+      ventasBase0: +ventas.reduce((s, v) => s + v.base0, 0).toFixed(2),
+      ventasBaseGrav: +ventas.reduce((s, v) => s + v.baseGrav, 0).toFixed(2),
       ventasIva: +ventas.reduce((s, v) => s + v.iva, 0).toFixed(2),
       ventasTotal: +ventas.reduce((s, v) => s + v.total, 0).toFixed(2),
     };
@@ -1438,13 +1455,17 @@ exports.ats = async (req, res) => {
     }
     xml += '  </compras>\n';
 
-    // Ventas (agrupadas por cliente)
+    // Ventas (agrupadas por cliente). Se separa base 0% (baseImponible) de la base
+    // gravada (baseImpGrav) usando el desglose por tarifa de cada factura; antes
+    // TODA la base iba a baseImpGrav aunque hubiera ventas 0% (servicios médicos).
     const byClient = {};
     for (const v of ventas) {
+      const tb = invoiceTaxBreakdown(v);
       const k = v.identificacionComprador || '9999999999999';
-      if (!byClient[k]) byClient[k] = { ...v, base: 0, iva: 0, total: 0, count: 0 };
-      byClient[k].base += v.totalSinImpuestos || 0;
-      byClient[k].iva += v.totalImpuesto || 0;
+      if (!byClient[k]) byClient[k] = { ...v, base0: 0, baseGrav: 0, iva: 0, total: 0, count: 0 };
+      byClient[k].base0 += tb.base0 + tb.baseExento + tb.baseNoObjeto;
+      byClient[k].baseGrav += tb.baseGravada;
+      byClient[k].iva += tb.iva;
       byClient[k].total += v.importeTotal || 0;
       byClient[k].count += 1;
     }
@@ -1455,8 +1476,8 @@ exports.ats = async (req, res) => {
       xml += `      <idCliente>${esc(v.identificacionComprador)}</idCliente>\n`;
       xml += `      <tipoComprobante>18</tipoComprobante>\n`;
       xml += `      <numeroComprobantes>${v.count}</numeroComprobantes>\n`;
-      xml += `      <baseImponible>0.00</baseImponible>\n`;
-      xml += `      <baseImpGrav>${v.base.toFixed(2)}</baseImpGrav>\n`;
+      xml += `      <baseImponible>${v.base0.toFixed(2)}</baseImponible>\n`;
+      xml += `      <baseImpGrav>${v.baseGrav.toFixed(2)}</baseImpGrav>\n`;
       xml += `      <montoIva>${v.iva.toFixed(2)}</montoIva>\n`;
       xml += `      <valorRetIva>0.00</valorRetIva>\n`;
       xml += `      <valorRetRenta>0.00</valorRetRenta>\n`;

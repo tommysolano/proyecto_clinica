@@ -5,6 +5,8 @@ const Clinic = require('../models/Clinic');
 const InvoicingConfig = require('../models/InvoicingConfig');
 const { loadForSigning } = require('./invoicingConfigController');
 
+const { breakdownFromSale } = require('../utils/invoiceTaxBreakdown');
+
 const { generarClaveAcceso } = require('../modules/invoicing/ec/accessKey');
 const { buildFacturaXml } = require('../modules/invoicing/ec/xmlBuilder');
 const { signXml } = require('../modules/invoicing/ec/xadesSigner');
@@ -151,6 +153,10 @@ exports.emitFromSale = async (req, res) => {
       .reduce((sum, item) => sum + Number(item.taxBase || item.subtotal || 0), 0)
       .toFixed(2);
 
+    // Snapshot tributario por tarifa (0% / gravada 15% / exento / no objeto) para
+    // que los reportes SRI separen ventas sin recalcular desde la venta origen.
+    const tb = breakdownFromSale(sale);
+
     const factura = {
       infoTributaria: {
         ambiente: config.ambiente,
@@ -219,6 +225,15 @@ exports.emitFromSale = async (req, res) => {
       totalDescuento: +Number(sale.discountTotal || 0).toFixed(2),
       totalImpuesto: sale.taxAmount,
       importeTotal: sale.total,
+      taxBreakdown: {
+        base0: tb.base0,
+        baseGravada: tb.baseGravada,
+        baseExento: tb.baseExento,
+        baseNoObjeto: tb.baseNoObjeto,
+        iva: tb.iva,
+        rates: tb.rates,
+        computed: true,
+      },
       balance: sale.paymentMethod === 'credito' ? Number(sale.balance || sale.total || 0) : 0,
       paid: sale.paymentMethod !== 'credito',
       createdBy: req.user._id,
