@@ -11,6 +11,8 @@ import NumericInput from '../components/NumericInput';
 import Spinner from '../components/Spinner';
 import SriStatus from '../components/SriStatus';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
+import EmailStatus from '../components/EmailStatus';
+import useEmailValidation from '../hooks/useEmailValidation';
 import {
   HiOutlinePlus,
   HiOutlinePencil,
@@ -81,6 +83,7 @@ export default function Patients() {
       }));
     },
   });
+  const emailCheck = useEmailValidation(form.email, { enabled: modalOpen });
 
   // Para crear cita junto al paciente
   const [rooms, setRooms] = useState([]);
@@ -479,6 +482,7 @@ export default function Patients() {
                 onChange={handleChange}
                 className="input"
               />
+              <EmailStatus status={emailCheck} onApplySuggestion={(s) => setForm((f) => ({ ...f, email: s }))} />
             </Field>
             <Field label="Teléfono">
               <input

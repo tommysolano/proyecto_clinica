@@ -13,6 +13,7 @@ const {
   addMinutesHHMM,
 } = require('../utils/booking');
 const { lookupTaxId } = require('../utils/cedulaLookup');
+const { checkEmail } = require('../utils/emailValidation');
 
 async function loadEnabledConfig(token) {
   if (!token) return null;
@@ -53,6 +54,19 @@ exports.lookup = async (req, res) => {
       return res.status(400).json({ message: isRuc ? 'RUC inválido' : 'Cédula inválida' });
     }
     res.status(500).json({ message: 'Error al consultar el SRI' });
+  }
+};
+
+// GET /api/public/booking/:token/email?email=... → validación de correo (gated).
+exports.emailLookup = async (req, res) => {
+  const email = (req.query.email || '').trim();
+  if (!email) return res.status(400).json({ message: 'Falta el correo' });
+  try {
+    const cfg = await loadEnabledConfig(req.params.token);
+    if (!cfg) return res.status(404).json({ message: 'Agenda no disponible' });
+    res.json(await checkEmail(email));
+  } catch (error) {
+    res.status(500).json({ message: 'Error al validar el correo' });
   }
 };
 

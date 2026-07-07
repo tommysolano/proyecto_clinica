@@ -5,6 +5,8 @@ import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import SriStatus from '../../components/SriStatus';
 import useSriLookup, { fillField } from '../../hooks/useSriLookup';
+import EmailStatus from '../../components/EmailStatus';
+import useEmailValidation from '../../hooks/useEmailValidation';
 import { HiOutlinePlus, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineUserGroup } from 'react-icons/hi2';
 
 const ROLES = ['CLIENTE', 'PROVEEDOR', 'EMPLEADO', 'VENDEDOR'];
@@ -35,6 +37,7 @@ export default function Suppliers() {
       }));
     },
   });
+  const emailCheck = useEmailValidation(form.email, { enabled: show });
 
   const load = async () => {
     try { const r = await api.get('/suppliers', { params: { q, role: roleFilter || undefined } }); setList(r.data || []); }
@@ -117,7 +120,7 @@ export default function Suppliers() {
             <Field label="RUC / CI / Pasaporte" required><input required placeholder="Ej: 0991234567001" value={form.ruc} onChange={(e) => setForm({ ...form, ruc: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" maxLength={20} /><SriStatus status={rucLookup} /></Field>
             <Field label="Razón social / Nombre" required className="col-span-2"><input required placeholder="Nombre legal" value={form.razonSocial} onChange={(e) => setForm({ ...form, razonSocial: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Nombre comercial" className="col-span-2"><input placeholder="Opcional" value={form.nombreComercial} onChange={(e) => setForm({ ...form, nombreComercial: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-            <Field label="Email"><input placeholder="correo@dominio.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Email"><input placeholder="correo@dominio.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /><EmailStatus status={emailCheck} onApplySuggestion={(s) => setForm({ ...form, email: s })} /></Field>
             <Field label="Teléfono"><input placeholder="09xxxxxxxx" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Dirección" className="col-span-2"><input placeholder="Dirección" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Régimen tributario"><select value={form.rimpe} onChange={(e) => setForm({ ...form, rimpe: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option value="">Régimen General</option><option value="POPULAR">RIMPE Popular</option><option value="EMPRENDEDOR">RIMPE Emprendedor</option></select></Field>

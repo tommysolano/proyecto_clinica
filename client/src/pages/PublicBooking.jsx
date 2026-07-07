@@ -4,6 +4,8 @@ import api from '../api/axios';
 import { sanitizeHtml } from '../utils/sanitizeHtml';
 import SriStatus from '../components/SriStatus';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
+import EmailStatus from '../components/EmailStatus';
+import useEmailValidation from '../hooks/useEmailValidation';
 
 // Página pública de auto-agendamiento (sin autenticación): /book/:token
 // Estilo landing (inspirado en OpenTable): hero con portada, acerca de,
@@ -36,6 +38,10 @@ export default function PublicBooking() {
         lastName: fillField(f.lastName, d.found ? d.lastName || '' : '', prev?.lastName),
       }));
     },
+  });
+  const emailCheck = useEmailValidation(form.email, {
+    enabled: !!slot,
+    path: `/public/booking/${token}/email`,
   });
 
   useEffect(() => {
@@ -248,7 +254,7 @@ export default function PublicBooking() {
                       <Field label="Teléfono / WhatsApp"><input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="0987654321" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" /></Field>
                       <div className="grid grid-cols-2 gap-3">
                         <Field label="Cédula / Pasaporte (opcional)"><input value={form.cedula} onChange={(e) => setForm({ ...form, cedula: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" maxLength={20} /><SriStatus status={cedulaLookup} /></Field>
-                        <Field label="Email (opcional)"><input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" /></Field>
+                        <Field label="Email (opcional)"><input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" /><EmailStatus status={emailCheck} onApplySuggestion={(s) => setForm({ ...form, email: s })} /></Field>
                       </div>
 
                       {error && <p className="text-sm text-red-500">{error}</p>}

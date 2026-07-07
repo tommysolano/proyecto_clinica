@@ -4,6 +4,8 @@ import toast from 'react-hot-toast';
 import Modal from './Modal';
 import SriStatus from './SriStatus';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
+import EmailStatus from './EmailStatus';
+import useEmailValidation from '../hooks/useEmailValidation';
 import {
   HiOutlineCheckCircle,
   HiOutlineBanknotes,
@@ -64,6 +66,7 @@ export default function AttendChargeModal({ appointment, doctors = [], onClose, 
       setPay((p) => ({ ...p, clientName: fillField(p.clientName, d.found ? d.fullName || '' : '', prev?.fullName) }));
     },
   });
+  const emailCheck = useEmailValidation(pay.clientEmail, { enabled: step === 'cobro' });
 
   useEffect(() => {
     api.get('/banks/payment-options')
@@ -218,6 +221,7 @@ export default function AttendChargeModal({ appointment, doctors = [], onClose, 
                   </label>
                   <label className="block text-xs text-slate-600">Email
                     <input type="email" value={pay.clientEmail} onChange={(e) => setPay({ ...pay, clientEmail: e.target.value })} placeholder="Opcional" className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm bg-slate-50/50" />
+                    <EmailStatus status={emailCheck} onApplySuggestion={(s) => setPay({ ...pay, clientEmail: s })} />
                   </label>
                   <label className="block text-xs text-slate-600">Teléfono
                     <input value={pay.clientPhone} onChange={(e) => setPay({ ...pay, clientPhone: e.target.value })} placeholder="Opcional" className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm bg-slate-50/50" />

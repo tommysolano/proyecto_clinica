@@ -11,6 +11,8 @@ import NumericInput from '../components/NumericInput';
 import useDocDeepLink from '../hooks/useDocDeepLink';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import SriStatus from '../components/SriStatus';
+import EmailStatus from '../components/EmailStatus';
+import useEmailValidation from '../hooks/useEmailValidation';
 import {
   HiOutlinePlus,
   HiOutlineEye,
@@ -91,6 +93,7 @@ export default function Sales() {
       }));
     },
   });
+  const emailCheck = useEmailValidation(form.clientEmail, { enabled: modalOpen });
 
   useEffect(() => {
     api
@@ -715,6 +718,7 @@ export default function Sales() {
                 onChange={(e) => setForm({ ...form, clientEmail: e.target.value })}
                 className="input"
               />
+              <EmailStatus status={emailCheck} onApplySuggestion={(s) => setForm({ ...form, clientEmail: s })} />
             </div>
             <div>
               <label className="lbl">Teléfono cliente</label>

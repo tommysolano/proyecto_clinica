@@ -4,6 +4,8 @@ import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import SriStatus from '../components/SriStatus';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
+import EmailStatus from '../components/EmailStatus';
+import useEmailValidation from '../hooks/useEmailValidation';
 import { useAuth } from '../context/AuthContext';
 import { HiOutlineBuildingOffice2, HiOutlinePlus, HiOutlinePencil, HiOutlineTrash } from 'react-icons/hi2';
 
@@ -40,6 +42,7 @@ export default function Clinics() {
       }));
     },
   });
+  const emailCheck = useEmailValidation(form.email, { enabled: modalOpen });
 
   // Consolidado por sucursal
   const todayStr = new Date().toISOString().slice(0, 10);
@@ -301,7 +304,9 @@ export default function Clinics() {
             </Field>
             <Field label="Razón social" value={form.razonSocial} onChange={(v) => setForm({ ...form, razonSocial: v })} />
             <Field label="Nombre comercial" value={form.nombreComercial} onChange={(v) => setForm({ ...form, nombreComercial: v })} />
-            <Field label="Email" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} />
+            <Field label="Email" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })}>
+              <EmailStatus status={emailCheck} onApplySuggestion={(s) => setForm({ ...form, email: s })} />
+            </Field>
             <Field label="Teléfono" value={form.phone} onChange={(v) => setForm({ ...form, phone: v })} />
           </div>
           <Field label="Dirección" value={form.address} onChange={(v) => setForm({ ...form, address: v })} />

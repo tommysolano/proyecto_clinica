@@ -10,6 +10,8 @@ import { fmtDate } from '../utils/date';
 import NumericInput from '../components/NumericInput';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import SriStatus from '../components/SriStatus';
+import EmailStatus from '../components/EmailStatus';
+import useEmailValidation from '../hooks/useEmailValidation';
 import {
   HiOutlinePlus,
   HiOutlineDocumentDuplicate,
@@ -58,6 +60,7 @@ export default function Quotations() {
       setForm((f) => ({ ...f, clientName: fillField(f.clientName, d.found ? d.fullName || '' : '', prev?.fullName) }));
     },
   });
+  const emailCheck = useEmailValidation(form.clientEmail, { enabled: showModal });
   const [products, setProducts] = useState([]);
   const [patients, setPatients] = useState([]);
   const [search, setSearch] = useState('');
@@ -348,6 +351,7 @@ export default function Quotations() {
               <label className="block">
                 <span className="text-xs font-medium text-slate-600">Email</span>
                 <input type="email" value={form.clientEmail} onChange={(e) => setForm({ ...form, clientEmail: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50" />
+                <EmailStatus status={emailCheck} onApplySuggestion={(s) => setForm({ ...form, clientEmail: s })} />
               </label>
               <label className="block">
                 <span className="text-xs font-medium text-slate-600">Teléfono</span>

@@ -5,6 +5,8 @@ import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import SriStatus from '../../components/SriStatus';
 import useSriLookup, { fillField } from '../../hooks/useSriLookup';
+import EmailStatus from '../../components/EmailStatus';
+import useEmailValidation from '../../hooks/useEmailValidation';
 import { HiOutlinePlus, HiOutlineUserGroup, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineClock } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
@@ -43,6 +45,7 @@ export default function Employees() {
       }));
     },
   });
+  const emailCheck = useEmailValidation(form.email, { enabled: show });
   const [users, setUsers] = useState([]);
   const [depts, setDepts] = useState([]);
   const [positions, setPositions] = useState([]);
@@ -184,7 +187,7 @@ export default function Employees() {
             <Field label="Identificación" required className="col-span-2"><input required placeholder="Nº de cédula / RUC / pasaporte" value={form.identificacion} onChange={(e) => setForm({ ...form, identificacion: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" maxLength={20} /><SriStatus status={idLookup} /></Field>
             <Field label="Nombres" required><input required value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Apellidos" required><input required value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-            <Field label="Email"><input placeholder="correo@dominio.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Email"><input placeholder="correo@dominio.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /><EmailStatus status={emailCheck} onApplySuggestion={(s) => setForm({ ...form, email: s })} /></Field>
             <Field label="Teléfono"><input placeholder="09xxxxxxxx" value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Departamento">
               <select value={form.departmentRef || ''} onChange={(e) => setForm({ ...form, departmentRef: e.target.value, positionRef: '' })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">

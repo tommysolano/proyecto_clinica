@@ -5,6 +5,8 @@ import Modal from '../components/Modal';
 import PageHeader, { EmptyState } from '../components/PageHeader';
 import SriStatus from '../components/SriStatus';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
+import EmailStatus from '../components/EmailStatus';
+import useEmailValidation from '../hooks/useEmailValidation';
 import { useAuth } from '../context/AuthContext';
 import {
   HiOutlineUserPlus,
@@ -51,6 +53,7 @@ export default function Users() {
       setForm((f) => ({ ...f, name: fillField(f.name, d.found ? d.fullName || '' : '', prev?.fullName) }));
     },
   });
+  const emailCheck = useEmailValidation(form.email, { enabled: showModal });
 
   const load = async () => {
     setLoading(true);
@@ -257,6 +260,7 @@ export default function Users() {
                 required
                 className="input"
               />
+              <EmailStatus status={emailCheck} onApplySuggestion={(s) => handleChange('email', s)} />
             </Field>
             <Field label={editing ? 'Nueva contraseña (opcional)' : 'Contraseña'} required={!editing}>
               <input
