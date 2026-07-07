@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
+import SriStatus from '../components/SriStatus';
+import useSriLookup from '../hooks/useSriLookup';
 import { useAuth } from '../context/AuthContext';
 import { HiOutlineBuildingOffice2, HiOutlinePlus, HiOutlinePencil, HiOutlineTrash } from 'react-icons/hi2';
 
@@ -25,6 +27,20 @@ export default function Clinics() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(empty);
   const [saving, setSaving] = useState(false);
+
+  // Autocompletado por RUC desde el SRI (razón social, nombre comercial, dirección).
+  const rucLookup = useSriLookup(form.ruc, {
+    enabled: modalOpen,
+    onData: (d) => {
+      if (!d.found) return;
+      setForm((f) => ({
+        ...f,
+        razonSocial: f.razonSocial?.trim() ? f.razonSocial : d.fullName || '',
+        nombreComercial: f.nombreComercial?.trim() ? f.nombreComercial : d.commercialName || '',
+        address: f.address?.trim() ? f.address : d.address || '',
+      }));
+    },
+  });
 
   // Consolidado por sucursal
   const todayStr = new Date().toISOString().slice(0, 10);
@@ -280,7 +296,10 @@ export default function Clinics() {
               value={form.ruc}
               onChange={(v) => setForm({ ...form, ruc: v })}
               maxLength={13}
-            />
+              inputMode="numeric"
+            >
+              <SriStatus status={rucLookup} />
+            </Field>
             <Field label="Razón social" value={form.razonSocial} onChange={(v) => setForm({ ...form, razonSocial: v })} />
             <Field label="Nombre comercial" value={form.nombreComercial} onChange={(v) => setForm({ ...form, nombreComercial: v })} />
             <Field label="Email" type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} />
@@ -310,7 +329,7 @@ export default function Clinics() {
   );
 }
 
-function Field({ label, value, onChange, type = 'text', required, maxLength }) {
+function Field({ label, value, onChange, type = 'text', required, maxLength, inputMode, children }) {
   return (
     <div>
       <label className="block text-sm font-medium text-slate-700 mb-1.5">{label}</label>
@@ -318,10 +337,12 @@ function Field({ label, value, onChange, type = 'text', required, maxLength }) {
         type={type}
         required={required}
         maxLength={maxLength}
+        inputMode={inputMode}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50 focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
       />
+      {children}
     </div>
   );
 }

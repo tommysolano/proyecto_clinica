@@ -13,6 +13,7 @@ router.get('/media/:id', media.serve);
 // Auto-agendamiento público.
 router.get('/booking/:token', booking.info);
 router.get('/booking/:token/slots', booking.slots);
+router.get('/booking/:token/lookup/:id', booking.lookup);
 router.post('/booking/:token', booking.book);
 
 // Reputación: página de calificación + envío.

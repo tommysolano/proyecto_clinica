@@ -12,6 +12,7 @@ const {
   parseLocalDate,
   addMinutesHHMM,
 } = require('../utils/booking');
+const { lookupTaxId } = require('../utils/cedulaLookup');
 
 async function loadEnabledConfig(token) {
   if (!token) return null;
@@ -29,6 +30,31 @@ function findBookable(cfg, productId) {
   if (prog) return { product: prog.product, name: prog.name || 'Programa', durationMinutes: prog.durationMinutes };
   return null;
 }
+
+// GET /api/public/booking/:token/lookup/:id → autocompletar nombre por cédula/RUC.
+// Gated por un token de agenda válido; solo devuelve el nombre (no dirección ni
+// clasificación tributaria) para no exponer datos de más en una página pública.
+exports.lookup = async (req, res) => {
+  const id = (req.params.id || '').trim();
+  try {
+    const cfg = await loadEnabledConfig(req.params.token);
+    if (!cfg) return res.status(404).json({ message: 'Agenda no disponible' });
+    const result = await lookupTaxId(id);
+    res.json({
+      found: result.found,
+      firstName: result.firstName || '',
+      lastName: result.lastName || '',
+      fullName: result.fullName || '',
+      isCompany: !!result.isCompany,
+    });
+  } catch (error) {
+    if (error.code === 'INVALID_CEDULA') {
+      const isRuc = id.length === 13;
+      return res.status(400).json({ message: isRuc ? 'RUC inválido' : 'Cédula inválida' });
+    }
+    res.status(500).json({ message: 'Error al consultar el SRI' });
+  }
+};
 
 // GET /api/public/booking/:token  → info para renderizar la página de reserva.
 exports.info = async (req, res) => {

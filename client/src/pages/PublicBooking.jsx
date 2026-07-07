@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import api from '../api/axios';
 import { sanitizeHtml } from '../utils/sanitizeHtml';
+import SriStatus from '../components/SriStatus';
+import useSriLookup from '../hooks/useSriLookup';
 
 // Página pública de auto-agendamiento (sin autenticación): /book/:token
 // Estilo landing (inspirado en OpenTable): hero con portada, acerca de,
@@ -21,6 +23,21 @@ export default function PublicBooking() {
   const [lightbox, setLightbox] = useState(null);
   const [programModal, setProgramModal] = useState(null);
   const reserveRef = useRef(null);
+
+  // Autocompletado por cédula/RUC desde el SRI (nombre/apellido), vía el endpoint
+  // público gated por el token de la agenda.
+  const cedulaLookup = useSriLookup(form.cedula, {
+    enabled: !!slot,
+    endpoint: (id) => `/public/booking/${token}/lookup/${id}`,
+    onData: (d) => {
+      if (!d.found) return;
+      setForm((f) => ({
+        ...f,
+        firstName: f.firstName?.trim() ? f.firstName : d.firstName || '',
+        lastName: f.lastName?.trim() ? f.lastName : d.lastName || '',
+      }));
+    },
+  });
 
   useEffect(() => {
     api.get(`/public/booking/${token}`)
@@ -231,7 +248,7 @@ export default function PublicBooking() {
                       </div>
                       <Field label="Teléfono / WhatsApp"><input value={form.phone} onChange={(e) => setForm({ ...form, phone: e.target.value })} placeholder="0987654321" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" /></Field>
                       <div className="grid grid-cols-2 gap-3">
-                        <Field label="Cédula (opcional)"><input value={form.cedula} onChange={(e) => setForm({ ...form, cedula: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" /></Field>
+                        <Field label="Cédula (opcional)"><input value={form.cedula} onChange={(e) => setForm({ ...form, cedula: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" inputMode="numeric" maxLength={13} /><SriStatus status={cedulaLookup} /></Field>
                         <Field label="Email (opcional)"><input value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" /></Field>
                       </div>
 

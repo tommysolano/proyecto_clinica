@@ -3,6 +3,8 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
+import SriStatus from '../../components/SriStatus';
+import useSriLookup from '../../hooks/useSriLookup';
 import { HiOutlinePlus, HiOutlineUserGroup, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineClock } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
@@ -29,6 +31,19 @@ export default function Employees() {
   const [form, setForm] = useState(EMPTY);
   const [history, setHistory] = useState(null);
   const [clinics, setClinics] = useState([]);
+
+  // Autocompletado por cédula/RUC desde el SRI (nombres/apellidos).
+  const idLookup = useSriLookup(form.identificacion, {
+    enabled: show,
+    onData: (d) => {
+      if (!d.found) return;
+      setForm((f) => ({
+        ...f,
+        firstName: f.firstName?.trim() ? f.firstName : d.firstName || '',
+        lastName: f.lastName?.trim() ? f.lastName : d.lastName || '',
+      }));
+    },
+  });
   const [users, setUsers] = useState([]);
   const [depts, setDepts] = useState([]);
   const [positions, setPositions] = useState([]);
@@ -167,7 +182,7 @@ export default function Employees() {
           <div className="grid grid-cols-2 gap-3">
             <Field label="Código" required><input required placeholder="Ej: EMP-01" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Tipo de identificación"><select value={form.tipoIdentificacion} onChange={(e) => setForm({ ...form, tipoIdentificacion: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>CEDULA</option><option>RUC</option><option>PASAPORTE</option></select></Field>
-            <Field label="Identificación" required className="col-span-2"><input required placeholder="Nº de cédula / RUC" value={form.identificacion} onChange={(e) => setForm({ ...form, identificacion: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Identificación" required className="col-span-2"><input required placeholder="Nº de cédula / RUC" value={form.identificacion} onChange={(e) => setForm({ ...form, identificacion: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" inputMode="numeric" maxLength={13} /><SriStatus status={idLookup} /></Field>
             <Field label="Nombres" required><input required value={form.firstName} onChange={(e) => setForm({ ...form, firstName: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Apellidos" required><input required value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Email"><input placeholder="correo@dominio.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>

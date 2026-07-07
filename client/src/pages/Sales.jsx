@@ -9,6 +9,8 @@ import { useAuth } from '../context/AuthContext';
 import { fmtDateTime } from '../utils/date';
 import NumericInput from '../components/NumericInput';
 import useDocDeepLink from '../hooks/useDocDeepLink';
+import useSriLookup from '../hooks/useSriLookup';
+import SriStatus from '../components/SriStatus';
 import {
   HiOutlinePlus,
   HiOutlineEye,
@@ -77,6 +79,20 @@ export default function Sales() {
   // Medios de pago (cuentas bancarias / tarjetas) y personal para recomendación
   const [payOptions, setPayOptions] = useState({ accounts: [], cards: [] });
   const [staff, setStaff] = useState([]);
+
+  // Autocompletado del cliente por cédula/RUC desde el SRI (nombre + dirección).
+  const cedulaLookup = useSriLookup(form.clientCedula, {
+    enabled: modalOpen,
+    onData: (d) => {
+      if (!d.found) return;
+      setForm((f) => ({
+        ...f,
+        clientName:
+          !f.clientName || f.clientName === 'Consumidor Final' ? d.fullName || f.clientName : f.clientName,
+        clientAddress: f.clientAddress?.trim() ? f.clientAddress : d.address || '',
+      }));
+    },
+  });
 
   useEffect(() => {
     api
@@ -688,7 +704,10 @@ export default function Sales() {
                 value={form.clientCedula}
                 onChange={(e) => setForm({ ...form, clientCedula: e.target.value })}
                 className="input"
+                inputMode="numeric"
+                maxLength={13}
               />
+              <SriStatus status={cedulaLookup} />
             </div>
             <div>
               <label className="lbl">Email cliente</label>

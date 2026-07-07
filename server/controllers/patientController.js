@@ -1,7 +1,6 @@
 const Patient = require('../models/Patient');
 const Appointment = require('../models/Appointment');
 const { emitToClinic } = require('../realtime');
-const { lookupTaxId } = require('../utils/cedulaLookup');
 
 // NOTA: los DATOS de los pacientes se comparten entre todas las clínicas
 // (cédula única global). El campo `clinic` queda como referencia de la clínica
@@ -66,36 +65,6 @@ exports.searchReferralCandidates = async (req, res) => {
   }
 };
 
-/**
- * Consulta los datos públicos de una persona por cédula (SRI) para autocompletar
- * el alta de un paciente. Si ya existe un paciente con esa cédula, lo devuelve
- * para evitar duplicados. Solo obtenemos el nombre completo de la fuente pública;
- * fecha de nacimiento, edad y género no están disponibles libremente en Ecuador.
- */
-exports.lookupByCedula = async (req, res) => {
-  try {
-    const cedula = (req.params.cedula || '').trim();
-
-    // ¿Ya está registrado? (la cédula es global, ver nota arriba)
-    const existing = await Patient.findOne({ cedula, active: true });
-    if (existing) {
-      return res.json({
-        found: true,
-        alreadyExists: true,
-        patient: sanitizeForRole(existing, req.role),
-      });
-    }
-
-    const result = await lookupTaxId(cedula);
-    res.json({ ...result, alreadyExists: false });
-  } catch (error) {
-    if (error.code === 'INVALID_CEDULA') {
-      const isRuc = (req.params.cedula || '').trim().length === 13;
-      return res.status(400).json({ message: isRuc ? 'RUC inválido' : 'Cédula inválida' });
-    }
-    res.status(500).json({ message: 'Error al consultar el SRI' });
-  }
-};
 
 exports.getPatients = async (req, res) => {
   try {

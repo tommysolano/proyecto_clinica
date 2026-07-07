@@ -142,12 +142,21 @@ async function fetchJson(url) {
   }
 }
 
-/** Dirección de la matriz del contribuyente (best-effort). */
-async function fetchMatrizAddress(ruc) {
+/** Dirección y nombre comercial de la matriz del contribuyente (best-effort). */
+async function fetchMatrizEstablecimiento(ruc) {
   const data = await fetchJson(`${SRI_ESTABLECIMIENTOS}?numeroRuc=${ruc}`);
-  if (!Array.isArray(data) || data.length === 0) return '';
+  if (!Array.isArray(data) || data.length === 0) return { address: '', commercialName: '' };
   const matriz = data.find((e) => e?.matriz === 'SI') || data[0];
-  return (matriz?.direccionCompleta || '').trim();
+  return {
+    address: (matriz?.direccionCompleta || '').trim(),
+    commercialName: (matriz?.nombreFantasiaComercial || '').trim(),
+  };
+}
+
+/** Interpreta un flag SRI ("SI"/"NO"/número de resolución/vacío) como booleano. */
+function sriFlag(val) {
+  const s = String(val ?? '').trim().toUpperCase();
+  return s !== '' && s !== 'NO';
 }
 
 /**
@@ -179,10 +188,10 @@ async function lookupTaxId(id) {
     throw err;
   }
 
-  // Consolidado (nombre/estado) y dirección de la matriz en paralelo.
-  const [consolidado, address] = await Promise.all([
+  // Consolidado (nombre/estado) y establecimiento matriz (dirección) en paralelo.
+  const [consolidado, establecimiento] = await Promise.all([
     fetchJson(`${SRI_CONSOLIDADO}?ruc=${ruc}`),
-    fetchMatrizAddress(ruc),
+    fetchMatrizEstablecimiento(ruc),
   ]);
 
   const record = Array.isArray(consolidado) ? consolidado[0] : null;
@@ -204,9 +213,13 @@ async function lookupTaxId(id) {
     isCompany,
     taxpayerType: record.tipoContribuyente || '',
     taxpayerState: record.estadoContribuyenteRuc || '',
-    commercialName: '',
+    commercialName: establecimiento.commercialName || '',
     mainActivity: record.actividadEconomicaPrincipal || '',
-    address: address || '',
+    address: establecimiento.address || '',
+    // Clasificación tributaria (útil para proveedores).
+    isSpecialContributor: sriFlag(record.contribuyenteEspecial),
+    isWithholdingAgent: sriFlag(record.agenteRetencion),
+    regime: record.regimen || '',
   };
 }
 

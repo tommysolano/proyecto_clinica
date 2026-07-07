@@ -3,6 +3,8 @@ import api from '../api/axios';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import NumericInput from '../components/NumericInput';
+import SriStatus from '../components/SriStatus';
+import useSriLookup from '../hooks/useSriLookup';
 import {
   HiOutlineDocumentText,
   HiOutlineLockClosed,
@@ -36,6 +38,20 @@ export default function InvoicingConfig() {
   const [certFile, setCertFile] = useState(null);
   const [certPassword, setCertPassword] = useState('');
   const [uploadingCert, setUploadingCert] = useState(false);
+
+  // Autocompletado por RUC desde el SRI (razón social, nombre comercial, dirección).
+  const rucLookup = useSriLookup(form.ruc, {
+    enabled: canEdit,
+    onData: (d) => {
+      if (!d.found) return;
+      setForm((prev) => ({
+        ...prev,
+        razonSocial: prev.razonSocial?.trim() ? prev.razonSocial : d.fullName || '',
+        nombreComercial: prev.nombreComercial?.trim() ? prev.nombreComercial : d.commercialName || '',
+        direccionMatriz: prev.direccionMatriz?.trim() ? prev.direccionMatriz : d.address || '',
+      }));
+    },
+  });
 
   const load = async () => {
     setLoading(true);
@@ -173,7 +189,9 @@ export default function InvoicingConfig() {
               disabled={!canEdit}
               onChange={(e) => handleChange('ruc', e.target.value.replace(/\D/g, ''))}
               className="input"
+              inputMode="numeric"
             />
+            <SriStatus status={rucLookup} />
           </Field>
           <Field label="Razón social" required>
             <input

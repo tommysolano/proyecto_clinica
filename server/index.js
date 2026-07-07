@@ -49,6 +49,7 @@ app.use('/api/users', require('./routes/users'));
 app.use('/api/access-blocks', require('./routes/accessBlocks'));
 app.use('/api/clinics', require('./routes/clinics'));
 app.use('/api/patients', require('./routes/patients'));
+app.use('/api/lookup', require('./routes/lookup'));
 app.use('/api/clinical-records', require('./routes/clinicalRecords'));
 app.use('/api/cie10', require('./routes/cie10'));
 app.use('/api/appointments', require('./routes/appointments'));

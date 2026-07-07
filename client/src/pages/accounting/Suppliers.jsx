@@ -3,6 +3,8 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
+import SriStatus from '../../components/SriStatus';
+import useSriLookup from '../../hooks/useSriLookup';
 import { HiOutlinePlus, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineUserGroup } from 'react-icons/hi2';
 
 const ROLES = ['CLIENTE', 'PROVEEDOR', 'EMPLEADO', 'VENDEDOR'];
@@ -17,6 +19,23 @@ export default function Suppliers() {
   const [form, setForm] = useState(EMPTY);
   const [q, setQ] = useState('');
   const [roleFilter, setRoleFilter] = useState('');
+
+  // Autocompletado por cédula/RUC desde el SRI (razón social, nombre comercial,
+  // dirección y clasificación tributaria).
+  const rucLookup = useSriLookup(form.ruc, {
+    enabled: show,
+    onData: (d) => {
+      if (!d.found) return;
+      setForm((f) => ({
+        ...f,
+        razonSocial: f.razonSocial?.trim() ? f.razonSocial : d.fullName || '',
+        nombreComercial: f.nombreComercial?.trim() ? f.nombreComercial : d.commercialName || '',
+        address: f.address?.trim() ? f.address : d.address || '',
+        isSpecialContributor: f.isSpecialContributor || !!d.isSpecialContributor,
+        isWithholdingAgent: f.isWithholdingAgent || !!d.isWithholdingAgent,
+      }));
+    },
+  });
 
   const load = async () => {
     try { const r = await api.get('/suppliers', { params: { q, role: roleFilter || undefined } }); setList(r.data || []); }
@@ -96,7 +115,7 @@ export default function Suppliers() {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Tipo de identificación"><select value={form.tipoIdentificacion} onChange={(e) => setForm({ ...form, tipoIdentificacion: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>RUC</option><option>CEDULA</option><option>PASAPORTE</option></select></Field>
-            <Field label="RUC / CI" required><input required placeholder="Ej: 0991234567001" value={form.ruc} onChange={(e) => setForm({ ...form, ruc: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="RUC / CI" required><input required placeholder="Ej: 0991234567001" value={form.ruc} onChange={(e) => setForm({ ...form, ruc: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" inputMode="numeric" maxLength={13} /><SriStatus status={rucLookup} /></Field>
             <Field label="Razón social / Nombre" required className="col-span-2"><input required placeholder="Nombre legal" value={form.razonSocial} onChange={(e) => setForm({ ...form, razonSocial: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Nombre comercial" className="col-span-2"><input placeholder="Opcional" value={form.nombreComercial} onChange={(e) => setForm({ ...form, nombreComercial: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Email"><input placeholder="correo@dominio.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>

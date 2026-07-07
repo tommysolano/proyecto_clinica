@@ -3,6 +3,8 @@ import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import PageHeader, { EmptyState } from '../components/PageHeader';
+import SriStatus from '../components/SriStatus';
+import useSriLookup from '../hooks/useSriLookup';
 import { useAuth } from '../context/AuthContext';
 import {
   HiOutlineUserPlus,
@@ -41,6 +43,15 @@ export default function Users() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY);
   const [saving, setSaving] = useState(false);
+
+  // Autocompletado por cédula/RUC desde el SRI (nombre completo).
+  const cedulaLookup = useSriLookup(form.cedula, {
+    enabled: showModal && !editing,
+    onData: (d) => {
+      if (!d.found) return;
+      setForm((f) => ({ ...f, name: f.name?.trim() ? f.name : d.fullName || '' }));
+    },
+  });
 
   const load = async () => {
     setLoading(true);
@@ -278,7 +289,10 @@ export default function Users() {
                 value={form.cedula}
                 onChange={(e) => handleChange('cedula', e.target.value)}
                 className="input"
+                inputMode="numeric"
+                maxLength={13}
               />
+              <SriStatus status={cedulaLookup} />
             </Field>
             <Field label="Teléfono">
               <input

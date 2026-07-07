@@ -3,6 +3,8 @@ import { createPortal } from 'react-dom';
 import toast from 'react-hot-toast';
 import NumericInput from '../components/NumericInput';
 import useDebounce from '../hooks/useDebounce';
+import useSriLookup from '../hooks/useSriLookup';
+import SriStatus from '../components/SriStatus';
 import {
   HiOutlineChatBubbleLeftRight,
   HiOutlineStar,
@@ -1765,6 +1767,18 @@ function RegisterPatientModal({ conv, onClose, onRegistered }) {
   });
   const [saving, setSaving] = useState(false);
 
+  // Autocompletado por cédula/RUC desde el SRI (nombres/apellidos).
+  const cedulaLookup = useSriLookup(form.cedula, {
+    onData: (d) => {
+      if (!d.found) return;
+      setForm((f) => ({
+        ...f,
+        firstName: f.firstName?.trim() ? f.firstName : d.firstName || '',
+        lastName: f.lastName?.trim() ? f.lastName : d.lastName || '',
+      }));
+    },
+  });
+
   const submit = async () => {
     if (!form.firstName || !form.lastName) return toast.error('Nombres y apellidos requeridos');
     if (!form.gender) return toast.error('El género es obligatorio');
@@ -1793,7 +1807,8 @@ function RegisterPatientModal({ conv, onClose, onRegistered }) {
           </div>
           <div>
             <label className="text-xs font-semibold text-slate-600 block mb-1">Cédula (opcional)</label>
-            <input value={form.cedula} onChange={(e) => setForm({ ...form, cedula: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+            <input value={form.cedula} onChange={(e) => setForm({ ...form, cedula: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" inputMode="numeric" maxLength={13} />
+            <SriStatus status={cedulaLookup} />
           </div>
           <div>
             <label className="text-xs font-semibold text-slate-600 block mb-1">Género *</label>
