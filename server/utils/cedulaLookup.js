@@ -160,6 +160,52 @@ function sriFlag(val) {
 }
 
 /**
+ * Fallback OPCIONAL al Registro Civil para cédulas válidas que NO tienen RUC en
+ * el SRI (el SRI solo conoce a quien alguna vez sacó RUC). No existe una fuente
+ * pública gratuita del Registro Civil en Ecuador, así que esto queda inerte a
+ * menos que se configure un proveedor (normalmente de pago) vía variables de
+ * entorno:
+ *   - REGISTRO_CIVIL_API_URL: URL con `{id}` donde va la cédula.
+ *   - REGISTRO_CIVIL_API_KEY: (opcional) se envía como Bearer.
+ * Se acepta un JSON con el nombre en `razonSocial`/`fullName`/`nombreCompleto`
+ * o separado en `nombres`/`apellidos`. Devuelve { fullName, nombres, apellidos }
+ * o null.
+ */
+async function fetchRegistroCivilName(cedula) {
+  const tpl = process.env.REGISTRO_CIVIL_API_URL;
+  if (!tpl) return null;
+  const url = tpl.replace('{id}', encodeURIComponent(cedula));
+  const headers = { 'User-Agent': 'Mozilla/5.0', Accept: 'application/json' };
+  if (process.env.REGISTRO_CIVIL_API_KEY) {
+    headers.Authorization = `Bearer ${process.env.REGISTRO_CIVIL_API_KEY}`;
+  }
+  const { signal, clear } = withTimeout(TIMEOUT_MS);
+  try {
+    const res = await fetch(url, { headers, signal });
+    if (!res.ok) return null;
+    const data = await res.json().catch(() => null);
+    const rec = Array.isArray(data) ? data[0] : data?.data || data;
+    if (!rec || typeof rec !== 'object') return null;
+    const nombres = (rec.nombres || '').trim();
+    const apellidos = (rec.apellidos || '').trim();
+    const full = (
+      rec.razonSocial ||
+      rec.fullName ||
+      rec.nombreCompleto ||
+      [apellidos, nombres].filter(Boolean).join(' ')
+    )
+      .toString()
+      .trim();
+    if (!full) return null;
+    return { fullName: full.toUpperCase(), nombres, apellidos };
+  } catch (e) {
+    return null;
+  } finally {
+    clear();
+  }
+}
+
+/**
  * Consulta el SRI por cédula (10) o RUC (13). Devuelve
  * { found, cedula, ruc, fullName, firstName, lastName, isCompany,
  *   taxpayerType, taxpayerState, commercialName, mainActivity, address }
@@ -196,7 +242,37 @@ async function lookupTaxId(id) {
 
   const record = Array.isArray(consolidado) ? consolidado[0] : null;
   const razonSocial = record?.razonSocial?.trim();
-  if (!razonSocial) return { found: false, cedula: raw, ruc };
+  if (!razonSocial) {
+    // Sin RUC en el SRI: intentar el Registro Civil (si hay proveedor configurado).
+    if (/^\d{10}$/.test(raw)) {
+      const rc = await fetchRegistroCivilName(raw);
+      if (rc?.fullName) {
+        const { firstName, lastName } =
+          rc.nombres || rc.apellidos
+            ? { firstName: rc.nombres.toUpperCase(), lastName: rc.apellidos.toUpperCase() }
+            : splitName(rc.fullName);
+        return {
+          found: true,
+          source: 'registro_civil',
+          cedula: raw,
+          ruc,
+          fullName: rc.fullName,
+          firstName,
+          lastName,
+          isCompany: false,
+          taxpayerType: '',
+          taxpayerState: '',
+          commercialName: '',
+          mainActivity: '',
+          address: '',
+          isSpecialContributor: false,
+          isWithholdingAgent: false,
+          regime: '',
+        };
+      }
+    }
+    return { found: false, cedula: raw, ruc };
+  }
 
   const isCompany = (record.tipoContribuyente || '').toUpperCase().includes('SOCIEDAD');
   const { firstName, lastName } = splitName(razonSocial);

@@ -4,7 +4,7 @@ import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import NumericInput from '../components/NumericInput';
 import SriStatus from '../components/SriStatus';
-import useSriLookup from '../hooks/useSriLookup';
+import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import {
   HiOutlineDocumentText,
   HiOutlineLockClosed,
@@ -42,13 +42,12 @@ export default function InvoicingConfig() {
   // Autocompletado por RUC desde el SRI (razón social, nombre comercial, dirección).
   const rucLookup = useSriLookup(form.ruc, {
     enabled: canEdit,
-    onData: (d) => {
-      if (!d.found) return;
+    onData: (d, prevData) => {
       setForm((prev) => ({
         ...prev,
-        razonSocial: prev.razonSocial?.trim() ? prev.razonSocial : d.fullName || '',
-        nombreComercial: prev.nombreComercial?.trim() ? prev.nombreComercial : d.commercialName || '',
-        direccionMatriz: prev.direccionMatriz?.trim() ? prev.direccionMatriz : d.address || '',
+        razonSocial: fillField(prev.razonSocial, d.found ? d.fullName || '' : '', prevData?.fullName),
+        nombreComercial: fillField(prev.nombreComercial, d.found ? d.commercialName || '' : '', prevData?.commercialName),
+        direccionMatriz: fillField(prev.direccionMatriz, d.found ? d.address || '' : '', prevData?.address),
       }));
     },
   });

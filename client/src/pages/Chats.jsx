@@ -3,7 +3,7 @@ import { createPortal } from 'react-dom';
 import toast from 'react-hot-toast';
 import NumericInput from '../components/NumericInput';
 import useDebounce from '../hooks/useDebounce';
-import useSriLookup from '../hooks/useSriLookup';
+import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import SriStatus from '../components/SriStatus';
 import {
   HiOutlineChatBubbleLeftRight,
@@ -1769,12 +1769,11 @@ function RegisterPatientModal({ conv, onClose, onRegistered }) {
 
   // Autocompletado por cédula/RUC desde el SRI (nombres/apellidos).
   const cedulaLookup = useSriLookup(form.cedula, {
-    onData: (d) => {
-      if (!d.found) return;
+    onData: (d, prev) => {
       setForm((f) => ({
         ...f,
-        firstName: f.firstName?.trim() ? f.firstName : d.firstName || '',
-        lastName: f.lastName?.trim() ? f.lastName : d.lastName || '',
+        firstName: fillField(f.firstName, d.found ? d.firstName || '' : '', prev?.firstName),
+        lastName: fillField(f.lastName, d.found ? d.lastName || '' : '', prev?.lastName),
       }));
     },
   });
@@ -1806,8 +1805,8 @@ function RegisterPatientModal({ conv, onClose, onRegistered }) {
             <input value={form.lastName} onChange={(e) => setForm({ ...form, lastName: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
           </div>
           <div>
-            <label className="text-xs font-semibold text-slate-600 block mb-1">Cédula (opcional)</label>
-            <input value={form.cedula} onChange={(e) => setForm({ ...form, cedula: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" inputMode="numeric" maxLength={13} />
+            <label className="text-xs font-semibold text-slate-600 block mb-1">Cédula / Pasaporte (opcional)</label>
+            <input value={form.cedula} onChange={(e) => setForm({ ...form, cedula: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" maxLength={20} />
             <SriStatus status={cedulaLookup} />
           </div>
           <div>

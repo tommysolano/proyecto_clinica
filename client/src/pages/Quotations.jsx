@@ -8,7 +8,7 @@ import PageHeader from '../components/PageHeader';
 import { useAuth } from '../context/AuthContext';
 import { fmtDate } from '../utils/date';
 import NumericInput from '../components/NumericInput';
-import useSriLookup from '../hooks/useSriLookup';
+import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import SriStatus from '../components/SriStatus';
 import {
   HiOutlinePlus,
@@ -54,9 +54,8 @@ export default function Quotations() {
   // Autocompletado del cliente por cédula/RUC desde el SRI.
   const cedulaLookup = useSriLookup(form.clientCedula, {
     enabled: showModal,
-    onData: (d) => {
-      if (!d.found) return;
-      setForm((f) => ({ ...f, clientName: f.clientName?.trim() ? f.clientName : d.fullName || '' }));
+    onData: (d, prev) => {
+      setForm((f) => ({ ...f, clientName: fillField(f.clientName, d.found ? d.fullName || '' : '', prev?.fullName) }));
     },
   });
   const [products, setProducts] = useState([]);
@@ -342,8 +341,8 @@ export default function Quotations() {
                 <input value={form.clientName} onChange={(e) => setForm({ ...form, clientName: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50" />
               </label>
               <label className="block">
-                <span className="text-xs font-medium text-slate-600">Cédula/RUC</span>
-                <input value={form.clientCedula} onChange={(e) => setForm({ ...form, clientCedula: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50" inputMode="numeric" maxLength={13} />
+                <span className="text-xs font-medium text-slate-600">Cédula / RUC / Pasaporte</span>
+                <input value={form.clientCedula} onChange={(e) => setForm({ ...form, clientCedula: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50" maxLength={20} />
                 <SriStatus status={cedulaLookup} />
               </label>
               <label className="block">

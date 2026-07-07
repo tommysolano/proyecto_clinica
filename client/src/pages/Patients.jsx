@@ -10,7 +10,7 @@ import { useSocketEvent } from '../context/SocketContext';
 import NumericInput from '../components/NumericInput';
 import Spinner from '../components/Spinner';
 import SriStatus from '../components/SriStatus';
-import useSriLookup from '../hooks/useSriLookup';
+import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import {
   HiOutlinePlus,
   HiOutlinePencil,
@@ -72,14 +72,12 @@ export default function Patients() {
   const cedulaLookup = useSriLookup(form.cedula, {
     enabled: modalOpen && !editing,
     existingIsError: true,
-    onData: (d) => {
-      if (!d.found) return;
+    onData: (d, prev) => {
       setForm((f) => ({
         ...f,
-        // No sobrescribimos lo que el usuario ya escribió.
-        firstName: f.firstName?.trim() ? f.firstName : (d.firstName || '').toUpperCase(),
-        lastName: f.lastName?.trim() ? f.lastName : (d.lastName || '').toUpperCase(),
-        address: f.address?.trim() ? f.address : (d.address || ''),
+        firstName: fillField(f.firstName, d.found ? (d.firstName || '').toUpperCase() : '', (prev?.firstName || '').toUpperCase()),
+        lastName: fillField(f.lastName, d.found ? (d.lastName || '').toUpperCase() : '', (prev?.lastName || '').toUpperCase()),
+        address: fillField(f.address, d.found ? d.address || '' : '', prev?.address),
       }));
     },
   });
@@ -423,16 +421,15 @@ export default function Patients() {
       >
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Field label="Cédula / RUC">
+            <Field label="Cédula / RUC / Pasaporte">
               <div className="relative">
                 <input
                   name="cedula"
                   value={form.cedula}
                   onChange={handleChange}
                   className="input pr-9"
-                  placeholder="Opcional — autocompleta desde el SRI"
-                  inputMode="numeric"
-                  maxLength={13}
+                  placeholder="Cédula, RUC o pasaporte"
+                  maxLength={20}
                 />
                 {cedulaLookup.loading && (
                   <span className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-500 pointer-events-none">

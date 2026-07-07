@@ -7,17 +7,46 @@ const SKIP = new Set(['', '9999999999', '9999999999999']);
 const EMPTY = { loading: false, error: false, found: false, msg: '' };
 
 /**
+ * Decide con qué valor quedarse al autocompletar un campo, respetando lo que el
+ * usuario escribió a mano pero permitiendo re-sobrescribir cuando cambia la
+ * cédula/RUC:
+ *   - `current`: valor actual del campo.
+ *   - `next`: valor nuevo del SRI ('' si no se encontró nada).
+ *   - `prevAuto`: valor que ESTE mismo autocompletado puso la última vez.
+ *   - `defaults`: valores "placeholder" que se tratan como vacíos (p. ej.
+ *     "Consumidor Final").
+ *
+ * Regla: si hay dato nuevo, se llena cuando el campo está vacío, es un default,
+ * o su valor coincide con el que autollenamos antes (el usuario no lo tocó). Si
+ * NO hay dato nuevo, solo se limpia lo que habíamos autollenado (no se borra lo
+ * que el usuario escribió).
+ */
+export function fillField(current, next, prevAuto, defaults = []) {
+  const cur = (current ?? '').toString();
+  const trimmed = cur.trim();
+  const wasAuto = prevAuto != null && prevAuto !== '' && cur === String(prevAuto);
+  if (next) {
+    if (trimmed === '' || defaults.includes(trimmed) || wasAuto) return next;
+    return current;
+  }
+  return wasAuto ? '' : current;
+}
+
+/**
  * Consulta una cédula (10 díg.) o RUC (13 díg.) en el SRI para autocompletar
  * formularios. Cuando el valor cambia y es válido, tras un breve debounce llama
  * al backend (`/lookup/tax-id/:id` por defecto) y:
- *   - ejecuta `onData(data)` con los datos encontrados para que el formulario
- *     llene sus campos, y
+ *   - ejecuta `onData(data, prevData)` para que el formulario llene sus campos
+ *     (usar `fillField` con `prevData?.<campo>` para permitir re-sobrescritura), y
  *   - devuelve un estado `{ loading, error, found, msg }` para mostrar al usuario
  *     que se está buscando/llenando (indicador de carga).
  *
+ * Los pasaportes (alfanuméricos o de otra longitud) no disparan consulta: se
+ * escriben libremente y la facturación los trata como tipo de identificación 06.
+ *
  * Opciones:
  *   - enabled: si es false no consulta (modal cerrado, edición, sin permiso…).
- *   - onData(data): callback para llenar el formulario con lo encontrado.
+ *   - onData(data, prevData): callback para llenar el formulario.
  *   - existingIsError: si true, cuando ya existe un paciente con esa cédula se
  *     marca error y NO se llama onData (evita duplicados en el alta de pacientes).
  *   - endpoint(id): url alternativa (para la página pública de reservas).
@@ -31,6 +60,8 @@ export default function useSriLookup(
   onDataRef.current = onData;
   const endpointRef = useRef(endpoint);
   endpointRef.current = endpoint;
+  // Último dato que ESTE hook autollenó (para permitir re-sobrescritura).
+  const appliedRef = useRef(null);
 
   const id = (taxId || '').trim();
 
@@ -51,7 +82,8 @@ export default function useSriLookup(
           setStatus({ loading: false, error: true, found: false, msg: `Ya existe un registro con esta ${label}.` });
           return;
         }
-        onDataRef.current?.(data);
+        onDataRef.current?.(data, appliedRef.current);
+        appliedRef.current = data.found ? data : null;
         if (data.found) {
           setStatus({ loading: false, error: false, found: true, msg: `Datos cargados desde el SRI: ${data.fullName}` });
         } else {

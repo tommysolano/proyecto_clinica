@@ -4,7 +4,7 @@ import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import PageHeader, { EmptyState } from '../components/PageHeader';
 import SriStatus from '../components/SriStatus';
-import useSriLookup from '../hooks/useSriLookup';
+import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import { useAuth } from '../context/AuthContext';
 import {
   HiOutlineUserPlus,
@@ -47,9 +47,8 @@ export default function Users() {
   // Autocompletado por cédula/RUC desde el SRI (nombre completo).
   const cedulaLookup = useSriLookup(form.cedula, {
     enabled: showModal && !editing,
-    onData: (d) => {
-      if (!d.found) return;
-      setForm((f) => ({ ...f, name: f.name?.trim() ? f.name : d.fullName || '' }));
+    onData: (d, prev) => {
+      setForm((f) => ({ ...f, name: fillField(f.name, d.found ? d.fullName || '' : '', prev?.fullName) }));
     },
   });
 
@@ -283,14 +282,13 @@ export default function Users() {
                 ))}
               </select>
             </Field>
-            <Field label="Cédula">
+            <Field label="Cédula / Pasaporte">
               <input
                 type="text"
                 value={form.cedula}
                 onChange={(e) => handleChange('cedula', e.target.value)}
                 className="input"
-                inputMode="numeric"
-                maxLength={13}
+                maxLength={20}
               />
               <SriStatus status={cedulaLookup} />
             </Field>

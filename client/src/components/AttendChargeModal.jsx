@@ -3,7 +3,7 @@ import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from './Modal';
 import SriStatus from './SriStatus';
-import useSriLookup from '../hooks/useSriLookup';
+import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import {
   HiOutlineCheckCircle,
   HiOutlineBanknotes,
@@ -60,9 +60,8 @@ export default function AttendChargeModal({ appointment, doctors = [], onClose, 
   // Autocompletado del cliente de facturación por cédula/RUC desde el SRI.
   const cedulaLookup = useSriLookup(pay.clientCedula, {
     enabled: step === 'cobro',
-    onData: (d) => {
-      if (!d.found) return;
-      setPay((p) => ({ ...p, clientName: p.clientName?.trim() ? p.clientName : d.fullName || '' }));
+    onData: (d, prev) => {
+      setPay((p) => ({ ...p, clientName: fillField(p.clientName, d.found ? d.fullName || '' : '', prev?.fullName) }));
     },
   });
 
@@ -213,8 +212,8 @@ export default function AttendChargeModal({ appointment, doctors = [], onClose, 
                   <label className="block text-xs text-slate-600">Nombre completo
                     <input value={pay.clientName} onChange={(e) => setPay({ ...pay, clientName: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm bg-slate-50/50" />
                   </label>
-                  <label className="block text-xs text-slate-600">Cédula / RUC
-                    <input value={pay.clientCedula} onChange={(e) => setPay({ ...pay, clientCedula: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm bg-slate-50/50" inputMode="numeric" maxLength={13} />
+                  <label className="block text-xs text-slate-600">Cédula / RUC / Pasaporte
+                    <input value={pay.clientCedula} onChange={(e) => setPay({ ...pay, clientCedula: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm bg-slate-50/50" maxLength={20} />
                     <SriStatus status={cedulaLookup} />
                   </label>
                   <label className="block text-xs text-slate-600">Email

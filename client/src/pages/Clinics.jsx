@@ -3,7 +3,7 @@ import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import SriStatus from '../components/SriStatus';
-import useSriLookup from '../hooks/useSriLookup';
+import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import { useAuth } from '../context/AuthContext';
 import { HiOutlineBuildingOffice2, HiOutlinePlus, HiOutlinePencil, HiOutlineTrash } from 'react-icons/hi2';
 
@@ -31,13 +31,12 @@ export default function Clinics() {
   // Autocompletado por RUC desde el SRI (razón social, nombre comercial, dirección).
   const rucLookup = useSriLookup(form.ruc, {
     enabled: modalOpen,
-    onData: (d) => {
-      if (!d.found) return;
+    onData: (d, prev) => {
       setForm((f) => ({
         ...f,
-        razonSocial: f.razonSocial?.trim() ? f.razonSocial : d.fullName || '',
-        nombreComercial: f.nombreComercial?.trim() ? f.nombreComercial : d.commercialName || '',
-        address: f.address?.trim() ? f.address : d.address || '',
+        razonSocial: fillField(f.razonSocial, d.found ? d.fullName || '' : '', prev?.fullName),
+        nombreComercial: fillField(f.nombreComercial, d.found ? d.commercialName || '' : '', prev?.commercialName),
+        address: fillField(f.address, d.found ? d.address || '' : '', prev?.address),
       }));
     },
   });

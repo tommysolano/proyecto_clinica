@@ -4,7 +4,7 @@ import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import SriStatus from '../../components/SriStatus';
-import useSriLookup from '../../hooks/useSriLookup';
+import useSriLookup, { fillField } from '../../hooks/useSriLookup';
 import { HiOutlinePlus, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineUserGroup } from 'react-icons/hi2';
 
 const ROLES = ['CLIENTE', 'PROVEEDOR', 'EMPLEADO', 'VENDEDOR'];
@@ -24,15 +24,14 @@ export default function Suppliers() {
   // dirección y clasificación tributaria).
   const rucLookup = useSriLookup(form.ruc, {
     enabled: show,
-    onData: (d) => {
-      if (!d.found) return;
+    onData: (d, prev) => {
       setForm((f) => ({
         ...f,
-        razonSocial: f.razonSocial?.trim() ? f.razonSocial : d.fullName || '',
-        nombreComercial: f.nombreComercial?.trim() ? f.nombreComercial : d.commercialName || '',
-        address: f.address?.trim() ? f.address : d.address || '',
-        isSpecialContributor: f.isSpecialContributor || !!d.isSpecialContributor,
-        isWithholdingAgent: f.isWithholdingAgent || !!d.isWithholdingAgent,
+        razonSocial: fillField(f.razonSocial, d.found ? d.fullName || '' : '', prev?.fullName),
+        nombreComercial: fillField(f.nombreComercial, d.found ? d.commercialName || '' : '', prev?.commercialName),
+        address: fillField(f.address, d.found ? d.address || '' : '', prev?.address),
+        isSpecialContributor: d.found ? !!d.isSpecialContributor : f.isSpecialContributor,
+        isWithholdingAgent: d.found ? !!d.isWithholdingAgent : f.isWithholdingAgent,
       }));
     },
   });
@@ -115,7 +114,7 @@ export default function Suppliers() {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Tipo de identificación"><select value={form.tipoIdentificacion} onChange={(e) => setForm({ ...form, tipoIdentificacion: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>RUC</option><option>CEDULA</option><option>PASAPORTE</option></select></Field>
-            <Field label="RUC / CI" required><input required placeholder="Ej: 0991234567001" value={form.ruc} onChange={(e) => setForm({ ...form, ruc: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" inputMode="numeric" maxLength={13} /><SriStatus status={rucLookup} /></Field>
+            <Field label="RUC / CI / Pasaporte" required><input required placeholder="Ej: 0991234567001" value={form.ruc} onChange={(e) => setForm({ ...form, ruc: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" maxLength={20} /><SriStatus status={rucLookup} /></Field>
             <Field label="Razón social / Nombre" required className="col-span-2"><input required placeholder="Nombre legal" value={form.razonSocial} onChange={(e) => setForm({ ...form, razonSocial: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Nombre comercial" className="col-span-2"><input placeholder="Opcional" value={form.nombreComercial} onChange={(e) => setForm({ ...form, nombreComercial: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Email"><input placeholder="correo@dominio.com" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>

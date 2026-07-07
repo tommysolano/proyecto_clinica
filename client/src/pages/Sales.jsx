@@ -9,7 +9,7 @@ import { useAuth } from '../context/AuthContext';
 import { fmtDateTime } from '../utils/date';
 import NumericInput from '../components/NumericInput';
 import useDocDeepLink from '../hooks/useDocDeepLink';
-import useSriLookup from '../hooks/useSriLookup';
+import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import SriStatus from '../components/SriStatus';
 import {
   HiOutlinePlus,
@@ -83,13 +83,11 @@ export default function Sales() {
   // Autocompletado del cliente por cédula/RUC desde el SRI (nombre + dirección).
   const cedulaLookup = useSriLookup(form.clientCedula, {
     enabled: modalOpen,
-    onData: (d) => {
-      if (!d.found) return;
+    onData: (d, prev) => {
       setForm((f) => ({
         ...f,
-        clientName:
-          !f.clientName || f.clientName === 'Consumidor Final' ? d.fullName || f.clientName : f.clientName,
-        clientAddress: f.clientAddress?.trim() ? f.clientAddress : d.address || '',
+        clientName: fillField(f.clientName, d.found ? d.fullName || '' : '', prev?.fullName, ['Consumidor Final']),
+        clientAddress: fillField(f.clientAddress, d.found ? d.address || '' : '', prev?.address),
       }));
     },
   });
@@ -699,13 +697,13 @@ export default function Sales() {
               />
             </div>
             <div>
-              <label className="lbl">Cédula / RUC</label>
+              <label className="lbl">Cédula / RUC / Pasaporte</label>
               <input
                 value={form.clientCedula}
                 onChange={(e) => setForm({ ...form, clientCedula: e.target.value })}
                 className="input"
-                inputMode="numeric"
-                maxLength={13}
+                maxLength={20}
+                placeholder="Cédula, RUC o pasaporte"
               />
               <SriStatus status={cedulaLookup} />
             </div>
