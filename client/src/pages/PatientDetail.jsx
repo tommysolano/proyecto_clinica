@@ -1677,6 +1677,12 @@ function SeguimientosTab({ patientId, appointmentId }) {
                     {fu.kind === 'enfermeria' && (
                       <span className="inline-block mb-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-sky-100 text-sky-700">Enfermería</span>
                     )}
+                    {hasOpticaData && (
+                      <span className="inline-block mb-1 ml-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-indigo-100 text-indigo-700">Óptica</span>
+                    )}
+                    {hasGinecoData && (
+                      <span className="inline-block mb-1 ml-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700">Ginecología</span>
+                    )}
                     {fu.tipoConsulta && (
                       <span className="inline-block mb-1 ml-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600 capitalize">{fu.tipoConsulta}</span>
                     )}
