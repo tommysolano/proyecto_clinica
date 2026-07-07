@@ -46,6 +46,7 @@ import Reports from './pages/Reports';
 import Discounts from './pages/Discounts';
 import Rooms from './pages/Rooms';
 import Blocks from './pages/Blocks';
+import AccessBlocks from './pages/AccessBlocks';
 import ChartOfAccounts from './pages/accounting/ChartOfAccounts';
 import CostCenters from './pages/accounting/CostCenters';
 import FiscalPeriods from './pages/accounting/FiscalPeriods';
@@ -388,6 +389,15 @@ function AppRoutes() {
                   element={
                     <SuperAdminRoute>
                       <Clinics />
+                    </SuperAdminRoute>
+                  }
+                />
+
+                <Route
+                  path="/access-blocks"
+                  element={
+                    <SuperAdminRoute>
+                      <AccessBlocks />
                     </SuperAdminRoute>
                   }
                 />

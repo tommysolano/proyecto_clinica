@@ -3,6 +3,7 @@ const jwt = require('jsonwebtoken');
 const { validationResult } = require('express-validator');
 const User = require('../models/User');
 const Clinic = require('../models/Clinic');
+const { isAccessBlocked, blockMessage } = require('../utils/accessControl');
 
 const ACCESS_EXPIRES = process.env.JWT_EXPIRES_IN || '8h';
 
@@ -63,6 +64,12 @@ exports.login = async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) {
       return res.status(400).json({ message: 'Credenciales inválidas' });
+    }
+
+    // Bloqueo de acceso al sistema (super-admin y exceptuados quedan libres).
+    const block = await isAccessBlocked(user);
+    if (block.blocked) {
+      return res.status(403).json({ message: blockMessage(block.rule), code: 'ACCESS_BLOCKED' });
     }
 
     const clinicIds = user.clinics.map((c) => c.clinic);

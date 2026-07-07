@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
-import { HiOutlineShieldCheck, HiOutlineBuildingOffice2 } from 'react-icons/hi2';
+import { HiOutlineShieldCheck, HiOutlineBuildingOffice2, HiOutlineNoSymbol } from 'react-icons/hi2';
 import shiluvLogo from '../Shiluv-logo-4.png';
 
 export default function Login() {
@@ -11,8 +11,18 @@ export default function Login() {
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState('credentials');
   const [availableClinics, setAvailableClinics] = useState([]);
+  const [blockMsg, setBlockMsg] = useState('');
   const { login, selectClinic } = useAuth();
   const navigate = useNavigate();
+
+  // Si el usuario fue expulsado por un bloqueo de acceso, mostrar el motivo.
+  useEffect(() => {
+    const msg = localStorage.getItem('accessBlockMsg');
+    if (msg) {
+      setBlockMsg(msg);
+      localStorage.removeItem('accessBlockMsg');
+    }
+  }, []);
 
   const handleCredentials = async (e) => {
     e.preventDefault();
@@ -31,7 +41,12 @@ export default function Login() {
       setAvailableClinics(data.clinics);
       setStep('clinic');
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al iniciar sesión');
+      const msg = err.response?.data?.message || 'Error al iniciar sesión';
+      if (err.response?.status === 403 && err.response?.data?.code === 'ACCESS_BLOCKED') {
+        setBlockMsg(msg);
+      } else {
+        toast.error(msg);
+      }
     } finally {
       setLoading(false);
     }
@@ -94,6 +109,12 @@ export default function Login() {
                   <h2 className="text-2xl font-bold text-slate-800 tracking-tight">Bienvenido</h2>
                   <p className="text-muted mt-1 text-sm">Ingrese sus credenciales para acceder</p>
                 </div>
+                {blockMsg && (
+                  <div className="mb-5 flex items-start gap-2 rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm text-rose-700">
+                    <HiOutlineNoSymbol className="w-5 h-5 flex-shrink-0 mt-0.5" />
+                    <span>{blockMsg}</span>
+                  </div>
+                )}
                 <form onSubmit={handleCredentials} className="space-y-5">
                   <div>
                     <label className="block text-sm font-semibold text-slate-700 mb-1.5">Correo electrónico</label>

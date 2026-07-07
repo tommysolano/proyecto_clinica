@@ -16,7 +16,10 @@ const sanitizeClinics = (clinics, fallbackClinicId) => {
  */
 exports.getUsers = async (req, res) => {
   try {
-    const filter = req.clinicId ? { 'clinics.clinic': req.clinicId } : {};
+    // El super-admin puede pedir TODOS los usuarios (?all=1), p.ej. para elegir
+    // excepciones al bloqueo de acceso global.
+    const allGlobal = req.query.all === '1' && req.user?.isSuperAdmin;
+    const filter = !allGlobal && req.clinicId ? { 'clinics.clinic': req.clinicId } : {};
     const users = await User.find(filter)
       .populate('clinics.clinic', 'name')
       .select('-password')

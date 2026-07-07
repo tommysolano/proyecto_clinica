@@ -38,6 +38,7 @@ app.use(require('./middleware/audit'));
 // Rutas
 app.use('/api/auth', require('./routes/auth'));
 app.use('/api/users', require('./routes/users'));
+app.use('/api/access-blocks', require('./routes/accessBlocks'));
 app.use('/api/clinics', require('./routes/clinics'));
 app.use('/api/patients', require('./routes/patients'));
 app.use('/api/clinical-records', require('./routes/clinicalRecords'));

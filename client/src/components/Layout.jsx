@@ -168,6 +168,7 @@ const MENU_GROUPS = [
       { path: '/users', label: 'Usuarios', roles: ['admin'] },
       { path: '/rooms', label: 'Consultorios', roles: ['admin'] },
       { path: '/blocks', label: 'Bloqueos', roles: ['admin'] },
+      { path: '/access-blocks', label: 'Bloqueo de Acceso', roles: [], superOnly: true },
       { path: '/clinics', label: 'Sucursales', roles: [], superOnly: true },
     ],
   },

@@ -19,7 +19,14 @@ api.interceptors.response.use(
   (error) => {
     const status = error.response?.status;
     const code = error.response?.data?.code;
-    if (status === 401) {
+    if (status === 403 && code === 'ACCESS_BLOCKED') {
+      // Bloqueo de acceso al sistema (definido por el super-admin). Se cierra la
+      // sesión y se guarda el motivo para mostrarlo en el login.
+      const msg = error.response?.data?.message || 'El acceso al sistema está bloqueado en este momento.';
+      localStorage.setItem('accessBlockMsg', msg);
+      localStorage.removeItem('token');
+      if (!window.location.pathname.startsWith('/login')) window.location.href = '/login';
+    } else if (status === 401) {
       localStorage.removeItem('token');
       window.location.href = '/login';
     } else if (status === 403 && code === 'CLINIC_REQUIRED') {

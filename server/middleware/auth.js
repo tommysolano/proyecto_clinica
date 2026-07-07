@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const { isAccessBlocked, blockMessage } = require('../utils/accessControl');
 
 /**
  * Verifica el JWT y carga el usuario.
@@ -20,6 +21,14 @@ const auth = async (req, res, next) => {
 
     req.user = user;
     req.tokenPayload = decoded;
+
+    // Bloqueo de acceso al sistema (gestionado por el super-admin). Aplica a
+    // cualquier petición autenticada; el super-admin y los usuarios exceptuados
+    // nunca se bloquean.
+    const block = await isAccessBlocked(user);
+    if (block.blocked) {
+      return res.status(403).json({ message: blockMessage(block.rule), code: 'ACCESS_BLOCKED' });
+    }
 
     if (decoded.clinicId) {
       req.clinicId = decoded.clinicId;
