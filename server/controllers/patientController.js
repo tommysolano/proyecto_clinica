@@ -1,7 +1,7 @@
 const Patient = require('../models/Patient');
 const Appointment = require('../models/Appointment');
 const { emitToClinic } = require('../realtime');
-const { lookupCedula } = require('../utils/cedulaLookup');
+const { lookupTaxId } = require('../utils/cedulaLookup');
 
 // NOTA: los DATOS de los pacientes se comparten entre todas las clínicas
 // (cédula única global). El campo `clinic` queda como referencia de la clínica
@@ -86,13 +86,14 @@ exports.lookupByCedula = async (req, res) => {
       });
     }
 
-    const result = await lookupCedula(cedula);
+    const result = await lookupTaxId(cedula);
     res.json({ ...result, alreadyExists: false });
   } catch (error) {
     if (error.code === 'INVALID_CEDULA') {
-      return res.status(400).json({ message: 'Cédula inválida' });
+      const isRuc = (req.params.cedula || '').trim().length === 13;
+      return res.status(400).json({ message: isRuc ? 'RUC inválido' : 'Cédula inválida' });
     }
-    res.status(500).json({ message: 'Error al consultar la cédula' });
+    res.status(500).json({ message: 'Error al consultar el SRI' });
   }
 };
 

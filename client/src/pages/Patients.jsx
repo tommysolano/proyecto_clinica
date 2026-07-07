@@ -124,23 +124,25 @@ export default function Patients() {
   useSocketEvent('patient:created', () => fetchPatients(), [debouncedSearch, page, onlyNew]);
   useSocketEvent('patient:updated', () => fetchPatients(), [debouncedSearch, page, onlyNew]);
 
-  // Autocompletado por cédula: al ingresar 10 dígitos consultamos el SRI para
-  // llenar nombres/apellidos. La fecha de nacimiento y el género no están en
-  // fuentes públicas gratuitas en Ecuador, así que esos se ingresan a mano.
+  // Autocompletado por cédula/RUC: al ingresar 10 (cédula) o 13 (RUC) dígitos
+  // validamos el número y consultamos el SRI para llenar nombres/apellidos y
+  // dirección. La fecha de nacimiento y el género no están en fuentes públicas
+  // gratuitas en Ecuador, así que esos se ingresan a mano.
   useEffect(() => {
     const ced = (form.cedula || '').trim();
-    if (!modalOpen || editing || !/^\d{10}$/.test(ced)) {
+    if (!modalOpen || editing || !/^(\d{10}|\d{13})$/.test(ced)) {
       setCedulaLookup({ loading: false, msg: '', error: false });
       return;
     }
     let cancelled = false;
-    setCedulaLookup({ loading: true, msg: 'Buscando datos…', error: false });
+    const label = ced.length === 13 ? 'RUC' : 'cédula';
+    setCedulaLookup({ loading: true, error: false, msg: 'Buscando en el SRI…' });
     const t = setTimeout(async () => {
       try {
         const { data } = await api.get(`/patients/lookup/${ced}`);
         if (cancelled) return;
         if (data.alreadyExists) {
-          setCedulaLookup({ loading: false, error: true, msg: 'Ya existe un paciente con esta cédula.' });
+          setCedulaLookup({ loading: false, error: true, msg: `Ya existe un paciente con esta ${label}.` });
           return;
         }
         if (data.found) {
@@ -149,14 +151,15 @@ export default function Patients() {
             // No sobrescribimos lo que el usuario ya escribió.
             firstName: f.firstName?.trim() ? f.firstName : (data.firstName || '').toUpperCase(),
             lastName: f.lastName?.trim() ? f.lastName : (data.lastName || '').toUpperCase(),
+            address: f.address?.trim() ? f.address : (data.address || ''),
           }));
-          setCedulaLookup({ loading: false, error: false, msg: `Datos encontrados: ${data.fullName}` });
+          setCedulaLookup({ loading: false, error: false, msg: `Datos cargados desde el SRI: ${data.fullName}` });
         } else {
-          setCedulaLookup({ loading: false, error: false, msg: 'Sin datos públicos para esta cédula. Ingrésalos manualmente.' });
+          setCedulaLookup({ loading: false, error: false, msg: `Sin datos públicos para esta ${label}. Ingrésalos manualmente.` });
         }
       } catch (err) {
         if (cancelled) return;
-        const m = err.response?.data?.message || 'No se pudo consultar la cédula';
+        const m = err.response?.data?.message || 'No se pudo consultar el SRI';
         setCedulaLookup({ loading: false, error: true, msg: m });
       }
     }, 500);
@@ -444,17 +447,26 @@ export default function Patients() {
       >
         <form onSubmit={handleSubmit} className="space-y-4">
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-            <Field label="Cédula">
-              <input
-                name="cedula"
-                value={form.cedula}
-                onChange={handleChange}
-                className="input"
-                placeholder="Opcional — autocompleta el nombre"
-                inputMode="numeric"
-              />
+            <Field label="Cédula / RUC">
+              <div className="relative">
+                <input
+                  name="cedula"
+                  value={form.cedula}
+                  onChange={handleChange}
+                  className="input pr-9"
+                  placeholder="Opcional — autocompleta desde el SRI"
+                  inputMode="numeric"
+                  maxLength={13}
+                />
+                {cedulaLookup.loading && (
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-emerald-500 pointer-events-none">
+                    <Spinner />
+                  </span>
+                )}
+              </div>
               {cedulaLookup.msg && (
-                <p className={`text-[11px] mt-1 ${cedulaLookup.error ? 'text-red-500' : cedulaLookup.loading ? 'text-slate-400' : 'text-emerald-600'}`}>
+                <p className={`text-[11px] mt-1 flex items-center gap-1 ${cedulaLookup.error ? 'text-red-500' : cedulaLookup.loading ? 'text-slate-500' : 'text-emerald-600'}`}>
+                  {cedulaLookup.loading && <Spinner className="h-3 w-3 shrink-0" />}
                   {cedulaLookup.msg}
                 </p>
               )}
@@ -776,6 +788,16 @@ function Field({ label, required, children }) {
       </label>
       {children}
     </div>
+  );
+}
+
+// Spinner giratorio reutilizable (indica búsqueda/carga en curso).
+function Spinner({ className = 'h-4 w-4' }) {
+  return (
+    <svg className={`animate-spin ${className}`} viewBox="0 0 24 24" fill="none" aria-hidden="true">
+      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+    </svg>
   );
 }
 
