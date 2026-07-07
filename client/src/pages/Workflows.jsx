@@ -245,7 +245,7 @@ function EnrollmentsModal({ workflow, onClose }) {
       .finally(() => setLoading(false));
   }, [workflow._id, statusFilter]);
 
-  const fmt = (d) => (d ? new Date(d).toLocaleString('es-EC', { day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—');
+  const fmt = (d) => (d ? new Date(d).toLocaleString('es-EC', { timeZone: 'America/Guayaquil', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—');
 
   return (
     <Modal isOpen onClose={onClose} title={`Inscritos — ${workflow.name}`} size="xl">

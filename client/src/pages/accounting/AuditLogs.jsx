@@ -43,7 +43,7 @@ export default function AuditLogs() {
           <tbody>
             {list.map((l) => (
               <tr key={l._id} className="border-t">
-                <td className="px-2 py-1">{fmtDate(l.createdAt)} {new Date(l.createdAt).toLocaleTimeString()}</td>
+                <td className="px-2 py-1">{fmtDate(l.createdAt)} {new Date(l.createdAt).toLocaleTimeString('es-EC', { timeZone: 'America/Guayaquil', hour: '2-digit', minute: '2-digit' })}</td>
                 <td className="px-2 py-1">{l.userName}</td>
                 <td className="px-2 py-1">{l.role}</td>
                 <td className="px-2 py-1 font-semibold">{l.action}</td>

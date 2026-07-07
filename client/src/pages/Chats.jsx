@@ -52,7 +52,7 @@ function timeAgo(date) {
 
 function formatTime(date) {
   if (!date) return '';
-  return new Date(date).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  return new Date(date).toLocaleTimeString('es-EC', { timeZone: 'America/Guayaquil', hour: '2-digit', minute: '2-digit' });
 }
 
 function getWindow24hExpiresAt(conv) {

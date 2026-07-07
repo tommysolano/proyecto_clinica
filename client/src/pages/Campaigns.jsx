@@ -169,7 +169,7 @@ export default function Campaigns() {
                   </div>
                   {c.status === 'scheduled' && (
                     <div className="text-xs text-indigo-600 mt-1 flex items-center gap-1">
-                      <HiOutlineClock /> Programada para {new Date(c.scheduledFor).toLocaleString()}
+                      <HiOutlineClock /> Programada para {new Date(c.scheduledFor).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' })}
                     </div>
                   )}
                   <div className="flex gap-4 text-xs mt-2 text-slate-600 flex-wrap">

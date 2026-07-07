@@ -35,7 +35,7 @@ export default function AccountingHealth() {
           {data.ok ? <HiOutlineCheckCircle className="w-7 h-7" /> : <HiOutlineXCircle className="w-7 h-7" />}
           <div>
             <div className="font-semibold">{data.ok ? 'Contabilidad consistente' : 'Se detectaron inconsistencias'}</div>
-            <div className="text-xs opacity-80">Verificado: {new Date(data.checkedAt).toLocaleString('es-EC')}</div>
+            <div className="text-xs opacity-80">Verificado: {new Date(data.checkedAt).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' })}</div>
           </div>
         </div>
       )}

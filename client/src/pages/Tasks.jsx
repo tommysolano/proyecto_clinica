@@ -99,7 +99,7 @@ export default function Tasks() {
               <div className="text-xs text-slate-400 flex gap-2 flex-wrap">
                 {t.assignedTo?.name && <span>👤 {t.assignedTo.name}</span>}
                 {t.patient && <span>🧑‍⚕️ {t.patient.firstName} {t.patient.lastName}</span>}
-                {t.dueAt && <span className={overdue(t) ? 'text-red-500 font-medium' : ''}>📅 {new Date(t.dueAt).toLocaleString()}</span>}
+                {t.dueAt && <span className={overdue(t) ? 'text-red-500 font-medium' : ''}>📅 {new Date(t.dueAt).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' })}</span>}
               </div>
               {t.notes && <div className="text-xs text-slate-500 mt-1">{t.notes}</div>}
             </div>

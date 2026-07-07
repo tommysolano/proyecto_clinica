@@ -1,4 +1,12 @@
 require('dotenv').config();
+
+// Zona horaria de TODO el proceso = Ecuador (Guayaquil, UTC-5, sin horario de
+// verano). Debe ir ANTES de cualquier uso de Date para que getDate()/getHours()/
+// setHours()/toLocaleString(), la fecha de emisión SRI, cortes de "hoy", etc. se
+// calculen siempre en hora de Ecuador y NUNCA en la del servidor (que en el VPS
+// suele estar en UTC). Node re-lee process.env.TZ al reasignarlo.
+process.env.TZ = process.env.TZ || 'America/Guayaquil';
+
 const express = require('express');
 const http = require('http');
 const cors = require('cors');

@@ -19,17 +19,30 @@ export function fmtDate(value) {
   return `${dd}/${mo}/${yyyy}`;
 }
 
+// Zona horaria de Ecuador: los horarios se muestran SIEMPRE en hora de Ecuador,
+// sin importar la zona del navegador del usuario.
+const EC_TZ = 'America/Guayaquil';
+
 /**
- * dd/mm/aaaa hh:mm
+ * dd/mm/aaaa hh:mm — SIEMPRE en hora de Ecuador (Guayaquil).
+ * Pensado para timestamps (createdAt, fechaAutorizacion, etc.), no fechas-solo.
  */
 export function fmtDateTime(value) {
   if (!value) return '';
   const d = new Date(value);
   if (Number.isNaN(d.getTime())) return '';
-  const dd = String(d.getDate()).padStart(2, '0');
-  const mo = String(d.getMonth() + 1).padStart(2, '0');
-  const yyyy = d.getFullYear();
-  const hh = String(d.getHours()).padStart(2, '0');
-  const mm = String(d.getMinutes()).padStart(2, '0');
-  return `${dd}/${mo}/${yyyy} ${hh}:${mm}`;
+  const p = new Intl.DateTimeFormat('es-EC', {
+    timeZone: EC_TZ,
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+    .formatToParts(d)
+    .reduce((acc, part) => ({ ...acc, [part.type]: part.value }), {});
+  // Algunos navegadores devuelven '24' a medianoche con hour12:false.
+  const hh = p.hour === '24' ? '00' : p.hour;
+  return `${p.day}/${p.month}/${p.year} ${hh}:${p.minute}`;
 }
