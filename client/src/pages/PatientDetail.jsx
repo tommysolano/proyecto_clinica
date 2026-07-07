@@ -40,6 +40,10 @@ const TABS = [
   { id: 'facturas', label: 'Facturas', icon: HiOutlineDocumentText },
 ];
 
+// Adjuntos permitidos en seguimientos: PDFs e imágenes.
+const isAllowedAttachment = (file) =>
+  !!file && (file.type === 'application/pdf' || String(file.type || '').startsWith('image/'));
+
 export default function PatientDetail() {
   const { id } = useParams();
   const [searchParams] = useSearchParams();
@@ -814,6 +818,7 @@ function ItemsTable({
 function SeguimientosTab({ patientId, appointmentId }) {
   const { hasRole, user } = useAuth();
   const isOptica = hasRole('optica');
+  const isGineco = hasRole('ginecologia');
   const isAdmin = hasRole('admin') || user?.isSuperAdmin;
   // Una vez guardado, solo administradores pueden eliminar/editar seguimientos.
   const canDelete = isAdmin;
@@ -835,6 +840,17 @@ function SeguimientosTab({ patientId, appointmentId }) {
     od: { sph: '', cyl: '', ax: '', add: '', dnp: '', alt: '' },
     oi: { sph: '', cyl: '', ax: '', add: '', dnp: '', alt: '' },
   });
+  const emptyGineco = () => ({
+    fum: '',
+    gpac: { gestas: '', partos: '', abortos: '', cesareas: '' },
+    embarazoActual: null, // null = sin dato, true = sí, false = no
+    metodosAnticonceptivos: { hormonal: false, barrera: false, diu: false, otro: false, otroDetalle: '' },
+    pap: {
+      tipo: '', // 'previo' | 'primera_vez'
+      toma: { exocervical: false, endocervical: false, otros: false, otrosDetalle: '' },
+    },
+    controlPrenatal: { signosVitalesScore: '', bebePosicion: '', actividadCardiaca: '' },
+  });
   const emptyForm = () => ({
     fecha: new Date().toISOString().substring(0, 10),
     tipoConsulta: '',        // B: primera | subsecuente
@@ -849,6 +865,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
     examenFisico: { regional: [], sistemico: [], hallazgos: '' }, // H
     diagnosticos: [],      // I
     opticaRx: emptyOpticaRx(),
+    ginecologia: emptyGineco(),
     vitalSigns: {
       hora: '',
       temperature: '',
@@ -974,23 +991,26 @@ function SeguimientosTab({ patientId, appointmentId }) {
   );
 
   // Subida de PDFs adjuntos a un seguimiento existente
-  const uploadAttachment = async (fuId, file) => {
-    if (!file) return;
-    if (file.type !== 'application/pdf') {
-      toast.error('Solo se permiten archivos PDF');
+  // Sube uno o varios archivos (PDF o imágenes) a un seguimiento existente.
+  const uploadAttachments = async (fuId, files) => {
+    const list = (Array.isArray(files) ? files : [files]).filter(isAllowedAttachment);
+    if (!list.length) {
+      toast.error('Solo se permiten archivos PDF o imágenes');
       return;
     }
     setUploadingFuId(fuId);
     try {
-      const fd = new FormData();
-      fd.append('file', file);
-      await api.post(
-        `/clinical-records/${patientId}/follow-ups/${fuId}/attachments`,
-        fd,
-        { headers: { 'Content-Type': 'multipart/form-data' } }
-      );
+      for (const file of list) {
+        const fd = new FormData();
+        fd.append('file', file);
+        await api.post(
+          `/clinical-records/${patientId}/follow-ups/${fuId}/attachments`,
+          fd,
+          { headers: { 'Content-Type': 'multipart/form-data' } }
+        );
+      }
       await load();
-      toast.success('Archivo adjuntado');
+      toast.success(list.length > 1 ? 'Archivos adjuntados' : 'Archivo adjuntado');
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al subir archivo');
     } finally {
@@ -1067,6 +1087,8 @@ function SeguimientosTab({ patientId, appointmentId }) {
         recomendaciones: form.estudioSintomas, // legacy alias
         vitalSigns,
       };
+      // Los datos ginecológicos solo se envían desde una consulta de ginecología.
+      if (!isGineco) delete payload.ginecologia;
       if (appointmentId) payload.appointmentId = appointmentId;
       const res = await api.post(`/clinical-records/${patientId}/follow-ups`, payload);
       // Subir PDFs pendientes (seleccionados ANTES de guardar) al seguimiento recién creado.
@@ -1495,22 +1517,21 @@ function SeguimientosTab({ patientId, appointmentId }) {
           />
         </Field>
         {isOptica && <OpticaRxTable value={form.opticaRx} onChange={(rx) => setForm((f) => ({ ...f, opticaRx: rx }))} />}
+        {isGineco && <GinecologiaSection value={form.ginecologia} onChange={(g) => setForm((f) => ({ ...f, ginecologia: g }))} />}
 
-        {/* PDFs antes de guardar el seguimiento */}
+        {/* Archivos (PDF o imágenes) antes de guardar el seguimiento */}
         <div className="md:col-span-3">
           <label className="text-sm font-medium text-slate-700 block mb-2">
-            Archivos PDF a adjuntar
+            Archivos a adjuntar (PDF o imágenes)
           </label>
           <div className="bg-white rounded-lg border border-slate-200 p-3 space-y-2">
             <input
               ref={fileInputRef}
               type="file"
-              accept="application/pdf"
+              accept="application/pdf,image/*"
               multiple
               onChange={(e) => {
-                const files = Array.from(e.target.files || []).filter(
-                  (f) => f.type === 'application/pdf'
-                );
+                const files = Array.from(e.target.files || []).filter(isAllowedAttachment);
                 setPendingFiles((prev) => [...prev, ...files]);
                 e.target.value = '';
               }}
@@ -1522,13 +1543,13 @@ function SeguimientosTab({ patientId, appointmentId }) {
               className="inline-flex items-center gap-2 px-4 py-2 rounded-lg border border-dashed border-slate-300 bg-slate-50 hover:bg-emerald-50 hover:border-emerald-400 text-sm text-slate-600 hover:text-emerald-700 cursor-pointer transition-colors"
             >
               <HiOutlineArrowDownTray className="w-4 h-4" />
-              Adjuntar PDFs
+              Adjuntar archivos
             </button>
             {pendingFiles.length > 0 && (
               <ul className="space-y-1">
                 {pendingFiles.map((f, i) => (
                   <li key={i} className="text-xs text-slate-600 flex items-center gap-2">
-                    <span>📎 {f.name}</span>
+                    <span>{f.type.startsWith('image/') ? '🖼️' : '📎'} {f.name}</span>
                     <span className="text-slate-400">({Math.round(f.size / 1024)} KB)</span>
                     <button
                       type="button"
@@ -1638,6 +1659,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                 fu.opticaRx &&
                 (Object.values(fu.opticaRx.od || {}).some((v) => String(v).trim()) ||
                   Object.values(fu.opticaRx.oi || {}).some((v) => String(v).trim()));
+              const hasGinecoData = ginecoHasData(fu.ginecologia);
               const vs = fu.vitalSigns || {};
               const hasVitals = ['temperature', 'bloodPressure', 'heartRate', 'respiratoryRate', 'oxygenSaturation', 'weight', 'height', 'glucose']
                 .some((k) => vs[k] != null && vs[k] !== '');
@@ -1743,11 +1765,11 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         <b>Observaciones:</b> {fu.observaciones}
                       </div>
                     )}
-                    {/* Adjuntos PDF */}
+                    {/* Adjuntos (PDF o imágenes) */}
                     <div className="mt-2 space-y-1">
                       {(fu.attachments || []).map((att) => (
                         <div key={att._id} className="flex items-center gap-2 text-xs text-slate-600">
-                          <span>📎</span>
+                          <span>{String(att.mimeType || '').startsWith('image/') ? '🖼️' : '📎'}</span>
                           <button
                             type="button"
                             onClick={() => downloadAttachment(fu._id, att._id, att.originalName)}
@@ -1773,22 +1795,24 @@ function SeguimientosTab({ patientId, appointmentId }) {
                       {canUpload && (
                         <label className="inline-flex items-center gap-1 text-xs text-emerald-700 cursor-pointer mt-1">
                           <HiOutlinePlus className="w-3 h-3" />
-                          {uploadingFuId === fu._id ? 'Subiendo...' : 'Adjuntar PDF'}
+                          {uploadingFuId === fu._id ? 'Subiendo...' : 'Adjuntar archivos'}
                           <input
                             type="file"
-                            accept="application/pdf"
+                            accept="application/pdf,image/*"
+                            multiple
                             className="hidden"
                             disabled={uploadingFuId === fu._id}
                             onChange={(e) => {
-                              const file = e.target.files?.[0];
+                              const files = Array.from(e.target.files || []).filter(isAllowedAttachment);
                               e.target.value = '';
-                              if (file) uploadAttachment(fu._id, file);
+                              if (files.length) uploadAttachments(fu._id, files);
                             }}
                           />
                         </label>
                       )}
                     </div>
                     {hasOpticaData && <OpticaRxSummary rx={fu.opticaRx} />}
+                    {hasGinecoData && <GinecologiaSummary g={fu.ginecologia} />}
                   </td>
                   <td className="px-4 py-2.5 text-right">
                     <div className="flex items-center justify-end gap-1">
@@ -1887,6 +1911,226 @@ function OpticaRxSummary({ rx }) {
     <div className="mt-2 text-[11px] text-slate-500 bg-indigo-50 border border-indigo-100 rounded p-2">
       <div><b>OD</b> {fmtRow(rx.od)}</div>
       <div><b>OI</b> {fmtRow(rx.oi)}</div>
+    </div>
+  );
+}
+
+// ──────────────── Ginecología (rol ginecologia) ────────────────
+const GINECO_METODOS = [
+  { key: 'hormonal', label: 'Hormonal' },
+  { key: 'barrera', label: 'Barrera' },
+  { key: 'diu', label: 'DIU' },
+  { key: 'otro', label: 'Otro' },
+];
+const GINECO_TOMA = [
+  { key: 'exocervical', label: 'Exocervical' },
+  { key: 'endocervical', label: 'Endocervical' },
+  { key: 'otros', label: 'Otros' },
+];
+
+// ¿El seguimiento tiene datos ginecológicos con contenido?
+function ginecoHasData(g) {
+  if (!g || typeof g !== 'object') return false;
+  const gpac = g.gpac || {};
+  const met = g.metodosAnticonceptivos || {};
+  const toma = g.pap?.toma || {};
+  const cp = g.controlPrenatal || {};
+  return Boolean(
+    g.fum ||
+    g.embarazoActual != null ||
+    g.pap?.tipo ||
+    ['gestas', 'partos', 'abortos', 'cesareas'].some((k) => gpac[k] != null && gpac[k] !== '') ||
+    ['hormonal', 'barrera', 'diu', 'otro'].some((k) => met[k]) ||
+    met.otroDetalle ||
+    ['exocervical', 'endocervical', 'otros'].some((k) => toma[k]) ||
+    toma.otrosDetalle ||
+    ['signosVitalesScore', 'bebePosicion', 'actividadCardiaca'].some((k) => cp[k])
+  );
+}
+
+// Chip de selección (toggle) reutilizado por la sección de ginecología.
+function GChip({ active, onClick, children }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer border ${
+        active ? 'bg-rose-600 text-white border-rose-600' : 'bg-white text-slate-600 border-slate-200'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+function GinecologiaSection({ value, onChange }) {
+  const g = value || {};
+  const gpac = g.gpac || {};
+  const met = g.metodosAnticonceptivos || {};
+  const pap = g.pap || {};
+  const toma = pap.toma || {};
+  const cp = g.controlPrenatal || {};
+  const setGpac = (k, v) => onChange({ ...g, gpac: { ...gpac, [k]: v } });
+  const setMet = (k, v) => onChange({ ...g, metodosAnticonceptivos: { ...met, [k]: v } });
+  const setToma = (k, v) => onChange({ ...g, pap: { ...pap, toma: { ...toma, [k]: v } } });
+  const setCp = (k, v) => onChange({ ...g, controlPrenatal: { ...cp, [k]: v } });
+
+  return (
+    <div className="md:col-span-3">
+      <label className="text-sm font-medium text-slate-700 block mb-2">Ginecología / Obstetricia</label>
+      <div className="bg-white rounded-lg border border-rose-200 p-3 space-y-4">
+        {/* FUM + Embarazo actual */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <Field label="FUM (última menstruación)">
+            <input
+              type="date"
+              value={g.fum || ''}
+              onChange={(e) => onChange({ ...g, fum: e.target.value })}
+              className="input"
+            />
+          </Field>
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Embarazo actual</label>
+            <div className="flex gap-2">
+              <GChip active={g.embarazoActual === true} onClick={() => onChange({ ...g, embarazoActual: g.embarazoActual === true ? null : true })}>Sí</GChip>
+              <GChip active={g.embarazoActual === false} onClick={() => onChange({ ...g, embarazoActual: g.embarazoActual === false ? null : false })}>No</GChip>
+            </div>
+          </div>
+        </div>
+
+        {/* G P A C */}
+        <div>
+          <label className="block text-xs font-semibold text-slate-600 mb-1">Antecedentes obstétricos (G · P · A · C)</label>
+          <div className="grid grid-cols-4 gap-2">
+            {[
+              { k: 'gestas', l: 'Gestas' },
+              { k: 'partos', l: 'Partos' },
+              { k: 'abortos', l: 'Abortos' },
+              { k: 'cesareas', l: 'Cesáreas' },
+            ].map((it) => (
+              <Field key={it.k} label={it.l}>
+                <input
+                  type="number"
+                  min="0"
+                  value={gpac[it.k] ?? ''}
+                  onChange={(e) => setGpac(it.k, e.target.value)}
+                  className="input"
+                />
+              </Field>
+            ))}
+          </div>
+        </div>
+
+        {/* Métodos anticonceptivos */}
+        <div>
+          <label className="block text-xs font-semibold text-slate-600 mb-1">Métodos anticonceptivos</label>
+          <div className="flex flex-wrap gap-2">
+            {GINECO_METODOS.map((m) => (
+              <GChip key={m.key} active={!!met[m.key]} onClick={() => setMet(m.key, !met[m.key])}>{m.label}</GChip>
+            ))}
+          </div>
+          {met.otro && (
+            <input
+              type="text"
+              value={met.otroDetalle || ''}
+              onChange={(e) => setMet('otroDetalle', e.target.value)}
+              placeholder="¿Cuál otro método?"
+              className="input mt-2"
+            />
+          )}
+        </div>
+
+        {/* PAP */}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">PAP (Papanicolaou)</label>
+            <div className="flex gap-2">
+              <GChip active={pap.tipo === 'previo'} onClick={() => onChange({ ...g, pap: { ...pap, tipo: pap.tipo === 'previo' ? '' : 'previo' } })}>PAP previo</GChip>
+              <GChip active={pap.tipo === 'primera_vez'} onClick={() => onChange({ ...g, pap: { ...pap, tipo: pap.tipo === 'primera_vez' ? '' : 'primera_vez' } })}>1.ª vez</GChip>
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Toma de PAP</label>
+            <div className="flex flex-wrap gap-2">
+              {GINECO_TOMA.map((t) => (
+                <GChip key={t.key} active={!!toma[t.key]} onClick={() => setToma(t.key, !toma[t.key])}>{t.label}</GChip>
+              ))}
+            </div>
+            {toma.otros && (
+              <input
+                type="text"
+                value={toma.otrosDetalle || ''}
+                onChange={(e) => setToma('otrosDetalle', e.target.value)}
+                placeholder="Especifique otros"
+                className="input mt-2"
+              />
+            )}
+          </div>
+        </div>
+
+        {/* Control prenatal */}
+        <div>
+          <label className="block text-xs font-semibold text-slate-600 mb-1">Control prenatal</label>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+            <Field label="Signos vitales / score">
+              <input
+                type="text"
+                value={cp.signosVitalesScore || ''}
+                onChange={(e) => setCp('signosVitalesScore', e.target.value)}
+                className="input"
+              />
+            </Field>
+            <Field label="Bebé — posición">
+              <input
+                type="text"
+                value={cp.bebePosicion || ''}
+                onChange={(e) => setCp('bebePosicion', e.target.value)}
+                placeholder="Cefálico, podálico…"
+                className="input"
+              />
+            </Field>
+            <Field label="Actividad cardíaca">
+              <input
+                type="text"
+                value={cp.actividadCardiaca || ''}
+                onChange={(e) => setCp('actividadCardiaca', e.target.value)}
+                placeholder="FCF (lpm)"
+                className="input"
+              />
+            </Field>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GinecologiaSummary({ g }) {
+  if (!g) return null;
+  const gpac = g.gpac || {};
+  const met = g.metodosAnticonceptivos || {};
+  const pap = g.pap || {};
+  const toma = pap.toma || {};
+  const cp = g.controlPrenatal || {};
+  const metodos = GINECO_METODOS.filter((m) => met[m.key]).map((m) => (m.key === 'otro' && met.otroDetalle ? `Otro (${met.otroDetalle})` : m.label));
+  const tomas = GINECO_TOMA.filter((t) => toma[t.key]).map((t) => (t.key === 'otros' && toma.otrosDetalle ? `Otros (${toma.otrosDetalle})` : t.label));
+  const gpacStr = ['gestas', 'partos', 'abortos', 'cesareas']
+    .map((k) => (gpac[k] != null && gpac[k] !== '' ? gpac[k] : '—'))
+    .join(' / ');
+  const hasGpac = ['gestas', 'partos', 'abortos', 'cesareas'].some((k) => gpac[k] != null && gpac[k] !== '');
+  const papTipo = pap.tipo === 'previo' ? 'PAP previo' : pap.tipo === 'primera_vez' ? 'PAP 1.ª vez' : '';
+  return (
+    <div className="mt-2 text-[11px] text-slate-600 bg-rose-50 border border-rose-100 rounded p-2 flex flex-wrap gap-x-3 gap-y-0.5">
+      <span className="font-semibold text-rose-600 uppercase w-full">Ginecología</span>
+      {g.fum && <span>FUM: {fmtDate(g.fum)}</span>}
+      {hasGpac && <span>G/P/A/C: {gpacStr}</span>}
+      {g.embarazoActual != null && <span>Embarazo actual: {g.embarazoActual ? 'Sí' : 'No'}</span>}
+      {metodos.length > 0 && <span>Anticoncepción: {metodos.join(', ')}</span>}
+      {papTipo && <span>{papTipo}</span>}
+      {tomas.length > 0 && <span>Toma PAP: {tomas.join(', ')}</span>}
+      {cp.signosVitalesScore && <span>SV/score: {cp.signosVitalesScore}</span>}
+      {cp.bebePosicion && <span>Posición: {cp.bebePosicion}</span>}
+      {cp.actividadCardiaca && <span>Act. cardíaca: {cp.actividadCardiaca}</span>}
     </div>
   );
 }

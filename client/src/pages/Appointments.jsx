@@ -74,6 +74,7 @@ const roleLabels = {
   admin: 'Administrador',
   cajero: 'Cajero',
   doctor: 'Doctor',
+  ginecologia: 'Ginecología',
   optica: 'Óptica',
   contabilidad: 'Contabilidad',
   call_center: 'Call Center',
@@ -121,7 +122,7 @@ export default function Appointments() {
   const { user, role, hasRole, activeClinic, clinics } = useAuth();
   const canWrite = hasRole('admin', 'cajero', 'call_center');
   const isAdmin = hasRole('admin') || user?.isSuperAdmin;
-  const isDoctor = role === 'doctor' || role === 'optica';
+  const isDoctor = role === 'doctor' || role === 'optica' || role === 'ginecologia';
   const isNurse = role === 'enfermero';
   const isCallCenter = role === 'call_center';
   const isReception = hasRole('admin', 'cajero', 'enfermero');
@@ -157,7 +158,7 @@ export default function Appointments() {
     patientQuery: '',
   });
   const [view, setView] = useState(
-    role === 'doctor' || role === 'optica'
+    role === 'doctor' || role === 'optica' || role === 'ginecologia'
       ? 'today'
       : 'calendar'
   ); // 'calendar' | 'list' | 'today'

@@ -16,6 +16,7 @@ const ROLES = [
   { value: 'cajero', label: 'Cajero' },
   { value: 'contabilidad', label: 'Contabilidad' },
   { value: 'doctor', label: 'Doctor' },
+  { value: 'ginecologia', label: 'Ginecología' },
   { value: 'optica', label: 'Óptica' },
   { value: 'call_center', label: 'Call Center' },
   { value: 'marketing', label: 'Marketing' },
@@ -287,7 +288,7 @@ export default function Users() {
                 className="input"
               />
             </Field>
-            {form.role === 'doctor' && (
+            {(form.role === 'doctor' || form.role === 'ginecologia') && (
               <Field label="Especialidad">
                 <input
                   type="text"

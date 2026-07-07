@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { roleSatisfies } from '../utils/roles';
 import shiluvLogo from '../Shiluv-logo-4.png';
 import {
   HiOutlineHome,
@@ -172,7 +173,7 @@ const MENU_GROUPS = [
   },
 ];
 
-const ALL_ROLES = ['admin', 'cajero', 'contabilidad', 'doctor', 'optica', 'call_center', 'marketing', 'enfermero'];
+const ALL_ROLES = ['admin', 'cajero', 'contabilidad', 'doctor', 'ginecologia', 'optica', 'call_center', 'marketing', 'enfermero'];
 
 const isPathActive = (pathname, path) =>
   pathname === path || (path !== '/' && pathname.startsWith(path));
@@ -228,7 +229,7 @@ export default function Layout({ children }) {
     if (item.superOnly) return !!user?.isSuperAdmin;
     if (user?.isSuperAdmin) return true;
     if (!role) return false;
-    return item.roles?.includes(role);
+    return roleSatisfies(role, item.roles);
   };
 
   // Grupos visibles con sus ítems filtrados por rol.
@@ -453,7 +454,7 @@ export default function Layout({ children }) {
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold text-white truncate">{user?.name}</p>
               <p className="text-[11px] text-emerald-300/80 capitalize">
-                {user?.isSuperAdmin ? 'Super Admin' : (role === 'call_center' ? 'Call Center' : role === 'optica' ? 'Óptica' : role || '')}
+                {user?.isSuperAdmin ? 'Super Admin' : (role === 'call_center' ? 'Call Center' : role === 'optica' ? 'Óptica' : role === 'ginecologia' ? 'Ginecología' : role || '')}
               </p>
             </div>
           </div>

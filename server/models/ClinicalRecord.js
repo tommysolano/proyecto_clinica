@@ -135,6 +135,47 @@ const followUpSchema = new mongoose.Schema(
         alt: { type: String, trim: true, default: '' },
       },
     },
+    // Datos ginecológicos (rol 'ginecologia'). Antecedentes y controles propios
+    // de la consulta gineco-obstétrica.
+    ginecologia: {
+      // FUM: fecha de la última menstruación.
+      fum: { type: Date, default: null },
+      // G P A C: gestas, partos, abortos, cesáreas.
+      gpac: {
+        gestas: { type: Number, default: null, min: 0 },
+        partos: { type: Number, default: null, min: 0 },
+        abortos: { type: Number, default: null, min: 0 },
+        cesareas: { type: Number, default: null, min: 0 },
+      },
+      // Embarazo actual: true = sí, false = no, null = no consignado.
+      embarazoActual: { type: Boolean, default: null },
+      // Métodos anticonceptivos en uso.
+      metodosAnticonceptivos: {
+        hormonal: { type: Boolean, default: false },
+        barrera: { type: Boolean, default: false },
+        diu: { type: Boolean, default: false },
+        otro: { type: Boolean, default: false },
+        otroDetalle: { type: String, trim: true, default: '' },
+      },
+      // Papanicolaou (PAP).
+      pap: {
+        // ¿PAP previo o primera vez?
+        tipo: { type: String, enum: ['previo', 'primera_vez', ''], default: '' },
+        // Toma de la muestra.
+        toma: {
+          exocervical: { type: Boolean, default: false },
+          endocervical: { type: Boolean, default: false },
+          otros: { type: Boolean, default: false },
+          otrosDetalle: { type: String, trim: true, default: '' },
+        },
+      },
+      // Control prenatal.
+      controlPrenatal: {
+        signosVitalesScore: { type: String, trim: true, default: '' },
+        bebePosicion: { type: String, trim: true, default: '' },
+        actividadCardiaca: { type: String, trim: true, default: '' },
+      },
+    },
     // Mantenemos compat con tratamientos referenciados (auto-creados a partir de la receta).
     treatment: { type: mongoose.Schema.Types.ObjectId, ref: 'Treatment', default: null },
     autoTreatmentCreated: { type: mongoose.Schema.Types.ObjectId, ref: 'Treatment' },

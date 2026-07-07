@@ -6,7 +6,7 @@ const { createEntry, reverseEntry } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const ExcelJS = require('exceljs');
 
-const ROLE_LABELS = { admin: 'Administrador', doctor: 'Médico', nurse: 'Enfermero/a', call_center: 'Call center', marketing: 'Marketing', contabilidad: 'Contabilidad' };
+const ROLE_LABELS = { admin: 'Administrador', doctor: 'Médico', ginecologia: 'Ginecología', nurse: 'Enfermero/a', call_center: 'Call center', marketing: 'Marketing', contabilidad: 'Contabilidad' };
 
 // ─────────── CRUD de reglas ───────────
 exports.listRules = async (req, res) => {
@@ -142,7 +142,10 @@ async function computeCommissions(clinicId, startDate, endDate) {
   const matchTarget = (rule, performer, performerRole) => {
     if (!performer) return false;
     if (rule.targetType === 'user') return String(rule.user) === String(performer._id);
-    return rule.role === performerRole;
+    if (rule.role === performerRole) return true;
+    // 'ginecologia' es un doctor especializado: hereda las reglas por rol 'doctor'.
+    if (rule.role === 'doctor' && performerRole === 'ginecologia') return true;
+    return false;
   };
 
   // ¿La cita incluye un servicio que la regla exige? (filtro a nivel de cita).

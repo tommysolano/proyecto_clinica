@@ -9,6 +9,7 @@ import ProductAutocomplete from '../components/ProductAutocomplete';
 const ROLES = [
   { value: 'admin', label: 'Administrador' },
   { value: 'doctor', label: 'Doctor' },
+  { value: 'ginecologia', label: 'Ginecología' },
   { value: 'optica', label: 'Óptica' },
   { value: 'enfermero', label: 'Enfermero/a' },
   { value: 'cajero', label: 'Cajero' },
@@ -31,6 +32,7 @@ const TRIGGERS = {
 const TRIGGERS_BY_ROLE = {
   admin: ['admin_service'],
   doctor: ['appointment_performed', 'recommendation', 'referral'],
+  ginecologia: ['appointment_performed', 'recommendation', 'referral'],
   optica: ['appointment_performed', 'recommendation'],
   enfermero: ['appointment_performed', 'recommendation'],
   cajero: ['sale', 'recommendation'],

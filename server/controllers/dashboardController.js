@@ -21,7 +21,7 @@ exports.getDashboard = async (req, res) => {
     const mongoose = require('mongoose');
     const clinicObjId = new mongoose.Types.ObjectId(clinicId);
 
-    const isClinician = req.role === 'doctor' || req.role === 'optica';
+    const isClinician = req.role === 'doctor' || req.role === 'optica' || req.role === 'ginecologia';
     const appointmentQuery = { clinic: clinicId, date: { $gte: today, $lt: tomorrow } };
     if (isClinician) {
       appointmentQuery.doctor = req.user._id;

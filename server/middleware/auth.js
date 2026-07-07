@@ -53,10 +53,10 @@ const requireClinic = (req, res, next) => {
  */
 const requireRole = (...roles) => (req, res, next) => {
   if (req.user?.isSuperAdmin) return next();
-  // 'optica' es funcionalmente idéntico a 'doctor': cualquier ruta que permita
-  // 'doctor' también acepta 'optica'.
+  // 'optica' y 'ginecologia' son funcionalmente doctores: cualquier ruta que
+  // permita 'doctor' también acepta 'optica' y 'ginecologia'.
   const expanded = roles.includes('doctor')
-    ? Array.from(new Set([...roles, 'optica']))
+    ? Array.from(new Set([...roles, 'optica', 'ginecologia']))
     : roles;
   if (!req.role || !expanded.includes(req.role)) {
     return res.status(403).json({ message: 'No tienes permisos para esta acción' });

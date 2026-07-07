@@ -4,6 +4,7 @@ const ROLE_LABELS = {
   admin: 'Administrador',
   cajero: 'Cajero',
   doctor: 'Doctor',
+  ginecologia: 'Ginecología',
   optica: 'Óptica',
   call_center: 'Call Center',
   marketing: 'Marketing',

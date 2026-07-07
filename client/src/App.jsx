@@ -110,6 +110,7 @@ function RoleDashboard() {
   switch (role) {
     case 'cajero': return <DashboardCajero />;
     case 'doctor': return <DashboardDoctor />;
+    case 'ginecologia': return <DashboardDoctor />;
     case 'optica': return <DashboardOptica />;
     case 'call_center': return <DashboardCallCenter />;
     case 'marketing': return <DashboardMarketing />;

@@ -1,5 +1,6 @@
 import { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import api from '../api/axios';
+import { roleSatisfies } from '../utils/roles';
 
 const AuthContext = createContext(null);
 
@@ -70,7 +71,7 @@ export function AuthProvider({ children }) {
     setClinics([]);
   };
 
-  const hasRole = (...roles) => role && roles.includes(role);
+  const hasRole = (...roles) => roleSatisfies(role, roles);
 
   return (
     <AuthContext.Provider

@@ -1,7 +1,7 @@
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
 
-const VALID_ROLES = ['admin', 'cajero', 'contabilidad', 'doctor', 'optica', 'call_center', 'marketing', 'enfermero'];
+const VALID_ROLES = ['admin', 'cajero', 'contabilidad', 'doctor', 'ginecologia', 'optica', 'call_center', 'marketing', 'enfermero'];
 
 const sanitizeClinics = (clinics, fallbackClinicId) => {
   if (!Array.isArray(clinics)) return [];
@@ -188,13 +188,14 @@ exports.getMySignature = async (req, res) => {
 };
 
 /**
- * Lista doctores de la clínica activa.
+ * Lista doctores de la clínica activa. Incluye 'ginecologia', que es un
+ * doctor especializado y también es asignable a citas.
  */
 exports.getDoctors = async (req, res) => {
   try {
     const doctors = await User.find({
       active: true,
-      clinics: { $elemMatch: { clinic: req.clinicId, role: 'doctor' } },
+      clinics: { $elemMatch: { clinic: req.clinicId, role: { $in: ['doctor', 'ginecologia'] } } },
     })
       .select('-password')
       .sort({ name: 1 });

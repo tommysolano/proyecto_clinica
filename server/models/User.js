@@ -1,6 +1,6 @@
 const mongoose = require('mongoose');
 
-const VALID_ROLES = ['admin', 'cajero', 'contabilidad', 'doctor', 'optica', 'call_center', 'marketing', 'enfermero'];
+const VALID_ROLES = ['admin', 'cajero', 'contabilidad', 'doctor', 'ginecologia', 'optica', 'call_center', 'marketing', 'enfermero'];
 
 const userClinicSchema = new mongoose.Schema(
   {

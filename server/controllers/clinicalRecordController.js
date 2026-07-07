@@ -34,13 +34,23 @@ const followupStorage = multer.diskStorage({
   },
 });
 
+// Se aceptan PDFs e imágenes (ecografías, resultados de laboratorio, fotos, etc.).
+const OK_ATTACHMENT_TYPES = [
+  'application/pdf',
+  'image/jpeg',
+  'image/png',
+  'image/webp',
+  'image/gif',
+  'image/heic',
+  'image/heif',
+];
+
 exports.uploadAttachmentMiddleware = multer({
   storage: followupStorage,
   limits: { fileSize: 20 * 1024 * 1024 }, // 20MB
   fileFilter: (req, file, cb) => {
-    const okTypes = ['application/pdf'];
-    if (okTypes.includes(file.mimetype)) cb(null, true);
-    else cb(new Error('Solo se aceptan archivos PDF'));
+    if (OK_ATTACHMENT_TYPES.includes(file.mimetype)) cb(null, true);
+    else cb(new Error('Solo se aceptan archivos PDF o imágenes'));
   },
 }).single('file');
 
@@ -145,6 +155,7 @@ exports.addFollowUp = async (req, res) => {
       treatment,         // legacy: id de tratamiento manual (sigue soportado)
       vitalSigns,        // signos vitales (opcional)
       opticaRx,          // datos ópticos (rol optica): { od:{...}, oi:{...} }
+      ginecologia,       // datos ginecológicos (rol ginecologia)
       // --- Campos del formulario MSP HCU-form.002 ---
       tipoConsulta,      // B: 'primera' | 'subsecuente'
       enfermedadActual,  // E: enfermedad o problema actual
@@ -178,6 +189,48 @@ exports.addFollowUp = async (req, res) => {
           presuntivo: !!d.presuntivo,
           definitivo: !!d.definitivo,
         }));
+
+    // Saneador de los datos ginecológicos: solo persiste lo que llega con contenido.
+    const sanitizeGineco = (g) => {
+      if (!g || typeof g !== 'object') return undefined;
+      const numOrNull = (v) => (v === '' || v == null || isNaN(Number(v)) ? null : Number(v));
+      const met = g.metodosAnticonceptivos || {};
+      const pap = g.pap || {};
+      const toma = pap.toma || {};
+      const cp = g.controlPrenatal || {};
+      const gpac = g.gpac || {};
+      return {
+        fum: g.fum ? new Date(g.fum) : null,
+        gpac: {
+          gestas: numOrNull(gpac.gestas),
+          partos: numOrNull(gpac.partos),
+          abortos: numOrNull(gpac.abortos),
+          cesareas: numOrNull(gpac.cesareas),
+        },
+        embarazoActual: typeof g.embarazoActual === 'boolean' ? g.embarazoActual : null,
+        metodosAnticonceptivos: {
+          hormonal: !!met.hormonal,
+          barrera: !!met.barrera,
+          diu: !!met.diu,
+          otro: !!met.otro,
+          otroDetalle: String(met.otroDetalle || '').trim(),
+        },
+        pap: {
+          tipo: ['previo', 'primera_vez'].includes(pap.tipo) ? pap.tipo : '',
+          toma: {
+            exocervical: !!toma.exocervical,
+            endocervical: !!toma.endocervical,
+            otros: !!toma.otros,
+            otrosDetalle: String(toma.otrosDetalle || '').trim(),
+          },
+        },
+        controlPrenatal: {
+          signosVitalesScore: String(cp.signosVitalesScore || '').trim(),
+          bebePosicion: String(cp.bebePosicion || '').trim(),
+          actividadCardiaca: String(cp.actividadCardiaca || '').trim(),
+        },
+      };
+    };
 
     if (!descripcion && !req.body.motivoConsulta) {
       return res.status(400).json({ message: 'El motivo de consulta es requerido' });
@@ -327,6 +380,7 @@ exports.addFollowUp = async (req, res) => {
             treatment: autoTreatmentId,
             autoTreatmentCreated: autoTreatmentId && !treatment ? autoTreatmentId : undefined,
             opticaRx: opticaRx && typeof opticaRx === 'object' ? opticaRx : undefined,
+            ginecologia: sanitizeGineco(ginecologia),
             valor: valor || 0,
             metodoPago: metodoPago || 'efectivo',
             createdBy: req.user._id,
