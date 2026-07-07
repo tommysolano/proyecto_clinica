@@ -322,9 +322,6 @@ function FichaTab({ patientId }) {
         edad: record.edad,
         cedula: record.cedula,
         celular: record.celular,
-        tomaMedicamentos: record.tomaMedicamentos,
-        tieneAlergias: record.tieneAlergias,
-        tieneCirugias: record.tieneCirugias,
         patologicosPersonales: record.patologicosPersonales || [],
         patologicosFamiliares: record.patologicosFamiliares || [],
         datosRelevantes: record.datosRelevantes || '',
@@ -405,25 +402,6 @@ function FichaTab({ patientId }) {
         )}
       </div>
 
-      <div className="space-y-4 pt-2 border-t border-slate-100">
-        <h3 className="font-semibold text-slate-800">Antecedentes</h3>
-        <YesNo
-          label="Medicamentos"
-          item={record.tomaMedicamentos}
-          onChange={(v) => update('tomaMedicamentos', v)}
-        />
-        <YesNo
-          label="Alergias"
-          item={record.tieneAlergias}
-          onChange={(v) => update('tieneAlergias', v)}
-        />
-        <YesNo
-          label="Cirugías"
-          item={record.tieneCirugias}
-          onChange={(v) => update('tieneCirugias', v)}
-        />
-      </div>
-
       {/* C. Antecedentes patológicos personales (10 categorías MSP) */}
       <div className="space-y-3 pt-2 border-t border-slate-100">
         <div>
@@ -469,47 +447,6 @@ function FichaTab({ patientId }) {
       </div>
 
       <FichaStyles />
-    </div>
-  );
-}
-
-function YesNo({ label, item, onChange }) {
-  const value = !!item?.value;
-  const detail = item?.detail || '';
-  return (
-    <div className="bg-slate-50 rounded-xl p-4">
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-sm font-medium text-slate-700">{label}</span>
-        <div className="flex items-center gap-2">
-          <button
-            type="button"
-            onClick={() => onChange({ value: true, detail })}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer border-none ${
-              value ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600 border border-slate-200'
-            }`}
-          >
-            Sí
-          </button>
-          <button
-            type="button"
-            onClick={() => onChange({ value: false, detail })}
-            className={`px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer border-none ${
-              !value ? 'bg-slate-700 text-white' : 'bg-white text-slate-600 border border-slate-200'
-            }`}
-          >
-            No
-          </button>
-        </div>
-      </div>
-      {value && (
-        <textarea
-          value={detail}
-          onChange={(e) => onChange({ value: true, detail: e.target.value })}
-          rows={2}
-          placeholder="Detalle (cuáles, cuándo, etc.)"
-          className="input mt-3 resize-none"
-        />
-      )}
     </div>
   );
 }

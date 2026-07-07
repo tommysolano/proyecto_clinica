@@ -1,13 +1,5 @@
 const mongoose = require('mongoose');
 
-const yesNoDetailSchema = new mongoose.Schema(
-  {
-    value: { type: Boolean, default: false },
-    detail: { type: String, trim: true, default: '' },
-  },
-  { _id: false }
-);
-
 const recetaItemSchema = new mongoose.Schema(
   {
     // Referencia al producto/medicamento del inventario (categoría 'medicamento' o 'servicio'/'programa').
@@ -177,9 +169,6 @@ const clinicalRecordSchema = new mongoose.Schema(
     edad: { type: Number, min: 0, max: 150 },
     cedula: { type: String, trim: true },
     celular: { type: String, trim: true },
-    tomaMedicamentos: { type: yesNoDetailSchema, default: () => ({}) },
-    tieneAlergias: { type: yesNoDetailSchema, default: () => ({}) },
-    tieneCirugias: { type: yesNoDetailSchema, default: () => ({}) },
     // C. Antecedentes patológicos personales (10 categorías MSP).
     patologicosPersonales: { type: [mspCheckSchema], default: [] },
     // D. Antecedentes patológicos familiares (10 categorías MSP).

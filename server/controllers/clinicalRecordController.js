@@ -78,9 +78,6 @@ exports.getOrCreateByPatient = async (req, res) => {
         edad: edad ?? 0,
         cedula: patient.cedula,
         celular: patient.phone || '',
-        tomaMedicamentos: { value: false, detail: '' },
-        tieneAlergias: { value: false, detail: '' },
-        tieneCirugias: { value: false, detail: '' },
         followUps: [],
         createdBy: req.user._id,
       });
@@ -107,9 +104,6 @@ exports.updateByPatient = async (req, res) => {
       'edad',
       'cedula',
       'celular',
-      'tomaMedicamentos',
-      'tieneAlergias',
-      'tieneCirugias',
       // Antecedentes patológicos MSP (C personales / D familiares) + datos relevantes.
       'patologicosPersonales',
       'patologicosFamiliares',
