@@ -34,7 +34,7 @@ export default function useEmailValidation(email, { enabled = true, path = '/loo
         if (cancelled) return;
         const suggestion = data.suggestion || '';
         if (data.valid) {
-          setStatus({ loading: false, error: false, valid: true, msg: 'Correo válido', suggestion });
+          setStatus({ loading: false, error: false, valid: true, msg: 'Formato y dominio válidos', suggestion });
         } else {
           const msg = !data.format
             ? 'Correo con formato inválido'
