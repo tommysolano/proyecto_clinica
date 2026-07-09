@@ -1,0 +1,56 @@
+diff --git a/node_modules/whatsapp-web.js/src/Client.js b/node_modules/whatsapp-web.js/src/Client.js
+index 800109e..0e15a3e 100644
+--- a/node_modules/whatsapp-web.js/src/Client.js
++++ b/node_modules/whatsapp-web.js/src/Client.js
+@@ -490,18 +490,43 @@ class Client extends EventEmitter {
+             referer: 'https://whatsapp.com/',
+         });
+ 
+-        await this.inject();
++        // PATCH micartaonline: WhatsApp Web navega a ?post_logout=1 en sesiones
++        // nuevas y recrea el contexto varias veces, destruyendo el inject inicial
++        // (la libreria solo re-inyectaba en framenavigated y sin tolerancia a
++        // fallos). Estrategia: inyectar con debounce tras la ULTIMA navegacion,
++        // con reintentos espaciados hasta que la pagina se estabilice.
++        let injectTimer = null;
++        const scheduleInject = () => {
++            clearTimeout(injectTimer);
++            injectTimer = setTimeout(async () => {
++                for (let i = 1; i <= 6; i++) {
++                    try {
++                        await this.inject();
++                        return;
++                    } catch (e) {
++                        console.error('[wwebjs inject intento ' + i + ']', (e.message || String(e)).split('\n')[0]);
++                        await new Promise((r) => setTimeout(r, 2500));
++                    }
++                }
++            }, 1500);
++        };
+ 
+-        this.pupPage.on('framenavigated', async (frame) => {
+-            if (frame.url().includes('post_logout=1') || this.lastLoggedOut) {
+-                this.emit(Events.DISCONNECTED, 'LOGOUT');
+-                await this.authStrategy.logout();
+-                await this.authStrategy.beforeBrowserInitialized();
+-                await this.authStrategy.afterBrowserInitialized();
++        this.pupPage.on('framenavigated', async () => {
++            // OJO: aqui la libreria original llamaba a authStrategy.logout() al
++            // ver ?post_logout=1, borrando el perfil del navegador MIENTRAS
++            // Chrome lo usa: corrompe su base local ("Ocurrio un error en la
++            // base de datos de tu navegador") y ademas emitia DISCONNECTED en
++            // sesiones nuevas (que aun no tienen nada que cerrar), matando el
++            // flujo de conexion. Solo tratamos como logout real el Cmd 'logout'
++            // de WhatsApp (lastLoggedOut).
++            if (this.lastLoggedOut) {
+                 this.lastLoggedOut = false;
++                this.emit(Events.DISCONNECTED, 'LOGOUT');
+             }
+-            await this.inject();
++            scheduleInject();
+         });
++
++        scheduleInject();
+     }
+ 
+     /**

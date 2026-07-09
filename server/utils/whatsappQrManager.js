@@ -113,6 +113,12 @@ async function connect(accountId, { userId } = {}) {
         store: getStore(),
         backupSyncIntervalMs: 300000, // 5 min (mínimo permitido por la librería)
       }),
+      // El UA por defecto de whatsapp-web.js es Chrome 101 (2022): WhatsApp Web
+      // rechaza navegadores tan viejos y expulsa la sesión antes de dar el QR.
+      userAgent: 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
+      // 'local' (default) intercepta y sirve un HTML viejo de WhatsApp Web
+      // (webVersion 2.3000.1017054665) que el servidor de WhatsApp ya no acepta.
+      webVersionCache: { type: 'none' },
       puppeteer: {
         headless: true,
         executablePath: resolveChromePath() || undefined,
