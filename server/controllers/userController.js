@@ -191,14 +191,15 @@ exports.getMySignature = async (req, res) => {
 };
 
 /**
- * Lista doctores de la clínica activa. Incluye 'ginecologia', que es un
- * doctor especializado y también es asignable a citas.
+ * Lista doctores de la clínica activa. Incluye 'optica' y 'ginecologia', que
+ * son doctores especializados y también asignables a citas (misma expansión
+ * doctor → optica/ginecologia que hace requireRole en middleware/auth.js).
  */
 exports.getDoctors = async (req, res) => {
   try {
     const doctors = await User.find({
       active: true,
-      clinics: { $elemMatch: { clinic: req.clinicId, role: { $in: ['doctor', 'ginecologia'] } } },
+      clinics: { $elemMatch: { clinic: req.clinicId, role: { $in: ['doctor', 'optica', 'ginecologia'] } } },
     })
       .select('-password')
       .sort({ name: 1 });
