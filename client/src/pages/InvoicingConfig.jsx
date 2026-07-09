@@ -13,6 +13,14 @@ import {
 } from 'react-icons/hi2';
 import { fmtDate } from '../utils/date';
 
+// Los errores del backend traen { message, error }: mostrar también el detalle
+// (p.ej. "INVOICE_ENCRYPTION_KEY no configurada"), no solo el mensaje genérico.
+const errDetail = (err, fallback) => {
+  const d = err.response?.data;
+  if (d?.message && d?.error) return `${d.message}: ${d.error}`;
+  return d?.message || fallback;
+};
+
 const EMPTY = {
   ruc: '',
   razonSocial: '',
@@ -39,6 +47,7 @@ export default function InvoicingConfig() {
   const [certFile, setCertFile] = useState(null);
   const [certPassword, setCertPassword] = useState('');
   const [uploadingCert, setUploadingCert] = useState(false);
+  const [deletingCert, setDeletingCert] = useState(false);
 
   // Autocompletado por RUC desde el SRI (razón social, nombre comercial, dirección).
   const rucLookup = useSriLookup(form.ruc, {
@@ -100,7 +109,7 @@ export default function InvoicingConfig() {
       setConfig(res.data);
       toast.success('Configuración guardada');
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al guardar');
+      toast.error(errDetail(err, 'Error al guardar'));
     } finally {
       setSaving(false);
     }
@@ -144,9 +153,23 @@ export default function InvoicingConfig() {
         toast.success('Certificado cargado correctamente');
       }
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al cargar certificado');
+      toast.error(errDetail(err, 'Error al cargar certificado'));
     } finally {
       setUploadingCert(false);
+    }
+  };
+
+  const handleDeleteCert = async () => {
+    if (!window.confirm('¿Eliminar el certificado cargado? No se podrán firmar facturas hasta subir uno nuevo.')) return;
+    setDeletingCert(true);
+    try {
+      const res = await api.delete('/invoicing-config/certificate');
+      setConfig(res.data);
+      toast.success('Certificado eliminado');
+    } catch (err) {
+      toast.error(errDetail(err, 'Error al eliminar certificado'));
+    } finally {
+      setDeletingCert(false);
     }
   };
 
@@ -339,7 +362,7 @@ export default function InvoicingConfig() {
             ) : (
               <HiOutlineExclamationTriangle className="w-6 h-6 text-red-600 flex-shrink-0" />
             )}
-            <div className="text-sm">
+            <div className="text-sm flex-1">
               <p className="font-semibold text-slate-800">
                 {certValid ? 'Certificado válido' : 'Certificado vencido'}
               </p>
@@ -358,6 +381,16 @@ export default function InvoicingConfig() {
                 <strong>Serie:</strong> {certInfo.serialNumber}
               </p>
             </div>
+            {canEdit && (
+              <button
+                type="button"
+                onClick={handleDeleteCert}
+                disabled={deletingCert}
+                className="px-3 py-1.5 bg-red-600 hover:bg-red-700 text-white rounded-lg text-xs font-medium disabled:opacity-50 cursor-pointer border-none flex-shrink-0"
+              >
+                {deletingCert ? 'Eliminando...' : 'Eliminar certificado'}
+              </button>
+            )}
           </div>
         ) : (
           <p className="text-sm text-slate-500">No hay certificado cargado.</p>
@@ -366,7 +399,10 @@ export default function InvoicingConfig() {
         {canEdit && (
           <form onSubmit={handleUploadCert} className="space-y-4 pt-2 border-t border-slate-100">
             <p className="text-sm text-slate-600">
-              {certInfo ? 'Reemplazar certificado:' : 'Cargar certificado:'}
+              {certInfo ? 'Reemplazar certificado:' : 'Cargar certificado:'}{' '}
+              <span className="text-slate-400">
+                (el certificado se guarda por separado; no hace falta guardar los datos del emisor)
+              </span>
             </p>
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <Field label="Archivo .p12 / .pfx">

@@ -7,5 +7,6 @@ router.use(auth, requireClinic);
 router.get('/', requireRole('admin', 'contabilidad'), ctrl.getConfig);
 router.put('/', requireRole('admin', 'contabilidad'), ctrl.upsertConfig);
 router.post('/certificate', requireRole('admin', 'contabilidad'), ctrl.uploadMiddleware, ctrl.uploadCertificate);
+router.delete('/certificate', requireRole('admin', 'contabilidad'), ctrl.deleteCertificate);
 
 module.exports = router;

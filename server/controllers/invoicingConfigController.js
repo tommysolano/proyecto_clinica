@@ -109,6 +109,9 @@ exports.uploadCertificate = async (req, res) => {
 
     const filename = `${req.clinicId}.p12`;
     const filepath = path.join(CERTS_DIR, filename);
+    // El directorio puede no existir aunque se cree al arrancar (borrado en
+    // caliente, deploy nuevo): asegurarlo aquí para no fallar con ENOENT.
+    fs.mkdirSync(CERTS_DIR, { recursive: true });
     fs.writeFileSync(filepath, req.file.buffer);
 
     const config = await InvoicingConfig.findOneAndUpdate(
@@ -156,6 +159,44 @@ exports.uploadCertificate = async (req, res) => {
     res
       .status(500)
       .json({ message: 'Error al subir certificado', error: error.message });
+  }
+};
+
+/**
+ * Elimina el certificado cargado (archivo en disco + campos en la config).
+ * No toca el resto de la configuración SRI. Hasta subir uno nuevo no se
+ * podrán firmar comprobantes (isComplete() pasa a false).
+ */
+exports.deleteCertificate = async (req, res) => {
+  try {
+    const config = await InvoicingConfig.findOne({ clinic: req.clinicId });
+    if (!config || !config.certificateFilename) {
+      return res.status(404).json({ message: 'No hay certificado cargado' });
+    }
+
+    // Borrar el archivo del disco (si falla, la BD sigue siendo la fuente de
+    // verdad: se limpia igual y el archivo huérfano se sobreescribe al resubir,
+    // porque el nombre es fijo por clínica).
+    try {
+      const filepath = path.join(CERTS_DIR, config.certificateFilename);
+      if (fs.existsSync(filepath)) fs.unlinkSync(filepath);
+    } catch (e) {
+      console.error('No se pudo borrar el archivo del certificado:', e.message);
+    }
+
+    const updated = await InvoicingConfig.findOneAndUpdate(
+      { clinic: req.clinicId },
+      {
+        $set: { certificateFilename: null, certificatePassword: null },
+        $unset: { certificateInfo: '' },
+      },
+      { new: true }
+    );
+    res.json(sanitizeOutput(updated));
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: 'Error al eliminar certificado', error: error.message });
   }
 };
 
