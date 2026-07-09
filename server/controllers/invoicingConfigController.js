@@ -9,7 +9,7 @@ const CERTS_DIR = path.join(__dirname, '..', 'storage', 'certs');
 if (!fs.existsSync(CERTS_DIR)) fs.mkdirSync(CERTS_DIR, { recursive: true });
 
 const storage = multer.memoryStorage();
-exports.uploadMiddleware = multer({
+const uploadSingle = multer({
   storage,
   limits: { fileSize: 5 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
@@ -22,6 +22,15 @@ exports.uploadMiddleware = multer({
     cb(new Error('Archivo debe ser .p12 o .pfx'));
   },
 }).single('certificate');
+
+// Los errores de multer (tipo de archivo, tamaño) son del cliente: responder
+// 400 con el motivo en vez de dejar que Express devuelva un 500 genérico.
+exports.uploadMiddleware = (req, res, next) => {
+  uploadSingle(req, res, (err) => {
+    if (err) return res.status(400).json({ message: err.message });
+    next();
+  });
+};
 
 function sanitizeOutput(config) {
   if (!config) return null;
@@ -59,6 +68,11 @@ exports.upsertConfig = async (req, res) => {
     ];
     const update = {};
     for (const k of allowed) if (req.body[k] !== undefined) update[k] = req.body[k];
+
+    // El modelo guarda ambiente como '1' (pruebas) / '2' (producción); aceptar
+    // también los alias legibles por si llega un cliente con bundle antiguo.
+    if (update.ambiente === 'pruebas') update.ambiente = '1';
+    if (update.ambiente === 'produccion') update.ambiente = '2';
 
     const config = await InvoicingConfig.findOneAndUpdate(
       { clinic: req.clinicId },

@@ -22,7 +22,7 @@ const EMPTY = {
   establecimiento: '001',
   puntoEmision: '001',
   secuencial: 1,
-  ambiente: 'pruebas',
+  ambiente: '1', // '1' = pruebas, '2' = producción (valores del modelo/SRI)
   obligadoContabilidad: false,
   agenteRetencion: '',
   contribuyenteEspecial: '',
@@ -30,7 +30,8 @@ const EMPTY = {
 
 export default function InvoicingConfig() {
   const { hasRole } = useAuth();
-  const canEdit = hasRole('admin');
+  // Mismos roles que autorizan PUT/POST en server/routes/invoicingConfig.js
+  const canEdit = hasRole('admin', 'contabilidad');
   const [form, setForm] = useState(EMPTY);
   const [config, setConfig] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -67,7 +68,7 @@ export default function InvoicingConfig() {
           establecimiento: res.data.establecimiento || '001',
           puntoEmision: res.data.puntoEmision || '001',
           secuencial: res.data.secuencial || 1,
-          ambiente: res.data.ambiente || 'pruebas',
+          ambiente: res.data.ambiente || '1',
           obligadoContabilidad: res.data.obligadoContabilidad === 'SI',
           agenteRetencion: res.data.agenteRetencion || '',
           contribuyenteEspecial: res.data.contribuyenteEspecial || '',
@@ -217,8 +218,8 @@ export default function InvoicingConfig() {
               onChange={(e) => handleChange('ambiente', e.target.value)}
               className="input"
             >
-              <option value="pruebas">Pruebas</option>
-              <option value="produccion">Producción</option>
+              <option value="1">Pruebas</option>
+              <option value="2">Producción</option>
             </select>
           </Field>
           <Field label="Dirección matriz" required>
