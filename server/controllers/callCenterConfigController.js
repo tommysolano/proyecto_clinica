@@ -229,6 +229,12 @@ const appConfigPayload = (req, cfg) => {
     verifyToken: maskSecret(cfg.cloudApi?.verifyToken || ''),
     callCenterClinic: cfg.callCenterClinic || null,
     webhookUrl: `${base}/chats/webhook/whatsapp`,
+    conversionsApi: {
+      enabled: Boolean(cfg.conversionsApi?.enabled),
+      datasetId: cfg.conversionsApi?.datasetId || '',
+      accessToken: maskSecret(cfg.conversionsApi?.accessToken || ''),
+      testEventCode: cfg.conversionsApi?.testEventCode || '',
+    },
   };
 };
 
@@ -367,6 +373,51 @@ exports.testWhatsappAccount = async (req, res) => {
   }
 };
 
+/**
+ * POST /whatsapp/accounts/:id/quality — consulta a Meta la calidad actual del
+ * número (Verde/Amarillo/Rojo) y su límite de mensajería, y los persiste.
+ */
+exports.refreshWhatsappAccountQuality = async (req, res) => {
+  try {
+    const doc = await WhatsappAccount.findById(req.params.id);
+    if (!doc) return res.status(404).json({ message: 'Número no encontrado' });
+    const r = await require('../utils/whatsappQuality').refreshAccountQuality(doc);
+    if (!r.ok) return res.status(400).json({ message: r.error || 'No se pudo consultar la calidad' });
+    res.json({ ok: true, qualityRating: r.qualityRating, messagingLimit: r.messagingLimit, account: maskWaAccount(doc) });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al consultar calidad', error: err.message });
+  }
+};
+
+/**
+ * POST /whatsapp/capi/test — envía un evento de prueba 'Lead' a la Conversions
+ * API para verificar credenciales. Con testEventCode configurado, el evento
+ * aparece en "Probar eventos" del Administrador de Eventos de Meta.
+ */
+exports.testConversionsApi = async (req, res) => {
+  try {
+    const capi = require('../utils/metaConversions');
+    const r = await capi.sendConversionEvent({
+      eventName: 'Lead',
+      eventId: `test_${Date.now()}`,
+      user: { phone: req.body.phone || '593999999999' },
+      customData: { chat_funnel_stage: 'prueba_conexion' },
+    });
+    if (r.skipped) {
+      return res.status(400).json({
+        message:
+          r.reason === 'capi_not_configured'
+            ? 'CAPI no está habilitada o falta Dataset ID / Access Token'
+            : 'No hay identificadores de usuario para el evento',
+      });
+    }
+    if (!r.ok) return res.status(400).json({ message: r.error || 'Meta rechazó el evento', detail: r.data });
+    res.json({ ok: true, result: r.data });
+  } catch (err) {
+    res.status(500).json({ message: 'Error de prueba CAPI', error: err.message });
+  }
+};
+
 // Config a nivel de app (compartida): appSecret/verifyToken del webhook + sede.
 exports.getWhatsappAppConfig = async (req, res) => {
   try {
@@ -389,6 +440,15 @@ exports.updateWhatsappAppConfig = async (req, res) => {
       cloud.verifyToken = req.body.verifyToken || '';
     }
     cfg.cloudApi = cloud;
+    // Conversions API (CAPI): dataset + token (cifrado) + modo de prueba.
+    const capi = cfg.conversionsApi || {};
+    if ('capiEnabled' in req.body) capi.enabled = Boolean(req.body.capiEnabled);
+    if (typeof req.body.capiDatasetId === 'string') capi.datasetId = req.body.capiDatasetId.trim();
+    if (typeof req.body.capiAccessToken === 'string' && !req.body.capiAccessToken.startsWith('••••')) {
+      capi.accessToken = req.body.capiAccessToken ? encryptSecret(req.body.capiAccessToken) : '';
+    }
+    if (typeof req.body.capiTestEventCode === 'string') capi.testEventCode = req.body.capiTestEventCode.trim();
+    cfg.conversionsApi = capi;
     if ('callCenterClinic' in req.body) cfg.callCenterClinic = req.body.callCenterClinic || null;
     cfg.updatedBy = req.user._id;
     await cfg.save();

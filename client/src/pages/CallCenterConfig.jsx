@@ -399,7 +399,9 @@ const blankAccount = () => ({
 function WhatsappNumbersManager() {
   const [appCfg, setAppCfg] = useState(null);
   const [appDraft, setAppDraft] = useState({ appSecret: '', verifyToken: '' });
+  const [capiDraft, setCapiDraft] = useState({ enabled: false, datasetId: '', accessToken: '', testEventCode: '' });
   const [savingApp, setSavingApp] = useState(false);
+  const [testingCapi, setTestingCapi] = useState(false);
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [addModal, setAddModal] = useState(null);
@@ -415,6 +417,12 @@ function WhatsappNumbersManager() {
       ]);
       setAppCfg(a.data);
       setAppDraft({ appSecret: '', verifyToken: '' });
+      setCapiDraft({
+        enabled: Boolean(a.data?.conversionsApi?.enabled),
+        datasetId: a.data?.conversionsApi?.datasetId || '',
+        accessToken: '',
+        testEventCode: a.data?.conversionsApi?.testEventCode || '',
+      });
       setAccounts(acc.data || []);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al cargar números de WhatsApp');
@@ -456,17 +464,50 @@ function WhatsappNumbersManager() {
   const saveApp = async () => {
     setSavingApp(true);
     try {
-      const payload = {};
+      const payload = {
+        capiEnabled: capiDraft.enabled,
+        capiDatasetId: capiDraft.datasetId,
+        capiTestEventCode: capiDraft.testEventCode,
+      };
       if (appDraft.appSecret) payload.appSecret = appDraft.appSecret;
       if (appDraft.verifyToken) payload.verifyToken = appDraft.verifyToken;
+      if (capiDraft.accessToken) payload.capiAccessToken = capiDraft.accessToken;
       const r = await api.put('/call-center-config/whatsapp/app-config', payload);
       setAppCfg(r.data);
       setAppDraft({ appSecret: '', verifyToken: '' });
+      setCapiDraft({
+        enabled: Boolean(r.data?.conversionsApi?.enabled),
+        datasetId: r.data?.conversionsApi?.datasetId || '',
+        accessToken: '',
+        testEventCode: r.data?.conversionsApi?.testEventCode || '',
+      });
       toast.success('Configuración de WhatsApp guardada');
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al guardar');
     } finally {
       setSavingApp(false);
+    }
+  };
+
+  const testCapi = async () => {
+    setTestingCapi(true);
+    try {
+      await api.post('/call-center-config/whatsapp/capi/test');
+      toast.success('Evento de prueba enviado. Revísalo en "Probar eventos" del Administrador de Eventos de Meta.');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al probar la Conversions API');
+    } finally {
+      setTestingCapi(false);
+    }
+  };
+
+  const refreshQuality = async (acc) => {
+    try {
+      const r = await api.post(`/call-center-config/whatsapp/accounts/${acc._id}/quality`);
+      setAccounts((l) => l.map((x) => (x._id === acc._id ? { ...x, ...r.data.account } : x)));
+      toast.success(`Calidad actualizada: ${r.data.qualityRating}${r.data.messagingLimit ? ` · límite ${r.data.messagingLimit}` : ''}`);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo consultar la calidad');
     }
   };
 
@@ -630,7 +671,73 @@ function WhatsappNumbersManager() {
             <span className="text-[11px] text-slate-400">El mismo que pongas en Meta.</span>
           </label>
         </div>
-        <div className="flex justify-end">
+        {/* Conversions API (CAPI): reporta Lead/Cita/Compra a Meta para optimizar anuncios */}
+        <div className="border-t border-slate-100 pt-3 space-y-3">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-800">Conversions API (optimización de anuncios)</h3>
+              <p className="text-xs text-slate-500">
+                Reporta a Meta las conversiones reales del CRM (nuevo lead, cita agendada, venta pagada)
+                para que tus campañas se optimicen por resultados y no solo por clics.
+              </p>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={capiDraft.enabled}
+                onChange={(e) => setCapiDraft({ ...capiDraft, enabled: e.target.checked })}
+                className="w-4 h-4 accent-emerald-600"
+              />
+              Habilitada
+            </label>
+          </div>
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+            <label className="block text-sm">
+              <span className="text-slate-700 font-medium">Dataset ID (Pixel ID)</span>
+              <input
+                value={capiDraft.datasetId}
+                onChange={(e) => setCapiDraft({ ...capiDraft, datasetId: e.target.value })}
+                placeholder="1234567890"
+                className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono"
+              />
+              <span className="text-[11px] text-slate-400">Del Administrador de Eventos de Meta.</span>
+            </label>
+            <label className="block text-sm">
+              <span className="text-slate-700 font-medium">Access Token (CAPI)</span>
+              <input
+                type="password"
+                value={capiDraft.accessToken}
+                onChange={(e) => setCapiDraft({ ...capiDraft, accessToken: e.target.value })}
+                placeholder={appCfg?.conversionsApi?.accessToken || '••••••'}
+                autoComplete="off"
+                className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono"
+              />
+              <span className="text-[11px] text-slate-400">Se genera en Configuración del dataset.</span>
+            </label>
+            <label className="block text-sm">
+              <span className="text-slate-700 font-medium">Código de prueba (opcional)</span>
+              <input
+                value={capiDraft.testEventCode}
+                onChange={(e) => setCapiDraft({ ...capiDraft, testEventCode: e.target.value })}
+                placeholder="TEST12345"
+                className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono"
+              />
+              <span className="text-[11px] text-slate-400">
+                Solo para pruebas ("Probar eventos"). Déjalo vacío en producción.
+              </span>
+            </label>
+          </div>
+        </div>
+
+        <div className="flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={testCapi}
+            disabled={testingCapi}
+            className="px-4 py-2 rounded-lg border border-slate-200 bg-white text-slate-700 text-sm cursor-pointer disabled:opacity-50"
+          >
+            {testingCapi ? 'Probando…' : 'Probar Conversions API'}
+          </button>
           <button
             type="button"
             onClick={saveApp}
@@ -676,6 +783,7 @@ function WhatsappNumbersManager() {
                 onConnect={() => openConnect(acc)}
                 onDisconnect={() => disconnect(acc)}
                 onTest={() => testAccount(acc)}
+                onRefreshQuality={() => refreshQuality(acc)}
               />
             ))}
           </div>
@@ -762,7 +870,13 @@ function WhatsappNumbersManager() {
   );
 }
 
-function AccountCard({ acc, onSetDefault, onToggleEnabled, onEdit, onDelete, onConnect, onDisconnect, onTest }) {
+const QUALITY_META = {
+  GREEN: { label: 'Calidad: Verde', cls: 'bg-emerald-100 text-emerald-700' },
+  YELLOW: { label: 'Calidad: Amarilla', cls: 'bg-amber-100 text-amber-700' },
+  RED: { label: 'Calidad: Roja', cls: 'bg-red-100 text-red-700' },
+};
+
+function AccountCard({ acc, onSetDefault, onToggleEnabled, onEdit, onDelete, onConnect, onDisconnect, onTest, onRefreshQuality }) {
   const isQr = acc.connectionType === 'qr';
   const status = acc.liveStatus || acc.status;
   const phone = acc.connectedPhone || acc.displayPhone || acc.phoneNumberId || '—';
@@ -771,6 +885,7 @@ function AccountCard({ acc, onSetDefault, onToggleEnabled, onEdit, onDelete, onC
     : acc.enabled
     ? { label: 'Activo', cls: 'bg-emerald-100 text-emerald-700' }
     : { label: 'Inactivo', cls: 'bg-slate-100 text-slate-500' };
+  const quality = !isQr ? QUALITY_META[acc.qualityRating] : null;
 
   return (
     <div className="border border-slate-200 rounded-xl p-3 bg-white flex items-center gap-3 flex-wrap">
@@ -794,6 +909,24 @@ function AccountCard({ acc, onSetDefault, onToggleEnabled, onEdit, onDelete, onC
         <div className="text-xs text-slate-400">{phone}</div>
       </div>
       <span className={`text-[11px] px-2 py-0.5 rounded-full ${badge.cls}`}>{badge.label}</span>
+      {quality && (
+        <button
+          onClick={onRefreshQuality}
+          title={`Calidad del número según Meta${acc.messagingLimit ? ` · Límite: ${acc.messagingLimit}` : ''}. Clic para actualizar.`}
+          className={`text-[11px] px-2 py-0.5 rounded-full border-none cursor-pointer ${quality.cls}`}
+        >
+          {quality.label}
+        </button>
+      )}
+      {!isQr && !quality && (
+        <button
+          onClick={onRefreshQuality}
+          title="Consultar a Meta la calidad del número (Verde/Amarillo/Rojo)"
+          className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 border-none cursor-pointer"
+        >
+          Calidad: consultar
+        </button>
+      )}
 
       <label className="flex items-center gap-1 text-xs text-slate-500 cursor-pointer">
         <input type="checkbox" checked={!!acc.enabled} onChange={onToggleEnabled} className="w-4 h-4 accent-emerald-600" />

@@ -78,6 +78,13 @@ exports.create = async (req, res) => {
     if (req.body.template) {
       template = await MessageTemplate.findOne({ _id: req.body.template, clinic: req.clinicId });
       if (!template) return res.status(404).json({ message: 'Plantilla no encontrada' });
+      // WhatsApp solo acepta plantillas APROBADAS por Meta: bloquear aquí evita
+      // encolar una campaña entera que fallaría mensaje a mensaje.
+      if (channel === 'whatsapp' && template.channel === 'whatsapp' && template.status !== 'approved') {
+        return res.status(400).json({
+          message: `La plantilla "${template.name}" no está aprobada por Meta (estado: ${template.status}). Envíala a revisión y espera la aprobación antes de usarla en campañas.`,
+        });
+      }
     }
     if (!template && !String(body || '').trim()) {
       return res.status(400).json({ message: 'Indica un cuerpo de mensaje o una plantilla' });

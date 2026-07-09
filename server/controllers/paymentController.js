@@ -298,6 +298,16 @@ exports.create = async (req, res) => {
         return payment._id;
       });
       const payment = await Payment.findById(paymentId);
+      // Evento de dominio: cobro registrado a un paciente (dispara CAPI Purchase).
+      if (payment.type === 'COBRO' && payment.partyModel === 'Patient' && payment.partyRef) {
+        const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
+        emitDomainEvent(DOMAIN_EVENTS.PAYMENT_RECEIVED, {
+          clinicId: String(req.clinicId),
+          patientId: String(payment.partyRef),
+          paymentId: String(payment._id),
+          total: Number(payment.total || 0),
+        });
+      }
       return res.status(201).json(payment);
     }
   } catch (e) {

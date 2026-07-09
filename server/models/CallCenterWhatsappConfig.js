@@ -20,6 +20,14 @@ const callCenterWhatsappConfigSchema = new mongoose.Schema(
       appSecret: { type: String, default: '' }, // cifrado — valida firma X-Hub-Signature-256
       verifyToken: { type: String, default: '' }, // handshake del webhook GET
     },
+    // Meta Conversions API (CAPI): reporta conversiones del chat (Lead/Schedule/
+    // Purchase) al Administrador de Eventos para optimizar campañas (CRO).
+    conversionsApi: {
+      enabled: { type: Boolean, default: false },
+      datasetId: { type: String, default: '' }, // Pixel ID / Dataset ID del Administrador de Eventos
+      accessToken: { type: String, default: '' }, // cifrado — token de la Conversions API
+      testEventCode: { type: String, default: '' }, // código "Probar eventos" (solo pruebas)
+    },
     callCenterClinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', default: null },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },

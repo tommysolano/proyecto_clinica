@@ -131,6 +131,8 @@ connectDB().then(() => {
   // Motor de workflows: suscribe a eventos de dominio + reanuda esperas vencidas.
   const workflowEngine = require('./utils/workflowEngine');
   workflowEngine.subscribeDomainEvents();
+  // Meta Conversions API (CAPI): reporta Lead/Schedule/Purchase a Meta si está configurada.
+  require('./utils/metaConversions').subscribeDomainEvents();
   setInterval(() => { workflowEngine.processDueEnrollments().catch(() => {}); }, 60 * 1000);
   // Job: cumpleaños del día (dispara workflows patient_birthday).
   require('./utils/birthdayJob').startBirthdayJob();

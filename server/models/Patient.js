@@ -60,6 +60,9 @@ const patientSchema = new mongoose.Schema(
       utmMedium: { type: String, trim: true, default: '' },
       utmCampaign: { type: String, trim: true, default: '' },
       adId: { type: String, trim: true, default: '' },
+      // Click-to-WhatsApp click id (anuncios Meta): matching fuerte para la
+      // Conversions API — se traspasa desde la conversación al vincular paciente.
+      ctwaClid: { type: String, trim: true, default: '' },
       firstTouchAt: { type: Date, default: null },
     },
     active: { type: Boolean, default: true },

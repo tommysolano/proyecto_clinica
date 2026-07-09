@@ -1475,8 +1475,14 @@ async function applyIncomingOptOut({ clinicId, conv, incomingText }) {
 
 // Procesa un evento "normalizado" (externalUserId, body, contactName) creando/
 // actualizando la conversación correspondiente.
-async function ingestExternalMessage({ clinicId, channel, externalUserId, body, contactName, externalId, phone, referral, media, account }) {
+async function ingestExternalMessage({ clinicId, channel, externalUserId, body, contactName, externalId, phone, referral, media, account, interactiveReply }) {
   if (!externalUserId && !phone) return;
+  // Meta reintenta el webhook si no respondemos a tiempo: si este message id ya
+  // se procesó, no lo dupliques (ni re-dispares flujos/workflows).
+  if (externalId) {
+    const dup = await Message.findOne({ clinic: clinicId, externalId, direction: 'in' }).select('_id');
+    if (dup) return;
+  }
   const normalizedPhone = normalizePhone(phone || externalUserId);
   const findKey = phone
     ? { clinic: clinicId, channel, phone: normalizedPhone }
@@ -1497,6 +1503,18 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
       ...(referral ? { attribution: referral } : {}),
     });
     isNew = true;
+    // CAPI: primera conversación de WhatsApp = Lead para Meta (fire-and-forget).
+    if (channel === 'whatsapp') {
+      require('../utils/metaConversions')
+        .reportLead({
+          conversationId: conv._id,
+          phone: conv.phone,
+          contactName: conv.contactName,
+          ctwaClid: referral?.ctwaClid || '',
+          adId: referral?.adId || '',
+        })
+        .catch(() => {});
+    }
   } else if (!conv.patient && patient) {
     conv.patient = patient._id;
   }
@@ -1540,6 +1558,7 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
     mediaUrl,
     mediaType,
     externalId,
+    ...(interactiveReply ? { interactiveReply } : {}),
     deliveryStatus: 'delivered',
   });
   conv.lastMessageAt = msg.createdAt;
@@ -1651,6 +1670,15 @@ exports.webhookWhatsappReceive = async (req, res) => {
             .catch((e) => console.error('[whatsapp webhook template]', e.message));
           continue;
         }
+        // Salud del canal: Meta avisa si la calidad del número cae (spam/bloqueos)
+        // o si cambia el límite diario de mensajería.
+        if (change.field === 'phone_number_quality_update') {
+          // eslint-disable-next-line no-await-in-loop
+          await require('../utils/whatsappQuality')
+            .handleQualityWebhook(clinicId, value)
+            .catch((e) => console.error('[whatsapp webhook quality]', e.message));
+          continue;
+        }
         // Identifica POR CUÁL número (global) llegó el evento, vía phone_number_id.
         // eslint-disable-next-line no-await-in-loop
         const account = await gateway.getCloudAccountByPhoneNumberId(value.metadata?.phone_number_id);
@@ -1672,6 +1700,19 @@ exports.webhookWhatsappReceive = async (req, res) => {
             : m.sticker
             ? { type: 'sticker', id: m.sticker.id }
             : null;
+          // Respuesta interactiva: botón interactivo, lista, o botón de respuesta
+          // rápida de plantilla (llega como m.button con payload). El id/payload
+          // permite etiquetar interés (CRO) sin depender del texto visible.
+          const reply = m.interactive?.button_reply || m.interactive?.list_reply || null;
+          const interactiveReply = reply
+            ? {
+                id: reply.id || '',
+                title: reply.title || '',
+                type: m.interactive?.list_reply ? 'list_reply' : 'button_reply',
+              }
+            : m.button
+            ? { id: m.button.payload || '', title: m.button.text || '', type: 'button_reply' }
+            : null;
           // eslint-disable-next-line no-await-in-loop
           await ingestExternalMessage({
             clinicId,
@@ -1679,7 +1720,8 @@ exports.webhookWhatsappReceive = async (req, res) => {
             account,
             phone: m.from,
             externalUserId: m.from,
-            body: m.text?.body || m.button?.text || m.interactive?.button_reply?.title || '',
+            body: m.text?.body || m.button?.text || reply?.title || '',
+            interactiveReply,
             media,
             contactName: contact.profile?.name || '',
             externalId: m.id,
@@ -1937,6 +1979,8 @@ exports.registerPatientFromChat = async (req, res) => {
         ...(patient.attribution?.toObject ? patient.attribution.toObject() : patient.attribution || {}),
         utmCampaign: conv.attribution.campaign || '',
         adId: conv.attribution.adId,
+        // ctwa_clid: matching fuerte para la Conversions API (Schedule/Purchase).
+        ctwaClid: conv.attribution.ctwaClid || '',
         firstTouchAt: patient.attribution?.firstTouchAt || conv.createdAt || new Date(),
       };
       await patient.save();

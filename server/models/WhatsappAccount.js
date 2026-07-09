@@ -28,6 +28,12 @@ const whatsappAccountSchema = new mongoose.Schema(
     businessAccountId: { type: String, trim: true, default: '' }, // WABA ID
     accessToken: { type: String, default: '' }, // cifrado
 
+    // ── Salud del canal (Meta) ── calidad del número y límite de mensajería.
+    // Se actualizan por webhook (phone_number_quality_update) o al refrescar por API.
+    qualityRating: { type: String, enum: ['GREEN', 'YELLOW', 'RED', 'UNKNOWN'], default: 'UNKNOWN' },
+    messagingLimit: { type: String, trim: true, default: '' }, // ej. TIER_1K
+    qualityUpdatedAt: { type: Date, default: null },
+
     // ── QR (whatsapp-web.js) ──
     status: {
       type: String,

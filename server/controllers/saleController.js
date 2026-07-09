@@ -739,9 +739,19 @@ exports.collectSale = async (req, res) => {
         sale.paid = sale.balance <= 0.01;
         if (sale.paid) sale.balance = 0;
         await sale.save({ session });
-        return { ok: true, balance: sale.balance, paid: sale.paid };
+        return { ok: true, balance: sale.balance, paid: sale.paid, patientId: sale.patient, amount, entryId: entry._id };
       });
-      return res.json(result);
+      // Evento de dominio: cobro registrado a un paciente (dispara CAPI Purchase).
+      if (result.patientId && result.amount > 0) {
+        const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
+        emitDomainEvent(DOMAIN_EVENTS.PAYMENT_RECEIVED, {
+          clinicId: String(req.clinicId),
+          patientId: String(result.patientId),
+          paymentId: String(result.entryId),
+          total: Number(result.amount),
+        });
+      }
+      return res.json({ ok: result.ok, balance: result.balance, paid: result.paid });
     }
   } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };

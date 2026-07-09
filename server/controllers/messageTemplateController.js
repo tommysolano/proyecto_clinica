@@ -328,7 +328,7 @@ exports.syncWhatsapp = async (req, res) => {
 // ─────────── Alertas (Notifications de plantillas) ───────────
 exports.listAlerts = async (req, res) => {
   try {
-    const filter = { clinic: req.clinicId, type: { $in: ['template_category_changed', 'template_status_changed'] } };
+    const filter = { clinic: req.clinicId, type: { $in: ['template_category_changed', 'template_status_changed', 'whatsapp_quality_changed'] } };
     if (req.query.unread === 'true') filter.read = false;
     const list = await Notification.find(filter).sort({ createdAt: -1 }).limit(100);
     res.json(list);

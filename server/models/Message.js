@@ -20,6 +20,13 @@ const messageSchema = new mongoose.Schema(
     mediaType: { type: String, enum: ['image', 'audio', 'video', 'document', null], default: null },
     // Identificadores externos (WhatsApp message id)
     externalId: { type: String, index: true },
+    // Respuesta interactiva (botón o lista de WhatsApp): id + título del elemento
+    // elegido. El id permite etiquetar interés (CRO) sin depender del texto visible.
+    interactiveReply: {
+      id: { type: String, trim: true, default: '' },
+      title: { type: String, trim: true, default: '' },
+      type: { type: String, enum: ['button_reply', 'list_reply', ''], default: '' },
+    },
     templateName: { type: String, trim: true, default: '' },
     errorCode: { type: String, trim: true, default: '' },
     errorMessage: { type: String, trim: true, default: '' },

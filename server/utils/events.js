@@ -26,6 +26,7 @@ const DOMAIN_EVENTS = {
   SALE_CREATED: 'sale.created',
   QUOTATION_SENT: 'quotation.sent',
   TAG_ADDED: 'patient.tag_added',
+  PAYMENT_RECEIVED: 'payment.received',
 };
 
 /**
