@@ -1,0 +1,37 @@
+name: Diagnostico VPS
+
+# Solo manual: vuelca estado y logs de PM2 del VPS para depurar sin SSH local.
+on:
+  workflow_dispatch:
+
+jobs:
+  diagnostico:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Leer estado y logs por SSH
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script_stop: false
+          script: |
+            export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+            cd /var/www/clinica/server || exit 1
+            echo '===== commit desplegado ====='
+            git -C /var/www/clinica log -1 --format='%h %s'
+            echo '===== pm2 status ====='
+            pm2 status || true
+            echo '===== whatsapp-web.js instalado y parcheado ====='
+            node -e "console.log('wwebjs', require('whatsapp-web.js/package.json').version)" || echo 'WWEBJS NO INSTALADO'
+            grep -c scheduleInject node_modules/whatsapp-web.js/src/Client.js && echo 'PARCHE APLICADO' || echo 'PARCHE NO APLICADO'
+            echo '===== chrome de puppeteer ====='
+            node -e "const p=require('puppeteer').executablePath(); console.log(p); require('fs').accessSync(p); console.log('CHROME OK')" || echo 'CHROME NO DISPONIBLE'
+            echo '===== memoria ====='
+            free -m || true
+            echo '===== disco ====='
+            df -h /var/www || true
+            echo '===== logs pm2 (200 lineas, sin stream) ====='
+            pm2 logs clinica-api --nostream --lines 200 || true
+            echo '===== lineas whatsapp/chrome del error log ====='
+            grep -iE 'whatsapp|wwebjs|puppeteer|chrome|inject' ~/.pm2/logs/clinica-api-error.log | tail -n 80 || true
