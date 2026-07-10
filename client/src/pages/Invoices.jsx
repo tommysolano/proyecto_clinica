@@ -14,6 +14,8 @@ import {
   HiOutlineEye,
   HiOutlineDocumentArrowDown,
   HiOutlineArrowDownTray,
+  HiOutlineSignal,
+  HiOutlineSignalSlash,
 } from 'react-icons/hi2';
 
 const ESTADO_STYLES = {
@@ -26,6 +28,34 @@ const ESTADO_STYLES = {
   ERROR: 'bg-red-100 text-red-700',
   ANULADA: 'bg-slate-300 text-slate-700',
 };
+
+// Etiquetas legibles para el contador (el enum interno es más técnico).
+const ESTADO_LABEL = {
+  AUTORIZADO: 'Autorizada',
+  RECIBIDA: 'Recibida (pend. autorización)',
+  EN_PROCESO: 'En proceso en el SRI',
+  EN_COLA: 'Pendiente de envío (SRI)',
+  DEVUELTA: 'Devuelta por el SRI',
+  NO_AUTORIZADO: 'No autorizada',
+  ERROR: 'Error de envío',
+  ANULADA: 'Anulada',
+};
+
+// Estados no finales: la factura sigue en juego y puede reintentarse.
+const PENDING_ESTADOS = ['EN_COLA', 'RECIBIDA', 'EN_PROCESO', 'ERROR', 'DEVUELTA', 'NO_AUTORIZADO'];
+
+// ¿El SRI autorizó en un día calendario distinto al de emisión? En ese caso se
+// mantiene la fecha de emisión original y se muestra una advertencia.
+function autorizadaOtroDia(inv) {
+  if (!inv?.fechaAutorizacion || !inv?.fechaEmision) return false;
+  const [dd, mm, yyyy] = String(inv.fechaEmision).split('/');
+  if (!dd || !mm || !yyyy) return false;
+  const aut = new Date(inv.fechaAutorizacion);
+  // Fecha de autorización en hora de Ecuador (UTC-5, sin horario de verano).
+  const ec = new Date(aut.getTime() - 5 * 60 * 60 * 1000);
+  const autKey = `${String(ec.getUTCDate()).padStart(2, '0')}/${String(ec.getUTCMonth() + 1).padStart(2, '0')}/${ec.getUTCFullYear()}`;
+  return autKey !== `${dd.padStart(2, '0')}/${mm.padStart(2, '0')}/${yyyy}`;
+}
 
 export default function Invoices() {
   const { hasRole } = useAuth();
@@ -40,6 +70,8 @@ export default function Invoices() {
   const [motivo, setMotivo] = useState('');
   const [anularVenta, setAnularVenta] = useState(true);
   const [busyId, setBusyId] = useState(null);
+  const [sriStatus, setSriStatus] = useState(null);
+  const [retryingAll, setRetryingAll] = useState(false);
 
   const load = async () => {
     setLoading(true);
@@ -57,10 +89,37 @@ export default function Invoices() {
     }
   };
 
+  const loadSriStatus = async () => {
+    try {
+      const res = await api.get('/invoices/sri-status');
+      setSriStatus(res.data);
+    } catch {
+      setSriStatus({ disponible: false, pendientes: 0 });
+    }
+  };
+
+  const reintentarPendientes = async () => {
+    setRetryingAll(true);
+    try {
+      const res = await api.post('/invoices/retry-pending');
+      toast.success(res.data?.message || 'Reintento procesado');
+      load();
+      loadSriStatus();
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al reintentar pendientes');
+    } finally {
+      setRetryingAll(false);
+    }
+  };
+
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filter]);
+
+  useEffect(() => {
+    loadSriStatus();
+  }, []);
 
   const verPdf = async (inv) => {
     try {
@@ -75,9 +134,14 @@ export default function Invoices() {
   const reintentar = async (inv) => {
     setBusyId(inv._id);
     try {
-      await api.post(`/invoices/${inv._id}/retry`);
-      toast.success('Reintento enviado');
+      const res = await api.post(`/invoices/${inv._id}/retry`);
+      const estado = res.data?.invoice?.estado;
+      const msg = res.data?.message || 'Reintento procesado';
+      if (estado === 'AUTORIZADO') toast.success(msg);
+      else if (['DEVUELTA', 'NO_AUTORIZADO', 'ERROR'].includes(estado)) toast.error(msg);
+      else toast(msg, { icon: '⏳', duration: 6000 });
       load();
+      loadSriStatus();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al reintentar');
     } finally {
@@ -123,6 +187,17 @@ export default function Invoices() {
   return (
     <div className="space-y-6 max-w-6xl mx-auto">
       <PageHeader icon={HiOutlineDocumentText} title="Facturación electrónica" subtitle="Emisión y seguimiento de comprobantes SRI">
+        {canRetry && (
+          <button
+            onClick={reintentarPendientes}
+            disabled={retryingAll}
+            className="btn-secondary disabled:opacity-50"
+            title="Reenviar/consultar autorización de todas las facturas pendientes"
+          >
+            <HiOutlineArrowPath className={`w-4 h-4 ${retryingAll ? 'animate-spin' : ''}`} />
+            {retryingAll ? 'Reintentando…' : 'Reintentar pendientes'}
+          </button>
+        )}
         <button
           onClick={async () => {
             try {
@@ -140,6 +215,42 @@ export default function Invoices() {
           <HiOutlineArrowDownTray className="w-4 h-4" /> Exportar Excel
         </button>
       </PageHeader>
+
+      {/* Estado del SRI + facturas pendientes */}
+      {sriStatus && (
+        <div
+          className={`rounded-2xl border p-4 flex flex-wrap items-center gap-3 ${
+            sriStatus.disponible
+              ? 'bg-emerald-50 border-emerald-200'
+              : 'bg-red-50 border-red-200'
+          }`}
+        >
+          {sriStatus.disponible ? (
+            <HiOutlineSignal className="w-5 h-5 text-emerald-600 shrink-0" />
+          ) : (
+            <HiOutlineSignalSlash className="w-5 h-5 text-red-600 shrink-0" />
+          )}
+          <div className="text-sm">
+            <span className={sriStatus.disponible ? 'text-emerald-800 font-medium' : 'text-red-800 font-medium'}>
+              {sriStatus.disponible ? 'SRI disponible' : 'SRI no disponible'}
+            </span>
+            <span className="text-slate-500">
+              {' '}
+              · Ambiente {sriStatus.ambiente === '2' ? 'Producción' : 'Pruebas'}
+            </span>
+            {!sriStatus.disponible && (
+              <span className="block text-xs text-red-700 mt-0.5">
+                Las facturas nuevas quedan emitidas y en cola; el sistema las enviará automáticamente cuando el SRI responda. No se pierde ninguna.
+              </span>
+            )}
+          </div>
+          {sriStatus.pendientes > 0 && (
+            <span className="ml-auto text-xs px-2.5 py-1 rounded-full bg-amber-100 text-amber-800 font-medium">
+              {sriStatus.pendientes} pendiente{sriStatus.pendientes === 1 ? '' : 's'} de autorización
+            </span>
+          )}
+        </div>
+      )}
 
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-4">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
@@ -163,7 +274,7 @@ export default function Invoices() {
             <option value="">Todos los estados</option>
             {Object.keys(ESTADO_STYLES).map((k) => (
               <option key={k} value={k}>
-                {k}
+                {ESTADO_LABEL[k] || k}
               </option>
             ))}
           </select>
@@ -228,8 +339,13 @@ export default function Invoices() {
                           ESTADO_STYLES[inv.estado] || 'bg-slate-100 text-slate-600'
                         }`}
                       >
-                        {inv.estado}
+                        {ESTADO_LABEL[inv.estado] || inv.estado}
                       </span>
+                      {inv.proximoReintento && PENDING_ESTADOS.includes(inv.estado) && (
+                        <p className="text-[10px] text-slate-400 mt-1">
+                          Próx. reintento: {fmtDateTime(inv.proximoReintento)}
+                        </p>
+                      )}
                     </td>
                     <td className="px-5 py-3 text-right">
                       <button
@@ -289,9 +405,23 @@ export default function Invoices() {
       >
         {detail && (
           <div className="space-y-4 text-sm">
+            {autorizadaOtroDia(detail) && (
+              <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-xs text-amber-800">
+                <strong>Advertencia administrativa:</strong> esta factura se emitió el{' '}
+                {detail.fechaEmision} y el SRI la autorizó otro día ({fmtDateTime(detail.fechaAutorizacion)}).
+                Se conserva la fecha de emisión original. Verifique que la autorización esté dentro del
+                plazo permitido por el SRI.
+              </div>
+            )}
             <div className="grid grid-cols-2 gap-3">
               <Item label="N° Factura" value={`${detail.estab}-${detail.ptoEmi}-${detail.secuencial}`} />
-              <Item label="Estado" value={detail.estado} />
+              <Item label="Estado" value={ESTADO_LABEL[detail.estado] || detail.estado} />
+              {detail.proximoReintento && PENDING_ESTADOS.includes(detail.estado) && (
+                <Item label="Próximo reintento" value={fmtDateTime(detail.proximoReintento)} />
+              )}
+              {detail.reintentos > 0 && (
+                <Item label="Reintentos" value={String(detail.reintentos)} />
+              )}
               <Item label="Clave de acceso" value={detail.claveAcceso} mono />
               <Item label="Ambiente" value={detail.ambiente === '2' ? 'Producción' : 'Pruebas'} />
               <Item label="Fecha emisión" value={detail.fechaEmision} />
@@ -350,6 +480,23 @@ export default function Invoices() {
                     {fmtDateTime(detail.anuladaAt)}
                   </p>
                 )}
+              </div>
+            )}
+            {detail.intentos?.length > 0 && (
+              <div className="bg-slate-50 rounded-xl p-3 text-xs space-y-1 border border-slate-100">
+                <p className="font-semibold text-slate-600">Bitácora de envíos al SRI</p>
+                <div className="max-h-48 overflow-y-auto space-y-1">
+                  {[...detail.intentos].reverse().map((it, i) => (
+                    <div key={i} className="flex items-start gap-2 text-slate-600">
+                      <span className="text-slate-400 shrink-0">{fmtDateTime(it.at)}</span>
+                      <span className="font-mono text-[10px] px-1.5 py-0.5 rounded bg-slate-200 text-slate-700 shrink-0">
+                        {it.tipo}
+                      </span>
+                      <span className="font-medium">{it.estado}</span>
+                      {it.mensaje && <span className="text-slate-400">— {it.mensaje}</span>}
+                    </div>
+                  ))}
+                </div>
               </div>
             )}
           </div>

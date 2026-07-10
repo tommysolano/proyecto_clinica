@@ -406,13 +406,20 @@ export default function Sales() {
     setInvoicingId(sale._id);
     try {
       const res = await api.post(`/invoices/from-sale/${sale._id}`);
-      const inv = res.data;
+      // Respuesta: la factura directa (201 autorizada) o { message, invoice } (202/en cola).
+      const inv = res.data?.invoice || res.data;
       if (inv.estado === 'AUTORIZADO') {
         toast.success('Factura autorizada por el SRI');
       } else if (inv.estado === 'DEVUELTA' || inv.estado === 'NO_AUTORIZADO') {
-        toast.error(`Factura rechazada: ${inv.errorMessage || inv.estado}`);
+        toast.error(`Factura rechazada: ${inv.errorUltimo || inv.estado}`);
+      } else if (inv.estado === 'EN_COLA') {
+        // SRI caído: la factura no se pierde, queda en cola y se reintenta sola.
+        toast(res.data?.message || 'SRI no disponible: la factura quedó en cola y se reintentará automáticamente.', {
+          icon: '⏳',
+          duration: 8000,
+        });
       } else {
-        toast.success(`Factura emitida (${inv.estado})`);
+        toast.success(res.data?.message || `Factura emitida (${inv.estado})`);
       }
       fetchSales();
     } catch (err) {

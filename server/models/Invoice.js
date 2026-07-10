@@ -10,6 +10,18 @@ const sriMessageSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Bitácora de cada intento de envío/consulta al SRI (para auditar caídas y
+// reintentos: cuándo se intentó, en qué paso y con qué resultado).
+const sriIntentoSchema = new mongoose.Schema(
+  {
+    at: { type: Date, default: Date.now },
+    tipo: String, // RECEPCION | AUTORIZACION
+    estado: String, // RECIBIDA | EN_PROCESO | AUTORIZADO | DEVUELTA | SRI_NO_DISPONIBLE | ERROR ...
+    mensaje: String,
+  },
+  { _id: false }
+);
+
 // Detalle por tarifa de IVA dentro del desglose tributario de la factura.
 const invoiceTaxRateSchema = new mongoose.Schema(
   {
@@ -111,6 +123,8 @@ const invoiceSchema = new mongoose.Schema(
     proximoReintento: { type: Date, default: null },
     mensajesSri: { type: [sriMessageSchema], default: [] },
     errorUltimo: { type: String, default: null },
+    // Bitácora de intentos (últimos ~30) para auditoría de caídas del SRI.
+    intentos: { type: [sriIntentoSchema], default: [] },
     // Anulación
     anuladaAt: { type: Date, default: null },
     anuladaBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

@@ -145,6 +145,10 @@ connectDB().then(() => {
   setInterval(() => { workflowEngine.processDueEnrollments().catch(() => {}); }, 60 * 1000);
   // Job: cumpleaños del día (dispara workflows patient_birthday).
   require('./utils/birthdayJob').startBirthdayJob();
+  // Job: reintentar facturas electrónicas pendientes cuando el SRI se cae
+  // (reenvía las EN_COLA y consulta autorización de las recibidas). Cada
+  // SRI_RETRY_INTERVAL_MIN minutos (por defecto 5).
+  require('./utils/invoiceRetry').startInvoiceRetryJob();
   // Reconecta los números de WhatsApp por QR (whatsapp-web.js) con sesión guardada.
   // A los 5s del arranque para no competir con la inicialización del resto.
   setTimeout(() => {

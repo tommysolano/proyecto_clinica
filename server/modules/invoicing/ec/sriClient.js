@@ -4,6 +4,7 @@
  *   - Autorización Comprobantes Offline
  */
 const soap = require('soap');
+const https = require('https');
 
 const URLS = {
   pruebas: {
@@ -64,4 +65,80 @@ async function autorizarComprobante(claveAcceso, ambiente) {
   return result?.RespuestaAutorizacionComprobante || result;
 }
 
-module.exports = { enviarComprobante, autorizarComprobante, URLS };
+/**
+ * ¿El error es de conectividad (SRI caído / red / timeout) en vez de un rechazo
+ * de negocio? Distinguirlos es clave: los de conectividad se reintentan solos;
+ * los de negocio (comprobante devuelto / no autorizado) requieren corrección.
+ */
+function isConnectivityError(err) {
+  const code = String(err?.code || '').trim().toUpperCase();
+  if (
+    [
+      'ECONNREFUSED',
+      'ETIMEDOUT',
+      'ENOTFOUND',
+      'ECONNRESET',
+      'EAI_AGAIN',
+      'EPIPE',
+      'EHOSTUNREACH',
+      'ENETUNREACH',
+      'ECONNABORTED',
+    ].includes(code)
+  ) {
+    return true;
+  }
+  const m = String(err?.message || '').toLowerCase();
+  return (
+    m.includes('timeout') ||
+    m.includes('socket hang up') ||
+    m.includes('network') ||
+    m.includes('getaddrinfo') ||
+    m.includes('econn') ||
+    m.includes('esocket') ||
+    m.includes('failed to connect') ||
+    m.includes('read econnreset') ||
+    m.includes('wsdl') || // no pudo descargar el WSDL => el WS no responde
+    m.includes('503') ||
+    m.includes('502') ||
+    m.includes('504')
+  );
+}
+
+/**
+ * Comprueba si los servicios web del SRI responden, antes de intentar enviar.
+ * Hace un GET rápido al WSDL de Recepción: cualquier respuesta HTTP < 500 se
+ * considera "disponible". Timeout / conexión rechazada / 5xx => no disponible.
+ * @returns {Promise<boolean>}
+ */
+function checkSriAvailability(ambiente, timeoutMs = 8000) {
+  const url = URLS[ambienteToKey(ambiente)].recepcion;
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (ok) => {
+      if (settled) return;
+      settled = true;
+      resolve(ok);
+    };
+    try {
+      const req = https.get(url, { timeout: timeoutMs }, (res) => {
+        res.resume(); // drenar para liberar el socket
+        done(Number(res.statusCode) > 0 && Number(res.statusCode) < 500);
+      });
+      req.on('timeout', () => {
+        req.destroy();
+        done(false);
+      });
+      req.on('error', () => done(false));
+    } catch (_) {
+      done(false);
+    }
+  });
+}
+
+module.exports = {
+  enviarComprobante,
+  autorizarComprobante,
+  checkSriAvailability,
+  isConnectivityError,
+  URLS,
+};

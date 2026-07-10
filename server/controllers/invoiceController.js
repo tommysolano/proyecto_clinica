@@ -10,12 +10,13 @@ const { breakdownFromSale } = require('../utils/invoiceTaxBreakdown');
 const { generarClaveAcceso } = require('../modules/invoicing/ec/accessKey');
 const { buildFacturaXml } = require('../modules/invoicing/ec/xmlBuilder');
 const { signXml } = require('../modules/invoicing/ec/xadesSigner');
-const {
-  enviarComprobante,
-  autorizarComprobante,
-} = require('../modules/invoicing/ec/sriClient');
+const { checkSriAvailability } = require('../modules/invoicing/ec/sriClient');
 const { buildRidePdf } = require('../modules/invoicing/ec/ride');
 const { buildAnulacionXml } = require('../modules/invoicing/ec/anular');
+const {
+  processInvoice,
+  runInvoiceRetryQueue,
+} = require('../utils/invoiceRetry');
 
 function fmtFechaEmision(d) {
   const dt = d ? new Date(d) : new Date();
@@ -243,68 +244,36 @@ exports.emitFromSale = async (req, res) => {
     sale.invoice = invoice._id;
     await sale.save();
 
-    // Generar XML, firmar y enviar
+    // Generar XML, firmar y guardar (queda "emitida localmente" en EN_COLA).
     const xml = buildFacturaXml(factura);
     const xmlFirmado = signXml(xml, p12Buffer, password);
     invoice.xmlFirmado = xmlFirmado;
     await invoice.save();
 
-    // Recepción
-    const recepcion = await enviarComprobante(xmlFirmado, config.ambiente);
-    invoice.estado = recepcion?.estado === 'RECIBIDA' ? 'RECIBIDA' : 'DEVUELTA';
-    if (recepcion?.comprobantes?.comprobante?.mensajes) {
-      const mensajes = recepcion.comprobantes.comprobante.mensajes.mensaje;
-      invoice.mensajesSri = (Array.isArray(mensajes) ? mensajes : [mensajes]).map((m) => ({
-        identificador: m.identificador,
-        mensaje: m.mensaje,
-        informacionAdicional: m.informacionAdicional,
-        tipo: m.tipo,
-      }));
-    }
-    await invoice.save();
+    // Enviar al SRI y consultar autorización. Si el SRI está caído, processInvoice
+    // deja la factura EN_COLA (no la pierde) para que el job la reintente solo.
+    await processInvoice(invoice, { authAttempts: 3, authDelayMs: 1500 });
 
-    if (invoice.estado !== 'RECIBIDA') {
+    // Responder según el estado alcanzado.
+    if (invoice.estado === 'AUTORIZADO') {
+      return res.status(201).json(invoice);
+    }
+    if (['RECIBIDA', 'EN_PROCESO', 'EN_COLA'].includes(invoice.estado)) {
+      const message =
+        invoice.estado === 'EN_COLA'
+          ? 'El SRI no está disponible en este momento. La factura quedó emitida localmente y en cola; el sistema la enviará automáticamente cuando el SRI responda.'
+          : 'Factura enviada al SRI; pendiente de autorización. El sistema consultará la autorización automáticamente.';
+      return res.status(202).json({ message, invoice });
+    }
+    if (['DEVUELTA', 'NO_AUTORIZADO'].includes(invoice.estado)) {
       return res.status(400).json({
-        message: 'El SRI rechazó el comprobante',
+        message: invoice.errorUltimo || 'El SRI rechazó el comprobante',
         invoice,
       });
     }
-
-    // Autorización (puede tardar; reintento ligero)
-    let aut;
-    for (let i = 0; i < 3; i++) {
-      await new Promise((r) => setTimeout(r, 1500));
-      aut = await autorizarComprobante(claveAcceso, config.ambiente);
-      const list = aut?.autorizaciones?.autorizacion;
-      const item = Array.isArray(list) ? list[0] : list;
-      if (item) {
-        if (item.estado === 'AUTORIZADO') {
-          invoice.estado = 'AUTORIZADO';
-          invoice.numeroAutorizacion = item.numeroAutorizacion;
-          invoice.fechaAutorizacion = item.fechaAutorizacion;
-          invoice.xmlAutorizado = item.comprobante;
-          break;
-        } else if (item.estado === 'NO AUTORIZADO') {
-          invoice.estado = 'NO_AUTORIZADO';
-          if (item.mensajes?.mensaje) {
-            const ms = Array.isArray(item.mensajes.mensaje)
-              ? item.mensajes.mensaje
-              : [item.mensajes.mensaje];
-            invoice.mensajesSri = ms.map((m) => ({
-              identificador: m.identificador,
-              mensaje: m.mensaje,
-              informacionAdicional: m.informacionAdicional,
-              tipo: m.tipo,
-            }));
-          }
-          break;
-        }
-      }
-      invoice.estado = 'EN_PROCESO';
-    }
-    await invoice.save();
-
-    res.status(201).json(invoice);
+    return res
+      .status(500)
+      .json({ message: invoice.errorUltimo || 'Error al emitir la factura', invoice });
   } catch (error) {
     if (invoice) {
       invoice.estado = 'ERROR';
@@ -459,29 +428,83 @@ exports.getRidePdf = async (req, res) => {
   }
 };
 
+/**
+ * Reintenta manualmente UNA factura. A diferencia del job, fuerza el reintento
+ * ignorando el backoff, y cubre todo el ciclo: reenvía a recepción si quedó
+ * EN_COLA/ERROR (SRI caído) y consulta autorización si ya fue recibida.
+ */
 exports.retry = async (req, res) => {
   try {
     const invoice = await Invoice.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!invoice) return res.status(404).json({ message: 'Factura no encontrada' });
-    if (!['ERROR', 'DEVUELTA', 'EN_PROCESO'].includes(invoice.estado)) {
+    if (['AUTORIZADO', 'ANULADA'].includes(invoice.estado)) {
       return res
         .status(400)
-        .json({ message: `No se puede reintentar en estado ${invoice.estado}` });
+        .json({ message: `La factura ya está ${invoice.estado.toLowerCase()}` });
     }
-    const { config } = await loadForSigning(req.clinicId);
-    const aut = await autorizarComprobante(invoice.claveAcceso, config.ambiente);
-    const list = aut?.autorizaciones?.autorizacion;
-    const item = Array.isArray(list) ? list[0] : list;
-    if (item?.estado === 'AUTORIZADO') {
-      invoice.estado = 'AUTORIZADO';
-      invoice.numeroAutorizacion = item.numeroAutorizacion;
-      invoice.fechaAutorizacion = item.fechaAutorizacion;
-      invoice.xmlAutorizado = item.comprobante;
-      await invoice.save();
-    }
-    res.json(invoice);
+    await processInvoice(invoice, { force: true, authAttempts: 2, authDelayMs: 1200 });
+    const messages = {
+      AUTORIZADO: 'Factura autorizada por el SRI',
+      RECIBIDA: 'Factura recibida por el SRI; pendiente de autorización',
+      EN_PROCESO: 'El SRI aún la está procesando; se consultará de nuevo automáticamente',
+      EN_COLA: 'El SRI sigue sin responder; la factura queda en cola para reintento',
+      DEVUELTA: invoice.errorUltimo || 'El SRI devolvió el comprobante',
+      NO_AUTORIZADO: invoice.errorUltimo || 'El SRI no autorizó el comprobante',
+      ERROR: invoice.errorUltimo || 'Error al reintentar',
+    };
+    res.json({ message: messages[invoice.estado] || 'Reintento procesado', invoice });
   } catch (error) {
     res.status(500).json({ message: 'Error al reintentar', error: error.message });
+  }
+};
+
+/**
+ * Reintenta TODAS las facturas pendientes de la clínica (botón "Reintentar
+ * autorización"). Fuerza el reintento ignorando el backoff.
+ */
+exports.retryPending = async (req, res) => {
+  try {
+    const result = await runInvoiceRetryQueue({
+      clinicId: req.clinicId,
+      force: true,
+      limit: 100,
+    });
+    res.json({
+      message: result.found
+        ? `Se procesaron ${result.processed} factura(s) pendiente(s); ${result.autorizadas} autorizada(s).`
+        : 'No hay facturas pendientes por reintentar.',
+      ...result,
+    });
+  } catch (error) {
+    res
+      .status(500)
+      .json({ message: 'Error al reintentar pendientes', error: error.message });
+  }
+};
+
+/**
+ * Estado de disponibilidad del SRI + conteo de facturas pendientes de la clínica.
+ * Alimenta el banner de la pantalla de facturación.
+ */
+exports.sriStatus = async (req, res) => {
+  try {
+    const config = await InvoicingConfig.findOne({ clinic: req.clinicId });
+    const ambiente = config?.ambiente || '1';
+    const [disponible, pendientes] = await Promise.all([
+      checkSriAvailability(ambiente),
+      Invoice.countDocuments({
+        clinic: req.clinicId,
+        estado: { $in: ['EN_COLA', 'RECIBIDA', 'EN_PROCESO', 'ERROR'] },
+      }),
+    ]);
+    res.json({
+      disponible,
+      ambiente,
+      pendientes,
+      checkedAt: new Date(),
+    });
+  } catch (error) {
+    res.json({ disponible: false, pendientes: 0, error: error.message, checkedAt: new Date() });
   }
 };
 
