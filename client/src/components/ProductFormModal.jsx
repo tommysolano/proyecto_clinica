@@ -5,7 +5,7 @@ import Modal from './Modal';
 import NumericInput from './NumericInput';
 import SearchableSelect from './SearchableSelect';
 import { HiOutlineTrash } from 'react-icons/hi2';
-import { PRODUCT_TYPES, PRODUCT_CATEGORIES } from '../constants/productCategories';
+import { PRODUCT_TYPES } from '../constants/productCategories';
 
 const types = PRODUCT_TYPES;
 
@@ -175,11 +175,13 @@ export default function ProductFormModal({
         return; // el finally restablece saving
       }
       // La categoría contable de inventario es la fuente principal solo para físicos.
-      // Servicios/programas no la usan (se envía null). `categoria` queda como legacy.
+      // Servicios/programas no llevan categoría de NINGÚN tipo (son solo para insumos):
+      // se envían ambas vacías para limpiar también datos antiguos.
       const inventoryCategory = !unlimited ? (productForm.inventoryCategory || null) : null;
       const data = {
         ...productForm,
         inventoryCategory,
+        categoria: unlimited ? '' : (productForm.categoria || ''),
         // Código vacío → el backend lo genera automáticamente.
         code: autoCode ? '' : (productForm.code || '').trim(),
         purchasePrice: isService ? 0 : parseFloat(productForm.purchasePrice) || 0,
@@ -326,22 +328,9 @@ export default function ProductFormModal({
                 </p>
               )}
             </div>
-          ) : (
-            <div className="sm:col-span-2">
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">Categoría</label>
-              <SearchableSelect
-                options={PRODUCT_CATEGORIES}
-                value={productForm.categoria}
-                onChange={(v) => setProductForm({ ...productForm, categoria: v })}
-                getLabel={(o) => o}
-                getValue={(o) => o}
-                placeholder="— Sin categoría —"
-                searchPlaceholder="Buscar categoría…"
-                allowClear
-              />
-              <p className="text-[11px] text-slate-400 mt-1">Los servicios y programas no usan categoría contable de inventario.</p>
-            </div>
-          )}
+          ) : null}
+          {/* Servicios y programas NO llevan categoría (ni comercial ni contable):
+              las categorías son solo para insumos físicos de inventario. */}
           <div className="sm:col-span-2">
             <label className="block text-sm font-medium text-slate-700 mb-1.5">Nombre *</label>
             <input value={productForm.name} onChange={(e) => setProductForm({...productForm, name: e.target.value})} required className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
