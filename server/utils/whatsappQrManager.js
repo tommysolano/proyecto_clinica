@@ -225,11 +225,21 @@ async function connect(accountId, { userId } = {}) {
   });
 
   // Mensaje entrante → mismo pipeline de ingesta que el webhook Cloud API.
+  // Tipos con contenido real de un humano; el resto (e2e_notification al
+  // renegociar cifrado, notification_template, ciphertext, llamadas, etc.)
+  // NO debe crear conversaciones: al vincular una sesión nueva, WhatsApp
+  // renegocia claves con muchos contactos y llegaba un "mensaje" vacío por
+  // cada uno (chats fantasma "Sin mensajes" con el LID como nombre).
+  const CONTENT_TYPES = ['chat', 'image', 'video', 'audio', 'ptt', 'document', 'sticker', 'location', 'vcard', 'multi_vcard'];
   client.on('message', async (msg) => {
     try {
       if (msg.fromMe || msg.isStatus) return;
-      if (typeof msg.from === 'string' && msg.from.endsWith('@g.us')) return; // ignora grupos
-      const phone = String(msg.from || '').replace(/@c\.us$/, '').replace(/[^\d]/g, '');
+      const from = typeof msg.from === 'string' ? msg.from : '';
+      // Solo chats directos: personas (@c.us) o contactos con número oculto (@lid).
+      // Fuera grupos (@g.us), canales (@newsletter) y listas (@broadcast).
+      if (!/@(c\.us|lid)$/.test(from)) return;
+      if (!CONTENT_TYPES.includes(msg.type)) return;
+      const phone = from.replace(/@.*$/, '').replace(/[^\d]/g, '');
       if (!phone) return;
 
       let media = null;
@@ -245,6 +255,7 @@ async function connect(accountId, { userId } = {}) {
           }
         } catch { /* media no disponible */ }
       }
+      if (!String(msg.body || '').trim() && !media) return; // nada que mostrar
 
       const account2 = await WhatsappAccount.findById(accountId);
       const clinicId = await require('./callCenterClinic').resolveCallCenterClinicId();
@@ -256,7 +267,9 @@ async function connect(accountId, { userId } = {}) {
         channel: 'whatsapp',
         account: account2,
         phone,
-        externalUserId: phone,
+        // JID completo (…@c.us / …@lid): imprescindible para RESPONDER a
+        // contactos con número oculto (a un LID no se le puede escribir @c.us).
+        externalUserId: from,
         body: msg.body || '',
         media,
         contactName: msg._data?.notifyName || '',
@@ -313,6 +326,16 @@ async function disconnect(accountId) {
   return { ok: true };
 }
 
+// sendMessage de whatsapp-web.js puede COLGARSE indefinidamente (p.ej. chatId
+// inexistente): sin límite, la petición HTTP moría en 504 de nginx y el
+// mensaje quedaba "en cola" para siempre.
+function withTimeout(promise, ms, label) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => setTimeout(() => reject(new Error(label)), ms).unref?.()),
+  ]);
+}
+
 /** Envía texto por la sesión QR. Devuelve un shape compatible con messaging. */
 async function sendText(account, to, body) {
   const key = String(account._id);
@@ -320,10 +343,31 @@ async function sendText(account, to, body) {
   if (!entry || !entry.client || entry.status !== 'connected') {
     return { ok: false, errorCode: 'qr_not_connected', error: 'El número QR no está conectado' };
   }
-  const phone = String(to || '').replace(/[^\d]/g, '');
-  if (!phone) return { ok: false, error: 'Teléfono inválido' };
   try {
-    const sent = await entry.client.sendMessage(`${phone}@c.us`, String(body || '').slice(0, 4096));
+    // Destino: JID completo si viene (…@c.us / …@lid, contactos con número
+    // oculto); si solo hay dígitos, resolver el JID real con getNumberId —
+    // valida que el número exista en WhatsApp y devuelve @c.us o @lid según
+    // corresponda (un LID crudo enviado como @c.us se colgaba sin error).
+    let chatId = String(to || '').trim();
+    if (!chatId) return { ok: false, error: 'Destino vacío' };
+    if (!chatId.includes('@')) {
+      const digits = chatId.replace(/[^\d]/g, '');
+      if (!digits) return { ok: false, error: 'Teléfono inválido' };
+      const numberId = await withTimeout(
+        entry.client.getNumberId(digits),
+        15000,
+        'Tiempo agotado verificando el número en WhatsApp'
+      ).catch((e) => { throw new Error(e.message); });
+      if (!numberId) {
+        return { ok: false, errorCode: 'qr_invalid_number', error: `El número ${digits} no está en WhatsApp` };
+      }
+      chatId = numberId._serialized;
+    }
+    const sent = await withTimeout(
+      entry.client.sendMessage(chatId, String(body || '').slice(0, 4096)),
+      30000,
+      'Tiempo agotado enviando el mensaje (la sesión puede estar inestable)'
+    );
     return { ok: true, data: { messages: [{ id: sent?.id?._serialized || '' }] } };
   } catch (e) {
     return { ok: false, errorCode: 'qr_send_error', error: e.message };

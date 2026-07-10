@@ -1518,6 +1518,12 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   } else if (!conv.patient && patient) {
     conv.patient = patient._id;
   }
+  // Mantener el identificador externo al día: para números QR ahora llega el JID
+  // completo de WhatsApp (…@c.us / …@lid), necesario para poder responder a
+  // contactos con número oculto. Cura conversaciones creadas solo con dígitos.
+  if (externalUserId && conv.externalUserId !== externalUserId) {
+    conv.externalUserId = externalUserId;
+  }
   // Si llega atribución (click-to-WhatsApp) y la conversación aún no la tiene, guárdala.
   if (referral && referral.adId && !conv.attribution?.adId) {
     conv.attribution = referral;

@@ -260,7 +260,11 @@ async function sendToProvider({ clinicId, channel, conv, body, templateInfo, acc
     // (renderizando la plantilla a texto si fuera necesario).
     if (account.connectionType === 'qr') {
       const text = body || (templateInfo ? await renderTemplateText(templateInfo) : '');
-      return gateway.sendText(account, conv.phone, text);
+      // Contactos con "número oculto" (LID de WhatsApp): conv.phone son los dígitos
+      // del LID, NO un teléfono; responder a <lid>@c.us cuelga para siempre. Se
+      // responde al JID completo (…@lid / …@c.us) guardado en externalUserId.
+      const dest = String(conv.externalUserId || '').includes('@') ? conv.externalUserId : conv.phone;
+      return gateway.sendText(account, dest, text);
     }
     return templateInfo
       ? gateway.sendTemplate(
