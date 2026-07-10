@@ -12,6 +12,9 @@ const signToken = (payload) =>
 
 const buildPublicUser = (user, activeClinic = null, role = null) => ({
   id: user._id,
+  // También como _id: el frontend usa user._id en varios sitios (SocketContext,
+  // Chats, Comisiones); sin este campo el socket nunca se conectaba.
+  _id: user._id,
   name: user.name,
   email: user.email,
   isSuperAdmin: !!user.isSuperAdmin,

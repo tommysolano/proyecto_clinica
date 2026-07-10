@@ -14,9 +14,15 @@ export function SocketProvider({ children }) {
   const socketRef = useRef(null);
   const [connected, setConnected] = useState(false);
 
+  // OJO: /auth/me devuelve el usuario con `id` (y ahora también `_id`). La
+  // dependencia del efecto era `user?._id`, que no existía: quedaba undefined
+  // siempre, el efecto no se re-ejecutaba al llegar el usuario y el socket NO
+  // se conectaba nunca (sin error alguno). Usar un id que exista de verdad.
+  const userId = user?.id || user?._id || null;
+
   useEffect(() => {
     const token = localStorage.getItem('token');
-    if (!user || !token) return undefined;
+    if (!userId || !token) return undefined;
 
     // En producción VITE_API_URL apunta al backend de Render.
     // En dev Vite proxea /socket.io al backend (vite.config.js).
@@ -39,7 +45,7 @@ export function SocketProvider({ children }) {
       socketRef.current = null;
       setConnected(false);
     };
-  }, [user?._id]);
+  }, [userId]);
 
   // Cuando cambia la clínica activa, avisar al server para que mueva la room.
   useEffect(() => {
