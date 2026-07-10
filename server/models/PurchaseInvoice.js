@@ -171,6 +171,15 @@ const purchaseInvoiceSchema = new mongoose.Schema(
     strictAccounts: { type: Boolean, default: false },
     importedFromTxt: { type: Boolean, default: false },
     importedFromXml: { type: Boolean, default: false },
+    // Totales ORIGINALES del comprobante según el SRI (snapshot al importar TXT/XML).
+    // Nunca se recalculan: sirven para comparar contra lo editado al contabilizar.
+    sriTotals: {
+      subtotal: { type: Number, default: null },
+      iva: { type: Number, default: null },
+      total: { type: Number, default: null },
+    },
+    // El usuario confirmó contabilizar con totales distintos a los del SRI (auditoría).
+    sriMismatchAccepted: { type: Boolean, default: false },
     // Datos crudos del XML del SRI para auditoría/verificación
     xmlClaveAcceso: { type: String, default: '' },
     authorizedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },

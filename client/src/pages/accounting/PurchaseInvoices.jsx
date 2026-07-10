@@ -113,6 +113,8 @@ export default function PurchaseInvoices() {
   const [journalInv, setJournalInv] = useState(null); // factura cuyo asiento se edita
   const [payInv, setPayInv] = useState(null); // factura a pagar
   const [payForm, setPayForm] = useState({ method: 'TRANSFERENCIA', bankAccount: '', voucherNumber: '', checkNumber: '', amount: 0, date: today() });
+  const [formError, setFormError] = useState(''); // error visible DENTRO del modal (no solo toast)
+  const [sriMismatch, setSriMismatch] = useState(null); // { sri, entered, diff, payload } → modal de confirmación
 
   // Solo la respuesta de la última búsqueda actualiza la lista.
   const reqRef = useRef(0);
@@ -396,83 +398,114 @@ export default function PurchaseInvoices() {
     return { s0, s12, s15, sNo, sEx, subtotal, subtotalConIva: s12 + s15, iva: +iva.toFixed(2), discount, total: +(subtotal + iva).toFixed(2), retTotal, balance: +(subtotal + iva - retTotal).toFixed(2) };
   })();
 
+  // Error de validación/contabilización: visible DENTRO del modal (banner) además del toast.
+  const fail = (msg) => { setFormError(msg); toast.error(msg); return undefined; };
+
+  // Mapea las líneas del form al payload del backend (solo datos que el servidor espera;
+  // de las retenciones solo va la SELECCIÓN regla/código: el backend recalcula).
+  const buildItemsPayload = (cleanItems) => cleanItems.map((it) => {
+    const retSel = lineRetList(it)
+      .filter((r) => r.rule || r.code)
+      .map((r) => ({ rule: r.rule || null, code: r.code, type: r.type }));
+    const base = {
+      lineType: it.lineType,
+      description: it.description || (it.lineType === 'ACTIVO_FIJO' ? (it.fixedAsset?.name || '') : ''),
+      quantity: Number(it.quantity) || (it.lineType === 'INVENTARIO' ? 0 : 1),
+      unitPrice: Number(it.unitPrice) || 0,
+      discount: Number(it.discount) || 0,
+      ivaRate: it.ivaRate,
+      costCenter: it.costCenter || null,
+      retentions: retSel,
+    };
+    if (it.lineType === 'INVENTARIO') {
+      base.product = it.product || null;
+      base.inventoryCategory = it.inventoryCategory || null;
+      base.warehouse = it.warehouse || null;
+      base.lot = it.lot || '';
+      base.expiryDate = it.expiryDate || null;
+    } else if (it.lineType === 'ACTIVO_FIJO') {
+      const fa = it.fixedAsset || {};
+      // Solo datos DESCRIPTIVOS: las cuentas/parámetros contables los define la
+      // categoría (el backend los ignora si se envían).
+      base.fixedAsset = {
+        category: fa.category || null, assetType: fa.assetType || null,
+        code: fa.code || '', name: fa.name || it.description || '', serial: fa.serial || '',
+        location: fa.location || '', locationClinic: fa.locationClinic || null, responsible: fa.responsible || null,
+        acquisitionDate: fa.acquisitionDate || null, startDate: fa.startDate || null,
+      };
+    } else { // GASTO
+      base.account = it.account || null;
+      base.accountSplits = (it.accountSplits || []).map((s) => ({ account: s.account || null, amount: Number(s.amount) || 0, description: s.description || '' }));
+    }
+    return base;
+  });
+
+  // Envía la factura al endpoint que corresponde según el modo del modal.
+  const sendInvoice = async (payload) => {
+    if (authorizeId) return api.post(`/purchase-invoices/${authorizeId}/authorize`, payload);
+    if (editId) return api.put(`/purchase-invoices/${editId}`, payload);
+    return api.post('/purchase-invoices', payload);
+  };
+
+  const closeForm = () => { setShow(false); setForm(EMPTY); setAuthorizeId(null); setEditId(null); setFormError(''); setSriMismatch(null); };
+
   const submit = async (e) => {
     e.preventDefault();
-    if (!form.supplier) return toast.error('Selecciona un proveedor');
+    setFormError('');
+    if (!form.supplier) return fail('Selecciona un proveedor');
     // El N° de comprobante ahora es un solo campo (001-001-000000123): exige el secuencial
     // salvo que la factura ya traiga una serie (documentos importados/editados).
-    if (!form.serie && !(form.secuencial || '').trim()) return toast.error('Ingresa el N° de comprobante (formato 001-001-000000123)');
+    if (!form.serie && !(form.secuencial || '').trim()) return fail('Ingresa el N° de comprobante (formato 001-001-000000123)');
     // Ignora líneas placeholder totalmente vacías (p.ej. la línea inicial de una sección
     // recién activada que no se llegó a usar) para no bloquear el guardado.
     const cleanItems = form.items.filter(lineHasData);
-    if (!cleanItems.length) return toast.error('Agrega al menos una línea (producto, gasto o activo fijo)');
+    if (!cleanItems.length) return fail('Agrega al menos una línea (producto, gasto o activo fijo)');
     for (const it of cleanItems) {
-      if (it.lineType === 'INVENTARIO' && !it.product) return toast.error('En productos/inventario, selecciona el producto en cada línea');
-      if (it.lineType === 'ACTIVO_FIJO' && !(it.fixedAsset?.category)) return toast.error('En activos fijos, selecciona la categoría de activo fijo');
-      if (it.lineType === 'ACTIVO_FIJO' && !(it.fixedAsset?.name || it.description)) return toast.error('El activo fijo necesita un nombre');
+      if (it.lineType === 'INVENTARIO' && !it.product) return fail('En productos/inventario, selecciona el producto en cada línea');
+      if (it.lineType === 'ACTIVO_FIJO' && !(it.fixedAsset?.category)) return fail('En activos fijos, selecciona la categoría de activo fijo');
+      if (it.lineType === 'ACTIVO_FIJO' && !(it.fixedAsset?.name || it.description)) return fail('El activo fijo necesita un nombre');
       if (it.lineType === 'GASTO') {
         const hasSplits = (it.accountSplits || []).length > 0;
-        if (!it.account && !hasSplits) return toast.error('Cada gasto necesita una cuenta contable (o una distribución)');
+        if (!it.account && !hasSplits) return fail(`Selecciona la cuenta contable de gasto para la línea "${it.description || '(sin descripción)'}"`);
         if (hasSplits) {
           const base = lineBase(it);
           const sum = +(it.accountSplits.reduce((s, sp) => s + (+sp.amount || 0), 0)).toFixed(2);
-          if (Math.abs(sum - base) > 0.01) return toast.error(`La distribución de "${it.description || 'gasto'}" no cuadra (${fmt(sum)} ≠ ${fmt(base)})`);
-          if (it.accountSplits.some((sp) => !sp.account)) return toast.error('Hay cuentas sin seleccionar en la distribución');
+          if (Math.abs(sum - base) > 0.01) return fail(`La distribución de "${it.description || 'gasto'}" no cuadra (${fmt(sum)} ≠ ${fmt(base)})`);
+          if (it.accountSplits.some((sp) => !sp.account)) return fail('Hay cuentas sin seleccionar en la distribución');
         }
       }
     }
     try {
       const serie = form.serie || `${form.estab}-${form.ptoEmi}-${form.secuencial}`;
-      const items = cleanItems.map((it) => {
-        // Solo se envía la SELECCIÓN de retenciones (regla/código); el backend recalcula.
-        const retSel = lineRetList(it)
-          .filter((r) => r.rule || r.code)
-          .map((r) => ({ rule: r.rule || null, code: r.code, type: r.type }));
-        const base = {
-          lineType: it.lineType,
-          description: it.description || (it.lineType === 'ACTIVO_FIJO' ? (it.fixedAsset?.name || '') : ''),
-          quantity: Number(it.quantity) || (it.lineType === 'INVENTARIO' ? 0 : 1),
-          unitPrice: Number(it.unitPrice) || 0,
-          discount: Number(it.discount) || 0,
-          ivaRate: it.ivaRate,
-          costCenter: it.costCenter || null,
-          retentions: retSel,
-        };
-        if (it.lineType === 'INVENTARIO') {
-          base.product = it.product || null;
-          base.inventoryCategory = it.inventoryCategory || null;
-          base.warehouse = it.warehouse || null;
-          base.lot = it.lot || '';
-          base.expiryDate = it.expiryDate || null;
-        } else if (it.lineType === 'ACTIVO_FIJO') {
-          const fa = it.fixedAsset || {};
-          // Solo datos DESCRIPTIVOS: las cuentas/parámetros contables los define la
-          // categoría (el backend los ignora si se envían).
-          base.fixedAsset = {
-            category: fa.category || null, assetType: fa.assetType || null,
-            code: fa.code || '', name: fa.name || it.description || '', serial: fa.serial || '',
-            location: fa.location || '', locationClinic: fa.locationClinic || null, responsible: fa.responsible || null,
-            acquisitionDate: fa.acquisitionDate || null, startDate: fa.startDate || null,
-          };
-        } else { // GASTO
-          base.account = it.account || null;
-          base.accountSplits = (it.accountSplits || []).map((s) => ({ account: s.account || null, amount: Number(s.amount) || 0, description: s.description || '' }));
-        }
-        return base;
-      });
+      const items = buildItemsPayload(cleanItems);
       const payload = { ...form, items, serie, costCenter: form.costCenter || null, fechaVencimiento: form.fechaVencimiento || null, fechaEmision: new Date(form.fechaEmision) };
-      if (authorizeId) {
-        await api.post(`/purchase-invoices/${authorizeId}/authorize`, payload);
-        toast.success('Factura contabilizada');
-      } else if (editId) {
-        await api.put(`/purchase-invoices/${editId}`, payload);
-        toast.success('Cambios guardados');
-      } else {
-        await api.post('/purchase-invoices', payload);
-        toast.success('Registrada');
-      }
-      setShow(false); setForm(EMPTY); setAuthorizeId(null); setEditId(null); load();
-    } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
+      await sendInvoice(payload);
+      toast.success(authorizeId ? 'Factura contabilizada' : editId ? 'Cambios guardados' : 'Registrada');
+      closeForm(); load();
+    } catch (err) {
+      const data = err.response?.data;
+      // Los totales editados no coinciden con los del SRI: modal de verificación
+      // (no bloquea; el usuario puede confirmar bajo su responsabilidad).
+      if (data?.code === 'SRI_MISMATCH') { setSriMismatch({ sri: data.sri, entered: data.entered, diff: data.diff }); return; }
+      fail(data?.message || 'Error');
+    }
+  };
+
+  // El usuario revisó la comparación contra el SRI y decide continuar: se reenvía con
+  // la aceptación explícita (queda marcada en la factura y en el log de auditoría).
+  const confirmSriMismatch = async () => {
+    try {
+      const serie = form.serie || `${form.estab}-${form.ptoEmi}-${form.secuencial}`;
+      const cleanItems = form.items.filter(lineHasData);
+      // Reusa el mismo payload del submit (recalculado sobre el estado actual del form).
+      const items = buildItemsPayload(cleanItems);
+      await sendInvoice({ ...form, items, serie, costCenter: form.costCenter || null, fechaVencimiento: form.fechaVencimiento || null, fechaEmision: new Date(form.fechaEmision), acceptSriMismatch: true });
+      toast.success('Factura contabilizada (diferencia con SRI aceptada y auditada)');
+      closeForm(); load();
+    } catch (err) {
+      setSriMismatch(null);
+      fail(err.response?.data?.message || 'Error');
+    }
   };
 
   const loadIntoForm = async (p, mode) => {
@@ -751,9 +784,17 @@ export default function PurchaseInvoices() {
         </div>
       </div>
 
-      <Modal isOpen={show} onClose={() => { setShow(false); setAuthorizeId(null); setEditId(null); }} title={authorizeId ? 'Verificar y contabilizar factura' : editId ? 'Editar factura de compra' : 'Nueva factura de compra'} size="2xl">
+      <Modal isOpen={show} onClose={closeForm} title={authorizeId ? 'Verificar y contabilizar factura' : editId ? 'Editar factura de compra' : 'Nueva factura de compra'} size="2xl">
         <form onSubmit={submit} className="space-y-4">
+          {formError && (
+            <div className="sticky top-16 z-20 bg-rose-50 border border-rose-300 rounded-xl p-3 flex items-start gap-2 text-rose-700 shadow-md shadow-rose-100">
+              <HiOutlineExclamationTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+              <div className="text-sm font-semibold flex-1">{formError}</div>
+              <button type="button" onClick={() => setFormError('')} aria-label="Cerrar error" className="shrink-0 text-rose-400 hover:text-rose-600"><HiOutlineXMark className="w-4 h-4" /></button>
+            </div>
+          )}
           {authorizeId && <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2">Factura cargada automáticamente. Clasifica cada renglón (Productos, Gastos o Activos fijos) y verifica los datos antes de contabilizar.</div>}
+          <SriCompareBanner sri={form.sriTotals} totals={totals} ice={+form.ice || 0} propina={+form.propina || 0} />
 
           {/* ── 1. Datos generales ── */}
           <SectionCard title="Datos de la factura" icon={HiOutlineDocumentText}>
@@ -1056,8 +1097,42 @@ export default function PurchaseInvoices() {
             </div>
           </div>
 
-          <div className="flex justify-end gap-2"><button type="button" onClick={() => { setShow(false); setAuthorizeId(null); setEditId(null); }} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">{authorizeId ? 'Contabilizar' : editId ? 'Guardar cambios' : 'Registrar'}</button></div>
+          <div className="flex justify-end gap-2"><button type="button" onClick={closeForm} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">{authorizeId ? 'Contabilizar' : editId ? 'Guardar cambios' : 'Registrar'}</button></div>
         </form>
+      </Modal>
+
+      {/* Verificación contra el SRI: los totales editados no coinciden con el comprobante.
+          Se muestra ENCIMA del modal de la factura; permite volver a revisar o continuar
+          bajo responsabilidad (queda auditado). */}
+      <Modal isOpen={!!sriMismatch} onClose={() => setSriMismatch(null)} title="Los valores no coinciden con el SRI" size="md">
+        {sriMismatch && (
+          <div className="space-y-3">
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-start gap-2 text-amber-800">
+              <HiOutlineExclamationTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+              <p className="text-sm">Los valores ingresados no coinciden con los reportados por el SRI para este comprobante. <b>Revise antes de contabilizar.</b></p>
+            </div>
+            <table className="w-full text-sm">
+              <thead className="bg-slate-100 text-xs uppercase text-slate-500">
+                <tr><th className="px-3 py-2 text-left">Concepto</th><th className="px-3 py-2 text-right">SRI</th><th className="px-3 py-2 text-right">Ingresado</th><th className="px-3 py-2 text-right">Diferencia</th></tr>
+              </thead>
+              <tbody>
+                {[['Subtotal', 'subtotal'], ['IVA', 'iva'], ['Total', 'total']].map(([label, k]) => (
+                  <tr key={k} className={`border-t ${Math.abs(sriMismatch.diff?.[k] || 0) > 0.01 ? 'bg-rose-50' : ''}`}>
+                    <td className="px-3 py-2 font-medium text-slate-700">{label}</td>
+                    <td className="px-3 py-2 text-right font-mono">${fmt(sriMismatch.sri?.[k])}</td>
+                    <td className="px-3 py-2 text-right font-mono">${fmt(sriMismatch.entered?.[k])}</td>
+                    <td className={`px-3 py-2 text-right font-mono font-semibold ${Math.abs(sriMismatch.diff?.[k] || 0) > 0.01 ? 'text-rose-600' : 'text-slate-400'}`}>{sriMismatch.diff?.[k] > 0 ? '+' : ''}{fmt(sriMismatch.diff?.[k])}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <p className="text-xs text-slate-500">Si continúa, la factura se contabilizará con los valores ingresados y quedará registrado en la auditoría que usted aceptó la diferencia.</p>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setSriMismatch(null)} className="px-4 py-2 bg-slate-200 rounded-xl">Volver a revisar</button>
+              <button type="button" onClick={confirmSriMismatch} className="px-4 py-2 bg-amber-600 text-white rounded-xl shadow-sm shadow-amber-600/20">Continuar bajo mi responsabilidad</button>
+            </div>
+          </div>
+        )}
       </Modal>
 
       <Modal isOpen={showImport} onClose={() => setShowImport(false)} title="Importar comprobantes del SRI" size="lg">
@@ -1138,6 +1213,42 @@ export default function PurchaseInvoices() {
 }
 
 // Bloque/sección del formulario con encabezado y botón opcional "+ Agregar".
+/**
+ * Aviso en vivo para facturas importadas del SRI (TXT/XML): compara los totales del
+ * comprobante contra lo que el usuario tiene EN PANTALLA. Verde si cuadra; ámbar con
+ * el detalle de cada diferencia si no (la verificación dura la hace el backend al
+ * contabilizar, esto es solo para que el usuario lo vea venir).
+ */
+function SriCompareBanner({ sri, totals, ice = 0, propina = 0 }) {
+  if (!sri || sri.total == null) return null;
+  const entered = {
+    subtotal: +(totals.subtotal || 0).toFixed(2),
+    iva: +(totals.iva || 0).toFixed(2),
+    total: +((totals.subtotal || 0) + (totals.iva || 0) + ice + propina).toFixed(2),
+  };
+  const rows = [['Subtotal', 'subtotal'], ['IVA', 'iva'], ['Total', 'total']]
+    .map(([label, k]) => ({ label, sri: +(sri[k] || 0).toFixed(2), entered: entered[k], diff: +(entered[k] - (sri[k] || 0)).toFixed(2) }));
+  const mismatched = rows.filter((r) => Math.abs(r.diff) > 0.01);
+  if (!mismatched.length) {
+    return (
+      <div className="bg-emerald-50 border border-emerald-200 text-emerald-700 text-xs rounded-lg px-3 py-2 flex items-center gap-2">
+        <HiOutlineCheck className="w-4 h-4 shrink-0" /> Los valores coinciden con el comprobante del SRI (Subtotal ${fmt(sri.subtotal)} · IVA ${fmt(sri.iva)} · Total ${fmt(sri.total)}).
+      </div>
+    );
+  }
+  return (
+    <div className="bg-amber-50 border border-amber-300 text-amber-800 text-xs rounded-lg px-3 py-2">
+      <div className="flex items-center gap-2 font-semibold"><HiOutlineExclamationTriangle className="w-4 h-4 shrink-0" /> Los valores en pantalla no coinciden con el comprobante del SRI:</div>
+      <ul className="mt-1 ml-6 list-disc space-y-0.5">
+        {mismatched.map((r) => (
+          <li key={r.label}><b>{r.label}</b>: SRI ${fmt(r.sri)} / Ingresado ${fmt(r.entered)} (diferencia {r.diff > 0 ? '+' : ''}{fmt(r.diff)})</li>
+        ))}
+      </ul>
+      <p className="mt-1 ml-6 text-amber-700/80">Al contabilizar se le pedirá confirmar la diferencia (queda en auditoría).</p>
+    </div>
+  );
+}
+
 function SectionCard({ title, icon: Icon, children, onAdd, addLabel, count }) {
   return (
     <div className="border border-slate-200 rounded-xl overflow-hidden">

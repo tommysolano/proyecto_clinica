@@ -41,15 +41,23 @@ async function seedClinic({ date = new Date() } = {}) {
 }
 
 /**
- * Categoría de inventario por defecto (find-or-create) con cuenta de activo = 1.1.04.01.
- * Refleja la regla nueva: un producto físico de inventario debe tener categoría contable
- * con `assetAccount` (las compras nuevas resuelven la cuenta desde ahí, sin fallback).
+ * Categoría de inventario por defecto (find-or-create) COMPLETA: cuenta de activo
+ * (1.1.04.01), de costo (5.1.01) y de ingreso (4.1.02). Refleja la regla nueva: al
+ * contabilizar una compra de inventario, la categoría contable del producto debe tener
+ * las tres cuentas configuradas (sin fallback).
  */
 async function defaultInventoryCategory(clinicId) {
   const existing = await InventoryCategory.findOne({ clinic: clinicId, code: 'INV-DEF' });
   if (existing) return existing;
-  const invAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '1.1.04.01' });
-  return InventoryCategory.create({ clinic: clinicId, code: 'INV-DEF', name: 'Inventario (test)', kind: 'INVENTARIO', assetAccount: invAcc?._id || null });
+  const [invAcc, costAcc, incAcc] = await Promise.all([
+    ChartOfAccount.findOne({ clinic: clinicId, code: '1.1.04.01' }),
+    ChartOfAccount.findOne({ clinic: clinicId, code: '5.1.01' }),
+    ChartOfAccount.findOne({ clinic: clinicId, code: '4.1.02' }),
+  ]);
+  return InventoryCategory.create({
+    clinic: clinicId, code: 'INV-DEF', name: 'Inventario (test)', kind: 'INVENTARIO',
+    assetAccount: invAcc?._id || null, expenseAccount: costAcc?._id || null, incomeAccount: incAcc?._id || null,
+  });
 }
 
 async function makeProduct(clinicId, overrides = {}) {

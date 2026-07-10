@@ -31,10 +31,12 @@ async function setup() {
   const depAcc = await ChartOfAccount.create({ clinic: clinicId, code: '5.2.99', name: 'Gasto depreciación (test)', type: 'GASTO', nature: 'DEBITO', allowsMovement: true });
   const accumAcc = await ChartOfAccount.create({ clinic: clinicId, code: '1.2.99.01', name: 'Dep. acumulada (test)', type: 'ACTIVO', nature: 'CREDITO', allowsMovement: true });
   const afCat = await InventoryCategory.create({ clinic: clinicId, code: 'AF-TST', name: 'Equipos médicos', kind: 'ACTIVO_FIJO', assetAccount: assetAcc._id, depreciationAccount: depAcc._id, accumDepreciationAccount: accumAcc._id, depreciationRate: 10, usefulLifeYears: 10, residualPercent: 0, expenseType: 'ADMINISTRATIVO' });
-  // Categoría de INVENTARIO con cuenta de activo = 1.1.04.01 (la cuenta de inventario
-  // sale de aquí; ya no hay fallback genérico en compras nuevas).
+  // Categoría de INVENTARIO completa (activo + costo + ingreso): al contabilizar se
+  // exigen las tres cuentas; la cuenta de inventario sale de aquí (sin fallback genérico).
   const invAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '1.1.04.01' });
-  const invCat = await InventoryCategory.create({ clinic: clinicId, code: 'INV-TST', name: 'Insumos médicos', kind: 'INVENTARIO', assetAccount: invAcc._id });
+  const costAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '5.1.01' });
+  const incAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '4.1.02' });
+  const invCat = await InventoryCategory.create({ clinic: clinicId, code: 'INV-TST', name: 'Insumos médicos', kind: 'INVENTARIO', assetAccount: invAcc._id, expenseAccount: costAcc._id, incomeAccount: incAcc._id });
   return { clinicId, userId, gasto, assetAcc, afCat, invAcc, invCat };
 }
 // Producto de inventario CON categoría contable configurada (caso normal).
@@ -207,7 +209,7 @@ test('compra NUEVA de inventario cuyo producto NO tiene categoría debe fallar',
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: null }); // sin inventoryCategory
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: new Date('2026-06-05'), items: [invLine(prod._id, 10, 5)] }));
   assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
-  assert.match(r.payload.message, /categoría de inventario/i);
+  assert.match(r.payload.message, /categoría contable/i);
   assert.equal(await H.accountBalanceByCode(clinicId, '1.1.04.01'), 0);
 });
 
@@ -334,6 +336,6 @@ test('authorize sigue siendo ESTRICTO: inventario sin categoría no se puede aut
   });
   const r = await H.runController(purchase.authorize, H.mockReq(clinicId, userId, {}, { params: { id: String(inv._id) } }));
   assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
-  assert.match(r.payload.message, /categoría de inventario/i);
+  assert.match(r.payload.message, /categoría contable/i);
   assert.equal((await PurchaseInvoice.findById(inv._id)).status, 'POR_AUTORIZAR', 'sigue pendiente (no se contabilizó)');
 });

@@ -497,7 +497,9 @@ export default function App() {
     <BrowserRouter>
       <AuthProvider>
         <SocketProvider>
-          <Toaster position="top-right" toastOptions={{ duration: 3000 }} />
+          {/* zIndex 20000: los toasts (sobre todo errores) deben verse ENCIMA de los
+              modales (z-9999) y de los dropdowns (z-10001), nunca tapados. */}
+          <Toaster position="top-right" containerStyle={{ zIndex: 20000 }} toastOptions={{ duration: 3000, error: { duration: 6000 } }} />
           <AppRoutes />
         </SocketProvider>
       </AuthProvider>

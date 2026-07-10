@@ -33,7 +33,9 @@ async function accId(clinicId, code) {
 test('el mayor devuelve entryId/sourceModel/sourceRef para navegar al documento origen', async () => {
   const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
   const invAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '1.1.04.01' });
-  const invCat = await InventoryCategory.create({ clinic: clinicId, code: 'INV', name: 'Insumos', kind: 'INVENTARIO', assetAccount: invAcc._id });
+  const costAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '5.1.01' });
+  const incAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '4.1.02' });
+  const invCat = await InventoryCategory.create({ clinic: clinicId, code: 'INV', name: 'Insumos', kind: 'INVENTARIO', assetAccount: invAcc._id, expenseAccount: costAcc._id, incomeAccount: incAcc._id });
   const sup = await H.makeSupplier(clinicId);
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id });
 

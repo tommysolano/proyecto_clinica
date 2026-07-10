@@ -152,24 +152,40 @@ function inferLineType(it) {
  *     → genérico `inventario`. Este fallback SOLO existe para no romper compras que ya
  *     estaban contabilizadas antes de esta regla.
  */
-async function resolveInventoryAccount(it, { clinicId, session, strict }) {
+async function resolveInventoryAccount(it, { clinicId, session, strict, label = '' }) {
+  const who = label ? `"${label}"` : 'de la línea';
   let cat = null;
   if (it.inventoryCategory) {
-    cat = await InventoryCategory.findOne({ _id: it.inventoryCategory, clinic: clinicId }).select('assetAccount').session(session || null);
+    cat = await InventoryCategory.findOne({ _id: it.inventoryCategory, clinic: clinicId }).select('name assetAccount expenseAccount incomeAccount').session(session || null);
   }
   let prod = null;
   if (!cat && it.product) {
     prod = await Product.findOne({ _id: it.product, clinic: clinicId }).select('inventoryCategory inventoryAccount').session(session || null);
     if (prod?.inventoryCategory) {
-      cat = await InventoryCategory.findOne({ _id: prod.inventoryCategory, clinic: clinicId }).select('assetAccount').session(session || null);
+      cat = await InventoryCategory.findOne({ _id: prod.inventoryCategory, clinic: clinicId }).select('name assetAccount expenseAccount incomeAccount').session(session || null);
       if (cat) it.inventoryCategory = cat._id;
     }
   }
   if (cat) {
+    if (strict) {
+      // La categoría debe estar COMPLETA: inventario (activo), costo/gasto e ingreso.
+      const missing = [];
+      if (!cat.assetAccount) missing.push('cuenta de inventario');
+      if (!cat.expenseAccount) missing.push('cuenta de costo/gasto');
+      if (!cat.incomeAccount) missing.push('cuenta de ingreso');
+      if (missing.length) {
+        throw Object.assign(new Error(
+          `La categoría contable "${cat.name}" del producto ${who} no tiene ${missing.join(' ni ')}. `
+          + 'Complétala en Contabilidad → Categorías Inventario/Activos antes de contabilizar.'
+        ), { status: 400 });
+      }
+    }
     if (cat.assetAccount) return cat.assetAccount;
-    if (strict) throw Object.assign(new Error('La categoría de inventario del producto no tiene cuenta de inventario configurada.'), { status: 400 });
   } else if (strict) {
-    throw Object.assign(new Error('El producto no tiene una categoría de inventario configurada.'), { status: 400 });
+    throw Object.assign(new Error(
+      `El producto ${who} no tiene una categoría contable asignada. `
+      + 'Edita el producto en Inventario y asígnale una categoría contable antes de contabilizar la factura.'
+    ), { status: 400 });
   }
   // Fallback legacy (solo documentos existentes / no estricto).
   if (it.account) return it.account;
@@ -203,6 +219,52 @@ async function resolveFixedAssetAccount(it, { clinicId, session, strict }) {
 }
 
 /**
+ * Compara los totales editados de la factura contra los originales del SRI (si la
+ * factura vino de TXT/XML). Diferencias > 1 centavo NO bloquean: exigen confirmación
+ * explícita (`acceptSriMismatch` en el body). Al aceptar, marca la factura y deja un
+ * registro de auditoría con el detalle (quién continuó y con qué diferencia).
+ * Devuelve true si hubo diferencia aceptada (para que el caller la marque).
+ */
+async function guardSriTotals(inv, req, session) {
+  const sri = inv.sriTotals;
+  if (!sri || sri.total == null) return false;
+  const entered = { subtotal: +(inv.subtotal || 0).toFixed(2), iva: +(inv.iva || 0).toFixed(2), total: +(inv.total || 0).toFixed(2) };
+  const original = { subtotal: +(sri.subtotal || 0).toFixed(2), iva: +(sri.iva || 0).toFixed(2), total: +(sri.total || 0).toFixed(2) };
+  const diff = {
+    subtotal: +(entered.subtotal - original.subtotal).toFixed(2),
+    iva: +(entered.iva - original.iva).toFixed(2),
+    total: +(entered.total - original.total).toFixed(2),
+  };
+  const mismatch = Math.abs(diff.subtotal) > 0.01 || Math.abs(diff.iva) > 0.01 || Math.abs(diff.total) > 0.01;
+  if (!mismatch) return false;
+  if (!req.body?.acceptSriMismatch) {
+    throw Object.assign(new Error('Los valores ingresados no coinciden con los reportados por el SRI. Revise antes de contabilizar.'), {
+      status: 409,
+      payload: { code: 'SRI_MISMATCH', sri: original, entered, diff },
+    });
+  }
+  // Confirmado bajo responsabilidad: queda en la factura y en el log de auditoría.
+  const AuditLog = require('../models/AuditLog');
+  await AuditLog.create([{
+    clinic: inv.clinic,
+    user: req.user._id,
+    userName: req.user.name || req.user.email,
+    role: req.user.role,
+    action: 'POST',
+    entity: 'purchase-invoices',
+    entityId: String(inv._id),
+    description: `Contabilizó la compra ${inv.serie || ''} con valores distintos al SRI. `
+      + `SRI: subtotal ${original.subtotal} / IVA ${original.iva} / total ${original.total} — `
+      + `Ingresado: subtotal ${entered.subtotal} / IVA ${entered.iva} / total ${entered.total}`,
+    method: 'POST',
+    path: req.originalUrl || '',
+    after: { sri: original, entered, diff },
+    success: true,
+  }], { session });
+  return true;
+}
+
+/**
  * Clasifica cada línea (infiere `lineType`), valida según su tipo y RESUELVE la cuenta
  * contable de cada línea (la deja en `it.account`) para que la contabilización sea
  * directa. Separa responsabilidades:
@@ -229,11 +291,11 @@ async function classifyAndValidateItems(items, { clinicId, supplier, session, st
       if (Array.isArray(it.accountSplits) && it.accountSplits.length) {
         throw Object.assign(new Error(`La línea de inventario "${label}" no admite distribución de cuentas`), { status: 400 });
       }
-      if (!it.product) throw Object.assign(new Error(`La línea de inventario "${label}" requiere un producto`), { status: 400 });
-      if (!(Number(it.quantity) > 0)) throw Object.assign(new Error(`La línea de inventario "${label}" requiere una cantidad`), { status: 400 });
+      if (!it.product) throw Object.assign(new Error(`Selecciona el producto en la línea de inventario "${label}".`), { status: 400 });
+      if (!(Number(it.quantity) > 0)) throw Object.assign(new Error(`Ingresa la cantidad en la línea de inventario "${label}".`), { status: 400 });
       // Inventario NO acepta cuenta manual en compras nuevas: la cuenta la manda la categoría.
       if (strict) { it.account = null; it.accountSplits = []; }
-      const acc = await resolveInventoryAccount(it, { clinicId, session, strict });
+      const acc = await resolveInventoryAccount(it, { clinicId, session, strict, label });
       it.account = acc || null;
     } else if (it.lineType === 'ACTIVO_FIJO') {
       if (Array.isArray(it.accountSplits) && it.accountSplits.length) {
@@ -269,7 +331,10 @@ async function classifyAndValidateItems(items, { clinicId, supplier, session, st
       // Cuenta por defecto del proveedor: SOLO para gasto sin cuenta ni distribución.
       if (!it.account && !hasSplits && supplier?.defaultExpenseAccount) it.account = supplier.defaultExpenseAccount;
       if (requireGastoAccount && !it.account && !hasSplits) {
-        throw Object.assign(new Error(`La línea de gasto "${label}" requiere una cuenta contable o una distribución de cuentas`), { status: 400 });
+        throw Object.assign(new Error(
+          `Selecciona la cuenta contable de gasto para la línea "${label}" `
+          + '(o distribúyela en varias cuentas con el botón de distribución).'
+        ), { status: 400 });
       }
     }
   }
@@ -738,7 +803,9 @@ exports.update = async (req, res) => {
         if (Array.isArray(req.body.items)) {
           await classifyAndValidateItems(req.body.items, { clinicId: req.clinicId, supplier: supForItems, session, strict: strictUpdate });
         }
-        Object.assign(inv, req.body);
+        // El snapshot del SRI y su aceptación los controla el servidor (no se pisan por body).
+        const { sriTotals: _st, sriMismatchAccepted: _sma, ...updateBody } = req.body;
+        Object.assign(inv, updateBody);
         if (inv.fechaEmision) inv.fechaEmision = new Date(inv.fechaEmision);
         // `strictAccounts` lo controla el servidor: no se deja pisar por el body y se
         // conserva/afianza según la naturaleza del documento (nuevo permanece estricto).
@@ -747,6 +814,8 @@ exports.update = async (req, res) => {
         if (!Array.isArray(req.body.items)) {
           await classifyAndValidateItems(inv.items, { clinicId: req.clinicId, supplier: supForItems, session, strict: strictUpdate });
         }
+        // La edición re-contabiliza: vuelve a verificar contra los totales del SRI.
+        if (await guardSriTotals(inv, req, session)) inv.sriMismatchAccepted = true;
         await applyLineRetentions(inv, { clinicId: req.clinicId, session });
         await inv.save({ session });
         await postPurchaseJournal(inv, req, session, `UPDATE:${Date.now()}`);
@@ -759,7 +828,7 @@ exports.update = async (req, res) => {
       const inv = await PurchaseInvoice.findById(invoiceId);
       return res.json(inv);
     }
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) { res.status(e.status || 400).json({ message: e.message, ...(e.payload || {}) }); }
 };
 
 exports.void = async (req, res) => {
@@ -1028,6 +1097,8 @@ exports.importTxt = async (req, res) => {
         subtotal12: r.ivaRate === 12 ? r.subtotal : 0,
         subtotal15: r.ivaRate === 15 ? r.subtotal : 0,
         subtotal: r.subtotal, iva: r.iva, total: r.total, balance: r.total,
+        // Snapshot inmutable para comparar contra lo que edite el usuario al contabilizar.
+        sriTotals: { subtotal: r.subtotal, iva: r.iva, total: r.total },
         status: 'POR_AUTORIZAR', importedFromTxt: true, createdBy: req.user._id,
       });
     }
@@ -1177,6 +1248,8 @@ exports.importXml = async (req, res) => {
           status: 'POR_AUTORIZAR', importedFromXml: true, createdBy: req.user._id,
         };
         calcTotals(data);
+        // Snapshot de los totales del comprobante (los ítems recién parseados SON los del SRI).
+        data.sriTotals = { subtotal: data.subtotal, iva: data.iva, total: data.total };
         await PurchaseInvoice.create(data);
         created++;
       } catch (err) { errors.push({ index: i + 1, error: err.message }); }
@@ -1209,8 +1282,14 @@ exports.authorize = async (req, res) => {
         // Se clasifica sobre los ítems CRUDOS del body si vinieron (conserva `lineType`
         // explícito) antes del casteo; de lo contrario, sobre los ya almacenados.
         const supForItems = await Supplier.findById(req.body?.supplier || inv.supplier).session(session);
+        // Facturas importadas ANTES de que existiera el snapshot: se toma como original
+        // lo que quedó guardado al importar (aún no se ha contabilizado ni recalculado).
+        if ((inv.importedFromTxt || inv.importedFromXml) && (inv.sriTotals?.total == null)) {
+          inv.sriTotals = { subtotal: inv.subtotal, iva: inv.iva, total: inv.total };
+        }
         if (req.body && Object.keys(req.body).length) {
-          const { status, clinic, journalEntry, ...rest } = req.body;
+          // El snapshot del SRI y su aceptación los controla el servidor (no se pisan por body).
+          const { status, clinic, journalEntry, sriTotals, sriMismatchAccepted, ...rest } = req.body;
           if (Array.isArray(rest.items)) {
             await classifyAndValidateItems(rest.items, { clinicId: req.clinicId, supplier: supForItems, session, strict: true });
           }
@@ -1222,6 +1301,9 @@ exports.authorize = async (req, res) => {
         if (!(req.body && Array.isArray(req.body.items))) {
           await classifyAndValidateItems(inv.items, { clinicId: req.clinicId, supplier: supForItems, session, strict: true });
         }
+        // Verificación contra el SRI: bloquea con 409 (payload SRI_MISMATCH) salvo
+        // confirmación explícita; al confirmar queda marcada y auditada.
+        if (await guardSriTotals(inv, req, session)) inv.sriMismatchAccepted = true;
         inv.status = 'REGISTRADA';
         inv.authorizedBy = req.user._id;
         inv.authorizedAt = new Date();
@@ -1239,7 +1321,7 @@ exports.authorize = async (req, res) => {
       const inv = await PurchaseInvoice.findById(invoiceId);
       return res.json(inv);
     }
-  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+  } catch (e) { res.status(e.status || 400).json({ message: e.message, ...(e.payload || {}) }); }
 };
 
 /**
