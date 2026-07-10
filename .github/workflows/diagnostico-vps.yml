@@ -31,7 +31,7 @@ jobs:
             free -m || true
             echo '===== disco ====='
             df -h /var/www || true
-            echo '===== logs pm2 (200 lineas, sin stream) ====='
-            pm2 logs clinica-api --nostream --lines 200 || true
-            echo '===== lineas whatsapp/chrome del error log ====='
-            grep -iE 'whatsapp|wwebjs|puppeteer|chrome|inject' ~/.pm2/logs/clinica-api-error.log | tail -n 80 || true
+            echo '===== prueba QR contra el server vivo ====='
+            node scripts/diagQrProd.js || true
+            echo '===== lineas whatsapp/chrome de los logs (tail) ====='
+            grep -hiE 'whatsapp|wwebjs|puppeteer|chrome|inject' ~/.pm2/logs/clinica-api-error-0.log ~/.pm2/logs/clinica-api-out-0.log 2>/dev/null | tail -n 60 || true
