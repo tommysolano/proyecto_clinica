@@ -6,6 +6,8 @@ const Invoice = require('../models/Invoice');
 const Payment = require('../models/Payment');
 const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
+const Receivable = require('../models/Receivable');
+const Payable = require('../models/Payable');
 const AccountBalance = require('../models/AccountBalance');
 const { recomputeBalances } = require('../utils/accounting');
 const { startOfDay, endOfDay } = require('../utils/dates');
@@ -277,7 +279,77 @@ exports.balanceSheet = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
-// ---------- Flujo de Caja (cuentas de efectivo y banco) ----------
+/**
+ * Proyección de liquidez para el flujo de caja: con el efectivo disponible HOY
+ * (caja + bancos, sin tope de fecha) más los ingresos esperados (CxC abiertas),
+ * ¿alcanza para cubrir las cuentas por pagar (CxP abiertas)?
+ * Los documentos se clasifican en vencidos / por vencer contra la fecha actual.
+ */
+async function buildLiquidityProjection(clinicId) {
+  const asOf = new Date();
+  const cashAccs = await ChartOfAccount.find({ clinic: clinicId, code: /^1\.1\.01\./ }).lean();
+  const ids = cashAccs.map((a) => a._id);
+  let disponible = 0;
+  if (ids.length) {
+    const agg = await JournalEntry.aggregate([
+      { $match: { clinic: asObjectId(clinicId), status: 'CONTABILIZADO', 'lines.account': { $in: ids } } },
+      { $unwind: '$lines' },
+      { $match: { 'lines.account': { $in: ids } } },
+      { $group: { _id: null, debit: { $sum: '$lines.debit' }, credit: { $sum: '$lines.credit' } } },
+    ]);
+    disponible = round2((agg[0]?.debit || 0) - (agg[0]?.credit || 0));
+  }
+
+  const openFilter = { clinic: clinicId, status: { $in: ['ABIERTO', 'PARCIAL'] } };
+  const [receivables, payables] = await Promise.all([
+    Receivable.find(openFilter).sort({ dueDate: 1, issueDate: 1 }).lean(),
+    Payable.find(openFilter).sort({ dueDate: 1, issueDate: 1 }).lean(),
+  ]);
+
+  const summarize = (docs) => {
+    const out = { total: 0, vencido: 0, porVencer: 0, count: docs.length, docs: [] };
+    for (const d of docs) {
+      const bal = round2(d.balance);
+      const base = d.dueDate || d.issueDate;
+      // Días vencidos (positivo = ya venció; negativo = faltan días para vencer).
+      const dias = Math.floor((asOf - new Date(base)) / 86400000);
+      out.total = round2(out.total + bal);
+      if (dias > 0) out.vencido = round2(out.vencido + bal);
+      else out.porVencer = round2(out.porVencer + bal);
+      if (out.docs.length < 200) {
+        out.docs.push({
+          id: d._id,
+          party: d.party?.name || '—',
+          docType: d.docType,
+          number: d.number,
+          issueDate: d.issueDate,
+          dueDate: d.dueDate,
+          balance: bal,
+          dias,
+        });
+      }
+    }
+    return out;
+  };
+
+  const cxc = summarize(receivables);
+  const cxp = summarize(payables);
+  const saldoProyectado = round2(disponible + cxc.total - cxp.total);
+  return {
+    asOf,
+    disponible,
+    cxc,
+    cxp,
+    saldoProyectado,
+    // Alertas de liquidez para la UI/Excel.
+    alertas: {
+      deficitProyectado: saldoProyectado < 0,
+      vencidasSuperanDisponible: cxp.vencido > disponible,
+    },
+  };
+}
+
+// ---------- Flujo de Caja (cuentas de efectivo y banco + proyección de liquidez) ----------
 exports.cashFlow = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
@@ -289,7 +361,8 @@ exports.cashFlow = async (req, res) => {
       ...compactAccount(a), opening: 0, debit: 0, credit: 0, closing: 0, balance: 0,
     }]));
     if (!ids.length) {
-      return res.json({ flows: [], accounts: [], opening: 0, totalIn: 0, totalOut: 0, saldoFinal: 0 });
+      const proyeccion = await buildLiquidityProjection(req.clinicId);
+      return res.json({ flows: [], accounts: [], opening: 0, totalIn: 0, totalOut: 0, saldoFinal: 0, proyeccion });
     }
 
     if (start) {
@@ -346,6 +419,7 @@ exports.cashFlow = async (req, res) => {
       }
     }
     const accounts = [...accountMap.values()].sort((a, b) => a.code.localeCompare(b.code));
+    const proyeccion = await buildLiquidityProjection(req.clinicId);
     res.json({
       flows,
       accounts,
@@ -353,6 +427,7 @@ exports.cashFlow = async (req, res) => {
       totalIn: flows.reduce((s, f) => s + f.in, 0),
       totalOut: flows.reduce((s, f) => s + f.out, 0),
       saldoFinal: saldo,
+      proyeccion,
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
@@ -1065,6 +1140,75 @@ exports.cashFlowExcel = async (req, res) => {
     // Fila de totales
     const totalRow = ws.addRow({ description: 'TOTALES', in: data.totalIn, out: data.totalOut, saldo: data.saldoFinal });
     totalRow.font = { bold: true };
+
+    // ---- Proyección de liquidez ----
+    const p = data.proyeccion;
+    if (p) {
+      ws.addRow({});
+      const title = ws.addRow({ description: 'PROYECCIÓN DE LIQUIDEZ (a hoy)' });
+      title.font = { bold: true };
+      title.getCell('description').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } };
+      const projRows = [
+        ['Disponible actual (caja + bancos)', p.disponible],
+        ['(+) Ingresos esperados (CxC por cobrar)', p.cxc.total],
+        ['      · CxC vencidas', p.cxc.vencido],
+        ['      · CxC por vencer', p.cxc.porVencer],
+        ['(−) Cuentas por pagar (CxP pendientes)', -p.cxp.total],
+        ['      · CxP vencidas', -p.cxp.vencido],
+        ['      · CxP por vencer', -p.cxp.porVencer],
+        ['(=) SALDO PROYECTADO', p.saldoProyectado],
+      ];
+      for (const [label, value] of projRows) {
+        const row = ws.addRow({ description: label, saldo: value });
+        if (label.startsWith('(=)')) {
+          row.font = { bold: true };
+          if (p.saldoProyectado < 0) {
+            row.getCell('saldo').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFEE2E2' } };
+            row.getCell('saldo').font = { color: { argb: 'FFB91C1C' }, bold: true };
+          }
+        }
+      }
+      if (p.alertas?.deficitProyectado) {
+        const a = ws.addRow({ description: 'ALERTA: las obligaciones superan el disponible + ingresos esperados' });
+        a.font = { color: { argb: 'FFB91C1C' }, bold: true };
+      } else if (p.alertas?.vencidasSuperanDisponible) {
+        const a = ws.addRow({ description: 'ALERTA: las CxP ya vencidas superan el efectivo disponible' });
+        a.font = { color: { argb: 'FFB91C1C' }, bold: true };
+      }
+
+      // Hojas de detalle de cartera abierta.
+      const addDetailSheet = (name, docs, headerColor) => {
+        const wd = wb.addWorksheet(name);
+        wd.columns = [
+          { header: 'Vencimiento', key: 'due', width: 14 },
+          { header: 'Emisión', key: 'issue', width: 14 },
+          { header: 'Contraparte', key: 'party', width: 34 },
+          { header: 'Documento', key: 'number', width: 20 },
+          { header: 'Tipo', key: 'docType', width: 10 },
+          { header: 'Estado', key: 'estado', width: 22 },
+          { header: 'Saldo', key: 'balance', width: 14 },
+        ];
+        wd.getRow(1).font = { bold: true };
+        wd.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: headerColor } };
+        for (const d of docs) {
+          const row = wd.addRow({
+            due: d.dueDate ? new Date(d.dueDate).toLocaleDateString('es-EC') : '—',
+            issue: d.issueDate ? new Date(d.issueDate).toLocaleDateString('es-EC') : '',
+            party: d.party,
+            number: d.number,
+            docType: d.docType,
+            estado: d.dias > 0 ? `VENCIDA hace ${d.dias} día(s)` : `Vence en ${-d.dias} día(s)`,
+            balance: d.balance,
+          });
+          if (d.dias > 0) row.getCell('estado').font = { color: { argb: 'FFB91C1C' }, bold: true };
+        }
+        wd.getColumn('balance').numFmt = '"$"#,##0.00';
+        const t = wd.addRow({ estado: 'TOTAL', balance: docs.reduce((s, d) => s + d.balance, 0) });
+        t.font = { bold: true };
+      };
+      addDetailSheet('Cuentas por pagar', p.cxp.docs || [], 'FFFEE2E2');
+      addDetailSheet('Cuentas por cobrar', p.cxc.docs || [], 'FFD1FAE5');
+    }
     await sendWorkbook(res, wb, `flujo_caja_${Date.now()}.xlsx`);
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
