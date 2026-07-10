@@ -7,6 +7,15 @@ require('dotenv').config();
 // suele estar en UTC). Node re-lee process.env.TZ al reasignarlo.
 process.env.TZ = process.env.TZ || 'America/Guayaquil';
 
+// Una promesa sin manejar NO debe tumbar toda la API de la clínica (Node >=15
+// mata el proceso por defecto). Caso real: RemoteAuth de whatsapp-web.js
+// crasheaba el server entero al fallar el guardado de la sesión. Se loguea con
+// stack para poder corregir la causa; las excepciones síncronas no capturadas
+// sí siguen matando el proceso (estado potencialmente corrupto, pm2 reinicia).
+process.on('unhandledRejection', (reason) => {
+  console.error('[unhandledRejection]', reason);
+});
+
 const express = require('express');
 const http = require('http');
 const cors = require('cors');

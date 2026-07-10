@@ -2,9 +2,13 @@
  * Gestor de números de WhatsApp conectados por QR (whatsapp-web.js).
  *
  * Cada WhatsappAccount con connectionType='qr' tiene un Client de whatsapp-web.js
- * que mantiene una sesión tipo WhatsApp Web. La sesión se persiste en Mongo con
- * RemoteAuth + wwebjs-mongo, de modo que sobrevive a reinicios/redeploys (clave en
- * el filesystem efímero de Render; útil también en el VPS).
+ * que mantiene una sesión tipo WhatsApp Web. La sesión se persiste EN DISCO con
+ * LocalAuth (server/.wwebjs_auth/, ignorado por git y a salvo del `git reset` del
+ * deploy): en el VPS el filesystem es persistente, así que sobrevive a reinicios
+ * y redeploys. NO usar RemoteAuth (zips a Mongo): comprimir el perfil de Chrome
+ * mientras Chrome lo escribe fallaba (ENOENT del zip) con una promesa sin manejar
+ * que TUMBABA el proceso entero 60s después de cada vinculación, y al reiniciar
+ * borraba el perfil local para "restaurar" desde un Mongo vacío (sesión perdida).
  *
  * Eventos → estado del número + socket.io:
  *   qr            → estado 'qr_pending'  + emite 'whatsapp:qr' (dataURL del QR)
@@ -19,28 +23,28 @@
  * se duerme, FS efímero) será inestable; es plenamente usable en un VPS. Las libs
  * pesadas se cargan de forma diferida para que el server arranque aunque falten.
  */
-const mongoose = require('mongoose');
+const path = require('path');
+const fs = require('fs');
 const WhatsappAccount = require('../models/WhatsappAccount');
 const { emitToCallCenter, emitToUser } = require('../realtime');
 
+// Carpeta de sesiones LocalAuth (una subcarpeta session-<id> por número).
+// Anclada a server/ (no al cwd) para que no dependa de cómo arranque pm2.
+const WA_DATA_PATH = path.join(__dirname, '..', '.wwebjs_auth');
+
 // accountId(string) → { client, status, watchdog, gotQr }
 const clients = new Map();
-let mongoStore = null;
 
-function getStore() {
-  if (!mongoStore) {
-    const { MongoStore } = require('wwebjs-mongo');
-    mongoStore = new MongoStore({ mongoose });
-  }
-  return mongoStore;
-}
-
-// Borra la sesión remota guardada en Mongo (GridFS). Solo se usa para cuentas
-// que nunca llegaron a vincularse: una sesión a medias/corrupta haría fallar
-// todos los intentos siguientes al restaurarse.
-async function wipeRemoteSession(sessionId) {
+// Borra la sesión local de un número. Solo se usa para cuentas que nunca
+// llegaron a vincularse: un perfil a medias/corrupto haría fallar los
+// intentos siguientes.
+async function wipeLocalSession(sessionId) {
   try {
-    await getStore().delete({ session: `RemoteAuth-${sessionId}` });
+    await fs.promises.rm(path.join(WA_DATA_PATH, `session-${sessionId}`), {
+      recursive: true,
+      force: true,
+      maxRetries: 3,
+    });
   } catch {
     /* noop */
   }
@@ -110,10 +114,10 @@ async function connect(accountId, { userId } = {}) {
   }
 
   let Client;
-  let RemoteAuth;
+  let LocalAuth;
   let QRCode;
   try {
-    ({ Client, RemoteAuth } = require('whatsapp-web.js'));
+    ({ Client, LocalAuth } = require('whatsapp-web.js'));
     QRCode = require('qrcode');
   } catch (e) {
     await setAccountStatus(accountId, { status: 'auth_failure' });
@@ -129,10 +133,9 @@ async function connect(accountId, { userId } = {}) {
   let client;
   try {
     client = new Client({
-      authStrategy: new RemoteAuth({
+      authStrategy: new LocalAuth({
         clientId: sessionId,
-        store: getStore(),
-        backupSyncIntervalMs: 300000, // 5 min (mínimo permitido por la librería)
+        dataPath: WA_DATA_PATH,
       }),
       // El UA por defecto de whatsapp-web.js es Chrome 101 (2022): WhatsApp Web
       // rechaza navegadores tan viejos y expulsa la sesión antes de dar el QR.
@@ -166,7 +169,7 @@ async function connect(accountId, { userId } = {}) {
     clients.delete(key);
     try { await client.destroy(); } catch { /* noop */ }
     const fresh = await WhatsappAccount.findById(accountId).catch(() => null);
-    if (fresh && !fresh.connectedPhone) await wipeRemoteSession(sessionId);
+    if (fresh && !fresh.connectedPhone) await wipeLocalSession(sessionId);
     await setAccountStatus(accountId, { status: 'auth_failure' });
     await emitStatus(key, {
       status: 'auth_failure',
@@ -287,7 +290,7 @@ async function connect(accountId, { userId } = {}) {
     clients.delete(key);
     try { await client.destroy(); } catch { /* noop */ }
     const fresh = await WhatsappAccount.findById(accountId).catch(() => null);
-    if (fresh && !fresh.connectedPhone) await wipeRemoteSession(sessionId);
+    if (fresh && !fresh.connectedPhone) await wipeLocalSession(sessionId);
     await setAccountStatus(accountId, { status: 'auth_failure' });
     await emitStatus(key, { status: 'auth_failure', error: short }, userId);
   });
