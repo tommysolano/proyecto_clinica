@@ -3,6 +3,7 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlineCog6Tooth, HiOutlinePlus } from 'react-icons/hi2';
 import NumericInput from '../../components/NumericInput';
+import SharedAccountSelect from '../../components/AccountSelect';
 
 const ACCOUNT_LABELS = {
   sueldos: 'Gasto sueldos (general)',
@@ -40,7 +41,7 @@ export default function PayrollConfig() {
   const loadIrTables = () => api.get('/payroll/income-tax').then((r) => setIrTables(r.data || [])).catch(() => {});
   useEffect(() => {
     loadCfg(); loadDepts(); loadPositions(); loadConcepts(); loadIrTables();
-    api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setAccounts((r.data || []).filter((a) => a.allowsMovement))).catch(() => {});
+    api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setAccounts(r.data || [])).catch(() => {});
   }, []);
 
   const saveCfg = async () => {
@@ -98,14 +99,8 @@ export default function PayrollConfig() {
   );
 }
 
-const accLabel = (a) => `${a.code} · ${a.name}`;
 function AccountSelect({ value, onChange, accounts, placeholder = 'Sin cuenta' }) {
-  return (
-    <select value={value || ''} onChange={(e) => onChange(e.target.value)} className={inputCls}>
-      <option value="">{placeholder}</option>
-      {accounts.map((a) => <option key={a._id} value={a._id}>{accLabel(a)}</option>)}
-    </select>
-  );
+  return <SharedAccountSelect accounts={accounts} value={value || ''} onChange={onChange} emptyOption={placeholder} />;
 }
 
 // ---- Departamentos ----

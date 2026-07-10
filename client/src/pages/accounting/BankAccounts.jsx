@@ -7,6 +7,7 @@ import { Link } from 'react-router-dom';
 import { HiOutlinePlus, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineBanknotes, HiOutlineArrowsRightLeft } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
+import AccountSelect from '../../components/AccountSelect';
 
 const EMPTY = { name: '', bank: '', accountNumber: '', accountType: 'CORRIENTE', currency: 'USD', city: '', chartAccount: '', initialBalance: 0, nextCheckNumber: 1, active: true };
 
@@ -30,7 +31,7 @@ export default function BankAccounts() {
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
   useEffect(() => {
-    api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setChart((r.data || []).filter((a) => a.allowsMovement)));
+    api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setChart(r.data || []));
     load();
   }, []);
 
@@ -190,10 +191,7 @@ export default function BankAccounts() {
             <Field label="Saldo inicial"><NumericInput step="0.01" value={form.initialBalance} onChange={(e) => setForm({ ...form, initialBalance: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Próximo cheque #"><NumericInput value={form.nextCheckNumber} onChange={(e) => setForm({ ...form, nextCheckNumber: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Cuenta contable" required>
-              <select required value={form.chartAccount} onChange={(e) => setForm({ ...form, chartAccount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
-                <option value="">Seleccione…</option>
-                {chart.filter((c) => c.code?.startsWith('1.1.01')).map((c) => <option key={c._id} value={c._id}>{c.code} {c.name}</option>)}
-              </select>
+              <AccountSelect accounts={chart} value={form.chartAccount} onChange={(v) => setForm({ ...form, chartAccount: v })} filter={(c) => c.code?.startsWith('1.1.01')} required />
             </Field>
           </div>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShowAcc(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button></div>

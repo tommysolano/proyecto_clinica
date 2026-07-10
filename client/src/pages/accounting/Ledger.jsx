@@ -4,7 +4,7 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlineBookOpen, HiOutlineArrowTopRightOnSquare, HiOutlineBuildingLibrary } from 'react-icons/hi2';
 import { fmt, fmtDate, startOfMonth, today } from './_utils';
-import SearchableSelect from '../../components/SearchableSelect';
+import AccountSelect from '../../components/AccountSelect';
 import Modal from '../../components/Modal';
 import { SOURCE_ROUTES, sourceLabel, sourceActionLabel, sourceDeepLink } from './sourceDocs';
 
@@ -62,14 +62,12 @@ export default function Ledger() {
       <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 flex-wrap items-end">
         <div className="flex-1 min-w-64">
           <label className="text-xs text-slate-500">Cuenta</label>
-          <SearchableSelect
-            options={accounts}
+          <AccountSelect
+            accounts={accounts}
             value={account}
             onChange={setAccount}
-            getLabel={(a) => `${a.code} - ${a.name}${a.allowsMovement === false ? ' (agrupadora)' : ''}`}
-            getSearchText={(a) => `${a.code} ${a.name}`}
+            includeGroups
             placeholder="Seleccione una cuenta (padre o de movimiento)…"
-            searchPlaceholder="Buscar por código o nombre…"
             allowClear
           />
         </div>

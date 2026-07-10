@@ -5,6 +5,7 @@ import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import { HiOutlineCreditCard, HiOutlinePlus, HiOutlinePencilSquare, HiOutlineTrash } from 'react-icons/hi2';
 import NumericInput from '../../components/NumericInput';
+import AccountSelect from '../../components/AccountSelect';
 
 const EMPTY = { name: '', brand: 'VISA', acquirer: '', accountType: 'CREDITO', chartAccount: '', commissionRate: 0, retentionRate: 0, pos: [], active: true };
 
@@ -21,7 +22,7 @@ export default function CreditCards() {
   };
   useEffect(() => {
     load();
-    api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setAccounts((r.data || []).filter((a) => a.allowsMovement))).catch(() => {});
+    api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setAccounts(r.data || [])).catch(() => {});
   }, []);
 
   const idOf = (v) => (v && typeof v === 'object' ? v._id : v) || '';
@@ -80,7 +81,7 @@ export default function CreditCards() {
             <Field label="Tipo de cuenta"><select value={form.accountType} onChange={(e) => setForm({ ...form, accountType: e.target.value })} className={inputCls}><option value="CREDITO">Crédito</option><option value="DEBITO">Débito</option><option value="CORRIENTE">Corriente</option></select></Field>
             <Field label="% Comisión"><NumericInput step="0.01" value={form.commissionRate} onChange={(e) => setForm({ ...form, commissionRate: +e.target.value })} className={inputCls} /></Field>
             <Field label="% Retención"><NumericInput step="0.01" value={form.retentionRate} onChange={(e) => setForm({ ...form, retentionRate: +e.target.value })} className={inputCls} /></Field>
-            <Field label="Cuenta contable" className="col-span-2"><select value={form.chartAccount} onChange={(e) => setForm({ ...form, chartAccount: e.target.value })} className={inputCls}><option value="">Seleccione…</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}</select></Field>
+            <Field label="Cuenta contable" className="col-span-2"><AccountSelect accounts={accounts} value={form.chartAccount} onChange={(v) => setForm({ ...form, chartAccount: v })} allowClear /></Field>
           </div>
           <div>
             <div className="flex items-center justify-between mb-1"><p className="text-xs font-semibold text-slate-500">POS / Terminales</p><button type="button" onClick={addPos} className="text-emerald-600 text-sm flex items-center gap-1"><HiOutlinePlus className="w-4 h-4" /> Agregar POS</button></div>

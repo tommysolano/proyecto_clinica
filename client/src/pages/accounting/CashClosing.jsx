@@ -6,6 +6,7 @@ import Field from '../../components/Field';
 import { HiOutlineCalculator, HiOutlineLockOpen, HiOutlineLockClosed, HiOutlineEye, HiOutlinePlus } from 'react-icons/hi2';
 import { fmt, fmtDate } from './_utils';
 import NumericInput from '../../components/NumericInput';
+import AccountSelect from '../../components/AccountSelect';
 
 const MOV_EMPTY = { type: 'GASTO', amount: 0, description: '', bankAccount: '', counterpartAccount: '' };
 
@@ -44,7 +45,7 @@ export default function CashClosing() {
   useEffect(() => { api.get('/banks').then((r) => setBanks(r.data || [])).catch(() => {}); }, []);
   useEffect(() => {
     api.get('/chart-of-accounts')
-      .then((r) => setAccounts((r.data || []).filter((a) => a.allowsMovement && (a.code?.startsWith('6.') || a.code?.startsWith('4.') || a.code?.startsWith('5.')))))
+      .then((r) => setAccounts(r.data || []))
       .catch(() => {});
   }, []);
 
@@ -263,12 +264,13 @@ export default function CashClosing() {
           </Field>
           {movForm.type !== 'DEPOSITO' && (
             <Field label={movForm.type === 'INGRESO' ? 'Cuenta de ingreso' : 'Cuenta de gasto'}>
-              <select value={movForm.counterpartAccount} onChange={(e) => setMovForm({ ...movForm, counterpartAccount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
-                <option value="">{movForm.type === 'INGRESO' ? 'Otros ingresos (por defecto)' : 'Otros gastos (por defecto)'}</option>
-                {accounts
-                  .filter((a) => (movForm.type === 'INGRESO' ? a.code?.startsWith('4.') : (a.code?.startsWith('6.') || a.code?.startsWith('5.'))))
-                  .map((a) => <option key={a._id} value={a._id}>{a.code} {a.name}</option>)}
-              </select>
+              <AccountSelect
+                accounts={accounts}
+                value={movForm.counterpartAccount}
+                onChange={(v) => setMovForm({ ...movForm, counterpartAccount: v })}
+                filter={(a) => (movForm.type === 'INGRESO' ? a.code?.startsWith('4.') : (a.code?.startsWith('6.') || a.code?.startsWith('5.')))}
+                emptyOption={movForm.type === 'INGRESO' ? 'Otros ingresos (por defecto)' : 'Otros gastos (por defecto)'}
+              />
             </Field>
           )}
           {movForm.type === 'DEPOSITO' && (

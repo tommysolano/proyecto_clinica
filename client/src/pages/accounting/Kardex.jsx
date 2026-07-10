@@ -3,6 +3,7 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlineArchiveBox } from 'react-icons/hi2';
 import Field from '../../components/Field';
+import ProductSelect from '../../components/ProductSelect';
 import { fmt, fmtDate } from './_utils';
 
 const TYPE_COLOR = { entrada: 'text-emerald-600', salida: 'text-rose-600', ajuste: 'text-amber-600', traslado: 'text-blue-600' };
@@ -33,9 +34,7 @@ export default function Kardex() {
       <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineArchiveBox className="text-emerald-600" /> Kardex</h1>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-3 grid grid-cols-1 md:grid-cols-6 gap-2">
         <Field label="Producto" required className="md:col-span-2">
-          <select value={filters.product} onChange={(e) => setFilters({ ...filters, product: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-lg">
-            <option value="">Seleccione…</option>{products.map((p) => <option key={p._id} value={p._id}>{p.code} - {p.name}</option>)}
-          </select>
+          <ProductSelect products={products} value={filters.product} onChange={(v) => setFilters({ ...filters, product: v })} allowClear />
         </Field>
         <Field label="Bodega">
           <select value={filters.warehouse} onChange={(e) => setFilters({ ...filters, warehouse: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-lg">

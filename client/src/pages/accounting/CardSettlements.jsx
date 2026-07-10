@@ -6,6 +6,7 @@ import { HiOutlinePlus, HiOutlineCreditCard, HiOutlineCheckCircle, HiOutlineEye,
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import SearchableSelect from '../../components/SearchableSelect';
+import AccountSelect from '../../components/AccountSelect';
 
 // Códigos SRI frecuentes en liquidaciones de tarjeta (referenciales, editables)
 const SRI_RENTA = ['332', '343', '344', '304'];
@@ -45,7 +46,7 @@ export default function CardSettlements() {
   useEffect(() => {
     api.get('/banks/accounts').then((r) => setBanks(r.data || [])).catch(() => {});
     api.get('/suppliers').then((r) => setSuppliers((r.data || []).filter((s) => (s.roles || []).includes('PROVEEDOR')))).catch(() => {});
-    api.get('/chart-of-accounts').then((r) => setAccounts((r.data || []).filter((a) => a.allowsMovement))).catch(() => {});
+    api.get('/chart-of-accounts').then((r) => setAccounts(r.data || [])).catch(() => {});
     api.get('/cost-centers').then((r) => setCostCenters(r.data || [])).catch(() => {});
     load();
   }, []);
@@ -171,8 +172,6 @@ export default function CardSettlements() {
     const map = { BORRADOR: 'bg-amber-100 text-amber-700', CONTABILIZADO: 'bg-emerald-100 text-emerald-700', ANULADO: 'bg-rose-100 text-rose-700' };
     return <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${map[st] || 'bg-slate-100 text-slate-600'}`}>{st}</span>;
   };
-
-  const accountLabel = (a) => `${a.code} — ${a.name}`;
 
   return (
     <div className="space-y-4">
@@ -333,10 +332,8 @@ export default function CardSettlements() {
             <summary className="cursor-pointer text-sm font-semibold text-slate-700">Cuentas contables (opcional — si se dejan vacías se usan las predeterminadas)</summary>
             <div className="grid grid-cols-2 md:grid-cols-3 gap-3 mt-3">
               {[['receivableAccount', 'Tarjetas por cobrar'], ['commissionAccount', 'Gasto comisión'], ['ivaAccount', 'IVA en compras'], ['retIvaAccount', 'Retención IVA por cobrar'], ['retIrAccount', 'Retención IR por cobrar']].map(([key, label]) => (
-                <label key={key} className="text-xs text-slate-500">{label}
-                  <select value={form[key] || ''} onChange={(e) => setForm({ ...form, [key]: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-2 py-2 text-sm">
-                    <option value="">Predeterminada</option>{accounts.map((a) => <option key={a._id} value={a._id}>{accountLabel(a)}</option>)}
-                  </select>
+                <label key={key} className="text-xs text-slate-500 block">{label}
+                  <div className="mt-1"><AccountSelect accounts={accounts} value={form[key] || ''} onChange={(v) => setForm({ ...form, [key]: v })} emptyOption="Predeterminada" size="sm" /></div>
                 </label>
               ))}
             </div>
@@ -360,7 +357,7 @@ export default function CardSettlements() {
                       <tr key={i}>
                         <td className="px-0.5 py-0.5"><input type="date" value={t.date} onChange={(e) => setTxn(i, { date: e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-32" /></td>
                         <td className="px-0.5 py-0.5"><input value={t.recap} onChange={(e) => setTxn(i, { recap: e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-20" /></td>
-                        <td className="px-0.5 py-0.5"><select value={t.account || ''} onChange={(e) => setTxn(i, { account: e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-40"><option value="">—</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.code}</option>)}</select></td>
+                        <td className="px-0.5 py-0.5 min-w-[160px]"><AccountSelect accounts={accounts} value={t.account || ''} onChange={(v) => setTxn(i, { account: v })} placeholder="—" allowClear size="sm" /></td>
                         <td className="px-0.5 py-0.5"><select value={t.costCenter || ''} onChange={(e) => setTxn(i, { costCenter: e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-36"><option value="">—</option>{costCenters.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}</select></td>
                         <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.deposit} onChange={(e) => setTxn(i, { deposit: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-24 text-right" /></td>
                         <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.commission} onChange={(e) => setTxn(i, { commission: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-24 text-right" /></td>

@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { HiOutlineBanknotes, HiOutlinePlus, HiOutlineTrash } from 'react-icons/hi2';
 import { fmt } from './_utils';
 import NumericInput from '../../components/NumericInput';
+import AccountSelect from '../../components/AccountSelect';
 
 export default function Budgets() {
   const now = new Date();
@@ -16,7 +17,7 @@ export default function Budgets() {
 
   const loadAccounts = async () => {
     const r = await api.get('/chart-of-accounts');
-    setAccounts((r.data || []).filter((a) => a.allowsMovement && ['INGRESO', 'GASTO', 'COSTO'].includes(a.type)));
+    setAccounts(r.data || []);
   };
   const loadBudget = async () => {
     const r = await api.get('/budgets');
@@ -77,10 +78,9 @@ export default function Budgets() {
           )}
           {lines.map((l, i) => (
             <div key={i} className="flex gap-2 items-center">
-              <select value={l.account} onChange={(e) => setLine(i, { account: e.target.value })} className="flex-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm">
-                <option value="">Cuenta...</option>
-                {accounts.map((a) => <option key={a._id} value={a._id}>{a.code} — {a.name}</option>)}
-              </select>
+              <div className="flex-1 min-w-0">
+                <AccountSelect accounts={accounts} value={l.account} onChange={(v) => setLine(i, { account: v })} filter={(a) => ['INGRESO', 'GASTO', 'COSTO'].includes(a.type)} placeholder="Cuenta..." size="sm" />
+              </div>
               <NumericInput step="0.01" placeholder="Monto anual" value={l.annual} onChange={(e) => setLine(i, { annual: +e.target.value })} className="w-40 border border-slate-200 rounded-xl px-2 py-1.5 text-sm text-right" />
               <button onClick={() => delLine(i)} className="text-rose-600"><HiOutlineTrash className="w-5 h-5" /></button>
             </div>

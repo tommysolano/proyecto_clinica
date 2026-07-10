@@ -6,6 +6,7 @@ import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineCube, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineArrowsRightLeft, HiOutlineChevronDown, HiOutlineChevronRight } from 'react-icons/hi2';
 import { fmt } from './_utils';
 import NumericInput from '../../components/NumericInput';
+import ProductSelect from '../../components/ProductSelect';
 
 const EMPTY_WH = { code: '', name: '', address: '', isMain: false, active: true };
 const EMPTY_TRANSFER = { product: '', fromWarehouse: '', toWarehouse: '', quantity: '', reason: '' };
@@ -239,10 +240,7 @@ export default function Warehouses() {
       <Modal isOpen={showTransfer} onClose={() => setShowTransfer(false)} title="Traslado entre bodegas">
         <form onSubmit={submitTransfer} className="space-y-3">
           <Field label="Producto" required>
-            <select required value={tForm.product} onChange={(e) => setTForm({ ...tForm, product: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
-              <option value="">Seleccione…</option>
-              {products.map((p) => <option key={p._id} value={p._id}>{p.code} - {p.name}</option>)}
-            </select>
+            <ProductSelect products={products} value={tForm.product} onChange={(v) => setTForm({ ...tForm, product: v })} required />
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Bodega origen" required>

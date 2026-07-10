@@ -7,6 +7,7 @@ import { Link } from 'react-router-dom';
 import { HiOutlinePlus, HiOutlineBuildingLibrary, HiOutlineCalculator, HiOutlinePencilSquare, HiOutlineEye, HiOutlineSquares2X2 } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
+import SearchableSelect from '../../components/SearchableSelect';
 import useDocDeepLink from '../../hooks/useDocDeepLink';
 
 const EMPTY = {
@@ -183,9 +184,17 @@ export default function FixedAssets() {
             <Field label="Código" required><input required placeholder="Ej: AF-001" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className={inputCls} /></Field>
             <Field label="Nombre" required><input required placeholder="Ej: Sillón odontológico" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} /></Field>
             <Field label="Categoría">
-              <select value={form.category} onChange={(e) => onSelectCategory(e.target.value)} className={inputCls}>
-                <option value="">Seleccione…</option>{rootCategories.map((c) => <option key={c._id} value={c._id}>{c.code} - {c.name} ({c.depreciationRate}%)</option>)}
-              </select>
+              <SearchableSelect
+                options={rootCategories}
+                value={form.category}
+                onChange={onSelectCategory}
+                getLabel={(c) => `${c.code} - ${c.name} (${c.depreciationRate}%)`}
+                getSearchText={(c) => `${c.code} ${c.name}`}
+                placeholder="Seleccione…"
+                searchPlaceholder="Buscar categoría…"
+                menuMinWidth={360}
+                wrapOptions
+              />
             </Field>
             <Field label="Tipo de activo">
               <select value={form.assetType} onChange={(e) => setForm({ ...form, assetType: e.target.value })} className={inputCls} disabled={!typesForCategory.length}>

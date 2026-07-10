@@ -4,7 +4,7 @@ import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import NumericInput from '../../components/NumericInput';
-import SearchableSelect from '../../components/SearchableSelect';
+import AccountSelect from '../../components/AccountSelect';
 import { HiOutlinePlus, HiOutlinePencilSquare, HiOutlineSparkles, HiOutlineExclamationTriangle } from 'react-icons/hi2';
 
 const APPLIES = ['BIENES', 'SERVICIOS', 'TRANSPORTE', 'HONORARIOS', 'ARRENDAMIENTO', 'OTRO'];
@@ -32,7 +32,7 @@ export default function RetentionRules() {
   };
   useEffect(() => {
     load();
-    api.get('/chart-of-accounts').then((r) => setAccounts((r.data || []).filter((a) => a.allowsMovement))).catch(() => {});
+    api.get('/chart-of-accounts').then((r) => setAccounts(r.data || [])).catch(() => {});
   }, []);
 
   const filtered = useMemo(() => {
@@ -83,7 +83,6 @@ export default function RetentionRules() {
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
 
-  const accLabel = (a) => `${a.code} ${a.name}`;
   const accountOf = (r) => (typeof r.payableAccount === 'object' && r.payableAccount) ? r.payableAccount : accounts.find((a) => String(a._id) === String(r.payableAccount));
 
   return (
@@ -161,7 +160,7 @@ export default function RetentionRules() {
           </div>
           <Field label="Tipo de base"><select value={form.baseType} onChange={(e) => setForm({ ...form, baseType: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">{BASE_TYPES.map((b) => <option key={b.v} value={b.v}>{b.l}</option>)}</select></Field>
           <Field label="Cuenta de retención por pagar">
-            <SearchableSelect options={accounts} value={form.payableAccount} onChange={(v) => setForm({ ...form, payableAccount: v })} getLabel={accLabel} getSearchText={accLabel} placeholder="— usar cuenta por rol (según tipo) —" searchPlaceholder="Buscar cuenta…" allowClear size="sm" />
+            <AccountSelect accounts={accounts} value={form.payableAccount} onChange={(v) => setForm({ ...form, payableAccount: v })} placeholder="— usar cuenta por rol (según tipo) —" allowClear size="sm" />
             {!form.payableAccount && <p className="text-[11px] text-amber-600 mt-1">Sin cuenta: se usará la cuenta de retención por pagar estándar según el tipo (IVA/Renta).</p>}
           </Field>
           <div className="grid grid-cols-2 gap-3">

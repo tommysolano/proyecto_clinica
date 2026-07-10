@@ -3,7 +3,7 @@ import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from './Modal';
 import NumericInput from './NumericInput';
-import SearchableSelect from './SearchableSelect';
+import AccountSelect from './AccountSelect';
 import { HiOutlinePlus, HiOutlineXMark } from 'react-icons/hi2';
 
 const fmt = (n) => Number(n || 0).toLocaleString('es-EC', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -24,7 +24,7 @@ export default function JournalEntryEditor({ isOpen, onClose, entryId, postUrl, 
 
   useEffect(() => {
     if (!isOpen) return;
-    api.get('/chart-of-accounts').then((r) => setAccounts((r.data || []).filter((a) => a.allowsMovement)));
+    api.get('/chart-of-accounts').then((r) => setAccounts(r.data || []));
   }, [isOpen]);
 
   useEffect(() => {
@@ -94,7 +94,7 @@ export default function JournalEntryEditor({ isOpen, onClose, entryId, postUrl, 
               {lines.map((l, i) => (
                 <tr key={i} className="border-t border-slate-100">
                   <td className="px-1 py-1 min-w-[200px]">
-                    <SearchableSelect options={accounts} value={l.account} onChange={(v) => setLine(i, { account: v })} getLabel={(a) => `${a.code} ${a.name}`} placeholder="Seleccione cuenta…" searchPlaceholder="Buscar cuenta…" size="sm" />
+                    <AccountSelect accounts={accounts} value={l.account} onChange={(v) => setLine(i, { account: v })} size="sm" />
                   </td>
                   <td className="px-1 py-1"><input value={l.description} onChange={(e) => setLine(i, { description: e.target.value })} className="w-full border border-slate-200 rounded px-2 py-1 text-xs" placeholder="Glosa" /></td>
                   <td className="px-1 py-1"><NumericInput step="0.01" value={l.debit || ''} onChange={(e) => setLine(i, { debit: +e.target.value, credit: 0 })} className="w-full border border-slate-200 rounded px-1 py-1 text-right text-xs" /></td>

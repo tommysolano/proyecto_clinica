@@ -8,6 +8,7 @@ import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import NumericInput from '../components/NumericInput';
 import SearchableSelect from '../components/SearchableSelect';
+import ProductSelect from '../components/ProductSelect';
 import ProductFormModal from '../components/ProductFormModal';
 import {
   HiOutlinePlus, HiOutlinePencil, HiOutlineTrash,
@@ -409,20 +410,22 @@ export default function Inventory() {
         <form onSubmit={handleMovementSubmit} className="space-y-4">
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1.5">Producto *</label>
-            <select value={movementForm.product} onChange={(e) => setMovementForm({...movementForm, product: e.target.value})} required className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50">
-              <option value="">Seleccionar</option>
-              {products.map(p => (
-                <option key={p._id} value={p._id}>{p.code} - {p.name} (Stock: {p.stock})</option>
-              ))}
-            </select>
+            <ProductSelect products={products} value={movementForm.product} onChange={(v) => setMovementForm({ ...movementForm, product: v })} placeholder="Seleccionar" required />
           </div>
           {warehouses.length > 0 && (
             <div>
               <label className="block text-sm font-medium text-slate-700 mb-1.5">Bodega</label>
-              <select value={movementForm.warehouse} onChange={(e) => setMovementForm({ ...movementForm, warehouse: e.target.value })} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50">
-                <option value="">Sin bodega (general)</option>
-                {warehouses.map((w) => <option key={w._id} value={w._id}>{w.code} - {w.name}</option>)}
-              </select>
+              <SearchableSelect
+                options={[{ _id: '', name: 'Sin bodega (general)' }, ...warehouses]}
+                value={movementForm.warehouse}
+                onChange={(v) => setMovementForm({ ...movementForm, warehouse: v })}
+                getLabel={(w) => (w.code ? `${w.code} - ${w.name}` : w.name)}
+                getSearchText={(w) => `${w.code || ''} ${w.name || ''}`}
+                placeholder="Sin bodega (general)"
+                searchPlaceholder="Buscar bodega…"
+                menuMinWidth={320}
+                wrapOptions
+              />
             </div>
           )}
           <div className="grid grid-cols-2 gap-4">

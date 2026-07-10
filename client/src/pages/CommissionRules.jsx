@@ -5,6 +5,7 @@ import Modal from '../components/Modal';
 import { HiOutlinePlus, HiOutlineTrash, HiOutlinePencil, HiOutlineTrophy, HiOutlineArrowDownTray, HiOutlineBanknotes } from 'react-icons/hi2';
 import NumericInput from '../components/NumericInput';
 import ProductAutocomplete from '../components/ProductAutocomplete';
+import AccountSelect from '../components/AccountSelect';
 
 const ROLES = [
   { value: 'admin', label: 'Administrador' },
@@ -137,7 +138,7 @@ export default function CommissionRules() {
       // Aceptamos servicios, programas, items (medicamento, insumo) — todos pueden tener comisión.
       setServices(list.filter((x) => x.active !== false));
       api.get('/call-center/agents').then((g) => setAgents(g.data || [])).catch(() => {});
-      api.get('/chart-of-accounts', { params: { active: true } }).then((a) => setAccounts((a.data || []).filter((x) => x.allowsMovement))).catch(() => {});
+      api.get('/chart-of-accounts', { params: { active: true } }).then((a) => setAccounts(a.data || [])).catch(() => {});
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al cargar');
     }
@@ -613,10 +614,7 @@ export default function CommissionRules() {
                 <HiOutlinePlus className="w-3.5 h-3.5" /> Agregar servicio
               </button>
               <label className="block text-sm pt-1">Cuenta contable (gasto comisión)
-                <select value={form.account} onChange={(e) => setForm({ ...form, account: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
-                  <option value="">Sin asignar</option>
-                  {accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}
-                </select>
+                <div className="mt-1"><AccountSelect accounts={accounts} value={form.account} onChange={(v) => setForm({ ...form, account: v })} emptyOption="Sin asignar" /></div>
               </label>
             </div>
           ) : (
@@ -636,10 +634,7 @@ export default function CommissionRules() {
                 )}
               </div>
               <label className="block text-sm">Cuenta contable (gasto comisión)
-                <select value={form.account} onChange={(e) => setForm({ ...form, account: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
-                  <option value="">Sin asignar</option>
-                  {accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}
-                </select>
+                <div className="mt-1"><AccountSelect accounts={accounts} value={form.account} onChange={(v) => setForm({ ...form, account: v })} emptyOption="Sin asignar" /></div>
               </label>
             </div>
           )}

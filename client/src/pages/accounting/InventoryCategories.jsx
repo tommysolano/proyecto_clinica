@@ -7,6 +7,7 @@ import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineSquares2X2, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineExclamationTriangle } from 'react-icons/hi2';
 import NumericInput from '../../components/NumericInput';
 import SearchableSelect from '../../components/SearchableSelect';
+import AccountSelect from '../../components/AccountSelect';
 
 const EMPTY = { code: '', name: '', kind: 'INVENTARIO', parent: '', depreciationRate: 0, usefulLifeYears: 0, usefulLifeMonths: 0, residualPercent: 0, noDepreciate: false, expenseType: '', assetAccount: '', depreciationAccount: '', accumDepreciationAccount: '', impairmentAssetAccount: '', impairmentExpenseAccount: '', expenseAccount: '', incomeAccount: '' };
 // Tipo de gasto para el estado de resultados (afecta dónde se registra la depreciación).
@@ -29,7 +30,7 @@ export default function InventoryCategories() {
   useEffect(() => {
     // eslint-disable-next-line react-hooks/set-state-in-effect -- carga inicial: el setState ocurre tras el await (asíncrono, seguro).
     load();
-    api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setAccounts((r.data || []).filter((a) => a.allowsMovement))).catch(() => {});
+    api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setAccounts(r.data || [])).catch(() => {});
   }, []);
 
   const idOf = (v) => (v && typeof v === 'object' ? v._id : v) || '';
@@ -98,14 +99,10 @@ export default function InventoryCategories() {
   // Campo de cuenta contable con buscador (reutilizado en todas las cuentas del modal).
   const acctField = (label, key, className = '') => (
     <Field label={label} className={className}>
-      <SearchableSelect
-        options={accounts}
+      <AccountSelect
+        accounts={accounts}
         value={form[key]}
         onChange={(v) => setForm({ ...form, [key]: v })}
-        getLabel={(a) => `${a.code} - ${a.name}`}
-        getSearchText={(a) => `${a.code} ${a.name}`}
-        placeholder="Seleccione…"
-        searchPlaceholder="Buscar por código o nombre…"
         allowClear
       />
     </Field>

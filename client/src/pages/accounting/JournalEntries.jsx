@@ -6,6 +6,7 @@ import Modal from '../../components/Modal';
 import { HiOutlinePlus, HiOutlineArrowUturnLeft, HiOutlineEye, HiOutlineXMark, HiOutlineCheckCircle, HiOutlineTrash, HiOutlineArrowTopRightOnSquare } from 'react-icons/hi2';
 import { fmt, fmtDate, today, startOfMonth, endOfMonth } from './_utils';
 import NumericInput from '../../components/NumericInput';
+import AccountSelect from '../../components/AccountSelect';
 import useDocDeepLink from '../../hooks/useDocDeepLink';
 import { sourceLabel, sourceActionLabel, sourceDeepLink } from './sourceDocs';
 
@@ -34,7 +35,7 @@ export default function JournalEntries() {
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
   useEffect(() => {
-    api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setAccounts((r.data || []).filter((a) => a.allowsMovement)));
+    api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setAccounts(r.data || []));
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -142,11 +143,8 @@ export default function JournalEntries() {
               <tbody>
                 {form.lines.map((l, i) => (
                   <tr key={i}>
-                    <td className="p-1">
-                      <select required value={l.account} onChange={(e) => setLine(i, { account: e.target.value })} className="w-full border border-slate-200 rounded px-2 py-1">
-                        <option value="">--</option>
-                        {accounts.map((a) => <option key={a._id} value={a._id}>{a.code} - {a.name}</option>)}
-                      </select>
+                    <td className="p-1 min-w-[220px]">
+                      <AccountSelect accounts={accounts} value={l.account} onChange={(v) => setLine(i, { account: v })} placeholder="--" required size="sm" />
                     </td>
                     <td className="p-1"><input value={l.description} onChange={(e) => setLine(i, { description: e.target.value })} className="w-full border border-slate-200 rounded px-2 py-1" /></td>
                     <td className="p-1"><NumericInput step="0.01" value={l.debit} onChange={(e) => setLine(i, { debit: +e.target.value })} className="w-24 border border-slate-200 rounded px-2 py-1 text-right" /></td>

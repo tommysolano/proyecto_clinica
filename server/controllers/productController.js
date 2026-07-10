@@ -149,10 +149,12 @@ exports.getProducts = async (req, res) => {
     };
 
     if (search) {
+      // Escapa el texto: códigos con ( ) + [ . etc. rompían el regex y "no encontraba" el producto.
+      const safe = String(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
       query.$and.push({
         $or: [
-          { name: { $regex: search, $options: 'i' } },
-          { code: { $regex: search, $options: 'i' } },
+          { name: { $regex: safe, $options: 'i' } },
+          { code: { $regex: safe, $options: 'i' } },
         ],
       });
     }

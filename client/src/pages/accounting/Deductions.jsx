@@ -6,6 +6,8 @@ import Field from '../../components/Field';
 import { HiOutlineReceiptPercent, HiOutlinePlus, HiOutlineTrash, HiOutlineArchiveBoxArrowDown } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
+import AccountSelect from '../../components/AccountSelect';
+import ProductSelect from '../../components/ProductSelect';
 
 const DED_TYPES = [
   ['CONSUMO', 'Consumo de productos/servicios'],
@@ -41,7 +43,7 @@ export default function Deductions() {
       api.get('/products').catch(() => ({ data: [] })),
     ]);
     setEmployees(e.data || []);
-    setAccounts((a.data || []).filter((x) => x.allowsMovement));
+    setAccounts(a.data || []);
     setProducts((p.data.products || p.data || []).filter((x) => x.category !== 'servicio' && !x.unlimited));
   };
   const loadList = async () => {
@@ -143,10 +145,7 @@ export default function Deductions() {
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
             <Field label="Fecha" required><input type="date" required value={ciForm.date} onChange={(e) => setCiForm({ ...ciForm, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Cuenta de gasto">
-              <select value={ciForm.account} onChange={(e) => setCiForm({ ...ciForm, account: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
-                <option value="">Consumo interno (por defecto)</option>
-                {accounts.filter((a) => a.code?.startsWith('6.') || a.code?.startsWith('5.')).map((a) => <option key={a._id} value={a._id}>{a.code} {a.name}</option>)}
-              </select>
+              <AccountSelect accounts={accounts} value={ciForm.account} onChange={(v) => setCiForm({ ...ciForm, account: v })} filter={(a) => a.code?.startsWith('6.') || a.code?.startsWith('5.')} emptyOption="Consumo interno (por defecto)" />
             </Field>
             <Field label="Notas"><input value={ciForm.notes} onChange={(e) => setCiForm({ ...ciForm, notes: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           </div>
@@ -154,10 +153,7 @@ export default function Deductions() {
           <div className="bg-emerald-50/50 rounded-xl p-3 flex gap-2 items-end">
             <div className="flex-1">
               <label className="text-xs text-slate-500">Producto</label>
-              <select value={ciSel.product} onChange={(e) => setCiSel({ ...ciSel, product: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
-                <option value="">Seleccionar producto…</option>
-                {products.map((p) => <option key={p._id} value={p._id}>{p.name} (stock {p.stock})</option>)}
-              </select>
+              <ProductSelect products={products} value={ciSel.product} onChange={(v) => setCiSel({ ...ciSel, product: v })} placeholder="Seleccionar producto…" />
             </div>
             <div className="w-24">
               <label className="text-xs text-slate-500">Cantidad</label>
@@ -205,10 +201,7 @@ export default function Deductions() {
           </div>
           <Field label="Fecha" required><input type="date" required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           <Field label="Cuenta contraparte (opcional)">
-            <select value={form.counterpartAccount} onChange={(e) => setForm({ ...form, counterpartAccount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
-              <option value="">Automática según el tipo</option>
-              {accounts.map((a) => <option key={a._id} value={a._id}>{a.code} {a.name}</option>)}
-            </select>
+            <AccountSelect accounts={accounts} value={form.counterpartAccount} onChange={(v) => setForm({ ...form, counterpartAccount: v })} emptyOption="Automática según el tipo" />
           </Field>
           <Field label="Descripción"><input value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" placeholder="Concepto del descuento" /></Field>
           <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2">El monto se descontará automáticamente del neto al cerrar el rol del período correspondiente.</div>

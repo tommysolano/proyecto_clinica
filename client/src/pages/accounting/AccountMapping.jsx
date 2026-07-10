@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlineAdjustmentsHorizontal } from 'react-icons/hi2';
+import AccountSelect from '../../components/AccountSelect';
 
 /**
  * Configuración del mapa de cuentas contables: el contador define qué cuenta
@@ -20,7 +21,8 @@ export default function AccountMapping() {
       api.get('/chart-of-accounts'),
     ]);
     setRoles(r.data.roles || []);
-    setAccounts((a.data || []).filter((x) => x.allowsMovement));
+    // Lista completa (incluye agrupadoras): AccountSelect las usa para la ruta padre.
+    setAccounts(a.data || []);
     const d = {};
     (r.data.roles || []).forEach((role) => { d[role.key] = role.configured || ''; });
     setDraft(d);
@@ -59,10 +61,9 @@ export default function AccountMapping() {
                 <tr key={r.key} className="border-t">
                   <td className="px-4 py-2 font-medium text-slate-700">{r.label}</td>
                   <td className="px-4 py-2">
-                    <select aria-label={`Cuenta para ${r.label}`} value={draft[r.key] || ''} onChange={(e) => setDraft({ ...draft, [r.key]: e.target.value })} className="w-full max-w-md border border-slate-200 rounded-xl px-2 py-1.5 text-sm">
-                      <option value="">(Predeterminada: {r.defaultCode})</option>
-                      {accounts.map((a) => <option key={a._id} value={a._id}>{a.code} — {a.name}</option>)}
-                    </select>
+                    <div className="max-w-md">
+                      <AccountSelect accounts={accounts} value={draft[r.key] || ''} onChange={(v) => setDraft({ ...draft, [r.key]: v })} emptyOption={`(Predeterminada: ${r.defaultCode})`} size="sm" />
+                    </div>
                   </td>
                   <td className="px-4 py-2 text-xs text-slate-500">{r.effective ? `${r.effective.code} ${r.effective.name}` : <span className="text-rose-500">No resuelta</span>}</td>
                 </tr>

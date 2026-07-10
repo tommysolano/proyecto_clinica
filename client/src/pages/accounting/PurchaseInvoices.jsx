@@ -8,11 +8,14 @@ import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import JournalEntryEditor from '../../components/JournalEntryEditor';
 import SearchableSelect from '../../components/SearchableSelect';
+import AccountSelect from '../../components/AccountSelect';
 import ProductFormModal from '../../components/ProductFormModal';
 import { useAuth } from '../../context/AuthContext';
 import useDocDeepLink from '../../hooks/useDocDeepLink';
 
 const PAGE_SIZE = 100;
+// Cuentas elegibles como destino de una línea de compra: gasto, costo, inventario o activo.
+const expenseAccountFilter = (a) => a.code?.startsWith('6.') || a.code?.startsWith('5.') || a.code?.startsWith('1.1.04') || a.code?.startsWith('1.2.');
 // Captura de activo fijo (los datos contables —cuentas, depreciación, vida útil,
 // residual— NO se piden: se derivan de la categoría de activo fijo).
 const EMPTY_FA = { category: '', assetType: '', code: '', name: '', serial: '', location: '', locationClinic: '', acquisitionDate: '', startDate: '', depreciationRate: 0, usefulLifeMonths: 0, residualPercent: 0, assetAccount: '', depreciationAccount: '', accumDepreciationAccount: '' };
@@ -138,7 +141,9 @@ export default function PurchaseInvoices() {
 
   useEffect(() => {
     api.get('/suppliers').then((r) => setSuppliers(r.data || []));
-    api.get('/chart-of-accounts').then((r) => setAccounts((r.data || []).filter((a) => a.allowsMovement && (a.code?.startsWith('6.') || a.code?.startsWith('5.') || a.code?.startsWith('1.1.04') || a.code?.startsWith('1.2.')))));
+    // Plan completo: AccountSelect filtra las elegibles (gasto/costo/inventario/activo)
+    // y usa las agrupadoras para mostrar la ruta padre de cada cuenta.
+    api.get('/chart-of-accounts').then((r) => setAccounts(r.data || []));
     loadProducts();
     api.get('/inventory-advanced/warehouses').then((r) => setWarehouses(r.data || [])).catch(() => {});
     api.get('/banks/accounts').then((r) => setBanks(r.data || [])).catch(() => {});
@@ -885,7 +890,7 @@ export default function PurchaseInvoices() {
                               {hasSplits ? (
                                 <div className="text-xs text-slate-500 border border-slate-200 rounded-lg px-2 py-2 bg-slate-50">Cuentas distribuidas (ver abajo)</div>
                               ) : (
-                                <SearchableSelect options={accounts} value={it.account} onChange={(v) => setItem(it._uid, { account: v })} getLabel={(a) => `${a.code} ${a.name}`} getSearchText={(a) => `${a.code} ${a.name}`} placeholder="Cuenta de gasto…" searchPlaceholder="Buscar cuenta…" size="sm" />
+                                <AccountSelect accounts={accounts} value={it.account} onChange={(v) => setItem(it._uid, { account: v })} filter={expenseAccountFilter} placeholder="Cuenta de gasto…" size="sm" />
                               )}
                             </td>
                             <td className="py-1.5 px-2 min-w-[160px]"><input value={it.description} onChange={(e) => setItem(it._uid, { description: e.target.value })} placeholder="Detalle del gasto" className={inputCls} /></td>
@@ -917,7 +922,7 @@ export default function PurchaseInvoices() {
                               </div>
                               {splits.map((sp, j) => (
                                 <div key={j} className="flex items-center gap-2 mb-1.5">
-                                  <div className="flex-1 min-w-0"><SearchableSelect options={accounts} value={sp.account} onChange={(v) => setSplit(j, { account: v })} getLabel={(a) => `${a.code} ${a.name}`} placeholder="Cuenta…" searchPlaceholder="Buscar cuenta…" size="sm" /></div>
+                                  <div className="flex-1 min-w-0"><AccountSelect accounts={accounts} value={sp.account} onChange={(v) => setSplit(j, { account: v })} filter={expenseAccountFilter} placeholder="Cuenta…" size="sm" /></div>
                                   <NumericInput step="0.01" placeholder="Monto" value={sp.amount} onChange={(e) => setSplit(j, { amount: +e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs w-28 text-right" />
                                   <input placeholder="Detalle" value={sp.description} onChange={(e) => setSplit(j, { description: e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-xs flex-1 min-w-0" />
                                   <button type="button" onClick={() => setItem(it._uid, { accountSplits: splits.filter((_, x) => x !== j) })} className="text-rose-500 shrink-0">×</button>
