@@ -22,8 +22,9 @@ router.get('/referral-options', requireRole('admin', 'cajero', 'call_center', 'm
 // Nota: la consulta de cédula/RUC al SRI vive en /api/lookup/tax-id/:id
 // (endpoint genérico, reutilizado por todos los formularios del sistema).
 
-// Cajeros, admins, doctores, call_center, enfermero y marketing ven pacientes
-router.get('/', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'), getPatients);
+// Cajeros, admins, doctores, call_center, enfermero y marketing ven pacientes.
+// contabilidad: solo el listado (lo usa el buscador de paciente en "Nueva venta").
+router.get('/', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing', 'contabilidad'), getPatients);
 router.get('/:id', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'), getPatient);
 // Compras y aplicaciones del paciente (para el seguimiento)
 router.get('/:id/purchases', requireRole('admin', 'cajero', 'doctor', 'call_center', 'enfermero', 'marketing'), getPatientPurchases);

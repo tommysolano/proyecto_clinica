@@ -35,7 +35,7 @@ const paymentMethods = {
 export default function Sales() {
   const { hasRole } = useAuth();
   const [journalSale, setJournalSale] = useState(null); // venta cuyo asiento se edita
-  const canCreate = hasRole('admin', 'cajero');
+  const canCreate = hasRole('admin', 'cajero', 'contabilidad');
   const canCancel = hasRole('admin');
   const canInvoice = hasRole('admin', 'cajero');
   const canAccounting = hasRole('admin', 'contabilidad');
