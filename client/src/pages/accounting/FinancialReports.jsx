@@ -10,6 +10,7 @@ import {
   HiOutlineInformationCircle,
 } from 'react-icons/hi2';
 import { fmt, fmtDate, startOfMonth, today, downloadBlob } from './_utils';
+import LiquidityProjection from './_LiquidityProjection';
 
 const REPORT_TABS = [
   ['PYG', 'Estado Resultados'],
@@ -287,6 +288,7 @@ function CashFlowReport({ data, onAccountClick }) {
         <Stat title="Salidas" value={`$${fmt(data.totalOut)}`} color="text-rose-600" />
         <Stat title="Saldo final" value={`$${fmt(data.saldoFinal)}`} color={(data.saldoFinal || 0) < 0 ? 'text-rose-600' : 'text-slate-800'} />
       </div>
+      <LiquidityProjection p={data.proyeccion} />
       <FinancialTable
         title="Cuentas de efectivo y bancos"
         rows={accounts}
