@@ -123,10 +123,12 @@ exports.createSale = async (req, res) => {
         const txProductIds = [...new Set(items.map((i) => String(i.product)))];
         // Catálogo compartido: el producto se resuelve por _id en toda la organización
         // (no por la sucursal dueña). El stock, en cambio, se descuenta por sucursal.
+        // Se puebla la categoría contable: es la fuente principal de las cuentas del
+        // asiento (ingreso por venta, costo de venta e inventario), igual que en compras.
         const txProducts = await Product.find({
           _id: { $in: txProductIds },
           active: true,
-        }).session(session);
+        }).populate('inventoryCategory').session(session);
         if (txProducts.length !== txProductIds.length) {
           throw Object.assign(new Error('Algun producto no existe o esta inactivo'), { status: 400 });
         }
@@ -331,10 +333,6 @@ exports.createSale = async (req, res) => {
         // Ingreso diferido (paquetes): la base de los ítems marcados como
         // deferredIncome NO se reconoce ahora; se acredita a "Ingresos diferidos".
         const isDeferred = (i) => txProductMap.get(String(i.product))?.deferredIncome === true;
-        const productBase = +txSaleItems
-          .filter((i) => i.category !== 'servicio' && !isDeferred(i))
-          .reduce((s, i) => s + i.taxBase + (i.discountTaxBase || 0), 0)
-          .toFixed(2);
         const serviceBase = +txSaleItems
           .filter((i) => i.category === 'servicio' && !isDeferred(i))
           .reduce((s, i) => s + i.taxBase + (i.discountTaxBase || 0), 0)
@@ -343,9 +341,28 @@ exports.createSale = async (req, res) => {
           .filter(isDeferred)
           .reduce((s, i) => s + i.taxBase + (i.discountTaxBase || 0), 0)
           .toFixed(2);
-        if (productBase > 0) {
-          const accProd = await getAccount(req.clinicId, 'ingresoProductos');
-          txLines.push({ account: accProd._id, debit: 0, credit: productBase, description: 'Ingreso productos' });
+        // Ingreso por PRODUCTOS: la cuenta sale de la categoría contable del producto
+        // (incomeAccount) → cuenta legacy del producto → rol 'ingresoProductos'.
+        // Se agrupa por cuenta (una línea de crédito por cada cuenta de ingreso).
+        {
+          const incomeByAccount = new Map();
+          let accProdDefault = null;
+          for (const i of txSaleItems) {
+            if (i.category === 'servicio' || isDeferred(i)) continue;
+            const base = Number(i.taxBase || 0) + Number(i.discountTaxBase || 0);
+            if (base <= 0) continue;
+            const prod = txProductMap.get(String(i.product));
+            let acc = prod?.inventoryCategory?.incomeAccount || prod?.incomeAccount || null;
+            if (!acc) {
+              if (!accProdDefault) accProdDefault = await getAccount(req.clinicId, 'ingresoProductos');
+              acc = accProdDefault._id;
+            }
+            const key = String(acc);
+            incomeByAccount.set(key, { account: acc, amount: (incomeByAccount.get(key)?.amount || 0) + base });
+          }
+          for (const { account, amount } of incomeByAccount.values()) {
+            txLines.push({ account, debit: 0, credit: +amount.toFixed(2), description: 'Ingreso productos' });
+          }
         }
         if (serviceBase > 0) {
           const accServ = await getAccount(req.clinicId, 'ingresoServicios');
@@ -367,6 +384,9 @@ exports.createSale = async (req, res) => {
           txLines.push({ account: desc._id, debit: txTotals.discountTaxBase, credit: 0, description: 'Descuento en venta' });
         }
 
+        // Asiento de COSTO por producto vendido (Débito: costo de venta / Crédito: inventario),
+        // valorado por el kardex (capas FIFO). Las cuentas salen de la categoría contable del
+        // producto (expenseAccount/assetAccount) → cuentas legacy del producto → rol por defecto.
         const costoDefault = await getAccount(req.clinicId, 'costoProductos');
         const inventarioDefault = await getAccount(req.clinicId, 'inventario');
         for (const it of txSaleItems) {
@@ -374,8 +394,9 @@ exports.createSale = async (req, res) => {
           if (!prod || txIsUnlimited(prod)) continue;
           const totalCost = +Number(it._cogs || 0).toFixed(2);
           if (totalCost <= 0) continue;
-          txLines.push({ account: prod.expenseAccount || costoDefault._id, debit: totalCost, credit: 0, description: `Costo venta ${it.productName}` });
-          txLines.push({ account: prod.inventoryAccount || inventarioDefault._id, debit: 0, credit: totalCost, description: `Salida inventario ${it.productName}` });
+          const cat = prod.inventoryCategory || null;
+          txLines.push({ account: cat?.expenseAccount || prod.expenseAccount || costoDefault._id, debit: totalCost, credit: 0, description: `Costo venta ${it.productName}` });
+          txLines.push({ account: cat?.assetAccount || prod.inventoryAccount || inventarioDefault._id, debit: 0, credit: totalCost, description: `Salida inventario ${it.productName}` });
         }
 
         const txEntry = await createEntry({
@@ -413,7 +434,7 @@ exports.createSale = async (req, res) => {
               partyName: txSale.clientName || '',
               treatment: it.treatment || null,
               deferredAccount: accDeferred._id,
-              incomeAccount: (prod && prod.incomeAccount) || accDeferredIncomeTarget._id,
+              incomeAccount: prod?.inventoryCategory?.incomeAccount || (prod && prod.incomeAccount) || accDeferredIncomeTarget._id,
               total: base,
               sessionsTotal: (prod && prod.sessionsIncluded) || 0,
               issueDate: saleDate,
