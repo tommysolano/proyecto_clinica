@@ -12,6 +12,7 @@ import useDocDeepLink from '../hooks/useDocDeepLink';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import SriStatus from '../components/SriStatus';
 import EmailStatus from '../components/EmailStatus';
+import ConsumidorFinalAlert from '../components/ConsumidorFinalAlert';
 import useEmailValidation from '../hooks/useEmailValidation';
 import {
   HiOutlinePlus,
@@ -831,6 +832,7 @@ export default function Sales() {
               </select>
             </div>
           </div>
+          <ConsumidorFinalAlert cedula={form.clientCedula} />
           <div>
             <label className="lbl">Dirección cliente</label>
             <input

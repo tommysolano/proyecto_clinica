@@ -6,6 +6,7 @@ import SriStatus from './SriStatus';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import EmailStatus from './EmailStatus';
 import useEmailValidation from '../hooks/useEmailValidation';
+import ConsumidorFinalAlert from './ConsumidorFinalAlert';
 import {
   HiOutlineCheckCircle,
   HiOutlineBanknotes,
@@ -227,6 +228,7 @@ export default function AttendChargeModal({ appointment, doctors = [], onClose, 
                     <input value={pay.clientPhone} onChange={(e) => setPay({ ...pay, clientPhone: e.target.value })} placeholder="Opcional" className="block w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm bg-slate-50/50" />
                   </label>
                 </div>
+                <ConsumidorFinalAlert cedula={pay.clientCedula} className="mt-1" />
               </div>
               <div className="rounded-xl border border-slate-200 divide-y divide-slate-100">
                 {items.length === 0 && (
