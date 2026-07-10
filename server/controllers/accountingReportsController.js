@@ -762,8 +762,9 @@ exports.accountsReceivableAging = async (req, res) => {
         bucket: bucket(days),
       });
     }
-    // Ventas a crédito con saldo pendiente (CxC directa, sin factura electrónica)
-    const creditSales = await Sale.find({ clinic: req.clinicId, status: 'completada', paymentMethod: 'credito', balance: { $gt: 0.01 } });
+    // Ventas con saldo pendiente (CxC directa, sin factura electrónica): crédito total
+    // o la parte a crédito de un pago dividido — cualquier venta con balance > 0.
+    const creditSales = await Sale.find({ clinic: req.clinicId, status: 'completada', balance: { $gt: 0.01 } });
     for (const s of creditSales) {
       const emitido = new Date(s.createdAt);
       const dueDate = s.dueDate ? new Date(s.dueDate) : new Date(emitido.getTime() + 30 * 86400000);

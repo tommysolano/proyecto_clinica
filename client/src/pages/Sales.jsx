@@ -32,6 +32,8 @@ const paymentMethods = {
   transferencia: 'Transferencia',
   credito: 'Crédito (CxC)',
 };
+// Etiqueta legible de un método (incluye 'mixto' para el detalle).
+const methodLabel = (m) => paymentMethods[m] || (m === 'mixto' ? 'Pago mixto' : m || '—');
 
 export default function Sales() {
   const { hasRole } = useAuth();
@@ -77,6 +79,11 @@ export default function Sales() {
     items: [],
   });
   const [currentItem, setCurrentItem] = useState({ product: '', quantity: 1 });
+  // Pago dividido: el cliente paga con varios métodos (p.ej. mitad efectivo + mitad
+  // tarjeta) o deja una parte a crédito. Cuando está activo, `splitPayments` es la
+  // fuente de verdad y se envía como `payments` al backend.
+  const [splitMode, setSplitMode] = useState(false);
+  const [splitPayments, setSplitPayments] = useState([]);
   const [patientSearch, setPatientSearch] = useState('');
   const [guayaquilZones, setGuayaquilZones] = useState([]);
   // Medios de pago (cuentas bancarias / tarjetas) y personal para recomendación
@@ -198,8 +205,22 @@ export default function Sales() {
     });
     setCurrentItem({ product: '', quantity: 1 });
     setPatientSearch('');
+    setSplitMode(false);
+    setSplitPayments([]);
     setModalOpen(true);
   };
+
+  // ── Pago dividido ──────────────────────────────────────────────────────────
+  const splitPaid = splitPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  const splitRemaining = +(total - splitPaid).toFixed(2);
+  const enableSplit = () => {
+    // Al activar, arranca con lo que haya en el método simple + el restante sugerido.
+    setSplitPayments([{ method: form.paymentMethod || 'efectivo', amount: +total.toFixed(2), bankAccount: form.bankAccount || '', creditCard: form.creditCard || '', cardPos: form.cardPos || '', cardLote: form.cardLote || '', cardVoucher: form.cardVoucher || '' }]);
+    setSplitMode(true);
+  };
+  const addSplitRow = () => setSplitPayments((rows) => [...rows, { method: 'efectivo', amount: splitRemaining > 0 ? +splitRemaining.toFixed(2) : 0, bankAccount: '', creditCard: '', cardPos: '', cardLote: '', cardVoucher: '' }]);
+  const setSplitRow = (i, patch) => setSplitPayments((rows) => rows.map((r, x) => (x === i ? { ...r, ...patch } : r)));
+  const removeSplitRow = (i) => setSplitPayments((rows) => rows.filter((_, x) => x !== i));
 
   const addItem = () => {
     if (!currentItem.product) return toast.error('Selecciona un producto');
@@ -300,21 +321,51 @@ export default function Sales() {
     if (form.items.length === 0) return toast.error('Agrega al menos un producto');
     setSaving(true);
     try {
-      if (form.paymentMethod === 'transferencia' && payOptions.accounts.length && !form.bankAccount) {
-        setSaving(false);
-        return toast.error('Selecciona la cuenta bancaria de destino');
-      }
-      if (form.paymentMethod === 'tarjeta' && payOptions.cards.length && !form.creditCard) {
-        setSaving(false);
-        return toast.error('Selecciona la tarjeta / POS');
+      // Datos de pago: modo dividido (varios métodos) o método simple.
+      let paymentPayload;
+      if (splitMode) {
+        const rows = splitPayments.filter((p) => (Number(p.amount) || 0) > 0);
+        if (!rows.length) { setSaving(false); return toast.error('Agrega al menos un método de pago con monto'); }
+        if (Math.abs(splitRemaining) > 0.01) {
+          setSaving(false);
+          return toast.error(`Los pagos ($${splitPaid.toFixed(2)}) no cuadran con el total ($${total.toFixed(2)}). Falta $${splitRemaining.toFixed(2)}.`);
+        }
+        for (const p of rows) {
+          if (p.method === 'transferencia' && payOptions.accounts.length && !p.bankAccount) { setSaving(false); return toast.error('Selecciona la cuenta bancaria en el pago por transferencia'); }
+          if (p.method === 'tarjeta' && payOptions.cards.length && !p.creditCard) { setSaving(false); return toast.error('Selecciona la tarjeta en el pago con tarjeta'); }
+        }
+        paymentPayload = {
+          payments: rows.map((p) => ({
+            method: p.method,
+            amount: Number(p.amount) || 0,
+            bankAccount: p.method === 'transferencia' ? p.bankAccount || null : null,
+            creditCard: p.method === 'tarjeta' ? p.creditCard || null : null,
+            cardPos: p.method === 'tarjeta' ? p.cardPos || '' : '',
+            cardLote: p.method === 'tarjeta' ? p.cardLote || '' : '',
+            cardVoucher: p.method === 'tarjeta' ? p.cardVoucher || '' : '',
+          })),
+          dueDate: form.dueDate || null,
+        };
+      } else {
+        if (form.paymentMethod === 'transferencia' && payOptions.accounts.length && !form.bankAccount) {
+          setSaving(false);
+          return toast.error('Selecciona la cuenta bancaria de destino');
+        }
+        if (form.paymentMethod === 'tarjeta' && payOptions.cards.length && !form.creditCard) {
+          setSaving(false);
+          return toast.error('Selecciona la tarjeta / POS');
+        }
+        paymentPayload = {
+          bankAccount: form.paymentMethod === 'transferencia' ? form.bankAccount || null : null,
+          creditCard: form.paymentMethod === 'tarjeta' ? form.creditCard || null : null,
+          cardPos: form.paymentMethod === 'tarjeta' ? form.cardPos || '' : '',
+          cardLote: form.paymentMethod === 'tarjeta' ? form.cardLote || '' : '',
+          cardVoucher: form.paymentMethod === 'tarjeta' ? form.cardVoucher || '' : '',
+        };
       }
       await api.post('/sales', {
         ...form,
-        bankAccount: form.paymentMethod === 'transferencia' ? form.bankAccount || null : null,
-        creditCard: form.paymentMethod === 'tarjeta' ? form.creditCard || null : null,
-        cardPos: form.paymentMethod === 'tarjeta' ? form.cardPos || '' : '',
-        cardLote: form.paymentMethod === 'tarjeta' ? form.cardLote || '' : '',
-        cardVoucher: form.paymentMethod === 'tarjeta' ? form.cardVoucher || '' : '',
+        ...paymentPayload,
         recommendedBy: form.recommendedBy || null,
         items: form.items.map((i) => ({
           product: i.product,
@@ -537,7 +588,7 @@ export default function Sales() {
                     </td>
                     <td className="px-6 py-3 text-sm font-bold text-slate-800 text-right">
                       ${s.total.toFixed(2)}
-                      {s.paymentMethod === 'credito' && s.balance > 0.01 && (
+                      {s.balance > 0.01 && (
                         <span className="block text-[10px] font-medium text-amber-600">Saldo ${s.balance.toFixed(2)}</span>
                       )}
                     </td>
@@ -587,7 +638,7 @@ export default function Sales() {
                           <HiOutlineDocumentText className="w-4 h-4" />
                         </button>
                       )}
-                      {s.status === 'completada' && s.paymentMethod === 'credito' && s.balance > 0.01 && (
+                      {s.status === 'completada' && s.balance > 0.01 && (
                         <button
                           onClick={() => collectSale(s)}
                           className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer"
@@ -729,6 +780,7 @@ export default function Sales() {
                 className="input"
               />
             </div>
+            {!splitMode && (
             <div>
               <label className="lbl">Método de pago</label>
               <select
@@ -742,8 +794,10 @@ export default function Sales() {
                   </option>
                 ))}
               </select>
+              <button type="button" onClick={enableSplit} className="mt-1 text-xs text-emerald-700 hover:underline bg-transparent border-none cursor-pointer p-0">Dividir en varios métodos</button>
             </div>
-            {form.paymentMethod === 'transferencia' && (
+            )}
+            {!splitMode && form.paymentMethod === 'transferencia' && (
               <div>
                 <label className="lbl">Cuenta bancaria de destino</label>
                 <select
@@ -758,7 +812,7 @@ export default function Sales() {
                 </select>
               </div>
             )}
-            {form.paymentMethod === 'tarjeta' && (
+            {!splitMode && form.paymentMethod === 'tarjeta' && (
               <>
                 <div>
                   <label className="lbl">Tarjeta / Adquirente</label>
@@ -812,10 +866,72 @@ export default function Sales() {
                 </div>
               </>
             )}
-            {form.paymentMethod === 'credito' && (
+            {!splitMode && form.paymentMethod === 'credito' && (
               <div>
                 <label className="lbl">Vence (crédito)</label>
                 <input type="date" value={form.dueDate || ''} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="input" />
+              </div>
+            )}
+            {splitMode && (
+              <div className="sm:col-span-3 rounded-xl border border-slate-200 p-3 space-y-2 bg-slate-50/40">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-semibold text-slate-700">Pago dividido (varios métodos)</span>
+                  <button type="button" onClick={() => { setSplitMode(false); setSplitPayments([]); }} className="text-xs text-slate-500 hover:text-slate-700 bg-transparent border-none cursor-pointer">Volver a un solo método</button>
+                </div>
+                {splitPayments.map((p, i) => (
+                  <div key={i} className="flex flex-wrap items-end gap-2 bg-white rounded-lg border border-slate-100 p-2">
+                    <div className="w-36">
+                      <label className="lbl">Método</label>
+                      <select value={p.method} onChange={(e) => setSplitRow(i, { method: e.target.value, bankAccount: '', creditCard: '', cardPos: '', cardLote: '', cardVoucher: '' })} className="input">
+                        {Object.entries(paymentMethods).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                      </select>
+                    </div>
+                    <div className="w-28">
+                      <label className="lbl">Monto</label>
+                      <NumericInput step="0.01" value={p.amount} onChange={(e) => setSplitRow(i, { amount: e.target.value })} className="input" />
+                    </div>
+                    {p.method === 'transferencia' && (
+                      <div className="flex-1 min-w-[180px]">
+                        <label className="lbl">Cuenta bancaria</label>
+                        <select value={p.bankAccount || ''} onChange={(e) => setSplitRow(i, { bankAccount: e.target.value })} className="input">
+                          <option value="">{payOptions.accounts.length ? 'Seleccionar cuenta…' : 'No hay cuentas'}</option>
+                          {payOptions.accounts.map((a) => <option key={a._id} value={a._id}>{a.name} — {a.bank}</option>)}
+                        </select>
+                      </div>
+                    )}
+                    {p.method === 'tarjeta' && (
+                      <>
+                        <div className="flex-1 min-w-[150px]">
+                          <label className="lbl">Tarjeta</label>
+                          <select value={p.creditCard || ''} onChange={(e) => setSplitRow(i, { creditCard: e.target.value })} className="input">
+                            <option value="">{payOptions.cards.length ? 'Seleccionar…' : 'No hay tarjetas'}</option>
+                            {payOptions.cards.map((c) => <option key={c._id} value={c._id}>{c.name} ({c.brand})</option>)}
+                          </select>
+                        </div>
+                        <div className="w-24">
+                          <label className="lbl">N° lote</label>
+                          <input value={p.cardLote || ''} onChange={(e) => setSplitRow(i, { cardLote: e.target.value })} className="input" />
+                        </div>
+                      </>
+                    )}
+                    <button type="button" onClick={() => removeSplitRow(i)} className="text-rose-500 hover:text-rose-600 pb-2 bg-transparent border-none cursor-pointer" title="Quitar método"><HiOutlineTrash className="w-4 h-4" /></button>
+                  </div>
+                ))}
+                <div className="flex items-center justify-between flex-wrap gap-2">
+                  <button type="button" onClick={addSplitRow} className="text-emerald-600 text-sm flex items-center gap-1 bg-transparent border-none cursor-pointer"><HiOutlinePlus className="w-4 h-4" /> Agregar método</button>
+                  <div className="text-sm text-slate-600">
+                    Pagado: <b className="font-mono">${splitPaid.toFixed(2)}</b> / Total: <b className="font-mono">${total.toFixed(2)}</b>
+                    {Math.abs(splitRemaining) > 0.01
+                      ? <span className={`ml-2 font-semibold ${splitRemaining > 0 ? 'text-amber-600' : 'text-rose-600'}`}>{splitRemaining > 0 ? `Falta $${splitRemaining.toFixed(2)}` : `Sobra $${(-splitRemaining).toFixed(2)}`}</span>
+                      : <span className="ml-2 text-emerald-600 font-semibold">✓ Cuadra</span>}
+                  </div>
+                </div>
+                {splitPayments.some((p) => p.method === 'credito') && (
+                  <div className="w-48">
+                    <label className="lbl">Vence (parte a crédito)</label>
+                    <input type="date" value={form.dueDate || ''} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="input" />
+                  </div>
+                )}
               </div>
             )}
             <div>
@@ -1082,11 +1198,25 @@ export default function Sales() {
               </div>
               <div>
                 <p className="text-xs text-slate-500">Método de pago</p>
-                <p className="capitalize">
-                  {paymentMethods[detailModal.paymentMethod]}
+                <p>
+                  {methodLabel(detailModal.paymentMethod)}
                   {detailModal.bankAccount && ` · ${detailModal.bankAccount.name}`}
                   {detailModal.creditCard && ` · ${detailModal.creditCard.name}${detailModal.cardPos ? ` (POS ${detailModal.cardPos})` : ''}`}
                 </p>
+                {/* Desglose cuando la venta se pagó con varios métodos. */}
+                {Array.isArray(detailModal.payments) && detailModal.payments.length > 1 && (
+                  <ul className="mt-1 text-xs text-slate-600 space-y-0.5">
+                    {detailModal.payments.map((p, i) => (
+                      <li key={i} className="flex justify-between gap-3">
+                        <span>{methodLabel(p.method)}{p.cardLote ? ` · lote ${p.cardLote}` : ''}</span>
+                        <span className="font-mono">${Number(p.amount || 0).toFixed(2)}</span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+                {detailModal.balance > 0.01 && (
+                  <p className="text-xs text-amber-600 font-medium mt-0.5">Saldo por cobrar: ${detailModal.balance.toFixed(2)}</p>
+                )}
               </div>
             </div>
             {(detailModal.cashier || detailModal.callCenter || detailModal.doctor || detailModal.nurse || detailModal.recommendedBy) && (

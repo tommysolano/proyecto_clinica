@@ -34,6 +34,22 @@ const saleItemSchema = new mongoose.Schema({
   subtotal: { type: Number, required: true },
 });
 
+// Un renglón de pago. Una venta puede pagarse con VARIOS métodos a la vez
+// (p.ej. mitad efectivo + mitad tarjeta) o dejar una parte a crédito (CxC).
+// Cada renglón lleva sus propios datos de banco/tarjeta según el método.
+const salePaymentSchema = new mongoose.Schema(
+  {
+    method: { type: String, enum: ['efectivo', 'tarjeta', 'transferencia', 'credito'], required: true },
+    amount: { type: Number, required: true, min: 0 },
+    bankAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'BankAccount', default: null },
+    creditCard: { type: mongoose.Schema.Types.ObjectId, ref: 'CreditCard', default: null },
+    cardPos: { type: String, default: '' },
+    cardLote: { type: String, default: '', trim: true },
+    cardVoucher: { type: String, default: '', trim: true },
+  },
+  { _id: false }
+);
+
 const saleSchema = new mongoose.Schema(
   {
     clinic: {
@@ -63,11 +79,17 @@ const saleSchema = new mongoose.Schema(
     discountTaxBase: { type: Number, default: 0 },
     taxAmount: { type: Number, required: true },
     total: { type: Number, required: true },
+    // Método de pago RESUMEN: el método único usado, o 'mixto' si se pagó con
+    // varios. El desglose real está en `payments`.
     paymentMethod: {
       type: String,
-      enum: ['efectivo', 'tarjeta', 'transferencia', 'credito'],
+      enum: ['efectivo', 'tarjeta', 'transferencia', 'credito', 'mixto'],
       default: 'efectivo',
     },
+    // Desglose de pago (uno o varios métodos). Fuente de verdad del cómo se pagó.
+    // Para ventas antiguas (antes del pago dividido) queda vacío y se interpreta
+    // como un solo pago = { method: paymentMethod, amount: total }.
+    payments: { type: [salePaymentSchema], default: [] },
     // Detalle del medio de pago según configuración contable:
     //  - transferencia/deposito -> cuenta bancaria destino
     //  - tarjeta -> tarjeta/POS configurado en bancos

@@ -18,7 +18,13 @@ const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 exports.searchCardSales = async (req, res) => {
   try {
     const { lote, from, to, cardPos, creditCard, includeSettled } = req.query;
-    const filter = { clinic: req.clinicId, paymentMethod: 'tarjeta', status: 'completada' };
+    // Incluye ventas pagadas con tarjeta, sea pago único (paymentMethod) o dividido
+    // (un renglón de `payments` con method 'tarjeta').
+    const filter = {
+      clinic: req.clinicId,
+      status: 'completada',
+      $or: [{ paymentMethod: 'tarjeta' }, { 'payments.method': 'tarjeta' }],
+    };
     if (lote && lote.trim()) filter.cardLote = new RegExp(`^${escapeRegex(lote.trim())}$`, 'i');
     if (cardPos) filter.cardPos = cardPos;
     if (creditCard) filter.creditCard = creditCard;

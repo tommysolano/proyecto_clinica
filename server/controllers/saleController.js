@@ -196,6 +196,49 @@ exports.createSale = async (req, res) => {
         });
         const txTotals = summarizeSaleTaxes(txSaleItems);
 
+        // ── Desglose de pago (uno o varios métodos) ──────────────────────────
+        // Si el cliente envía `payments`, se usa (pago dividido: p.ej. mitad
+        // efectivo + mitad tarjeta, o una parte a crédito). Si no, se sintetiza
+        // un solo pago del método clásico (compatibilidad con clientes viejos).
+        const VALID_METHODS = new Set(['efectivo', 'tarjeta', 'transferencia', 'credito']);
+        const rawPayments = Array.isArray(req.body.payments) && req.body.payments.length
+          ? req.body.payments
+          : [{
+              method: paymentMethod || 'efectivo',
+              amount: txTotals.total,
+              bankAccount: req.body.bankAccount || null,
+              creditCard: req.body.creditCard || null,
+              cardPos: req.body.cardPos || '',
+              cardLote: req.body.cardLote || '',
+              cardVoucher: req.body.cardVoucher || '',
+            }];
+        const txPayments = rawPayments
+          .map((p) => ({
+            method: p.method,
+            amount: +(Number(p.amount) || 0).toFixed(2),
+            bankAccount: p.method === 'transferencia' ? (p.bankAccount || null) : null,
+            creditCard: p.method === 'tarjeta' ? (p.creditCard || null) : null,
+            cardPos: p.method === 'tarjeta' ? (p.cardPos || '') : '',
+            cardLote: p.method === 'tarjeta' ? String(p.cardLote || '').trim() : '',
+            cardVoucher: p.method === 'tarjeta' ? String(p.cardVoucher || '').trim() : '',
+          }))
+          .filter((p) => p.amount > 0);
+        if (!txPayments.length) throw Object.assign(new Error('Debe indicar al menos un método de pago'), { status: 400 });
+        for (const p of txPayments) {
+          if (!VALID_METHODS.has(p.method)) throw Object.assign(new Error(`Método de pago inválido: ${p.method}`), { status: 400 });
+        }
+        const paidSum = +txPayments.reduce((s, p) => s + p.amount, 0).toFixed(2);
+        if (Math.abs(paidSum - txTotals.total) > 0.01) {
+          throw Object.assign(new Error(`Los pagos ($${paidSum.toFixed(2)}) no cuadran con el total de la venta ($${txTotals.total.toFixed(2)})`), { status: 400 });
+        }
+        const creditoAmount = +txPayments.filter((p) => p.method === 'credito').reduce((s, p) => s + p.amount, 0).toFixed(2);
+        const distinctMethods = [...new Set(txPayments.map((p) => p.method))];
+        const resolvedMethod = distinctMethods.length === 1 ? distinctMethods[0] : 'mixto';
+        // Datos de banco/tarjeta a nivel cabecera (compat + liquidaciones de tarjeta):
+        // se toman del primer pago con tarjeta / transferencia.
+        const firstCard = txPayments.find((p) => p.method === 'tarjeta') || {};
+        const firstTransfer = txPayments.find((p) => p.method === 'transferencia') || {};
+
         let txIsFirstVisit = false;
         if (patient) {
           const previousCount = await Sale.countDocuments({
@@ -224,10 +267,11 @@ exports.createSale = async (req, res) => {
           discountTaxBase: txTotals.discountTaxBase,
           taxAmount: txTotals.taxAmount,
           total: txTotals.total,
-          paymentMethod,
-          dueDate: paymentMethod === 'credito' ? (req.body.dueDate ? new Date(req.body.dueDate) : null) : null,
-          balance: paymentMethod === 'credito' ? txTotals.total : 0,
-          paid: paymentMethod !== 'credito',
+          paymentMethod: resolvedMethod,
+          payments: txPayments,
+          dueDate: creditoAmount > 0 ? (req.body.dueDate ? new Date(req.body.dueDate) : null) : null,
+          balance: creditoAmount,
+          paid: creditoAmount <= 0.01,
           notes,
           isFirstVisit: txIsFirstVisit,
           clientCity,
@@ -237,11 +281,11 @@ exports.createSale = async (req, res) => {
           doctor: req.body.doctor || undefined,
           nurse: req.body.nurse || undefined,
           recommendedBy: req.body.recommendedBy || undefined,
-          bankAccount: paymentMethod === 'transferencia' ? (req.body.bankAccount || undefined) : undefined,
-          creditCard: paymentMethod === 'tarjeta' ? (req.body.creditCard || undefined) : undefined,
-          cardPos: paymentMethod === 'tarjeta' ? (req.body.cardPos || '') : '',
-          cardLote: paymentMethod === 'tarjeta' ? (req.body.cardLote || '').trim() : '',
-          cardVoucher: paymentMethod === 'tarjeta' ? (req.body.cardVoucher || '').trim() : '',
+          bankAccount: firstTransfer.bankAccount || undefined,
+          creditCard: firstCard.creditCard || undefined,
+          cardPos: firstCard.cardPos || '',
+          cardLote: firstCard.cardLote || '',
+          cardVoucher: firstCard.cardVoucher || '',
           appointment: req.body.appointment || undefined,
           idempotencyKey,
           createdAt: saleDate,
@@ -308,27 +352,35 @@ exports.createSale = async (req, res) => {
           }], { session });
         }
 
+        // Asiento de venta: una línea de DÉBITO por cada método de pago. El
+        // efectivo va a Caja, la transferencia a la cuenta del banco, la tarjeta a
+        // "Tarjetas por liquidar" y el crédito a Clientes (CxC). Así el arqueo de
+        // caja, la conciliación bancaria y la CxC quedan correctos aunque una misma
+        // venta se pague con varios métodos.
         const txLines = [];
-        let txDebitAcc = null;
-        if (paymentMethod === 'transferencia' && txSale.bankAccount) {
-          const BankAccount = require('../models/BankAccount');
-          const ChartOfAccount = require('../models/ChartOfAccount');
-          const bank = await BankAccount.findOne({ _id: txSale.bankAccount, clinic: req.clinicId }).session(session);
-          if (bank?.chartAccount) txDebitAcc = await ChartOfAccount.findById(bank.chartAccount).session(session);
-        } else if (paymentMethod === 'tarjeta' && txSale.creditCard) {
-          const CreditCard = require('../models/CreditCard');
-          const ChartOfAccount = require('../models/ChartOfAccount');
-          const card = await CreditCard.findOne({ _id: txSale.creditCard, clinic: req.clinicId }).session(session);
-          if (card?.chartAccount) txDebitAcc = await ChartOfAccount.findById(card.chartAccount).session(session);
+        let clientesAcc = null; // cuenta de CxC (para abrir el documento de cartera)
+        const ChartOfAccount = require('../models/ChartOfAccount');
+        for (const p of txPayments) {
+          let acc = null;
+          if (p.method === 'transferencia' && p.bankAccount) {
+            const BankAccount = require('../models/BankAccount');
+            const bank = await BankAccount.findOne({ _id: p.bankAccount, clinic: req.clinicId }).session(session);
+            if (bank?.chartAccount) acc = await ChartOfAccount.findById(bank.chartAccount).session(session);
+          } else if (p.method === 'tarjeta' && p.creditCard) {
+            const CreditCard = require('../models/CreditCard');
+            const card = await CreditCard.findOne({ _id: p.creditCard, clinic: req.clinicId }).session(session);
+            if (card?.chartAccount) acc = await ChartOfAccount.findById(card.chartAccount).session(session);
+          }
+          if (!acc) {
+            let role = 'clientes';
+            if (p.method === 'efectivo') role = 'caja';
+            else if (p.method === 'tarjeta') role = 'tarjetasPorLiquidar';
+            else if (p.method === 'transferencia') role = 'bancos';
+            acc = await getAccount(req.clinicId, role);
+          }
+          if (p.method === 'credito') clientesAcc = acc;
+          txLines.push({ account: acc._id, debit: p.amount, credit: 0, description: `Venta ${txSale.saleNumber} (${p.method})` });
         }
-        if (!txDebitAcc) {
-          let debitRole = 'clientes';
-          if (paymentMethod === 'efectivo') debitRole = 'caja';
-          else if (paymentMethod === 'tarjeta') debitRole = 'tarjetasPorLiquidar';
-          else if (paymentMethod === 'transferencia') debitRole = 'bancos';
-          txDebitAcc = await getAccount(req.clinicId, debitRole);
-        }
-        txLines.push({ account: txDebitAcc._id, debit: txTotals.total, credit: 0, description: `Venta ${txSale.saleNumber}` });
 
         // Ingreso diferido (paquetes): la base de los ítems marcados como
         // deferredIncome NO se reconoce ahora; se acredita a "Ingresos diferidos".
@@ -443,8 +495,11 @@ exports.createSale = async (req, res) => {
           }
         }
 
-        // Cartera (CxC): una venta a crédito abre un documento de cobro en el subledger.
-        if (paymentMethod === 'credito') {
+        // Cartera (CxC): abre un documento de cobro por la PARTE a crédito (que en
+        // un pago total a crédito es el total, y en un pago dividido es solo la
+        // porción no pagada al contado).
+        if (creditoAmount > 0) {
+          if (!clientesAcc) clientesAcc = await getAccount(req.clinicId, 'clientes');
           await openReceivable({
             clinic: req.clinicId,
             party: { model: 'Patient', ref: txSale.patient || null, name: txSale.clientName || '' },
@@ -454,8 +509,8 @@ exports.createSale = async (req, res) => {
             number: txSale.saleNumber,
             issueDate: saleDate,
             dueDate: txSale.dueDate || null,
-            total: txTotals.total,
-            account: txDebitAcc._id,
+            total: creditoAmount,
+            account: clientesAcc._id,
           }, { session });
         }
         return txSale._id;
@@ -679,7 +734,9 @@ exports.collectSale = async (req, res) => {
         const sale = await Sale.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
         if (!sale) throw Object.assign(new Error('Venta no encontrada'), { status: 404 });
         if (sale.status !== 'completada') throw Object.assign(new Error('La venta no esta activa'), { status: 400 });
-        if (sale.paymentMethod !== 'credito') throw Object.assign(new Error('La venta no es a credito'), { status: 400 });
+        // Se cobra sobre cualquier venta con saldo pendiente: crédito total o la
+        // parte a crédito de un pago dividido (mixto).
+        if (sale.paid || Number(sale.balance || 0) <= 0.01) throw Object.assign(new Error('La venta no tiene saldo pendiente por cobrar'), { status: 400 });
 
         const amount = +(Number(req.body.amount) || 0).toFixed(2);
         if (amount <= 0) throw Object.assign(new Error('Monto invalido'), { status: 400 });
@@ -741,6 +798,11 @@ exports.collectSale = async (req, res) => {
 
         // Cartera (CxC): asegura el documento de cobro y aplica el abono. Idempotente:
         // si la venta es anterior al subledger, lo abre reconstruyendo el saldo previo.
+        // El total de la CxC es la PARTE a crédito (en un pago dividido no es el total
+        // de la venta, sino la porción no pagada al contado).
+        const creditTotal = (sale.payments && sale.payments.length)
+          ? +sale.payments.filter((p) => p.method === 'credito').reduce((s, p) => s + (p.amount || 0), 0).toFixed(2)
+          : Number(sale.total || 0);
         await openReceivable({
           clinic: req.clinicId,
           party: { model: 'Patient', ref: sale.patient || null, name: sale.clientName || '' },
@@ -750,8 +812,8 @@ exports.collectSale = async (req, res) => {
           number: sale.saleNumber,
           issueDate: sale.createdAt || date,
           dueDate: sale.dueDate || null,
-          total: sale.total,
-          applied: +(Number(sale.total || 0) - Number(sale.balance || 0)).toFixed(2),
+          total: creditTotal,
+          applied: +(creditTotal - Number(sale.balance || 0)).toFixed(2),
           account: clientes._id,
         }, { session });
         await applyToReceivable({ clinicId: req.clinicId, sourceModel: 'Sale', sourceRef: sale._id, amount }, { session });

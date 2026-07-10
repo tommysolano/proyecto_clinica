@@ -53,14 +53,34 @@ const dayRange = (dateStr) => {
 const salesByMethod = async (clinicId, start, end, cashierId = null) => {
   const match = { clinic: oid(clinicId), status: 'completada', createdAt: { $gte: start, $lte: end } };
   if (cashierId) match.cashier = oid(cashierId);
+  // El desglose por método sale de `payments` (pago dividido: una venta puede
+  // sumar a varios métodos). Ventas antiguas sin `payments` se interpretan como un
+  // solo pago = { method: paymentMethod, amount: total }. El conteo de ventas y el
+  // total sí son por venta (no por renglón de pago).
   const rows = await Sale.aggregate([
     { $match: match },
-    { $group: { _id: '$paymentMethod', total: { $sum: '$total' }, count: { $sum: 1 } } },
+    {
+      $project: {
+        total: 1,
+        pays: {
+          $cond: [
+            { $gt: [{ $size: { $ifNull: ['$payments', []] } }, 0] },
+            '$payments',
+            [{ method: '$paymentMethod', amount: '$total' }],
+          ],
+        },
+      },
+    },
+    { $unwind: '$pays' },
+    { $group: { _id: '$pays.method', amount: { $sum: '$pays.amount' } } },
+  ]);
+  const totals = await Sale.aggregate([
+    { $match: match },
+    { $group: { _id: null, count: { $sum: 1 }, total: { $sum: '$total' } } },
   ]);
   const byMethod = { efectivo: 0, tarjeta: 0, transferencia: 0 };
-  let salesCount = 0, totalSales = 0;
-  rows.forEach((r) => { if (r._id in byMethod) byMethod[r._id] = r.total; salesCount += r.count; totalSales += r.total; });
-  return { byMethod, salesCount, totalSales };
+  rows.forEach((r) => { if (r._id in byMethod) byMethod[r._id] = +Number(r.amount || 0).toFixed(2); });
+  return { byMethod, salesCount: totals[0]?.count || 0, totalSales: +Number(totals[0]?.total || 0).toFixed(2) };
 };
 
 /** Caja abierta del cajero actual (si existe), con su resumen en vivo. */

@@ -234,8 +234,9 @@ exports.emitFromSale = async (req, res) => {
         rates: tb.rates,
         computed: true,
       },
-      balance: sale.paymentMethod === 'credito' ? Number(sale.balance || sale.total || 0) : 0,
-      paid: sale.paymentMethod !== 'credito',
+      // Saldo/pagado según la venta (cubre crédito total y la parte a crédito de un pago dividido).
+      balance: Number(sale.balance || 0),
+      paid: !!sale.paid,
       createdBy: req.user._id,
     });
 
