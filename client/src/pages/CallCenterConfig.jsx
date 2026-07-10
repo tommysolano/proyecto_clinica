@@ -457,7 +457,8 @@ function WhatsappNumbersManager() {
         toast.success('Número conectado');
         return null;
       }
-      return { ...m, status: p.status };
+      // Si falló, se limpia el QR viejo y se muestra el motivo.
+      return { ...m, status: p.status, error: p.error || '', qr: p.status === 'auth_failure' ? '' : m.qr };
     });
   });
 
@@ -857,12 +858,25 @@ function WhatsappNumbersManager() {
                 {(QR_STATUS_META[qrModal.status] || QR_STATUS_META.connecting).label}
               </span>
             </div>
-            <button
-              onClick={() => setQrModal(null)}
-              className="px-4 py-2 border border-slate-200 rounded-lg text-sm bg-white cursor-pointer"
-            >
-              Cerrar
-            </button>
+            {qrModal.error && (
+              <p className="text-xs text-red-600">{qrModal.error}</p>
+            )}
+            <div className="flex items-center justify-center gap-2">
+              {qrModal.status === 'auth_failure' && (
+                <button
+                  onClick={() => openConnect({ _id: qrModal.accountId, label: qrModal.label })}
+                  className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm cursor-pointer border-none"
+                >
+                  Reintentar
+                </button>
+              )}
+              <button
+                onClick={() => setQrModal(null)}
+                className="px-4 py-2 border border-slate-200 rounded-lg text-sm bg-white cursor-pointer"
+              >
+                Cerrar
+              </button>
+            </div>
           </div>
         )}
       </Modal>

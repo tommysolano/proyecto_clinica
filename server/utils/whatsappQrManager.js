@@ -23,7 +23,7 @@ const mongoose = require('mongoose');
 const WhatsappAccount = require('../models/WhatsappAccount');
 const { emitToCallCenter, emitToUser } = require('../realtime');
 
-// accountId(string) → { client, status }
+// accountId(string) → { client, status, watchdog, gotQr }
 const clients = new Map();
 let mongoStore = null;
 
@@ -33,6 +33,17 @@ function getStore() {
     mongoStore = new MongoStore({ mongoose });
   }
   return mongoStore;
+}
+
+// Borra la sesión remota guardada en Mongo (GridFS). Solo se usa para cuentas
+// que nunca llegaron a vincularse: una sesión a medias/corrupta haría fallar
+// todos los intentos siguientes al restaurarse.
+async function wipeRemoteSession(sessionId) {
+  try {
+    await getStore().delete({ session: `RemoteAuth-${sessionId}` });
+  } catch {
+    /* noop */
+  }
 }
 
 // Ruta al ejecutable de Chrome para whatsapp-web.js. Por defecto reutiliza el
@@ -78,9 +89,19 @@ async function connect(accountId, { userId } = {}) {
   const key = String(accountId);
   const existing = clients.get(key);
   if (existing && existing.client) {
-    // Ya hay un cliente vivo: reusar y reemitir el estado conocido.
-    await emitStatus(key, { status: existing.status || 'connecting' }, userId);
-    return { ok: true, status: existing.status || 'connecting' };
+    if (existing.status === 'connected') {
+      // Ya está conectado: solo reemitir el estado.
+      await emitStatus(key, { status: 'connected' }, userId);
+      return { ok: true, status: 'connected' };
+    }
+    // Cliente vivo pero NO conectado (p.ej. quedó en 'connecting' colgado, o en
+    // 'qr_pending' con un QR que ya caducó — típico tras initEnabledOnBoot).
+    // Antes se reusaba y solo se reemitía el estado, sin volver a generar el QR:
+    // el botón "Conectar" quedaba muerto hasta reiniciar el server. Ahora se
+    // destruye y se arranca de cero para garantizar un QR fresco.
+    clients.delete(key);
+    if (existing.watchdog) clearTimeout(existing.watchdog);
+    try { await existing.client.destroy(); } catch { /* noop */ }
   }
 
   const account = await WhatsappAccount.findById(accountId);
@@ -130,12 +151,33 @@ async function connect(accountId, { userId } = {}) {
     return { ok: false, error: `No se pudo crear el cliente: ${e.message}` };
   }
 
-  clients.set(key, { client, status: 'connecting' });
+  const entry = { client, status: 'connecting', watchdog: null, gotQr: false };
+  clients.set(key, entry);
   await setAccountStatus(accountId, { status: 'connecting' });
   await emitStatus(key, { status: 'connecting' }, userId);
 
+  // Watchdog: si en 90s no salió ni un QR ni conectó (Chrome colgado, sesión
+  // corrupta, red), se mata el cliente y se avisa, en vez de dejar la UI en
+  // "Generando código QR…" para siempre. No aplica si ya hubo QR (el usuario
+  // puede tardar en escanear y la sincronización posterior también toma tiempo).
+  entry.watchdog = setTimeout(async () => {
+    const cur = clients.get(key);
+    if (!cur || cur.client !== client || cur.gotQr || cur.status !== 'connecting') return;
+    clients.delete(key);
+    try { await client.destroy(); } catch { /* noop */ }
+    const fresh = await WhatsappAccount.findById(accountId).catch(() => null);
+    if (fresh && !fresh.connectedPhone) await wipeRemoteSession(sessionId);
+    await setAccountStatus(accountId, { status: 'auth_failure' });
+    await emitStatus(key, {
+      status: 'auth_failure',
+      error: 'No se pudo generar el QR en 90 segundos. Vuelve a pulsar "Conectar".',
+    }, userId);
+  }, 90000);
+
   client.on('qr', async (qr) => {
-    clients.set(key, { client, status: 'qr_pending' });
+    entry.status = 'qr_pending';
+    entry.gotQr = true;
+    if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
     await setAccountStatus(accountId, { status: 'qr_pending', lastQrAt: new Date() });
     let dataUrl = '';
     try {
@@ -149,7 +191,8 @@ async function connect(accountId, { userId } = {}) {
   });
 
   client.on('ready', async () => {
-    clients.set(key, { client, status: 'connected' });
+    entry.status = 'connected';
+    if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
     const connectedPhone = (client.info?.wid?.user || '').toString();
     await setAccountStatus(accountId, {
       status: 'connected',
@@ -160,17 +203,18 @@ async function connect(accountId, { userId } = {}) {
   });
 
   client.on('authenticated', () => {
-    const cur = clients.get(key);
-    if (cur) clients.set(key, { ...cur, status: 'connecting' });
+    entry.status = 'connecting'; // escaneado: sincronizando sesión hasta 'ready'
   });
 
   client.on('auth_failure', async () => {
-    clients.set(key, { client, status: 'auth_failure' });
+    entry.status = 'auth_failure';
+    if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
     await setAccountStatus(accountId, { status: 'auth_failure' });
     await emitStatus(key, { status: 'auth_failure' }, userId);
   });
 
   client.on('disconnected', async () => {
+    if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
     clients.delete(key);
     await setAccountStatus(accountId, { status: 'disconnected' });
     await emitStatus(key, { status: 'disconnected' });
@@ -239,9 +283,13 @@ async function connect(accountId, { userId } = {}) {
       ? 'Chromium no disponible en este entorno: los números QR no se conectarán aquí. Usa Cloud API, o un servidor con Chrome (VPS). Puedes fijar PUPPETEER_EXECUTABLE_PATH.'
       : (e.message || '').split('\n')[0];
     console.error('[whatsapp-qr initialize]', short);
+    if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
     clients.delete(key);
+    try { await client.destroy(); } catch { /* noop */ }
+    const fresh = await WhatsappAccount.findById(accountId).catch(() => null);
+    if (fresh && !fresh.connectedPhone) await wipeRemoteSession(sessionId);
     await setAccountStatus(accountId, { status: 'auth_failure' });
-    await emitStatus(key, { status: 'auth_failure', error: short });
+    await emitStatus(key, { status: 'auth_failure', error: short }, userId);
   });
 
   return { ok: true, status: 'connecting' };
@@ -252,6 +300,7 @@ async function disconnect(accountId) {
   const key = String(accountId);
   const entry = clients.get(key);
   if (entry && entry.client) {
+    if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
     try { await entry.client.logout(); } catch { /* noop */ }
     try { await entry.client.destroy(); } catch { /* noop */ }
   }
@@ -293,7 +342,10 @@ async function initEnabledOnBoot() {
   try {
     const accounts = await WhatsappAccount.find({ connectionType: 'qr', enabled: true });
     for (const acc of accounts) {
-      if (!acc.sessionId) continue; // nunca se vinculó → no intentamos
+      // Solo cuentas que COMPLETARON una vinculación (connectedPhone se guarda en
+      // 'ready'). Tener solo sessionId significa que hubo un intento fallido: si
+      // se conecta al boot, queda un cliente zombi mostrando QRs que nadie ve.
+      if (!acc.sessionId || !acc.connectedPhone) continue;
       // eslint-disable-next-line no-await-in-loop
       await connect(acc._id).catch(() => {});
     }
