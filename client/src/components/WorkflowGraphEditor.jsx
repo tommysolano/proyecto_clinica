@@ -67,6 +67,7 @@ export const TRIGGERS = [
   { value: 'keyword', label: 'Palabra clave (chat)' },
   { value: 'new_conversation', label: 'Nueva conversación (chat)' },
   { value: 'tag_added', label: 'Etiqueta añadida' },
+  { value: 'ctwa_ad', label: 'Mensaje desde anuncio (Meta Ads)' },
 ];
 export const AUDIENCES = [
   { value: 'all', label: 'Todos' },
@@ -330,7 +331,7 @@ function descendantIdsInclusive(edges, startId) {
  *  - clic en un nodo: abre el panel de configuración (drawer) sobre el lienzo.
  *  - clic en el disparador: abre la configuración del disparador.
  */
-const defaultTrigger = () => ({ type: 'appointment_created', audience: 'all', serviceFilter: null, keywords: [], matchType: 'contains', tagFilter: '' });
+const defaultTrigger = () => ({ type: 'appointment_created', audience: 'all', serviceFilter: null, keywords: [], matchType: 'contains', tagFilter: '', adFilter: '' });
 
 export default function WorkflowGraphEditor({
   nodes = [], edges = [], onChange,
@@ -648,7 +649,7 @@ function StepPicker({ onPick, onClose }) {
 function TriggerConfig({ trigger = {}, onChange }) {
   const set = (patch) => onChange?.({ ...trigger, ...patch });
   const isApptTrigger = trigger.type?.startsWith('appointment');
-  const isChatTrigger = ['inbound_message', 'keyword', 'new_conversation'].includes(trigger.type);
+  const isChatTrigger = ['inbound_message', 'keyword', 'new_conversation', 'ctwa_ad'].includes(trigger.type);
   return (
     <div className="grid gap-3">
       <label className="text-sm">
@@ -690,6 +691,21 @@ function TriggerConfig({ trigger = {}, onChange }) {
         <label className="text-sm">
           <span className="text-slate-600 block mb-1">Etiqueta (vacío = cualquier etiqueta)</span>
           <input value={trigger.tagFilter || ''} onChange={(e) => set({ tagFilter: e.target.value })} placeholder="vip" className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm" />
+        </label>
+      )}
+      {trigger.type === 'ctwa_ad' && (
+        <label className="text-sm">
+          <span className="text-slate-600 block mb-1">ID del anuncio (vacío = cualquier anuncio)</span>
+          <input
+            value={trigger.adFilter || ''}
+            onChange={(e) => set({ adFilter: e.target.value })}
+            placeholder="120211234567890123"
+            className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm font-mono"
+          />
+          <span className="text-[11px] text-slate-400 block mt-1">
+            El "Identificador del anuncio" del Administrador de Anuncios de Meta. Varios separados
+            por coma. Dispara cuando alguien escribe tocando ese anuncio (click-to-WhatsApp).
+          </span>
         </label>
       )}
     </div>

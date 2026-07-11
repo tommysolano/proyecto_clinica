@@ -1592,6 +1592,7 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
       phone: conv.phone,
       text: finalBody,
       isNew,
+      referral, // anuncio CTWA del que vino este mensaje (trigger 'ctwa_ad')
     })
     .catch(() => {});
   // Legacy MessageFlow (en deprecación): sigue atendiendo flujos ya existentes.

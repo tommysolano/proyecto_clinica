@@ -750,9 +750,9 @@ async function enrollForEvent(eventType, payload = {}) {
  * (inbound_message / keyword / new_conversation). Reemplaza a MessageFlow.
  * Lo invoca el ingest de mensajes entrantes del chatController.
  */
-async function enrollForChatMessage({ clinicId, conversation, patient, phone, text, isNew }) {
+async function enrollForChatMessage({ clinicId, conversation, patient, phone, text, isNew, referral }) {
   if (!clinicId || !conversation) return { enrolled: 0 };
-  const types = ['inbound_message', 'keyword', 'new_conversation'];
+  const types = ['inbound_message', 'keyword', 'new_conversation', 'ctwa_ad'];
   const workflows = await Workflow.find({
     clinic: clinicId,
     active: true,
@@ -760,10 +760,23 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
   });
   if (!workflows.length) return { enrolled: 0 };
 
+  // Anuncio del que vino ESTE mensaje (click-to-WhatsApp): el webhook lo trae en
+  // referral.source_id → adId. Se usa el del mensaje y no conv.attribution para que
+  // el trigger dispare solo al llegar desde el anuncio (no en cada mensaje posterior).
+  const msgAdId = String(referral?.adId || '').trim();
+
   const matchesChat = (tr) => {
     if (!tr || !types.includes(tr.type)) return false;
     if (tr.type === 'new_conversation' && !isNew) return false;
     if (tr.type === 'keyword' && !keywordMatchesTrigger(tr, text)) return false;
+    if (tr.type === 'ctwa_ad') {
+      if (!msgAdId) return false; // este mensaje no vino de un anuncio
+      const wanted = String(tr.adFilter || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean);
+      if (wanted.length && !wanted.includes(msgAdId)) return false;
+    }
     // Audiencia: new = sin paciente vinculado, existing = con paciente.
     if (tr.audience === 'new' && patient) return false;
     if (tr.audience === 'existing' && !patient) return false;

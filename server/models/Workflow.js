@@ -96,6 +96,9 @@ const TRIGGER_TYPES = [
   'keyword',
   'new_conversation',
   'tag_added',
+  // Mensaje entrante desde un anuncio click-to-WhatsApp de Meta (el webhook trae
+  // `referral.source_id` = ID del anuncio). Permite un workflow por anuncio.
+  'ctwa_ad',
 ];
 
 // Nodo del grafo visual (editor estilo GoHighLevel). `type` es el tipo de paso
@@ -141,6 +144,9 @@ const triggerSchema = new mongoose.Schema(
     matchType: { type: String, enum: ['contains', 'exact', 'starts', ''], default: 'contains' },
     // Trigger 'tag_added': solo dispara si se añade esta etiqueta (vacío = cualquiera).
     tagFilter: { type: String, trim: true, default: '' },
+    // Trigger 'ctwa_ad': ID(s) del anuncio de Meta (referral.source_id), separados
+    // por coma. Vacío = cualquier anuncio.
+    adFilter: { type: String, trim: true, default: '' },
   },
   { _id: false }
 );
