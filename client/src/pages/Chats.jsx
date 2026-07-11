@@ -301,7 +301,7 @@ export default function Chats() {
         : { body };
       const r = await api.post(`/chats/${activeId}/messages`, payload);
       setMessages((prev) => [...prev, r.data]);
-      const preview = useTemplate ? `[Plantilla: ${templateName}]` : body;
+      const preview = r.data.body || (useTemplate ? `[Plantilla: ${templateName}]` : body);
       setConversations((prev) =>
         prev.map((c) =>
           c._id === activeId
@@ -1222,6 +1222,11 @@ function MessageBubble({ msg }) {
         }`}
       >
         <MessageMedia msg={msg} />
+        {msg.templateName && (
+          <div className={`text-[10px] font-medium mb-0.5 ${isOut ? 'text-emerald-100' : 'text-slate-500'}`}>
+            Plantilla · {msg.templateName}
+          </div>
+        )}
         <div className="whitespace-pre-wrap break-words">{msg.body}</div>
         <div className={`text-[10px] mt-1 flex items-center gap-1 ${isOut ? 'text-emerald-100' : 'text-slate-400'}`}>
           {isOut && msg.sentByName && <span>{msg.sentByName} · </span>}

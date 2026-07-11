@@ -449,7 +449,16 @@ async function send({
   }
 
   const textBody = String(body || '').trim();
-  const preview = textBody || (templateInfo ? `[Plantilla: ${templateInfo.name}]` : mediaUrl ? '[media]' : '');
+  // Para plantillas guardamos el TEXTO renderizado (cuerpo con las variables ya
+  // sustituidas) para que en el chat se vea el contenido real que recibe el paciente
+  // y no un `[Plantilla: nombre]`. El envío a Meta sigue usando templateInfo (nombre
+  // + componentes); esto es solo el body que se persiste y se muestra en la bandeja.
+  let preview = textBody;
+  if (!preview) {
+    if (templateInfo) preview = await renderTemplateText(templateInfo);
+    else if (mediaUrl) preview = '[media]';
+    else preview = '';
+  }
   const msg = await Message.create({
     clinic: clinicId,
     conversation: conv._id,
