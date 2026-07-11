@@ -111,11 +111,19 @@ exports.create = async (req, res) => {
 
 exports.update = async (req, res) => {
   try {
+    const existing = await MessageTemplate.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!existing) return res.status(404).json({ message: 'Plantilla no encontrada' });
     const update = { ...req.body };
     delete update.clinic;
     delete update._id;
     delete update.status; // el estado lo gobierna la sincronización con Meta
     delete update.metaTemplateId;
+    // La categoría también la gobierna Meta. Si la plantilla YA está registrada en
+    // Meta (metaTemplateId), NO permitimos cambiarla localmente: hacerlo mostraría
+    // una categoría distinta de la real de Meta (divergencia silenciosa que afecta
+    // costo y reglas, sin ningún efecto en Meta). Solo la sincronización/webhook la
+    // actualizan. En borradores aún no registrados sí es la categoría solicitada.
+    if (existing.metaTemplateId) delete update.category;
     if (update.body) update.variables = req.body.variables?.length ? req.body.variables : extractVariables(update.body);
     const tpl = await MessageTemplate.findOneAndUpdate(
       { _id: req.params.id, clinic: req.clinicId },

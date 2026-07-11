@@ -319,7 +319,12 @@ export default function MessageTemplates() {
                 </label>
                 <label className="text-sm">
                   <span className="text-slate-600">Categoría</span>
-                  <select value={editing.category} onChange={(e) => setEditing({ ...editing, category: e.target.value })} className="w-full mt-1 border border-slate-200 rounded-lg px-2 py-2 text-sm">
+                  <select
+                    value={editing.category}
+                    onChange={(e) => setEditing({ ...editing, category: e.target.value })}
+                    disabled={!!editing.metaTemplateId}
+                    className="w-full mt-1 border border-slate-200 rounded-lg px-2 py-2 text-sm disabled:bg-slate-50"
+                  >
                     {CATEGORIES.map((c) => <option key={c.value} value={c.value}>{c.value}</option>)}
                   </select>
                 </label>
@@ -461,7 +466,8 @@ export default function MessageTemplates() {
 
               {editing.metaTemplateId ? (
                 <p className="text-xs text-amber-600">
-                  Esta plantilla está ligada a Meta; el estado se gobierna por la sincronización.
+                  Esta plantilla está ligada a Meta; el estado y la categoría los gobierna Meta y
+                  se actualizan al sincronizar (no se pueden editar aquí).
                 </p>
               ) : editing.channel === 'email' ? (
                 <p className="text-xs text-slate-400">
