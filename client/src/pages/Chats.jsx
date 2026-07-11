@@ -1231,7 +1231,7 @@ function MessageBubble({ msg }) {
         <div className={`text-[10px] mt-1 flex items-center gap-1 ${isOut ? 'text-emerald-100' : 'text-slate-400'}`}>
           {isOut && msg.sentByName && <span>{msg.sentByName} · </span>}
           {formatTime(msg.createdAt)}
-          {isOut && <span>Â·</span>}
+          {isOut && <span>·</span>}
           {isOut && <DeliveryBadge msg={msg} />}
         </div>
       </div>

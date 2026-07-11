@@ -27,9 +27,15 @@ export function SocketProvider({ children }) {
     // En producción VITE_API_URL apunta al backend de Render.
     // En dev Vite proxea /socket.io al backend (vite.config.js).
     const SOCKET_URL = import.meta.env.VITE_API_URL || undefined;
+    // Polling PRIMERO (orden por defecto de socket.io): con websocket primero,
+    // si el proxy (nginx) no pasa los headers de Upgrade el intento falla y
+    // socket.io NO cae a polling — se queda reintentando para siempre y el
+    // tiempo real muere en silencio (visto en prod: wss:// fallando en bucle).
+    // Con polling primero siempre conecta, y el upgrade a websocket se intenta
+    // en segundo plano (si falla, se queda en polling sin romper nada).
     const socket = io(SOCKET_URL, {
       auth: { token },
-      transports: ['websocket', 'polling'],
+      transports: ['polling', 'websocket'],
       reconnection: true,
       reconnectionDelay: 1500,
     });
