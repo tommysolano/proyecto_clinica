@@ -1,32 +1,26 @@
 import { useEffect, useState } from 'react';
-import { useNavigate } from 'react-router-dom';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
-import { HiOutlinePlus, HiOutlineArrowUturnLeft, HiOutlineEye, HiOutlineXMark, HiOutlineCheckCircle, HiOutlineTrash, HiOutlineArrowTopRightOnSquare } from 'react-icons/hi2';
+import JournalEntryViewModal from '../../components/JournalEntryViewModal';
+import { HiOutlinePlus, HiOutlineArrowUturnLeft, HiOutlineEye, HiOutlineXMark, HiOutlineCheckCircle, HiOutlineTrash } from 'react-icons/hi2';
 import { fmt, fmtDate, today, startOfMonth, endOfMonth } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import AccountSelect from '../../components/AccountSelect';
 import useDocDeepLink from '../../hooks/useDocDeepLink';
-import { sourceLabel, sourceActionLabel, sourceDeepLink } from './sourceDocs';
 
 const EMPTY = { date: today(), description: '', source: 'MANUAL', lines: [{ account: '', debit: 0, credit: 0, description: '' }, { account: '', debit: 0, credit: 0, description: '' }] };
 
 export default function JournalEntries() {
-  const navigate = useNavigate();
   const [list, setList] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [show, setShow] = useState(false);
   const [form, setForm] = useState(EMPTY);
   const [filters, setFilters] = useState({ startDate: startOfMonth(), endDate: endOfMonth(), status: '', q: '' });
-  const [viewing, setViewing] = useState(null);
+  const [viewing, setViewing] = useState(null); // id del asiento a ver
 
   // Deep-link (?doc=<idAsiento>): abre el asiento aunque no esté en el filtro actual.
-  const openById = async (id) => {
-    try { const r = await api.get(`/journal-entries/${id}`); setViewing(r.data); }
-    catch (e) { toast.error(e.response?.data?.message || 'No se encontró el asiento'); }
-  };
-  useDocDeepLink(openById);
+  useDocDeepLink((id) => setViewing(id));
 
   const load = async () => {
     try {
@@ -117,7 +111,7 @@ export default function JournalEntries() {
                   <span className={`px-2 py-0.5 rounded-full text-[11px] ${e.status === 'BORRADOR' ? 'bg-amber-100 text-amber-700' : e.status === 'CONTABILIZADO' ? 'bg-emerald-100 text-emerald-700' : 'bg-rose-100 text-rose-700'}`}>{e.status}</span>
                 </td>
                 <td className="px-3 py-2 flex gap-1 justify-end">
-                  <button onClick={() => setViewing(e)} className="p-1.5 text-blue-600" title="Ver"><HiOutlineEye className="w-4 h-4" /></button>
+                  <button onClick={() => setViewing(e._id)} className="p-1.5 text-blue-600" title="Ver"><HiOutlineEye className="w-4 h-4" /></button>
                   {e.status === 'BORRADOR' && <button onClick={() => approve(e)} className="p-1.5 text-emerald-600" title="Aprobar/contabilizar"><HiOutlineCheckCircle className="w-4 h-4" /></button>}
                   {e.status === 'BORRADOR' && <button onClick={() => removeDraft(e)} className="p-1.5 text-rose-500" title="Eliminar borrador"><HiOutlineTrash className="w-4 h-4" /></button>}
                   {e.status === 'CONTABILIZADO' && <button onClick={() => reverse(e)} className="p-1.5 text-rose-600" title="Reversar"><HiOutlineArrowUturnLeft className="w-4 h-4" /></button>}
@@ -172,33 +166,7 @@ export default function JournalEntries() {
         </form>
       </Modal>
 
-      <Modal isOpen={!!viewing} onClose={() => setViewing(null)} title={`Asiento ${viewing?.number}`} size="xl">
-        {viewing && (
-          <div>
-            <p className="text-sm"><b>Fecha:</b> {fmtDate(viewing.date)} | <b>Origen:</b> {sourceLabel(viewing)}</p>
-            <p className="text-sm mb-2">{viewing.description}</p>
-            {sourceDeepLink(viewing) ? (
-              <button
-                onClick={() => { const url = sourceDeepLink(viewing); setViewing(null); navigate(url); }}
-                className="mb-3 inline-flex items-center gap-1.5 px-3 py-1.5 text-sm bg-slate-700 text-white rounded-lg"
-              >
-                <HiOutlineArrowTopRightOnSquare className="w-4 h-4" /> {sourceActionLabel(viewing)}
-              </button>
-            ) : (
-              viewing.sourceModel && <p className="mb-3 text-xs text-slate-400">Documento origen: {sourceLabel(viewing)} (sin navegación directa).</p>
-            )}
-            <table className="tbl border">
-              <thead className="bg-slate-100"><tr><th className="p-2 text-left">Código</th><th className="p-2 text-left">Cuenta</th><th className="p-2 text-right">Débito</th><th className="p-2 text-right">Crédito</th></tr></thead>
-              <tbody>
-                {(viewing.lines || []).map((l, i) => (
-                  <tr key={i} className="border-t"><td className="p-2 font-mono">{l.accountCode}</td><td className="p-2">{l.accountName} {l.description ? `- ${l.description}` : ''}</td><td className="p-2 text-right font-mono">{fmt(l.debit)}</td><td className="p-2 text-right font-mono">{fmt(l.credit)}</td></tr>
-                ))}
-                <tr className="font-bold bg-slate-50"><td colSpan={2} className="p-2 text-right">Totales</td><td className="p-2 text-right font-mono">{fmt(viewing.totalDebit)}</td><td className="p-2 text-right font-mono">{fmt(viewing.totalCredit)}</td></tr>
-              </tbody>
-            </table>
-          </div>
-        )}
-      </Modal>
+      <JournalEntryViewModal isOpen={!!viewing} onClose={() => setViewing(null)} entryId={viewing} />
     </div>
   );
 }

@@ -28,6 +28,7 @@ export const SOURCE_ROUTES = {
   CreditCardBatch: { label: 'Lote de tarjeta' },
   EmployeeDeduction: { label: 'Deducción de empleado' },
   PhysicalCount: { label: 'Toma física de inventario' },
+  InventoryMovement: { label: 'Movimiento de inventario (traslado)' },
   JournalEntry: { label: 'Asiento (reversa)' },
 };
 

@@ -126,6 +126,39 @@ exports.get = async (req, res) => {
   res.json(e);
 };
 
+/**
+ * Asientos generados por un documento origen (trazabilidad inversa):
+ * cualquier módulo puede consultar sus asientos con ?model=<sourceModel>&ref=<id>.
+ * Un documento puede tener varios (p.ej. venta: ingreso + costo + reversas).
+ */
+exports.bySource = async (req, res) => {
+  try {
+    const { model, ref } = req.query;
+    if (!model || !ref) return res.status(400).json({ message: 'model y ref requeridos' });
+    const entries = await JournalEntry.find({ clinic: req.clinicId, sourceModel: model, sourceRef: ref })
+      .populate('createdBy', 'name')
+      .sort({ date: 1, createdAt: 1 });
+    res.json(entries);
+  } catch (e) {
+    res.status(500).json({ message: e.message });
+  }
+};
+
+/** PDF del comprobante de asiento (cuentas afectadas, origen, usuario, fecha/hora). */
+exports.pdf = async (req, res) => {
+  try {
+    const entry = await JournalEntry.findOne({ _id: req.params.id, clinic: req.clinicId })
+      .populate('createdBy', 'name');
+    if (!entry) return res.status(404).json({ message: 'No encontrado' });
+    const Clinic = require('../models/Clinic');
+    const clinic = await Clinic.findById(req.clinicId).select('name razonSocial ruc address').lean();
+    const { streamJournalEntryPdf } = require('../utils/journalEntryPdf');
+    streamJournalEntryPdf({ entry, clinic, res });
+  } catch (e) {
+    if (!res.headersSent) res.status(500).json({ message: e.message });
+  }
+};
+
 exports.create = async (req, res) => {
   try {
     const { date, description, lines, draft } = req.body;

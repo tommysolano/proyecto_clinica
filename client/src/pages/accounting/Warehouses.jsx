@@ -3,12 +3,14 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
-import { HiOutlinePlus, HiOutlineCube, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineArrowsRightLeft, HiOutlineChevronDown, HiOutlineChevronRight } from 'react-icons/hi2';
+import { HiOutlinePlus, HiOutlineCube, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineArrowsRightLeft, HiOutlineChevronDown, HiOutlineChevronRight, HiOutlineDocumentText } from 'react-icons/hi2';
 import { fmt } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import ProductSelect from '../../components/ProductSelect';
+import AccountSelect from '../../components/AccountSelect';
+import JournalEntryViewModal from '../../components/JournalEntryViewModal';
 
-const EMPTY_WH = { code: '', name: '', address: '', isMain: false, active: true };
+const EMPTY_WH = { code: '', name: '', address: '', chartAccount: '', isMain: false, active: true };
 const EMPTY_TRANSFER = { product: '', fromWarehouse: '', toWarehouse: '', quantity: '', reason: '' };
 
 export default function Warehouses() {
@@ -30,6 +32,10 @@ export default function Warehouses() {
   const [tForm, setTForm] = useState(EMPTY_TRANSFER);
   const [savingT, setSavingT] = useState(false);
 
+  // Soporte contable del traslado (asiento o kardex)
+  const [accounts, setAccounts] = useState([]);
+  const [viewEntry, setViewEntry] = useState(null); // { model, ref, title }
+
   const loadWarehouses = async () => {
     try { const r = await api.get('/inventory-advanced/warehouses'); setList(r.data || []); }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
@@ -47,6 +53,7 @@ export default function Warehouses() {
   useEffect(() => {
     loadWarehouses();
     api.get('/products').then((r) => setProducts((r.data || []).filter((p) => !p.unlimited))).catch(() => {});
+    api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setAccounts(r.data || [])).catch(() => {});
   }, []);
   useEffect(() => {
     if (tab === 'stock') loadStock();
@@ -56,9 +63,10 @@ export default function Warehouses() {
   // --- CRUD bodega ---
   const submit = async (e) => {
     e.preventDefault();
+    const payload = { ...form, chartAccount: form.chartAccount || null };
     try {
-      if (editing) await api.put(`/inventory-advanced/warehouses/${editing._id}`, form);
-      else await api.post('/inventory-advanced/warehouses', form);
+      if (editing) await api.put(`/inventory-advanced/warehouses/${editing._id}`, payload);
+      else await api.post('/inventory-advanced/warehouses', payload);
       toast.success('Guardado'); setShow(false); setEditing(null); setForm(EMPTY_WH); loadWarehouses();
     } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
   };
@@ -86,8 +94,10 @@ export default function Warehouses() {
     if (availableInFrom != null && qty > availableInFrom) return toast.error(`Solo hay ${fmt(availableInFrom)} disponibles en la bodega de origen`);
     setSavingT(true);
     try {
-      await api.post('/inventory-advanced/transfer', { ...tForm, quantity: qty });
-      toast.success('Traslado registrado');
+      const r = await api.post('/inventory-advanced/transfer', { ...tForm, quantity: qty });
+      toast.success(r.data?.journalEntryCreated
+        ? 'Traslado registrado con asiento contable (bodegas con cuentas distintas)'
+        : 'Traslado registrado');
       setShowTransfer(false); setTForm(EMPTY_TRANSFER);
       loadStock(); loadTransfers();
     } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
@@ -133,7 +143,7 @@ export default function Warehouses() {
                   <td className="px-3 py-2 text-slate-500">{w.address}</td>
                   <td className="px-3 py-2 text-center">{w.isMain ? '✓' : '—'}</td>
                   <td className="px-3 py-2 flex gap-1 justify-end">
-                    <button onClick={() => { setEditing(w); setForm({ code: w.code, name: w.name, address: w.address || '', isMain: !!w.isMain, active: w.active !== false }); setShow(true); }} className="text-blue-600"><HiOutlinePencilSquare className="w-4 h-4" /></button>
+                    <button onClick={() => { setEditing(w); setForm({ code: w.code, name: w.name, address: w.address || '', chartAccount: w.chartAccount?._id || w.chartAccount || '', isMain: !!w.isMain, active: w.active !== false }); setShow(true); }} className="text-blue-600"><HiOutlinePencilSquare className="w-4 h-4" /></button>
                     <button onClick={() => remove(w)} className="text-rose-600"><HiOutlineTrash className="w-4 h-4" /></button>
                   </td>
                 </tr>
@@ -207,9 +217,10 @@ export default function Warehouses() {
               <th className="px-3 py-2 text-right">Cantidad</th>
               <th className="px-3 py-2 text-right">Valor</th>
               <th className="px-3 py-2 text-left">Usuario</th>
+              <th className="px-3 py-2 text-center">Soporte</th>
             </tr></thead>
             <tbody>
-              {transfers.length === 0 && <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-500">Sin traslados registrados.</td></tr>}
+              {transfers.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-500">Sin traslados registrados.</td></tr>}
               {transfers.map((t) => (
                 <tr key={t._id} className="border-t">
                   <td className="px-3 py-2 text-xs">{new Date(t.createdAt).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' })}</td>
@@ -218,6 +229,15 @@ export default function Warehouses() {
                   <td className="px-3 py-2 text-right font-mono">{fmt(t.quantity)}</td>
                   <td className="px-3 py-2 text-right font-mono">${fmt(t.totalCost)}</td>
                   <td className="px-3 py-2 text-xs text-slate-500">{t.createdBy?.name || '—'}</td>
+                  <td className="px-3 py-2 text-center">
+                    <button
+                      onClick={() => setViewEntry({ model: 'InventoryMovement', ref: t._id, title: `Soporte del traslado — ${t.product?.name || ''}` })}
+                      className="inline-flex items-center gap-1 px-2 py-1 text-xs text-emerald-700 bg-emerald-50 rounded-lg"
+                      title="Ver asiento contable / soporte del traslado"
+                    >
+                      <HiOutlineDocumentText className="w-4 h-4" /> Asiento
+                    </button>
+                  </td>
                 </tr>
               ))}
             </tbody>
@@ -231,6 +251,10 @@ export default function Warehouses() {
           <Field label="Código" required><input required placeholder="Ej: BOD-01" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           <Field label="Nombre" required><input required placeholder="Ej: Bodega principal" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           <Field label="Dirección"><input placeholder="Dirección física" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+          <Field label="Cuenta contable de inventario (opcional)">
+            <AccountSelect accounts={accounts} value={form.chartAccount} onChange={(v) => setForm({ ...form, chartAccount: v })} placeholder="Sin cuenta específica" />
+            <p className="text-xs text-slate-400 mt-1">Si dos bodegas tienen cuentas distintas, el traslado entre ellas genera asiento contable de reclasificación. Con la misma cuenta (o sin cuenta), el traslado es solo movimiento de kardex.</p>
+          </Field>
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isMain} onChange={(e) => setForm({ ...form, isMain: e.target.checked })} /> Principal (bodega por defecto al registrar movimientos)</label>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button></div>
         </form>
@@ -266,6 +290,15 @@ export default function Warehouses() {
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShowTransfer(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button disabled={savingT} className="px-4 py-2 bg-sky-600 text-white rounded-xl shadow-sm shadow-sky-600/20 disabled:opacity-50">{savingT ? 'Trasladando…' : 'Trasladar'}</button></div>
         </form>
       </Modal>
+
+      {/* Asiento / soporte contable del traslado */}
+      <JournalEntryViewModal
+        isOpen={!!viewEntry}
+        onClose={() => setViewEntry(null)}
+        source={viewEntry ? { model: viewEntry.model, ref: viewEntry.ref } : null}
+        title={viewEntry?.title || 'Soporte del traslado'}
+        emptyHint="Este traslado no generó asiento financiero porque las bodegas comparten la misma cuenta contable de inventario (o no tienen cuenta asignada). El soporte es el movimiento de kardex: producto, cantidad, costo, bodega origen/destino, usuario y fecha que se muestran en la tabla."
+      />
     </div>
   );
 }

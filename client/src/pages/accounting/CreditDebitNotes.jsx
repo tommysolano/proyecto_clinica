@@ -3,7 +3,8 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
-import { HiOutlinePlus, HiOutlineDocumentMinus, HiOutlineXMark } from 'react-icons/hi2';
+import JournalEntryViewModal from '../../components/JournalEntryViewModal';
+import { HiOutlinePlus, HiOutlineDocumentMinus, HiOutlineXMark, HiOutlineDocumentText } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 
@@ -13,6 +14,7 @@ export default function CreditDebitNotes() {
   const [list, setList] = useState([]);
   const [show, setShow] = useState(false);
   const [form, setForm] = useState(EMPTY);
+  const [viewEntry, setViewEntry] = useState(null);
 
   const load = async () => {
     try { const r = await api.get('/credit-debit-notes'); setList(r.data?.items || r.data || []); }
@@ -69,6 +71,7 @@ export default function CreditDebitNotes() {
                 <td className="px-3 py-2 text-right font-mono">{fmt(n.total)}</td>
                 <td className="px-3 py-2 text-center text-xs">{n.estado}</td>
                 <td className="px-3 py-2 text-right">
+                  <button onClick={() => setViewEntry(n)} className="p-1.5 text-emerald-700" title="Ver asiento contable"><HiOutlineDocumentText className="w-4 h-4 inline" /></button>
                   {n.kind === 'NC' && n.direction === 'EMITIDA' && n.refModel === 'Invoice' && !['AUTORIZADO', 'RECIBIDA', 'EN_PROCESO'].includes(n.estado) && (
                     <button onClick={() => emit(n)} className="px-2.5 py-1 text-xs bg-emerald-600 text-white rounded-lg">Emitir</button>
                   )}
@@ -108,6 +111,13 @@ export default function CreditDebitNotes() {
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Registrar</button></div>
         </form>
       </Modal>
+
+      <JournalEntryViewModal
+        isOpen={!!viewEntry}
+        onClose={() => setViewEntry(null)}
+        source={viewEntry ? { model: 'CreditDebitNote', ref: viewEntry._id } : null}
+        title={`Asiento de la nota ${viewEntry?.serie || ''}`}
+      />
     </div>
   );
 }

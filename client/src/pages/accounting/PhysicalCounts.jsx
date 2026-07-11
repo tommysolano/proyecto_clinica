@@ -3,7 +3,8 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
-import { HiOutlinePlus, HiOutlineClipboardDocumentCheck, HiOutlineCheck } from 'react-icons/hi2';
+import JournalEntryViewModal from '../../components/JournalEntryViewModal';
+import { HiOutlinePlus, HiOutlineClipboardDocumentCheck, HiOutlineCheck, HiOutlineDocumentText } from 'react-icons/hi2';
 import { fmt, fmtDate } from './_utils';
 import NumericInput from '../../components/NumericInput';
 
@@ -13,6 +14,7 @@ export default function PhysicalCounts() {
   const [warehouses, setWarehouses] = useState([]);
   const [selected, setSelected] = useState(null);
   const [form, setForm] = useState({ warehouse: '', description: '' });
+  const [viewEntry, setViewEntry] = useState(null);
 
   const load = async () => {
     try { const r = await api.get('/inventory-advanced/counts'); setList(r.data || []); }
@@ -74,12 +76,17 @@ export default function PhysicalCounts() {
           <div className="md:col-span-2 bg-white rounded-xl p-4 shadow-sm">
             <div className="flex justify-between items-center mb-3">
               <h2 className="font-semibold">{selected.code} — {selected.status}</h2>
-              {selected.status === 'BORRADOR' && (
-                <div className="flex gap-2">
-                  <button onClick={saveDraft} className="px-3 py-1.5 bg-slate-600 text-white rounded text-sm">Guardar</button>
-                  <button onClick={confirm} className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm flex items-center gap-1"><HiOutlineCheck /> Confirmar</button>
-                </div>
-              )}
+              <div className="flex gap-2">
+                {selected.status !== 'BORRADOR' && (
+                  <button onClick={() => setViewEntry(selected)} className="px-3 py-1.5 bg-emerald-50 text-emerald-700 rounded text-sm flex items-center gap-1" title="Ver asiento contable del ajuste"><HiOutlineDocumentText className="w-4 h-4" /> Asiento</button>
+                )}
+                {selected.status === 'BORRADOR' && (
+                  <>
+                    <button onClick={saveDraft} className="px-3 py-1.5 bg-slate-600 text-white rounded text-sm">Guardar</button>
+                    <button onClick={confirm} className="px-3 py-1.5 bg-emerald-600 text-white rounded text-sm flex items-center gap-1"><HiOutlineCheck /> Confirmar</button>
+                  </>
+                )}
+              </div>
             </div>
             <table className="tbl">
               <thead className="bg-slate-100 text-xs"><tr>
@@ -114,6 +121,14 @@ export default function PhysicalCounts() {
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Iniciar</button></div>
         </form>
       </Modal>
+
+      <JournalEntryViewModal
+        isOpen={!!viewEntry}
+        onClose={() => setViewEntry(null)}
+        source={viewEntry ? { model: 'PhysicalCount', ref: viewEntry._id } : null}
+        title={`Asiento del ajuste — ${viewEntry?.code || ''}`}
+        emptyHint="Esta toma física no generó asiento (sin diferencias de inventario que ajustar)."
+      />
     </div>
   );
 }

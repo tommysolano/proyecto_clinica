@@ -355,6 +355,11 @@ exports.getKardex = async (req, res) => {
  * origen y recrea capas equivalentes (mismo costo, lote y vencimiento) en la de
  * destino, de modo que el valor del inventario y la trazabilidad se conservan.
  * El stock global del producto no cambia (solo se reubica). Atómico en transacción.
+ *
+ * Impacto contable: si ambas bodegas tienen cuenta contable asignada y son
+ * DISTINTAS, genera el asiento de reclasificación (débito inventario destino,
+ * crédito inventario origen, al costo trasladado). Si comparten cuenta (o no
+ * tienen), el traslado es solo movimiento de kardex, sin asiento financiero.
  */
 exports.transferStock = async (req, res) => {
   try {
@@ -364,6 +369,7 @@ exports.transferStock = async (req, res) => {
     const qty = kardex.round4(quantity);
     if (qty <= 0) return res.status(400).json({ message: 'Cantidad inválida' });
 
+    let entryCreated = false;
     const movId = await runInTransaction(async (session) => {
       const prod = await Product.findOne({ _id: product, clinic: req.clinicId }).session(session);
       if (!prod) throw Object.assign(new Error('Producto no encontrado'), { status: 404 });
@@ -401,11 +407,41 @@ exports.transferStock = async (req, res) => {
         reason: reason || 'Traslado entre bodegas', balanceAfter: prod.stock,
         createdBy: req.user._id,
       }], { session });
+
+      // Asiento de reclasificación entre cuentas de inventario cuando las bodegas
+      // están parametrizadas con cuentas contables distintas.
+      const cost = kardex.round2(totalCost);
+      if (cost > 0) {
+        const [fromWh, toWh] = await Promise.all([
+          Warehouse.findOne({ _id: fromWarehouse, clinic: req.clinicId }).session(session),
+          Warehouse.findOne({ _id: toWarehouse, clinic: req.clinicId }).session(session),
+        ]);
+        const fromAcc = fromWh?.chartAccount ? String(fromWh.chartAccount) : null;
+        const toAcc = toWh?.chartAccount ? String(toWh.chartAccount) : null;
+        if (fromAcc && toAcc && fromAcc !== toAcc) {
+          await createEntry({
+            clinicId: req.clinicId,
+            date: new Date(),
+            description: `Traslado de ${prod.name} (${qty}) de ${fromWh.name} a ${toWh.name}`,
+            source: 'TRASLADO',
+            sourceModel: 'InventoryMovement',
+            sourceRef: mov._id,
+            sourceAction: 'TRANSFER',
+            lines: [
+              { account: toWh.chartAccount, debit: cost, credit: 0, description: `Entrada a bodega ${toWh.name}` },
+              { account: fromWh.chartAccount, debit: 0, credit: cost, description: `Salida de bodega ${fromWh.name}` },
+            ],
+            userId: req.user._id,
+            session,
+          });
+          entryCreated = true;
+        }
+      }
       return mov._id;
     });
 
     const mov = await InventoryMovement.findById(movId).populate('warehouse toWarehouse', 'code name').populate('product', 'code name');
-    res.status(201).json(mov);
+    res.status(201).json({ ...mov.toObject(), journalEntryCreated: entryCreated });
   } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
 

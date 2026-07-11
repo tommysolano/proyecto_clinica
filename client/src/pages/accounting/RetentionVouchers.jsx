@@ -2,8 +2,9 @@ import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
+import JournalEntryViewModal from '../../components/JournalEntryViewModal';
 import { fmt, fmtDate } from './_utils';
-import { HiOutlineArrowPath, HiOutlineEye } from 'react-icons/hi2';
+import { HiOutlineArrowPath, HiOutlineEye, HiOutlineDocumentText } from 'react-icons/hi2';
 
 const ESTADO_CLS = {
   AUTORIZADO: 'bg-emerald-100 text-emerald-700',
@@ -18,6 +19,7 @@ const ESTADO_CLS = {
 export default function RetentionVouchers() {
   const [list, setList] = useState([]);
   const [sel, setSel] = useState(null);
+  const [viewEntry, setViewEntry] = useState(null);
 
   const load = async () => {
     try { const r = await api.get('/retention-vouchers'); setList(r.data || []); }
@@ -53,6 +55,7 @@ export default function RetentionVouchers() {
                 <td className="px-3 py-2"><span className={`px-2 py-0.5 rounded-full text-xs ${ESTADO_CLS[v.estado] || 'bg-slate-100 text-slate-600'}`}>{v.estado}</span></td>
                 <td className="px-3 py-2 flex gap-1 justify-end">
                   <button onClick={() => setSel(v)} className="p-1.5 text-blue-600" title="Ver"><HiOutlineEye className="w-4 h-4" /></button>
+                  <button onClick={() => setViewEntry(v)} className="p-1.5 text-emerald-700" title="Ver asiento contable"><HiOutlineDocumentText className="w-4 h-4" /></button>
                   {['ERROR', 'DEVUELTA', 'EN_COLA', 'FIRMADO'].includes(v.estado) && (
                     <button onClick={() => retry(v)} className="p-1.5 text-emerald-600" title="Reintentar"><HiOutlineArrowPath className="w-4 h-4" /></button>
                   )}
@@ -95,6 +98,14 @@ export default function RetentionVouchers() {
           </div>
         )}
       </Modal>
+
+      <JournalEntryViewModal
+        isOpen={!!viewEntry}
+        onClose={() => setViewEntry(null)}
+        source={viewEntry ? { model: 'RetentionVoucher', ref: viewEntry._id } : null}
+        title={`Asiento de la retención ${viewEntry?.serie || ''}`}
+        emptyHint="La retención se contabiliza dentro del asiento de la compra que la origina; revisa el asiento de la factura de compra."
+      />
     </div>
   );
 }
