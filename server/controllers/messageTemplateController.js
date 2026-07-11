@@ -228,6 +228,38 @@ async function applyMetaTemplate(clinicId, mt, createdBy) {
     rejectionReason: status === 'rejected' ? mt.rejected_reason || '' : '',
   };
 
+  // Espeja la ESTRUCTURA aprobada por Meta (cabecera/pie/botones). Sin esto la
+  // copia local podía quedar sin cabecera (p.ej. plantilla importada) y el envío
+  // salía sin el parámetro multimedia obligatorio → #131008 "required parameter
+  // is missing" en cada envío.
+  const headerComponent = (mt.components || []).find((c) => c.type === 'HEADER');
+  const footerComponent = (mt.components || []).find((c) => c.type === 'FOOTER');
+  const buttonsComponent = (mt.components || []).find((c) => c.type === 'BUTTONS');
+  if (headerComponent) {
+    const format = String(headerComponent.format || 'TEXT').toLowerCase();
+    if (format === 'text') {
+      patch.headerType = 'text';
+      patch.headerText = headerComponent.text || '';
+    } else if (['image', 'document', 'video'].includes(format)) {
+      patch.headerType = format;
+      // Se conserva la URL local (autoalojada) si existe; el header_handle que
+      // devuelve Meta es un CDN temporal y solo sirve de último recurso.
+      const handleUrl = headerComponent.example?.header_handle?.[0] || '';
+      if (!existing?.headerMediaUrl && handleUrl) patch.headerMediaUrl = handleUrl;
+    }
+  } else {
+    patch.headerType = 'none';
+    patch.headerText = '';
+  }
+  if (footerComponent) patch.footer = footerComponent.text || '';
+  if (buttonsComponent?.buttons?.length) {
+    patch.buttons = buttonsComponent.buttons.map((b) => {
+      if (b.type === 'URL') return { type: 'url', text: b.text || '', url: b.url || '' };
+      if (b.type === 'PHONE_NUMBER') return { type: 'phone', text: b.text || '', url: b.phone_number || '' };
+      return { type: 'quick_reply', text: b.text || '' };
+    });
+  }
+
   if (!existing) {
     await MessageTemplate.create({
       clinic: clinicId,
@@ -441,7 +473,7 @@ function toNumberedText(text, variables = []) {
  * Construye el array `components` que pide la Graph API a partir de una plantilla
  * local (cabecera, cuerpo, pie y botones).
  */
-function buildMetaComponents(tpl) {
+function buildMetaComponents(tpl, headerHandle = '') {
   const components = [];
 
   // HEADER
@@ -450,12 +482,14 @@ function buildMetaComponents(tpl) {
     const header = { type: 'HEADER', format: 'TEXT', text: numbered };
     if (count > 0) header.example = { header_text: examples };
     components.push(header);
-  } else if (['image', 'document', 'video'].includes(tpl.headerType) && tpl.headerMediaUrl) {
-    // Meta pide un "handle" del media; aceptamos pasar la URL pública autoalojada.
+  } else if (['image', 'document', 'video'].includes(tpl.headerType) && (headerHandle || tpl.headerMediaUrl)) {
+    // Meta exige un "handle" de su Resumable Upload API (una URL cruda la rechaza
+    // con "requiere un ejemplo... válido"). Se sube en submitTemplateToMeta; la URL
+    // queda de último recurso por compatibilidad.
     components.push({
       type: 'HEADER',
       format: tpl.headerType.toUpperCase(),
-      example: { header_handle: [tpl.headerMediaUrl] },
+      example: { header_handle: [headerHandle || tpl.headerMediaUrl] },
     });
   }
 
@@ -484,6 +518,66 @@ function buildMetaComponents(tpl) {
 }
 
 /**
+ * Obtiene los bytes de la imagen/documento de cabecera. Si es la URL autoalojada
+ * (/api/public/media/:id) lee directo de Mongo (no depende de la red ni de
+ * PUBLIC_API_URL); si es una URL externa, la descarga.
+ */
+async function fetchHeaderMediaBytes(url) {
+  const m = String(url || '').match(/\/api\/public\/media\/([a-f0-9]{24})/i);
+  if (m) {
+    const ChatGalleryImage = require('../models/ChatGalleryImage');
+    const img = await ChatGalleryImage.findById(m[1]).select('dataUrl mimeType').lean();
+    const dm = img?.dataUrl?.match(/^data:([^;]+);base64,(.*)$/);
+    if (dm) return { buffer: Buffer.from(dm[2], 'base64'), mime: dm[1] || img.mimeType || 'image/png' };
+    return null;
+  }
+  try {
+    const r = await fetch(url);
+    if (!r.ok) return null;
+    return { buffer: Buffer.from(await r.arrayBuffer()), mime: r.headers.get('content-type') || 'image/png' };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Sube el media de cabecera a Meta (Resumable Upload API) y devuelve el "handle"
+ * que exige el registro de plantillas con cabecera multimedia. Meta NO acepta una
+ * URL en example.header_handle (era la causa del error "las plantillas con tipo de
+ * título IMAGE requieren un ejemplo" al enviar a Meta).
+ */
+async function uploadHeaderMediaHandle(accessToken, tpl) {
+  const media = await fetchHeaderMediaBytes(tpl.headerMediaUrl);
+  if (!media) return { ok: false, error: 'No se pudo leer el archivo de cabecera' };
+  // La sesión de subida se abre contra el APP ID, que se resuelve desde el token.
+  const appRes = await fetch(
+    `https://graph.facebook.com/${API_VERSION}/app?access_token=${encodeURIComponent(accessToken)}`
+  );
+  const app = await appRes.json().catch(() => ({}));
+  if (!appRes.ok || !app.id) {
+    return { ok: false, error: app?.error?.message || 'No se pudo resolver el App ID desde el token' };
+  }
+  const sessRes = await fetch(
+    `https://graph.facebook.com/${API_VERSION}/${app.id}/uploads?file_length=${media.buffer.length}&file_type=${encodeURIComponent(media.mime)}&access_token=${encodeURIComponent(accessToken)}`,
+    { method: 'POST' }
+  );
+  const sess = await sessRes.json().catch(() => ({}));
+  if (!sessRes.ok || !sess.id) {
+    return { ok: false, error: sess?.error?.message || 'No se pudo abrir la sesión de subida' };
+  }
+  const upRes = await fetch(`https://graph.facebook.com/${API_VERSION}/${sess.id}`, {
+    method: 'POST',
+    headers: { Authorization: `OAuth ${accessToken}`, file_offset: '0' },
+    body: media.buffer,
+  });
+  const up = await upRes.json().catch(() => ({}));
+  if (!upRes.ok || !up.h) {
+    return { ok: false, error: up?.error?.message || 'La subida del archivo a Meta falló' };
+  }
+  return { ok: true, handle: up.h };
+}
+
+/**
  * Registra (POST) la plantilla en el WABA del número Cloud API por defecto.
  * Devuelve { ok, data } o { ok:false, reason, error }.
  */
@@ -494,12 +588,21 @@ async function submitTemplateToMeta(tpl) {
     return { ok: false, reason: 'not_configured' };
   }
   const accessToken = require('../utils/secretCrypto').decryptSecret(account.accessToken);
+  // Cabecera multimedia: subir el archivo a Meta y registrar con su handle.
+  let headerHandle = '';
+  if (['image', 'document', 'video'].includes(tpl.headerType) && tpl.headerMediaUrl) {
+    const up = await uploadHeaderMediaHandle(accessToken, tpl);
+    if (!up.ok) {
+      return { ok: false, reason: 'meta_error', error: `No se pudo subir la cabecera a Meta: ${up.error}` };
+    }
+    headerHandle = up.handle;
+  }
   const url = `https://graph.facebook.com/${API_VERSION}/${account.businessAccountId}/message_templates`;
   const payload = {
     name: tpl.name,
     language: tpl.language || 'es',
     category: tpl.category || 'MARKETING',
-    components: buildMetaComponents(tpl),
+    components: buildMetaComponents(tpl, headerHandle),
   };
   try {
     const r = await fetch(url, {

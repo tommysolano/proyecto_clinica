@@ -122,9 +122,14 @@ async function enrichTemplateHeader(clinicId, templateInfo) {
     channel: 'whatsapp',
     name: templateInfo.name,
   }).select('headerType headerMediaUrl').lean();
-  if (!tpl || !tpl.headerMediaUrl) return templateInfo;
+  if (!tpl) return templateInfo;
   const kind = ['image', 'document', 'video'].includes(tpl.headerType) ? tpl.headerType : null;
   if (!kind) return templateInfo;
+  if (!tpl.headerMediaUrl) {
+    // La plantilla aprobada exige cabecera multimedia y no hay archivo guardado:
+    // se marca para fallar con un mensaje claro (Meta devolvería #131008).
+    return { ...templateInfo, missingHeaderMedia: kind };
+  }
   const headerComponent = {
     type: 'header',
     parameters: [{ type: kind, [kind]: { link: tpl.headerMediaUrl } }],
@@ -265,6 +270,15 @@ async function sendToProvider({ clinicId, channel, conv, body, templateInfo, acc
       // responde al JID completo (…@lid / …@c.us) guardado en externalUserId.
       const dest = String(conv.externalUserId || '').includes('@') ? conv.externalUserId : conv.phone;
       return gateway.sendText(account, dest, text);
+    }
+    if (templateInfo?.missingHeaderMedia) {
+      return {
+        ok: false,
+        errorCode: 'template_header_missing',
+        error:
+          `La plantilla "${templateInfo.name}" requiere ${templateInfo.missingHeaderMedia === 'image' ? 'una imagen' : 'un archivo'} ` +
+          'de cabecera y no hay ninguno guardado. Edita la plantilla y vuelve a subir la imagen.',
+      };
     }
     return templateInfo
       ? gateway.sendTemplate(
