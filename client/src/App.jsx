@@ -48,6 +48,7 @@ import Rooms from './pages/Rooms';
 import Blocks from './pages/Blocks';
 import AccessBlocks from './pages/AccessBlocks';
 import ChartOfAccounts from './pages/accounting/ChartOfAccounts';
+import DataImport from './pages/accounting/DataImport';
 import CostCenters from './pages/accounting/CostCenters';
 import FiscalPeriods from './pages/accounting/FiscalPeriods';
 import JournalEntries from './pages/accounting/JournalEntries';
@@ -412,6 +413,7 @@ function AppRoutes() {
                   ['checks', Checks],
                   ['cards', CreditCards],
                   ['chart', ChartOfAccounts],
+                  ['data-import', DataImport],
                   ['account-mapping', AccountMapping],
                   ['cost-centers', CostCenters],
                   ['periods', FiscalPeriods],

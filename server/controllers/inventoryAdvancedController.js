@@ -32,6 +32,9 @@ const PRODUCT_TEMPLATE_COLUMNS = [
   { header: 'stock_minimo', key: 'minStock', width: 12 },
   { header: 'iva', key: 'taxRate', width: 8 },
   { header: 'ilimitado', key: 'unlimited', width: 10 },
+  { header: 'cuenta_inventario', key: 'cuentaInventario', width: 18 },
+  { header: 'cuenta_costo', key: 'cuentaCosto', width: 16 },
+  { header: 'cuenta_venta', key: 'cuentaVenta', width: 16 },
 ];
 
 // Encabezados aceptados por columna (además del oficial). Se comparan normalizados
@@ -53,6 +56,11 @@ const HEADER_ALIASES = {
   minStock: ['stock minimo', 'stockminimo', 'minstock'],
   taxRate: ['iva', 'taxrate'],
   unlimited: ['ilimitado', 'unlimited'],
+  // Cuentas contables específicas del producto (código del plan; opcionales,
+  // tienen prioridad sobre las de la categoría contable).
+  cuentaInventario: ['cuenta inventario', 'cuenta de inventario'],
+  cuentaCosto: ['cuenta costo', 'cuenta de costo', 'cuenta gasto', 'cuenta de gasto'],
+  cuentaVenta: ['cuenta venta', 'cuenta de venta', 'cuenta ingreso'],
 };
 
 // Normaliza un encabezado para el matching por alias (guiones bajos = espacios).
@@ -84,6 +92,7 @@ exports.downloadProductTemplate = async (req, res) => {
     help.addRow(['ilimitado: SI (servicios sin stock) o NO']);
     help.addRow(['iva: 0, 12 o 15']);
     help.addRow(['Servicios y programas NO requieren categoria_contable.']);
+    help.addRow(['cuenta_inventario / cuenta_costo / cuenta_venta (opcionales): CÓDIGO de la cuenta del plan. Tienen prioridad sobre las cuentas de la categoría contable; si se dejan vacías se usan las de la categoría.']);
     help.addRow(['No borre la fila de encabezados. Puede borrar la fila de ejemplo.']);
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename="plantilla_productos.xlsx"');
@@ -156,8 +165,23 @@ exports.importProductsExcel = async (req, res) => {
         _catId: data.inventoryCategory || data.inventoryCategoryId || '',
         _catText: data.categoriaContable || data.categoria || '',
         _rawCategoria: data.categoria || '',
+        // Crudos de cuentas contables por producto (código del plan, opcionales).
+        _accInv: data.cuentaInventario ? String(data.cuentaInventario).trim() : '',
+        _accCost: data.cuentaCosto ? String(data.cuentaCosto).trim() : '',
+        _accSale: data.cuentaVenta ? String(data.cuentaVenta).trim() : '',
       });
     }
+
+    // Índice código → cuenta para resolver las columnas cuenta_* (opcionales).
+    const accountsList = await ChartOfAccount.find({ clinic: req.clinicId }).select('code allowsMovement').lean();
+    const accByCode = new Map(accountsList.map((a) => [String(a.code).trim(), a]));
+    const resolveAcc = (raw, label, code, errs) => {
+      if (!raw) return undefined;
+      const acc = accByCode.get(raw);
+      if (!acc) { errs.push(`${code}: ${label} "${raw}" no existe en el plan de cuentas`); return undefined; }
+      if (acc.allowsMovement === false) { errs.push(`${code}: ${label} "${raw}" es agrupadora (no permite movimiento)`); return undefined; }
+      return acc._id;
+    };
 
     // Resolver la categoría contable de inventario por fila (sin crear categorías).
     // Físico sin categoría válida → error de fila (no se crea legacy silencioso).
@@ -175,7 +199,17 @@ exports.importProductsExcel = async (req, res) => {
         // No físico o sin categoría: conserva la categoría comercial legacy (normalizada).
         p.categoria = normalizeCategoria(p._rawCategoria);
       }
+      // Cuentas contables por producto (prioridad sobre la categoría; error de fila si no existen).
+      const accErrs = [];
+      const inv = resolveAcc(p._accInv, 'cuenta_inventario', p.code, accErrs);
+      const cost = resolveAcc(p._accCost, 'cuenta_costo', p.code, accErrs);
+      const sale = resolveAcc(p._accSale, 'cuenta_venta', p.code, accErrs);
+      if (accErrs.length) { rowErrors.push(...accErrs); continue; }
+      if (inv !== undefined) p.inventoryAccount = inv;
+      if (cost !== undefined) p.expenseAccount = cost;
+      if (sale !== undefined) p.incomeAccount = sale;
       delete p._catId; delete p._catText; delete p._rawCategoria;
+      delete p._accInv; delete p._accCost; delete p._accSale;
       products.push(p);
     }
 

@@ -114,6 +114,7 @@ app.use('/api/accounting-health', require('./routes/accountingHealth'));
 app.use('/api/deferred-income', require('./routes/deferredIncome'));
 app.use('/api/budgets', require('./routes/budgets'));
 app.use('/api/audit-logs', require('./routes/auditLogs'));
+app.use('/api/data-import', require('./routes/dataImport'));
 
 // Ruta de salud
 app.get('/api/health', (req, res) => {

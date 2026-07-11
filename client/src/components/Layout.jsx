@@ -120,6 +120,7 @@ const MENU_GROUPS = [
   {
     key: 'contabilidad', label: 'Contabilidad', icon: HiOutlineCalculator, items: [
       { path: '/accounting/chart', label: 'Plan de Cuentas', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/data-import', label: 'Importar Datos', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/account-mapping', label: 'Config. Cuentas', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/retention-rules', label: 'Config. Retenciones', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/cost-centers', label: 'Centros de Costo', roles: ['admin', 'contabilidad'] },

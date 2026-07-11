@@ -154,8 +154,11 @@ function streamJournalEntryPdf({ entry, clinic, res, filename }) {
     doc.fontSize(7.5).fillColor('#64748b').font('Helvetica').text(label, positions[i], y + 44, { width: sigW, align: 'center' });
   });
 
+  // Pie en la página actual: sin margen inferior y sin salto de línea, para que
+  // pdfkit no genere una página extra al escribir cerca del borde.
+  doc.page.margins.bottom = 0;
   doc.fontSize(7).fillColor('#94a3b8')
-    .text(`Generado el ${fmtDateTime(new Date())} · Sistema de gestión clínica`, LEFT, 800, { width: WIDTH, align: 'center' });
+    .text(`Generado el ${fmtDateTime(new Date())} · Sistema de gestión clínica`, LEFT, doc.page.height - 32, { width: WIDTH, align: 'center', lineBreak: false });
 
   doc.end();
 }

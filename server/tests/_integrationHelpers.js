@@ -125,6 +125,7 @@ async function assertLedgerBalanced(clinicId) {
 
 /** Simula req con clínica/usuario y body. */
 function mockReq(clinicId, userId, body = {}, extra = {}) {
+  const headers = extra.headers || {};
   return {
     clinicId,
     user: { _id: userId },
@@ -132,6 +133,14 @@ function mockReq(clinicId, userId, body = {}, extra = {}) {
     body,
     params: extra.params || {},
     query: extra.query || {},
+    // Superficie mínima de Express usada por algunos controladores (p.ej. armar
+    // URLs absolutas con el host de la petición en bookingConfig.uploadImage).
+    protocol: 'http',
+    headers,
+    get(name) {
+      const key = String(name).toLowerCase();
+      return headers[key] ?? (key === 'host' ? 'localhost:5000' : undefined);
+    },
   };
 }
 
