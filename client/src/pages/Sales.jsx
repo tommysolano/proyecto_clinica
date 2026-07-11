@@ -210,18 +210,6 @@ export default function Sales() {
     setModalOpen(true);
   };
 
-  // ── Pago dividido ──────────────────────────────────────────────────────────
-  const splitPaid = splitPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
-  const splitRemaining = +(total - splitPaid).toFixed(2);
-  const enableSplit = () => {
-    // Al activar, arranca con lo que haya en el método simple + el restante sugerido.
-    setSplitPayments([{ method: form.paymentMethod || 'efectivo', amount: +total.toFixed(2), bankAccount: form.bankAccount || '', creditCard: form.creditCard || '', cardPos: form.cardPos || '', cardLote: form.cardLote || '', cardVoucher: form.cardVoucher || '' }]);
-    setSplitMode(true);
-  };
-  const addSplitRow = () => setSplitPayments((rows) => [...rows, { method: 'efectivo', amount: splitRemaining > 0 ? +splitRemaining.toFixed(2) : 0, bankAccount: '', creditCard: '', cardPos: '', cardLote: '', cardVoucher: '' }]);
-  const setSplitRow = (i, patch) => setSplitPayments((rows) => rows.map((r, x) => (x === i ? { ...r, ...patch } : r)));
-  const removeSplitRow = (i) => setSplitPayments((rows) => rows.filter((_, x) => x !== i));
-
   const addItem = () => {
     if (!currentItem.product) return toast.error('Selecciona un producto');
     const product = products.find((p) => p._id === currentItem.product);
@@ -282,6 +270,19 @@ export default function Sales() {
   // No se cobra IVA en la venta (el precio del inventario ya lo contempla).
   const taxAmount = 0;
   const total = subtotal - discountTotal;
+
+  // ── Pago dividido ── (debe ir DESPUÉS de `total`: se evalúa en cada render y
+  // usarlo antes de su declaración rompía la página completa con ReferenceError)
+  const splitPaid = splitPayments.reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  const splitRemaining = +(total - splitPaid).toFixed(2);
+  const enableSplit = () => {
+    // Al activar, arranca con lo que haya en el método simple + el restante sugerido.
+    setSplitPayments([{ method: form.paymentMethod || 'efectivo', amount: +total.toFixed(2), bankAccount: form.bankAccount || '', creditCard: form.creditCard || '', cardPos: form.cardPos || '', cardLote: form.cardLote || '', cardVoucher: form.cardVoucher || '' }]);
+    setSplitMode(true);
+  };
+  const addSplitRow = () => setSplitPayments((rows) => [...rows, { method: 'efectivo', amount: splitRemaining > 0 ? +splitRemaining.toFixed(2) : 0, bankAccount: '', creditCard: '', cardPos: '', cardLote: '', cardVoucher: '' }]);
+  const setSplitRow = (i, patch) => setSplitPayments((rows) => rows.map((r, x) => (x === i ? { ...r, ...patch } : r)));
+  const removeSplitRow = (i) => setSplitPayments((rows) => rows.filter((_, x) => x !== i));
 
   const handlePatientSelect = (patientId) => {
     const patient = patients.find((p) => p._id === patientId);
