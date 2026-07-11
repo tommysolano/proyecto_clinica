@@ -62,13 +62,16 @@ exports.get = async (req, res) => {
  * Útil para que el admin copie la URL al panel de Meta for Developers.
  */
 exports.getWebhookUrls = async (req, res) => {
-  const base = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}/api`;
+  // PUBLIC_API_URL puede venir con o sin "/api"; normalizamos para emitir el
+  // prefijo una sola vez y que las URLs sean siempre .../api/chats/...
+  let base = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}`;
+  base = base.replace(/\/+$/, '').replace(/\/api$/, '');
   res.json({
     // WhatsApp es global (call center compartido): una sola URL para todos los números Cloud API.
-    whatsapp: `${base}/chats/webhook/whatsapp`,
-    messenger: `${base}/chats/webhook/messenger/${req.clinicId}`,
-    instagram: `${base}/chats/webhook/instagram/${req.clinicId}`,
-    tiktok: `${base}/chats/webhook/tiktok/${req.clinicId}`,
+    whatsapp: `${base}/api/chats/webhook/whatsapp`,
+    messenger: `${base}/api/chats/webhook/messenger/${req.clinicId}`,
+    instagram: `${base}/api/chats/webhook/instagram/${req.clinicId}`,
+    tiktok: `${base}/api/chats/webhook/tiktok/${req.clinicId}`,
     note:
       'Configura estas URLs como callback en el panel de Meta for Developers (WhatsApp/Messenger/Instagram) y en TikTok Developer. ' +
       'El valor "Verify Token" que pongas en cada plataforma debe coincidir con el verifyToken configurado aquí.',
@@ -223,12 +226,15 @@ const maskWaAccount = (acc) => {
 };
 
 const appConfigPayload = (req, cfg) => {
-  const base = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}/api`;
+  // PUBLIC_API_URL puede venir con o sin "/api" al final; normalizamos para
+  // emitir el prefijo una sola vez y que el webhook sea siempre .../api/chats/...
+  let base = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}`;
+  base = base.replace(/\/+$/, '').replace(/\/api$/, '');
   return {
     appSecret: maskSecret(cfg.cloudApi?.appSecret || ''),
     verifyToken: maskSecret(cfg.cloudApi?.verifyToken || ''),
     callCenterClinic: cfg.callCenterClinic || null,
-    webhookUrl: `${base}/chats/webhook/whatsapp`,
+    webhookUrl: `${base}/api/chats/webhook/whatsapp`,
     conversionsApi: {
       enabled: Boolean(cfg.conversionsApi?.enabled),
       datasetId: cfg.conversionsApi?.datasetId || '',
