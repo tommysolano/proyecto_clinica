@@ -108,33 +108,70 @@ function normalizeTemplate(template, vars) {
 }
 
 /**
- * Si la plantilla tiene cabecera multimedia (imagen/documento/video) con URL
- * pública, antepone el componente `header` que exige la Cloud API. Busca el doc
- * de plantilla por nombre+clínica. No-op si no hay cabecera o ya viene incluida.
+ * Prepara la plantilla para el envío por Cloud API contra su definición local:
+ *  1) Reconcilia los parámetros del CUERPO con las variables que la plantilla
+ *     declara de verdad: recorta los que sobran (p.ej. los workflows mandaban
+ *     siempre el nombre aunque la plantilla no tuviera variables → #132000
+ *     "number of parameters does not match") y completa los que faltan usando
+ *     el nombre del paciente o el ejemplo documentado de cada variable.
+ *  2) Si tiene cabecera multimedia (imagen/documento/video) con URL pública,
+ *     antepone el componente `header` que exige la Cloud API; si la exige y no
+ *     hay archivo guardado, marca `missingHeaderMedia` para fallar con un
+ *     mensaje claro (Meta devolvería #131008).
  */
-async function enrichTemplateHeader(clinicId, templateInfo) {
+async function enrichTemplateHeader(clinicId, templateInfo, patient) {
   if (!templateInfo?.name) return templateInfo;
-  const hasHeader = (templateInfo.components || []).some((c) => c.type === 'header');
-  if (hasHeader) return templateInfo;
   const MessageTemplate = require('../models/MessageTemplate');
   const tpl = await MessageTemplate.findOne({
     clinic: clinicId,
     channel: 'whatsapp',
     name: templateInfo.name,
-  }).select('headerType headerMediaUrl').lean();
+  }).select('headerType headerMediaUrl body variables').lean();
   if (!tpl) return templateInfo;
-  const kind = ['image', 'document', 'video'].includes(tpl.headerType) ? tpl.headerType : null;
-  if (!kind) return templateInfo;
-  if (!tpl.headerMediaUrl) {
-    // La plantilla aprobada exige cabecera multimedia y no hay archivo guardado:
-    // se marca para fallar con un mensaje claro (Meta devolvería #131008).
-    return { ...templateInfo, missingHeaderMedia: kind };
+
+  const info = { ...templateInfo, components: [...(templateInfo.components || [])] };
+
+  // ── 1) Parámetros del cuerpo ──
+  // Variables distintas en orden de aparición (mismo criterio que el registro).
+  const keys = [];
+  for (const m of String(tpl.body || '').matchAll(/\{\{\s*([^}\s]+)\s*\}\}/g)) {
+    if (!keys.includes(m[1])) keys.push(m[1]);
   }
-  const headerComponent = {
-    type: 'header',
-    parameters: [{ type: kind, [kind]: { link: tpl.headerMediaUrl } }],
-  };
-  return { ...templateInfo, components: [headerComponent, ...(templateInfo.components || [])] };
+  const expected = keys.length;
+  const bodyIdx = info.components.findIndex((c) => c.type === 'body');
+  let params = bodyIdx >= 0 ? [...(info.components[bodyIdx].parameters || [])] : [];
+  if (params.length > expected) params = params.slice(0, expected);
+  if (params.length < expected) {
+    const exampleOf = new Map((tpl.variables || []).map((v) => [v.key, v.example]));
+    const firstName = String(patient?.firstName || '').trim();
+    for (let i = params.length; i < expected; i++) {
+      const key = keys[i];
+      let val = '';
+      if (/^(nombre|nombres|firstname|name)$/i.test(key)) val = firstName;
+      if (!val) val = exampleOf.get(key) || '';
+      if (!val) val = firstName || '-'; // Meta rechaza parámetros vacíos
+      params.push({ type: 'text', text: String(val) });
+    }
+  }
+  if (expected === 0) {
+    if (bodyIdx >= 0) info.components.splice(bodyIdx, 1);
+  } else if (bodyIdx >= 0) {
+    info.components[bodyIdx] = { ...info.components[bodyIdx], parameters: params };
+  } else {
+    info.components.push({ type: 'body', parameters: params });
+  }
+
+  // ── 2) Cabecera multimedia ──
+  const hasHeader = info.components.some((c) => c.type === 'header');
+  const kind = ['image', 'document', 'video'].includes(tpl.headerType) ? tpl.headerType : null;
+  if (!hasHeader && kind) {
+    if (!tpl.headerMediaUrl) return { ...info, missingHeaderMedia: kind };
+    info.components.unshift({
+      type: 'header',
+      parameters: [{ type: kind, [kind]: { link: tpl.headerMediaUrl } }],
+    });
+  }
+  return info;
 }
 
 function extractProviderMessageId(result) {
@@ -449,7 +486,7 @@ async function send({
 
   let templateInfo = normalizeTemplate(template, vars);
   if (templateInfo && normalizedChannel === 'whatsapp') {
-    templateInfo = await enrichTemplateHeader(clinicId, templateInfo);
+    templateInfo = await enrichTemplateHeader(clinicId, templateInfo, patientDoc || patient);
   }
   if (normalizedChannel === 'whatsapp' && gateway.isCloud(account)) {
     const computedWindow = getWhatsappWindowExpiresAt(conv);
