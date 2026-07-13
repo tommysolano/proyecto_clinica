@@ -42,6 +42,11 @@ const paymentSchema = new mongoose.Schema(
     // `Idempotency-Key`. Evita que un doble clic / reintento de red registre el mismo
     // cobro o pago dos veces. Ver el índice único parcial de abajo.
     idempotencyKey: { type: String, trim: true, default: null },
+    // Huella del contenido de la solicitud que creó el pago. Si llega la MISMA clave con
+    // otro contenido (importe, método, banco, documentos aplicados…) se responde 409 en vez
+    // de devolver por error un pago que no corresponde a lo pedido. Los pagos anteriores a
+    // este campo no la tienen: ahí se conserva el comportamiento previo (replay).
+    idempotencyFingerprint: { type: String, default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }

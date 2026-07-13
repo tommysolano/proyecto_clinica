@@ -75,18 +75,19 @@ export default function SriReports() {
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
 
-  // XML oficiales (Form 103/104): SOLO mensuales.
+  // Borrador técnico XML (Form 103/104): SOLO mensual. NO es el XML oficial del SRI.
   const downloadXml = async () => {
-    if (!isMonthly) { toast.error('El XML oficial se genera por mes. Cambie el período a "Mensual".'); return; }
+    if (!isMonthly) { toast.error('El XML se genera por mes. Cambie el período a "Mensual".'); return; }
     try {
       const url = tab === 'F104' ? '/accounting-reports/sri/form-104.xml' : '/accounting-reports/sri/form-103.xml';
       const r = await api.get(url, { params: { periodType: 'MONTHLY', year, month }, responseType: 'blob' });
-      downloadBlob(r.data, `${tab}_${suffix()}.xml`);
-      toast.success('XML descargado');
+      downloadBlob(r.data, `borrador-tecnico-${tab}_${suffix()}.xml`);
+      toast.success('Borrador técnico descargado (no es el XML oficial)');
     } catch (e) { toast.error(e.response?.data?.message || 'Error al descargar XML'); }
   };
 
-  // ATS oficial (XML): SOLO mensual. El reporte visual sí acepta rangos.
+  // ATS en XML: SOLO mensual (estructura simplificada, no validada contra el esquema
+  // vigente del SRI). El reporte visual sí acepta rangos.
   const downloadAtsXml = async () => {
     if (!isMonthly) { toast.error('El ATS XML se genera por mes. Cambie el período a "Mensual".'); return; }
     try {
@@ -134,8 +135,8 @@ export default function SriReports() {
         {isRdep && <button onClick={downloadRdepXml} className="px-4 py-2 bg-indigo-600 text-white rounded-lg flex items-center gap-1"><HiOutlineDocumentArrowDown className="w-4 h-4" /> Descargar XML</button>}
 
         {(tab === 'F103' || tab === 'F104') && (
-          <button onClick={downloadXml} disabled={!isMonthly} title={isMonthly ? '' : 'El XML oficial se genera por mes'} className={`px-4 py-2 rounded-lg flex items-center gap-1 ${isMonthly ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}>
-            <HiOutlineDocumentArrowDown className="w-4 h-4" /> Descargar XML (DIMM)
+          <button onClick={downloadXml} disabled={!isMonthly} title={isMonthly ? 'Borrador técnico: no es el XML oficial del SRI' : 'El XML se genera por mes'} className={`px-4 py-2 rounded-lg flex items-center gap-1 ${isMonthly ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}>
+            <HiOutlineDocumentArrowDown className="w-4 h-4" /> Borrador técnico (XML)
           </button>
         )}
 
@@ -158,9 +159,18 @@ export default function SriReports() {
         )}
       </div>
 
+      {(tab === 'F103' || tab === 'F104') && (
+        <p className="text-xs text-sky-800 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2">
+          Esto es una <b>preliquidación de solo lectura</b>. Para declarar de verdad —borrador, casilleros editables,
+          cierre contable, obligación con el SRI y sustitutivas— use{' '}
+          <Link to="/accounting/sri-declarations" className="text-emerald-700 underline font-medium">Declaraciones SRI</Link>.
+          El XML que se descarga aquí es un <b>borrador técnico</b>, no el archivo oficial del SRI.
+        </p>
+      )}
+
       {!isRdep && (tab === 'F103' || tab === 'F104' || tab === 'ATS') && !isMonthly && (
         <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-          El XML oficial solo se genera por mes. Con este período verá el reporte visual; para descargar el XML cambie a período <b>Mensual</b>.
+          El XML solo se genera por mes. Con este período verá el reporte visual; para descargarlo cambie a período <b>Mensual</b>.
         </p>
       )}
 
@@ -298,7 +308,7 @@ function Form104({ data }) {
   );
 }
 
-// ATS visual (compras + ventas del período). El XML oficial es mensual.
+// ATS visual (compras + ventas del período). El XML del ATS se genera por mes.
 function AtsPreview({ data }) {
   const compras = data?.compras || [];
   const ventas = data?.ventas || [];

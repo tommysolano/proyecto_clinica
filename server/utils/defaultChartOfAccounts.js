@@ -23,6 +23,8 @@ module.exports = [
   { code: '1.1.03.02',name: 'Retención IVA por cobrar',                   type: 'ACTIVO',    nature: 'DEBITO' },
   { code: '1.1.03.03',name: 'Retención Renta por cobrar',                 type: 'ACTIVO',    nature: 'DEBITO' },
   { code: '1.1.03.04',name: 'Anticipo Impuesto a la Renta',               type: 'ACTIVO',    nature: 'DEBITO' },
+  // Saldo a favor que queda tras liquidar el Formulario 104 y se arrastra al mes siguiente.
+  { code: '1.1.03.05',name: 'Crédito tributario IVA (saldo a favor)',     type: 'ACTIVO',    nature: 'DEBITO' },
   { code: '1.1.04',   name: 'INVENTARIOS',                                type: 'ACTIVO',    nature: 'DEBITO',  allowsMovement: false },
   { code: '1.1.04.01',name: 'Inventario de productos',                    type: 'ACTIVO',    nature: 'DEBITO' },
   { code: '1.1.04.02',name: 'Inventario de insumos médicos',              type: 'ACTIVO',    nature: 'DEBITO' },
@@ -57,6 +59,9 @@ module.exports = [
   { code: '2.1.02.03',name: 'Retención IVA por pagar',                    type: 'PASIVO',    nature: 'CREDITO' },
   { code: '2.1.02.04',name: 'Retención Renta por pagar',                  type: 'PASIVO',    nature: 'CREDITO' },
   { code: '2.1.02.05',name: 'Impuesto a la Renta por pagar',              type: 'PASIVO',    nature: 'CREDITO' },
+  // Obligación consolidada con el SRI al finalizar una declaración (104/103). Es la
+  // cuenta de control de la CxP al SRI: solo se debita cuando se PAGA la declaración.
+  { code: '2.1.02.06',name: 'SRI por pagar (declaraciones)',              type: 'PASIVO',    nature: 'CREDITO' },
   { code: '2.1.03',   name: 'OBLIGACIONES LABORALES',                     type: 'PASIVO',    nature: 'CREDITO', allowsMovement: false },
   { code: '2.1.03.01',name: 'Sueldos por pagar',                          type: 'PASIVO',    nature: 'CREDITO' },
   { code: '2.1.03.02',name: 'IESS por pagar',                             type: 'PASIVO',    nature: 'CREDITO' },

@@ -7,6 +7,9 @@ const Sale = require('../models/Sale');
 const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { openReceivable, applyToReceivable, unapplyFromReceivable, openPayable, applyToPayable, unapplyFromPayable } = require('../utils/subledger');
+const {
+  readIdempotencyKey, fingerprint, assertSameFingerprint, normalize: N, conflict,
+} = require('../utils/idempotency');
 
 async function nextNumber(clinicId, type, session = null) {
   const prefix = type === 'COBRO' ? 'CB-' : 'PG-';
@@ -56,18 +59,50 @@ exports.get = async (req, res) => {
  * Crea cobro o pago, aplica a documentos, opcional anticipo.
  */
 exports.create = async (req, res) => {
-  // Idempotencia: clave provista por el cliente (body o header `Idempotency-Key`) para
-  // no registrar dos veces el mismo cobro/pago por doble-submit o reintento de red.
-  const idempotencyKey = (req.body?.idempotencyKey
-    || req.headers?.['idempotency-key']
-    || (typeof req.get === 'function' && req.get('Idempotency-Key'))
-    || '').toString().trim() || null;
+  // Idempotencia: clave provista por el cliente (header `Idempotency-Key`, o body por
+  // compatibilidad) para no registrar dos veces el mismo cobro/pago por doble-submit o
+  // reintento de red. La HUELLA del contenido distingue un reintento (mismo contenido ⇒
+  // replay) de una operación distinta que reutiliza la clave por error (⇒ 409).
+  //
+  // La IDENTIDAD DEL DESTINO va dentro de la huella: aquí el destino no es un parámetro de
+  // ruta sino los documentos aplicados (`applications[].docModel/docRef`), es decir la CxP o
+  // CxC concreta. Reutilizar la clave contra OTRA CxP produce otra huella ⇒ 409.
+  const idempotencyKey = readIdempotencyKey(req);
+  const targetOf = (apps) => (apps || [])
+    .map((a) => ({ docModel: a.docModel || null, docRef: N.id(a.docRef) }))
+    .sort((a, b) => String(a.docRef).localeCompare(String(b.docRef)));
+  const target = targetOf(req.body?.applications);
+  const idemFingerprint = fingerprint({
+    op: 'payment.create',
+    type: req.body?.type || null,
+    method: req.body?.method || null,
+    bankAccount: N.id(req.body?.bankAccount),
+    party: N.id(req.body?.partyRef),
+    date: N.date(req.body?.date),
+    advanceAmount: N.num(req.body?.advanceAmount),
+    checkNumber: req.body?.checkNumber || null,
+    applications: (req.body?.applications || [])
+      .map((a) => ({ docModel: a.docModel || null, docRef: N.id(a.docRef), amount: N.num(a.amount) }))
+      .sort((a, b) => String(a.docRef).localeCompare(String(b.docRef))),
+  });
   try {
     // Replay directo: si la clave ya se usó en esta clínica, devolvemos el pago
     // existente SIN crear otro asiento, BankTransaction ni re-aplicar CxP/CxC.
     if (idempotencyKey) {
       const existing = await Payment.findOne({ clinic: req.clinicId, idempotencyKey });
-      if (existing) return res.status(200).json({ ...existing.toObject(), idempotentReplay: true });
+      if (existing) {
+        // Pagos legacy (con clave pero sin huella): no se pueden comparar por contenido, así
+        // que al menos se comprueba que apuntan a la MISMA obligación. Nunca se devuelve el
+        // pago de otra CxP/CxC como si fuera el de esta.
+        if (JSON.stringify(targetOf(existing.applications)) !== JSON.stringify(target)) {
+          throw conflict(
+            `La clave de idempotencia ya fue utilizada para el cobro/pago ${existing.number}, `
+            + 'aplicado a OTROS documentos. Cada obligación es una operación distinta: use una clave nueva.'
+          );
+        }
+        assertSameFingerprint(existing.idempotencyFingerprint, idemFingerprint, 'cobro/pago');
+        return res.status(200).json({ ...existing.toObject(), idempotentReplay: true });
+      }
     }
     {
       const paymentId = await runInTransaction(async (session) => {
@@ -154,6 +189,7 @@ exports.create = async (req, res) => {
           advanceAmount,
           description,
           idempotencyKey,
+          idempotencyFingerprint: idempotencyKey ? idemFingerprint : null,
           createdBy: req.user._id,
         }], { session });
 
@@ -312,10 +348,19 @@ exports.create = async (req, res) => {
     }
   } catch (e) {
     // Carrera de idempotencia: otra petición con la misma clave ganó (índice único).
-    // Recuperamos y devolvemos el pago existente en vez de fallar.
+    // Recuperamos y devolvemos el pago existente en vez de fallar (409 si pedía otra cosa).
     if (e.code === 11000 && idempotencyKey) {
       const existing = await Payment.findOne({ clinic: req.clinicId, idempotencyKey });
-      if (existing) return res.status(200).json({ ...existing.toObject(), idempotentReplay: true });
+      if (existing) {
+        const mismoDestino = JSON.stringify(targetOf(existing.applications)) === JSON.stringify(target);
+        try {
+          if (!mismoDestino) throw conflict(`La clave de idempotencia ya fue utilizada para el cobro/pago ${existing.number}, aplicado a OTROS documentos.`);
+          assertSameFingerprint(existing.idempotencyFingerprint, idemFingerprint, 'cobro/pago');
+        } catch (conflictErr) {
+          return res.status(409).json({ message: conflictErr.message });
+        }
+        return res.status(200).json({ ...existing.toObject(), idempotentReplay: true });
+      }
     }
     res.status(e.status || 400).json({ message: e.message });
   }

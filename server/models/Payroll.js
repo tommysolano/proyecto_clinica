@@ -67,6 +67,28 @@ const payrollItemSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Pago (total o parcial) del rol. Un rol puede liquidarse en varios pagos: cada uno
+// aplica contra la obligación (CxP) y afecta Banco/Caja con su propio asiento.
+//
+// `idempotencyKey` identifica la INTENCIÓN de pago (el cliente la genera por intención, no
+// por reintento): un doble clic o un reintento de red con la misma clave devuelve el pago ya
+// registrado en vez de duplicar banco y aplicación. `fingerprint` es la huella del contenido
+// de esa solicitud: si llega la misma clave con otro importe/banco/fecha, se responde 409.
+const payrollPaymentSchema = new mongoose.Schema(
+  {
+    date: { type: Date, required: true },
+    amount: { type: Number, required: true, min: 0 },
+    bankAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'BankAccount', default: null },
+    journalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
+    bankTransaction: { type: mongoose.Schema.Types.ObjectId, ref: 'BankTransaction', default: null },
+    reference: { type: String, default: '' },
+    paidBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    idempotencyKey: { type: String, trim: true, default: null },
+    fingerprint: { type: String, default: null },
+  },
+  { _id: false }
+);
+
 const payrollSchema = new mongoose.Schema(
   {
     clinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', required: true, index: true },
@@ -81,10 +103,21 @@ const payrollSchema = new mongoose.Schema(
     totalNeto: { type: Number, default: 0 },
     totalProvisiones: { type: Number, default: 0 },
     status: { type: String, enum: ['BORRADOR', 'CERRADO', 'PAGADO', 'ANULADO'], default: 'BORRADOR' },
+    // Fecha CONTABLE del cierre (devengo del gasto). Antes se forzaba el día 28 del mes;
+    // ahora la elige el usuario al cerrar (por defecto, el último día del período).
+    accountingDate: { type: Date, default: null },
+    // Fecha en la que se PLANEA pagar el neto. Alimenta la proyección de flujo de caja
+    // (es el vencimiento de la obligación de sueldos por pagar).
+    scheduledPaymentDate: { type: Date, default: null },
     journalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry' },
+    // Obligación (CxP) por el neto de sueldos por pagar, abierta al cerrar. El pasivo
+    // contable lo reconoce el asiento de cierre: esta CxP es solo el submayor.
+    payableRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Payable', default: null },
     closedAt: Date,
     closedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-    // Pago del rol (desde banco o caja): asiento y transacción bancaria.
+    // Pagos del rol (total o parciales).
+    payments: { type: [payrollPaymentSchema], default: [] },
+    // Compat: reflejan el PRIMER pago registrado (los módulos antiguos los leen).
     paymentJournalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
     paymentBankTransaction: { type: mongoose.Schema.Types.ObjectId, ref: 'BankTransaction', default: null },
     paymentBankAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'BankAccount', default: null },
@@ -95,6 +128,42 @@ const payrollSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+/**
+ * Total pagado. La FUENTE DE VERDAD del saldo contable es la CxP (`Payable.applied`):
+ * `payments[]` es su espejo, escrito en la MISMA transacción que la aplicación, y no hay
+ * ningún endpoint que lo modifique por separado.
+ *
+ * Estos virtuales son SÍNCRONOS y no pueden leer la cartera, así que son solo una
+ * aproximación local. Cuando el rol tiene obligación (`payableRef`), los controladores
+ * SOBRESCRIBEN estos valores con el saldo real de la CxP (ver `withObligation` en
+ * payrollController): el saldo de la CxP siempre prevalece sobre el estado del rol.
+ *
+ * Fallback legacy: un rol histórico marcado PAGADO, SIN `payments[]` y SIN `payableRef`
+ * (anterior a que existiera la obligación) no tiene de dónde sacar el dato; ahí, y solo
+ * ahí, su estado se toma como que el neto está pagado. Si tiene `payableRef`, NO se asume
+ * nada: manda la CxP.
+ */
+payrollSchema.virtual('paidAmount').get(function () {
+  const registrados = +(this.payments || []).reduce((s, p) => s + (Number(p.amount) || 0), 0).toFixed(2);
+  if (registrados > 0) return registrados;
+  const esLegacySinCartera = !this.payableRef && this.status === 'PAGADO';
+  return esLegacySinCartera ? +(Number(this.totalNeto) || 0).toFixed(2) : 0;
+});
+/** Saldo pendiente del neto (lo sobrescribe el saldo de la CxP cuando existe obligación). */
+payrollSchema.virtual('pendingAmount').get(function () {
+  return +((Number(this.totalNeto) || 0) - this.paidAmount).toFixed(2);
+});
+payrollSchema.set('toJSON', { virtuals: true });
+payrollSchema.set('toObject', { virtuals: true });
+
 payrollSchema.index({ clinic: 1, year: 1, month: 1 }, { unique: true });
+// Idempotencia de pagos: una clave no puede reutilizarse en otro rol de la misma clínica.
+// (Dentro de un mismo rol la protección es el chequeo transaccional de markPaid, que se
+// serializa por conflicto de escritura sobre este documento.) Parcial: los pagos legacy
+// sin clave no colisionan entre sí.
+payrollSchema.index(
+  { clinic: 1, 'payments.idempotencyKey': 1 },
+  { unique: true, partialFilterExpression: { 'payments.idempotencyKey': { $type: 'string' } } }
+);
 
 module.exports = mongoose.model('Payroll', payrollSchema);

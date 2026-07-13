@@ -10,10 +10,75 @@ const BankTransaction = require('../models/BankTransaction');
 const User = require('../models/User');
 const EmployeeDeduction = require('../models/EmployeeDeduction');
 const PayrollIncomeTaxTable = require('../models/PayrollIncomeTaxTable');
-const { createEntry, findAccount, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
+const Payable = require('../models/Payable');
+const JournalEntry = require('../models/JournalEntry');
+const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
+const { openPayable, applyToPayable, voidPayable } = require('../utils/subledger');
 const { recomputeItem, buildPayrollEntryLines, resolveConfigAccounts } = require('../utils/payrollPosting');
 const { DEFAULT_IR_RANGES_2024, getActiveIncomeTaxTable } = require('../utils/payrollTax');
+const { payrollWithholdingForPeriod } = require('../utils/payrollWithholding');
+const {
+  readIdempotencyKey, fingerprint, assertSameFingerprint, assertSameTarget, normalize: N,
+} = require('../utils/idempotency');
+
+const r2 = (n) => +(Number(n) || 0).toFixed(2);
+
+/**
+ * Adjunta al rol el estado REAL de su obligación (CxP), que es la fuente de verdad del
+ * saldo. Si el rol tiene `payableRef`/CxP, `paidAmount` y `pendingAmount` se toman de ella y
+ * NO del estado del rol: un rol legacy marcado PAGADO cuya CxP todavía tiene saldo muestra
+ * el saldo real, no cero. Solo cuando no hay cartera se usan los virtuales del modelo
+ * (fallback legacy documentado en models/Payroll.js).
+ */
+async function withObligation(payroll, clinicId) {
+  if (!payroll) return payroll;
+  const obj = payroll.toObject ? payroll.toObject({ virtuals: true }) : { ...payroll };
+  const cxp = await Payable.findOne({
+    clinic: clinicId, sourceModel: 'Payroll', sourceRef: payroll._id,
+  }).lean();
+  if (!cxp) return { ...obj, obligacion: null };
+  return {
+    ...obj,
+    paidAmount: r2(cxp.applied),
+    pendingAmount: r2(cxp.balance),
+    obligacion: {
+      total: r2(cxp.total),
+      applied: r2(cxp.applied),
+      balance: r2(cxp.balance),
+      status: cxp.status,
+      dueDate: cxp.dueDate,
+      plannedPaymentDate: cxp.plannedPaymentDate || null,
+    },
+  };
+}
+
+/**
+ * Abre (o sincroniza) la OBLIGACIÓN por el neto de sueldos por pagar del rol.
+ *
+ * El pasivo contable ya lo reconoció el asiento de cierre (crédito a «Sueldos por
+ * pagar»): esta CxP es SOLO el documento de submayor que hace la obligación visible
+ * y proyectable en el flujo de caja. NO genera un segundo crédito.
+ *
+ * Idempotente por (clínica, Payroll, rolId): cerrar dos veces no duplica la obligación.
+ */
+async function openPayrollObligation(p, { clinicId, account, session }) {
+  const neto = r2(p.totalNeto);
+  if (neto <= 0) return null;
+  return openPayable({
+    clinic: clinicId,
+    party: { model: 'Employee', ref: null, name: `Empleados — rol ${p.period}` },
+    sourceModel: 'Payroll',
+    sourceRef: p._id,
+    docType: 'OTRO',
+    number: p.code || `ROL-${p.period}`,
+    issueDate: p.accountingDate || new Date(),
+    dueDate: p.scheduledPaymentDate || null,
+    total: neto,
+    account,
+    notes: `Neto de sueldos por pagar del rol ${p.period}`,
+  }, { session });
+}
 
 /** Mapa conceptId → flags de afectación (para el motor de cálculo del ítem). */
 async function loadConceptFlags(clinicId, session) {
@@ -342,7 +407,7 @@ exports.listPayrolls = async (req, res) => {
 exports.getPayroll = async (req, res) => {
   const p = await Payroll.findOne({ _id: req.params.id, clinic: req.clinicId });
   if (!p) return res.status(404).json({ message: 'No encontrado' });
-  res.json(p);
+  res.json(await withObligation(p, req.clinicId));
 };
 
 exports.updatePayrollItem = async (req, res) => {
@@ -381,13 +446,30 @@ exports.updatePayrollItem = async (req, res) => {
  * cuenta crítica (p.ej. la cuenta de sueldos del departamento). Trazabilidad:
  * source NOMINA · sourceModel Payroll · sourceRef rol · sourceAction CLOSE.
  */
+/**
+ * Cierra el rol: contabiliza gastos/provisiones/pasivos y abre la OBLIGACIÓN por el
+ * neto (CxP), dejándola proyectable en el flujo de caja.
+ *
+ * Body: { accountingDate?, scheduledPaymentDate? }
+ *   - accountingDate: fecha de DEVENGO del gasto (por defecto, último día del mes del
+ *     rol). Antes se forzaba el día 28: ya no.
+ *   - scheduledPaymentDate: fecha en que se planea pagar el neto → vencimiento de la
+ *     obligación. Es la fecha LEGAL: no se desplaza por caer fin de semana (eso lo hace
+ *     la proyección, que muestra además la fecha efectiva).
+ */
 exports.closePayroll = async (req, res) => {
   try {
     const payrollId = await runInTransaction(async (session) => {
       const p = await Payroll.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
       if (!p) throw Object.assign(new Error('No encontrado'), { status: 404 });
       if (p.status !== 'BORRADOR') throw Object.assign(new Error('No es borrador'), { status: 400 });
-      const payrollDate = new Date(p.year, p.month - 1, 28);
+
+      // Último día del mes del rol: devengo natural del período (sustituye al día 28 fijo).
+      const defaultDate = new Date(p.year, p.month, 0, 23, 59, 59, 999);
+      const payrollDate = req.body?.accountingDate ? new Date(req.body.accountingDate) : defaultDate;
+      if (Number.isNaN(payrollDate.getTime())) throw Object.assign(new Error('Fecha contable inválida'), { status: 400 });
+      const scheduled = req.body?.scheduledPaymentDate ? new Date(req.body.scheduledPaymentDate) : null;
+      if (scheduled && Number.isNaN(scheduled.getTime())) throw Object.assign(new Error('Fecha de pago programada inválida'), { status: 400 });
       await assertPeriodOpen(req.clinicId, payrollDate, { session });
 
       // Bloqueo: si hay empleados con ingreso (sujetos a IR) y NO hay tabla de
@@ -402,7 +484,20 @@ exports.closePayroll = async (req, res) => {
       }
 
       // Construye las líneas (agrega por cuenta; valida config crítica).
-      const { lines } = await buildPayrollEntryLines(p, { clinicId: req.clinicId, session });
+      const { lines, config } = await buildPayrollEntryLines(p, { clinicId: req.clinicId, session });
+
+      // El asiento se identifica por `sourceAction`, y `createEntry` es idempotente por
+      // (clinic, sourceModel, sourceRef, sourceAction). Un asiento REVERSADO conserva su
+      // status CONTABILIZADO, así que reutilizar 'CLOSE' tras una reapertura devolvería el
+      // asiento reversado y el rol quedaría cerrado SIN reconocer el gasto (con la CxP
+      // reabierta y sin respaldo en el mayor). Cada ciclo de cierre usa su propia acción.
+      const previousCloses = await JournalEntry.countDocuments({
+        clinic: req.clinicId,
+        sourceModel: 'Payroll',
+        sourceRef: p._id,
+        sourceAction: { $regex: /^CLOSE/ },
+      }).session(session);
+      const closeAction = previousCloses === 0 ? 'CLOSE' : `CLOSE:${previousCloses + 1}`;
 
       const entry = await createEntry({
         clinicId: req.clinicId,
@@ -411,7 +506,7 @@ exports.closePayroll = async (req, res) => {
         source: 'NOMINA',
         sourceRef: p._id,
         sourceModel: 'Payroll',
-        sourceAction: 'CLOSE',
+        sourceAction: closeAction,
         lines,
         userId: req.user._id,
         session,
@@ -454,14 +549,113 @@ exports.closePayroll = async (req, res) => {
 
       p.status = 'CERRADO';
       p.journalEntry = entry._id;
+      p.accountingDate = payrollDate;
+      p.scheduledPaymentDate = scheduled;
       p.closedAt = new Date();
       p.closedBy = req.user._id;
+
+      // Obligación por el neto (submayor de «Sueldos por pagar»): el crédito contable
+      // ya lo hizo el asiento de arriba, aquí NO se vuelve a acreditar nada.
+      const obligation = await openPayrollObligation(p, {
+        clinicId: req.clinicId,
+        account: config.sueldosPorPagar?._id || null,
+        session,
+      });
+      p.payableRef = obligation?._id || null;
+
       await p.save({ session });
       return p._id;
     });
     const payroll = await Payroll.findById(payrollId);
-    return res.json(payroll);
+    return res.json(await withObligation(payroll, req.clinicId));
   } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+};
+
+/**
+ * POST /payroll/:id/reopen — devuelve un rol CERRADO a BORRADOR.
+ * Reversa el asiento de cierre y anula la obligación. Se bloquea si ya hubo pagos:
+ * primero habría que revertirlos (evita dejar la cartera y el mayor incoherentes).
+ */
+exports.reopenPayroll = async (req, res) => {
+  try {
+    const payrollId = await runInTransaction(async (session) => {
+      const p = await Payroll.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+      if (!p) throw Object.assign(new Error('No encontrado'), { status: 404 });
+      if (p.status !== 'CERRADO') throw Object.assign(new Error('Solo se reabre un rol cerrado'), { status: 400 });
+      if ((p.payments || []).length) throw Object.assign(new Error('El rol tiene pagos registrados: no se puede reabrir'), { status: 400 });
+
+      const reversalDate = req.body?.date ? new Date(req.body.date) : new Date();
+      await assertPeriodOpen(req.clinicId, p.accountingDate || reversalDate, { session });
+      await assertPeriodOpen(req.clinicId, reversalDate, { session });
+
+      if (p.journalEntry) {
+        await reverseEntry({
+          clinicId: req.clinicId,
+          entryId: p.journalEntry,
+          userId: req.user._id,
+          reason: req.body?.reason || `Reapertura del rol ${p.period}`,
+          date: reversalDate,
+          session,
+        });
+      }
+      await voidPayable({ clinicId: req.clinicId, sourceModel: 'Payroll', sourceRef: p._id }, { session });
+
+      p.status = 'BORRADOR';
+      p.journalEntry = null;
+      p.payableRef = null;
+      p.closedAt = null;
+      p.closedBy = null;
+      await p.save({ session });
+      return p._id;
+    });
+    const payroll = await Payroll.findById(payrollId);
+    res.json(await withObligation(payroll, req.clinicId));
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+};
+
+/** POST /payroll/:id/void — anula el rol: reversa el asiento y cancela la obligación. */
+exports.voidPayroll = async (req, res) => {
+  try {
+    const payrollId = await runInTransaction(async (session) => {
+      const p = await Payroll.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+      if (!p) throw Object.assign(new Error('No encontrado'), { status: 404 });
+      if (p.status === 'ANULADO') throw Object.assign(new Error('El rol ya está anulado'), { status: 400 });
+      if ((p.payments || []).length) throw Object.assign(new Error('El rol tiene pagos registrados: reverse los pagos antes de anular'), { status: 400 });
+
+      const reversalDate = req.body?.date ? new Date(req.body.date) : new Date();
+      await assertPeriodOpen(req.clinicId, reversalDate, { session });
+      if (p.journalEntry) {
+        await reverseEntry({
+          clinicId: req.clinicId,
+          entryId: p.journalEntry,
+          userId: req.user._id,
+          reason: req.body?.reason || `Anulación del rol ${p.period}`,
+          date: reversalDate,
+          session,
+        });
+      }
+      await voidPayable({ clinicId: req.clinicId, sourceModel: 'Payroll', sourceRef: p._id }, { session });
+      p.status = 'ANULADO';
+      await p.save({ session });
+      return p._id;
+    });
+    const payroll = await Payroll.findById(payrollId);
+    res.json(await withObligation(payroll, req.clinicId));
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+};
+
+/**
+ * GET /payroll/withholding?year&month — servicio auditable de retención en relación de
+ * dependencia (lo consume el Formulario 103): base gravada, IR retenido y el detalle de
+ * qué rubro se incluyó/excluyó y por qué.
+ */
+exports.withholdingSummary = async (req, res) => {
+  try {
+    const year = parseInt(req.query.year, 10) || new Date().getFullYear();
+    const month = parseInt(req.query.month, 10) || (new Date().getMonth() + 1);
+    const data = await payrollWithholdingForPeriod({ clinicId: req.clinicId, year, month });
+    res.json({ year, month, ...data });
+  } catch (e) { res.status(e.status || 500).json({ message: e.message }); }
 };
 
 /**
@@ -506,117 +700,223 @@ exports.generateDecimos = async (req, res) => {
 };
 
 /**
- * Paga un rol CERRADO. Si se indica `bankAccountId`, genera el asiento de pago
- * (DEBE Sueldos por pagar · HABER Banco) y una BankTransaction que se refleja en el
- * libro de bancos y el mayor (source PAGO · sourceModel Payroll · sourceAction PAY).
- * Si NO se indica banco, solo marca PAGADO (compat legacy, sin afectación bancaria).
+ * Paga un rol CERRADO, TOTAL o PARCIALMENTE, aplicando la obligación (CxP) del neto.
+ *
+ * Body: { bankAccountId?, confirmNoBank?, amount?, date?, reference?, idempotencyKey? }
+ * Header: `Idempotency-Key` (preferido).
+ *   - Con `bankAccountId`: asiento D Sueldos por pagar / H Banco + BankTransaction.
+ *   - Con `confirmNoBank`: pago en efectivo → H Caja (nunca se marca PAGADO sin asiento).
+ *   - `amount` ausente = paga el saldo pendiente. Si queda saldo, el rol sigue CERRADO.
+ *
+ * IDEMPOTENCIA: la clave identifica la INTENCIÓN de pago. Reintentarla (doble clic, red)
+ * devuelve el pago ya registrado sin duplicar asiento, movimiento bancario ni aplicación.
+ * La misma clave con OTRO contenido responde 409. Dos claves distintas son dos pagos reales
+ * (dos pagos de 100 en momentos distintos se registran los dos).
+ *
+ * La comprobación vive DENTRO de la transacción: dos peticiones en paralelo con la misma
+ * clave se serializan por el conflicto de escritura sobre el rol, y la que reintenta ve el
+ * pago ya aplicado y hace replay.
+ *
+ * El submayor impide además el doble pago por importe: aplicar más que el saldo de la CxP
+ * lanza error.
  */
 exports.markPaid = async (req, res) => {
+  const { bankAccountId, date, reference } = req.body || {};
+  const idemKey = readIdempotencyKey(req);
+  // Huella del contenido ENVIADO (no de los valores resueltos por defecto): así un
+  // reintento idéntico coincide, y un cambio de importe/banco/fecha no. Incluye la
+  // IDENTIDAD DEL DESTINO (`payroll`, del parámetro de ruta) y el tipo de operación: la
+  // misma clave en otro rol nunca puede confundirse con un reintento de este.
+  const idemFingerprint = fingerprint({
+    op: 'payroll.pay',
+    sourceModel: 'Payroll',
+    sourceRef: String(req.params.id),
+    payroll: String(req.params.id),
+    amount: N.num(req.body?.amount),
+    bankAccount: N.id(bankAccountId),
+    cash: !bankAccountId,
+    date: N.date(date),
+    reference: reference || null,
+  });
+
   try {
-    const { bankAccountId, date, reference } = req.body || {};
-    // Sin banco: ENDURECIDO. Antes marcaba PAGADO sin ningún asiento, dejando "Sueldos
-    // por pagar" abierto indefinidamente. Ahora solo se admite un pago MANUAL/EFECTIVO
-    // EXPLÍCITO (confirmNoBank), que igualmente genera el asiento de liquidación
-    // (D Sueldos por pagar / H Caja) para no dejar la obligación sin liquidar.
-    if (!bankAccountId) {
-      if (!(req.body?.confirmNoBank === true || req.body?.force === true)) {
-        return res.status(400).json({
-          message: 'El pago de nómina requiere un banco. Usa "Pagar desde banco", o confirma un pago manual en efectivo (confirmNoBank), que se contabilizará contra Caja.',
-        });
-      }
-      const payrollId = await runInTransaction(async (session) => {
-        const p = await Payroll.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
-        if (!p) throw Object.assign(new Error('No encontrado'), { status: 404 });
-        if (p.status !== 'CERRADO') throw Object.assign(new Error('Debe estar cerrado'), { status: 400 });
-        const amount = +(p.totalNeto || 0).toFixed(2);
-        if (amount <= 0) throw Object.assign(new Error('El rol no tiene neto por pagar'), { status: 400 });
-
-        const cfg = await PayrollConfig.findOne({ clinic: req.clinicId }).session(session);
-        const general = await resolveConfigAccounts(req.clinicId, cfg, session);
-        const caja = await getAccount(req.clinicId, 'caja', { session });
-        const txDate = date ? new Date(date) : new Date();
-
-        // Idempotente por sourceAction 'PAY' (mismo que el pago desde banco).
-        const entry = await createEntry({
-          clinicId: req.clinicId, date: txDate,
-          description: `Pago de nómina ${p.period} (efectivo/manual)`,
-          source: 'PAGO', sourceRef: p._id, sourceModel: 'Payroll', sourceAction: 'PAY',
-          lines: [
-            { account: general.sueldosPorPagar._id, debit: amount, credit: 0, description: 'Pago sueldos por pagar' },
-            { account: caja._id, debit: 0, credit: amount, description: `Pago nómina ${p.period} (efectivo)` },
-          ],
-          userId: req.user._id, session,
-        });
-
-        p.status = 'PAGADO';
-        p.paymentJournalEntry = entry._id;
-        p.paidAt = txDate;
-        p.paidBy = req.user._id;
-        await p.save({ session });
-        return p._id;
+    if (!bankAccountId && !(req.body?.confirmNoBank === true || req.body?.force === true)) {
+      return res.status(400).json({
+        message: 'El pago de nómina requiere un banco. Usa "Pagar desde banco", o confirma un pago manual en efectivo (confirmNoBank), que se contabilizará contra Caja.',
       });
-      const payroll = await Payroll.findById(payrollId);
-      return res.json(payroll);
     }
 
-    const payrollId = await runInTransaction(async (session) => {
+    // Replay rápido fuera de la transacción (doble clic / reintento de red).
+    // La clave se busca en TODA la clínica, no solo en este rol: el índice único es de
+    // clínica, así que reutilizarla en OTRO rol debe responder 409, no reventar contra el
+    // índice ni devolver el pago del rol ajeno.
+    if (idemKey) {
+      const previo = await Payroll.findOne({
+        clinic: req.clinicId, 'payments.idempotencyKey': idemKey,
+      });
+      if (previo) {
+        assertSameTarget(previo._id, req.params.id, 'el pago de nómina');
+        const pago = previo.payments.find((x) => x.idempotencyKey === idemKey);
+        assertSameFingerprint(pago?.fingerprint, idemFingerprint, 'pago de nómina');
+        return res.json({ ...(await withObligation(previo, req.clinicId)), idempotentReplay: true });
+      }
+    }
+
+    const result = await runInTransaction(async (session) => {
       const p = await Payroll.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
       if (!p) throw Object.assign(new Error('No encontrado'), { status: 404 });
-      if (p.status !== 'CERRADO') throw Object.assign(new Error('Debe estar cerrado'), { status: 400 });
-      const amount = +(p.totalNeto || 0).toFixed(2);
-      if (amount <= 0) throw Object.assign(new Error('El rol no tiene neto por pagar'), { status: 400 });
 
-      const bank = await BankAccount.findOne({ _id: bankAccountId, clinic: req.clinicId }).session(session);
-      if (!bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 400 });
-      if (!bank.chartAccount) throw Object.assign(new Error('La cuenta bancaria no tiene cuenta contable asociada'), { status: 400 });
+      // Dentro de la transacción: si la clave ya se aplicó (la ganó otra petición
+      // concurrente), se hace replay sin escribir nada —o 409 si fue en otro rol.
+      if (idemKey) {
+        const dueño = await Payroll.findOne({
+          clinic: req.clinicId, 'payments.idempotencyKey': idemKey,
+        }).session(session);
+        if (dueño) {
+          assertSameTarget(dueño._id, p._id, 'el pago de nómina');
+          const yaAplicado = dueño.payments.find((x) => x.idempotencyKey === idemKey);
+          assertSameFingerprint(yaAplicado?.fingerprint, idemFingerprint, 'pago de nómina');
+          return { payrollId: p._id, replay: true };
+        }
+      }
+
+      if (p.status !== 'CERRADO') {
+        throw Object.assign(new Error(p.status === 'PAGADO' ? 'El rol ya está pagado' : 'Debe estar cerrado'), { status: 400 });
+      }
+      const neto = r2(p.totalNeto);
+      if (neto <= 0) throw Object.assign(new Error('El rol no tiene neto por pagar'), { status: 400 });
 
       const cfg = await PayrollConfig.findOne({ clinic: req.clinicId }).session(session);
       const general = await resolveConfigAccounts(req.clinicId, cfg, session);
-      const txDate = date ? new Date(date) : new Date();
 
+      // Roles cerrados ANTES de que existiera la obligación (legacy): se abre ahora,
+      // idempotente, para que el pago tenga contra qué aplicarse.
+      let payable = await Payable.findOne({
+        clinic: req.clinicId, sourceModel: 'Payroll', sourceRef: p._id,
+      }).session(session);
+      if (!payable) {
+        payable = await openPayrollObligation(p, {
+          clinicId: req.clinicId, account: general.sueldosPorPagar?._id || null, session,
+        });
+        p.payableRef = payable?._id || null;
+      }
+      if (!payable || payable.status === 'ANULADO') throw Object.assign(new Error('El rol no tiene obligación pendiente'), { status: 400 });
+
+      const saldo = r2(payable.balance);
+      if (saldo <= 0) throw Object.assign(new Error('La obligación del rol ya está pagada'), { status: 400 });
+      const amount = req.body?.amount != null ? r2(req.body.amount) : saldo;
+      if (amount <= 0) throw Object.assign(new Error('Monto de pago inválido'), { status: 400 });
+      if (amount > saldo + 0.005) {
+        throw Object.assign(new Error(`El monto excede el saldo pendiente del rol (${saldo.toFixed(2)})`), { status: 400 });
+      }
+
+      const txDate = date ? new Date(date) : new Date();
+      await assertPeriodOpen(req.clinicId, txDate, { session });
+
+      let bank = null;
+      let creditAccount = null;
+      if (bankAccountId) {
+        bank = await BankAccount.findOne({ _id: bankAccountId, clinic: req.clinicId }).session(session);
+        if (!bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 400 });
+        if (!bank.chartAccount) throw Object.assign(new Error('La cuenta bancaria no tiene cuenta contable asociada'), { status: 400 });
+        creditAccount = bank.chartAccount;
+      } else {
+        creditAccount = (await getAccount(req.clinicId, 'caja', { session }))._id;
+      }
+
+      // Primer pago conserva el sourceAction 'PAY' histórico; los siguientes se numeran.
+      const seq = (p.payments || []).length + 1;
       const entry = await createEntry({
         clinicId: req.clinicId,
         date: txDate,
-        description: `Pago de nómina ${p.period}`,
+        description: `Pago de nómina ${p.period}${amount < saldo ? ' (parcial)' : ''}${bank ? '' : ' (efectivo/manual)'}`,
         source: 'PAGO',
         sourceRef: p._id,
         sourceModel: 'Payroll',
-        sourceAction: 'PAY',
+        sourceAction: seq === 1 ? 'PAY' : `PAY:${seq}`,
         lines: [
           { account: general.sueldosPorPagar._id, debit: amount, credit: 0, description: 'Pago sueldos por pagar' },
-          { account: bank.chartAccount, debit: 0, credit: amount, description: `Pago nómina ${p.period}` },
+          { account: creditAccount, debit: 0, credit: amount, description: `Pago nómina ${p.period}${bank ? '' : ' (efectivo)'}` },
         ],
         userId: req.user._id,
         session,
       });
 
-      const [bankTx] = await BankTransaction.create([{
-        clinic: req.clinicId,
-        bankAccount: bank._id,
-        date: txDate,
-        type: 'PAGO',
-        amount,
-        direction: -1,
-        description: `Pago de nómina ${p.period}`,
-        reference: reference || p.code || '',
-        journalEntry: entry._id,
-        sourceModel: 'Payroll',
-        sourceRef: p._id,
-        createdBy: req.user._id,
-      }], { session });
+      let bankTx = null;
+      if (bank) {
+        [bankTx] = await BankTransaction.create([{
+          clinic: req.clinicId,
+          bankAccount: bank._id,
+          date: txDate,
+          type: 'PAGO',
+          amount,
+          direction: -1,
+          description: `Pago de nómina ${p.period}`,
+          reference: reference || p.code || '',
+          journalEntry: entry._id,
+          sourceModel: 'Payroll',
+          sourceRef: p._id,
+          createdBy: req.user._id,
+        }], { session });
+      }
 
-      p.status = 'PAGADO';
-      p.paymentJournalEntry = entry._id;
-      p.paymentBankTransaction = bankTx._id;
-      p.paymentBankAccount = bank._id;
-      p.paidAt = txDate;
-      p.paidBy = req.user._id;
+      // Aplica al submayor: es quien impide la doble aplicación (excede saldo → error).
+      const applied = await applyToPayable(
+        { clinicId: req.clinicId, sourceModel: 'Payroll', sourceRef: p._id, amount },
+        { session }
+      );
+
+      p.payments.push({
+        date: txDate,
+        amount,
+        bankAccount: bank?._id || null,
+        journalEntry: entry._id,
+        bankTransaction: bankTx?._id || null,
+        reference: reference || '',
+        paidBy: req.user._id,
+        idempotencyKey: idemKey,
+        fingerprint: idemKey ? idemFingerprint : null,
+      });
+      // Campos legacy: reflejan el primer pago.
+      if (!p.paymentJournalEntry) {
+        p.paymentJournalEntry = entry._id;
+        p.paymentBankTransaction = bankTx?._id || null;
+        p.paymentBankAccount = bank?._id || null;
+        p.paidBy = req.user._id;
+      }
+      if (r2(applied.balance) <= 0.005) {
+        p.status = 'PAGADO';
+        p.paidAt = txDate;
+      }
       await p.save({ session });
-      return p._id;
+      return { payrollId: p._id, replay: false };
     });
-    const payroll = await Payroll.findById(payrollId);
-    res.json(payroll);
-  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+
+    const payroll = await Payroll.findById(result.payrollId);
+    const body = await withObligation(payroll, req.clinicId);
+    res.json(result.replay ? { ...body, idempotentReplay: true } : body);
+  } catch (e) {
+    // Carrera de idempotencia contra el índice único (la clave la ganó otra petición):
+    // se resuelve en vez de devolver un E11000 crudo. El índice es de clínica, así que el
+    // ganador puede ser OTRO rol → 409 (nunca se devuelve su pago como si fuera de este).
+    if (e.code === 11000 && idemKey) {
+      const previo = await Payroll.findOne({
+        clinic: req.clinicId, 'payments.idempotencyKey': idemKey,
+      });
+      if (previo) {
+        try {
+          assertSameTarget(previo._id, req.params.id, 'el pago de nómina');
+          const pago = previo.payments.find((x) => x.idempotencyKey === idemKey);
+          assertSameFingerprint(pago?.fingerprint, idemFingerprint, 'pago de nómina');
+        } catch (conflictErr) {
+          return res.status(conflictErr.status || 409).json({ message: conflictErr.message });
+        }
+        const body = await withObligation(previo, req.clinicId);
+        return res.json({ ...body, idempotentReplay: true });
+      }
+    }
+    res.status(e.status || 400).json({ message: e.message });
+  }
 };
 
 // ═══════════════════════ Catálogos parametrizados ═══════════════════════

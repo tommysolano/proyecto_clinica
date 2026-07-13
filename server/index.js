@@ -104,6 +104,7 @@ app.use('/api/retention-vouchers', require('./routes/retentionVouchers'));
 app.use('/api/credit-debit-notes', require('./routes/creditDebitNotes'));
 app.use('/api/inventory-advanced', require('./routes/inventoryAdvanced'));
 app.use('/api/accounting-reports', require('./routes/accountingReports'));
+app.use('/api/tax-declarations', require('./routes/taxDeclarations'));
 app.use('/api/payroll', require('./routes/payroll'));
 app.use('/api/credit-card-batches', require('./routes/creditCardBatches'));
 app.use('/api/card-settlements', require('./routes/cardSettlements'));

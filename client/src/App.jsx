@@ -70,6 +70,7 @@ import FixedAssets from './pages/accounting/FixedAssets';
 import FinancialReports from './pages/accounting/FinancialReports';
 import ManagementReports from './pages/accounting/ManagementReports';
 import SriReports from './pages/accounting/SriReports';
+import SriDeclarations from './pages/accounting/SriDeclarations';
 import Employees from './pages/accounting/Employees';
 import EmployeeLoans from './pages/accounting/EmployeeLoans';
 import Deductions from './pages/accounting/Deductions';
@@ -444,6 +445,7 @@ function AppRoutes() {
                   ['management-reports', ManagementReports],
                   ['budgets', Budgets],
                   ['sri-reports', SriReports],
+                  ['sri-declarations', SriDeclarations],
                   ['employees', Employees],
                   ['loans', EmployeeLoans],
                   ['deductions', Deductions],

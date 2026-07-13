@@ -14,6 +14,7 @@ export const SOURCE_ROUTES = {
   FixedAsset: { path: '/accounting/assets', label: 'Activo fijo (depreciación)', deep: true },
   Payroll: { path: '/accounting/payroll', label: 'Nómina', deep: true },
   Payment: { path: '/accounting/payments', label: 'Pago / Cobro', deep: true },
+  SriDeclaration: { path: '/accounting/sri-declarations', label: 'Declaración SRI', deep: true },
   // Sin deep-link (solo etiqueta): el asiento se ve en el modal.
   BankTransaction: { label: 'Movimiento bancario' },
   CashDeposit: { label: 'Depósito de efectivo' },

@@ -54,7 +54,9 @@ router.get('/sri/ats', c.ats);
 router.get('/sri/rdep', c.rdep);
 router.get('/sri/retentions-received', c.retentionsReceived);
 
-// SRI XML (DIMM Formularios)
+// SRI 103/104 en XML: BORRADOR TÉCNICO (estructura propia, no validada contra el SRI).
+// No es un archivo DIMM ni está listo para cargar. La declaración formal está en
+// /tax-declarations.
 router.get('/sri/form-104.xml', ex.form104Xml);
 router.get('/sri/form-103.xml', ex.form103Xml);
 

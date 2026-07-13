@@ -1,15 +1,21 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import {
   HiOutlinePlus, HiOutlineCalculator, HiOutlineLockClosed, HiOutlineCheck,
-  HiOutlineXMark, HiOutlineTrash, HiOutlinePencilSquare, HiOutlineBanknotes,
+  HiOutlineTrash, HiOutlinePencilSquare, HiOutlineBanknotes, HiOutlineEye,
+  HiOutlineLockOpen,
 } from 'react-icons/hi2';
-import { fmt, today } from './_utils';
+import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
+import JournalEntryViewModal from '../../components/JournalEntryViewModal';
+import { newIdempotencyKey, withIdempotencyKey } from '../../utils/idempotency';
 import useDocDeepLink from '../../hooks/useDocDeepLink';
+
+/** Último día del mes (fecha contable por defecto del cierre). */
+const lastDayOfMonth = (year, month) => new Date(year, month, 0).toISOString().slice(0, 10);
 
 const MONTHS = ['', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 const STATUS_STYLE = {
@@ -293,13 +299,17 @@ export default function Payroll() {
   const [banks, setBanks] = useState([]);
   const [concepts, setConcepts] = useState([]);
   const [payModal, setPayModal] = useState(null);
+  const [closeModal, setCloseModal] = useState(null);
+  const [showEntry, setShowEntry] = useState(false);
+  const [cashBusy, setCashBusy] = useState(false);
+  const cashKeyRef = useRef(null); // clave de idempotencia de la intención de pago en efectivo
   const [detailIdx, setDetailIdx] = useState(null); // índice del empleado abierto en detalle
 
   const load = async () => {
     try { const r = await api.get('/payroll', { params: { year } }); setList(r.data || []); }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
-  // eslint-disable-next-line react-hooks/set-state-in-effect, react-hooks/exhaustive-deps
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { load(); }, [year]);
   useEffect(() => {
     api.get('/banks/accounts').then((r) => setBanks(r.data || [])).catch(() => {});
@@ -328,26 +338,75 @@ export default function Payroll() {
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); throw e; }
   };
 
+  // Cierre: el usuario elige la fecha CONTABLE (devengo) y la fecha PLANIFICADA de pago.
+  // Esta última es el vencimiento de la obligación y alimenta el flujo de caja.
   const close = async () => {
-    if (!confirm('¿Cerrar el rol y generar el asiento contable? No podrá editarse luego.')) return;
-    try { const r = await api.post(`/payroll/${selected._id}/close`); setSelected(r.data); load(); toast.success('Rol cerrado y contabilizado'); }
+    try {
+      const r = await api.post(`/payroll/${selected._id}/close`, {
+        accountingDate: closeModal.accountingDate,
+        scheduledPaymentDate: closeModal.scheduledPaymentDate || null,
+      });
+      setSelected(r.data); setCloseModal(null); load();
+      toast.success('Rol cerrado, contabilizado y con su obligación abierta');
+    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+  };
+  const reopen = async () => {
+    if (!confirm('¿Reabrir el rol? Se reversará el asiento de cierre y se anulará la obligación por pagar.')) return;
+    try { const r = await api.post(`/payroll/${selected._id}/reopen`); setSelected(r.data); load(); toast.success('Rol reabierto'); }
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
+  /**
+   * Pago en efectivo. La clave de idempotencia se guarda en un ref: si el intento falla
+   * (p.ej. la red se cae sin saber si el pago entró), el reintento usa LA MISMA clave y el
+   * backend hace replay en vez de pagar dos veces. Tras el éxito se descarta.
+   */
   const markPaid = async () => {
-    if (!confirm('¿Registrar el pago en EFECTIVO (contra Caja)? Se generará el asiento Sueldos por pagar → Caja.')) return;
-    try { const r = await api.post(`/payroll/${selected._id}/pay`, { confirmNoBank: true }); setSelected(r.data); load(); toast.success('Pagada en efectivo (Caja)'); }
-    catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+    if (cashBusy) return;
+    if (!confirm('¿Registrar el pago del saldo pendiente en EFECTIVO (contra Caja)? Se generará el asiento Sueldos por pagar → Caja.')) return;
+    if (!cashKeyRef.current) cashKeyRef.current = newIdempotencyKey();
+    setCashBusy(true);
+    try {
+      const r = await api.post(`/payroll/${selected._id}/pay`, { confirmNoBank: true }, withIdempotencyKey(cashKeyRef.current));
+      cashKeyRef.current = null; // éxito: el próximo pago es otra intención
+      setSelected(r.data); load();
+      toast.success(r.data.idempotentReplay ? 'El pago ya estaba registrado' : 'Pagada en efectivo (Caja)');
+    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+    finally { setCashBusy(false); }
   };
+
+  // Cambiar banco, fecha o importe es OTRA intención de pago ⇒ clave nueva.
+  const setPayField = (patch) => setPayModal((m) => ({ ...m, ...patch, key: newIdempotencyKey() }));
+
   const payFromBank = async () => {
     if (!payModal?.bankAccountId) { toast.error('Selecciona un banco'); return; }
+    if (payModal.busy) return; // evita el doble submit (la protección real está en backend)
+    setPayModal((m) => ({ ...m, busy: true }));
     try {
-      const r = await api.post(`/payroll/${selected._id}/pay`, { bankAccountId: payModal.bankAccountId, date: payModal.date });
-      setSelected(r.data); setPayModal(null); load(); toast.success('Nómina pagada desde banco');
-    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+      const r = await api.post(
+        `/payroll/${selected._id}/pay`,
+        {
+          bankAccountId: payModal.bankAccountId,
+          date: payModal.date,
+          amount: payModal.amount ? Number(payModal.amount) : undefined,
+        },
+        withIdempotencyKey(payModal.key),
+      );
+      setSelected(r.data); setPayModal(null); load(); // al cerrar el modal se descarta la clave
+      if (r.data.idempotentReplay) toast.success('El pago ya estaba registrado');
+      else toast.success(r.data.status === 'PAGADO' ? 'Nómina pagada por completo' : 'Pago parcial registrado');
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'Error');
+      // Se conserva la MISMA clave: reintentar esta intención no puede duplicar el pago.
+      setPayModal((m) => (m ? { ...m, busy: false } : m));
+    }
   };
 
   const editable = selected?.status === 'BORRADOR';
   const detailItem = detailIdx != null ? selected?.items?.[detailIdx] : null;
+  // Pagado/pendiente los calcula el backend (virtuales del rol, espejo de la CxP, que es la
+  // fuente de verdad del saldo). No se rederivan aquí para no discrepar con la cartera.
+  const paidAmount = Number(selected?.paidAmount) || 0;
+  const pending = Number(selected?.pendingAmount ?? selected?.totalNeto) || 0;
 
   return (
     <div className="space-y-4">
@@ -385,10 +444,30 @@ export default function Payroll() {
                 <h2 className="font-semibold text-slate-800">Rol {MONTHS[selected.month]} {selected.year}</h2>
                 <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${STATUS_STYLE[selected.status] || ''}`}>{selected.status}</span>
               </div>
-              <div className="flex gap-2">
-                {selected.status === 'BORRADOR' && <button onClick={close} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-sm flex items-center gap-1"><HiOutlineLockClosed className="w-4 h-4" /> Cerrar y contabilizar</button>}
-                {selected.status === 'CERRADO' && <button onClick={() => setPayModal({ bankAccountId: banks[0]?._id || '', date: today() })} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm flex items-center gap-1"><HiOutlineBanknotes className="w-4 h-4" /> Pagar desde banco</button>}
-                {selected.status === 'CERRADO' && <button onClick={markPaid} className="px-3 py-1.5 bg-slate-200 text-slate-700 rounded-lg text-sm" title="Genera el asiento Sueldos por pagar → Caja">Pagar en efectivo</button>}
+              <div className="flex flex-wrap gap-2">
+                {selected.status === 'BORRADOR' && (
+                  <button
+                    onClick={() => setCloseModal({
+                      accountingDate: lastDayOfMonth(selected.year, selected.month),
+                      scheduledPaymentDate: lastDayOfMonth(selected.year, selected.month),
+                    })}
+                    className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-sm flex items-center gap-1"
+                  >
+                    <HiOutlineLockClosed className="w-4 h-4" /> Cerrar y contabilizar
+                  </button>
+                )}
+                {selected.status === 'CERRADO' && <button onClick={() => setPayModal({ bankAccountId: banks[0]?._id || '', date: today(), amount: '', key: newIdempotencyKey(), busy: false })} className="px-3 py-1.5 bg-blue-600 text-white rounded-lg text-sm flex items-center gap-1"><HiOutlineBanknotes className="w-4 h-4" /> Pagar desde banco</button>}
+                {selected.status === 'CERRADO' && <button onClick={markPaid} disabled={cashBusy} className="px-3 py-1.5 bg-slate-200 text-slate-700 rounded-lg text-sm disabled:opacity-60" title="Genera el asiento Sueldos por pagar → Caja">{cashBusy ? 'Pagando…' : 'Pagar en efectivo'}</button>}
+                {selected.status === 'CERRADO' && !(selected.payments || []).length && (
+                  <button onClick={reopen} className="px-3 py-1.5 bg-slate-200 text-slate-700 rounded-lg text-sm flex items-center gap-1" title="Reversa el asiento y anula la obligación">
+                    <HiOutlineLockOpen className="w-4 h-4" /> Reabrir
+                  </button>
+                )}
+                {selected.status !== 'BORRADOR' && (
+                  <button onClick={() => setShowEntry(true)} className="px-3 py-1.5 bg-slate-700 text-white rounded-lg text-sm flex items-center gap-1" title="Ver el asiento de cierre y los pagos">
+                    <HiOutlineEye className="w-4 h-4" /> Ver asiento
+                  </button>
+                )}
               </div>
             </div>
 
@@ -399,6 +478,19 @@ export default function Payroll() {
               <Chip label="Provisiones (empresa)" value={`$${fmt(selected.totalProvisiones)}`} tone="sky" />
               <Chip label="Neto a pagar" value={`$${fmt(selected.totalNeto)}`} tone="emerald" />
             </div>
+
+            {/* Obligación y pagos (alimenta el flujo de caja) */}
+            {selected.status !== 'BORRADOR' && (
+              <div className="mb-3 rounded-xl border border-slate-200 bg-slate-50/60 px-3 py-2 text-xs text-slate-600 flex flex-wrap items-center gap-x-5 gap-y-1">
+                <span>Fecha contable: <b>{fmtDate(selected.accountingDate) || '—'}</b></span>
+                <span>Pago programado: <b>{fmtDate(selected.scheduledPaymentDate) || 'sin fecha'}</b></span>
+                <span>Pagado: <b className="font-mono">${fmt(paidAmount)}</b></span>
+                <span>Pendiente: <b className={`font-mono ${pending > 0 ? 'text-rose-600' : 'text-emerald-700'}`}>${fmt(pending)}</b></span>
+                {(selected.payments || []).length > 0 && (
+                  <span className="text-slate-400">({selected.payments.length} pago{selected.payments.length > 1 ? 's' : ''}: {selected.payments.map((p) => `$${fmt(p.amount)} el ${fmtDate(p.date)}`).join(' · ')})</span>
+                )}
+              </div>
+            )}
 
             <div className="overflow-x-auto">
               <table className="tbl text-sm">
@@ -452,23 +544,62 @@ export default function Payroll() {
         )}
       </Modal>
 
-      {/* Pago desde banco */}
+      {/* Cierre: fechas contable y de pago programado */}
+      <Modal isOpen={!!closeModal} onClose={() => setCloseModal(null)} title="Cerrar y contabilizar el rol">
+        {closeModal && (
+          <div className="space-y-3">
+            <p className="text-sm text-slate-600">
+              Se generará el asiento de gastos, provisiones y pasivos, y se abrirá la <b>obligación por el neto</b> (${fmt(selected?.totalNeto)}) para el flujo de caja. El rol ya no podrá editarse.
+            </p>
+            <Field label="Fecha contable" required hint="Devengo del gasto. Por defecto, el último día del período.">
+              <input type="date" value={closeModal.accountingDate} onChange={(e) => setCloseModal({ ...closeModal, accountingDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            </Field>
+            <Field label="Fecha programada de pago" hint="Cuándo se pagará el neto. Es el vencimiento de la obligación: si cae fin de semana, la fecha legal no se mueve; el flujo de caja proyecta el siguiente día hábil.">
+              <input type="date" value={closeModal.scheduledPaymentDate} onChange={(e) => setCloseModal({ ...closeModal, scheduledPaymentDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            </Field>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setCloseModal(null)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button>
+              <button onClick={close} className="px-4 py-2 bg-emerald-600 text-white rounded-xl flex items-center gap-1"><HiOutlineLockClosed className="w-4 h-4" /> Cerrar y contabilizar</button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Pago desde banco (total o parcial) */}
       <Modal isOpen={!!payModal} onClose={() => setPayModal(null)} title="Pagar nómina desde banco">
         {payModal && (
           <div className="space-y-3">
-            <p className="text-sm text-slate-600">Neto a pagar: <b>${fmt(selected?.totalNeto)}</b></p>
+            <p className="text-sm text-slate-600">Neto del rol: <b>${fmt(selected?.totalNeto)}</b> · Pendiente: <b className="text-rose-600">${fmt(pending)}</b></p>
             <Field label="Banco" required>
-              <select value={payModal.bankAccountId} onChange={(e) => setPayModal({ ...payModal, bankAccountId: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+              <select value={payModal.bankAccountId} onChange={(e) => setPayField({ bankAccountId: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
                 <option value="">Seleccione…</option>
                 {banks.map((b) => <option key={b._id} value={b._id}>{b.name} · {b.bank} {b.accountNumber}</option>)}
               </select>
             </Field>
-            <Field label="Fecha de pago"><input type="date" value={payModal.date} onChange={(e) => setPayModal({ ...payModal, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-            <p className="text-xs text-slate-500">Se generará el asiento (Sueldos por pagar → Banco) y una transacción bancaria.</p>
-            <div className="flex justify-end gap-2"><button onClick={() => setPayModal(null)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button onClick={payFromBank} className="px-4 py-2 bg-blue-600 text-white rounded-xl flex items-center gap-1"><HiOutlineCheck className="w-4 h-4" /> Pagar</button></div>
+            <Field label="Fecha de pago"><input type="date" value={payModal.date} onChange={(e) => setPayField({ date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Monto" hint="Vacío = paga todo el saldo pendiente. Se admite pago parcial: el rol sigue CERRADO hasta liquidar el total.">
+              <NumericInput step="0.01" min="0" value={payModal.amount} onChange={(e) => setPayField({ amount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            </Field>
+            <p className="text-xs text-slate-500">Se generará el asiento (Sueldos por pagar → Banco), una transacción bancaria y se aplicará la obligación.</p>
+            <div className="flex justify-end gap-2">
+              <button onClick={() => setPayModal(null)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button>
+              <button onClick={payFromBank} disabled={payModal.busy} className="px-4 py-2 bg-blue-600 text-white rounded-xl flex items-center gap-1 disabled:opacity-60">
+                <HiOutlineCheck className="w-4 h-4" /> {payModal.busy ? 'Pagando…' : 'Pagar'}
+              </button>
+            </div>
           </div>
         )}
       </Modal>
+
+      {/* Asiento(s) del rol: cierre + pagos */}
+      <JournalEntryViewModal
+        isOpen={showEntry}
+        onClose={() => setShowEntry(false)}
+        source={selected ? { model: 'Payroll', ref: selected._id } : null}
+        title={selected ? `Asientos del rol ${MONTHS[selected.month]} ${selected.year}` : 'Asiento'}
+        emptyHint="El rol aún no se ha cerrado: el asiento se genera al cerrar y contabilizar."
+        hideOriginLink
+      />
 
       {/* Generar período */}
       <Modal isOpen={show} onClose={() => setShow(false)} title="Generar rol de nómina">

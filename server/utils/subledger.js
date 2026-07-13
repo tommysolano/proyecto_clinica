@@ -28,7 +28,11 @@ async function openDocument(Model, data, session) {
     // Refresca campos mutables (p.ej. tras editar el documento fuente) sin tocar
     // lo ya aplicado. Si fue anulado, se reactiva al refrescar el total.
     if (data.total != null) existing.total = round2(data.total);
-    if (data.dueDate !== undefined) existing.dueDate = data.dueDate;
+    // El vencimiento solo se refresca cuando el origen trae uno. Un `null`/`undefined`
+    // NO borra la fecha existente: puede haber sido corregida a mano en la cartera o
+    // completada por el backfill, y el documento fuente puede no tenerla.
+    if (data.dueDate != null) existing.dueDate = data.dueDate;
+    if (data.plannedPaymentDate != null) existing.plannedPaymentDate = data.plannedPaymentDate;
     if (data.number) existing.number = data.number;
     if (data.account) existing.account = data.account;
     if (data.party?.name) existing.party.name = data.party.name;
@@ -46,6 +50,7 @@ async function openDocument(Model, data, session) {
       number: data.number || '',
       issueDate: data.issueDate || new Date(),
       dueDate: data.dueDate || null,
+      plannedPaymentDate: data.plannedPaymentDate || null,
       total: round2(data.total),
       applied: round2(data.applied || 0),
       account: data.account || null,

@@ -15,6 +15,7 @@ const {
   resolveReportRange, isMonthlyRange, invoiceFiscalDate, purchaseFiscalDate, inRange,
 } = require('../utils/reportDateRange');
 const { invoiceTaxBreakdown } = require('../utils/invoiceTaxBreakdown');
+const { effectivePaymentDate } = require('../utils/paymentSchedule');
 const ExcelJS = require('exceljs');
 const mongoose = require('mongoose');
 
@@ -313,6 +314,9 @@ async function buildLiquidityProjection(clinicId) {
       const base = d.dueDate || d.issueDate;
       // Días vencidos (positivo = ya venció; negativo = faltan días para vencer).
       const dias = Math.floor((asOf - new Date(base)) / 86400000);
+      // Fecha EFECTIVA de cobro/pago: manda la fecha planificada si existe, y si esa base
+      // cae en domingo el dinero se mueve el lunes. El `dueDate` legal NO se toca.
+      const { effectiveDate, shifted } = effectivePaymentDate(d);
       out.total = round2(out.total + bal);
       if (dias > 0) out.vencido = round2(out.vencido + bal);
       else out.porVencer = round2(out.porVencer + bal);
@@ -324,6 +328,9 @@ async function buildLiquidityProjection(clinicId) {
           number: d.number,
           issueDate: d.issueDate,
           dueDate: d.dueDate,
+          plannedPaymentDate: d.plannedPaymentDate || null,
+          fechaEfectiva: effectiveDate,
+          desplazadaAHabil: shifted,
           balance: bal,
           dias,
         });
@@ -1751,7 +1758,7 @@ exports.retentionsReceived = async (req, res) => {
 
 /**
  * ATS visual (JSON) por rango: compras y ventas del período, con desglose de
- * retenciones, para revisar/conciliar antes de generar el XML oficial (mensual).
+ * retenciones, para revisar/conciliar antes de generar el XML del ATS (mensual).
  * Acepta cualquier período (mensual, semestral, anual, personalizado).
  */
 exports.atsPreview = async (req, res) => {
@@ -1815,8 +1822,9 @@ exports.atsPreview = async (req, res) => {
 
 /**
  * ATS - Anexo Transaccional Simplificado.
- * Genera XML simplificado (estructura básica del SRI v2.0.0).
- * El ATS oficial es MENSUAL: se bloquea cualquier período no mensual.
+ * Genera un XML SIMPLIFICADO (estructura básica inspirada en la v2.0.0 del SRI). No está
+ * validado contra el esquema vigente: revísalo antes de presentarlo. El ATS se declara por
+ * MES, así que se bloquea cualquier período no mensual.
  */
 exports.ats = async (req, res) => {
   try {

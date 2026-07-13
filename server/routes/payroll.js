@@ -44,11 +44,16 @@ router.post('/income-tax', requireRole('admin', 'contabilidad'), c.createIncomeT
 router.post('/income-tax/seed', requireRole('admin', 'contabilidad'), c.seedIncomeTaxTable);
 router.put('/income-tax/:id', requireRole('admin', 'contabilidad'), c.updateIncomeTaxTable);
 
+// Retención en relación de dependencia del período (la consume el Formulario 103).
+router.get('/withholding', requireRole('admin', 'contabilidad'), c.withholdingSummary);
+
 router.get('/', requireRole('admin', 'contabilidad'), c.listPayrolls);
 router.get('/:id', requireRole('admin', 'contabilidad'), c.getPayroll);
 router.post('/generate', requireRole('admin', 'contabilidad'), c.generatePayroll);
 router.put('/:id/item', requireRole('admin', 'contabilidad'), c.updatePayrollItem);
 router.post('/:id/close', requireRole('admin', 'contabilidad'), c.closePayroll);
+router.post('/:id/reopen', requireRole('admin', 'contabilidad'), c.reopenPayroll);
+router.post('/:id/void', requireRole('admin', 'contabilidad'), c.voidPayroll);
 router.post('/:id/pay', requireRole('admin', 'contabilidad'), c.markPaid);
 
 module.exports = router;

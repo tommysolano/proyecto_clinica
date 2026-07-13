@@ -19,6 +19,7 @@ const ACCOUNT_ROLES = {
   retIvaPorCobrar:      { group: 'Activo',  label: 'Retención IVA por cobrar',  code: '1.1.03.02' },
   retRentaPorCobrar:    { group: 'Activo',  label: 'Retención Renta por cobrar', code: '1.1.03.03' },
   anticipoIR:           { group: 'Activo',  label: 'Anticipo Impuesto a la Renta', code: '1.1.03.04' },
+  creditoTributarioIva: { group: 'Activo',  label: 'Crédito tributario IVA (saldo a favor del F104)', code: '1.1.03.05' },
   inventario:           { group: 'Activo',  label: 'Inventario',                code: '1.1.04.01' },
 
   proveedores:          { group: 'Pasivo',  label: 'Proveedores (CxP)',         code: '2.1.01.01' },
@@ -29,6 +30,8 @@ const ACCOUNT_ROLES = {
   ivaPorPagar:          { group: 'Pasivo',  label: 'IVA por pagar',             code: '2.1.02.02' },
   retIvaPorPagar:       { group: 'Pasivo',  label: 'Retención IVA por pagar',   code: '2.1.02.03' },
   retRentaPorPagar:     { group: 'Pasivo',  label: 'Retención Renta por pagar', code: '2.1.02.04' },
+  irPorPagar:           { group: 'Pasivo',  label: 'Impuesto a la Renta por pagar (retención a empleados)', code: '2.1.02.05' },
+  sriPorPagar:          { group: 'Pasivo',  label: 'SRI por pagar (declaraciones 103/104)', code: '2.1.02.06' },
 
   resultadosAcumulados: { group: 'Patrimonio', label: 'Resultados acumulados',  code: '3.3.01' },
   resultadoEjercicio:   { group: 'Patrimonio', label: 'Resultado del ejercicio', code: '3.3.02' },

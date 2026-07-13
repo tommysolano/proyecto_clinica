@@ -159,6 +159,7 @@ const MENU_GROUPS = [
       { path: '/accounting/financial-reports', label: 'Rep. Financieros', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/management-reports', label: 'Rep. Gerenciales', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/sri-reports', label: 'Rep. SRI', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/sri-declarations', label: 'Declaraciones SRI', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/profitability', label: 'Rentabilidad x Médico', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/audit-logs', label: 'Auditoría', roles: ['admin', 'contabilidad'] },
     ],

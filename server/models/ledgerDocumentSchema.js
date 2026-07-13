@@ -29,7 +29,12 @@ function buildLedgerDocumentSchema() {
       },
       number: { type: String, default: '' },
       issueDate: { type: Date, required: true, index: true },
+      // Vencimiento LEGAL pactado. No se desplaza por caer en día no hábil.
       dueDate: { type: Date, default: null },
+      // Cuándo se PLANEA pagar/cobrar de verdad. Solo afecta a la proyección de flujo de
+      // caja (prevalece sobre `dueDate` para estimar la fecha efectiva); no altera la
+      // fecha legal ni la antigüedad de cartera. Ver utils/paymentSchedule.
+      plannedPaymentDate: { type: Date, default: null },
       currency: { type: String, default: 'USD' },
       // Montos. `applied` es lo cobrado/pagado/aplicado (incluye NC y anticipos).
       total: { type: Number, required: true, min: 0 },

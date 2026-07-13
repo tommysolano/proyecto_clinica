@@ -1,14 +1,18 @@
 /**
- * Reportes oficiales SRI (XML) y SuperCías (TXT).
+ * Reportes SuperCías (TXT) y BORRADORES TÉCNICOS del SRI (XML).
  *
  * SuperCías F.20 (estados financieros):
  *   - Balance General: archivo plano pipe `codigoCuenta|saldo`
  *   - Estado de Resultados: mismo formato
  * SRI:
- *   - Formulario 103 (retenciones en la fuente) XML
- *   - Formulario 104 (IVA) XML
- *   - ATS ya existe en accountingReportsController
+ *   - Formulario 103 (retenciones en la fuente) y 104 (IVA) en XML.
+ *
+ * IMPORTANTE — estos XML NO son oficiales. Su estructura la definió este sistema y no
+ * está validada contra la definición (XSD) vigente del SRI: no son archivos DIMM ni
+ * están listos para cargar. Sirven de respaldo/revisión. La declaración formal, con
+ * casilleros, cierre contable y obligación, vive en /tax-declarations (SriDeclaration).
  */
+const { XML_DISCLAIMER } = require('../utils/sriForms/definitions');
 
 const JournalEntry = require('../models/JournalEntry');
 const ChartOfAccount = require('../models/ChartOfAccount');
@@ -26,10 +30,10 @@ async function salesInRange(clinicId, start, end) {
   return invoices.filter((inv) => inRange(invoiceFiscalDate(inv), start, end));
 }
 
-/** Mensaje 400 cuando se pide un XML oficial mensual con un rango no mensual. */
+/** Mensaje 400 cuando se pide el XML mensual con un rango no mensual. */
 function monthlyGuard(range, res, formLabel) {
   if (isMonthlyRange(range)) return false;
-  res.status(400).json({ message: `El XML oficial del ${formLabel} debe generarse por mes; para rangos use el reporte visual.` });
+  res.status(400).json({ message: `El XML del ${formLabel} debe generarse por mes; para rangos use el reporte visual.` });
   return true;
 }
 
@@ -122,7 +126,7 @@ exports.incomeStatementTxt = async (req, res) => {
 
 /**
  * GET /accounting-reports/sri/form-104.xml?year&month
- * Genera XML del formulario 104 (IVA mensual) compatible con DIMM Formularios.
+ * BORRADOR TÉCNICO en XML del formulario 104 (IVA mensual). NO es el XML oficial.
  */
 exports.form104Xml = async (req, res) => {
   try {
@@ -173,7 +177,9 @@ exports.form104Xml = async (req, res) => {
 
     // Solo el IVA con crédito tributario reduce el IVA por pagar (igual que el visual).
     const ivaPagar = +(v.iva - c.ivaCredito - c.retIVA).toFixed(2);
-    let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<form104>\n';
+    let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+    xml += `<!-- ${XML_DISCLAIMER} -->\n<form104>\n`;
+    xml += `  <advertencia>${escXml(XML_DISCLAIMER)}</advertencia>\n`;
     xml += `  <ruc>${escXml(clinic?.ruc)}</ruc>\n`;
     xml += `  <razonSocial>${escXml(clinic?.razonSocial || clinic?.name)}</razonSocial>\n`;
     xml += `  <periodoFiscal>${String(m).padStart(2, '0')}/${y}</periodoFiscal>\n`;
@@ -194,7 +200,7 @@ exports.form104Xml = async (req, res) => {
     res.setHeader('Content-Type', 'application/xml');
     res.setHeader(
       'Content-Disposition',
-      `attachment; filename="form104-${y}-${String(m).padStart(2, '0')}.xml"`
+      `attachment; filename="borrador-tecnico-104-${y}-${String(m).padStart(2, '0')}.xml"`
     );
     res.send(xml);
   } catch (e) {
@@ -204,7 +210,7 @@ exports.form104Xml = async (req, res) => {
 
 /**
  * GET /accounting-reports/sri/form-103.xml?year&month
- * Retenciones en la fuente del impuesto a la renta.
+ * BORRADOR TÉCNICO en XML de retenciones en la fuente. NO es el XML oficial.
  */
 exports.form103Xml = async (req, res) => {
   try {
@@ -230,7 +236,9 @@ exports.form103Xml = async (req, res) => {
         byCode[key].amount += r.amount || 0;
       }
     }
-    let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<form103>\n';
+    let xml = '<?xml version="1.0" encoding="UTF-8"?>\n';
+    xml += `<!-- ${XML_DISCLAIMER} -->\n<form103>\n`;
+    xml += `  <advertencia>${escXml(XML_DISCLAIMER)}</advertencia>\n`;
     xml += `  <ruc>${escXml(clinic?.ruc)}</ruc>\n`;
     xml += `  <razonSocial>${escXml(clinic?.razonSocial || clinic?.name)}</razonSocial>\n`;
     xml += `  <periodoFiscal>${String(m).padStart(2, '0')}/${y}</periodoFiscal>\n`;
@@ -251,7 +259,7 @@ exports.form103Xml = async (req, res) => {
     res.setHeader('Content-Type', 'application/xml');
     res.setHeader(
       'Content-Disposition',
-      `attachment; filename="form103-${y}-${String(m).padStart(2, '0')}.xml"`
+      `attachment; filename="borrador-tecnico-103-${y}-${String(m).padStart(2, '0')}.xml"`
     );
     res.send(xml);
   } catch (e) {

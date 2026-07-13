@@ -79,6 +79,13 @@ exports.recurringAccounts = async (req, res) => {
 /**
  * Abre el documento de cuentas por pagar (CxP) de una compra: el saldo a pagar
  * al proveedor es el total menos las retenciones. Idempotente por la factura.
+ *
+ * `issueDate` (emisión) y `dueDate` (vencimiento) son conceptos SEPARADOS: la CxP
+ * hereda el vencimiento pactado de la compra (`fechaVencimiento`), que es la fecha
+ * LEGAL de pago y no se mueve por caer sábado/domingo. El desplazamiento a día hábil
+ * es una fecha EFECTIVA que solo se calcula al proyectar (utils/paymentSchedule).
+ * Si la compra es al contado (sin `fechaVencimiento`), la CxP queda sin vencimiento y
+ * la proyección cae a la fecha de emisión, como hasta ahora.
  */
 async function openPayableForInvoice(inv, sup, req, session) {
   const payable = +(Number(inv.total || 0) - Number(inv.retentionTotal || 0)).toFixed(2);
@@ -94,6 +101,7 @@ async function openPayableForInvoice(inv, sup, req, session) {
     docType: 'COMPRA',
     number: inv.serie || '',
     issueDate: inv.fechaEmision || new Date(),
+    dueDate: inv.fechaVencimiento || null,
     total: payable,
     account: provAcc,
   }, { session });

@@ -6,7 +6,8 @@
  *  - Form 103 lee SOLO las retenciones de cabecera (sin doble conteo con línea);
  *  - Form 104 suma ventas/compras del rango;
  *  - ATS visual toma compras/ventas del rango;
- *  - los XML oficiales (103/104/ATS) siguen funcionando mensual y BLOQUEAN rangos.
+ *  - los XML mensuales (103/104: borradores técnicos, no oficiales; y ATS) siguen
+ *    funcionando por mes y BLOQUEAN rangos.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -354,7 +355,7 @@ test('12) ats-preview (visual) toma compras/ventas del rango anual', async () =>
   assert.equal(r.payload.monthlyXmlAvailable, false, 'anual: XML no disponible');
 });
 
-// ── 13) XML oficial mensual sigue funcionando con year/month ──────────────────
+// ── 13) XML mensual sigue funcionando con year/month ──────────────────────────
 test('13) XML 104/103/ATS mensual generan XML válido', async () => {
   const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
   const sup = await H.makeSupplier(clinicId);
@@ -389,7 +390,7 @@ test('13b) XML 104 legacy (year/month sin periodType) funciona', async () => {
   assert.match(String(r.payload), /<periodoFiscal>06\/2026<\/periodoFiscal>/);
 });
 
-// ── 14) XML oficial BLOQUEA rango no mensual ──────────────────────────────────
+// ── 14) el XML mensual BLOQUEA un rango no mensual ────────────────────────────
 test('14) XML 104/103/ATS bloquean período no mensual con mensaje claro', async () => {
   const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
   const annual = { query: { periodType: 'ANNUAL', year: 2026 } };
