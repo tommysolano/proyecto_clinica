@@ -451,6 +451,16 @@ exports.testWhatsappAccount = async (req, res) => {
           detail: 'Guarda el "Identificador de la cuenta de WhatsApp Business" (WABA ID) al editar el número para poder verificar la asignación exacta.',
           fix: '',
         });
+      } else {
+        // Hay WABA ID guardado pero Meta no reportó restricción granular para el
+        // scope de mensajería: el permiso aplica a todo lo que el usuario del
+        // sistema tenga asignado.
+        checks.push({
+          ok: true,
+          label: 'Cuentas de WhatsApp asignadas al token',
+          detail: 'Meta no reporta restricción por WABA para este token (aplica a todos los activos del usuario del sistema).',
+          fix: '',
+        });
       }
     }
 

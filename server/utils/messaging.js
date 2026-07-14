@@ -543,7 +543,12 @@ async function send({
   } else {
     msg.deliveryStatus = 'failed';
     msg.errorCode = providerErrorCode(providerResult);
-    msg.errorMessage = providerErrorMessage(providerResult);
+    // Incluye POR QUÉ NÚMERO salió el intento: con varios números conectados, un
+    // error de permisos (#200) suele ser del número anclado a la conversación,
+    // no del que el usuario cree estar usando.
+    msg.errorMessage =
+      providerErrorMessage(providerResult) +
+      (account?.label ? ` — enviado vía «${account.label}»` : '');
     msg.statusTimestamps = {
       ...(msg.statusTimestamps?.toObject ? msg.statusTimestamps.toObject() : msg.statusTimestamps || {}),
       failedAt: new Date(),
