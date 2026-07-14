@@ -498,6 +498,24 @@ exports.testWhatsappAccount = async (req, res) => {
     // del MISMO nombre en el Business Manager es fácil guardar el ID equivocado.
     if (doc.businessAccountId) {
       try {
+        // ¿Qué empresa es DUEÑA de la WABA? Si pertenece a otro Business Manager
+        // (típico del registro integrado), Business Settings revierte en silencio
+        // los permisos que intentes dar y el envío da #200 aunque todo se lea bien.
+        const ro = await fetch(
+          `https://graph.facebook.com/${V}/${doc.businessAccountId}?fields=name,owner_business_info,on_behalf_of_business_info`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const oj = await ro.json().catch(() => ({}));
+        if (ro.ok && (oj.owner_business_info || oj.on_behalf_of_business_info)) {
+          const owner = oj.owner_business_info || {};
+          const obo = oj.on_behalf_of_business_info || null;
+          checks.push({
+            ok: true,
+            label: 'Empresa propietaria de la WABA',
+            detail: `"${oj.name || ''}" pertenece a la empresa «${owner.name || 'desconocida'}» (ID ${owner.id || 'n/d'})${obo ? ` · operada en nombre de «${obo.name}» (ID ${obo.id})` : ''}. Si esa empresa NO es tu Business Manager, ahí está la causa: no puedes dar permisos sobre una WABA ajena.`,
+            fix: '',
+          });
+        }
         const rp = await fetch(
           `https://graph.facebook.com/${V}/${doc.businessAccountId}/phone_numbers?fields=id,display_phone_number`,
           { headers: { Authorization: `Bearer ${token}` } }
