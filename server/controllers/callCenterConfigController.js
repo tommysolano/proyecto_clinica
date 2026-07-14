@@ -477,9 +477,11 @@ exports.testWhatsappAccount = async (req, res) => {
       }
     }
 
-    // 2) Acceso al número concreto con ese token.
+    // 2) Acceso al número concreto con ese token + su ESTADO real: si el número
+    // no está registrado en Cloud API o sigue operando en la app del teléfono
+    // (platform_type SMB), el envío por API falla aunque los permisos estén bien.
     const r = await fetch(
-      `https://graph.facebook.com/${V}/${doc.phoneNumberId}?fields=display_phone_number,verified_name,quality_rating`,
+      `https://graph.facebook.com/${V}/${doc.phoneNumberId}?fields=display_phone_number,verified_name,quality_rating,status,platform_type,code_verification_status`,
       { headers: { Authorization: `Bearer ${token}` } }
     );
     const data = await r.json().catch(() => ({}));
@@ -493,6 +495,23 @@ exports.testWhatsappAccount = async (req, res) => {
         ? ''
         : 'Verifica que el phone number ID sea el correcto (WhatsApp Manager → Números de teléfono) y que el token tenga acceso a su WABA.',
     });
+    if (r.ok && (data.status || data.platform_type || data.code_verification_status)) {
+      const status = String(data.status || '').toUpperCase();
+      const platform = String(data.platform_type || '').toUpperCase();
+      const codeVer = String(data.code_verification_status || '').toUpperCase();
+      const isCloud = !platform || platform === 'CLOUD_API' || platform === 'NOT_APPLICABLE';
+      const isConnected = !status || status === 'CONNECTED';
+      checks.push({
+        ok: isCloud && isConnected,
+        label: 'Estado del número en Cloud API',
+        detail: `Estado: ${status || 'n/d'} · Plataforma: ${platform || 'n/d'} · Verificación del número: ${codeVer || 'n/d'}.`,
+        fix: !isCloud
+          ? 'El número está operando en la app de WhatsApp Business del teléfono (SMB), no en Cloud API. Debes migrarlo/registrarlo: WhatsApp Manager → Números de teléfono → Registrar para la API en la nube (el número se desconecta de la app del teléfono).'
+          : !isConnected
+            ? 'El número no está CONECTADO en Cloud API: en WhatsApp Manager → Números de teléfono, completa el registro (verificación por SMS/llamada y PIN de verificación en dos pasos).'
+            : '',
+      });
+    }
 
     // 2b) La WABA guardada: ¿realmente contiene este número? Con varias cuentas
     // del MISMO nombre en el Business Manager es fácil guardar el ID equivocado.
