@@ -521,10 +521,31 @@ exports.testWhatsappAccount = async (req, res) => {
         // (típico del registro integrado), Business Settings revierte en silencio
         // los permisos que intentes dar y el envío da #200 aunque todo se lea bien.
         const ro = await fetch(
-          `https://graph.facebook.com/${V}/${doc.businessAccountId}?fields=name,owner_business_info,on_behalf_of_business_info`,
+          `https://graph.facebook.com/${V}/${doc.businessAccountId}?fields=name,owner_business_info,on_behalf_of_business_info,account_review_status,business_verification_status`,
           { headers: { Authorization: `Bearer ${token}` } }
         );
         const oj = await ro.json().catch(() => ({}));
+        // Estado de revisión de la WABA + verificación del negocio: una WABA en
+        // revisión (PENDING) o rechazada, o un negocio sin verificar, bloquea el
+        // envío real con #200 aunque token/permisos/número estén perfectos.
+        if (ro.ok && (oj.account_review_status || oj.business_verification_status)) {
+          const review = String(oj.account_review_status || '').toUpperCase();
+          const bver = String(oj.business_verification_status || '').toLowerCase();
+          const reviewOk = !review || review === 'APPROVED';
+          const bverOk = !bver || bver === 'verified';
+          checks.push({
+            ok: reviewOk && bverOk,
+            label: 'Revisión de la WABA y verificación del negocio',
+            detail: `Revisión de la cuenta: ${review || 'n/d'} · Verificación del negocio: ${bver || 'n/d'}.`,
+            fix: !reviewOk
+              ? (review === 'PENDING'
+                  ? 'La cuenta de WhatsApp está EN REVISIÓN por Meta: hasta que la aprueben, el envío real está bloqueado. Suele resolverse en horas/días; la verificación del negocio lo acelera.'
+                  : 'La revisión de la cuenta de WhatsApp fue RECHAZADA: revisa las políticas de WhatsApp Business y apela desde WhatsApp Manager.')
+              : !bverOk
+                ? 'El negocio NO está verificado: Business Manager → Centro de seguridad → "Verificación del negocio" (pide RUC/documentos; 1-2 días). Sin esto Meta restringe el envío en producción.'
+                : '',
+          });
+        }
         if (ro.ok && (oj.owner_business_info || oj.on_behalf_of_business_info)) {
           const owner = oj.owner_business_info || {};
           const obo = oj.on_behalf_of_business_info || null;
