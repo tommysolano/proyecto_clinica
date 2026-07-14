@@ -357,6 +357,15 @@ exports.disconnectWhatsappAccount = async (req, res) => {
   }
 };
 
+/**
+ * POST /whatsapp/accounts/:id/test — Diagnóstico completo de un número Cloud API.
+ * No solo comprueba que el token "lea" el número: inspecciona el token con
+ * debug_token (vigencia, permisos y QUÉ WABAs tiene asignadas) para detectar la
+ * causa exacta del error (#200) "You do not have the necessary permissions to
+ * send messages on behalf of this WhatsApp Business Account", que ocurre cuando
+ * el token no tiene whatsapp_business_messaging o no tiene ESTA WABA asignada.
+ * Devuelve { ok, checks: [{ ok, label, detail, fix }] }.
+ */
 exports.testWhatsappAccount = async (req, res) => {
   try {
     const doc = await WhatsappAccount.findById(req.params.id);
@@ -367,13 +376,103 @@ exports.testWhatsappAccount = async (req, res) => {
     if (!doc.accessToken || !doc.phoneNumberId) {
       return res.status(400).json({ message: 'Falta accessToken o phoneNumberId' });
     }
+    const token = decryptSecret(doc.accessToken);
+    const V = process.env.WHATSAPP_API_VERSION || 'v20.0';
+    const checks = [];
+
+    // 1) Inspección del token (un token puede inspeccionarse a sí mismo).
+    let dbg = null;
+    try {
+      const r = await fetch(
+        `https://graph.facebook.com/${V}/debug_token?input_token=${encodeURIComponent(token)}`,
+        { headers: { Authorization: `Bearer ${token}` } }
+      );
+      const j = await r.json().catch(() => ({}));
+      if (r.ok && j?.data) dbg = j.data;
+    } catch { /* sin red o token ilegible: se reporta abajo */ }
+
+    if (!dbg) {
+      checks.push({
+        ok: false,
+        label: 'Token legible por Meta',
+        detail: 'Meta no pudo inspeccionar el token (inválido o revocado).',
+        fix: 'Genera un token nuevo en Business Manager → Usuarios del sistema y guárdalo en este número.',
+      });
+    } else {
+      // Vigencia
+      const expiresAt = Number(dbg.expires_at || 0); // 0 = no caduca (usuario del sistema)
+      const expired = dbg.is_valid === false || (expiresAt > 0 && expiresAt * 1000 < Date.now());
+      checks.push({
+        ok: !expired,
+        label: 'Token vigente',
+        detail: expired
+          ? 'El token está caducado o fue invalidado.'
+          : expiresAt === 0
+            ? 'Token sin caducidad (usuario del sistema). ✔ Ideal para producción.'
+            : `Caduca el ${new Date(expiresAt * 1000).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' })}. Los tokens temporales del panel de desarrollador duran ~24h.`,
+        fix: expired
+          ? 'Genera un token PERMANENTE: Business Manager → Configuración del negocio → Usuarios del sistema → Generar token (con la app y los permisos de WhatsApp).'
+          : expiresAt > 0
+            ? 'Para que no se caiga cada 24h, usa un token de Usuario del sistema (no caduca).'
+            : '',
+      });
+
+      // Permisos (scopes)
+      const scopes = dbg.scopes || [];
+      const canMessage = scopes.includes('whatsapp_business_messaging');
+      checks.push({
+        ok: canMessage,
+        label: 'Permiso para ENVIAR mensajes (whatsapp_business_messaging)',
+        detail: canMessage
+          ? 'El token tiene el permiso de mensajería.'
+          : `El token NO tiene whatsapp_business_messaging (tiene: ${scopes.join(', ') || 'ninguno'}). Esta es la causa típica del error #200 al enviar.`,
+        fix: canMessage ? '' : 'Al generar el token del Usuario del sistema, marca los permisos "whatsapp_business_messaging" y "whatsapp_business_management".',
+      });
+
+      // WABA asignada al token (granular_scopes → target_ids)
+      const gran = (dbg.granular_scopes || []).find((g) => g.scope === 'whatsapp_business_messaging');
+      const targetIds = gran?.target_ids || null; // null = sin restricción granular
+      if (doc.businessAccountId && Array.isArray(targetIds)) {
+        const hasWaba = targetIds.includes(String(doc.businessAccountId));
+        checks.push({
+          ok: hasWaba,
+          label: 'Esta cuenta de WhatsApp (WABA) asignada al token',
+          detail: hasWaba
+            ? `El token puede enviar por la WABA ${doc.businessAccountId}.`
+            : `El token solo puede enviar por: ${targetIds.join(', ') || '(ninguna)'} y este número pertenece a la WABA ${doc.businessAccountId}. Esta es la causa del error #200.`,
+          fix: hasWaba
+            ? ''
+            : 'Business Manager → Usuarios del sistema → tu usuario → "Asignar activos" → Cuentas de WhatsApp: añade ESTA cuenta con control total, y vuelve a generar el token.',
+        });
+      } else if (!doc.businessAccountId) {
+        checks.push({
+          ok: true,
+          label: 'WABA ID no guardado en este número',
+          detail: 'Guarda el "Identificador de la cuenta de WhatsApp Business" (WABA ID) al editar el número para poder verificar la asignación exacta.',
+          fix: '',
+        });
+      }
+    }
+
+    // 2) Acceso al número concreto con ese token.
     const r = await fetch(
-      `https://graph.facebook.com/v20.0/${doc.phoneNumberId}?fields=display_phone_number,verified_name`,
-      { headers: { Authorization: `Bearer ${decryptSecret(doc.accessToken)}` } }
+      `https://graph.facebook.com/${V}/${doc.phoneNumberId}?fields=display_phone_number,verified_name,quality_rating`,
+      { headers: { Authorization: `Bearer ${token}` } }
     );
-    const data = await r.json();
-    if (!r.ok) return res.status(400).json({ message: 'Token inválido', detail: data });
-    res.json({ ok: true, info: data });
+    const data = await r.json().catch(() => ({}));
+    checks.push({
+      ok: r.ok,
+      label: 'Acceso al número (phone number ID)',
+      detail: r.ok
+        ? `Número ${data.display_phone_number || doc.phoneNumberId} ("${data.verified_name || 'sin nombre verificado'}").`
+        : data?.error?.message || 'Meta rechazó la consulta del número.',
+      fix: r.ok
+        ? ''
+        : 'Verifica que el phone number ID sea el correcto (WhatsApp Manager → Números de teléfono) y que el token tenga acceso a su WABA.',
+    });
+
+    const ok = checks.every((c) => c.ok);
+    res.json({ ok, checks, info: r.ok ? data : null });
   } catch (err) {
     res.status(500).json({ message: 'Error de prueba', error: err.message });
   }

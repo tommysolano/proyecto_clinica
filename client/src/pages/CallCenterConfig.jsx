@@ -407,6 +407,7 @@ function WhatsappNumbersManager() {
   const [addModal, setAddModal] = useState(null);
   const [editModal, setEditModal] = useState(null);
   const [qrModal, setQrModal] = useState(null); // { accountId, label, qr, status }
+  const [diagModal, setDiagModal] = useState(null); // { label, loading, ok, checks }
 
   const load = async () => {
     setLoading(true);
@@ -607,12 +608,20 @@ function WhatsappNumbersManager() {
     }
   };
 
+  // Diagnóstico completo del número Cloud API: token vigente, permisos, WABA
+  // asignada y acceso al número. Explica la causa exacta del error #200 de Meta.
   const testAccount = async (acc) => {
+    setDiagModal({ label: acc.label, loading: true, checks: [] });
     try {
       const r = await api.post(`/call-center-config/whatsapp/accounts/${acc._id}/test`);
-      toast.success(`Conexión OK: ${r.data?.info?.display_phone_number || 'verificado'}`);
+      setDiagModal({ label: acc.label, loading: false, ok: r.data?.ok, checks: r.data?.checks || [] });
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error de conexión');
+      setDiagModal({
+        label: acc.label,
+        loading: false,
+        ok: false,
+        checks: [{ ok: false, label: 'Diagnóstico', detail: err.response?.data?.message || 'Error de conexión', fix: '' }],
+      });
     }
   };
 
@@ -874,6 +883,52 @@ function WhatsappNumbersManager() {
                 onClick={() => setQrModal(null)}
                 className="px-4 py-2 border border-slate-200 rounded-lg text-sm bg-white cursor-pointer"
               >
+                Cerrar
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Modal: diagnóstico Cloud API (token, permisos, WABA, número) */}
+      <Modal isOpen={!!diagModal} onClose={() => setDiagModal(null)} title={`Diagnóstico — ${diagModal?.label || ''}`} size="md">
+        {diagModal && (
+          <div className="space-y-3">
+            {diagModal.loading ? (
+              <p className="text-sm text-slate-500 text-center py-6">Consultando a Meta…</p>
+            ) : (
+              <>
+                <p className={`text-sm font-semibold ${diagModal.ok ? 'text-emerald-700' : 'text-rose-700'}`}>
+                  {diagModal.ok
+                    ? '✓ Todo en orden: este número puede enviar mensajes.'
+                    : '✗ Se encontraron problemas. Corrige lo marcado en rojo:'}
+                </p>
+                <div className="grid gap-2">
+                  {diagModal.checks.map((c, i) => (
+                    <div key={i} className={`rounded-xl border px-3 py-2.5 ${c.ok ? 'border-slate-200 bg-white' : 'border-rose-200 bg-rose-50/60'}`}>
+                      <div className="flex items-start gap-2">
+                        <span className={`mt-0.5 ${c.ok ? 'text-emerald-500' : 'text-rose-500'}`}>{c.ok ? '✓' : '✗'}</span>
+                        <div className="min-w-0">
+                          <div className="text-sm font-medium text-slate-700">{c.label}</div>
+                          {c.detail && <div className="text-xs text-slate-500 mt-0.5">{c.detail}</div>}
+                          {!c.ok && c.fix && (
+                            <div className="text-xs text-rose-700 mt-1.5 bg-white border border-rose-200 rounded-lg px-2 py-1.5">
+                              <b>Cómo corregirlo:</b> {c.fix}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <p className="text-[11px] text-slate-400">
+                  El error de Meta “(#200) You do not have the necessary permissions…” aparece cuando el token
+                  no tiene el permiso de mensajería o no tiene asignada esta cuenta de WhatsApp Business (WABA).
+                </p>
+              </>
+            )}
+            <div className="flex justify-end">
+              <button onClick={() => setDiagModal(null)} className="px-4 py-2 border border-slate-200 rounded-lg text-sm bg-white cursor-pointer">
                 Cerrar
               </button>
             </div>
