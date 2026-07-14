@@ -87,9 +87,13 @@ const TRIGGER_TYPES = [
   'appointment_attended',
   'appointment_no_show',
   'appointment_cancelled',
+  'appointment_confirmed',
+  'appointment_rescheduled',
   'treatment_abandoned',
   'patient_birthday',
+  'patient_created',
   'sale_created',
+  'payment_received',
   'quotation_sent',
   // Disparadores de chat (reemplazan a MessageFlow):
   'inbound_message',

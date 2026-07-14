@@ -12,6 +12,35 @@ const { emitToClinic, emitToUser } = require('../realtime');
 const { DOMAIN_EVENTS, onDomainEvent } = require('./events');
 
 const MAX_STEP_TRANSITIONS = 100; // guarda contra bucles por onFailGoTo mal formado
+const MAX_LOG_ENTRIES = 60; // tope del registro de ejecución por inscripción
+
+// Motivos por los que messaging.send salta/falla un envío, en lenguaje del usuario.
+const SEND_FAIL_REASONS = {
+  out_of_window: 'WhatsApp: fuera de la ventana de 24h (el paciente no ha escrito recientemente). Usa el paso "Enviar plantilla" con una plantilla aprobada.',
+  provider_unavailable: 'Canal no disponible: no hay número de WhatsApp conectado/configurado.',
+  invalid_recipient: 'El contacto no tiene un teléfono/destino válido.',
+  opt_out: 'El paciente pidió no recibir mensajes (opt-out).',
+  no_email_consent: 'El paciente no aceptó recibir emails.',
+  blocked: 'La conversación está bloqueada.',
+  template_header_missing: 'La plantilla requiere una imagen/archivo de cabecera que no está guardado.',
+};
+
+/**
+ * Añade una entrada al registro de ejecución de la inscripción (en memoria; se
+ * persiste con el siguiente save). Si es un fallo, actualiza lastError.
+ */
+function pushLog(enrollment, entry) {
+  const e = { at: new Date(), ok: true, ...entry };
+  enrollment.log = [...(enrollment.log || []), e].slice(-MAX_LOG_ENTRIES);
+  if (e.ok === false && e.info) enrollment.lastError = e.info;
+}
+
+/** Interpreta el resultado de messaging.send: null = éxito, string = motivo del fallo. */
+function sendFailureInfo(result) {
+  if (!result || result.ok) return null;
+  const reason = result.reason || result.errorCode || 'error';
+  return SEND_FAIL_REASONS[reason] || result.errorMessage || `No se pudo enviar (${reason}).`;
+}
 
 /**
  * Agente call_center con MENOS conversaciones abiertas asignadas (reparto
@@ -188,6 +217,8 @@ async function loadConversationForPatient(clinicId, phone) {
  * Ejecuta UNA acción de efecto secundario (no de control de flujo). La usa el
  * runner de grafo. `convRef` = { current } comparte la conversación cargada
  * perezosamente entre nodos. Replica la lógica del runner lineal.
+ * Devuelve null si todo salió bien, o un string con el motivo del fallo (para
+ * el registro de ejecución). Los errores inesperados se propagan (throw).
  */
 async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
   const loadConv = async () => {
@@ -195,16 +226,19 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
     return convRef.current;
   };
   switch (step.type) {
-    case 'send_message':
-      await messaging.send({ clinicId, channel: 'whatsapp', to: phone, patient, body: personalize(step.body, patient), isAutoReply: true });
-      break;
-    case 'send_template':
-      await messaging.send({ clinicId, channel: 'whatsapp', to: phone, patient, template: { name: step.templateName, language: step.templateLanguage || 'es', vars: [firstNameOf(patient)] }, isAutoReply: true });
-      break;
+    case 'send_message': {
+      const r = await messaging.send({ clinicId, channel: 'whatsapp', to: phone, patient, body: personalize(step.body, patient), isAutoReply: true });
+      return sendFailureInfo(r);
+    }
+    case 'send_template': {
+      const r = await messaging.send({ clinicId, channel: 'whatsapp', to: phone, patient, template: { name: step.templateName, language: step.templateLanguage || 'es', vars: [firstNameOf(patient)] }, isAutoReply: true });
+      return sendFailureInfo(r);
+    }
     case 'send_email': {
       const to = patient?.email;
-      if (to) await messaging.send({ clinicId, channel: 'email', to, patient, subject: personalize(step.emailSubject || 'Mensaje de tu clínica', patient), body: personalize(step.body, patient) });
-      break;
+      if (!to) return 'El paciente no tiene email registrado.';
+      const r = await messaging.send({ clinicId, channel: 'email', to, patient, subject: personalize(step.emailSubject || 'Mensaje de tu clínica', patient), body: personalize(step.body, patient) });
+      return sendFailureInfo(r);
     }
     case 'assign_agent': {
       const conversation = await loadConv();
@@ -257,17 +291,19 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
       const base = process.env.PUBLIC_API_URL || '';
       const link = base ? `${base}/api/public/review/${token}` : '';
       const text = personalize(step.body || '¡Hola {{nombre}}! ¿Cómo fue tu experiencia con nosotros? Califícanos aquí:', patient);
-      await messaging.send({ clinicId, channel: 'whatsapp', to: phone, patient, body: link ? `${text}\n${link}` : text, isAutoReply: true });
-      break;
+      const r = await messaging.send({ clinicId, channel: 'whatsapp', to: phone, patient, body: link ? `${text}\n${link}` : text, isAutoReply: true });
+      return sendFailureInfo(r);
     }
     case 'ai_reply': {
       const conversation = await loadConv();
-      if (conversation) {
-        const { suggestReply } = require('./aiAssistant');
-        const r = await suggestReply({ clinicId, conversationId: conversation._id });
-        if (r.ok && r.suggestion) await messaging.send({ clinicId, channel: conversation.channel || 'whatsapp', to: phone, patient, conversation, body: r.suggestion, isAutoReply: true });
+      if (!conversation) return 'No hay conversación abierta con el paciente para responder con IA.';
+      const { suggestReply } = require('./aiAssistant');
+      const r = await suggestReply({ clinicId, conversationId: conversation._id });
+      if (r.ok && r.suggestion) {
+        const sent = await messaging.send({ clinicId, channel: conversation.channel || 'whatsapp', to: phone, patient, conversation, body: r.suggestion, isAutoReply: true });
+        return sendFailureInfo(sent);
       }
-      break;
+      return 'La IA no generó una sugerencia.';
     }
     case 'set_appointment_status':
       if (ctx.appointmentId && step.appointmentStatus) {
@@ -380,13 +416,25 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
       return;
     } else if (type === 'condition') {
       const pass = evaluateCondition(data, { patient, conversation: convRef.current, context: ctx });
+      pushLog(enrollment, { nodeId: currentId, type, info: pass ? 'Rama Sí' : 'Rama No' });
       currentId = nextNodeId(workflow, currentId, pass ? 'yes' : 'no');
     } else if (type === 'goal') {
-      if (evaluateCondition(data, { patient, conversation: convRef.current, context: ctx })) break;
+      if (evaluateCondition(data, { patient, conversation: convRef.current, context: ctx })) {
+        pushLog(enrollment, { nodeId: currentId, type, info: 'Objetivo cumplido: fin del flujo' });
+        break;
+      }
       currentId = nextNodeId(workflow, currentId);
     } else {
-      // eslint-disable-next-line no-await-in-loop
-      await performAction({ ...data, type }, { clinicId: enrollment.clinic, patient, phone, ctx, convRef });
+      // Un paso que falla NO aborta el flujo: se registra y se continúa. Así un
+      // envío saltado (ventana 24h, sin teléfono) queda visible en el registro.
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        const fail = await performAction({ ...data, type }, { clinicId: enrollment.clinic, patient, phone, ctx, convRef });
+        pushLog(enrollment, { nodeId: currentId, type, ok: !fail, info: fail || '' });
+      } catch (err) {
+        pushLog(enrollment, { nodeId: currentId, type, ok: false, info: `Error: ${err.message}` });
+        console.error('[workflowEngine] action error', enrollment._id, type, err.message);
+      }
       currentId = nextNodeId(workflow, currentId);
     }
   }
@@ -434,7 +482,7 @@ async function executeEnrollment(enrollment) {
 
     if (step.type === 'send_message') {
       // eslint-disable-next-line no-await-in-loop
-      await messaging.send({
+      const r = await messaging.send({
         clinicId: enrollment.clinic,
         channel: 'whatsapp',
         to: phone,
@@ -442,10 +490,12 @@ async function executeEnrollment(enrollment) {
         body: personalize(step.body, patient),
         isAutoReply: true,
       });
+      const fail = sendFailureInfo(r);
+      pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail || '' });
       i++;
     } else if (step.type === 'send_template') {
       // eslint-disable-next-line no-await-in-loop
-      await messaging.send({
+      const r = await messaging.send({
         clinicId: enrollment.clinic,
         channel: 'whatsapp',
         to: phone,
@@ -453,12 +503,14 @@ async function executeEnrollment(enrollment) {
         template: { name: step.templateName, language: step.templateLanguage || 'es', vars: [firstNameOf(patient)] },
         isAutoReply: true,
       });
+      const fail = sendFailureInfo(r);
+      pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail || '' });
       i++;
     } else if (step.type === 'send_email') {
       const to = patient?.email;
       if (to) {
         // eslint-disable-next-line no-await-in-loop
-        await messaging.send({
+        const r = await messaging.send({
           clinicId: enrollment.clinic,
           channel: 'email',
           to,
@@ -466,6 +518,10 @@ async function executeEnrollment(enrollment) {
           subject: personalize(step.emailSubject || 'Mensaje de tu clínica', patient),
           body: personalize(step.body, patient),
         });
+        const fail = sendFailureInfo(r);
+        pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail || '' });
+      } else {
+        pushLog(enrollment, { stepIndex: i, type: step.type, ok: false, info: 'El paciente no tiene email registrado.' });
       }
       i++;
     } else if (step.type === 'assign_agent') {
@@ -628,6 +684,7 @@ async function executeEnrollment(enrollment) {
       i++;
     } else if (step.type === 'condition') {
       const pass = evaluateCondition(step, { patient, conversation, context: ctx });
+      pushLog(enrollment, { stepIndex: i, type: step.type, info: pass ? 'Rama Sí' : 'Rama No' });
       if (pass) {
         i++;
       } else if (step.onFailGoTo != null && step.onFailGoTo >= 0) {
@@ -695,8 +752,9 @@ async function enrollForEvent(eventType, payload = {}) {
 
   const patient = await Patient.findById(patientId); // global
   if (!patient) return;
+  // Sin teléfono TAMBIÉN se inscribe: hay pasos que no envían mensajes (etiquetas,
+  // tareas) y el fallo de los envíos queda registrado en el log de la inscripción.
   const phone = patient.whatsapp || patient.phone || '';
-  if (!phone) return;
 
   const services = (payload.services || []).map((s) => String(s));
 
@@ -739,8 +797,12 @@ async function enrollForEvent(eventType, payload = {}) {
       }
       // eslint-disable-next-line no-await-in-loop
       await Workflow.updateOne({ _id: wf._id }, { $inc: { 'stats.enrolled': 1 } });
+      // Un error en ESTE flujo no debe impedir que los demás workflows del evento
+      // se inscriban. processDueEnrollments recupera las inscripciones atascadas.
       // eslint-disable-next-line no-await-in-loop
-      await executeEnrollment(enrollment);
+      await executeEnrollment(enrollment).catch((err) =>
+        console.error('[workflowEngine] event enrollment error', enrollment._id, err.message)
+      );
     }
   }
 }
@@ -830,9 +892,18 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
   return { enrolled };
 }
 
-/** Job: reanuda inscripciones cuya espera ya venció. */
+/**
+ * Job: reanuda inscripciones cuya espera ya venció. Recupera además las que
+ * quedaron atascadas en 'active' (p.ej. si el proceso murió o un paso lanzó un
+ * error a mitad de ejecución): tras 5 min sin avanzar se reintenta.
+ */
 async function processDueEnrollments() {
-  const due = await WorkflowEnrollment.find({ status: 'waiting', nextRunAt: { $lte: new Date() } })
+  const due = await WorkflowEnrollment.find({
+    $or: [
+      { status: 'waiting', nextRunAt: { $lte: new Date() } },
+      { status: 'active', updatedAt: { $lte: new Date(Date.now() - 5 * 60000) } },
+    ],
+  })
     .sort({ nextRunAt: 1 })
     .limit(100);
   for (const enrollment of due) {
@@ -887,9 +958,13 @@ function subscribeDomainEvents() {
     [DOMAIN_EVENTS.APPOINTMENT_ATTENDED]: 'appointment_attended',
     [DOMAIN_EVENTS.APPOINTMENT_NO_SHOW]: 'appointment_no_show',
     [DOMAIN_EVENTS.APPOINTMENT_CANCELLED]: 'appointment_cancelled',
+    [DOMAIN_EVENTS.APPOINTMENT_CONFIRMED]: 'appointment_confirmed',
+    [DOMAIN_EVENTS.APPOINTMENT_RESCHEDULED]: 'appointment_rescheduled',
     [DOMAIN_EVENTS.TREATMENT_ABANDONED]: 'treatment_abandoned',
     [DOMAIN_EVENTS.PATIENT_BIRTHDAY]: 'patient_birthday',
+    [DOMAIN_EVENTS.PATIENT_CREATED]: 'patient_created',
     [DOMAIN_EVENTS.SALE_CREATED]: 'sale_created',
+    [DOMAIN_EVENTS.PAYMENT_RECEIVED]: 'payment_received',
     [DOMAIN_EVENTS.QUOTATION_SENT]: 'quotation_sent',
     [DOMAIN_EVENTS.TAG_ADDED]: 'tag_added',
   };

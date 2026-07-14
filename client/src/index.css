@@ -84,6 +84,31 @@ select:disabled {
   transition-timing-function: ease;
 }
 
+/* ──────────────────────────────────────────────────────────────
+   React Flow (editor de automatizaciones).
+   1) Cursores NATIVOS del SO: los cursores grab/grabbing que trae la librería
+      son dibujados por Chromium y en Windows a veces se vuelven invisibles
+      sobre el lienzo (bug de DPI/GPU). default/move siempre se ven.
+   2) Puntos de conexión (handles) más grandes para poder arrastrarlos con el
+      mouse y unir nodos sin puntería de francotirador. */
+.react-flow__pane { cursor: default !important; }
+.react-flow__pane.dragging { cursor: move !important; }
+.react-flow__node { cursor: pointer !important; }
+.react-flow__node.dragging { cursor: move !important; }
+.react-flow__handle {
+  width: 12px !important;
+  height: 12px !important;
+  border: 2px solid #fff !important;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.25);
+  cursor: crosshair !important;
+}
+.react-flow__handle:hover {
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.35);
+}
+.react-flow__edge { cursor: pointer; }
+.react-flow__edge.selected .react-flow__edge-path { stroke: #10b981 !important; }
+.react-flow__connection-path { stroke: #10b981; stroke-width: 2.5; }
+
 #root {
   width: 100%;
   height: 100vh;

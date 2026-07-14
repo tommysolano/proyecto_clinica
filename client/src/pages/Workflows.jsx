@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
@@ -14,17 +14,22 @@ import Modal from '../components/Modal';
 
 const TRIGGERS = [
   { value: 'appointment_created', label: 'Cita agendada' },
+  { value: 'appointment_confirmed', label: 'Cita confirmada' },
+  { value: 'appointment_rescheduled', label: 'Cita reagendada' },
   { value: 'appointment_attended', label: 'Cita asistida' },
   { value: 'appointment_no_show', label: 'No asistió (no-show)' },
   { value: 'appointment_cancelled', label: 'Cita cancelada' },
   { value: 'treatment_abandoned', label: 'Tratamiento abandonado' },
   { value: 'patient_birthday', label: 'Cumpleaños del paciente' },
+  { value: 'patient_created', label: 'Paciente creado' },
   { value: 'sale_created', label: 'Venta registrada' },
+  { value: 'payment_received', label: 'Pago recibido' },
   { value: 'quotation_sent', label: 'Cotización enviada' },
   { value: 'inbound_message', label: 'Mensaje entrante (chat)' },
   { value: 'keyword', label: 'Palabra clave (chat)' },
   { value: 'new_conversation', label: 'Nueva conversación (chat)' },
   { value: 'tag_added', label: 'Etiqueta añadida' },
+  { value: 'ctwa_ad', label: 'Mensaje desde anuncio (Meta Ads)' },
 ];
 
 // Resumen de disparadores para la lista (soporta varios; lógica OR).
@@ -230,11 +235,34 @@ const ENROLL_STATUS = {
   cancelled: { label: 'Cancelado', cls: 'bg-slate-100 text-slate-500' },
 };
 
-// Vista de inscripciones de un workflow (quién está en qué paso) para depurar.
+// Etiquetas legibles de los tipos de paso para el registro de ejecución.
+const STEP_LABELS = {
+  send_message: 'Enviar mensaje',
+  send_template: 'Enviar plantilla',
+  send_email: 'Enviar email',
+  wait: 'Espera',
+  wait_until: 'Espera hasta la cita',
+  wait_reply: 'Esperar respuesta',
+  condition: 'Condición',
+  goal: 'Objetivo',
+  add_tag: 'Añadir etiqueta',
+  remove_tag: 'Quitar etiqueta',
+  move_stage: 'Mover etapa',
+  set_appointment_status: 'Cambiar estado de cita',
+  assign_agent: 'Asignar agente',
+  create_task: 'Crear tarea',
+  webhook: 'Webhook',
+  ai_reply: 'Respuesta IA',
+  request_review: 'Pedir reseña',
+};
+
+// Vista de inscripciones de un workflow (quién está en qué paso) para depurar,
+// con el registro de ejecución de cada inscripción (estilo "Registros" de GHL).
 function EnrollmentsModal({ workflow, onClose }) {
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
   const [statusFilter, setStatusFilter] = useState('');
+  const [openLog, setOpenLog] = useState(null); // _id de la inscripción expandida
 
   useEffect(() => {
     setLoading(true);
@@ -250,7 +278,10 @@ function EnrollmentsModal({ workflow, onClose }) {
   return (
     <Modal isOpen onClose={onClose} title={`Inscritos — ${workflow.name}`} size="xl">
       <div>
-        <p className="text-xs text-slate-500 -mt-1 mb-4">Pacientes que pasaron por esta automatización y su paso actual.</p>
+        <p className="text-xs text-slate-500 -mt-1 mb-4">
+          Pacientes que pasaron por esta automatización. Haz clic en una fila para ver el
+          <b> registro de ejecución</b>: qué hizo cada paso y por qué falló un envío (p.ej. ventana de 24h de WhatsApp).
+        </p>
         <div className="mb-3">
           <label className="text-xs text-slate-500 mr-2">Filtrar por estado</label>
           <select value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
@@ -272,21 +303,56 @@ function EnrollmentsModal({ workflow, onClose }) {
                 <tr>
                   <th className="text-left px-3 py-2">Paciente / Teléfono</th>
                   <th className="text-center px-3 py-2">Estado</th>
-                  <th className="text-center px-3 py-2">Paso</th>
+                  <th className="text-center px-3 py-2">Pasos OK / fallidos</th>
                   <th className="text-left px-3 py-2">Próxima ejecución</th>
+                  <th className="text-left px-3 py-2">Último error</th>
                 </tr>
               </thead>
               <tbody>
                 {rows.map((e) => {
                   const st = ENROLL_STATUS[e.status] || ENROLL_STATUS.active;
                   const name = e.patient ? `${e.patient.firstName || ''} ${e.patient.lastName || ''}`.trim() : '';
+                  const log = e.log || [];
+                  const fails = log.filter((l) => l.ok === false).length;
+                  const isOpen = openLog === e._id;
                   return (
-                    <tr key={e._id} className="border-t border-slate-100">
-                      <td className="px-3 py-2">{name || e.patient?.phone || e.context?.phone || 'Contacto'}</td>
-                      <td className="px-3 py-2 text-center"><span className={`text-[11px] px-2 py-0.5 rounded-full ${st.cls}`}>{st.label}</span></td>
-                      <td className="px-3 py-2 text-center">{e.stepIndex}</td>
-                      <td className="px-3 py-2">{e.status === 'waiting' ? fmt(e.nextRunAt) : '—'}</td>
-                    </tr>
+                    <Fragment key={e._id}>
+                      <tr
+                        className={`border-t border-slate-100 cursor-pointer hover:bg-slate-50 ${isOpen ? 'bg-slate-50' : ''}`}
+                        onClick={() => setOpenLog(isOpen ? null : e._id)}
+                      >
+                        <td className="px-3 py-2">{name || e.patient?.phone || e.context?.phone || 'Contacto'}</td>
+                        <td className="px-3 py-2 text-center"><span className={`text-[11px] px-2 py-0.5 rounded-full ${st.cls}`}>{st.label}</span></td>
+                        <td className="px-3 py-2 text-center">
+                          <span className="text-emerald-600 font-medium">{log.length - fails}</span>
+                          {fails > 0 && <span className="text-rose-600 font-medium"> / {fails} ✗</span>}
+                        </td>
+                        <td className="px-3 py-2">{e.status === 'waiting' ? fmt(e.nextRunAt) : '—'}</td>
+                        <td className="px-3 py-2 max-w-[260px]">
+                          {e.lastError ? <span className="text-[11px] text-rose-600 line-clamp-2">{e.lastError}</span> : <span className="text-slate-300">—</span>}
+                        </td>
+                      </tr>
+                      {isOpen && (
+                        <tr className="border-t border-slate-100 bg-slate-50/60">
+                          <td colSpan={5} className="px-4 py-3">
+                            {log.length === 0 ? (
+                              <p className="text-xs text-slate-400">Sin registro de ejecución (inscripción anterior a esta versión o aún sin pasos ejecutados).</p>
+                            ) : (
+                              <ol className="grid gap-1">
+                                {log.map((l, i) => (
+                                  <li key={i} className="text-xs flex items-start gap-2">
+                                    <span className={l.ok === false ? 'text-rose-500' : 'text-emerald-500'}>{l.ok === false ? '✗' : '✓'}</span>
+                                    <span className="text-slate-400 shrink-0">{fmt(l.at)}</span>
+                                    <span className="font-medium text-slate-600 shrink-0">{STEP_LABELS[l.type] || l.type}</span>
+                                    {l.info && <span className={l.ok === false ? 'text-rose-600' : 'text-slate-500'}>{l.info}</span>}
+                                  </li>
+                                ))}
+                              </ol>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </Fragment>
                   );
                 })}
               </tbody>

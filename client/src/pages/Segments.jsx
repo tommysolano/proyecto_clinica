@@ -128,7 +128,10 @@ export default function Segments() {
             <HiOutlineFunnel className="text-emerald-600" /> Segmentos
           </h1>
           <p className="text-sm text-slate-500 mt-1">
-            Listas inteligentes reutilizables para campañas. Se recalculan al usarlas.
+            Un segmento es una <b>lista inteligente de pacientes</b> definida por filtros (fuente,
+            etiquetas, edad, servicio/programa, días sin visitar…). No se guarda la lista: se
+            recalcula cada vez que la usas, así siempre está al día. Los usan las <b>Campañas</b> para
+            decidir a quién enviar. Prueba con “Previsualizar” para ver quiénes entran.
           </p>
         </div>
         <button onClick={openNew} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm flex items-center gap-1 cursor-pointer border-none">

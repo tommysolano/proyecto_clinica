@@ -139,7 +139,9 @@ export default function Campaigns() {
             <HiOutlineMegaphone className="text-emerald-600" /> Campañas
           </h1>
           <p className="text-sm text-slate-500 mt-1">
-            Envíos masivos a un segmento, ahora o programados. Respetan opt-out y ventana de 24h.
+            Una campaña es un <b>envío masivo puntual</b> (WhatsApp o email) a los pacientes de un
+            segmento: se elige el segmento, el mensaje o plantilla, y se envía ahora o programado.
+            Respeta opt-out y ventana de 24h. Para mensajes automáticos por eventos usa <b>Automatizaciones</b>.
           </p>
         </div>
         <button onClick={() => setCreating(blank())} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm flex items-center gap-1 cursor-pointer border-none">

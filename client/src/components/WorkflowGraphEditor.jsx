@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import toast from 'react-hot-toast';
 import NumericInput from './NumericInput';
+import WhatsappTextArea from './WhatsappTextArea';
 import ReactFlow, {
   Background,
   Controls,
+  MiniMap,
   Handle,
   Position,
   ReactFlowProvider,
@@ -22,6 +25,16 @@ import {
   HiOutlineArrowsRightLeft,
   HiOutlineTag,
   HiOutlineCog6Tooth,
+  HiOutlineEnvelope,
+  HiOutlineDocumentText,
+  HiOutlineSparkles,
+  HiOutlineStar,
+  HiOutlineUserPlus,
+  HiOutlineClipboardDocumentList,
+  HiOutlineGlobeAlt,
+  HiOutlineCalendarDays,
+  HiOutlineFlag,
+  HiOutlineFunnel,
 } from 'react-icons/hi2';
 
 // Tipos de paso disponibles en el lienzo (sin 'trigger', que es el nodo inicial).
@@ -54,14 +67,49 @@ const STEP_GROUPS = [
   { title: 'Otros', icon: HiOutlineCog6Tooth, types: ['create_task', 'webhook'] },
 ];
 
+// Icono + color por tipo de paso (tarjetas del lienzo y selector, estilo Daplox).
+const STEP_ICONS = {
+  send_message: { icon: HiOutlineChatBubbleLeftRight, cls: 'bg-emerald-100 text-emerald-600' },
+  send_template: { icon: HiOutlineDocumentText, cls: 'bg-emerald-100 text-emerald-600' },
+  send_email: { icon: HiOutlineEnvelope, cls: 'bg-sky-100 text-sky-600' },
+  ai_reply: { icon: HiOutlineSparkles, cls: 'bg-violet-100 text-violet-600' },
+  request_review: { icon: HiOutlineStar, cls: 'bg-amber-100 text-amber-600' },
+  wait: { icon: HiOutlineClock, cls: 'bg-indigo-100 text-indigo-600' },
+  wait_until: { icon: HiOutlineCalendarDays, cls: 'bg-indigo-100 text-indigo-600' },
+  wait_reply: { icon: HiOutlineChatBubbleLeftRight, cls: 'bg-indigo-100 text-indigo-600' },
+  condition: { icon: HiOutlineArrowsRightLeft, cls: 'bg-amber-100 text-amber-600' },
+  goal: { icon: HiOutlineFlag, cls: 'bg-rose-100 text-rose-600' },
+  add_tag: { icon: HiOutlineTag, cls: 'bg-teal-100 text-teal-600' },
+  remove_tag: { icon: HiOutlineTag, cls: 'bg-slate-100 text-slate-500' },
+  move_stage: { icon: HiOutlineFunnel, cls: 'bg-cyan-100 text-cyan-600' },
+  set_appointment_status: { icon: HiOutlineCalendarDays, cls: 'bg-emerald-100 text-emerald-600' },
+  assign_agent: { icon: HiOutlineUserPlus, cls: 'bg-blue-100 text-blue-600' },
+  create_task: { icon: HiOutlineClipboardDocumentList, cls: 'bg-orange-100 text-orange-600' },
+  webhook: { icon: HiOutlineGlobeAlt, cls: 'bg-slate-100 text-slate-600' },
+};
+
+function StepIcon({ type, className = 'w-6 h-6 p-1' }) {
+  const def = STEP_ICONS[type] || { icon: HiOutlineCog6Tooth, cls: 'bg-slate-100 text-slate-500' };
+  const Icon = def.icon;
+  return (
+    <span className={`inline-flex items-center justify-center rounded-lg shrink-0 ${def.cls} ${className}`}>
+      <Icon className="w-full h-full" />
+    </span>
+  );
+}
+
 export const TRIGGERS = [
   { value: 'appointment_created', label: 'Cita agendada' },
+  { value: 'appointment_confirmed', label: 'Cita confirmada' },
+  { value: 'appointment_rescheduled', label: 'Cita reagendada' },
   { value: 'appointment_attended', label: 'Cita asistida' },
   { value: 'appointment_no_show', label: 'No asistió (no-show)' },
   { value: 'appointment_cancelled', label: 'Cita cancelada' },
   { value: 'treatment_abandoned', label: 'Tratamiento abandonado' },
   { value: 'patient_birthday', label: 'Cumpleaños del paciente' },
+  { value: 'patient_created', label: 'Paciente creado' },
   { value: 'sale_created', label: 'Venta registrada' },
+  { value: 'payment_received', label: 'Pago recibido' },
   { value: 'quotation_sent', label: 'Cotización enviada' },
   { value: 'inbound_message', label: 'Mensaje entrante (chat)' },
   { value: 'keyword', label: 'Palabra clave (chat)' },
@@ -241,10 +289,15 @@ function TriggerNode({ data }) {
 function ActionNode({ data, selected }) {
   return (
     <div className="relative">
-      <div className={`rounded-xl border bg-white px-4 py-2.5 text-xs shadow-sm min-w-[190px] ${selected ? 'border-emerald-500 ring-2 ring-emerald-200' : 'border-slate-300'}`}>
+      <div className={`rounded-xl border bg-white px-3 py-2.5 text-xs shadow-sm min-w-[200px] ${selected ? 'border-emerald-500 ring-2 ring-emerald-200' : 'border-slate-300'}`}>
         <Handle type="target" position={Position.Top} style={{ background: '#94a3b8' }} />
-        <div className="font-semibold text-slate-700">{STEP_DEFS[data._type] || data._type}</div>
-        {data._summary && <div className="text-[10px] text-slate-400 mt-0.5 truncate max-w-[170px]">{data._summary}</div>}
+        <div className="flex items-center gap-2">
+          <StepIcon type={data._type} />
+          <div className="min-w-0">
+            <div className="font-semibold text-slate-700">{STEP_DEFS[data._type] || data._type}</div>
+            {data._summary && <div className="text-[10px] text-slate-400 mt-0.5 truncate max-w-[160px]">{data._summary}</div>}
+          </div>
+        </div>
         <Handle type="source" position={Position.Bottom} style={{ background: '#94a3b8' }} />
       </div>
       {!data._hasDefaultOut && (
@@ -257,10 +310,15 @@ function ActionNode({ data, selected }) {
 function BranchNode({ data, selected }) {
   return (
     <div className="relative">
-      <div className={`rounded-xl border bg-amber-50 px-4 py-2.5 text-xs shadow-sm min-w-[200px] ${selected ? 'border-amber-500 ring-2 ring-amber-200' : 'border-amber-300'}`}>
+      <div className={`rounded-xl border bg-amber-50 px-3 py-2.5 text-xs shadow-sm min-w-[210px] ${selected ? 'border-amber-500 ring-2 ring-amber-200' : 'border-amber-300'}`}>
         <Handle type="target" position={Position.Top} style={{ background: '#94a3b8' }} />
-        <div className="font-semibold text-amber-700">◆ {STEP_DEFS[data._type] || data._type}</div>
-        {data._summary && <div className="text-[10px] text-amber-600/80 mt-0.5 truncate max-w-[190px]">{data._summary}</div>}
+        <div className="flex items-center gap-2">
+          <StepIcon type={data._type} />
+          <div className="min-w-0">
+            <div className="font-semibold text-amber-700">{STEP_DEFS[data._type] || data._type}</div>
+            {data._summary && <div className="text-[10px] text-amber-600/80 mt-0.5 truncate max-w-[165px]">{data._summary}</div>}
+          </div>
+        </div>
         <div className="flex justify-between text-[9px] font-bold mt-1.5">
           <span className="text-emerald-600">SÍ</span>
           <span className="text-rose-600">NO</span>
@@ -280,19 +338,29 @@ function BranchNode({ data, selected }) {
 
 const nodeTypes = { trigger: TriggerNode, action: ActionNode, branch: BranchNode };
 
-// ─────────── Arista con botón "+" para insertar en medio ───────────
-function PlusEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, label }) {
+// ─────────── Arista con "+" para insertar y "×" para desconectar ───────────
+function PlusEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, label, selected }) {
   const [edgePath, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
   return (
     <>
-      <BaseEdge id={id} path={edgePath} style={{ stroke: '#cbd5e1', strokeWidth: 2 }} />
+      <BaseEdge id={id} path={edgePath} style={{ stroke: selected ? '#10b981' : '#cbd5e1', strokeWidth: 2 }} interactionWidth={24} />
       <EdgeLabelRenderer>
         <div
           style={{ position: 'absolute', transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`, pointerEvents: 'all' }}
-          className="nodrag nopan flex flex-col items-center gap-0.5"
+          className="nodrag nopan flex items-center gap-1"
         >
           {label && <span className={`text-[9px] font-bold px-1 rounded ${label === 'Sí' ? 'text-emerald-600' : 'text-rose-600'}`}>{label}</span>}
           <AddButton onClick={() => data.onInsert(id)} />
+          {selected && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); data.onDeleteEdge(id); }}
+              title="Eliminar esta conexión"
+              className="nodrag nopan flex items-center justify-center w-6 h-6 rounded-full bg-white border-2 border-rose-400 text-rose-500 shadow-sm hover:bg-rose-500 hover:text-white cursor-pointer"
+            >
+              <HiOutlineXMark className="w-3.5 h-3.5" />
+            </button>
+          )}
         </div>
       </EdgeLabelRenderer>
     </>
@@ -335,7 +403,7 @@ const defaultTrigger = () => ({ type: 'appointment_created', audience: 'all', se
 
 export default function WorkflowGraphEditor({
   nodes = [], edges = [], onChange,
-  templates = [], agents = [],
+  templates = [], agents = [], products = [],
 }) {
   const [selectedId, setSelectedId] = useState(null);
   const [selectedTrigger, setSelectedTrigger] = useState(null); // { nodeId, idx }
@@ -393,15 +461,50 @@ export default function WorkflowGraphEditor({
     onChange?.({ nodes: next, edges });
   }, [rfNodes, modelNodes, edges, onChange]);
 
+  const deleteEdge = useCallback((edgeId) => {
+    onChange?.({ nodes: modelNodes, edges: edges.filter((e) => e.id !== edgeId) });
+  }, [modelNodes, edges, onChange]);
+
   const flowEdges = useMemo(
     () => edges.map((e) => ({
       ...e,
       type: 'plus',
-      data: { onInsert: (edgeId) => setAdding({ mode: 'insert', edgeId }) },
+      data: {
+        onInsert: (edgeId) => setAdding({ mode: 'insert', edgeId }),
+        onDeleteEdge: deleteEdge,
+      },
       label: e.sourceHandle === 'yes' ? 'Sí' : e.sourceHandle === 'no' ? 'No' : undefined,
     })),
-    [edges]
+    [edges, deleteEdge]
   );
+
+  // ── Conexión manual con el mouse (arrastrar desde un punto a otro nodo) ──
+  // Valida que la conexión tenga sentido y REEMPLAZA la salida existente del
+  // mismo handle (cada salida — default/Sí/No — apunta a un solo paso).
+  const isValidConnection = useCallback((conn) => {
+    if (!conn.source || !conn.target || conn.source === conn.target) return false;
+    const targetNode = modelNodes.find((n) => n.id === conn.target);
+    if (!targetNode || targetNode.type === 'trigger') return false; // nada entra a un disparador
+    // Sin ciclos: el destino no puede ser un ancestro (evita bucles de mensajes).
+    const reachableFromTarget = descendantIdsInclusive(edges, conn.target);
+    if (reachableFromTarget.has(conn.source)) return false;
+    return true;
+  }, [modelNodes, edges]);
+
+  const onConnect = useCallback((conn) => {
+    if (!isValidConnection(conn)) {
+      const targetNode = modelNodes.find((n) => n.id === conn.target);
+      if (targetNode?.type === 'trigger') toast.error('No puedes conectar hacia un disparador');
+      else if (conn.source && conn.target && conn.source !== conn.target) toast.error('Esa conexión crearía un bucle en el flujo');
+      return;
+    }
+    const handle = conn.sourceHandle || 'default';
+    // Una salida por handle: si ya había conexión desde ese punto, se reemplaza.
+    const rest = edges.filter((e) => !(e.source === conn.source && (e.sourceHandle || 'default') === handle));
+    const newEdge = { id: `e-${conn.source}-${conn.target}-${handle}`, source: conn.source, target: conn.target, sourceHandle: handle };
+    if (rest.some((e) => e.id === newEdge.id)) return; // ya existe exactamente esta conexión
+    onChange?.({ nodes: modelNodes, edges: [...rest, newEdge] });
+  }, [isValidConnection, modelNodes, edges, onChange]);
 
   // ── Disparadores por flujo (cada nodo trigger guarda su propia lista, lógica OR) ──
   const setNodeTriggers = (nodeId, arr) =>
@@ -520,10 +623,13 @@ export default function WorkflowGraphEditor({
           edgeTypes={edgeTypes}
           onNodesChange={onNodesChange}
           onNodeDragStop={onNodeDragStop}
+          onConnect={onConnect}
+          isValidConnection={isValidConnection}
+          connectionRadius={38}
           onNodeClick={(_, n) => { if (n.type === 'trigger') { setSelectedTrigger({ nodeId: n.id, idx: 0 }); setSelectedId(null); } else { setSelectedId(n.id); setSelectedTrigger(null); } }}
           onPaneClick={() => { setSelectedId(null); setSelectedTrigger(null); }}
           nodesDraggable
-          nodesConnectable={false}
+          nodesConnectable
           elementsSelectable
           deleteKeyCode={null}
           fitView
@@ -532,6 +638,12 @@ export default function WorkflowGraphEditor({
         >
           <Background gap={18} color="#e2e8f0" />
           <Controls showInteractive={false} />
+          <MiniMap
+            pannable
+            zoomable
+            className="!bg-white/90 border border-slate-200 rounded-lg"
+            nodeColor={(n) => (n.type === 'trigger' ? '#10b981' : n.type === 'branch' ? '#f59e0b' : '#cbd5e1')}
+          />
         </ReactFlow>
 
         {/* Acciones del lienzo */}
@@ -552,6 +664,9 @@ export default function WorkflowGraphEditor({
           >
             Auto-organizar
           </button>
+          <span className="hidden md:inline-flex items-center px-3 py-1.5 bg-white/80 border border-slate-200 rounded-lg text-[11px] text-slate-400 shadow-sm select-none">
+            Arrastra desde el punto de abajo de un nodo hasta otro para conectarlos · clic en una línea y luego en ✕ para desconectar
+          </span>
         </div>
 
         {/* Drawer de configuración del disparador */}
@@ -561,7 +676,7 @@ export default function WorkflowGraphEditor({
             onClose={() => setSelectedTrigger(null)}
             onDelete={selTrigCount > 1 ? () => removeTrigger(selectedTrigger.nodeId, selectedTrigger.idx) : null}
           >
-            <TriggerConfig trigger={selTrig} onChange={(full) => setTriggerAt(selectedTrigger.nodeId, selectedTrigger.idx, full)} />
+            <TriggerConfig trigger={selTrig} products={products} onChange={(full) => setTriggerAt(selectedTrigger.nodeId, selectedTrigger.idx, full)} />
           </Drawer>
         )}
 
@@ -631,8 +746,8 @@ function StepPicker({ onPick, onClose }) {
                 <div className="flex items-center gap-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wide mb-1.5"><Icon className="w-3.5 h-3.5" /> {g.title}</div>
                 <div className="grid grid-cols-2 gap-1.5">
                   {items.map((t) => (
-                    <button key={t} type="button" onClick={() => onPick(t)} className="text-left px-3 py-2 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer hover:border-emerald-400 hover:bg-emerald-50">
-                      {STEP_DEFS[t]}
+                    <button key={t} type="button" onClick={() => onPick(t)} className="text-left px-2.5 py-2 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer hover:border-emerald-400 hover:bg-emerald-50 flex items-center gap-2">
+                      <StepIcon type={t} className="w-6 h-6 p-1" /> {STEP_DEFS[t]}
                     </button>
                   ))}
                 </div>
@@ -646,10 +761,11 @@ function StepPicker({ onPick, onClose }) {
 }
 
 // ─────────── Configuración del disparador ───────────
-function TriggerConfig({ trigger = {}, onChange }) {
+function TriggerConfig({ trigger = {}, onChange, products = [] }) {
   const set = (patch) => onChange?.({ ...trigger, ...patch });
   const isApptTrigger = trigger.type?.startsWith('appointment');
   const isChatTrigger = ['inbound_message', 'keyword', 'new_conversation', 'ctwa_ad'].includes(trigger.type);
+  const bookable = products.filter((p) => ['servicio', 'programa'].includes(p.category));
   return (
     <div className="grid gap-3">
       <label className="text-sm">
@@ -664,6 +780,22 @@ function TriggerConfig({ trigger = {}, onChange }) {
           <select value={trigger.audience || 'all'} onChange={(e) => set({ audience: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm">
             {AUDIENCES.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
           </select>
+        </label>
+      )}
+      {isApptTrigger && bookable.length > 0 && (
+        <label className="text-sm">
+          <span className="text-slate-600 block mb-1">Solo si la cita incluye este servicio/programa</span>
+          <select
+            value={trigger.serviceFilter || ''}
+            onChange={(e) => set({ serviceFilter: e.target.value || null })}
+            className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm"
+          >
+            <option value="">Cualquier servicio</option>
+            {bookable.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
+          </select>
+          <span className="text-[11px] text-slate-400 block mt-1">
+            Útil para flujos por tratamiento (p.ej. solo citas de "Control hepático").
+          </span>
         </label>
       )}
       {trigger.type === 'keyword' && (
@@ -719,7 +851,13 @@ function NodeConfig({ node, onChange, templates, agents }) {
   const t = node.type;
 
   if (t === 'send_message') return (
-    <textarea value={d.body || ''} onChange={(e) => set({ body: e.target.value })} rows={4} placeholder="Mensaje (usa {{nombre}})" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+    <div className="grid gap-2">
+      <WhatsappTextArea value={d.body || ''} onChange={(body) => set({ body })} rows={6} placeholder="Mensaje (usa {{nombre}})" />
+      <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
+        WhatsApp solo permite texto libre si el paciente te escribió en las últimas 24h.
+        Fuera de esa ventana usa el paso <b>Enviar plantilla</b> (plantilla aprobada por Meta).
+      </p>
+    </div>
   );
   if (t === 'send_template') return (
     <select value={d.templateName || ''} onChange={(e) => set({ templateName: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
@@ -730,7 +868,7 @@ function NodeConfig({ node, onChange, templates, agents }) {
   if (t === 'send_email') return (
     <div className="grid gap-2">
       <input value={d.emailSubject || ''} onChange={(e) => set({ emailSubject: e.target.value })} placeholder="Asunto" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-      <textarea value={d.body || ''} onChange={(e) => set({ body: e.target.value })} rows={4} placeholder="Cuerpo (usa {{nombre}})" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+      <WhatsappTextArea value={d.body || ''} onChange={(body) => set({ body })} rows={5} placeholder="Cuerpo (usa {{nombre}})" />
       <p className="text-[11px] text-slate-400">Se envía al email del paciente. Incluye enlace de baja automático.</p>
     </div>
   );
@@ -775,7 +913,11 @@ function NodeConfig({ node, onChange, templates, agents }) {
       {d.op !== 'exists' && d.field !== 'hasPatient' && d.field !== 'lastReply' && (
         <input value={d.value || ''} onChange={(e) => set({ value: e.target.value })} placeholder="valor" className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
       )}
-      <p className="text-[11px] text-slate-400">Conecta las salidas “Sí” y “No” con los botones + del diagrama.</p>
+      <p className="text-[11px] text-slate-400">
+        La salida <b className="text-emerald-600">Sí</b> (punto verde, izquierda) se sigue cuando la condición se
+        cumple; la salida <b className="text-rose-600">No</b> (punto rojo, derecha) cuando no. Usa los botones “+”
+        bajo cada salida, o arrastra desde el punto hasta un nodo existente para conectarlo.
+      </p>
     </div>
   );
   if (t === 'add_tag' || t === 'remove_tag') return (
@@ -831,7 +973,7 @@ function NodeConfig({ node, onChange, templates, agents }) {
   );
   if (t === 'request_review') return (
     <div className="grid gap-2">
-      <textarea value={d.body || ''} onChange={(e) => set({ body: e.target.value })} rows={3} placeholder="Mensaje de invitación a calificar" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+      <WhatsappTextArea value={d.body || ''} onChange={(body) => set({ body })} rows={4} placeholder="Mensaje de invitación a calificar" />
       <p className="text-[11px] text-slate-400">Se adjunta un enlace de calificación 1-5.</p>
     </div>
   );

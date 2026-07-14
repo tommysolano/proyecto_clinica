@@ -318,10 +318,11 @@ exports.createAppointment = async (req, res) => {
     // Validar límite de citas por horario para servicios con cupo.
     // Aplica únicamente a productos de categoría 'servicio' o 'programa'.
     // El cupo limita cuántas citas pueden coincidir en el mismo día + hora de inicio.
+    // OJO: el catálogo es compartido entre sucursales (el producto "pertenece" a la
+    // clínica que lo creó), así que NO se filtra por clinic — se resuelve por _id.
     if (serviceIds.length > 0) {
       const limited = await Product.find({
         _id: { $in: serviceIds },
-        clinic: targetClinicId,
         category: { $in: ['servicio', 'programa'] },
         maxAppointmentsPerDay: { $gt: 0 },
       }).select('name maxAppointmentsPerDay');
@@ -331,6 +332,7 @@ exports.createAppointment = async (req, res) => {
           date: localDate,
           startTime,
           'services.product': prod._id,
+          status: { $ne: 'cancelada' }, // una cita cancelada libera su cupo
         });
         if (used >= prod.maxAppointmentsPerDay) {
           return res.status(400).json({
@@ -352,9 +354,9 @@ exports.createAppointment = async (req, res) => {
       if (serviceIds.length === 0) {
         isFirstVisit = true;
       } else {
+        // Catálogo compartido entre sucursales: se resuelve por _id, sin filtrar por clinic.
         const counted = await Product.countDocuments({
           _id: { $in: serviceIds },
-          clinic: targetClinicId,
           excludeFromFirstVisit: { $ne: true },
         });
         isFirstVisit = counted > 0;
@@ -554,6 +556,13 @@ exports.updateAppointment = async (req, res) => {
     if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
     emitToClinic(req.clinicId, 'appointment:updated', appointment);
     if (appointment.doctor?._id) emitToUser(appointment.doctor._id, 'appointment:updated', appointment);
+    // Eventos de dominio para workflows: reagendamiento y confirmación.
+    if (dateChanged || startChanged || endChanged) {
+      emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_RESCHEDULED, appointmentEventPayload(appointment));
+    }
+    if (update.status === 'confirmada' && existing.status !== 'confirmada') {
+      emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CONFIRMED, appointmentEventPayload(appointment));
+    }
     res.json(appointment);
   } catch (error) {
     res.status(500).json({ message: 'Error al actualizar cita', error: error.message });

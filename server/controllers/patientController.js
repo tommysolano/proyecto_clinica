@@ -186,6 +186,15 @@ exports.createPatient = async (req, res) => {
       clinic: req.clinicId,
     });
     emitToClinic(req.clinicId, 'patient:created', { id: patient._id });
+    // Evento de dominio: dispara workflows con trigger 'patient_created'.
+    {
+      const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
+      emitDomainEvent(DOMAIN_EVENTS.PATIENT_CREATED, {
+        clinicId: String(req.clinicId),
+        patientId: String(patient._id),
+        isFirstVisit: true,
+      });
+    }
     res.status(201).json(patient);
   } catch (error) {
     res.status(500).json({ message: 'Error al crear paciente', error: error.message });

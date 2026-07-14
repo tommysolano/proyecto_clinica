@@ -31,6 +31,24 @@ const workflowEnrollmentSchema = new mongoose.Schema(
     waitingForReply: { type: Boolean, default: false, index: true },
     context: { type: mongoose.Schema.Types.Mixed, default: {} },
     lastError: { type: String, default: '' },
+    // Registro de ejecución (estilo GoHighLevel): qué hizo cada paso y si falló.
+    // Clave para diagnosticar envíos saltados (ventana 24h, sin teléfono, canal caído).
+    log: {
+      type: [
+        new mongoose.Schema(
+          {
+            at: { type: Date, default: Date.now },
+            nodeId: { type: String, default: null }, // nodo del grafo (o null en lineales)
+            stepIndex: { type: Number, default: null }, // índice en workflows lineales
+            type: { type: String, default: '' }, // tipo de paso (send_message, condition…)
+            ok: { type: Boolean, default: true },
+            info: { type: String, default: '' }, // detalle: rama tomada, motivo de fallo…
+          },
+          { _id: false }
+        ),
+      ],
+      default: [],
+    },
   },
   { timestamps: true }
 );
