@@ -481,6 +481,34 @@ exports.testWhatsappAccount = async (req, res) => {
         : 'Verifica que el phone number ID sea el correcto (WhatsApp Manager → Números de teléfono) y que el token tenga acceso a su WABA.',
     });
 
+    // 3) Envío REAL de prueba (opcional, si mandan un número destino): reproduce
+    // el error exacto de Meta al enviar (p.ej. #200), que el simple "leer" no detecta.
+    const testTo = String(req.body?.to || '').replace(/[^\d]/g, '');
+    if (testTo) {
+      const gateway = require('../utils/whatsappGateway');
+      const send = await gateway.sendText(doc, testTo, 'Prueba de conexión del sistema ✅');
+      const metaErr = send?.data?.error || null;
+      const code = metaErr?.code || null;
+      let fix = 'Revisa el detalle del error de Meta.';
+      if (code === 200 || String(metaErr?.message || '').includes('#200')) {
+        fix = 'El token no puede enviar por la WABA de este número: en Business Manager → Usuarios del sistema → Asignar activos, añade ESTA cuenta de WhatsApp con control total y regenera el token.';
+      } else if (code === 131047) {
+        fix = 'Ventana de 24h cerrada para ese destinatario: escribe primero un WhatsApp desde ese teléfono a este número y vuelve a probar (o usa una plantilla).';
+      } else if (code === 131030) {
+        fix = 'El número es de PRUEBA de Meta: el destinatario debe estar en la lista de destinatarios permitidos (máx. 5).';
+      } else if (code === 131026) {
+        fix = 'El destinatario no tiene WhatsApp o el número está mal escrito (usa código de país, ej. 5939XXXXXXXX).';
+      }
+      checks.push({
+        ok: !!send.ok,
+        label: `Envío real de prueba a ${testTo}`,
+        detail: send.ok
+          ? 'Mensaje aceptado por Meta. Revisa que haya llegado al teléfono.'
+          : `${metaErr?.message || send.error || 'Meta rechazó el envío'}${metaErr?.error_data?.details ? ` — ${metaErr.error_data.details}` : ''}${code ? ` (código ${code}${metaErr?.error_subcode ? `/${metaErr.error_subcode}` : ''})` : ''}`,
+        fix: send.ok ? '' : fix,
+      });
+    }
+
     const ok = checks.every((c) => c.ok);
     res.json({ ok, checks, info: r.ok ? data : null });
   } catch (err) {

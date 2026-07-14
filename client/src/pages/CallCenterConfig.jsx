@@ -609,19 +609,22 @@ function WhatsappNumbersManager() {
   };
 
   // Diagnóstico completo del número Cloud API: token vigente, permisos, WABA
-  // asignada y acceso al número. Explica la causa exacta del error #200 de Meta.
-  const testAccount = async (acc) => {
-    setDiagModal({ label: acc.label, loading: true, checks: [] });
+  // asignada, acceso al número y (opcional) un envío real de prueba que
+  // reproduce el error exacto de Meta (#200, ventana 24h, lista de prueba…).
+  const testAccount = async (acc, to = '') => {
+    setDiagModal((m) => ({ ...(m || {}), accId: acc._id, label: acc.label, loading: true, checks: m?.checks || [], testTo: to || m?.testTo || '' }));
     try {
-      const r = await api.post(`/call-center-config/whatsapp/accounts/${acc._id}/test`);
-      setDiagModal({ label: acc.label, loading: false, ok: r.data?.ok, checks: r.data?.checks || [] });
+      const r = await api.post(`/call-center-config/whatsapp/accounts/${acc._id}/test`, to ? { to } : {});
+      setDiagModal((m) => ({ ...(m || {}), accId: acc._id, label: acc.label, loading: false, ok: r.data?.ok, checks: r.data?.checks || [] }));
     } catch (err) {
-      setDiagModal({
+      setDiagModal((m) => ({
+        ...(m || {}),
+        accId: acc._id,
         label: acc.label,
         loading: false,
         ok: false,
         checks: [{ ok: false, label: 'Diagnóstico', detail: err.response?.data?.message || 'Error de conexión', fix: '' }],
-      });
+      }));
     }
   };
 
@@ -925,6 +928,29 @@ function WhatsappNumbersManager() {
                   El error de Meta “(#200) You do not have the necessary permissions…” aparece cuando el token
                   no tiene el permiso de mensajería o no tiene asignada esta cuenta de WhatsApp Business (WABA).
                 </p>
+                <div className="border-t border-slate-100 pt-3">
+                  <label className="text-xs font-semibold text-slate-600 block mb-1">
+                    Prueba de envío REAL (reproduce el error exacto de Meta)
+                  </label>
+                  <div className="flex gap-2">
+                    <input
+                      value={diagModal.testTo || ''}
+                      onChange={(e) => setDiagModal({ ...diagModal, testTo: e.target.value })}
+                      placeholder="5939XXXXXXXX (con código de país)"
+                      className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono"
+                    />
+                    <button
+                      onClick={() => diagModal.testTo && testAccount({ _id: diagModal.accId, label: diagModal.label }, diagModal.testTo)}
+                      disabled={!diagModal.testTo}
+                      className="px-3 py-2 bg-emerald-600 text-white rounded-lg text-sm cursor-pointer border-none disabled:opacity-50"
+                    >
+                      Enviar prueba
+                    </button>
+                  </div>
+                  <p className="text-[10px] text-slate-400 mt-1">
+                    Ideal: un teléfono que ya le haya escrito a este número (así la ventana de 24h no interfiere).
+                  </p>
+                </div>
               </>
             )}
             <div className="flex justify-end">
