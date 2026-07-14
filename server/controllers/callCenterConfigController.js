@@ -417,6 +417,19 @@ exports.testWhatsappAccount = async (req, res) => {
             : '',
       });
 
+      // App a la que pertenece el token + fecha de emisión (delata si realmente
+      // se regeneró y si es de la app correcta).
+      checks.push({
+        ok: true,
+        label: 'App y emisión del token',
+        detail: `App: ${dbg.application || 'desconocida'}${dbg.app_id ? ` (ID ${dbg.app_id})` : ''}${
+          dbg.issued_at
+            ? ` · emitido el ${new Date(dbg.issued_at * 1000).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' })}`
+            : ''
+        }`,
+        fix: '',
+      });
+
       // Permisos (scopes)
       const scopes = dbg.scopes || [];
       const canMessage = scopes.includes('whatsapp_business_messaging');
@@ -480,6 +493,63 @@ exports.testWhatsappAccount = async (req, res) => {
         ? ''
         : 'Verifica que el phone number ID sea el correcto (WhatsApp Manager → Números de teléfono) y que el token tenga acceso a su WABA.',
     });
+
+    // 2b) La WABA guardada: ¿realmente contiene este número? Con varias cuentas
+    // del MISMO nombre en el Business Manager es fácil guardar el ID equivocado.
+    if (doc.businessAccountId) {
+      try {
+        const rp = await fetch(
+          `https://graph.facebook.com/${V}/${doc.businessAccountId}/phone_numbers?fields=id,display_phone_number`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        const pj = await rp.json().catch(() => ({}));
+        if (rp.ok) {
+          const nums = pj.data || [];
+          const contains = nums.some((n) => String(n.id) === String(doc.phoneNumberId));
+          checks.push({
+            ok: contains,
+            label: 'El número pertenece a la WABA guardada',
+            detail: contains
+              ? `La WABA ${doc.businessAccountId} sí contiene este número.`
+              : `La WABA guardada (${doc.businessAccountId}) NO contiene este número — sus números son: ${nums.map((n) => n.display_phone_number).join(', ') || '(ninguno)'}. Probablemente copiaste el ID de otra cuenta con el mismo nombre.`,
+            fix: contains
+              ? ''
+              : 'En WhatsApp Manager abre la cuenta que SÍ contiene este número, copia su ID, guárdalo aquí (editar número), asigna ESA cuenta al usuario del sistema y regenera el token.',
+          });
+        } else {
+          checks.push({
+            ok: false,
+            label: 'Acceso a la WABA guardada',
+            detail: pj?.error?.message || `El token no puede leer la WABA ${doc.businessAccountId}.`,
+            fix: 'Asigna esa cuenta de WhatsApp al usuario del sistema (control total) y REGENERA el token, o corrige el WABA ID guardado en este número.',
+          });
+        }
+
+        // ¿La app del token está conectada (suscrita) a esa WABA? Enviar con el
+        // token de una app distinta a la conectada produce el #200.
+        if (dbg?.app_id) {
+          const rs = await fetch(
+            `https://graph.facebook.com/${V}/${doc.businessAccountId}/subscribed_apps`,
+            { headers: { Authorization: `Bearer ${token}` } }
+          );
+          const sj = await rs.json().catch(() => ({}));
+          if (rs.ok) {
+            const apps = (sj.data || []).map((a) => a.whatsapp_business_api_data || a || {});
+            const subscribed = apps.some((a) => String(a.id) === String(dbg.app_id));
+            checks.push({
+              ok: subscribed,
+              label: 'La app del token está conectada a la WABA',
+              detail: subscribed
+                ? `La app del token (${dbg.application || dbg.app_id}) está suscrita a esta WABA.`
+                : `Esta WABA tiene conectadas: ${apps.map((a) => a.name || a.id).join(', ') || '(ninguna app)'} — pero tu token es de la app "${dbg.application || ''}" (${dbg.app_id}). Un token de otra app no puede enviar por esta cuenta (#200).`,
+              fix: subscribed
+                ? ''
+                : 'Genera el token desde la app que está conectada a esta WABA, o conecta tu app a la WABA y regenera el token.',
+            });
+          }
+        }
+      } catch { /* sin red: se omiten estos chequeos */ }
+    }
 
     // 3) Envío REAL de prueba (opcional, si mandan un número destino): reproduce
     // el error exacto de Meta al enviar (p.ej. #200), que el simple "leer" no detecta.
