@@ -632,7 +632,7 @@ exports.testWhatsappAccount = async (req, res) => {
         label: `Envío real de prueba a ${testTo}`,
         detail: send.ok
           ? 'Mensaje aceptado por Meta. Revisa que haya llegado al teléfono.'
-          : `${metaErr?.message || send.error || 'Meta rechazó el envío'}${metaErr?.error_data?.details ? ` — ${metaErr.error_data.details}` : ''}${code ? ` (código ${code}${metaErr?.error_subcode ? `/${metaErr.error_subcode}` : ''})` : ''}`,
+          : `${metaErr?.message || send.error || 'Meta rechazó el envío'}${metaErr?.error_data?.details ? ` — ${metaErr.error_data.details}` : ''}${code ? ` (código ${code}${metaErr?.error_subcode ? `/${metaErr.error_subcode}` : ''})` : ''}${metaErr?.fbtrace_id ? ` · fbtrace: ${metaErr.fbtrace_id}` : ''}`,
         fix: send.ok ? '' : fix,
       });
     }

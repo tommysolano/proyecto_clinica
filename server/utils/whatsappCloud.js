@@ -13,7 +13,9 @@
  * { ok: false, simulated: true } sin lanzar, para no romper la UX.
  */
 
-const DEFAULT_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v20.0';
+// v20.0 salió de soporte (mediados de 2026): fijar una versión vigente evita
+// comportamientos raros con los tokens nuevos de integración de negocio.
+const DEFAULT_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v23.0';
 
 /**
  * Descarga un media entrante de WhatsApp (imagen/audio/documento) por su id.
