@@ -1,0 +1,143 @@
+/**
+ * Árbol de categorías del flujo de caja.
+ *
+ * Es solo la SEMILLA por defecto: se copia a `CashFlowConfig.categories` la primera vez y
+ * a partir de ahí manda la configuración de cada clínica (se pueden añadir, renombrar y
+ * desactivar). El motor nunca asume estas etiquetas: recorre las de la configuración.
+ *
+ * La estructura reproduce la del Excel de referencia (FLUJO DE CAJA), con dos correcciones
+ * conscientes que se documentan en docs/FLUJO_DE_CAJA.md:
+ *   - el Excel deja los PRÉSTAMOS recibidos fuera de `TOTAL INGRESOS` (su SUM va de la fila
+ *     10 a la 17 y el préstamo está en la 18); aquí sí suman;
+ *   - el Excel solo tiene columnas de lunes a viernes; aquí el sábado es hábil salvo que la
+ *     clínica lo apague (`includeSaturdays`).
+ */
+
+const SIN_CLASIFICAR = 'SIN_CLASIFICAR';
+
+/** Categorías de INGRESO. `key` es estable; `label` es editable por la clínica. */
+const DEFAULT_INCOME = [
+  {
+    key: 'CLIENTES',
+    label: 'Clientes',
+    order: 10,
+    subcategories: [
+      { key: 'CLIENTES_CXC', label: 'Cobro de facturas', order: 10 },
+      { key: 'CLIENTES_CONTADO', label: 'Depósitos ventas al contado', order: 20 },
+      { key: 'CLIENTES_TARJETA', label: 'Transferencias y cobros TC', order: 30 },
+    ],
+  },
+  {
+    key: 'OTROS_INGRESOS',
+    label: 'Otros ingresos',
+    order: 20,
+    subcategories: [
+      { key: 'APORTES', label: 'Aportes de socios', order: 10 },
+      { key: 'DEVOLUCIONES', label: 'Devoluciones recibidas', order: 20 },
+      { key: 'EXTRAORDINARIOS', label: 'Ingresos extraordinarios', order: 30 },
+    ],
+  },
+  {
+    key: 'PRESTAMOS_RECIBIDOS',
+    label: 'Préstamos recibidos',
+    order: 30,
+    isLoan: true,
+    subcategories: [],
+  },
+];
+
+/** Categorías de EGRESO. */
+const DEFAULT_EXPENSE = [
+  {
+    key: 'PROVEEDORES',
+    label: 'Proveedores',
+    order: 10,
+    subcategories: [],
+  },
+  {
+    key: 'OTROS_PAGOS',
+    label: 'Otros pagos',
+    order: 20,
+    subcategories: [
+      { key: 'VIATICOS', label: 'Viáticos', order: 10 },
+      { key: 'DEV_CLIENTES', label: 'Devoluciones a clientes', order: 20 },
+      { key: 'CAPACITACIONES', label: 'Capacitaciones', order: 30 },
+      { key: 'MANTENIMIENTO', label: 'Mantenimiento', order: 40 },
+      { key: 'IMPRENTA', label: 'Imprenta', order: 50 },
+      { key: 'SUMINISTROS', label: 'Suministros', order: 60 },
+      { key: 'CAJA_CHICA', label: 'Caja chica', order: 70 },
+      { key: 'IMPORTACIONES', label: 'Importaciones', order: 80 },
+      { key: 'GASTOS_LEGALES', label: 'Gastos legales', order: 90 },
+      { key: 'OTROS', label: 'Otros', order: 100 },
+    ],
+  },
+  {
+    key: 'GASTOS_FIJOS',
+    label: 'Gastos fijos',
+    order: 30,
+    subcategories: [
+      { key: 'SUELDOS', label: 'Sueldos', order: 10 },
+      { key: 'COMISIONES', label: 'Comisiones', order: 20 },
+      { key: 'DECIMOS', label: 'Décimo tercero y cuarto', order: 30 },
+      { key: 'IESS', label: 'IESS', order: 40 },
+      { key: 'SRI', label: 'SRI', order: 50 },
+      { key: 'SERVICIOS_BASICOS', label: 'Servicios básicos', order: 60 },
+      { key: 'ALQUILERES', label: 'Alquileres', order: 70 },
+      { key: 'TARJETAS_CORPORATIVAS', label: 'Tarjetas corporativas', order: 80 },
+      { key: 'SERVICIOS_RECURRENTES', label: 'Servicios recurrentes', order: 90 },
+      { key: 'UTILIDADES', label: 'Utilidades', order: 100 },
+      { key: 'OTROS_FIJOS', label: 'Otros gastos fijos', order: 110 },
+    ],
+  },
+  {
+    key: 'PRESTAMOS_PAGADOS',
+    label: 'Préstamos',
+    order: 40,
+    isLoan: true,
+    subcategories: [
+      { key: 'CAPITAL', label: 'Capital', order: 10 },
+      { key: 'INTERES', label: 'Interés', order: 20 },
+      { key: 'COMISION_BANCARIA', label: 'Comisión bancaria', order: 30 },
+    ],
+  },
+];
+
+/** Categoría comodín: nunca se oculta, para que un documento sin regla no desaparezca. */
+const UNCLASSIFIED = {
+  key: SIN_CLASIFICAR,
+  label: 'Sin clasificar',
+  order: 999,
+  subcategories: [],
+};
+
+function defaultCategories() {
+  return {
+    INGRESO: [...DEFAULT_INCOME, { ...UNCLASSIFIED }].map((c) => ({ ...c, isActive: true })),
+    EGRESO: [...DEFAULT_EXPENSE, { ...UNCLASSIFIED }].map((c) => ({ ...c, isActive: true })),
+  };
+}
+
+/**
+ * Clasificación por defecto del MÓDULO de origen (nivel 5 de la prioridad del Bloque B).
+ * Es lo que se aplica cuando no hay override en el documento ni regla configurada.
+ *
+ * Deliberadamente NO mira la descripción: un préstamo, un impuesto o un gasto fijo se
+ * reconocen por su origen (`sourceModel`) o por una regla explícita, nunca por buscar
+ * palabras sueltas en un texto libre.
+ */
+const MODULE_DEFAULTS = {
+  // Ingresos
+  'Receivable:Sale': { category: 'CLIENTES', subcategory: 'CLIENTES_CXC' },
+  'Receivable:Invoice': { category: 'CLIENTES', subcategory: 'CLIENTES_CXC' },
+  // Egresos
+  'Payable:PurchaseInvoice': { category: 'PROVEEDORES', subcategory: null },
+  'Payable:Payroll': { category: 'GASTOS_FIJOS', subcategory: 'SUELDOS' },
+  'Payable:SriDeclaration': { category: 'GASTOS_FIJOS', subcategory: 'SRI' },
+};
+
+module.exports = {
+  defaultCategories,
+  MODULE_DEFAULTS,
+  SIN_CLASIFICAR,
+  UNCLASSIFIED,
+};

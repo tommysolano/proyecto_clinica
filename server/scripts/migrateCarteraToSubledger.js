@@ -16,13 +16,10 @@ const PurchaseInvoice = require('../models/PurchaseInvoice');
 const { getAccount } = require('../utils/accountMap');
 const { openReceivable, openPayable } = require('../utils/subledger');
 
-async function run() {
-  const opts = parseArgs();
-  banner('Migración cartera → subledger (CxC/CxP)', opts);
-  await connect();
-  try {
-    const base = opts.clinic ? { clinic: opts.clinic } : {};
-    let ar = 0, ap = 0;
+/** Migración pura (sin conectar/desconectar): las pruebas ejercitan ESTE código. */
+async function migrate(opts = {}) {
+  const base = opts.clinic ? { clinic: opts.clinic } : {};
+  let ar = 0, ap = 0;
 
     // Ventas a crédito con saldo
     const sales = await Sale.find({ ...base, paymentMethod: 'credito', status: 'completada', balance: { $gt: 0.005 } });
@@ -40,9 +37,23 @@ async function run() {
       ar++;
     }
 
-    // Facturas con saldo
+    // Facturas con saldo.
+    // Una factura EMITIDA DESDE UNA VENTA a crédito representa la MISMA obligación económica
+    // que esa venta: abrirle su propia CxC duplicaría el saldo en la cartera y en el flujo de
+    // caja. El documento canónico es la VENTA (es la que abre cartera en el flujo vivo), así
+    // que aquí se saltan las facturas que ya están cubiertas por la CxC de su venta.
+    const facturasDeVenta = new Set(
+      (await Sale.find({ ...base, invoice: { $ne: null }, balance: { $gt: 0.005 } }).select('invoice'))
+        .map((s) => String(s.invoice))
+    );
     const invoices = await Invoice.find({ ...base, balance: { $gt: 0.005 } });
+    let saltadas = 0;
     for (const inv of invoices) {
+      if (facturasDeVenta.has(String(inv._id))) {
+        saltadas += 1;
+        console.log(`  ↷ factura ${inv.secuencial || inv._id}: ya cubierta por la CxC de su venta (no se duplica)`);
+        continue;
+      }
       console.log(`  CxC factura ${inv.secuencial || inv._id}: saldo ${inv.balance}`);
       if (opts.commit) {
         const clientes = await getAccount(inv.clinic, 'clientes');
@@ -73,11 +84,28 @@ async function run() {
       ap++;
     }
 
-    console.log(`\nCxC procesadas: ${ar}. CxP procesadas: ${ap}.`);
+    console.log(`\nCxC procesadas: ${ar}. CxP procesadas: ${ap}. Facturas saltadas por venta enlazada: ${saltadas}.`);
+    if (saltadas) {
+      console.log('Para revisar duplicados YA creados por una corrida anterior:');
+      console.log('  node scripts/diagnoseDuplicateReceivables.js --clinic=<id>');
+    }
     if (opts.dryRun) console.log('DRY-RUN: nada se escribió.');
+    return { ar, ap, saltadas };
+}
+
+async function run() {
+  const opts = parseArgs();
+  banner('Migración cartera → subledger (CxC/CxP)', opts);
+  await connect();
+  try {
+    return await migrate(opts);
   } finally {
     await disconnect();
   }
 }
 
-run().catch((e) => { console.error('ERROR:', e.message); process.exit(1); });
+if (require.main === module) {
+  run().catch((e) => { console.error('ERROR:', e.message); process.exit(1); });
+}
+
+module.exports = { run, migrate };

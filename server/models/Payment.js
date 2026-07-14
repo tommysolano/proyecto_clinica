@@ -6,6 +6,15 @@ const applicationSchema = new mongoose.Schema(
     docRef: { type: mongoose.Schema.Types.ObjectId, required: true, refPath: 'applications.docModel' },
     docNumber: String,
     amount: { type: Number, required: true, min: 0 },
+    // Cartera sobre la que se aplicó REALMENTE el importe. Una venta y su factura son la misma
+    // obligación económica: cobrar la factura reduce la cartera del documento canónico (que
+    // puede ser la venta). Anular tiene que devolver el saldo a ESA misma cartera, no a la que
+    // diga el documento: si no, la reversión iría a otro submayor y el par quedaría irresoluble.
+    // Vacío en los cobros/pagos antiguos: entonces se aplica sobre el propio documento.
+    appliedTo: {
+      sourceModel: { type: String, enum: ['Invoice', 'PurchaseInvoice', 'Sale', null], default: null },
+      sourceRef: { type: mongoose.Schema.Types.ObjectId, default: null },
+    },
   },
   { _id: false }
 );

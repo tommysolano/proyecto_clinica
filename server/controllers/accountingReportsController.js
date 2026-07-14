@@ -16,6 +16,7 @@ const {
 } = require('../utils/reportDateRange');
 const { invoiceTaxBreakdown } = require('../utils/invoiceTaxBreakdown');
 const { effectivePaymentDate } = require('../utils/paymentSchedule');
+const { resolveReceivableEconomicObligations } = require('../services/receivableObligations');
 const ExcelJS = require('exceljs');
 const mongoose = require('mongoose');
 
@@ -741,9 +742,20 @@ function bucket(days) {
   return 'VENCIDO_MAS_120';
 }
 
+/**
+ * Antigüedad de cartera por cobrar.
+ *
+ * Una venta a crédito que además se facturó es UNA obligación económica con DOS documentos (y,
+ * en la cartera migrada, hasta con dos CxC). Se resuelve con el servicio COMPARTIDO —el mismo
+ * que usa el motor del flujo de caja—, así que el saldo que sale aquí es exactamente el que
+ * proyecta el flujo, aparece una sola vez y lleva los vínculos a la venta y a la factura.
+ * Los casos que no concilian no se ocultan: se muestran con su advertencia.
+ */
 exports.accountsReceivableAging = async (req, res) => {
   try {
     const today = new Date();
+    const obl = await resolveReceivableEconomicObligations({ clinicId: req.clinicId });
+
     // Aplica a facturas de venta autorizadas con saldo pendiente (saldo = total - cobros aplicados)
     const invoices = await Invoice.find({ clinic: req.clinicId, estado: 'AUTORIZADO' });
     const paymentApps = await Payment.aggregate([
@@ -755,6 +767,8 @@ exports.accountsReceivableAging = async (req, res) => {
     const paidMap = new Map(paymentApps.map((p) => [String(p._id), p.paid]));
     const rows = [];
     for (const inv of invoices) {
+      // Enlazada a una venta: la obligación se emite UNA vez, más abajo, con el saldo económico.
+      if (obl.byInvoice.has(String(inv._id))) continue;
       const paid = paidMap.get(String(inv._id)) || 0;
       const balance = (inv.importeTotal || inv.total || 0) - paid;
       if (balance <= 0.01) continue;
@@ -773,6 +787,7 @@ exports.accountsReceivableAging = async (req, res) => {
     // o la parte a crédito de un pago dividido — cualquier venta con balance > 0.
     const creditSales = await Sale.find({ clinic: req.clinicId, status: 'completada', balance: { $gt: 0.01 } });
     for (const s of creditSales) {
+      if (obl.bySale.has(String(s._id))) continue;   // ídem: se emite como obligación única
       const emitido = new Date(s.createdAt);
       const dueDate = s.dueDate ? new Date(s.dueDate) : new Date(emitido.getTime() + 30 * 86400000);
       const days = Math.floor((today - dueDate) / 86400000);
@@ -784,8 +799,94 @@ exports.accountsReceivableAging = async (req, res) => {
         bucket: bucket(days),
       });
     }
-    const totals = rows.reduce((acc, r) => { acc[r.bucket] = (acc[r.bucket] || 0) + r.balance; acc.total += r.balance; return acc; }, { total: 0 });
-    res.json({ rows, totals });
+
+    // ── Obligaciones venta+factura: UNA fila por obligación económica ────────────────────
+    const invIds = obl.obligations.map((o) => o.factura.id);
+    const invPares = invIds.length
+      ? await Invoice.find({ clinic: req.clinicId, _id: { $in: invIds } })
+        .select('estab ptoEmi secuencial razonSocialComprador').lean()
+      : [];
+    const invById = new Map(invPares.map((i) => [String(i._id), i]));
+    for (const o of obl.obligations) {
+      if (o.balance <= 0.01) continue;   // ya cobrada: no es cartera
+      const iv = invById.get(o.factura.id);
+      const numFactura = iv ? `${iv.estab}-${iv.ptoEmi}-${iv.secuencial}` : '';
+      const emitido = o.issueDate ? new Date(o.issueDate) : today;
+      const dueDate = o.dueDate ? new Date(o.dueDate) : new Date(emitido.getTime() + 30 * 86400000);
+      const days = Math.floor((today - dueDate) / 86400000);
+      rows.push({
+        docId: o.canonical.sourceRef,
+        type: 'Venta + Factura',
+        number: [o.venta.numero, numFactura].filter(Boolean).join(' · '),
+        client: o.party.name || iv?.razonSocialComprador || '—',
+        date: emitido, dueDate,
+        description: o.requiresReview ? o.reason : '',
+        retentions: 0,
+        total: o.total, paid: o.applied, balance: o.balance, days,
+        bucket: bucket(days),
+        // Trazabilidad: la fila es una obligación, pero se puede abrir cualquiera de sus
+        // documentos y cualquiera de sus dos carteras.
+        links: {
+          sale: o.venta.id,
+          invoice: o.factura.id,
+          receivableSale: o.receivables.venta?.id || null,
+          receivableInvoice: o.receivables.factura?.id || null,
+        },
+        resolution: o.resolution,
+        resolutionReason: o.reason,
+        formula: o.formula,
+        // Confirmado ≠ estimado: una ambigua NUNCA se presenta como saldo conciliado.
+        confirmedBalance: o.confirmedBalance,
+        ambiguousEstimatedBalance: o.ambiguousEstimatedBalance,
+        operationalBalance: o.operationalBalance,
+        requiresReview: o.requiresReview,
+        warning: o.requiresReview ? o.reason : null,
+      });
+    }
+
+    // Las filas que no son una obligación venta+factura son cartera CONFIRMADA por definición.
+    for (const r of rows) {
+      if (r.resolution) continue;
+      r.resolution = 'UNICA';
+      r.confirmedBalance = r.balance;
+      r.ambiguousEstimatedBalance = 0;
+      r.operationalBalance = r.balance;
+      r.requiresReview = false;
+      r.formula = `${Number(r.total || 0).toFixed(2)} − ${Number(r.paid || 0).toFixed(2)} = ${Number(r.balance).toFixed(2)}`;
+    }
+
+    const totals = rows.reduce((acc, r) => {
+      acc[r.bucket] = +((acc[r.bucket] || 0) + r.balance).toFixed(2);
+      acc.total = +(acc.total + r.balance).toFixed(2);
+      // Cada rango de edad se abre en confirmado y estimado.
+      acc.confirmed[r.bucket] = +((acc.confirmed[r.bucket] || 0) + r.confirmedBalance).toFixed(2);
+      acc.ambiguous[r.bucket] = +((acc.ambiguous[r.bucket] || 0) + r.ambiguousEstimatedBalance).toFixed(2);
+      return acc;
+    }, { total: 0, confirmed: {}, ambiguous: {} });
+
+    const summary = {
+      confirmedBalance: +rows.reduce((s, r) => s + r.confirmedBalance, 0).toFixed(2),
+      ambiguousEstimatedBalance: +rows.reduce((s, r) => s + r.ambiguousEstimatedBalance, 0).toFixed(2),
+      operationalBalance: +rows.reduce((s, r) => s + r.operationalBalance, 0).toFixed(2),
+      ambiguousCount: rows.filter((r) => r.requiresReview).length,
+    };
+    summary.warning = summary.ambiguousCount
+      ? `${summary.ambiguousCount} obligación(es) tienen dos carteras (venta y factura) que no concilian. `
+        + `Su saldo (${summary.ambiguousEstimatedBalance.toFixed(2)}) es una ESTIMACIÓN conservadora, `
+        + 'no cartera confirmada: requiere conciliación humana.'
+      : null;
+
+    const alerts = obl.ambiguas.filter((o) => o.balance > 0.01).map((o) => ({
+      tipo: 'CXC_DUPLICADA_AMBIGUA',
+      venta: o.venta.id,
+      factura: o.factura.id,
+      receivables: { venta: o.receivables.venta?.id || null, factura: o.receivables.factura?.id || null },
+      numero: o.venta.numero,
+      motivo: o.reason,
+      formula: o.formula,
+      saldo: o.balance,
+    }));
+    res.json({ rows, totals, summary, alerts });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
@@ -1059,6 +1160,13 @@ const AGING_COLS = [
   { header: 'Valor documento', key: 'docValue', width: 14 },
   { header: 'Retenciones', key: 'retentions', width: 12 },
   { header: 'Pagos', key: 'payments', width: 12 },
+  // Confirmado ≠ estimado: una obligación ambigua no se exporta como cartera conciliada.
+  { header: 'Resolución', key: 'resolution', width: 24 },
+  { header: 'Saldo confirmado', key: 'confirmed', width: 16 },
+  { header: 'Saldo ambiguo estimado', key: 'ambiguous', width: 20 },
+  { header: 'Saldo operativo', key: 'operational', width: 15 },
+  { header: 'Motivo', key: 'reason', width: 60 },
+  { header: 'Requiere revisión', key: 'review', width: 16 },
 ];
 
 function agingRowToExcel(r, name) {
@@ -1080,17 +1188,41 @@ function agingRowToExcel(r, name) {
     docValue: r.total || 0,
     retentions: r.retentions || 0,
     payments: r.paid || 0,
+    // En cartera por pagar no hay obligaciones ambiguas: todo es confirmado.
+    resolution: r.resolution || 'UNICA',
+    confirmed: r.confirmedBalance ?? r.balance ?? 0,
+    ambiguous: r.ambiguousEstimatedBalance ?? 0,
+    operational: r.operationalBalance ?? r.balance ?? 0,
+    reason: r.resolutionReason || '',
+    review: r.requiresReview ? 'SÍ — conciliación humana' : '',
   };
 }
 
-async function buildAgingWorkbook(rows, title) {
+async function buildAgingWorkbook(rows, title, summary = null) {
   const wb = new ExcelJS.Workbook();
   const ws = wb.addWorksheet(title);
   ws.columns = AGING_COLS;
   ws.getRow(1).font = { bold: true };
   ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } };
   rows.forEach((r) => ws.addRow(r));
-  ['porVencer', 'd30', 'd60', 'd120', 'd120plus', 'total', 'docValue', 'retentions', 'payments'].forEach((k) => { ws.getColumn(k).numFmt = '"$"#,##0.00'; });
+  ['porVencer', 'd30', 'd60', 'd120', 'd120plus', 'total', 'docValue', 'retentions', 'payments',
+    'confirmed', 'ambiguous', 'operational'].forEach((k) => { ws.getColumn(k).numFmt = '"$"#,##0.00'; });
+
+  // Sección de resumen: el Excel dice lo mismo que la API, y separa lo confirmado de lo estimado.
+  if (summary) {
+    ws.addRow({});
+    const filas = [
+      ['Total confirmado', summary.confirmedBalance],
+      ['Estimación ambigua (NO es cartera confirmada)', summary.ambiguousEstimatedBalance],
+      ['Total operativo (el que usa el flujo de caja)', summary.operationalBalance],
+      ['Obligaciones ambiguas', summary.ambiguousCount],
+    ];
+    for (const [etiqueta, valor] of filas) {
+      const row = ws.addRow({ name: etiqueta, total: valor });
+      row.font = { bold: true };
+    }
+    if (summary.warning) ws.addRow({ name: summary.warning });
+  }
   return wb;
 }
 
@@ -1098,7 +1230,7 @@ exports.arAgingExcel = async (req, res) => {
   try {
     const data = await new Promise((resolve) => { exports.accountsReceivableAging(req, { json: resolve, status: () => ({ json: resolve }) }); });
     const rows = (data.rows || []).map((r) => agingRowToExcel(r, r.client));
-    const wb = await buildAgingWorkbook(rows, 'Cuentas por cobrar');
+    const wb = await buildAgingWorkbook(rows, 'Cuentas por cobrar', data.summary);
     await sendWorkbook(res, wb, `cartera_cobrar_${Date.now()}.xlsx`);
   } catch (e) { res.status(500).json({ message: e.message }); }
 };

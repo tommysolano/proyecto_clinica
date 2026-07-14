@@ -1,12 +1,16 @@
 const Payment = require('../models/Payment');
 const Invoice = require('../models/Invoice');
+const Receivable = require('../models/Receivable');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
+const Supplier = require('../models/Supplier');
+const { resolvePurchaseDueDate } = require('../utils/purchaseDueDate');
 const BankAccount = require('../models/BankAccount');
 const BankTransaction = require('../models/BankTransaction');
 const Sale = require('../models/Sale');
 const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { openReceivable, applyToReceivable, unapplyFromReceivable, openPayable, applyToPayable, unapplyFromPayable } = require('../utils/subledger');
+const { canonicalReceivableTarget, legacyUnapplyTarget } = require('../services/receivableObligations');
 const {
   readIdempotencyKey, fingerprint, assertSameFingerprint, normalize: N, conflict,
 } = require('../utils/idempotency');
@@ -275,7 +279,13 @@ exports.create = async (req, res) => {
         payment.bankTransaction = bankTx?._id || null;
         await payment.save({ session });
 
-        for (const a of apps) {
+        for (let i = 0; i < apps.length; i++) {
+          const a = apps[i];
+          // Dónde se aplicó de verdad el importe (lo lee la anulación). Por defecto, el propio
+          // documento; el cobro de una factura enlazada puede redirigirlo a la venta canónica.
+          const marcar = (sourceModel, sourceRef) => {
+            payment.applications[i].appliedTo = { sourceModel, sourceRef };
+          };
           if (type === 'PAGO' && a.docModel === 'PurchaseInvoice') {
             const pi = await PurchaseInvoice.findOne({ _id: a.docRef, clinic: req.clinicId }).session(session);
             pi.balance = Math.max(0, Number(pi.balance || pi.total || 0) - Number(a.amount));
@@ -287,17 +297,24 @@ exports.create = async (req, res) => {
             await pi.save({ session });
             // Subledger CxP: asegura y aplica el pago al documento de la compra.
             const provAcc = await getAccount(req.clinicId, 'proveedores', { session });
+            // El vencimiento sale de la MISMA utilidad que usa la compra (fecha explícita →
+            // días de crédito de la compra → del proveedor): esta cartera legacy nacía sin
+            // vencimiento y se proyectaba por la emisión.
+            const supDoc = await Supplier.findById(pi.supplier).session(session);
+            const { dueDate: vencePi } = resolvePurchaseDueDate(pi, supDoc);
             await openPayable({
               clinic: req.clinicId,
               party: { model: 'Supplier', ref: pi.supplier, name: partyName || '' },
               sourceModel: 'PurchaseInvoice', sourceRef: pi._id, docType: 'COMPRA',
               number: pi.serie || '', issueDate: pi.fechaEmision || new Date(),
+              dueDate: vencePi,
               total: +(Number(pi.total || 0) - Number(pi.retentionTotal || 0)).toFixed(2),
               // applied previo (antes de este pago): total - retención - saldo ANTERIOR.
               applied: +(Number(pi.total || 0) - Number(pi.retentionTotal || 0) - (Number(pi.balance || 0) + Number(a.amount))).toFixed(2),
               account: provAcc._id,
             }, { session });
             await applyToPayable({ clinicId: req.clinicId, sourceModel: 'PurchaseInvoice', sourceRef: pi._id, amount: a.amount }, { session });
+            marcar('PurchaseInvoice', pi._id);
           } else if (type === 'COBRO' && a.docModel === 'Invoice') {
             const inv = await Invoice.findOne({ _id: a.docRef, clinic: req.clinicId }).session(session);
             if (inv && typeof inv.balance !== 'undefined') {
@@ -307,6 +324,43 @@ exports.create = async (req, res) => {
                 if (typeof inv.paid !== 'undefined') inv.paid = true;
               }
               await inv.save({ session });
+            }
+            // Submayor CxC: si la factura tiene cartera abierta (las migradas por
+            // scripts/migrateCarteraToSubledger la tienen), el cobro TIENE que reducirla.
+            // Sin esto el saldo del submayor no bajaba nunca: la antigüedad de cartera
+            // mostraba como pendiente una factura ya cobrada y el flujo de caja la
+            // proyectaría eternamente. No se abre cartera nueva aquí: una factura cobrada
+            // en el mostrador no tiene CxC y no debe tenerla.
+            //
+            // Si la factura pertenece a una venta a crédito, la obligación económica es UNA
+            // sola: el cobro se aplica sobre la cartera CANÓNICA (servicio compartido), no
+            // sobre dos submayores a la vez.
+            const destino = await canonicalReceivableTarget({
+              clinicId: req.clinicId, sourceModel: 'Invoice', sourceRef: a.docRef, session,
+            }) || { sourceModel: 'Invoice', sourceRef: String(a.docRef), redirected: false };
+            const cxc = await Receivable.findOne({
+              clinic: req.clinicId, sourceModel: destino.sourceModel, sourceRef: destino.sourceRef,
+            }).session(session);
+            if (cxc && cxc.status !== 'ANULADO' && cxc.balance > 0.005) {
+              await applyToReceivable({
+                clinicId: req.clinicId,
+                sourceModel: destino.sourceModel,
+                sourceRef: destino.sourceRef,
+                amount: Math.min(Number(a.amount), cxc.balance),
+              }, { session });
+              // Se recuerda DÓNDE se aplicó: anular tiene que devolvérselo a la misma cartera.
+              marcar(destino.sourceModel, destino.sourceRef);
+            }
+            // La venta y su factura son el mismo dinero: si la obligación canónica es la venta,
+            // su documento también baja, o los dos documentos de la misma obligación divergirían.
+            if (destino.redirected && destino.sourceModel === 'Sale') {
+              const sv = await Sale.findOne({ _id: destino.sourceRef, clinic: req.clinicId }).session(session);
+              if (sv) {
+                sv.balance = Math.max(0, Number(sv.balance || sv.total || 0) - Number(a.amount));
+                sv.paid = sv.balance <= 0.005;
+                if (sv.paid) sv.balance = 0;
+                await sv.save({ session });
+              }
             }
           } else if (type === 'COBRO' && a.docModel === 'Sale') {
             const s = await Sale.findOne({ _id: a.docRef, clinic: req.clinicId }).session(session);
@@ -327,9 +381,12 @@ exports.create = async (req, res) => {
                 account: clientesAcc._id,
               }, { session });
               await applyToReceivable({ clinicId: req.clinicId, sourceModel: 'Sale', sourceRef: s._id, amount: a.amount }, { session });
+              marcar('Sale', s._id);
             }
           }
         }
+        // Persiste el destino real de cada aplicación (lo lee la anulación).
+        await payment.save({ session });
 
         return payment._id;
       });
@@ -502,11 +559,14 @@ exports.createBulk = async (req, res) => {
             if (pi.status !== 'ANULADA') pi.status = 'PAGADA';
           }
           await pi.save({ session });
+          const supPago = await Supplier.findById(pi.supplier?._id || pi.supplier).session(session);
+          const { dueDate: vencePi } = resolvePurchaseDueDate(pi, supPago);
           await openPayable({
             clinic: req.clinicId,
             party: { model: 'Supplier', ref: pi.supplier?._id || pi.supplier, name: sup.name },
             sourceModel: 'PurchaseInvoice', sourceRef: pi._id, docType: 'COMPRA',
             number: pi.serie || '', issueDate: pi.fechaEmision || new Date(),
+            dueDate: vencePi,
             total: +(Number(pi.total || 0) - Number(pi.retentionTotal || 0)).toFixed(2),
             applied: +(Number(pi.total || 0) - Number(pi.retentionTotal || 0) - prevBalance).toFixed(2),
             account: prov._id,
@@ -581,11 +641,59 @@ exports.void = async (req, res) => {
               await unapplyFromPayable({ clinicId: req.clinicId, sourceModel: 'PurchaseInvoice', sourceRef: pi._id, amount: a.amount }, { session });
             }
           } else if (p.type === 'COBRO' && a.docModel === 'Invoice') {
+            // Simétrico del cobro: si la factura tiene cartera, anular DEBE devolverle el
+            // saldo. Subir `Invoice.balance` no basta: sin esto la CxC quedaba reducida para
+            // siempre y el saldo desaparecía del aging y del flujo de caja.
+            //
+            // Y se devuelve a la MISMA cartera sobre la que se aplicó, no a la que diga el
+            // documento. Los cobros NUEVOS lo llevan escrito (`appliedTo`). Los ANTIGUOS no:
+            // ahí el destino se reconstruye por EVIDENCIA histórica (ver legacyUnapplyTarget),
+            // nunca recalculando el canónico con los saldos de hoy —que ya incluyen el efecto
+            // del cobro que se está anulando—. Si no puede demostrarse, se BLOQUEA la anulación
+            // entera: es preferible pedir una conciliación manual a descuadrar la cartera.
+            let origen = a.appliedTo?.sourceModel
+              ? { sourceModel: a.appliedTo.sourceModel, sourceRef: a.appliedTo.sourceRef }
+              : null;
+            let espejo = null;
+            if (!origen) {
+              const ev = await legacyUnapplyTarget({
+                clinicId: req.clinicId, payment: p, application: a, session,
+              });
+              if (ev.blocked) throw Object.assign(new Error(ev.message), { status: 409 });
+              origen = ev.target;      // null ⇒ ninguna cartera refleja este cobro
+              espejo = ev.mirror;      // la otra cartera del par, cuando el cobro está espejado
+            }
+
             const inv = await Invoice.findOne({ _id: a.docRef, clinic: req.clinicId }).session(session);
             if (inv && typeof inv.balance !== 'undefined') {
               inv.balance = Number(inv.balance || 0) + Number(a.amount);
               if (inv.balance > 0.005 && inv.paid) inv.paid = false;
               await inv.save({ session });
+            }
+
+            if (origen) {
+              await unapplyFromReceivable({
+                clinicId: req.clinicId, sourceModel: origen.sourceModel, sourceRef: origen.sourceRef, amount: a.amount,
+              }, { session });
+            }
+            // El MISMO cobro espejado en las dos carteras del par: se devuelve a las dos para no
+            // dejar una reducida a perpetuidad. El efecto ECONÓMICO sigue siendo uno solo: el
+            // flujo y el aging cuentan únicamente la cartera canónica de la obligación.
+            if (espejo) {
+              await unapplyFromReceivable({
+                clinicId: req.clinicId, sourceModel: espejo.sourceModel, sourceRef: espejo.sourceRef, amount: a.amount,
+              }, { session });
+            }
+            // Solo los cobros nuevos redirigidos bajaron también el documento de la venta: a esos
+            // se les devuelve el saldo. A un cobro histórico no se le toca la venta, porque no se
+            // puede saber si llegó a bajarla.
+            if (a.appliedTo?.sourceModel === 'Sale') {
+              const sv = await Sale.findOne({ _id: a.appliedTo.sourceRef, clinic: req.clinicId }).session(session);
+              if (sv) {
+                sv.balance = Number(sv.balance || 0) + Number(a.amount);
+                if (sv.balance > 0.005 && sv.paid) sv.paid = false;
+                await sv.save({ session });
+              }
             }
           } else if (p.type === 'COBRO' && a.docModel === 'Sale') {
             const s = await Sale.findOne({ _id: a.docRef, clinic: req.clinicId }).session(session);
@@ -602,5 +710,13 @@ exports.void = async (req, res) => {
       });
       return res.json(result);
     }
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) {
+    // Nunca se filtra un error interno de Mongo: si algo así llegara aquí, se traduce.
+    const interno = e.code === 11000 || /E11000|MongoServerError|BSONError/i.test(e.message || '');
+    return res.status(e.status || 400).json({
+      message: interno
+        ? 'No se pudo anular el cobro/pago por un conflicto al escribir. Inténtalo de nuevo.'
+        : e.message,
+    });
+  }
 };

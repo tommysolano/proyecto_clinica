@@ -7,6 +7,8 @@ const RecurringAccount = require('../models/RecurringAccount');
 const FixedAsset = require('../models/FixedAsset');
 const InventoryCategory = require('../models/InventoryCategory');
 const RetentionRule = require('../models/RetentionRule');
+const Payable = require('../models/Payable');
+const { resolvePurchaseDueDate } = require('../utils/purchaseDueDate');
 const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { openPayable, voidPayable } = require('../utils/subledger');
@@ -80,12 +82,14 @@ exports.recurringAccounts = async (req, res) => {
  * Abre el documento de cuentas por pagar (CxP) de una compra: el saldo a pagar
  * al proveedor es el total menos las retenciones. Idempotente por la factura.
  *
- * `issueDate` (emisión) y `dueDate` (vencimiento) son conceptos SEPARADOS: la CxP
- * hereda el vencimiento pactado de la compra (`fechaVencimiento`), que es la fecha
- * LEGAL de pago y no se mueve por caer sábado/domingo. El desplazamiento a día hábil
+ * `issueDate` (emisión) y `dueDate` (vencimiento) son conceptos SEPARADOS. El vencimiento
+ * LEGAL sale de `utils/purchaseDueDate` (fecha explícita → días de crédito de la compra →
+ * días del proveedor) y no se mueve por caer sábado o domingo: el desplazamiento a día hábil
  * es una fecha EFECTIVA que solo se calcula al proyectar (utils/paymentSchedule).
- * Si la compra es al contado (sin `fechaVencimiento`), la CxP queda sin vencimiento y
- * la proyección cae a la fecha de emisión, como hasta ahora.
+ *
+ * Una fecha DERIVADA de los días de crédito no pisa la que ya tenga la CxP (puede haberse
+ * corregido a mano o venir del backfill). Una fecha EXPLÍCITA de la compra sí se propaga:
+ * es el dato que el usuario acaba de pactar.
  */
 async function openPayableForInvoice(inv, sup, req, session) {
   const payable = +(Number(inv.total || 0) - Number(inv.retentionTotal || 0)).toFixed(2);
@@ -93,6 +97,17 @@ async function openPayableForInvoice(inv, sup, req, session) {
   const provAcc = sup?.defaultPayableAccount
     ? sup.defaultPayableAccount
     : (await getAccount(req.clinicId, 'proveedores', { session }))._id;
+
+  const { dueDate, source } = resolvePurchaseDueDate(inv, sup);
+  let due = dueDate;
+  if (source !== 'EXPLICITA' && due) {
+    const existente = await Payable.findOne({
+      clinic: req.clinicId, sourceModel: 'PurchaseInvoice', sourceRef: inv._id,
+    }).session(session || null);
+    // No se recalcula una CxP que ya tiene fecha (null no borra: ver utils/subledger).
+    if (existente?.dueDate) due = null;
+  }
+
   await openPayable({
     clinic: req.clinicId,
     party: { model: 'Supplier', ref: inv.supplier, name: sup?.razonSocial || sup?.name || '' },
@@ -101,7 +116,7 @@ async function openPayableForInvoice(inv, sup, req, session) {
     docType: 'COMPRA',
     number: inv.serie || '',
     issueDate: inv.fechaEmision || new Date(),
-    dueDate: inv.fechaVencimiento || null,
+    dueDate: due,
     total: payable,
     account: provAcc,
   }, { session });

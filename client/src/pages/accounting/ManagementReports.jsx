@@ -185,10 +185,48 @@ export default function ManagementReports() {
     );
     if (tab === 'AR' || tab === 'AP') return (
       <div className="space-y-3">
+        {/* Lo confirmado y lo estimado NUNCA se presentan como una sola cifra conciliada. */}
+        {data.summary && (
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
+            <Stat title="Total confirmado" value={`$${fmt(data.summary.confirmedBalance)}`} />
+            <Stat title="Estimación ambigua" value={`$${fmt(data.summary.ambiguousEstimatedBalance)}`}
+              color={data.summary.ambiguousEstimatedBalance > 0 ? 'text-rose-600' : undefined} />
+            <Stat title="Total operativo" value={`$${fmt(data.summary.operationalBalance)}`} />
+            <Stat title="Obligaciones ambiguas" value={data.summary.ambiguousCount} />
+          </div>
+        )}
+        {data.summary?.warning && (
+          <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">
+            {data.summary.warning}
+          </div>
+        )}
         <div className="grid grid-cols-3 md:grid-cols-6 gap-2">
-          {Object.keys(AGING_LABELS).map((k) => <Stat key={k} title={AGING_LABELS[k]} value={`$${fmt(totals[k] || 0)}`} small />)}
+          {Object.keys(AGING_LABELS).map((k) => (
+            <Stat key={k} title={AGING_LABELS[k]} small
+              value={`$${fmt(totals[k] || 0)}`}
+              // Cada rango dice cuánto de su saldo es estimado.
+              hint={totals.ambiguous?.[k] ? `estimado $${fmt(totals.ambiguous[k])}` : null} />
+          ))}
         </div>
-        <Table head={[tab === 'AR' ? 'Cliente' : 'Proveedor', 'Documento', 'Fecha', 'Antigüedad', 'Saldo']} rows={rows.map((r) => [r.client || r.supplier || '—', r.number, fmtDate(r.date), AGING_LABELS[r.bucket], `$${fmt(r.balance)}`])} />
+        {/* Una venta y su factura son UNA obligación: se muestra una sola vez. Las que no
+            concilian no se ocultan, se avisan con su fórmula. */}
+        {(data.alerts || []).map((a) => (
+          <div key={a.venta} className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded-xl px-3 py-2">
+            <b>Cartera duplicada sin resolver</b> · {a.numero}: {a.motivo}{' '}
+            <span className="block text-rose-600 mt-0.5">{a.formula}</span>
+          </div>
+        ))}
+        <Table
+          head={[tab === 'AR' ? 'Cliente' : 'Proveedor', 'Documento', 'Fecha', 'Antigüedad', 'Resolución', 'Saldo']}
+          rows={rows.map((r) => [
+            r.client || r.supplier || '—',
+            r.resolution && r.resolution !== 'UNICA' ? `${r.number} (venta+factura)` : r.number,
+            fmtDate(r.date),
+            AGING_LABELS[r.bucket],
+            r.requiresReview ? 'AMBIGUA · requiere conciliación' : (r.resolution || 'UNICA'),
+            r.requiresReview ? `$${fmt(r.balance)} (estimado)` : `$${fmt(r.balance)}`,
+          ])}
+        />
       </div>
     );
     if (tab === 'INV') return (
@@ -244,6 +282,12 @@ function ReportBlock({ title, children }) {
   );
 }
 
-function Stat({ title, value, color = 'text-slate-800', small }) {
-  return <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-500">{title}</p><p className={`${small ? 'text-base' : 'text-xl'} font-bold ${color}`}>{value}</p></div>;
+function Stat({ title, value, color = 'text-slate-800', small, hint }) {
+  return (
+    <div className="bg-slate-50 rounded-lg p-3">
+      <p className="text-xs text-slate-500">{title}</p>
+      <p className={`${small ? 'text-base' : 'text-xl'} font-bold ${color}`}>{value}</p>
+      {hint && <p className="text-[10px] text-rose-600">{hint}</p>}
+    </div>
+  );
 }

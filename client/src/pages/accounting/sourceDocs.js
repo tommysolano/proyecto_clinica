@@ -16,6 +16,7 @@ export const SOURCE_ROUTES = {
   Payment: { path: '/accounting/payments', label: 'Pago / Cobro', deep: true },
   SriDeclaration: { path: '/accounting/sri-declarations', label: 'Declaración SRI', deep: true },
   // Sin deep-link (solo etiqueta): el asiento se ve en el modal.
+  CashFlowManualItem: { label: 'Partida manual del flujo de caja' },
   BankTransaction: { label: 'Movimiento bancario' },
   CashDeposit: { label: 'Depósito de efectivo' },
   Reconciliation: { label: 'Conciliación' },
