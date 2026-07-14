@@ -36,7 +36,7 @@ function withSession(query, session) {
 /**
  * Registra una entrada de stock creando una capa valorada.
  */
-async function receiveStock({ clinicId, product, warehouse = null, lot = '', expiryDate = null,
+async function receiveStock({ clinicId, product, warehouse = null, costCenter = null, lot = '', expiryDate = null,
   quantity, unitCost, date = new Date(), sourceModel = null, sourceRef = null, userId = null }, session) {
   const qty = round4(quantity);
   if (qty <= 0) throw Object.assign(new Error('Cantidad de entrada inválida'), { status: 400 });
@@ -44,6 +44,7 @@ async function receiveStock({ clinicId, product, warehouse = null, lot = '', exp
     clinic: clinicId,
     product,
     warehouse,
+    costCenter: costCenter || null,
     lot: lot || '',
     expiryDate: expiryDate || null,
     qtyInitial: qty,

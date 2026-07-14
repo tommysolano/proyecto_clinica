@@ -76,8 +76,16 @@ export default function Sales() {
     cardVoucher: '',
     recommendedBy: '',
     notes: '',
+    // Bodega de la que sale la mercadería y centro de costo con el que se registra la venta.
+    // El centro lo PROPONE la bodega; se puede cambiar confirmando la diferencia.
+    warehouse: '',
+    costCenter: '',
     items: [],
   });
+  const [warehouses, setWarehouses] = useState([]);
+  const [costCenters, setCostCenters] = useState([]);
+  // { warehouse, esperado, elegido } cuando el backend rechaza por centro distinto (409).
+  const [ccMismatch, setCcMismatch] = useState(null);
   const [currentItem, setCurrentItem] = useState({ product: '', quantity: 1 });
   // Pago dividido: el cliente paga con varios métodos (p.ej. mitad efectivo + mitad
   // tarjeta) o deja una parte a crédito. Cuando está activo, `splitPayments` es la
@@ -174,6 +182,14 @@ export default function Sales() {
       api.get('/users')
         .then((r) => setStaff(r.data || []))
         .catch(() => setStaff([]));
+      // Bodegas (con su centro predeterminado) y centros activos. Si el usuario no tiene
+      // permiso para verlas, la venta sigue funcionando sin bodega (como hasta ahora).
+      api.get('/inventory-advanced/warehouses')
+        .then((r) => setWarehouses((r.data || []).filter((w) => w.active !== false)))
+        .catch(() => setWarehouses([]));
+      api.get('/cost-centers', { params: { active: true } })
+        .then((r) => setCostCenters(r.data || []))
+        .catch(() => setCostCenters([]));
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -201,14 +217,40 @@ export default function Sales() {
       cardVoucher: '',
       recommendedBy: '',
       notes: '',
+      warehouse: '',
+      costCenter: '',
       items: [],
     });
     setCurrentItem({ product: '', quantity: 1 });
     setPatientSearch('');
     setSplitMode(false);
     setSplitPayments([]);
+    setCcMismatch(null);
     setModalOpen(true);
   };
+
+  /**
+   * Al elegir la BODEGA se PROPONE su centro de costo (solo si aún no hay uno elegido: lo que
+   * el usuario ya escogió no se pisa). La validación real y el rechazo de una diferencia sin
+   * confirmar los hace el backend.
+   */
+  const onPickWarehouse = (warehouseId) => {
+    const wh = warehouses.find((w) => String(w._id) === String(warehouseId));
+    const propuesto = wh?.costCenter?._id || wh?.costCenter || '';
+    setForm((f) => ({ ...f, warehouse: warehouseId, costCenter: f.costCenter || propuesto || '' }));
+  };
+
+  const nombreCentro = (id) => {
+    const c = costCenters.find((x) => String(x._id) === String(id));
+    return c ? `${c.code} - ${c.name}` : '';
+  };
+  // El centro elegido difiere del predeterminado de la bodega: se avisa ANTES de enviar.
+  const centroEsperado = (() => {
+    const wh = warehouses.find((w) => String(w._id) === String(form.warehouse));
+    return wh?.costCenter?._id || wh?.costCenter || '';
+  })();
+  const centroDistinto = !!(form.warehouse && centroEsperado && form.costCenter
+    && String(centroEsperado) !== String(form.costCenter));
 
   const addItem = () => {
     if (!currentItem.product) return toast.error('Selecciona un producto');
@@ -267,8 +309,7 @@ export default function Sales() {
 
   const subtotal = form.items.reduce((s, i) => s + i.unitPrice * i.quantity, 0);
   const discountTotal = form.items.reduce((s, i) => s + (Number(i.discount) || 0), 0);
-  // No se cobra IVA en la venta (el precio del inventario ya lo contempla).
-  const taxAmount = 0;
+  // El IVA lo calcula el backend por línea (`utils/tax`): aquí solo se muestra el total.
   const total = subtotal - discountTotal;
 
   // ── Pago dividido ── (debe ir DESPUÉS de `total`: se evalúa en cada render y
@@ -364,23 +405,49 @@ export default function Sales() {
           cardVoucher: form.paymentMethod === 'tarjeta' ? form.cardVoucher || '' : '',
         };
       }
+      await enviarVenta(paymentPayload, {});
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Error al crear venta');
+      setSaving(false);
+    }
+  };
+
+  /**
+   * POST de la venta. `extra` lleva las confirmaciones explícitas (por ahora, el centro de
+   * costo distinto al de la bodega). El backend es quien rechaza la diferencia sin confirmar.
+   */
+  const enviarVenta = async (paymentPayload, extra = {}) => {
+    try {
       await api.post('/sales', {
         ...form,
         ...paymentPayload,
         recommendedBy: form.recommendedBy || null,
+        warehouse: form.warehouse || null,
+        costCenter: form.costCenter || null,
         items: form.items.map((i) => ({
           product: i.product,
           quantity: i.quantity,
           discount: Number(i.discount) || 0,
           treatment: i.treatment || null,
         })),
+        ...extra,
       });
-      toast.success('Venta registrada');
+      toast.success(extra.costCenterConfirmed
+        ? 'Venta registrada con el centro de costo elegido (diferencia auditada)'
+        : 'Venta registrada');
+      setCcMismatch(null);
       setModalOpen(false);
       fetchSales();
       fetchProducts();
     } catch (err) {
-      toast.error(err.response?.data?.message || 'Error al crear venta');
+      const data = err.response?.data;
+      if (data?.code === 'COST_CENTER_MISMATCH') {
+        // Se explica la diferencia y se pide confirmación; el pago ya calculado se conserva
+        // para reenviar exactamente la misma venta.
+        setCcMismatch({ ...data, paymentPayload });
+        return;
+      }
+      throw err;
     } finally {
       setSaving(false);
     }
@@ -956,6 +1023,43 @@ export default function Sales() {
               </select>
             </div>
           </div>
+
+          {/* Bodega y centro de costo. La bodega decide de qué capas FIFO sale la mercadería
+              (y por tanto el costo de venta) y PROPONE el centro. Una venta de solo servicios
+              no necesita bodega: entonces no hay centro de bodega que proponer. */}
+          {warehouses.length > 0 && (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+              <div>
+                <label className="lbl">Bodega (de dónde sale la mercadería)</label>
+                <select value={form.warehouse || ''} onChange={(e) => onPickWarehouse(e.target.value)} className="input">
+                  <option value="">— Sin bodega (stock general) —</option>
+                  {warehouses.map((w) => (
+                    <option key={w._id} value={w._id}>{w.name}</option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="lbl">Centro de costo</label>
+                <select value={form.costCenter || ''} onChange={(e) => setForm({ ...form, costCenter: e.target.value })} className="input">
+                  <option value="">— Sin centro —</option>
+                  {costCenters.map((c) => (
+                    <option key={c._id} value={c._id}>{c.code} - {c.name}</option>
+                  ))}
+                </select>
+                {form.warehouse && centroEsperado && !centroDistinto && form.costCenter && (
+                  <p className="text-xs text-slate-500 mt-1">Propuesto por la bodega. Puedes cambiarlo.</p>
+                )}
+              </div>
+              {centroDistinto && (
+                <div className="sm:col-span-2 bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800">
+                  <b>Centro distinto al de la bodega.</b> La bodega{' '}
+                  <b>{warehouses.find((w) => String(w._id) === String(form.warehouse))?.name}</b> espera{' '}
+                  <b>{nombreCentro(centroEsperado) || '(sin centro)'}</b> y la venta se registrará con{' '}
+                  <b>{nombreCentro(form.costCenter)}</b>. Al guardar se te pedirá confirmarlo y quedará auditado.
+                </div>
+              )}
+            </div>
+          )}
           <ConsumidorFinalAlert cedula={form.clientCedula} />
           <div>
             <label className="lbl">Dirección cliente</label>
@@ -1176,6 +1280,46 @@ export default function Sales() {
             </button>
           </div>
         </form>
+      </Modal>
+
+      {/* El backend rechazó la venta porque su centro no es el predeterminado de la bodega.
+          No se bloquea: se explica y se confirma. La venta queda con el centro ELEGIDO. */}
+      <Modal isOpen={!!ccMismatch} onClose={() => setCcMismatch(null)} title="Centro de costo distinto al de la bodega" size="md">
+        {ccMismatch && (
+          <div className="space-y-3">
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800">
+              La bodega <b>{ccMismatch.warehouse?.name}</b> tiene un centro de costo predeterminado distinto
+              del que estás usando en esta venta.
+            </div>
+            <table className="w-full text-sm">
+              <tbody>
+                <tr className="border-t">
+                  <td className="px-3 py-2 font-medium text-slate-700">Centro esperado (bodega)</td>
+                  <td className="px-3 py-2 text-right">{ccMismatch.esperado?.code} - {ccMismatch.esperado?.name}</td>
+                </tr>
+                <tr className="border-t bg-amber-50">
+                  <td className="px-3 py-2 font-medium text-slate-700">Centro elegido</td>
+                  <td className="px-3 py-2 text-right font-semibold text-amber-700">{ccMismatch.elegido?.code} - {ccMismatch.elegido?.name}</td>
+                </tr>
+              </tbody>
+            </table>
+            <p className="text-xs text-slate-500">
+              La venta, su asiento de ingreso, el costo de venta (COGS) y la salida de inventario
+              quedarán con <b>{ccMismatch.elegido?.name}</b>. La diferencia queda auditada.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setCcMismatch(null)} className="px-4 py-2 bg-slate-200 rounded-xl">Volver a revisar</button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => { setSaving(true); enviarVenta(ccMismatch.paymentPayload, { costCenterConfirmed: true }).catch((e) => toast.error(e.response?.data?.message || 'Error al crear venta')); }}
+                className="px-4 py-2 bg-amber-600 text-white rounded-xl shadow-sm shadow-amber-600/20"
+              >
+                Registrar con el centro elegido
+              </button>
+            </div>
+          </div>
+        )}
       </Modal>
 
       <Modal

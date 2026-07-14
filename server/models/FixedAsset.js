@@ -32,6 +32,21 @@ const fixedAssetSchema = new mongoose.Schema(
     accumDepreciationAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },
     // Factura de compra de la que proviene el activo
     purchaseInvoice: { type: mongoose.Schema.Types.ObjectId, ref: 'PurchaseInvoice', default: null },
+    // IDENTIDAD del activo dentro de la compra: línea y unidad. Una línea de 3 monitores son
+    // TRES activos (unidades 0,1,2), cada uno con su costo unitario, y volver a contabilizar la
+    // compra reconoce a cada uno por su identidad en vez de borrarlos y recrearlos (que es como
+    // se duplicaban los que ya tenían depreciación). `purchaseItemSchema` es `_id:false`, así
+    // que la identidad de la línea es su ÍNDICE.
+    purchaseLineIndex: { type: Number, default: null },
+    purchaseUnitIndex: { type: Number, default: null },
+    // Identidad ESTABLE de la línea (`PurchaseInvoice.items[].lineId`). Manda sobre el índice
+    // posicional: si se borra o reordena una línea, el activo sigue reconociendo LA SUYA.
+    purchaseLineId: { type: String, default: null },
+    // Proveedor y centro de costo de la compra (el activo los conserva aunque la compra cambie).
+    supplier: { type: mongoose.Schema.Types.ObjectId, ref: 'Supplier', default: null },
+    costCenter: { type: mongoose.Schema.Types.ObjectId, ref: 'CostCenter', default: null },
+    // Bodega/ubicación física cuando la línea de compra la declara.
+    warehouse: { type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse', default: null },
     // Asiento contable de compra/alta que originó el activo (navegación mayor ↔ activo).
     journalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
     acquisitionDate: { type: Date, required: true },
@@ -59,5 +74,22 @@ const fixedAssetSchema = new mongoose.Schema(
 );
 
 fixedAssetSchema.index({ clinic: 1, code: 1 }, { unique: true });
+
+// Un activo por (clínica, compra, línea, unidad): dos contabilizaciones de la misma compra no
+// pueden crear dos activos para la misma unidad, ni siquiera en carrera. Parcial porque los
+// activos creados a mano (sin compra) no tienen esta identidad.
+fixedAssetSchema.index(
+  {
+    clinic: 1, purchaseInvoice: 1, purchaseLineIndex: 1, purchaseUnitIndex: 1,
+  },
+  {
+    unique: true,
+    partialFilterExpression: {
+      purchaseInvoice: { $type: 'objectId' },
+      purchaseLineIndex: { $type: 'number' },
+      purchaseUnitIndex: { $type: 'number' },
+    },
+  }
+);
 
 module.exports = mongoose.model('FixedAsset', fixedAssetSchema);

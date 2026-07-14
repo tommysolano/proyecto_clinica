@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Warehouse = require('../models/Warehouse');
 const InventoryCategory = require('../models/InventoryCategory');
 const PhysicalCount = require('../models/PhysicalCount');
@@ -6,6 +7,10 @@ const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
 const InventoryLayer = require('../models/InventoryLayer');
 const BankAccount = require('../models/BankAccount');
+const CostCenter = require('../models/CostCenter');
+const kardexService = require('../services/kardexService');
+const { readIdempotencyKey } = require('../utils/idempotency');
+const { canReq } = require('../utils/permissions');
 const { createEntry, findAccount, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const kardex = require('../utils/kardex');
@@ -265,19 +270,41 @@ exports.importProductsExcel = async (req, res) => {
 
 // ----- Bodegas -----
 exports.listWarehouses = async (req, res) => {
-  const items = await Warehouse.find({ clinic: req.clinicId }).populate('chartAccount', 'code name').sort({ code: 1 });
+  const filter = { clinic: req.clinicId };
+  if (req.query.active !== undefined) filter.active = req.query.active !== 'false';
+  if (req.query.costCenter) filter.costCenter = req.query.costCenter;
+  const items = await Warehouse.find(filter)
+    .populate('chartAccount', 'code name')
+    .populate('costCenter', 'code name active')
+    .sort({ code: 1 });
   res.json(items);
 };
+
+/** El centro de costo de una bodega tiene que ser de la MISMA clínica y estar activo. */
+async function validateWarehouseCostCenter(clinicId, costCenterId) {
+  if (!costCenterId) return null;
+  const cc = await CostCenter.findOne({ _id: costCenterId, clinic: clinicId });
+  if (!cc) throw Object.assign(new Error('El centro de costo no existe en esta clínica'), { status: 400 });
+  if (cc.active === false) throw Object.assign(new Error(`El centro de costo ${cc.name} está inactivo`), { status: 400 });
+  return cc._id;
+}
+
 exports.createWarehouse = async (req, res) => {
-  try { const w = await Warehouse.create({ ...req.body, clinic: req.clinicId }); res.status(201).json(w); }
-  catch (e) { res.status(400).json({ message: e.message }); }
+  try {
+    const costCenter = await validateWarehouseCostCenter(req.clinicId, req.body.costCenter);
+    const w = await Warehouse.create({ ...req.body, costCenter, clinic: req.clinicId });
+    res.status(201).json(w);
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
 exports.updateWarehouse = async (req, res) => {
   try {
     const w = await Warehouse.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!w) return res.status(404).json({ message: 'No encontrada' });
+    if (req.body.costCenter !== undefined) {
+      req.body.costCenter = await validateWarehouseCostCenter(req.clinicId, req.body.costCenter);
+    }
     Object.assign(w, req.body); await w.save(); res.json(w);
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
 exports.deleteWarehouse = async (req, res) => {
   const w = await Warehouse.findOne({ _id: req.params.id, clinic: req.clinicId });
@@ -343,44 +370,127 @@ exports.deleteCategory = async (req, res) => {
 
 // ----- Kardex -----
 /**
- * Kardex de un producto: movimientos con saldo acumulado, filtrable por bodega/fecha/tipo.
- * query: { product (req), warehouse, type, startDate, endDate }
+ * Kardex VALORIZADO de un producto (motor único: `services/kardexService`).
+ * query: { product (req), warehouse, type, from|startDate, to|endDate, sourceModel, lot }
+ *
+ * Lo calcula el servicio: saldo inicial anterior al rango, filas con unidades Y valor, costo
+ * real (grabado / FIFO), fecha funcional y saldo acumulado. La pantalla y el Excel salen de
+ * aquí, así que no pueden discrepar.
  */
 exports.getKardex = async (req, res) => {
   try {
-    const { product, warehouse, type, startDate, endDate } = req.query;
-    if (!product) return res.status(400).json({ message: 'product requerido' });
-    const filter = { clinic: req.clinicId, product };
-    if (warehouse) filter.$or = [{ warehouse }, { toWarehouse: warehouse }];
-    if (type) filter.type = type;
-    if (startDate || endDate) {
-      filter.createdAt = {};
-      if (startDate) filter.createdAt.$gte = new Date(startDate);
-      if (endDate) filter.createdAt.$lte = new Date(endDate + 'T23:59:59.999');
-    }
-    const movements = await InventoryMovement.find(filter)
-      .populate('warehouse toWarehouse', 'code name')
-      .populate('createdBy', 'name')
-      .sort({ createdAt: 1 });
-    const prod = await Product.findOne({ _id: product, clinic: req.clinicId }).select('code name unit stock averageCost');
-    // Saldo acumulado
-    let balance = 0;
-    const rows = movements.map((m) => {
-      const sign = m.type === 'salida' ? -1 : (m.type === 'entrada' ? 1 : (m.type === 'ajuste' ? 1 : 0));
-      // traslado no cambia stock total (sale de una bodega y entra a otra)
-      const qty = m.quantity * sign;
-      balance += qty;
-      return {
-        _id: m._id, date: m.createdAt, type: m.type,
-        warehouse: m.warehouse, toWarehouse: m.toWarehouse,
-        quantity: m.quantity, signedQuantity: qty,
-        unitCost: m.unitCost, balance,
-        reason: m.reason, reference: m.reference,
-        sourceModel: m.sourceModel, createdBy: m.createdBy,
-      };
+    const q = req.query;
+    const data = await kardexService.buildKardex(req.clinicId, {
+      product: q.product,
+      warehouse: q.warehouse || null,
+      type: q.type || null,
+      from: q.from || q.startDate || null,
+      to: q.to || q.endDate || null,
+      sourceModel: q.sourceModel || null,
+      lot: q.lot || null,
     });
-    res.json({ product: prod, movements: rows, currentBalance: prod?.stock ?? balance });
-  } catch (e) { res.status(500).json({ message: e.message }); }
+    // Sin permiso de costos, los importes NO salen del servidor (no se ocultan en React).
+    const final = canReq(req, 'inventory.costs') ? data : kardexService.stripCosts(data);
+    // Compatibilidad con la pantalla actual, que lee `product` y `movements`.
+    res.json({ ...final, product: final.producto, movements: final.rows });
+  } catch (e) { res.status(e.status || 500).json({ message: e.message }); }
+};
+
+/** Excel del kardex: saldo inicial, movimientos valorizados, saldo final y totales conciliables. */
+exports.kardexExcel = async (req, res) => {
+  try {
+    const q = req.query;
+    const data = await kardexService.buildKardex(req.clinicId, {
+      product: q.product,
+      warehouse: q.warehouse || null,
+      type: q.type || null,
+      from: q.from || q.startDate || null,
+      to: q.to || q.endDate || null,
+      sourceModel: q.sourceModel || null,
+      lot: q.lot || null,
+    });
+    // Sin permiso de costos, las columnas de dinero NO se escriben en el archivo.
+    const conCostos = canReq(req, 'inventory.costs');
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Kardex');
+    ws.columns = [
+      { header: 'Fecha', key: 'fecha', width: 12 },
+      { header: 'Fecha estimada', key: 'estimada', width: 14 },
+      { header: 'Movimiento', key: 'tipo', width: 12 },
+      { header: 'Documento', key: 'doc', width: 18 },
+      { header: 'Referencia', key: 'ref', width: 18 },
+      { header: 'Bodega origen', key: 'origen', width: 16 },
+      { header: 'Bodega destino', key: 'destino', width: 16 },
+      { header: 'Entrada (u)', key: 'entQty', width: 12 },
+      { header: 'Salida (u)', key: 'salQty', width: 12 },
+      ...(conCostos ? [
+        { header: 'Costo unitario', key: 'costo', width: 14 },
+        { header: 'Valor entrada', key: 'entVal', width: 14 },
+        { header: 'Valor salida', key: 'salVal', width: 14 },
+      ] : []),
+      { header: 'Saldo (u)', key: 'saldoQty', width: 12 },
+      ...(conCostos ? [
+        { header: 'Saldo ($)', key: 'saldoVal', width: 14 },
+        { header: 'Costo promedio', key: 'prom', width: 14 },
+      ] : []),
+      { header: 'Asiento', key: 'asiento', width: 14 },
+      { header: 'Usuario', key: 'usuario', width: 18 },
+    ];
+    ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF047857' } };
+
+    // El kardex NO arranca en cero: la primera fila es el saldo que venía de antes.
+    const inicial = ws.addRow({
+      fecha: data.rango.from ? new Date(data.rango.from).toLocaleDateString('es-EC') : '',
+      tipo: 'SALDO INICIAL',
+      saldoQty: data.saldoInicial.qty,
+      saldoVal: data.saldoInicial.value,
+      prom: data.saldoInicial.unitCost,
+    });
+    inicial.font = { bold: true };
+
+    for (const r of data.rows) {
+      ws.addRow({
+        fecha: new Date(r.date).toLocaleDateString('es-EC'),
+        estimada: r.fechaEstimada ? 'SÍ (histórico sin fecha)' : '',
+        tipo: r.esTraslado ? 'traslado' : r.type,
+        doc: r.documento ? `${r.documento.model} ${String(r.documento.ref).slice(-6)}` : '',
+        ref: r.referencia || r.motivo || '',
+        origen: r.warehouse ? `${r.warehouse.code} ${r.warehouse.name}` : '',
+        destino: r.toWarehouse ? `${r.toWarehouse.code} ${r.toWarehouse.name}` : '',
+        entQty: r.entradaQty || 0,
+        salQty: r.salidaQty || 0,
+        costo: r.unitCost,
+        entVal: r.entradaValor || 0,
+        salVal: r.salidaValor || 0,
+        saldoQty: r.saldoQty,
+        saldoVal: r.saldoValor,
+        prom: r.costoPromedio,
+        asiento: r.journalEntry ? String(r.journalEntry).slice(-6) : '',
+        usuario: r.usuario,
+      });
+    }
+
+    const final = ws.addRow({
+      tipo: 'SALDO FINAL',
+      entQty: data.totales.entradasQty,
+      salQty: data.totales.salidasQty,
+      entVal: data.totales.entradasValor,
+      salVal: data.totales.salidasValor,
+      saldoQty: data.saldoFinal.qty,
+      saldoVal: data.saldoFinal.value,
+      prom: data.saldoFinal.unitCost,
+    });
+    final.font = { bold: true };
+    if (conCostos) {
+      ['costo', 'entVal', 'salVal', 'saldoVal', 'prom'].forEach((k) => { ws.getColumn(k).numFmt = '"$"#,##0.0000'; });
+    }
+
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="kardex.xlsx"');
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (e) { res.status(e.status || 500).json({ message: e.message }); }
 };
 
 /**
@@ -396,12 +506,23 @@ exports.getKardex = async (req, res) => {
  * tienen), el traslado es solo movimiento de kardex, sin asiento financiero.
  */
 exports.transferStock = async (req, res) => {
+  const idemKey = readIdempotencyKey(req);
   try {
     const { product, fromWarehouse, toWarehouse, quantity, reason } = req.body;
     if (!product || !fromWarehouse || !toWarehouse || !quantity) return res.status(400).json({ message: 'product, fromWarehouse, toWarehouse y quantity requeridos' });
     if (String(fromWarehouse) === String(toWarehouse)) return res.status(400).json({ message: 'Las bodegas deben ser distintas' });
     const qty = kardex.round4(quantity);
     if (qty <= 0) return res.status(400).json({ message: 'Cantidad inválida' });
+    // Fecha FUNCIONAL del traslado (la del documento), no la de grabación.
+    const fecha = kardexService.parseLocalDate(req.body.date) || new Date();
+
+    // Reintento: la misma clave devuelve el traslado ya hecho en vez de moverlo dos veces.
+    if (idemKey) {
+      const previo = await InventoryMovement.findOne({
+        clinic: req.clinicId, type: 'traslado', reference: `IDEM:${idemKey}`,
+      }).populate('warehouse toWarehouse', 'code name').populate('product', 'code name');
+      if (previo) return res.json({ ...previo.toObject(), idempotentReplay: true });
+    }
 
     let entryCreated = false;
     const movId = await runInTransaction(async (session) => {
@@ -434,44 +555,99 @@ exports.transferStock = async (req, res) => {
         }, session);
       }
 
-      const [mov] = await InventoryMovement.create([{
-        clinic: req.clinicId, product, type: 'traslado',
-        warehouse: fromWarehouse, toWarehouse, quantity: qty,
-        totalCost: kardex.round2(totalCost),
-        reason: reason || 'Traslado entre bodegas', balanceAfter: prod.stock,
-        createdBy: req.user._id,
-      }], { session });
-
-      // Asiento de reclasificación entre cuentas de inventario cuando las bodegas
-      // están parametrizadas con cuentas contables distintas.
       const cost = kardex.round2(totalCost);
+      const [fromWh, toWh] = await Promise.all([
+        Warehouse.findOne({ _id: fromWarehouse, clinic: req.clinicId }).session(session),
+        Warehouse.findOne({ _id: toWarehouse, clinic: req.clinicId }).session(session),
+      ]);
+      if (!fromWh || !toWh) throw Object.assign(new Error('Bodega no encontrada en esta clínica'), { status: 404 });
+
+      // Saldos por bodega DESPUÉS del traslado (de las capas, que son la fuente real: nunca de
+      // `Product.stock`, que es global y no dice nada de una bodega).
+      const [saldoOrigen, saldoDestino] = await Promise.all([
+        kardex.currentStock({ clinicId: req.clinicId, product, warehouse: fromWarehouse }, session),
+        kardex.currentStock({ clinicId: req.clinicId, product, warehouse: toWarehouse }, session),
+      ]);
+
+      // DOS patas con el mismo `transferGroup`: la salida de la bodega origen y la entrada en la
+      // destino. Antes había un solo movimiento al que el kardex daba signo 0, así que el
+      // traslado no aparecía NI en el origen NI en el destino. El costo es el de las capas
+      // trasladadas: un traslado no puede generar utilidad ni usar el precio de venta.
+      const transferGroup = new mongoose.Types.ObjectId();
+      const comun = {
+        clinic: req.clinicId,
+        product,
+        type: 'traslado',
+        quantity: qty,
+        unitCost: qty > 0 ? kardex.round4(cost / qty) : 0,
+        totalCost: cost,
+        transferGroup,
+        movementDate: fecha,
+        dateSource: 'DOCUMENTO',
+        reason: reason || 'Traslado entre bodegas',
+        // La clave de idempotencia se guarda en la referencia: un reintento la reconoce.
+        reference: idemKey ? `IDEM:${idemKey}` : `TR-${String(transferGroup).slice(-6)}`,
+        sourceModel: 'InventoryMovement',
+        createdBy: req.user._id,
+      };
+      // Centro de costo: el de la bodega es una PROPUESTA. Si el usuario eligió otro (la UI le
+      // avisa de la diferencia), se registra el que REALMENTE usó, que es lo que manda.
+      const ccElegido = req.body.costCenter
+        ? await CostCenter.findOne({ _id: req.body.costCenter, clinic: req.clinicId }).session(session)
+        : null;
+      if (req.body.costCenter && !ccElegido) {
+        throw Object.assign(new Error('El centro de costo no existe en esta clínica'), { status: 400 });
+      }
+      const ccSalida = ccElegido?._id || fromWh.costCenter || null;
+      const ccEntrada = ccElegido?._id || toWh.costCenter || null;
+
+      const [salida] = await InventoryMovement.create([{
+        ...comun,
+        warehouse: fromWarehouse,
+        toWarehouse,
+        balanceAfter: saldoOrigen.qty,
+        costCenter: ccSalida,
+      }], { session });
+      const [entrada] = await InventoryMovement.create([{
+        ...comun,
+        warehouse: toWarehouse,          // la pata de ENTRADA vive en la bodega destino
+        toWarehouse: null,
+        balanceAfter: saldoDestino.qty,
+        costCenter: ccEntrada,
+        sourceRef: salida._id,           // vínculo salida ↔ entrada
+      }], { session });
+      await InventoryMovement.updateOne({ _id: salida._id }, { $set: { sourceRef: entrada._id } }, { session });
+
+      // Asiento de reclasificación entre cuentas de inventario cuando las bodegas están
+      // parametrizadas con cuentas DISTINTAS. Nunca toca Caja ni Banco: es inventariable.
       if (cost > 0) {
-        const [fromWh, toWh] = await Promise.all([
-          Warehouse.findOne({ _id: fromWarehouse, clinic: req.clinicId }).session(session),
-          Warehouse.findOne({ _id: toWarehouse, clinic: req.clinicId }).session(session),
-        ]);
         const fromAcc = fromWh?.chartAccount ? String(fromWh.chartAccount) : null;
         const toAcc = toWh?.chartAccount ? String(toWh.chartAccount) : null;
         if (fromAcc && toAcc && fromAcc !== toAcc) {
-          await createEntry({
+          const entry = await createEntry({
             clinicId: req.clinicId,
-            date: new Date(),
+            date: fecha,
             description: `Traslado de ${prod.name} (${qty}) de ${fromWh.name} a ${toWh.name}`,
             source: 'TRASLADO',
             sourceModel: 'InventoryMovement',
-            sourceRef: mov._id,
-            sourceAction: 'TRANSFER',
+            sourceRef: salida._id,
+            sourceAction: `TRANSFER:${transferGroup}`,   // idempotente por traslado
             lines: [
-              { account: toWh.chartAccount, debit: cost, credit: 0, description: `Entrada a bodega ${toWh.name}` },
-              { account: fromWh.chartAccount, debit: 0, credit: cost, description: `Salida de bodega ${fromWh.name}` },
+              { account: toWh.chartAccount, debit: cost, credit: 0, description: `Entrada a bodega ${toWh.name}`, costCenter: ccEntrada },
+              { account: fromWh.chartAccount, debit: 0, credit: cost, description: `Salida de bodega ${fromWh.name}`, costCenter: ccSalida },
             ],
             userId: req.user._id,
             session,
           });
           entryCreated = true;
+          await InventoryMovement.updateMany(
+            { _id: { $in: [salida._id, entrada._id] } },
+            { $set: { journalEntry: entry._id } },
+            { session }
+          );
         }
       }
-      return mov._id;
+      return salida._id;
     });
 
     const mov = await InventoryMovement.findById(movId).populate('warehouse toWarehouse', 'code name').populate('product', 'code name');
@@ -523,10 +699,16 @@ exports.warehouseStock = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
-/** Historial de traslados entre bodegas (más recientes primero). */
+/**
+ * Historial de traslados (más recientes primero). Un traslado son DOS movimientos (salida y
+ * entrada); aquí se lista UNA fila por traslado: la pata de SALIDA, que es la que lleva
+ * `toWarehouse` y por tanto sabe de dónde a dónde fue.
+ */
 exports.listTransfers = async (req, res) => {
   try {
-    const items = await InventoryMovement.find({ clinic: req.clinicId, type: 'traslado' })
+    const items = await InventoryMovement.find({
+      clinic: req.clinicId, type: 'traslado', toWarehouse: { $ne: null },
+    })
       .populate('product', 'code name')
       .populate('warehouse toWarehouse', 'code name')
       .populate('createdBy', 'name')
@@ -537,182 +719,282 @@ exports.listTransfers = async (req, res) => {
 };
 
 // ----- Toma física -----
+
+/**
+ * Una toma sin permiso de costos viaja SIN importes: el contador físico cuenta unidades, no
+ * necesita saber cuánto vale cada cosa. Se omite en el servidor, no en la pantalla.
+ */
+function countForRole(req, pc) {
+  const doc = pc.toObject ? pc.toObject() : pc;
+  if (canReq(req, 'inventory.costs')) return doc;
+  return {
+    ...doc,
+    costsHidden: true,
+    items: (doc.items || []).map((it) => ({ ...it, unitCost: null, adjustmentValue: null })),
+  };
+}
+
 exports.listCounts = async (req, res) => {
-  const items = await PhysicalCount.find({ clinic: req.clinicId }).sort({ date: -1 });
-  res.json(items);
+  const items = await PhysicalCount.find({ clinic: req.clinicId })
+    .populate('warehouse', 'code name')
+    .populate('category', 'code name')
+    .populate('responsible confirmedBy', 'name')
+    .sort({ date: -1 });
+  res.json(items.map((c) => countForRole(req, c)));
 };
 
+/**
+ * Inicia una toma física de UNA bodega (obligatoria) y, opcionalmente, de UNA categoría de
+ * inventario. Congela un SNAPSHOT: qué productos entran, cuánto decía el sistema EN ESA BODEGA
+ * y a qué costo real (el de las capas vivas, no `purchasePrice`, que es el precio de hoy).
+ *
+ * Solo entran productos INVENTARIABLES de la clínica: nunca servicios, ni programas sin stock,
+ * ni productos de stock ilimitado, ni inactivos (salvo `includeInactive`).
+ */
 exports.startCount = async (req, res) => {
   try {
-    const { warehouse, description } = req.body;
+    const {
+      warehouse, category, description, notes, responsible, includeInactive,
+    } = req.body;
+    if (!warehouse) throw Object.assign(new Error('Indica la bodega: una toma física es de UNA bodega.'), { status: 400 });
+    const wh = await Warehouse.findOne({ _id: warehouse, clinic: req.clinicId });
+    if (!wh) throw Object.assign(new Error('La bodega no existe en esta clínica'), { status: 404 });
+    if (wh.active === false) throw Object.assign(new Error('La bodega está inactiva'), { status: 400 });
+
+    let cat = null;
+    if (category) {
+      cat = await InventoryCategory.findOne({ _id: category, clinic: req.clinicId });
+      if (!cat) throw Object.assign(new Error('La categoría no existe en esta clínica'), { status: 404 });
+    }
+
+    const fecha = kardexService.parseLocalDate(req.body.date) || new Date();
     const count = await PhysicalCount.countDocuments({ clinic: req.clinicId });
     const code = `TF-${String(count + 1).padStart(5, '0')}`;
-    const products = await Product.find({ clinic: req.clinicId, active: true, unlimited: { $ne: true }, category: { $ne: 'servicio' } });
-    const items = products.map((p) => ({
-      product: p._id, productCode: p.code, productName: p.name,
-      systemQty: p.stock, countedQty: p.stock, difference: 0,
-      unitCost: p.purchasePrice || 0,
-    }));
-    const pc = await PhysicalCount.create({
-      clinic: req.clinicId, code, warehouse: warehouse || null, description, items, createdBy: req.user._id,
+
+    // Inventariables: nunca servicios ni ilimitados.
+    const filtro = {
+      clinic: req.clinicId,
+      unlimited: { $ne: true },
+      category: { $ne: 'servicio' },
+    };
+    if (!includeInactive) filtro.active = true;
+    if (cat) filtro.inventoryCategory = cat._id;
+    const products = await Product.find(filtro).select('code name barcode categoria inventoryCategory').lean();
+
+    // Stock y costo REALES de la bodega, leídos de las capas (nunca `Product.stock`, que es global).
+    const existencias = await kardexService.stockByWarehouse({ clinicId: req.clinicId, warehouse });
+    const porProducto = new Map(existencias.map((e) => [String(e.product), e]));
+
+    const items = products.map((p) => {
+      const e = porProducto.get(String(p._id)) || { qty: 0, unitCost: 0 };
+      return {
+        product: p._id,
+        productCode: p.code,
+        productName: p.name,
+        barcode: p.barcode || '',
+        inventoryCategory: p.inventoryCategory || null,
+        categoria: p.categoria || '',
+        systemQty: e.qty,
+        countedQty: e.qty,
+        counted: false,
+        difference: 0,
+        unitCost: e.unitCost,
+        adjustmentValue: 0,
+      };
     });
-    res.status(201).json(pc);
-  } catch (e) { res.status(400).json({ message: e.message }); }
+
+    const pc = await PhysicalCount.create({
+      clinic: req.clinicId,
+      code,
+      warehouse: wh._id,
+      category: cat?._id || null,
+      date: fecha,
+      responsible: responsible || null,
+      description,
+      notes,
+      items,
+      snapshotAt: new Date(),
+      snapshotBy: req.user._id,
+      createdBy: req.user._id,
+    });
+    res.status(201).json(countForRole(req, pc));
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
 
 exports.updateCount = async (req, res) => {
-  const pc = await PhysicalCount.findOne({ _id: req.params.id, clinic: req.clinicId });
-  if (!pc) return res.status(404).json({ message: 'No encontrada' });
-  if (pc.status !== 'BORRADOR') return res.status(400).json({ message: 'No editable' });
-  if (req.body.items) pc.items = req.body.items.map((it) => ({
-    ...it,
-    difference: (it.countedQty || 0) - (it.systemQty || 0),
-    adjustmentValue: ((it.countedQty || 0) - (it.systemQty || 0)) * (it.unitCost || 0),
-  }));
-  if (req.body.description !== undefined) pc.description = req.body.description;
-  await pc.save();
-  res.json(pc);
+  try {
+    const pc = await PhysicalCount.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!pc) return res.status(404).json({ message: 'No encontrada' });
+    if (pc.status !== 'BORRADOR') return res.status(400).json({ message: 'No editable' });
+    if (req.body.items) {
+      // El SNAPSHOT manda: el sistema conserva su `systemQty` y su `unitCost`. Del cliente solo
+      // se acepta lo contado y la observación; si no, recontar bastaría para cambiar el costo.
+      const porProducto = new Map(pc.items.map((it) => [String(it.product), it]));
+      for (const it of req.body.items) {
+        const base = porProducto.get(String(it.product));
+        if (!base) continue;
+        const contado = Number(it.countedQty ?? base.systemQty) || 0;
+        base.countedQty = contado;
+        base.counted = it.counted !== undefined ? !!it.counted : true;
+        base.difference = kardex.round4(contado - base.systemQty);
+        base.adjustmentValue = kardex.round2(base.difference * base.unitCost);
+        if (it.notes !== undefined) base.notes = it.notes;
+      }
+    }
+    for (const k of ['description', 'notes']) if (req.body[k] !== undefined) pc[k] = req.body[k];
+    await pc.save();
+    res.json(countForRole(req, pc));
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
 
+/**
+ * Confirma la toma física: ajusta el inventario DE SU BODEGA y contabiliza la diferencia.
+ *
+ * Lo que se corrigió aquí (era el bug más grave del módulo): `receiveStock`/`issueStock`/
+ * `currentStock` se llamaban SIN bodega aunque la toma tuviera una. Los sobrantes creaban capas
+ * con `warehouse: null` y los faltantes consumían capas FIFO de CUALQUIER bodega. Cada toma
+ * física corrompía silenciosamente las existencias por bodega.
+ *
+ * Además, el faltante se valoraba al costo del snapshot; ahora se valora al costo REAL de las
+ * capas consumidas (FIFO), que es lo que de verdad sale del inventario.
+ *
+ * Todo ocurre en UNA transacción: si algo falla, no queda ni medio ajuste. Doble confirmación
+ * bloqueada por el estado, releído dentro de la transacción.
+ */
 exports.confirmCount = async (req, res) => {
   try {
-    {
-      const countId = await runInTransaction(async (session) => {
-        const pc = await PhysicalCount.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
-        if (!pc) throw Object.assign(new Error('No encontrada'), { status: 404 });
-        if (pc.status !== 'BORRADOR') throw Object.assign(new Error('No editable'), { status: 400 });
-        const date = req.body.date ? new Date(req.body.date) : new Date();
-        await assertPeriodOpen(req.clinicId, date, { session });
+    const countId = await runInTransaction(async (session) => {
+      const pc = await PhysicalCount.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+      if (!pc) throw Object.assign(new Error('No encontrada'), { status: 404 });
+      if (pc.status === 'CONFIRMADO') throw Object.assign(new Error('La toma ya fue confirmada: no se puede ajustar dos veces.'), { status: 400 });
+      if (pc.status !== 'BORRADOR') throw Object.assign(new Error('No editable'), { status: 400 });
+      if (!pc.warehouse) throw Object.assign(new Error('La toma no tiene bodega: no se puede saber qué existencias ajustar.'), { status: 400 });
 
-        let positive = 0;
-        let negative = 0;
-        for (const it of pc.items) {
-          const diff = (it.countedQty || 0) - (it.systemQty || 0);
-          if (diff === 0) continue;
-          let layerConsumption = [];
-          if (diff > 0) {
-            // Sobrante: nueva capa al costo informado en el conteo.
-            await kardex.receiveStock({
-              clinicId: req.clinicId, product: it.product, quantity: diff,
-              unitCost: it.unitCost || 0, date, sourceModel: 'PhysicalCount', sourceRef: pc._id, userId: req.user._id,
-            }, session);
-          } else {
-            // Faltante/merma: consume capas FIFO.
-            const issue = await kardex.issueStock({
-              clinicId: req.clinicId, product: it.product, quantity: Math.abs(diff), allowNegative: true,
-            }, session);
-            layerConsumption = issue.consumption.map((c) => ({ layer: c.layerId, qty: c.qty, unitCost: c.unitCost }));
-          }
-          await Product.updateOne({ _id: it.product, clinic: req.clinicId }, { $inc: { stock: diff } }, { session });
-          const cur = await kardex.currentStock({ clinicId: req.clinicId, product: it.product }, session);
-          await Product.updateOne({ _id: it.product, clinic: req.clinicId }, { $set: { averageCost: cur.averageCost } }, { session });
-          await InventoryMovement.create([{
-            clinic: req.clinicId,
-            product: it.product,
-            type: diff > 0 ? 'entrada' : 'salida',
-            quantity: Math.abs(diff),
-            unitCost: it.unitCost || 0,
-            totalCost: +(Math.abs(diff) * (it.unitCost || 0)).toFixed(2),
-            balanceAfter: cur.qty,
-            layerConsumption,
-            reason: 'Ajuste por toma fisica',
-            reference: pc.code,
-            sourceModel: 'PhysicalCount',
-            sourceRef: pc._id,
-            createdBy: req.user._id,
-          }], { session });
-          const val = Math.abs(diff) * (it.unitCost || 0);
-          if (diff > 0) positive += val;
-          else negative += val;
+      // Fecha FUNCIONAL de la toma (no la de grabación).
+      const date = kardexService.parseLocalDate(req.body.date) || pc.date || new Date();
+      await assertPeriodOpen(req.clinicId, date, { session });
+
+      const wh = await Warehouse.findOne({ _id: pc.warehouse, clinic: req.clinicId }).session(session);
+      if (!wh) throw Object.assign(new Error('La bodega de la toma ya no existe'), { status: 400 });
+      const costCenter = wh.costCenter || null;
+
+      let positive = 0;
+      let negative = 0;
+      let ajustes = 0;
+      for (const it of pc.items) {
+        const diff = kardex.round4((it.countedQty || 0) - (it.systemQty || 0));
+        if (Math.abs(diff) < 0.00001) continue;
+        ajustes += 1;
+        let layerConsumption = [];
+        let costoReal = kardex.round4(it.unitCost || 0);
+        let valor;
+
+        if (diff > 0) {
+          // Sobrante: entra EN SU BODEGA, al costo del snapshot (el más reciente conocido).
+          await kardex.receiveStock({
+            clinicId: req.clinicId, product: it.product, warehouse: pc.warehouse,
+            quantity: diff, unitCost: costoReal, date,
+            sourceModel: 'PhysicalCount', sourceRef: pc._id, userId: req.user._id,
+          }, session);
+          valor = kardex.round2(diff * costoReal);
+          positive += valor;
+        } else {
+          // Faltante: consume capas FIFO DE SU BODEGA y se valora al costo REAL que sale.
+          const issue = await kardex.issueStock({
+            clinicId: req.clinicId, product: it.product, warehouse: pc.warehouse,
+            quantity: Math.abs(diff), allowNegative: true,
+          }, session);
+          layerConsumption = issue.consumption.map((c) => ({ layer: c.layerId, qty: c.qty, unitCost: c.unitCost }));
+          valor = kardex.round2(issue.totalCost);
+          if (valor > 0) costoReal = kardex.round4(valor / Math.abs(diff));
+          negative += valor;
         }
 
-        if (positive > 0 || negative > 0) {
-          const inv = await getAccount(req.clinicId, 'inventario', { session });
-          const gasto = await getAccount(req.clinicId, 'mermaInventario', { session });
-          const lines = [];
-          const net = +(positive - negative).toFixed(2);
-          if (net > 0) {
-            lines.push({ account: inv._id, debit: net, credit: 0, description: 'Sobrante inventario' });
-            lines.push({ account: gasto._id, debit: 0, credit: net, description: 'Ajuste sobrante' });
-          } else if (net < 0) {
-            lines.push({ account: gasto._id, debit: -net, credit: 0, description: 'Faltante inventario' });
-            lines.push({ account: inv._id, debit: 0, credit: -net, description: 'Ajuste faltante' });
-          }
-          if (lines.length) {
-            const entry = await createEntry({
-              clinicId: req.clinicId,
-              date,
-              description: `Ajuste toma fisica ${pc.code}`,
-              source: 'AJUSTE',
-              sourceRef: pc._id,
-              sourceModel: 'PhysicalCount',
-              sourceAction: 'CONFIRM',
-              lines,
-              userId: req.user._id,
-              session,
-            });
-            pc.adjustmentEntry = entry._id;
-          }
-        }
+        // Existencias de la bodega DESPUÉS del ajuste (de las capas, no del stock global).
+        const enBodega = await kardex.currentStock({
+          clinicId: req.clinicId, product: it.product, warehouse: pc.warehouse,
+        }, session);
+        // `Product.stock` es el agregado global de apoyo: se mantiene coherente, pero NO es la
+        // fuente de la decisión por bodega.
+        await Product.updateOne({ _id: it.product, clinic: req.clinicId }, { $inc: { stock: diff } }, { session });
+        const global = await kardex.currentStock({ clinicId: req.clinicId, product: it.product }, session);
+        await Product.updateOne({ _id: it.product, clinic: req.clinicId }, { $set: { averageCost: global.averageCost } }, { session });
+
+        await InventoryMovement.create([{
+          clinic: req.clinicId,
+          product: it.product,
+          type: diff > 0 ? 'entrada' : 'salida',
+          warehouse: pc.warehouse,
+          costCenter,
+          movementDate: date,
+          dateSource: 'DOCUMENTO',
+          quantity: Math.abs(diff),
+          unitCost: costoReal,
+          totalCost: kardex.round2(valor),
+          balanceAfter: enBodega.qty,
+          layerConsumption,
+          reason: 'Ajuste por toma física',
+          reference: pc.code,
+          sourceModel: 'PhysicalCount',
+          sourceRef: pc._id,
+          createdBy: req.user._id,
+        }], { session });
+
+        it.difference = diff;
+        it.unitCost = costoReal;
+        it.adjustmentValue = kardex.round2(diff > 0 ? valor : -valor);
+      }
+
+      if (!ajustes) {
+        // Una toma sin diferencias es válida: se cierra sin asiento (no hay hecho económico).
         pc.status = 'CONFIRMADO';
         pc.confirmedAt = date;
         pc.confirmedBy = req.user._id;
         await pc.save({ session });
         return pc._id;
-      });
-      const pc = await PhysicalCount.findById(countId);
-      return res.json(pc);
-    }
-
-    const pc = await PhysicalCount.findOne({ _id: req.params.id, clinic: req.clinicId });
-    if (!pc) return res.status(404).json({ message: 'No encontrada' });
-    if (pc.status !== 'BORRADOR') return res.status(400).json({ message: 'No editable' });
-
-    // Ajustar stock y crear movimientos
-    let positive = 0, negative = 0;
-    for (const it of pc.items) {
-      const diff = (it.countedQty || 0) - (it.systemQty || 0);
-      if (diff === 0) continue;
-      await Product.updateOne({ _id: it.product, clinic: req.clinicId }, { $inc: { stock: diff } });
-      await InventoryMovement.create({
-        clinic: req.clinicId, product: it.product,
-        type: diff > 0 ? 'entrada' : 'salida',
-        quantity: Math.abs(diff), reason: 'Ajuste por toma física',
-        reference: pc.code, createdBy: req.user._id,
-      });
-      const val = Math.abs(diff) * (it.unitCost || 0);
-      if (diff > 0) positive += val; else negative += val;
-    }
-
-    // Asiento contable de ajuste
-    if (positive > 0 || negative > 0) {
-      const inv = await findAccount(req.clinicId, { code: '1.1.04.01' });
-      const gasto = await findAccount(req.clinicId, { code: '6.1.99' });
-      const lines = [];
-      const net = positive - negative;
-      if (net > 0) {
-        lines.push({ account: inv._id, debit: net, credit: 0, description: 'Sobrante inventario' });
-        lines.push({ account: gasto._id, debit: 0, credit: net, description: 'Ajuste sobrante' });
-      } else if (net < 0) {
-        lines.push({ account: gasto._id, debit: -net, credit: 0, description: 'Faltante inventario' });
-        lines.push({ account: inv._id, debit: 0, credit: -net, description: 'Ajuste faltante' });
       }
-      if (lines.length) {
+
+      const net = kardex.round2(positive - negative);
+      if (Math.abs(net) > 0.005) {
+        const invAcc = wh.chartAccount
+          ? await ChartOfAccount.findOne({ _id: wh.chartAccount, clinic: req.clinicId }).session(session)
+          : await getAccount(req.clinicId, 'inventario', { session });
+        const gasto = await getAccount(req.clinicId, 'mermaInventario', { session });
+        // Una toma física NO toca Caja ni Banco: es puramente inventariable.
+        const lines = net > 0
+          ? [{ account: invAcc._id, debit: net, credit: 0, description: 'Sobrante de inventario', costCenter },
+            { account: gasto._id, debit: 0, credit: net, description: `Ajuste sobrante ${pc.code}`, costCenter }]
+          : [{ account: gasto._id, debit: -net, credit: 0, description: 'Faltante de inventario', costCenter },
+            { account: invAcc._id, debit: 0, credit: -net, description: `Ajuste faltante ${pc.code}`, costCenter }];
         const entry = await createEntry({
-          clinicId: req.clinicId, date: new Date(),
-          description: `Ajuste toma física ${pc.code}`, source: 'AJUSTE',
-          sourceRef: pc._id, sourceModel: 'PhysicalCount',
-          lines, userId: req.user._id,
+          clinicId: req.clinicId,
+          date,
+          description: `Ajuste toma física ${pc.code} · ${wh.name}`,
+          source: 'AJUSTE',
+          sourceRef: pc._id,
+          sourceModel: 'PhysicalCount',
+          sourceAction: 'CONFIRM',      // idempotente: una toma, un asiento
+          lines,
+          userId: req.user._id,
+          session,
         });
         pc.adjustmentEntry = entry._id;
+        await InventoryMovement.updateMany(
+          { clinic: req.clinicId, sourceModel: 'PhysicalCount', sourceRef: pc._id },
+          { $set: { journalEntry: entry._id } },
+          { session }
+        );
       }
-    }
-    pc.status = 'CONFIRMADO';
-    pc.confirmedAt = new Date();
-    pc.confirmedBy = req.user._id;
-    await pc.save();
-    res.json(pc);
-  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+
+      pc.status = 'CONFIRMADO';
+      pc.confirmedAt = date;
+      pc.confirmedBy = req.user._id;
+      await pc.save({ session });
+      return pc._id;
+    });
+    const pc = await PhysicalCount.findById(countId);
+    return res.json(pc);
+  } catch (e) { return res.status(e.status || 400).json({ message: e.message }); }
 };
 
 // ----- Activos fijos -----

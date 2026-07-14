@@ -10,8 +10,12 @@ import ProductSelect from '../../components/ProductSelect';
 import AccountSelect from '../../components/AccountSelect';
 import JournalEntryViewModal from '../../components/JournalEntryViewModal';
 
-const EMPTY_WH = { code: '', name: '', address: '', chartAccount: '', isMain: false, active: true };
-const EMPTY_TRANSFER = { product: '', fromWarehouse: '', toWarehouse: '', quantity: '', reason: '' };
+const EMPTY_WH = {
+  code: '', name: '', address: '', chartAccount: '', costCenter: '', isMain: false, active: true,
+};
+const EMPTY_TRANSFER = {
+  product: '', fromWarehouse: '', toWarehouse: '', quantity: '', reason: '', date: '', costCenter: '',
+};
 
 export default function Warehouses() {
   const [tab, setTab] = useState('list');
@@ -34,6 +38,7 @@ export default function Warehouses() {
 
   // Soporte contable del traslado (asiento o kardex)
   const [accounts, setAccounts] = useState([]);
+  const [costCenters, setCostCenters] = useState([]);
   const [viewEntry, setViewEntry] = useState(null); // { model, ref, title }
 
   const loadWarehouses = async () => {
@@ -54,7 +59,16 @@ export default function Warehouses() {
     loadWarehouses();
     api.get('/products').then((r) => setProducts((r.data || []).filter((p) => !p.unlimited))).catch(() => {});
     api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setAccounts(r.data || [])).catch(() => {});
+    api.get('/cost-centers', { params: { active: true } }).then((r) => setCostCenters(r.data || [])).catch(() => {});
   }, []);
+
+  /** Centro de costo predeterminado de una bodega (lo PROPONE, no lo impone). */
+  const centroDe = (whId) => {
+    const w = list.find((x) => String(x._id) === String(whId));
+    const cc = w?.costCenter;
+    return cc ? (cc._id || cc) : '';
+  };
+  const nombreCentro = (id) => costCenters.find((c) => String(c._id) === String(id))?.name || '—';
   useEffect(() => {
     if (tab === 'stock') loadStock();
     if (tab === 'transfers') { loadStock(); loadTransfers(); }
@@ -63,12 +77,20 @@ export default function Warehouses() {
   // --- CRUD bodega ---
   const submit = async (e) => {
     e.preventDefault();
-    const payload = { ...form, chartAccount: form.chartAccount || null };
+    const payload = {
+      ...form,
+      chartAccount: form.chartAccount || null,
+      costCenter: form.costCenter || null,
+    };
     try {
       if (editing) await api.put(`/inventory-advanced/warehouses/${editing._id}`, payload);
       else await api.post('/inventory-advanced/warehouses', payload);
       toast.success('Guardado'); setShow(false); setEditing(null); setForm(EMPTY_WH); loadWarehouses();
-    } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
+    } catch (err) {
+      // Mensajes controlados: el backend nunca devuelve un E11000 crudo, pero por si acaso.
+      const msg = err.response?.data?.message || 'Error';
+      toast.error(/E11000|duplicate key/i.test(msg) ? 'Ya existe una bodega con ese código.' : msg);
+    }
   };
   const remove = async (w) => {
     if (!confirm('¿Eliminar la bodega? (las existencias quedarán sin bodega asignada)')) return;
@@ -92,6 +114,10 @@ export default function Warehouses() {
     const qty = Number(tForm.quantity);
     if (!qty || qty <= 0) return toast.error('Cantidad inválida');
     if (availableInFrom != null && qty > availableInFrom) return toast.error(`Solo hay ${fmt(availableInFrom)} disponibles en la bodega de origen`);
+    if (centroDistinto && !window.confirm(
+      `El centro de costo de la bodega es "${nombreCentro(centroEsperado)}" y elegiste `
+      + `"${nombreCentro(tForm.costCenter)}". El traslado se registrará con el que elegiste. ¿Continuar?`
+    )) return;
     setSavingT(true);
     try {
       const r = await api.post('/inventory-advanced/transfer', { ...tForm, quantity: qty });
@@ -105,9 +131,30 @@ export default function Warehouses() {
   };
   const openTransfer = () => {
     const main = list.find((w) => w.isMain) || list[0];
-    setTForm({ ...EMPTY_TRANSFER, fromWarehouse: main?._id || '' });
+    setTForm({
+      ...EMPTY_TRANSFER,
+      fromWarehouse: main?._id || '',
+      costCenter: centroDe(main?._id),
+      date: new Date().toISOString().slice(0, 10),
+    });
     setShowTransfer(true);
   };
+
+  /**
+   * Al elegir la bodega origen se PROPONE su centro de costo, pero solo si el usuario no había
+   * elegido uno: un centro ya seleccionado no se pisa en silencio.
+   */
+  const elegirOrigen = (whId) => {
+    setTForm((f) => ({
+      ...f,
+      fromWarehouse: whId,
+      costCenter: f.costCenter || centroDe(whId),
+    }));
+  };
+
+  const centroEsperado = centroDe(tForm.fromWarehouse);
+  const centroDistinto = !!centroEsperado && !!tForm.costCenter
+    && String(centroEsperado) !== String(tForm.costCenter);
 
   const tabBtn = (id, label) => (
     <button onClick={() => setTab(id)} className={`px-5 py-2.5 rounded-lg text-sm font-medium cursor-pointer border-none transition-colors ${tab === id ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-emerald-700 bg-transparent'}`}>{label}</button>
@@ -133,17 +180,40 @@ export default function Warehouses() {
       {tab === 'list' && (
         <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
           <table className="tbl">
-            <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Código</th><th className="px-3 py-2 text-left">Nombre</th><th className="px-3 py-2 text-left">Dirección</th><th className="px-3 py-2 text-center">Principal</th><th></th></tr></thead>
+            <thead className="bg-emerald-50 text-xs uppercase"><tr>
+              <th className="px-3 py-2 text-left">Código</th>
+              <th className="px-3 py-2 text-left">Nombre</th>
+              <th className="px-3 py-2 text-left">Dirección</th>
+              <th className="px-3 py-2 text-left">Centro de costo</th>
+              <th className="px-3 py-2 text-center">Estado</th>
+              <th className="px-3 py-2 text-center">Principal</th>
+              <th></th>
+            </tr></thead>
             <tbody>
-              {list.length === 0 && <tr><td colSpan={5} className="px-3 py-6 text-center text-slate-500">Sin bodegas. Crea una para ubicar tu inventario.</td></tr>}
+              {list.length === 0 && <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-500">Sin bodegas. Crea una para ubicar tu inventario.</td></tr>}
               {list.map((w) => (
-                <tr key={w._id} className="border-t">
+                <tr key={w._id} className={`border-t ${w.active === false ? 'opacity-60' : ''}`}>
                   <td className="px-3 py-2 font-mono">{w.code}</td>
                   <td className="px-3 py-2">{w.name}</td>
                   <td className="px-3 py-2 text-slate-500">{w.address}</td>
+                  <td className="px-3 py-2 text-slate-600">{w.costCenter?.name || '—'}</td>
+                  <td className="px-3 py-2 text-center">
+                    <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
+                      w.active === false ? 'text-slate-600 bg-slate-100' : 'text-emerald-700 bg-emerald-50'
+                    }`}>{w.active === false ? 'INACTIVA' : 'ACTIVA'}</span>
+                  </td>
                   <td className="px-3 py-2 text-center">{w.isMain ? '✓' : '—'}</td>
                   <td className="px-3 py-2 flex gap-1 justify-end">
-                    <button onClick={() => { setEditing(w); setForm({ code: w.code, name: w.name, address: w.address || '', chartAccount: w.chartAccount?._id || w.chartAccount || '', isMain: !!w.isMain, active: w.active !== false }); setShow(true); }} className="text-blue-600"><HiOutlinePencilSquare className="w-4 h-4" /></button>
+                    <button onClick={() => {
+                      setEditing(w);
+                      setForm({
+                        code: w.code, name: w.name, address: w.address || '',
+                        chartAccount: w.chartAccount?._id || w.chartAccount || '',
+                        costCenter: w.costCenter?._id || w.costCenter || '',
+                        isMain: !!w.isMain, active: w.active !== false,
+                      });
+                      setShow(true);
+                    }} className="text-blue-600"><HiOutlinePencilSquare className="w-4 h-4" /></button>
                     <button onClick={() => remove(w)} className="text-rose-600"><HiOutlineTrash className="w-4 h-4" /></button>
                   </td>
                 </tr>
@@ -255,7 +325,22 @@ export default function Warehouses() {
             <AccountSelect accounts={accounts} value={form.chartAccount} onChange={(v) => setForm({ ...form, chartAccount: v })} placeholder="Sin cuenta específica" />
             <p className="text-xs text-slate-400 mt-1">Si dos bodegas tienen cuentas distintas, el traslado entre ellas genera asiento contable de reclasificación. Con la misma cuenta (o sin cuenta), el traslado es solo movimiento de kardex.</p>
           </Field>
+          <Field label="Centro de costo predeterminado (opcional)">
+            <select value={form.costCenter} onChange={(e) => setForm({ ...form, costCenter: e.target.value })}
+              className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+              <option value="">Sin centro de costo</option>
+              {costCenters.map((c) => <option key={c._id} value={c._id}>{c.code} — {c.name}</option>)}
+            </select>
+            <p className="text-xs text-slate-400 mt-1">
+              Se <b>propone</b> en los documentos que usen esta bodega (traslados, tomas físicas, ajustes).
+              El usuario puede elegir otro: la operación se registra con el que realmente use.
+            </p>
+          </Field>
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" checked={form.isMain} onChange={(e) => setForm({ ...form, isMain: e.target.checked })} /> Principal (bodega por defecto al registrar movimientos)</label>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={form.active !== false} onChange={(e) => setForm({ ...form, active: e.target.checked })} />
+            Bodega activa (una bodega inactiva no admite tomas físicas nuevas)
+          </label>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button></div>
         </form>
       </Modal>
@@ -268,7 +353,7 @@ export default function Warehouses() {
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Bodega origen" required>
-              <select required value={tForm.fromWarehouse} onChange={(e) => setTForm({ ...tForm, fromWarehouse: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+              <select required value={tForm.fromWarehouse} onChange={(e) => elegirOrigen(e.target.value)} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
                 <option value="">Seleccione…</option>
                 {list.map((w) => <option key={w._id} value={w._id}>{w.name}</option>)}
               </select>
@@ -285,6 +370,28 @@ export default function Warehouses() {
           </Field>
           {tForm.product && tForm.fromWarehouse && (
             <p className={`text-xs ${availableInFrom > 0 ? 'text-slate-500' : 'text-rose-600'}`}>Disponible en origen: <b>{fmt(availableInFrom || 0)}</b></p>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="Fecha del traslado">
+              <input type="date" value={tForm.date} onChange={(e) => setTForm({ ...tForm, date: e.target.value })}
+                className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            </Field>
+            <Field label="Centro de costo">
+              <select value={tForm.costCenter} onChange={(e) => setTForm({ ...tForm, costCenter: e.target.value })}
+                className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                <option value="">Sin centro de costo</option>
+                {costCenters.map((c) => <option key={c._id} value={c._id}>{c.code} — {c.name}</option>)}
+              </select>
+            </Field>
+          </div>
+          {/* El centro de la bodega es una PROPUESTA: si eliges otro, se avisa y se registra el elegido. */}
+          {centroDistinto && (
+            <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-2">
+              <b>Centro de costo distinto al de la bodega.</b><br />
+              Esperado (bodega {list.find((w) => String(w._id) === String(tForm.fromWarehouse))?.name}):{' '}
+              <b>{nombreCentro(centroEsperado)}</b> · Seleccionado: <b>{nombreCentro(tForm.costCenter)}</b>.<br />
+              El traslado quedará registrado con el centro <b>seleccionado</b>. Confirma para continuar.
+            </div>
           )}
           <Field label="Motivo"><input placeholder="Opcional" value={tForm.reason} onChange={(e) => setTForm({ ...tForm, reason: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShowTransfer(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button disabled={savingT} className="px-4 py-2 bg-sky-600 text-white rounded-xl shadow-sm shadow-sky-600/20 disabled:opacity-50">{savingT ? 'Trasladando…' : 'Trasladar'}</button></div>

@@ -1,5 +1,6 @@
 const Sale = require('../models/Sale');
 const Product = require('../models/Product');
+const CreditCard = require('../models/CreditCard');
 const InventoryMovement = require('../models/InventoryMovement');
 const Discount = require('../models/Discount');
 const Treatment = require('../models/Treatment');
@@ -8,6 +9,7 @@ const { createEntry, reverseEntry, runInTransaction, assertPeriodOpen } = requir
 const { getAccount } = require('../utils/accountMap');
 const { openReceivable, applyToReceivable, voidReceivable } = require('../utils/subledger');
 const kardex = require('../utils/kardex');
+const { createResolver, auditarDiferencias } = require('../services/costCenterPolicy');
 const { calculateSaleLine, summarizeSaleTaxes } = require('../utils/tax');
 const { emitToClinic } = require('../realtime');
 
@@ -136,13 +138,41 @@ exports.createSale = async (req, res) => {
         const txProductMap = new Map(txProducts.map((p) => [String(p._id), p]));
         const txIsUnlimited = (p) => p.unlimited === true || p.category === 'servicio';
 
+        // ── Bodega y CENTRO DE COSTO de la venta ────────────────────────────
+        // El centro se propone desde la bodega y solo se cambia confirmando la diferencia
+        // (misma regla que en compras: `services/costCenterPolicy`). Una venta de puro
+        // servicio no lleva bodega: entonces no hay centro de bodega que proponer, y el que
+        // el usuario elija a mano se respeta tal cual.
+        const resolver = createResolver({ clinicId: req.clinicId, session });
+        const cc = await resolver.resolve({
+          warehouse: req.body.warehouse || null,
+          costCenter: req.body.costCenter || null,
+          confirmed: req.body.costCenterConfirmed === true || req.body.costCenterConfirmed === 'true',
+          contexto: 'la venta',
+        });
+        const txWarehouse = cc.warehouse || null;
+
         for (const item of items) {
           const product = txProductMap.get(String(item.product));
           const qty = Number(item.quantity);
           if (!qty || qty <= 0) {
             throw Object.assign(new Error(`Cantidad invalida para ${product.name}`), { status: 400 });
           }
-          if (!txIsUnlimited(product) && Number(product.stock || 0) < qty) {
+          if (txIsUnlimited(product)) continue;
+          if (txWarehouse) {
+            // Con bodega, el disponible lo dice el SUBMAYOR de esa bodega (las capas), no el
+            // `stock` global del producto: vender 5 de una bodega que tiene 2 porque "en total
+            // hay 10" es lo que descuadraba el inventario por bodega.
+            const enBodega = await kardex.currentStock(
+              { clinicId: req.clinicId, product: product._id, warehouse: txWarehouse }, session
+            );
+            if (enBodega.qty < qty) {
+              throw Object.assign(
+                new Error(`Stock insuficiente para "${product.name}" en la bodega seleccionada. Disponible: ${enBodega.qty}`),
+                { status: 400 }
+              );
+            }
+          } else if (Number(product.stock || 0) < qty) {
             throw Object.assign(new Error(`Stock insuficiente para "${product.name}". Disponible: ${product.stock}`), { status: 400 });
           }
         }
@@ -191,6 +221,10 @@ exports.createSale = async (req, res) => {
             discountTaxBase: tax.discountTaxBase,
             discountRef: item.discountRef || undefined,
             treatment: item.treatment || undefined,
+            // Bodega de la que sale el ítem. Antes NO se copiaba: `issueStock` leía un
+            // `it.warehouse` que nunca existía, así que toda venta consumía capas FIFO de
+            // CUALQUIER bodega y su movimiento quedaba sin bodega (invisible en el kardex).
+            warehouse: txIsUnlimited(product) ? null : txWarehouse,
             subtotal: tax.taxBase,
           };
         });
@@ -216,13 +250,30 @@ exports.createSale = async (req, res) => {
           .map((p) => ({
             method: p.method,
             amount: +(Number(p.amount) || 0).toFixed(2),
+            date: saleDate,
             bankAccount: p.method === 'transferencia' ? (p.bankAccount || null) : null,
+            reference: String(p.reference || '').trim(),
             creditCard: p.method === 'tarjeta' ? (p.creditCard || null) : null,
             cardPos: p.method === 'tarjeta' ? (p.cardPos || '') : '',
             cardLote: p.method === 'tarjeta' ? String(p.cardLote || '').trim() : '',
             cardVoucher: p.method === 'tarjeta' ? String(p.cardVoucher || '').trim() : '',
           }))
           .filter((p) => p.amount > 0);
+
+        // SNAPSHOT del tipo de tarjeta (débito/crédito) en el momento de la venta: si mañana se
+        // reconfigura la tarjeta, el reporte histórico NO puede cambiar. Sin esto, el reporte no
+        // podía separar débito de crédito sin mentir sobre el pasado.
+        const cardIds = [...new Set(txPayments.filter((p) => p.creditCard).map((p) => String(p.creditCard)))];
+        if (cardIds.length) {
+          const cards = await CreditCard.find({ _id: { $in: cardIds }, clinic: req.clinicId }).session(session);
+          const byId = new Map(cards.map((c) => [String(c._id), c]));
+          for (const p of txPayments) {
+            const card = p.creditCard ? byId.get(String(p.creditCard)) : null;
+            if (!card) continue;
+            p.cardTypeSnapshot = card.accountType || '';
+            p.cardBrandSnapshot = card.brand || '';
+          }
+        }
         if (!txPayments.length) throw Object.assign(new Error('Debe indicar al menos un método de pago'), { status: 400 });
         for (const p of txPayments) {
           if (!VALID_METHODS.has(p.method)) throw Object.assign(new Error(`Método de pago inválido: ${p.method}`), { status: 400 });
@@ -252,6 +303,8 @@ exports.createSale = async (req, res) => {
         const [txSale] = await Sale.create([{
           clinic: req.clinicId,
           items: txSaleItems,
+          warehouse: txWarehouse,
+          costCenter: cc.costCenter || null,
           patient: patient || undefined,
           clientName,
           clientCedula,
@@ -344,6 +397,12 @@ exports.createSale = async (req, res) => {
             balanceAfter: cur.qty,
             lot: it.lot || '',
             layerConsumption: issue.consumption.map((c) => ({ layer: c.layerId, qty: c.qty, unitCost: c.unitCost })),
+            // Bodega, centro y fecha FUNCIONAL de la venta: sin esto la salida no aparecía en el
+            // kardex de su bodega y se fechaba por `createdAt`.
+            warehouse: it.warehouse || null,
+            costCenter: cc.costCenter || null,
+            movementDate: saleDate,
+            dateSource: 'DOCUMENTO',
             reason: 'Venta',
             reference: txSale.saleNumber,
             sourceModel: 'Sale',
@@ -451,6 +510,11 @@ exports.createSale = async (req, res) => {
           txLines.push({ account: cat?.assetAccount || prod.inventoryAccount || inventarioDefault._id, debit: 0, credit: totalCost, description: `Salida inventario ${it.productName}` });
         }
 
+        // Centro de costo de la venta: el resuelto contra la bodega (no el crudo del body).
+        // Va en la cabecera del asiento y en CADA línea —ingreso, IVA, CxC y COSTO DE VENTA—,
+        // que es lo que permite leer el margen del centro sin cruzar documentos a mano.
+        const txCostCenter = cc.costCenter || null;
+        for (const l of txLines) if (!l.costCenter) l.costCenter = txCostCenter;
         const txEntry = await createEntry({
           clinicId: req.clinicId,
           date: saleDate,
@@ -462,11 +526,20 @@ exports.createSale = async (req, res) => {
           lines: txLines,
           userId: req.user._id,
           doctor: txSale.doctor || null,
-          costCenter: req.body.costCenter || null,
+          costCenter: txCostCenter,
           session,
         });
         txSale.journalEntry = txEntry._id;
         await txSale.save({ session });
+        // El movimiento de inventario apunta a su asiento (trazabilidad desde el kardex).
+        await InventoryMovement.updateMany(
+          { clinic: req.clinicId, sourceModel: 'Sale', sourceRef: txSale._id },
+          { $set: { journalEntry: txEntry._id } },
+          { session }
+        );
+        await auditarDiferencias(cc.aviso ? [cc.aviso] : [], {
+          clinicId: req.clinicId, req, entity: 'sales', entityId: txSale._id, session,
+        });
 
         // Ingreso diferido: registra un documento por cada ítem de paquete para
         // reconocer el ingreso por sesión más adelante.
@@ -539,7 +612,14 @@ exports.createSale = async (req, res) => {
         .populate('createdBy', 'name');
       if (existingSale) return res.status(200).json(existingSale);
     }
-    res.status(error.status || 500).json({ message: 'Error al crear venta', error: error.message });
+    // Un error de negocio (400/409) lleva SU mensaje y su payload (p.ej. el código
+    // COST_CENTER_MISMATCH con la bodega y los dos centros): la pantalla necesita poder
+    // explicarlo y ofrecer la confirmación. Solo un fallo inesperado queda genérico.
+    res.status(error.status || 500).json({
+      message: error.status ? error.message : 'Error al crear venta',
+      ...(error.payload || {}),
+      error: error.message,
+    });
   }
 };
 
@@ -603,6 +683,12 @@ async function reverseSaleTx(session, { clinicId, saleId, userId, reversalDate, 
       quantity: item.quantity,
       unitCost,
       totalCost: +(Number(item.quantity || 0) * unitCost).toFixed(2),
+      // La devolución vuelve a la MISMA bodega y al MISMO centro de la venta: anular no
+      // reclasifica nada (y el kardex de esa bodega tiene que ver la entrada).
+      warehouse: item.warehouse || sale.warehouse || null,
+      costCenter: sale.costCenter || null,
+      movementDate: reversalDate,
+      dateSource: 'DOCUMENTO',
       reason: 'Anulacion de venta',
       reference: sale.saleNumber,
       sourceModel: 'Sale',

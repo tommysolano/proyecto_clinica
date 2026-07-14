@@ -60,6 +60,14 @@ const lineRetentionSchema = new mongoose.Schema(
 
 const purchaseItemSchema = new mongoose.Schema(
   {
+    /**
+     * IDENTIDAD ESTABLE de la línea. El subdocumento es `_id:false` (histórico), así que sin
+     * esto la única identidad posible era el ÍNDICE POSICIONAL: borrar o reordenar una línea
+     * desplazaba los índices y los activos fijos de esa compra se rebindeaban a la línea
+     * equivocada (se les sobrescribía costo y categoría). Se genera al crear la línea y no
+     * cambia nunca. Las compras históricas no lo tienen: ahí se sigue usando el índice.
+     */
+    lineId: { type: String, default: () => new mongoose.Types.ObjectId().toString() },
     description: { type: String, required: true },
     quantity: { type: Number, default: 1, min: 0 },
     unitPrice: { type: Number, default: 0 },

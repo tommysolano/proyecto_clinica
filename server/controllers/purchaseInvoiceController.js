@@ -15,7 +15,9 @@ const { openPayable, voidPayable } = require('../utils/subledger');
 const kardex = require('../utils/kardex');
 const { parsePurchaseInvoiceXml } = require('../utils/sriXmlParser');
 const { computeRetention, groupLineRetentions, lineRetentionList } = require('../utils/retentionCalculator');
-const { normalizeAssetConfig, assetCategoryIssues } = require('../utils/fixedAssetConfig');
+const { assetCategoryIssues } = require('../utils/fixedAssetConfig');
+const assetsService = require('../services/fixedAssetsFromPurchase');
+const { createResolver, auditarDiferencias } = require('../services/costCenterPolicy');
 
 /**
  * Memoriza las cuentas de gasto usadas en una compra como "cuentas recurrentes"
@@ -145,6 +147,41 @@ function calcTotals(invoice) {
   invoice.retentionTotal = +retTotal.toFixed(2);
   invoice.total = +(invoice.subtotal + invoice.iva + (invoice.ice || 0) + (invoice.propina || 0)).toFixed(2);
   invoice.balance = +(invoice.total - invoice.retentionTotal).toFixed(2);
+}
+
+/**
+ * CENTRO DE COSTO de cada línea contra su BODEGA (regla única: `services/costCenterPolicy`).
+ *
+ * La compra es POR LÍNEA: cada línea tiene su bodega y su centro, y la cabecera solo aporta el
+ * centro POR DEFECTO de las líneas que no eligieron uno. Se respeta el modelo que ya existe (no
+ * se inventa un centro por cabecera que contradiga a las líneas): una compra mixta puede recibir
+ * insumos en la bodega de farmacia y un activo fijo en la de quirófano, y cada línea se lleva
+ * el centro que le corresponde.
+ *
+ * Deja en `it.costCenter` el centro EFECTIVO, que es el único que leen después el asiento
+ * (`postPurchaseJournal`), el inventario (`postInventoryEntries`) y los activos
+ * (`fixedAssetsFromPurchase`). Un solo valor: no pueden discrepar entre sí.
+ *
+ * @returns {Promise<string[]>} avisos de diferencias confirmadas (para el log de auditoría).
+ */
+async function applyCostCenterPolicy(doc, req, session) {
+  const resolver = createResolver({ clinicId: req.clinicId, session });
+  const confirmed = req.body?.costCenterConfirmed === true || req.body?.costCenterConfirmed === 'true';
+  // El centro de la cabecera se valida aunque no haya bodega (puede ser un gasto puro).
+  if (doc.costCenter) await resolver.getCostCenter(doc.costCenter);
+
+  const avisos = [];
+  for (const it of doc.items || []) {
+    const r = await resolver.resolve({
+      warehouse: it.warehouse || null,
+      costCenter: it.costCenter || doc.costCenter || null,
+      confirmed,
+      contexto: `la compra (línea "${it.description || 'sin descripción'}")`,
+    });
+    it.costCenter = r.costCenter || null;
+    if (r.aviso) avisos.push(r.aviso);
+  }
+  return avisos;
 }
 
 /**
@@ -562,7 +599,13 @@ exports.create = async (req, res) => {
         // se aplica SOLO a líneas GASTO, dentro del helper). Compra NUEVA => strict:
         // inventario/activo deben resolver su cuenta desde la categoría contable.
         await classifyAndValidateItems(data.items, { clinicId: req.clinicId, supplier: sup, session, strict: true });
+        // Centro de costo efectivo de cada línea ANTES de guardar: lo que se contabiliza es lo
+        // que queda escrito en la compra (y no otra cosa calculada aparte al vuelo).
+        const avisos = await applyCostCenterPolicy(data, req, session);
         const [inv] = await PurchaseInvoice.create([data], { session });
+        await auditarDiferencias(avisos, {
+          clinicId: req.clinicId, req, entity: 'purchase-invoices', entityId: inv._id, session,
+        });
         // Retenciones por línea desde catálogo (recalcula base/monto y deriva la cabecera).
         await applyLineRetentions(inv, { clinicId: req.clinicId, session });
         await postPurchaseJournal(inv, req, session);
@@ -576,7 +619,9 @@ exports.create = async (req, res) => {
       return res.status(201).json(inv);
     }
   } catch (e) {
-    res.status(e.status || 400).json({ message: e.message });
+    // El `payload` del error (p.ej. COST_CENTER_MISMATCH con la bodega y los dos centros) viaja
+    // a la pantalla: sin él no se puede explicar la diferencia ni ofrecer confirmarla.
+    res.status(e.status || 400).json({ message: e.message, ...(e.payload || {}) });
   }
 };
 
@@ -674,11 +719,15 @@ async function postInventoryEntries(inv, req, session) {
     if (!prod || prod.unlimited || prod.category === 'servicio') continue;
     const qty = Number(it.quantity);
     const unitCost = Number(it.unitPrice) || 0;
+    // Centro de costo EFECTIVO de la línea (ya resuelto contra la bodega en
+    // `applyCostCenterPolicy`): el mismo que debita el asiento y que hereda el activo fijo.
+    const costCenter = it.costCenter || inv.costCenter || null;
     // Kardex: cada compra crea una capa valorada (con lote/vencimiento si aplica).
     await kardex.receiveStock({
       clinicId: req.clinicId,
       product: prod._id,
       warehouse: it.warehouse || null,
+      costCenter,
       lot: it.lot || '',
       expiryDate: it.expiryDate || null,
       quantity: qty,
@@ -704,6 +753,15 @@ async function postInventoryEntries(inv, req, session) {
       balanceAfter: cur.qty,
       lot: it.lot || '',
       expiryDate: it.expiryDate || null,
+      // La BODEGA y el CENTRO viajan con el movimiento, no solo con la capa: sin ellos el
+      // kardex por bodega no veía las compras (el movimiento no sabía dónde había entrado).
+      warehouse: it.warehouse || null,
+      costCenter,
+      // Fecha FUNCIONAL: la del comprobante, no la de captura. Una compra de enero registrada
+      // en marzo pertenece a enero.
+      movementDate: inv.fechaEmision || new Date(),
+      dateSource: inv.fechaEmision ? 'DOCUMENTO' : 'CREATED_AT',
+      journalEntry: inv.journalEntry || null,
       reason: `Compra ${inv.serie || ''}`.trim(),
       reference: inv.serie || '',
       sourceModel: 'PurchaseInvoice',
@@ -714,79 +772,24 @@ async function postInventoryEntries(inv, req, session) {
 }
 
 /**
- * Crea los activos fijos de las líneas ACTIVO_FIJO al contabilizar la factura. Toda la
- * configuración contable y de depreciación se COPIA (snapshot) desde la categoría —NO se
- * usan los parámetros que pudiera enviar el frontend—. Del `fixedAsset` de la línea solo
- * se toman datos DESCRIPTIVOS (nombre, código, serie, sede, ubicación, responsable,
- * fechas). Idempotente: borra los activos previos de esta factura sin depreciación y los
- * recrea (para reflejar ediciones).
+ * Activos fijos de las líneas ACTIVO_FIJO. La regla vive en `services/fixedAssetsFromPurchase`
+ * (fuente única: la comparten la compra, la anulación y el diagnóstico). Aquí solo se adapta la
+ * firma del controlador.
+ *
+ * Cambios respecto de la versión anterior: una línea de N unidades crea N activos (antes creaba
+ * UNO con el costo de toda la línea), la idempotencia es por identidad `(compra, línea, unidad)`
+ * (antes borraba y recreaba, duplicando los activos ya depreciados) y un activo con historia
+ * contable nunca se borra ni se reescribe.
  */
 async function syncFixedAssetsForInvoice(inv, req, session) {
-  const assetItems = (inv.items || []).filter((it) => it.lineType === 'ACTIVO_FIJO');
-  await FixedAsset.deleteMany({
-    clinic: req.clinicId, purchaseInvoice: inv._id,
-    $or: [{ accumulatedDepreciation: { $lte: 0 } }, { accumulatedDepreciation: null }],
-  }).session(session || null);
-  if (!assetItems.length) return;
-
-  const baseCount = await FixedAsset.countDocuments({ clinic: req.clinicId }).session(session || null);
-  let seq = 0;
-  for (const it of assetItems) {
-    const fa = it.fixedAsset || {};
-    const cat = fa.category ? await InventoryCategory.findOne({ _id: fa.category, clinic: req.clinicId }).session(session || null) : null;
-    if (!cat) throw Object.assign(new Error('La línea de activo fijo requiere una categoría de activo fijo'), { status: 400 });
-    const issues = assetCategoryIssues(cat);
-    if (issues.length) throw Object.assign(new Error(`La categoría de activo fijo no tiene configuración contable completa (falta: ${issues.join(', ')})`), { status: 400 });
-    const cfg = normalizeAssetConfig(cat); // fuente ÚNICA de la config contable/depreciación
-    const cost = +Number(it.subtotal || 0).toFixed(2);
-    const residualValue = +(cost * (cfg.residualPercent / 100)).toFixed(2);
-    const monthly = (cfg.noDepreciate || !cfg.usefulLifeMonths) ? 0 : +((cost - residualValue) / cfg.usefulLifeMonths).toFixed(2);
-    seq += 1;
-    const code = (fa.code && String(fa.code).trim()) || `AF-${String(baseCount + seq).padStart(4, '0')}`;
-    const acqDate = fa.acquisitionDate || inv.fechaEmision || new Date();
-    const [asset] = await FixedAsset.create([{
-      clinic: req.clinicId,
-      code,
-      name: (fa.name && String(fa.name).trim()) || it.description,
-      // Descriptivos (de la captura de la línea):
-      category: cat._id,
-      assetType: fa.assetType || null,
-      serial: fa.serial || '',
-      location: fa.location || '',
-      locationClinic: fa.locationClinic || null,
-      responsible: fa.responsible || null,
-      purchaseInvoice: inv._id,
-      journalEntry: inv.journalEntry || null, // asiento de compra (ya creado por postPurchaseJournal)
-      acquisitionDate: acqDate,
-      acquisitionCost: cost,
-      startDate: fa.startDate || acqDate,
-      // Snapshot contable/depreciación (de la CATEGORÍA):
-      assetAccount: cfg.assetAccount,
-      depreciationAccount: cfg.depreciationAccount,
-      accumDepreciationAccount: cfg.accumDepreciationAccount,
-      usefulLifeMonths: cfg.usefulLifeMonths,
-      residualPercent: cfg.residualPercent,
-      depreciationRate: cfg.depreciationRate,
-      expenseType: cfg.expenseType,
-      residualValue,
-      monthlyDepreciation: monthly,
-      bookValue: cost,
-      createdBy: req.user._id,
-    }], { session });
-    it.fixedAsset = { ...fa, createdAsset: asset._id };
-  }
-  await inv.save({ session });
+  return assetsService.syncFixedAssetsForInvoice(inv, {
+    clinicId: req.clinicId, userId: req.user._id, session,
+  });
 }
 
-/**
- * Borra los activos fijos creados por esta factura que aún no tengan depreciación.
- * Se usa al anular: si alguno ya se depreció, se conserva (debe darse de baja a mano).
- */
+/** Al anular: borra los activos sin historia y BLOQUEA si alguno ya se depreció o se dio de baja. */
 async function removeFixedAssetsForInvoice(inv, req, session) {
-  await FixedAsset.deleteMany({
-    clinic: req.clinicId, purchaseInvoice: inv._id,
-    $or: [{ accumulatedDepreciation: { $lte: 0 } }, { accumulatedDepreciation: null }],
-  }).session(session || null);
+  return assetsService.removeFixedAssetsForInvoice(inv, { clinicId: req.clinicId, session });
 }
 
 exports.update = async (req, res) => {
@@ -839,6 +842,10 @@ exports.update = async (req, res) => {
         }
         // La edición re-contabiliza: vuelve a verificar contra los totales del SRI.
         if (await guardSriTotals(inv, req, session)) inv.sriMismatchAccepted = true;
+        const avisosCC = await applyCostCenterPolicy(inv, req, session);
+        await auditarDiferencias(avisosCC, {
+          clinicId: req.clinicId, req, entity: 'purchase-invoices', entityId: inv._id, session,
+        });
         await applyLineRetentions(inv, { clinicId: req.clinicId, session });
         await inv.save({ session });
         await postPurchaseJournal(inv, req, session, `UPDATE:${Date.now()}`);
@@ -1327,6 +1334,12 @@ exports.authorize = async (req, res) => {
         // Verificación contra el SRI: bloquea con 409 (payload SRI_MISMATCH) salvo
         // confirmación explícita; al confirmar queda marcada y auditada.
         if (await guardSriTotals(inv, req, session)) inv.sriMismatchAccepted = true;
+        // Una compra POR_AUTORIZAR se contabiliza por PRIMERA vez aquí: es el momento en que la
+        // bodega elegida propone su centro de costo (y en que una diferencia debe confirmarse).
+        const avisosCC = await applyCostCenterPolicy(inv, req, session);
+        await auditarDiferencias(avisosCC, {
+          clinicId: req.clinicId, req, entity: 'purchase-invoices', entityId: inv._id, session,
+        });
         inv.status = 'REGISTRADA';
         inv.authorizedBy = req.user._id;
         inv.authorizedAt = new Date();

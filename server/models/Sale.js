@@ -31,6 +31,10 @@ const saleItemSchema = new mongoose.Schema({
   discountRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Discount' },
   // Tratamiento al que aporta este ítem (avance automático).
   treatment: { type: mongoose.Schema.Types.ObjectId, ref: 'Treatment' },
+  // Bodega de la que SALIÓ este ítem (copiada de la cabecera de la venta al registrarla).
+  // Es la que consume las capas FIFO y la que ve el kardex por bodega. Vacía = stock general
+  // (ventas anteriores a las bodegas: no se les inventa una).
+  warehouse: { type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse', default: null },
   subtotal: { type: Number, required: true },
 });
 
@@ -41,8 +45,20 @@ const salePaymentSchema = new mongoose.Schema(
   {
     method: { type: String, enum: ['efectivo', 'tarjeta', 'transferencia', 'credito'], required: true },
     amount: { type: Number, required: true, min: 0 },
+    // Fecha del pago (por defecto la de la venta). Un cobro posterior de la CxC NO va aquí:
+    // vive en su propio `Payment` y se une al reporte desde allí.
+    date: { type: Date, default: null },
     bankAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'BankAccount', default: null },
+    reference: { type: String, default: '', trim: true },
     creditCard: { type: mongoose.Schema.Types.ObjectId, ref: 'CreditCard', default: null },
+    /**
+     * SNAPSHOT del tipo de tarjeta (`CreditCard.accountType`) en el momento de la venta.
+     * Si mañana alguien cambia la tarjeta de DÉBITO a CRÉDITO, los reportes históricos no
+     * pueden moverse: lo que se cobró, se cobró como lo que era ese día.
+     * Vacío en las ventas antiguas: ahí no hay evidencia y NO se inventa.
+     */
+    cardTypeSnapshot: { type: String, enum: ['DEBITO', 'CREDITO', 'CORRIENTE', ''], default: '' },
+    cardBrandSnapshot: { type: String, default: '' },
     cardPos: { type: String, default: '' },
     cardLote: { type: String, default: '', trim: true },
     cardVoucher: { type: String, default: '', trim: true },
@@ -70,6 +86,15 @@ const saleSchema = new mongoose.Schema(
     // Zona/sector dentro de la ciudad (zonas de Guayaquil pre-cargadas)
     clientZone: { type: String, trim: true },
     items: [saleItemSchema],
+    /**
+     * Bodega de la que sale la mercadería y CENTRO DE COSTO con el que se registra la venta.
+     * El centro se PROPONE desde la bodega (`Warehouse.costCenter`) y se puede cambiar
+     * confirmando la diferencia (`services/costCenterPolicy`). Es el que llevan el asiento de
+     * ingreso, el de costo, los movimientos de inventario y el reporte de ventas.
+     * Un servicio no tiene bodega: entonces no hay centro de bodega que proponer.
+     */
+    warehouse: { type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse', default: null },
+    costCenter: { type: mongoose.Schema.Types.ObjectId, ref: 'CostCenter', default: null },
     subtotal: { type: Number, required: true },
     taxableSubtotal: { type: Number, default: 0 },
     subtotal0: { type: Number, default: 0 },

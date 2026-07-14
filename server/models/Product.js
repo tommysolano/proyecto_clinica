@@ -13,6 +13,8 @@ const productSchema = new mongoose.Schema(
       required: [true, 'El código es requerido'],
       trim: true,
     },
+    // Código de barras (opcional): permite buscar el producto con lector en la toma física.
+    barcode: { type: String, default: '', trim: true, index: true },
     name: {
       type: String,
       required: [true, 'El nombre es requerido'],

@@ -152,7 +152,12 @@ exports.create = async (req, res) => {
             const s = await Sale.findOne({ _id: a.docRef, clinic: req.clinicId }).session(session);
             if (!s) throw Object.assign(new Error('Venta no encontrada'), { status: 400 });
             if (s.status === 'anulada') throw Object.assign(new Error('No se puede cobrar una venta anulada'), { status: 400 });
-            if (s.paymentMethod !== 'credito') throw Object.assign(new Error('La venta no es a crédito'), { status: 400 });
+            // Lo que habilita el cobro es que la venta TENGA saldo, no que su método resumen sea
+            // 'credito': una venta MIXTA (parte efectivo, parte a crédito) tiene `paymentMethod`
+            // 'mixto' y una CxC real, y antes no se la podía cobrar nunca.
+            if (!(Number(s.balance || 0) > 0.005)) {
+              throw Object.assign(new Error('La venta no tiene saldo pendiente de cobro'), { status: 400 });
+            }
             if (a.amount > Number(s.balance || 0) + 0.01) {
               throw Object.assign(new Error('El cobro excede el saldo de la venta'), { status: 400 });
             }

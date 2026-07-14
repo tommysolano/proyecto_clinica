@@ -6,11 +6,38 @@ import Field from '../../components/Field';
 import { HiOutlineChartBar, HiOutlineArrowDownTray, HiOutlinePlus, HiOutlineTag, HiOutlineTrash, HiOutlinePencilSquare } from 'react-icons/hi2';
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { fmt, startOfMonth, endOfMonth } from './_utils';
+import SalesDetailReport from './_SalesDetailReport';
 
 const COLORS = ['#10b981', '#0ea5e9', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
 const METHOD_LABELS = { efectivo: 'Efectivo', tarjeta: 'Tarjeta', transferencia: 'Transferencia' };
 
+/** Cabecera compartida por las dos vistas: rango y cambio de pestaña. */
+function Cabecera({ vista, setVista, rango, setRango }) {
+  return (
+    <div className="flex items-center justify-between flex-wrap gap-2">
+      <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
+        <HiOutlineChartBar className="text-emerald-600" /> Reportes de Ventas
+      </h1>
+      <div className="flex items-end gap-2">
+        <label className="text-xs text-slate-500">Desde
+          <input type="date" value={rango.startDate} onChange={(e) => setRango({ ...rango, startDate: e.target.value })}
+            className="block border border-slate-200 rounded-lg px-2 py-1.5" />
+        </label>
+        <label className="text-xs text-slate-500">Hasta
+          <input type="date" value={rango.endDate} onChange={(e) => setRango({ ...rango, endDate: e.target.value })}
+            className="block border border-slate-200 rounded-lg px-2 py-1.5" />
+        </label>
+        <button onClick={() => setVista(vista === 'detalle' ? 'resumen' : 'detalle')}
+          className="px-3 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg text-sm">
+          {vista === 'detalle' ? 'Ver gráficos' : 'Detalle conciliable'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export default function SalesReports() {
+  const [vista, setVista] = useState('resumen');   // resumen (gráficos) | detalle (conciliable)
   const [products, setProducts] = useState([]);
   const [categories, setCategories] = useState([]);
   const [filters, setFilters] = useState({ startDate: startOfMonth(), endDate: endOfMonth(), products: [], categories: [] });
@@ -44,14 +71,16 @@ export default function SalesReports() {
     catch (e) { toast.error(e.response?.data?.message || 'Error'); }
     finally { setLoading(false); }
   };
-  useEffect(() => { run(); /* eslint-disable-next-line */ }, []);
+  // Carga inicial: el resto de consultas las dispara el botón (no se re-consulta al teclear).
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { run(); }, []);
 
   const downloadExcel = async () => {
     try {
       const r = await api.get('/sales-reports/excel', { params: params(), responseType: 'blob' });
       const u = URL.createObjectURL(r.data); const a = document.createElement('a');
       a.href = u; a.download = 'reporte-ventas.xlsx'; a.click(); URL.revokeObjectURL(u);
-    } catch (e) { toast.error('Error al exportar'); }
+    } catch { toast.error('Error al exportar'); }
   };
 
   const toggleProduct = (id) => setFilters((f) => ({ ...f, products: f.products.includes(id) ? f.products.filter((x) => x !== id) : [...f.products, id] }));
@@ -84,11 +113,28 @@ export default function SalesReports() {
     </div>
   );
 
+  if (vista === 'detalle') {
+    return (
+      <div className="space-y-4">
+        <Cabecera vista={vista} setVista={setVista} rango={filters} setRango={setFilters} />
+        {/* Reporte CONCILIABLE: documentos, líneas y pagos reales (motor único del backend). */}
+        <SalesDetailReport
+          rango={{ startDate: filters.startDate, endDate: filters.endDate }}
+          categories={categories}
+          products={products}
+        />
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineChartBar className="text-emerald-600" /> Reportes de Ventas</h1>
         <div className="flex gap-2">
+          <button onClick={() => setVista('detalle')} className="px-3 py-2 bg-white border border-slate-200 text-slate-700 rounded-lg text-sm">
+            Detalle conciliable
+          </button>
           <button onClick={openNewCat} className="px-3 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2 text-sm"><HiOutlineTag /> Categorías</button>
           <button onClick={downloadExcel} className="px-3 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 text-sm"><HiOutlineArrowDownTray /> Excel detallado</button>
         </div>

@@ -115,6 +115,8 @@ export default function PurchaseInvoices() {
   const [payForm, setPayForm] = useState({ method: 'TRANSFERENCIA', bankAccount: '', voucherNumber: '', checkNumber: '', amount: 0, date: today() });
   const [formError, setFormError] = useState(''); // error visible DENTRO del modal (no solo toast)
   const [sriMismatch, setSriMismatch] = useState(null); // { sri, entered, diff, payload } → modal de confirmación
+  // { warehouse, esperado, elegido } → el centro elegido no es el predeterminado de la bodega.
+  const [ccMismatch, setCcMismatch] = useState(null);
 
   // Solo la respuesta de la última búsqueda actualiza la lista.
   const reqRef = useRef(0);
@@ -190,6 +192,51 @@ export default function PurchaseInvoices() {
 
   // ---- Manipulación de líneas por _uid ----
   const setItem = (u, patch) => setForm((f) => ({ ...f, items: f.items.map((it) => (it._uid === u ? { ...it, ...patch } : it)) }));
+
+  /**
+   * Al elegir la BODEGA de una línea se PROPONE su centro de costo. Es una propuesta:
+   *   · si la línea aún no tiene centro, se rellena con el de la bodega;
+   *   · si ya tiene uno elegido, NO se pisa (el documento manda).
+   * La advertencia de "centro distinto al de la bodega" y la confirmación las decide el
+   * BACKEND (`COST_CENTER_MISMATCH`): aquí solo se anticipa para que el usuario lo vea antes.
+   */
+  const onPickWarehouse = (u, warehouseId) => {
+    const wh = warehouses.find((w) => String(w._id) === String(warehouseId));
+    const propuesto = wh?.costCenter?._id || wh?.costCenter || '';
+    setForm((f) => ({
+      ...f,
+      items: f.items.map((it) => {
+        if (it._uid !== u) return it;
+        const centroActual = it.costCenter || '';
+        return { ...it, warehouse: warehouseId || '', costCenter: centroActual || propuesto || '' };
+      }),
+    }));
+  };
+
+  /** Centro esperado por la bodega de la línea (para avisar de la diferencia). */
+  const centroDeBodega = (it) => {
+    const wh = warehouses.find((w) => String(w._id) === String(it.warehouse));
+    return wh?.costCenter?._id || wh?.costCenter || '';
+  };
+  const nombreCentro = (id) => {
+    const c = costCenters.find((x) => String(x._id) === String(id));
+    return c ? `${c.code} - ${c.name}` : '(sin centro)';
+  };
+  // Líneas cuya bodega tiene un centro predeterminado distinto del elegido.
+  const diferenciasCentro = form.items
+    .map((it) => {
+      const esperado = centroDeBodega(it);
+      if (!it.warehouse || !esperado || !it.costCenter) return null;
+      if (String(esperado) === String(it.costCenter)) return null;
+      const wh = warehouses.find((w) => String(w._id) === String(it.warehouse));
+      return {
+        linea: it.description || '(sin descripción)',
+        bodega: wh?.name || '',
+        esperado: nombreCentro(esperado),
+        elegido: nombreCentro(it.costCenter),
+      };
+    })
+    .filter(Boolean);
   const removeItem = (u) => setForm((f) => ({ ...f, items: f.items.filter((it) => it._uid !== u) }));
   const addItem = (lineType) => setForm((f) => {
     const it = makeItem(lineType);
@@ -447,7 +494,7 @@ export default function PurchaseInvoices() {
     return api.post('/purchase-invoices', payload);
   };
 
-  const closeForm = () => { setShow(false); setForm(EMPTY); setAuthorizeId(null); setEditId(null); setFormError(''); setSriMismatch(null); };
+  const closeForm = () => { setShow(false); setForm(EMPTY); setAuthorizeId(null); setEditId(null); setFormError(''); setSriMismatch(null); setCcMismatch(null); };
 
   const submit = async (e) => {
     e.preventDefault();
@@ -475,38 +522,50 @@ export default function PurchaseInvoices() {
         }
       }
     }
+    await enviar({}, authorizeId ? 'Factura contabilizada' : editId ? 'Cambios guardados' : 'Registrada');
+  };
+
+  /**
+   * Envío ÚNICO. `extra` acumula las confirmaciones explícitas del usuario (diferencia con el
+   * SRI, centro de costo distinto al de la bodega) para que confirmar una no pierda la otra:
+   * el backend puede rechazar por las dos, una detrás de otra.
+   */
+  const enviar = async (extra = {}, okMsg = 'Guardada') => {
     try {
       const serie = form.serie || `${form.estab}-${form.ptoEmi}-${form.secuencial}`;
-      const items = buildItemsPayload(cleanItems);
-      const payload = { ...form, items, serie, costCenter: form.costCenter || null, fechaVencimiento: form.fechaVencimiento || null, fechaEmision: new Date(form.fechaEmision) };
-      await sendInvoice(payload);
-      toast.success(authorizeId ? 'Factura contabilizada' : editId ? 'Cambios guardados' : 'Registrada');
+      const items = buildItemsPayload(form.items.filter(lineHasData));
+      await sendInvoice({
+        ...form, items, serie,
+        costCenter: form.costCenter || null,
+        fechaVencimiento: form.fechaVencimiento || null,
+        fechaEmision: new Date(form.fechaEmision),
+        ...extra,
+      });
+      toast.success(okMsg);
       closeForm(); load();
     } catch (err) {
       const data = err.response?.data;
       // Los totales editados no coinciden con los del SRI: modal de verificación
       // (no bloquea; el usuario puede confirmar bajo su responsabilidad).
-      if (data?.code === 'SRI_MISMATCH') { setSriMismatch({ sri: data.sri, entered: data.entered, diff: data.diff }); return; }
+      if (data?.code === 'SRI_MISMATCH') { setSriMismatch({ sri: data.sri, entered: data.entered, diff: data.diff, extra }); return; }
+      // El centro de costo elegido no es el predeterminado de la bodega: se explica y se pide
+      // confirmación. La compra queda con el centro ELEGIDO, y la diferencia, auditada.
+      if (data?.code === 'COST_CENTER_MISMATCH') { setCcMismatch({ ...data, extra }); return; }
       fail(data?.message || 'Error');
     }
   };
 
   // El usuario revisó la comparación contra el SRI y decide continuar: se reenvía con
   // la aceptación explícita (queda marcada en la factura y en el log de auditoría).
-  const confirmSriMismatch = async () => {
-    try {
-      const serie = form.serie || `${form.estab}-${form.ptoEmi}-${form.secuencial}`;
-      const cleanItems = form.items.filter(lineHasData);
-      // Reusa el mismo payload del submit (recalculado sobre el estado actual del form).
-      const items = buildItemsPayload(cleanItems);
-      await sendInvoice({ ...form, items, serie, costCenter: form.costCenter || null, fechaVencimiento: form.fechaVencimiento || null, fechaEmision: new Date(form.fechaEmision), acceptSriMismatch: true });
-      toast.success('Factura contabilizada (diferencia con SRI aceptada y auditada)');
-      closeForm(); load();
-    } catch (err) {
-      setSriMismatch(null);
-      fail(err.response?.data?.message || 'Error');
-    }
-  };
+  const confirmSriMismatch = () => enviar(
+    { ...(sriMismatch?.extra || {}), acceptSriMismatch: true },
+    'Factura contabilizada (diferencia con SRI aceptada y auditada)'
+  );
+
+  const confirmCostCenter = () => enviar(
+    { ...(ccMismatch?.extra || {}), costCenterConfirmed: true },
+    'Registrada con el centro de costo elegido (diferencia auditada)'
+  );
 
   const loadIntoForm = async (p, mode) => {
     try {
@@ -793,6 +852,24 @@ export default function PurchaseInvoices() {
               <button type="button" onClick={() => setFormError('')} aria-label="Cerrar error" className="shrink-0 text-rose-400 hover:text-rose-600"><HiOutlineXMark className="w-4 h-4" /></button>
             </div>
           )}
+          {/* Aviso ANTES de enviar: alguna línea usa un centro distinto al predeterminado de su
+              bodega. No bloquea (el documento manda), pero al guardar habrá que confirmarlo. */}
+          {diferenciasCentro.length > 0 && (
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-start gap-2 text-amber-800">
+              <HiOutlineExclamationTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+              <div className="text-sm flex-1">
+                <p className="font-semibold">Centro de costo distinto al de la bodega</p>
+                <ul className="mt-1 space-y-0.5 text-xs">
+                  {diferenciasCentro.map((d, i) => (
+                    <li key={i}>
+                      <b>{d.linea}</b> · bodega <b>{d.bodega}</b>: esperado {d.esperado}, se registrará con <b>{d.elegido}</b>.
+                    </li>
+                  ))}
+                </ul>
+                <p className="text-xs mt-1">Al guardar se te pedirá confirmarlo y quedará auditado.</p>
+              </div>
+            </div>
+          )}
           {authorizeId && <div className="bg-amber-50 border border-amber-200 text-amber-800 text-xs rounded-lg px-3 py-2">Factura cargada automáticamente. Clasifica cada renglón (Productos, Gastos o Activos fijos) y verifica los datos antes de contabilizar.</div>}
           <SriCompareBanner sri={form.sriTotals} totals={totals} ice={+form.ice || 0} propina={+form.propina || 0} />
 
@@ -876,7 +953,7 @@ export default function PurchaseInvoices() {
                             </div>
                             {missing && <div className="text-[11px] text-rose-600 flex items-center gap-1 mt-1"><HiOutlineExclamationTriangle className="w-3.5 h-3.5" /> {cat ? 'La categoría del producto no tiene cuenta de inventario' : 'El producto no tiene categoría contable'}</div>}
                           </td>
-                          <td className="py-1.5 px-2 min-w-[110px]"><SearchableSelect options={[{ _id: '', name: 'General' }, ...warehouses]} value={it.warehouse} onChange={(v) => setItem(it._uid, { warehouse: v })} getLabel={(w) => w.name} placeholder="General" searchPlaceholder="Buscar bodega…" size="sm" /></td>
+                          <td className="py-1.5 px-2 min-w-[110px]"><SearchableSelect options={[{ _id: '', name: 'General' }, ...warehouses]} value={it.warehouse} onChange={(v) => onPickWarehouse(it._uid, v)} getLabel={(w) => w.name} placeholder="General" searchPlaceholder="Buscar bodega…" size="sm" /></td>
                           <td className="py-1.5 px-2 w-20"><NumericInput step="0.01" value={it.quantity} onChange={(e) => setItem(it._uid, { quantity: +e.target.value })} className={`${inputCls} text-right`} /></td>
                           <td className="py-1.5 px-2 w-24"><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(it._uid, { unitPrice: +e.target.value })} className={`${inputCls} text-right`} /></td>
                           <td className="py-1.5 px-2 w-20"><NumericInput step="0.01" value={it.discount} onChange={(e) => setItem(it._uid, { discount: +e.target.value })} className={`${inputCls} text-right`} /></td>
@@ -1130,6 +1207,44 @@ export default function PurchaseInvoices() {
             <div className="flex justify-end gap-2">
               <button type="button" onClick={() => setSriMismatch(null)} className="px-4 py-2 bg-slate-200 rounded-xl">Volver a revisar</button>
               <button type="button" onClick={confirmSriMismatch} className="px-4 py-2 bg-amber-600 text-white rounded-xl shadow-sm shadow-amber-600/20">Continuar bajo mi responsabilidad</button>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* El centro de costo elegido no es el predeterminado de la bodega. No se bloquea: se
+          explica (bodega, centro esperado, centro elegido) y se pide confirmación. La compra
+          queda con el centro ELEGIDO y la diferencia se audita. */}
+      <Modal isOpen={!!ccMismatch} onClose={() => setCcMismatch(null)} title="Centro de costo distinto al de la bodega" size="md">
+        {ccMismatch && (
+          <div className="space-y-3">
+            <div className="bg-amber-50 border border-amber-200 rounded-xl p-3 flex items-start gap-2 text-amber-800">
+              <HiOutlineExclamationTriangle className="w-5 h-5 shrink-0 mt-0.5" />
+              <p className="text-sm">
+                La bodega <b>{ccMismatch.warehouse?.name}</b> tiene un centro de costo predeterminado
+                distinto del que estás usando en esta compra.
+              </p>
+            </div>
+            <table className="w-full text-sm">
+              <tbody>
+                <tr className="border-t">
+                  <td className="px-3 py-2 font-medium text-slate-700">Centro esperado (bodega)</td>
+                  <td className="px-3 py-2 text-right">{ccMismatch.esperado?.code} - {ccMismatch.esperado?.name}</td>
+                </tr>
+                <tr className="border-t bg-amber-50">
+                  <td className="px-3 py-2 font-medium text-slate-700">Centro elegido</td>
+                  <td className="px-3 py-2 text-right font-semibold text-amber-700">{ccMismatch.elegido?.code} - {ccMismatch.elegido?.name}</td>
+                </tr>
+              </tbody>
+            </table>
+            <p className="text-xs text-slate-500">
+              Si continúas, la compra <b>quedará registrada con el centro elegido</b> ({ccMismatch.elegido?.name}),
+              y así irá al asiento, al movimiento de inventario y a los activos fijos que genere.
+              La diferencia queda en el log de auditoría.
+            </p>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setCcMismatch(null)} className="px-4 py-2 bg-slate-200 rounded-xl">Volver a revisar</button>
+              <button type="button" onClick={confirmCostCenter} className="px-4 py-2 bg-amber-600 text-white rounded-xl shadow-sm shadow-amber-600/20">Registrar con el centro elegido</button>
             </div>
           </div>
         )}

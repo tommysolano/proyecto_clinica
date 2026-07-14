@@ -11,6 +11,10 @@ const inventoryLayerSchema = new mongoose.Schema(
     clinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', required: true, index: true },
     product: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true, index: true },
     warehouse: { type: mongoose.Schema.Types.ObjectId, ref: 'Warehouse', default: null },
+    // Centro de costo con el que ENTRÓ el stock (el que se usó en el documento, no el de la
+    // bodega: pueden diferir si se confirmó la diferencia). Viaja con la capa para que el costo
+    // de venta que la consume pueda decir de qué centro salió.
+    costCenter: { type: mongoose.Schema.Types.ObjectId, ref: 'CostCenter', default: null },
     lot: { type: String, default: '' },
     expiryDate: { type: Date, default: null },
     qtyInitial: { type: Number, required: true, min: 0 },
