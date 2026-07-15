@@ -12,7 +12,7 @@
  */
 const WhatsappAccount = require('../models/WhatsappAccount');
 
-const API_VERSION = process.env.WHATSAPP_API_VERSION || 'v20.0';
+const API_VERSION = process.env.WHATSAPP_API_VERSION || 'v23.0';
 
 async function raiseQualityAlert(clinicId, { severity, title, body, meta }) {
   const Notification = require('../models/Notification');

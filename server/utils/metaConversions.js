@@ -24,7 +24,7 @@ const crypto = require('crypto');
  * NUNCA debe romper el flujo de negocio que lo dispara.
  */
 
-const API_VERSION = process.env.WHATSAPP_API_VERSION || 'v20.0';
+const API_VERSION = process.env.WHATSAPP_API_VERSION || 'v23.0';
 
 /** SHA-256 en hex sobre el dato normalizado (trim + minúsculas), como exige Meta. */
 function hashSha256(value) {

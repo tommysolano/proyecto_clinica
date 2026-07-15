@@ -150,6 +150,28 @@ exports.remove = async (req, res) => {
   }
 };
 
+/**
+ * Explica exactamente qué falta para operar plantillas contra Meta (las
+ * plantillas viven en la WABA de un número Cloud API). Devuelve '' si está OK.
+ */
+function describeMissingCloudAccount(account) {
+  if (!account) {
+    return (
+      'No hay ningún número Cloud API activo. Las plantillas se registran en la cuenta ' +
+      'de WhatsApp Business (WABA) de un número Cloud API — los números QR no usan plantillas. ' +
+      'Agrega o activa uno en Configuración del Call Center.'
+    );
+  }
+  const faltan = [
+    !account.accessToken && 'el Access Token',
+    !account.businessAccountId && 'el WABA ID (WhatsApp Business Account ID)',
+  ]
+    .filter(Boolean)
+    .join(' y ');
+  if (!faltan) return '';
+  return `Al número Cloud API "${account.label}" le falta ${faltan}. Complétalo en Configuración del Call Center → editar ese número.`;
+}
+
 const META_STATUS_MAP = {
   APPROVED: 'approved',
   PENDING: 'pending',
@@ -308,9 +330,8 @@ async function syncTemplatesFromMeta(clinicId, createdBy = null) {
   // Las plantillas viven en el WABA del número Cloud API por defecto (config global).
   const gateway = require('../utils/whatsappGateway');
   const account = await gateway.getDefaultCloudAccount();
-  if (!account?.accessToken || !account?.businessAccountId) {
-    return { ok: false, reason: 'not_configured' };
-  }
+  const missing = describeMissingCloudAccount(account);
+  if (missing) return { ok: false, reason: 'not_configured', error: missing };
   const accessToken = require('../utils/secretCrypto').decryptSecret(account.accessToken);
   const url = `https://graph.facebook.com/${API_VERSION}/${account.businessAccountId}/message_templates?fields=name,status,category,language,components,rejected_reason,id&limit=200&access_token=${accessToken}`;
   const r = await fetch(url);
@@ -358,7 +379,7 @@ exports.syncWhatsapp = async (req, res) => {
     const result = await syncTemplatesFromMeta(req.clinicId, req.user._id);
     if (!result.ok) {
       if (result.reason === 'not_configured') {
-        return res.status(400).json({ message: 'Falta businessAccountId / accessToken de WhatsApp para sincronizar con Meta' });
+        return res.status(400).json({ message: result.error || 'Falta businessAccountId / accessToken de WhatsApp para sincronizar con Meta' });
       }
       return res.status(502).json({ message: 'Error al consultar plantillas en Meta', error: result.error });
     }
@@ -609,9 +630,8 @@ async function uploadHeaderMediaHandle(accessToken, tpl) {
 async function submitTemplateToMeta(tpl) {
   const gateway = require('../utils/whatsappGateway');
   const account = await gateway.getDefaultCloudAccount();
-  if (!account?.accessToken || !account?.businessAccountId) {
-    return { ok: false, reason: 'not_configured' };
-  }
+  const missing = describeMissingCloudAccount(account);
+  if (missing) return { ok: false, reason: 'not_configured', error: missing };
   const accessToken = require('../utils/secretCrypto').decryptSecret(account.accessToken);
   // Cabecera multimedia: subir el archivo a Meta y registrar con su handle.
   let headerHandle = '';
@@ -673,7 +693,7 @@ exports.submit = async (req, res) => {
     if (!result.ok) {
       if (result.reason === 'not_configured') {
         return res.status(400).json({
-          message: 'Falta el número Cloud API por defecto (WABA ID + Access Token) para enviar a Meta',
+          message: result.error || 'Falta el número Cloud API por defecto (WABA ID + Access Token) para enviar a Meta',
         });
       }
       return res.status(502).json({ message: result.error || 'Meta rechazó la solicitud', detail: result.data?.error });

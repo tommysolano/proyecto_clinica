@@ -14,7 +14,8 @@ const WhatsappAccount = require('../models/WhatsappAccount');
 const wa = require('./whatsappCloud');
 const { decryptSecret } = require('./secretCrypto');
 
-const DEFAULT_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v20.0';
+// v20.0 salió de soporte (mediados de 2026): mantener una versión vigente.
+const DEFAULT_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v23.0';
 
 // ── Resolución de cuentas ──
 
@@ -46,12 +47,20 @@ async function getCloudAccountByPhoneNumberId(phoneNumberId) {
   return WhatsappAccount.findOne({ connectionType: 'cloud_api', phoneNumberId: String(phoneNumberId) });
 }
 
-/** Cuenta Cloud API por defecto (para sincronizar plantillas con su WABA). */
+/**
+ * Cuenta Cloud API por defecto (para sincronizar/registrar plantillas en su WABA).
+ * Prefiere una cuenta COMPLETA (con token y WABA ID): si el número por defecto es
+ * QR o a la cuenta elegida le faltan credenciales, otra cuenta Cloud completa
+ * sirve igual. Si ninguna está completa devuelve la primera para que el caller
+ * pueda reportar exactamente qué campo falta.
+ */
 async function getDefaultCloudAccount() {
-  return (
-    (await WhatsappAccount.findOne({ connectionType: 'cloud_api', enabled: true, isDefault: true })) ||
-    (await WhatsappAccount.findOne({ connectionType: 'cloud_api', enabled: true }).sort({ createdAt: 1 }))
-  );
+  const clouds = await WhatsappAccount.find({ connectionType: 'cloud_api', enabled: true }).sort({
+    isDefault: -1,
+    createdAt: 1,
+  });
+  if (!clouds.length) return null;
+  return clouds.find((a) => a.accessToken && a.businessAccountId) || clouds[0];
 }
 
 function cloudCreds(account) {

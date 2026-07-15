@@ -407,7 +407,7 @@ exports.testWhatsappAccount = async (req, res) => {
       return res.status(400).json({ message: 'Falta accessToken o phoneNumberId' });
     }
     const token = decryptSecret(doc.accessToken);
-    const V = process.env.WHATSAPP_API_VERSION || 'v20.0';
+    const V = process.env.WHATSAPP_API_VERSION || 'v23.0';
     const checks = [];
 
     // 1) Inspección del token (un token puede inspeccionarse a sí mismo).
