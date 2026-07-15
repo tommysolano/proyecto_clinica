@@ -125,6 +125,52 @@ test('Trigger "cita agendada": paciente SIN teléfono también se inscribe (el f
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+test('Trigger "cita agendada" con contacto de número oculto (LID): el mensaje va a la conversación EXISTENTE del paciente', async () => {
+  const Conversation = require('../models/Conversation');
+  const WhatsappAccount = require('../models/WhatsappAccount');
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const userId = new H.mongoose.Types.ObjectId();
+  // Paciente vinculado desde el chat: SIN teléfono en la ficha (el número real
+  // de un contacto LID no se conoce).
+  const patient = await Patient.create({ clinic: clinic._id, firstName: 'Lid', lastName: 'Oculto' });
+  const acc = await WhatsappAccount.create({ label: 'Finca', connectionType: 'qr', enabled: true, status: 'connected' });
+  await Conversation.create({
+    clinic: clinic._id,
+    phone: '243142896943159', // dígitos del LID: NO son un teléfono real
+    channel: 'whatsapp',
+    patient: patient._id,
+    externalUserId: '243142896943159@lid',
+    whatsappAccount: acc._id,
+  });
+  const prod = await H.makeProduct(clinic._id, { category: 'servicio', unlimited: true });
+  const wf = await graphWorkflow(clinic._id);
+
+  const r = await H.runController(appointmentCtrl.createAppointment, H.mockReq(clinic._id, userId, {
+    patient: patient._id, services: [String(prod._id)], date: '2026-07-23', startTime: '09:00',
+  }));
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+
+  const enrollment = await waitFor(() =>
+    WorkflowEnrollment.findOne({ workflow: wf._id, patient: patient._id, status: 'done' })
+  );
+  assert.ok(enrollment, 'no se inscribió el workflow');
+  const sendLog = (enrollment.log || []).find((l) => l.type === 'send_message');
+  assert.ok(sendLog, 'sin rastro del envío en el log');
+  // ANTES: fallaba con "destino inválido" (buscaba la conversación por el
+  // teléfono de la ficha, vacío en contactos LID) y el mensaje no aparecía en
+  // ningún lado. AHORA resuelve la conversación del PACIENTE y llega hasta el
+  // proveedor (aquí falla solo porque la sesión QR no está viva en el test).
+  assert.match(String(sendLog.info || ''), /QR/i, `motivo inesperado: ${sendLog.info}`);
+  assert.doesNotMatch(String(sendLog.info || ''), /destino válido/i);
+  // Y el intento quedó en ESA conversación (visible en el chat), sin crear otra.
+  const convs = await Conversation.find({ clinic: clinic._id });
+  assert.equal(convs.length, 1, 'no debe crearse otra conversación');
+  const Message = require('../models/Message');
+  const msg = await Message.findOne({ conversation: convs[0]._id, direction: 'out' });
+  assert.ok(msg, 'el intento de envío debe quedar como mensaje en la conversación del paciente');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 test('Cupo por servicio: bloquea la 2ª cita en el mismo horario aunque el servicio sea de OTRA sucursal', async () => {
   const owner = await Clinic.create({ name: 'Matriz' }); // dueña del producto
   const branch = await Clinic.create({ name: 'Sucursal Norte' }); // donde se agenda

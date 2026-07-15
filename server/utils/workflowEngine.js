@@ -18,11 +18,14 @@ const MAX_LOG_ENTRIES = 60; // tope del registro de ejecución por inscripción
 const SEND_FAIL_REASONS = {
   out_of_window: 'WhatsApp: fuera de la ventana de 24h (el paciente no ha escrito recientemente). Usa el paso "Enviar plantilla" con una plantilla aprobada.',
   provider_unavailable: 'Canal no disponible: no hay número de WhatsApp conectado/configurado.',
-  invalid_recipient: 'El contacto no tiene un teléfono/destino válido.',
+  invalid_recipient: 'El contacto no tiene un teléfono/destino válido ni una conversación previa de WhatsApp.',
   opt_out: 'El paciente pidió no recibir mensajes (opt-out).',
+  no_whatsapp_consent: 'El paciente tiene desactivado el consentimiento de WhatsApp (ficha del paciente → Marketing).',
   no_email_consent: 'El paciente no aceptó recibir emails.',
   blocked: 'La conversación está bloqueada.',
   template_header_missing: 'La plantilla requiere una imagen/archivo de cabecera que no está guardado.',
+  qr_not_connected: 'El número QR por el que saldría este mensaje está desconectado: reconéctalo en Configuración del Call Center.',
+  qr_invalid_number: 'El teléfono del paciente no está en WhatsApp.',
 };
 
 /**
@@ -206,7 +209,18 @@ function evaluateCondition(step, { patient, conversation, context } = {}) {
   }
 }
 
-async function loadConversationForPatient(clinicId, phone) {
+async function loadConversationForPatient(clinicId, phone, patientId) {
+  // Primero por PACIENTE: los contactos con número oculto de WhatsApp (LID)
+  // tienen una conversación cuyo "phone" son los dígitos del LID, NO el
+  // teléfono de la ficha — buscar solo por teléfono no la encuentra nunca.
+  if (patientId) {
+    const byPatient = await Conversation.findOne({
+      clinic: clinicId,
+      patient: patientId,
+      channel: 'whatsapp',
+    }).sort({ lastMessageAt: -1 });
+    if (byPatient) return byPatient;
+  }
   if (!phone) return null;
   return Conversation.findOne({ clinic: clinicId, phone: messaging.normalizePhone(phone) });
 }
@@ -222,12 +236,23 @@ async function loadConversationForPatient(clinicId, phone) {
  */
 async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
   const loadConv = async () => {
-    if (!convRef.current) convRef.current = await loadConversationForPatient(clinicId, phone);
+    if (!convRef.current) convRef.current = await loadConversationForPatient(clinicId, phone, patient?._id);
     return convRef.current;
   };
   switch (step.type) {
     case 'send_message': {
-      const r = await messaging.send({ clinicId, channel: 'whatsapp', to: phone, patient, body: personalize(step.body, patient), isAutoReply: true });
+      // Se envía a la CONVERSACIÓN existente del paciente (imprescindible con
+      // números ocultos/LID, donde el teléfono de la ficha no sirve de destino);
+      // si no hay ninguna, messaging la crea a partir del teléfono.
+      const r = await messaging.send({
+        clinicId,
+        channel: 'whatsapp',
+        conversation: await loadConv(),
+        to: phone,
+        patient,
+        body: personalize(step.body, patient),
+        isAutoReply: true,
+      });
       return sendFailureInfo(r);
     }
     case 'send_template': {
@@ -236,6 +261,7 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
       const r = await messaging.send({
         clinicId,
         channel: 'whatsapp',
+        conversation: await loadConv(),
         to: phone,
         patient,
         template: { name: step.templateName, language: step.templateLanguage || 'es' },
@@ -301,7 +327,7 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
       const base = process.env.PUBLIC_API_URL || '';
       const link = base ? `${base}/api/public/review/${token}` : '';
       const text = personalize(step.body || '¡Hola {{nombre}}! ¿Cómo fue tu experiencia con nosotros? Califícanos aquí:', patient);
-      const r = await messaging.send({ clinicId, channel: 'whatsapp', to: phone, patient, body: link ? `${text}\n${link}` : text, isAutoReply: true });
+      const r = await messaging.send({ clinicId, channel: 'whatsapp', conversation: await loadConv(), to: phone, patient, body: link ? `${text}\n${link}` : text, isAutoReply: true });
       return sendFailureInfo(r);
     }
     case 'ai_reply': {
@@ -471,7 +497,7 @@ async function executeEnrollment(enrollment) {
     : null;
   const ctx = enrollment.context || {};
   const phone = ctx.phone || patient?.whatsapp || patient?.phone || '';
-  let conversation = await loadConversationForPatient(enrollment.clinic, phone);
+  let conversation = await loadConversationForPatient(enrollment.clinic, phone, patient?._id);
 
   // Estamos ejecutando activamente: ya no esperamos respuesta (se reactivará si
   // un próximo paso wait_reply vuelve a pausar).
@@ -495,6 +521,7 @@ async function executeEnrollment(enrollment) {
       const r = await messaging.send({
         clinicId: enrollment.clinic,
         channel: 'whatsapp',
+        conversation,
         to: phone,
         patient,
         body: personalize(step.body, patient),
@@ -508,6 +535,7 @@ async function executeEnrollment(enrollment) {
       const r = await messaging.send({
         clinicId: enrollment.clinic,
         channel: 'whatsapp',
+        conversation,
         to: phone,
         patient,
         template: { name: step.templateName, language: step.templateLanguage || 'es' },
@@ -626,6 +654,7 @@ async function executeEnrollment(enrollment) {
       await messaging.send({
         clinicId: enrollment.clinic,
         channel: 'whatsapp',
+        conversation,
         to: phone,
         patient,
         body: link ? `${text}\n${link}` : text,
