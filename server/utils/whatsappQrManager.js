@@ -496,12 +496,23 @@ async function waitForConnected(key, timeoutMs = 45000) {
  */
 async function sendResolvingQuote(entry, chatId, content, quotedMessageId, opts = {}) {
   if (quotedMessageId) {
+    // 1) Cargar el mensaje (getMessageById lo trae del store O del servidor) y
+    //    citar con reply() usando el chat del propio mensaje.
     try {
       const original = await entry.client.getMessageById(quotedMessageId);
-      if (original) return await original.reply(content, chatId, opts);
-      console.warn('[whatsapp-qr quote] mensaje citado no encontrado:', quotedMessageId);
+      if (original) return await original.reply(content, undefined, opts);
+      console.warn('[whatsapp-qr quote] getMessageById devolvió null:', quotedMessageId);
     } catch (e) {
-      console.warn('[whatsapp-qr quote]', e.message);
+      console.warn('[whatsapp-qr quote] getMessageById:', e.message);
+    }
+    // 2) Fallback: citar directo por id (por si el store SÍ lo tiene aunque
+    //    getMessageById fallara). whatsapp-web.js con ignoreQuoteErrors=false
+    //    lanza si no puede citar, así lo detectamos en vez de mandar normal en
+    //    silencio; si lanza, caemos al envío normal de más abajo.
+    try {
+      return await entry.client.sendMessage(chatId, content, { ...opts, quotedMessageId, ignoreQuoteErrors: false });
+    } catch (e) {
+      console.warn('[whatsapp-qr quote] sendMessage+quote falló, se envía normal:', e.message, quotedMessageId);
     }
   }
   return entry.client.sendMessage(chatId, content, opts);

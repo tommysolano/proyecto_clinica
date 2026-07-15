@@ -635,6 +635,17 @@ async function send({
     isAutoReply,
   });
 
+  // Diagnóstico de citas: un mensaje sin wamid (p.ej. creado por "Simular
+  // entrante") NO se puede citar en WhatsApp, aunque el CRM muestre el bloque.
+  if (replyTo) {
+    console.log(
+      '[reply]',
+      replyTo.externalId
+        ? `citando wamid ${replyTo.externalId} (canal ${normalizedChannel}, cuenta ${account?.connectionType || 'n/a'})`
+        : 'el mensaje citado NO tiene wamid: se enviará sin cita en WhatsApp (¿mensaje simulado?)'
+    );
+  }
+
   const providerResult = await sendToProvider({
     clinicId,
     channel: normalizedChannel,
