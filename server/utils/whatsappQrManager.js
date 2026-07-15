@@ -513,11 +513,50 @@ async function waitForConnected(key, timeoutMs = 45000) {
  */
 function findQuoteTargetId(entry, chatId, wamid, quoteBody) {
   return entry.client.pupPage.evaluate(async (chatId, wamid, body) => {
+    // En chats LID el modelo del store puede NO exponer `id._serialized`
+    // (probado en producción: se encontraba el mensaje por texto y el id salía
+    // vacío). Se serializa de forma tolerante y, si hace falta, se reconstruye
+    // a mano: fromMe_remoto_id[_participante].
+    const widStr = (w) => {
+      if (!w) return '';
+      if (typeof w === 'string') return w;
+      if (w._serialized) return String(w._serialized);
+      if (w.user && w.server) return w.user + '@' + w.server;
+      const s = typeof w.toString === 'function' ? w.toString() : '';
+      return s && s !== '[object Object]' ? s : '';
+    };
+    const keyStr = (k) => {
+      if (!k) return '';
+      if (k._serialized) return String(k._serialized);
+      const s = typeof k.toString === 'function' ? k.toString() : '';
+      if (s && s !== '[object Object]') return s;
+      const remote = widStr(k.remote);
+      if (k.id && remote) {
+        const part = widStr(k.participant);
+        return (k.fromMe ? 'true' : 'false') + '_' + remote + '_' + k.id + (part ? '_' + part : '');
+      }
+      return '';
+    };
     try {
       const Coll = window.require('WAWebCollections');
+      // Devuelve el id del modelo encontrado, asegurando que el lookup que hará
+      // whatsapp-web.js al citar (Msg.get global) lo pueda resolver.
+      const finish = (m, step) => {
+        const id = keyStr(m.id);
+        if (!id) {
+          const shape = m.id ? Object.keys(m.id).slice(0, 8).join(',') : 'sin_id';
+          return { id: '', step: step + '_sin_serializar(' + shape + ')' };
+        }
+        let extra = '';
+        if (!Coll.Msg.get(id)) {
+          try { Coll.Msg.add(m); } catch (e) { /* colección no admite add */ }
+          if (!Coll.Msg.get(id)) extra = '+fuera_del_store_global';
+        }
+        return { id, step: step + extra };
+      };
       if (wamid) {
         const direct = Coll.Msg.get(wamid);
-        if (direct && direct.id) return { id: direct.id._serialized, step: 'store' };
+        if (direct && direct.id) return finish(direct, 'store');
       }
       const chat = await window.WWebJS.getChat(chatId, { getAsModel: false });
       if (!chat || !chat.msgs) return { id: '', step: 'chat_no_encontrado' };
@@ -535,12 +574,12 @@ function findQuoteTargetId(entry, chatId, wamid, quoteBody) {
       const hash = wamid ? String(wamid).split('_')[2] || '' : '';
       if (hash) {
         const byHash = msgs.filter((m) => m.id && m.id.id === hash);
-        if (byHash.length) return { id: byHash[byHash.length - 1].id._serialized, step: 'hash' };
+        if (byHash.length) return finish(byHash[byHash.length - 1], 'hash');
       }
       const needle = String(body || '').trim();
       if (needle) {
         const byBody = msgs.filter((m) => String(m.body || '').trim() === needle);
-        if (byBody.length) return { id: byBody[byBody.length - 1].id._serialized, step: 'texto' };
+        if (byBody.length) return finish(byBody[byBody.length - 1], 'texto');
       }
       return { id: '', step: 'sin_coincidencia(' + msgs.length + ' mensajes)' };
     } catch (e) {
