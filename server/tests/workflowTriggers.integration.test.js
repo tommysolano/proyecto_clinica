@@ -171,6 +171,43 @@ test('Trigger "cita agendada" con contacto de número oculto (LID): el mensaje v
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+test('Cita creada DESDE EL CHAT (createAppointmentFromChat) también dispara el workflow de "cita agendada"', async () => {
+  const chatCtrl = require('../controllers/chatController');
+  const Conversation = require('../models/Conversation');
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const userId = new H.mongoose.Types.ObjectId();
+  const patient = await Patient.create({ clinic: clinic._id, firstName: 'Chat', lastName: 'Agenda', phone: '0993334444' });
+  const conv = await Conversation.create({
+    clinic: clinic._id,
+    phone: '593993334444',
+    channel: 'whatsapp',
+    patient: patient._id,
+  });
+  const prod = await H.makeProduct(clinic._id, { category: 'servicio', unlimited: true, name: 'Botox' });
+  const wf = await graphWorkflow(clinic._id);
+
+  const r = await H.runController(
+    chatCtrl.createAppointmentFromChat,
+    H.mockReq(clinic._id, userId, {
+      appointments: [
+        { date: '2026-07-24', startTime: '11:00', services: [{ product: String(prod._id), quantity: 1 }] },
+      ],
+    }, { params: { id: String(conv._id) } })
+  );
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+
+  // ANTES: este camino creaba la cita sin emitir el evento de dominio y el
+  // workflow jamás se enteraba (el usuario probaba justo desde el chat).
+  const enrollment = await waitFor(() =>
+    WorkflowEnrollment.findOne({ workflow: wf._id, patient: patient._id, status: 'done' })
+  );
+  assert.ok(enrollment, 'la cita creada desde el chat no inscribió el workflow');
+  assert.equal(String(enrollment.context?.appointmentId || ''), String(r.payload.appointment._id));
+  const sendLog = (enrollment.log || []).find((l) => l.type === 'send_message');
+  assert.ok(sendLog, 'sin rastro del paso de envío');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 test('Cupo por servicio: bloquea la 2ª cita en el mismo horario aunque el servicio sea de OTRA sucursal', async () => {
   const owner = await Clinic.create({ name: 'Matriz' }); // dueña del producto
   const branch = await Clinic.create({ name: 'Sucursal Norte' }); // donde se agenda

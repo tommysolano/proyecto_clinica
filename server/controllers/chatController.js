@@ -2097,6 +2097,18 @@ exports.createAppointmentFromChat = async (req, res) => {
       first = false; // solo la primera puede ser "primera visita"
       created.push(appointment);
       emitToClinic(targetClinic, 'appointment:created', { id: appointment._id });
+      // Evento de DOMINIO: sin esto, las citas creadas desde el chat jamás
+      // disparaban los workflows de "cita agendada" (solo las de la página de
+      // Citas y la reserva online lo emitían).
+      const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
+      emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CREATED, {
+        clinicId: String(targetClinic),
+        patientId: String(conv.patient._id),
+        appointmentId: String(appointment._id),
+        appointmentDate: appointment.date,
+        isFirstVisit: !!appointment.isFirstVisit,
+        services: serviceItems.map((s) => String(s.product)).filter(Boolean),
+      });
     }
 
     // Link primera cita a la oportunidad
