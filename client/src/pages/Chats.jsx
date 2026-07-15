@@ -1314,46 +1314,70 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
       )}
 
       <div>
-        <div className="flex items-center justify-between mb-1">
-          <div className="text-xs font-semibold text-slate-500">Oportunidad</div>
-          <button onClick={onEditOpportunity} className="text-[10px] text-emerald-600 hover:underline">
-            {op.isOpportunity ? 'Editar' : 'Crear'}
-          </button>
-        </div>
-        {op.isOpportunity ? (
-          <div className="space-y-1 text-sm">
-            <span className={`inline-block text-[11px] px-2 py-0.5 rounded ${meta.color}`}>
-              {meta.label}
-            </span>
-            {op.expectedValue > 0 && (
-              <div className="text-xs text-slate-600">Valor esperado: ${op.expectedValue}</div>
-            )}
-            {(op.interestedIn || []).length > 0 && (
-              <div>
-                <div className="text-[10px] text-slate-400 mt-1">Interesado en:</div>
-                <div className="flex flex-wrap gap-1 mt-0.5">
-                  {(op.interestedIn || []).map((s, i) => (
-                    <span key={i} className="bg-slate-100 text-slate-600 text-[10px] px-1.5 py-0.5 rounded">
-                      {s.name || s.product?.name}
-                    </span>
-                  ))}
+        {(() => {
+          // Todas las oportunidades del chat (una por anuncio/interés). El campo
+          // `opportunity` es solo el espejo de la última; aquí se listan todas.
+          const opsList = (conv.opportunities || []).length
+            ? conv.opportunities
+            : op.isOpportunity
+            ? [op]
+            : [];
+          return (
+            <>
+              <div className="flex items-center justify-between mb-1">
+                <div className="text-xs font-semibold text-slate-500">
+                  Oportunidades{opsList.length > 0 ? ` (${opsList.length})` : ''}
                 </div>
+                <button onClick={onEditOpportunity} className="text-[10px] text-emerald-600 hover:underline">
+                  {opsList.length > 0 ? 'Editar / añadir' : 'Crear'}
+                </button>
               </div>
-            )}
-            {(op.tags || []).length > 0 && (
-              <div className="flex flex-wrap gap-1 mt-1">
-                {op.tags.map((t) => (
-                  <span key={t} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
-                    <HiOutlineTag className="w-2.5 h-2.5" />{t}
-                  </span>
-                ))}
-              </div>
-            )}
-            {op.notes && <div className="text-xs text-slate-500 italic">"{op.notes}"</div>}
-          </div>
-        ) : (
-          <div className="text-xs text-slate-400">No es una oportunidad aún.</div>
-        )}
+              {opsList.length === 0 ? (
+                <div className="text-xs text-slate-400">No es una oportunidad aún.</div>
+              ) : (
+                <div className="space-y-2">
+                  {opsList.map((o, idx) => {
+                    const m = STAGES.find((s) => s.value === o.stage) || STAGES[0];
+                    return (
+                      <div key={idx} className="border border-slate-100 rounded-lg p-2 space-y-1 text-sm">
+                        <div className="flex items-center justify-between gap-2">
+                          <span className={`inline-block text-[11px] px-2 py-0.5 rounded ${m.color}`}>{m.label}</span>
+                          {o.expectedValue > 0 && (
+                            <span className="text-[11px] text-slate-500">${o.expectedValue}</span>
+                          )}
+                        </div>
+                        {(o.attribution?.adId || o.attribution?.campaign) && (
+                          <div className="text-[10px] text-violet-700 bg-violet-50 border border-violet-100 rounded px-1.5 py-0.5 inline-block">
+                            📣 {o.attribution.campaign || `Anuncio ${o.attribution.adId}`}
+                          </div>
+                        )}
+                        {(o.interestedIn || []).length > 0 && (
+                          <div className="flex flex-wrap gap-1">
+                            {(o.interestedIn || []).map((s, i) => (
+                              <span key={i} className="bg-slate-100 text-slate-600 text-[10px] px-1.5 py-0.5 rounded">
+                                {s.name || s.product?.name}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        {(o.tags || []).length > 0 && (
+                          <div className="flex flex-wrap gap-1">
+                            {o.tags.map((t) => (
+                              <span key={t} className="inline-flex items-center gap-1 text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-50 text-emerald-700 border border-emerald-200">
+                                <HiOutlineTag className="w-2.5 h-2.5" />{t}
+                              </span>
+                            ))}
+                          </div>
+                        )}
+                        {o.notes && <div className="text-xs text-slate-500 italic">"{o.notes}"</div>}
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </>
+          );
+        })()}
       </div>
 
       <ConvTagsSection conv={conv} onUpdated={onUpdated} />
@@ -1968,6 +1992,7 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
       notes: op.notes || '',
       lostReason: op.lostReason || '',
       tags: op.tags || [],
+      attribution: op.attribution || null, // solo lectura: anuncio de origen
       interested: (op.interestedIn || []).map((s) => s.product?._id || s.product || '').filter(Boolean),
     }));
   }, [conv]);
@@ -2037,12 +2062,19 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
       <div className="space-y-4 text-sm">
         {items.map((it, idx) => (
           <div key={idx} className="border border-emerald-200 rounded-xl p-3 bg-emerald-50/40 space-y-3">
-            <div className="flex items-center justify-between">
-              <span className="text-xs font-bold text-emerald-700">Oportunidad #{idx + 1}</span>
+            <div className="flex items-center justify-between gap-2">
+              <span className="text-xs font-bold text-emerald-700 flex items-center gap-2 min-w-0">
+                Oportunidad #{idx + 1}
+                {(it.attribution?.adId || it.attribution?.campaign) && (
+                  <span className="text-[10px] font-normal text-violet-700 bg-violet-50 border border-violet-100 rounded px-1.5 py-0.5 truncate">
+                    📣 {it.attribution.campaign || `Anuncio ${it.attribution.adId}`}
+                  </span>
+                )}
+              </span>
               <button
                 type="button"
                 onClick={() => removeOne(idx, it._existingIdx)}
-                className="text-rose-600 text-xs bg-transparent border-none cursor-pointer"
+                className="text-rose-600 text-xs bg-transparent border-none cursor-pointer shrink-0"
               >
                 Quitar
               </button>

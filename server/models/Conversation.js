@@ -33,6 +33,13 @@ const opportunitySchema = new mongoose.Schema(
     appointment: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment', default: null },
     convertedAt: { type: Date },
     lostReason: { type: String, trim: true },
+    // De qué ANUNCIO nació esta oportunidad (click-to-WhatsApp). Permite tener
+    // una oportunidad por anuncio dentro del mismo chat.
+    attribution: {
+      adId: { type: String, trim: true, default: '' },
+      campaign: { type: String, trim: true, default: '' },
+      ctwaClid: { type: String, trim: true, default: '' },
+    },
     createdAt: { type: Date, default: Date.now },
   },
   { _id: false }

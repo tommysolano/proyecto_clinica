@@ -973,12 +973,14 @@ exports.listAllOpportunities = async (req, res) => {
       .sort({ lastMessageAt: -1 })
       .limit(500);
 
-    // Aplanar para devolver una oportunidad por fila.
+    // Aplanar para devolver una oportunidad por fila. OJO: `opportunity` es el
+    // ESPEJO de la última del array — si hay array, usar SOLO el array (antes se
+    // sumaban ambos y la oportunidad principal salía duplicada en el embudo).
     const rows = [];
     for (const c of list) {
       const opps = [];
-      if (c.opportunity?.isOpportunity) opps.push(c.opportunity);
-      if (Array.isArray(c.opportunities)) opps.push(...c.opportunities);
+      if (Array.isArray(c.opportunities) && c.opportunities.length) opps.push(...c.opportunities);
+      else if (c.opportunity?.isOpportunity) opps.push(c.opportunity);
       for (const op of opps) {
         const created = op.createdAt ? new Date(op.createdAt) : null;
         if (from && created && created < new Date(from)) continue;
@@ -999,6 +1001,9 @@ exports.listAllOpportunities = async (req, res) => {
           expectedValue: op.expectedValue,
           interestedIn: op.interestedIn,
           createdAt: op.createdAt,
+          // Anuncio del que nació la oportunidad (una por anuncio).
+          adId: op.attribution?.adId || '',
+          adCampaign: op.attribution?.campaign || '',
         });
       }
     }
@@ -1527,6 +1532,33 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   // Si llega atribución (click-to-WhatsApp) y la conversación aún no la tiene, guárdala.
   if (referral && referral.adId && !conv.attribution?.adId) {
     conv.attribution = referral;
+  }
+  // Cada ANUNCIO es una oportunidad distinta: si el mensaje viene de un anuncio
+  // y este chat aún no tiene una oportunidad de ESE anuncio, se crea sola
+  // (etapa 'nuevo') con su atribución — el agente la ve lista en el panel.
+  if (referral && referral.adId) {
+    const hasForAd =
+      (conv.opportunities || []).some((o) => o.attribution?.adId === referral.adId) ||
+      (!(conv.opportunities || []).length &&
+        conv.opportunity?.isOpportunity &&
+        conv.attribution?.adId === referral.adId);
+    if (!hasForAd) {
+      conv.opportunities = [
+        ...(conv.opportunities || []),
+        {
+          isOpportunity: true,
+          stage: 'nuevo',
+          notes: referral.campaign ? `Desde anuncio: ${referral.campaign}` : 'Desde anuncio (click-to-WhatsApp)',
+          attribution: {
+            adId: referral.adId,
+            campaign: referral.campaign || '',
+            ctwaClid: referral.ctwaClid || '',
+          },
+          createdAt: new Date(),
+        },
+      ];
+      syncPrimaryOpportunity(conv);
+    }
   }
   // Recuerda por qué número (global) entró el mensaje, para responder por el mismo.
   if (account && String(conv.whatsappAccount || '') !== String(account._id)) {
