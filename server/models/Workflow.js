@@ -61,6 +61,11 @@ const workflowStepSchema = new mongoose.Schema(
     // wait_until: fecha base del contexto + offset (offset negativo = antes)
     waitEvent: { type: String, enum: ['appointment_date', ''], default: '' },
     offsetMinutes: { type: Number, default: 0 },
+    // wait_until modo "hora fija": N días antes de la cita a las HH:MM (p.ej.
+    // recordatorio a las 18:00 del día anterior, sin importar la hora de la cita).
+    waitMode: { type: String, enum: ['', 'offset', 'clock'], default: '' },
+    daysBefore: { type: Number, default: 1, min: 0 },
+    atTime: { type: String, trim: true, default: '' },
     // wait_reply: pausa hasta que el paciente responda (o venza el timeout)
     timeoutMinutes: { type: Number, default: 720, min: 1 },
     // set_appointment_status: actualiza la cita del contexto

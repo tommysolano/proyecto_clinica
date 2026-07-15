@@ -13,6 +13,35 @@ test('computeWaitUntil returns null without a base date', () => {
   assert.equal(computeWaitUntil({ waitEvent: '', offsetMinutes: 0 }, { appointmentDate: new Date() }), null);
 });
 
+test('computeWaitUntil modo hora fija: N días antes de la cita a las HH:MM (hora local)', () => {
+  // Cita el 20 de junio (guardada a mediodía local); recordatorio 1 día antes a las 18:00.
+  const ctx = { appointmentDate: new Date(2026, 5, 20, 12, 0, 0) };
+  const target = computeWaitUntil(
+    { waitEvent: 'appointment_date', waitMode: 'clock', daysBefore: 1, atTime: '18:00' },
+    ctx
+  );
+  assert.equal(target.getFullYear(), 2026);
+  assert.equal(target.getMonth(), 5);
+  assert.equal(target.getDate(), 19); // día anterior
+  assert.equal(target.getHours(), 18);
+  assert.equal(target.getMinutes(), 0);
+
+  // Mismo día de la cita a las 08:30, sin importar la hora de la cita.
+  const sameDay = computeWaitUntil(
+    { waitEvent: 'appointment_date', waitMode: 'clock', daysBefore: 0, atTime: '08:30' },
+    ctx
+  );
+  assert.equal(sameDay.getDate(), 20);
+  assert.equal(sameDay.getHours(), 8);
+  assert.equal(sameDay.getMinutes(), 30);
+
+  // Hora inválida → null (el runner continúa sin esperar en vez de romperse).
+  assert.equal(
+    computeWaitUntil({ waitEvent: 'appointment_date', waitMode: 'clock', daysBefore: 1, atTime: 'x' }, ctx),
+    null
+  );
+});
+
 test('evaluateCondition checks tags', () => {
   const patient = { tags: ['ortodoncia', 'vip'] };
   assert.equal(evaluateCondition({ field: 'tag', op: 'eq', value: 'vip' }, { patient }), true);

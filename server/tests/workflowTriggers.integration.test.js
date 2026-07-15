@@ -168,6 +168,11 @@ test('Trigger "cita agendada" con contacto de número oculto (LID): el mensaje v
   const Message = require('../models/Message');
   const msg = await Message.findOne({ conversation: convs[0]._id, direction: 'out' });
   assert.ok(msg, 'el intento de envío debe quedar como mensaje en la conversación del paciente');
+  // El paso add_tag etiqueta al paciente Y a la conversación (la bandeja de
+  // chats muestra las etiquetas de la conversación).
+  assert.ok((convs[0].tags || []).includes('cita-agendada'), 'la etiqueta debe verse en la conversación (chats)');
+  const pLid = await Patient.findById(patient._id);
+  assert.ok((pLid.tags || []).includes('cita-agendada'), 'la etiqueta debe quedar también en el paciente');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

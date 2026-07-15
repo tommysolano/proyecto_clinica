@@ -8,7 +8,7 @@ const AgentTask = require('../models/AgentTask');
 const User = require('../models/User');
 const ReviewRequest = require('../models/ReviewRequest');
 const messaging = require('./messaging');
-const { emitToClinic, emitToUser } = require('../realtime');
+const { emitToClinic, emitToUser, emitToCallCenter } = require('../realtime');
 const { DOMAIN_EVENTS, onDomainEvent } = require('./events');
 
 const MAX_STEP_TRANSITIONS = 100; // guarda contra bucles por onFailGoTo mal formado
@@ -170,9 +170,51 @@ function computeWaitUntil(step, context = {}) {
   if (step.waitEvent === 'appointment_date' && context.appointmentDate) {
     const base = new Date(context.appointmentDate);
     if (Number.isNaN(base.getTime())) return null;
+    // Modo "hora fija": N días antes de la cita, a una hora del reloj — p.ej.
+    // "recordatorio a las 18:00 del día anterior", sin importar a qué hora sea
+    // la cita. El proceso corre en America/Guayaquil (TZ forzada en index.js).
+    if (step.waitMode === 'clock') {
+      const m = String(step.atTime || '').match(/^(\d{1,2}):(\d{2})$/);
+      if (!m) return null;
+      const target = new Date(base);
+      target.setDate(target.getDate() - Math.max(0, Number(step.daysBefore || 0)));
+      target.setHours(Math.min(23, Number(m[1])), Math.min(59, Number(m[2])), 0, 0);
+      return target;
+    }
     return new Date(base.getTime() + Number(step.offsetMinutes || 0) * 60000);
   }
   return null;
+}
+
+/**
+ * Aplica (o quita) una etiqueta en el PACIENTE y en la CONVERSACIÓN. La bandeja
+ * de chats muestra las etiquetas de la conversación: etiquetar solo al paciente
+ * era invisible ahí ("añadir etiqueta no funciona"). Emite chat:updated para
+ * que la bandeja se refresque en vivo.
+ */
+async function applyTag(patient, conversation, tag, { remove = false } = {}) {
+  if (!tag) return;
+  if (patient) {
+    const cur = patient.tags || [];
+    const next = remove ? cur.filter((t) => t !== tag) : cur.includes(tag) ? cur : [...cur, tag];
+    if (next.length !== cur.length) {
+      patient.tags = next;
+      await patient.save();
+    }
+  }
+  if (conversation) {
+    const cur = conversation.tags || [];
+    const next = remove ? cur.filter((t) => t !== tag) : cur.includes(tag) ? cur : [...cur, tag];
+    if (next.length !== cur.length) {
+      conversation.tags = next;
+      await conversation.save();
+      try {
+        emitToCallCenter('chat:updated', { id: conversation._id });
+      } catch {
+        /* realtime opcional */
+      }
+    }
+  }
 }
 
 /**
@@ -352,10 +394,10 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
       }
       break;
     case 'add_tag':
-      if (step.tag && patient && !patient.tags.includes(step.tag)) { patient.tags.push(step.tag); await patient.save(); }
+      if (step.tag) await applyTag(patient, await loadConv(), step.tag);
       break;
     case 'remove_tag':
-      if (step.tag && patient) { patient.tags = (patient.tags || []).filter((t) => t !== step.tag); await patient.save(); }
+      if (step.tag) await applyTag(patient, await loadConv(), step.tag, { remove: true });
       break;
     case 'move_stage':
       if (step.stage) {
@@ -736,19 +778,15 @@ async function executeEnrollment(enrollment) {
       if (evaluateCondition(step, { patient, conversation, context: ctx })) break; // objetivo cumplido → fin
       i++;
     } else if (step.type === 'add_tag' && step.tag && patient) {
-      if (!patient.tags.includes(step.tag)) {
-        patient.tags.push(step.tag);
-        // eslint-disable-next-line no-await-in-loop
-        await patient.save();
-      }
+      // eslint-disable-next-line no-await-in-loop
+      await applyTag(patient, conversation, step.tag);
       i++;
     } else if (step.type === 'remove_tag' && step.tag && patient) {
-      patient.tags = (patient.tags || []).filter((t) => t !== step.tag);
       // eslint-disable-next-line no-await-in-loop
-      await patient.save();
+      await applyTag(patient, conversation, step.tag, { remove: true });
       i++;
     } else if (step.type === 'move_stage' && step.stage) {
-      if (!conversation) conversation = await loadConversationForPatient(enrollment.clinic, phone);
+      if (!conversation) conversation = await loadConversationForPatient(enrollment.clinic, phone, patient?._id);
       if (conversation) {
         conversation.opportunity = {
           ...(conversation.opportunity?.toObject ? conversation.opportunity.toObject() : conversation.opportunity || {}),

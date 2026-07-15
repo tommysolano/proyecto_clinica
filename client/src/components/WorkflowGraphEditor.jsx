@@ -43,7 +43,7 @@ export const STEP_DEFS = {
   send_template: 'Enviar plantilla',
   send_email: 'Enviar email',
   wait: 'Esperar (tiempo)',
-  wait_until: 'Esperar hasta la cita',
+  wait_until: 'Esperar hasta la cita / hora fija',
   wait_reply: 'Esperar respuesta',
   condition: 'Condición (sí/no)',
   add_tag: 'Añadir etiqueta',
@@ -146,6 +146,7 @@ const REPLY_VALUES = [
 export const newNodeData = (type) => ({
   body: '', templateName: '', templateLanguage: 'es', emailSubject: '',
   waitMinutes: 60, waitEvent: 'appointment_date', offsetMinutes: -1440, timeoutMinutes: 720,
+  waitMode: 'clock', daysBefore: 1, atTime: '18:00',
   appointmentStatus: 'confirmada', field: 'tag', op: 'eq', value: '', tag: '', stage: 'contactado',
   assignMode: 'roundrobin', assignUser: null, taskTitle: '', taskDueOffsetMinutes: 1440,
   webhookUrl: '', webhookMethod: 'POST',
@@ -217,7 +218,9 @@ function summarize(n) {
     case 'send_template': return d.templateName;
     case 'send_email': return d.emailSubject || d.body;
     case 'wait': return `${d.waitMinutes} min`;
-    case 'wait_until': return `${Math.abs((d.offsetMinutes || 0) / 60)}h ${(d.offsetMinutes || 0) < 0 ? 'antes' : 'después'}`;
+    case 'wait_until': return d.waitMode === 'clock'
+      ? `${d.daysBefore === 0 ? 'el día de la cita' : d.daysBefore === 1 ? '1 día antes' : `${d.daysBefore} días antes`} a las ${d.atTime || '—'}`
+      : `${Math.abs((d.offsetMinutes || 0) / 60)}h ${(d.offsetMinutes || 0) < 0 ? 'antes' : 'después'}`;
     case 'add_tag': case 'remove_tag': return d.tag;
     case 'move_stage': return d.stage;
     case 'condition': case 'goal': return `${d.field} ${d.op} ${d.value || ''}`;
@@ -880,14 +883,52 @@ function NodeConfig({ node, onChange, templates, agents }) {
     </div>
   );
   if (t === 'wait_until') return (
-    <div className="flex items-center gap-2 text-sm flex-wrap">
-      <span>Esperar</span>
-      <NumericInput value={Math.abs((d.offsetMinutes || 0) / 60)} onChange={(e) => set({ offsetMinutes: (d.offsetMinutes < 0 ? -1 : 1) * Number(e.target.value) * 60 })} className="w-16 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-      <span>h</span>
-      <select value={(d.offsetMinutes || 0) < 0 ? 'before' : 'after'} onChange={(e) => set({ offsetMinutes: (e.target.value === 'before' ? -1 : 1) * Math.abs(d.offsetMinutes || 0) })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
-        <option value="before">antes de la cita</option>
-        <option value="after">después de la cita</option>
+    <div className="grid gap-2 text-sm">
+      <select
+        value={d.waitMode === 'clock' ? 'clock' : 'offset'}
+        onChange={(e) => set({ waitMode: e.target.value })}
+        className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+      >
+        <option value="clock">A una hora fija del día (ej. 18:00 del día anterior)</option>
+        <option value="offset">Horas antes/después de la hora de la cita</option>
       </select>
+      {d.waitMode === 'clock' ? (
+        <div className="flex items-center gap-2 flex-wrap">
+          <select
+            value={String(d.daysBefore ?? 1)}
+            onChange={(e) => set({ daysBefore: Number(e.target.value) })}
+            className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+          >
+            <option value="0">El mismo día de la cita</option>
+            <option value="1">1 día antes</option>
+            <option value="2">2 días antes</option>
+            <option value="3">3 días antes</option>
+            <option value="7">7 días antes</option>
+          </select>
+          <span>a las</span>
+          <input
+            type="time"
+            value={d.atTime || '18:00'}
+            onChange={(e) => set({ atTime: e.target.value })}
+            className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+          />
+        </div>
+      ) : (
+        <div className="flex items-center gap-2 flex-wrap">
+          <span>Esperar</span>
+          <NumericInput value={Math.abs((d.offsetMinutes || 0) / 60)} onChange={(e) => set({ offsetMinutes: (d.offsetMinutes < 0 ? -1 : 1) * Number(e.target.value) * 60 })} className="w-16 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+          <span>h</span>
+          <select value={(d.offsetMinutes || 0) < 0 ? 'before' : 'after'} onChange={(e) => set({ offsetMinutes: (e.target.value === 'before' ? -1 : 1) * Math.abs(d.offsetMinutes || 0) })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+            <option value="before">antes de la cita</option>
+            <option value="after">después de la cita</option>
+          </select>
+        </div>
+      )}
+      <p className="text-[11px] text-slate-400">
+        {d.waitMode === 'clock'
+          ? 'Ej.: cita para mañana + "1 día antes a las 18:00" → el mensaje sale HOY a las 18:00, sin importar la hora de la cita. Si al agendar esa hora ya pasó, el paso continúa de inmediato.'
+          : 'Relativo a la hora exacta de la cita (p. ej. 24 h antes).'}
+      </p>
     </div>
   );
   if (t === 'wait_reply') return (
