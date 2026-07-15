@@ -10,7 +10,7 @@ import NurseFinishModal from '../components/NurseFinishModal';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
-import { fmtDateTime } from '../utils/date';
+import { fmtDateTime, todayEc } from '../utils/date';
 import NumericInput from '../components/NumericInput';
 import {
   HiOutlinePlus,
@@ -1225,6 +1225,7 @@ export default function Appointments() {
                 name="date"
                 type="date"
                 value={form.date}
+                min={todayEc()}
                 onChange={handleChange}
                 required
                 className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
@@ -1344,6 +1345,7 @@ export default function Appointments() {
                     <input
                       type="date"
                       value={it.date}
+                      min={todayEc()}
                       onChange={(e) => setForm((f) => ({
                         ...f,
                         extraAppointments: f.extraAppointments.map((x, i) => i === idx ? { ...x, date: e.target.value } : x),

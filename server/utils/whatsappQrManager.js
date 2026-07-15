@@ -485,6 +485,28 @@ async function waitForConnected(key, timeoutMs = 45000) {
   }
 }
 
+/**
+ * Envía `content` (texto o MessageMedia) al chat, CITANDO el mensaje indicado si
+ * se puede resolver. Pasar `quotedMessageId` directo a sendMessage no basta:
+ * whatsapp-web.js solo cita si el mensaje ya está en su store en memoria y, si
+ * no lo está, envía un mensaje NORMAL en silencio (ignoreQuoteErrors por
+ * defecto). Por eso primero se carga el mensaje con getMessageById —que lo trae
+ * del store O del servidor— y se usa `.reply()`, que arma la cita correctamente.
+ * Si el mensaje no se encuentra, se envía normal para no perder el mensaje.
+ */
+async function sendResolvingQuote(entry, chatId, content, quotedMessageId, opts = {}) {
+  if (quotedMessageId) {
+    try {
+      const original = await entry.client.getMessageById(quotedMessageId);
+      if (original) return await original.reply(content, chatId, opts);
+      console.warn('[whatsapp-qr quote] mensaje citado no encontrado:', quotedMessageId);
+    } catch (e) {
+      console.warn('[whatsapp-qr quote]', e.message);
+    }
+  }
+  return entry.client.sendMessage(chatId, content, opts);
+}
+
 /** Envía texto por la sesión QR. Devuelve un shape compatible con messaging. */
 async function sendText(account, to, body, quotedMessageId) {
   const key = String(account._id);
@@ -496,12 +518,9 @@ async function sendText(account, to, body, quotedMessageId) {
   try {
     const r = await resolveChatId(entry, to);
     if (!r.ok) return r;
-    // quotedMessageId (wamid serializado del mensaje citado) hace que el contacto
-    // vea la respuesta como cita, igual que en WhatsApp.
-    const opts = quotedMessageId ? { quotedMessageId } : undefined;
     const sent = await withTimeout(
-      entry.client.sendMessage(r.chatId, String(body || '').slice(0, 4096), opts),
-      30000,
+      sendResolvingQuote(entry, r.chatId, String(body || '').slice(0, 4096), quotedMessageId),
+      40000,
       'Tiempo agotado enviando el mensaje (la sesión puede estar inestable)'
     );
     return { ok: true, data: { messages: [{ id: sent?.id?._serialized || '' }] } };
@@ -544,10 +563,10 @@ async function sendMedia(account, to, url, caption, quotedMessageId) {
     }
     const { MessageMedia } = require('whatsapp-web.js');
     const media = new MessageMedia(mime, b64, 'imagen');
-    const opts = { caption: String(caption || '').slice(0, 1024) };
-    if (quotedMessageId) opts.quotedMessageId = quotedMessageId;
+    // La cita se resuelve igual que en texto: getMessageById + reply() para que
+    // el contacto vea la imagen como respuesta al mensaje citado.
     const sent = await withTimeout(
-      entry.client.sendMessage(r.chatId, media, opts),
+      sendResolvingQuote(entry, r.chatId, media, quotedMessageId, { caption: String(caption || '').slice(0, 1024) }),
       60000,
       'Tiempo agotado enviando la imagen (la sesión puede estar inestable)'
     );

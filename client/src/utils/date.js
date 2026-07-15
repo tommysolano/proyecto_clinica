@@ -24,6 +24,16 @@ export function fmtDate(value) {
 const EC_TZ = 'America/Guayaquil';
 
 /**
+ * Fecha de HOY en Ecuador como 'YYYY-MM-DD'. Robusto cerca de medianoche (no
+ * usa toISOString, que es UTC y adelantaría el día por la noche en Ecuador).
+ * Se usa como `min` de los inputs de fecha para bloquear días anteriores a hoy.
+ */
+export function todayEc() {
+  // 'en-CA' formatea como YYYY-MM-DD.
+  return new Intl.DateTimeFormat('en-CA', { timeZone: EC_TZ }).format(new Date());
+}
+
+/**
  * dd/mm/aaaa hh:mm — SIEMPRE en hora de Ecuador (Guayaquil).
  * Pensado para timestamps (createdAt, fechaAutorizacion, etc.), no fechas-solo.
  */

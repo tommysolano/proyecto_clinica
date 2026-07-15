@@ -2228,10 +2228,15 @@ exports.createAppointmentFromChat = async (req, res) => {
           clinic: req.body.clinic,
         }];
 
+    const { isPastLocalDate, PAST_DATE_MESSAGE } = require('../utils/appointmentDate');
     for (let i = 0; i < requested.length; i++) {
       const a = requested[i];
       if (!a.date || !a.startTime) {
         return res.status(400).json({ message: `La cita #${i + 1} requiere fecha y hora de inicio.` });
+      }
+      // No se puede agendar en una fecha anterior a hoy.
+      if (isPastLocalDate(a.date)) {
+        return res.status(400).json({ message: `La cita #${i + 1}: ${PAST_DATE_MESSAGE}` });
       }
       // El servicio es obligatorio para toda cita nueva.
       const svcIds = (a.services || [])

@@ -3,6 +3,7 @@ const Product = require('../models/Product');
 const Patient = require('../models/Patient');
 const { emitToClinic, emitToUser } = require('../realtime');
 const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
+const { isPastLocalDate, isSameLocalDay, PAST_DATE_MESSAGE } = require('../utils/appointmentDate');
 
 // Construye el payload de evento de dominio para una cita (para workflows).
 function appointmentEventPayload(appt) {
@@ -249,6 +250,10 @@ exports.createAppointment = async (req, res) => {
     if (!localDate || Number.isNaN(localDate.getTime())) {
       return res.status(400).json({ message: 'Fecha inválida' });
     }
+    // Regla de negocio: no se agenda en una fecha anterior a hoy.
+    if (isPastLocalDate(localDate)) {
+      return res.status(400).json({ message: PAST_DATE_MESSAGE });
+    }
     const startMin = toMinutes(startTime);
     const endMin = endTime ? toMinutes(endTime) : null;
     if (startMin === null) {
@@ -456,6 +461,13 @@ exports.updateAppointment = async (req, res) => {
       const localDate = parseLocalDate(update.date);
       if (!localDate || Number.isNaN(localDate.getTime())) {
         return res.status(400).json({ message: 'Fecha inválida' });
+      }
+      // Bloquear REAGENDAR a una fecha anterior a hoy. Se permite editar (sin
+      // mover el día) una cita que ya está en el pasado, para no romper el
+      // registro de asistencia/no-show; solo se rechaza si el día CAMBIA a uno
+      // anterior a hoy.
+      if (!isSameLocalDay(localDate, existing.date) && isPastLocalDate(localDate)) {
+        return res.status(400).json({ message: PAST_DATE_MESSAGE });
       }
       update.date = localDate;
     }

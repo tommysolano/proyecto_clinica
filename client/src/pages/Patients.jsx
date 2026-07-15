@@ -3,6 +3,7 @@ import { Link } from 'react-router-dom';
 import api from '../api/axios';
 import useDebounce from '../hooks/useDebounce';
 import { downloadFile } from '../utils/download';
+import { todayEc } from '../utils/date';
 import Modal from '../components/Modal';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
@@ -587,6 +588,7 @@ export default function Patients() {
                       <input
                         type="date"
                         value={aptForm.date}
+                        min={todayEc()}
                         onChange={(e) => setAptForm({ ...aptForm, date: e.target.value })}
                         className="input"
                       />

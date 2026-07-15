@@ -7,7 +7,6 @@ import useDebounce from '../hooks/useDebounce';
 import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import SriStatus from '../components/SriStatus';
 import {
-  HiOutlineChatBubbleLeftRight,
   HiOutlineStar,
   HiStar,
   HiOutlinePaperAirplane,
@@ -30,7 +29,7 @@ import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
 import SameSlotPanel from '../components/SameSlotPanel';
 import TagEditor from '../components/TagEditor';
-import { fmtDate } from '../utils/date';
+import { fmtDate, todayEc } from '../utils/date';
 
 const STAGES = [
   { value: 'nuevo', label: 'Nuevo', color: 'bg-slate-100 text-slate-700' },
@@ -420,18 +419,37 @@ export default function Chats() {
   };
 
   return (
-    <div className="h-[calc(100vh-120px)] flex flex-col">
-      {/* Header con tabs */}
-      <div className="flex items-center justify-between flex-wrap gap-2 mb-3">
-        <div>
-          <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2">
-            <HiOutlineChatBubbleLeftRight className="text-emerald-600" /> Chats
-          </h1>
-          <p className="text-xs text-slate-500">
-            Bandeja unificada de WhatsApp y oportunidades del call center.
-          </p>
+    <div className="h-[calc(100vh-96px)] flex flex-col">
+      {/* Barra de pestañas + acciones (el título va en la cabecera del sistema) */}
+      <div className="flex items-center justify-between gap-2 mb-2 border-b border-slate-200">
+        <div className="flex gap-1 flex-wrap">
+          {[
+            { id: 'all', label: 'Todos' },
+            { id: 'unread', label: 'No leídos' },
+            { id: 'mine', label: 'Mis chats' },
+            { id: 'featured', label: 'Destacados' },
+            { id: 'opportunities', label: 'Oportunidades' },
+            ...(isAdmin || isSupervisor ? [{ id: 'board', label: 'Supervisión' }] : []),
+          ].map((t) => (
+            <button
+              key={t.id}
+              onClick={() => setTab(t.id)}
+              className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px ${
+                tab === t.id
+                  ? 'border-emerald-600 text-emerald-700'
+                  : 'border-transparent text-slate-500 hover:text-slate-700'
+              }`}
+            >
+              {t.label}
+              {t.id === 'featured' && stats?.featuredCount > 0 && (
+                <span className="ml-1.5 bg-amber-100 text-amber-700 text-[10px] px-1.5 rounded-full">
+                  {stats.featuredCount}
+                </span>
+              )}
+            </button>
+          ))}
         </div>
-        <div className="flex gap-2">
+        <div className="flex gap-2 shrink-0 pb-1">
           <button
             onClick={() => setSimulateModal(true)}
             className="px-3 py-1.5 text-sm border border-slate-200 rounded-lg bg-white hover:bg-slate-50 flex items-center gap-1"
@@ -445,34 +463,6 @@ export default function Chats() {
             <HiOutlinePlus className="w-4 h-4" /> Nuevo chat
           </button>
         </div>
-      </div>
-
-      <div className="flex gap-1 mb-2 border-b border-slate-200">
-        {[
-          { id: 'all', label: 'Todos' },
-          { id: 'unread', label: 'No leídos' },
-          { id: 'mine', label: 'Mis chats' },
-          { id: 'featured', label: 'Destacados' },
-          { id: 'opportunities', label: 'Oportunidades' },
-          ...(isAdmin || isSupervisor ? [{ id: 'board', label: 'Supervisión' }] : []),
-        ].map((t) => (
-          <button
-            key={t.id}
-            onClick={() => setTab(t.id)}
-            className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px ${
-              tab === t.id
-                ? 'border-emerald-600 text-emerald-700'
-                : 'border-transparent text-slate-500 hover:text-slate-700'
-            }`}
-          >
-            {t.label}
-            {t.id === 'featured' && stats?.featuredCount > 0 && (
-              <span className="ml-1.5 bg-amber-100 text-amber-700 text-[10px] px-1.5 rounded-full">
-                {stats.featuredCount}
-              </span>
-            )}
-          </button>
-        ))}
       </div>
 
       {tab === 'board' ? (
@@ -2354,7 +2344,7 @@ function ModalShell({ title, onClose, children, size = 'md' }) {
 
 function AppointmentFromChatModal({ conv, services, onClose, onCreated }) {
   const { clinics, activeClinic } = useAuth();
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayEc();
   // Soporte para agendar múltiples citas en una sola operación.
   // Importante: arrancamos SIN servicios pre-seleccionados (el usuario los elige cada vez).
   const emptyAppt = () => ({
@@ -2457,7 +2447,7 @@ function AppointmentFromChatModal({ conv, services, onClose, onCreated }) {
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-xs font-medium text-slate-600">Fecha</label>
-                  <input type="date" value={it.date} onChange={(e) => updateItem(idx, { date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
+                  <input type="date" value={it.date} min={today} onChange={(e) => updateItem(idx, { date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
                 </div>
                 <div>
                   <label className="text-xs font-medium text-slate-600">Hora</label>
@@ -2579,7 +2569,7 @@ function ChatServicePicker({ services, selectedIds, onAdd, onRemove }) {
 }
 
 function QuotationFromChatModal({ conv, services, onClose, onCreated }) {
-  const today = new Date().toISOString().slice(0, 10);
+  const today = todayEc();
   const [validUntil, setValidUntil] = useState('');
   const [notes, setNotes] = useState('');
   const [items, setItems] = useState([]);
