@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import {
@@ -26,6 +26,33 @@ const CATEGORIES = [
   { value: 'UTILITY', label: 'Utilidad (transaccional)' },
   { value: 'AUTHENTICATION', label: 'Autenticación (códigos)' },
 ];
+
+// Variables que el sistema sabe rellenar por su NOMBRE al enviar. Las de
+// "Paciente" se rellenan siempre; las de "Cita" usan la cita real cuando el
+// envío viene de un workflow de citas (recordatorio/confirmación) — en
+// campañas sin cita se usa el ejemplo.
+const VARIABLE_CATALOG = [
+  { key: 'nombre', label: 'Nombre', example: 'María', group: 'Paciente', hint: 'Nombre del paciente. Se rellena automáticamente en todos los envíos.' },
+  { key: 'apellido', label: 'Apellido', example: 'Pérez', group: 'Paciente', hint: 'Apellido del paciente.' },
+  { key: 'servicio', label: 'Servicio', example: 'Limpieza facial', group: 'Cita', hint: 'Servicio(s) de la cita.' },
+  { key: 'fecha', label: 'Fecha de la cita', example: 'lunes 20 de julio', group: 'Cita', hint: 'Fecha de la cita, en palabras.' },
+  { key: 'hora', label: 'Hora de la cita', example: '14:30', group: 'Cita', hint: 'Hora de inicio de la cita.' },
+  { key: 'doctor', label: 'Doctor', example: 'Dra. Salazar', group: 'Cita', hint: 'Profesional asignado a la cita.' },
+  { key: 'sede', label: 'Sede', example: 'Sede Norte', group: 'Cita', hint: 'Sucursal donde es la cita.' },
+];
+
+// Datos de ejemplo para la previsualización (así el usuario ve el mensaje "real").
+const SAMPLE_VARS = Object.fromEntries(VARIABLE_CATALOG.map((v) => [v.key, v.example]));
+
+// Documenta las variables del cuerpo con el ejemplo del catálogo: Meta exige un
+// ejemplo por variable al registrar y con ejemplos realistas aprueba mejor.
+const varsFromBody = (body = '') => {
+  const keys = [];
+  for (const m of String(body).matchAll(/\{\{\s*([\w]+)\s*\}\}/g)) {
+    if (!keys.includes(m[1])) keys.push(m[1]);
+  }
+  return keys.map((k) => ({ key: k, example: VARIABLE_CATALOG.find((v) => v.key === k)?.example || '' }));
+};
 
 const STATUS_BADGE = {
   draft: { label: 'Borrador', cls: 'bg-slate-100 text-slate-600' },
@@ -56,9 +83,33 @@ export default function MessageTemplates() {
   const [syncing, setSyncing] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [submittingId, setSubmittingId] = useState(null);
+  const bodyRef = useRef(null);
+
+  // Inserta {{variable}} en el cuerpo, donde esté el cursor.
+  const insertVariable = (key) => {
+    const token = `{{${key}}}`;
+    const el = bodyRef.current;
+    setEditing((prev) => {
+      const body = prev.body || '';
+      const start = el?.selectionStart ?? body.length;
+      const end = el?.selectionEnd ?? start;
+      if (el) {
+        requestAnimationFrame(() => {
+          el.focus();
+          const pos = start + token.length;
+          el.setSelectionRange(pos, pos);
+        });
+      }
+      return { ...prev, body: body.slice(0, start) + token + body.slice(end) };
+    });
+  };
 
   const uploadHeaderImage = async (file) => {
     if (!file) return;
+    if (!/^image\/(png|jpe?g)$/.test(file.type)) {
+      toast.error('Usa JPG o PNG: Meta no acepta otros formatos en plantillas');
+      return;
+    }
     if (file.size > 1_800_000) {
       toast.error('Imagen demasiado grande (máx ~1.8MB)');
       return;
@@ -124,11 +175,13 @@ export default function MessageTemplates() {
       return;
     }
     try {
+      // Documentar las variables con ejemplos del catálogo (Meta los exige).
+      const payload = { ...editing, variables: varsFromBody(editing.body) };
       if (editing._id) {
-        await api.put(`/message-templates/${editing._id}`, editing);
+        await api.put(`/message-templates/${editing._id}`, payload);
         toast.success('Plantilla actualizada');
       } else {
-        await api.post('/message-templates', editing);
+        await api.post('/message-templates', payload);
         toast.success('Plantilla creada');
       }
       setEditing(null);
@@ -382,8 +435,9 @@ export default function MessageTemplates() {
                       <div className="flex-1">
                         <label className="inline-flex items-center gap-1 px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer hover:border-emerald-400">
                           <HiOutlinePhoto className="w-4 h-4" /> {uploading ? 'Subiendo…' : 'Subir imagen'}
-                          <input type="file" accept="image/png,image/jpeg,image/webp" className="hidden" onChange={(e) => uploadHeaderImage(e.target.files?.[0])} />
+                          <input type="file" accept="image/png,image/jpeg" className="hidden" onChange={(e) => uploadHeaderImage(e.target.files?.[0])} />
                         </label>
+                        <p className="text-[10px] text-slate-400 mt-1">JPG o PNG, máx. ~1.8 MB (Meta no acepta WEBP).</p>
                         <input
                           value={editing.headerMediaUrl || ''}
                           onChange={(e) => setEditing({ ...editing, headerMediaUrl: e.target.value })}
@@ -397,15 +451,49 @@ export default function MessageTemplates() {
               )}
 
               <label className="text-sm">
-                <span className="text-slate-600">Cuerpo (usa variables como {'{{firstName}}'} o {'{{1}}'})</span>
+                <span className="text-slate-600">Cuerpo</span>
                 <textarea
+                  ref={bodyRef}
                   value={editing.body}
                   onChange={(e) => setEditing({ ...editing, body: e.target.value })}
                   rows={5}
                   className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
-                  placeholder="Hola {{firstName}}, te recordamos tu cita el {{1}}."
+                  placeholder="Hola {{nombre}}, te recordamos tu cita de {{servicio}} el {{fecha}} a las {{hora}}."
                 />
               </label>
+
+              {/* Insertador de variables: un clic en vez de escribir {{...}} a mano */}
+              {editing.channel === 'whatsapp' && (
+                <div className="border border-emerald-100 rounded-lg p-3 bg-emerald-50/40 -mt-1">
+                  <p className="text-[11px] font-semibold text-slate-500 uppercase mb-1.5">
+                    Insertar variable en el cuerpo
+                  </p>
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    {VARIABLE_CATALOG.map((v) => (
+                      <button
+                        key={v.key}
+                        type="button"
+                        onClick={() => insertVariable(v.key)}
+                        title={`${v.hint} Ejemplo: "${v.example}".`}
+                        className={`text-[11px] px-2 py-1 rounded-full border cursor-pointer ${
+                          v.group === 'Cita'
+                            ? 'bg-sky-50 border-sky-200 text-sky-700 hover:bg-sky-100'
+                            : 'bg-white border-emerald-200 text-emerald-700 hover:bg-emerald-50'
+                        }`}
+                      >
+                        + {v.label}
+                      </button>
+                    ))}
+                  </div>
+                  <p className="text-[11px] text-slate-400 mt-1.5">
+                    <b>Nombre/Apellido</b> se rellenan siempre con los datos del paciente. Las{' '}
+                    <b className="text-sky-600">de cita</b> (servicio, fecha, hora, doctor, sede) se
+                    rellenan con la cita real cuando la plantilla se envía desde un workflow de citas
+                    (p. ej. recordatorio); en campañas sin cita se usa el ejemplo. Al registrarla en
+                    Meta se convierten a {'{{1}}, {{2}}…'} automáticamente.
+                  </p>
+                </div>
+              )}
               <label className="text-sm">
                 <span className="text-slate-600">Pie (opcional)</span>
                 <input value={editing.footer || ''} onChange={(e) => setEditing({ ...editing, footer: e.target.value })} className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
@@ -485,8 +573,11 @@ export default function MessageTemplates() {
               {/* Columna preview */}
               <div className="lg:sticky lg:top-0 h-max">
                 <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Previsualización</p>
-                <WhatsappPreview template={editing} />
-                <p className="text-[11px] text-slate-400 mt-2">Así se verá aproximadamente en WhatsApp. Las variables {'{{...}}'} se rellenan al enviar.</p>
+                <WhatsappPreview template={editing} sampleVars={SAMPLE_VARS} />
+                <p className="text-[11px] text-slate-400 mt-2">
+                  Así se verá aproximadamente en WhatsApp, con datos de ejemplo en las variables
+                  (al enviar se usan los datos reales del paciente/cita).
+                </p>
               </div>
             </div>
             <div className="flex justify-end gap-2 mt-6">

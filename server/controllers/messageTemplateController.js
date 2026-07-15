@@ -1,7 +1,8 @@
 const MessageTemplate = require('../models/MessageTemplate');
 const ChatGalleryImage = require('../models/ChatGalleryImage');
 
-const API_VERSION = process.env.WHATSAPP_API_VERSION || 'v20.0';
+// v20.0 quedó fuera de soporte a mediados de 2026: alinear con whatsappCloud.js.
+const API_VERSION = process.env.WHATSAPP_API_VERSION || 'v23.0';
 
 /**
  * Sube una imagen de cabecera de plantilla (data URL base64). La almacena en
@@ -11,8 +12,10 @@ const API_VERSION = process.env.WHATSAPP_API_VERSION || 'v20.0';
 exports.uploadHeaderImage = async (req, res) => {
   try {
     const { dataUrl, name } = req.body;
-    if (!dataUrl || !/^data:image\/(png|jpe?g|webp);base64,/.test(dataUrl)) {
-      return res.status(400).json({ message: 'Imagen inválida (usa PNG/JPG/WEBP)' });
+    // Solo JPG/PNG: Meta NO acepta WEBP en cabeceras de plantilla (la subida a
+    // su Resumable Upload API falla y el registro de la plantilla da error).
+    if (!dataUrl || !/^data:image\/(png|jpe?g);base64,/.test(dataUrl)) {
+      return res.status(400).json({ message: 'Imagen inválida: usa JPG o PNG (WhatsApp no acepta WEBP en plantillas)' });
     }
     if (dataUrl.length > 2_500_000) {
       return res.status(400).json({ message: 'Imagen demasiado grande (máx ~1.8MB)' });
@@ -547,15 +550,37 @@ async function fetchHeaderMediaBytes(url) {
  * título IMAGE requieren un ejemplo" al enviar a Meta).
  */
 async function uploadHeaderMediaHandle(accessToken, tpl) {
+  // Mensaje de error completo de Meta (incluye fbtrace para soporte).
+  const metaError = (j, fallback) => {
+    const e = j?.error;
+    if (!e) return fallback;
+    return `${e.error_user_msg || e.message || fallback}${e.code ? ` (código ${e.code})` : ''}${e.fbtrace_id ? ` · fbtrace: ${e.fbtrace_id}` : ''}`;
+  };
   const media = await fetchHeaderMediaBytes(tpl.headerMediaUrl);
-  if (!media) return { ok: false, error: 'No se pudo leer el archivo de cabecera' };
+  if (!media) {
+    return {
+      ok: false,
+      error: 'No se pudo leer el archivo de cabecera guardado. Edita la plantilla y vuelve a subir la imagen.',
+    };
+  }
+  // Formatos que Meta acepta por tipo de cabecera; un WEBP/GIF guardado antes
+  // de la restricción fallaría en Meta con un error críptico.
+  if (tpl.headerType === 'image' && !/^image\/(png|jpe?g)$/i.test(media.mime)) {
+    return {
+      ok: false,
+      error: `La imagen de cabecera es ${media.mime} y Meta solo acepta JPG o PNG. Edita la plantilla y súbela en ese formato.`,
+    };
+  }
+  if (tpl.headerType === 'document' && !/pdf$/i.test(media.mime)) {
+    return { ok: false, error: `La cabecera de documento debe ser PDF (el archivo es ${media.mime}).` };
+  }
   // La sesión de subida se abre contra el APP ID, que se resuelve desde el token.
   const appRes = await fetch(
     `https://graph.facebook.com/${API_VERSION}/app?access_token=${encodeURIComponent(accessToken)}`
   );
   const app = await appRes.json().catch(() => ({}));
   if (!appRes.ok || !app.id) {
-    return { ok: false, error: app?.error?.message || 'No se pudo resolver el App ID desde el token' };
+    return { ok: false, error: metaError(app, 'No se pudo resolver el App ID desde el token') };
   }
   const sessRes = await fetch(
     `https://graph.facebook.com/${API_VERSION}/${app.id}/uploads?file_length=${media.buffer.length}&file_type=${encodeURIComponent(media.mime)}&access_token=${encodeURIComponent(accessToken)}`,
@@ -563,7 +588,7 @@ async function uploadHeaderMediaHandle(accessToken, tpl) {
   );
   const sess = await sessRes.json().catch(() => ({}));
   if (!sessRes.ok || !sess.id) {
-    return { ok: false, error: sess?.error?.message || 'No se pudo abrir la sesión de subida' };
+    return { ok: false, error: metaError(sess, 'No se pudo abrir la sesión de subida') };
   }
   const upRes = await fetch(`https://graph.facebook.com/${API_VERSION}/${sess.id}`, {
     method: 'POST',
@@ -572,7 +597,7 @@ async function uploadHeaderMediaHandle(accessToken, tpl) {
   });
   const up = await upRes.json().catch(() => ({}));
   if (!upRes.ok || !up.h) {
-    return { ok: false, error: up?.error?.message || 'La subida del archivo a Meta falló' };
+    return { ok: false, error: metaError(up, 'La subida del archivo a Meta falló') };
   }
   return { ok: true, handle: up.h };
 }

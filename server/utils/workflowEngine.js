@@ -231,7 +231,17 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
       return sendFailureInfo(r);
     }
     case 'send_template': {
-      const r = await messaging.send({ clinicId, channel: 'whatsapp', to: phone, patient, template: { name: step.templateName, language: step.templateLanguage || 'es', vars: [firstNameOf(patient)] }, isAutoReply: true });
+      // Sin vars posicionales: messaging rellena cada variable por su NOMBRE
+      // (paciente + datos reales de la cita vía appointmentId del contexto).
+      const r = await messaging.send({
+        clinicId,
+        channel: 'whatsapp',
+        to: phone,
+        patient,
+        template: { name: step.templateName, language: step.templateLanguage || 'es' },
+        appointmentId: ctx.appointmentId || null,
+        isAutoReply: true,
+      });
       return sendFailureInfo(r);
     }
     case 'send_email': {
@@ -500,7 +510,8 @@ async function executeEnrollment(enrollment) {
         channel: 'whatsapp',
         to: phone,
         patient,
-        template: { name: step.templateName, language: step.templateLanguage || 'es', vars: [firstNameOf(patient)] },
+        template: { name: step.templateName, language: step.templateLanguage || 'es' },
+        appointmentId: ctx.appointmentId || null,
         isAutoReply: true,
       });
       const fail = sendFailureInfo(r);

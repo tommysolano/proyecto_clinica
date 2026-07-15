@@ -108,18 +108,65 @@ function normalizeTemplate(template, vars) {
 }
 
 /**
+ * Resuelve variables "conocidas" por su nombre: datos del paciente y, si el
+ * envío trae una cita (`appointmentId`, típico de workflows de recordatorio),
+ * datos REALES de la cita (servicio, fecha, hora, doctor, sede). Devuelve una
+ * función key → valor ('' si no la reconoce).
+ */
+async function buildKnownVariableResolver(patient, appointmentId) {
+  const firstName = String(patient?.firstName || '').trim();
+  const lastName = String(patient?.lastName || '').trim();
+  let apt = null;
+  if (appointmentId) {
+    try {
+      const Appointment = require('../models/Appointment');
+      apt = await Appointment.findById(appointmentId)
+        .populate('doctor', 'name')
+        .populate('clinic', 'name')
+        .lean();
+    } catch {
+      apt = null;
+    }
+  }
+  const fecha = apt?.date
+    ? new Date(apt.date).toLocaleDateString('es-EC', {
+        timeZone: 'America/Guayaquil',
+        weekday: 'long',
+        day: 'numeric',
+        month: 'long',
+      })
+    : '';
+  const hora = apt?.startTime || '';
+  const servicio = (apt?.services || []).map((s) => s.name).filter(Boolean).join(', ');
+  const doctor = apt?.doctor?.name || '';
+  const sede = apt?.clinic?.name || '';
+  return (key) => {
+    if (/^(nombre|nombres|firstname|name)$/i.test(key)) return firstName;
+    if (/^(apellido|apellidos|lastname)$/i.test(key)) return lastName;
+    if (/^(nombre_?completo|fullname)$/i.test(key)) return `${firstName} ${lastName}`.trim();
+    if (/^(fecha(_?cita)?|date|appointmentdate)$/i.test(key)) return fecha;
+    if (/^(hora(_?cita)?|time|appointmenttime)$/i.test(key)) return hora;
+    if (/^(servicios?|service|tratamiento)$/i.test(key)) return servicio;
+    if (/^(doctora?|medico|profesional)$/i.test(key)) return doctor;
+    if (/^(sede|sucursal|clinica|clinic)$/i.test(key)) return sede;
+    return '';
+  };
+}
+
+/**
  * Prepara la plantilla para el envío por Cloud API contra su definición local:
  *  1) Reconcilia los parámetros del CUERPO con las variables que la plantilla
  *     declara de verdad: recorta los que sobran (p.ej. los workflows mandaban
  *     siempre el nombre aunque la plantilla no tuviera variables → #132000
- *     "number of parameters does not match") y completa los que faltan usando
- *     el nombre del paciente o el ejemplo documentado de cada variable.
+ *     "number of parameters does not match") y completa los que faltan por el
+ *     NOMBRE de la variable (paciente y datos reales de la cita si hay
+ *     `appointmentId`), o con el ejemplo documentado como último recurso.
  *  2) Si tiene cabecera multimedia (imagen/documento/video) con URL pública,
  *     antepone el componente `header` que exige la Cloud API; si la exige y no
  *     hay archivo guardado, marca `missingHeaderMedia` para fallar con un
  *     mensaje claro (Meta devolvería #131008).
  */
-async function enrichTemplateHeader(clinicId, templateInfo, patient) {
+async function enrichTemplateHeader(clinicId, templateInfo, patient, appointmentId) {
   if (!templateInfo?.name) return templateInfo;
   const MessageTemplate = require('../models/MessageTemplate');
   const tpl = await MessageTemplate.findOne({
@@ -144,10 +191,10 @@ async function enrichTemplateHeader(clinicId, templateInfo, patient) {
   if (params.length < expected) {
     const exampleOf = new Map((tpl.variables || []).map((v) => [v.key, v.example]));
     const firstName = String(patient?.firstName || '').trim();
+    const known = await buildKnownVariableResolver(patient, appointmentId);
     for (let i = params.length; i < expected; i++) {
       const key = keys[i];
-      let val = '';
-      if (/^(nombre|nombres|firstname|name)$/i.test(key)) val = firstName;
+      let val = known(key);
       if (!val) val = exampleOf.get(key) || '';
       if (!val) val = firstName || '-'; // Meta rechaza parámetros vacíos
       params.push({ type: 'text', text: String(val) });
@@ -287,10 +334,19 @@ async function renderTemplateText(templateInfo) {
   const tpl = await MessageTemplate.findOne({ channel: 'whatsapp', name: templateInfo.name })
     .select('body')
     .lean();
-  let text = tpl?.body || `[${templateInfo.name}]`;
+  const text = tpl?.body || `[${templateInfo.name}]`;
   const bodyComp = (templateInfo.components || []).find((c) => c.type === 'body');
   const params = (bodyComp?.parameters || []).map((p) => p.text);
-  return text.replace(/\{\{\s*(\d+)\s*\}\}/g, (m, n) => params[Number(n) - 1] ?? m);
+  // Claves distintas en orden de aparición: el MISMO criterio con el que se
+  // construyeron los parámetros (soporta variables nombradas, no solo {{1}}).
+  const order = [];
+  for (const m of text.matchAll(/\{\{\s*([\w]+)\s*\}\}/g)) {
+    if (!order.includes(m[1])) order.push(m[1]);
+  }
+  return text.replace(/\{\{\s*([\w]+)\s*\}\}/g, (m, k) => {
+    const idx = /^\d+$/.test(k) ? Number(k) - 1 : order.indexOf(k);
+    return params[idx] ?? m;
+  });
 }
 
 async function sendToProvider({ clinicId, channel, conv, body, templateInfo, account }) {
@@ -337,7 +393,7 @@ async function sendToProvider({ clinicId, channel, conv, body, templateInfo, acc
     if (!channelConfig?.enabled || !pageAccessToken) {
       return { ok: false, errorCode: 'provider_unavailable', error: `${channel} no configurado` };
     }
-    const url = `https://graph.facebook.com/v20.0/me/messages?access_token=${pageAccessToken}`;
+    const url = `https://graph.facebook.com/${process.env.WHATSAPP_API_VERSION || 'v23.0'}/me/messages?access_token=${pageAccessToken}`;
     return postMetaMessage({
       accessToken: pageAccessToken,
       url,
@@ -449,6 +505,9 @@ async function send({
   isAutoReply = false,
   ignoreOptOut = false,
   source,
+  // Cita de contexto (workflows de recordatorio/confirmación): permite rellenar
+  // las variables {{servicio}}/{{fecha}}/{{hora}}/{{doctor}}/{{sede}} con datos reales.
+  appointmentId,
 }) {
   const normalizedChannel = channel || 'whatsapp';
 
@@ -486,7 +545,7 @@ async function send({
 
   let templateInfo = normalizeTemplate(template, vars);
   if (templateInfo && normalizedChannel === 'whatsapp') {
-    templateInfo = await enrichTemplateHeader(clinicId, templateInfo, patientDoc || patient);
+    templateInfo = await enrichTemplateHeader(clinicId, templateInfo, patientDoc || patient, appointmentId);
   }
   if (normalizedChannel === 'whatsapp' && gateway.isCloud(account)) {
     const computedWindow = getWhatsappWindowExpiresAt(conv);
