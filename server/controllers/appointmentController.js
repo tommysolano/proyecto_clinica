@@ -435,12 +435,22 @@ exports.createAppointment = async (req, res) => {
 
 exports.updateAppointment = async (req, res) => {
   try {
+    // Sucursal de la cita: por defecto la activa. `?clinic=<id>` permite editar
+    // una cita de OTRA sucursal si el usuario tiene acceso (p.ej. reagendar
+    // desde el chat del CRM, que es global y lista citas de todas las sedes).
+    let clinicScope = req.clinicId;
+    if (req.query.clinic && String(req.query.clinic) !== String(req.clinicId)) {
+      const allowed =
+        req.user.isSuperAdmin ||
+        (req.user.clinics || []).some((c) => String(c.clinic) === String(req.query.clinic));
+      if (allowed) clinicScope = req.query.clinic;
+    }
     // Permisos: solo admin puede editar cualquier cita.
     // Otros roles solo pueden editar las citas que ellos mismos crearon.
     // El doctor puede actualizar las suyas (diagnóstico, tratamiento, cronómetro, completar).
     const existing = await Appointment.findOne({
       _id: req.params.id,
-      clinic: req.clinicId,
+      clinic: clinicScope,
     });
     if (!existing) return res.status(404).json({ message: 'Cita no encontrada' });
 
@@ -529,7 +539,7 @@ exports.updateAppointment = async (req, res) => {
     if (!isAdmin && finalDate && finalStart) {
       const TimeBlock = require('../models/TimeBlock');
       const blocks = await TimeBlock.find({
-        clinic: req.clinicId,
+        clinic: clinicScope,
         $or: [
           { doctor: null, room: null },
           ...(finalDoctor ? [{ doctor: finalDoctor }] : []),
@@ -585,7 +595,7 @@ exports.updateAppointment = async (req, res) => {
     }
 
     const appointment = await Appointment.findOneAndUpdate(
-      { _id: req.params.id, clinic: req.clinicId },
+      { _id: req.params.id, clinic: clinicScope },
       update,
       { new: true, runValidators: true }
     )
@@ -595,7 +605,7 @@ exports.updateAppointment = async (req, res) => {
       .populate('services.product', 'name code salePrice category');
 
     if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
-    emitToClinic(req.clinicId, 'appointment:updated', appointment);
+    emitToClinic(clinicScope, 'appointment:updated', appointment);
     if (appointment.doctor?._id) emitToUser(appointment.doctor._id, 'appointment:updated', appointment);
     // Eventos de dominio para workflows: reagendamiento y confirmación.
     if (dateChanged || startChanged || endChanged) {

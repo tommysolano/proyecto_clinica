@@ -125,8 +125,6 @@ export default function Chats() {
   }, [replyDraft]);
   const [gallery, setGallery] = useState([]);
   const [galleryOpen, setGalleryOpen] = useState(false);
-  const [newChatModal, setNewChatModal] = useState(false);
-  const [simulateModal, setSimulateModal] = useState(false);
   const [opportunityModal, setOpportunityModal] = useState(false);
   const [appointmentModal, setAppointmentModal] = useState(false);
   const [quotationModal, setQuotationModal] = useState(false);
@@ -455,20 +453,6 @@ export default function Chats() {
               )}
             </button>
           ))}
-        </div>
-        <div className="flex gap-2 shrink-0 pb-1">
-          <button
-            onClick={() => setSimulateModal(true)}
-            className="px-3 py-1.5 text-sm border border-slate-200 rounded-lg bg-white hover:bg-slate-50 flex items-center gap-1"
-          >
-            <HiOutlineSparkles className="w-4 h-4" /> Simular entrante
-          </button>
-          <button
-            onClick={() => setNewChatModal(true)}
-            className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 flex items-center gap-1"
-          >
-            <HiOutlinePlus className="w-4 h-4" /> Nuevo chat
-          </button>
         </div>
       </div>
 
@@ -813,25 +797,6 @@ export default function Chats() {
         </div>
       )}
 
-      {newChatModal && (
-        <NewChatModal
-          onClose={() => setNewChatModal(false)}
-          onCreated={(c) => {
-            setConversations((prev) => [c, ...prev.filter((p) => p._id !== c._id)]);
-            setActiveId(c._id);
-            setNewChatModal(false);
-          }}
-        />
-      )}
-      {simulateModal && (
-        <SimulateModal
-          onClose={() => setSimulateModal(false)}
-          onSimulated={() => {
-            setSimulateModal(false);
-            loadConversations(tab === 'mine' ? { assigned: 'me' } : {});
-          }}
-        />
-      )}
       {opportunityModal && activeConv && (
         <OpportunityModal
           conv={activeConv}
@@ -1119,7 +1084,7 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpport
           className="text-xs px-2 py-1 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-lg flex items-center gap-1"
         >
           <HiOutlineTag className="w-3.5 h-3.5" />
-          {conv.opportunity?.isOpportunity ? 'Editar oportunidad' : 'Crear oportunidad'}
+          {conv.opportunity?.isOpportunity ? 'Editar / añadir oportunidad' : 'Crear oportunidad'}
         </button>
         {conv.patient && (
           <button
@@ -1289,8 +1254,11 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
   const meta = op.isOpportunity ? stageMeta(op.stage) : null;
   const [registerModal, setRegisterModal] = useState(false);
   const [appts, setAppts] = useState([]);
+  const [resched, setResched] = useState(null); // cita a reagendar
+  const [apptsVersion, setApptsVersion] = useState(0); // fuerza recarga tras reagendar
 
   // Cargar citas del paciente vinculado para mostrar cuántas tiene y sus fechas.
+  // clinic=all: el chat es global, la cita puede ser de cualquier sucursal.
   useEffect(() => {
     if (!conv.patient?._id && !conv.patient) {
       setAppts([]);
@@ -1298,10 +1266,10 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
     }
     const pid = conv.patient?._id || conv.patient;
     api
-      .get('/appointments', { params: { patient: pid, limit: 100 } })
+      .get('/appointments', { params: { patient: pid, limit: 100, clinic: 'all' } })
       .then((r) => setAppts(Array.isArray(r.data) ? r.data : r.data?.appointments || []))
       .catch(() => setAppts([]));
-  }, [conv.patient]);
+  }, [conv.patient, apptsVersion]);
 
   return (
     <div className="space-y-3">
@@ -1463,13 +1431,27 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
                   const dt = new Date(a.date);
                   const dd = String(dt.getDate()).padStart(2, '0');
                   const mm = String(dt.getMonth() + 1).padStart(2, '0');
+                  // Una cita ya atendida/cobrada no se reagenda desde el chat.
+                  const canResched = !['completada', 'asistida'].includes(a.status);
                   return (
-                    <li key={a._id} className="text-xs text-slate-600 flex items-center justify-between bg-slate-50 rounded px-2 py-1">
+                    <li key={a._id} className="text-xs text-slate-600 flex items-center justify-between gap-1 bg-slate-50 rounded px-2 py-1">
                       <span>
                         {dd}/{mm}/{dt.getFullYear()} · {a.startTime}
                       </span>
-                      <span className="text-[10px] uppercase tracking-wide text-slate-400">
-                        {a.status}
+                      <span className="flex items-center gap-1.5 shrink-0">
+                        <span className="text-[10px] uppercase tracking-wide text-slate-400">
+                          {a.status}
+                        </span>
+                        {canResched && (
+                          <button
+                            type="button"
+                            title="Reagendar esta cita"
+                            onClick={() => setResched(a)}
+                            className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700 hover:bg-emerald-200 border-none cursor-pointer"
+                          >
+                            Reagendar
+                          </button>
+                        )}
                       </span>
                     </li>
                   );
@@ -1477,6 +1459,17 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
             </ul>
           )}
         </div>
+      )}
+
+      {resched && (
+        <RescheduleApptModal
+          appt={resched}
+          onClose={() => setResched(null)}
+          onSaved={() => {
+            setResched(null);
+            setApptsVersion((v) => v + 1);
+          }}
+        />
       )}
 
       <div>
@@ -1905,125 +1898,6 @@ function RegisterPatientModal({ conv, onClose, onRegistered }) {
   );
 }
 
-function NewChatModal({ onClose, onCreated }) {
-  const [phone, setPhone] = useState('');
-  const [contactName, setContactName] = useState('');
-  const [saving, setSaving] = useState(false);
-
-  const submit = async () => {
-    if (!phone.trim()) return toast.error('Teléfono requerido');
-    setSaving(true);
-    try {
-      const r = await api.post('/chats', { phone, contactName });
-      onCreated(r.data);
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Error');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <ModalShell title="Nuevo chat" onClose={onClose}>
-      <div className="space-y-3">
-        <div>
-          <label className="text-xs font-semibold text-slate-600 block mb-1">Teléfono</label>
-          <input
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            placeholder="593987654321"
-            className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
-          />
-        </div>
-        <div>
-          <label className="text-xs font-semibold text-slate-600 block mb-1">
-            Nombre del contacto (opcional)
-          </label>
-          <input
-            value={contactName}
-            onChange={(e) => setContactName(e.target.value)}
-            className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
-          />
-        </div>
-        <button
-          disabled={saving}
-          onClick={submit}
-          className="w-full bg-emerald-600 text-white py-2 rounded-lg hover:bg-emerald-700 disabled:opacity-50"
-        >
-          Crear chat
-        </button>
-      </div>
-    </ModalShell>
-  );
-}
-
-function SimulateModal({ onClose, onSimulated }) {
-  const [phone, setPhone] = useState('');
-  const [contactName, setContactName] = useState('');
-  const [body, setBody] = useState('Hola, quisiera información');
-  const [saving, setSaving] = useState(false);
-
-  const submit = async () => {
-    if (!phone.trim() || !body.trim()) return toast.error('Teléfono y mensaje requeridos');
-    setSaving(true);
-    try {
-      await api.post('/chats/simulate', { phone, body, contactName });
-      toast.success('Mensaje entrante simulado');
-      onSimulated();
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Error');
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <ModalShell title="Simular mensaje entrante" onClose={onClose}>
-      <p className="text-xs text-slate-500 mb-3">
-        Útil mientras no hay conexión real con WhatsApp Business API. Crea o reutiliza la
-        conversación con ese número y agrega un mensaje entrante.
-      </p>
-      <div className="space-y-2">
-        <div>
-          <label className="text-xs font-semibold text-slate-600 block mb-1">Teléfono</label>
-          <input
-            value={phone}
-            onChange={(e) => setPhone(e.target.value)}
-            placeholder="593987654321"
-            className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
-          />
-        </div>
-        <div>
-          <label className="text-xs font-semibold text-slate-600 block mb-1">Nombre del contacto (opcional)</label>
-          <input
-            value={contactName}
-            onChange={(e) => setContactName(e.target.value)}
-            placeholder="Nombre del paciente"
-            className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
-          />
-        </div>
-        <div>
-          <label className="text-xs font-semibold text-slate-600 block mb-1">Mensaje entrante simulado</label>
-          <textarea
-            value={body}
-            onChange={(e) => setBody(e.target.value)}
-            rows={3}
-            placeholder="Texto que enviaría el paciente"
-            className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm resize-none"
-          />
-        </div>
-        <button
-          disabled={saving}
-          onClick={submit}
-          className="w-full bg-emerald-600 text-white py-2 rounded-lg hover:bg-emerald-700 disabled:opacity-50"
-        >
-          Simular
-        </button>
-      </div>
-    </ModalShell>
-  );
-}
-
 function OpportunityModal({ conv, services, onClose, onSaved }) {
   // Soporta MÚLTIPLES oportunidades por chat. Para compatibilidad, si solo existe
   // la oportunidad legacy `opportunity`, la convertimos al array en pantalla.
@@ -2345,6 +2219,98 @@ function KPICard({ label, value, color }) {
       <div className="text-xs">{label}</div>
       <div className="text-2xl font-bold">{value}</div>
     </div>
+  );
+}
+
+/**
+ * Reagendar una cita del paciente desde el chat. Envía PUT /appointments/:id
+ * con ?clinic=<sucursal de la cita> (el chat es global: la cita puede ser de
+ * otra sede). El backend valida no-pasado, registra el reagendamiento en el
+ * historial y re-sincroniza los recordatorios de workflows pendientes.
+ */
+function RescheduleApptModal({ appt, onClose, onSaved }) {
+  const toYmd = (v) => {
+    const d = new Date(v);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  };
+  const [date, setDate] = useState(() => toYmd(appt.date));
+  const [startTime, setStartTime] = useState(appt.startTime || '09:00');
+  const [saving, setSaving] = useState(false);
+  const today = todayEc();
+
+  const save = async () => {
+    if (!date || !startTime) return toast.error('Fecha y hora requeridas');
+    setSaving(true);
+    try {
+      // Mantener la duración original: si la cita tenía hora de fin, se desplaza.
+      const toMin = (s) => {
+        const m = String(s || '').match(/^(\d{1,2}):(\d{2})$/);
+        return m ? Number(m[1]) * 60 + Number(m[2]) : null;
+      };
+      const s0 = toMin(appt.startTime);
+      const e0 = toMin(appt.endTime);
+      const s1 = toMin(startTime);
+      const payload = { date, startTime };
+      if (s0 != null && e0 != null && s1 != null && e0 > s0) {
+        const e1 = Math.min(23 * 60 + 59, s1 + (e0 - s0));
+        payload.endTime = `${String(Math.floor(e1 / 60)).padStart(2, '0')}:${String(e1 % 60).padStart(2, '0')}`;
+      }
+      await api.put(`/appointments/${appt._id}`, payload, { params: { clinic: appt.clinic } });
+      toast.success('Cita reagendada');
+      onSaved();
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'Error al reagendar');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <ModalShell title="Reagendar cita" onClose={onClose} size="sm">
+      <div className="p-4 space-y-3">
+        <p className="text-xs text-slate-500">
+          Cita actual: <b className="text-slate-700">{toYmd(appt.date).split('-').reverse().join('/')} · {appt.startTime}</b>
+          <span className="ml-1 uppercase text-[10px] tracking-wide text-slate-400">({appt.status})</span>
+        </p>
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="text-xs font-medium text-slate-600">Nueva fecha</label>
+            <input
+              type="date"
+              value={date}
+              min={today}
+              onChange={(e) => setDate(e.target.value)}
+              className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white text-sm"
+            />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-slate-600">Nueva hora</label>
+            <input
+              type="time"
+              value={startTime}
+              min={date === today ? nowEcHHMM() : undefined}
+              onChange={(e) => setStartTime(e.target.value)}
+              className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white text-sm"
+            />
+          </div>
+        </div>
+        {['cancelada', 'no_asistio'].includes(appt.status) && (
+          <p className="text-[11px] text-slate-400">
+            Al reagendar, la cita vuelve a estado <b>pendiente</b>.
+          </p>
+        )}
+        <div className="flex justify-end gap-2 pt-1">
+          <button onClick={onClose} className="px-3 py-1.5 rounded-lg text-sm border border-slate-200 bg-white cursor-pointer">Cancelar</button>
+          <button
+            onClick={save}
+            disabled={saving}
+            className="px-4 py-1.5 rounded-lg text-sm bg-emerald-600 text-white border-none cursor-pointer disabled:opacity-60"
+          >
+            {saving ? 'Guardando…' : 'Reagendar'}
+          </button>
+        </div>
+      </div>
+    </ModalShell>
   );
 }
 

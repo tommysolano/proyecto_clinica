@@ -121,6 +121,39 @@ test('updateAppointment bloquea reagendar al pasado (día u hora) pero permite e
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+test('PUT /appointments/:id?clinic= reagenda una cita de OTRA sucursal solo con acceso', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const otherClinic = new H.mongoose.Types.ObjectId(); // sucursal B (basta el id)
+  const svc = await seedService(clinicId);
+  const patient = await Patient.create({ clinic: otherClinic, firstName: 'Suc', lastName: 'B' });
+  const cita = await Appointment.create({
+    clinic: otherClinic, patient: patient._id, date: new Date(`${TOMORROW}T12:00:00`),
+    startTime: '10:00', services: [{ product: svc._id, name: 'Consulta' }], status: 'pendiente', createdBy: userId,
+  });
+  const inTwoDays = ymd(new Date(Date.now() + 2 * 86400000));
+
+  // Sin acceso a la sucursal B: el scope se queda en la activa → 404.
+  const denied = await H.runController(
+    appt.updateAppointment,
+    H.mockReq(clinicId, userId, { date: inTwoDays, startTime: '11:00' }, {
+      params: { id: String(cita._id) }, query: { clinic: String(otherClinic) }, role: 'admin',
+    }),
+  );
+  assert.equal(denied.statusCode, 404, JSON.stringify(denied.payload));
+
+  // Con acceso a la sucursal B (reagendar desde el chat global) → 200.
+  const req = H.mockReq(clinicId, userId, { date: inTwoDays, startTime: '11:00' }, {
+    params: { id: String(cita._id) }, query: { clinic: String(otherClinic) }, role: 'admin',
+  });
+  req.user.clinics = [{ clinic: otherClinic, role: 'cajero' }];
+  const ok = await H.runController(appt.updateAppointment, req);
+  assert.equal(ok.statusCode, 200, JSON.stringify(ok.payload));
+  const after = await Appointment.findById(cita._id);
+  assert.equal(after.startTime, '11:00');
+  assert.equal((after.rescheduleHistory || []).length, 1, 'el reagendamiento debe quedar en el historial');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 test('createAppointmentFromChat rechaza fecha pasada y hora pasada de HOY', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const svc = await seedService(clinicId);
