@@ -86,16 +86,19 @@ async function sendText(account, to, body) {
 }
 
 /**
- * Envía una imagen (URL) con texto de pie. Hoy solo lo usan los números QR
- * (para la cabecera de imagen de las plantillas); en Cloud API la cabecera
- * viaja dentro de la propia plantilla.
+ * Envía media (imagen/video/documento por URL) con texto de pie. Por QR la
+ * sesión descarga los bytes y los manda como MessageMedia; por Cloud API se
+ * envía el link (Meta lo descarga: debe ser una URL pública, no un data URL).
  */
-async function sendMedia(account, to, url, caption) {
+async function sendMedia(account, to, url, caption, type = 'image') {
   if (!account) return { ok: false, errorCode: 'provider_unavailable', error: 'Sin número de WhatsApp configurado' };
   if (account.connectionType === 'qr') {
     return require('./whatsappQrManager').sendMedia(account, to, url, caption);
   }
-  return { ok: false, error: 'sendMedia solo está implementado para números QR' };
+  if (/^data:/i.test(String(url || ''))) {
+    return { ok: false, error: 'La Cloud API no acepta data URLs: usa una URL pública' };
+  }
+  return wa.sendMedia(cloudCreds(account), to, url, caption, type);
 }
 
 async function sendTemplate(account, to, templateName, lang, components) {

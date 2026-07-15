@@ -525,15 +525,41 @@ exports.listSavedReplies = async (req, res) => {
   }
 };
 
+// Normaliza el atajo: minúsculas, sin espacios ni caracteres raros. Si no se
+// envía, se deriva del título/nombre (sin acentos) para que "/" siga funcionando.
+function normalizeShortcut(shortcut, title) {
+  const base = String(shortcut || title || '')
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^a-z0-9_-]/g, '');
+  return base.slice(0, 40);
+}
+
+function normalizeAttachment(att) {
+  if (!att || !att.url) return { url: '', type: '', name: '' };
+  const type = ['image', 'video', 'document'].includes(att.type) ? att.type : 'document';
+  return {
+    url: String(att.url).trim(),
+    type,
+    name: String(att.name || '').trim().slice(0, 120),
+  };
+}
+
 exports.createSavedReply = async (req, res) => {
   try {
-    const { shortcut, title, body, shared } = req.body;
-    if (!shortcut || !body) return res.status(400).json({ message: 'shortcut y body requeridos' });
+    const { shortcut, title, body, shared, folder, attachment } = req.body;
+    const cut = normalizeShortcut(shortcut, title);
+    if (!cut || !body) return res.status(400).json({ message: 'Nombre/atajo y mensaje requeridos' });
     const reply = await SavedReply.create({
       clinic: req.clinicId,
-      shortcut: String(shortcut).trim().toLowerCase().replace(/[^a-z0-9_-]/g, ''),
+      shortcut: cut,
       title: title || '',
       body,
+      folder: String(folder || '').trim().slice(0, 60),
+      attachment: normalizeAttachment(attachment),
       shared: shared !== false,
       createdBy: req.user._id,
     });
@@ -545,15 +571,107 @@ exports.createSavedReply = async (req, res) => {
 
 exports.updateSavedReply = async (req, res) => {
   try {
+    const patch = {};
+    if (req.body.title !== undefined) patch.title = req.body.title;
+    if (req.body.body !== undefined) patch.body = req.body.body;
+    if (req.body.folder !== undefined) patch.folder = String(req.body.folder || '').trim().slice(0, 60);
+    if (req.body.shared !== undefined) patch.shared = req.body.shared !== false;
+    if (req.body.attachment !== undefined) patch.attachment = normalizeAttachment(req.body.attachment);
+    if (req.body.shortcut !== undefined || req.body.title !== undefined) {
+      const cut = normalizeShortcut(req.body.shortcut, req.body.title);
+      if (cut) patch.shortcut = cut;
+    }
     const r = await SavedReply.findOneAndUpdate(
       { _id: req.params.id, clinic: req.clinicId },
-      req.body,
+      patch,
       { new: true }
     );
     if (!r) return res.status(404).json({ message: 'No encontrado' });
     res.json(r);
   } catch (err) {
     res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
+/**
+ * Sube el adjunto de un mensaje guardado (imagen o video como data URL). Se
+ * almacena en ChatGalleryImage (mismo storage autoalojado que las cabeceras de
+ * plantilla) y devuelve la URL pública /api/public/media/:id que entienden los
+ * gateways de WhatsApp (QR la lee directo de Mongo; Cloud API la descarga).
+ */
+exports.uploadSavedReplyMedia = async (req, res) => {
+  try {
+    const { name, dataUrl } = req.body;
+    const m = String(dataUrl || '').match(/^data:((image|video)\/[a-zA-Z0-9.+-]+);base64,/);
+    if (!m) return res.status(400).json({ message: 'Archivo inválido: solo imágenes o videos' });
+    const kind = m[2]; // image | video
+    const maxLen = kind === 'video' ? 14_000_000 : 2_500_000; // ~10MB video, ~1.8MB imagen
+    if (dataUrl.length > maxLen) {
+      return res.status(400).json({
+        message: kind === 'video' ? 'Video demasiado grande (máx ~10MB)' : 'Imagen demasiado grande (máx ~1.8MB)',
+      });
+    }
+    const img = await ChatGalleryImageModel().create({
+      clinic: req.clinicId,
+      name: name || `adjunto_${Date.now()}`,
+      dataUrl,
+      mimeType: m[1],
+      size: dataUrl.length,
+      createdBy: req.user._id,
+    });
+    let base = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}/api`;
+    base = base.replace(/\/+$/, '').replace(/\/api$/, '');
+    res.status(201).json({ id: img._id, url: `${base}/api/public/media/${img._id}`, type: kind, name: img.name });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al subir adjunto', error: err.message });
+  }
+};
+
+// Carga diferida para no mover el require existente de más abajo.
+function ChatGalleryImageModel() {
+  return require('../models/ChatGalleryImage');
+}
+
+/**
+ * Envío de prueba de un fragmento (como el "fragmento de prueba" de Daplox):
+ * manda el texto + adjunto al número indicado por el WhatsApp por defecto.
+ * No requiere que el fragmento esté guardado: recibe el contenido directo.
+ */
+exports.testSavedReply = async (req, res) => {
+  try {
+    const { phone, body, attachment } = req.body;
+    const digits = String(phone || '').replace(/[^\d]/g, '');
+    if (!digits || digits.length < 8) return res.status(400).json({ message: 'Número de teléfono inválido' });
+    const att = normalizeAttachment(attachment);
+    if (!String(body || '').trim() && !att.url) {
+      return res.status(400).json({ message: 'El fragmento está vacío' });
+    }
+    const result = await messaging.send({
+      clinicId: req.clinicId,
+      channel: 'whatsapp',
+      to: digits,
+      body: String(body || ''),
+      mediaUrl: att.url || null,
+      mediaType: att.type || null,
+      ignoreOptOut: true, // es una prueba a un número propio
+      sentBy: req.user._id,
+      sentByName: req.user.name,
+    });
+    if (result.skipped) {
+      const reasons = {
+        out_of_window: 'La ventana de 24h con ese número está cerrada (Cloud API). Escríbete primero desde ese número o usa un número QR.',
+        provider_unavailable: 'No hay ningún número de WhatsApp configurado.',
+        invalid_recipient: 'Número inválido.',
+        blocked: 'Ese contacto está bloqueado.',
+      };
+      return res.status(409).json({ message: reasons[result.reason] || 'No se pudo enviar la prueba.', code: result.reason });
+    }
+    if (result.deliveryStatus === 'failed') {
+      return res.status(502).json({ message: result.errorMessage || 'El proveedor rechazó el envío' });
+    }
+    res.json({ ok: true, deliveryStatus: result.deliveryStatus });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al enviar prueba', error: err.message });
   }
 };
 

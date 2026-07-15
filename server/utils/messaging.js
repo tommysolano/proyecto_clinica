@@ -352,7 +352,7 @@ async function renderTemplateText(templateInfo) {
   });
 }
 
-async function sendToProvider({ clinicId, channel, conv, body, templateInfo, account }) {
+async function sendToProvider({ clinicId, channel, conv, body, templateInfo, account, mediaUrl, mediaType }) {
   if (channel === 'whatsapp') {
     if (!account) {
       return { ok: false, errorCode: 'provider_unavailable', error: 'Sin número de WhatsApp configurado' };
@@ -372,6 +372,10 @@ async function sendToProvider({ clinicId, channel, conv, body, templateInfo, acc
       if (hm?.type === 'image' && hm.url) {
         return gateway.sendMedia(account, dest, hm.url, text);
       }
+      // Mensaje suelto con adjunto (mensajes guardados con imagen/video).
+      if (mediaUrl) {
+        return gateway.sendMedia(account, dest, mediaUrl, text, mediaType || 'image');
+      }
       return gateway.sendText(account, dest, text);
     }
     if (templateInfo?.missingHeaderMedia) {
@@ -383,15 +387,22 @@ async function sendToProvider({ clinicId, channel, conv, body, templateInfo, acc
           'de cabecera y no hay ninguno guardado. Edita la plantilla y vuelve a subir la imagen.',
       };
     }
-    return templateInfo
-      ? gateway.sendTemplate(
-          account,
-          conv.phone,
-          templateInfo.name,
-          templateInfo.language,
-          templateInfo.components
-        )
-      : gateway.sendText(account, conv.phone, body || '');
+    if (templateInfo) {
+      return gateway.sendTemplate(
+        account,
+        conv.phone,
+        templateInfo.name,
+        templateInfo.language,
+        templateInfo.components
+      );
+    }
+    // Adjunto suelto por Cloud API: se envía el link público con el texto como
+    // caption. Un data URL no es enviable por link → cae a texto solo (el
+    // adjunto queda igualmente visible en la burbuja del chat interno).
+    if (mediaUrl && !/^data:/i.test(String(mediaUrl))) {
+      return gateway.sendMedia(account, conv.phone, mediaUrl, body || '', mediaType || 'image');
+    }
+    return gateway.sendText(account, conv.phone, body || '');
   }
 
   if (channel === 'messenger' || channel === 'instagram') {
@@ -623,9 +634,13 @@ async function send({
     clinicId,
     channel: normalizedChannel,
     conv,
-    body: textBody || preview,
+    // Sin plantilla y sin texto el body va vacío: el placeholder '[media]' es
+    // solo para la vista interna, no debe llegar como caption al paciente.
+    body: textBody || (templateInfo ? preview : ''),
     templateInfo,
     account,
+    mediaUrl,
+    mediaType,
   });
 
   if (providerResult.ok) {

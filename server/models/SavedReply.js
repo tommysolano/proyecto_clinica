@@ -15,6 +15,15 @@ const savedReplySchema = new mongoose.Schema(
     shortcut: { type: String, required: true, trim: true }, // p.ej. "saludo"
     title: { type: String, trim: true },
     body: { type: String, required: true, trim: true },
+    // Carpeta para organizar los fragmentos (texto libre, '' = sin carpeta).
+    folder: { type: String, trim: true, default: '' },
+    // Adjunto opcional (imagen/video/documento) que se envía junto al texto.
+    // url: URL pública autoalojada (/api/public/media/:id) o externa.
+    attachment: {
+      url: { type: String, trim: true, default: '' },
+      type: { type: String, enum: ['', 'image', 'video', 'document'], default: '' },
+      name: { type: String, trim: true, default: '' },
+    },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     shared: { type: Boolean, default: true }, // visible para toda la clínica
   },

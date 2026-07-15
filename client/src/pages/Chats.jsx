@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import NumericInput from '../components/NumericInput';
 import useDebounce from '../hooks/useDebounce';
@@ -79,6 +80,18 @@ function isOptedOut(conv) {
   return Boolean(marketing?.optOutAt || marketing?.whatsappOptIn === false);
 }
 
+// Rellena las variables {{nombre}}/{{apellido}}/{{nombre_completo}} de un
+// mensaje guardado con los datos del contacto de la conversación.
+function fillSavedVariables(text, conv) {
+  const first = conv?.patient?.firstName || (conv?.contactName || '').trim().split(/\s+/)[0] || '';
+  const last = conv?.patient?.lastName || '';
+  const full = `${first} ${last}`.trim() || conv?.contactName || '';
+  return String(text || '')
+    .replace(/\{\{\s*(nombre|nombres|firstname|name)\s*\}\}/gi, first)
+    .replace(/\{\{\s*(apellido|apellidos|lastname)\s*\}\}/gi, last)
+    .replace(/\{\{\s*(nombre_?completo|fullname)\s*\}\}/gi, full);
+}
+
 export default function Chats() {
   const { role, user } = useAuth();
   const [tab, setTab] = useState('all'); // all | mine | featured | opportunities | board
@@ -99,9 +112,10 @@ export default function Chats() {
   const [savedReplies, setSavedReplies] = useState([]);
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState('');
+  // Adjunto (imagen/video) preparado desde un mensaje guardado, se envía con el texto.
+  const [attachmentDraft, setAttachmentDraft] = useState(null);
   const [gallery, setGallery] = useState([]);
   const [galleryOpen, setGalleryOpen] = useState(false);
-  const [savedRepliesModal, setSavedRepliesModal] = useState(false);
   const [newChatModal, setNewChatModal] = useState(false);
   const [simulateModal, setSimulateModal] = useState(false);
   const [opportunityModal, setOpportunityModal] = useState(false);
@@ -191,6 +205,7 @@ export default function Chats() {
     if (activeId) loadMessages(activeId);
     else setMessages([]);
     setTemplateDraft({ name: '', language: 'es', vars: '' });
+    setAttachmentDraft(null);
   }, [activeId]);
 
   // Realtime — recargar al recibir cambios
@@ -286,7 +301,7 @@ export default function Chats() {
       toast.error('Ventana de 24h cerrada: selecciona una plantilla aprobada');
       return;
     }
-    if (!useTemplate && !body) return;
+    if (!useTemplate && !body && !attachmentDraft) return;
     if (!useTemplate) setDraft('');
     try {
       const payload = useTemplate
@@ -298,7 +313,12 @@ export default function Chats() {
               .map((v) => v.trim())
               .filter(Boolean),
           }
-        : { body };
+        : {
+            body,
+            ...(attachmentDraft
+              ? { mediaUrl: attachmentDraft.url, mediaType: attachmentDraft.type || 'image' }
+              : {}),
+          };
       const r = await api.post(`/chats/${activeId}/messages`, payload);
       setMessages((prev) => [...prev, r.data]);
       const preview = r.data.body || (useTemplate ? `[Plantilla: ${templateName}]` : body);
@@ -319,10 +339,33 @@ export default function Chats() {
       } else if (useTemplate) {
         setTemplateDraft({ name: '', language: 'es', vars: '' });
       }
+      if (!useTemplate) setAttachmentDraft(null);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al enviar');
       if (!windowClosed) setDraft(body);
     }
+  };
+
+  // Inserta un mensaje guardado: reemplaza el token "/atajo" (o añade al final),
+  // rellena variables con el contacto y prepara el adjunto si lo tiene.
+  const insertSavedReply = (r) => {
+    const body = fillSavedVariables(r.body, activeConv);
+    setDraft((prev) => {
+      const lastSlashAt = prev.lastIndexOf('/');
+      if (lastSlashAt >= 0 && (lastSlashAt === 0 || /\s/.test(prev[lastSlashAt - 1]))) {
+        return prev.slice(0, lastSlashAt) + body;
+      }
+      return prev ? `${prev} ${body}` : body;
+    });
+    if (r.attachment?.url) {
+      setAttachmentDraft({
+        url: r.attachment.url,
+        type: r.attachment.type || 'image',
+        name: r.attachment.name || r.title || 'adjunto',
+      });
+    }
+    setSlashOpen(false);
+    setSlashQuery('');
   };
 
   const toggleFeatured = async (conv) => {
@@ -535,6 +578,26 @@ export default function Chats() {
                       />
                     </div>
                   )}
+                  {/* Adjunto preparado (desde un mensaje guardado) */}
+                  {attachmentDraft && (
+                    <div className="mb-2 flex items-center gap-2 border border-emerald-200 bg-emerald-50/60 rounded-lg px-2.5 py-1.5">
+                      {attachmentDraft.type === 'image' ? (
+                        <img src={attachmentDraft.url} alt="adjunto" className="w-8 h-8 rounded object-cover" />
+                      ) : (
+                        <span className="text-lg">{attachmentDraft.type === 'video' ? '🎬' : '📎'}</span>
+                      )}
+                      <span className="text-xs text-emerald-800 truncate flex-1">
+                        Se enviará con adjunto: {attachmentDraft.name}
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => setAttachmentDraft(null)}
+                        className="text-xs text-slate-500 hover:text-rose-600 bg-transparent border-none cursor-pointer flex items-center gap-0.5"
+                      >
+                        <HiOutlineXMark className="w-3.5 h-3.5" /> Quitar
+                      </button>
+                    </div>
+                  )}
                   <div className="relative flex gap-2 items-end">
                     {slashOpen && (
                       <div className="absolute bottom-full left-0 mb-1 w-72 max-h-64 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg z-30">
@@ -547,24 +610,28 @@ export default function Chats() {
                               type="button"
                               onMouseDown={(e) => {
                                 e.preventDefault();
-                                setDraft(r.body);
-                                setSlashOpen(false);
-                                setSlashQuery('');
+                                insertSavedReply(r);
                               }}
                               className="w-full text-left px-3 py-2 hover:bg-emerald-50 border-b border-slate-50 text-sm bg-white cursor-pointer"
                             >
-                              <div className="font-semibold text-emerald-700 text-xs">/{r.shortcut}</div>
+                              <div className="font-semibold text-emerald-700 text-xs flex items-center gap-1">
+                                /{r.shortcut}
+                                {r.title && <span className="text-slate-500 font-normal truncate">· {r.title}</span>}
+                                {r.attachment?.url && (
+                                  <span title="Con adjunto">{r.attachment.type === 'video' ? '🎬' : '🖼'}</span>
+                                )}
+                              </div>
                               <div className="text-slate-600 text-xs truncate">{r.body}</div>
                             </button>
                           ))}
                         {savedReplies.length === 0 && (
                           <div className="px-3 py-2 text-xs text-slate-400">
                             Sin mensajes guardados. Configúralos en{' '}
-                            <button
-                              type="button"
-                              onMouseDown={(e) => { e.preventDefault(); setSavedRepliesModal(true); setSlashOpen(false); }}
-                              className="underline text-emerald-700 bg-transparent border-none cursor-pointer p-0"
-                            >ajustes</button>.
+                            <Link
+                              to="/saved-replies"
+                              className="underline text-emerald-700"
+                              onMouseDown={(e) => e.stopPropagation()}
+                            >Marketing → Mensajes Guardados</Link>.
                           </div>
                         )}
                       </div>
@@ -618,9 +685,9 @@ export default function Chats() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setSavedRepliesModal(true)}
-                      className="px-2 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 cursor-pointer text-xs"
-                      title="Mensajes guardados"
+                      onClick={() => setSlashOpen((v) => !v)}
+                      className={`px-2 py-2 border rounded-lg cursor-pointer text-xs ${slashOpen ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                      title="Mensajes guardados (se configuran en Marketing → Mensajes Guardados)"
                     >
                       /
                     </button>
@@ -670,7 +737,7 @@ export default function Chats() {
                           ? false
                           : activeWindowClosed
                             ? true
-                            : !draft.trim())
+                            : !draft.trim() && !attachmentDraft)
                       }
                       className="px-3 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1"
                     >
@@ -756,13 +823,6 @@ export default function Chats() {
           }}
         />
       )}
-      {savedRepliesModal && (
-        <SavedRepliesModal
-          replies={savedReplies}
-          onClose={() => setSavedRepliesModal(false)}
-          onChange={(list) => setSavedReplies(list)}
-        />
-      )}
       {galleryOpen && (
         <GalleryModal
           images={gallery}
@@ -789,128 +849,6 @@ export default function Chats() {
 }
 
 // ============= Modales nuevos =============
-
-function SavedRepliesModal({ replies, onClose, onChange }) {
-  const [list, setList] = useState(replies);
-  const [editing, setEditing] = useState(null);
-  const [form, setForm] = useState({ shortcut: '', title: '', body: '' });
-
-  const save = async () => {
-    if (!form.shortcut || !form.body) {
-      toast.error('Atajo y mensaje requeridos');
-      return;
-    }
-    try {
-      if (editing) {
-        const r = await api.put(`/chats/saved-replies/${editing}`, form);
-        const next = list.map((x) => (x._id === editing ? r.data : x));
-        setList(next);
-        onChange?.(next);
-      } else {
-        const r = await api.post('/chats/saved-replies', form);
-        const next = [...list, r.data];
-        setList(next);
-        onChange?.(next);
-      }
-      setEditing(null);
-      setForm({ shortcut: '', title: '', body: '' });
-      toast.success('Guardado');
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Error');
-    }
-  };
-
-  const remove = async (id) => {
-    if (!window.confirm('¿Eliminar este mensaje guardado?')) return;
-    try {
-      await api.delete(`/chats/saved-replies/${id}`);
-      const next = list.filter((x) => x._id !== id);
-      setList(next);
-      onChange?.(next);
-    } catch (err) {
-      toast.error(err.response?.data?.message || 'Error');
-    }
-  };
-
-  return (
-    <ModalShell title="Mensajes guardados" onClose={onClose} size="lg">
-      <div className="space-y-3">
-        <div className="bg-emerald-50 border border-emerald-100 rounded p-2 text-xs text-emerald-800">
-          Usa <code className="font-mono bg-white px-1 py-0.5 rounded">/atajo</code> en el chat para insertarlos rápidamente.
-        </div>
-        <div className="grid grid-cols-12 gap-2">
-          <div className="col-span-3">
-            <label className="text-xs font-semibold text-slate-600 block mb-1">Atajo</label>
-            <input
-              placeholder="ej. saludo"
-              value={form.shortcut}
-              onChange={(e) => setForm({ ...form, shortcut: e.target.value.toLowerCase().replace(/\s/g, '') })}
-              className="w-full border border-slate-200 rounded-xl px-2 py-1.5 text-sm"
-            />
-          </div>
-          <div className="col-span-4">
-            <label className="text-xs font-semibold text-slate-600 block mb-1">Título (opcional)</label>
-            <input
-              placeholder="Nombre descriptivo"
-              value={form.title}
-              onChange={(e) => setForm({ ...form, title: e.target.value })}
-              className="w-full border border-slate-200 rounded-xl px-2 py-1.5 text-sm"
-            />
-          </div>
-          <div className="col-span-5">
-            <label className="text-xs font-semibold text-slate-600 block mb-1">Mensaje</label>
-            <input
-              placeholder="Texto que se insertará"
-              value={form.body}
-              onChange={(e) => setForm({ ...form, body: e.target.value })}
-              className="w-full border border-slate-200 rounded-xl px-2 py-1.5 text-sm"
-            />
-          </div>
-        </div>
-        <div className="flex justify-end gap-2">
-          {editing && (
-            <button
-              type="button"
-              onClick={() => { setEditing(null); setForm({ shortcut: '', title: '', body: '' }); }}
-              className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-white"
-            >
-              Cancelar
-            </button>
-          )}
-          <button
-            type="button"
-            onClick={save}
-            className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 border-none cursor-pointer"
-          >
-            {editing ? 'Actualizar' : 'Agregar'}
-          </button>
-        </div>
-        <ul className="space-y-1 max-h-80 overflow-y-auto">
-          {list.length === 0 && <li className="text-xs text-slate-400 text-center py-4">Sin mensajes guardados.</li>}
-          {list.map((r) => (
-            <li key={r._id} className="flex items-start gap-2 border border-slate-100 rounded p-2 bg-slate-50/40">
-              <span className="text-xs font-mono bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded">/{r.shortcut}</span>
-              <div className="flex-1 min-w-0">
-                {r.title && <div className="text-xs font-semibold text-slate-700">{r.title}</div>}
-                <div className="text-xs text-slate-600 truncate">{r.body}</div>
-              </div>
-              <button
-                type="button"
-                onClick={() => { setEditing(r._id); setForm({ shortcut: r.shortcut, title: r.title || '', body: r.body }); }}
-                className="text-emerald-700 text-xs bg-transparent border-none cursor-pointer"
-              >Editar</button>
-              <button
-                type="button"
-                onClick={() => remove(r._id)}
-                className="text-rose-600 text-xs bg-transparent border-none cursor-pointer"
-              >Eliminar</button>
-            </li>
-          ))}
-        </ul>
-      </div>
-    </ModalShell>
-  );
-}
 
 function GalleryModal({ images, onClose, onChange, onSend }) {
   const [list, setList] = useState(images);

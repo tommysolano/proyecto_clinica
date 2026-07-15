@@ -296,8 +296,9 @@ Los mensajes **salientes** muestran quién lo envió, la hora y su **estado de e
 - **📄 Plantilla** — abre el buscador de **plantillas aprobadas por Meta**. Al elegir una, se muestra un
   recuadro con su **vista previa** y un campo de **Variables** (separadas por coma) para rellenarla.
   Funciona **siempre** (dentro o fuera de la ventana de 24h). El botón **Quitar** la deselecciona.
-- **/ Mensajes guardados** — abre el administrador de respuestas rápidas. También puedes escribir **`/`**
-  directamente en el cuadro de texto para ver un menú de atajos y elegir uno.
+- **/ Mensajes guardados** — abre el menú de atajos para insertar una respuesta rápida. También puedes
+  escribir **`/`** directamente en el cuadro de texto. Los mensajes se crean y editan en
+  **Marketing & CRM → Mensajes Guardados** (con emojis, formato, carpetas y adjuntos de imagen/video).
 - **Cuadro de texto** — escribe y pulsa **Enter** para enviar (**Shift+Enter** = salto de línea). Se
   deshabilita si el contacto está bloqueado/opt-out, si la ventana de 24h está cerrada o si tienes una
   plantilla seleccionada.
@@ -357,9 +358,12 @@ vez. Si manejas varias sucursales, primero eliges la **Clínica**. Por cada cita
 - Pulsa **Crear y enviar al chat**: genera la cotización y **manda un mensaje con el enlace al PDF** en
   el propio chat.
 
-**Mensajes guardados** (botón **/** o desde el menú de atajos):
-- Crea respuestas rápidas con **Atajo** (ej. `saludo`), **Título** (opcional) y **Mensaje**.
-- Luego, en el chat, escribe **`/saludo`** para insertarlas al instante. Se pueden **Editar** y **Eliminar**.
+**Mensajes guardados** (se configuran en **Marketing & CRM → Mensajes Guardados**):
+- Crea fragmentos con **Nombre**, **Atajo** (ej. `saludo`), **Carpeta**, **Cuerpo** (con emojis, *negrita*,
+  viñetas y variables como `{{nombre}}`) y un **adjunto** opcional (imagen o video, subido o por URL).
+- La página incluye **vista previa** tipo teléfono y un **envío de prueba** a cualquier número.
+- Luego, en el chat, escribe **`/saludo`** para insertarlos al instante: las variables se rellenan con los
+  datos del contacto y el adjunto se envía junto al texto.
 
 **Galería de imágenes** (botón **🖼**):
 - **+ Subir nueva imagen** (máx ~1.8 MB). Selecciona una imagen de la cuadrícula, escribe un **pie de

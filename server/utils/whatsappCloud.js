@@ -91,6 +91,24 @@ async function sendText(creds, to, body) {
 }
 
 /**
+ * Envía media (imagen/video/documento) por URL pública con texto de pie.
+ * Meta descarga la URL, por lo que debe ser accesible desde fuera (no data URLs).
+ */
+async function sendMedia(creds, to, url, caption, type = 'image') {
+  const phone = normalizePhone(to);
+  if (!phone) return { ok: false, error: 'Teléfono inválido' };
+  const kind = ['image', 'video', 'document'].includes(type) ? type : 'image';
+  const media = { link: String(url || '') };
+  if (caption) media.caption = String(caption).slice(0, 1024);
+  return postToMeta(creds, {
+    messaging_product: 'whatsapp',
+    to: phone,
+    type: kind,
+    [kind]: media,
+  });
+}
+
+/**
  * Envía una plantilla aprobada (requerido para iniciar conversación fuera de la ventana de 24h).
  * @param {object} creds - credenciales de la clínica (ver loadCreds)
  * @param {string} to - número con código país
@@ -129,4 +147,4 @@ async function sendBulk(creds, recipients, builderFn) {
   return results;
 }
 
-module.exports = { DEFAULT_API_VERSION, isConfigured, sendText, sendTemplate, sendBulk, downloadMedia };
+module.exports = { DEFAULT_API_VERSION, isConfigured, sendText, sendMedia, sendTemplate, sendBulk, downloadMedia };

@@ -144,6 +144,7 @@ const MENU_GROUPS = [
       { path: '/campaigns', label: 'Campañas', roles: ['admin', 'marketing'] },
       { path: '/segments', label: 'Segmentos', roles: ['admin', 'marketing'] },
       { path: '/message-templates', label: 'Plantillas de Mensaje', roles: ['admin', 'marketing'] },
+      { path: '/saved-replies', label: 'Mensajes Guardados', roles: ['admin', 'call_center', 'marketing'] },
       { path: '/workflows', label: 'Automatizaciones', roles: ['admin', 'marketing'] },
       { path: '/attribution', label: 'Atribución / ROI', roles: ['admin', 'marketing'] },
       { path: '/reputation', label: 'Reputación', roles: ['admin', 'marketing'] },
@@ -511,7 +512,16 @@ export default function Layout({ children }) {
         </header>
 
         <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
-          <div key={location.pathname} className="page-enter mx-auto w-full max-w-screen-xl">{children}</div>
+          {/* El chat aprovecha TODO el ancho (sin tope de 1280px): con la barra
+              lateral colapsada el espacio sobrante lo ocupa la conversación. */}
+          <div
+            key={location.pathname}
+            className={`page-enter mx-auto w-full ${
+              location.pathname.startsWith('/chats') ? 'max-w-none' : 'max-w-screen-xl'
+            }`}
+          >
+            {children}
+          </div>
         </main>
       </div>
     </div>

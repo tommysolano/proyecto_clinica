@@ -35,6 +35,8 @@ router.get('/stats', requireRole(...CALL_CENTER_ROLES), ctrl.getStats);
 
 // Mensajes guardados (canned/saved replies)
 router.get('/saved-replies', requireRole(...CALL_CENTER_ROLES), ctrl.listSavedReplies);
+router.post('/saved-replies/upload', requireRole(...CALL_CENTER_ROLES), ctrl.uploadSavedReplyMedia);
+router.post('/saved-replies/test', requireRole(...CALL_CENTER_ROLES), ctrl.testSavedReply);
 router.post('/saved-replies', requireRole(...CALL_CENTER_ROLES), ctrl.createSavedReply);
 router.put('/saved-replies/:id', requireRole(...CALL_CENTER_ROLES), ctrl.updateSavedReply);
 router.delete('/saved-replies/:id', requireRole(...CALL_CENTER_ROLES), ctrl.deleteSavedReply);

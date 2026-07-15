@@ -30,6 +30,7 @@ import Chats from './pages/Chats';
 import OpportunitiesGlobal from './pages/OpportunitiesGlobal';
 import Analytics from './pages/Analytics';
 import MessageTemplates from './pages/MessageTemplates';
+import SavedReplies from './pages/SavedReplies';
 import Segments from './pages/Segments';
 import Campaigns from './pages/Campaigns';
 import Workflows from './pages/Workflows';
@@ -270,6 +271,14 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'marketing']}>
                       <MessageTemplates />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/saved-replies"
+                  element={
+                    <RoleRoute roles={['admin', 'call_center', 'marketing']}>
+                      <SavedReplies />
                     </RoleRoute>
                   }
                 />
