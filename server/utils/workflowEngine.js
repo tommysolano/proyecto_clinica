@@ -14,6 +14,15 @@ const { DOMAIN_EVENTS, onDomainEvent } = require('./events');
 const MAX_STEP_TRANSITIONS = 100; // guarda contra bucles por onFailGoTo mal formado
 const MAX_LOG_ENTRIES = 60; // tope del registro de ejecución por inscripción
 
+// Pasos de EFECTO (no de control de flujo) del runner lineal: tras ejecutarlos
+// se persiste stepIndex para que una recuperación (deploy/caída a mitad del
+// flujo) continúe desde ahí y no repita envíos. El runner de grafo ya lo hace.
+const LINEAR_ACTION_TYPES = new Set([
+  'send_message', 'send_template', 'send_email', 'assign_agent', 'create_task',
+  'webhook', 'request_review', 'ai_reply', 'set_appointment_status',
+  'add_tag', 'remove_tag', 'move_stage',
+]);
+
 // Motivos por los que messaging.send salta/falla un envío, en lenguaje del usuario.
 const SEND_FAIL_REASONS = {
   out_of_window: 'WhatsApp: fuera de la ventana de 24h (el paciente no ha escrito recientemente). Usa el paso "Enviar plantilla" con una plantilla aprobada.',
@@ -844,6 +853,12 @@ async function executeEnrollment(enrollment) {
     } else {
       i++; // paso desconocido → saltar
     }
+
+    if (LINEAR_ACTION_TYPES.has(step.type) && enrollment.stepIndex !== i) {
+      enrollment.stepIndex = i;
+      // eslint-disable-next-line no-await-in-loop
+      await enrollment.save();
+    }
   }
 
   enrollment.stepIndex = workflow.steps.length;
@@ -908,17 +923,24 @@ async function enrollForEvent(eventType, payload = {}) {
     }
     for (const flow of flows) {
       // Anti-duplicado: una inscripción viva por (workflow, paciente, flujo).
-      // OJO: en eventos de CITA el duplicado es por cita (context.appointmentId):
-      // cada cita nueva debe generar su propio recordatorio/confirmación aunque
-      // haya otra inscripción viva de una cita anterior (antes se saltaba en
-      // silencio y "agendé 3 citas y no llegó nada").
+      // OJO: en eventos de CITA el duplicado es por cita Y por tipo de evento
+      // (context.appointmentId + eventType), y cuenta CUALQUIER estado (también
+      // 'done'): el mismo evento de la misma cita ejecuta el flujo UNA sola vez
+      // aunque se repita (doble clic en "No asistió", asistencia marcada por dos
+      // caminos, reintentos). Cada mensaje cuesta dinero: un envío por evento.
+      // Una cita NUEVA sí genera su propia ejecución (dedup por cita, no por
+      // paciente: antes "agendé 3 citas y no llegó nada").
       const dedup = {
         workflow: wf._id,
         patient: patient._id,
         startNodeId: flow.startNodeId,
         status: { $in: ['active', 'waiting'] },
       };
-      if (payload.appointmentId) dedup['context.appointmentId'] = String(payload.appointmentId);
+      if (payload.appointmentId) {
+        dedup['context.appointmentId'] = String(payload.appointmentId);
+        dedup['context.eventType'] = eventType;
+        delete dedup.status; // una sola vez por (cita, evento), para siempre
+      }
       // Cumpleaños: una sola vez AL DÍA aunque el job vuelva a correr (el server
       // se reinicia con cada deploy y re-ejecuta el chequeo al arrancar). La
       // inscripción del saludo ya terminó ('done'), así que el dedup por
@@ -936,7 +958,7 @@ async function enrollForEvent(eventType, payload = {}) {
           wf,
           'skipped_duplicate',
           payload.appointmentId
-            ? 'Esta misma cita ya tiene una inscripción viva en este flujo; no se crea otra.'
+            ? 'Este flujo ya se ejecutó para esta cita con este mismo activador: no se repite (un envío por cita y por tipo de evento).'
             : 'El paciente ya tiene una inscripción activa/en espera en este flujo; el evento no crea otra hasta que termine.'
         );
         continue;
@@ -956,6 +978,7 @@ async function enrollForEvent(eventType, payload = {}) {
           nextRunAt: new Date(),
           context: {
             phone,
+            eventType, // parte de la clave anti-duplicado (una vez por cita y evento)
             appointmentId: payload.appointmentId || null,
             appointmentDate: payload.appointmentDate || null,
           },

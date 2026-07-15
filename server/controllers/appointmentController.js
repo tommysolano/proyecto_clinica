@@ -1022,6 +1022,7 @@ exports.markAttended = async (req, res) => {
   try {
     const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
+    const wasAttended = apt.status === 'asistida';
     apt.status = 'asistida';
     if (req.body.doctorId) {
       apt.doctor = req.body.doctorId;
@@ -1044,7 +1045,9 @@ exports.markAttended = async (req, res) => {
       .populate('services.product', 'name code salePrice category');
     emitToClinic(req.clinicId, 'appointment:updated', populated);
     if (populated.doctor?._id) emitToUser(populated.doctor._id, 'appointment:updated', populated);
-    emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_ATTENDED, appointmentEventPayload(populated));
+    // Solo la PRIMERA vez: re-marcar (doble clic, reasignar doctor) no debe
+    // re-disparar la automatización de "cita asistida".
+    if (!wasAttended) emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_ATTENDED, appointmentEventPayload(populated));
     res.json(populated);
   } catch (error) {
     res.status(500).json({ message: 'Error al marcar asistencia' });
@@ -1084,6 +1087,9 @@ exports.markNoShow = async (req, res) => {
   try {
     const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
+    // Idempotente: un doble clic no debe re-emitir el evento (y con él, otro
+    // mensaje de la automatización de no-show).
+    if (apt.status === 'no_asistio') return res.json(apt);
     apt.status = 'no_asistio';
     await apt.save();
     emitToClinic(req.clinicId, 'appointment:updated', apt);
@@ -1103,6 +1109,8 @@ exports.markConfirmed = async (req, res) => {
   try {
     const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
+    // Idempotente: confirmar dos veces no re-dispara la automatización.
+    if (apt.status === 'confirmada') return res.json(apt);
     apt.status = 'confirmada';
     await apt.save();
     emitToClinic(req.clinicId, 'appointment:updated', apt);

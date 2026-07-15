@@ -60,15 +60,15 @@ test('isPastLocalDateTime: días completos y casos sin hora', () => {
 
 // ─────────── isNoShowDue (no-show automático de citas de HOY) ───────────
 
-test('isNoShowDue: la cita vence 1h después de su inicio (o a su hora de fin si es posterior)', () => {
+test('isNoShowDue: la cita vence apenas pasa su hora de inicio (margen de 1 min)', () => {
   const date = new Date('2026-07-15T17:00:00Z'); // día guardado a las 12:00 hora Ecuador
-  const appt = { date, startTime: '09:00' };
-  assert.equal(isNoShowDue(appt, new Date('2026-07-15T09:30:00-05:00')), false); // dentro de la gracia
-  assert.equal(isNoShowDue(appt, new Date('2026-07-15T10:01:00-05:00')), true); // pasó inicio + 1h
+  const appt = { date, startTime: '16:35' };
+  assert.equal(isNoShowDue(appt, new Date('2026-07-15T16:35:30-05:00')), false); // dentro del margen
+  assert.equal(isNoShowDue(appt, new Date('2026-07-15T16:37:00-05:00')), true); // pasó la hora → no-show
 
-  const withEnd = { date, startTime: '09:00', endTime: '11:00' };
-  assert.equal(isNoShowDue(withEnd, new Date('2026-07-15T10:30:00-05:00')), false); // la cita sigue en curso
-  assert.equal(isNoShowDue(withEnd, new Date('2026-07-15T11:01:00-05:00')), true); // terminó y nadie la cerró
+  // La hora de FIN no pospone el no-show: si nadie la recibió al inicio, venció.
+  const withEnd = { date, startTime: '16:35', endTime: '17:30' };
+  assert.equal(isNoShowDue(withEnd, new Date('2026-07-15T16:37:00-05:00')), true);
 });
 
 test('isNoShowDue: sin hora de inicio válida no se marca (queda para el barrido del día siguiente)', () => {

@@ -249,6 +249,29 @@ test('Botón "No asistió" (markNoShow) dispara el workflow de no-show', async (
   assert.ok(enrollment, 'marcar "no asistió" a mano debe inscribir el workflow de no-show');
   const sendLog = (enrollment.log || []).find((l) => l.type === 'send_message');
   assert.ok(sendLog, 'el paso de envío debe dejar rastro en el log');
+
+  // UN envío por cita y por evento: ni el doble clic (markNoShow idempotente) ni
+  // un evento repetido del mismo tipo (p. ej. botón + barrido automático) deben
+  // crear otra inscripción aunque la primera ya haya terminado.
+  const rNo2 = await H.runController(
+    appointmentCtrl.markNoShow,
+    H.mockReq(clinic._id, userId, {}, { params: { id: String(r.payload._id) } })
+  );
+  assert.equal(rNo2.statusCode, 200);
+  await workflowEngine.enrollForEvent('appointment_no_show', {
+    clinicId: String(clinic._id),
+    patientId: String(patient._id),
+    appointmentId: String(r.payload._id),
+    appointmentDate: new Date(),
+    isFirstVisit: false,
+    services: [],
+  });
+  await new Promise((res) => setTimeout(res, 250));
+  assert.equal(
+    await WorkflowEnrollment.countDocuments({ workflow: wf._id }),
+    1,
+    'el mismo evento de la misma cita no debe generar otra inscripción (otro mensaje)'
+  );
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
