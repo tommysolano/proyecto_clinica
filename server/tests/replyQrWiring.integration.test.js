@@ -138,3 +138,43 @@ test('si WhatsApp descartó la cita, el mensaje queda marcado failed:<motivo>', 
   assert.equal(outMsg.quoteResult, 'failed:library_dropped:cannot_reply',
     'el motivo real del descarte queda registrado para verlo en el CRM');
 });
+
+test('ack con el wamid bajo OTRA forma de JID actualiza el estado (fallback por hash)', async () => {
+  const { clinicId } = await H.seedClinic();
+  const conv = await Conversation.create({
+    clinic: clinicId, phone: '204496395366461', externalUserId: '204496395366461@lid',
+    channel: 'whatsapp', lastMessageAt: new Date(), lastMessageDirection: 'out',
+  });
+  const out = await Message.create({
+    clinic: clinicId, conversation: conv._id, direction: 'out', body: 'hola',
+    externalId: 'true_204496395366461@lid_ABCDEF123456', deliveryStatus: 'sent',
+  });
+  const messaging = require('../utils/messaging');
+  // El ack llega con el número REAL (@c.us) pero el MISMO hash.
+  const r = await messaging.updateMessageStatus({
+    clinicId, externalId: 'true_593999999999@c.us_ABCDEF123456', status: 'read',
+  });
+  assert.equal(r.ok, true, 'el ack encuentra el mensaje por el hash del wamid');
+  const updated = await Message.findById(out._id).lean();
+  assert.equal(updated.deliveryStatus, 'read');
+});
+
+test('cita entrante con hash pelado (quotedStanzaID) resuelve el mensaje citado', async () => {
+  const { clinicId } = await H.seedClinic();
+  const conv = await Conversation.create({
+    clinic: clinicId, phone: '204496395366461', externalUserId: '204496395366461@lid',
+    channel: 'whatsapp', lastMessageAt: new Date(), lastMessageDirection: 'out',
+  });
+  await Message.create({
+    clinic: clinicId, conversation: conv._id, direction: 'out', body: 'hola, ¿confirmas tu cita?',
+    externalId: 'true_204496395366461@lid_FEEDBEEF9999', deliveryStatus: 'sent', sentByName: 'Agente',
+  });
+  await chat.ingestExternalMessage({
+    clinicId, channel: 'whatsapp', externalUserId: '204496395366461@lid', phone: '204496395366461',
+    body: 'sí confirmo', externalId: 'false_204496395366461@lid_NEW1', contextId: 'FEEDBEEF9999',
+  });
+  const inMsg = await Message.findOne({ conversation: conv._id, direction: 'in' }).lean();
+  assert.ok(inMsg, 'el mensaje entrante se ingirió');
+  assert.equal(inMsg.replyTo?.externalId, 'true_204496395366461@lid_FEEDBEEF9999',
+    'la cita entrante se resolvió por el hash aunque el contexto llegó pelado');
+});

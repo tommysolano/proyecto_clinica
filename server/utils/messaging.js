@@ -763,7 +763,19 @@ async function updateMessageStatus({
   if (!externalId || !deliveryStatus) {
     return { ok: false, reason: 'invalid_status' };
   }
-  const msg = await Message.findOne({ clinic: clinicId, externalId });
+  let msg = await Message.findOne({ clinic: clinicId, externalId });
+  if (!msg) {
+    // Chats LID (número oculto): el ack puede llegar con el wamid bajo la OTRA
+    // forma del JID (@c.us vs @lid) y no coincidir con el guardado — por eso
+    // los salientes se quedaban en "enviado" aunque el contacto ya los leyó.
+    // La parte única del wamid (hash) identifica el mensaje igual.
+    const parts = String(externalId).split('_');
+    const hash = parts.length >= 3 ? parts[2] : '';
+    if (hash && hash.length >= 8) {
+      const esc = hash.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      msg = await Message.findOne({ clinic: clinicId, externalId: new RegExp(`_${esc}$`) });
+    }
+  }
   if (!msg) return { ok: false, reason: 'message_not_found' };
 
   msg.deliveryStatus = deliveryStatus;

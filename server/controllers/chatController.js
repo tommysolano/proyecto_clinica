@@ -1749,8 +1749,24 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   // burbuja citada (el remitente es el equipo si era saliente, o el contacto).
   let replyTo = null;
   if (contextId) {
-    const quoted = await Message.findOne({ clinic: clinicId, conversation: conv._id, externalId: contextId })
-      .select('body direction externalId mediaType sentByName isAutoReply');
+    const fields = 'body direction externalId mediaType sentByName isAutoReply';
+    let quoted = await Message.findOne({ clinic: clinicId, conversation: conv._id, externalId: contextId })
+      .select(fields);
+    if (!quoted) {
+      // El mismo mensaje puede estar guardado con OTRA forma del JID (chats LID:
+      // @lid vs @c.us), o el contexto puede llegar como hash pelado
+      // (quotedStanzaID). La parte única del wamid identifica el mensaje igual.
+      const parts = String(contextId).split('_');
+      const hash = parts.length >= 3 ? parts[2] : String(contextId);
+      if (hash && hash.length >= 8) {
+        const esc = hash.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        quoted = await Message.findOne({
+          clinic: clinicId,
+          conversation: conv._id,
+          externalId: new RegExp(`(^|_)${esc}$`),
+        }).select(fields);
+      }
+    }
     if (quoted) replyTo = replySnapshotFrom(quoted, conv.contactName);
   }
 

@@ -498,45 +498,55 @@ async function waitForConnected(key, timeoutMs = 45000) {
 }
 
 /**
- * Envía `content` (texto o MessageMedia) al chat, CITANDO el mensaje indicado si
- * se puede resolver. Pasar `quotedMessageId` directo a sendMessage no basta:
- * whatsapp-web.js solo cita si el mensaje ya está en su store en memoria y, si
- * no lo está, envía un mensaje NORMAL en silencio (ignoreQuoteErrors por
- * defecto). Por eso primero se carga el mensaje con getMessageById —que lo trae
- * del store O del servidor— y se usa `.reply()`, que arma la cita correctamente.
- * Si el mensaje no se encuentra, se envía normal para no perder el mensaje.
+ * Localiza DENTRO de la página de WhatsApp Web el mensaje a citar y devuelve su
+ * id serializado REAL en el store (`{ id, step }`). NO usa los helpers de alto
+ * nivel de whatsapp-web.js (getChatById/fetchMessages/getMessageById): esos
+ * serializan modelos enteros (frágil) y exigen el id con la MISMA forma de JID
+ * con que el store lo guardó — en chats LID (número oculto) el store puede
+ * tener el mensaje bajo el número real (@c.us) aunque nosotros lo guardamos
+ * como @lid, o al revés, y por eso "no se encontraba" ni un mensaje recién
+ * enviado. Trabaja directo sobre el store con el mismo WWebJS.getChat del
+ * envío normal (que sí funciona en estos chats). Estrategias, en orden:
+ *   1) Msg.get(wamid) exacto.
+ *   2) Por la parte ÚNICA del wamid (el hash), ignorando la forma del JID.
+ *   3) Por TEXTO exacto del mensaje citado (cuando no hay wamid guardado).
  */
-/**
- * Localiza el mensaje a citar dentro de la sesión de WhatsApp. Nunca lanza
- * (devuelve null si no lo encuentra). Estrategias, en orden:
- *   1) Por wamid (getMessageById: lo trae del store o del servidor).
- *   2) Por TEXTO: busca en los últimos mensajes del chat uno con el mismo cuerpo.
- *      Cubre el caso en que no guardamos el wamid (p.ej. chats LID donde
- *      whatsapp-web.js no lo expone al recibir) — así la cita funciona igual.
- */
-async function resolveQuoteTarget(entry, chatId, quotedMessageId, quoteBody) {
-  if (quotedMessageId) {
+function findQuoteTargetId(entry, chatId, wamid, quoteBody) {
+  return entry.client.pupPage.evaluate(async (chatId, wamid, body) => {
     try {
-      const m = await withTimeout(entry.client.getMessageById(quotedMessageId), 10000, 'getMessageById timeout');
-      if (m) return { target: m, how: 'id' };
-      console.warn('[whatsapp-qr quote] getMessageById devolvió null:', quotedMessageId);
+      const Coll = window.require('WAWebCollections');
+      if (wamid) {
+        const direct = Coll.Msg.get(wamid);
+        if (direct && direct.id) return { id: direct.id._serialized, step: 'store' };
+      }
+      const chat = await window.WWebJS.getChat(chatId, { getAsModel: false });
+      if (!chat || !chat.msgs) return { id: '', step: 'chat_no_encontrado' };
+      let msgs = chat.msgs.getModelsArray();
+      try {
+        const loader = window.require('WAWebChatLoadMessages');
+        for (let i = 0; i < 5 && msgs.length < 50; i++) {
+          const more = await loader.loadEarlierMsgs({ chat });
+          if (!more || !more.length) break;
+          msgs = chat.msgs.getModelsArray();
+        }
+      } catch (e) { /* seguir con lo que haya en memoria */ }
+      // El hash es la 3ª parte del wamid (fromMe_remoto_HASH): idéntico en
+      // ambas formas del JID.
+      const hash = wamid ? String(wamid).split('_')[2] || '' : '';
+      if (hash) {
+        const byHash = msgs.filter((m) => m.id && m.id.id === hash);
+        if (byHash.length) return { id: byHash[byHash.length - 1].id._serialized, step: 'hash' };
+      }
+      const needle = String(body || '').trim();
+      if (needle) {
+        const byBody = msgs.filter((m) => String(m.body || '').trim() === needle);
+        if (byBody.length) return { id: byBody[byBody.length - 1].id._serialized, step: 'texto' };
+      }
+      return { id: '', step: 'sin_coincidencia(' + msgs.length + ' mensajes)' };
     } catch (e) {
-      console.warn('[whatsapp-qr quote] getMessageById:', e.message);
+      return { id: '', step: 'error:' + String((e && e.message) || e).slice(0, 120) };
     }
-  }
-  const needle = String(quoteBody || '').trim();
-  if (needle) {
-    try {
-      const chat = await withTimeout(entry.client.getChatById(chatId), 10000, 'getChatById timeout');
-      const recent = await withTimeout(chat.fetchMessages({ limit: 50 }), 15000, 'fetchMessages timeout');
-      const matches = recent.filter((m) => String(m.body || '').trim() === needle);
-      if (matches.length) return { target: matches[matches.length - 1], how: 'text' }; // el más reciente que coincide
-      console.warn('[whatsapp-qr quote] sin coincidencia por texto para citar');
-    } catch (e) {
-      console.warn('[whatsapp-qr quote] búsqueda por texto:', e.message);
-    }
-  }
-  return { target: null, how: '', reason: 'not_found' };
+  }, chatId, wamid || '', quoteBody || '');
 }
 
 /**
@@ -579,27 +589,42 @@ async function diagnoseQuoteDrop(entry, wamid) {
 async function sendResolvingQuote(entry, chatId, content, quotedMessageId, opts = {}, quoteBody = '') {
   const quote = { applied: false, how: '', reason: '', wamid: '' };
   if (quotedMessageId || String(quoteBody || '').trim()) {
-    const resolved = await resolveQuoteTarget(entry, chatId, quotedMessageId, quoteBody);
-    if (resolved.target) {
-      quote.how = resolved.how;
-      quote.wamid = resolved.target.id?._serialized || '';
+    let found = { id: '', step: 'error:desconocido' };
+    try {
+      found = await withTimeout(
+        findQuoteTargetId(entry, chatId, quotedMessageId, quoteBody),
+        20000,
+        'timeout buscando el mensaje a citar'
+      );
+    } catch (e) {
+      found = { id: '', step: `error:${e.message}` };
+    }
+    if (found.id) {
+      quote.how = found.step;
+      quote.wamid = found.id;
       try {
-        // ignoreQuoteErrors:false → si la página no localiza el mensaje citado,
+        // El id encontrado es el REAL del store: Msg.get lo resolverá dentro de
+        // la página. ignoreQuoteErrors:false → si aun así no lo localiza,
         // LANZA (default: manda normal en silencio) y aquí queda el motivo.
-        const sent = await resolved.target.reply(content, undefined, { ...opts, ignoreQuoteErrors: false });
+        const sent = await entry.client.sendMessage(chatId, content, {
+          ...opts,
+          quotedMessageId: found.id,
+          ignoreQuoteErrors: false,
+        });
         if (sent && sent.hasQuotedMsg === false) {
-          quote.reason = `library_dropped:${await diagnoseQuoteDrop(entry, quote.wamid)}`;
+          quote.reason = `library_dropped:${await diagnoseQuoteDrop(entry, found.id)}`;
           console.warn('[whatsapp-qr quote] WhatsApp Web descartó la cita:', quote.reason);
         } else {
           quote.applied = true;
         }
         return { sent, quote };
       } catch (e) {
-        quote.reason = `reply_error:${e.message}`;
-        console.warn('[whatsapp-qr quote] reply falló, se envía normal:', e.message);
+        quote.reason = `reply_error:${String(e.message || '').slice(0, 160)}`;
+        console.warn('[whatsapp-qr quote] envío citando falló, se envía normal:', e.message);
       }
     } else {
-      quote.reason = resolved.reason || 'not_found';
+      quote.reason = `not_found:${found.step}`;
+      console.warn('[whatsapp-qr quote] mensaje a citar no localizado:', found.step);
     }
   }
   const sent = await entry.client.sendMessage(chatId, content, opts);

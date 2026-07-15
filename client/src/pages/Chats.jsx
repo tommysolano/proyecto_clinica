@@ -1203,10 +1203,13 @@ function ReplyButton({ onClick }) {
 // Solo se muestra cuando la respuesta NO llegó citada al destinatario.
 function quoteFailureText(code) {
   const reason = String(code || '').replace(/^failed:/, '');
-  if (reason.startsWith('no_wamid')) return 'Se envió sin la cita: el mensaje original no tiene ID de WhatsApp.';
-  if (reason.startsWith('library_dropped')) return 'Se envió sin la cita: WhatsApp no permitió citar ese mensaje.';
-  if (reason.startsWith('not_found')) return 'Se envió sin la cita: no se encontró el mensaje original en WhatsApp.';
-  return 'Se envió sin la cita en WhatsApp.';
+  let base = 'Se envió sin la cita en WhatsApp.';
+  if (reason.startsWith('no_wamid')) base = 'Se envió sin la cita: el mensaje original no tiene ID de WhatsApp.';
+  else if (reason.startsWith('library_dropped')) base = 'Se envió sin la cita: WhatsApp no permitió citar ese mensaje.';
+  else if (reason.startsWith('not_found')) base = 'Se envió sin la cita: no se encontró el mensaje original en WhatsApp.';
+  else if (reason.startsWith('reply_error')) base = 'Se envió sin la cita: el envío citando falló.';
+  // El código técnico permite diagnosticar el paso exacto desde una captura.
+  return `${base} (${reason.slice(0, 90)})`;
 }
 
 function MessageBubble({ msg, onReply, onJumpTo }) {
