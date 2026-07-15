@@ -176,6 +176,20 @@ function personalize(text, patient) {
 }
 
 /**
+ * Rellena TODAS las variables conocidas del texto — el mismo catálogo que las
+ * plantillas: {{nombre}}, {{apellido}}, {{nombre_completo}}, {{fecha_cita}},
+ * {{hora_cita}}, {{servicio}}, {{doctor}}, {{sede}} (las de cita se resuelven
+ * con la cita del contexto del flujo). Una variable desconocida o sin dato se
+ * elimina, para que al paciente nunca le llegue un "{{x}}" literal.
+ */
+async function renderText(text, patient, ctx = {}) {
+  const raw = String(text || '');
+  if (!raw.includes('{{')) return raw;
+  const resolve = await messaging.buildKnownVariableResolver(patient, ctx.appointmentId || null);
+  return raw.replace(/\{\{\s*([^}\s]+)\s*\}\}/g, (_, key) => resolve(key) || '').replace(/[ \t]{2,}/g, ' ');
+}
+
+/**
  * Calcula la fecha objetivo de un paso wait_until a partir del contexto.
  * PURO y testeable. Devuelve Date o null si no hay base.
  */
@@ -305,7 +319,11 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
         conversation: await loadConv(),
         to: phone,
         patient,
-        body: personalize(step.body, patient),
+        body: await renderText(step.body, patient, ctx),
+        // Adjunto opcional del nodo (imagen/video): Cloud lo manda por link,
+        // QR lee los bytes del storage propio. Misma ventana de 24h que el texto.
+        mediaUrl: step.mediaUrl || null,
+        mediaType: step.mediaType || null,
         isAutoReply: true,
       });
       return sendFailureInfo(r);
@@ -328,7 +346,7 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
     case 'send_email': {
       const to = patient?.email;
       if (!to) return 'El paciente no tiene email registrado.';
-      const r = await messaging.send({ clinicId, channel: 'email', to, patient, subject: personalize(step.emailSubject || 'Mensaje de tu clínica', patient), body: personalize(step.body, patient) });
+      const r = await messaging.send({ clinicId, channel: 'email', to, patient, subject: await renderText(step.emailSubject || 'Mensaje de tu clínica', patient, ctx), body: await renderText(step.body, patient, ctx) });
       return sendFailureInfo(r);
     }
     case 'assign_agent': {
@@ -353,7 +371,7 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
       const offset = Number(step.taskDueOffsetMinutes || 0);
       const task = await AgentTask.create({
         clinic: clinicId,
-        title: personalize(step.taskTitle || 'Tarea automática', patient),
+        title: await renderText(step.taskTitle || 'Tarea automática', patient, ctx),
         conversation: convRef.current?._id || null,
         patient: patient?._id || null,
         assignedTo: assignTo,
@@ -381,7 +399,7 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
       await ReviewRequest.create({ clinic: clinicId, patient: patient?._id || null, appointment: ctx.appointmentId || null, conversation: convRef.current?._id || null, token, channel: 'whatsapp' });
       const base = process.env.PUBLIC_API_URL || '';
       const link = base ? `${base}/api/public/review/${token}` : '';
-      const text = personalize(step.body || '¡Hola {{nombre}}! ¿Cómo fue tu experiencia con nosotros? Califícanos aquí:', patient);
+      const text = await renderText(step.body || '¡Hola {{nombre}}! ¿Cómo fue tu experiencia con nosotros? Califícanos aquí:', patient, ctx);
       const r = await messaging.send({ clinicId, channel: 'whatsapp', conversation: await loadConv(), to: phone, patient, body: link ? `${text}\n${link}` : text, isAutoReply: true });
       return sendFailureInfo(r);
     }
@@ -607,7 +625,10 @@ async function executeEnrollment(enrollment) {
         conversation,
         to: phone,
         patient,
-        body: personalize(step.body, patient),
+        // eslint-disable-next-line no-await-in-loop
+        body: await renderText(step.body, patient, ctx),
+        mediaUrl: step.mediaUrl || null,
+        mediaType: step.mediaType || null,
         isAutoReply: true,
       });
       const fail = sendFailureInfo(r);
@@ -637,8 +658,10 @@ async function executeEnrollment(enrollment) {
           channel: 'email',
           to,
           patient,
-          subject: personalize(step.emailSubject || 'Mensaje de tu clínica', patient),
-          body: personalize(step.body, patient),
+          // eslint-disable-next-line no-await-in-loop
+          subject: await renderText(step.emailSubject || 'Mensaje de tu clínica', patient, ctx),
+          // eslint-disable-next-line no-await-in-loop
+          body: await renderText(step.body, patient, ctx),
         });
         const fail = sendFailureInfo(r);
         pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail || '' });
@@ -678,7 +701,8 @@ async function executeEnrollment(enrollment) {
       // eslint-disable-next-line no-await-in-loop
       const task = await AgentTask.create({
         clinic: enrollment.clinic,
-        title: personalize(step.taskTitle || 'Tarea automática', patient),
+        // eslint-disable-next-line no-await-in-loop
+        title: await renderText(step.taskTitle || 'Tarea automática', patient, ctx),
         conversation: conversation?._id || null,
         patient: patient?._id || null,
         assignedTo: assignTo,
@@ -729,9 +753,11 @@ async function executeEnrollment(enrollment) {
       });
       const base = process.env.PUBLIC_API_URL || '';
       const link = base ? `${base}/api/public/review/${token}` : '';
-      const text = personalize(
+      // eslint-disable-next-line no-await-in-loop
+      const text = await renderText(
         step.body || '¡Hola {{nombre}}! ¿Cómo fue tu experiencia con nosotros? Califícanos aquí:',
-        patient
+        patient,
+        ctx
       );
       // eslint-disable-next-line no-await-in-loop
       await messaging.send({
@@ -1257,6 +1283,7 @@ module.exports = {
   triggerMatchesEvent,
   pickRoundRobinAgent,
   personalize,
+  renderText,
   executeEnrollment,
   executeGraphEnrollment,
   findStartNode,

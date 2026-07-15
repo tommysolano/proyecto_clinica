@@ -3,10 +3,26 @@ import { HiOutlineFaceSmile, HiOutlineListBullet } from 'react-icons/hi2';
 
 /**
  * Área de texto para mensajes de WhatsApp/email con barra de formato:
- * negrita/cursiva/tachado (marcadores nativos de WhatsApp), viñetas, variable
- * {{nombre}} y selector de emojis. Es un textarea controlado normal: recibe
+ * negrita/cursiva/tachado (marcadores nativos de WhatsApp), viñetas, menú de
+ * variables y selector de emojis. Es un textarea controlado normal: recibe
  * `value` + `onChange(nuevoTexto)`.
+ *
+ * `variables`: catálogo de variables insertables. Por defecto solo {{nombre}}
+ * (chats/campañas); el editor de workflows pasa MESSAGE_VARIABLES completo
+ * (el backend las resuelve con datos del paciente y de la cita del contexto).
  */
+export const MESSAGE_VARIABLES = [
+  { key: 'nombre', label: 'Nombre del paciente' },
+  { key: 'apellido', label: 'Apellido del paciente' },
+  { key: 'nombre_completo', label: 'Nombre completo' },
+  { key: 'fecha_cita', label: 'Fecha de la cita', cita: true },
+  { key: 'hora_cita', label: 'Hora de la cita', cita: true },
+  { key: 'servicio', label: 'Servicio(s) de la cita', cita: true },
+  { key: 'doctor', label: 'Doctor de la cita', cita: true },
+  { key: 'sede', label: 'Sede / sucursal de la cita', cita: true },
+];
+const DEFAULT_VARIABLES = [MESSAGE_VARIABLES[0]];
+
 const EMOJIS = {
   'Frecuentes': ['😀', '😁', '😂', '🤣', '😊', '😍', '🥰', '😘', '😎', '🤗', '🙂', '😉', '🙌', '👏', '🙏', '👍', '👌', '✌️', '💪', '🤝'],
   'Salud': ['🩺', '💉', '💊', '🦷', '🧠', '❤️', '🫀', '🩹', '🏥', '👩‍⚕️', '👨‍⚕️', '🧬', '🔬', '🌡️', '😷', '🤒', '🛌', '🧘', '🏃', '🥗'],
@@ -14,9 +30,10 @@ const EMOJIS = {
   'Tiempo y citas': ['📅', '🗓️', '⏰', '⌚', '⏳', '🕐', '📍', '📌', '📞', '📱', '💬', '✅', '☑️', '✔️', '❌', '⚠️', '❗', '❓', '💵', '💳'],
 };
 
-export default function WhatsappTextArea({ value = '', onChange, rows = 5, placeholder = 'Mensaje…', showVariables = true }) {
+export default function WhatsappTextArea({ value = '', onChange, rows = 5, placeholder = 'Mensaje…', showVariables = true, variables = DEFAULT_VARIABLES }) {
   const ref = useRef(null);
   const [showEmoji, setShowEmoji] = useState(false);
+  const [showVars, setShowVars] = useState(false);
 
   // Inserta texto en la posición del cursor (o reemplaza la selección).
   const insertAt = (text, { wrap = null } = {}) => {
@@ -78,16 +95,48 @@ export default function WhatsappTextArea({ value = '', onChange, rows = 5, place
         <FmtBtn label={<i>C</i>} title="Cursiva (_texto_)" onClick={() => insertAt('texto', { wrap: '_' })} />
         <FmtBtn label={<s>T</s>} title="Tachado (~texto~)" onClick={() => insertAt('texto', { wrap: '~' })} />
         <FmtBtn label={<HiOutlineListBullet className="w-4 h-4" />} title="Viñetas" onClick={bulletize} />
-        {showVariables && (
-          <FmtBtn label="{{nombre}}" title="Insertar el nombre del paciente" onClick={() => insertAt('{{nombre}}')} className="font-mono" />
+        {showVariables && variables.length === 1 && (
+          <FmtBtn label={`{{${variables[0].key}}}`} title={`Insertar: ${variables[0].label}`} onClick={() => insertAt(`{{${variables[0].key}}}`)} className="font-mono" />
+        )}
+        {showVariables && variables.length > 1 && (
+          <FmtBtn
+            label="{{ }} Variables"
+            title="Insertar una variable"
+            onClick={() => { setShowVars((v) => !v); setShowEmoji(false); }}
+            className={`font-mono ${showVars ? 'border-emerald-400 text-emerald-700' : ''}`}
+          />
         )}
         <FmtBtn
           label={<HiOutlineFaceSmile className="w-4 h-4" />}
           title="Emojis"
-          onClick={() => setShowEmoji((v) => !v)}
+          onClick={() => { setShowEmoji((v) => !v); setShowVars(false); }}
           className={showEmoji ? 'border-emerald-400 text-emerald-700' : ''}
         />
       </div>
+
+      {showVars && (
+        <div className="absolute z-30 top-9 left-0 w-72 max-h-64 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-xl p-1.5">
+          {variables.map((v) => (
+            <button
+              key={v.key}
+              type="button"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={() => { insertAt(`{{${v.key}}}`); setShowVars(false); }}
+              className="w-full text-left px-2 py-1.5 rounded-lg hover:bg-emerald-50 bg-transparent border-none cursor-pointer flex items-center justify-between gap-2"
+            >
+              <span className="text-xs text-slate-700">{v.label}</span>
+              <code className="text-[10px] text-emerald-700 bg-emerald-50 border border-emerald-100 rounded px-1 py-0.5">{`{{${v.key}}}`}</code>
+            </button>
+          ))}
+          {variables.some((v) => v.cita) && (
+            <p className="text-[10px] text-slate-400 px-2 pt-1 border-t border-slate-100 mt-1">
+              Las variables de cita (fecha, hora, servicio, doctor, sede) se llenan solo cuando el
+              flujo se disparó por una CITA (agendada, no asistió, etc.); en otros disparadores
+              quedan vacías.
+            </p>
+          )}
+        </div>
+      )}
 
       {showEmoji && (
         <div className="absolute z-30 top-9 right-0 w-72 max-h-56 overflow-y-auto bg-white border border-slate-200 rounded-xl shadow-xl p-2">

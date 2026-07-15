@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
+import api from '../api/axios';
 import NumericInput from './NumericInput';
-import WhatsappTextArea from './WhatsappTextArea';
+import WhatsappTextArea, { MESSAGE_VARIABLES } from './WhatsappTextArea';
 import ReactFlow, {
   Background,
   Controls,
@@ -214,7 +215,7 @@ function autoLayout(nodes, edges) {
 function summarize(n) {
   const d = n.data || {};
   switch (n.type) {
-    case 'send_message': return d.body;
+    case 'send_message': return `${d.mediaUrl ? '📎 ' : ''}${d.body || ''}`;
     case 'send_template': return d.templateName;
     case 'send_email': return d.emailSubject || d.body;
     case 'wait': return `${d.waitMinutes} min`;
@@ -847,6 +848,72 @@ function TriggerConfig({ trigger = {}, onChange, products = [] }) {
   );
 }
 
+// ─────────── Adjunto del nodo "Enviar mensaje" (imagen o video) ───────────
+function NodeAttachment({ d, set }) {
+  const [uploading, setUploading] = useState(false);
+  const fileRef = useRef(null);
+
+  const upload = (file) => {
+    if (!file) return;
+    const isImage = file.type.startsWith('image/');
+    const isVideo = file.type.startsWith('video/');
+    if (!isImage && !isVideo) return toast.error('Solo imágenes o videos');
+    if (isImage && file.size > 1.8 * 1024 * 1024) return toast.error('Imagen: máximo 1.8MB');
+    if (isVideo && file.size > 10 * 1024 * 1024) return toast.error('Video: máximo 10MB');
+    const reader = new FileReader();
+    reader.onload = async (ev) => {
+      try {
+        setUploading(true);
+        // Mismo storage autoalojado que los mensajes guardados: la URL pública
+        // resultante la entienden ambos gateways (Cloud por link, QR por bytes).
+        const r = await api.post('/chats/saved-replies/upload', { name: file.name, dataUrl: ev.target.result });
+        set({ mediaUrl: r.data.url, mediaType: r.data.type, mediaName: file.name });
+        toast.success('Adjunto subido');
+      } catch (err) {
+        toast.error(err.response?.data?.message || 'Error al subir adjunto');
+      } finally {
+        setUploading(false);
+      }
+    };
+    reader.readAsDataURL(file);
+  };
+
+  if (d.mediaUrl) return (
+    <div className="flex items-center gap-2 border border-slate-200 rounded-lg p-2 bg-slate-50">
+      {d.mediaType === 'image' ? (
+        <img src={d.mediaUrl} alt="" className="w-12 h-12 rounded-lg object-cover shrink-0" />
+      ) : (
+        <span className="w-12 h-12 rounded-lg bg-slate-200 flex items-center justify-center text-xl shrink-0">🎬</span>
+      )}
+      <div className="min-w-0 flex-1">
+        <p className="text-xs font-medium text-slate-700 truncate">{d.mediaName || 'Adjunto'}</p>
+        <p className="text-[10px] text-slate-400">{d.mediaType === 'image' ? 'Imagen' : 'Video'} — se envía junto al mensaje</p>
+      </div>
+      <button
+        type="button"
+        onClick={() => set({ mediaUrl: '', mediaType: '', mediaName: '' })}
+        className="text-rose-500 hover:text-rose-700 bg-transparent border-none cursor-pointer p-1"
+        title="Quitar adjunto"
+      >
+        <HiOutlineTrash className="w-4 h-4" />
+      </button>
+    </div>
+  );
+  return (
+    <div>
+      <input ref={fileRef} type="file" accept="image/*,video/*" className="hidden" onChange={(e) => { upload(e.target.files?.[0]); e.target.value = ''; }} />
+      <button
+        type="button"
+        disabled={uploading}
+        onClick={() => fileRef.current?.click()}
+        className="w-full border border-dashed border-slate-300 rounded-lg px-2 py-2 text-xs text-slate-500 bg-white hover:border-emerald-400 hover:text-emerald-700 cursor-pointer disabled:opacity-60"
+      >
+        {uploading ? 'Subiendo…' : '📎 Adjuntar imagen o video (opcional)'}
+      </button>
+    </div>
+  );
+}
+
 // ─────────── Formulario de configuración por tipo de nodo ───────────
 function NodeConfig({ node, onChange, templates, agents }) {
   const d = node.data || {};
@@ -855,9 +922,10 @@ function NodeConfig({ node, onChange, templates, agents }) {
 
   if (t === 'send_message') return (
     <div className="grid gap-2">
-      <WhatsappTextArea value={d.body || ''} onChange={(body) => set({ body })} rows={6} placeholder="Mensaje (usa {{nombre}})" />
+      <WhatsappTextArea value={d.body || ''} onChange={(body) => set({ body })} rows={6} placeholder="Mensaje (usa el menú de variables)" variables={MESSAGE_VARIABLES} />
+      <NodeAttachment d={d} set={set} />
       <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
-        WhatsApp solo permite texto libre si el paciente te escribió en las últimas 24h.
+        WhatsApp solo permite texto libre (y adjuntos) si el paciente te escribió en las últimas 24h.
         Fuera de esa ventana usa el paso <b>Enviar plantilla</b> (plantilla aprobada por Meta).
       </p>
     </div>
@@ -871,7 +939,7 @@ function NodeConfig({ node, onChange, templates, agents }) {
   if (t === 'send_email') return (
     <div className="grid gap-2">
       <input value={d.emailSubject || ''} onChange={(e) => set({ emailSubject: e.target.value })} placeholder="Asunto" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-      <WhatsappTextArea value={d.body || ''} onChange={(body) => set({ body })} rows={5} placeholder="Cuerpo (usa {{nombre}})" />
+      <WhatsappTextArea value={d.body || ''} onChange={(body) => set({ body })} rows={5} placeholder="Cuerpo (usa el menú de variables)" variables={MESSAGE_VARIABLES} />
       <p className="text-[11px] text-slate-400">Se envía al email del paciente. Incluye enlace de baja automático.</p>
     </div>
   );
@@ -1014,7 +1082,7 @@ function NodeConfig({ node, onChange, templates, agents }) {
   );
   if (t === 'request_review') return (
     <div className="grid gap-2">
-      <WhatsappTextArea value={d.body || ''} onChange={(body) => set({ body })} rows={4} placeholder="Mensaje de invitación a calificar" />
+      <WhatsappTextArea value={d.body || ''} onChange={(body) => set({ body })} rows={4} placeholder="Mensaje de invitación a calificar" variables={MESSAGE_VARIABLES} />
       <p className="text-[11px] text-slate-400">Se adjunta un enlace de calificación 1-5.</p>
     </div>
   );

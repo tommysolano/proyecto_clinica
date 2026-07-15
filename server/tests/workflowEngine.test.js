@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { computeWaitUntil, evaluateCondition, personalize, classifyReply, findStartNode, nextNodeId } = require('../utils/workflowEngine');
+const { computeWaitUntil, evaluateCondition, personalize, renderText, classifyReply, findStartNode, nextNodeId } = require('../utils/workflowEngine');
 
 test('computeWaitUntil applies a negative offset (e.g. 24h before the appointment)', () => {
   const ctx = { appointmentDate: '2026-06-20T15:00:00Z' };
@@ -66,6 +66,18 @@ test('evaluateCondition hasPatient + unknown field defaults to true', () => {
 
 test('personalize replaces name tokens', () => {
   assert.equal(personalize('Hola {{nombre}}', { firstName: 'Ana' }), 'Hola Ana');
+});
+
+test('renderText resuelve el catálogo completo de variables del paciente (igual que las plantillas)', async () => {
+  const patient = { firstName: 'Ana', lastName: 'Vera' };
+  assert.equal(await renderText('Hola {{nombre}} {{apellido}}', patient), 'Hola Ana Vera');
+  assert.equal(await renderText('{{nombre_completo}}', patient), 'Ana Vera');
+  // Variable desconocida o sin dato: se elimina (al paciente no le llega "{{x}}").
+  assert.equal(await renderText('x {{desconocida}} y', patient), 'x y');
+  // Sin cita en el contexto, las variables de cita quedan vacías sin romper.
+  assert.equal((await renderText('Cita: {{fecha_cita}} {{hora_cita}}', patient)).trim(), 'Cita:');
+  // Texto sin variables pasa intacto (sin tocar espacios ni saltos).
+  assert.equal(await renderText('sin  variables', patient), 'sin  variables');
 });
 
 test('classifyReply detects affirmative, negative and other', () => {

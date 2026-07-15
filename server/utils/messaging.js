@@ -808,6 +808,7 @@ async function updateMessageStatus({
 
 module.exports = {
   WHATSAPP_WINDOW_MS,
+  buildKnownVariableResolver,
   buildTemplateComponents,
   computeWhatsappWindowExpiresAt,
   getWhatsappWindowExpiresAt,
