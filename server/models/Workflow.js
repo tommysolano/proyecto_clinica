@@ -37,6 +37,7 @@ const workflowStepSchema = new mongoose.Schema(
         'ai_reply',
         'request_review',
         'goal',
+        'send_media', // solo imagen/video, sin texto
       ],
       required: true,
     },
@@ -75,8 +76,8 @@ const workflowStepSchema = new mongoose.Schema(
     timeoutMinutes: { type: Number, default: 720, min: 1 },
     // set_appointment_status: actualiza la cita del contexto
     appointmentStatus: { type: String, enum: ['confirmada', 'cancelada', ''], default: '' },
-    // condition / goal
-    field: { type: String, enum: ['tag', 'stage', 'source', 'hasPatient', 'lastReply', ''], default: '' },
+    // condition / goal ('clinic' = sucursal del evento que inscribió el flujo)
+    field: { type: String, enum: ['tag', 'stage', 'source', 'hasPatient', 'lastReply', 'clinic', ''], default: '' },
     op: { type: String, enum: ['eq', 'neq', 'contains', 'exists', ''], default: 'eq' },
     value: { type: String, default: '' },
     onFailGoTo: { type: Number, default: null }, // índice de paso; null = terminar
@@ -151,6 +152,10 @@ const triggerSchema = new mongoose.Schema(
     // Filtro opcional por servicio (para eventos de cita): solo dispara si la
     // cita incluye este producto.
     serviceFilter: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null },
+    // Filtro opcional por SUCURSAL: solo dispara si el evento (cita, venta, etc.)
+    // ocurrió en esta sucursal. Vacío = todas. Permite un flujo por sede (p.ej.
+    // un video distinto por sucursal al agendar la cita).
+    clinicFilter: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', default: null },
     // Audiencia (cuando aplica): all | new (primera visita) | existing.
     audience: { type: String, enum: ['all', 'new', 'existing'], default: 'all' },
     // Trigger 'keyword': palabras clave + tipo de coincidencia.

@@ -18,7 +18,7 @@ const MAX_LOG_ENTRIES = 60; // tope del registro de ejecución por inscripción
 // se persiste stepIndex para que una recuperación (deploy/caída a mitad del
 // flujo) continúe desde ahí y no repita envíos. El runner de grafo ya lo hace.
 const LINEAR_ACTION_TYPES = new Set([
-  'send_message', 'send_template', 'send_email', 'assign_agent', 'create_task',
+  'send_message', 'send_media', 'send_template', 'send_email', 'assign_agent', 'create_task',
   'webhook', 'request_review', 'ai_reply', 'set_appointment_status',
   'add_tag', 'remove_tag', 'move_stage',
 ]);
@@ -124,6 +124,9 @@ function triggerMatchesEvent(tr, eventType, payload, services) {
   if (tr.audience === 'new' && !payload.isFirstVisit) return false;
   if (tr.audience === 'existing' && payload.isFirstVisit) return false;
   if (tr.serviceFilter && !services.includes(String(tr.serviceFilter))) return false;
+  // Filtro por SUCURSAL del evento (payload.clinicId = sede donde ocurrió la
+  // cita/venta): permite un flujo distinto por sede (p.ej. un video por sucursal).
+  if (tr.clinicFilter && String(payload.clinicId || '') !== String(tr.clinicFilter)) return false;
   if (eventType === 'tag_added' && tr.tagFilter && String(payload.tag || '') !== tr.tagFilter) return false;
   return true;
 }
@@ -253,9 +256,15 @@ function evaluateCondition(step, { patient, conversation, context } = {}) {
   const stage = conversation?.opportunity?.stage || '';
   const source = patient?.source || '';
   const lastReply = context?.lastReply || '';
+  const eventClinic = String(context?.eventClinicId || '');
   const value = step.value;
 
   switch (step.field) {
+    case 'clinic':
+      // Sucursal donde ocurrió el evento que inscribió el flujo (cita/venta).
+      if (step.op === 'exists') return !!eventClinic;
+      if (step.op === 'neq') return eventClinic !== String(value || '');
+      return eventClinic === String(value || '');
     case 'tag':
       if (step.op === 'exists') return tags.length > 0;
       if (step.op === 'neq') return !tags.includes(value);
@@ -324,6 +333,22 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
         // QR lee los bytes del storage propio. Misma ventana de 24h que el texto.
         mediaUrl: step.mediaUrl || null,
         mediaType: step.mediaType || null,
+        isAutoReply: true,
+      });
+      return sendFailureInfo(r);
+    }
+    case 'send_media': {
+      // Solo imagen o video, sin texto (nodo "Enviar imagen / video").
+      if (!step.mediaUrl) return 'El nodo no tiene imagen o video adjunto: edítalo y sube el archivo.';
+      const r = await messaging.send({
+        clinicId,
+        channel: 'whatsapp',
+        conversation: await loadConv(),
+        to: phone,
+        patient,
+        body: '',
+        mediaUrl: step.mediaUrl,
+        mediaType: step.mediaType || 'image',
         isAutoReply: true,
       });
       return sendFailureInfo(r);
@@ -634,6 +659,26 @@ async function executeEnrollment(enrollment) {
       const fail = sendFailureInfo(r);
       pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail || '' });
       i++;
+    } else if (step.type === 'send_media') {
+      if (!step.mediaUrl) {
+        pushLog(enrollment, { stepIndex: i, type: step.type, ok: false, info: 'El nodo no tiene imagen o video adjunto.' });
+      } else {
+        // eslint-disable-next-line no-await-in-loop
+        const r = await messaging.send({
+          clinicId: enrollment.clinic,
+          channel: 'whatsapp',
+          conversation,
+          to: phone,
+          patient,
+          body: '',
+          mediaUrl: step.mediaUrl,
+          mediaType: step.mediaType || 'image',
+          isAutoReply: true,
+        });
+        const fail = sendFailureInfo(r);
+        pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail || '' });
+      }
+      i++;
     } else if (step.type === 'send_template') {
       // eslint-disable-next-line no-await-in-loop
       const r = await messaging.send({
@@ -943,7 +988,7 @@ async function enrollForEvent(eventType, payload = {}) {
       trace(
         wf,
         'no_match',
-        'El evento ocurrió pero el disparador no coincidió: revisa la audiencia ("solo pacientes nuevos/existentes") o el filtro de servicio del nodo disparador.'
+        'El evento ocurrió pero el disparador no coincidió: revisa la audiencia ("solo pacientes nuevos/existentes"), el filtro de servicio o el filtro de sucursal del nodo disparador.'
       );
       continue;
     }
@@ -1005,6 +1050,8 @@ async function enrollForEvent(eventType, payload = {}) {
           context: {
             phone,
             eventType, // parte de la clave anti-duplicado (una vez por cita y evento)
+            // Sucursal donde ocurrió el evento (las condiciones por sucursal la leen).
+            eventClinicId: payload.clinicId ? String(payload.clinicId) : null,
             appointmentId: payload.appointmentId || null,
             appointmentDate: payload.appointmentDate || null,
           },

@@ -36,11 +36,13 @@ import {
   HiOutlineCalendarDays,
   HiOutlineFlag,
   HiOutlineFunnel,
+  HiOutlinePhoto,
 } from 'react-icons/hi2';
 
 // Tipos de paso disponibles en el lienzo (sin 'trigger', que es el nodo inicial).
 export const STEP_DEFS = {
   send_message: 'Enviar mensaje',
+  send_media: 'Enviar imagen / video',
   send_template: 'Enviar plantilla',
   send_email: 'Enviar email',
   wait: 'Esperar (tiempo)',
@@ -61,7 +63,7 @@ export const STEP_DEFS = {
 
 // Agrupación de pasos para el selector (estilo GoHighLevel).
 const STEP_GROUPS = [
-  { title: 'Comunicación', icon: HiOutlineChatBubbleLeftRight, types: ['send_message', 'send_template', 'send_email', 'ai_reply', 'request_review'] },
+  { title: 'Comunicación', icon: HiOutlineChatBubbleLeftRight, types: ['send_message', 'send_media', 'send_template', 'send_email', 'ai_reply', 'request_review'] },
   { title: 'Esperas', icon: HiOutlineClock, types: ['wait', 'wait_until', 'wait_reply'] },
   { title: 'Lógica', icon: HiOutlineArrowsRightLeft, types: ['condition', 'goal'] },
   { title: 'Contacto / CRM', icon: HiOutlineTag, types: ['add_tag', 'remove_tag', 'move_stage', 'assign_agent', 'set_appointment_status'] },
@@ -71,6 +73,7 @@ const STEP_GROUPS = [
 // Icono + color por tipo de paso (tarjetas del lienzo y selector, estilo Daplox).
 const STEP_ICONS = {
   send_message: { icon: HiOutlineChatBubbleLeftRight, cls: 'bg-emerald-100 text-emerald-600' },
+  send_media: { icon: HiOutlinePhoto, cls: 'bg-emerald-100 text-emerald-600' },
   send_template: { icon: HiOutlineDocumentText, cls: 'bg-emerald-100 text-emerald-600' },
   send_email: { icon: HiOutlineEnvelope, cls: 'bg-sky-100 text-sky-600' },
   ai_reply: { icon: HiOutlineSparkles, cls: 'bg-violet-100 text-violet-600' },
@@ -131,6 +134,7 @@ const FIELDS = [
   { value: 'source', label: 'Fuente del paciente' },
   { value: 'lastReply', label: 'Última respuesta del paciente' },
   { value: 'hasPatient', label: 'Tiene paciente vinculado' },
+  { value: 'clinic', label: 'Sucursal de la cita / evento' },
 ];
 const OPS = [
   { value: 'eq', label: 'es igual a' },
@@ -216,6 +220,7 @@ function summarize(n) {
   const d = n.data || {};
   switch (n.type) {
     case 'send_message': return `${d.mediaUrl ? '📎 ' : ''}${d.body || ''}`;
+    case 'send_media': return d.mediaUrl ? `📎 ${d.mediaName || (d.mediaType === 'video' ? 'Video' : 'Imagen')}` : 'Sin archivo';
     case 'send_template': return d.templateName;
     case 'send_email': return d.emailSubject || d.body;
     case 'wait': return `${d.waitMinutes} min`;
@@ -407,7 +412,7 @@ const defaultTrigger = () => ({ type: 'appointment_created', audience: 'all', se
 
 export default function WorkflowGraphEditor({
   nodes = [], edges = [], onChange,
-  templates = [], agents = [], products = [],
+  templates = [], agents = [], products = [], clinics = [],
 }) {
   const [selectedId, setSelectedId] = useState(null);
   const [selectedTrigger, setSelectedTrigger] = useState(null); // { nodeId, idx }
@@ -680,7 +685,7 @@ export default function WorkflowGraphEditor({
             onClose={() => setSelectedTrigger(null)}
             onDelete={selTrigCount > 1 ? () => removeTrigger(selectedTrigger.nodeId, selectedTrigger.idx) : null}
           >
-            <TriggerConfig trigger={selTrig} products={products} onChange={(full) => setTriggerAt(selectedTrigger.nodeId, selectedTrigger.idx, full)} />
+            <TriggerConfig trigger={selTrig} products={products} clinics={clinics} onChange={(full) => setTriggerAt(selectedTrigger.nodeId, selectedTrigger.idx, full)} />
           </Drawer>
         )}
 
@@ -691,7 +696,7 @@ export default function WorkflowGraphEditor({
             onClose={() => setSelectedId(null)}
             onDelete={() => deleteNode(selectedNode.id)}
           >
-            <NodeConfig node={selectedNode} onChange={(patch) => updateNodeData(selectedNode.id, patch)} templates={templates} agents={agents} />
+            <NodeConfig node={selectedNode} onChange={(patch) => updateNodeData(selectedNode.id, patch)} templates={templates} agents={agents} clinics={clinics} />
           </Drawer>
         )}
 
@@ -765,7 +770,7 @@ function StepPicker({ onPick, onClose }) {
 }
 
 // ─────────── Configuración del disparador ───────────
-function TriggerConfig({ trigger = {}, onChange, products = [] }) {
+function TriggerConfig({ trigger = {}, onChange, products = [], clinics = [] }) {
   const set = (patch) => onChange?.({ ...trigger, ...patch });
   const isApptTrigger = trigger.type?.startsWith('appointment');
   const isChatTrigger = ['inbound_message', 'keyword', 'new_conversation', 'ctwa_ad'].includes(trigger.type);
@@ -784,6 +789,23 @@ function TriggerConfig({ trigger = {}, onChange, products = [] }) {
           <select value={trigger.audience || 'all'} onChange={(e) => set({ audience: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm">
             {AUDIENCES.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
           </select>
+        </label>
+      )}
+      {!isChatTrigger && clinics.length > 1 && (
+        <label className="text-sm">
+          <span className="text-slate-600 block mb-1">Solo si ocurre en esta sucursal</span>
+          <select
+            value={trigger.clinicFilter || ''}
+            onChange={(e) => set({ clinicFilter: e.target.value || null })}
+            className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm"
+          >
+            <option value="">Cualquier sucursal</option>
+            {clinics.map((c) => <option key={c._id} value={c._id}>{c.nombreComercial || c.name}</option>)}
+          </select>
+          <span className="text-[11px] text-slate-400 block mt-1">
+            Permite un flujo distinto por sede: p.ej. al agendar en una sucursal se envía
+            un video y al agendar en otra, un video diferente (un flujo por sucursal).
+          </span>
         </label>
       )}
       {isApptTrigger && bookable.length > 0 && (
@@ -844,6 +866,65 @@ function TriggerConfig({ trigger = {}, onChange, products = [] }) {
           </span>
         </label>
       )}
+    </div>
+  );
+}
+
+// ─────────── Previsualización estilo WhatsApp ───────────
+// Valores de ejemplo para ver el mensaje "como se envía" (las variables reales
+// las resuelve el backend con los datos del paciente/cita al ejecutar el flujo).
+const SAMPLE_VARS = {
+  nombre: 'María',
+  apellido: 'Pérez',
+  nombre_completo: 'María Pérez',
+  fecha_cita: 'miércoles 22 de julio',
+  hora_cita: '10:00',
+  servicio: 'Limpieza facial',
+  doctor: 'Dra. Salazar',
+  sede: 'Sucursal Norte',
+};
+
+// Convierte el texto al HTML que "pinta" WhatsApp: *negrita*, _cursiva_,
+// ~tachado~, saltos de línea, y las variables con su valor de ejemplo resaltado.
+function waPreviewHtml(text) {
+  let s = String(text || '');
+  s = s.replace(/[&<>]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]));
+  s = s.replace(/\{\{\s*([^}\s]+)\s*\}\}/g, (_, k) => {
+    const v = SAMPLE_VARS[String(k).toLowerCase()];
+    return `<span class="bg-amber-100 text-amber-800 rounded px-0.5" title="{{${k}}}">${v || `{{${k}}}`}</span>`;
+  });
+  s = s.replace(/\*([^*\n]+)\*/g, '<b>$1</b>');
+  s = s.replace(/_([^_\n]+)_/g, '<i>$1</i>');
+  s = s.replace(/~([^~\n]+)~/g, '<s>$1</s>');
+  return s.replace(/\n/g, '<br/>');
+}
+
+/** Burbuja verde estilo WhatsApp con el adjunto (si hay) y el texto renderizado. */
+function WhatsappPreview({ body = '', mediaUrl = '', mediaType = '' }) {
+  if (!String(body).trim() && !mediaUrl) return null;
+  return (
+    <div className="rounded-xl p-3" style={{ background: '#e5ddd5' }}>
+      <p className="text-[10px] font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">Previsualización</p>
+      <div className="ml-auto max-w-[85%] rounded-lg rounded-tr-none shadow-sm overflow-hidden" style={{ background: '#d9fdd3' }}>
+        {mediaUrl && (
+          mediaType === 'video' ? (
+            <div className="h-28 bg-slate-800 flex items-center justify-center text-3xl">🎬</div>
+          ) : (
+            <img src={mediaUrl} alt="" className="w-full max-h-40 object-cover" />
+          )
+        )}
+        {String(body).trim() && (
+          <p
+            className="text-[13px] text-slate-800 px-2.5 py-1.5 whitespace-pre-wrap break-words"
+            // eslint-disable-next-line react/no-danger
+            dangerouslySetInnerHTML={{ __html: waPreviewHtml(body) }}
+          />
+        )}
+        <p className="text-[10px] text-slate-500 text-right px-2 pb-1">10:30 ✓✓</p>
+      </div>
+      <p className="text-[10px] text-slate-500 mt-1.5">
+        Las variables se muestran con datos de ejemplo; al enviarse llevan los del paciente y su cita.
+      </p>
     </div>
   );
 }
@@ -915,7 +996,7 @@ function NodeAttachment({ d, set }) {
 }
 
 // ─────────── Formulario de configuración por tipo de nodo ───────────
-function NodeConfig({ node, onChange, templates, agents }) {
+function NodeConfig({ node, onChange, templates, agents, clinics = [] }) {
   const d = node.data || {};
   const set = (patch) => onChange(patch);
   const t = node.type;
@@ -924,9 +1005,21 @@ function NodeConfig({ node, onChange, templates, agents }) {
     <div className="grid gap-2">
       <WhatsappTextArea value={d.body || ''} onChange={(body) => set({ body })} rows={6} placeholder="Mensaje (usa el menú de variables)" variables={MESSAGE_VARIABLES} />
       <NodeAttachment d={d} set={set} />
+      <WhatsappPreview body={d.body} mediaUrl={d.mediaUrl} mediaType={d.mediaType} />
       <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
         WhatsApp solo permite texto libre (y adjuntos) si el paciente te escribió en las últimas 24h.
         Fuera de esa ventana usa el paso <b>Enviar plantilla</b> (plantilla aprobada por Meta).
+      </p>
+    </div>
+  );
+  if (t === 'send_media') return (
+    <div className="grid gap-2">
+      <p className="text-xs text-slate-500">Envía SOLO una imagen o video, sin texto.</p>
+      <NodeAttachment d={d} set={set} />
+      <WhatsappPreview mediaUrl={d.mediaUrl} mediaType={d.mediaType} />
+      <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
+        Igual que el texto libre, WhatsApp solo lo entrega si el paciente te escribió en las
+        últimas 24h; fuera de esa ventana usa <b>Enviar plantilla</b> con cabecera multimedia.
       </p>
     </div>
   );
@@ -1019,7 +1112,13 @@ function NodeConfig({ node, onChange, templates, agents }) {
           {REPLY_VALUES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
         </select>
       )}
-      {d.op !== 'exists' && d.field !== 'hasPatient' && d.field !== 'lastReply' && (
+      {d.op !== 'exists' && d.field === 'clinic' && (
+        <select value={d.value || ''} onChange={(e) => set({ value: e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+          <option value="">Selecciona sucursal…</option>
+          {clinics.map((c) => <option key={c._id} value={c._id}>{c.nombreComercial || c.name}</option>)}
+        </select>
+      )}
+      {d.op !== 'exists' && d.field !== 'hasPatient' && d.field !== 'lastReply' && d.field !== 'clinic' && (
         <input value={d.value || ''} onChange={(e) => set({ value: e.target.value })} placeholder="valor" className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
       )}
       <p className="text-[11px] text-slate-400">

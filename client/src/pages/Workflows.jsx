@@ -337,6 +337,7 @@ const ENROLL_STATUS = {
 // Etiquetas legibles de los tipos de paso para el registro de ejecución.
 const STEP_LABELS = {
   send_message: 'Enviar mensaje',
+  send_media: 'Enviar imagen / video',
   send_template: 'Enviar plantilla',
   send_email: 'Enviar email',
   wait: 'Espera',

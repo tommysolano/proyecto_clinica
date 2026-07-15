@@ -25,6 +25,7 @@ export default function WorkflowEditor() {
   const [templates, setTemplates] = useState([]);
   const [agents, setAgents] = useState([]);
   const [products, setProducts] = useState([]);
+  const [clinics, setClinics] = useState([]);
   const [folderNames, setFolderNames] = useState([]);
   const [saving, setSaving] = useState(false);
 
@@ -39,17 +40,19 @@ export default function WorkflowEditor() {
     let active = true;
     const load = async () => {
       try {
-        const [tpls, ags, fld, list, prods] = await Promise.all([
+        const [tpls, ags, fld, list, prods, clins] = await Promise.all([
           api.get('/message-templates?channel=whatsapp').catch(() => ({ data: [] })),
           api.get('/call-center/agents').catch(() => ({ data: [] })),
           api.get('/workflows/folders').catch(() => ({ data: [] })),
           api.get('/workflows').catch(() => ({ data: [] })),
           api.get('/products').catch(() => ({ data: [] })),
+          api.get('/clinics').catch(() => ({ data: [] })),
         ]);
         if (!active) return;
         setTemplates((tpls.data || []).filter((t) => t.status === 'approved'));
         setAgents(ags.data || []);
         setProducts(Array.isArray(prods.data) ? prods.data : prods.data?.items || []);
+        setClinics(Array.isArray(clins.data) ? clins.data : clins.data?.clinics || []);
         const names = new Set((fld.data || []).map((f) => f.name));
         (list.data || []).forEach((w) => names.add(w.folder || 'General'));
         setFolderNames([...names].sort());
@@ -168,6 +171,7 @@ export default function WorkflowEditor() {
           templates={templates}
           agents={agents}
           products={products}
+          clinics={clinics}
         />
       </main>
     </div>,

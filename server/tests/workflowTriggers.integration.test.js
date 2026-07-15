@@ -275,6 +275,51 @@ test('Botón "No asistió" (markNoShow) dispara el workflow de no-show', async (
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+test('Filtro por sucursal en el disparador: cada sede corre SOLO su flujo (un video por sucursal)', async () => {
+  const clinicA = await Clinic.create({ name: 'Matriz' }); // la más antigua = ancla del CRM
+  const clinicB = await Clinic.create({ name: 'Extensión' });
+  const userId = new H.mongoose.Types.ObjectId();
+  const patient = await Patient.create({ clinic: clinicA._id, firstName: 'Multi', lastName: 'Sede', phone: '0993214321' });
+  const prod = await H.makeProduct(clinicA._id, { category: 'servicio', unlimited: true });
+  const trigA = { type: 'appointment_created', audience: 'all', serviceFilter: null, clinicFilter: clinicA._id };
+  const trigB = { type: 'appointment_created', audience: 'all', serviceFilter: null, clinicFilter: clinicB._id };
+  const wf = await Workflow.create({
+    clinic: clinicA._id,
+    name: 'Video de bienvenida por sede',
+    active: true,
+    triggers: [trigA, trigB],
+    trigger: trigA,
+    steps: [],
+    nodes: [
+      { id: 'trigA', type: 'trigger', position: { x: 0, y: 0 }, data: { triggers: [trigA] } },
+      { id: 'mA', type: 'send_media', position: { x: 0, y: 130 }, data: { mediaUrl: 'https://cdn/videoA.mp4', mediaType: 'video' } },
+      { id: 'trigB', type: 'trigger', position: { x: 240, y: 0 }, data: { triggers: [trigB] } },
+      { id: 'mB', type: 'send_media', position: { x: 240, y: 130 }, data: { mediaUrl: 'https://cdn/videoB.mp4', mediaType: 'video' } },
+    ],
+    edges: [
+      { id: 'eA', source: 'trigA', target: 'mA', sourceHandle: 'default' },
+      { id: 'eB', source: 'trigB', target: 'mB', sourceHandle: 'default' },
+    ],
+  });
+
+  // Cita agendada en la sucursal B (Extensión) → solo el flujo B debe correr.
+  const r = await H.runController(appointmentCtrl.createAppointment, H.mockReq(clinicB._id, userId, {
+    patient: patient._id, services: [String(prod._id)], date: futureDate(4), startTime: '10:00',
+  }));
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+
+  const enrollment = await waitFor(() =>
+    WorkflowEnrollment.findOne({ workflow: wf._id, patient: patient._id, status: 'done' })
+  );
+  assert.ok(enrollment, 'la cita en la sucursal B debió inscribir su flujo');
+  assert.equal(enrollment.startNodeId, 'trigB', 'debe correr el flujo de la sucursal B (no el de A)');
+  assert.equal(String(enrollment.context.eventClinicId), String(clinicB._id));
+  const mediaLog = (enrollment.log || []).find((l) => l.type === 'send_media');
+  assert.ok(mediaLog, 'el nodo de imagen/video debe dejar rastro en el log');
+  assert.equal(await WorkflowEnrollment.countDocuments({ workflow: wf._id }), 1, 'el flujo de la sucursal A no debe correr');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 test('autoNoShow marca las citas de HOY cuya hora ya venció y dispara el workflow de no-show', async () => {
   const Appointment = require('../models/Appointment');
   const { runAutoNoShow } = require('../utils/autoNoShow');

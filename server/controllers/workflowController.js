@@ -11,6 +11,7 @@ const WorkflowFolder = require('../models/WorkflowFolder');
 function sanitizeTrigger(tr = {}) {
   const t = { ...tr };
   if (!t.serviceFilter) t.serviceFilter = null;
+  if (!t.clinicFilter) t.clinicFilter = null;
   return t;
 }
 

@@ -1,6 +1,6 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { computeWaitUntil, evaluateCondition, personalize, renderText, classifyReply, findStartNode, nextNodeId } = require('../utils/workflowEngine');
+const { computeWaitUntil, evaluateCondition, personalize, renderText, classifyReply, findStartNode, nextNodeId, triggerMatchesEvent } = require('../utils/workflowEngine');
 
 test('computeWaitUntil applies a negative offset (e.g. 24h before the appointment)', () => {
   const ctx = { appointmentDate: '2026-06-20T15:00:00Z' };
@@ -56,6 +56,24 @@ test('evaluateCondition checks opportunity stage and source', () => {
   assert.equal(evaluateCondition({ field: 'stage', op: 'eq', value: 'agendado' }, { conversation }), true);
   assert.equal(evaluateCondition({ field: 'stage', op: 'neq', value: 'ganado' }, { conversation }), true);
   assert.equal(evaluateCondition({ field: 'source', op: 'eq', value: 'anuncio' }, { patient: { source: 'anuncio' } }), true);
+});
+
+test('triggerMatchesEvent filtra por sucursal del evento (clinicFilter)', () => {
+  const tr = { type: 'appointment_created', audience: 'all', clinicFilter: 'A' };
+  assert.equal(triggerMatchesEvent(tr, 'appointment_created', { clinicId: 'A' }, []), true);
+  assert.equal(triggerMatchesEvent(tr, 'appointment_created', { clinicId: 'B' }, []), false);
+  // Sin filtro dispara para cualquier sede.
+  const any = { type: 'appointment_created', audience: 'all', clinicFilter: null };
+  assert.equal(triggerMatchesEvent(any, 'appointment_created', { clinicId: 'B' }, []), true);
+});
+
+test('evaluateCondition por sucursal del evento (context.eventClinicId)', () => {
+  const context = { eventClinicId: 'A' };
+  assert.equal(evaluateCondition({ field: 'clinic', op: 'eq', value: 'A' }, { context }), true);
+  assert.equal(evaluateCondition({ field: 'clinic', op: 'eq', value: 'B' }, { context }), false);
+  assert.equal(evaluateCondition({ field: 'clinic', op: 'neq', value: 'B' }, { context }), true);
+  assert.equal(evaluateCondition({ field: 'clinic', op: 'exists' }, { context }), true);
+  assert.equal(evaluateCondition({ field: 'clinic', op: 'exists' }, { context: {} }), false);
 });
 
 test('evaluateCondition hasPatient + unknown field defaults to true', () => {
