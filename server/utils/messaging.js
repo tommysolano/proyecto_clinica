@@ -352,7 +352,7 @@ async function renderTemplateText(templateInfo) {
   });
 }
 
-async function sendToProvider({ clinicId, channel, conv, body, templateInfo, account, mediaUrl, mediaType, contextMessageId }) {
+async function sendToProvider({ clinicId, channel, conv, body, templateInfo, account, mediaUrl, mediaType, contextMessageId, quoteBody }) {
   if (channel === 'whatsapp') {
     if (!account) {
       return { ok: false, errorCode: 'provider_unavailable', error: 'Sin número de WhatsApp configurado' };
@@ -370,13 +370,13 @@ async function sendToProvider({ clinicId, channel, conv, body, templateInfo, acc
       // recibía solo texto).
       const hm = templateInfo?.headerMedia;
       if (hm?.type === 'image' && hm.url) {
-        return gateway.sendMedia(account, dest, hm.url, text, contextMessageId);
+        return gateway.sendMedia(account, dest, hm.url, text, contextMessageId, quoteBody);
       }
       // Mensaje suelto con adjunto (mensajes guardados con imagen/video).
       if (mediaUrl) {
-        return gateway.sendMedia(account, dest, mediaUrl, text, mediaType || 'image', contextMessageId);
+        return gateway.sendMedia(account, dest, mediaUrl, text, mediaType || 'image', contextMessageId, quoteBody);
       }
-      return gateway.sendText(account, dest, text, contextMessageId);
+      return gateway.sendText(account, dest, text, contextMessageId, quoteBody);
     }
     if (templateInfo?.missingHeaderMedia) {
       return {
@@ -657,9 +657,11 @@ async function send({
     account,
     mediaUrl,
     mediaType,
-    // Solo se cita en WhatsApp si el mensaje original tiene wamid (los enviados/
-    // recibidos por el proveedor lo tienen; los simulados no).
+    // Cita en WhatsApp: por Cloud API se usa el wamid; por QR, si no tenemos el
+    // wamid guardado, se pasa el TEXTO del mensaje citado para localizarlo en
+    // vivo dentro del chat y citarlo igual.
     contextMessageId: replyTo?.externalId || null,
+    quoteBody: replyTo ? (replyTo.body || '') : null,
   });
 
   if (providerResult.ok) {

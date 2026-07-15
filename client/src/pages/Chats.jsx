@@ -602,12 +602,6 @@ export default function Chats() {
                         <div className="text-xs text-slate-500 truncate">
                           {replyDraft.body || (replyDraft.mediaType ? `[${replyDraft.mediaType}]` : 'Mensaje')}
                         </div>
-                        {!replyDraft.externalId && (
-                          <div className="text-[10px] text-amber-600 flex items-center gap-1 mt-0.5">
-                            <HiOutlineExclamationTriangle className="w-3 h-3" />
-                            Mensaje de prueba (sin ID de WhatsApp): se enviará sin la cita.
-                          </div>
-                        )}
                       </div>
                       <button
                         type="button"

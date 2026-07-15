@@ -364,6 +364,18 @@ async function connect(accountId, { userId } = {}) {
         }
       }
 
+      // wamid del mensaje: imprescindible para poder CITARLO luego. Se toma de
+      // varias fuentes porque en chats LID (número oculto) whatsapp-web.js a
+      // veces no expone `id._serialized` en el objeto de alto nivel.
+      const serializedId =
+        msg.id?._serialized || msg._data?.id?._serialized || msg._data?.id?.id || '';
+      if (!serializedId) {
+        console.warn(
+          '[whatsapp-qr] mensaje entrante SIN wamid (no se podrá citar). type=%s from=%s id=%j',
+          msg.type, from, msg.id
+        );
+      }
+
       const { ingestExternalMessage } = require('../controllers/chatController');
       await ingestExternalMessage({
         clinicId,
@@ -376,7 +388,7 @@ async function connect(accountId, { userId } = {}) {
         body: msg.body || '',
         media,
         contactName: msg._data?.notifyName || '',
-        externalId: msg.id?._serialized || '',
+        externalId: serializedId,
         contextId,
       });
     } catch (e) {
@@ -494,32 +506,59 @@ async function waitForConnected(key, timeoutMs = 45000) {
  * del store O del servidor— y se usa `.reply()`, que arma la cita correctamente.
  * Si el mensaje no se encuentra, se envía normal para no perder el mensaje.
  */
-async function sendResolvingQuote(entry, chatId, content, quotedMessageId, opts = {}) {
+/**
+ * Localiza el mensaje a citar dentro de la sesión de WhatsApp. Nunca lanza
+ * (devuelve null si no lo encuentra). Estrategias, en orden:
+ *   1) Por wamid (getMessageById: lo trae del store o del servidor).
+ *   2) Por TEXTO: busca en los últimos mensajes del chat uno con el mismo cuerpo.
+ *      Cubre el caso en que no guardamos el wamid (p.ej. chats LID donde
+ *      whatsapp-web.js no lo expone al recibir) — así la cita funciona igual.
+ */
+async function resolveQuoteTarget(entry, chatId, quotedMessageId, quoteBody) {
   if (quotedMessageId) {
-    // 1) Cargar el mensaje (getMessageById lo trae del store O del servidor) y
-    //    citar con reply() usando el chat del propio mensaje.
     try {
-      const original = await entry.client.getMessageById(quotedMessageId);
-      if (original) return await original.reply(content, undefined, opts);
+      const m = await withTimeout(entry.client.getMessageById(quotedMessageId), 10000, 'getMessageById timeout');
+      if (m) return m;
       console.warn('[whatsapp-qr quote] getMessageById devolvió null:', quotedMessageId);
     } catch (e) {
       console.warn('[whatsapp-qr quote] getMessageById:', e.message);
     }
-    // 2) Fallback: citar directo por id (por si el store SÍ lo tiene aunque
-    //    getMessageById fallara). whatsapp-web.js con ignoreQuoteErrors=false
-    //    lanza si no puede citar, así lo detectamos en vez de mandar normal en
-    //    silencio; si lanza, caemos al envío normal de más abajo.
+  }
+  const needle = String(quoteBody || '').trim();
+  if (needle) {
     try {
-      return await entry.client.sendMessage(chatId, content, { ...opts, quotedMessageId, ignoreQuoteErrors: false });
+      const chat = await withTimeout(entry.client.getChatById(chatId), 10000, 'getChatById timeout');
+      const recent = await withTimeout(chat.fetchMessages({ limit: 50 }), 15000, 'fetchMessages timeout');
+      const matches = recent.filter((m) => String(m.body || '').trim() === needle);
+      if (matches.length) return matches[matches.length - 1]; // el más reciente que coincide
+      console.warn('[whatsapp-qr quote] sin coincidencia por texto para citar');
     } catch (e) {
-      console.warn('[whatsapp-qr quote] sendMessage+quote falló, se envía normal:', e.message, quotedMessageId);
+      console.warn('[whatsapp-qr quote] búsqueda por texto:', e.message);
+    }
+  }
+  return null;
+}
+
+/**
+ * Envía `content` citando el mensaje indicado si se puede resolver (por wamid o
+ * por texto). Si no, envía normal — nunca se pierde el mensaje.
+ */
+async function sendResolvingQuote(entry, chatId, content, quotedMessageId, opts = {}, quoteBody = '') {
+  if (quotedMessageId || quoteBody) {
+    const target = await resolveQuoteTarget(entry, chatId, quotedMessageId, quoteBody);
+    if (target) {
+      try {
+        return await target.reply(content, undefined, opts);
+      } catch (e) {
+        console.warn('[whatsapp-qr quote] reply falló, se envía normal:', e.message);
+      }
     }
   }
   return entry.client.sendMessage(chatId, content, opts);
 }
 
 /** Envía texto por la sesión QR. Devuelve un shape compatible con messaging. */
-async function sendText(account, to, body, quotedMessageId) {
+async function sendText(account, to, body, quotedMessageId, quoteBody) {
   const key = String(account._id);
   let entry = clients.get(key);
   if (!entry || entry.status !== 'connected') entry = await waitForConnected(key);
@@ -530,8 +569,8 @@ async function sendText(account, to, body, quotedMessageId) {
     const r = await resolveChatId(entry, to);
     if (!r.ok) return r;
     const sent = await withTimeout(
-      sendResolvingQuote(entry, r.chatId, String(body || '').slice(0, 4096), quotedMessageId),
-      40000,
+      sendResolvingQuote(entry, r.chatId, String(body || '').slice(0, 4096), quotedMessageId, {}, quoteBody),
+      50000,
       'Tiempo agotado enviando el mensaje (la sesión puede estar inestable)'
     );
     return { ok: true, data: { messages: [{ id: sent?.id?._serialized || '' }] } };
@@ -545,7 +584,7 @@ async function sendText(account, to, body, quotedMessageId) {
  * de imagen de las plantillas (por QR no existen plantillas de Meta: se manda
  * la imagen real con el cuerpo como caption).
  */
-async function sendMedia(account, to, url, caption, quotedMessageId) {
+async function sendMedia(account, to, url, caption, quotedMessageId, quoteBody) {
   const key = String(account._id);
   let entry = clients.get(key);
   if (!entry || entry.status !== 'connected') entry = await waitForConnected(key);
@@ -577,7 +616,7 @@ async function sendMedia(account, to, url, caption, quotedMessageId) {
     // La cita se resuelve igual que en texto: getMessageById + reply() para que
     // el contacto vea la imagen como respuesta al mensaje citado.
     const sent = await withTimeout(
-      sendResolvingQuote(entry, r.chatId, media, quotedMessageId, { caption: String(caption || '').slice(0, 1024) }),
+      sendResolvingQuote(entry, r.chatId, media, quotedMessageId, { caption: String(caption || '').slice(0, 1024) }, quoteBody),
       60000,
       'Tiempo agotado enviando la imagen (la sesión puede estar inestable)'
     );

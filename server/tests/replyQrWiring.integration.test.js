@@ -35,8 +35,8 @@ test('responder a un mensaje con wamid pasa quotedMessageId al gateway QR', asyn
   // Interceptar el envío por QR.
   const calls = [];
   const orig = qrManager.sendText;
-  qrManager.sendText = async (account, to, body, quotedMessageId) => {
-    calls.push({ to, body, quotedMessageId });
+  qrManager.sendText = async (account, to, body, quotedMessageId, quoteBody) => {
+    calls.push({ to, body, quotedMessageId, quoteBody });
     return { ok: true, data: { messages: [{ id: 'true_204496395366461@lid_SENT123' }] } };
   };
 
@@ -52,11 +52,13 @@ test('responder a un mensaje con wamid pasa quotedMessageId al gateway QR', asyn
   assert.equal(calls.length, 1, 'se llamó a sendText del QR una vez');
   assert.equal(calls[0].quotedMessageId, 'false_204496395366461@lid_3EB0ABCDEF',
     'el wamid del mensaje citado llega como quotedMessageId al gateway QR');
+  assert.equal(calls[0].quoteBody, 'test de conexion',
+    'el texto del mensaje citado llega como quoteBody (respaldo para citar por texto)');
   // Y se responde al JID completo (@lid), no a los dígitos.
   assert.equal(calls[0].to, '204496395366461@lid');
 });
 
-test('responder a un mensaje SIN wamid (simulado) NO intenta citar', async () => {
+test('responder a un mensaje SIN wamid pasa el texto como quoteBody (respaldo por texto)', async () => {
   const { clinicId, userId } = await H.seedClinic();
   await WhatsappAccount.create({ label: 'QR Test', connectionType: 'qr', enabled: true, isDefault: true, status: 'connected' });
   const conv = await Conversation.create({
@@ -64,24 +66,25 @@ test('responder a un mensaje SIN wamid (simulado) NO intenta citar', async () =>
     contactName: '.', channel: 'whatsapp', lastMessageAt: new Date(), lastMessageDirection: 'in',
     window24hExpiresAt: new Date(Date.now() + 20 * 3600 * 1000),
   });
-  // Mensaje simulado: SIN externalId.
-  const simulated = await Message.create({
+  // Mensaje SIN externalId (p.ej. LID donde no se expuso el wamid, o simulado).
+  const noWamid = await Message.create({
     clinic: clinicId, conversation: conv._id, direction: 'in', body: 'test de conexion', deliveryStatus: 'delivered',
   });
 
   const calls = [];
   const orig = qrManager.sendText;
-  qrManager.sendText = async (account, to, body, quotedMessageId) => {
-    calls.push({ quotedMessageId });
+  qrManager.sendText = async (account, to, body, quotedMessageId, quoteBody) => {
+    calls.push({ quotedMessageId, quoteBody });
     return { ok: true, data: { messages: [{ id: 'x' }] } };
   };
   try {
-    const req = H.mockReq(clinicId, userId, { body: 'hola', replyTo: String(simulated._id) }, { params: { id: String(conv._id) } });
+    const req = H.mockReq(clinicId, userId, { body: 'hola', replyTo: String(noWamid._id) }, { params: { id: String(conv._id) } });
     req.user.name = 'Agente';
     await H.runController(chat.sendMessage, req);
   } finally {
     qrManager.sendText = orig;
   }
   assert.equal(calls.length, 1);
-  assert.ok(!calls[0].quotedMessageId, 'sin wamid no se pasa quotedMessageId (no se puede citar en WhatsApp)');
+  assert.ok(!calls[0].quotedMessageId, 'sin wamid no hay quotedMessageId');
+  assert.equal(calls[0].quoteBody, 'test de conexion', 'se pasa el texto para citar en vivo por contenido');
 });

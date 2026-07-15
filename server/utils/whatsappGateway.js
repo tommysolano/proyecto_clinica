@@ -77,10 +77,11 @@ function isCloud(account) {
 
 // ── Envío (enruta por método) ──
 
-async function sendText(account, to, body, contextMessageId) {
+async function sendText(account, to, body, contextMessageId, quoteBody) {
   if (!account) return { ok: false, errorCode: 'provider_unavailable', error: 'Sin número de WhatsApp configurado' };
   if (account.connectionType === 'qr') {
-    return require('./whatsappQrManager').sendText(account, to, body, contextMessageId);
+    // quoteBody permite al QR citar por texto si no tenemos el wamid guardado.
+    return require('./whatsappQrManager').sendText(account, to, body, contextMessageId, quoteBody);
   }
   return wa.sendText(cloudCreds(account), to, body, contextMessageId);
 }
@@ -90,10 +91,10 @@ async function sendText(account, to, body, contextMessageId) {
  * sesión descarga los bytes y los manda como MessageMedia; por Cloud API se
  * envía el link (Meta lo descarga: debe ser una URL pública, no un data URL).
  */
-async function sendMedia(account, to, url, caption, type = 'image', contextMessageId) {
+async function sendMedia(account, to, url, caption, type = 'image', contextMessageId, quoteBody) {
   if (!account) return { ok: false, errorCode: 'provider_unavailable', error: 'Sin número de WhatsApp configurado' };
   if (account.connectionType === 'qr') {
-    return require('./whatsappQrManager').sendMedia(account, to, url, caption, contextMessageId);
+    return require('./whatsappQrManager').sendMedia(account, to, url, caption, contextMessageId, quoteBody);
   }
   if (/^data:/i.test(String(url || ''))) {
     return { ok: false, error: 'La Cloud API no acepta data URLs: usa una URL pública' };
