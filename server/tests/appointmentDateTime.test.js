@@ -6,7 +6,8 @@
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { appointmentDateTime } = require('../utils/appointmentDate');
+const { appointmentDateTime, isPastLocalDateTime } = require('../utils/appointmentDate');
+const { isNoShowDue } = require('../utils/autoNoShow');
 
 test('combina el día (guardado a las 12:00 local) con startTime en hora Ecuador', () => {
   // Forma actual de guardado: 12:00 hora local Ecuador = 17:00Z.
@@ -36,4 +37,42 @@ test('entrada inválida devuelve null', () => {
 test('acepta hora con un solo dígito (9:05)', () => {
   const stored = new Date('2026-07-20T17:00:00.000Z');
   assert.equal(appointmentDateTime(stored, '9:05').toISOString(), '2026-07-20T14:05:00.000Z');
+});
+
+// ─────────── isPastLocalDateTime (bloqueo de agendar en hora pasada) ───────────
+
+test('isPastLocalDateTime: HOY con hora anterior a la actual ya pasó', () => {
+  const now = new Date(2026, 6, 15, 16, 15); // 15-jul 16:15 local
+  const today = new Date(2026, 6, 15, 12, 0);
+  assert.equal(isPastLocalDateTime(today, '09:00', now), true);
+  assert.equal(isPastLocalDateTime(today, '16:14', now), true);
+  assert.equal(isPastLocalDateTime(today, '16:15', now), false); // el minuto en curso aún vale
+  assert.equal(isPastLocalDateTime(today, '17:00', now), false);
+});
+
+test('isPastLocalDateTime: días completos y casos sin hora', () => {
+  const now = new Date(2026, 6, 15, 16, 15);
+  assert.equal(isPastLocalDateTime(new Date(2026, 6, 14, 12, 0), '23:59', now), true); // ayer, cualquier hora
+  assert.equal(isPastLocalDateTime(new Date(2026, 6, 16, 12, 0), '00:00', now), false); // mañana
+  assert.equal(isPastLocalDateTime(new Date(2026, 6, 15, 12, 0), '', now), false); // hoy sin hora: lo valida el caller
+  assert.equal(isPastLocalDateTime(null, '09:00', now), false);
+});
+
+// ─────────── isNoShowDue (no-show automático de citas de HOY) ───────────
+
+test('isNoShowDue: la cita vence 1h después de su inicio (o a su hora de fin si es posterior)', () => {
+  const date = new Date('2026-07-15T17:00:00Z'); // día guardado a las 12:00 hora Ecuador
+  const appt = { date, startTime: '09:00' };
+  assert.equal(isNoShowDue(appt, new Date('2026-07-15T09:30:00-05:00')), false); // dentro de la gracia
+  assert.equal(isNoShowDue(appt, new Date('2026-07-15T10:01:00-05:00')), true); // pasó inicio + 1h
+
+  const withEnd = { date, startTime: '09:00', endTime: '11:00' };
+  assert.equal(isNoShowDue(withEnd, new Date('2026-07-15T10:30:00-05:00')), false); // la cita sigue en curso
+  assert.equal(isNoShowDue(withEnd, new Date('2026-07-15T11:01:00-05:00')), true); // terminó y nadie la cerró
+});
+
+test('isNoShowDue: sin hora de inicio válida no se marca (queda para el barrido del día siguiente)', () => {
+  const date = new Date('2026-07-15T17:00:00Z');
+  assert.equal(isNoShowDue({ date, startTime: '' }, new Date('2026-07-16T10:00:00-05:00')), false);
+  assert.equal(isNoShowDue({ date, startTime: 'x' }, new Date('2026-07-16T10:00:00-05:00')), false);
 });

@@ -47,6 +47,29 @@ function isSameLocalDay(a, b) {
 }
 
 const PAST_DATE_MESSAGE = 'No se puede agendar una cita en una fecha anterior a hoy.';
+const PAST_TIME_MESSAGE = 'No se puede agendar una cita en un horario que ya pasó.';
+
+/**
+ * ¿La fecha + hora de inicio ('HH:MM', hora local Ecuador) ya pasó?
+ * - Día anterior a hoy → true (aunque no haya hora).
+ * - Hoy con hora anterior a la actual → true.
+ * - Día futuro u hora inválida → false (el formato lo valida el caller).
+ * `now` es inyectable para tests.
+ */
+function isPastLocalDateTime(dateValue, startTime, now = new Date()) {
+  const d = parseLocalDate(dateValue);
+  if (!d || Number.isNaN(d.getTime())) return false;
+  const day = new Date(d);
+  day.setHours(0, 0, 0, 0);
+  const today = new Date(now);
+  today.setHours(0, 0, 0, 0);
+  if (day.getTime() < today.getTime()) return true;
+  if (day.getTime() > today.getTime()) return false;
+  const m = String(startTime || '').match(/^(\d{1,2}):(\d{2})$/);
+  if (!m) return false;
+  const minutes = Number(m[1]) * 60 + Number(m[2]);
+  return minutes < now.getHours() * 60 + now.getMinutes();
+}
 
 // Combina el día calendario de la cita (campo `date`) con su hora de inicio
 // (`startTime`, 'HH:MM') en un Date con la hora REAL de la cita en Ecuador
@@ -63,4 +86,13 @@ function appointmentDateTime(date, startTime) {
   return new Date(`${day}T${m[1].padStart(2, '0')}:${m[2]}:00-05:00`);
 }
 
-module.exports = { startOfToday, parseLocalDate, isPastLocalDate, isSameLocalDay, appointmentDateTime, PAST_DATE_MESSAGE };
+module.exports = {
+  startOfToday,
+  parseLocalDate,
+  isPastLocalDate,
+  isPastLocalDateTime,
+  isSameLocalDay,
+  appointmentDateTime,
+  PAST_DATE_MESSAGE,
+  PAST_TIME_MESSAGE,
+};

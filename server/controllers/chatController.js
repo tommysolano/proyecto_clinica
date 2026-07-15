@@ -2261,7 +2261,7 @@ exports.createAppointmentFromChat = async (req, res) => {
           clinic: req.body.clinic,
         }];
 
-    const { isPastLocalDate, PAST_DATE_MESSAGE } = require('../utils/appointmentDate');
+    const { isPastLocalDate, isPastLocalDateTime, PAST_DATE_MESSAGE, PAST_TIME_MESSAGE } = require('../utils/appointmentDate');
     for (let i = 0; i < requested.length; i++) {
       const a = requested[i];
       if (!a.date || !a.startTime) {
@@ -2270,6 +2270,10 @@ exports.createAppointmentFromChat = async (req, res) => {
       // No se puede agendar en una fecha anterior a hoy.
       if (isPastLocalDate(a.date)) {
         return res.status(400).json({ message: `La cita #${i + 1}: ${PAST_DATE_MESSAGE}` });
+      }
+      // Ni HOY en una hora que ya pasó (hora Ecuador).
+      if (isPastLocalDateTime(a.date, a.startTime)) {
+        return res.status(400).json({ message: `La cita #${i + 1}: ${PAST_TIME_MESSAGE}` });
       }
       // El servicio es obligatorio para toda cita nueva.
       const svcIds = (a.services || [])

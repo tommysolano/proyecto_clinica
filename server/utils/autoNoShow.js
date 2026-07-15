@@ -5,10 +5,16 @@ const { appointmentDateTime } = require('./appointmentDate');
 // Ecuador no tiene horario de verano (UTC-5 todo el año).
 const EC_OFFSET_MS = 5 * 60 * 60 * 1000;
 
+// Gracia tras la hora de INICIO antes de marcar no-show (paciente atrasado,
+// recepción ocupada). Si el paciente sí llegó, recepción la marca 'asistida'
+// y este job ya no la toca (solo barre pendiente/confirmada).
+const GRACE_MS = 60 * 60 * 1000;
+
 /**
  * Devuelve la medianoche (UTC) del día calendario actual en Ecuador.
- * Las fechas de cita se guardan como medianoche UTC del día calendario, así que
- * comparar contra este valor permite detectar las citas de días YA pasados.
+ * Las fechas de cita se guardan ancladas al día calendario (12:00 local hoy;
+ * medianoche UTC en registros viejos): ambas caen dentro de [cutoff, cutoff+24h)
+ * de su día, así que comparar contra este valor separa días pasados/hoy.
  */
 function ecTodayUtcMidnight() {
   const ec = new Date(Date.now() - EC_OFFSET_MS);
@@ -16,31 +22,76 @@ function ecTodayUtcMidnight() {
 }
 
 /**
- * Marca como 'no_asistio' todas las citas de días anteriores a hoy que quedaron
- * en estado 'pendiente' o 'confirmada' (el paciente no asistió y nadie la cerró).
+ * ¿Una cita de HOY ya venció sin que nadie la atienda? PURO y testeable.
+ * Vence 1 hora después de su inicio (o a su hora de fin, si termina después).
+ * Sin hora de inicio válida no se puede saber: se marca recién al día siguiente.
+ */
+function isNoShowDue(appt, now = new Date()) {
+  if (!/^\d{1,2}:\d{2}$/.test(String(appt?.startTime || ''))) return false;
+  const start = appointmentDateTime(appt.date, appt.startTime);
+  if (!start) return false;
+  const end = /^\d{1,2}:\d{2}$/.test(String(appt.endTime || ''))
+    ? appointmentDateTime(appt.date, appt.endTime)
+    : null;
+  const due = Math.max(start.getTime() + GRACE_MS, end ? end.getTime() : 0);
+  return now.getTime() > due;
+}
+
+/** Marca las citas dadas como no_asistio y emite el evento de dominio por cada una. */
+async function markNoShows(appointments) {
+  if (!appointments.length) return 0;
+  await Appointment.updateMany(
+    { _id: { $in: appointments.map((a) => a._id) } },
+    { $set: { status: 'no_asistio' } }
+  );
+  for (const appt of appointments) {
+    emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_NO_SHOW, {
+      clinicId: String(appt.clinic),
+      patientId: appt.patient ? String(appt.patient) : null,
+      appointmentId: String(appt._id),
+      appointmentDate: appointmentDateTime(appt.date, appt.startTime),
+      isFirstVisit: !!appt.isFirstVisit,
+      services: (appt.services || []).map((s) => String(s.product)).filter(Boolean),
+    });
+    // Refresco en vivo del calendario/lista de citas.
+    try {
+      require('../realtime').emitToClinic(appt.clinic, 'appointment:updated', { _id: appt._id, status: 'no_asistio' });
+    } catch {
+      /* realtime opcional */
+    }
+  }
+  return appointments.length;
+}
+
+const SELECT = 'clinic patient date startTime endTime isFirstVisit services';
+
+/**
+ * Marca como 'no_asistio' las citas que quedaron en 'pendiente'/'confirmada':
+ *  1) TODAS las de días anteriores a hoy (nadie las cerró), y
+ *  2) las de HOY cuya hora ya venció (1h de gracia tras el inicio, o la hora de
+ *     fin si es posterior) — antes seguían "pendientes" toda la tarde.
  */
 async function runAutoNoShow() {
   try {
     const cutoff = ecTodayUtcMidnight();
-    const filter = { date: { $lt: cutoff }, status: { $in: ['pendiente', 'confirmada'] } };
-    // Tomamos los datos ANTES de actualizar para poder disparar workflows por cita.
-    const affected = await Appointment.find(filter)
-      .select('clinic patient date startTime isFirstVisit services')
+    const OPEN = { status: { $in: ['pendiente', 'confirmada'] } };
+
+    // 1) Días anteriores: vencidas sin importar la hora.
+    const pastDays = await Appointment.find({ ...OPEN, date: { $lt: cutoff } })
+      .select(SELECT)
       .lean();
-    const res = await Appointment.updateMany(filter, { $set: { status: 'no_asistio' } });
-    const modified = res.modifiedCount ?? res.nModified ?? 0;
+
+    // 2) Hoy: solo las que ya pasaron de su hora (con gracia).
+    const todayEnd = new Date(cutoff.getTime() + 24 * 60 * 60 * 1000);
+    const todays = await Appointment.find({ ...OPEN, date: { $gte: cutoff, $lt: todayEnd } })
+      .select(SELECT)
+      .lean();
+    const now = new Date();
+    const dueToday = todays.filter((a) => isNoShowDue(a, now));
+
+    const modified = await markNoShows([...pastDays, ...dueToday]);
     if (modified > 0) {
-      console.log(`[autoNoShow] ${modified} cita(s) marcadas como "no asistió".`);
-      for (const appt of affected) {
-        emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_NO_SHOW, {
-          clinicId: String(appt.clinic),
-          patientId: appt.patient ? String(appt.patient) : null,
-          appointmentId: String(appt._id),
-          appointmentDate: appointmentDateTime(appt.date, appt.startTime),
-          isFirstVisit: !!appt.isFirstVisit,
-          services: (appt.services || []).map((s) => String(s.product)).filter(Boolean),
-        });
-      }
+      console.log(`[autoNoShow] ${modified} cita(s) marcadas como "no asistió" (${dueToday.length} de hoy).`);
     }
     return modified;
   } catch (err) {
@@ -50,11 +101,12 @@ async function runAutoNoShow() {
 }
 
 /**
- * Arranca el job: corre una vez al inicio y luego cada 30 minutos.
+ * Arranca el job: corre una vez al inicio y luego cada 10 minutos (las citas de
+ * hoy deben reflejar el no-show poco después de vencer, no al día siguiente).
  */
 function startAutoNoShowJob() {
   runAutoNoShow();
-  setInterval(runAutoNoShow, 30 * 60 * 1000);
+  setInterval(runAutoNoShow, 10 * 60 * 1000);
 }
 
-module.exports = { runAutoNoShow, startAutoNoShowJob };
+module.exports = { runAutoNoShow, startAutoNoShowJob, isNoShowDue };

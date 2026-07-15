@@ -29,7 +29,7 @@ import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
 import SameSlotPanel from '../components/SameSlotPanel';
 import TagEditor from '../components/TagEditor';
-import { fmtDate, todayEc } from '../utils/date';
+import { fmtDate, todayEc, nowEcHHMM } from '../utils/date';
 
 const STAGES = [
   { value: 'nuevo', label: 'Nuevo', color: 'bg-slate-100 text-slate-700' },
@@ -2479,7 +2479,7 @@ function AppointmentFromChatModal({ conv, services, onClose, onCreated }) {
                 </div>
                 <div>
                   <label className="text-xs font-medium text-slate-600">Hora</label>
-                  <input type="time" value={it.startTime} onChange={(e) => updateItem(idx, { startTime: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
+                  <input type="time" value={it.startTime} min={it.date === today ? nowEcHHMM() : undefined} onChange={(e) => updateItem(idx, { startTime: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
                 </div>
               </div>
               <div>

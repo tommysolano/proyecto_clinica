@@ -3,7 +3,14 @@ const Product = require('../models/Product');
 const Patient = require('../models/Patient');
 const { emitToClinic, emitToUser } = require('../realtime');
 const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
-const { isPastLocalDate, isSameLocalDay, appointmentDateTime, PAST_DATE_MESSAGE } = require('../utils/appointmentDate');
+const {
+  isPastLocalDate,
+  isPastLocalDateTime,
+  isSameLocalDay,
+  appointmentDateTime,
+  PAST_DATE_MESSAGE,
+  PAST_TIME_MESSAGE,
+} = require('../utils/appointmentDate');
 
 // Construye el payload de evento de dominio para una cita (para workflows).
 // appointmentDate lleva la hora REAL de la cita (date = día calendario +
@@ -257,6 +264,10 @@ exports.createAppointment = async (req, res) => {
     if (isPastLocalDate(localDate)) {
       return res.status(400).json({ message: PAST_DATE_MESSAGE });
     }
+    // Ni HOY en una hora que ya pasó (hora Ecuador).
+    if (isPastLocalDateTime(localDate, startTime)) {
+      return res.status(400).json({ message: PAST_TIME_MESSAGE });
+    }
     const startMin = toMinutes(startTime);
     const endMin = endTime ? toMinutes(endTime) : null;
     if (startMin === null) {
@@ -487,6 +498,21 @@ exports.updateAppointment = async (req, res) => {
         return res
           .status(400)
           .json({ message: 'La hora de fin debe ser posterior a la hora de inicio.' });
+      }
+    }
+
+    // Bloquear REAGENDAR a un horario que ya pasó (hoy a una hora anterior a la
+    // actual, hora Ecuador). Solo aplica si el día o la hora CAMBIAN: editar
+    // otros campos de una cita cuyo horario ya pasó sigue permitido (asistencia,
+    // servicios, notas).
+    {
+      const scheduleChanged =
+        (update.date !== undefined && !isSameLocalDay(update.date, existing.date)) ||
+        (typeof update.startTime === 'string' && update.startTime !== existing.startTime);
+      const finalDate2 = update.date !== undefined ? update.date : existing.date;
+      const finalStart2 = update.startTime !== undefined ? update.startTime : existing.startTime;
+      if (scheduleChanged && isPastLocalDateTime(finalDate2, finalStart2)) {
+        return res.status(400).json({ message: PAST_TIME_MESSAGE });
       }
     }
 

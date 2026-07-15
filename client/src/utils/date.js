@@ -34,6 +34,22 @@ export function todayEc() {
 }
 
 /**
+ * Hora actual en Ecuador como 'HH:MM' (24h). Se usa como `min` de los inputs
+ * de hora cuando la fecha elegida es HOY (no se agenda en una hora que ya pasó).
+ */
+export function nowEcHHMM() {
+  const p = new Intl.DateTimeFormat('en-GB', {
+    timeZone: EC_TZ,
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+    .formatToParts(new Date())
+    .reduce((acc, part) => ({ ...acc, [part.type]: part.value }), {});
+  return `${p.hour === '24' ? '00' : p.hour}:${p.minute}`;
+}
+
+/**
  * dd/mm/aaaa hh:mm — SIEMPRE en hora de Ecuador (Guayaquil).
  * Pensado para timestamps (createdAt, fechaAutorizacion, etc.), no fechas-solo.
  */

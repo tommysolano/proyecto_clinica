@@ -252,6 +252,39 @@ test('Botón "No asistió" (markNoShow) dispara el workflow de no-show', async (
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+test('autoNoShow marca las citas de HOY cuya hora ya venció y dispara el workflow de no-show', async () => {
+  const Appointment = require('../models/Appointment');
+  const { runAutoNoShow } = require('../utils/autoNoShow');
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const patient = await Patient.create({ clinic: clinic._id, firstName: 'Tarde', lastName: 'Hoy', phone: '0991112222' });
+  const prod = await H.makeProduct(clinic._id, { category: 'servicio', unlimited: true });
+  const wf = await graphWorkflow(clinic._id, { triggerType: 'appointment_no_show' });
+
+  // Cita hace 3 horas (insertada directo: el controller ya no permite crearla en
+  // el pasado). Si el test corre de madrugada la hora cae en el día anterior y
+  // la marca el barrido de días pasados: el resultado esperado es el mismo.
+  const start = new Date(Date.now() - 3 * 3600000);
+  const dateAnchor = new Date(start);
+  dateAnchor.setHours(12, 0, 0, 0); // forma de guardado: día calendario a las 12:00 local
+  const startHHMM = `${String(start.getHours()).padStart(2, '0')}:${String(start.getMinutes()).padStart(2, '0')}`;
+  const appt = await Appointment.create({
+    clinic: clinic._id, patient: patient._id, date: dateAnchor, startTime: startHHMM,
+    services: [{ product: prod._id, name: 'Consulta' }], status: 'pendiente',
+  });
+
+  const marked = await runAutoNoShow();
+  assert.ok(marked >= 1, 'el barrido debió marcar al menos esta cita');
+  const after = await Appointment.findById(appt._id);
+  assert.equal(after.status, 'no_asistio', 'la cita de hoy con hora vencida debe pasar a no_asistio');
+
+  // Y el evento inscribió el workflow de no-show.
+  const enrollment = await waitFor(() =>
+    WorkflowEnrollment.findOne({ workflow: wf._id, patient: patient._id, status: 'done' })
+  );
+  assert.ok(enrollment, 'el no-show automático debe disparar el workflow');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 test('"Esperar hasta la cita" espera a la hora REAL; reagendar mueve la espera y cancelar la anula', async () => {
   const clinic = await Clinic.create({ name: 'Principal' });
   const userId = new H.mongoose.Types.ObjectId();

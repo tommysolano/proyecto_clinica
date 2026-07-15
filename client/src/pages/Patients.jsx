@@ -3,7 +3,7 @@ import { Link } from 'react-router-dom';
 import api from '../api/axios';
 import useDebounce from '../hooks/useDebounce';
 import { downloadFile } from '../utils/download';
-import { todayEc } from '../utils/date';
+import { todayEc, nowEcHHMM } from '../utils/date';
 import Modal from '../components/Modal';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
@@ -597,6 +597,7 @@ export default function Patients() {
                       <input
                         type="time"
                         value={aptForm.startTime}
+                        min={aptForm.date === todayEc() ? nowEcHHMM() : undefined}
                         onChange={(e) => setAptForm({ ...aptForm, startTime: e.target.value })}
                         className="input"
                       />
