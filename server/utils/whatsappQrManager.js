@@ -452,10 +452,31 @@ async function resolveChatId(entry, to) {
   return { ok: true, chatId };
 }
 
+/**
+ * Espera (hasta timeoutMs) a que la sesión termine de conectar. Tras un deploy
+ * (pm2 restart) la sesión guardada tarda ~30-60 s en volver a 'connected';
+ * los envíos de workflows que caían en esa ventana fallaban con "el número QR
+ * no está conectado" aunque el número apareciera conectado minutos después.
+ * Solo espera estados que se resuelven solos (connecting/syncing); si hace
+ * falta escanear un QR o la sesión murió, devuelve null de inmediato.
+ */
+async function waitForConnected(key, timeoutMs = 45000) {
+  const until = Date.now() + timeoutMs;
+  for (;;) {
+    const entry = clients.get(key);
+    if (entry && entry.status === 'connected') return entry;
+    if (!entry || !['connecting', 'syncing'].includes(entry.status)) return null;
+    if (Date.now() > until) return null;
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((r) => setTimeout(r, 1500));
+  }
+}
+
 /** Envía texto por la sesión QR. Devuelve un shape compatible con messaging. */
 async function sendText(account, to, body) {
   const key = String(account._id);
-  const entry = clients.get(key);
+  let entry = clients.get(key);
+  if (!entry || entry.status !== 'connected') entry = await waitForConnected(key);
   if (!entry || !entry.client || entry.status !== 'connected') {
     return { ok: false, errorCode: 'qr_not_connected', error: 'El número QR no está conectado' };
   }
@@ -480,7 +501,8 @@ async function sendText(account, to, body) {
  */
 async function sendMedia(account, to, url, caption) {
   const key = String(account._id);
-  const entry = clients.get(key);
+  let entry = clients.get(key);
+  if (!entry || entry.status !== 'connected') entry = await waitForConnected(key);
   if (!entry || !entry.client || entry.status !== 'connected') {
     return { ok: false, errorCode: 'qr_not_connected', error: 'El número QR no está conectado' };
   }

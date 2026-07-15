@@ -38,6 +38,10 @@ function pushLog(enrollment, entry) {
   if (e.ok === false && e.info) enrollment.lastError = e.info;
 }
 
+// Fecha legible (hora Ecuador) para el registro de ejecución.
+const fmtLogDate = (d) =>
+  d.toLocaleString('es-EC', { timeZone: 'America/Guayaquil', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
+
 /** Interpreta el resultado de messaging.send: null = éxito, string = motivo del fallo. */
 function sendFailureInfo(result) {
   if (!result || result.ok) return null;
@@ -477,12 +481,23 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
       const target = computeWaitUntil(data, ctx);
       const nxt = nextNodeId(workflow, currentId);
       if (target && target.getTime() > now.getTime()) {
+        pushLog(enrollment, { nodeId: currentId, type, info: `Esperando hasta ${fmtLogDate(target)}` });
         enrollment.currentNodeId = nxt;
         enrollment.nextRunAt = target;
         enrollment.status = 'waiting';
         await enrollment.save();
         return;
       }
+      // NO esperó: dejar constancia del porqué (antes era invisible y parecía
+      // que el recordatorio "llegó cuando quiso").
+      pushLog(enrollment, {
+        nodeId: currentId,
+        type,
+        ok: !!target,
+        info: target
+          ? `La hora objetivo (${fmtLogDate(target)}) ya pasó al llegar aquí: continúa de inmediato`
+          : 'Este flujo se disparó SIN cita en el contexto (p. ej. trigger de chat/etiqueta): el paso no puede calcular la espera y continúa',
+      });
       currentId = nxt;
     } else if (type === 'wait_reply') {
       enrollment.currentNodeId = nextNodeId(workflow, currentId);
@@ -514,6 +529,11 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
         console.error('[workflowEngine] action error', enrollment._id, type, err.message);
       }
       currentId = nextNodeId(workflow, currentId);
+      // Persistir tras CADA acción: si el proceso se reinicia (deploy) a mitad
+      // del flujo, la recuperación continúa desde aquí y no repite envíos.
+      enrollment.currentNodeId = currentId;
+      // eslint-disable-next-line no-await-in-loop
+      await enrollment.save();
     }
   }
 
@@ -736,12 +756,21 @@ async function executeEnrollment(enrollment) {
     } else if (step.type === 'wait_until') {
       const target = computeWaitUntil(step, ctx);
       if (target && target.getTime() > now.getTime()) {
+        pushLog(enrollment, { stepIndex: i, type: step.type, info: `Esperando hasta ${fmtLogDate(target)}` });
         enrollment.stepIndex = i + 1;
         enrollment.nextRunAt = target;
         enrollment.status = 'waiting';
         await enrollment.save();
         return;
       }
+      pushLog(enrollment, {
+        stepIndex: i,
+        type: step.type,
+        ok: !!target,
+        info: target
+          ? `La hora objetivo (${fmtLogDate(target)}) ya pasó al llegar aquí: continúa de inmediato`
+          : 'Este flujo se disparó SIN cita en el contexto: el paso no puede calcular la espera y continúa',
+      });
       i++; // fecha ya pasada → continuar
     } else if (step.type === 'wait_reply') {
       // Pausa hasta que el paciente responda (resumeOnReply) o venza el timeout.
