@@ -116,6 +116,13 @@ export default function Chats() {
   const [attachmentDraft, setAttachmentDraft] = useState(null);
   // Mensaje al que se está respondiendo (cita estilo WhatsApp).
   const [replyDraft, setReplyDraft] = useState(null);
+  const composerRef = useRef(null);
+
+  // Al pulsar "responder" el cursor pasa directo al editor: sin este foco había
+  // que hacer clic en el cuadro antes de poder escribir.
+  useEffect(() => {
+    if (replyDraft) composerRef.current?.focus();
+  }, [replyDraft]);
   const [gallery, setGallery] = useState([]);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [newChatModal, setNewChatModal] = useState(false);
@@ -727,6 +734,7 @@ export default function Chats() {
                       /
                     </button>
                     <textarea
+                      ref={composerRef}
                       value={draft}
                       onChange={(e) => {
                         const v = e.target.value;
