@@ -251,3 +251,21 @@ exports.enrollments = async (req, res) => {
     res.status(500).json({ message: 'Error', error: err.message });
   }
 };
+
+/**
+ * GET /workflows/:id/activity — rastro del disparador: por cada evento de
+ * dominio, si este workflow inscribió al paciente o por qué NO (duplicado,
+ * audiencia/filtro sin coincidir). Responde "agendé una cita y no pasó nada".
+ */
+exports.activity = async (req, res) => {
+  try {
+    const WorkflowTriggerEvent = require('../models/WorkflowTriggerEvent');
+    const list = await WorkflowTriggerEvent.find({ workflow: req.params.id, clinic: req.clinicId })
+      .sort({ createdAt: -1 })
+      .limit(80)
+      .lean();
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ message: 'Error', error: err.message });
+  }
+};

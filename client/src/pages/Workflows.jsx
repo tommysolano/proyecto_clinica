@@ -46,6 +46,7 @@ export default function Workflows() {
   const [selectedFolder, setSelectedFolder] = useState('__all__');
   const [presets, setPresets] = useState([]);
   const [enrollView, setEnrollView] = useState(null); // workflow cuyas inscripciones se ven
+  const [activityView, setActivityView] = useState(null); // workflow cuya actividad de disparador se ve
 
   const load = async () => {
     try {
@@ -213,6 +214,13 @@ export default function Workflows() {
               <div className="flex items-start gap-1 shrink-0">
                 <button onClick={() => toggleActive(wf)} className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer">{wf.active ? 'Pausar' : 'Activar'}</button>
                 <button onClick={() => setEnrollView(wf)} className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer">Inscritos</button>
+                <button
+                  onClick={() => setActivityView(wf)}
+                  title="Por cada evento (cita, pago…): si inscribió al paciente o por qué no"
+                  className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer"
+                >
+                  Actividad
+                </button>
                 <button onClick={() => openEdit(wf)} className="p-2 text-slate-500 hover:text-emerald-600 bg-transparent border-none cursor-pointer"><HiOutlinePencil /></button>
                 <button onClick={() => remove(wf._id)} className="p-2 text-slate-500 hover:text-red-600 bg-transparent border-none cursor-pointer"><HiOutlineTrash /></button>
               </div>
@@ -224,7 +232,98 @@ export default function Workflows() {
       {enrollView && (
         <EnrollmentsModal workflow={enrollView} onClose={() => setEnrollView(null)} />
       )}
+      {activityView && (
+        <ActivityModal workflow={activityView} onClose={() => setActivityView(null)} />
+      )}
     </div>
+  );
+}
+
+const ACTIVITY_DECISION = {
+  enrolled: { label: 'Inscrito ✓', cls: 'bg-emerald-100 text-emerald-700' },
+  skipped_duplicate: { label: 'Saltado (duplicado)', cls: 'bg-amber-100 text-amber-700' },
+  no_match: { label: 'No coincidió', cls: 'bg-slate-100 text-slate-500' },
+};
+
+// Actividad del disparador: cada evento evaluado y la decisión tomada. Es la
+// respuesta a "ocurrió el evento y no pasó nada" cuando ni siquiera hay inscripción.
+function ActivityModal({ workflow, onClose }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api
+      .get(`/workflows/${workflow._id}/activity`)
+      .then((r) => setRows(r.data || []))
+      .catch(() => setRows([]))
+      .finally(() => setLoading(false));
+  }, [workflow._id]);
+
+  const fmt = (d) =>
+    d
+      ? new Date(d).toLocaleString('es-EC', {
+          timeZone: 'America/Guayaquil',
+          day: '2-digit',
+          month: '2-digit',
+          hour: '2-digit',
+          minute: '2-digit',
+        })
+      : '—';
+  const evLabel = (t) => TRIGGERS.find((x) => x.value === t)?.label || t;
+
+  return (
+    <Modal isOpen onClose={onClose} title={`Actividad del disparador — ${workflow.name}`} size="xl">
+      <div>
+        <p className="text-xs text-slate-500 -mt-1 mb-4">
+          Cada vez que ocurre un evento (cita agendada, pago, etc.) aquí queda registrado si este
+          workflow <b>inscribió</b> al paciente o <b>por qué no</b>. Si un evento ni aparece, el
+          workflow estaba pausado o el evento no llegó a emitirse. Se conserva 30 días.
+        </p>
+        {loading ? (
+          <div className="text-center py-10 text-slate-400 text-sm">Cargando…</div>
+        ) : rows.length === 0 ? (
+          <div className="text-center py-10 text-slate-400 text-sm">
+            Sin actividad registrada aún. Ocurre a partir de ahora: provoca el evento (p. ej. agenda
+            una cita) y vuelve a abrir esta ventana.
+          </div>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="tbl w-full">
+              <thead className="bg-slate-50 text-slate-600">
+                <tr>
+                  <th className="text-left px-3 py-2">Cuándo</th>
+                  <th className="text-left px-3 py-2">Evento</th>
+                  <th className="text-left px-3 py-2">Paciente</th>
+                  <th className="text-center px-3 py-2">Decisión</th>
+                  <th className="text-left px-3 py-2">Detalle</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((r) => {
+                  const d = ACTIVITY_DECISION[r.decision] || ACTIVITY_DECISION.no_match;
+                  return (
+                    <tr key={r._id} className="border-t border-slate-100">
+                      <td className="px-3 py-2 whitespace-nowrap">{fmt(r.createdAt)}</td>
+                      <td className="px-3 py-2 whitespace-nowrap">{evLabel(r.eventType)}</td>
+                      <td className="px-3 py-2">{r.patientName || '—'}</td>
+                      <td className="px-3 py-2 text-center">
+                        <span className={`text-[11px] px-2 py-0.5 rounded-full whitespace-nowrap ${d.cls}`}>{d.label}</span>
+                      </td>
+                      <td className="px-3 py-2 text-xs text-slate-500 max-w-[340px]">{r.detail}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div className="flex justify-end mt-4">
+          <button onClick={onClose} className="px-4 py-2 border border-slate-200 rounded-lg text-sm bg-white cursor-pointer">
+            Cerrar
+          </button>
+        </div>
+      </div>
+    </Modal>
   );
 }
 

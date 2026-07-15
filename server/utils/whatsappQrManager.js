@@ -427,6 +427,31 @@ function withTimeout(promise, ms, label) {
   ]);
 }
 
+/**
+ * Resuelve el chatId destino. JID completo si viene (…@c.us / …@lid, contactos
+ * con número oculto); si solo hay dígitos, resolver el JID real con getNumberId —
+ * valida que el número exista en WhatsApp y devuelve @c.us o @lid según
+ * corresponda (un LID crudo enviado como @c.us se colgaba sin error).
+ */
+async function resolveChatId(entry, to) {
+  let chatId = String(to || '').trim();
+  if (!chatId) return { ok: false, error: 'Destino vacío' };
+  if (!chatId.includes('@')) {
+    const digits = chatId.replace(/[^\d]/g, '');
+    if (!digits) return { ok: false, error: 'Teléfono inválido' };
+    const numberId = await withTimeout(
+      entry.client.getNumberId(digits),
+      15000,
+      'Tiempo agotado verificando el número en WhatsApp'
+    );
+    if (!numberId) {
+      return { ok: false, errorCode: 'qr_invalid_number', error: `El número ${digits} no está en WhatsApp` };
+    }
+    chatId = numberId._serialized;
+  }
+  return { ok: true, chatId };
+}
+
 /** Envía texto por la sesión QR. Devuelve un shape compatible con messaging. */
 async function sendText(account, to, body) {
   const key = String(account._id);
@@ -435,29 +460,56 @@ async function sendText(account, to, body) {
     return { ok: false, errorCode: 'qr_not_connected', error: 'El número QR no está conectado' };
   }
   try {
-    // Destino: JID completo si viene (…@c.us / …@lid, contactos con número
-    // oculto); si solo hay dígitos, resolver el JID real con getNumberId —
-    // valida que el número exista en WhatsApp y devuelve @c.us o @lid según
-    // corresponda (un LID crudo enviado como @c.us se colgaba sin error).
-    let chatId = String(to || '').trim();
-    if (!chatId) return { ok: false, error: 'Destino vacío' };
-    if (!chatId.includes('@')) {
-      const digits = chatId.replace(/[^\d]/g, '');
-      if (!digits) return { ok: false, error: 'Teléfono inválido' };
-      const numberId = await withTimeout(
-        entry.client.getNumberId(digits),
-        15000,
-        'Tiempo agotado verificando el número en WhatsApp'
-      ).catch((e) => { throw new Error(e.message); });
-      if (!numberId) {
-        return { ok: false, errorCode: 'qr_invalid_number', error: `El número ${digits} no está en WhatsApp` };
-      }
-      chatId = numberId._serialized;
-    }
+    const r = await resolveChatId(entry, to);
+    if (!r.ok) return r;
     const sent = await withTimeout(
-      entry.client.sendMessage(chatId, String(body || '').slice(0, 4096)),
+      entry.client.sendMessage(r.chatId, String(body || '').slice(0, 4096)),
       30000,
       'Tiempo agotado enviando el mensaje (la sesión puede estar inestable)'
+    );
+    return { ok: true, data: { messages: [{ id: sent?.id?._serialized || '' }] } };
+  } catch (e) {
+    return { ok: false, errorCode: 'qr_send_error', error: e.message };
+  }
+}
+
+/**
+ * Envía una IMAGEN (URL) con texto de pie por la sesión QR. Lo usa la cabecera
+ * de imagen de las plantillas (por QR no existen plantillas de Meta: se manda
+ * la imagen real con el cuerpo como caption).
+ */
+async function sendMedia(account, to, url, caption) {
+  const key = String(account._id);
+  const entry = clients.get(key);
+  if (!entry || !entry.client || entry.status !== 'connected') {
+    return { ok: false, errorCode: 'qr_not_connected', error: 'El número QR no está conectado' };
+  }
+  try {
+    const r = await resolveChatId(entry, to);
+    if (!r.ok) return r;
+    // Bytes de la imagen: la URL autoalojada (/api/public/media/:id) se lee
+    // directo de Mongo; una URL externa se descarga.
+    let mime = 'image/jpeg';
+    let b64 = '';
+    const m = String(url || '').match(/\/api\/public\/media\/([a-f0-9]{24})/i);
+    if (m) {
+      const img = await require('../models/ChatGalleryImage').findById(m[1]).select('dataUrl mimeType').lean();
+      const dm = img?.dataUrl?.match(/^data:([^;]+);base64,(.*)$/);
+      if (!dm) return { ok: false, error: 'No se pudo leer la imagen de cabecera guardada' };
+      mime = dm[1] || img.mimeType || 'image/jpeg';
+      b64 = dm[2];
+    } else {
+      const resp = await withTimeout(fetch(url), 20000, 'Tiempo agotado descargando la imagen de cabecera');
+      if (!resp.ok) return { ok: false, error: `No se pudo descargar la imagen de cabecera (HTTP ${resp.status})` };
+      mime = resp.headers.get('content-type') || 'image/jpeg';
+      b64 = Buffer.from(await resp.arrayBuffer()).toString('base64');
+    }
+    const { MessageMedia } = require('whatsapp-web.js');
+    const media = new MessageMedia(mime, b64, 'imagen');
+    const sent = await withTimeout(
+      entry.client.sendMessage(r.chatId, media, { caption: String(caption || '').slice(0, 1024) }),
+      60000,
+      'Tiempo agotado enviando la imagen (la sesión puede estar inestable)'
     );
     return { ok: true, data: { messages: [{ id: sent?.id?._serialized || '' }] } };
   } catch (e) {
@@ -530,6 +582,7 @@ module.exports = {
   connect,
   disconnect,
   sendText,
+  sendMedia,
   downloadMedia,
   getLiveStatus,
   getLiveSnapshot,

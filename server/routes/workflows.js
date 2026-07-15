@@ -19,6 +19,7 @@ router.post('/presets/:key', requireRole(...ROLES), ctrl.installPreset);
 router.post('/', requireRole(...ROLES), ctrl.create);
 router.get('/:id', requireRole(...ROLES), ctrl.get);
 router.get('/:id/enrollments', requireRole(...ROLES), ctrl.enrollments);
+router.get('/:id/activity', requireRole(...ROLES), ctrl.activity);
 router.put('/:id', requireRole(...ROLES), ctrl.update);
 router.delete('/:id', requireRole(...ROLES), ctrl.remove);
 

@@ -211,6 +211,9 @@ async function enrichTemplateHeader(clinicId, templateInfo, patient, appointment
   // ── 2) Cabecera multimedia ──
   const hasHeader = info.components.some((c) => c.type === 'header');
   const kind = ['image', 'document', 'video'].includes(tpl.headerType) ? tpl.headerType : null;
+  // Se expone la cabecera para: (a) enviarla como imagen real por números QR
+  // (que no admiten plantillas) y (b) mostrarla en la burbuja del chat.
+  if (kind && tpl.headerMediaUrl) info.headerMedia = { type: kind, url: tpl.headerMediaUrl };
   if (!hasHeader && kind) {
     if (!tpl.headerMediaUrl) return { ...info, missingHeaderMedia: kind };
     info.components.unshift({
@@ -362,6 +365,13 @@ async function sendToProvider({ clinicId, channel, conv, body, templateInfo, acc
       // del LID, NO un teléfono; responder a <lid>@c.us cuelga para siempre. Se
       // responde al JID completo (…@lid / …@c.us) guardado en externalUserId.
       const dest = String(conv.externalUserId || '').includes('@') ? conv.externalUserId : conv.phone;
+      // Plantilla con cabecera de IMAGEN: por QR se envía la imagen real con el
+      // texto como pie (antes la cabecera se ignoraba en silencio y el paciente
+      // recibía solo texto).
+      const hm = templateInfo?.headerMedia;
+      if (hm?.type === 'image' && hm.url) {
+        return gateway.sendMedia(account, dest, hm.url, text);
+      }
       return gateway.sendText(account, dest, text);
     }
     if (templateInfo?.missingHeaderMedia) {
@@ -545,7 +555,30 @@ async function send({
 
   let templateInfo = normalizeTemplate(template, vars);
   if (templateInfo && normalizedChannel === 'whatsapp') {
-    templateInfo = await enrichTemplateHeader(clinicId, templateInfo, patientDoc || patient, appointmentId);
+    // Plantilla enviada SIN cita explícita (a mano desde el chat, campañas):
+    // usar la PRÓXIMA cita del paciente para que {{servicio}}/{{fecha}}/{{hora}}
+    // lleven datos reales y no el ejemplo documentado.
+    let aptId = appointmentId;
+    const patientRef = patientDoc || patient;
+    if (!aptId && patientRef?._id) {
+      try {
+        const Appointment = require('../models/Appointment');
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        const next = await Appointment.findOne({
+          patient: patientRef._id,
+          date: { $gte: today },
+          status: { $ne: 'cancelada' },
+        })
+          .sort({ date: 1, startTime: 1 })
+          .select('_id')
+          .lean();
+        if (next) aptId = next._id;
+      } catch {
+        /* sin cita próxima: se usan los ejemplos */
+      }
+    }
+    templateInfo = await enrichTemplateHeader(clinicId, templateInfo, patientRef, aptId);
   }
   if (normalizedChannel === 'whatsapp' && gateway.isCloud(account)) {
     const computedWindow = getWhatsappWindowExpiresAt(conv);
@@ -569,13 +602,16 @@ async function send({
     else if (mediaUrl) preview = '[media]';
     else preview = '';
   }
+  // La cabecera multimedia de la plantilla se guarda en el mensaje para que la
+  // burbuja del chat muestre la plantilla TAL CUAL la recibe el paciente.
+  const tplMedia = templateInfo?.headerMedia || null;
   const msg = await Message.create({
     clinic: clinicId,
     conversation: conv._id,
     direction: 'out',
     body: preview,
-    mediaUrl: mediaUrl || null,
-    mediaType: mediaType || null,
+    mediaUrl: mediaUrl || tplMedia?.url || null,
+    mediaType: mediaType || tplMedia?.type || null,
     templateName: templateInfo?.name || '',
     deliveryStatus: 'queued',
     sentBy: sentBy || null,

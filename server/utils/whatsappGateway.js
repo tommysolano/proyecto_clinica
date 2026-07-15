@@ -85,6 +85,19 @@ async function sendText(account, to, body) {
   return wa.sendText(cloudCreds(account), to, body);
 }
 
+/**
+ * Envía una imagen (URL) con texto de pie. Hoy solo lo usan los números QR
+ * (para la cabecera de imagen de las plantillas); en Cloud API la cabecera
+ * viaja dentro de la propia plantilla.
+ */
+async function sendMedia(account, to, url, caption) {
+  if (!account) return { ok: false, errorCode: 'provider_unavailable', error: 'Sin número de WhatsApp configurado' };
+  if (account.connectionType === 'qr') {
+    return require('./whatsappQrManager').sendMedia(account, to, url, caption);
+  }
+  return { ok: false, error: 'sendMedia solo está implementado para números QR' };
+}
+
 async function sendTemplate(account, to, templateName, lang, components) {
   if (!account) return { ok: false, errorCode: 'provider_unavailable', error: 'Sin número de WhatsApp configurado' };
   if (account.connectionType === 'qr') {
@@ -112,6 +125,7 @@ module.exports = {
   cloudCreds,
   isCloud,
   sendText,
+  sendMedia,
   sendTemplate,
   downloadMedia,
 };

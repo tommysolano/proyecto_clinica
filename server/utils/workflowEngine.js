@@ -798,20 +798,57 @@ async function enrollForEvent(eventType, payload = {}) {
 
   const services = (payload.services || []).map((s) => String(s));
 
+  // Rastro visible (Workflows → Actividad) de POR QUÉ cada workflow inscribió o
+  // no: antes un salto por duplicado o por filtro era invisible y parecía que
+  // "el trigger no funciona". Nunca debe tumbar la inscripción (fire and forget).
+  const patientName = `${patient.firstName || ''} ${patient.lastName || ''}`.trim();
+  const trace = (wf, decision, detail) => {
+    try {
+      require('../models/WorkflowTriggerEvent')
+        .create({ clinic: clinicId, workflow: wf._id, patient: patient._id, patientName, eventType, decision, detail })
+        .catch(() => {});
+    } catch {
+      /* noop */
+    }
+  };
+
   for (const wf of workflows) {
     // Un workflow puede tener varios flujos (nodos trigger) independientes; cada
     // flujo cuyo disparador coincida se inscribe por separado.
     const flows = matchingFlows(wf, (tr) => triggerMatchesEvent(tr, eventType, payload, services));
+    if (!flows.length) {
+      trace(
+        wf,
+        'no_match',
+        'El evento ocurrió pero el disparador no coincidió: revisa la audiencia ("solo pacientes nuevos/existentes") o el filtro de servicio del nodo disparador.'
+      );
+      continue;
+    }
     for (const flow of flows) {
       // Anti-duplicado: una inscripción viva por (workflow, paciente, flujo).
-      // eslint-disable-next-line no-await-in-loop
-      const existing = await WorkflowEnrollment.findOne({
+      // OJO: en eventos de CITA el duplicado es por cita (context.appointmentId):
+      // cada cita nueva debe generar su propio recordatorio/confirmación aunque
+      // haya otra inscripción viva de una cita anterior (antes se saltaba en
+      // silencio y "agendé 3 citas y no llegó nada").
+      const dedup = {
         workflow: wf._id,
         patient: patient._id,
         startNodeId: flow.startNodeId,
         status: { $in: ['active', 'waiting'] },
-      });
-      if (existing) continue;
+      };
+      if (payload.appointmentId) dedup['context.appointmentId'] = String(payload.appointmentId);
+      // eslint-disable-next-line no-await-in-loop
+      const existing = await WorkflowEnrollment.findOne(dedup);
+      if (existing) {
+        trace(
+          wf,
+          'skipped_duplicate',
+          payload.appointmentId
+            ? 'Esta misma cita ya tiene una inscripción viva en este flujo; no se crea otra.'
+            : 'El paciente ya tiene una inscripción activa/en espera en este flujo; el evento no crea otra hasta que termine.'
+        );
+        continue;
+      }
 
       let enrollment;
       try {
@@ -835,6 +872,7 @@ async function enrollForEvent(eventType, payload = {}) {
         if (e.code === 11000) continue; // carrera anti-duplicado
         throw e;
       }
+      trace(wf, 'enrolled', 'Inscripción creada; los pasos y sus resultados quedan en "Inscritos" → registro de ejecución.');
       // eslint-disable-next-line no-await-in-loop
       await Workflow.updateOne({ _id: wf._id }, { $inc: { 'stats.enrolled': 1 } });
       // Un error en ESTE flujo no debe impedir que los demás workflows del evento
