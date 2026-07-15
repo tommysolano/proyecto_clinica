@@ -518,7 +518,7 @@ async function resolveQuoteTarget(entry, chatId, quotedMessageId, quoteBody) {
   if (quotedMessageId) {
     try {
       const m = await withTimeout(entry.client.getMessageById(quotedMessageId), 10000, 'getMessageById timeout');
-      if (m) return m;
+      if (m) return { target: m, how: 'id' };
       console.warn('[whatsapp-qr quote] getMessageById devolvió null:', quotedMessageId);
     } catch (e) {
       console.warn('[whatsapp-qr quote] getMessageById:', e.message);
@@ -530,31 +530,80 @@ async function resolveQuoteTarget(entry, chatId, quotedMessageId, quoteBody) {
       const chat = await withTimeout(entry.client.getChatById(chatId), 10000, 'getChatById timeout');
       const recent = await withTimeout(chat.fetchMessages({ limit: 50 }), 15000, 'fetchMessages timeout');
       const matches = recent.filter((m) => String(m.body || '').trim() === needle);
-      if (matches.length) return matches[matches.length - 1]; // el más reciente que coincide
+      if (matches.length) return { target: matches[matches.length - 1], how: 'text' }; // el más reciente que coincide
       console.warn('[whatsapp-qr quote] sin coincidencia por texto para citar');
     } catch (e) {
       console.warn('[whatsapp-qr quote] búsqueda por texto:', e.message);
     }
   }
-  return null;
+  return { target: null, how: '', reason: 'not_found' };
+}
+
+/**
+ * Cuando WhatsApp Web envió el mensaje pero DESCARTÓ la cita en silencio,
+ * pregunta dentro de la página el porqué (canReplyMsg / msgContextInfo). Es
+ * solo diagnóstico: nunca lanza, devuelve un código corto.
+ */
+async function diagnoseQuoteDrop(entry, wamid) {
+  if (!wamid) return 'sin_wamid';
+  try {
+    return await withTimeout(entry.client.pupPage.evaluate((mid) => {
+      try {
+        const m = window.require('WAWebCollections').Msg.get(mid);
+        if (!m) return 'no_en_store';
+        try {
+          const R = window.require('WAWebMsgReply');
+          const can = R && R.canReplyMsg
+            ? !!R.canReplyMsg(m.unsafe ? m.unsafe() : m)
+            : (typeof m.canReply === 'function' ? !!m.canReply() : null);
+          if (can === false) return 'cannot_reply';
+        } catch (e) { return 'canReply_error'; }
+        if (typeof m.msgContextInfo !== 'function') return 'sin_msgContextInfo';
+        return 'motivo_desconocido';
+      } catch (e) { return 'eval_error'; }
+    }, wamid), 8000, 'diagnose timeout');
+  } catch (e) {
+    return 'diagnose_timeout';
+  }
 }
 
 /**
  * Envía `content` citando el mensaje indicado si se puede resolver (por wamid o
- * por texto). Si no, envía normal — nunca se pierde el mensaje.
+ * por texto). Si no, envía normal — nunca se pierde el mensaje. Devuelve
+ * `{ sent, quote }` donde `quote` es el resultado REAL de la cita:
+ *   { applied, how: 'id'|'text', reason, wamid }
+ * `applied` se verifica DESPUÉS de enviar con `sent.hasQuotedMsg`: whatsapp-web.js
+ * puede descartar la cita en silencio aun con el mensaje localizado (p.ej.
+ * canReplyMsg=false), y esa era una caja negra — ahora queda registrado.
  */
 async function sendResolvingQuote(entry, chatId, content, quotedMessageId, opts = {}, quoteBody = '') {
-  if (quotedMessageId || quoteBody) {
-    const target = await resolveQuoteTarget(entry, chatId, quotedMessageId, quoteBody);
-    if (target) {
+  const quote = { applied: false, how: '', reason: '', wamid: '' };
+  if (quotedMessageId || String(quoteBody || '').trim()) {
+    const resolved = await resolveQuoteTarget(entry, chatId, quotedMessageId, quoteBody);
+    if (resolved.target) {
+      quote.how = resolved.how;
+      quote.wamid = resolved.target.id?._serialized || '';
       try {
-        return await target.reply(content, undefined, opts);
+        // ignoreQuoteErrors:false → si la página no localiza el mensaje citado,
+        // LANZA (default: manda normal en silencio) y aquí queda el motivo.
+        const sent = await resolved.target.reply(content, undefined, { ...opts, ignoreQuoteErrors: false });
+        if (sent && sent.hasQuotedMsg === false) {
+          quote.reason = `library_dropped:${await diagnoseQuoteDrop(entry, quote.wamid)}`;
+          console.warn('[whatsapp-qr quote] WhatsApp Web descartó la cita:', quote.reason);
+        } else {
+          quote.applied = true;
+        }
+        return { sent, quote };
       } catch (e) {
+        quote.reason = `reply_error:${e.message}`;
         console.warn('[whatsapp-qr quote] reply falló, se envía normal:', e.message);
       }
+    } else {
+      quote.reason = resolved.reason || 'not_found';
     }
   }
-  return entry.client.sendMessage(chatId, content, opts);
+  const sent = await entry.client.sendMessage(chatId, content, opts);
+  return { sent, quote };
 }
 
 /** Envía texto por la sesión QR. Devuelve un shape compatible con messaging. */
@@ -568,12 +617,16 @@ async function sendText(account, to, body, quotedMessageId, quoteBody) {
   try {
     const r = await resolveChatId(entry, to);
     if (!r.ok) return r;
-    const sent = await withTimeout(
+    const { sent, quote } = await withTimeout(
       sendResolvingQuote(entry, r.chatId, String(body || '').slice(0, 4096), quotedMessageId, {}, quoteBody),
       50000,
       'Tiempo agotado enviando el mensaje (la sesión puede estar inestable)'
     );
-    return { ok: true, data: { messages: [{ id: sent?.id?._serialized || '' }] } };
+    return {
+      ok: true,
+      data: { messages: [{ id: sent?.id?._serialized || '' }] },
+      ...(quotedMessageId || quoteBody ? { quote } : {}),
+    };
   } catch (e) {
     return { ok: false, errorCode: 'qr_send_error', error: e.message };
   }
@@ -615,12 +668,16 @@ async function sendMedia(account, to, url, caption, quotedMessageId, quoteBody) 
     const media = new MessageMedia(mime, b64, 'imagen');
     // La cita se resuelve igual que en texto: getMessageById + reply() para que
     // el contacto vea la imagen como respuesta al mensaje citado.
-    const sent = await withTimeout(
+    const { sent, quote } = await withTimeout(
       sendResolvingQuote(entry, r.chatId, media, quotedMessageId, { caption: String(caption || '').slice(0, 1024) }, quoteBody),
       60000,
       'Tiempo agotado enviando la imagen (la sesión puede estar inestable)'
     );
-    return { ok: true, data: { messages: [{ id: sent?.id?._serialized || '' }] } };
+    return {
+      ok: true,
+      data: { messages: [{ id: sent?.id?._serialized || '' }] },
+      ...(quotedMessageId || quoteBody ? { quote } : {}),
+    };
   } catch (e) {
     return { ok: false, errorCode: 'qr_send_error', error: e.message };
   }

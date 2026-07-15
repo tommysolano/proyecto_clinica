@@ -1199,6 +1199,16 @@ function ReplyButton({ onClick }) {
   );
 }
 
+// Traduce el resultado real de la cita ('failed:<motivo>') a un texto corto.
+// Solo se muestra cuando la respuesta NO llegó citada al destinatario.
+function quoteFailureText(code) {
+  const reason = String(code || '').replace(/^failed:/, '');
+  if (reason.startsWith('no_wamid')) return 'Se envió sin la cita: el mensaje original no tiene ID de WhatsApp.';
+  if (reason.startsWith('library_dropped')) return 'Se envió sin la cita: WhatsApp no permitió citar ese mensaje.';
+  if (reason.startsWith('not_found')) return 'Se envió sin la cita: no se encontró el mensaje original en WhatsApp.';
+  return 'Se envió sin la cita en WhatsApp.';
+}
+
 function MessageBubble({ msg, onReply, onJumpTo }) {
   const isOut = msg.direction === 'out';
   // Etiqueta de remitente: quién envió el mensaje (agente con acceso al chat, o
@@ -1237,6 +1247,13 @@ function MessageBubble({ msg, onReply, onJumpTo }) {
               {reply.body || (reply.mediaType ? `[${reply.mediaType}]` : 'Mensaje')}
             </div>
           </button>
+        )}
+        {/* La cita se verificó tras el envío y NO llegó aplicada a WhatsApp */}
+        {reply && isOut && String(msg.quoteResult || '').startsWith('failed') && (
+          <div className="text-[10px] mb-1 flex items-start gap-1 text-amber-100 bg-amber-500/30 rounded px-1.5 py-0.5">
+            <HiOutlineExclamationTriangle className="w-3 h-3 shrink-0 mt-px" />
+            <span>{quoteFailureText(msg.quoteResult)}</span>
+          </div>
         )}
         <MessageMedia msg={msg} />
         {msg.templateName && (

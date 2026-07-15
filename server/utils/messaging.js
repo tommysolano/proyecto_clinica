@@ -671,6 +671,30 @@ async function send({
       ...(msg.statusTimestamps?.toObject ? msg.statusTimestamps.toObject() : msg.statusTimestamps || {}),
       sentAt: new Date(),
     };
+    // Auditoría de la cita: registra si la respuesta llegó CITADA de verdad.
+    if (replyTo && normalizedChannel === 'whatsapp') {
+      const q = providerResult.quote;
+      if (q) {
+        // QR: el gateway verificó tras enviar si el mensaje lleva la cita.
+        msg.quoteResult = q.applied ? `quoted_by_${q.how}` : `failed:${q.reason || 'not_found'}`;
+        // Si el mensaje citado se localizó EN VIVO (p.ej. por texto), ya
+        // conocemos su wamid: se respalda en el mensaje original para que las
+        // próximas citas vayan directo por id.
+        if (q.wamid && replyTo.message) {
+          await Message.updateOne(
+            { _id: replyTo.message, externalId: { $in: [null, ''] } },
+            { externalId: q.wamid }
+          ).catch(() => {});
+        }
+      } else {
+        // Cloud API: la cita viaja como `context.message_id`; sin wamid no hay
+        // forma de citar (Meta no admite búsqueda por texto).
+        msg.quoteResult = replyTo.externalId ? 'quoted_by_id' : 'failed:no_wamid';
+      }
+      if (msg.quoteResult.startsWith('failed')) {
+        console.warn('[reply] la cita NO se aplicó en WhatsApp:', msg.quoteResult);
+      }
+    }
   } else {
     msg.deliveryStatus = 'failed';
     msg.errorCode = providerErrorCode(providerResult);

@@ -37,7 +37,11 @@ test('responder a un mensaje con wamid pasa quotedMessageId al gateway QR', asyn
   const orig = qrManager.sendText;
   qrManager.sendText = async (account, to, body, quotedMessageId, quoteBody) => {
     calls.push({ to, body, quotedMessageId, quoteBody });
-    return { ok: true, data: { messages: [{ id: 'true_204496395366461@lid_SENT123' }] } };
+    return {
+      ok: true,
+      data: { messages: [{ id: 'true_204496395366461@lid_SENT123' }] },
+      quote: { applied: true, how: 'id', reason: '', wamid: quotedMessageId },
+    };
   };
 
   try {
@@ -56,6 +60,9 @@ test('responder a un mensaje con wamid pasa quotedMessageId al gateway QR', asyn
     'el texto del mensaje citado llega como quoteBody (respaldo para citar por texto)');
   // Y se responde al JID completo (@lid), no a los dígitos.
   assert.equal(calls[0].to, '204496395366461@lid');
+  // El resultado real de la cita queda auditado en el mensaje saliente.
+  const outMsg = await Message.findOne({ conversation: conv._id, direction: 'out' }).lean();
+  assert.equal(outMsg.quoteResult, 'quoted_by_id');
 });
 
 test('responder a un mensaje SIN wamid pasa el texto como quoteBody (respaldo por texto)', async () => {
@@ -75,7 +82,13 @@ test('responder a un mensaje SIN wamid pasa el texto como quoteBody (respaldo po
   const orig = qrManager.sendText;
   qrManager.sendText = async (account, to, body, quotedMessageId, quoteBody) => {
     calls.push({ quotedMessageId, quoteBody });
-    return { ok: true, data: { messages: [{ id: 'x' }] } };
+    // Simula que la sesión LOCALIZÓ el mensaje por texto y lo citó: devuelve el
+    // wamid descubierto para que se respalde en el mensaje original.
+    return {
+      ok: true,
+      data: { messages: [{ id: 'x' }] },
+      quote: { applied: true, how: 'text', reason: '', wamid: 'false_204496395366461@lid_FOUND99' },
+    };
   };
   try {
     const req = H.mockReq(clinicId, userId, { body: 'hola', replyTo: String(noWamid._id) }, { params: { id: String(conv._id) } });
@@ -87,4 +100,41 @@ test('responder a un mensaje SIN wamid pasa el texto como quoteBody (respaldo po
   assert.equal(calls.length, 1);
   assert.ok(!calls[0].quotedMessageId, 'sin wamid no hay quotedMessageId');
   assert.equal(calls[0].quoteBody, 'test de conexion', 'se pasa el texto para citar en vivo por contenido');
+  // Auditoría + respaldo: el saliente registra que citó por texto y el mensaje
+  // original recibe el wamid descubierto (las próximas citas irán por id).
+  const outMsg = await Message.findOne({ conversation: conv._id, direction: 'out' }).lean();
+  assert.equal(outMsg.quoteResult, 'quoted_by_text');
+  const original = await Message.findById(noWamid._id).lean();
+  assert.equal(original.externalId, 'false_204496395366461@lid_FOUND99',
+    'el wamid descubierto al citar por texto se respalda en el mensaje original');
+});
+
+test('si WhatsApp descartó la cita, el mensaje queda marcado failed:<motivo>', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  await WhatsappAccount.create({ label: 'QR Test', connectionType: 'qr', enabled: true, isDefault: true, status: 'connected' });
+  const conv = await Conversation.create({
+    clinic: clinicId, phone: '204496395366461', externalUserId: '204496395366461@lid',
+    contactName: '.', channel: 'whatsapp', lastMessageAt: new Date(), lastMessageDirection: 'in',
+    window24hExpiresAt: new Date(Date.now() + 20 * 3600 * 1000),
+  });
+  const incoming = await Message.create({
+    clinic: clinicId, conversation: conv._id, direction: 'in', body: 'test de conexion', deliveryStatus: 'delivered',
+  });
+
+  const orig = qrManager.sendText;
+  qrManager.sendText = async () => ({
+    ok: true,
+    data: { messages: [{ id: 'y' }] },
+    quote: { applied: false, how: 'text', reason: 'library_dropped:cannot_reply', wamid: '' },
+  });
+  try {
+    const req = H.mockReq(clinicId, userId, { body: 'hola', replyTo: String(incoming._id) }, { params: { id: String(conv._id) } });
+    req.user.name = 'Agente';
+    await H.runController(chat.sendMessage, req);
+  } finally {
+    qrManager.sendText = orig;
+  }
+  const outMsg = await Message.findOne({ conversation: conv._id, direction: 'out' }).lean();
+  assert.equal(outMsg.quoteResult, 'failed:library_dropped:cannot_reply',
+    'el motivo real del descarte queda registrado para verlo en el CRM');
 });

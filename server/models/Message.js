@@ -40,6 +40,11 @@ const messageSchema = new mongoose.Schema(
       body: { type: String, trim: true, default: '' },
       mediaType: { type: String, trim: true, default: '' },
     },
+    // Resultado REAL de la cita en WhatsApp (solo salientes con replyTo):
+    // 'quoted_by_id' | 'quoted_by_text' | 'failed:<motivo>'. Vacío si no aplica.
+    // Permite auditar sin acceso a los logs del servidor por qué una respuesta
+    // llegó (o no) citada al destinatario.
+    quoteResult: { type: String, trim: true, default: '' },
     errorCode: { type: String, trim: true, default: '' },
     errorMessage: { type: String, trim: true, default: '' },
     statusTimestamps: {
