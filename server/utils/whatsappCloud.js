@@ -79,13 +79,14 @@ async function postToMeta(creds, payload) {
 /**
  * Envía un mensaje de texto plano (solo válido en ventana de 24h tras último mensaje del usuario).
  */
-async function sendText(creds, to, body) {
+async function sendText(creds, to, body, contextMessageId) {
   const phone = normalizePhone(to);
   if (!phone) return { ok: false, error: 'Teléfono inválido' };
   return postToMeta(creds, {
     messaging_product: 'whatsapp',
     to: phone,
     type: 'text',
+    ...(contextMessageId ? { context: { message_id: contextMessageId } } : {}),
     text: { body: String(body || '').slice(0, 4096) },
   });
 }
@@ -94,7 +95,7 @@ async function sendText(creds, to, body) {
  * Envía media (imagen/video/documento) por URL pública con texto de pie.
  * Meta descarga la URL, por lo que debe ser accesible desde fuera (no data URLs).
  */
-async function sendMedia(creds, to, url, caption, type = 'image') {
+async function sendMedia(creds, to, url, caption, type = 'image', contextMessageId) {
   const phone = normalizePhone(to);
   if (!phone) return { ok: false, error: 'Teléfono inválido' };
   const kind = ['image', 'video', 'document'].includes(type) ? type : 'image';
@@ -104,6 +105,7 @@ async function sendMedia(creds, to, url, caption, type = 'image') {
     messaging_product: 'whatsapp',
     to: phone,
     type: kind,
+    ...(contextMessageId ? { context: { message_id: contextMessageId } } : {}),
     [kind]: media,
   });
 }

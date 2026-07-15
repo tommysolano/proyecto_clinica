@@ -352,6 +352,18 @@ async function connect(accountId, { userId } = {}) {
       const clinicId = await require('./callCenterClinic').resolveCallCenterClinicId();
       if (!clinicId) return;
 
+      // Cita: si el contacto respondió a un mensaje, whatsapp-web.js expone el
+      // wamid citado en _data.quotedStanzaID (o hasQuotedMsg + getQuotedMessage).
+      let contextId = '';
+      if (msg.hasQuotedMsg) {
+        try {
+          const q = await msg.getQuotedMessage();
+          contextId = q?.id?._serialized || msg._data?.quotedStanzaID || '';
+        } catch {
+          contextId = msg._data?.quotedStanzaID || '';
+        }
+      }
+
       const { ingestExternalMessage } = require('../controllers/chatController');
       await ingestExternalMessage({
         clinicId,
@@ -365,6 +377,7 @@ async function connect(accountId, { userId } = {}) {
         media,
         contactName: msg._data?.notifyName || '',
         externalId: msg.id?._serialized || '',
+        contextId,
       });
     } catch (e) {
       console.error('[whatsapp-qr message]', e.message);
@@ -473,7 +486,7 @@ async function waitForConnected(key, timeoutMs = 45000) {
 }
 
 /** Envía texto por la sesión QR. Devuelve un shape compatible con messaging. */
-async function sendText(account, to, body) {
+async function sendText(account, to, body, quotedMessageId) {
   const key = String(account._id);
   let entry = clients.get(key);
   if (!entry || entry.status !== 'connected') entry = await waitForConnected(key);
@@ -483,8 +496,11 @@ async function sendText(account, to, body) {
   try {
     const r = await resolveChatId(entry, to);
     if (!r.ok) return r;
+    // quotedMessageId (wamid serializado del mensaje citado) hace que el contacto
+    // vea la respuesta como cita, igual que en WhatsApp.
+    const opts = quotedMessageId ? { quotedMessageId } : undefined;
     const sent = await withTimeout(
-      entry.client.sendMessage(r.chatId, String(body || '').slice(0, 4096)),
+      entry.client.sendMessage(r.chatId, String(body || '').slice(0, 4096), opts),
       30000,
       'Tiempo agotado enviando el mensaje (la sesión puede estar inestable)'
     );
@@ -499,7 +515,7 @@ async function sendText(account, to, body) {
  * de imagen de las plantillas (por QR no existen plantillas de Meta: se manda
  * la imagen real con el cuerpo como caption).
  */
-async function sendMedia(account, to, url, caption) {
+async function sendMedia(account, to, url, caption, quotedMessageId) {
   const key = String(account._id);
   let entry = clients.get(key);
   if (!entry || entry.status !== 'connected') entry = await waitForConnected(key);
@@ -528,8 +544,10 @@ async function sendMedia(account, to, url, caption) {
     }
     const { MessageMedia } = require('whatsapp-web.js');
     const media = new MessageMedia(mime, b64, 'imagen');
+    const opts = { caption: String(caption || '').slice(0, 1024) };
+    if (quotedMessageId) opts.quotedMessageId = quotedMessageId;
     const sent = await withTimeout(
-      entry.client.sendMessage(r.chatId, media, { caption: String(caption || '').slice(0, 1024) }),
+      entry.client.sendMessage(r.chatId, media, opts),
       60000,
       'Tiempo agotado enviando la imagen (la sesión puede estar inestable)'
     );

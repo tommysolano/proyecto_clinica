@@ -23,6 +23,7 @@ import {
   HiOutlineDocumentDuplicate,
   HiOutlineTrash,
   HiOutlineExclamationTriangle,
+  HiOutlineArrowUturnLeft,
 } from 'react-icons/hi2';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
@@ -114,6 +115,8 @@ export default function Chats() {
   const [slashQuery, setSlashQuery] = useState('');
   // Adjunto (imagen/video) preparado desde un mensaje guardado, se envía con el texto.
   const [attachmentDraft, setAttachmentDraft] = useState(null);
+  // Mensaje al que se está respondiendo (cita estilo WhatsApp).
+  const [replyDraft, setReplyDraft] = useState(null);
   const [gallery, setGallery] = useState([]);
   const [galleryOpen, setGalleryOpen] = useState(false);
   const [newChatModal, setNewChatModal] = useState(false);
@@ -206,6 +209,7 @@ export default function Chats() {
     else setMessages([]);
     setTemplateDraft({ name: '', language: 'es', vars: '' });
     setAttachmentDraft(null);
+    setReplyDraft(null);
   }, [activeId]);
 
   // Realtime — recargar al recibir cambios
@@ -318,6 +322,7 @@ export default function Chats() {
             ...(attachmentDraft
               ? { mediaUrl: attachmentDraft.url, mediaType: attachmentDraft.type || 'image' }
               : {}),
+            ...(replyDraft ? { replyTo: replyDraft._id } : {}),
           };
       const r = await api.post(`/chats/${activeId}/messages`, payload);
       setMessages((prev) => [...prev, r.data]);
@@ -339,7 +344,10 @@ export default function Chats() {
       } else if (useTemplate) {
         setTemplateDraft({ name: '', language: 'es', vars: '' });
       }
-      if (!useTemplate) setAttachmentDraft(null);
+      if (!useTemplate) {
+        setAttachmentDraft(null);
+        setReplyDraft(null);
+      }
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al enviar');
       if (!windowClosed) setDraft(body);
@@ -388,6 +396,16 @@ export default function Chats() {
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error');
     }
+  };
+
+  // Salta al mensaje original citado y lo resalta un instante.
+  const scrollToMessage = (id) => {
+    if (!id) return;
+    const el = document.getElementById(`msg-${id}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.classList.add('ring-2', 'ring-emerald-400', 'rounded-lg');
+    setTimeout(() => el.classList.remove('ring-2', 'ring-emerald-400', 'rounded-lg'), 1600);
   };
 
   // Reparte la conversación al agente con menos chats abiertos (round-robin).
@@ -526,7 +544,12 @@ export default function Chats() {
                 />
                 <div ref={messagesEndRef} className="flex-1 overflow-y-auto bg-slate-50 p-4 space-y-2">
                   {messages.map((m) => (
-                    <MessageBubble key={m._id} msg={m} />
+                    <MessageBubble
+                      key={m._id}
+                      msg={m}
+                      onReply={() => setReplyDraft(m)}
+                      onJumpTo={scrollToMessage}
+                    />
                   ))}
                 </div>
                 <div className="border-t border-slate-100 p-2">
@@ -576,6 +599,28 @@ export default function Chats() {
                         placeholder="Variables (separadas por coma) — ej. Juan, 12/06"
                         className="w-full mt-2 border border-slate-200 rounded-lg px-3 py-1.5 text-sm"
                       />
+                    </div>
+                  )}
+                  {/* Respondiendo a un mensaje específico (cita) */}
+                  {replyDraft && (
+                    <div className="mb-2 flex items-stretch gap-2 bg-slate-50 border-l-4 border-emerald-500 rounded-lg pl-2 pr-2 py-1.5">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-[11px] font-semibold text-emerald-700 flex items-center gap-1">
+                          <HiOutlineArrowUturnLeft className="w-3 h-3" />
+                          Respondiendo a {replyDraft.direction === 'out' ? (replyDraft.sentByName || 'ti') : (activeConv?.contactName || 'contacto')}
+                        </div>
+                        <div className="text-xs text-slate-500 truncate">
+                          {replyDraft.body || (replyDraft.mediaType ? `[${replyDraft.mediaType}]` : 'Mensaje')}
+                        </div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setReplyDraft(null)}
+                        title="Cancelar respuesta"
+                        className="text-slate-400 hover:text-rose-600 bg-transparent border-none cursor-pointer self-center"
+                      >
+                        <HiOutlineXMark className="w-4 h-4" />
+                      </button>
                     </div>
                   )}
                   {/* Adjunto preparado (desde un mensaje guardado) */}
@@ -1150,15 +1195,59 @@ function MessageMedia({ msg }) {
   );
 }
 
-function MessageBubble({ msg }) {
-  const isOut = msg.direction === 'out';
+// Botón "responder" que aparece al pasar el cursor sobre la burbuja.
+function ReplyButton({ onClick }) {
   return (
-    <div className={`flex ${isOut ? 'justify-end' : 'justify-start'}`}>
+    <button
+      type="button"
+      onClick={onClick}
+      title="Responder a este mensaje"
+      className="opacity-0 group-hover:opacity-100 transition-opacity shrink-0 w-7 h-7 rounded-full bg-white border border-slate-200 shadow-sm flex items-center justify-center text-slate-500 hover:text-emerald-600 hover:border-emerald-300 cursor-pointer"
+    >
+      <HiOutlineArrowUturnLeft className="w-3.5 h-3.5" />
+    </button>
+  );
+}
+
+function MessageBubble({ msg, onReply, onJumpTo }) {
+  const isOut = msg.direction === 'out';
+  // Etiqueta de remitente: quién envió el mensaje (agente con acceso al chat, o
+  // "Automático" para respuestas de flujos/workflows). Solo en salientes.
+  const senderLabel = isOut ? (msg.sentByName || (msg.isAutoReply ? 'Automático' : 'Equipo')) : null;
+  const reply = msg.replyTo && (msg.replyTo.body || msg.replyTo.mediaType || msg.replyTo.senderName)
+    ? msg.replyTo
+    : null;
+  return (
+    <div className={`group flex items-center gap-1.5 ${isOut ? 'justify-end' : 'justify-start'}`}>
+      {isOut && <ReplyButton onClick={onReply} />}
       <div
-        className={`max-w-[70%] rounded-lg px-3 py-2 text-sm shadow-sm ${
+        id={`msg-${msg._id}`}
+        className={`max-w-[70%] rounded-lg px-3 py-2 text-sm shadow-sm transition-shadow ${
           isOut ? 'bg-emerald-500 text-white' : 'bg-white border border-slate-200 text-slate-800'
         }`}
       >
+        {senderLabel && (
+          <div className={`text-[11px] font-semibold mb-1 flex items-center gap-1 ${isOut ? 'text-white/95' : 'text-emerald-700'}`}>
+            <HiOutlineUserCircle className="w-3.5 h-3.5" /> {senderLabel}
+          </div>
+        )}
+        {/* Mensaje citado (respuesta a uno específico): clic para saltar al original */}
+        {reply && (
+          <button
+            type="button"
+            onClick={() => onJumpTo?.(reply.message)}
+            className={`w-full text-left mb-1 rounded-md border-l-4 pl-2 pr-2 py-1 cursor-pointer ${
+              isOut ? 'bg-emerald-600/40 border-white/70' : 'bg-slate-100 border-emerald-500'
+            }`}
+          >
+            <div className={`text-[10px] font-semibold ${isOut ? 'text-white/90' : 'text-emerald-700'}`}>
+              {reply.senderName || 'Mensaje'}
+            </div>
+            <div className={`text-[11px] truncate ${isOut ? 'text-white/80' : 'text-slate-500'}`}>
+              {reply.body || (reply.mediaType ? `[${reply.mediaType}]` : 'Mensaje')}
+            </div>
+          </button>
+        )}
         <MessageMedia msg={msg} />
         {msg.templateName && (
           <div className={`text-[10px] font-medium mb-0.5 ${isOut ? 'text-emerald-100' : 'text-slate-500'}`}>
@@ -1167,12 +1256,12 @@ function MessageBubble({ msg }) {
         )}
         <div className="whitespace-pre-wrap break-words">{msg.body}</div>
         <div className={`text-[10px] mt-1 flex items-center gap-1 ${isOut ? 'text-emerald-100' : 'text-slate-400'}`}>
-          {isOut && msg.sentByName && <span>{msg.sentByName} · </span>}
           {formatTime(msg.createdAt)}
           {isOut && <span>·</span>}
           {isOut && <DeliveryBadge msg={msg} />}
         </div>
       </div>
+      {!isOut && <ReplyButton onClick={onReply} />}
     </div>
   );
 }

@@ -28,6 +28,18 @@ const messageSchema = new mongoose.Schema(
       type: { type: String, enum: ['button_reply', 'list_reply', ''], default: '' },
     },
     templateName: { type: String, trim: true, default: '' },
+    // Respuesta a un mensaje específico (cita estilo WhatsApp). Snapshot para
+    // renderizar la burbuja citada sin populate; `message` apunta al original
+    // para poder saltar a él; `externalId` es el wamid que se manda a WhatsApp
+    // como `context` para que el contacto también vea la cita.
+    replyTo: {
+      message: { type: mongoose.Schema.Types.ObjectId, ref: 'Message', default: null },
+      externalId: { type: String, trim: true, default: '' },
+      direction: { type: String, enum: ['in', 'out', ''], default: '' },
+      senderName: { type: String, trim: true, default: '' },
+      body: { type: String, trim: true, default: '' },
+      mediaType: { type: String, trim: true, default: '' },
+    },
     errorCode: { type: String, trim: true, default: '' },
     errorMessage: { type: String, trim: true, default: '' },
     statusTimestamps: {

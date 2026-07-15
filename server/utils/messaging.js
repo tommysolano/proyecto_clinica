@@ -352,7 +352,7 @@ async function renderTemplateText(templateInfo) {
   });
 }
 
-async function sendToProvider({ clinicId, channel, conv, body, templateInfo, account, mediaUrl, mediaType }) {
+async function sendToProvider({ clinicId, channel, conv, body, templateInfo, account, mediaUrl, mediaType, contextMessageId }) {
   if (channel === 'whatsapp') {
     if (!account) {
       return { ok: false, errorCode: 'provider_unavailable', error: 'Sin número de WhatsApp configurado' };
@@ -370,13 +370,13 @@ async function sendToProvider({ clinicId, channel, conv, body, templateInfo, acc
       // recibía solo texto).
       const hm = templateInfo?.headerMedia;
       if (hm?.type === 'image' && hm.url) {
-        return gateway.sendMedia(account, dest, hm.url, text);
+        return gateway.sendMedia(account, dest, hm.url, text, contextMessageId);
       }
       // Mensaje suelto con adjunto (mensajes guardados con imagen/video).
       if (mediaUrl) {
-        return gateway.sendMedia(account, dest, mediaUrl, text, mediaType || 'image');
+        return gateway.sendMedia(account, dest, mediaUrl, text, mediaType || 'image', contextMessageId);
       }
-      return gateway.sendText(account, dest, text);
+      return gateway.sendText(account, dest, text, contextMessageId);
     }
     if (templateInfo?.missingHeaderMedia) {
       return {
@@ -400,9 +400,9 @@ async function sendToProvider({ clinicId, channel, conv, body, templateInfo, acc
     // caption. Un data URL no es enviable por link → cae a texto solo (el
     // adjunto queda igualmente visible en la burbuja del chat interno).
     if (mediaUrl && !/^data:/i.test(String(mediaUrl))) {
-      return gateway.sendMedia(account, conv.phone, mediaUrl, body || '', mediaType || 'image');
+      return gateway.sendMedia(account, conv.phone, mediaUrl, body || '', mediaType || 'image', contextMessageId);
     }
-    return gateway.sendText(account, conv.phone, body || '');
+    return gateway.sendText(account, conv.phone, body || '', contextMessageId);
   }
 
   if (channel === 'messenger' || channel === 'instagram') {
@@ -529,6 +529,10 @@ async function send({
   // Cita de contexto (workflows de recordatorio/confirmación): permite rellenar
   // las variables {{servicio}}/{{fecha}}/{{hora}}/{{doctor}}/{{sede}} con datos reales.
   appointmentId,
+  // Respuesta a un mensaje específico (cita estilo WhatsApp). Snapshot listo
+  // para persistir; su `externalId` se manda a WhatsApp como `context` para que
+  // el contacto también vea la cita.
+  replyTo,
 }) {
   const normalizedChannel = channel || 'whatsapp';
 
@@ -624,6 +628,7 @@ async function send({
     mediaUrl: mediaUrl || tplMedia?.url || null,
     mediaType: mediaType || tplMedia?.type || null,
     templateName: templateInfo?.name || '',
+    ...(replyTo ? { replyTo } : {}),
     deliveryStatus: 'queued',
     sentBy: sentBy || null,
     sentByName: sentByName || '',
@@ -641,6 +646,9 @@ async function send({
     account,
     mediaUrl,
     mediaType,
+    // Solo se cita en WhatsApp si el mensaje original tiene wamid (los enviados/
+    // recibidos por el proveedor lo tienen; los simulados no).
+    contextMessageId: replyTo?.externalId || null,
   });
 
   if (providerResult.ok) {

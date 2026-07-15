@@ -1212,6 +1212,38 @@ exports.listMessages = async (req, res) => {
   }
 };
 
+// Resumen del mensaje citado. `who` (contacto) se pasa aparte porque el mensaje
+// entrante no guarda el nombre del remitente. Devuelve null si no aplica.
+function replySnapshotFrom(quoted, contactName) {
+  if (!quoted) return null;
+  const senderName =
+    quoted.direction === 'out'
+      ? quoted.sentByName || (quoted.isAutoReply ? 'Automático' : 'Equipo')
+      : contactName || 'Contacto';
+  let body = quoted.body || '';
+  if (!body && quoted.mediaType) body = `[${quoted.mediaType}]`;
+  return {
+    message: quoted._id,
+    externalId: quoted.externalId || '',
+    direction: quoted.direction,
+    senderName,
+    body: String(body).slice(0, 300),
+    mediaType: quoted.mediaType || '',
+  };
+}
+
+// Carga el mensaje citado (por id) validando que sea de ESTA conversación.
+async function buildReplySnapshot(replyToId, conv) {
+  if (!replyToId) return null;
+  const quoted = await Message.findOne({
+    _id: replyToId,
+    conversation: conv._id,
+    clinic: conv.clinic,
+  }).select('body direction externalId mediaType sentByName isAutoReply');
+  if (!quoted) return null;
+  return replySnapshotFrom(quoted, conv.contactName);
+}
+
 exports.sendMessage = async (req, res) => {
   try {
     const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
@@ -1231,6 +1263,11 @@ exports.sendMessage = async (req, res) => {
       return res.status(400).json({ message: 'Mensaje vacío' });
     }
 
+    // Responder a un mensaje específico (cita estilo WhatsApp): se resuelve el
+    // mensaje original de ESTA conversación y se arma el snapshot que se persiste
+    // y se muestra en la burbuja; su wamid viaja a WhatsApp como `context`.
+    const replyTo = await buildReplySnapshot(req.body.replyTo, conv);
+
     // Todo envío saliente pasa por la puerta única (ventana 24h, opt-out, registro de estado).
     const result = await messaging.send({
       clinicId: req.clinicId,
@@ -1241,6 +1278,7 @@ exports.sendMessage = async (req, res) => {
       body: outboundBody,
       mediaUrl: req.body.mediaUrl || null,
       mediaType: req.body.mediaType || null,
+      replyTo,
       template: templateName
         ? {
             name: templateName,
@@ -1598,7 +1636,7 @@ async function applyIncomingOptOut({ clinicId, conv, incomingText }) {
 
 // Procesa un evento "normalizado" (externalUserId, body, contactName) creando/
 // actualizando la conversación correspondiente.
-async function ingestExternalMessage({ clinicId, channel, externalUserId, body, contactName, externalId, phone, referral, media, account, interactiveReply }) {
+async function ingestExternalMessage({ clinicId, channel, externalUserId, body, contactName, externalId, phone, referral, media, account, interactiveReply, contextId }) {
   if (!externalUserId && !phone) return;
   // Meta reintenta el webhook si no respondemos a tiempo: si este message id ya
   // se procesó, no lo dupliques (ni re-dispares flujos/workflows).
@@ -1706,6 +1744,16 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
     if (!finalBody) finalBody = media.caption || `[${media.type}]`;
   }
 
+  // Cita entrante: el contacto respondió a un mensaje específico. Meta manda el
+  // wamid citado en `context.id`; lo resolvemos a nuestro mensaje para mostrar la
+  // burbuja citada (el remitente es el equipo si era saliente, o el contacto).
+  let replyTo = null;
+  if (contextId) {
+    const quoted = await Message.findOne({ clinic: clinicId, conversation: conv._id, externalId: contextId })
+      .select('body direction externalId mediaType sentByName isAutoReply');
+    if (quoted) replyTo = replySnapshotFrom(quoted, conv.contactName);
+  }
+
   const msg = await Message.create({
     clinic: clinicId,
     conversation: conv._id,
@@ -1715,6 +1763,7 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
     mediaType,
     externalId,
     ...(interactiveReply ? { interactiveReply } : {}),
+    ...(replyTo ? { replyTo } : {}),
     deliveryStatus: 'delivered',
   });
   conv.lastMessageAt = msg.createdAt;
@@ -1882,6 +1931,8 @@ exports.webhookWhatsappReceive = async (req, res) => {
             media,
             contactName: contact.profile?.name || '',
             externalId: m.id,
+            // Cita: wamid del mensaje al que el contacto respondió (si respondió a uno).
+            contextId: m.context?.id || '',
             // Atribución click-to-WhatsApp (anuncios Meta): solo viene en el 1er mensaje.
             referral: m.referral
               ? {
