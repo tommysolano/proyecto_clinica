@@ -247,9 +247,39 @@ const appConfigPayload = (req, cfg) => {
 exports.listWhatsappAccounts = async (req, res) => {
   try {
     const accounts = await WhatsappAccount.find().sort({ isDefault: -1, createdAt: 1 });
+    // Reconciliar los números QR con la sesión real: si se desvinculó desde el
+    // teléfono sin que llegara el evento, aquí se detecta y se corrige antes de
+    // responder (la página nunca muestra "Conectado" con una sesión muerta).
+    await Promise.all(
+      accounts.map((a) => (a.connectionType === 'qr' ? qrManager.reconcileAccount(a).catch(() => {}) : null))
+    );
     res.json(accounts.map(maskWaAccount));
   } catch (err) {
     res.status(500).json({ message: 'Error al listar números', error: err.message });
+  }
+};
+
+/**
+ * GET /whatsapp/accounts/:id/qr — estado vivo + último QR del número.
+ * Es el RESPALDO del socket para el modal de conexión: si el socket se cae o
+ * se pierde un evento, la página sondea este endpoint y no se queda ciega.
+ */
+exports.getWhatsappAccountQr = async (req, res) => {
+  try {
+    const doc = await WhatsappAccount.findById(req.params.id);
+    if (!doc) return res.status(404).json({ message: 'Número no encontrado' });
+    if (doc.connectionType !== 'qr') {
+      return res.status(400).json({ message: 'Solo aplica a números QR' });
+    }
+    const snap = qrManager.getLiveSnapshot(doc._id);
+    if (!snap) {
+      // Sin cliente vivo: el estado de BD manda (reconciliado si estaba viejo).
+      await qrManager.reconcileAccount(doc).catch(() => {});
+      return res.json({ status: doc.status, qr: '', percent: null, connectedPhone: doc.connectedPhone || '' });
+    }
+    res.json({ ...snap, connectedPhone: doc.connectedPhone || '' });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al consultar el estado', error: err.message });
   }
 };
 

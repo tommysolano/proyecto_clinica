@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
-import { useSocketEvent } from '../context/SocketContext';
+import { useSocket, useSocketEvent } from '../context/SocketContext';
 import Modal from '../components/Modal';
 import {
   HiOutlineCog6Tooth,
@@ -16,6 +16,8 @@ import {
   HiOutlineQrCode,
   HiOutlineCloud,
   HiOutlineExclamationTriangle,
+  HiOutlineArrowPath,
+  HiOutlineDevicePhoneMobile,
 } from 'react-icons/hi2';
 
 const TABS = [
@@ -66,6 +68,28 @@ const copyToClipboard = (text) => {
     () => toast.error('No se pudo copiar')
   );
 };
+
+// Interruptor visual (reemplaza los checkboxes "Activo", que confundían).
+function Toggle({ checked, onChange, title }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={onChange}
+      title={title}
+      className={`relative inline-flex h-5 w-9 shrink-0 items-center rounded-full border-none cursor-pointer transition-colors ${
+        checked ? 'bg-emerald-500' : 'bg-slate-300'
+      }`}
+    >
+      <span
+        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${
+          checked ? 'translate-x-[19px]' : 'translate-x-[3px]'
+        }`}
+      />
+    </button>
+  );
+}
 
 export default function CallCenterConfig() {
   const [config, setConfig] = useState({
@@ -240,17 +264,16 @@ export default function CallCenterConfig() {
                   : 'Inactivo. Configura las credenciales y actívalo cuando esté listo.'}
               </p>
             </div>
-            <label className="flex items-center gap-2 cursor-pointer text-sm">
-              <input
-                type="checkbox"
+            <div className="flex items-center gap-2 text-sm">
+              <Toggle
                 checked={!!currentChannel.enabled}
-                onChange={(e) => toggleEnabled(e.target.checked)}
-                className="w-5 h-5 accent-emerald-600"
+                onChange={() => toggleEnabled(!currentChannel.enabled)}
+                title={currentChannel.enabled ? 'Canal activo: clic para desactivarlo' : 'Canal inactivo: clic para activarlo'}
               />
-              <span className="font-medium text-slate-700">
+              <span className={`font-medium ${currentChannel.enabled ? 'text-emerald-700' : 'text-slate-400'}`}>
                 {currentChannel.enabled ? 'Activo' : 'Inactivo'}
               </span>
-            </label>
+            </div>
           </div>
 
           {/* URLs del webhook que el usuario debe pegar en Meta/TikTok */}
@@ -380,12 +403,24 @@ export default function CallCenterConfig() {
 // ════════════════ Gestor de números de WhatsApp (global / multi-número) ════════════════
 
 const QR_STATUS_META = {
-  connected: { label: 'Conectado', cls: 'bg-emerald-100 text-emerald-700' },
-  qr_pending: { label: 'Escanea el QR', cls: 'bg-amber-100 text-amber-700' },
-  connecting: { label: 'Conectando…', cls: 'bg-sky-100 text-sky-700' },
-  auth_failure: { label: 'Falló la conexión', cls: 'bg-red-100 text-red-700' },
-  disconnected: { label: 'Desconectado', cls: 'bg-slate-100 text-slate-500' },
+  connected: { label: 'Conectado', cls: 'bg-emerald-100 text-emerald-700', dot: 'bg-emerald-500' },
+  qr_pending: { label: 'Esperando escaneo del QR', cls: 'bg-amber-100 text-amber-700', dot: 'bg-amber-500 animate-pulse' },
+  connecting: { label: 'Iniciando sesión…', cls: 'bg-sky-100 text-sky-700', dot: 'bg-sky-500 animate-pulse' },
+  syncing: { label: 'QR escaneado · sincronizando…', cls: 'bg-sky-100 text-sky-700', dot: 'bg-sky-500 animate-pulse' },
+  auth_failure: { label: 'Falló la conexión', cls: 'bg-red-100 text-red-700', dot: 'bg-red-500' },
+  disconnected: { label: 'Desconectado', cls: 'bg-slate-100 text-slate-500', dot: 'bg-slate-400' },
 };
+
+const fmtDateTime = (d) =>
+  d
+    ? new Date(d).toLocaleString('es-EC', {
+        timeZone: 'America/Guayaquil',
+        day: '2-digit',
+        month: 'short',
+        hour: '2-digit',
+        minute: '2-digit',
+      })
+    : '';
 
 const blankAccount = () => ({
   connectionType: 'cloud_api',
@@ -404,10 +439,12 @@ function WhatsappNumbersManager() {
   const [testingCapi, setTestingCapi] = useState(false);
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
   const [addModal, setAddModal] = useState(null);
   const [editModal, setEditModal] = useState(null);
-  const [qrModal, setQrModal] = useState(null); // { accountId, label, qr, status }
+  const [qrModal, setQrModal] = useState(null); // { accountId, label, qr, status, percent, error }
   const [diagModal, setDiagModal] = useState(null); // { label, loading, ok, checks }
+  const { connected: liveConnected } = useSocket();
 
   const load = async () => {
     setLoading(true);
@@ -436,6 +473,93 @@ function WhatsappNumbersManager() {
     load();
   }, []);
 
+  // Recarga silenciosa de la lista. El backend reconcilia el estado real de las
+  // sesiones QR al listar, así que esto también detecta "desvinculé desde el
+  // celular" aunque no haya llegado ningún evento por socket.
+  const refreshAccounts = async () => {
+    try {
+      const r = await api.get('/call-center-config/whatsapp/accounts');
+      const list = r.data || [];
+      setAccounts(list);
+      setQrModal((m) => {
+        if (!m) return m;
+        const acc = list.find((x) => String(x._id) === String(m.accountId));
+        if (acc && (acc.liveStatus || acc.status) === 'connected') {
+          toast.success(`"${acc.label}" conectado`, { id: `wa-conn-${m.accountId}` });
+          return null;
+        }
+        return m;
+      });
+    } catch {
+      /* silencioso: es un respaldo */
+    }
+  };
+
+  const manualRefresh = async () => {
+    setRefreshing(true);
+    await refreshAccounts();
+    setRefreshing(false);
+  };
+
+  // Respaldo por sondeo: si el socket se cae o se pierde un evento, la página
+  // igual se entera (cada 20 s y al volver a la pestaña).
+  useEffect(() => {
+    const t = setInterval(refreshAccounts, 20000);
+    const onFocus = () => refreshAccounts();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      clearInterval(t);
+      window.removeEventListener('focus', onFocus);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Al (re)conectar el socket pudo perderse algún evento: sincronizar la lista.
+  useEffect(() => {
+    if (liveConnected) refreshAccounts();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [liveConnected]);
+
+  // Mientras el modal de conexión está abierto, sondear el estado + QR por HTTP
+  // (al abrir y cada 4 s). Así el QR aparece y el "Conectado" llega aunque el
+  // socket falle, y "Ver progreso" muestra el QR vigente sin reiniciar nada.
+  useEffect(() => {
+    const id = qrModal?.accountId;
+    if (!id) return undefined;
+    let alive = true;
+    const tick = async () => {
+      try {
+        const r = await api.get(`/call-center-config/whatsapp/accounts/${id}/qr`);
+        if (!alive) return;
+        const { status, qr, percent } = r.data || {};
+        if (status === 'connected') {
+          toast.success('Número conectado', { id: `wa-conn-${id}` });
+          setQrModal((m) => (m && String(m.accountId) === String(id) ? null : m));
+          refreshAccounts();
+          return;
+        }
+        setQrModal((m) => {
+          if (!m || String(m.accountId) !== String(id)) return m;
+          const next = status || m.status;
+          // Mientras el arranque está en vuelo, no degradar a estados viejos.
+          if (m.starting && (next === 'disconnected' || next === 'auth_failure')) {
+            return { ...m, qr: qr || m.qr, percent: percent ?? m.percent };
+          }
+          return { ...m, status: next, qr: qr || m.qr, percent: percent ?? m.percent };
+        });
+      } catch {
+        /* silencioso: es un respaldo */
+      }
+    };
+    tick();
+    const t = setInterval(tick, 4000);
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [qrModal?.accountId]);
+
   // QR en vivo del número que se está conectando.
   useSocketEvent('whatsapp:qr', (p) => {
     setQrModal((m) =>
@@ -448,18 +572,37 @@ function WhatsappNumbersManager() {
     setAccounts((list) =>
       list.map((x) =>
         String(x._id) === String(p.accountId)
-          ? { ...x, status: p.status, liveStatus: p.status, connectedPhone: p.connectedPhone || x.connectedPhone }
+          ? {
+              ...x,
+              status: p.status,
+              liveStatus: p.status,
+              connectedPhone: p.connectedPhone || x.connectedPhone,
+              lastConnectedAt: p.status === 'connected' ? new Date().toISOString() : x.lastConnectedAt,
+            }
           : x
       )
     );
+    if (p.status === 'connected') {
+      toast.success(`Número conectado${p.connectedPhone ? ` (+${p.connectedPhone})` : ''}`, {
+        id: `wa-conn-${p.accountId}`,
+      });
+      setQrModal((m) => (m && String(m.accountId) === String(p.accountId) ? null : m));
+      return;
+    }
+    // Sesión cerrada con motivo (p.ej. desvinculada desde el teléfono): avisar.
+    if (p.status === 'disconnected' && p.error) {
+      toast.error(p.error, { id: `wa-disc-${p.accountId}` });
+    }
     setQrModal((m) => {
       if (!m || String(m.accountId) !== String(p.accountId)) return m;
-      if (p.status === 'connected') {
-        toast.success('Número conectado');
-        return null;
-      }
       // Si falló, se limpia el QR viejo y se muestra el motivo.
-      return { ...m, status: p.status, error: p.error || '', qr: p.status === 'auth_failure' ? '' : m.qr };
+      return {
+        ...m,
+        status: p.status,
+        percent: p.percent ?? m.percent,
+        error: p.error || '',
+        qr: p.status === 'auth_failure' ? '' : m.qr,
+      };
     });
   });
 
@@ -514,9 +657,12 @@ function WhatsappNumbersManager() {
   };
 
   const openConnect = async (acc) => {
-    setQrModal({ accountId: acc._id, label: acc.label, qr: '', status: 'connecting' });
+    // starting=true: mientras el POST /connect está en vuelo, el sondeo no debe
+    // pisar el modal con el estado viejo de la BD (aún no existe el cliente).
+    setQrModal({ accountId: acc._id, label: acc.label, qr: '', status: 'connecting', starting: true });
     try {
       await api.post(`/call-center-config/whatsapp/accounts/${acc._id}/connect`);
+      setQrModal((m) => (m && String(m.accountId) === String(acc._id) ? { ...m, starting: false } : m));
     } catch (err) {
       toast.error(err.response?.data?.message || 'No se pudo iniciar la conexión');
       setQrModal(null);
@@ -771,12 +917,36 @@ function WhatsappNumbersManager() {
               Conecta hasta 5 números por Cloud API (Meta, oficial) o por QR (estilo WhatsApp Web).
             </p>
           </div>
-          <button
-            onClick={() => setAddModal(blankAccount())}
-            className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm flex items-center gap-1 cursor-pointer border-none"
-          >
-            <HiOutlinePlus /> Agregar número
-          </button>
+          <div className="flex items-center gap-2 flex-wrap">
+            <span
+              className={`text-[11px] inline-flex items-center gap-1.5 px-2 py-1 rounded-full ${
+                liveConnected ? 'bg-emerald-50 text-emerald-700' : 'bg-amber-50 text-amber-700'
+              }`}
+              title={
+                liveConnected
+                  ? 'Los cambios de estado de los números se reflejan al instante.'
+                  : 'Sin conexión en tiempo real: la lista se actualiza sola cada 20 segundos, o al pulsar Actualizar.'
+              }
+            >
+              <span className={`w-1.5 h-1.5 rounded-full ${liveConnected ? 'bg-emerald-500' : 'bg-amber-500 animate-pulse'}`} />
+              {liveConnected ? 'Actualización en vivo' : 'Sin tiempo real · refresco cada 20 s'}
+            </span>
+            <button
+              onClick={manualRefresh}
+              disabled={refreshing}
+              title="Verificar ahora el estado real de los números"
+              className="px-3 py-2 border border-slate-200 rounded-lg text-sm text-slate-600 bg-white flex items-center gap-1.5 cursor-pointer disabled:opacity-50"
+            >
+              <HiOutlineArrowPath className={`w-4 h-4 ${refreshing ? 'animate-spin' : ''}`} />
+              Actualizar
+            </button>
+            <button
+              onClick={() => setAddModal(blankAccount())}
+              className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm flex items-center gap-1 cursor-pointer border-none"
+            >
+              <HiOutlinePlus /> Agregar número
+            </button>
+          </div>
         </div>
 
         {accounts.length === 0 ? (
@@ -794,6 +964,9 @@ function WhatsappNumbersManager() {
                 onEdit={() => setEditModal({ ...acc, accessToken: '' })}
                 onDelete={() => removeAccount(acc)}
                 onConnect={() => openConnect(acc)}
+                onShowProgress={() =>
+                  setQrModal({ accountId: acc._id, label: acc.label, qr: '', status: acc.liveStatus || acc.status })
+                }
                 onDisconnect={() => disconnect(acc)}
                 onTest={() => testAccount(acc)}
                 onRefreshQuality={() => refreshQuality(acc)}
@@ -810,6 +983,10 @@ function WhatsappNumbersManager() {
           <p className="font-semibold mb-1">Sobre la conexión por QR</p>
           <ul className="list-disc list-inside space-y-1">
             <li>Es una sesión tipo WhatsApp Web (no oficial): no usa plantillas y puede enviar texto libre.</li>
+            <li>
+              Si desvinculas el dispositivo desde el teléfono, el sistema lo detecta solo (puede tardar
+              hasta ~1 minuto) y el número pasará a "Desconectado".
+            </li>
             <li>WhatsApp puede bloquear números que envían mucho contenido automatizado: úsala con criterio.</li>
             <li>
               Requiere el servidor siempre encendido. En hosting gratuito (Render) será inestable; es
@@ -850,29 +1027,80 @@ function WhatsappNumbersManager() {
       {/* Modal: QR */}
       <Modal isOpen={!!qrModal} onClose={() => setQrModal(null)} title={`Conectar "${qrModal?.label || ''}"`} size="sm">
         {qrModal && (
-          <div className="text-center space-y-3">
-            <p className="text-sm text-slate-600">
-              Abre WhatsApp en el teléfono → <b>Dispositivos vinculados</b> → <b>Vincular un dispositivo</b> y
-              escanea este código.
-            </p>
-            <div className="flex items-center justify-center min-h-[240px]">
-              {qrModal.qr ? (
-                <img src={qrModal.qr} alt="Código QR" className="w-56 h-56" />
+          <div className="space-y-3">
+            {/* Instrucciones paso a paso (solo mientras hay algo que escanear) */}
+            {qrModal.status !== 'syncing' && qrModal.status !== 'auth_failure' && (
+              <ol className="text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-xl p-3 space-y-1.5">
+                <li className="flex gap-2">
+                  <b className="text-emerald-600">1.</b>
+                  <span>Abre <b>WhatsApp</b> en el teléfono del número que quieres conectar.</span>
+                </li>
+                <li className="flex gap-2">
+                  <b className="text-emerald-600">2.</b>
+                  <span>Ve a <b>Ajustes → Dispositivos vinculados → Vincular un dispositivo</b>.</span>
+                </li>
+                <li className="flex gap-2">
+                  <b className="text-emerald-600">3.</b>
+                  <span>Apunta la cámara a este código.</span>
+                </li>
+              </ol>
+            )}
+
+            <div className="flex items-center justify-center min-h-[240px] text-center">
+              {qrModal.status === 'syncing' ? (
+                <div className="space-y-3">
+                  <div className="w-12 h-12 mx-auto rounded-full border-4 border-emerald-100 border-t-emerald-600 animate-spin" />
+                  <p className="text-sm font-semibold text-emerald-700">¡Código escaneado!</p>
+                  <p className="text-xs text-slate-500 max-w-[240px] mx-auto">
+                    WhatsApp está sincronizando la sesión
+                    {typeof qrModal.percent === 'number' ? ` (${qrModal.percent}%)` : ''}. Puede tardar
+                    hasta un minuto; te avisaremos aquí cuando quede conectado.
+                  </p>
+                </div>
+              ) : qrModal.status === 'auth_failure' ? (
+                <div className="space-y-2">
+                  <HiOutlineExclamationTriangle className="w-10 h-10 mx-auto text-red-400" />
+                  <p className="text-sm font-semibold text-red-600">No se pudo conectar</p>
+                  <p className="text-xs text-slate-500 max-w-[260px] mx-auto">
+                    {qrModal.error || 'La vinculación falló o expiró. Pulsa "Reintentar" para generar un código nuevo.'}
+                  </p>
+                </div>
+              ) : qrModal.qr ? (
+                <div className="space-y-2">
+                  <img src={qrModal.qr} alt="Código QR" className="w-56 h-56 mx-auto border border-slate-100 rounded-xl" />
+                  <p className="text-[11px] text-slate-400 flex items-center justify-center gap-1">
+                    <HiOutlineDevicePhoneMobile className="w-3.5 h-3.5" />
+                    El código se renueva solo cada ~30 s; no hace falta recargar.
+                  </p>
+                </div>
               ) : (
                 <div className="text-slate-400 text-sm flex flex-col items-center gap-2">
                   <HiOutlineQrCode className="w-10 h-10 animate-pulse" />
-                  Generando código QR…
+                  <span>Preparando la sesión de WhatsApp…</span>
+                  <span className="text-[11px] text-slate-300">Suele tardar 10–30 segundos.</span>
                 </div>
               )}
             </div>
-            <div className="text-xs">
-              <span className={`px-2 py-0.5 rounded-full ${(QR_STATUS_META[qrModal.status] || QR_STATUS_META.connecting).cls}`}>
+
+            <div className="text-xs text-center">
+              <span
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full ${
+                  (QR_STATUS_META[qrModal.status] || QR_STATUS_META.connecting).cls
+                }`}
+              >
+                <span
+                  className={`w-1.5 h-1.5 rounded-full ${(QR_STATUS_META[qrModal.status] || QR_STATUS_META.connecting).dot}`}
+                />
                 {(QR_STATUS_META[qrModal.status] || QR_STATUS_META.connecting).label}
               </span>
             </div>
-            {qrModal.error && (
-              <p className="text-xs text-red-600">{qrModal.error}</p>
+            {qrModal.error && qrModal.status !== 'auth_failure' && (
+              <p className="text-xs text-red-600 text-center">{qrModal.error}</p>
             )}
+            <p className="text-[11px] text-slate-400 text-center">
+              Puedes cerrar esta ventana: la conexión sigue en el servidor y el estado se verá en la
+              lista de números.
+            </p>
             <div className="flex items-center justify-center gap-2">
               {qrModal.status === 'auth_failure' && (
                 <button
@@ -971,16 +1199,26 @@ const QUALITY_META = {
   RED: { label: 'Calidad: Roja', cls: 'bg-red-100 text-red-700' },
 };
 
-function AccountCard({ acc, onSetDefault, onToggleEnabled, onEdit, onDelete, onConnect, onDisconnect, onTest, onRefreshQuality }) {
+function AccountCard({ acc, onSetDefault, onToggleEnabled, onEdit, onDelete, onConnect, onShowProgress, onDisconnect, onTest, onRefreshQuality }) {
   const isQr = acc.connectionType === 'qr';
   const status = acc.liveStatus || acc.status;
-  const phone = acc.connectedPhone || acc.displayPhone || acc.phoneNumberId || '—';
-  const badge = isQr
-    ? QR_STATUS_META[status] || QR_STATUS_META.disconnected
-    : acc.enabled
-    ? { label: 'Activo', cls: 'bg-emerald-100 text-emerald-700' }
-    : { label: 'Inactivo', cls: 'bg-slate-100 text-slate-500' };
+  const inProgress = isQr && ['connecting', 'qr_pending', 'syncing'].includes(status);
+  const phone = acc.connectedPhone ? `+${acc.connectedPhone}` : acc.displayPhone || acc.phoneNumberId || '—';
+  // Insignia de estado de CONEXIÓN (solo QR; en Cloud API el interruptor
+  // "Activo" ya lo dice y la insignia duplicada confundía).
+  const badge = isQr ? QR_STATUS_META[status] || QR_STATUS_META.disconnected : null;
   const quality = !isQr ? QUALITY_META[acc.qualityRating] : null;
+  // Detalle humano de la conexión QR: desde cuándo está vinculado, o cuándo se
+  // vio por última vez (ayuda a notar que se desconectó desde el teléfono).
+  const qrDetail = !isQr
+    ? ''
+    : status === 'connected' && acc.lastConnectedAt
+    ? `Vinculado desde ${fmtDateTime(acc.lastConnectedAt)}`
+    : status === 'disconnected' && acc.lastConnectedAt
+    ? `Última conexión: ${fmtDateTime(acc.lastConnectedAt)} · pulsa "Conectar" y escanea el QR`
+    : status === 'disconnected'
+    ? 'Nunca se ha vinculado · pulsa "Conectar" y escanea el QR'
+    : '';
 
   return (
     <div className="border border-slate-200 rounded-xl p-3 bg-white flex items-center gap-3 flex-wrap">
@@ -995,15 +1233,22 @@ function AccountCard({ acc, onSetDefault, onToggleEnabled, onEdit, onDelete, onC
         className={`inline-flex items-center gap-1 text-[11px] px-2 py-0.5 rounded-full ${
           isQr ? 'bg-violet-100 text-violet-700' : 'bg-sky-100 text-sky-700'
         }`}
+        title={isQr ? 'Sesión tipo WhatsApp Web (no oficial)' : 'API oficial de Meta'}
       >
         {isQr ? <HiOutlineQrCode className="w-3.5 h-3.5" /> : <HiOutlineCloud className="w-3.5 h-3.5" />}
         {isQr ? 'QR' : 'Cloud API'}
       </span>
-      <div className="flex-1 min-w-[140px]">
+      <div className="flex-1 min-w-[160px]">
         <div className="font-semibold text-slate-800 text-sm">{acc.label}</div>
         <div className="text-xs text-slate-400">{phone}</div>
+        {qrDetail && <div className="text-[11px] text-slate-400 mt-0.5">{qrDetail}</div>}
       </div>
-      <span className={`text-[11px] px-2 py-0.5 rounded-full ${badge.cls}`}>{badge.label}</span>
+      {badge && (
+        <span className={`inline-flex items-center gap-1.5 text-[11px] px-2 py-0.5 rounded-full ${badge.cls}`}>
+          <span className={`w-1.5 h-1.5 rounded-full ${badge.dot}`} />
+          {badge.label}
+        </span>
+      )}
       {quality && (
         <button
           onClick={onRefreshQuality}
@@ -1023,16 +1268,35 @@ function AccountCard({ acc, onSetDefault, onToggleEnabled, onEdit, onDelete, onC
         </button>
       )}
 
-      <label className="flex items-center gap-1 text-xs text-slate-500 cursor-pointer">
-        <input type="checkbox" checked={!!acc.enabled} onChange={onToggleEnabled} className="w-4 h-4 accent-emerald-600" />
-        Activo
-      </label>
+      <div className="flex items-center gap-1.5 text-xs">
+        <Toggle
+          checked={!!acc.enabled}
+          onChange={onToggleEnabled}
+          title={
+            acc.enabled
+              ? 'Este número recibe y envía mensajes. Clic para desactivarlo.'
+              : 'Número desactivado: no se usa para enviar ni recibir. Clic para activarlo.'
+          }
+        />
+        <span className={acc.enabled ? 'text-emerald-700 font-medium' : 'text-slate-400'}>
+          {acc.enabled ? 'Activo' : 'Inactivo'}
+        </span>
+      </div>
 
       <div className="flex items-center gap-1">
         {isQr ? (
           status === 'connected' ? (
             <button onClick={onDisconnect} className="px-2.5 py-1.5 text-xs border border-slate-200 rounded-lg bg-white cursor-pointer">
               Desconectar
+            </button>
+          ) : inProgress ? (
+            // Hay una conexión en curso: abrir el modal SIN reiniciar la sesión
+            // (reconectar aquí destruiría el cliente que ya está sincronizando).
+            <button
+              onClick={onShowProgress}
+              className="px-2.5 py-1.5 text-xs bg-sky-600 text-white rounded-lg cursor-pointer border-none"
+            >
+              Ver progreso
             </button>
           ) : (
             <button onClick={onConnect} className="px-2.5 py-1.5 text-xs bg-emerald-600 text-white rounded-lg cursor-pointer border-none">

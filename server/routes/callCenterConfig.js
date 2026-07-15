@@ -21,6 +21,7 @@ router.post('/whatsapp/accounts', ctrl.createWhatsappAccount);
 router.put('/whatsapp/accounts/:id', ctrl.updateWhatsappAccount);
 router.delete('/whatsapp/accounts/:id', ctrl.deleteWhatsappAccount);
 router.post('/whatsapp/accounts/:id/default', ctrl.setDefaultWhatsappAccount);
+router.get('/whatsapp/accounts/:id/qr', ctrl.getWhatsappAccountQr);
 router.post('/whatsapp/accounts/:id/connect', ctrl.connectWhatsappAccount);
 router.post('/whatsapp/accounts/:id/disconnect', ctrl.disconnectWhatsappAccount);
 router.post('/whatsapp/accounts/:id/test', ctrl.testWhatsappAccount);

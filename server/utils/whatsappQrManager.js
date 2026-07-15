@@ -12,11 +12,19 @@
  *
  * Eventos → estado del número + socket.io:
  *   qr            → estado 'qr_pending'  + emite 'whatsapp:qr' (dataURL del QR)
+ *   authenticated → estado 'syncing'     (QR escaneado, sincronizando sesión)
+ *   loading_screen→ emite 'syncing' con % de progreso
  *   ready         → estado 'connected'   + guarda connectedPhone
  *   auth_failure  → estado 'auth_failure'
  *   disconnected  → estado 'disconnected'
+ *   change_state  → UNPAIRED (desvinculado desde el teléfono) → 'disconnected'
  *   message       → ingesta entrante (mismo pipeline que el webhook Cloud API)
  *   message_ack   → actualiza el estado de entrega del mensaje saliente
+ *
+ * Los eventos NO bastan: al desvincular desde el teléfono, whatsapp-web.js a
+ * veces no emite 'disconnected' y la sesión queda "conectada" para siempre.
+ * Por eso hay un chequeo de salud periódico (getState) y una reconciliación
+ * al listar los números, que detectan la sesión muerta y corrigen el estado.
  *
  * IMPORTANTE (hosting): whatsapp-web.js levanta un Chromium headless por número
  * (~300–500 MB) y requiere un proceso SIEMPRE activo. En Render gratis (RAM baja,
@@ -32,8 +40,61 @@ const { emitToCallCenter, emitToUser } = require('../realtime');
 // Anclada a server/ (no al cwd) para que no dependa de cómo arranque pm2.
 const WA_DATA_PATH = path.join(__dirname, '..', '.wwebjs_auth');
 
-// accountId(string) → { client, status, watchdog, gotQr }
+// accountId(string) → { client, status, watchdog, gotQr, lastQr, percent }
+// lastQr guarda el último QR (dataURL) para que la UI pueda recuperarlo por
+// sondeo HTTP si el socket se cayó y el evento 'whatsapp:qr' se perdió.
 const clients = new Map();
+
+// Cierra y limpia un cliente, persiste el estado final y lo emite a la UI.
+async function teardown(key, entry, { status = 'disconnected', error = '' } = {}) {
+  if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
+  // Si ya hay OTRO cliente para este número (el usuario reconectó), solo se
+  // destruye este: persistir/emitir aquí pisaría el estado de la conexión nueva.
+  const replaced = clients.has(key) && clients.get(key) !== entry;
+  if (!replaced) clients.delete(key);
+  try { await entry.client.destroy(); } catch { /* noop */ }
+  if (replaced) return;
+  await setAccountStatus(key, { status });
+  await emitStatus(key, { status, ...(error ? { error } : {}) });
+}
+
+/**
+ * Verifica que una sesión 'connected' siga viva de verdad (getState).
+ * - 'CONNECTED' → sigue viva.
+ * - timeout → sin veredicto: NO se mata (Chrome puede estar ocupado).
+ * - cualquier otro estado o error → sesión muerta (p.ej. desvinculada desde el
+ *   teléfono sin que llegara el evento): se cierra y se marca 'disconnected'.
+ */
+async function verifyConnected(key, entry, timeoutMs = 8000) {
+  let state = null;
+  try {
+    state = await withTimeout(entry.client.getState(), timeoutMs, '__timeout__');
+  } catch (e) {
+    if (String(e.message) === '__timeout__') return 'connected';
+    state = null;
+  }
+  if (state === 'CONNECTED') return 'connected';
+  if (clients.get(key) !== entry) return clients.get(key)?.status || 'disconnected';
+  await teardown(key, entry, {
+    error: 'La sesión se cerró (desvinculada desde el teléfono o expirada).',
+  });
+  return 'disconnected';
+}
+
+// Chequeo de salud periódico de todas las sesiones conectadas: es la red de
+// seguridad para el caso "desvinculé desde el celular y no llegó ningún evento".
+let healthTimer = null;
+function ensureHealthTimer() {
+  if (healthTimer) return;
+  healthTimer = setInterval(async () => {
+    for (const [key, entry] of Array.from(clients.entries())) {
+      if (entry.status !== 'connected') continue;
+      // eslint-disable-next-line no-await-in-loop
+      await verifyConnected(key, entry, 10000).catch(() => {});
+    }
+  }, 45000);
+  healthTimer.unref?.();
+}
 
 // Borra la sesión local de un número. Solo se usa para cuentas que nunca
 // llegaron a vincularse: un perfil a medias/corrupto haría fallar los
@@ -94,18 +155,24 @@ async function connect(accountId, { userId } = {}) {
   const existing = clients.get(key);
   if (existing && existing.client) {
     if (existing.status === 'connected') {
-      // Ya está conectado: solo reemitir el estado.
-      await emitStatus(key, { status: 'connected' }, userId);
-      return { ok: true, status: 'connected' };
+      // Ya figura conectado: verificar que la sesión siga VIVA antes de reusarla
+      // (si se desvinculó desde el teléfono sin evento, aquí se detecta y se
+      // sigue con una conexión desde cero en vez de reemitir un estado falso).
+      const still = await verifyConnected(key, existing, 6000).catch(() => 'connected');
+      if (still === 'connected') {
+        await emitStatus(key, { status: 'connected' }, userId);
+        return { ok: true, status: 'connected' };
+      }
+    } else {
+      // Cliente vivo pero NO conectado (p.ej. quedó en 'connecting' colgado, o en
+      // 'qr_pending' con un QR que ya caducó — típico tras initEnabledOnBoot).
+      // Antes se reusaba y solo se reemitía el estado, sin volver a generar el QR:
+      // el botón "Conectar" quedaba muerto hasta reiniciar el server. Ahora se
+      // destruye y se arranca de cero para garantizar un QR fresco.
+      clients.delete(key);
+      if (existing.watchdog) clearTimeout(existing.watchdog);
+      try { await existing.client.destroy(); } catch { /* noop */ }
     }
-    // Cliente vivo pero NO conectado (p.ej. quedó en 'connecting' colgado, o en
-    // 'qr_pending' con un QR que ya caducó — típico tras initEnabledOnBoot).
-    // Antes se reusaba y solo se reemitía el estado, sin volver a generar el QR:
-    // el botón "Conectar" quedaba muerto hasta reiniciar el server. Ahora se
-    // destruye y se arranca de cero para garantizar un QR fresco.
-    clients.delete(key);
-    if (existing.watchdog) clearTimeout(existing.watchdog);
-    try { await existing.client.destroy(); } catch { /* noop */ }
   }
 
   const account = await WhatsappAccount.findById(accountId);
@@ -154,8 +221,9 @@ async function connect(accountId, { userId } = {}) {
     return { ok: false, error: `No se pudo crear el cliente: ${e.message}` };
   }
 
-  const entry = { client, status: 'connecting', watchdog: null, gotQr: false };
+  const entry = { client, status: 'connecting', watchdog: null, gotQr: false, lastQr: '', percent: null };
   clients.set(key, entry);
+  ensureHealthTimer();
   await setAccountStatus(accountId, { status: 'connecting' });
   await emitStatus(key, { status: 'connecting' }, userId);
 
@@ -188,6 +256,7 @@ async function connect(accountId, { userId } = {}) {
     } catch {
       /* noop */
     }
+    entry.lastQr = dataUrl; // respaldo para el sondeo HTTP si el socket está caído
     const payload = { status: 'qr_pending', qr: dataUrl };
     emitToCallCenter('whatsapp:qr', { accountId: key, ...payload });
     if (userId) emitToUser(userId, 'whatsapp:qr', { accountId: key, ...payload });
@@ -195,6 +264,8 @@ async function connect(accountId, { userId } = {}) {
 
   client.on('ready', async () => {
     entry.status = 'connected';
+    entry.lastQr = '';
+    entry.percent = null;
     if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
     const connectedPhone = (client.info?.wid?.user || '').toString();
     await setAccountStatus(accountId, {
@@ -205,8 +276,20 @@ async function connect(accountId, { userId } = {}) {
     await emitStatus(key, { status: 'connected', connectedPhone }, userId);
   });
 
-  client.on('authenticated', () => {
-    entry.status = 'connecting'; // escaneado: sincronizando sesión hasta 'ready'
+  // QR escaneado: WhatsApp sincroniza la sesión hasta 'ready'. Antes esta fase
+  // era muda y la UI seguía diciendo "Escanea el QR" — ahora se avisa.
+  client.on('authenticated', async () => {
+    entry.status = 'syncing';
+    entry.lastQr = '';
+    await setAccountStatus(accountId, { status: 'syncing' });
+    await emitStatus(key, { status: 'syncing' }, userId);
+  });
+
+  // Progreso de la sincronización (0-100). No se persiste; solo informa a la UI.
+  client.on('loading_screen', async (percent) => {
+    entry.status = 'syncing';
+    entry.percent = Number(percent) || 0;
+    await emitStatus(key, { status: 'syncing', percent: entry.percent }, userId);
   });
 
   client.on('auth_failure', async () => {
@@ -216,12 +299,20 @@ async function connect(accountId, { userId } = {}) {
     await emitStatus(key, { status: 'auth_failure' }, userId);
   });
 
-  client.on('disconnected', async () => {
-    if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
-    clients.delete(key);
-    await setAccountStatus(accountId, { status: 'disconnected' });
-    await emitStatus(key, { status: 'disconnected' });
-    try { await client.destroy(); } catch { /* noop */ }
+  client.on('disconnected', async (reason) => {
+    await teardown(key, entry, {
+      error: String(reason || '').toUpperCase() === 'LOGOUT'
+        ? 'La sesión se cerró desde el teléfono (dispositivo desvinculado).'
+        : '',
+    });
+  });
+
+  // Desvinculación detectada por cambio de estado (a veces 'disconnected' no llega).
+  client.on('change_state', async (state) => {
+    if (state === 'UNPAIRED' || state === 'UNPAIRED_IDLE') {
+      if (clients.get(key) !== entry) return;
+      await teardown(key, entry, { error: 'El teléfono desvinculó este dispositivo.' });
+    }
   });
 
   // Mensaje entrante → mismo pipeline de ingesta que el webhook Cloud API.
@@ -384,6 +475,40 @@ function getLiveStatus(accountId) {
   return clients.get(String(accountId))?.status || null;
 }
 
+/**
+ * Foto del estado vivo para el sondeo HTTP del modal de conexión: estado, el
+ * último QR generado y el % de sincronización. Devuelve null si no hay cliente.
+ */
+function getLiveSnapshot(accountId) {
+  const entry = clients.get(String(accountId));
+  if (!entry) return null;
+  return { status: entry.status, qr: entry.lastQr || '', percent: entry.percent ?? null };
+}
+
+/**
+ * Reconcilia el estado guardado de una cuenta QR con la realidad, mutando
+ * `doc.status`. Se usa al listar los números para que la página nunca muestre
+ * "conectado" con una sesión muerta:
+ * - Sin cliente en memoria → cualquier estado activo en BD es viejo → 'disconnected'.
+ * - Cliente 'connected' → verificación rápida con getState (2.5s de presupuesto;
+ *   si no responde a tiempo se deja como está y el chequeo periódico decide).
+ */
+async function reconcileAccount(doc) {
+  const key = String(doc._id);
+  const entry = clients.get(key);
+  if (!entry) {
+    if (['connected', 'connecting', 'qr_pending', 'syncing'].includes(doc.status)) {
+      doc.status = 'disconnected';
+      await WhatsappAccount.updateOne({ _id: doc._id }, { status: 'disconnected' }).catch(() => {});
+    }
+    return doc;
+  }
+  doc.status = entry.status === 'connected'
+    ? await verifyConnected(key, entry, 2500).catch(() => entry.status)
+    : entry.status;
+  return doc;
+}
+
 /** Reconecta al arrancar el server los números QR habilitados con sesión guardada. */
 async function initEnabledOnBoot() {
   try {
@@ -401,4 +526,13 @@ async function initEnabledOnBoot() {
   }
 }
 
-module.exports = { connect, disconnect, sendText, downloadMedia, getLiveStatus, initEnabledOnBoot };
+module.exports = {
+  connect,
+  disconnect,
+  sendText,
+  downloadMedia,
+  getLiveStatus,
+  getLiveSnapshot,
+  reconcileAccount,
+  initEnabledOnBoot,
+};

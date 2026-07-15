@@ -37,7 +37,8 @@ const whatsappAccountSchema = new mongoose.Schema(
     // ── QR (whatsapp-web.js) ──
     status: {
       type: String,
-      enum: ['disconnected', 'qr_pending', 'connecting', 'connected', 'auth_failure'],
+      // 'syncing' = QR ya escaneado, WhatsApp está sincronizando la sesión.
+      enum: ['disconnected', 'qr_pending', 'connecting', 'syncing', 'connected', 'auth_failure'],
       default: 'disconnected',
     },
     sessionId: { type: String, trim: true, default: '' }, // clave del store de sesión (RemoteAuth)
