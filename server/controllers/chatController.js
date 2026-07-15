@@ -159,11 +159,28 @@ exports.updateConversation = async (req, res) => {
       return res.status(403).json({ message: 'No puedes modificar esta conversación' });
     }
 
+    const prevTags = new Set((conv.tags || []).map(String));
+    const patientIdBefore = conv.patient?._id || conv.patient || null;
     const allowed = ['contactName', 'patient', 'status', 'tags'];
     allowed.forEach((k) => {
       if (req.body[k] !== undefined) conv[k] = req.body[k];
     });
     await conv.save();
+    // Etiquetar desde el chat también dispara los workflows de 'tag_added'
+    // (antes solo el etiquetado masivo de pacientes emitía el evento).
+    if (Array.isArray(req.body.tags) && patientIdBefore) {
+      const added = (conv.tags || []).filter((t) => !prevTags.has(String(t)));
+      if (added.length) {
+        const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
+        for (const tag of added) {
+          emitDomainEvent(DOMAIN_EVENTS.TAG_ADDED, {
+            clinicId: String(req.clinicId),
+            patientId: String(patientIdBefore),
+            tag,
+          });
+        }
+      }
+    }
     await populateConversation(conv);
     res.json(conv);
   } catch (err) {
@@ -2327,7 +2344,7 @@ exports.createAppointmentFromChat = async (req, res) => {
         clinicId: String(targetClinic),
         patientId: String(conv.patient._id),
         appointmentId: String(appointment._id),
-        appointmentDate: appointment.date,
+        appointmentDate: require('../utils/appointmentDate').appointmentDateTime(appointment.date, appointment.startTime),
         isFirstVisit: !!appointment.isFirstVisit,
         services: serviceItems.map((s) => String(s.product)).filter(Boolean),
       });

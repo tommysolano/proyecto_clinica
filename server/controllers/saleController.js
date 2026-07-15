@@ -600,6 +600,9 @@ exports.createSale = async (req, res) => {
           clinicId: String(req.clinicId),
           patientId: String(txPopulated.patient._id),
           saleId: String(txSaleId),
+          // Sin esto, el filtro "solo si incluye este servicio" del disparador
+          // de venta nunca coincidía.
+          services: (txPopulated.items || []).map((it) => String(it.product)).filter(Boolean),
         });
       }
       return res.status(201).json(txPopulated);

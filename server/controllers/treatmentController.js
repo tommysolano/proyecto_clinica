@@ -1,7 +1,7 @@
 const Treatment = require('../models/Treatment');
 const Product = require('../models/Product');
 const { emitToClinic } = require('../realtime');
-const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
+const { applyAbandonment } = require('../utils/treatmentAbandonment');
 
 const POPULATE = [
   { path: 'patient', select: 'firstName lastName cedula phone email' },
@@ -9,29 +9,6 @@ const POPULATE = [
   { path: 'items.product', select: 'name code salePrice category' },
   { path: 'createdBy', select: 'name email' },
 ];
-
-// Verifica y aplica el abandono automático si superó el umbral de días sin actividad.
-async function applyAbandonment(treatments) {
-  const now = Date.now();
-  for (const t of treatments) {
-    if (t.status !== 'activo') continue;
-    const ref = t.lastActivityAt || t.startDate || t.createdAt;
-    if (!ref) continue;
-    const days = Math.floor((now - new Date(ref).getTime()) / 86400000);
-    const limit = t.inactivityDaysToAbandon || 30;
-    if (days >= limit) {
-      t.status = 'abandonado';
-      t.abandonedAt = new Date();
-      await t.save();
-      emitDomainEvent(DOMAIN_EVENTS.TREATMENT_ABANDONED, {
-        clinicId: String(t.clinic),
-        patientId: t.patient ? String(t.patient._id || t.patient) : null,
-        treatmentId: String(t._id),
-        services: (t.items || []).map((it) => String(it.product?._id || it.product)).filter(Boolean),
-      });
-    }
-  }
-}
 
 exports.list = async (req, res) => {
   try {

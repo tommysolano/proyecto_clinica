@@ -485,6 +485,11 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
         enrollment.currentNodeId = nxt;
         enrollment.nextRunAt = target;
         enrollment.status = 'waiting';
+        // Marca EN QUÉ wait_until quedó pausada: si la cita se reagenda o se
+        // cancela mientras espera, el suscriptor recalcula/anula esta espera.
+        ctx.waitNodeId = currentId;
+        enrollment.context = ctx;
+        enrollment.markModified('context');
         await enrollment.save();
         return;
       }
@@ -564,6 +569,13 @@ async function executeEnrollment(enrollment) {
   // Estamos ejecutando activamente: ya no esperamos respuesta (se reactivará si
   // un próximo paso wait_reply vuelve a pausar).
   enrollment.waitingForReply = false;
+  // La espera en la que estaba pausada (si la hubo) ya venció: limpiar el marcador.
+  if (ctx.waitNodeId != null || ctx.waitStepIndex != null) {
+    delete ctx.waitNodeId;
+    delete ctx.waitStepIndex;
+    enrollment.context = ctx;
+    enrollment.markModified('context');
+  }
 
   // Workflows de grafo (nodes/edges): recorrido por aristas con ramificaciones.
   if ((workflow.nodes || []).length > 0) {
@@ -760,6 +772,9 @@ async function executeEnrollment(enrollment) {
         enrollment.stepIndex = i + 1;
         enrollment.nextRunAt = target;
         enrollment.status = 'waiting';
+        ctx.waitStepIndex = i;
+        enrollment.context = ctx;
+        enrollment.markModified('context');
         await enrollment.save();
         return;
       }
@@ -904,6 +919,16 @@ async function enrollForEvent(eventType, payload = {}) {
         status: { $in: ['active', 'waiting'] },
       };
       if (payload.appointmentId) dedup['context.appointmentId'] = String(payload.appointmentId);
+      // Cumpleaños: una sola vez AL DÍA aunque el job vuelva a correr (el server
+      // se reinicia con cada deploy y re-ejecuta el chequeo al arrancar). La
+      // inscripción del saludo ya terminó ('done'), así que el dedup por
+      // inscripciones vivas no bastaba y el paciente recibía saludos repetidos.
+      if (eventType === 'patient_birthday') {
+        const dayStart = new Date();
+        dayStart.setHours(0, 0, 0, 0); // día calendario Ecuador (TZ del proceso)
+        delete dedup.status;
+        dedup.createdAt = { $gte: dayStart };
+      }
       // eslint-disable-next-line no-await-in-loop
       const existing = await WorkflowEnrollment.findOne(dedup);
       if (existing) {
@@ -1096,8 +1121,88 @@ async function resumeOnReply({ clinicId, patientId, phone, text }) {
   return { resumed: enrollments.length };
 }
 
+/**
+ * Cita REAGENDADA: las inscripciones vivas de esa cita siguen apuntando a la
+ * fecha vieja, así que el recordatorio saldría el día/hora equivocados. Actualiza
+ * el contexto y, si la inscripción está pausada en un "esperar hasta la cita"
+ * (marcador waitNodeId/waitStepIndex), recalcula nextRunAt con la nueva fecha.
+ */
+async function syncEnrollmentsForAppointment(payload = {}) {
+  if (!payload.appointmentId || !payload.appointmentDate) return;
+  const enrollments = await WorkflowEnrollment.find({
+    status: { $in: ['active', 'waiting'] },
+    'context.appointmentId': String(payload.appointmentId),
+  });
+  for (const enrollment of enrollments) {
+    const ctx = enrollment.context || {};
+    ctx.appointmentDate = payload.appointmentDate;
+    enrollment.context = ctx;
+    enrollment.markModified('context');
+    if (enrollment.status === 'waiting' && !enrollment.waitingForReply && (ctx.waitNodeId != null || ctx.waitStepIndex != null)) {
+      // eslint-disable-next-line no-await-in-loop
+      const wf = await Workflow.findById(enrollment.workflow);
+      let stepCfg = null;
+      if (wf && ctx.waitNodeId != null) {
+        const node = getNode(wf, ctx.waitNodeId);
+        if (node && node.type === 'wait_until') stepCfg = node.data || {};
+      } else if (wf && Array.isArray(wf.steps) && wf.steps[ctx.waitStepIndex]?.type === 'wait_until') {
+        stepCfg = wf.steps[ctx.waitStepIndex];
+      }
+      if (stepCfg) {
+        const target = computeWaitUntil(stepCfg, ctx);
+        if (target) {
+          enrollment.nextRunAt = target.getTime() > Date.now() ? target : new Date();
+          pushLog(enrollment, {
+            nodeId: ctx.waitNodeId || null,
+            stepIndex: ctx.waitStepIndex ?? null,
+            type: 'wait_until',
+            info: `Cita reagendada: la espera se movió a ${fmtLogDate(enrollment.nextRunAt)}`,
+          });
+        }
+      }
+    }
+    // eslint-disable-next-line no-await-in-loop
+    await enrollment.save();
+  }
+}
+
+/**
+ * Cita CANCELADA: una inscripción pausada en "esperar hasta la cita" enviaría el
+ * recordatorio de una cita que ya no existe. Se anula y queda constancia en el log.
+ * Solo toca inscripciones con el marcador de wait_until (no las que esperan
+ * respuesta ni las de otros flujos del mismo paciente).
+ */
+async function cancelWaitingEnrollmentsForAppointment(payload = {}) {
+  if (!payload.appointmentId) return;
+  const enrollments = await WorkflowEnrollment.find({
+    status: 'waiting',
+    waitingForReply: false,
+    'context.appointmentId': String(payload.appointmentId),
+    $or: [
+      { 'context.waitNodeId': { $exists: true, $ne: null } },
+      { 'context.waitStepIndex': { $exists: true, $ne: null } },
+    ],
+  });
+  for (const enrollment of enrollments) {
+    enrollment.status = 'cancelled';
+    pushLog(enrollment, {
+      nodeId: enrollment.context?.waitNodeId || null,
+      stepIndex: enrollment.context?.waitStepIndex ?? null,
+      type: 'wait_until',
+      info: 'Cita cancelada: se anuló la espera para no enviar un recordatorio obsoleto.',
+    });
+    // eslint-disable-next-line no-await-in-loop
+    await enrollment.save();
+  }
+}
+
 /** Suscribe el motor al bus de eventos de dominio (llamar una vez al arrancar). */
 function subscribeDomainEvents() {
+  // Mantenimiento de esperas ligadas a la cita: ANTES de inscribir los flujos del
+  // propio evento, para que un reagendamiento/cancelación no dispare recordatorios
+  // con la fecha vieja ni deje esperas huérfanas.
+  onDomainEvent(DOMAIN_EVENTS.APPOINTMENT_RESCHEDULED, (payload) => syncEnrollmentsForAppointment(payload));
+  onDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CANCELLED, (payload) => cancelWaitingEnrollmentsForAppointment(payload));
   const map = {
     [DOMAIN_EVENTS.APPOINTMENT_CREATED]: 'appointment_created',
     [DOMAIN_EVENTS.APPOINTMENT_ATTENDED]: 'appointment_attended',
@@ -1137,5 +1242,7 @@ module.exports = {
   enrollForChatMessage,
   processDueEnrollments,
   resumeOnReply,
+  syncEnrollmentsForAppointment,
+  cancelWaitingEnrollmentsForAppointment,
   subscribeDomainEvents,
 };

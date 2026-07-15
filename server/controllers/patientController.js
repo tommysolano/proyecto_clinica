@@ -208,11 +208,29 @@ exports.updatePatient = async (req, res) => {
     if (req.role === 'doctor' || req.role === 'optica') {
       SENSITIVE_FIELDS_FOR_DOCTOR.forEach((f) => delete update[f]);
     }
+    // Etiquetas previas: para disparar 'tag_added' solo por las realmente nuevas.
+    const prev = Array.isArray(update.tags)
+      ? await Patient.findById(req.params.id).select('tags')
+      : null;
     const patient = await Patient.findByIdAndUpdate(req.params.id, update, {
       new: true,
       runValidators: true,
     });
     if (!patient) return res.status(404).json({ message: 'Paciente no encontrado' });
+    if (prev) {
+      const before = new Set((prev.tags || []).map(String));
+      const added = (patient.tags || []).filter((t) => !before.has(String(t)));
+      if (added.length) {
+        const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
+        for (const tag of added) {
+          emitDomainEvent(DOMAIN_EVENTS.TAG_ADDED, {
+            clinicId: String(req.clinicId),
+            patientId: String(patient._id),
+            tag,
+          });
+        }
+      }
+    }
     emitToClinic(req.clinicId, 'patient:updated', { id: patient._id });
     res.json(sanitizeForRole(patient, req.role));
   } catch (error) {

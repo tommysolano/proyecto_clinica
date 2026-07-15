@@ -1,23 +1,9 @@
 const ExcelJS = require('exceljs');
 const Treatment = require('../models/Treatment');
 const messaging = require('../utils/messaging');
-
-// Replicates the abandonment-application used by treatmentController.list
-async function applyAbandonment(treatments) {
-  const now = Date.now();
-  for (const t of treatments) {
-    if (t.status !== 'activo') continue;
-    const ref = t.lastActivityAt || t.startDate || t.createdAt;
-    if (!ref) continue;
-    const days = Math.floor((now - new Date(ref).getTime()) / 86400000);
-    const limit = t.inactivityDaysToAbandon || 30;
-    if (days >= limit) {
-      t.status = 'abandonado';
-      t.abandonedAt = new Date();
-      await t.save();
-    }
-  }
-}
+// Lógica compartida (misma que treatmentController y el job periódico); esta
+// copia local no emitía el evento de dominio y el trigger no disparaba.
+const { applyAbandonment } = require('../utils/treatmentAbandonment');
 
 async function fetchByAlert(clinicId, alert) {
   let treatments = await Treatment.find({ clinic: clinicId }).populate([

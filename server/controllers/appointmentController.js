@@ -3,16 +3,19 @@ const Product = require('../models/Product');
 const Patient = require('../models/Patient');
 const { emitToClinic, emitToUser } = require('../realtime');
 const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
-const { isPastLocalDate, isSameLocalDay, PAST_DATE_MESSAGE } = require('../utils/appointmentDate');
+const { isPastLocalDate, isSameLocalDay, appointmentDateTime, PAST_DATE_MESSAGE } = require('../utils/appointmentDate');
 
 // Construye el payload de evento de dominio para una cita (para workflows).
+// appointmentDate lleva la hora REAL de la cita (date = día calendario +
+// startTime): los pasos "esperar hasta la cita" calculan desde aquí; con solo
+// `date` (12:00) el recordatorio salía a una hora que no era.
 function appointmentEventPayload(appt) {
   const patientId = appt.patient?._id || appt.patient;
   return {
     clinicId: String(appt.clinic),
     patientId: patientId ? String(patientId) : null,
     appointmentId: String(appt._id),
-    appointmentDate: appt.date,
+    appointmentDate: appointmentDateTime(appt.date, appt.startTime),
     isFirstVisit: !!appt.isFirstVisit,
     services: (appt.services || []).map((s) => String(s.product?._id || s.product)).filter(Boolean),
   };
@@ -572,8 +575,18 @@ exports.updateAppointment = async (req, res) => {
     if (dateChanged || startChanged || endChanged) {
       emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_RESCHEDULED, appointmentEventPayload(appointment));
     }
-    if (update.status === 'confirmada' && existing.status !== 'confirmada') {
-      emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CONFIRMED, appointmentEventPayload(appointment));
+    // Cambios MANUALES de estado desde el formulario de edición: antes solo se
+    // emitía "confirmada"; cancelar/no-show/asistió desde aquí no disparaba nada.
+    if (update.status && update.status !== existing.status) {
+      if (update.status === 'confirmada') {
+        emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CONFIRMED, appointmentEventPayload(appointment));
+      } else if (update.status === 'cancelada') {
+        emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CANCELLED, appointmentEventPayload(appointment));
+      } else if (update.status === 'no_asistio') {
+        emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_NO_SHOW, appointmentEventPayload(appointment));
+      } else if (update.status === 'asistida' || update.status === 'completada') {
+        emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_ATTENDED, appointmentEventPayload(appointment));
+      }
     }
     res.json(appointment);
   } catch (error) {
@@ -1048,6 +1061,9 @@ exports.markNoShow = async (req, res) => {
     apt.status = 'no_asistio';
     await apt.save();
     emitToClinic(req.clinicId, 'appointment:updated', apt);
+    // Sin este evento, el botón "No asistió" jamás disparaba los workflows de
+    // no-show (solo el job nocturno de citas vencidas lo hacía).
+    emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_NO_SHOW, appointmentEventPayload(apt));
     res.json(apt);
   } catch (error) {
     res.status(500).json({ message: 'Error al marcar no asistencia' });
@@ -1064,6 +1080,7 @@ exports.markConfirmed = async (req, res) => {
     apt.status = 'confirmada';
     await apt.save();
     emitToClinic(req.clinicId, 'appointment:updated', apt);
+    emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_CONFIRMED, appointmentEventPayload(apt));
     res.json(apt);
   } catch (error) {
     res.status(500).json({ message: 'Error al confirmar cita' });

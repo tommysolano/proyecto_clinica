@@ -148,6 +148,9 @@ connectDB().then(() => {
   setInterval(() => { workflowEngine.processDueEnrollments().catch(() => {}); }, 60 * 1000);
   // Job: cumpleaños del día (dispara workflows patient_birthday).
   require('./utils/birthdayJob').startBirthdayJob();
+  // Job: abandono automático de tratamientos (dispara workflows
+  // treatment_abandoned aunque nadie abra la página de Tratamientos).
+  require('./utils/treatmentAbandonment').startTreatmentAbandonmentJob();
   // Job: reintentar facturas electrónicas pendientes cuando el SRI se cae
   // (reenvía las EN_COLA y consulta autorización de las recibidas). Cada
   // SRI_RETRY_INTERVAL_MIN minutos (por defecto 5).

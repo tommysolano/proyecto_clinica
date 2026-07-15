@@ -212,6 +212,114 @@ test('Cita creada DESDE EL CHAT (createAppointmentFromChat) también dispara el 
   assert.ok(sendLog, 'sin rastro del paso de envío');
 });
 
+/** Día calendario futuro (YYYY-MM-DD) a N días de hoy: las citas no pueden agendarse en el pasado. */
+function futureDate(days) {
+  const d = new Date(Date.now() + days * 86400000);
+  return d.toISOString().slice(0, 10);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('Botón "No asistió" (markNoShow) dispara el workflow de no-show', async () => {
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const userId = new H.mongoose.Types.ObjectId();
+  const patient = await Patient.create({ clinic: clinic._id, firstName: 'Noe', lastName: 'Show', phone: '0995556666' });
+  const prod = await H.makeProduct(clinic._id, { category: 'servicio', unlimited: true });
+  const wf = await graphWorkflow(clinic._id, { triggerType: 'appointment_no_show', body: 'Te extrañamos {{nombre}}' });
+
+  const r = await H.runController(appointmentCtrl.createAppointment, H.mockReq(clinic._id, userId, {
+    patient: patient._id, services: [String(prod._id)], date: futureDate(3), startTime: '10:00',
+  }));
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+
+  // Nadie debe inscribirse todavía (el trigger es no-show, no cita agendada).
+  await new Promise((res) => setTimeout(res, 150));
+  assert.equal(await WorkflowEnrollment.countDocuments({ workflow: wf._id }), 0);
+
+  const rNo = await H.runController(
+    appointmentCtrl.markNoShow,
+    H.mockReq(clinic._id, userId, {}, { params: { id: String(r.payload._id) } })
+  );
+  assert.equal(rNo.statusCode, 200, JSON.stringify(rNo.payload));
+
+  // ANTES: markNoShow no emitía APPOINTMENT_NO_SHOW y el workflow jamás corría
+  // (solo el job nocturno de citas vencidas lo disparaba).
+  const enrollment = await waitFor(() =>
+    WorkflowEnrollment.findOne({ workflow: wf._id, patient: patient._id, status: 'done' })
+  );
+  assert.ok(enrollment, 'marcar "no asistió" a mano debe inscribir el workflow de no-show');
+  const sendLog = (enrollment.log || []).find((l) => l.type === 'send_message');
+  assert.ok(sendLog, 'el paso de envío debe dejar rastro en el log');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('"Esperar hasta la cita" espera a la hora REAL; reagendar mueve la espera y cancelar la anula', async () => {
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const userId = new H.mongoose.Types.ObjectId();
+  const patient = await Patient.create({ clinic: clinic._id, firstName: 'Rea', lastName: 'Genda', phone: '0997778888' });
+  const prod = await H.makeProduct(clinic._id, { category: 'servicio', unlimited: true });
+  const trigger = { type: 'appointment_created', audience: 'all', serviceFilter: null };
+  const wf = await Workflow.create({
+    clinic: clinic._id,
+    name: 'Recordatorio 1h antes',
+    active: true,
+    triggers: [trigger],
+    trigger,
+    steps: [],
+    nodes: [
+      { id: 'trigger', type: 'trigger', position: { x: 0, y: 0 }, data: { triggers: [trigger] } },
+      { id: 'w1', type: 'wait_until', position: { x: 0, y: 130 }, data: { waitEvent: 'appointment_date', waitMode: 'offset', offsetMinutes: -60 } },
+      { id: 'n1', type: 'send_message', position: { x: 0, y: 260 }, data: { body: 'Tu cita es en 1 hora' } },
+    ],
+    edges: [
+      { id: 'e1', source: 'trigger', target: 'w1', sourceHandle: 'default' },
+      { id: 'e2', source: 'w1', target: 'n1', sourceHandle: 'default' },
+    ],
+  });
+
+  const day = futureDate(5);
+  const r = await H.runController(appointmentCtrl.createAppointment, H.mockReq(clinic._id, userId, {
+    patient: patient._id, services: [String(prod._id)], date: day, startTime: '10:00',
+  }));
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+
+  const enrollment = await waitFor(() =>
+    WorkflowEnrollment.findOne({ workflow: wf._id, patient: patient._id, status: 'waiting' })
+  );
+  assert.ok(enrollment, 'la inscripción debió quedar en espera del wait_until');
+  // ANTES: la espera se calculaba desde `date` (12:00) y el recordatorio salía a
+  // las 11:00 sin importar la hora de la cita. AHORA: 10:00 - 1h = 09:00 Ecuador.
+  const expected = new Date(`${day}T09:00:00-05:00`);
+  assert.equal(new Date(enrollment.nextRunAt).getTime(), expected.getTime(),
+    `la espera debe ser 1h antes de la HORA REAL de la cita (esperado ${expected.toISOString()}, fue ${new Date(enrollment.nextRunAt).toISOString()})`);
+  assert.equal(enrollment.context.waitNodeId, 'w1');
+
+  // Reagendar (otro día a las 15:00) debe MOVER la espera a las 14:00 del nuevo día.
+  const day2 = futureDate(6);
+  const r2 = await H.runController(appointmentCtrl.updateAppointment, H.mockReq(clinic._id, userId, {
+    date: day2, startTime: '15:00',
+  }, { params: { id: String(r.payload._id) } }));
+  assert.equal(r2.statusCode, 200, JSON.stringify(r2.payload));
+  const expected2 = new Date(`${day2}T14:00:00-05:00`);
+  const moved = await waitFor(async () => {
+    const e = await WorkflowEnrollment.findById(enrollment._id);
+    return e && new Date(e.nextRunAt).getTime() === expected2.getTime() ? e : null;
+  });
+  assert.ok(moved, 'reagendar la cita debe recalcular la espera con la nueva fecha/hora');
+  assert.equal(String(moved.status), 'waiting');
+
+  // Cancelar la cita ANULA la espera: no debe llegar el recordatorio de una cita muerta.
+  const rDel = await H.runController(
+    appointmentCtrl.deleteAppointment,
+    H.mockReq(clinic._id, userId, {}, { params: { id: String(r.payload._id) } })
+  );
+  assert.equal(rDel.statusCode, 200, JSON.stringify(rDel.payload));
+  const cancelled = await waitFor(async () => {
+    const e = await WorkflowEnrollment.findById(enrollment._id);
+    return e && e.status === 'cancelled' ? e : null;
+  });
+  assert.ok(cancelled, 'cancelar la cita debe anular la inscripción en espera del recordatorio');
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 test('Cupo por servicio: bloquea la 2ª cita en el mismo horario aunque el servicio sea de OTRA sucursal', async () => {
   const owner = await Clinic.create({ name: 'Matriz' }); // dueña del producto

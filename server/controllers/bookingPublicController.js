@@ -246,7 +246,7 @@ exports.book = async (req, res) => {
       clinicId: String(cfg.clinic),
       patientId: String(patient._id),
       appointmentId: String(appointment._id),
-      appointmentDate: localDate,
+      appointmentDate: require('../utils/appointmentDate').appointmentDateTime(localDate, startTime),
       isFirstVisit: appointment.isFirstVisit,
       services: [String(svc.product)],
     });
