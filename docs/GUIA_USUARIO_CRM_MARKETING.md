@@ -176,6 +176,17 @@ importantes**. Cada pestaña muestra un ✓ verde si el canal está **activo** o
 - **WhatsApp:** *Phone Number ID*, *WhatsApp Business Account ID (WABA ID)*, *Access Token (long-lived)*
   🔒, *Verify Token* 🔒 (lo defines tú y debe coincidir en Meta), *App Secret* 🔒, *Teléfono visible*
   (formato E.164, ej. `+593987654321`).
+
+> **Para usar las llamadas de voz** (botón 📞 en el chat) hay que hacer **dos cosas en el panel de Meta**,
+> una sola vez por número:
+> 1. En el webhook de WhatsApp, **suscribir el campo `calls`** (además de `messages`). Sin esta
+>    suscripción no llegan ni las llamadas entrantes ni la respuesta a las salientes.
+> 2. **Habilitar las llamadas** en el número. Meta las ofrece por país y tipo de cuenta, y **no están
+>    disponibles en todas partes ni en los números de prueba**: si tu número no las soporta, el botón
+>    📞 del chat aparecerá deshabilitado indicándolo.
+>
+> Recuerda que esto **solo aplica a números Cloud API**: los conectados por QR nunca podrán llamar.
+
 - **Messenger:** *Page ID*, *Page Access Token* 🔒, *Verify Token* 🔒, *App Secret* 🔒.
 - **Instagram:** *Instagram Business Account ID*, *Page ID* de la página de FB vinculada, *Page Access
   Token* 🔒, *Verify Token* 🔒, *App Secret* 🔒.
@@ -272,6 +283,9 @@ Instagram, etc.), y desde ahí **crear pacientes, oportunidades, citas y cotizac
 #### Columna central — La conversación
 **Cabecera del chat:** avatar, nombre del contacto, una etiqueta roja **"Esperando respuesta"** si el
 último mensaje es del paciente, e indicadores de *Paciente vinculado* y *Agente*. Botones:
+- **📞 Llamar** — llama al contacto **por WhatsApp** (ver *Llamadas de voz* más abajo). Si el botón está
+  gris, pasa el cursor por encima: te dirá el motivo (número conectado por QR, o llamadas no habilitadas
+  en Meta).
 - **Tomar** — te asignas la conversación (aparece si no es tuya).
 - **Auto-asignar** — *(solo admin/marketing)* la reparte al **agente con menos chats abiertos**
   (round-robin).
@@ -293,6 +307,11 @@ Los mensajes **salientes** muestran quién lo envió, la hora y su **estado de e
 
 **Caja de escritura (de izquierda a derecha):**
 - **🖼 Galería** — abre la galería para **enviar una imagen** (con pie de foto opcional).
+- **🎤 Micrófono** — graba una **nota de voz**, igual que en WhatsApp. Pulsa el micrófono, habla (verás el
+  cronómetro en rojo) y pulsa **✓** para adjuntarla o **🗑** para descartarla. Antes de enviarla puedes
+  **escucharla** en el reproductor que aparece sobre el cuadro. Una nota de voz **se envía sola, sin
+  texto** (WhatsApp no permite ponerle pie): si tenías algo escrito, se queda en el cuadro para que lo
+  mandes aparte. La primera vez el navegador te pedirá **permiso para el micrófono**.
 - **📄 Plantilla** — abre el buscador de **plantillas aprobadas por Meta**. Al elegir una, se muestra un
   recuadro con su **vista previa** y un campo de **Variables** (separadas por coma) para rellenarla.
   Funciona **siempre** (dentro o fuera de la ventana de 24h). El botón **Quitar** la deselecciona.
@@ -300,11 +319,31 @@ Los mensajes **salientes** muestran quién lo envió, la hora y su **estado de e
   escribir **`/`** directamente en el cuadro de texto. Los mensajes se crean y editan en
   **Marketing & CRM → Mensajes Guardados** (con emojis, formato, carpetas y adjuntos de imagen/video).
 - **Cuadro de texto** — escribe y pulsa **Enter** para enviar (**Shift+Enter** = salto de línea). Se
-  deshabilita si el contacto está bloqueado/opt-out, si la ventana de 24h está cerrada o si tienes una
-  plantilla seleccionada.
+  deshabilita si el contacto está bloqueado/opt-out, si la ventana de 24h está cerrada, si tienes una
+  plantilla seleccionada o si has adjuntado una nota de voz.
+  **Pegar imágenes:** copia una imagen (una captura de pantalla, o *clic derecho → copiar imagen*) y
+  pulsa **Ctrl+V** dentro del cuadro, igual que en WhatsApp Web: se adjunta sola y lo que escribas será
+  su **pie de foto**. Las imágenes muy grandes se reducen automáticamente para que puedan enviarse.
 - **IA** — pide al asistente una **sugerencia de respuesta** (la rellena en el cuadro para que la edites
   antes de enviar). Requiere la IA configurada.
 - **Enviar** — manda el mensaje (texto libre o la plantilla seleccionada).
+
+#### Llamadas de voz por WhatsApp
+Desde la cabecera del chat puedes **llamar al contacto** y **recibir sus llamadas**, sin salir del CRM.
+
+- **Llamar:** pulsa **📞 Llamar**. Se abre un panel abajo a la derecha con el estado (*Llamando…* y luego
+  el cronómetro). Puedes **silenciar** el micrófono o **colgar**. El panel **no bloquea la pantalla**: sigue
+  navegando por el CRM (abrir la ficha, agendar) mientras hablas.
+- **Recibir:** cuando un contacto llama, el panel aparece sonando con **Contestar** / **Rechazar** —
+  aunque estés mirando otro chat. Al contestar, si la conversación no tenía agente, **te la asignas**.
+- **Historial:** toda llamada queda registrada (entrante/saliente, agente, duración, y si fue *perdida*,
+  *rechazada* o *fallida*).
+
+> **Requisitos.** Las llamadas solo funcionan en números conectados por **Cloud API**: un número
+> vinculado por **QR** no puede llamar ni recibir llamadas (WhatsApp Web no lo permite), y en esos chats
+> el botón aparece deshabilitado. Además Meta debe tener las **llamadas habilitadas** en el número, y
+> las ofrece por país/cuenta: si no está disponible, el botón lo indica. El navegador pedirá **permiso
+> de micrófono** y la página debe abrirse por **https**.
 
 #### Columna derecha — Panel de contexto
 Secciones, de arriba a abajo:

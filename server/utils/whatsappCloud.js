@@ -92,15 +92,18 @@ async function sendText(creds, to, body, contextMessageId) {
 }
 
 /**
- * Envía media (imagen/video/documento) por URL pública con texto de pie.
+ * Envía media (imagen/video/documento/audio) por URL pública con texto de pie.
  * Meta descarga la URL, por lo que debe ser accesible desde fuera (no data URLs).
+ * El audio debe ser ogg/opus, mpeg, mp4, aac o amr (ver utils/audioTranscode).
  */
 async function sendMedia(creds, to, url, caption, type = 'image', contextMessageId) {
   const phone = normalizePhone(to);
   if (!phone) return { ok: false, error: 'Teléfono inválido' };
-  const kind = ['image', 'video', 'document'].includes(type) ? type : 'image';
+  const kind = ['image', 'video', 'document', 'audio'].includes(type) ? type : 'image';
   const media = { link: String(url || '') };
-  if (caption) media.caption = String(caption).slice(0, 1024);
+  // Las notas de voz no llevan pie: Meta rechaza el payload si el audio trae
+  // caption (igual que en la app, donde a un audio no se le puede añadir texto).
+  if (caption && kind !== 'audio') media.caption = String(caption).slice(0, 1024);
   return postToMeta(creds, {
     messaging_product: 'whatsapp',
     to: phone,

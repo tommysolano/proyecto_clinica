@@ -370,9 +370,9 @@ async function sendToProvider({ clinicId, channel, conv, body, templateInfo, acc
       // recibía solo texto).
       const hm = templateInfo?.headerMedia;
       if (hm?.type === 'image' && hm.url) {
-        return gateway.sendMedia(account, dest, hm.url, text, contextMessageId, quoteBody);
+        return gateway.sendMedia(account, dest, hm.url, text, 'image', contextMessageId, quoteBody);
       }
-      // Mensaje suelto con adjunto (mensajes guardados con imagen/video).
+      // Mensaje suelto con adjunto (imagen pegada, mensaje guardado, nota de voz).
       if (mediaUrl) {
         return gateway.sendMedia(account, dest, mediaUrl, text, mediaType || 'image', contextMessageId, quoteBody);
       }
@@ -614,7 +614,7 @@ async function send({
   let preview = textBody;
   if (!preview) {
     if (templateInfo) preview = await renderTemplateText(templateInfo);
-    else if (mediaUrl) preview = '[media]';
+    else if (mediaUrl) preview = mediaType === 'audio' ? '[nota de voz]' : '[media]';
     else preview = '';
   }
   // La cabecera multimedia de la plantilla se guarda en el mensaje para que la

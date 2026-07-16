@@ -622,28 +622,46 @@ exports.updateSavedReply = async (req, res) => {
 };
 
 /**
- * Sube el adjunto de un mensaje guardado (imagen o video como data URL). Se
- * almacena en ChatGalleryImage (mismo storage autoalojado que las cabeceras de
- * plantilla) y devuelve la URL pública /api/public/media/:id que entienden los
- * gateways de WhatsApp (QR la lee directo de Mongo; Cloud API la descarga).
+ * Sube un adjunto del chat (imagen, video o audio como data URL). Lo usan los
+ * mensajes guardados, el editor de workflows y el compositor del chat (imágenes
+ * pegadas del portapapeles y notas de voz). Se almacena en ChatGalleryImage
+ * (mismo storage autoalojado que las cabeceras de plantilla) y devuelve la URL
+ * pública /api/public/media/:id que entienden los gateways de WhatsApp (QR la
+ * lee directo de Mongo; Cloud API la descarga).
+ *
+ * El audio se normaliza a ogg/opus: es el único formato que WhatsApp reproduce
+ * como nota de voz y que Meta acepta (el navegador graba WebM, que no sirve).
  */
 exports.uploadSavedReplyMedia = async (req, res) => {
   try {
-    const { name, dataUrl } = req.body;
-    const m = String(dataUrl || '').match(/^data:((image|video)\/[a-zA-Z0-9.+-]+);base64,/);
-    if (!m) return res.status(400).json({ message: 'Archivo inválido: solo imágenes o videos' });
-    const kind = m[2]; // image | video
-    const maxLen = kind === 'video' ? 14_000_000 : 2_500_000; // ~10MB video, ~1.8MB imagen
-    if (dataUrl.length > maxLen) {
-      return res.status(400).json({
-        message: kind === 'video' ? 'Video demasiado grande (máx ~10MB)' : 'Imagen demasiado grande (máx ~1.8MB)',
-      });
+    const { name } = req.body;
+    let { dataUrl } = req.body;
+    const parsed = require('../utils/dataUrl').parseDataUrl(dataUrl);
+    if (!parsed || !['image', 'video', 'audio'].includes(parsed.kind)) {
+      return res.status(400).json({ message: 'Archivo inválido: solo imágenes, videos o audios' });
+    }
+    const kind = parsed.kind;
+    const MAX_LEN = { video: 14_000_000, audio: 7_000_000, image: 2_500_000 }; // ~10MB, ~5MB, ~1.8MB
+    const TOO_BIG = {
+      video: 'Video demasiado grande (máx ~10MB)',
+      audio: 'Audio demasiado grande (máx ~5MB)',
+      image: 'Imagen demasiado grande (máx ~1.8MB)',
+    };
+    if (dataUrl.length > MAX_LEN[kind]) {
+      return res.status(400).json({ message: TOO_BIG[kind] });
+    }
+    let mimeType = parsed.mimeType;
+    if (kind === 'audio') {
+      const conv = await require('../utils/audioTranscode').toWhatsappVoice(dataUrl);
+      if (!conv.ok) return res.status(400).json({ message: conv.error });
+      dataUrl = conv.dataUrl;
+      mimeType = conv.mimeType;
     }
     const img = await ChatGalleryImageModel().create({
       clinic: req.clinicId,
       name: name || `adjunto_${Date.now()}`,
       dataUrl,
-      mimeType: m[1],
+      mimeType,
       size: dataUrl.length,
       createdBy: req.user._id,
     });
@@ -1985,6 +2003,10 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
 
 // Expuesto para que whatsappQrManager reutilice el mismo pipeline de ingesta.
 exports.ingestExternalMessage = ingestExternalMessage;
+// Lo reutiliza el controller de llamadas: una llamada entrante debe vincularse
+// al mismo paciente que un mensaje entrante del mismo número.
+exports.findPatientForIncoming = findPatientForIncoming;
+exports.normalizePhone = normalizePhone;
 
 // Verificación GET para canales Meta (whatsapp/messenger/instagram).
 // El proveedor envía hub.mode/hub.verify_token/hub.challenge.
@@ -2073,6 +2095,14 @@ exports.webhookWhatsappReceive = async (req, res) => {
         // Identifica POR CUÁL número (global) llegó el evento, vía phone_number_id.
         // eslint-disable-next-line no-await-in-loop
         const account = await gateway.getCloudAccountByPhoneNumberId(value.metadata?.phone_number_id);
+        // Llamadas de voz (Calling API): señalización WebRTC + fin de llamada.
+        if (change.field === 'calls') {
+          // eslint-disable-next-line no-await-in-loop
+          await require('./callController')
+            .handleCallWebhook(clinicId, value, account)
+            .catch((e) => console.error('[whatsapp webhook calls]', e.message));
+          continue;
+        }
         if (Array.isArray(value.statuses) && value.statuses.length) {
           // eslint-disable-next-line no-await-in-loop
           statusUpdates += await processMetaStatuses(clinicId, value.statuses);

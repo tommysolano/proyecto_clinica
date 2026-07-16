@@ -23,6 +23,8 @@ import {
   HiOutlineTrash,
   HiOutlineExclamationTriangle,
   HiOutlineArrowUturnLeft,
+  HiOutlineMicrophone,
+  HiOutlinePhone,
 } from 'react-icons/hi2';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
@@ -30,6 +32,10 @@ import { useSocketEvent } from '../context/SocketContext';
 import SameSlotPanel from '../components/SameSlotPanel';
 import TagEditor from '../components/TagEditor';
 import { fmtDate, todayEc, nowEcHHMM } from '../utils/date';
+import { imageFromClipboard, imageFileToDataUrl, pastedImageName, readFileAsDataUrl } from '../utils/chatMedia';
+import useVoiceRecorder, { formatDuration } from '../hooks/useVoiceRecorder';
+import useWhatsappCall from '../hooks/useWhatsappCall';
+import CallPanel from '../components/CallPanel';
 
 // Etiquetas de los disparadores (para mostrar los flujos en el menú de
 // automatizaciones del compositor).
@@ -138,8 +144,10 @@ export default function Chats() {
   const [savedReplies, setSavedReplies] = useState([]);
   const [slashOpen, setSlashOpen] = useState(false);
   const [slashQuery, setSlashQuery] = useState('');
-  // Adjunto (imagen/video) preparado desde un mensaje guardado, se envía con el texto.
+  // Adjunto (imagen/video/audio) preparado desde un mensaje guardado, pegado del
+  // portapapeles o grabado como nota de voz; se envía junto con el texto.
   const [attachmentDraft, setAttachmentDraft] = useState(null);
+  const [attachingMedia, setAttachingMedia] = useState(false);
   // Mensaje al que se está respondiendo (cita estilo WhatsApp).
   const [replyDraft, setReplyDraft] = useState(null);
   const composerRef = useRef(null);
@@ -328,7 +336,11 @@ export default function Chats() {
       toast.error('Contacto en opt-out');
       return;
     }
-    const body = draft.trim();
+    // Una nota de voz viaja sola: WhatsApp no admite pie de texto en un audio.
+    // Si había algo escrito se deja en el cuadro para enviarlo aparte, en vez de
+    // perderlo en silencio (el proveedor descartaría el caption).
+    const isVoice = attachmentDraft?.type === 'audio';
+    const body = isVoice ? '' : draft.trim();
     const templateName = templateDraft.name.trim();
     // Si hay una plantilla seleccionada se envía como plantilla (sirve tanto dentro
     // como fuera de la ventana de 24h). Si no, se envía texto libre (solo dentro).
@@ -338,7 +350,7 @@ export default function Chats() {
       return;
     }
     if (!useTemplate && !body && !attachmentDraft) return;
-    if (!useTemplate) setDraft('');
+    if (!useTemplate && !isVoice) setDraft('');
     try {
       const payload = useTemplate
         ? {
@@ -382,9 +394,83 @@ export default function Chats() {
       }
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al enviar');
-      if (!windowClosed) setDraft(body);
+      if (!windowClosed && !isVoice) setDraft(body);
     }
   };
+
+  // Sube un adjunto ya leído como data URL y lo deja preparado en el composer.
+  // Devuelve true si quedó listo. El uploader es el mismo que usan los mensajes
+  // guardados: almacena la media y devuelve una URL pública que ambos gateways
+  // (Cloud API y QR) saben resolver.
+  const attachMedia = async ({ dataUrl, name, type }) => {
+    setAttachingMedia(true);
+    try {
+      const { data } = await api.post('/chats/saved-replies/upload', { name, dataUrl });
+      setAttachmentDraft({ url: data.url, type: data.type || type, name: data.name || name });
+      return true;
+    } catch (err) {
+      toast.error(err.response?.data?.message || err.message || 'No se pudo adjuntar');
+      return false;
+    } finally {
+      setAttachingMedia(false);
+    }
+  };
+
+  // Pegar una imagen del portapapeles (Ctrl+V) igual que en WhatsApp Web: se sube
+  // y queda como adjunto; el texto que se escriba será su pie de foto. Si lo
+  // pegado no es una imagen se deja pasar el pegado normal del textarea.
+  const handleComposerPaste = async (e) => {
+    const file = imageFromClipboard(e);
+    if (!file) return;
+    e.preventDefault();
+    if (attachingMedia) return;
+    try {
+      const dataUrl = await imageFileToDataUrl(file);
+      await attachMedia({ dataUrl, name: pastedImageName(file), type: 'image' });
+    } catch (err) {
+      toast.error(err.message || 'No se pudo pegar la imagen');
+    }
+  };
+
+  // Nota de voz: al soltar el botón se sube y queda preparada; el servidor la
+  // convierte a ogg/opus para que WhatsApp la reproduzca como nota de voz.
+  const recorder = useVoiceRecorder({
+    onRecorded: async (blob) => {
+      try {
+        const dataUrl = await readFileAsDataUrl(blob);
+        await attachMedia({ dataUrl, name: `nota-de-voz-${Date.now()}.ogg`, type: 'audio' });
+      } catch (err) {
+        toast.error(err.message || 'No se pudo preparar la nota de voz');
+      }
+    },
+  });
+
+  const startRecording = async () => {
+    try {
+      await recorder.start();
+    } catch (err) {
+      toast.error(err.message);
+    }
+  };
+
+  // Una nota de voz se envía sola: en WhatsApp un audio no admite pie de texto.
+  const voiceNoteAttached = attachmentDraft?.type === 'audio';
+
+  // Llamadas de voz por WhatsApp. `calling` dice si el número de ESTE chat puede
+  // llamar (solo Cloud API, y con las llamadas habilitadas en Meta); se consulta
+  // al abrir el chat para no ofrecer un botón que fallaría al pulsarlo.
+  const voiceCall = useWhatsappCall();
+  const [calling, setCalling] = useState(null);
+  useEffect(() => {
+    if (!activeId) return setCalling(null);
+    setCalling(null);
+    let cancelled = false;
+    api
+      .get(`/chats/${activeId}/calling-status`)
+      .then(({ data }) => { if (!cancelled) setCalling(data); })
+      .catch(() => { if (!cancelled) setCalling({ enabled: false, reason: 'No se pudo comprobar si este número puede llamar.' }); });
+    return () => { cancelled = true; };
+  }, [activeId]);
 
   // Inserta un mensaje guardado: reemplaza el token "/atajo" (o añade al final),
   // rellena variables con el contacto y prepara el adjunto si lo tiene.
@@ -581,6 +667,8 @@ export default function Chats() {
                   onCreateAppointment={() => setAppointmentModal(true)}
                   onCreateQuotation={() => setQuotationModal(true)}
                   meId={user?._id}
+                  calling={calling}
+                  onCall={() => voiceCall.startCall(activeConv)}
                 />
                 <div ref={messagesEndRef} className="flex-1 overflow-y-auto bg-slate-50 p-4 space-y-2">
                   {messages.map((m) => (
@@ -663,17 +751,35 @@ export default function Chats() {
                       </button>
                     </div>
                   )}
-                  {/* Adjunto preparado (desde un mensaje guardado) */}
+                  {/* Subiendo un adjunto pegado o grabado */}
+                  {attachingMedia && !attachmentDraft && (
+                    <div className="mb-2 flex items-center gap-2 border border-slate-200 bg-slate-50 rounded-lg px-2.5 py-1.5">
+                      <HiOutlineArrowPath className="w-4 h-4 text-slate-400 animate-spin" />
+                      <span className="text-xs text-slate-500">Subiendo adjunto…</span>
+                    </div>
+                  )}
+                  {/* Adjunto preparado (mensaje guardado, imagen pegada o nota de voz) */}
                   {attachmentDraft && (
                     <div className="mb-2 flex items-center gap-2 border border-emerald-200 bg-emerald-50/60 rounded-lg px-2.5 py-1.5">
                       {attachmentDraft.type === 'image' ? (
                         <img src={attachmentDraft.url} alt="adjunto" className="w-8 h-8 rounded object-cover" />
                       ) : (
-                        <span className="text-lg">{attachmentDraft.type === 'video' ? '🎬' : '📎'}</span>
+                        <span className="text-lg">
+                          {attachmentDraft.type === 'video' ? '🎬' : attachmentDraft.type === 'audio' ? '🎤' : '📎'}
+                        </span>
                       )}
-                      <span className="text-xs text-emerald-800 truncate flex-1">
-                        Se enviará con adjunto: {attachmentDraft.name}
-                      </span>
+                      {voiceNoteAttached ? (
+                        <>
+                          <audio controls src={attachmentDraft.url} className="h-8 flex-1 max-w-[260px]" />
+                          <span className="text-[11px] text-emerald-700 hidden sm:inline">
+                            Se enviará como nota de voz
+                          </span>
+                        </>
+                      ) : (
+                        <span className="text-xs text-emerald-800 truncate flex-1">
+                          Se enviará con adjunto: {attachmentDraft.name}
+                        </span>
+                      )}
                       <button
                         type="button"
                         onClick={() => setAttachmentDraft(null)}
@@ -930,6 +1036,15 @@ export default function Chats() {
                     >
                       <HiOutlinePlus className="w-4 h-4" />
                     </button>
+                    {recorder.recording ? (
+                      <div className="flex-1 flex items-center gap-2 border border-rose-200 bg-rose-50 rounded-xl px-3.5 py-2.5">
+                        <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse flex-shrink-0" />
+                        <span className="text-sm font-semibold text-rose-700 tabular-nums">
+                          {formatDuration(recorder.seconds)}
+                        </span>
+                        <span className="text-xs text-rose-500 truncate">Grabando nota de voz…</span>
+                      </div>
+                    ) : (
                     <textarea
                       ref={composerRef}
                       value={draft}
@@ -955,14 +1070,58 @@ export default function Chats() {
                           sendMessage();
                         }
                       }}
-                      placeholder={templateDraft.name ? 'Se enviará la plantilla seleccionada…' : 'Escribe un mensaje... (usa / para mensajes guardados)'}
+                      onPaste={handleComposerPaste}
+                      placeholder={
+                        templateDraft.name
+                          ? 'Se enviará la plantilla seleccionada…'
+                          : voiceNoteAttached
+                            ? 'Una nota de voz se envía sola, sin texto'
+                            : 'Escribe un mensaje... (pega una imagen o usa / para mensajes guardados)'
+                      }
                       rows={2}
-                      disabled={!!activeConv?.blocked || activeWindowClosed || activeOptedOut || !!templateDraft.name}
+                      disabled={
+                        !!activeConv?.blocked || activeWindowClosed || activeOptedOut ||
+                        !!templateDraft.name || voiceNoteAttached
+                      }
                       className="flex-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm resize-none disabled:bg-slate-100"
                     />
+                    )}
+                    {recorder.recording ? (
+                      <>
+                        <button
+                          type="button"
+                          onClick={recorder.cancel}
+                          title="Descartar la grabación"
+                          className="px-3 py-2 bg-white border border-slate-200 text-slate-500 rounded-xl hover:text-rose-600 hover:border-rose-300 cursor-pointer flex items-center"
+                        >
+                          <HiOutlineTrash className="w-4 h-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={recorder.stop}
+                          title="Detener y adjuntar la nota de voz"
+                          className="px-3 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 cursor-pointer flex items-center"
+                        >
+                          <HiOutlineCheckCircle className="w-4 h-4" />
+                        </button>
+                      </>
+                    ) : (
+                      <>
+                    <button
+                      type="button"
+                      onClick={startRecording}
+                      disabled={
+                        !!activeConv?.blocked || activeWindowClosed || activeOptedOut ||
+                        !!templateDraft.name || attachingMedia || !!attachmentDraft
+                      }
+                      title="Grabar una nota de voz"
+                      className="px-3 py-2 bg-white border border-slate-200 text-slate-600 rounded-xl hover:border-emerald-400 hover:text-emerald-600 disabled:opacity-50 cursor-pointer flex items-center"
+                    >
+                      <HiOutlineMicrophone className="w-4 h-4" />
+                    </button>
                     <button
                       onClick={suggestReply}
-                      disabled={suggesting || !!activeConv?.blocked || activeOptedOut || activeWindowClosed}
+                      disabled={suggesting || !!activeConv?.blocked || activeOptedOut || activeWindowClosed || voiceNoteAttached}
                       title="Sugerir respuesta con IA"
                       className="px-3 py-2 bg-white border border-slate-200 text-slate-600 rounded-xl hover:border-emerald-400 disabled:opacity-50 flex items-center gap-1"
                     >
@@ -973,6 +1132,7 @@ export default function Chats() {
                       disabled={
                         !!activeConv?.blocked ||
                         activeOptedOut ||
+                        attachingMedia ||
                         (templateDraft.name.trim()
                           ? false
                           : activeWindowClosed
@@ -983,6 +1143,8 @@ export default function Chats() {
                     >
                       <HiOutlinePaperAirplane className="w-4 h-4" /> Enviar
                     </button>
+                      </>
+                    )}
                   </div>
                 </div>
               </>
@@ -1065,6 +1227,17 @@ export default function Chats() {
           }}
         />
       )}
+      {/* Fuera del chat activo a propósito: una llamada entrante debe sonar
+          aunque el agente esté mirando otra conversación. */}
+      <CallPanel
+        call={voiceCall.call}
+        seconds={voiceCall.seconds}
+        muted={voiceCall.muted}
+        onAccept={voiceCall.acceptCall}
+        onReject={voiceCall.rejectCall}
+        onHangUp={voiceCall.hangUp}
+        onToggleMute={voiceCall.toggleMute}
+      />
     </div>
   );
 }
@@ -1246,7 +1419,7 @@ function ConversationRow({ conv, active, onClick, onToggleFeatured }) {
   );
 }
 
-function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpportunity, onCreateAppointment, onCreateQuotation, meId }) {
+function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpportunity, onCreateAppointment, onCreateQuotation, meId, calling, onCall }) {
   const canTake = !conv.assignedTo || String(conv.assignedTo._id || conv.assignedTo) !== String(meId);
   // "Esperando respuesta" cuando el último mensaje es entrante (del paciente).
   const waitingReply = conv.lastMessageDirection === 'in';
@@ -1275,6 +1448,17 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpport
         </div>
       </div>
       <div className="flex gap-1 flex-wrap justify-end">
+        {/* Llamar por WhatsApp. Solo los números Cloud API pueden llamar: si el
+            chat usa un número QR o Meta no tiene las llamadas habilitadas, el
+            botón queda deshabilitado explicando por qué en vez de fallar al pulsar. */}
+        <button
+          onClick={onCall}
+          disabled={!calling?.enabled || conv.blocked}
+          title={conv.blocked ? 'Contacto bloqueado' : calling?.enabled ? 'Llamar por WhatsApp' : (calling?.reason || 'Comprobando si este número puede llamar…')}
+          className="text-xs px-2 py-1 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed border-none cursor-pointer flex items-center gap-1"
+        >
+          <HiOutlinePhone className="w-3.5 h-3.5" /> Llamar
+        </button>
         {canTake && (
           <button
             onClick={onTake}

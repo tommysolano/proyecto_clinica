@@ -42,6 +42,14 @@ router.post('/saved-replies/:id/used', requireRole(...CALL_CENTER_ROLES), ctrl.m
 router.put('/saved-replies/:id', requireRole(...CALL_CENTER_ROLES), ctrl.updateSavedReply);
 router.delete('/saved-replies/:id', requireRole(...CALL_CENTER_ROLES), ctrl.deleteSavedReply);
 
+// Llamadas de voz por WhatsApp (Calling API de Meta). Las rutas por :callId van
+// antes que las paramétricas de conversación para que /calls no se confunda con
+// un id de chat.
+const callCtrl = require('../controllers/callController');
+router.post('/calls/:callId/accept', requireRole(...CALL_CENTER_ROLES), callCtrl.acceptCall);
+router.post('/calls/:callId/reject', requireRole(...CALL_CENTER_ROLES), callCtrl.rejectCall);
+router.post('/calls/:callId/terminate', requireRole(...CALL_CENTER_ROLES), callCtrl.terminateCall);
+
 // Automatizaciones (workflows) desde el chat: listar activas y disparar a mano.
 router.get('/workflows-list', requireRole(...CALL_CENTER_ROLES), ctrl.listWorkflowsForChat);
 router.post('/:id/run-workflow', requireRole(...CALL_CENTER_ROLES), ctrl.runWorkflowManually);
@@ -92,6 +100,13 @@ router.delete('/:id/opportunity', requireRole(...CALL_CENTER_ROLES), ctrl.remove
 router.post('/:id/opportunities', requireRole(...CALL_CENTER_ROLES), ctrl.addOpportunity);
 router.put('/:id/opportunities/:idx', requireRole(...CALL_CENTER_ROLES), ctrl.updateOpportunityAt);
 router.delete('/:id/opportunities/:idx', requireRole(...CALL_CENTER_ROLES), ctrl.removeOpportunityAt);
+
+// Llamadas de un chat concreto.
+router.get('/:id/calling-status', requireRole(...CALL_CENTER_ROLES), callCtrl.getCallingStatus);
+router.post('/:id/calling-enable', requireRole('admin', 'marketing'), callCtrl.enableCalling);
+router.get('/:id/calls', requireRole(...CALL_CENTER_ROLES), callCtrl.listCalls);
+router.post('/:id/call', requireRole(...CALL_CENTER_ROLES), callCtrl.startCall);
+router.post('/:id/call-permission', requireRole(...CALL_CENTER_ROLES), callCtrl.requestCallPermission);
 
 router.get('/:id/messages', requireRole(...CALL_CENTER_ROLES), ctrl.listMessages);
 router.post('/:id/messages', requireRole(...CALL_CENTER_ROLES), ctrl.sendMessage);

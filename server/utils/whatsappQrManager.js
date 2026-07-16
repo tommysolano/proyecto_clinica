@@ -147,9 +147,13 @@ async function setAccountStatus(accountId, patch) {
 
 const ACK_STATUS = { '-1': 'failed', 1: 'sent', 2: 'delivered', 3: 'read', 4: 'read' };
 
+// Tipo de whatsapp-web.js → enum de Message.mediaType. 'ptt' es la nota de voz;
+// un sticker es un webp, así que se guarda como imagen (el enum no tiene
+// 'sticker' y devolverlo hacía fallar el guardado del mensaje entrante).
 function mapQrMediaType(t) {
   if (t === 'ptt') return 'audio';
-  if (['image', 'audio', 'video', 'document', 'sticker'].includes(t)) return t;
+  if (t === 'sticker') return 'image';
+  if (['image', 'audio', 'video', 'document'].includes(t)) return t;
   return 'document';
 }
 
@@ -745,45 +749,55 @@ async function sendText(account, to, body, quotedMessageId, quoteBody) {
 }
 
 /**
- * Envía una IMAGEN (URL) con texto de pie por la sesión QR. Lo usa la cabecera
- * de imagen de las plantillas (por QR no existen plantillas de Meta: se manda
- * la imagen real con el cuerpo como caption).
+ * Envía media (URL) con texto de pie por la sesión QR. Lo usan la cabecera de
+ * imagen de las plantillas (por QR no existen plantillas de Meta: se manda la
+ * imagen real con el cuerpo como caption), los adjuntos del compositor y las
+ * notas de voz.
+ *
+ * `type` decide la forma del mensaje: con 'audio' se envía como NOTA DE VOZ
+ * (sendAudioAsVoice) en vez de como archivo adjunto, igual que en la app.
  */
-async function sendMedia(account, to, url, caption, quotedMessageId, quoteBody) {
+async function sendMedia(account, to, url, caption, type = 'image', quotedMessageId, quoteBody) {
   const key = String(account._id);
   let entry = clients.get(key);
   if (!entry || entry.status !== 'connected') entry = await waitForConnected(key);
   if (!entry || !entry.client || entry.status !== 'connected') {
     return { ok: false, errorCode: 'qr_not_connected', error: 'El número QR no está conectado' };
   }
+  const isVoice = type === 'audio';
+  const what = isVoice ? 'la nota de voz' : 'la imagen';
   try {
     const r = await resolveChatId(entry, to);
     if (!r.ok) return r;
-    // Bytes de la imagen: la URL autoalojada (/api/public/media/:id) se lee
+    // Bytes del adjunto: la URL autoalojada (/api/public/media/:id) se lee
     // directo de Mongo; una URL externa se descarga.
-    let mime = 'image/jpeg';
+    let mime = isVoice ? 'audio/ogg' : 'image/jpeg';
     let b64 = '';
     const m = String(url || '').match(/\/api\/public\/media\/([a-f0-9]{24})/i);
     if (m) {
       const img = await require('../models/ChatGalleryImage').findById(m[1]).select('dataUrl mimeType').lean();
-      const dm = img?.dataUrl?.match(/^data:([^;]+);base64,(.*)$/);
-      if (!dm) return { ok: false, error: 'No se pudo leer la imagen de cabecera guardada' };
-      mime = dm[1] || img.mimeType || 'image/jpeg';
-      b64 = dm[2];
+      const parsed = require('./dataUrl').parseDataUrl(img?.dataUrl);
+      if (!parsed) return { ok: false, error: `No se pudo leer ${what} guardada` };
+      mime = parsed.mimeType || img.mimeType || mime;
+      b64 = parsed.b64;
     } else {
-      const resp = await withTimeout(fetch(url), 20000, 'Tiempo agotado descargando la imagen de cabecera');
-      if (!resp.ok) return { ok: false, error: `No se pudo descargar la imagen de cabecera (HTTP ${resp.status})` };
-      mime = resp.headers.get('content-type') || 'image/jpeg';
+      const resp = await withTimeout(fetch(url), 20000, `Tiempo agotado descargando ${what}`);
+      if (!resp.ok) return { ok: false, error: `No se pudo descargar ${what} (HTTP ${resp.status})` };
+      mime = resp.headers.get('content-type') || mime;
       b64 = Buffer.from(await resp.arrayBuffer()).toString('base64');
     }
     const { MessageMedia } = require('whatsapp-web.js');
-    const media = new MessageMedia(mime, b64, 'imagen');
+    const media = new MessageMedia(mime, b64, isVoice ? 'nota-de-voz.ogg' : 'imagen');
+    // Una nota de voz no admite pie (en WhatsApp tampoco se le puede añadir texto).
+    const opts = isVoice
+      ? { sendAudioAsVoice: true }
+      : { caption: String(caption || '').slice(0, 1024) };
     // La cita se resuelve igual que en texto: getMessageById + reply() para que
-    // el contacto vea la imagen como respuesta al mensaje citado.
+    // el contacto vea el adjunto como respuesta al mensaje citado.
     const { sent, quote } = await withTimeout(
-      sendResolvingQuote(entry, r.chatId, media, quotedMessageId, { caption: String(caption || '').slice(0, 1024) }, quoteBody),
+      sendResolvingQuote(entry, r.chatId, media, quotedMessageId, opts, quoteBody),
       60000,
-      'Tiempo agotado enviando la imagen (la sesión puede estar inestable)'
+      `Tiempo agotado enviando ${what} (la sesión puede estar inestable)`
     );
     return {
       ok: true,
