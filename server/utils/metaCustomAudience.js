@@ -28,7 +28,62 @@ async function getMarketingConfig() {
   const mkt = cfg?.marketingApi;
   if (!mkt?.enabled || !mkt.accessToken) return null;
   const { decryptSecret } = require('./secretCrypto');
-  return { accessToken: decryptSecret(mkt.accessToken) };
+  return { accessToken: decryptSecret(mkt.accessToken), adAccountId: mkt.adAccountId || '' };
+}
+
+/** IDs de cuenta publicitaria (formato act_XXXX). Usa la configurada o las descubre. */
+async function resolveAdAccountIds(cfg) {
+  if (cfg.adAccountId) {
+    const id = String(cfg.adAccountId).trim();
+    return [id.startsWith('act_') ? id : `act_${id}`];
+  }
+  // Auto-descubre las cuentas a las que el token tiene acceso.
+  const url = `https://graph.facebook.com/${API_VERSION}/me/adaccounts?fields=account_id&limit=100&access_token=${encodeURIComponent(cfg.accessToken)}`;
+  const res = await fetch(url);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+  return (data.data || []).map((a) => `act_${a.account_id}`);
+}
+
+/** Públicos personalizados de una cuenta publicitaria. */
+async function fetchAudiencesForAccount(accessToken, actId) {
+  const url = `https://graph.facebook.com/${API_VERSION}/${actId}/customaudiences?fields=id,name,approximate_count_lower_bound,subtype&limit=500&access_token=${encodeURIComponent(accessToken)}`;
+  const res = await fetch(url);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(data?.error?.message || `HTTP ${res.status}`);
+  return (data.data || []).map((a) => ({
+    id: a.id,
+    name: a.name || a.id,
+    count: typeof a.approximate_count_lower_bound === 'number' ? a.approximate_count_lower_bound : null,
+    subtype: a.subtype || '',
+  }));
+}
+
+/**
+ * Lista los Públicos Personalizados definidos en Meta (para el selector del nodo).
+ * Devuelve { ok, audiences:[{id,name,count,subtype}], reason?, error? }.
+ */
+async function listAudiences() {
+  const cfg = await getMarketingConfig();
+  if (!cfg) return { ok: false, reason: 'marketing_api_not_configured', audiences: [] };
+  try {
+    const accounts = await resolveAdAccountIds(cfg);
+    if (!accounts.length) return { ok: false, reason: 'no_ad_accounts', audiences: [] };
+    const all = [];
+    for (const acc of accounts) {
+      // eslint-disable-next-line no-await-in-loop
+      const list = await fetchAudiencesForAccount(cfg.accessToken, acc);
+      all.push(...list);
+    }
+    const seen = new Set();
+    const audiences = all
+      .filter((a) => (seen.has(a.id) ? false : (seen.add(a.id), true)))
+      .sort((a, b) => a.name.localeCompare(b.name));
+    return { ok: true, audiences };
+  } catch (err) {
+    console.error('[Marketing API] Error al listar públicos:', err.message);
+    return { ok: false, error: err.message, audiences: [] };
+  }
 }
 
 /**
@@ -90,4 +145,4 @@ function removeFromAudience({ audienceId, patient }) {
   return callAudienceUsers({ method: 'DELETE', audienceId, patient });
 }
 
-module.exports = { getMarketingConfig, buildAudienceData, addToAudience, removeFromAudience };
+module.exports = { getMarketingConfig, buildAudienceData, addToAudience, removeFromAudience, listAudiences };

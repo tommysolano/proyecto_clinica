@@ -34,6 +34,9 @@ const callCenterWhatsappConfigSchema = new mongoose.Schema(
     marketingApi: {
       enabled: { type: Boolean, default: false },
       accessToken: { type: String, default: '' }, // cifrado — Usuario del Sistema con ads_management
+      // Cuenta publicitaria (act_XXXX o solo el número). Opcional: si se deja
+      // vacío, se descubren automáticamente las cuentas del token.
+      adAccountId: { type: String, default: '' },
     },
     callCenterClinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', default: null },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },

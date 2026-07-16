@@ -270,3 +270,17 @@ exports.activity = async (req, res) => {
     res.status(500).json({ message: 'Error', error: err.message });
   }
 };
+
+/**
+ * Lista los Públicos Personalizados definidos en Meta/Facebook (Marketing API),
+ * para que el nodo "Añadir/Quitar de público" ofrezca un selector en vez de
+ * pedir el ID a mano. Devuelve { ok, audiences:[{id,name,count}], reason? }.
+ */
+exports.listMetaCustomAudiences = async (req, res) => {
+  try {
+    const { listAudiences } = require('../utils/metaCustomAudience');
+    res.json(await listAudiences());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, audiences: [] });
+  }
+};

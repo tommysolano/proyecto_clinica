@@ -444,7 +444,7 @@ const defaultTrigger = () => ({ type: 'appointment_created', audience: 'all', se
 
 export default function WorkflowGraphEditor({
   nodes = [], edges = [], onChange,
-  templates = [], agents = [], products = [], clinics = [],
+  templates = [], agents = [], products = [], clinics = [], audiences = [], audiencesNotice = '',
 }) {
   const [selectedId, setSelectedId] = useState(null);
   const [selectedTrigger, setSelectedTrigger] = useState(null); // { nodeId, idx }
@@ -729,7 +729,7 @@ export default function WorkflowGraphEditor({
             onClose={() => setSelectedId(null)}
             onDelete={() => deleteNode(selectedNode.id)}
           >
-            <NodeConfig node={selectedNode} onChange={(patch) => updateNodeData(selectedNode.id, patch)} templates={templates} agents={agents} clinics={clinics} />
+            <NodeConfig node={selectedNode} onChange={(patch) => updateNodeData(selectedNode.id, patch)} templates={templates} agents={agents} clinics={clinics} audiences={audiences} audiencesNotice={audiencesNotice} />
           </Drawer>
         )}
 
@@ -1096,7 +1096,7 @@ function NodeAttachment({ d, set }) {
 }
 
 // ─────────── Formulario de configuración por tipo de nodo ───────────
-function NodeConfig({ node, onChange, templates, agents, clinics = [] }) {
+function NodeConfig({ node, onChange, templates, agents, clinics = [], audiences = [], audiencesNotice = '' }) {
   const d = node.data || {};
   const set = (patch) => onChange(patch);
   const t = node.type;
@@ -1313,24 +1313,52 @@ function NodeConfig({ node, onChange, templates, agents, clinics = [] }) {
       </div>
     );
   }
-  if (t === 'fb_audience_add' || t === 'fb_audience_remove') return (
-    <div className="grid gap-2 text-sm">
-      <label className="grid gap-1">
-        <span className="text-slate-600">ID del público personalizado</span>
-        <input value={d.audienceId || ''} onChange={(e) => set({ audienceId: e.target.value.trim() })} placeholder="23848XXXXXXXXXXX" className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono" />
-      </label>
-      <label className="grid gap-1">
-        <span className="text-slate-600">Nombre (solo para identificarlo aquí)</span>
-        <input value={d.audienceName || ''} onChange={(e) => set({ audienceName: e.target.value })} placeholder="Interesados / Compradores…" className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-      </label>
-      <p className="text-[11px] text-slate-400">
-        {t === 'fb_audience_add'
-          ? 'Añade al contacto a este Público Personalizado de Facebook (para retargeting).'
-          : 'Quita al contacto de este Público Personalizado (p. ej. cuando ya compró, para dejar de gastar en anuncios con él).'}
-        {' '}El ID sale del Administrador de Anuncios → Públicos. Requiere el <b>token de Marketing API</b> (permiso
-        ads_management) en Ajustes → WhatsApp (Meta).
-      </p>
-    </div>
-  );
+  if (t === 'fb_audience_add' || t === 'fb_audience_remove') {
+    const hasList = audiences.length > 0;
+    // Conserva el público guardado aunque no venga en la lista (otra cuenta, etc.).
+    const options = hasList && d.audienceId && !audiences.some((a) => a.id === d.audienceId)
+      ? [{ id: d.audienceId, name: d.audienceName || d.audienceId, count: null }, ...audiences]
+      : audiences;
+    return (
+      <div className="grid gap-2 text-sm">
+        {hasList ? (
+          <label className="grid gap-1">
+            <span className="text-slate-600">Público personalizado</span>
+            <select
+              value={d.audienceId || ''}
+              onChange={(e) => {
+                const a = options.find((x) => x.id === e.target.value);
+                set({ audienceId: e.target.value, audienceName: a?.name || '' });
+              }}
+              className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+            >
+              <option value="">Selecciona un público…</option>
+              {options.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}{typeof a.count === 'number' ? ` (${a.count.toLocaleString()})` : ''}
+                </option>
+              ))}
+            </select>
+            <span className="text-[11px] text-slate-400">Se leen directamente de tu cuenta de Meta (Marketing API).</span>
+          </label>
+        ) : (
+          <>
+            {audiencesNotice && (
+              <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">{audiencesNotice}</p>
+            )}
+            <label className="grid gap-1">
+              <span className="text-slate-600">ID del público personalizado (manual)</span>
+              <input value={d.audienceId || ''} onChange={(e) => set({ audienceId: e.target.value.trim() })} placeholder="23848XXXXXXXXXXX" className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono" />
+            </label>
+          </>
+        )}
+        <p className="text-[11px] text-slate-400">
+          {t === 'fb_audience_add'
+            ? 'Añade al contacto a este Público Personalizado de Facebook (para retargeting).'
+            : 'Quita al contacto de este Público Personalizado (p. ej. cuando ya compró, para dejar de gastar en anuncios con él).'}
+        </p>
+      </div>
+    );
+  }
   return <p className="text-xs text-slate-400">Sin configuración.</p>;
 }

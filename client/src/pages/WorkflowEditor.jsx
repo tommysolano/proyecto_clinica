@@ -26,6 +26,8 @@ export default function WorkflowEditor() {
   const [agents, setAgents] = useState([]);
   const [products, setProducts] = useState([]);
   const [clinics, setClinics] = useState([]);
+  const [audiences, setAudiences] = useState([]);
+  const [audiencesNotice, setAudiencesNotice] = useState('');
   const [folderNames, setFolderNames] = useState([]);
   const [saving, setSaving] = useState(false);
 
@@ -40,19 +42,31 @@ export default function WorkflowEditor() {
     let active = true;
     const load = async () => {
       try {
-        const [tpls, ags, fld, list, prods, clins] = await Promise.all([
+        const [tpls, ags, fld, list, prods, clins, auds] = await Promise.all([
           api.get('/message-templates?channel=whatsapp').catch(() => ({ data: [] })),
           api.get('/call-center/agents').catch(() => ({ data: [] })),
           api.get('/workflows/folders').catch(() => ({ data: [] })),
           api.get('/workflows').catch(() => ({ data: [] })),
           api.get('/products').catch(() => ({ data: [] })),
           api.get('/clinics').catch(() => ({ data: [] })),
+          api.get('/workflows/meta/custom-audiences').catch((e) => ({ data: { ok: false, error: e?.response?.data?.error || 'error', audiences: [] } })),
         ]);
         if (!active) return;
         setTemplates((tpls.data || []).filter((t) => t.status === 'approved'));
         setAgents(ags.data || []);
         setProducts(Array.isArray(prods.data) ? prods.data : prods.data?.items || []);
         setClinics(Array.isArray(clins.data) ? clins.data : clins.data?.clinics || []);
+        const ad = auds.data || {};
+        setAudiences(ad.audiences || []);
+        setAudiencesNotice(
+          ad.ok
+            ? ((ad.audiences || []).length ? '' : 'No hay públicos personalizados en tu cuenta de Meta todavía.')
+            : ad.reason === 'marketing_api_not_configured'
+              ? 'Configura el token de Marketing API en Ajustes → WhatsApp (Meta) para ver tus públicos.'
+              : ad.reason === 'no_ad_accounts'
+                ? 'El token no tiene cuentas publicitarias con acceso.'
+                : `No se pudieron cargar los públicos de Meta${ad.error ? `: ${ad.error}` : ''}.`
+        );
         const names = new Set((fld.data || []).map((f) => f.name));
         (list.data || []).forEach((w) => names.add(w.folder || 'General'));
         setFolderNames([...names].sort());
@@ -172,6 +186,8 @@ export default function WorkflowEditor() {
           agents={agents}
           products={products}
           clinics={clinics}
+          audiences={audiences}
+          audiencesNotice={audiencesNotice}
         />
       </main>
     </div>,

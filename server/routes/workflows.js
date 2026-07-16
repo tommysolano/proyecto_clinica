@@ -14,6 +14,8 @@ router.put('/folders/:id', requireRole(...ROLES), ctrl.renameFolder);
 router.delete('/folders/:id', requireRole(...ROLES), ctrl.deleteFolder);
 
 router.get('/', requireRole(...ROLES), ctrl.list);
+// Públicos Personalizados de Meta (selector del nodo de Facebook).
+router.get('/meta/custom-audiences', requireRole(...ROLES), ctrl.listMetaCustomAudiences);
 router.get('/presets', requireRole(...ROLES), ctrl.listPresets);
 router.post('/presets/:key', requireRole(...ROLES), ctrl.installPreset);
 router.post('/', requireRole(...ROLES), ctrl.create);

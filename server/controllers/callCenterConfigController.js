@@ -244,6 +244,7 @@ const appConfigPayload = (req, cfg) => {
     marketingApi: {
       enabled: Boolean(cfg.marketingApi?.enabled),
       accessToken: maskSecret(cfg.marketingApi?.accessToken || ''),
+      adAccountId: cfg.marketingApi?.adAccountId || '',
     },
   };
 };
@@ -760,6 +761,7 @@ exports.updateWhatsappAppConfig = async (req, res) => {
     if (typeof req.body.marketingAccessToken === 'string' && !req.body.marketingAccessToken.startsWith('••••')) {
       mkt.accessToken = req.body.marketingAccessToken ? encryptSecret(req.body.marketingAccessToken) : '';
     }
+    if (typeof req.body.marketingAdAccountId === 'string') mkt.adAccountId = req.body.marketingAdAccountId.trim();
     cfg.marketingApi = mkt;
     if ('callCenterClinic' in req.body) cfg.callCenterClinic = req.body.callCenterClinic || null;
     cfg.updatedBy = req.user._id;

@@ -435,7 +435,7 @@ function WhatsappNumbersManager() {
   const [appCfg, setAppCfg] = useState(null);
   const [appDraft, setAppDraft] = useState({ appSecret: '', verifyToken: '' });
   const [capiDraft, setCapiDraft] = useState({ enabled: false, datasetId: '', accessToken: '', testEventCode: '' });
-  const [marketingDraft, setMarketingDraft] = useState({ enabled: false, accessToken: '' });
+  const [marketingDraft, setMarketingDraft] = useState({ enabled: false, accessToken: '', adAccountId: '' });
   const [savingApp, setSavingApp] = useState(false);
   const [testingCapi, setTestingCapi] = useState(false);
   const [accounts, setAccounts] = useState([]);
@@ -465,6 +465,7 @@ function WhatsappNumbersManager() {
       setMarketingDraft({
         enabled: Boolean(a.data?.marketingApi?.enabled),
         accessToken: '',
+        adAccountId: a.data?.marketingApi?.adAccountId || '',
       });
       setAccounts(acc.data || []);
     } catch (err) {
@@ -624,6 +625,7 @@ function WhatsappNumbersManager() {
       if (appDraft.verifyToken) payload.verifyToken = appDraft.verifyToken;
       if (capiDraft.accessToken) payload.capiAccessToken = capiDraft.accessToken;
       if (marketingDraft.accessToken) payload.marketingAccessToken = marketingDraft.accessToken;
+      payload.marketingAdAccountId = marketingDraft.adAccountId;
       const r = await api.put('/call-center-config/whatsapp/app-config', payload);
       setAppCfg(r.data);
       setAppDraft({ appSecret: '', verifyToken: '' });
@@ -636,6 +638,7 @@ function WhatsappNumbersManager() {
       setMarketingDraft({
         enabled: Boolean(r.data?.marketingApi?.enabled),
         accessToken: '',
+        adAccountId: r.data?.marketingApi?.adAccountId || '',
       });
       toast.success('Configuración de WhatsApp guardada');
     } catch (err) {
@@ -919,20 +922,35 @@ function WhatsappNumbersManager() {
               Habilitada
             </label>
           </div>
-          <label className="block text-sm max-w-md">
-            <span className="text-slate-700 font-medium">Access Token (ads_management)</span>
-            <input
-              type="password"
-              value={marketingDraft.accessToken}
-              onChange={(e) => setMarketingDraft({ ...marketingDraft, accessToken: e.target.value })}
-              placeholder={appCfg?.marketingApi?.accessToken || '••••••'}
-              autoComplete="off"
-              className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono"
-            />
-            <span className="text-[11px] text-slate-400">
-              Business Manager → Configuración → Usuarios del sistema → Generar token con <code>ads_management</code>.
-            </span>
-          </label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="block text-sm">
+              <span className="text-slate-700 font-medium">Access Token (ads_management)</span>
+              <input
+                type="password"
+                value={marketingDraft.accessToken}
+                onChange={(e) => setMarketingDraft({ ...marketingDraft, accessToken: e.target.value })}
+                placeholder={appCfg?.marketingApi?.accessToken || '••••••'}
+                autoComplete="off"
+                className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono"
+              />
+              <span className="text-[11px] text-slate-400">
+                Business Manager → Configuración → Usuarios del sistema → Generar token con <code>ads_management</code>.
+              </span>
+            </label>
+            <label className="block text-sm">
+              <span className="text-slate-700 font-medium">Cuenta publicitaria (opcional)</span>
+              <input
+                value={marketingDraft.adAccountId}
+                onChange={(e) => setMarketingDraft({ ...marketingDraft, adAccountId: e.target.value })}
+                placeholder="act_1234567890"
+                className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono"
+              />
+              <span className="text-[11px] text-slate-400">
+                Si lo dejas vacío, se descubren automáticamente las cuentas del token. Útil si el token
+                tiene acceso a varias cuentas y quieres una en concreto.
+              </span>
+            </label>
+          </div>
         </div>
 
         <div className="flex justify-end gap-2">
