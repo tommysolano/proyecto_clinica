@@ -140,6 +140,7 @@ const MENU_GROUPS = [
     key: 'marketing', label: 'Marketing & CRM', icon: HiOutlineMegaphone, items: [
       { path: '/marketing', label: 'Marketing', roles: ['admin', 'marketing'] },
       { path: '/chats', label: 'Chats / WhatsApp', roles: ['admin', 'call_center', 'marketing'] },
+      { path: '/contacts', label: 'Contactos', roles: ['admin', 'call_center', 'marketing'] },
       { path: '/opportunities', label: 'Oportunidades', roles: ['admin', 'call_center', 'marketing'] },
       { path: '/campaigns', label: 'Campañas', roles: ['admin', 'marketing'] },
       { path: '/segments', label: 'Segmentos', roles: ['admin', 'marketing'] },
