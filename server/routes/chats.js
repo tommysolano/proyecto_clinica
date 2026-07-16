@@ -41,6 +41,10 @@ router.post('/saved-replies', requireRole(...CALL_CENTER_ROLES), ctrl.createSave
 router.put('/saved-replies/:id', requireRole(...CALL_CENTER_ROLES), ctrl.updateSavedReply);
 router.delete('/saved-replies/:id', requireRole(...CALL_CENTER_ROLES), ctrl.deleteSavedReply);
 
+// Automatizaciones (workflows) desde el chat: listar activas y disparar a mano.
+router.get('/workflows-list', requireRole(...CALL_CENTER_ROLES), ctrl.listWorkflowsForChat);
+router.post('/:id/run-workflow', requireRole(...CALL_CENTER_ROLES), ctrl.runWorkflowManually);
+
 // Mensajes automáticos (legacy)
 router.get('/auto-messages', requireRole(...CALL_CENTER_ROLES), ctrl.listAutoMessages);
 router.post('/auto-messages', requireRole(...CALL_CENTER_ROLES), ctrl.createAutoMessage);

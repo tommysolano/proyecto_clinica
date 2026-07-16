@@ -422,6 +422,49 @@ test('"Esperar hasta la cita" espera a la hora REAL; reagendar mueve la espera y
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+test('Disparo MANUAL desde el chat: ejecuta el flujo con la próxima cita en el contexto y evita duplicados vivos', async () => {
+  const chatCtrl = require('../controllers/chatController');
+  const Conversation = require('../models/Conversation');
+  const Appointment = require('../models/Appointment');
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const userId = new H.mongoose.Types.ObjectId();
+  const patient = await Patient.create({ clinic: clinic._id, firstName: 'Manu', lastName: 'Al', phone: '0994445555' });
+  const conv = await Conversation.create({ clinic: clinic._id, phone: '593994445555', channel: 'whatsapp', patient: patient._id });
+  const prod = await H.makeProduct(clinic._id, { category: 'servicio', unlimited: true });
+  const wf = await graphWorkflow(clinic._id, { triggerType: 'appointment_no_show', body: 'Te esperamos {{nombre}}' });
+  // Próxima cita del paciente: debe entrar al contexto del disparo manual.
+  const appt = await Appointment.create({
+    clinic: clinic._id, patient: patient._id, date: new Date(`${futureDate(3)}T12:00:00`),
+    startTime: '10:00', services: [{ product: prod._id, name: 'Consulta' }], status: 'pendiente',
+  });
+
+  const r = await H.runController(
+    chatCtrl.runWorkflowManually,
+    H.mockReq(clinic._id, userId, { workflowId: String(wf._id), startNodeId: 'trigger' }, { params: { id: String(conv._id) } })
+  );
+  assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
+  assert.equal(r.payload.ok, true);
+
+  const enrollment = await WorkflowEnrollment.findOne({ workflow: wf._id, conversation: conv._id });
+  assert.ok(enrollment, 'el disparo manual debe crear la inscripción');
+  assert.equal(String(enrollment.context.eventType), 'manual');
+  assert.equal(String(enrollment.context.appointmentId), String(appt._id), 'la próxima cita del paciente entra al contexto');
+  assert.equal(enrollment.status, 'done');
+  const sendLog = (enrollment.log || []).find((l) => l.type === 'send_message');
+  assert.ok(sendLog, 'el paso de envío debe dejar rastro en el log');
+  // El fallo de envío (sin WhatsApp en test) vuelve como warning para el agente.
+  assert.ok(r.payload.warning, 'el primer fallo del log debe volver como warning');
+
+  // Un workflow pausado no se puede disparar.
+  await Workflow.updateOne({ _id: wf._id }, { active: false });
+  const paused = await H.runController(
+    chatCtrl.runWorkflowManually,
+    H.mockReq(clinic._id, userId, { workflowId: String(wf._id) }, { params: { id: String(conv._id) } })
+  );
+  assert.equal(paused.statusCode, 400);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 test('Cupo por servicio: bloquea la 2ª cita en el mismo horario aunque el servicio sea de OTRA sucursal', async () => {
   const owner = await Clinic.create({ name: 'Matriz' }); // dueña del producto
   const branch = await Clinic.create({ name: 'Sucursal Norte' }); // donde se agenda

@@ -649,6 +649,146 @@ function ChatGalleryImageModel() {
   return require('../models/ChatGalleryImage');
 }
 
+// ============ Automatizaciones desde el chat (disparo manual) ============
+
+/**
+ * Lista las automatizaciones ACTIVAS con sus flujos (nodos disparadores) para
+ * el menú del chat: si el disparo automático no salió (p.ej. la cita se agendó
+ * antes de crear el workflow), el agente puede ejecutar el flujo a mano.
+ */
+exports.listWorkflowsForChat = async (req, res) => {
+  try {
+    const Workflow = require('../models/Workflow');
+    const list = await Workflow.find({ clinic: req.clinicId, active: true })
+      .select('name folder nodes edges triggers trigger')
+      .sort({ name: 1 })
+      .lean();
+    const out = list
+      .map((wf) => {
+        const triggerNodes = (wf.nodes || []).filter((n) => n.type === 'trigger');
+        const flows = triggerNodes.length
+          ? triggerNodes
+              .filter((tn) => (wf.edges || []).some((e) => e.source === tn.id)) // sin pasos = nada que ejecutar
+              .map((tn) => ({
+                startNodeId: tn.id,
+                triggerTypes: ((tn.data?.triggers?.length ? tn.data.triggers : wf.triggers) || [])
+                  .map((t) => t.type)
+                  .filter(Boolean),
+              }))
+          : [{ startNodeId: null, triggerTypes: (wf.triggers || []).map((t) => t.type).filter(Boolean) }];
+        return { _id: wf._id, name: wf.name, folder: wf.folder || 'General', flows };
+      })
+      .filter((w) => w.flows.length > 0);
+    res.json(out);
+  } catch (err) {
+    res.status(500).json({ message: 'Error al listar automatizaciones', error: err.message });
+  }
+};
+
+/**
+ * Ejecuta manualmente un flujo de una automatización para ESTE chat.
+ * body: { workflowId, startNodeId? } (startNodeId identifica el flujo cuando el
+ * diagrama tiene varios). Si el paciente tiene una PRÓXIMA cita, se pone en el
+ * contexto para que las variables de cita y los "esperar hasta la cita"
+ * funcionen igual que en el disparo automático.
+ */
+exports.runWorkflowManually = async (req, res) => {
+  try {
+    const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
+    const Workflow = require('../models/Workflow');
+    const WorkflowEnrollment = require('../models/WorkflowEnrollment');
+    const workflowEngine = require('../utils/workflowEngine');
+    const wf = await Workflow.findOne({ _id: req.body.workflowId, clinic: req.clinicId });
+    if (!wf) return res.status(404).json({ message: 'Automatización no encontrada' });
+    if (!wf.active) return res.status(400).json({ message: 'La automatización está pausada: actívala primero.' });
+
+    // Flujo a ejecutar (nodo disparador). Workflows lineales no tienen nodos.
+    let flow = { startNodeId: null, currentNodeId: null };
+    if ((wf.nodes || []).length) {
+      const tn = (wf.nodes || []).find(
+        (n) => n.type === 'trigger' && (!req.body.startNodeId || n.id === req.body.startNodeId)
+      );
+      const startChild = tn ? workflowEngine.nextNodeId(wf, tn.id) : null;
+      if (!startChild) return res.status(400).json({ message: 'El flujo indicado no tiene pasos.' });
+      flow = { startNodeId: tn.id, currentNodeId: startChild };
+    }
+
+    // Evitar doble ejecución simultánea del mismo flujo en este chat.
+    const live = await WorkflowEnrollment.findOne({
+      workflow: wf._id,
+      conversation: conv._id,
+      startNodeId: flow.startNodeId,
+      status: { $in: ['active', 'waiting'] },
+    });
+    if (live) {
+      return res.status(409).json({ message: 'Este chat ya tiene esa automatización en ejecución o en espera.' });
+    }
+
+    const patient = conv.patient ? await Patient.findById(conv.patient) : null;
+    let appt = null;
+    if (patient) {
+      const { startOfToday } = require('../utils/appointmentDate');
+      appt = await Appointment.findOne({
+        patient: patient._id,
+        status: { $in: ['pendiente', 'confirmada'] },
+        date: { $gte: startOfToday() },
+      }).sort({ date: 1, startTime: 1 });
+    }
+    const { appointmentDateTime } = require('../utils/appointmentDate');
+    const enrollment = await WorkflowEnrollment.create({
+      clinic: req.clinicId,
+      workflow: wf._id,
+      patient: patient?._id || null,
+      conversation: conv._id,
+      stepIndex: 0,
+      currentNodeId: flow.currentNodeId,
+      startNodeId: flow.startNodeId,
+      status: 'active',
+      nextRunAt: new Date(),
+      context: {
+        phone: conv.phone,
+        conversationId: String(conv._id),
+        eventType: 'manual', // no bloquea el dedup por (cita, evento) de los disparos automáticos
+        ...(appt
+          ? {
+              appointmentId: String(appt._id),
+              appointmentDate: appointmentDateTime(appt.date, appt.startTime),
+              eventClinicId: String(appt.clinic),
+            }
+          : {}),
+      },
+    });
+    await Workflow.updateOne({ _id: wf._id }, { $inc: { 'stats.enrolled': 1 } });
+    try {
+      const patientName = patient
+        ? `${patient.firstName || ''} ${patient.lastName || ''}`.trim()
+        : conv.contactName || conv.phone;
+      require('../models/WorkflowTriggerEvent')
+        .create({
+          clinic: req.clinicId,
+          workflow: wf._id,
+          patient: patient?._id || null,
+          patientName,
+          eventType: 'manual',
+          decision: 'enrolled',
+          detail: `Disparada manualmente por ${req.user?.name || 'un agente'} desde el chat.`,
+        })
+        .catch(() => {});
+    } catch {
+      /* noop */
+    }
+    await workflowEngine.executeEnrollment(enrollment).catch(() => {});
+    // Devolver el primer fallo del log (si lo hubo) para que el agente vea al
+    // instante por qué no salió (ventana 24h, QR desconectado, sin teléfono…).
+    const fresh = await WorkflowEnrollment.findById(enrollment._id).lean();
+    const failed = (fresh?.log || []).find((l) => l.ok === false);
+    res.json({ ok: true, status: fresh?.status || 'active', warning: failed?.info || '' });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al ejecutar la automatización', error: err.message });
+  }
+};
+
 /**
  * Envío de prueba de un fragmento (como el "fragmento de prueba" de Daplox):
  * manda el texto + adjunto al número indicado por el WhatsApp por defecto.

@@ -31,6 +31,28 @@ import SameSlotPanel from '../components/SameSlotPanel';
 import TagEditor from '../components/TagEditor';
 import { fmtDate, todayEc, nowEcHHMM } from '../utils/date';
 
+// Etiquetas de los disparadores (para mostrar los flujos en el menú de
+// automatizaciones del compositor).
+const TRIGGER_LABELS_CHAT = {
+  appointment_created: 'Cita agendada',
+  appointment_confirmed: 'Cita confirmada',
+  appointment_rescheduled: 'Cita reagendada',
+  appointment_attended: 'Cita asistida',
+  appointment_no_show: 'No asistió',
+  appointment_cancelled: 'Cita cancelada',
+  treatment_abandoned: 'Tratamiento abandonado',
+  patient_birthday: 'Cumpleaños',
+  patient_created: 'Paciente creado',
+  sale_created: 'Venta registrada',
+  payment_received: 'Pago recibido',
+  quotation_sent: 'Cotización enviada',
+  inbound_message: 'Mensaje entrante',
+  keyword: 'Palabra clave',
+  new_conversation: 'Nueva conversación',
+  tag_added: 'Etiqueta añadida',
+  ctwa_ad: 'Anuncio Meta',
+};
+
 const STAGES = [
   { value: 'nuevo', label: 'Nuevo', color: 'bg-slate-100 text-slate-700' },
   { value: 'contactado', label: 'Contactado', color: 'bg-blue-100 text-blue-700' },
@@ -107,7 +129,10 @@ export default function Chats() {
   const [suggesting, setSuggesting] = useState(false);
   const [templateDraft, setTemplateDraft] = useState({ name: '', language: 'es', vars: '' });
   const [templates, setTemplates] = useState([]); // plantillas WhatsApp aprobadas
-  const [templatePickerOpen, setTemplatePickerOpen] = useState(false);
+  // Menú unificado del compositor: null (cerrado) | 'auto' | 'templates' | 'saved'
+  const [pickerTab, setPickerTab] = useState(null);
+  const [chatWorkflows, setChatWorkflows] = useState([]); // automatizaciones activas (disparo manual)
+  const [runningWf, setRunningWf] = useState(false);
   // Mensajes guardados y galería
   const [savedReplies, setSavedReplies] = useState([]);
   const [slashOpen, setSlashOpen] = useState(false);
@@ -188,6 +213,7 @@ export default function Chats() {
       .catch(() => {});
     api.get('/chats/saved-replies').then((r) => setSavedReplies(r.data || [])).catch(() => {});
     api.get('/chats/gallery').then((r) => setGallery(r.data || [])).catch(() => {});
+    api.get('/chats/workflows-list').then((r) => setChatWorkflows(r.data || [])).catch(() => {});
     api.get('/call-center/agents').then((r) => setAgents(r.data || [])).catch(() => {});
     // Plantillas WhatsApp aprobadas por Meta (para enviar desde el chat).
     api
@@ -378,6 +404,34 @@ export default function Chats() {
     }
     setSlashOpen(false);
     setSlashQuery('');
+    setPickerTab(null);
+  };
+
+  // Disparo MANUAL de una automatización para este chat (cuando el disparo
+  // automático no salió). Confirma antes: cada mensaje tiene costo.
+  const runWorkflowForChat = async (wf, flow) => {
+    if (!activeConv || runningWf) return;
+    const flowLabel = (flow.triggerTypes || []).map((t) => TRIGGER_LABELS_CHAT[t] || t).join(' / ');
+    if (!window.confirm(`¿Ejecutar la automatización "${wf.name}"${flowLabel ? ` (${flowLabel})` : ''} para este chat?`)) return;
+    setRunningWf(true);
+    try {
+      const r = await api.post(`/chats/${activeConv._id}/run-workflow`, {
+        workflowId: wf._id,
+        startNodeId: flow.startNodeId,
+      });
+      if (r.data.warning) {
+        toast(`Ejecutada, pero un paso falló: ${r.data.warning}`, { icon: '⚠️', duration: 8000 });
+      } else if (r.data.status === 'waiting') {
+        toast.success('Automatización iniciada: quedó en espera de su próximo paso.');
+      } else {
+        toast.success('Automatización ejecutada.');
+      }
+      setPickerTab(null);
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'Error al ejecutar la automatización');
+    } finally {
+      setRunningWf(false);
+    }
   };
 
   const toggleFeatured = async (conv) => {
@@ -662,34 +716,120 @@ export default function Chats() {
                         )}
                       </div>
                     )}
-                    {templatePickerOpen && (
-                      <div className="absolute bottom-full left-0 mb-1 w-80 max-h-72 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg z-30">
-                        <div className="px-3 py-2 border-b border-slate-100 text-xs font-semibold text-slate-500 sticky top-0 bg-white">
-                          Plantillas aprobadas por Meta
+                    {pickerTab && (
+                      <div className="absolute bottom-full left-0 mb-1 w-96 max-h-80 flex flex-col bg-white border border-slate-200 rounded-lg shadow-lg z-30 overflow-hidden">
+                        <div className="flex border-b border-slate-100 bg-white shrink-0">
+                          {[
+                            ['auto', '⚡ Automatizaciones'],
+                            ['templates', '📄 Plantillas'],
+                            ['saved', '/ Guardados'],
+                          ].map(([k, label]) => (
+                            <button
+                              key={k}
+                              type="button"
+                              onClick={() => setPickerTab(k)}
+                              className={`flex-1 px-2 py-2 text-xs font-semibold border-none cursor-pointer ${pickerTab === k ? 'bg-emerald-50 text-emerald-700 border-b-2 border-emerald-500' : 'bg-white text-slate-500 hover:bg-slate-50'}`}
+                            >
+                              {label}
+                            </button>
+                          ))}
                         </div>
-                        {templates.length === 0 && (
-                          <div className="px-3 py-3 text-xs text-slate-400">
-                            No hay plantillas aprobadas. Créalas y apruébalas en Plantillas / Sincroniza con Meta.
-                          </div>
-                        )}
-                        {templates.map((t) => (
-                          <button
-                            key={t._id}
-                            type="button"
-                            onMouseDown={(e) => {
-                              e.preventDefault();
-                              setTemplateDraft({ name: t.name, language: t.language || 'es', vars: '' });
-                              setTemplatePickerOpen(false);
-                            }}
-                            className="w-full text-left px-3 py-2 hover:bg-emerald-50 border-b border-slate-50 text-sm bg-white cursor-pointer"
-                          >
-                            <div className="flex items-center justify-between gap-2">
-                              <span className="font-semibold text-slate-700 text-xs truncate">{t.name}</span>
-                              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 shrink-0">Aprobada</span>
-                            </div>
-                            <div className="text-slate-500 text-xs truncate">{t.body}</div>
-                          </button>
-                        ))}
+                        <div className="overflow-y-auto">
+                          {pickerTab === 'auto' && (
+                            <>
+                              <div className="px-3 py-2 text-[11px] text-slate-400 border-b border-slate-50">
+                                Ejecuta un flujo a mano para este chat (p. ej. si el disparo automático no salió).
+                                Si el paciente tiene una próxima cita, sus datos se usan en las variables y esperas.
+                              </div>
+                              {chatWorkflows.length === 0 && (
+                                <div className="px-3 py-3 text-xs text-slate-400">
+                                  No hay automatizaciones activas. Créalas en Marketing → Workflows.
+                                </div>
+                              )}
+                              {chatWorkflows.map((wf) =>
+                                wf.flows.map((flow, fi) => (
+                                  <button
+                                    key={`${wf._id}-${flow.startNodeId || fi}`}
+                                    type="button"
+                                    disabled={runningWf}
+                                    onMouseDown={(e) => { e.preventDefault(); runWorkflowForChat(wf, flow); }}
+                                    className="w-full text-left px-3 py-2 hover:bg-emerald-50 border-b border-slate-50 text-sm bg-white cursor-pointer disabled:opacity-50"
+                                  >
+                                    <div className="font-semibold text-slate-700 text-xs flex items-center gap-1.5">
+                                      ⚡ {wf.name}
+                                      {wf.flows.length > 1 && (
+                                        <span className="text-[10px] text-slate-400 font-normal">· flujo {fi + 1}</span>
+                                      )}
+                                    </div>
+                                    <div className="text-slate-500 text-[11px] truncate">
+                                      {(flow.triggerTypes || []).map((t) => TRIGGER_LABELS_CHAT[t] || t).join(' / ') || 'Sin disparador'}
+                                      <span className="text-slate-300"> · {wf.folder}</span>
+                                    </div>
+                                  </button>
+                                ))
+                              )}
+                            </>
+                          )}
+                          {pickerTab === 'templates' && (
+                            <>
+                              <div className="px-3 py-2 text-[11px] text-slate-400 border-b border-slate-50">
+                                Plantillas aprobadas por Meta (funcionan aun fuera de la ventana de 24h).
+                              </div>
+                              {templates.length === 0 && (
+                                <div className="px-3 py-3 text-xs text-slate-400">
+                                  No hay plantillas aprobadas. Créalas y apruébalas en Plantillas / Sincroniza con Meta.
+                                </div>
+                              )}
+                              {templates.map((t) => (
+                                <button
+                                  key={t._id}
+                                  type="button"
+                                  onMouseDown={(e) => {
+                                    e.preventDefault();
+                                    setTemplateDraft({ name: t.name, language: t.language || 'es', vars: '' });
+                                    setPickerTab(null);
+                                  }}
+                                  className="w-full text-left px-3 py-2 hover:bg-emerald-50 border-b border-slate-50 text-sm bg-white cursor-pointer"
+                                >
+                                  <div className="flex items-center justify-between gap-2">
+                                    <span className="font-semibold text-slate-700 text-xs truncate">{t.name}</span>
+                                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 shrink-0">Aprobada</span>
+                                  </div>
+                                  <div className="text-slate-500 text-xs truncate">{t.body}</div>
+                                </button>
+                              ))}
+                            </>
+                          )}
+                          {pickerTab === 'saved' && (
+                            <>
+                              <div className="px-3 py-2 text-[11px] text-slate-400 border-b border-slate-50">
+                                También puedes escribir "/" en el mensaje para buscarlos al vuelo.
+                              </div>
+                              {savedReplies.length === 0 && (
+                                <div className="px-3 py-3 text-xs text-slate-400">
+                                  Sin mensajes guardados. Configúralos en Marketing → Mensajes Guardados.
+                                </div>
+                              )}
+                              {savedReplies.map((r) => (
+                                <button
+                                  key={r._id}
+                                  type="button"
+                                  onMouseDown={(e) => { e.preventDefault(); insertSavedReply(r); }}
+                                  className="w-full text-left px-3 py-2 hover:bg-emerald-50 border-b border-slate-50 text-sm bg-white cursor-pointer"
+                                >
+                                  <div className="font-semibold text-emerald-700 text-xs flex items-center gap-1">
+                                    /{r.shortcut}
+                                    {r.title && <span className="text-slate-500 font-normal truncate">· {r.title}</span>}
+                                    {r.attachment?.url && (
+                                      <span title="Con adjunto">{r.attachment.type === 'video' ? '🎬' : '🖼'}</span>
+                                    )}
+                                  </div>
+                                  <div className="text-slate-600 text-xs truncate">{r.body}</div>
+                                </button>
+                              ))}
+                            </>
+                          )}
+                        </div>
                       </div>
                     )}
                     <button
@@ -702,20 +842,11 @@ export default function Chats() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setTemplatePickerOpen((v) => !v)}
-                      disabled={!!activeConv?.blocked || activeOptedOut}
-                      className={`px-2 py-2 border rounded-lg cursor-pointer disabled:opacity-50 flex items-center ${templateDraft.name ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
-                      title="Enviar plantilla aprobada"
+                      onClick={() => setPickerTab((v) => (v ? null : 'auto'))}
+                      className={`px-2 py-2 border rounded-lg cursor-pointer disabled:opacity-50 flex items-center ${pickerTab || templateDraft.name ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
+                      title="Automatizaciones, plantillas y mensajes guardados"
                     >
-                      <HiOutlineDocumentDuplicate className="w-4 h-4" />
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => setSlashOpen((v) => !v)}
-                      className={`px-2 py-2 border rounded-lg cursor-pointer text-xs ${slashOpen ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
-                      title="Mensajes guardados (se configuran en Marketing → Mensajes Guardados)"
-                    >
-                      /
+                      <HiOutlinePlus className="w-4 h-4" />
                     </button>
                     <textarea
                       ref={composerRef}
