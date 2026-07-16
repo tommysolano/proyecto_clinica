@@ -151,7 +151,7 @@ export default function Appointments() {
     endDate: '',
     status: '',
     isFirstVisit: '',
-    room: '',
+    clinic: '',
     service: '',
     timeFrom: '',
     timeTo: '',
@@ -525,7 +525,7 @@ export default function Appointments() {
       .slice(0, 30);
   }, [patientSearch, patients]);
 
-  // Aplica filtros en el cliente para servicio/consultorio/rango horario.
+  // Aplica filtros en el cliente para servicio/sucursal/rango horario.
   // Ordena cronológicamente (por fecha y hora) para verlas en forma de HORARIO,
   // no en el orden en que se agendaron.
   const filteredAppointments = useMemo(() => {
@@ -537,9 +537,9 @@ export default function Appointments() {
           );
           if (!has) return false;
         }
-        if (filter.room) {
-          const r = apt.room?._id || apt.room;
-          if (String(r) !== String(filter.room)) return false;
+        if (filter.clinic) {
+          const c = apt.clinic?._id || apt.clinic;
+          if (String(c) !== String(filter.clinic)) return false;
         }
         if (filter.timeFrom && apt.startTime && apt.startTime < filter.timeFrom) return false;
         if (filter.timeTo && apt.startTime && apt.startTime > filter.timeTo) return false;
@@ -551,7 +551,7 @@ export default function Appointments() {
         if (da !== db) return da - db;
         return String(a.startTime || '').localeCompare(String(b.startTime || ''));
       });
-  }, [appointments, filter.service, filter.room, filter.timeFrom, filter.timeTo]);
+  }, [appointments, filter.service, filter.clinic, filter.timeFrom, filter.timeTo]);
 
   // Agrupa las citas (ya filtradas) por día YYYY-MM-DD para pintar la cuadrícula.
   const calApptsByDay = useMemo(() => {
@@ -725,14 +725,16 @@ export default function Appointments() {
                 placeholder="Filtrar por servicio..."
               />
             )}
-            {!isDoctor && (
+            {!isDoctor && (clinics?.length || 0) > 1 && (
               <select
-                value={filter.room}
-                onChange={(e) => setFilter({ ...filter, room: e.target.value })}
+                value={filter.clinic}
+                onChange={(e) => setFilter({ ...filter, clinic: e.target.value })}
                 className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
               >
-                <option value="">Todos los consultorios</option>
-                {rooms.map((r) => <option key={r._id} value={r._id}>{r.name}</option>)}
+                <option value="">Todas las sucursales</option>
+                {clinics.map((c) => (
+                  <option key={c._id} value={c._id}>{c.nombreComercial || c.name}</option>
+                ))}
               </select>
             )}
             {/* Filtros por hora: solo tienen sentido en la lista (un día). */}
@@ -757,9 +759,9 @@ export default function Appointments() {
           </div>
           <div className="flex items-center justify-between text-xs text-slate-500">
             <span>Total filtrado: <strong className="text-slate-800">{filteredAppointments.length}</strong> citas</span>
-            {(filter.service || filter.room || filter.timeFrom || filter.timeTo || filter.status || filter.isFirstVisit || filter.patientQuery) && (
+            {(filter.service || filter.clinic || filter.timeFrom || filter.timeTo || filter.status || filter.isFirstVisit || filter.patientQuery) && (
               <button
-                onClick={() => setFilter({ startDate: '', endDate: '', status: '', isFirstVisit: '', room: '', service: '', timeFrom: '', timeTo: '', patientQuery: '' })}
+                onClick={() => setFilter({ startDate: '', endDate: '', status: '', isFirstVisit: '', clinic: '', service: '', timeFrom: '', timeTo: '', patientQuery: '' })}
                 className="text-emerald-600 hover:underline border-none bg-transparent cursor-pointer"
               >Limpiar filtros</button>
             )}
