@@ -15,6 +15,7 @@ const Contact = require('../models/Contact');
 const MessageTemplate = require('../models/MessageTemplate');
 const gateway = require('../utils/whatsappGateway');
 const { buildSendableMatch } = require('../utils/contactAudience');
+const { suggestVarMapping, templateKeys } = require('../utils/contactTemplateVars');
 const { runCampaign } = require('../utils/dripRunner');
 
 // Niveles de Meta: conversaciones que puede INICIAR el negocio cada 24 h.
@@ -64,6 +65,16 @@ exports.create = async (req, res) => {
       return res.status(400).json({ message: 'Elige una plantilla o escribe el mensaje.' });
     }
 
+    // De dónde sale cada variable de la plantilla. Si el front no lo manda, se
+    // propone por el nombre de la variable ({{nombre}} → nombre del contacto).
+    const templateVars = Array.isArray(req.body.templateVars) && req.body.templateVars.length
+      ? req.body.templateVars.map((v) => ({
+          key: String(v.key || ''),
+          source: String(v.source || ''),
+          fixed: String(v.fixed || ''),
+        }))
+      : suggestVarMapping(template);
+
     const camp = await DripCampaign.create({
       clinic: req.clinicId,
       name,
@@ -71,6 +82,7 @@ exports.create = async (req, res) => {
       template: template?._id || null,
       templateName: template?.name || '',
       templateLanguage: template?.language || 'es',
+      templateVars,
       body: String(req.body.body || '').trim(),
       mediaUrl: String(req.body.mediaUrl || '').trim(),
       mediaType: String(req.body.mediaType || '').trim(),
@@ -137,6 +149,19 @@ exports.preview = async (req, res) => {
     }
     if (!isCloud && camp.templateName) {
       warnings.push('El número QR no admite plantillas de Meta: se enviará el texto libre de la campaña.');
+    }
+    // Una variable sin fuente sale como "-" en el mensaje de TODOS. Mejor verlo
+    // aquí que en el WhatsApp de 800 personas.
+    if (isCloud && camp.template) {
+      const tpl = await MessageTemplate.findById(camp.template).select('body').lean();
+      const mapped = new Map((camp.templateVars || []).map((v) => [v.key, v.source]));
+      const huerfanas = templateKeys(tpl).filter((k) => !mapped.get(k));
+      if (huerfanas.length) {
+        warnings.push(
+          `Estas variables de la plantilla no tienen de dónde salir: ${huerfanas.map((k) => `{{${k}}}`).join(', ')}. ` +
+            'Se enviarán como "-" a todos. Edita la campaña y elige su origen.'
+        );
+      }
     }
     if (!isCloud && perDay > 200) {
       warnings.push(

@@ -125,11 +125,17 @@ function fakeGateway() {
     sent.push({ to, body });
     return { ok: true, data: { messages: [{ id: `wamid.${sent.length}` }] } };
   };
-  gw.sendTemplate = async (account, to) => {
-    sent.push({ to, template: true });
+  gw.sendTemplate = async (account, to, templateName, lang, components) => {
+    sent.push({ to, template: true, templateName, lang, components });
     return { ok: true, data: { messages: [{ id: `wamid.${sent.length}` }] } };
   };
   return { sent, restore: () => Object.assign(gw, orig) };
+}
+
+/** Parámetros del cuerpo que se le mandaron a Meta, como texto plano. */
+function bodyParams(entry) {
+  const body = (entry.components || []).find((c) => c.type === 'body');
+  return (body?.parameters || []).map((p) => p.text);
 }
 
 test('goteo: manda solo la tanda, y a la siguiente sigue por donde iba', async () => {
@@ -306,6 +312,137 @@ test('goteo: el envío queda en el chat del contacto', async () => {
     const msg = await Message.findOne({ conversation: conv._id, direction: 'out' });
     assert.ok(msg, 'el mensaje queda registrado en el chat');
     assert.equal(msg.body, 'Hola Ligia');
+  } finally {
+    gw.restore();
+    await H.resetDb();
+  }
+});
+
+// ─────────── variables de plantilla (Cloud API) ───────────
+
+/** Número de Cloud API + plantilla aprobada con una variable {{nombre}}. */
+async function seedCloudTemplate(clinicId, body = 'Hola {{nombre}}, te esperamos.') {
+  await WhatsappAccount.create({
+    label: 'Producción', connectionType: 'cloud_api', enabled: true, isDefault: true,
+    status: 'connected', phoneNumberId: '123', accessToken: 'tok', messagingLimit: 'TIER_1K',
+  });
+  const MessageTemplate = require('../models/MessageTemplate');
+  return MessageTemplate.create({
+    clinic: clinicId, channel: 'whatsapp', name: 'promo_julio', language: 'es',
+    status: 'approved', body,
+    // El EJEMPLO es la trampa: sin resolver la variable contra el contacto,
+    // messaging cae aquí y los 800 contactos reciben "Hola María".
+    variables: [{ key: 'nombre', example: 'María' }],
+  });
+}
+
+test('goteo por Cloud API: la plantilla se rellena con el nombre del CONTACTO, no con el ejemplo', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const gw = fakeGateway();
+  try {
+    const tpl = await seedCloudTemplate(clinicId);
+    await Contact.create([
+      { clinic: clinicId, phone: '593999000001', firstName: 'Emily', lastName: 'Torres' },
+      { clinic: clinicId, phone: '593999000002', displayName: 'Dome' },
+    ]);
+    const camp = await DripCampaign.create({
+      clinic: clinicId, name: 'Promo', template: tpl._id, templateName: 'promo_julio',
+      templateLanguage: 'es', templateVars: [{ key: 'nombre', source: 'nombre' }],
+      batchSize: 10, intervalMinutes: 15, hourFrom: '00:00', hourTo: '23:59',
+      status: 'running', nextRunAt: new Date(), createdBy: userId,
+    });
+
+    const { runCampaign } = require('../utils/dripRunner');
+    await runCampaign(camp._id);
+
+    assert.equal(gw.sent.length, 2);
+    const names = gw.sent.map((s) => bodyParams(s)[0]).sort();
+    assert.deepEqual(names, ['Dome', 'Emily'], 'cada contacto recibe SU nombre');
+    assert.ok(!names.includes('María'), 'nadie recibe el ejemplo de la plantilla');
+  } finally {
+    gw.restore();
+    await H.resetDb();
+  }
+});
+
+test('goteo por Cloud API: un contacto sin nombre recibe "-" y no rompe el envío', async () => {
+  // Meta rechaza los parámetros vacíos: un contacto que en el Excel era solo un
+  // número no puede tumbar la campaña entera.
+  const { clinicId, userId } = await H.seedClinic();
+  const gw = fakeGateway();
+  try {
+    const tpl = await seedCloudTemplate(clinicId);
+    await Contact.create({ clinic: clinicId, phone: '593999000009' });
+    const camp = await DripCampaign.create({
+      clinic: clinicId, name: 'Promo', template: tpl._id, templateName: 'promo_julio',
+      templateLanguage: 'es', templateVars: [{ key: 'nombre', source: 'nombre' }],
+      batchSize: 10, intervalMinutes: 15, hourFrom: '00:00', hourTo: '23:59',
+      status: 'running', nextRunAt: new Date(), createdBy: userId,
+    });
+
+    const { runCampaign } = require('../utils/dripRunner');
+    await runCampaign(camp._id);
+
+    const fresh = await DripCampaign.findById(camp._id);
+    assert.equal(fresh.stats.sent, 1, 'se envía igual');
+    assert.deepEqual(bodyParams(gw.sent[0]), ['-']);
+  } finally {
+    gw.restore();
+    await H.resetDb();
+  }
+});
+
+test('goteo por Cloud API: una plantilla SIN variables no manda parámetros', async () => {
+  // Mandar parámetros a una plantilla que no los tiene es el error #132000.
+  const { clinicId, userId } = await H.seedClinic();
+  const gw = fakeGateway();
+  try {
+    const tpl = await seedCloudTemplate(clinicId, 'Promo de julio, escríbenos.');
+    tpl.variables = [];
+    await tpl.save();
+    await Contact.create({ clinic: clinicId, phone: '593999000001', firstName: 'Emily' });
+    const camp = await DripCampaign.create({
+      clinic: clinicId, name: 'Promo', template: tpl._id, templateName: 'promo_julio',
+      templateLanguage: 'es', templateVars: [],
+      batchSize: 10, intervalMinutes: 15, hourFrom: '00:00', hourTo: '23:59',
+      status: 'running', nextRunAt: new Date(), createdBy: userId,
+    });
+
+    const { runCampaign } = require('../utils/dripRunner');
+    await runCampaign(camp._id);
+
+    assert.equal(gw.sent.length, 1);
+    assert.deepEqual(bodyParams(gw.sent[0]), [], 'sin parámetros de cuerpo');
+  } finally {
+    gw.restore();
+    await H.resetDb();
+  }
+});
+
+test('goteo por Cloud API: un texto fijo va igual para todos, el nombre no', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const gw = fakeGateway();
+  try {
+    const tpl = await seedCloudTemplate(clinicId, 'Hola {{nombre}}, usa el código {{promo}}');
+    tpl.variables = [{ key: 'nombre', example: 'María' }, { key: 'promo', example: 'XXX' }];
+    await tpl.save();
+    await Contact.create([
+      { clinic: clinicId, phone: '593999000001', firstName: 'Emily' },
+      { clinic: clinicId, phone: '593999000002', firstName: 'Ana' },
+    ]);
+    const camp = await DripCampaign.create({
+      clinic: clinicId, name: 'Promo', template: tpl._id, templateName: 'promo_julio',
+      templateLanguage: 'es',
+      templateVars: [{ key: 'nombre', source: 'nombre' }, { key: 'promo', source: 'fixed', fixed: 'JULIO20' }],
+      batchSize: 10, intervalMinutes: 15, hourFrom: '00:00', hourTo: '23:59',
+      status: 'running', nextRunAt: new Date(), createdBy: userId,
+    });
+
+    const { runCampaign } = require('../utils/dripRunner');
+    await runCampaign(camp._id);
+
+    const params = gw.sent.map((s) => bodyParams(s)).sort((a, b) => a[0].localeCompare(b[0]));
+    assert.deepEqual(params, [['Ana', 'JULIO20'], ['Emily', 'JULIO20']]);
   } finally {
     gw.restore();
     await H.resetDb();

@@ -29,6 +29,23 @@ const dripCampaignSchema = new mongoose.Schema(
     template: { type: mongoose.Schema.Types.ObjectId, ref: 'MessageTemplate', default: null },
     templateName: { type: String, trim: true, default: '' },
     templateLanguage: { type: String, trim: true, default: 'es' },
+    // De dónde sale cada variable de la plantilla ({{nombre}} → el nombre del
+    // contacto). Sin esto, messaging cae al EJEMPLO documentado de la plantilla y
+    // todos reciben el mismo "Hola María". Ver utils/contactTemplateVars.js.
+    //   { key: 'nombre', source: 'nombre' }
+    //   { key: 'promo',  source: 'fixed', fixed: 'JULIO20' }
+    templateVars: {
+      type: [
+        {
+          key: { type: String, default: '' },
+          // nombre | nombre_completo | apellido | telefono | custom:<clave> | fixed
+          source: { type: String, default: '' },
+          fixed: { type: String, default: '' },
+          _id: false,
+        },
+      ],
+      default: [],
+    },
     body: { type: String, trim: true, default: '' },
     mediaUrl: { type: String, trim: true, default: '' },
     mediaType: { type: String, trim: true, default: '' },

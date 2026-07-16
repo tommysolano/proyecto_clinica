@@ -15,9 +15,11 @@
 const Contact = require('../models/Contact');
 const Conversation = require('../models/Conversation');
 const DripCampaign = require('../models/DripCampaign');
+const MessageTemplate = require('../models/MessageTemplate');
 const messaging = require('./messaging');
 const gateway = require('./whatsappGateway');
 const { buildSendableMatch } = require('./contactAudience');
+const { buildContactTemplateVars } = require('./contactTemplateVars');
 const { emitToCallCenter } = require('../realtime');
 
 /**
@@ -76,6 +78,13 @@ async function runBatch(camp) {
     ? await gateway.getAccountById(camp.whatsappAccount)
     : await gateway.getDefaultAccount();
 
+  // La plantilla se lee UNA vez por tanda (no una por contacto): sus variables se
+  // rellenan con los datos de cada contacto. Sin esto, messaging no encuentra
+  // paciente y acaba mandando a todos el ejemplo de la plantilla.
+  const tpl = camp.template
+    ? await MessageTemplate.findById(camp.template).select('body variables').lean()
+    : null;
+
   let sent = 0;
   let failed = 0;
   let skipped = 0;
@@ -94,7 +103,11 @@ async function runBatch(camp) {
       mediaUrl: camp.mediaUrl || null,
       mediaType: camp.mediaType || null,
       template: camp.templateName
-        ? { name: camp.templateName, language: camp.templateLanguage || 'es', vars: [] }
+        ? {
+            name: camp.templateName,
+            language: camp.templateLanguage || 'es',
+            vars: buildContactTemplateVars(tpl, contact, camp.templateVars),
+          }
         : null,
       sentBy: camp.createdBy || null,
       sentByName: camp.createdByName || 'Campaña',

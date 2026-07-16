@@ -11,6 +11,7 @@ import api from '../../api/axios';
 import Modal from '../Modal';
 import { useSocketEvent } from '../../context/SocketContext';
 import { fmtDateTime } from '../../utils/date';
+import { templateKeys, suggestVarMapping, previewBody, VAR_SOURCES } from '../../utils/templateVars';
 
 const STATUS_META = {
   draft: { label: 'Borrador', chip: 'bg-slate-100 text-slate-600' },
@@ -194,6 +195,7 @@ function DripModal({ campaign, groups, onClose, onSaved }) {
     group: campaign?.group?._id || campaign?.group || '',
     whatsappAccount: campaign?.whatsappAccount || '',
     template: campaign?.template || '',
+    templateVars: campaign?.templateVars || [],
     body: campaign?.body || '',
     batchSize: campaign?.batchSize ?? 20,
     intervalMinutes: campaign?.intervalMinutes ?? 15,
@@ -222,6 +224,25 @@ function DripModal({ campaign, groups, onClose, onSaved }) {
   const account = accounts.find((a) => a._id === form.whatsappAccount) || accounts.find((a) => a.isDefault) || accounts[0];
   const isCloud = account?.connectionType === 'cloud_api';
   const approved = templates.filter((t) => t.status === 'approved');
+  const selectedTpl = templates.find((t) => t._id === form.template) || null;
+  const tplKeys = templateKeys(selectedTpl);
+
+  // Al elegir plantilla se propone de dónde sale cada variable ({{nombre}} → el
+  // nombre del contacto). Las que el sistema no reconoce quedan en blanco a
+  // propósito: enviarían "-" a todos, y eso hay que verlo y decidirlo.
+  const pickTemplate = (id) => {
+    const tpl = templates.find((t) => t._id === id) || null;
+    setForm((f) => ({ ...f, template: id, templateVars: tpl ? suggestVarMapping(tpl) : [] }));
+  };
+
+  const setVar = (key, patch) => {
+    setForm((f) => ({
+      ...f,
+      templateVars: f.templateVars.map((v) => (v.key === key ? { ...v, ...patch } : v)),
+    }));
+  };
+
+  const unmappedVars = tplKeys.filter((k) => !form.templateVars.find((v) => v.key === k)?.source);
 
   // Mismo cálculo que el backend (dripController.preview), para verlo mientras se edita.
   const perDay = (() => {
@@ -315,7 +336,7 @@ function DripModal({ campaign, groups, onClose, onSaved }) {
                 <select
                   disabled={readOnly}
                   value={form.template}
-                  onChange={(e) => setForm((f) => ({ ...f, template: e.target.value }))}
+                  onChange={(e) => pickTemplate(e.target.value)}
                   className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm bg-white disabled:bg-slate-50"
                 >
                   <option value="">Elige una plantilla aprobada…</option>
@@ -326,6 +347,60 @@ function DripModal({ campaign, groups, onClose, onSaved }) {
                     No tienes plantillas aprobadas. Créalas en Marketing → Plantillas de Mensaje y espera
                     la aprobación de Meta.
                   </p>
+                )}
+
+                {/* De dónde sale cada variable. Sin esto, Meta recibiría el ejemplo
+                    de la plantilla y TODOS leerían el mismo nombre. */}
+                {selectedTpl && tplKeys.length > 0 && (
+                  <div className="border border-slate-200 rounded-xl p-2.5 mt-2 space-y-2">
+                    <div className="text-[11px] font-semibold text-slate-600">
+                      ¿De dónde sale cada dato de la plantilla?
+                    </div>
+                    {tplKeys.map((key) => {
+                      const v = form.templateVars.find((x) => x.key === key) || { key, source: '', fixed: '' };
+                      return (
+                        <div key={key} className="flex items-center gap-2">
+                          <code className="text-[10px] font-mono bg-slate-100 text-slate-600 px-1.5 py-1 rounded shrink-0">
+                            {`{{${key}}}`}
+                          </code>
+                          <select
+                            disabled={readOnly}
+                            value={v.source}
+                            onChange={(e) => setVar(key, { source: e.target.value })}
+                            className={`flex-1 border rounded-lg px-2 py-1 text-xs bg-white disabled:bg-slate-50 ${
+                              v.source ? 'border-slate-200' : 'border-amber-300 bg-amber-50'
+                            }`}
+                          >
+                            <option value="">Elige el origen…</option>
+                            {VAR_SOURCES.map((s) => <option key={s.value} value={s.value}>{s.label}</option>)}
+                          </select>
+                          {v.source === 'fixed' && (
+                            <input
+                              disabled={readOnly}
+                              value={v.fixed}
+                              onChange={(e) => setVar(key, { fixed: e.target.value })}
+                              placeholder="JULIO20"
+                              className="w-24 border border-slate-200 rounded-lg px-2 py-1 text-xs disabled:bg-slate-50"
+                            />
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    {unmappedVars.length > 0 && (
+                      <p className="text-[10px] text-amber-800">
+                        Sin origen, {unmappedVars.map((k) => `{{${k}}}`).join(', ')} se enviará como
+                        “-” a todos los contactos.
+                      </p>
+                    )}
+
+                    <div className="bg-[#d9fdd3] rounded-lg px-2.5 py-1.5 text-[11px] text-slate-800">
+                      <div className="text-[9px] text-slate-500 mb-0.5">Así lo recibiría Emily Torres:</div>
+                      {previewBody(selectedTpl, form.templateVars, {
+                        firstName: 'Emily', lastName: 'Torres', phone: '593999111222',
+                      })}
+                    </div>
+                  </div>
                 )}
               </>
             ) : (
