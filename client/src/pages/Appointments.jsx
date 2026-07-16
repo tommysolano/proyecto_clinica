@@ -684,7 +684,7 @@ export default function Appointments() {
                 className={`px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${
                   listDay === toYmd(new Date())
                     ? 'bg-emerald-600 text-white border-none'
-                    : 'bg-white text-emerald-700 border border-emerald-200 hover:bg-emerald-50'
+                    : 'bg-white text-slate-600 border border-slate-200 hover:bg-slate-50'
                 }`}
               >
                 Hoy
