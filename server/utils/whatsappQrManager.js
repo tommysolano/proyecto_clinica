@@ -40,14 +40,21 @@ const { emitToCallCenter, emitToUser } = require('../realtime');
 // Anclada a server/ (no al cwd) para que no dependa de cómo arranque pm2.
 const WA_DATA_PATH = path.join(__dirname, '..', '.wwebjs_auth');
 
-// accountId(string) → { client, status, watchdog, gotQr, lastQr, percent }
+// accountId(string) → { client, status, watchdog, syncWatchdog, gotQr, lastQr, percent }
 // lastQr guarda el último QR (dataURL) para que la UI pueda recuperarlo por
 // sondeo HTTP si el socket se cayó y el evento 'whatsapp:qr' se perdió.
 const clients = new Map();
 
+// Reintentos de una sincronización COLGADA (QR escaneado pero 'ready' nunca
+// llega, típico tras un reinicio del server). Se resetea al conectar bien.
+const syncRetries = new Map();
+// Sin progreso de sincronización durante este tiempo → se reinicia el cliente.
+const SYNC_STUCK_MS = 3 * 60 * 1000;
+
 // Cierra y limpia un cliente, persiste el estado final y lo emite a la UI.
 async function teardown(key, entry, { status = 'disconnected', error = '' } = {}) {
   if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
+  if (entry.syncWatchdog) { clearTimeout(entry.syncWatchdog); entry.syncWatchdog = null; }
   // Si ya hay OTRO cliente para este número (el usuario reconectó), solo se
   // destruye este: persistir/emitir aquí pisaría el estado de la conexión nueva.
   const replaced = clients.has(key) && clients.get(key) !== entry;
@@ -171,6 +178,7 @@ async function connect(accountId, { userId } = {}) {
       // destruye y se arranca de cero para garantizar un QR fresco.
       clients.delete(key);
       if (existing.watchdog) clearTimeout(existing.watchdog);
+      if (existing.syncWatchdog) clearTimeout(existing.syncWatchdog);
       try { await existing.client.destroy(); } catch { /* noop */ }
     }
   }
@@ -221,7 +229,7 @@ async function connect(accountId, { userId } = {}) {
     return { ok: false, error: `No se pudo crear el cliente: ${e.message}` };
   }
 
-  const entry = { client, status: 'connecting', watchdog: null, gotQr: false, lastQr: '', percent: null };
+  const entry = { client, status: 'connecting', watchdog: null, syncWatchdog: null, gotQr: false, lastQr: '', percent: null };
   clients.set(key, entry);
   ensureHealthTimer();
   await setAccountStatus(accountId, { status: 'connecting' });
@@ -262,11 +270,45 @@ async function connect(accountId, { userId } = {}) {
     if (userId) emitToUser(userId, 'whatsapp:qr', { accountId: key, ...payload });
   });
 
+  // Watchdog de SINCRONIZACIÓN: tras escanear el QR (o al reconectar con la
+  // sesión guardada), whatsapp-web.js a veces nunca emite 'ready' y el número
+  // queda "sincronizando…" para siempre (típico tras un deploy) — y con él
+  // fallan todos los envíos de las automatizaciones. Cada señal de progreso
+  // re-arma el timer; si pasa SYNC_STUCK_MS sin llegar a 'ready', se destruye
+  // el cliente y se reintenta UNA vez desde la sesión guardada (sin QR nuevo);
+  // si vuelve a colgarse, queda 'disconnected' con el motivo visible.
+  const armSyncWatchdog = () => {
+    if (entry.syncWatchdog) clearTimeout(entry.syncWatchdog);
+    entry.syncWatchdog = setTimeout(async () => {
+      const cur = clients.get(key);
+      if (!cur || cur.client !== client || cur.status !== 'syncing') return;
+      clients.delete(key);
+      try { await client.destroy(); } catch { /* noop */ }
+      const retries = syncRetries.get(key) || 0;
+      if (retries < 1) {
+        syncRetries.set(key, retries + 1);
+        console.warn(`[whatsappQr] sincronización colgada en ${key}; reintentando desde la sesión guardada`);
+        await emitStatus(key, { status: 'connecting' }, userId);
+        connect(accountId, { userId }).catch(() => {});
+        return;
+      }
+      syncRetries.delete(key);
+      await setAccountStatus(accountId, { status: 'disconnected' });
+      await emitStatus(key, {
+        status: 'disconnected',
+        error: 'La sincronización no terminó (WhatsApp no confirmó la sesión). Pulsa "Conectar" para reintentar.',
+      }, userId);
+    }, SYNC_STUCK_MS);
+    entry.syncWatchdog.unref?.();
+  };
+
   client.on('ready', async () => {
     entry.status = 'connected';
     entry.lastQr = '';
     entry.percent = null;
     if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
+    if (entry.syncWatchdog) { clearTimeout(entry.syncWatchdog); entry.syncWatchdog = null; }
+    syncRetries.delete(key);
     const connectedPhone = (client.info?.wid?.user || '').toString();
     await setAccountStatus(accountId, {
       status: 'connected',
@@ -281,20 +323,24 @@ async function connect(accountId, { userId } = {}) {
   client.on('authenticated', async () => {
     entry.status = 'syncing';
     entry.lastQr = '';
+    armSyncWatchdog();
     await setAccountStatus(accountId, { status: 'syncing' });
     await emitStatus(key, { status: 'syncing' }, userId);
   });
 
   // Progreso de la sincronización (0-100). No se persiste; solo informa a la UI.
+  // Cada avance re-arma el watchdog (hay vida: no matar una sync lenta).
   client.on('loading_screen', async (percent) => {
     entry.status = 'syncing';
     entry.percent = Number(percent) || 0;
+    armSyncWatchdog();
     await emitStatus(key, { status: 'syncing', percent: entry.percent }, userId);
   });
 
   client.on('auth_failure', async () => {
     entry.status = 'auth_failure';
     if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
+    if (entry.syncWatchdog) { clearTimeout(entry.syncWatchdog); entry.syncWatchdog = null; }
     await setAccountStatus(accountId, { status: 'auth_failure' });
     await emitStatus(key, { status: 'auth_failure' }, userId);
   });
@@ -433,10 +479,12 @@ async function disconnect(accountId) {
   const entry = clients.get(key);
   if (entry && entry.client) {
     if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
+    if (entry.syncWatchdog) { clearTimeout(entry.syncWatchdog); entry.syncWatchdog = null; }
     try { await entry.client.logout(); } catch { /* noop */ }
     try { await entry.client.destroy(); } catch { /* noop */ }
   }
   clients.delete(key);
+  syncRetries.delete(key);
   await setAccountStatus(accountId, { status: 'disconnected' });
   await emitStatus(key, { status: 'disconnected' });
   return { ok: true };
