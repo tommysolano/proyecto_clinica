@@ -769,6 +769,76 @@ function StepPicker({ onPick, onClose }) {
   );
 }
 
+// Entrada de VARIOS IDs de anuncio (chips). Internamente se guarda como un único
+// string separado por comas en `trigger.adFilter` (el backend lo divide por coma),
+// para no romper compatibilidad con los flujos ya guardados.
+function AdIdsInput({ value = '', onChange }) {
+  const [draft, setDraft] = useState('');
+  const ids = String(value || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+  const commit = (next) => {
+    // De-duplica conservando el orden de inserción.
+    const seen = new Set();
+    const clean = next.filter((id) => (seen.has(id) ? false : (seen.add(id), true)));
+    onChange(clean.join(', '));
+  };
+
+  const addDraft = () => {
+    // Permite pegar varios de golpe (separados por coma o espacios).
+    const parts = draft.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
+    if (!parts.length) { setDraft(''); return; }
+    commit([...ids, ...parts]);
+    setDraft('');
+  };
+
+  return (
+    <div>
+      {ids.length > 0 && (
+        <div className="flex flex-wrap gap-1.5 mb-2">
+          {ids.map((id, i) => (
+            <span
+              key={id}
+              className="inline-flex items-center gap-1 bg-emerald-50 text-emerald-700 border border-emerald-200 rounded-full pl-2.5 pr-1 py-1 text-xs font-mono"
+            >
+              {id}
+              <button
+                type="button"
+                onClick={() => commit(ids.filter((_, idx) => idx !== i))}
+                className="w-4 h-4 flex items-center justify-center rounded-full hover:bg-emerald-200 text-emerald-600 cursor-pointer border-none bg-transparent p-0"
+                title="Quitar este anuncio"
+              >
+                <HiOutlineXMark className="w-3.5 h-3.5" />
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
+      <div className="flex gap-2">
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') { e.preventDefault(); addDraft(); }
+          }}
+          onBlur={addDraft}
+          placeholder="120211234567890123"
+          className="flex-1 border border-slate-200 rounded-lg px-2 py-2 text-sm font-mono"
+        />
+        <button
+          type="button"
+          onClick={addDraft}
+          className="px-3 py-2 rounded-lg bg-emerald-600 text-white text-sm cursor-pointer border-none hover:bg-emerald-700 flex items-center gap-1 shrink-0"
+        >
+          <HiOutlinePlus className="w-4 h-4" /> Añadir
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─────────── Configuración del disparador ───────────
 function TriggerConfig({ trigger = {}, onChange, products = [], clinics = [] }) {
   const set = (patch) => onChange?.({ ...trigger, ...patch });
@@ -852,19 +922,16 @@ function TriggerConfig({ trigger = {}, onChange, products = [], clinics = [] }) 
         </label>
       )}
       {trigger.type === 'ctwa_ad' && (
-        <label className="text-sm">
-          <span className="text-slate-600 block mb-1">ID del anuncio (vacío = cualquier anuncio)</span>
-          <input
-            value={trigger.adFilter || ''}
-            onChange={(e) => set({ adFilter: e.target.value })}
-            placeholder="120211234567890123"
-            className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm font-mono"
-          />
+        <div className="text-sm">
+          <span className="text-slate-600 block mb-1">IDs de anuncios (vacío = cualquier anuncio)</span>
+          <AdIdsInput value={trigger.adFilter || ''} onChange={(v) => set({ adFilter: v })} />
           <span className="text-[11px] text-slate-400 block mt-1">
-            El "Identificador del anuncio" del Administrador de Anuncios de Meta. Varios separados
-            por coma. Dispara cuando alguien escribe tocando ese anuncio (click-to-WhatsApp).
+            El "Identificador del anuncio" del Administrador de Anuncios de Meta. Puedes vincular
+            varios: el flujo se dispara cuando alguien escribe tocando cualquiera de ellos
+            (click-to-WhatsApp). Requiere el número conectado por la API de Meta (Cloud API); los
+            números conectados por QR no reciben el dato del anuncio.
           </span>
-        </label>
+        </div>
       )}
     </div>
   );

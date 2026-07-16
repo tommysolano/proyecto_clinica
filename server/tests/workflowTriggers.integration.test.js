@@ -212,6 +212,76 @@ test('Cita creada DESDE EL CHAT (createAppointmentFromChat) también dispara el 
   assert.ok(sendLog, 'sin rastro del paso de envío');
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Disparador "mensaje desde anuncio (Meta Ads)": un flujo puede vincularse a
+// VARIOS anuncios (adFilter = IDs separados por coma). Dispara con cualquiera de
+// ellos y NO con anuncios ajenos ni con mensajes normales (sin anuncio).
+function ctwaWorkflow(clinicId, adFilter) {
+  const tr = { type: 'ctwa_ad', audience: 'all', adFilter };
+  return Workflow.create({
+    clinic: clinicId,
+    name: 'Anuncio Meta',
+    active: true,
+    triggers: [tr],
+    trigger: tr,
+    steps: [],
+    nodes: [
+      { id: 'trigger', type: 'trigger', position: { x: 0, y: 0 }, data: { triggers: [tr] } },
+      { id: 'n1', type: 'send_message', position: { x: 0, y: 130 }, data: { body: 'Gracias por escribir desde el anuncio' } },
+    ],
+    edges: [{ id: 'e1', source: 'trigger', target: 'n1', sourceHandle: 'default' }],
+  });
+}
+
+test('Trigger "mensaje desde anuncio" (ctwa_ad) con VARIOS IDs: dispara con cualquiera de ellos, no con otros', async () => {
+  const Conversation = require('../models/Conversation');
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const wf = await ctwaWorkflow(clinic._id, 'ad_1, ad_2, ad_3');
+
+  // Mensaje que llega desde el anuncio ad_2 (uno de los vinculados) → inscribe.
+  const conv1 = await Conversation.create({ clinic: clinic._id, phone: '593990000001', channel: 'whatsapp' });
+  const r1 = await workflowEngine.enrollForChatMessage({
+    clinicId: clinic._id, conversation: conv1, patient: null,
+    phone: conv1.phone, text: 'Hola, vi su anuncio', isNew: true,
+    referral: { adId: 'ad_2' },
+  });
+  assert.equal(r1.enrolled, 1, 'un anuncio vinculado (ad_2) debía disparar el flujo');
+  assert.ok(await WorkflowEnrollment.findOne({ workflow: wf._id, conversation: conv1._id }));
+
+  // Mensaje desde un anuncio NO vinculado (ad_9) → no inscribe.
+  const conv2 = await Conversation.create({ clinic: clinic._id, phone: '593990000002', channel: 'whatsapp' });
+  const r2 = await workflowEngine.enrollForChatMessage({
+    clinicId: clinic._id, conversation: conv2, patient: null,
+    phone: conv2.phone, text: 'Hola', isNew: true,
+    referral: { adId: 'ad_9' },
+  });
+  assert.equal(r2.enrolled, 0, 'un anuncio ajeno (ad_9) no debía disparar el flujo');
+
+  // Mensaje normal SIN anuncio (chat común) → tampoco dispara el ctwa_ad.
+  const conv3 = await Conversation.create({ clinic: clinic._id, phone: '593990000003', channel: 'whatsapp' });
+  const r3 = await workflowEngine.enrollForChatMessage({
+    clinicId: clinic._id, conversation: conv3, patient: null,
+    phone: conv3.phone, text: 'Hola', isNew: true,
+    referral: null,
+  });
+  assert.equal(r3.enrolled, 0, 'un mensaje sin anuncio no debía disparar el ctwa_ad');
+});
+
+test('Trigger "mensaje desde anuncio" (ctwa_ad) SIN filtro: dispara con cualquier anuncio', async () => {
+  const Conversation = require('../models/Conversation');
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const wf = await ctwaWorkflow(clinic._id, ''); // vacío = cualquier anuncio
+
+  const conv = await Conversation.create({ clinic: clinic._id, phone: '593990000004', channel: 'whatsapp' });
+  const r = await workflowEngine.enrollForChatMessage({
+    clinicId: clinic._id, conversation: conv, patient: null,
+    phone: conv.phone, text: 'Hola', isNew: true,
+    referral: { adId: 'cualquier_id_de_anuncio' },
+  });
+  assert.equal(r.enrolled, 1, 'sin filtro, cualquier anuncio debía disparar el flujo');
+  assert.ok(await WorkflowEnrollment.findOne({ workflow: wf._id, conversation: conv._id }));
+});
+
 /** Día calendario futuro (YYYY-MM-DD) a N días de hoy: las citas no pueden agendarse en el pasado. */
 function futureDate(days) {
   const d = new Date(Date.now() + days * 86400000);
