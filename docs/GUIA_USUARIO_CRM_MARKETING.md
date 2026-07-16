@@ -416,18 +416,39 @@ por la fecha en que se crearon).
 
 - **KPIs:** *Chats abiertos*, **"Sin responder"** (chats que superaron el umbral de SLA, en rojo si hay
   alguno), *Citas creadas*, *Citas asistidas* y *Oportunidades*.
-- **Por agente:** tabla con total de chats, abiertos, **citas creadas** y **asistidas** por agente.
+- **Por agente:** tabla con total de chats, abiertos, **sin responder**, **citas creadas** y
+  **asistidas** por agente.
+  - **Sin responder** son los chats abiertos de ese agente cuyo **último mensaje es del paciente**, es
+    decir que están esperando respuesta **ahora mismo** (en rojo si hay alguno). Ojo: la **tarjeta** de
+    arriba es más estricta y cuenta solo los que ya pasaron del umbral de SLA, así que los dos números
+    no tienen por qué coincidir.
+  - Los chats que **no ha tomado nadie** aparecen agrupados en una fila **Sin asignar**: suelen ser los
+    que llevan más tiempo esperando.
 - **Tiempo de primera respuesta por agente:** promedio (en verde si está dentro del umbral de SLA, en
   rojo si lo supera) y número de conversaciones.
-- **Tiempo de respuesta por chat:** el detalle chat a chat — contacto, agente, cuándo entró y cuánto se
-  tardó en contestarlo. Los que **siguen sin responder** salen primero (en rojo), y después los que más
-  tardaron, para que veas de un vistazo dónde está el problema. Máximo 200 chats.
 - **Embudo de oportunidades:** total y valor económico por etapa.
 
 > **Sobre las citas.** Se cuentan solo las agendadas **desde un chat** (el botón *Crear cita* del CRM),
 > no las que se crean en la página de Citas: el panel mide el trabajo del call center. *Asistidas* incluye
-> las marcadas como **asistida** y las **completadas** por el doctor. Las citas creadas **antes de esta
-> versión** no guardaban de qué chat venían, así que no aparecen en el conteo.
+> las marcadas como **asistida** y las **completadas** por el doctor.
+>
+> Las citas creadas **antes de esta versión** no guardaban de qué chat venían y saldrían como 0. Para
+> recuperarlas hay un script; las nuevas se vinculan solas.
+
+**Recuperar las citas antiguas en el panel** (una sola vez, en el servidor):
+
+```bash
+node scripts/backfillAppointmentConversation.js                          # informe, no toca nada
+node scripts/backfillAppointmentConversation.js --commit                 # vincula solo las seguras
+node scripts/backfillAppointmentConversation.js --por-paciente --commit  # + las probables
+```
+
+El primer comando **no escribe**: solo dice cuántas citas puede vincular y con qué grado de certeza.
+- **Seguras:** el motivo de la cita es el automático (`Cita desde chat <teléfono>`), que identifica el
+  chat exacto. Sin margen de error.
+- **Probables:** la cita es de un paciente que tiene un único chat. Recupera las citas en las que el
+  agente escribió un motivo propio, pero **podría colar alguna** agendada desde la página de Citas para
+  un paciente que además tiene chat. Por eso hay que pedirlas a propósito con `--por-paciente`.
 
 ---
 

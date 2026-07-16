@@ -1,6 +1,6 @@
 /**
  * Panel de Supervisión del CRM (GET /chats/stats): filtro por fechas, tiempo de
- * respuesta por chat y por agente, chats sin responder y citas creadas/asistidas
+ * respuesta por agente, chats sin responder (por agente y sin asignar) y citas
  * nacidas de un chat.
  *
  * Prueba contra el controller real y un Mongo en memoria: la agregación cruza
@@ -75,14 +75,17 @@ const statsFor = (clinicId, userId, query = {}) =>
   H.runController(chat.getStats, H.mockReq(clinicId, userId, {}, { query }));
 
 // ─────────────────────────────────────────────────────────────────────────────
-test('tiempo de respuesta: por chat y promedio por agente', async () => {
+test('tiempo de primera respuesta: promedio por agente', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const emily = await makeAgent('Emily');
+  const jaime = await makeAgent('Jaime');
   const base = new Date('2026-07-10T14:00:00Z');
 
   // Emily: uno a 10 min y otro a 30 min → promedio 20.
   await makeConv(clinicId, { phone: '111', agent: emily, contactName: 'Uno', createdAt: base, firstResponseAt: new Date(+base + 10 * MIN) });
   await makeConv(clinicId, { phone: '222', agent: emily, contactName: 'Dos', createdAt: base, firstResponseAt: new Date(+base + 30 * MIN) });
+  // Un chat sin responder no debe arrastrar el promedio de nadie.
+  await makeConv(clinicId, { phone: '333', agent: jaime, contactName: 'Tres', createdAt: base, firstResponseAt: null });
 
   const r = await statsFor(clinicId, userId);
   assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
@@ -90,28 +93,52 @@ test('tiempo de respuesta: por chat y promedio por agente', async () => {
   const emilyAvg = r.payload.responseTimes.find((x) => x.name === 'Emily');
   assert.equal(emilyAvg.avgMinutes, 20);
   assert.equal(emilyAvg.count, 2);
-
-  // Y chat a chat, con su tiempo individual.
-  const uno = r.payload.perChat.find((c) => c.contactName === 'Uno');
-  const dos = r.payload.perChat.find((c) => c.contactName === 'Dos');
-  assert.equal(uno.responseMinutes, 10);
-  assert.equal(dos.responseMinutes, 30);
-  assert.equal(uno.assignedToName, 'Emily');
+  assert.equal(r.payload.responseTimes.find((x) => x.name === 'Jaime'), undefined);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-test('perChat: los chats sin responder van primero y se marcan como tales', async () => {
+test('por agente: "sin responder" son los chats abiertos que esperan respuesta', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const emily = await makeAgent('Emily');
+  const jaime = await makeAgent('Jaime');
+  const base = new Date('2026-07-10T14:00:00Z');
+
+  // Emily: dos esperando respuesta (último mensaje del paciente) y uno contestado.
+  await makeConv(clinicId, { phone: '111', agent: emily, createdAt: base, lastMessageDirection: 'in' });
+  await makeConv(clinicId, { phone: '222', agent: emily, createdAt: base, lastMessageDirection: 'in' });
+  await makeConv(clinicId, { phone: '333', agent: emily, createdAt: base, lastMessageDirection: 'out' });
+  // Un chat cerrado con el último mensaje entrante NO cuenta: ya no está en juego.
+  await makeConv(clinicId, { phone: '444', agent: emily, createdAt: base, lastMessageDirection: 'in', status: 'closed' });
+  // Jaime, al día.
+  await makeConv(clinicId, { phone: '555', agent: jaime, createdAt: base, lastMessageDirection: 'out' });
+
+  const r = await statsFor(clinicId, userId);
+  const rowEmily = r.payload.byAgent.find((a) => a.name === 'Emily');
+  const rowJaime = r.payload.byAgent.find((a) => a.name === 'Jaime');
+  assert.equal(rowEmily.unanswered, 2);
+  assert.equal(rowEmily.total, 4);
+  assert.equal(rowJaime.unanswered, 0);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('por agente: los chats sin asignar salen en su propia fila', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const emily = await makeAgent('Emily');
   const base = new Date('2026-07-10T14:00:00Z');
 
-  await makeConv(clinicId, { phone: '111', agent: emily, contactName: 'Respondido', createdAt: base, firstResponseAt: new Date(+base + 5 * MIN) });
-  await makeConv(clinicId, { phone: '222', agent: emily, contactName: 'Pendiente', createdAt: base, firstResponseAt: null });
+  await makeConv(clinicId, { phone: '111', agent: emily, createdAt: base, lastMessageDirection: 'out' });
+  // Nadie los ha tomado y el paciente espera: es lo que hay que ver.
+  await makeConv(clinicId, { phone: '222', agent: null, createdAt: base, lastMessageDirection: 'in' });
+  await makeConv(clinicId, { phone: '333', agent: null, createdAt: base, lastMessageDirection: 'in' });
 
   const r = await statsFor(clinicId, userId);
-  assert.equal(r.payload.perChat[0].contactName, 'Pendiente');
-  assert.equal(r.payload.perChat[0].responseMinutes, null);
-  assert.equal(r.payload.perChat[1].responseMinutes, 5);
+  const sinAsignar = r.payload.byAgent.find((a) => a.name === 'Sin asignar');
+  assert.ok(sinAsignar, 'debe existir la fila de sin asignar');
+  assert.equal(sinAsignar._id, null);
+  assert.equal(sinAsignar.total, 2);
+  assert.equal(sinAsignar.unanswered, 2);
+  // Y no se le cuelgan citas a una fila que no es de nadie.
+  assert.equal(sinAsignar.appointmentsCreated, 0);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -216,23 +243,21 @@ test('filtro por fechas: acota chats y citas al rango, e incluye los bordes', as
   await makeApptFromChat(clinicId, { conv: cOut, agent: emily, status: 'asistida', createdAt: fuera });
 
   const julio = await statsFor(clinicId, userId, { from: '2026-07-01', to: '2026-07-31' });
-  assert.equal(julio.payload.perChat.length, 1);
-  assert.equal(julio.payload.perChat[0].contactName, 'Julio');
+  assert.equal(julio.payload.byAgent.find((a) => a.name === 'Emily').total, 1);
   assert.equal(julio.payload.appointments.created, 1);
 
   // Sin rango: todo el histórico.
   const todo = await statsFor(clinicId, userId);
-  assert.equal(todo.payload.perChat.length, 2);
+  assert.equal(todo.payload.byAgent.find((a) => a.name === 'Emily').total, 2);
   assert.equal(todo.payload.appointments.created, 2);
 
   // Un rango de un solo día debe incluir ese día completo (hasta las 23:59).
   const soloEseDia = await statsFor(clinicId, userId, { from: '2026-07-10', to: '2026-07-10' });
-  assert.equal(soloEseDia.payload.perChat.length, 1);
+  assert.equal(soloEseDia.payload.byAgent.find((a) => a.name === 'Emily').total, 1);
   assert.equal(soloEseDia.payload.appointments.created, 1);
 
   // Un rango sin actividad no rompe: devuelve ceros.
   const vacio = await statsFor(clinicId, userId, { from: '2026-01-01', to: '2026-01-31' });
-  assert.equal(vacio.payload.perChat.length, 0);
   assert.equal(vacio.payload.appointments.created, 0);
   assert.equal(vacio.payload.byAgent.length, 0);
 });

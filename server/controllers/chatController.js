@@ -2315,18 +2315,40 @@ exports.getStats = async (req, res) => {
         { $group: { _id: '$opportunity.stage', count: { $sum: 1 }, value: { $sum: '$opportunity.expectedValue' } } },
       ]),
       Conversation.countDocuments({ ...match, isFeatured: true }),
+      // Ojo: NO se filtra por assignedTo. Los chats SIN ASIGNAR salen agrupados en
+      // su propia fila: son justo los que nadie responde, y ocultarlos hacía que
+      // la tabla no cuadrara con el indicador de "sin responder".
       Conversation.aggregate([
-        { $match: { ...match, assignedTo: { $ne: null } } },
+        { $match: match },
         {
           $group: {
             _id: '$assignedTo',
             total: { $sum: 1 },
             open: { $sum: { $cond: [{ $eq: ['$status', 'open'] }, 1, 0] } },
+            // Esperando respuesta: chat abierto cuyo ÚLTIMO mensaje es del paciente.
+            unanswered: {
+              $sum: {
+                $cond: [
+                  { $and: [{ $eq: ['$status', 'open'] }, { $eq: ['$lastMessageDirection', 'in'] }] },
+                  1,
+                  0,
+                ],
+              },
+            },
           },
         },
         { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'user' } },
-        { $unwind: '$user' },
-        { $project: { _id: 1, name: '$user.name', email: '$user.email', total: 1, open: 1 } },
+        { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
+        {
+          $project: {
+            _id: 1,
+            name: { $ifNull: ['$user.name', 'Sin asignar'] },
+            email: '$user.email',
+            total: 1,
+            open: 1,
+            unanswered: 1,
+          },
+        },
         { $sort: { total: -1 } },
       ]),
     ]);
@@ -2335,7 +2357,7 @@ exports.getStats = async (req, res) => {
     // responder cuyo último mensaje es entrante y lleva más del umbral abierto).
     const SLA_MINUTES = Number(req.query.slaMinutes || 60);
     const slaCutoff = new Date(Date.now() - SLA_MINUTES * 60000);
-    const [responseTimes, unanswered, perChat, appointmentsByAgent] = await Promise.all([
+    const [responseTimes, unanswered, appointmentsByAgent] = await Promise.all([
       Conversation.aggregate([
         { $match: { ...match, firstResponseAt: { $ne: null } } },
         { $project: { assignedTo: 1, respMs: { $subtract: ['$firstResponseAt', '$createdAt'] } } },
@@ -2351,34 +2373,6 @@ exports.getStats = async (req, res) => {
         lastMessageDirection: 'in',
         lastMessageAt: { $lt: slaCutoff },
       }),
-      // Tiempo de respuesta CHAT A CHAT. Incluye los que aún no tienen respuesta
-      // (responseMinutes: null) para que el supervisor vea justo los que faltan;
-      // los peores primero, que son los que hay que mirar.
-      Conversation.aggregate([
-        { $match: match },
-        {
-          $project: {
-            contactName: 1,
-            phone: 1,
-            assignedToName: 1,
-            createdAt: 1,
-            status: 1,
-            lastMessageDirection: 1,
-            lastMessageAt: 1,
-            answered: { $cond: [{ $ifNull: ['$firstResponseAt', false] }, true, false] },
-            responseMinutes: {
-              $cond: [
-                { $ifNull: ['$firstResponseAt', false] },
-                { $round: [{ $divide: [{ $subtract: ['$firstResponseAt', '$createdAt'] }, 60000] }, 1] },
-                null,
-              ],
-            },
-          },
-        },
-        // Sin responder arriba del todo; luego, la respuesta más lenta primero.
-        { $sort: { answered: 1, responseMinutes: -1, createdAt: -1 } },
-        { $limit: 200 },
-      ]),
       // Citas nacidas de un chat, por agente que las creó. Se filtran por el chat
       // (`conversation`), no por Appointment.clinic: una cita del call center puede
       // agendarse en OTRA sucursal y se perdería al filtrar por clínica.
@@ -2414,8 +2408,9 @@ exports.getStats = async (req, res) => {
     // que las filas que no existan en byAgent se añaden al final.
     const apptByAgent = new Map(appointmentsByAgent.map((a) => [String(a._id), a]));
     const rows = byAgent.map((a) => {
-      const appt = apptByAgent.get(String(a._id));
-      apptByAgent.delete(String(a._id));
+      // La fila "Sin asignar" tiene _id null y nunca casa con un createdBy.
+      const appt = a._id ? apptByAgent.get(String(a._id)) : null;
+      if (a._id) apptByAgent.delete(String(a._id));
       return { ...a, appointmentsCreated: appt?.created || 0, appointmentsAttended: appt?.attended || 0 };
     });
     if (apptByAgent.size) {
@@ -2430,6 +2425,7 @@ exports.getStats = async (req, res) => {
           open: 0,
           appointmentsCreated: appt?.created || 0,
           appointmentsAttended: appt?.attended || 0,
+          unanswered: 0,
         });
       }
     }
@@ -2445,7 +2441,6 @@ exports.getStats = async (req, res) => {
       featuredCount,
       byAgent: rows,
       responseTimes,
-      perChat,
       appointments,
       range: { from: req.query.from || '', to: req.query.to || '' },
       sla: { thresholdMinutes: SLA_MINUTES, unanswered },

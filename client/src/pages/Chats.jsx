@@ -2524,7 +2524,6 @@ function SupervisorBoard({ stats, reload, agents = [], range, onRangeChange }) {
   const byAgent = stats?.byAgent || [];
   const opps = stats?.opportunities || [];
   const responseTimes = stats?.responseTimes || [];
-  const perChat = stats?.perChat || [];
   const appointments = stats?.appointments || { created: 0, attended: 0 };
   const sla = stats?.sla || { thresholdMinutes: 60, unanswered: 0 };
   const presets = rangePresets();
@@ -2595,23 +2594,29 @@ function SupervisorBoard({ stats, reload, agents = [], range, onRangeChange }) {
                 <th className="text-left px-3 py-2">Agente</th>
                 <th className="text-right px-3 py-2">Total chats</th>
                 <th className="text-right px-3 py-2">Abiertos</th>
+                <th className="text-right px-3 py-2">Sin responder</th>
                 <th className="text-right px-3 py-2">Citas creadas</th>
                 <th className="text-right px-3 py-2">Asistidas</th>
               </tr>
             </thead>
             <tbody>
               {byAgent.map((a) => (
-                <tr key={a._id} className="border-t border-slate-100">
-                  <td className="px-3 py-2 font-medium">{a.name}</td>
+                <tr key={a._id || 'unassigned'} className="border-t border-slate-100">
+                  <td className={`px-3 py-2 font-medium ${a._id ? '' : 'text-slate-400 italic'}`}>{a.name}</td>
                   <td className="px-3 py-2 text-right">{a.total}</td>
                   <td className="px-3 py-2 text-right">{a.open}</td>
+                  <td className="px-3 py-2 text-right">
+                    <span className={a.unanswered > 0 ? 'text-rose-600 font-bold' : 'text-slate-400'}>
+                      {a.unanswered}
+                    </span>
+                  </td>
                   <td className="px-3 py-2 text-right font-semibold">{a.appointmentsCreated}</td>
                   <td className="px-3 py-2 text-right text-emerald-700 font-bold">{a.appointmentsAttended}</td>
                 </tr>
               ))}
               {byAgent.length === 0 && (
                 <tr>
-                  <td colSpan={5} className="px-3 py-6 text-center text-slate-400 text-sm">
+                  <td colSpan={6} className="px-3 py-6 text-center text-slate-400 text-sm">
                     Sin actividad en este periodo
                   </td>
                 </tr>
@@ -2620,8 +2625,11 @@ function SupervisorBoard({ stats, reload, agents = [], range, onRangeChange }) {
           </table>
         </div>
         <p className="text-[11px] text-slate-400 mt-2">
-          Solo se cuentan las citas agendadas <strong>desde un chat</strong>. Las citas creadas antes de
-          esta versión no guardaban el chat de origen, así que no aparecen aquí.
+          <strong>Sin responder</strong>: chats abiertos de ese agente cuyo último mensaje es del paciente,
+          esperando respuesta ahora mismo (la tarjeta de arriba cuenta solo los que ya pasaron de{' '}
+          {sla.thresholdMinutes} min). Los chats que aún no tiene nadie salen en la fila{' '}
+          <em>Sin asignar</em>. En <strong>citas</strong> solo se cuentan las agendadas{' '}
+          <strong>desde un chat</strong>.
         </p>
       </section>
 
@@ -2663,49 +2671,6 @@ function SupervisorBoard({ stats, reload, agents = [], range, onRangeChange }) {
         </p>
       </section>
 
-      <section className="bg-white border border-slate-200 rounded-xl p-4">
-        <h2 className="font-semibold text-slate-800 mb-2">Tiempo de respuesta por chat</h2>
-        <div className="overflow-x-auto">
-          <table className="tbl">
-            <thead className="bg-slate-50 text-slate-600">
-              <tr>
-                <th className="text-left px-3 py-2">Chat</th>
-                <th className="text-left px-3 py-2">Agente</th>
-                <th className="text-left px-3 py-2">Entró</th>
-                <th className="text-right px-3 py-2">1ª respuesta</th>
-              </tr>
-            </thead>
-            <tbody>
-              {perChat.map((c) => (
-                <tr key={c._id} className="border-t border-slate-100">
-                  <td className="px-3 py-2 font-medium">{c.contactName || c.phone}</td>
-                  <td className="px-3 py-2 text-slate-500">{c.assignedToName || 'Sin asignar'}</td>
-                  <td className="px-3 py-2 text-slate-500">{fmtDateTime(c.createdAt)}</td>
-                  <td className="px-3 py-2 text-right">
-                    {c.responseMinutes == null ? (
-                      <span className="font-semibold text-rose-600">Sin responder</span>
-                    ) : (
-                      <span className={`font-semibold ${c.responseMinutes <= sla.thresholdMinutes ? 'text-emerald-700' : 'text-rose-600'}`}>
-                        {fmtMinutes(c.responseMinutes)}
-                      </span>
-                    )}
-                  </td>
-                </tr>
-              ))}
-              {perChat.length === 0 && (
-                <tr>
-                  <td colSpan={4} className="px-3 py-6 text-center text-slate-400 text-sm">
-                    Sin chats en este periodo
-                  </td>
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-        <p className="text-[11px] text-slate-400 mt-2">
-          Los que faltan por responder salen primero, y luego los que más tardaron. Máximo 200 chats.
-        </p>
-      </section>
 
       <section className="bg-white border border-slate-200 rounded-xl p-4">
         <h2 className="font-semibold text-slate-800 mb-2">Embudo de oportunidades</h2>
