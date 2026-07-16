@@ -145,6 +145,10 @@ connectDB().then(() => {
   // petición HTTP porque 47k filas tardan minutos y nginx corta a los 60s.
   const { processPendingImports } = require('./utils/contactImportRunner');
   setInterval(() => { processPendingImports().catch(() => {}); }, 60 * 1000);
+  // Job: tandas del envío masivo por goteo (cada 60s). El goteo es lo que evita
+  // que una ráfaga tumbe el número (por QR) o rebote contra el límite de Meta.
+  const { processDueDrips } = require('./utils/dripRunner');
+  setInterval(() => { processDueDrips().catch(() => {}); }, 60 * 1000);
   // Motor de workflows: suscribe a eventos de dominio + reanuda esperas vencidas.
   const workflowEngine = require('./utils/workflowEngine');
   workflowEngine.subscribeDomainEvents();
