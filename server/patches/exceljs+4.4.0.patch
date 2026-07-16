@@ -1,0 +1,84 @@
+diff --git a/node_modules/exceljs/lib/stream/xlsx/workbook-reader.js b/node_modules/exceljs/lib/stream/xlsx/workbook-reader.js
+index 0d3afd6..99fa09d 100644
+--- a/node_modules/exceljs/lib/stream/xlsx/workbook-reader.js
++++ b/node_modules/exceljs/lib/stream/xlsx/workbook-reader.js
+@@ -88,6 +88,8 @@ class WorkbookReader extends EventEmitter {
+     for await (const entry of iterateStream(zip)) {
+       let match;
+       let sheetNo;
++      // PATCH shiluv: ver el autodrain del final del bucle.
++      let piped = false;
+       switch (entry.path) {
+         case '_rels/.rels':
+           break;
+@@ -107,24 +109,40 @@ class WorkbookReader extends EventEmitter {
+           if (entry.path.match(/xl\/worksheets\/sheet\d+[.]xml/)) {
+             match = entry.path.match(/xl\/worksheets\/sheet(\d+)[.]xml/);
+             sheetNo = match[1];
+-            if (this.sharedStrings && this.workbookRels) {
++            // PATCH shiluv (defensivo): _parseWorksheet lee `this.model.sheets`,
++            // que solo existe tras parsear xl/workbook.xml. Los ficheros escritos
++            // por exceljs ponen la hoja ANTES que workbook.xml y sharedStrings,
++            // así que ya caían en la rama diferida; pero otro generador (Excel,
++            // Google Sheets) puede poner sharedStrings antes de la hoja y entrar
++            // aquí con el modelo aún sin cargar. Exigirlo difiere la hoja al
++            // temporal, que se parsea al final, cuando workbook.xml ya se leyó.
++            // (Esto NO es lo que arreglaba el fallo aleatorio: ver el tmp.fileSync
++            // de abajo.)
++            if (this.sharedStrings && this.workbookRels && this.model) {
+               yield* this._parseWorksheet(iterateStream(entry), sheetNo);
+             } else {
+               // create temp file for each worksheet
++              // PATCH shiluv: `tmp.file()` es ASÍNCRONO, así que el .pipe() se
++              // enganchaba uno o más ticks después de recibir la entrada. Para
++              // entonces unzipper ya había empezado a emitir (o a drenar) sus
++              // datos: el temporal quedaba vacío o a medias, la iteración del zip
++              // moría antes de llegar a xl/sharedStrings.xml y xl/workbook.xml, y
++              // al procesar la hoja diferida reventaba con "Cannot read properties
++              // of undefined (reading 'sheets')". Un fallo ALEATORIO (~1 de cada 4)
++              // al leer .xlsx. Con la versión síncrona el pipe se engancha en el
++              // MISMO tick y no se pierde nada.
++              const tmpFile = tmp.fileSync();
++              waitingWorkSheets.push({
++                sheetNo,
++                path: tmpFile.name,
++                tempFileCleanupCallback: tmpFile.removeCallback,
++              });
++              piped = true; // ya consumida: no volver a drenarla
+               await new Promise((resolve, reject) => {
+-                tmp.file((err, path, fd, tempFileCleanupCallback) => {
+-                  if (err) {
+-                    return reject(err);
+-                  }
+-                  waitingWorkSheets.push({sheetNo, path, tempFileCleanupCallback});
+-
+-                  const tempStream = fs.createWriteStream(path);
+-                  tempStream.on('error', reject);
+-                  entry.pipe(tempStream);
+-                  return tempStream.on('finish', () => {
+-                    return resolve();
+-                  });
+-                });
++                const tempStream = fs.createWriteStream(tmpFile.name);
++                tempStream.on('error', reject);
++                entry.pipe(tempStream);
++                tempStream.on('finish', resolve);
+               });
+             }
+           } else if (entry.path.match(/xl\/worksheets\/_rels\/sheet\d+[.]xml.rels/)) {
+@@ -134,7 +152,14 @@ class WorkbookReader extends EventEmitter {
+           }
+           break;
+       }
+-      entry.autodrain();
++      // PATCH shiluv: no drenar una entrada que YA se canalizó a un temporal (la
++      // rama de las hojas diferidas). Hacerlo dejaba al lector del zip en mal
++      // estado y la iteración terminaba antes de tiempo: xl/workbook.xml (que va
++      // DESPUÉS de las hojas en los ficheros de exceljs) no llegaba a parsearse,
++      // `this.model` quedaba undefined y al procesar las hojas diferidas
++      // reventaba con "Cannot read properties of undefined (reading 'sheets')".
++      // Se manifestaba como un fallo ALEATORIO al leer .xlsx (~1 de cada 4).
++      if (!piped) entry.autodrain();
+     }
+ 
+     for (const {sheetNo, path, tempFileCleanupCallback} of waitingWorkSheets) {

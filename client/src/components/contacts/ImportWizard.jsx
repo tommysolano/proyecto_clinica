@@ -248,7 +248,9 @@ function StepMapping({ analysis, mapping, setMapping }) {
             <tbody>
               {mapping.map((m, i) => {
                 const isCustom = (m.field || '').startsWith('custom:');
-                const samples = (analysis.samples || []).map((s) => s[m.column]).filter((v) => String(v || '').trim());
+                // `samples` viene como [{ column, values: [...] }], no como filas.
+                const samples = ((analysis.samples || []).find((s) => s.column === m.column)?.values || [])
+                  .filter((v) => String(v || '').trim());
                 return (
                   <tr key={m.column} className="border-t border-slate-100">
                     <td className="px-3 py-2 font-semibold text-slate-700 whitespace-nowrap">{m.column}</td>

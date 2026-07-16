@@ -13,7 +13,7 @@ const os = require('node:os');
 const path = require('node:path');
 const ExcelJS = require('exceljs');
 
-const { mapRow, suggestMapping, splitFullName } = require('../utils/contactRowMapper');
+const { mapRow, suggestMapping, splitFullName, guessField } = require('../utils/contactRowMapper');
 const { readHeaders, iterateRows } = require('../utils/contactFileReader');
 
 // ───────────────────────── mapeo de filas ─────────────────────────
@@ -206,4 +206,57 @@ test('el archivo entero se recorre sin cargarlo en memoria (5.000 filas)', async
   } finally {
     fs.unlinkSync(file);
   }
+});
+
+test('suggestMapping: "Nombre completo" NO se confunde con "Nombres"', () => {
+  // La regla de firstName no está anclada, así que "Nombre completo" —que empieza
+  // por "Nombre"— la ganaba y el nombre ENTERO acababa en firstName: la plantilla
+  // saludaba "Hola María José Pérez Gómez" y {{apellido}} salía vacío.
+  assert.equal(guessField('Nombre completo'), 'displayName');
+  assert.equal(guessField('Nombre Completo'), 'displayName');
+  assert.equal(guessField('nombre_completo'), 'displayName');
+  assert.equal(guessField('Nombre de contacto'), 'displayName');
+  assert.equal(guessField('Full Name'), 'displayName');
+  assert.equal(guessField('Name'), 'displayName');
+
+  // Pero una columna de nombre de pila sigue siendo firstName.
+  assert.equal(guessField('Nombre'), 'firstName');
+  assert.equal(guessField('Nombres'), 'firstName');
+  assert.equal(guessField('First Name'), 'firstName');
+  assert.equal(guessField('Nombre del paciente'), 'firstName');
+  assert.equal(guessField('Apellidos'), 'lastName');
+});
+
+test('cadena completa: Excel con nombre y apellido separados llena bien la plantilla', () => {
+  // Es el caso que importa: columnas separadas → cada variable con SU dato.
+  const { buildContactTemplateVars, suggestVarMapping } = require('../utils/contactTemplateVars');
+  const mapping = suggestMapping(['Nombre', 'Apellido', 'Numero']);
+  const r = mapRow({ Nombre: 'Emily', Apellido: 'Torres Vera', Numero: '0999111222' }, mapping);
+
+  assert.equal(r.ok, true);
+  assert.equal(r.contact.firstName, 'Emily');
+  assert.equal(r.contact.lastName, 'Torres Vera');
+  assert.equal(r.contact.phone, '593999111222');
+
+  const tpl = {
+    body: 'Hola {{nombre}} {{apellido}}, te esperamos.',
+    variables: [{ key: 'nombre', example: 'María' }, { key: 'apellido', example: 'Pérez' }],
+  };
+  assert.deepEqual(
+    buildContactTemplateVars(tpl, r.contact, suggestVarMapping(tpl)),
+    ['Emily', 'Torres Vera']
+  );
+});
+
+test('cadena completa: una sola columna de nombre completo se parte para el saludo', () => {
+  const { buildContactTemplateVars, suggestVarMapping } = require('../utils/contactTemplateVars');
+  const mapping = suggestMapping(['Nombre completo', 'Celular']);
+  const r = mapRow({ 'Nombre completo': 'María José Pérez Gómez', Celular: '0998220447' }, mapping);
+
+  // La primera palabra es el nombre: el saludo queda bien, que es lo que importa.
+  assert.equal(r.contact.firstName, 'María');
+  assert.equal(r.contact.displayName, 'María José Pérez Gómez', 'se conserva lo que venía en el archivo');
+
+  const tpl = { body: 'Hola {{nombre}}', variables: [{ key: 'nombre', example: 'X' }] };
+  assert.deepEqual(buildContactTemplateVars(tpl, r.contact, suggestVarMapping(tpl)), ['María']);
 });

@@ -117,6 +117,16 @@ async function csvIterate(filePath, onRow) {
 
 // ─────────────────────────── XLSX ───────────────────────────
 
+/**
+ * OJO: el lector en streaming de exceljs 4.4.0 tiene un fallo que se manifiesta
+ * como un error ALEATORIO (~1 de cada 4) al leer .xlsx: difería la hoja a un
+ * temporal con `tmp.file()` (asíncrono), así que el .pipe() se enganchaba tarde y
+ * se perdían datos de la entrada del zip. La iteración moría antes de leer
+ * sharedStrings/workbook.xml y reventaba con "Cannot read properties of undefined
+ * (reading 'sheets')". Está corregido en patches/exceljs+4.4.0.patch (patch-package
+ * lo aplica solo en el postinstall). No quitar ese parche sin volver a probarlo en
+ * bucle: un solo intento no reproduce el fallo.
+ */
 function xlsxReader(filePath) {
   return new ExcelJS.stream.xlsx.WorkbookReader(filePath, {
     entries: 'emit',

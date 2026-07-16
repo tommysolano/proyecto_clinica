@@ -96,9 +96,13 @@ function mapRow(row, mapping) {
  */
 const GUESSES = [
   [/^(phone|tel[eé]fono|celular|m[oó]vil|movil|whatsapp|numero|n[uú]mero|contact number)/i, 'phone'],
+  // "Nombre completo" va ANTES que "Nombres" y es de coincidencia exacta ($): la
+  // regla de firstName no está anclada, así que "Nombre completo" —que empieza por
+  // "Nombre"— la ganaba y el nombre entero acababa en firstName. Resultado: la
+  // plantilla saludaba "Hola María José Pérez Gómez" y {{apellido}} salía vacío.
+  [/^(full ?name|nombre[ _]?completo|contact name|nombre de contacto|name)$/i, 'displayName'],
   [/^(first ?name|nombres?|given)/i, 'firstName'],
   [/^(last ?name|apellidos?|surname)/i, 'lastName'],
-  [/^(full ?name|nombre completo|contact name|nombre de contacto|name)$/i, 'displayName'],
   [/^(e-?mail|correo)/i, 'email'],
   [/^(tags?|etiquetas?)/i, 'tags'],
   [/^(notes?|notas|observaciones)/i, 'notes'],
