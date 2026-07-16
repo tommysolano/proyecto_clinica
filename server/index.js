@@ -85,6 +85,7 @@ app.use('/api/reviews', require('./routes/reviews'));
 app.use('/api/booking-config', require('./routes/bookingConfig'));
 app.use('/api/public', require('./routes/public'));
 app.use('/api/chats', require('./routes/chats'));
+app.use('/api/contacts', require('./routes/contacts'));
 app.use('/api/call-center', require('./routes/callCenter'));
 app.use('/api/call-center-config', require('./routes/callCenterConfig'));
 app.use('/api/commissions', require('./routes/commissions'));
@@ -140,6 +141,10 @@ connectDB().then(() => {
   // Job: procesar mensajes de campañas encolados/vencidos (cada 60s).
   const { processDueScheduledMessages } = require('./controllers/campaignController');
   setInterval(() => { processDueScheduledMessages().catch(() => {}); }, 60 * 1000);
+  // Job: importaciones de contactos pendientes (cada 60s). Van fuera de la
+  // petición HTTP porque 47k filas tardan minutos y nginx corta a los 60s.
+  const { processPendingImports } = require('./utils/contactImportRunner');
+  setInterval(() => { processPendingImports().catch(() => {}); }, 60 * 1000);
   // Motor de workflows: suscribe a eventos de dominio + reanuda esperas vencidas.
   const workflowEngine = require('./utils/workflowEngine');
   workflowEngine.subscribeDomainEvents();
