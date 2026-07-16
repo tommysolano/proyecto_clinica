@@ -159,9 +159,9 @@ export default function Appointments() {
   });
   const [view, setView] = useState(
     role === 'doctor' || role === 'optica' || role === 'ginecologia'
-      ? 'today'
+      ? 'list'
       : 'calendar'
-  ); // 'calendar' | 'list' | 'today'
+  ); // 'calendar' | 'list'
   // Mes visible en la vista calendario
   const [calMonth, setCalMonth] = useState(() => {
     const d = new Date();
@@ -184,11 +184,7 @@ export default function Appointments() {
   const fetchAppointments = async () => {
     try {
       const params = {};
-      if (view === 'today') {
-        const today = new Date().toISOString().split('T')[0];
-        params.startDate = today;
-        params.endDate = today;
-      } else if (view === 'calendar') {
+      if (view === 'calendar') {
         // Trae todas las citas del mes visible para pintarlas en la cuadrícula.
         const first = new Date(calMonth.getFullYear(), calMonth.getMonth(), 1);
         const last = new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 0);
@@ -442,11 +438,7 @@ export default function Appointments() {
   const exportExcel = async () => {
     try {
       const params = {};
-      if (view === 'today') {
-        const today = new Date().toISOString().split('T')[0];
-        params.startDate = today;
-        params.endDate = today;
-      } else if (view === 'calendar') {
+      if (view === 'calendar') {
         const first = new Date(calMonth.getFullYear(), calMonth.getMonth(), 1);
         const last = new Date(calMonth.getFullYear(), calMonth.getMonth() + 1, 0);
         params.startDate = toYmd(first);
@@ -620,7 +612,7 @@ export default function Appointments() {
         <div className="flex gap-2">
           {!isDoctor && (
             <div className="inline-flex rounded-xl border border-slate-200 overflow-hidden bg-white">
-              {[['calendar', 'Calendario'], ['list', 'Lista'], ['today', 'Hoy']].map(([v, label]) => (
+              {[['calendar', 'Calendario'], ['list', 'Lista']].map(([v, label]) => (
                 <button
                   key={v}
                   onClick={() => setView(v)}
@@ -689,7 +681,11 @@ export default function Appointments() {
               </button>
               <button
                 onClick={() => setListDay(toYmd(new Date()))}
-                className="px-3 py-2 rounded-lg bg-emerald-600 text-white border-none cursor-pointer text-sm"
+                className={`px-3 py-2 rounded-lg cursor-pointer text-sm transition-colors ${
+                  listDay === toYmd(new Date())
+                    ? 'bg-emerald-600 text-white border-none'
+                    : 'bg-white text-emerald-700 border border-emerald-200 hover:bg-emerald-50'
+                }`}
               >
                 Hoy
               </button>
