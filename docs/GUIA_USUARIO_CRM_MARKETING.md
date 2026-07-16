@@ -409,13 +409,25 @@ vez. Si manejas varias sucursales, primero eliges la **Clínica**. Por cada cita
   foto** opcional y pulsa **Enviar**. Las imágenes se pueden **Eliminar**.
 
 #### Pestaña "Supervisión" (tablero del supervisor) — *solo admin/marketing*
-Indicadores de gestión:
-- **KPIs:** *Chats abiertos*, *Oportunidades*, *Ganadas* y **"Sin responder"** (chats que superaron el
-  umbral de SLA, en rojo si hay alguno).
-- **Por agente:** tabla con total de chats, abiertos, destacados, oportunidades y **ganadas** por agente.
+Indicadores de gestión. **Todo el panel se filtra por fechas** con la barra de arriba: atajos (*Hoy*,
+*Últimos 7 días*, *Este mes*, *Últimos 30 días*, *Todo*) o un rango **Desde/Hasta** a mano. Por defecto
+muestra el **mes en curso**. El rango se aplica por la **fecha en que entró el chat** (y, en las citas,
+por la fecha en que se crearon).
+
+- **KPIs:** *Chats abiertos*, **"Sin responder"** (chats que superaron el umbral de SLA, en rojo si hay
+  alguno), *Citas creadas*, *Citas asistidas* y *Oportunidades*.
+- **Por agente:** tabla con total de chats, abiertos, **citas creadas** y **asistidas** por agente.
 - **Tiempo de primera respuesta por agente:** promedio (en verde si está dentro del umbral de SLA, en
   rojo si lo supera) y número de conversaciones.
+- **Tiempo de respuesta por chat:** el detalle chat a chat — contacto, agente, cuándo entró y cuánto se
+  tardó en contestarlo. Los que **siguen sin responder** salen primero (en rojo), y después los que más
+  tardaron, para que veas de un vistazo dónde está el problema. Máximo 200 chats.
 - **Embudo de oportunidades:** total y valor económico por etapa.
+
+> **Sobre las citas.** Se cuentan solo las agendadas **desde un chat** (el botón *Crear cita* del CRM),
+> no las que se crean en la página de Citas: el panel mide el trabajo del call center. *Asistidas* incluye
+> las marcadas como **asistida** y las **completadas** por el doctor. Las citas creadas **antes de esta
+> versión** no guardaban de qué chat venían, así que no aparecen en el conteo.
 
 ---
 

@@ -31,7 +31,7 @@ import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
 import SameSlotPanel from '../components/SameSlotPanel';
 import TagEditor from '../components/TagEditor';
-import { fmtDate, todayEc, nowEcHHMM } from '../utils/date';
+import { fmtDate, fmtDateTime, todayEc, nowEcHHMM } from '../utils/date';
 import { imageFromClipboard, imageFileToDataUrl, pastedImageName, readFileAsDataUrl } from '../utils/chatMedia';
 import useVoiceRecorder, { formatDuration } from '../hooks/useVoiceRecorder';
 import useWhatsappCall from '../hooks/useWhatsappCall';
@@ -129,6 +129,8 @@ export default function Chats() {
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebounce(search, 300);
   const [stats, setStats] = useState(null);
+  // Rango del panel de Supervisión. Por defecto, el mes en curso (hora Ecuador).
+  const [statsRange, setStatsRange] = useState(() => ({ from: `${todayEc().slice(0, 7)}-01`, to: todayEc() }));
   const [services, setServices] = useState([]);
   const [loading, setLoading] = useState(false);
   const [draft, setDraft] = useState('');
@@ -186,9 +188,11 @@ export default function Chats() {
     }
   };
 
-  const loadStats = async () => {
+  const loadStats = async (range = statsRange) => {
     try {
-      const r = await api.get('/chats/stats');
+      const r = await api.get('/chats/stats', {
+        params: { ...(range?.from ? { from: range.from } : {}), ...(range?.to ? { to: range.to } : {}) },
+      });
       setStats(r.data);
     } catch {
       /* noop */
@@ -602,7 +606,13 @@ export default function Chats() {
       </div>
 
       {tab === 'board' ? (
-        <SupervisorBoard stats={stats} reload={loadStats} agents={agents} />
+        <SupervisorBoard
+          stats={stats}
+          reload={() => loadStats()}
+          agents={agents}
+          range={statsRange}
+          onRangeChange={(next) => { setStatsRange(next); loadStats(next); }}
+        />
       ) : (
         <div className="flex-1 grid grid-cols-1 lg:grid-cols-[320px_1fr_320px] gap-3 min-h-0">
           {/* Lista de conversaciones */}
@@ -2481,31 +2491,102 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
   );
 }
 
-function SupervisorBoard({ stats, reload, agents = [] }) {
+// Atajos del filtro de fechas del panel (en hora Ecuador).
+function rangePresets() {
+  const today = todayEc();
+  const shift = (days) => {
+    const d = new Date(`${today}T12:00:00`);
+    d.setDate(d.getDate() - days);
+    return d.toISOString().slice(0, 10);
+  };
+  return [
+    { label: 'Hoy', from: today, to: today },
+    { label: 'Últimos 7 días', from: shift(6), to: today },
+    { label: 'Este mes', from: `${today.slice(0, 7)}-01`, to: today },
+    { label: 'Últimos 30 días', from: shift(29), to: today },
+    { label: 'Todo', from: '', to: '' },
+  ];
+}
+
+// Minutos → texto corto ("45 min", "2 h 10 min"): un chat respondido al día
+// siguiente en minutos no se lee.
+function fmtMinutes(min) {
+  if (min == null) return '—';
+  if (min < 60) return `${min} min`;
+  const h = Math.floor(min / 60);
+  const m = Math.round(min % 60);
+  if (h < 24) return m ? `${h} h ${m} min` : `${h} h`;
+  const d = Math.floor(h / 24);
+  return `${d} d ${h % 24} h`;
+}
+
+function SupervisorBoard({ stats, reload, agents = [], range, onRangeChange }) {
   const byAgent = stats?.byAgent || [];
   const opps = stats?.opportunities || [];
   const responseTimes = stats?.responseTimes || [];
+  const perChat = stats?.perChat || [];
+  const appointments = stats?.appointments || { created: 0, attended: 0 };
   const sla = stats?.sla || { thresholdMinutes: 60, unanswered: 0 };
+  const presets = rangePresets();
+  const activePreset = presets.find((p) => p.from === (range?.from || '') && p.to === (range?.to || ''));
 
   return (
     <div className="flex-1 overflow-y-auto space-y-4">
-      <div className="grid sm:grid-cols-4 gap-3">
+      {/* Filtro de fechas: aplica a todo el panel */}
+      <section className="bg-white border border-slate-200 rounded-xl p-3 flex flex-wrap items-center gap-2">
+        <div className="flex flex-wrap gap-1">
+          {presets.map((p) => (
+            <button
+              key={p.label}
+              type="button"
+              onClick={() => onRangeChange({ from: p.from, to: p.to })}
+              className={`text-xs px-2.5 py-1.5 rounded-lg border cursor-pointer ${
+                activePreset?.label === p.label
+                  ? 'bg-emerald-600 text-white border-emerald-600'
+                  : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+              }`}
+            >
+              {p.label}
+            </button>
+          ))}
+        </div>
+        <div className="flex items-center gap-1.5 ml-auto">
+          <input
+            type="date"
+            value={range?.from || ''}
+            max={range?.to || undefined}
+            onChange={(e) => onRangeChange({ ...range, from: e.target.value })}
+            className="border border-slate-200 rounded-lg px-2 py-1 text-xs"
+          />
+          <span className="text-xs text-slate-400">a</span>
+          <input
+            type="date"
+            value={range?.to || ''}
+            min={range?.from || undefined}
+            onChange={(e) => onRangeChange({ ...range, to: e.target.value })}
+            className="border border-slate-200 rounded-lg px-2 py-1 text-xs"
+          />
+          <button onClick={reload} className="text-xs text-slate-500 hover:underline ml-1 bg-transparent border-none cursor-pointer">
+            Recargar
+          </button>
+        </div>
+      </section>
+
+      <div className="grid sm:grid-cols-2 lg:grid-cols-5 gap-3">
         <KPICard label="Chats abiertos" value={stats?.byStatus?.find((s) => s._id === 'open')?.count || 0} color="emerald" />
-        <KPICard label="Oportunidades" value={opps.reduce((a, x) => a + x.count, 0)} color="indigo" />
-        <KPICard label="Ganadas" value={opps.find((x) => x._id === 'ganado')?.count || 0} color="emerald" />
         <KPICard
           label={`Sin responder (>${sla.thresholdMinutes}m)`}
           value={sla.unanswered || 0}
           color={sla.unanswered > 0 ? 'rose' : 'slate'}
         />
+        <KPICard label="Citas creadas" value={appointments.created || 0} color="indigo" />
+        <KPICard label="Citas asistidas" value={appointments.attended || 0} color="emerald" />
+        <KPICard label="Oportunidades" value={opps.reduce((a, x) => a + x.count, 0)} color="indigo" />
       </div>
 
       <section className="bg-white border border-slate-200 rounded-xl p-4">
         <div className="flex items-center justify-between mb-2">
           <h2 className="font-semibold text-slate-800">Por agente</h2>
-          <button onClick={reload} className="text-xs text-slate-500 hover:underline">
-            Recargar
-          </button>
         </div>
         <div className="overflow-x-auto">
           <table className="tbl">
@@ -2514,9 +2595,8 @@ function SupervisorBoard({ stats, reload, agents = [] }) {
                 <th className="text-left px-3 py-2">Agente</th>
                 <th className="text-right px-3 py-2">Total chats</th>
                 <th className="text-right px-3 py-2">Abiertos</th>
-                <th className="text-right px-3 py-2">Destacados</th>
-                <th className="text-right px-3 py-2">Oportunidades</th>
-                <th className="text-right px-3 py-2">Ganadas</th>
+                <th className="text-right px-3 py-2">Citas creadas</th>
+                <th className="text-right px-3 py-2">Asistidas</th>
               </tr>
             </thead>
             <tbody>
@@ -2525,21 +2605,24 @@ function SupervisorBoard({ stats, reload, agents = [] }) {
                   <td className="px-3 py-2 font-medium">{a.name}</td>
                   <td className="px-3 py-2 text-right">{a.total}</td>
                   <td className="px-3 py-2 text-right">{a.open}</td>
-                  <td className="px-3 py-2 text-right">{a.featured}</td>
-                  <td className="px-3 py-2 text-right">{a.opportunities}</td>
-                  <td className="px-3 py-2 text-right text-emerald-700 font-bold">{a.won}</td>
+                  <td className="px-3 py-2 text-right font-semibold">{a.appointmentsCreated}</td>
+                  <td className="px-3 py-2 text-right text-emerald-700 font-bold">{a.appointmentsAttended}</td>
                 </tr>
               ))}
               {byAgent.length === 0 && (
                 <tr>
-                  <td colSpan={6} className="px-3 py-6 text-center text-slate-400 text-sm">
-                    Sin actividad
+                  <td colSpan={5} className="px-3 py-6 text-center text-slate-400 text-sm">
+                    Sin actividad en este periodo
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
         </div>
+        <p className="text-[11px] text-slate-400 mt-2">
+          Solo se cuentan las citas agendadas <strong>desde un chat</strong>. Las citas creadas antes de
+          esta versión no guardaban el chat de origen, así que no aparecen aquí.
+        </p>
       </section>
 
       <section className="bg-white border border-slate-200 rounded-xl p-4">
@@ -2559,7 +2642,7 @@ function SupervisorBoard({ stats, reload, agents = [] }) {
                   <td className="px-3 py-2 font-medium">{r.name || 'Sin asignar'}</td>
                   <td className="px-3 py-2 text-right">
                     <span className={`font-semibold ${r.avgMinutes <= sla.thresholdMinutes ? 'text-emerald-700' : 'text-rose-600'}`}>
-                      {r.avgMinutes != null ? `${r.avgMinutes} min` : '—'}
+                      {fmtMinutes(r.avgMinutes)}
                     </span>
                   </td>
                   <td className="px-3 py-2 text-right">{r.count}</td>
@@ -2577,6 +2660,50 @@ function SupervisorBoard({ stats, reload, agents = [] }) {
         </div>
         <p className="text-[11px] text-slate-400 mt-2">
           Umbral de SLA: {sla.thresholdMinutes} min. En verde, agentes dentro del umbral.
+        </p>
+      </section>
+
+      <section className="bg-white border border-slate-200 rounded-xl p-4">
+        <h2 className="font-semibold text-slate-800 mb-2">Tiempo de respuesta por chat</h2>
+        <div className="overflow-x-auto">
+          <table className="tbl">
+            <thead className="bg-slate-50 text-slate-600">
+              <tr>
+                <th className="text-left px-3 py-2">Chat</th>
+                <th className="text-left px-3 py-2">Agente</th>
+                <th className="text-left px-3 py-2">Entró</th>
+                <th className="text-right px-3 py-2">1ª respuesta</th>
+              </tr>
+            </thead>
+            <tbody>
+              {perChat.map((c) => (
+                <tr key={c._id} className="border-t border-slate-100">
+                  <td className="px-3 py-2 font-medium">{c.contactName || c.phone}</td>
+                  <td className="px-3 py-2 text-slate-500">{c.assignedToName || 'Sin asignar'}</td>
+                  <td className="px-3 py-2 text-slate-500">{fmtDateTime(c.createdAt)}</td>
+                  <td className="px-3 py-2 text-right">
+                    {c.responseMinutes == null ? (
+                      <span className="font-semibold text-rose-600">Sin responder</span>
+                    ) : (
+                      <span className={`font-semibold ${c.responseMinutes <= sla.thresholdMinutes ? 'text-emerald-700' : 'text-rose-600'}`}>
+                        {fmtMinutes(c.responseMinutes)}
+                      </span>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {perChat.length === 0 && (
+                <tr>
+                  <td colSpan={4} className="px-3 py-6 text-center text-slate-400 text-sm">
+                    Sin chats en este periodo
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+        <p className="text-[11px] text-slate-400 mt-2">
+          Los que faltan por responder salen primero, y luego los que más tardaron. Máximo 200 chats.
         </p>
       </section>
 

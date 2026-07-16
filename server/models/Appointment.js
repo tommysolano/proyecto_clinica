@@ -90,6 +90,11 @@ const appointmentSchema = new mongoose.Schema(
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     // Rol del usuario que creó la cita (snapshot, útil para comisiones de call_center)
     createdByRole: { type: String },
+    // Chat del que nació la cita (solo si se agendó desde el CRM). Es lo que
+    // permite al panel de Supervisión contar las citas del call center sin
+    // mezclarlas con las que un admin agenda desde la página de Citas.
+    // Las citas anteriores a este campo no lo tienen: no se cuentan.
+    conversation: { type: mongoose.Schema.Types.ObjectId, ref: 'Conversation', default: null, index: true },
     // Historial de reagendamientos
     rescheduleHistory: { type: [rescheduleEntrySchema], default: [] },
     // Origen de la cita: si nació de una derivación o se agendó suelta

@@ -2271,9 +2271,40 @@ exports.webhookTiktokReceive = async (req, res) => {
 
 // =================== Métricas / supervisor ===================
 
+// Una cita cuenta como asistida tanto si se marcó 'asistida' como si ya se
+// 'completada' (el doctor la atendió): en ambos casos el paciente vino.
+const ATTENDED_STATUSES = ['asistida', 'completada'];
+
+/**
+ * Rango de fechas del panel de Supervisión. `from`/`to` llegan como 'YYYY-MM-DD'
+ * y se interpretan en hora de Ecuador (todo el sistema va en America/Guayaquil,
+ * y el server fuerza TZ), de modo que "hoy" es el hoy del usuario y no el UTC.
+ * Sin parámetros no filtra: devuelve el histórico completo.
+ */
+function statsDateRange(query) {
+  const parse = (v, endOfDay) => {
+    const m = String(v || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return null;
+    const [, y, mo, d] = m;
+    return new Date(
+      Number(y), Number(mo) - 1, Number(d),
+      ...(endOfDay ? [23, 59, 59, 999] : [0, 0, 0, 0])
+    );
+  };
+  const from = parse(query.from, false);
+  const to = parse(query.to, true);
+  if (!from && !to) return null;
+  return { ...(from ? { $gte: from } : {}), ...(to ? { $lte: to } : {}) };
+}
+
 exports.getStats = async (req, res) => {
   try {
-    const match = { clinic: new mongoose.Types.ObjectId(req.clinicId) };
+    const clinicOid = new mongoose.Types.ObjectId(req.clinicId);
+    const range = statsDateRange(req.query);
+    // El rango filtra por creación de la conversación: el panel mide el trabajo
+    // sobre los chats que ENTRARON en el periodo.
+    const match = { clinic: clinicOid, ...(range ? { createdAt: range } : {}) };
+
     const [byStatus, opportunities, featuredCount, byAgent] = await Promise.all([
       Conversation.aggregate([
         { $match: match },
@@ -2291,25 +2322,11 @@ exports.getStats = async (req, res) => {
             _id: '$assignedTo',
             total: { $sum: 1 },
             open: { $sum: { $cond: [{ $eq: ['$status', 'open'] }, 1, 0] } },
-            featured: { $sum: { $cond: ['$isFeatured', 1, 0] } },
-            opportunities: { $sum: { $cond: ['$opportunity.isOpportunity', 1, 0] } },
-            won: { $sum: { $cond: [{ $eq: ['$opportunity.stage', 'ganado'] }, 1, 0] } },
           },
         },
         { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'user' } },
         { $unwind: '$user' },
-        {
-          $project: {
-            _id: 1,
-            name: '$user.name',
-            email: '$user.email',
-            total: 1,
-            open: 1,
-            featured: 1,
-            opportunities: 1,
-            won: 1,
-          },
-        },
+        { $project: { _id: 1, name: '$user.name', email: '$user.email', total: 1, open: 1 } },
         { $sort: { total: -1 } },
       ]),
     ]);
@@ -2318,7 +2335,7 @@ exports.getStats = async (req, res) => {
     // responder cuyo último mensaje es entrante y lleva más del umbral abierto).
     const SLA_MINUTES = Number(req.query.slaMinutes || 60);
     const slaCutoff = new Date(Date.now() - SLA_MINUTES * 60000);
-    const [responseTimes, unanswered] = await Promise.all([
+    const [responseTimes, unanswered, perChat, appointmentsByAgent] = await Promise.all([
       Conversation.aggregate([
         { $match: { ...match, firstResponseAt: { $ne: null } } },
         { $project: { assignedTo: 1, respMs: { $subtract: ['$firstResponseAt', '$createdAt'] } } },
@@ -2334,14 +2351,103 @@ exports.getStats = async (req, res) => {
         lastMessageDirection: 'in',
         lastMessageAt: { $lt: slaCutoff },
       }),
+      // Tiempo de respuesta CHAT A CHAT. Incluye los que aún no tienen respuesta
+      // (responseMinutes: null) para que el supervisor vea justo los que faltan;
+      // los peores primero, que son los que hay que mirar.
+      Conversation.aggregate([
+        { $match: match },
+        {
+          $project: {
+            contactName: 1,
+            phone: 1,
+            assignedToName: 1,
+            createdAt: 1,
+            status: 1,
+            lastMessageDirection: 1,
+            lastMessageAt: 1,
+            answered: { $cond: [{ $ifNull: ['$firstResponseAt', false] }, true, false] },
+            responseMinutes: {
+              $cond: [
+                { $ifNull: ['$firstResponseAt', false] },
+                { $round: [{ $divide: [{ $subtract: ['$firstResponseAt', '$createdAt'] }, 60000] }, 1] },
+                null,
+              ],
+            },
+          },
+        },
+        // Sin responder arriba del todo; luego, la respuesta más lenta primero.
+        { $sort: { answered: 1, responseMinutes: -1, createdAt: -1 } },
+        { $limit: 200 },
+      ]),
+      // Citas nacidas de un chat, por agente que las creó. Se filtran por el chat
+      // (`conversation`), no por Appointment.clinic: una cita del call center puede
+      // agendarse en OTRA sucursal y se perdería al filtrar por clínica.
+      Appointment.aggregate([
+        {
+          $match: {
+            conversation: { $ne: null },
+            ...(range ? { createdAt: range } : {}),
+          },
+        },
+        {
+          $lookup: {
+            from: 'conversations',
+            localField: 'conversation',
+            foreignField: '_id',
+            as: 'conv',
+          },
+        },
+        { $unwind: '$conv' },
+        { $match: { 'conv.clinic': clinicOid } },
+        {
+          $group: {
+            _id: '$createdBy',
+            created: { $sum: 1 },
+            attended: { $sum: { $cond: [{ $in: ['$status', ATTENDED_STATUSES] }, 1, 0] } },
+          },
+        },
+      ]),
     ]);
+
+    // Las citas se cuelgan del agente en la tabla "Por agente". Un agente puede
+    // haber creado citas sin tener chats asignados (tomó un chat de otro), así
+    // que las filas que no existan en byAgent se añaden al final.
+    const apptByAgent = new Map(appointmentsByAgent.map((a) => [String(a._id), a]));
+    const rows = byAgent.map((a) => {
+      const appt = apptByAgent.get(String(a._id));
+      apptByAgent.delete(String(a._id));
+      return { ...a, appointmentsCreated: appt?.created || 0, appointmentsAttended: appt?.attended || 0 };
+    });
+    if (apptByAgent.size) {
+      const extra = await User.find({ _id: { $in: [...apptByAgent.keys()] } }).select('name email');
+      for (const u of extra) {
+        const appt = apptByAgent.get(String(u._id));
+        rows.push({
+          _id: u._id,
+          name: u.name,
+          email: u.email,
+          total: 0,
+          open: 0,
+          appointmentsCreated: appt?.created || 0,
+          appointmentsAttended: appt?.attended || 0,
+        });
+      }
+    }
+
+    const appointments = appointmentsByAgent.reduce(
+      (acc, a) => ({ created: acc.created + a.created, attended: acc.attended + a.attended }),
+      { created: 0, attended: 0 }
+    );
 
     res.json({
       byStatus,
       opportunities,
       featuredCount,
-      byAgent,
+      byAgent: rows,
       responseTimes,
+      perChat,
+      appointments,
+      range: { from: req.query.from || '', to: req.query.to || '' },
       sla: { thresholdMinutes: SLA_MINUTES, unanswered },
     });
   } catch (err) {
@@ -2518,6 +2624,9 @@ exports.createAppointmentFromChat = async (req, res) => {
         isFirstVisit: first,
         createdBy: req.user._id,
         createdByRole: req.role || null,
+        // Deja rastro del chat de origen: el panel de Supervisión cuenta por aquí
+        // las citas que produjo el call center.
+        conversation: conv._id,
       });
       first = false; // solo la primera puede ser "primera visita"
       created.push(appointment);
