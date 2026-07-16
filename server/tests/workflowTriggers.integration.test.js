@@ -282,6 +282,63 @@ test('Trigger "mensaje desde anuncio" (ctwa_ad) SIN filtro: dispara con cualquie
   assert.ok(await WorkflowEnrollment.findOne({ workflow: wf._id, conversation: conv._id }));
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Nodos de Marketing (Meta): se ejecutan a través de performAction y, sin
+// credenciales configuradas, registran el motivo en el log sin romper el flujo.
+function metaNodeWorkflow(clinicId, node) {
+  return Workflow.create({
+    clinic: clinicId, name: 'Meta node', active: true,
+    triggers: [{ type: 'appointment_created', audience: 'all' }],
+    trigger: { type: 'appointment_created', audience: 'all' },
+    steps: [],
+    nodes: [
+      { id: 'trigger', type: 'trigger', position: { x: 0, y: 0 }, data: { triggers: [{ type: 'appointment_created', audience: 'all' }] } },
+      { id: 'n1', ...node, position: { x: 0, y: 130 } },
+    ],
+    edges: [{ id: 'e1', source: 'trigger', target: 'n1', sourceHandle: 'default' }],
+  });
+}
+
+test('Nodo "API de conversión de Meta" (meta_capi): se ejecuta y registra que CAPI no está configurada', async () => {
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const userId = new H.mongoose.Types.ObjectId();
+  const patient = await Patient.create({ clinic: clinic._id, firstName: 'Capi', lastName: 'Test', phone: '0997778888' });
+  const prod = await H.makeProduct(clinic._id, { category: 'servicio', unlimited: true });
+  const wf = await metaNodeWorkflow(clinic._id, { type: 'meta_capi', data: { metaEventName: 'Schedule' } });
+
+  const r = await H.runController(appointmentCtrl.createAppointment, H.mockReq(clinic._id, userId, {
+    patient: patient._id, services: [String(prod._id)], date: futureDate(3), startTime: '10:00',
+  }));
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+
+  const enr = await waitFor(() => WorkflowEnrollment.findOne({ workflow: wf._id, patient: patient._id, status: 'done' }));
+  assert.ok(enr, 'no se inscribió el workflow con nodo meta_capi');
+  const log = (enr.log || []).find((l) => l.type === 'meta_capi');
+  assert.ok(log, 'no hay rastro del paso meta_capi en el registro');
+  assert.equal(log.ok, false);
+  assert.match(log.info, /CAPI/);
+});
+
+test('Nodo "Añadir a público de Facebook" (fb_audience_add): se ejecuta y registra que la Marketing API no está configurada', async () => {
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const userId = new H.mongoose.Types.ObjectId();
+  const patient = await Patient.create({ clinic: clinic._id, firstName: 'Aud', lastName: 'Test', phone: '0996665555' });
+  const prod = await H.makeProduct(clinic._id, { category: 'servicio', unlimited: true });
+  const wf = await metaNodeWorkflow(clinic._id, { type: 'fb_audience_add', data: { audienceId: '2384812345' } });
+
+  const r = await H.runController(appointmentCtrl.createAppointment, H.mockReq(clinic._id, userId, {
+    patient: patient._id, services: [String(prod._id)], date: futureDate(3), startTime: '11:00',
+  }));
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+
+  const enr = await waitFor(() => WorkflowEnrollment.findOne({ workflow: wf._id, patient: patient._id, status: 'done' }));
+  assert.ok(enr, 'no se inscribió el workflow con nodo fb_audience_add');
+  const log = (enr.log || []).find((l) => l.type === 'fb_audience_add');
+  assert.ok(log, 'no hay rastro del paso fb_audience_add en el registro');
+  assert.equal(log.ok, false);
+  assert.match(log.info, /Marketing API/);
+});
+
 /** Día calendario futuro (YYYY-MM-DD) a N días de hoy: las citas no pueden agendarse en el pasado. */
 function futureDate(days) {
   const d = new Date(Date.now() + days * 86400000);

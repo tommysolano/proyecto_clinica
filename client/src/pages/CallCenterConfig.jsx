@@ -435,6 +435,7 @@ function WhatsappNumbersManager() {
   const [appCfg, setAppCfg] = useState(null);
   const [appDraft, setAppDraft] = useState({ appSecret: '', verifyToken: '' });
   const [capiDraft, setCapiDraft] = useState({ enabled: false, datasetId: '', accessToken: '', testEventCode: '' });
+  const [marketingDraft, setMarketingDraft] = useState({ enabled: false, accessToken: '' });
   const [savingApp, setSavingApp] = useState(false);
   const [testingCapi, setTestingCapi] = useState(false);
   const [accounts, setAccounts] = useState([]);
@@ -460,6 +461,10 @@ function WhatsappNumbersManager() {
         datasetId: a.data?.conversionsApi?.datasetId || '',
         accessToken: '',
         testEventCode: a.data?.conversionsApi?.testEventCode || '',
+      });
+      setMarketingDraft({
+        enabled: Boolean(a.data?.marketingApi?.enabled),
+        accessToken: '',
       });
       setAccounts(acc.data || []);
     } catch (err) {
@@ -613,10 +618,12 @@ function WhatsappNumbersManager() {
         capiEnabled: capiDraft.enabled,
         capiDatasetId: capiDraft.datasetId,
         capiTestEventCode: capiDraft.testEventCode,
+        marketingEnabled: marketingDraft.enabled,
       };
       if (appDraft.appSecret) payload.appSecret = appDraft.appSecret;
       if (appDraft.verifyToken) payload.verifyToken = appDraft.verifyToken;
       if (capiDraft.accessToken) payload.capiAccessToken = capiDraft.accessToken;
+      if (marketingDraft.accessToken) payload.marketingAccessToken = marketingDraft.accessToken;
       const r = await api.put('/call-center-config/whatsapp/app-config', payload);
       setAppCfg(r.data);
       setAppDraft({ appSecret: '', verifyToken: '' });
@@ -625,6 +632,10 @@ function WhatsappNumbersManager() {
         datasetId: r.data?.conversionsApi?.datasetId || '',
         accessToken: '',
         testEventCode: r.data?.conversionsApi?.testEventCode || '',
+      });
+      setMarketingDraft({
+        enabled: Boolean(r.data?.marketingApi?.enabled),
+        accessToken: '',
       });
       toast.success('Configuración de WhatsApp guardada');
     } catch (err) {
@@ -886,6 +897,42 @@ function WhatsappNumbersManager() {
               </span>
             </label>
           </div>
+        </div>
+        {/* Marketing API: token para añadir/quitar contactos de Públicos Personalizados */}
+        <div className="border-t border-slate-100 pt-3 space-y-3">
+          <div className="flex items-center justify-between flex-wrap gap-2">
+            <div>
+              <h3 className="text-sm font-semibold text-slate-800">Marketing API (Públicos Personalizados)</h3>
+              <p className="text-xs text-slate-500">
+                Permite que las automatizaciones <b>añadan o quiten contactos de un Público Personalizado</b> de
+                Facebook (retargeting). Necesita un token de <b>Usuario del Sistema</b> con permiso <code>ads_management</code>.
+                El ID de cada público se pone en el propio nodo del flujo.
+              </p>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-slate-600 cursor-pointer">
+              <input
+                type="checkbox"
+                checked={marketingDraft.enabled}
+                onChange={(e) => setMarketingDraft({ ...marketingDraft, enabled: e.target.checked })}
+                className="w-4 h-4 accent-emerald-600"
+              />
+              Habilitada
+            </label>
+          </div>
+          <label className="block text-sm max-w-md">
+            <span className="text-slate-700 font-medium">Access Token (ads_management)</span>
+            <input
+              type="password"
+              value={marketingDraft.accessToken}
+              onChange={(e) => setMarketingDraft({ ...marketingDraft, accessToken: e.target.value })}
+              placeholder={appCfg?.marketingApi?.accessToken || '••••••'}
+              autoComplete="off"
+              className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono"
+            />
+            <span className="text-[11px] text-slate-400">
+              Business Manager → Configuración → Usuarios del sistema → Generar token con <code>ads_management</code>.
+            </span>
+          </label>
         </div>
 
         <div className="flex justify-end gap-2">

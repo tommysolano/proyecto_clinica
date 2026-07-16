@@ -37,6 +37,8 @@ import {
   HiOutlineFlag,
   HiOutlineFunnel,
   HiOutlinePhoto,
+  HiOutlineMegaphone,
+  HiOutlineUserMinus,
 } from 'react-icons/hi2';
 
 // Tipos de paso disponibles en el lienzo (sin 'trigger', que es el nodo inicial).
@@ -59,6 +61,9 @@ export const STEP_DEFS = {
   ai_reply: 'Responder con IA',
   request_review: 'Pedir reseña',
   goal: 'Objetivo (terminar si)',
+  meta_capi: 'API de conversión de Meta',
+  fb_audience_add: 'Añadir a público de Facebook',
+  fb_audience_remove: 'Quitar de público de Facebook',
 };
 
 // Agrupación de pasos para el selector (estilo GoHighLevel).
@@ -67,6 +72,7 @@ const STEP_GROUPS = [
   { title: 'Esperas', icon: HiOutlineClock, types: ['wait', 'wait_until', 'wait_reply'] },
   { title: 'Lógica', icon: HiOutlineArrowsRightLeft, types: ['condition', 'goal'] },
   { title: 'Contacto / CRM', icon: HiOutlineTag, types: ['add_tag', 'remove_tag', 'move_stage', 'assign_agent', 'set_appointment_status'] },
+  { title: 'Marketing (Meta / Facebook)', icon: HiOutlineMegaphone, types: ['meta_capi', 'fb_audience_add', 'fb_audience_remove'] },
   { title: 'Otros', icon: HiOutlineCog6Tooth, types: ['create_task', 'webhook'] },
 ];
 
@@ -90,6 +96,9 @@ const STEP_ICONS = {
   assign_agent: { icon: HiOutlineUserPlus, cls: 'bg-blue-100 text-blue-600' },
   create_task: { icon: HiOutlineClipboardDocumentList, cls: 'bg-orange-100 text-orange-600' },
   webhook: { icon: HiOutlineGlobeAlt, cls: 'bg-slate-100 text-slate-600' },
+  meta_capi: { icon: HiOutlineMegaphone, cls: 'bg-blue-100 text-blue-600' },
+  fb_audience_add: { icon: HiOutlineUserPlus, cls: 'bg-blue-100 text-blue-600' },
+  fb_audience_remove: { icon: HiOutlineUserMinus, cls: 'bg-blue-100 text-blue-600' },
 };
 
 function StepIcon({ type, className = 'w-6 h-6 p-1' }) {
@@ -155,6 +164,7 @@ export const newNodeData = (type) => ({
   appointmentStatus: 'confirmada', field: 'tag', op: 'eq', value: '', tag: '', stage: 'contactado',
   assignMode: 'roundrobin', assignUser: null, taskTitle: '', taskDueOffsetMinutes: 1440,
   webhookUrl: '', webhookMethod: 'POST',
+  metaEventName: 'Lead', metaValue: 0, metaCurrency: 'USD', audienceId: '', audienceName: '',
 });
 
 const isBranch = (t) => t === 'condition' || t === 'goal';
@@ -231,6 +241,8 @@ function summarize(n) {
     case 'move_stage': return d.stage;
     case 'condition': case 'goal': return `${d.field} ${d.op} ${d.value || ''}`;
     case 'assign_agent': return d.assignMode === 'user' ? 'Agente fijo' : 'Round-robin';
+    case 'meta_capi': return `Evento ${d.metaEventName || 'Lead'}${Number(d.metaValue) > 0 ? ` · ${d.metaValue} ${d.metaCurrency || 'USD'}` : ''}`;
+    case 'fb_audience_add': case 'fb_audience_remove': return d.audienceName || d.audienceId || 'Sin público';
     default: return '';
   }
 }
@@ -251,42 +263,62 @@ function AddButton({ onClick, style, className = '' }) {
 }
 
 // ─────────── Nodos personalizados ───────────
+// Cada disparador se muestra como su PROPIA tarjeta (estilo Daplox/GoHighLevel),
+// más una tarjeta "Añadir nuevo activador". Todas comparten el mismo flujo de
+// acciones (lógica OR: cualquiera lo inicia) y una única salida hacia abajo.
 function TriggerNode({ data }) {
   const triggers = data._triggers || [];
   return (
-    <div className="relative">
-      <div className="rounded-xl border-2 border-emerald-500 bg-emerald-50 shadow-sm min-w-[220px] overflow-hidden">
-        <div className="px-3 py-1.5 text-[11px] font-bold text-emerald-700 bg-emerald-100/70 flex items-center justify-between gap-1.5">
-          <span className="flex items-center gap-1.5"><HiOutlineBolt className="w-3.5 h-3.5" /> {data._flowLabel || 'Disparadores'} {triggers.length > 1 ? `(${triggers.length} · cualquiera)` : ''}</span>
-          {data._flowCount > 1 && (
-            <button type="button" title="Eliminar este flujo" onClick={(e) => { e.stopPropagation(); data.onDeleteFlow(); }} className="nodrag p-0.5 text-emerald-700/60 hover:text-rose-600 bg-transparent border-none cursor-pointer">
-              <HiOutlineTrash className="w-3.5 h-3.5" />
-            </button>
-          )}
-        </div>
-        <div className="p-2 grid gap-1">
-          {triggers.length === 0 && (
-            <div className="text-[11px] text-emerald-700/60 px-1 py-1">Sin disparadores — añade uno.</div>
-          )}
-          {triggers.map((t, i) => (
-            <button
-              key={i}
-              type="button"
-              onClick={(e) => { e.stopPropagation(); data.onSelectTrigger(i); }}
-              className="nodrag text-left px-2 py-1.5 rounded-lg text-xs bg-white border border-emerald-200 text-emerald-800 hover:border-emerald-400 cursor-pointer flex items-center gap-1.5"
-            >
-              ⚡ {t.label}
-            </button>
-          ))}
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); data.onAddTrigger(); }}
-            className="nodrag text-left px-2 py-1 rounded-lg text-[11px] text-emerald-600 hover:bg-emerald-100 bg-transparent border border-dashed border-emerald-300 cursor-pointer"
-          >
-            + Añadir disparador a este flujo
+    <div className="relative flex flex-col items-stretch gap-2 min-w-[240px]">
+      {data._flowCount > 1 && (
+        <div className="flex items-center justify-between px-1">
+          <span className="text-[10px] font-bold text-emerald-700/70 uppercase tracking-wide flex items-center gap-1">
+            <HiOutlineBolt className="w-3 h-3" /> {data._flowLabel || 'Flujo'}
+          </span>
+          <button type="button" title="Eliminar este flujo" onClick={(e) => { e.stopPropagation(); data.onDeleteFlow(); }} className="nodrag p-0.5 text-slate-300 hover:text-rose-600 bg-transparent border-none cursor-pointer">
+            <HiOutlineTrash className="w-3.5 h-3.5" />
           </button>
         </div>
-      </div>
+      )}
+      {triggers.length === 0 && (
+        <div className="rounded-xl border-2 border-dashed border-emerald-300 bg-emerald-50/40 px-3 py-3 text-[11px] text-emerald-700/70 text-center">Sin disparadores — añade uno.</div>
+      )}
+      {triggers.map((t, i) => (
+        <div
+          key={i}
+          onClick={(e) => { e.stopPropagation(); data.onSelectTrigger(i); }}
+          className="nodrag group relative rounded-xl border-2 border-emerald-500 bg-white shadow-sm px-3 py-2.5 cursor-pointer hover:shadow-md transition-shadow"
+        >
+          <div className="flex items-center gap-2">
+            <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-emerald-100 text-emerald-600 shrink-0">
+              <HiOutlineBolt className="w-4 h-4" />
+            </span>
+            <div className="min-w-0">
+              <div className="text-[10px] font-semibold text-emerald-600 uppercase tracking-wide">
+                Activador{triggers.length > 1 ? ` ${i + 1}` : ''}
+              </div>
+              <div className="text-xs font-semibold text-slate-700 truncate max-w-[160px]">{t.label}</div>
+            </div>
+          </div>
+          {triggers.length > 1 && (
+            <button
+              type="button"
+              title="Quitar este activador"
+              onClick={(e) => { e.stopPropagation(); data.onRemoveTrigger(i); }}
+              className="nodrag absolute -top-2 -right-2 w-5 h-5 rounded-full bg-white border border-slate-200 text-slate-400 hover:text-rose-600 hover:border-rose-300 shadow-sm flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity cursor-pointer"
+            >
+              <HiOutlineXMark className="w-3 h-3" />
+            </button>
+          )}
+        </div>
+      ))}
+      <button
+        type="button"
+        onClick={(e) => { e.stopPropagation(); data.onAddTrigger(); }}
+        className="nodrag rounded-xl border-2 border-dashed border-emerald-300 bg-emerald-50/40 px-3 py-2.5 text-xs font-medium text-emerald-600 hover:bg-emerald-50 hover:border-emerald-400 cursor-pointer flex items-center justify-center gap-1.5"
+      >
+        <HiOutlinePlus className="w-4 h-4" /> Añadir nuevo activador
+      </button>
       <Handle type="source" position={Position.Bottom} style={{ background: '#10b981' }} />
       {!data._hasDefaultOut && (
         <AddButton onClick={() => data.onAppend('default')} style={{ position: 'absolute', left: '50%', bottom: -30, transform: 'translateX(-50%)' }} />
@@ -450,6 +482,7 @@ export default function WorkflowGraphEditor({
           onAppend: (handle) => setAdding({ mode: 'append', sourceId: n.id, sourceHandle: handle }),
           onSelectTrigger: (i) => { setSelectedTrigger({ nodeId: n.id, idx: i }); setSelectedId(null); },
           onAddTrigger: () => addTriggerToNode(n.id),
+          onRemoveTrigger: (i) => removeTrigger(n.id, i),
           onDeleteFlow: () => deleteFlow(n.id),
         },
       };
@@ -1254,6 +1287,50 @@ function NodeConfig({ node, onChange, templates, agents, clinics = [] }) {
   );
   if (t === 'ai_reply') return (
     <p className="text-xs text-slate-500">La IA redacta y envía una respuesta usando el contexto de la conversación.</p>
+  );
+  if (t === 'meta_capi') {
+    const META_EVENTS = ['Lead', 'Schedule', 'Contact', 'CompleteRegistration', 'SubmitApplication', 'Purchase'];
+    return (
+      <div className="grid gap-2 text-sm">
+        <label className="grid gap-1">
+          <span className="text-slate-600">Evento de conversión</span>
+          <select value={d.metaEventName || 'Lead'} onChange={(e) => set({ metaEventName: e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+            {META_EVENTS.map((ev) => <option key={ev} value={ev}>{ev}</option>)}
+          </select>
+        </label>
+        <label className="grid gap-1">
+          <span className="text-slate-600">Valor (opcional — para Purchase / ROAS)</span>
+          <div className="flex items-center gap-2">
+            <NumericInput value={d.metaValue || 0} onChange={(e) => set({ metaValue: Number(e.target.value) })} className="w-28 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+            <input value={d.metaCurrency || 'USD'} onChange={(e) => set({ metaCurrency: e.target.value.toUpperCase().slice(0, 3) })} className="w-20 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+          </div>
+        </label>
+        <p className="text-[11px] text-slate-400">
+          Reporta el evento a Meta con el teléfono/email del paciente (hasheado en SHA-256) para que
+          el algoritmo optimice tus anuncios por resultados reales. Requiere la <b>Conversions API</b>
+          activada en Ajustes → WhatsApp (Meta).
+        </p>
+      </div>
+    );
+  }
+  if (t === 'fb_audience_add' || t === 'fb_audience_remove') return (
+    <div className="grid gap-2 text-sm">
+      <label className="grid gap-1">
+        <span className="text-slate-600">ID del público personalizado</span>
+        <input value={d.audienceId || ''} onChange={(e) => set({ audienceId: e.target.value.trim() })} placeholder="23848XXXXXXXXXXX" className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm font-mono" />
+      </label>
+      <label className="grid gap-1">
+        <span className="text-slate-600">Nombre (solo para identificarlo aquí)</span>
+        <input value={d.audienceName || ''} onChange={(e) => set({ audienceName: e.target.value })} placeholder="Interesados / Compradores…" className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+      </label>
+      <p className="text-[11px] text-slate-400">
+        {t === 'fb_audience_add'
+          ? 'Añade al contacto a este Público Personalizado de Facebook (para retargeting).'
+          : 'Quita al contacto de este Público Personalizado (p. ej. cuando ya compró, para dejar de gastar en anuncios con él).'}
+        {' '}El ID sale del Administrador de Anuncios → Públicos. Requiere el <b>token de Marketing API</b> (permiso
+        ads_management) en Ajustes → WhatsApp (Meta).
+      </p>
+    </div>
   );
   return <p className="text-xs text-slate-400">Sin configuración.</p>;
 }

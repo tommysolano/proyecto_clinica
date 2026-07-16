@@ -38,6 +38,10 @@ const workflowStepSchema = new mongoose.Schema(
         'request_review',
         'goal',
         'send_media', // solo imagen/video, sin texto
+        // Marketing (Meta / Facebook):
+        'meta_capi', // envía un evento de conversión a Meta (Conversions API)
+        'fb_audience_add', // añade el contacto a un Público Personalizado
+        'fb_audience_remove', // quita el contacto de un Público Personalizado
       ],
       required: true,
     },
@@ -89,6 +93,13 @@ const workflowStepSchema = new mongoose.Schema(
       enum: ['nuevo', 'contactado', 'interesado', 'agendado', 'ganado', 'perdido', ''],
       default: '',
     },
+    // meta_capi: evento estándar de conversión de Meta + valor opcional (Purchase).
+    metaEventName: { type: String, trim: true, default: 'Lead' },
+    metaValue: { type: Number, default: 0 },
+    metaCurrency: { type: String, trim: true, default: 'USD' },
+    // fb_audience_add / fb_audience_remove: ID del Público Personalizado destino.
+    audienceId: { type: String, trim: true, default: '' },
+    audienceName: { type: String, trim: true, default: '' }, // solo etiqueta para la UI
   },
   { _id: true }
 );

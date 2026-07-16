@@ -28,6 +28,13 @@ const callCenterWhatsappConfigSchema = new mongoose.Schema(
       accessToken: { type: String, default: '' }, // cifrado — token de la Conversions API
       testEventCode: { type: String, default: '' }, // código "Probar eventos" (solo pruebas)
     },
+    // Meta Marketing API: para añadir/quitar contactos de Públicos Personalizados
+    // (retargeting) desde las automatizaciones. Necesita un token de Usuario del
+    // Sistema con permiso `ads_management`. El token se cifra en reposo.
+    marketingApi: {
+      enabled: { type: Boolean, default: false },
+      accessToken: { type: String, default: '' }, // cifrado — Usuario del Sistema con ads_management
+    },
     callCenterClinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', default: null },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },

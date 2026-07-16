@@ -219,6 +219,7 @@ module.exports = {
   hashSha256,
   normalizePhoneForCapi,
   buildUserData,
+  patientUserData,
   getCapiConfig,
   sendConversionEvent,
   reportLead,

@@ -241,6 +241,10 @@ const appConfigPayload = (req, cfg) => {
       accessToken: maskSecret(cfg.conversionsApi?.accessToken || ''),
       testEventCode: cfg.conversionsApi?.testEventCode || '',
     },
+    marketingApi: {
+      enabled: Boolean(cfg.marketingApi?.enabled),
+      accessToken: maskSecret(cfg.marketingApi?.accessToken || ''),
+    },
   };
 };
 
@@ -750,6 +754,13 @@ exports.updateWhatsappAppConfig = async (req, res) => {
     }
     if (typeof req.body.capiTestEventCode === 'string') capi.testEventCode = req.body.capiTestEventCode.trim();
     cfg.conversionsApi = capi;
+    // Marketing API: token (cifrado) de Usuario del Sistema con ads_management.
+    const mkt = cfg.marketingApi || {};
+    if ('marketingEnabled' in req.body) mkt.enabled = Boolean(req.body.marketingEnabled);
+    if (typeof req.body.marketingAccessToken === 'string' && !req.body.marketingAccessToken.startsWith('••••')) {
+      mkt.accessToken = req.body.marketingAccessToken ? encryptSecret(req.body.marketingAccessToken) : '';
+    }
+    cfg.marketingApi = mkt;
     if ('callCenterClinic' in req.body) cfg.callCenterClinic = req.body.callCenterClinic || null;
     cfg.updatedBy = req.user._id;
     await cfg.save();

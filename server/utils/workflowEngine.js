@@ -21,6 +21,7 @@ const LINEAR_ACTION_TYPES = new Set([
   'send_message', 'send_media', 'send_template', 'send_email', 'assign_agent', 'create_task',
   'webhook', 'request_review', 'ai_reply', 'set_appointment_status',
   'add_tag', 'remove_tag', 'move_stage',
+  'meta_capi', 'fb_audience_add', 'fb_audience_remove',
 ]);
 
 // Motivos por los que messaging.send salta/falla un envío, en lenguaje del usuario.
@@ -464,6 +465,53 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
         }
       }
       break;
+    case 'meta_capi': {
+      // Reporta un evento de conversión a Meta (Conversions API) con los datos
+      // del paciente. Optimiza las campañas por resultados reales del CRM.
+      const mc = require('./metaConversions');
+      const eventName = step.metaEventName || 'Lead';
+      const user = patient ? mc.patientUserData(patient) : {};
+      if (!user.phone && phone) user.phone = phone;
+      const customData = { chat_funnel_stage: 'automatizacion' };
+      if (Number(step.metaValue) > 0) { customData.value = Number(step.metaValue); customData.currency = step.metaCurrency || 'USD'; }
+      const r = await mc.sendConversionEvent({
+        eventName,
+        eventId: `${eventName.toLowerCase()}_wf_${patient?._id || phone || 'anon'}_${ctx.appointmentId || Date.now()}`,
+        user,
+        customData,
+      });
+      if (r.skipped) {
+        return r.reason === 'capi_not_configured'
+          ? 'La API de conversión de Meta (CAPI) no está configurada en Ajustes → WhatsApp.'
+          : 'El paciente no tiene teléfono/email para el matching con Meta.';
+      }
+      if (!r.ok) return `Meta rechazó el evento de conversión: ${r.error}`;
+      break;
+    }
+    case 'fb_audience_add': {
+      const ca = require('./metaCustomAudience');
+      const r = await ca.addToAudience({ audienceId: step.audienceId, patient: patient || { phone } });
+      if (r.error && !r.skipped && !r.reason) return `Meta rechazó añadir al público: ${r.error}`;
+      if (r.skipped) {
+        return r.reason === 'marketing_api_not_configured'
+          ? 'La Marketing API de Meta no está configurada (falta el token con ads_management en Ajustes → WhatsApp).'
+          : 'El contacto no tiene teléfono/email para el matching con Meta.';
+      }
+      if (!r.ok) return r.error || 'No se pudo añadir al público personalizado.';
+      break;
+    }
+    case 'fb_audience_remove': {
+      const ca = require('./metaCustomAudience');
+      const r = await ca.removeFromAudience({ audienceId: step.audienceId, patient: patient || { phone } });
+      if (r.error && !r.skipped && !r.reason) return `Meta rechazó quitar del público: ${r.error}`;
+      if (r.skipped) {
+        return r.reason === 'marketing_api_not_configured'
+          ? 'La Marketing API de Meta no está configurada (falta el token con ads_management en Ajustes → WhatsApp).'
+          : 'El contacto no tiene teléfono/email para el matching con Meta.';
+      }
+      if (!r.ok) return r.error || 'No se pudo quitar del público personalizado.';
+      break;
+    }
     default:
       break;
   }
