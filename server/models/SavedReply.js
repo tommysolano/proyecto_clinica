@@ -26,6 +26,8 @@ const savedReplySchema = new mongoose.Schema(
     },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     shared: { type: Boolean, default: true }, // visible para toda la clínica
+    // Veces insertado en el chat: ordena el menú por "más usados".
+    usageCount: { type: Number, default: 0 },
   },
   { timestamps: true }
 );

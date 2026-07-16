@@ -667,6 +667,15 @@ async function send({
   if (providerResult.ok) {
     msg.deliveryStatus = 'sent';
     msg.externalId = extractProviderMessageId(providerResult);
+    // Contador de uso de la plantilla (ordena el menú del chat por "más usadas").
+    if (templateInfo?.name) {
+      require('../models/MessageTemplate')
+        .updateOne(
+          { clinic: clinicId, channel: 'whatsapp', name: templateInfo.name },
+          { $inc: { usageCount: 1 } }
+        )
+        .catch(() => {});
+    }
     msg.statusTimestamps = {
       ...(msg.statusTimestamps?.toObject ? msg.statusTimestamps.toObject() : msg.statusTimestamps || {}),
       sentAt: new Date(),

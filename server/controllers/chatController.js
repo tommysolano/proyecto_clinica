@@ -535,8 +535,19 @@ const SavedReply = require('../models/SavedReply');
 
 exports.listSavedReplies = async (req, res) => {
   try {
-    const list = await SavedReply.find({ clinic: req.clinicId }).sort({ shortcut: 1 });
+    // Más usados primero (el menú del chat muestra el top 4 por defecto).
+    const list = await SavedReply.find({ clinic: req.clinicId }).sort({ usageCount: -1, shortcut: 1 });
     res.json(list);
+  } catch (err) {
+    res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
+/** Marca un mensaje guardado como usado (ordena el menú por "más usados"). */
+exports.markSavedReplyUsed = async (req, res) => {
+  try {
+    await SavedReply.updateOne({ _id: req.params.id, clinic: req.clinicId }, { $inc: { usageCount: 1 } });
+    res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ message: 'Error', error: err.message });
   }
@@ -659,9 +670,10 @@ function ChatGalleryImageModel() {
 exports.listWorkflowsForChat = async (req, res) => {
   try {
     const Workflow = require('../models/Workflow');
+    // Más usadas primero (stats.enrolled): el menú muestra el top 4 por defecto.
     const list = await Workflow.find({ clinic: req.clinicId, active: true })
-      .select('name folder nodes edges triggers trigger')
-      .sort({ name: 1 })
+      .select('name folder nodes edges triggers trigger stats')
+      .sort({ 'stats.enrolled': -1, name: 1 })
       .lean();
     const out = list
       .map((wf) => {
@@ -676,7 +688,7 @@ exports.listWorkflowsForChat = async (req, res) => {
                   .filter(Boolean),
               }))
           : [{ startNodeId: null, triggerTypes: (wf.triggers || []).map((t) => t.type).filter(Boolean) }];
-        return { _id: wf._id, name: wf.name, folder: wf.folder || 'General', flows };
+        return { _id: wf._id, name: wf.name, folder: wf.folder || 'General', used: wf.stats?.enrolled || 0, flows };
       })
       .filter((w) => w.flows.length > 0);
     res.json(out);

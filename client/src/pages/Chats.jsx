@@ -131,6 +131,7 @@ export default function Chats() {
   const [templates, setTemplates] = useState([]); // plantillas WhatsApp aprobadas
   // Menú unificado del compositor: null (cerrado) | 'auto' | 'templates' | 'saved'
   const [pickerTab, setPickerTab] = useState(null);
+  const [pickerQuery, setPickerQuery] = useState(''); // buscador del menú (por pestaña)
   const [chatWorkflows, setChatWorkflows] = useState([]); // automatizaciones activas (disparo manual)
   const [runningWf, setRunningWf] = useState(false);
   // Mensajes guardados y galería
@@ -215,10 +216,11 @@ export default function Chats() {
     api.get('/chats/gallery').then((r) => setGallery(r.data || [])).catch(() => {});
     api.get('/chats/workflows-list').then((r) => setChatWorkflows(r.data || [])).catch(() => {});
     api.get('/call-center/agents').then((r) => setAgents(r.data || [])).catch(() => {});
-    // Plantillas WhatsApp aprobadas por Meta (para enviar desde el chat).
+    // Plantillas WhatsApp aprobadas por Meta (para enviar desde el chat),
+    // más usadas primero (el menú muestra el top 4 por defecto).
     api
       .get('/message-templates', { params: { channel: 'whatsapp', status: 'approved' } })
-      .then((r) => setTemplates(r.data || []))
+      .then((r) => setTemplates((r.data || []).slice().sort((a, b) => (b.usageCount || 0) - (a.usageCount || 0))))
       .catch(() => {});
     loadStats();
   }, []);
@@ -405,6 +407,9 @@ export default function Chats() {
     setSlashOpen(false);
     setSlashQuery('');
     setPickerTab(null);
+    // Contador "más usados" (ordena el menú); no bloquea la inserción.
+    api.post(`/chats/saved-replies/${r._id}/used`).catch(() => {});
+    setSavedReplies((prev) => prev.map((x) => (x._id === r._id ? { ...x, usageCount: (x.usageCount || 0) + 1 } : x)));
   };
 
   // Disparo MANUAL de una automatización para este chat (cuando el disparo
@@ -727,12 +732,27 @@ export default function Chats() {
                             <button
                               key={k}
                               type="button"
-                              onClick={() => setPickerTab(k)}
+                              onClick={() => { setPickerTab(k); setPickerQuery(''); }}
                               className={`flex-1 px-2 py-2 text-xs font-semibold border-none cursor-pointer ${pickerTab === k ? 'bg-emerald-50 text-emerald-700 border-b-2 border-emerald-500' : 'bg-white text-slate-500 hover:bg-slate-50'}`}
                             >
                               {label}
                             </button>
                           ))}
+                        </div>
+                        <div className="p-2 border-b border-slate-100 shrink-0">
+                          <input
+                            autoFocus
+                            value={pickerQuery}
+                            onChange={(e) => setPickerQuery(e.target.value)}
+                            placeholder={
+                              pickerTab === 'auto'
+                                ? 'Buscar automatización…'
+                                : pickerTab === 'templates'
+                                  ? 'Buscar plantilla…'
+                                  : 'Buscar mensaje guardado…'
+                            }
+                            className="w-full border border-slate-200 rounded-lg px-2.5 py-1.5 text-xs"
+                          />
                         </div>
                         <div className="overflow-y-auto">
                           {pickerTab === 'auto' && (
@@ -741,33 +761,55 @@ export default function Chats() {
                                 Ejecuta un flujo a mano para este chat (p. ej. si el disparo automático no salió).
                                 Si el paciente tiene una próxima cita, sus datos se usan en las variables y esperas.
                               </div>
-                              {chatWorkflows.length === 0 && (
-                                <div className="px-3 py-3 text-xs text-slate-400">
-                                  No hay automatizaciones activas. Créalas en Marketing → Workflows.
-                                </div>
-                              )}
-                              {chatWorkflows.map((wf) =>
-                                wf.flows.map((flow, fi) => (
-                                  <button
-                                    key={`${wf._id}-${flow.startNodeId || fi}`}
-                                    type="button"
-                                    disabled={runningWf}
-                                    onMouseDown={(e) => { e.preventDefault(); runWorkflowForChat(wf, flow); }}
-                                    className="w-full text-left px-3 py-2 hover:bg-emerald-50 border-b border-slate-50 text-sm bg-white cursor-pointer disabled:opacity-50"
-                                  >
-                                    <div className="font-semibold text-slate-700 text-xs flex items-center gap-1.5">
-                                      ⚡ {wf.name}
-                                      {wf.flows.length > 1 && (
-                                        <span className="text-[10px] text-slate-400 font-normal">· flujo {fi + 1}</span>
-                                      )}
-                                    </div>
-                                    <div className="text-slate-500 text-[11px] truncate">
-                                      {(flow.triggerTypes || []).map((t) => TRIGGER_LABELS_CHAT[t] || t).join(' / ') || 'Sin disparador'}
-                                      <span className="text-slate-300"> · {wf.folder}</span>
-                                    </div>
-                                  </button>
-                                ))
-                              )}
+                              {(() => {
+                                const q = pickerQuery.trim().toLowerCase();
+                                const rows = [];
+                                chatWorkflows.forEach((wf) => wf.flows.forEach((flow, fi) => rows.push({ wf, flow, fi })));
+                                const shown = q
+                                  ? rows.filter(({ wf, flow }) =>
+                                      wf.name.toLowerCase().includes(q) ||
+                                      (wf.folder || '').toLowerCase().includes(q) ||
+                                      (flow.triggerTypes || []).some((t) => (TRIGGER_LABELS_CHAT[t] || t).toLowerCase().includes(q))
+                                    ).slice(0, 30)
+                                  : rows.slice(0, 4); // top 4 más usadas
+                                if (rows.length === 0) return (
+                                  <div className="px-3 py-3 text-xs text-slate-400">
+                                    No hay automatizaciones activas. Créalas en Marketing → Workflows.
+                                  </div>
+                                );
+                                if (shown.length === 0) return (
+                                  <div className="px-3 py-3 text-xs text-slate-400">Sin resultados para "{pickerQuery}".</div>
+                                );
+                                return (
+                                  <>
+                                    {shown.map(({ wf, flow, fi }) => (
+                                      <button
+                                        key={`${wf._id}-${flow.startNodeId || fi}`}
+                                        type="button"
+                                        disabled={runningWf}
+                                        onMouseDown={(e) => { e.preventDefault(); runWorkflowForChat(wf, flow); }}
+                                        className="w-full text-left px-3 py-2 hover:bg-emerald-50 border-b border-slate-50 text-sm bg-white cursor-pointer disabled:opacity-50"
+                                      >
+                                        <div className="font-semibold text-slate-700 text-xs flex items-center gap-1.5">
+                                          ⚡ {wf.name}
+                                          {wf.flows.length > 1 && (
+                                            <span className="text-[10px] text-slate-400 font-normal">· flujo {fi + 1}</span>
+                                          )}
+                                        </div>
+                                        <div className="text-slate-500 text-[11px] truncate">
+                                          {(flow.triggerTypes || []).map((t) => TRIGGER_LABELS_CHAT[t] || t).join(' / ') || 'Sin disparador'}
+                                          <span className="text-slate-300"> · {wf.folder}</span>
+                                        </div>
+                                      </button>
+                                    ))}
+                                    {!q && rows.length > 4 && (
+                                      <div className="px-3 py-1.5 text-[10px] text-slate-400">
+                                        Mostrando las 4 más usadas de {rows.length} — escribe arriba para buscar el resto.
+                                      </div>
+                                    )}
+                                  </>
+                                );
+                              })()}
                             </>
                           )}
                           {pickerTab === 'templates' && (
@@ -775,29 +817,47 @@ export default function Chats() {
                               <div className="px-3 py-2 text-[11px] text-slate-400 border-b border-slate-50">
                                 Plantillas aprobadas por Meta (funcionan aun fuera de la ventana de 24h).
                               </div>
-                              {templates.length === 0 && (
-                                <div className="px-3 py-3 text-xs text-slate-400">
-                                  No hay plantillas aprobadas. Créalas y apruébalas en Plantillas / Sincroniza con Meta.
-                                </div>
-                              )}
-                              {templates.map((t) => (
-                                <button
-                                  key={t._id}
-                                  type="button"
-                                  onMouseDown={(e) => {
-                                    e.preventDefault();
-                                    setTemplateDraft({ name: t.name, language: t.language || 'es', vars: '' });
-                                    setPickerTab(null);
-                                  }}
-                                  className="w-full text-left px-3 py-2 hover:bg-emerald-50 border-b border-slate-50 text-sm bg-white cursor-pointer"
-                                >
-                                  <div className="flex items-center justify-between gap-2">
-                                    <span className="font-semibold text-slate-700 text-xs truncate">{t.name}</span>
-                                    <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 shrink-0">Aprobada</span>
+                              {(() => {
+                                const q = pickerQuery.trim().toLowerCase();
+                                const shown = q
+                                  ? templates.filter((t) => t.name.toLowerCase().includes(q) || (t.body || '').toLowerCase().includes(q)).slice(0, 30)
+                                  : templates.slice(0, 4); // top 4 más usadas
+                                if (templates.length === 0) return (
+                                  <div className="px-3 py-3 text-xs text-slate-400">
+                                    No hay plantillas aprobadas. Créalas y apruébalas en Plantillas / Sincroniza con Meta.
                                   </div>
-                                  <div className="text-slate-500 text-xs truncate">{t.body}</div>
-                                </button>
-                              ))}
+                                );
+                                if (shown.length === 0) return (
+                                  <div className="px-3 py-3 text-xs text-slate-400">Sin resultados para "{pickerQuery}".</div>
+                                );
+                                return (
+                                  <>
+                                    {shown.map((t) => (
+                                      <button
+                                        key={t._id}
+                                        type="button"
+                                        onMouseDown={(e) => {
+                                          e.preventDefault();
+                                          setTemplateDraft({ name: t.name, language: t.language || 'es', vars: '' });
+                                          setPickerTab(null);
+                                        }}
+                                        className="w-full text-left px-3 py-2 hover:bg-emerald-50 border-b border-slate-50 text-sm bg-white cursor-pointer"
+                                      >
+                                        <div className="flex items-center justify-between gap-2">
+                                          <span className="font-semibold text-slate-700 text-xs truncate">{t.name}</span>
+                                          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 shrink-0">Aprobada</span>
+                                        </div>
+                                        <div className="text-slate-500 text-xs truncate">{t.body}</div>
+                                      </button>
+                                    ))}
+                                    {!q && templates.length > 4 && (
+                                      <div className="px-3 py-1.5 text-[10px] text-slate-400">
+                                        Mostrando las 4 más usadas de {templates.length} — escribe arriba para buscar el resto.
+                                      </div>
+                                    )}
+                                  </>
+                                );
+                              })()}
                             </>
                           )}
                           {pickerTab === 'saved' && (
@@ -805,28 +865,50 @@ export default function Chats() {
                               <div className="px-3 py-2 text-[11px] text-slate-400 border-b border-slate-50">
                                 También puedes escribir "/" en el mensaje para buscarlos al vuelo.
                               </div>
-                              {savedReplies.length === 0 && (
-                                <div className="px-3 py-3 text-xs text-slate-400">
-                                  Sin mensajes guardados. Configúralos en Marketing → Mensajes Guardados.
-                                </div>
-                              )}
-                              {savedReplies.map((r) => (
-                                <button
-                                  key={r._id}
-                                  type="button"
-                                  onMouseDown={(e) => { e.preventDefault(); insertSavedReply(r); }}
-                                  className="w-full text-left px-3 py-2 hover:bg-emerald-50 border-b border-slate-50 text-sm bg-white cursor-pointer"
-                                >
-                                  <div className="font-semibold text-emerald-700 text-xs flex items-center gap-1">
-                                    /{r.shortcut}
-                                    {r.title && <span className="text-slate-500 font-normal truncate">· {r.title}</span>}
-                                    {r.attachment?.url && (
-                                      <span title="Con adjunto">{r.attachment.type === 'video' ? '🎬' : '🖼'}</span>
-                                    )}
+                              {(() => {
+                                const q = pickerQuery.trim().toLowerCase();
+                                const shown = q
+                                  ? savedReplies.filter((r) =>
+                                      r.shortcut.includes(q) ||
+                                      (r.title || '').toLowerCase().includes(q) ||
+                                      (r.body || '').toLowerCase().includes(q)
+                                    ).slice(0, 30)
+                                  : savedReplies.slice(0, 4); // top 4 más usados
+                                if (savedReplies.length === 0) return (
+                                  <div className="px-3 py-3 text-xs text-slate-400">
+                                    Sin mensajes guardados. Configúralos en Marketing → Mensajes Guardados.
                                   </div>
-                                  <div className="text-slate-600 text-xs truncate">{r.body}</div>
-                                </button>
-                              ))}
+                                );
+                                if (shown.length === 0) return (
+                                  <div className="px-3 py-3 text-xs text-slate-400">Sin resultados para "{pickerQuery}".</div>
+                                );
+                                return (
+                                  <>
+                                    {shown.map((r) => (
+                                      <button
+                                        key={r._id}
+                                        type="button"
+                                        onMouseDown={(e) => { e.preventDefault(); insertSavedReply(r); }}
+                                        className="w-full text-left px-3 py-2 hover:bg-emerald-50 border-b border-slate-50 text-sm bg-white cursor-pointer"
+                                      >
+                                        <div className="font-semibold text-emerald-700 text-xs flex items-center gap-1">
+                                          /{r.shortcut}
+                                          {r.title && <span className="text-slate-500 font-normal truncate">· {r.title}</span>}
+                                          {r.attachment?.url && (
+                                            <span title="Con adjunto">{r.attachment.type === 'video' ? '🎬' : '🖼'}</span>
+                                          )}
+                                        </div>
+                                        <div className="text-slate-600 text-xs truncate">{r.body}</div>
+                                      </button>
+                                    ))}
+                                    {!q && savedReplies.length > 4 && (
+                                      <div className="px-3 py-1.5 text-[10px] text-slate-400">
+                                        Mostrando los 4 más usados de {savedReplies.length} — escribe arriba para buscar el resto.
+                                      </div>
+                                    )}
+                                  </>
+                                );
+                              })()}
                             </>
                           )}
                         </div>
@@ -842,7 +924,7 @@ export default function Chats() {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setPickerTab((v) => (v ? null : 'auto'))}
+                      onClick={() => { setPickerTab((v) => (v ? null : 'auto')); setPickerQuery(''); }}
                       className={`px-2 py-2 border rounded-lg cursor-pointer disabled:opacity-50 flex items-center ${pickerTab || templateDraft.name ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
                       title="Automatizaciones, plantillas y mensajes guardados"
                     >

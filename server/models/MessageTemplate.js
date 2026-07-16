@@ -60,6 +60,8 @@ const messageTemplateSchema = new mongoose.Schema(
     rejectionReason: { type: String, trim: true, default: '' },
     syncedAt: { type: Date, default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // Veces enviada (chat, workflows, campañas): ordena el menú por "más usadas".
+    usageCount: { type: Number, default: 0 },
   },
   { timestamps: true }
 );
