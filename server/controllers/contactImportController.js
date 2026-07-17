@@ -12,7 +12,6 @@
  * VPS, que además corre Chromium para los QR y los PDFs.
  */
 const fs = require('fs');
-const os = require('os');
 const path = require('path');
 const multer = require('multer');
 const mongoose = require('mongoose');
@@ -23,8 +22,31 @@ const { readHeaders, isSupported } = require('../utils/contactFileReader');
 const { suggestMapping, FIELD_OPTIONS } = require('../utils/contactRowMapper');
 const { revertImport } = require('../utils/contactImportRunner');
 
-const UPLOAD_DIR = path.join(os.tmpdir(), 'shiluv_contact_imports');
+// En server/storage (el patrón de la casa para lo que debe SOBREVIVIR deploys:
+// certificados, adjuntos clínicos), NO en /tmp. El archivo se necesita minutos
+// después de subirlo (lo procesa un job) y /tmp no garantiza nada en ese
+// intervalo: el SO puede limpiarlo y un reinicio de pm2 a mitad de importación
+// dejaba lotes en "el archivo ya no está en el servidor".
+const UPLOAD_DIR = path.join(__dirname, '..', 'storage', 'contact_imports');
 fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+
+/** Barre subidas huérfanas (analizadas pero nunca confirmadas) de más de 24 h. */
+function sweepOldUploads() {
+  fs.promises
+    .readdir(UPLOAD_DIR)
+    .then((files) =>
+      Promise.all(
+        files.map(async (f) => {
+          const p = path.join(UPLOAD_DIR, f);
+          const st = await fs.promises.stat(p).catch(() => null);
+          if (st && Date.now() - st.mtimeMs > 24 * 60 * 60 * 1000) {
+            await fs.promises.unlink(p).catch(() => {});
+          }
+        })
+      )
+    )
+    .catch(() => {});
+}
 
 // 30 MB, igual que Daplox.
 exports.uploadMiddleware = multer({
@@ -115,6 +137,7 @@ exports.template = async (req, res) => {
 /** Paso 2 del asistente: analiza el archivo y propone el mapeo. */
 exports.analyze = async (req, res) => {
   if (!req.file) return res.status(400).json({ message: 'No se recibió ningún archivo' });
+  sweepOldUploads(); // cada subida nueva limpia las huérfanas viejas
   try {
     const { headers, samples } = await readHeaders(req.file.path, req.file.originalname);
     if (!headers.length) {

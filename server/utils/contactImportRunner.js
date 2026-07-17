@@ -315,6 +315,16 @@ async function runImport(batchId) {
 
 /** Job: coge los lotes que están esperando. */
 async function processPendingImports() {
+  // Rescate: lotes que quedaron en 'running' porque un deploy o un reinicio mató
+  // el proceso a mitad. Mientras procesa de verdad guarda cada 500 filas, así que
+  // 5 min sin escribir = muerto. Reprocesar desde cero es seguro: los contadores
+  // se resetean al arrancar, la escritura es por upsert (teléfono único) y las
+  // inscripciones en workflows tienen dedup.
+  await ContactImport.updateMany(
+    { status: 'running', updatedAt: { $lte: new Date(Date.now() - 5 * 60 * 1000) } },
+    { $set: { status: 'pending' } }
+  ).catch(() => {});
+
   const pending = await ContactImport.find({ status: 'pending' }).select('_id').sort({ createdAt: 1 }).limit(3);
   for (const p of pending) {
     // eslint-disable-next-line no-await-in-loop

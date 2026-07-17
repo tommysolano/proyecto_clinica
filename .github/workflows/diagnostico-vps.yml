@@ -27,6 +27,11 @@ jobs:
             grep -c scheduleInject node_modules/whatsapp-web.js/src/Client.js && echo 'PARCHE APLICADO' || echo 'PARCHE NO APLICADO'
             echo '===== chrome de puppeteer ====='
             node -e "const p=require('puppeteer').executablePath(); console.log(p); require('fs').accessSync(p); console.log('CHROME OK')" || echo 'CHROME NO DISPONIBLE'
+            echo '===== importacion de contactos: staging de archivos ====='
+            ls -la /tmp/shiluv_contact_imports 2>/dev/null || echo '/tmp/shiluv_contact_imports NO EXISTE'
+            ls -la /var/www/clinica/server/storage/contact_imports 2>/dev/null || echo 'storage/contact_imports aun no existe (se crea al primer uso)'
+            findmnt /tmp || echo '/tmp no es un punto de montaje aparte'
+            systemctl show "pm2-$(whoami).service" -p PrivateTmp 2>/dev/null || true
             echo '===== memoria ====='
             free -m || true
             echo '===== disco ====='

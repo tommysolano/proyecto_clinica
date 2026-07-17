@@ -439,3 +439,29 @@ test('la inscripción de un contacto EJECUTA de verdad: el mensaje sale con el n
     gw.sendText = orig;
   }
 });
+
+test('un lote atascado en running (deploy a mitad) se rescata y termina', async () => {
+  // Un pm2 restart en plena importación dejaba el lote en 'running' PARA SIEMPRE:
+  // el job solo miraba los 'pending'. Ahora, 5 min sin guardar = muerto → vuelve
+  // a 'pending' y se reprocesa desde cero (upserts: no duplica).
+  const { clinicId, userId } = await H.seedClinic();
+  const file = writeCsv([
+    ['Nombre', 'Celular', 'Correo', 'Ciudad'],
+    ['Ligia', '0999111222', '', ''],
+  ]);
+  const batch = await makeBatch(clinicId, userId, file, { status: 'running', startedAt: new Date() });
+
+  // Antedatar updatedAt exige el driver nativo: mongoose lo protege y lo
+  // descarta en silencio de un $set (el resto del $set sí se aplica).
+  await H.mongoose.connection.db
+    .collection('contactimports')
+    .updateOne({ _id: batch._id }, { $set: { updatedAt: new Date(Date.now() - 10 * 60 * 1000) } });
+
+  const { processPendingImports } = require('../utils/contactImportRunner');
+  await processPendingImports();
+
+  const done = await ContactImport.findById(batch._id);
+  assert.equal(done.status, 'done', done.errorMessage);
+  assert.equal(done.created, 1);
+  assert.ok(await Contact.findOne({ clinic: clinicId, phone: '593999111222' }));
+});
