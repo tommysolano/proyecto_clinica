@@ -29,7 +29,11 @@ echo "==> 3/4 Compilando el frontend (regenera client/dist)"
 npm --prefix client run build
 
 echo "==> 4/4 Reiniciando el backend con PM2"
-pm2 restart clinica-api --update-env
+# --kill-timeout 15000: pm2 manda SIGINT y espera 15 s antes del SIGKILL. El
+# server usa ese tiempo para cerrar los Chromium de WhatsApp QR con destroy();
+# sin la gracia, la sesión moría a mitad de escritura y tras varios deploys
+# quedaba corrupta (auth_failure → re-escanear el QR).
+pm2 restart clinica-api --update-env --kill-timeout 15000
 pm2 save
 
 echo "==> Despliegue completado: $(date)"

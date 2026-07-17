@@ -870,6 +870,26 @@ async function initEnabledOnBoot() {
   }
 }
 
+/**
+ * Apagado ordenado del proceso (pm2 manda SIGINT en cada deploy): cierra TODOS
+ * los Chromium con destroy() para que la sesión de WhatsApp se termine de
+ * escribir en disco. Matarlos a lo bruto a mitad de escritura era lo que, tras
+ * varios deploys seguidos, corrompía la sesión guardada y acababa en
+ * auth_failure (tocaba re-escanear el QR). NO toca el estado en BD: al arrancar,
+ * initEnabledOnBoot reconecta desde la sesión guardada.
+ */
+async function shutdownAll() {
+  const entries = [...clients.values()];
+  clients.clear();
+  await Promise.allSettled(
+    entries.map((e) => {
+      if (e.watchdog) clearTimeout(e.watchdog);
+      if (e.syncWatchdog) clearTimeout(e.syncWatchdog);
+      return e.client.destroy().catch(() => {});
+    })
+  );
+}
+
 module.exports = {
   connect,
   disconnect,
@@ -880,4 +900,5 @@ module.exports = {
   getLiveSnapshot,
   reconcileAccount,
   initEnabledOnBoot,
+  shutdownAll,
 };

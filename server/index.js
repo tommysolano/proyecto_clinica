@@ -16,6 +16,30 @@ process.on('unhandledRejection', (reason) => {
   console.error('[unhandledRejection]', reason);
 });
 
+// Apagado ORDENADO: pm2 manda SIGINT en cada deploy (5 deploys en una tarde son
+// 5 reinicios). Sin esto Node muere de golpe y los Chromium de WhatsApp QR
+// quedan degollados a mitad de escritura de la sesión: tras varios deploys la
+// sesión guardada se corrompe → auth_failure → a re-escanear el QR. El deploy
+// da 15 s de gracia (--kill-timeout); aquí nos autoimponemos 10 s por si un
+// destroy se cuelga.
+let shuttingDown = false;
+function gracefulExit(signal) {
+  if (shuttingDown) return;
+  shuttingDown = true;
+  console.log(`[shutdown] ${signal}: cerrando sesiones de WhatsApp QR…`);
+  const forced = setTimeout(() => process.exit(0), 10 * 1000);
+  require('./utils/whatsappQrManager')
+    .shutdownAll()
+    .then(() => console.log('[shutdown] sesiones cerradas limpiamente'))
+    .catch(() => {})
+    .finally(() => {
+      clearTimeout(forced);
+      process.exit(0);
+    });
+}
+process.on('SIGINT', () => gracefulExit('SIGINT'));
+process.on('SIGTERM', () => gracefulExit('SIGTERM'));
+
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
@@ -133,6 +157,17 @@ connectDB().then(() => {
   server.listen(PORT, () => {
     console.log(`Servidor corriendo en puerto ${PORT} (HTTP + Socket.IO)`);
   });
+
+  // Interruptor para DESARROLLO: el .env local apunta a la base de PRODUCCIÓN,
+  // así que un `npm run dev` sin esto ejecuta los jobs reales (goteo, workflows,
+  // no-show…) y levanta las sesiones de WhatsApp QR compitiendo con el VPS.
+  // Caso real: un dev local se comía las importaciones de contactos de prod.
+  // En el VPS la variable no existe y todo corre normal.
+  if (process.env.JOBS_DISABLED === '1') {
+    console.log('[jobs] JOBS_DISABLED=1: jobs y WhatsApp QR desactivados en esta máquina (modo desarrollo seguro)');
+    return;
+  }
+
   // Job: marcar automáticamente como "no asistió" las citas de días pasados.
   require('./utils/autoNoShow').startAutoNoShowJob();
   // Job: reanudar flujos de mensajes con pasos de espera vencidos (cada 60s).
