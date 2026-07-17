@@ -1,21 +1,21 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import {
   HiOutlineArrowsRightLeft,
+  HiOutlineArrowTopRightOnSquare,
   HiOutlineBookOpen,
   HiOutlineClipboardDocumentList,
   HiOutlineDocumentChartBar,
   HiOutlineInformationCircle,
 } from 'react-icons/hi2';
 import { fmt, fmtDate, startOfMonth, today, downloadBlob } from './_utils';
-import LiquidityProjection from './_LiquidityProjection';
 
 const REPORT_TABS = [
   ['PYG', 'Estado Resultados'],
   ['BG', 'Balance General'],
-  ['FC', 'Flujo de Caja'],
 ];
 
 const DETAIL_TABS = [
@@ -44,6 +44,7 @@ const SOURCE_LABELS = {
 };
 
 export default function FinancialReports() {
+  const navigate = useNavigate();
   const [tab, setTab] = useState('PYG');
   const [startDate, setStart] = useState(startOfMonth());
   const [endDate, setEnd] = useState(today());
@@ -60,7 +61,6 @@ export default function FinancialReports() {
         url = '/accounting-reports/balance-sheet';
         params = { date: endDate, startDate, endDate };
       }
-      if (tab === 'FC') url = '/accounting-reports/cash-flow';
       const r = await api.get(url, { params });
       setData(r.data);
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
@@ -104,8 +104,7 @@ export default function FinancialReports() {
   const renderReport = () => {
     if (!data) return null;
     if (tab === 'PYG') return <IncomeStatement data={data} onAccountClick={openAccount} />;
-    if (tab === 'BG') return <BalanceSheet data={data} onAccountClick={openAccount} />;
-    return <CashFlowReport data={data} onAccountClick={openAccount} />;
+    return <BalanceSheet data={data} onAccountClick={openAccount} />;
   };
 
   return (
@@ -114,6 +113,10 @@ export default function FinancialReports() {
       <div className="flex gap-2 flex-wrap">
         {REPORT_TABS.map(([k, l]) =>
           <button key={k} onClick={() => { setTab(k); setData(null); }} className={`px-4 py-2 rounded-lg text-sm ${tab === k ? 'bg-emerald-600 text-white' : 'bg-white border'}`}>{l}</button>)}
+        {/* El flujo de caja vive en un solo lugar (Contabilidad → Flujo de Caja); este acceso solo navega ahí. */}
+        <button onClick={() => navigate('/accounting/cash-flow')} className="px-4 py-2 rounded-lg text-sm bg-white border flex items-center gap-1.5" title="Abre el módulo de Flujo de Caja (Contabilidad)">
+          Flujo de Caja <HiOutlineArrowTopRightOnSquare className="w-3.5 h-3.5 text-slate-400" />
+        </button>
       </div>
       <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 items-end flex-wrap">
         <div><label className="text-xs text-slate-500 block">Desde</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
@@ -276,33 +279,6 @@ function BalanceSheet({ data, onAccountClick }) {
   );
 }
 
-function CashFlowReport({ data, onAccountClick }) {
-  const accounts = data.accounts || data.cuentas || [];
-  const flows = data.flows || [];
-
-  return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Stat title="Saldo inicial" value={`$${fmt(data.opening)}`} />
-        <Stat title="Entradas" value={`$${fmt(data.totalIn)}`} color="text-emerald-700" />
-        <Stat title="Salidas" value={`$${fmt(data.totalOut)}`} color="text-rose-600" />
-        <Stat title="Saldo final" value={`$${fmt(data.saldoFinal)}`} color={(data.saldoFinal || 0) < 0 ? 'text-rose-600' : 'text-slate-800'} />
-      </div>
-      <LiquidityProjection p={data.proyeccion} />
-      <FinancialTable
-        title="Cuentas de efectivo y bancos"
-        rows={accounts}
-        total={data.saldoFinal}
-        totalClass={(data.saldoFinal || 0) < 0 ? 'text-rose-600' : 'text-emerald-700'}
-        amountKey="closing"
-        amountLabel="Saldo final"
-        onAccountClick={onAccountClick}
-      />
-      <CashFlowTable flows={flows} onAccountClick={onAccountClick} />
-    </div>
-  );
-}
-
 function FinancialTable({ title, rows = [], total: totalValue = 0, totalClass = '', amountKey = 'balance', amountLabel = 'Saldo', onAccountClick, extraRows = [] }) {
   const visibleRows = [...(rows || [])]
     .filter((row) => hasData(row, amountKey))
@@ -354,49 +330,6 @@ function FinancialTable({ title, rows = [], total: totalValue = 0, totalClass = 
               <td className={`px-3 py-2 text-right font-mono ${totalClass}`}>${fmt(totalValue)}</td>
             </tr>
           </tfoot>
-        </table>
-      </div>
-    </section>
-  );
-}
-
-function CashFlowTable({ flows = [], onAccountClick }) {
-  return (
-    <section className="space-y-2">
-      <h3 className="font-semibold text-emerald-700 border-b pb-1">Movimientos de caja</h3>
-      <div className="overflow-x-auto rounded-lg border border-slate-100">
-        <table className="tbl min-w-[920px]">
-          <thead className="bg-emerald-50 text-xs uppercase text-slate-600">
-            <tr>
-              <th className="px-3 py-2 text-left">Fecha</th>
-              <th className="px-3 py-2 text-left">Asiento</th>
-              <th className="px-3 py-2 text-left">Cuenta</th>
-              <th className="px-3 py-2 text-left">Descripcion</th>
-              <th className="px-3 py-2 text-right">Entrada</th>
-              <th className="px-3 py-2 text-right">Salida</th>
-              <th className="px-3 py-2 text-right">Saldo</th>
-            </tr>
-          </thead>
-          <tbody>
-            {flows.map((flow, index) => (
-              <tr key={`${flow.entryId || flow.number}-${index}`} className={`border-t border-slate-100 ${flow.saldo < 0 ? 'bg-rose-50' : ''}`}>
-                <td className="px-3 py-2 text-xs">{fmtDate(flow.date)}</td>
-                <td className="px-3 py-2 font-mono text-xs">{flow.number}</td>
-                <td className="px-3 py-2">
-                  <AccountButton account={{ _id: flow.accountId, code: flow.accountCode, name: flow.accountName }} onAccountClick={onAccountClick}>
-                    {flow.accountCode ? `${flow.accountCode} - ${flow.accountName}` : 'Cuenta'}
-                  </AccountButton>
-                </td>
-                <td className="px-3 py-2 text-xs">{flow.description}</td>
-                <td className="px-3 py-2 text-right font-mono text-emerald-700">{money(flow.in) ? fmt(flow.in) : ''}</td>
-                <td className="px-3 py-2 text-right font-mono text-rose-600">{money(flow.out) ? fmt(flow.out) : ''}</td>
-                <td className={`px-3 py-2 text-right font-mono font-semibold ${flow.saldo < 0 ? 'text-rose-600' : ''}`}>{fmt(flow.saldo)}</td>
-              </tr>
-            ))}
-            {!flows.length && (
-              <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400 text-xs">Sin movimientos de caja en el rango seleccionado.</td></tr>
-            )}
-          </tbody>
         </table>
       </div>
     </section>
