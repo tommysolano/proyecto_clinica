@@ -10,6 +10,7 @@
  * escritura por fila son 47k viajes a Mongo.
  */
 const fs = require('fs');
+const os = require('os');
 const Contact = require('../models/Contact');
 const ContactImport = require('../models/ContactImport');
 const { iterateRows } = require('./contactFileReader');
@@ -206,11 +207,15 @@ async function flushBatch(rows, batch) {
  */
 async function runImport(batchId) {
   const batch = await ContactImport.findOneAndUpdate(
-    { _id: batchId, status: 'pending' },
+    // Guardia de máquina: el archivo está en el disco de UN host concreto. Un
+    // server de desarrollo local conectado a la base de producción corría este
+    // mismo job, agarraba el lote y lo mataba con "el archivo ya no está en el
+    // servidor" (buscaba rutas del VPS en Windows). '' = lotes de antes del campo.
+    { _id: batchId, status: 'pending', host: { $in: [os.hostname(), '', null] } },
     { $set: { status: 'running', startedAt: new Date() } },
     { new: true }
   );
-  if (!batch) return null; // ya lo cogió otro tick del job
+  if (!batch) return null; // ya lo cogió otro tick del job, o es de otra máquina
 
   const progress = () =>
     emitToCallCenter('contactImport:progress', {
@@ -321,11 +326,15 @@ async function processPendingImports() {
   // se resetean al arrancar, la escritura es por upsert (teléfono único) y las
   // inscripciones en workflows tienen dedup.
   await ContactImport.updateMany(
-    { status: 'running', updatedAt: { $lte: new Date(Date.now() - 5 * 60 * 1000) } },
+    { status: 'running', host: { $in: [os.hostname(), '', null] }, updatedAt: { $lte: new Date(Date.now() - 5 * 60 * 1000) } },
     { $set: { status: 'pending' } }
   ).catch(() => {});
 
-  const pending = await ContactImport.find({ status: 'pending' }).select('_id').sort({ createdAt: 1 }).limit(3);
+  // Solo los lotes de ESTA máquina (ver guardia en runImport).
+  const pending = await ContactImport.find({ status: 'pending', host: { $in: [os.hostname(), '', null] } })
+    .select('_id')
+    .sort({ createdAt: 1 })
+    .limit(3);
   for (const p of pending) {
     // eslint-disable-next-line no-await-in-loop
     await runImport(p._id).catch((e) => console.error('[contactImport]', e.message));

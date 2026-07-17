@@ -255,7 +255,9 @@ test('un lote solo se procesa una vez (dos ticks del job no duplican)', async ()
   const batch = await makeBatch(clinicId, userId, file);
 
   const [a, b] = await Promise.all([runImport(batch._id), runImport(batch._id)]);
-  assert.ok(a && !b, 'el segundo intento no debe volver a procesar el lote');
+  // La garantía es que UNO gana la carrera (findOneAndUpdate atómico) — no CUÁL:
+  // bajo carga a veces procesa el segundo. Mismo intermitente que tuvo el goteo.
+  assert.ok(!!a !== !!b, 'exactamente un tick procesa el lote; el otro se retira');
   assert.equal(await Contact.countDocuments({ clinic: clinicId }), 1);
 });
 
@@ -464,4 +466,29 @@ test('un lote atascado en running (deploy a mitad) se rescata y termina', async 
   assert.equal(done.status, 'done', done.errorMessage);
   assert.equal(done.created, 1);
   assert.ok(await Contact.findOne({ clinic: clinicId, phone: '593999111222' }));
+});
+
+test('un lote de OTRA máquina no se toca: su archivo no está en este disco', async () => {
+  // Caso real: un server de desarrollo local conectado a la base de producción
+  // corría los mismos jobs, agarraba los lotes del VPS y los mataba con "el
+  // archivo ya no está en el servidor" (buscaba rutas de Linux en Windows).
+  const { clinicId, userId } = await H.seedClinic();
+  const file = writeCsv([
+    ['Nombre', 'Celular', 'Correo', 'Ciudad'],
+    ['Ligia', '0999111222', '', ''],
+  ]);
+  const batch = await makeBatch(clinicId, userId, file, { host: 'vps-produccion' });
+
+  const { runImport, processPendingImports } = require('../utils/contactImportRunner');
+  assert.equal(await runImport(batch._id), null, 'runImport directo tampoco lo procesa');
+  await processPendingImports();
+
+  const fresh = await ContactImport.findById(batch._id);
+  assert.equal(fresh.status, 'pending', 'queda esperando a SU máquina, no falla');
+
+  // El mismo lote con el host de esta máquina sí se procesa.
+  fresh.host = require('os').hostname();
+  await fresh.save();
+  await processPendingImports();
+  assert.equal((await ContactImport.findById(batch._id)).status, 'done');
 });

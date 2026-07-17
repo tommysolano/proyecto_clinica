@@ -30,6 +30,11 @@ const contactImportSchema = new mongoose.Schema(
     fileName: { type: String, trim: true, default: '' },
     filePath: { type: String, trim: true, default: '' }, // temporal, se borra al terminar
     fileSize: { type: Number, default: 0 },
+    // Máquina que recibió el archivo: SOLO ella procesa el lote. Caso real: un
+    // server de desarrollo local conectado a la base de producción corría los
+    // mismos jobs, agarraba los lotes y buscaba el archivo en rutas del VPS que
+    // en Windows no existen → "el archivo ya no está en el servidor".
+    host: { type: String, trim: true, default: '' },
 
     // pending  → subido y mapeado, esperando al job
     // running  → procesándose

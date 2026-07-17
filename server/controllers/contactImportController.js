@@ -12,6 +12,7 @@
  * VPS, que además corre Chromium para los QR y los PDFs.
  */
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 const multer = require('multer');
 const mongoose = require('mongoose');
@@ -213,6 +214,8 @@ exports.create = async (req, res) => {
       fileName: fileName || 'contactos.csv',
       filePath,
       fileSize: fs.statSync(filePath).size,
+      // El archivo vive en el disco de ESTA máquina: solo ella puede procesarlo.
+      host: os.hostname(),
       status: 'pending',
       mapping: map.map((m) => ({
         column: String(m.column || ''),
