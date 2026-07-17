@@ -59,6 +59,50 @@ function sendFailureInfo(result) {
   return SEND_FAIL_REASONS[reason] || result.errorMessage || `No se pudo enviar (${reason}).`;
 }
 
+// Fallos TRANSITORIOS del canal: solo el número QR caído (reconectar lo cura),
+// así que el envío se REINTENTA en vez de quemar el turno del contacto. Caso
+// real: una importación inscribió sus contactos mientras la sesión QR se
+// re-asentaba tras un deploy; todos quedaron "fallido" para siempre con el
+// número ya en verde. OJO: provider_unavailable ("no hay número configurado")
+// NO va aquí — es ausencia de configuración, no un tropiezo: debe fallar claro
+// y al instante, no colgarse 3 horas reintentando.
+const RETRYABLE_SEND_FAILS = new Set([SEND_FAIL_REASONS.qr_not_connected]);
+const SEND_RETRY_MS = 5 * 60 * 1000; // reintento cada 5 min…
+const SEND_RETRY_MAX = 36; // …hasta ~3 horas; después, fallo definitivo y el flujo sigue
+
+/**
+ * Si `fail` es un fallo transitorio del canal y quedan reintentos, pausa la
+ * inscripción para reintentar ESTE MISMO paso (waiting + nextRunAt) y devuelve
+ * true. El caller debe fijar currentNodeId/stepIndex al paso actual, guardar y
+ * salir. `at` = { nodeId } (grafo) o { stepIndex } (lineal), para el registro.
+ */
+function scheduleSendRetry(enrollment, fail, at) {
+  if (!fail || !RETRYABLE_SEND_FAILS.has(fail)) return false;
+  const ctx = enrollment.context || {};
+  const tries = Number(ctx.sendRetries || 0) + 1;
+  if (tries > SEND_RETRY_MAX) return false; // agotado: que el caller lo registre como definitivo
+  ctx.sendRetries = tries;
+  enrollment.context = ctx;
+  enrollment.markModified('context');
+  pushLog(enrollment, {
+    ...at,
+    type: 'retry',
+    ok: false,
+    info: `${fail} Se reintenta en 5 min (intento ${tries}/${SEND_RETRY_MAX}); el turno del contacto no se pierde.`,
+  });
+  enrollment.status = 'waiting';
+  enrollment.nextRunAt = new Date(Date.now() + SEND_RETRY_MS);
+  return true;
+}
+
+/** El paso se resolvió (éxito o fallo definitivo): limpiar el contador de reintentos. */
+function clearSendRetries(enrollment) {
+  if (enrollment.context?.sendRetries) {
+    delete enrollment.context.sendRetries;
+    enrollment.markModified('context');
+  }
+}
+
 /**
  * Agente call_center con MENOS conversaciones abiertas asignadas (reparto
  * equitativo). Devuelve { _id, name } o null si no hay agentes.
@@ -639,6 +683,14 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
       try {
         // eslint-disable-next-line no-await-in-loop
         const fail = await performAction({ ...data, type }, { clinicId: enrollment.clinic, patient, phone, ctx, convRef });
+        // Canal caído (QR desconectado): reintentar ESTE nodo, no quemar el turno.
+        if (fail && scheduleSendRetry(enrollment, fail, { nodeId: currentId })) {
+          enrollment.currentNodeId = currentId;
+          // eslint-disable-next-line no-await-in-loop
+          await enrollment.save();
+          return;
+        }
+        clearSendRetries(enrollment);
         pushLog(enrollment, { nodeId: currentId, type, ok: !fail, info: fail || '' });
       } catch (err) {
         pushLog(enrollment, { nodeId: currentId, type, ok: false, info: `Error: ${err.message}` });
@@ -716,6 +768,13 @@ async function executeEnrollment(enrollment) {
         isAutoReply: true,
       });
       const fail = sendFailureInfo(r);
+      if (fail && scheduleSendRetry(enrollment, fail, { stepIndex: i })) {
+        enrollment.stepIndex = i; // reintentar este mismo paso
+        // eslint-disable-next-line no-await-in-loop
+        await enrollment.save();
+        return;
+      }
+      clearSendRetries(enrollment);
       pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail || '' });
       i++;
     } else if (step.type === 'send_media') {
@@ -735,6 +794,13 @@ async function executeEnrollment(enrollment) {
           isAutoReply: true,
         });
         const fail = sendFailureInfo(r);
+        if (fail && scheduleSendRetry(enrollment, fail, { stepIndex: i })) {
+          enrollment.stepIndex = i;
+          // eslint-disable-next-line no-await-in-loop
+          await enrollment.save();
+          return;
+        }
+        clearSendRetries(enrollment);
         pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail || '' });
       }
       i++;
@@ -751,6 +817,13 @@ async function executeEnrollment(enrollment) {
         isAutoReply: true,
       });
       const fail = sendFailureInfo(r);
+      if (fail && scheduleSendRetry(enrollment, fail, { stepIndex: i })) {
+        enrollment.stepIndex = i;
+        // eslint-disable-next-line no-await-in-loop
+        await enrollment.save();
+        return;
+      }
+      clearSendRetries(enrollment);
       pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail || '' });
       i++;
     } else if (step.type === 'send_email') {

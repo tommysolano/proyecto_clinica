@@ -492,3 +492,100 @@ test('un lote de OTRA máquina no se toca: su archivo no está en este disco', a
   await processPendingImports();
   assert.equal((await ContactImport.findById(batch._id)).status, 'done');
 });
+
+test('QR caído: el workflow NO quema el turno — reintenta y envía cuando el número vuelve', async () => {
+  // Caso real: una importación inscribió sus contactos mientras la sesión QR se
+  // re-asentaba tras un deploy; los envíos quedaron "fallido" PARA SIEMPRE con
+  // el número ya verde. Un fallo de canal es transitorio: se reintenta.
+  const { clinicId, userId } = await H.seedClinic();
+  const WhatsappAccount = require('../models/WhatsappAccount');
+  await WhatsappAccount.create({ label: 'QR', connectionType: 'qr', enabled: true, isDefault: true, status: 'connected' });
+
+  const gw = require('../utils/whatsappGateway');
+  const orig = gw.sendText;
+  const sent = [];
+  gw.sendText = async () => ({ ok: false, errorCode: 'qr_not_connected', error: 'El número QR no está conectado' });
+  try {
+    const wf = await Workflow.create({
+      clinic: clinicId,
+      name: 'Bienvenida',
+      active: true,
+      trigger: { type: 'contact_import' },
+      steps: [{ type: 'send_message', body: 'Hola {{nombre}}' }],
+    });
+    const file = writeCsv([
+      ['Nombre', 'Celular', 'Correo', 'Ciudad'],
+      ['Ligia', '0999111222', '', ''],
+    ]);
+    const batch = await makeBatch(clinicId, userId, file, { workflows: [wf._id] });
+    await runImport(batch._id);
+
+    const engine = require('../utils/workflowEngine');
+
+    // 1ª ejecución con el QR caído: debe quedar EN ESPERA, no quemada.
+    await WorkflowEnrollment.updateMany({ workflow: wf._id }, { $set: { nextRunAt: new Date(Date.now() - 1000) } });
+    await engine.processDueEnrollments();
+    let e = await WorkflowEnrollment.findOne({ workflow: wf._id });
+    assert.equal(e.status, 'waiting', 'el turno no se pierde: queda esperando el reintento');
+    assert.ok(e.nextRunAt > new Date(), 'reintento programado en el futuro');
+    assert.ok(
+      e.log.some((l) => (l.info || '').includes('Se reintenta')),
+      'el registro explica que se reintentará'
+    );
+    assert.equal(e.context.sendRetries, 1);
+
+    // El número "vuelve": el reintento envía de verdad y el flujo termina.
+    gw.sendText = async (account, to, body) => {
+      sent.push({ to, body });
+      return { ok: true, data: { messages: [{ id: 'wamid.retry' }] } };
+    };
+    await WorkflowEnrollment.updateMany({ workflow: wf._id }, { $set: { nextRunAt: new Date(Date.now() - 1000) } });
+    await engine.processDueEnrollments();
+
+    e = await WorkflowEnrollment.findOne({ workflow: wf._id });
+    assert.equal(e.status, 'done');
+    assert.equal(sent.length, 1, 'el mensaje salió una sola vez');
+    assert.equal(sent[0].body, 'Hola Ligia');
+    assert.equal(e.context.sendRetries, undefined, 'el contador se limpia al resolverse');
+  } finally {
+    gw.sendText = orig;
+  }
+});
+
+test('QR caído con los reintentos agotados: fallo definitivo y el flujo sigue', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const WhatsappAccount = require('../models/WhatsappAccount');
+  await WhatsappAccount.create({ label: 'QR', connectionType: 'qr', enabled: true, isDefault: true, status: 'connected' });
+  const gw = require('../utils/whatsappGateway');
+  const orig = gw.sendText;
+  gw.sendText = async () => ({ ok: false, errorCode: 'qr_not_connected', error: 'El número QR no está conectado' });
+  try {
+    const wf = await Workflow.create({
+      clinic: clinicId,
+      name: 'Bienvenida',
+      active: true,
+      trigger: { type: 'contact_import' },
+      steps: [{ type: 'send_message', body: 'Hola' }],
+    });
+    await Contact.create({ clinic: clinicId, phone: '593999111222', firstName: 'Ligia' });
+    const batch = await ContactImport.create({
+      clinic: clinicId, fileName: 'x.csv', status: 'done', mapping: MAPPING,
+      workflows: [wf._id], createdBy: userId,
+    });
+    await enrollInWorkflows(batch, ['593999111222']);
+
+    // Simular que ya se reintentó el máximo de veces.
+    await WorkflowEnrollment.updateMany(
+      { workflow: wf._id },
+      { $set: { nextRunAt: new Date(Date.now() - 1000), 'context.sendRetries': 36 } }
+    );
+    const engine = require('../utils/workflowEngine');
+    await engine.processDueEnrollments();
+
+    const e = await WorkflowEnrollment.findOne({ workflow: wf._id });
+    assert.equal(e.status, 'done', 'agotados los reintentos, el flujo termina en vez de colgarse');
+    assert.ok(e.log.some((l) => l.ok === false && (l.info || '').includes('desconectado')), 'el fallo definitivo queda registrado');
+  } finally {
+    gw.sendText = orig;
+  }
+});

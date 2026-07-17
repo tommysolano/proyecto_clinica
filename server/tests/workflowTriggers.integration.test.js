@@ -150,11 +150,27 @@ test('Trigger "cita agendada" con contacto de número oculto (LID): el mensaje v
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
 
+  // La sesión QR no está viva en el test → qr_not_connected es TRANSITORIO: la
+  // inscripción queda EN ESPERA reintentando (no quema el turno del paciente).
   const enrollment = await waitFor(() =>
-    WorkflowEnrollment.findOne({ workflow: wf._id, patient: patient._id, status: 'done' })
+    WorkflowEnrollment.findOne({ workflow: wf._id, patient: patient._id, status: 'waiting' })
   );
   assert.ok(enrollment, 'no se inscribió el workflow');
-  const sendLog = (enrollment.log || []).find((l) => l.type === 'send_message');
+  assert.ok(
+    (enrollment.log || []).some((l) => l.type === 'retry' && /QR/i.test(l.info || '')),
+    'el registro debe explicar que el QR está caído y que se reintenta'
+  );
+
+  // Agotar los reintentos: el fallo se vuelve definitivo y el flujo CONTINÚA
+  // (el add_tag posterior debe correr aunque el envío muriera).
+  await WorkflowEnrollment.updateOne(
+    { _id: enrollment._id },
+    { $set: { 'context.sendRetries': 36, nextRunAt: new Date(Date.now() - 1000) } }
+  );
+  await require('../utils/workflowEngine').processDueEnrollments();
+  const done = await WorkflowEnrollment.findOne({ _id: enrollment._id, status: 'done' });
+  assert.ok(done, 'agotados los reintentos, el flujo termina en vez de colgarse');
+  const sendLog = (done.log || []).find((l) => l.type === 'send_message');
   assert.ok(sendLog, 'sin rastro del envío en el log');
   // ANTES: fallaba con "destino inválido" (buscaba la conversación por el
   // teléfono de la ficha, vacío en contactos LID) y el mensaje no aparecía en
