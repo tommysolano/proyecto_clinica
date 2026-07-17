@@ -11,6 +11,7 @@ router.use(require('../middleware/callCenterScope'));
 const CRM_ROLES = ['admin', 'marketing', 'call_center'];
 
 // Importaciones. Las rutas concretas van antes que las paramétricas.
+router.get('/imports/template', requireRole(...CRM_ROLES), imp.template);
 router.get('/imports', requireRole(...CRM_ROLES), imp.list);
 router.post('/imports/analyze', requireRole('admin', 'marketing'), imp.uploadMiddleware, imp.analyze);
 router.post('/imports', requireRole('admin', 'marketing'), imp.create);

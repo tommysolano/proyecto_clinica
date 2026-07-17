@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import {
   HiOutlineArrowUpTray,
+  HiOutlineArrowDownTray,
   HiOutlineDocumentText,
   HiOutlineCheckCircle,
   HiOutlineExclamationTriangle,
@@ -171,6 +172,20 @@ function StepUpload({ busy, onFile }) {
   const inputRef = useRef(null);
   const [dragOver, setDragOver] = useState(false);
 
+  const downloadTemplate = async () => {
+    try {
+      const r = await api.get('/contacts/imports/template', { responseType: 'blob' });
+      const url = URL.createObjectURL(new Blob([r.data]));
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'plantilla_contactos_shiluv.xlsx';
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      toast.error('No se pudo descargar la plantilla');
+    }
+  };
+
   return (
     <div>
       <div
@@ -199,7 +214,22 @@ function StepUpload({ busy, onFile }) {
           onChange={(e) => { const f = e.target.files?.[0]; e.target.value = ''; onFile(f); }}
         />
       </div>
-      <div className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 mt-3 space-y-1">
+      <div className="flex items-center justify-between gap-2 flex-wrap bg-emerald-50 border border-emerald-200 rounded-xl px-3 py-2.5 mt-3">
+        <div className="text-xs text-emerald-900">
+          <b>¿No sabes qué formato usar?</b> Descarga la plantilla, rellénala y súbela. También puedes
+          subir cualquier Excel tuyo: en el paso siguiente dices qué columna es cada cosa.
+        </div>
+        <button
+          type="button"
+          onClick={downloadTemplate}
+          className="px-3 py-1.5 text-xs border border-emerald-300 text-emerald-700 bg-white rounded-lg hover:bg-emerald-100 cursor-pointer flex items-center gap-1 whitespace-nowrap shrink-0"
+        >
+          <HiOutlineArrowDownTray className="w-4 h-4" /> Descargar plantilla
+        </button>
+      </div>
+
+      <div className="text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2.5 mt-2 space-y-1">
+        <p><b>Solo el teléfono es obligatorio.</b> Nombre, apellido, correo y etiquetas son opcionales.</p>
         <p><b>La primera fila debe ser el nombre de cada columna</b> (Teléfono, Nombre, Correo…).</p>
         <p>
           Formatea la columna del teléfono como <b>texto</b> en Excel. Si la deja como número, Excel la

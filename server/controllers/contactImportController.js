@@ -42,6 +42,76 @@ exports.uploadMiddleware = multer({
   },
 }).single('file');
 
+/**
+ * Plantilla .xlsx para rellenar y volver a subir. Resuelve la duda de "¿qué
+ * formato quiere el sistema?": ninguno en concreto —basta con que la primera fila
+ * sean los títulos—, pero una plantilla lista quita toda fricción.
+ *
+ * Lo importante: la columna del TELÉFONO se marca como TEXTO (numFmt '@'). Es la
+ * trampa nº 1 de estas importaciones — si Excel la trata como número, un
+ * 0999111222 se guarda como 9,99E+08 y esa fila no se puede importar.
+ */
+exports.template = async (req, res) => {
+  try {
+    const ExcelJS = require('exceljs');
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('Contactos');
+
+    ws.columns = [
+      { header: 'Nombre', key: 'nombre', width: 18 },
+      { header: 'Apellido', key: 'apellido', width: 20 },
+      { header: 'Teléfono', key: 'telefono', width: 18 },
+      { header: 'Correo', key: 'correo', width: 26 },
+      { header: 'Etiquetas', key: 'etiquetas', width: 24 },
+    ];
+
+    // Cabecera en negrita para que se vea que es la fila de títulos.
+    ws.getRow(1).font = { bold: true };
+    ws.getRow(1).eachCell((cell) => {
+      cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
+    });
+
+    // Toda la columna del teléfono como texto (incluye lo que el usuario escriba).
+    ws.getColumn('telefono').numFmt = '@';
+
+    // Ejemplos: el teléfono va como STRING, no como número, para que herede el
+    // formato de texto y sirva de guía de cómo escribirlo.
+    const ejemplos = [
+      { nombre: 'Emily', apellido: 'Torres Vera', telefono: '0999111222', correo: 'emily@correo.com', etiquetas: 'feria-julio, interesada' },
+      { nombre: 'Dome', apellido: '', telefono: '0988776655', correo: '', etiquetas: 'feria-julio' },
+    ];
+    ejemplos.forEach((e) => ws.addRow(e));
+
+    // Hoja de instrucciones aparte, para no ensuciar los datos.
+    const help = wb.addWorksheet('Instrucciones');
+    help.getColumn(1).width = 90;
+    const lines = [
+      'Cómo usar esta plantilla',
+      '',
+      '1. Escribe un contacto por fila, debajo de los títulos de la hoja "Contactos".',
+      '2. La única columna OBLIGATORIA es Teléfono. El resto son opcionales.',
+      '3. El teléfono puede ir como 0999111222 o +593 99 911 1222: el sistema lo normaliza.',
+      '4. Deja el teléfono con formato de TEXTO (ya viene así en la plantilla). Si Excel',
+      '   lo convierte a número, un 0999111222 se vuelve 9,99E+08 y esa fila se descarta.',
+      '5. Puedes añadir tus propias columnas (Ciudad, Interés…): al importar decides a qué',
+      '   campo va cada una, o las guardas como dato adicional del contacto.',
+      '6. Borra estas dos filas de ejemplo antes de subir el archivo.',
+    ];
+    lines.forEach((t, i) => {
+      const row = help.getRow(i + 1);
+      row.getCell(1).value = t;
+      if (i === 0) row.font = { bold: true, size: 14 };
+    });
+
+    const buffer = await wb.xlsx.writeBuffer();
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="plantilla_contactos_shiluv.xlsx"');
+    res.send(Buffer.from(buffer));
+  } catch (err) {
+    res.status(500).json({ message: 'No se pudo generar la plantilla', error: err.message });
+  }
+};
+
 /** Paso 2 del asistente: analiza el archivo y propone el mapeo. */
 exports.analyze = async (req, res) => {
   if (!req.file) return res.status(400).json({ message: 'No se recibió ningún archivo' });
