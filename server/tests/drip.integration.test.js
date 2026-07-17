@@ -257,7 +257,10 @@ test('goteo: dos ticks a la vez no mandan la tanda dos veces', async () => {
 
     const { runCampaign } = require('../utils/dripRunner');
     const [a, b] = await Promise.all([runCampaign(camp._id), runCampaign(camp._id)]);
-    assert.ok(a && !b, 'el segundo tick no debe procesar la misma tanda');
+    // La garantía es que UNO gana la carrera (findOneAndUpdate atómico) — no
+    // CUÁL: bajo carga a veces procesa el segundo. Afirmar "gana el primero"
+    // hacía el test intermitente sin que hubiera ningún bug real.
+    assert.ok(!!a !== !!b, 'exactamente un tick procesa la tanda; el otro se retira');
     assert.equal(gw.sent.length, 1, 'el contacto recibe UN mensaje, no dos');
   } finally {
     gw.restore();

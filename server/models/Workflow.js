@@ -125,6 +125,10 @@ const TRIGGER_TYPES = [
   // Mensaje entrante desde un anuncio click-to-WhatsApp de Meta (el webhook trae
   // `referral.source_id` = ID del anuncio). Permite un workflow por anuncio.
   'ctwa_ad',
+  // Contactos del CRM (no pacientes): el asistente de importación inscribe a los
+  // contactos del Excel en los workflows que tengan este disparador. No se emite
+  // como evento de dominio: inscribe directamente el runner de importación.
+  'contact_import',
 ];
 
 // Nodo del grafo visual (editor estilo GoHighLevel). `type` es el tipo de paso

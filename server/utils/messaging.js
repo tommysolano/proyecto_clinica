@@ -113,9 +113,16 @@ function normalizeTemplate(template, vars) {
  * datos REALES de la cita (servicio, fecha, hora, doctor, sede). Devuelve una
  * función key → valor ('' si no la reconoce).
  */
-async function buildKnownVariableResolver(patient, appointmentId) {
-  const firstName = String(patient?.firstName || '').trim();
-  const lastName = String(patient?.lastName || '').trim();
+async function buildKnownVariableResolver(patient, appointmentId, contact = null) {
+  // Sin paciente (contactos importados del CRM), el nombre sale del CONTACTO.
+  // Sin este fallback, la variable caía al EJEMPLO documentado de la plantilla y
+  // todos los contactos de un workflow recibían "Hola María".
+  const contactFirst =
+    String(contact?.firstName || '').trim() ||
+    String(contact?.displayName || '').trim().split(' ')[0] ||
+    '';
+  const firstName = String(patient?.firstName || '').trim() || contactFirst;
+  const lastName = String(patient?.lastName || '').trim() || String(contact?.lastName || '').trim();
   let apt = null;
   if (appointmentId) {
     try {
@@ -166,7 +173,7 @@ async function buildKnownVariableResolver(patient, appointmentId) {
  *     hay archivo guardado, marca `missingHeaderMedia` para fallar con un
  *     mensaje claro (Meta devolvería #131008).
  */
-async function enrichTemplateHeader(clinicId, templateInfo, patient, appointmentId) {
+async function enrichTemplateHeader(clinicId, templateInfo, patient, appointmentId, contact = null) {
   if (!templateInfo?.name) return templateInfo;
   const MessageTemplate = require('../models/MessageTemplate');
   const tpl = await MessageTemplate.findOne({
@@ -190,8 +197,12 @@ async function enrichTemplateHeader(clinicId, templateInfo, patient, appointment
   if (params.length > expected) params = params.slice(0, expected);
   if (params.length < expected) {
     const exampleOf = new Map((tpl.variables || []).map((v) => [v.key, v.example]));
-    const firstName = String(patient?.firstName || '').trim();
-    const known = await buildKnownVariableResolver(patient, appointmentId);
+    const firstName =
+      String(patient?.firstName || '').trim() ||
+      String(contact?.firstName || '').trim() ||
+      String(contact?.displayName || '').trim().split(' ')[0] ||
+      '';
+    const known = await buildKnownVariableResolver(patient, appointmentId, contact);
     for (let i = params.length; i < expected; i++) {
       const key = keys[i];
       let val = known(key);
@@ -593,7 +604,20 @@ async function send({
         /* sin cita próxima: se usan los ejemplos */
       }
     }
-    templateInfo = await enrichTemplateHeader(clinicId, templateInfo, patientRef, aptId);
+    // Sin paciente (contactos importados, envíos por teléfono): el contacto del
+    // CRM aporta el nombre para las variables. Búsqueda indexada (clinic, phone).
+    let contactRef = null;
+    if (!patientRef) {
+      try {
+        contactRef = await require('../models/Contact')
+          .findOne({ clinic: clinicId, phone: conv.phone || normalizePhone(to) })
+          .select('firstName lastName displayName')
+          .lean();
+      } catch {
+        contactRef = null;
+      }
+    }
+    templateInfo = await enrichTemplateHeader(clinicId, templateInfo, patientRef, aptId, contactRef);
   }
   if (normalizedChannel === 'whatsapp' && gateway.isCloud(account)) {
     const computedWindow = getWhatsappWindowExpiresAt(conv);

@@ -140,7 +140,7 @@ exports.analyze = async (req, res) => {
 /** Paso 4: confirma y encola la importación. */
 exports.create = async (req, res) => {
   try {
-    const { uploadId, fileName, mapping, mode, tags, groups, whatsappOptIn, consentSource } = req.body;
+    const { uploadId, fileName, mapping, mode, tags, groups, whatsappOptIn, consentSource, workflows } = req.body;
     // basename() evita que un uploadId manipulado ("../../etc/passwd") salga del
     // directorio de subidas.
     const filePath = path.join(UPLOAD_DIR, path.basename(String(uploadId || '')));
@@ -162,6 +162,29 @@ exports.create = async (req, res) => {
       }
     }
 
+    // Workflows elegidos: deben existir, estar ACTIVOS y tener el disparador
+    // "Contactos importados". Se valida aquí y no en el runner: si no, el usuario
+    // elige un workflow que nunca inscribe a nadie y parece que "no funciona".
+    const workflowIds = (Array.isArray(workflows) ? workflows : []).filter((w) => mongoose.isValidObjectId(w));
+    if (workflowIds.length) {
+      const Workflow = require('../models/Workflow');
+      const { matchingFlows } = require('../utils/workflowEngine');
+      const docs = await Workflow.find({ _id: { $in: workflowIds }, clinic: req.clinicId });
+      if (docs.length !== workflowIds.length) {
+        return res.status(400).json({ message: 'Algún workflow elegido no existe.' });
+      }
+      for (const wf of docs) {
+        if (!wf.active) {
+          return res.status(400).json({ message: `El workflow "${wf.name}" está desactivado: actívalo antes de importar.` });
+        }
+        if (!matchingFlows(wf, (tr) => tr?.type === 'contact_import').length) {
+          return res.status(400).json({
+            message: `El workflow "${wf.name}" no tiene el disparador "Contactos importados (Excel)" con pasos conectados.`,
+          });
+        }
+      }
+    }
+
     const batch = await ContactImport.create({
       clinic: req.clinicId,
       fileName: fileName || 'contactos.csv',
@@ -176,6 +199,7 @@ exports.create = async (req, res) => {
       mode: ['upsert', 'create', 'update'].includes(mode) ? mode : 'upsert',
       tags: (Array.isArray(tags) ? tags : []).map((t) => String(t).trim()).filter(Boolean),
       groups: groupIds,
+      workflows: workflowIds,
       whatsappOptIn: whatsappOptIn !== false,
       consentSource: String(consentSource || '').trim(),
       createdBy: req.user._id,

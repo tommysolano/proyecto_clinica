@@ -153,6 +153,9 @@ export default function ImportsTab({ groups, onGroupsChanged }) {
                     <Counter label="Actualizados" value={b.updated} tone="text-sky-700" />
                     <Counter label="Omitidos" value={b.skipped} tone="text-slate-500" />
                     <Counter label="Fallidos" value={b.failed} tone={b.failed ? 'text-rose-600' : 'text-slate-400'} />
+                    {b.workflows?.length > 0 && (
+                      <Counter label="En workflow" value={b.enrolled} tone="text-violet-700" />
+                    )}
                   </div>
                 )}
 

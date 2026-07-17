@@ -272,3 +272,170 @@ test('importa 1.200 filas por tandas y cuenta bien', async () => {
   assert.equal(done.created, 1200);
   assert.equal(await Contact.countDocuments({ clinic: clinicId }), 1200);
 });
+
+// ─────────── inscripción en workflows al importar ───────────
+
+const Workflow = require('../models/Workflow');
+const WorkflowEnrollment = require('../models/WorkflowEnrollment');
+const { enrollInWorkflows, nextEnrollSlot } = require('../utils/contactImportRunner');
+
+test('nextEnrollSlot: escalona dentro de la franja 09:00-20:00', () => {
+  // A media mañana: avanza 20s y ya.
+  const dia = new Date(2026, 6, 17, 10, 0, 0);
+  const s1 = nextEnrollSlot(dia);
+  assert.equal(s1.getTime() - dia.getTime(), 20 * 1000);
+
+  // De madrugada: salta a las 09:00 del mismo día.
+  const noche = new Date(2026, 6, 17, 3, 30, 0);
+  const s2 = nextEnrollSlot(noche);
+  assert.equal(s2.getHours(), 9);
+  assert.equal(s2.getDate(), 17);
+
+  // Pasadas las 20:00: salta a las 09:00 del día siguiente. Nadie quiere el
+  // primer mensaje de un workflow a las 3 de la mañana.
+  const tarde = new Date(2026, 6, 17, 19, 59, 50);
+  const s3 = nextEnrollSlot(tarde);
+  assert.equal(s3.getHours(), 9);
+  assert.equal(s3.getDate(), 18);
+});
+
+async function makeImportWorkflow(clinicId) {
+  return Workflow.create({
+    clinic: clinicId,
+    name: 'Bienvenida importados',
+    active: true,
+    trigger: { type: 'contact_import' },
+    steps: [{ type: 'add_tag', tag: 'importado-saludado' }],
+  });
+}
+
+test('importar con workflow: inscribe escalonado, en waiting, y respeta el consentimiento', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const wf = await makeImportWorkflow(clinicId);
+
+  // Un contacto que YA existe y está dado de baja: el archivo lo trae, pero no
+  // debe entrar al workflow (el motor de workflows no conoce el opt-out de
+  // contactos, así que el filtro es responsabilidad de la importación).
+  await Contact.create({
+    clinic: clinicId,
+    phone: '593999000009',
+    displayName: 'Baja',
+    marketing: { whatsappOptIn: false, optOutAt: new Date() },
+  });
+
+  const file = writeCsv([
+    ['Nombre', 'Celular', 'Correo', 'Ciudad'],
+    ['Ligia', '0999111222', '', ''],
+    ['Dome', '0988776655', '', ''],
+    ['Baja', '0999000009', '', ''],
+  ]);
+  const batch = await makeBatch(clinicId, userId, file, { workflows: [wf._id] });
+  await runImport(batch._id);
+
+  const done = await ContactImport.findById(batch._id);
+  assert.equal(done.status, 'done', done.errorMessage);
+  assert.equal(done.enrolled, 2, 'el dado de baja NO se inscribe');
+
+  const enrollments = await WorkflowEnrollment.find({ workflow: wf._id }).sort({ nextRunAt: 1 });
+  assert.equal(enrollments.length, 2);
+  for (const e of enrollments) {
+    // 'waiting', NUNCA 'active': el job de recuperación reintenta cualquier
+    // 'active' con >5 min sin avanzar aunque su nextRunAt sea futuro — con
+    // 'active' los arranques escalonados saldrían todos de golpe a los 5 min.
+    assert.equal(e.status, 'waiting');
+    assert.ok(e.nextRunAt > new Date(), 'el arranque queda en el futuro');
+    assert.ok(e.context.contactId, 'guarda el contacto');
+    assert.equal(e.context.importBatchId, String(batch._id));
+  }
+  assert.ok(
+    enrollments[1].nextRunAt > enrollments[0].nextRunAt,
+    'los arranques van escalonados, no en ráfaga'
+  );
+
+  const fresh = await Workflow.findById(wf._id);
+  assert.equal(fresh.stats.enrolled, 2);
+});
+
+test('reinscribir el mismo lote no duplica inscripciones', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const wf = await makeImportWorkflow(clinicId);
+  await Contact.create([
+    { clinic: clinicId, phone: '593999111222', displayName: 'Ligia', source: 'import' },
+    { clinic: clinicId, phone: '593988776655', displayName: 'Dome', source: 'import' },
+  ]);
+  const batch = await ContactImport.create({
+    clinic: clinicId, fileName: 'x.csv', status: 'done',
+    mapping: MAPPING, workflows: [wf._id], createdBy: userId,
+  });
+
+  const first = await enrollInWorkflows(batch, ['593999111222', '593988776655']);
+  assert.equal(first, 2);
+  const again = await enrollInWorkflows(batch, ['593999111222', '593988776655']);
+  assert.equal(again, 0, 'los ya inscritos (vivos) no se repiten');
+  assert.equal(await WorkflowEnrollment.countDocuments({ workflow: wf._id }), 2);
+});
+
+test('deshacer la importación cancela las inscripciones pendientes', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const wf = await makeImportWorkflow(clinicId);
+  const file = writeCsv([
+    ['Nombre', 'Celular', 'Correo', 'Ciudad'],
+    ['Ligia', '0999111222', '', ''],
+  ]);
+  const batch = await makeBatch(clinicId, userId, file, { workflows: [wf._id] });
+  await runImport(batch._id);
+  assert.equal((await ContactImport.findById(batch._id)).enrolled, 1);
+
+  const r = await revertImport(batch._id);
+  assert.equal(r.ok, true);
+  assert.equal(r.cancelledEnrollments, 1);
+  const e = await WorkflowEnrollment.findOne({ workflow: wf._id });
+  assert.equal(e.status, 'cancelled', 'no puede quedar un envío programado de contactos borrados');
+});
+
+test('la inscripción de un contacto EJECUTA de verdad: el mensaje sale con el nombre del contacto', async () => {
+  // Cierra el círculo completo: importar → inscribir (waiting) → vencer el
+  // arranque → el motor envía por el teléfono del contexto, sin paciente, y
+  // {{nombre}} se rellena con el CONTACTO (antes salía "Hola " en blanco).
+  const { clinicId, userId } = await H.seedClinic();
+  const WhatsappAccount = require('../models/WhatsappAccount');
+  await WhatsappAccount.create({ label: 'QR', connectionType: 'qr', enabled: true, isDefault: true, status: 'connected' });
+
+  const gw = require('../utils/whatsappGateway');
+  const sent = [];
+  const orig = gw.sendText;
+  gw.sendText = async (account, to, body) => {
+    sent.push({ to, body });
+    return { ok: true, data: { messages: [{ id: 'wamid.1' }] } };
+  };
+  try {
+    const wf = await Workflow.create({
+      clinic: clinicId,
+      name: 'Bienvenida importados',
+      active: true,
+      trigger: { type: 'contact_import' },
+      steps: [{ type: 'send_message', body: 'Hola {{nombre}}, gracias por tu interés' }],
+    });
+    const file = writeCsv([
+      ['Nombre', 'Celular', 'Correo', 'Ciudad'],
+      ['Ligia Farfán', '0999111222', '', ''],
+    ]);
+    const batch = await makeBatch(clinicId, userId, file, { workflows: [wf._id] });
+    await runImport(batch._id);
+
+    // Vencer el arranque escalonado y dejar que el job lo ejecute (el mismo
+    // camino que en producción: processDueEnrollments cada minuto).
+    await WorkflowEnrollment.updateMany({ workflow: wf._id }, { $set: { nextRunAt: new Date(Date.now() - 1000) } });
+    const engine = require('../utils/workflowEngine');
+    await engine.processDueEnrollments();
+
+    assert.equal(sent.length, 1, 'el mensaje salió');
+    assert.equal(sent[0].to, '593999111222');
+    assert.equal(sent[0].body, 'Hola Ligia, gracias por tu interés', 'el nombre viene del CONTACTO, no queda en blanco');
+
+    const e = await WorkflowEnrollment.findOne({ workflow: wf._id });
+    assert.equal(e.status, 'done');
+  } finally {
+    gw.sendText = orig;
+  }
+});

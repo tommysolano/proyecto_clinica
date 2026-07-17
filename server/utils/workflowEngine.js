@@ -189,7 +189,18 @@ function personalize(text, patient) {
 async function renderText(text, patient, ctx = {}) {
   const raw = String(text || '');
   if (!raw.includes('{{')) return raw;
-  const resolve = await messaging.buildKnownVariableResolver(patient, ctx.appointmentId || null);
+  // Inscripción de un CONTACTO del CRM (importación): no hay paciente, así que
+  // {{nombre}} sale del contacto guardado en el contexto. Sin esto el saludo
+  // llegaba como "Hola " en blanco.
+  let contact = null;
+  if (!patient && ctx.contactId) {
+    contact = await require('../models/Contact')
+      .findById(ctx.contactId)
+      .select('firstName lastName displayName')
+      .lean()
+      .catch(() => null);
+  }
+  const resolve = await messaging.buildKnownVariableResolver(patient, ctx.appointmentId || null, contact);
   return raw.replace(/\{\{\s*([^}\s]+)\s*\}\}/g, (_, key) => resolve(key) || '').replace(/[ \t]{2,}/g, ' ');
 }
 

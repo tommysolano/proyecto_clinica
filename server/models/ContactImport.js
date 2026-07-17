@@ -65,6 +65,10 @@ const contactImportSchema = new mongoose.Schema(
     // Se aplican a todo lo importado (así el Excel se conecta con las campañas).
     tags: { type: [String], default: [] },
     groups: [{ type: mongoose.Schema.Types.ObjectId, ref: 'ContactGroup' }],
+    // Workflows (con disparador 'contact_import') que trabajarán estos contactos.
+    // Al terminar la importación, el runner inscribe a los contactos del archivo
+    // de forma ESCALONADA (no de golpe: sería la ráfaga que el goteo evita).
+    workflows: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Workflow' }],
     whatsappOptIn: { type: Boolean, default: true },
     consentSource: { type: String, trim: true, default: '' },
 
@@ -74,6 +78,9 @@ const contactImportSchema = new mongoose.Schema(
     updated: { type: Number, default: 0 },
     skipped: { type: Number, default: 0 },
     failed: { type: Number, default: 0 },
+    // Inscripciones en workflows creadas por este lote (solo contactos con
+    // consentimiento; el arranque de cada una queda escalonado en el tiempo).
+    enrolled: { type: Number, default: 0 },
     // Muestra acotada: 47k errores no caben en un documento. No se llama `errors`
     // porque es un nombre reservado de mongoose (choca con la validación del doc).
     rowErrors: { type: [importErrorSchema], default: [] },

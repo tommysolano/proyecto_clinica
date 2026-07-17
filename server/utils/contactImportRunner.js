@@ -19,6 +19,113 @@ const { emitToCallCenter } = require('../realtime');
 const BATCH_SIZE = 500;      // filas por bulkWrite
 const MAX_STORED_ERRORS = 200; // muestra para la UI: 47k errores no caben en un doc
 
+// ── Inscripción en workflows (disparador 'contact_import') ──
+// Los arranques se ESCALONAN: uno cada SLOT_SECONDS dentro de la franja horaria.
+// Inscribir 47k contactos con arranque inmediato dispararía el primer paso de
+// todos a la vez — la misma ráfaga que el goteo existe para evitar.
+const SLOT_SECONDS = 20;      // ≈180 arranques/hora, ~2.000/día en la franja
+const ENROLL_HOUR_FROM = 9;   // hora local Ecuador (TZ del proceso)
+const ENROLL_HOUR_TO = 20;
+
+/**
+ * Siguiente hueco de arranque: `prev` + SLOT_SECONDS, movido a la franja
+ * 09:00–20:00 (nadie quiere el primer mensaje de un workflow a las 3 am).
+ */
+function nextEnrollSlot(prev) {
+  const t = new Date(prev.getTime() + SLOT_SECONDS * 1000);
+  if (t.getHours() < ENROLL_HOUR_FROM) {
+    t.setHours(ENROLL_HOUR_FROM, 0, 0, 0);
+  } else if (t.getHours() >= ENROLL_HOUR_TO) {
+    t.setDate(t.getDate() + 1);
+    t.setHours(ENROLL_HOUR_FROM, 0, 0, 0);
+  }
+  return t;
+}
+
+/**
+ * Inscribe los contactos del archivo en los workflows elegidos en el asistente.
+ *
+ * - Solo contactos con CONSENTIMIENTO (opt-in y sin baja): el motor de workflows
+ *   valida opt-out de pacientes, pero no conoce el opt-out de contactos.
+ * - status 'waiting' + nextRunAt escalonado. OJO: 'active' no sirve — el job de
+ *   recuperación reintenta cualquier 'active' con >5 min sin avanzar AUNQUE su
+ *   nextRunAt sea futuro, y dispararía todos los arranques de golpe.
+ * - Dedup por (workflow, contacto) vivo: reimportar el archivo no duplica.
+ */
+async function enrollInWorkflows(batch, phones, onProgress) {
+  if (!batch.workflows?.length || !phones.length) return 0;
+  const Workflow = require('../models/Workflow');
+  const WorkflowEnrollment = require('../models/WorkflowEnrollment');
+  const { matchingFlows } = require('./workflowEngine');
+
+  const workflows = await Workflow.find({ _id: { $in: batch.workflows }, clinic: batch.clinic, active: true });
+  const perWorkflow = workflows
+    .map((wf) => ({ wf, flows: matchingFlows(wf, (tr) => tr?.type === 'contact_import') }))
+    .filter((x) => x.flows.length);
+  if (!perWorkflow.length) return 0;
+
+  let slot = new Date();
+  let enrolled = 0;
+  const createdByWf = new Map(); // workflowId → inscripciones creadas de verdad
+
+  for (let i = 0; i < phones.length; i += BATCH_SIZE) {
+    const chunk = phones.slice(i, i + BATCH_SIZE);
+    // eslint-disable-next-line no-await-in-loop
+    const contacts = await Contact.find({
+      clinic: batch.clinic,
+      phone: { $in: chunk },
+      active: true,
+      'marketing.whatsappOptIn': true,
+      'marketing.optOutAt': null,
+    })
+      .select('_id phone patient')
+      .lean();
+
+    for (const contact of contacts) {
+      for (const { wf, flows } of perWorkflow) {
+        for (const flow of flows) {
+          // eslint-disable-next-line no-await-in-loop
+          const dup = await WorkflowEnrollment.findOne({
+            workflow: wf._id,
+            'context.contactId': String(contact._id),
+            startNodeId: flow.startNodeId,
+            status: { $in: ['active', 'waiting'] },
+          }).select('_id');
+          if (dup) continue;
+
+          slot = nextEnrollSlot(slot);
+          // eslint-disable-next-line no-await-in-loop
+          await WorkflowEnrollment.create({
+            clinic: batch.clinic,
+            workflow: wf._id,
+            patient: contact.patient || null,
+            stepIndex: 0,
+            currentNodeId: flow.currentNodeId,
+            startNodeId: flow.startNodeId,
+            status: 'waiting',
+            nextRunAt: slot,
+            context: {
+              phone: contact.phone,
+              contactId: String(contact._id),
+              importBatchId: String(batch._id),
+              eventType: 'contact_import',
+            },
+          });
+          enrolled++;
+          createdByWf.set(String(wf._id), (createdByWf.get(String(wf._id)) || 0) + 1);
+        }
+      }
+    }
+    if (onProgress) onProgress(enrolled);
+  }
+
+  for (const [wfId, n] of createdByWf) {
+    // eslint-disable-next-line no-await-in-loop
+    await Workflow.updateOne({ _id: wfId }, { $inc: { 'stats.enrolled': n } }).catch(() => {});
+  }
+  return enrolled;
+}
+
 /** Construye el bulkWrite de una tanda respetando el modo de importación. */
 function buildOps(rows, batch) {
   const ops = [];
@@ -114,6 +221,7 @@ async function runImport(batchId) {
       updated: batch.updated,
       skipped: batch.skipped,
       failed: batch.failed,
+      enrolled: batch.enrolled,
     });
 
   try {
@@ -168,6 +276,26 @@ async function runImport(batchId) {
     batch.finishedAt = new Date();
     await batch.save();
     progress();
+
+    // Inscribir en los workflows elegidos. DESPUÉS de marcar 'done': la
+    // importación de datos ya terminó y esto es una fase aparte — si fallara, los
+    // contactos ya están dentro y el error queda en el lote sin marcarlo fallido.
+    if (batch.workflows?.length) {
+      try {
+        // `seen` = todos los teléfonos válidos del archivo (creados Y actualizados;
+        // los actualizados no llevan importBatch, así que no hay otra forma de
+        // encontrarlos). El filtro de consentimiento se aplica dentro.
+        batch.enrolled = await enrollInWorkflows(batch, [...seen], (n) => {
+          batch.enrolled = n;
+          progress();
+        });
+        await batch.save();
+        progress();
+      } catch (e) {
+        batch.errorMessage = `Contactos importados, pero la inscripción en workflows falló: ${e.message}`;
+        await batch.save().catch(() => {});
+      }
+    }
   } catch (e) {
     batch.status = 'failed';
     batch.errorMessage = e.message;
@@ -204,6 +332,15 @@ async function revertImport(batchId) {
   if (batch.status === 'running') return { ok: false, error: 'La importación está en curso.' };
   if (batch.status === 'reverted') return { ok: false, error: 'Esa importación ya se deshizo.' };
 
+  // Las inscripciones pendientes de este lote se cancelan: deshacer la
+  // importación también significa que esos contactos no reciban el workflow.
+  // Las 'done' se quedan (el mensaje ya salió; cancelarlas no lo des-envía).
+  const WorkflowEnrollment = require('../models/WorkflowEnrollment');
+  const cancelled = await WorkflowEnrollment.updateMany(
+    { 'context.importBatchId': String(batch._id), status: { $in: ['active', 'waiting'] } },
+    { $set: { status: 'cancelled', nextRunAt: null } }
+  );
+
   const del = await Contact.deleteMany({ importBatch: batch._id, patient: null });
   // Un contacto que ya se convirtió en paciente NO se borra: se le quitan las
   // marcas del lote, pero la persona se queda.
@@ -218,7 +355,7 @@ async function revertImport(batchId) {
   batch.status = 'reverted';
   batch.revertedAt = new Date();
   await batch.save();
-  return { ok: true, deleted: del.deletedCount || 0, cleaned };
+  return { ok: true, deleted: del.deletedCount || 0, cleaned, cancelledEnrollments: cancelled.modifiedCount || 0 };
 }
 
-module.exports = { runImport, processPendingImports, revertImport, BATCH_SIZE };
+module.exports = { runImport, processPendingImports, revertImport, enrollInWorkflows, nextEnrollSlot, BATCH_SIZE };

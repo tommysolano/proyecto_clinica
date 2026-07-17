@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import {
   HiOutlineArrowUpTray,
@@ -34,12 +34,32 @@ export default function ImportWizard({ groups, onClose, onDone }) {
     mode: 'upsert',
     tags: '',
     groups: [],
+    workflows: [],
     whatsappOptIn: true,
     consentSource: '',
   });
   const [busy, setBusy] = useState(false);
+  const [workflows, setWorkflows] = useState([]);
 
   const staticGroups = groups.filter((g) => g.kind === 'static');
+
+  // Workflows elegibles: activos y con el disparador "Contactos importados".
+  // El filtro espeja al backend (que valida en serio); aquí solo decide qué
+  // enseñar en el desplegable.
+  useEffect(() => {
+    api
+      .get('/workflows')
+      .then((r) => {
+        const hasImportTrigger = (wf) =>
+          wf.trigger?.type === 'contact_import' ||
+          (wf.triggers || []).some((t) => t.type === 'contact_import') ||
+          (wf.nodes || []).some(
+            (n) => n.type === 'trigger' && (n.data?.triggers || []).some((t) => t.type === 'contact_import')
+          );
+        setWorkflows((r.data || []).filter((wf) => wf.active && hasImportTrigger(wf)));
+      })
+      .catch(() => {});
+  }, []);
 
   const analyze = async (file) => {
     if (!file) return;
@@ -68,6 +88,7 @@ export default function ImportWizard({ groups, onClose, onDone }) {
         mode: opts.mode,
         tags: opts.tags.split(',').map((t) => t.trim()).filter(Boolean),
         groups: opts.groups,
+        workflows: opts.workflows,
         whatsappOptIn: opts.whatsappOptIn,
         consentSource: opts.consentSource.trim(),
       });
@@ -119,11 +140,18 @@ export default function ImportWizard({ groups, onClose, onDone }) {
       )}
 
       {step === 2 && (
-        <StepOptions opts={opts} setOpts={setOpts} staticGroups={staticGroups} />
+        <StepOptions opts={opts} setOpts={setOpts} staticGroups={staticGroups} workflows={workflows} />
       )}
 
       {step === 3 && (
-        <StepConfirm analysis={analysis} mapping={mapping} opts={opts} groups={groups} mappedCount={mappedCount} />
+        <StepConfirm
+          analysis={analysis}
+          mapping={mapping}
+          opts={opts}
+          groups={groups}
+          workflows={workflows}
+          mappedCount={mappedCount}
+        />
       )}
 
       {/* Navegación */}
@@ -340,7 +368,7 @@ function StepMapping({ analysis, mapping, setMapping }) {
 
 // ───────────────────────── Paso 3: opciones ─────────────────────────
 
-function StepOptions({ opts, setOpts, staticGroups }) {
+function StepOptions({ opts, setOpts, staticGroups, workflows }) {
   return (
     <div className="space-y-4">
       <div>
@@ -399,6 +427,32 @@ function StepOptions({ opts, setOpts, staticGroups }) {
         </p>
       </div>
 
+      <div>
+        <label className="text-xs font-semibold text-slate-600 block mb-1">
+          Workflow que trabajará estos contactos
+        </label>
+        <select
+          value={opts.workflows[0] || ''}
+          onChange={(e) => setOpts((s) => ({ ...s, workflows: e.target.value ? [e.target.value] : [] }))}
+          className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm bg-white"
+        >
+          <option value="">Ninguno</option>
+          {workflows.map((w) => <option key={w._id} value={w._id}>{w.name}</option>)}
+        </select>
+        {workflows.length === 0 ? (
+          <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2 mt-1">
+            No hay workflows con el disparador <b>“Contactos importados (Excel)”</b>. Créalo en
+            Marketing → Automatizaciones: añade ese disparador, conecta los pasos y actívalo; entonces
+            aparecerá aquí.
+          </p>
+        ) : (
+          <p className="text-[10px] text-slate-400 mt-1">
+            Al terminar la importación, los contactos con consentimiento entran al workflow de forma
+            escalonada (uno cada pocos segundos, de 09:00 a 20:00) para proteger tu número — no en ráfaga.
+          </p>
+        )}
+      </div>
+
       <div className="border border-slate-200 rounded-xl p-3 space-y-2">
         <label className="flex items-start gap-2 cursor-pointer">
           <input
@@ -433,9 +487,10 @@ function StepOptions({ opts, setOpts, staticGroups }) {
 
 // ───────────────────────── Paso 4: confirmar ─────────────────────────
 
-function StepConfirm({ analysis, mapping, opts, groups, mappedCount }) {
+function StepConfirm({ analysis, mapping, opts, groups, workflows, mappedCount }) {
   const mode = MODE_OPTIONS.find((m) => m.value === opts.mode);
   const groupName = groups.find((g) => g._id === opts.groups[0])?.name;
+  const workflowName = workflows.find((w) => w._id === opts.workflows[0])?.name;
   const tagList = opts.tags.split(',').map((t) => t.trim()).filter(Boolean);
   const assigned = mapping.filter((m) => m.field);
 
@@ -466,6 +521,13 @@ function StepConfirm({ analysis, mapping, opts, groups, mappedCount }) {
           {tagList.length ? tagList.join(', ') : <span className="text-slate-300">ninguna</span>}
         </Row>
         <Row label="Lista fija">{groupName || <span className="text-slate-300">ninguna</span>}</Row>
+        <Row label="Workflow">
+          {workflowName ? (
+            <span className="text-violet-700">{workflowName} — entrada escalonada, solo con consentimiento</span>
+          ) : (
+            <span className="text-slate-300">ninguno</span>
+          )}
+        </Row>
         <Row label="Consentimiento">
           {opts.whatsappOptIn ? (
             <span className="text-emerald-700 inline-flex items-center gap-1">

@@ -129,6 +129,7 @@ export const TRIGGERS = [
   { value: 'new_conversation', label: 'Nueva conversación (chat)' },
   { value: 'tag_added', label: 'Etiqueta añadida' },
   { value: 'ctwa_ad', label: 'Mensaje desde anuncio (Meta Ads)' },
+  { value: 'contact_import', label: 'Contactos importados (Excel)' },
 ];
 export const AUDIENCES = [
   { value: 'all', label: 'Todos' },
