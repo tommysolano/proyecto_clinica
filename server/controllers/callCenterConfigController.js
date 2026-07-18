@@ -789,10 +789,14 @@ exports.registerWhatsappNumber = async (req, res) => {
     });
     const j = await r.json().catch(() => ({}));
     if (!r.ok || j.success === false) {
-      return res.status(400).json({
-        message: j?.error?.message || 'Meta rechazó el registro del número.',
-        error: j?.error || null,
-      });
+      // Meta esconde la causa real en error_data.details / error_user_msg; el
+      // "message" a secas suele ser un genérico tipo "Invalid parameter".
+      const e = j?.error || {};
+      const detail = e.error_data?.details || e.error_user_msg || '';
+      const parts = [e.message || 'Meta rechazó el registro del número.'];
+      if (detail) parts.push(detail);
+      if (e.code) parts.push(`(código ${e.code}${e.error_subcode ? `/${e.error_subcode}` : ''})`);
+      return res.status(400).json({ message: parts.join(' — '), error: e });
     }
     res.json({ success: true, message: 'Número registrado en Cloud API. Vuelve a Probar: el estado debe salir CONNECTED.' });
   } catch (err) {
