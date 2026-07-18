@@ -26,6 +26,18 @@ const creditDebitNoteSchema = new mongoose.Schema(
     subtotal: { type: Number, default: 0 },
     iva: { type: Number, default: 0 },
     total: { type: Number, default: 0 },
+    // Tarifa aplicada (15, 12, 0…). Permite que las declaraciones SRI resten la nota de
+    // crédito de la base de SU MISMA tarifa sin tener que inferirla del signo del IVA.
+    ivaRate: { type: Number, default: null },
+    // Desglose por tarifa de la nota (snapshot). Fuente preferida por el Formulario 104
+    // para clasificar la resta; si viene en cero, el 104 infiere la tarifa desde el IVA.
+    taxBreakdown: {
+      base0: { type: Number, default: 0 },
+      baseGravada: { type: Number, default: 0 },
+      baseExento: { type: Number, default: 0 },
+      baseNoObjeto: { type: Number, default: 0 },
+      iva: { type: Number, default: 0 },
+    },
     estado: {
       type: String,
       enum: ['EN_COLA', 'RECIBIDA', 'EN_PROCESO', 'AUTORIZADO', 'NO_AUTORIZADO', 'DEVUELTA', 'ERROR', 'ANULADA', 'REGISTRADA'],

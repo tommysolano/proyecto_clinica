@@ -16,6 +16,7 @@ router.post('/:id/finalize', c.finalize);
 router.post('/:id/substitute', c.substitute);
 router.post('/:id/void', c.void);
 router.post('/:id/pay', c.pay);
+router.delete('/:id', c.remove);
 router.get('/:id/draft.xml', c.draftXml);
 
 module.exports = router;

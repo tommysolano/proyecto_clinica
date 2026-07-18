@@ -4,7 +4,7 @@ import toast from 'react-hot-toast';
 import {
   HiOutlineDocumentText, HiOutlineArrowPath, HiOutlineLockClosed, HiOutlineDocumentDuplicate,
   HiOutlineArrowDownTray, HiOutlinePrinter, HiOutlineBanknotes, HiOutlineClipboardDocumentList,
-  HiOutlineExclamationTriangle, HiOutlineCheckCircle, HiOutlineEye,
+  HiOutlineExclamationTriangle, HiOutlineCheckCircle, HiOutlineEye, HiOutlineTrash,
 } from 'react-icons/hi2';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
@@ -174,6 +174,18 @@ export default function SriDeclarations() {
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
 
+  /** Elimina un borrador (solo borradores: no tocan contabilidad). */
+  const removeDraft = async () => {
+    if (!confirm('¿Eliminar este borrador? Se borra definitivamente. Solo aplica a borradores; no afecta la contabilidad.')) return;
+    try {
+      await api.delete(`/tax-declarations/${decl._id}`);
+      setData(null);
+      setDirty({});
+      loadHistory();
+      toast.success('Borrador eliminado');
+    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+  };
+
   /**
    * Cambiar importe, banco o fecha es OTRA intención de pago: se renueva la clave de
    * idempotencia. Un reintento de la misma intención conserva la suya.
@@ -325,6 +337,13 @@ export default function SriDeclarations() {
                       </button>
                       <button onClick={() => setFinalizeModal({ accountingDate: '', dueDate: '', plannedPaymentDate: '' })} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-sm flex items-center gap-1">
                         <HiOutlineLockClosed className="w-4 h-4" /> Finalizar
+                      </button>
+                      <button
+                        onClick={removeDraft}
+                        title="Eliminar este borrador (solo borradores; no afecta la contabilidad)"
+                        className="px-3 py-1.5 bg-rose-100 text-rose-700 rounded-lg text-sm flex items-center gap-1 hover:bg-rose-200"
+                      >
+                        <HiOutlineTrash className="w-4 h-4" /> Eliminar
                       </button>
                     </>
                   )}

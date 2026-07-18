@@ -616,6 +616,30 @@ exports.void = async (req, res) => {
 };
 
 /**
+ * DELETE /tax-declarations/:id — elimina FÍSICAMENTE un borrador.
+ *
+ * Solo borradores: no tocan contabilidad ni cartera, así que borrarlos no deja movimientos
+ * huérfanos. Una declaración FINALIZED (con asiento y CxP) NUNCA se borra: se ANULA (void)
+ * para conservar la trazabilidad contable. Sirve para limpiar borradores de prueba.
+ */
+exports.remove = async (req, res) => {
+  try {
+    const decl = await SriDeclaration.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!decl) return res.status(404).json({ message: 'Declaración no encontrada' });
+    if (decl.status !== 'DRAFT') {
+      throw badRequest('Solo se eliminan borradores. Una declaración finalizada se ANULA (no se borra), para conservar el rastro contable.');
+    }
+    // Un borrador no debería tener asiento ni CxP; si por algún motivo los tuviera, no se
+    // borra en silencio (evita dejar contabilidad huérfana): se pide anularlo.
+    if (decl.journalEntry || decl.payableRef) {
+      throw badRequest('El borrador tiene efectos contables asociados: anúlelo en vez de eliminarlo.');
+    }
+    await SriDeclaration.deleteOne({ _id: decl._id, clinic: req.clinicId });
+    res.json({ ok: true, deleted: String(decl._id) });
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+};
+
+/**
  * POST /tax-declarations/:id/pay { bankAccountId, date, amount?, reference? }
  * Header: `Idempotency-Key` (o body.idempotencyKey por compatibilidad).
  *

@@ -59,9 +59,29 @@ const EDITABLE = 'EDITABLE';
 const FORMULA = 'FORMULA';
 
 // ─────────────────────────────── FORMULARIO 104 (IVA) ───────────────────────────────
+//
+// NUMERACIÓN DE CASILLEROS (2026): esta definición busca ser una RÉPLICA de la estructura
+// del formulario 104 oficial (una fila por combinación tipo de comprobante × tarifa ×
+// derecho a crédito), no un resumen. Las etiquetas y la clasificación son fieles al
+// instructivo; los NÚMEROS de casillero de las filas nuevas se derivaron del instructivo
+// pero NO están confirmados contra el PDF/XML oficial presentado (pendiente de que la
+// contadora entregue sus formularios reales en docs/ para validar). Por eso todo el
+// formulario sigue `verified: false` y cada casillero lleva `boxVerified: false`.
+//
+// Casilleros con número heredado y usado por los tests/contabilización (estables):
+//   401 ventas gravadas ≠0%, 403/405 reparto 0% ventas (con/sin derecho), 499 IVA ventas,
+//   507 compras gravadas ≠0% SIN derecho, 529 IVA total compras, 530 IVA crédito (disponible),
+//   563 factor, 564 IVA utilizable, 565 IVA al gasto, 601/602/605/607/609/615 resumen,
+//   721 retención IVA agente, 902 total a pagar.
+// Casilleros AÑADIDOS en esta versión (réplica más fiel; número tentativo):
+//   411/421 neto e IVA de ventas gravadas (411 = 401 − notas de crédito de ventas),
+//   510/520 neto e IVA de compras ≠0% CON derecho, 522 IVA compras ≠0% SIN derecho,
+//   517 compras 0% CON derecho, 518 compras 0% SIN derecho (caso "feriado tarifa 0 sin derecho"),
+//   516 adquisiciones a contribuyentes RISE / nota de venta, 515 importaciones.
+//
 const FORM_104 = {
   formType: '104',
-  definitionVersion: '104-borrador-2026.1',
+  definitionVersion: '104-borrador-2026.2',
   title: 'Formulario 104 — Declaración del Impuesto al Valor Agregado',
   verified: false,
   sections: [
@@ -76,81 +96,125 @@ const FORM_104 = {
     // ── Ventas
     {
       box: '401', section: 'VENTAS', order: 1, kind: COMPUTED, format: MONEY, boxVerified: false,
-      label: 'Ventas locales gravadas con tarifa diferente de 0%',
-      source: 'Facturas de venta AUTORIZADAS del período (base gravada del desglose por tarifa).',
+      label: 'Ventas locales gravadas tarifa diferente de 0% (valor bruto)',
+      source: 'Facturas de venta AUTORIZADAS del período (base gravada del desglose por tarifa), antes de notas de crédito.',
       help: 'Solo entran facturas electrónicas autorizadas. Las ventas sin autorizar no se declaran.',
     },
     {
-      box: '403', section: 'VENTAS', order: 2, kind: EDITABLE, format: MONEY, boxVerified: false,
+      box: '411', section: 'VENTAS', order: 2, kind: COMPUTED, format: MONEY, boxVerified: false,
+      label: 'Valor neto ventas gravadas ≠0% (bruto − notas de crédito)',
+      formula: '411 = 401 − notas de crédito de ventas gravadas',
+      source: 'Casillero 401 menos las notas de crédito emitidas del período sobre ventas gravadas.',
+      help: 'La base que efectivamente genera IVA es la neta de notas de crédito.',
+    },
+    {
+      box: '421', section: 'VENTAS', order: 3, kind: COMPUTED, format: MONEY, boxVerified: false,
+      label: 'IVA generado en ventas gravadas ≠0%',
+      source: 'IVA de las facturas autorizadas del período menos el IVA de las notas de crédito de ventas.',
+    },
+    {
+      box: '403', section: 'VENTAS', order: 4, kind: EDITABLE, format: MONEY, boxVerified: false,
       label: 'Ventas locales gravadas con tarifa 0% que NO dan derecho a crédito tributario',
-      source: 'Reparto de la base tarifa 0% de las ventas del período (lo define el contador).',
-      formula: '403 + 405 = base total tarifa 0% de las ventas',
+      source: 'Reparto de la base tarifa 0% de las ventas del período (neta de notas de crédito 0%); lo define el contador.',
+      formula: '403 + 405 = base total tarifa 0% de las ventas (neta de NC)',
       validations: { min: 0, maxBox: '_base0Total' },
       help: 'Por defecto TODA la base 0% se clasifica aquí. Mueva a 405 la parte que sí da derecho a crédito. La suma 403+405 no puede exceder la base 0% real: no se duplican totales.',
     },
     {
-      box: '405', section: 'VENTAS', order: 3, kind: EDITABLE, format: MONEY, boxVerified: false,
+      box: '405', section: 'VENTAS', order: 5, kind: EDITABLE, format: MONEY, boxVerified: false,
       label: 'Ventas locales gravadas con tarifa 0% que SÍ dan derecho a crédito tributario',
-      source: 'Reparto de la base tarifa 0% de las ventas del período (lo define el contador).',
+      source: 'Reparto de la base tarifa 0% de las ventas del período (neta de notas de crédito 0%); lo define el contador.',
       validations: { min: 0, maxBox: '_base0Total' },
       help: 'Aumenta el factor de proporcionalidad: estas ventas 0% permiten usar el IVA de compras como crédito.',
     },
     {
-      box: '431', section: 'VENTAS', order: 4, kind: COMPUTED, format: MONEY, boxVerified: false,
+      box: '431', section: 'VENTAS', order: 6, kind: COMPUTED, format: MONEY, boxVerified: false,
       label: 'Transferencias no objeto de IVA',
       source: 'Base "no objeto" del desglose tributario de las facturas del período.',
     },
     {
-      box: '434', section: 'VENTAS', order: 5, kind: COMPUTED, format: MONEY, boxVerified: false,
+      box: '434', section: 'VENTAS', order: 7, kind: COMPUTED, format: MONEY, boxVerified: false,
       label: 'Transferencias exentas de IVA',
       source: 'Base "exenta" del desglose tributario de las facturas del período.',
     },
     {
-      box: '419', section: 'VENTAS', order: 6, kind: FORMULA, format: MONEY, boxVerified: false,
-      label: 'Total ventas y otras operaciones',
-      formula: '401 + 403 + 405 + 431 + 434',
+      box: '419', section: 'VENTAS', order: 8, kind: FORMULA, format: MONEY, boxVerified: false,
+      label: 'Total ventas y otras operaciones (valor neto)',
+      formula: '411 + 403 + 405 + 431 + 434',
     },
     {
-      box: '499', section: 'VENTAS', order: 7, kind: COMPUTED, format: MONEY, boxVerified: false,
-      label: 'IVA generado en ventas',
-      source: 'IVA de las facturas autorizadas del período (cuenta IVA en ventas).',
+      box: '499', section: 'VENTAS', order: 9, kind: COMPUTED, format: MONEY, boxVerified: false,
+      label: 'Total IVA generado en ventas del período',
+      source: 'IVA neto de las ventas del período (facturas autorizadas − notas de crédito). Coincide con 421 cuando toda la base gravada es una sola tarifa.',
     },
 
     // ── Compras
     {
       box: '500', section: 'COMPRAS', order: 1, kind: COMPUTED, format: MONEY, boxVerified: false,
-      label: 'Adquisiciones gravadas tarifa diferente de 0% CON derecho a crédito tributario',
-      source: 'Compras no anuladas del período marcadas como deducibles (base gravada).',
+      label: 'Adquisiciones gravadas tarifa ≠0% CON derecho a crédito tributario (valor bruto)',
+      source: 'Facturas de compra no anuladas del período marcadas como deducibles (base gravada), antes de notas de crédito.',
     },
     {
-      box: '507', section: 'COMPRAS', order: 2, kind: COMPUTED, format: MONEY, boxVerified: false,
-      label: 'Adquisiciones gravadas tarifa diferente de 0% SIN derecho a crédito tributario',
+      box: '510', section: 'COMPRAS', order: 2, kind: COMPUTED, format: MONEY, boxVerified: false,
+      label: 'Valor neto adquisiciones ≠0% CON derecho (bruto − notas de crédito de compras)',
+      formula: '510 = 500 − notas de crédito de compras gravadas',
+      source: 'Casillero 500 menos las notas de crédito recibidas del período sobre compras gravadas.',
+    },
+    {
+      box: '520', section: 'COMPRAS', order: 3, kind: COMPUTED, format: MONEY, boxVerified: false,
+      label: 'IVA en adquisiciones ≠0% CON derecho a crédito tributario',
+      source: 'IVA con derecho a crédito de las compras deducibles, neto del IVA de las notas de crédito de compras. Es el IVA "disponible" (= casillero 530).',
+    },
+    {
+      box: '507', section: 'COMPRAS', order: 4, kind: COMPUTED, format: MONEY, boxVerified: false,
+      label: 'Adquisiciones gravadas tarifa ≠0% SIN derecho a crédito tributario',
       source: 'Compras del período marcadas como NO deducibles (su IVA ya se cargó al gasto al registrarlas).',
     },
     {
-      box: '517', section: 'COMPRAS', order: 3, kind: COMPUTED, format: MONEY, boxVerified: false,
-      label: 'Adquisiciones gravadas tarifa 0%',
-      source: 'Subtotal tarifa 0% de las compras del período.',
+      box: '522', section: 'COMPRAS', order: 5, kind: COMPUTED, format: MONEY, boxVerified: false,
+      label: 'IVA en adquisiciones ≠0% SIN derecho a crédito tributario',
+      source: 'IVA de las compras no deducibles (o la parte no recuperable de las deducibles). Ya fue al gasto al registrar la compra; no es crédito.',
     },
     {
-      box: '519', section: 'COMPRAS', order: 4, kind: COMPUTED, format: MONEY, boxVerified: false,
+      box: '517', section: 'COMPRAS', order: 6, kind: COMPUTED, format: MONEY, boxVerified: false,
+      label: 'Adquisiciones tarifa 0% que dan derecho a crédito tributario',
+      source: 'Subtotal tarifa 0% de las compras deducibles del período (neto de notas de crédito 0%).',
+    },
+    {
+      box: '518', section: 'COMPRAS', order: 7, kind: COMPUTED, format: MONEY, boxVerified: false,
+      label: 'Adquisiciones tarifa 0% que NO dan derecho a crédito tributario',
+      source: 'Subtotal tarifa 0% de las compras marcadas como NO deducibles del período.',
+      help: 'Aquí caen las compras tarifa 0% sin derecho a crédito (p. ej. adquisiciones que no soportan ventas con derecho): antes no tenían casillero propio y no se sumaban en ningún lado.',
+    },
+    {
+      box: '516', section: 'COMPRAS', order: 8, kind: COMPUTED, format: MONEY, boxVerified: false,
+      label: 'Adquisiciones a contribuyentes RISE / notas de venta',
+      source: 'Compras del período cuyo comprobante es NOTA DE VENTA (contribuyentes RISE). Toda su base va aquí, no a los casilleros de factura.',
+    },
+    {
+      box: '515', section: 'COMPRAS', order: 9, kind: COMPUTED, format: MONEY, boxVerified: false,
+      label: 'Importaciones de bienes y servicios gravados tarifa ≠0%',
+      source: 'Compras del período registradas como importación (liquidación de importación). Placeholder: el registro de compras aún no marca importaciones, por lo que hoy suele quedar en 0.',
+    },
+    {
+      box: '519', section: 'COMPRAS', order: 10, kind: COMPUTED, format: MONEY, boxVerified: false,
       label: 'Adquisiciones no objeto de IVA / exentas',
       source: 'Subtotales "no objeto" y "exento" de las compras del período.',
     },
     {
-      box: '521', section: 'COMPRAS', order: 5, kind: FORMULA, format: MONEY, boxVerified: false,
-      label: 'Total adquisiciones y pagos',
-      formula: '500 + 507 + 517 + 519',
+      box: '521', section: 'COMPRAS', order: 11, kind: FORMULA, format: MONEY, boxVerified: false,
+      label: 'Total adquisiciones y pagos (valor neto)',
+      formula: '510 + 507 + 517 + 518 + 516 + 515 + 519',
     },
     {
-      box: '529', section: 'COMPRAS', order: 6, kind: COMPUTED, format: MONEY, boxVerified: false,
+      box: '529', section: 'COMPRAS', order: 12, kind: COMPUTED, format: MONEY, boxVerified: false,
       label: 'IVA total pagado en compras del período',
-      source: 'Suma del IVA de todas las compras no anuladas del período (deducibles y no deducibles).',
+      source: 'Suma del IVA de todas las compras no anuladas del período (deducibles y no deducibles), neto del IVA de las notas de crédito de compras. = 520 + 522.',
     },
     {
-      box: '530', section: 'COMPRAS', order: 7, kind: COMPUTED, format: MONEY, boxVerified: false,
+      box: '530', section: 'COMPRAS', order: 13, kind: COMPUTED, format: MONEY, boxVerified: false,
       label: 'IVA registrado como crédito tributario al comprar',
-      source: 'Parte del IVA de compras que se contabilizó en la cuenta IVA en compras (activo). El resto ya fue al gasto.',
+      source: 'Parte del IVA de compras que se contabilizó en la cuenta IVA en compras (activo), neta de notas de crédito. El resto ya fue al gasto. = 520.',
       help: 'Este es el IVA "disponible" que esta declaración puede usar o reclasificar al gasto. El IVA de compras no deducibles no está aquí: ya se cargó al gasto al registrar la compra.',
     },
 
@@ -158,7 +222,7 @@ const FORM_104 = {
     {
       box: '563', section: 'CREDITO', order: 1, kind: COMPUTED, format: 'PERCENT', boxVerified: false,
       label: 'Factor de proporcionalidad',
-      formula: '(401 + 405) / (401 + 403 + 405)',
+      formula: '(411 + 405) / (411 + 403 + 405)',
       source: 'Se calcula con las ventas del período: qué proporción da derecho a crédito.',
       help: 'Si TODAS las ventas dan derecho a crédito el factor es 1 y todo el IVA de compras es utilizable. Si hay ventas 0% sin derecho a crédito (casillero 403), el factor baja y parte del IVA se vuelve gasto. Con ventas en 0 el factor se toma como 1 (no hay proporción que aplicar).',
     },

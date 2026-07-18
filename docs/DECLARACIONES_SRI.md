@@ -78,6 +78,44 @@ validaciones, formato, ayuda). **No está en el JSX**: la pantalla se dibuja rec
 el backend valida contra la misma definición. La versión usada se congela en cada declaración
 (`definitionVersion`).
 
+### Formulario 104 como RÉPLICA (no resumen)
+
+El 104 (`104-borrador-2026.2`) reproduce la estructura del formulario oficial —una fila por
+combinación tipo de comprobante × tarifa × derecho a crédito— en lugar de un resumen:
+
+- **Ventas:** `401` valor bruto gravadas ≠0%, `411` valor neto (= 401 − notas de crédito),
+  `421`/`499` IVA sobre el neto, `403`/`405` reparto de la base 0% (sin/con derecho, editable),
+  `431` no objeto, `434` exento.
+- **Compras:** `500`/`510`/`520` gravadas ≠0% **con** derecho (bruto/neto/IVA), `507`/`522`
+  gravadas ≠0% **sin** derecho (su IVA ya fue al gasto), `517` tarifa 0% **con** derecho,
+  `518` tarifa 0% **sin** derecho *(el caso "compra en feriado tarifa 0 sin derecho" que antes
+  no sumaba en ningún casillero)*, `516` **RISE / nota de venta**, `515` importaciones
+  (placeholder), `519` no objeto/exento, `521` total, `529` IVA total, `530` IVA crédito.
+
+Cada compra se clasifica automáticamente por `docType` + tarifa (`subtotal15`/`subtotal0`/…) +
+`deductible` (proxy del derecho a crédito). El `docType = NOTA_VENTA` va entero al casillero
+RISE. **Nada queda sin casillero.**
+
+**Notas de crédito** (`CreditDebitNote`, `kind: NC`): las EMITIDAS sobre ventas y las RECIBIDAS
+sobre compras se restan automáticamente de la base **y del IVA de su misma tarifa** (valor
+neto = bruto − NC). La tarifa se toma del `taxBreakdown`/`ivaRate` de la nota; las notas
+antiguas la infieren del IVA (>0 ⇒ gravada, =0 ⇒ 0%). Restar la NC también deja el cierre
+contable correcto (el asiento de la NC ya movió IVA ventas/compras, así que el cierre usa el neto).
+
+> ⚠ Los **números** de los casilleros nuevos (411, 510, 516, 518, 520, 522…) se derivaron del
+> instructivo pero **no** están confirmados contra el PDF/XML oficial: todo el 104 sigue
+> `verified: false` y cada casillero `boxVerified: false`. Cuando la contadora entregue sus
+> formularios 103/104 reales (en `docs/`), se contrastan etiquetas y números y se marcan
+> `boxVerified: true` los que correspondan.
+
+### Eliminar borradores
+
+`DELETE /tax-declarations/:id` borra **físicamente** una declaración **solo en estado DRAFT**
+(no tocan contabilidad ni cartera, así que no dejan movimientos huérfanos). Una declaración
+FINALIZED nunca se borra: se **anula** (`void`) para conservar el rastro contable. En la UI el
+botón *Eliminar* solo aparece sobre borradores, con confirmación. Sirve para limpiar borradores
+de prueba y quedarse con el definitivo.
+
 ## ⚠ Validación externa pendiente (para el contador)
 
 Los **importes** son auditables: salen de las ventas, compras y nóminas del período, con sus

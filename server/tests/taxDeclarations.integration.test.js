@@ -15,6 +15,7 @@ const decls = require('../controllers/taxDeclarationController');
 const SriDeclaration = require('../models/SriDeclaration');
 const Invoice = require('../models/Invoice');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
+const CreditDebitNote = require('../models/CreditDebitNote');
 const Payroll = require('../models/Payroll');
 const Payable = require('../models/Payable');
 const JournalEntry = require('../models/JournalEntry');
@@ -52,20 +53,47 @@ async function makeSale(clinicId, { baseGravada = 0, base0 = 0, iva = 0, day = 1
 /** Compra registrada (los importes se fijan directo: aquí interesa la declaración). */
 async function makePurchase(clinicId, supplierId, {
   subtotal = 100, iva = 15, deductible = true, vatCreditAmount, retentions = [], day = 10,
+  docType = 'FACTURA', subtotal0, subtotal15,
 } = {}) {
   seq += 1;
   const retentionTotal = retentions.reduce((s, r) => s + (r.amount || 0), 0);
+  // Por defecto la base es gravada 15%; si se pasa subtotal0 la base cae en tarifa 0%.
+  const s0 = subtotal0 != null ? subtotal0 : 0;
+  const s15 = subtotal15 != null ? subtotal15 : (subtotal0 != null ? 0 : subtotal);
   return PurchaseInvoice.create({
-    clinic: clinicId, supplier: supplierId, docType: 'FACTURA',
+    clinic: clinicId, supplier: supplierId, docType,
     estab: '001', ptoEmi: '001', secuencial: String(seq).padStart(9, '0'),
     serie: `001-001-${String(seq).padStart(9, '0')}`,
     fechaEmision: inMonth(day),
-    subtotal, subtotal15: subtotal, iva, total: subtotal + iva,
+    subtotal, subtotal0: s0, subtotal15: s15, iva, total: subtotal + iva,
     deductible,
     vatCreditAmount: vatCreditAmount != null ? vatCreditAmount : (deductible === false ? 0 : iva),
     vatNonCreditAmount: deductible === false ? iva : 0,
     retentions, retentionTotal,
     status: 'REGISTRADA',
+  });
+}
+
+/**
+ * Nota de crédito NC registrada. `withBreakdown=false` la deja SIN snapshot de tarifa para
+ * ejercitar la inferencia por IVA (nota antigua). Emitida→ventas, Recibida→compras.
+ */
+async function makeNC(clinicId, {
+  direction, refModel, refDoc, subtotal, iva = 0, day = 15, withBreakdown = true,
+} = {}) {
+  seq += 1;
+  const gravada = iva > 0;
+  return CreditDebitNote.create({
+    clinic: clinicId, kind: 'NC', direction, refModel, refDoc,
+    estab: '001', ptoEmi: '001', secuencial: String(seq).padStart(9, '0'),
+    serie: `001-001-${String(seq).padStart(9, '0')}`,
+    fechaEmision: inMonth(day),
+    subtotal, iva, total: subtotal + iva,
+    ivaRate: withBreakdown ? (gravada ? 15 : 0) : null,
+    taxBreakdown: withBreakdown
+      ? (gravada ? { baseGravada: subtotal, iva } : { base0: subtotal })
+      : undefined,
+    estado: 'AUTORIZADO',
   });
 }
 
@@ -374,4 +402,114 @@ test('10) dos clínicas: sin contaminación de datos', async () => {
   // Una declaración de A no es accesible desde B.
   const cross = await run(decls.get, H.mockReq(b.clinicId, b.userId, {}, { params: { id: String(da.declaration._id) } }));
   assert.equal(cross.statusCode, 404);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('11) F104: la nota de crédito de VENTAS resta de la base y del IVA de su tarifa', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: inMonth() });
+  const sup = await H.makeSupplier(clinicId);
+  const inv = await makeSale(clinicId, { baseGravada: 1000, iva: 150 });
+  await makePurchase(clinicId, sup._id, { subtotal: 400, iva: 60 });
+  // NC emitida sobre la factura de venta: 100 de base + 15 de IVA (tarifa 15%).
+  await makeNC(clinicId, { direction: 'EMITIDA', refModel: 'Invoice', refDoc: inv._id, subtotal: 100, iva: 15 });
+
+  const d = await draft(clinicId, userId, '104');
+  assert.equal(d.cells['401'], 1000, 'valor bruto de ventas gravadas');
+  assert.equal(d.cells['411'], 900, 'valor neto = 1000 − 100 de la NC');
+  assert.equal(d.cells['421'], 135, 'IVA sobre el neto = 150 − 15');
+  assert.equal(d.cells['499'], 135, 'IVA total de ventas neto de NC');
+  assert.equal(d.cells['609'], 75, 'impuesto = 135 − 60 disponible');
+  const nc = d.declaration.snapshot.notasCredito.ventas;
+  assert.equal(nc.count, 1);
+  assert.equal(nc.baseGravada, 100);
+  assert.equal(nc.iva, 15);
+
+  const fin = okPayload(await finalize(clinicId, userId, d.declaration._id));
+  assert.equal(fin.declaration.totals.impuestoPorPagar, 75);
+  assert.equal(await bal(clinicId, '2.1.02.01'), 135, 'el cierre debita IVA ventas por el NETO de NC');
+  assert.ok((await H.assertLedgerBalanced(clinicId)).balanced);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('12) F104: la nota de crédito de COMPRAS resta de la base y del IVA disponible', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: inMonth() });
+  const sup = await H.makeSupplier(clinicId);
+  await makeSale(clinicId, { baseGravada: 1000, iva: 150 });
+  const p = await makePurchase(clinicId, sup._id, { subtotal: 400, iva: 60 });
+  // NC recibida sobre la compra: infiere tarifa 15% por el IVA (nota SIN snapshot).
+  await makeNC(clinicId, { direction: 'RECIBIDA', refModel: 'PurchaseInvoice', refDoc: p._id, subtotal: 100, iva: 15, withBreakdown: false });
+
+  const d = await draft(clinicId, userId, '104');
+  assert.equal(d.cells['500'], 400, 'compras gravadas con derecho (bruto)');
+  assert.equal(d.cells['510'], 300, 'valor neto = 400 − 100 de la NC');
+  assert.equal(d.cells['520'], 45, 'IVA con derecho neto = 60 − 15');
+  assert.equal(d.cells['530'], 45, 'IVA disponible neto de NC');
+  assert.equal(d.cells['529'], 45, 'IVA total de compras neto de NC');
+  assert.equal(d.cells['609'], 105, 'impuesto = 150 − 45');
+
+  const fin = okPayload(await finalize(clinicId, userId, d.declaration._id));
+  assert.equal(fin.declaration.totals.impuestoPorPagar, 105);
+  assert.equal(await bal(clinicId, '1.1.03.01'), -45, 'el cierre acredita IVA compras por el NETO de NC');
+  assert.ok((await H.assertLedgerBalanced(clinicId)).balanced);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('13) F104: clasificación de compras por tipo y tarifa (RISE, 0% sin derecho, con/sin crédito)', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: inMonth() });
+  const sup = await H.makeSupplier(clinicId);
+  await makeSale(clinicId, { baseGravada: 1000, iva: 150 });
+  // Factura 15% deducible → 500/520.
+  await makePurchase(clinicId, sup._id, { subtotal: 400, iva: 60 });
+  // Factura 15% NO deducible → 507/522.
+  await makePurchase(clinicId, sup._id, { subtotal: 300, iva: 45, deductible: false, day: 11 });
+  // "Ernesto compra en feriado tarifa 0 SIN derecho" → 518 (casillero propio).
+  await makePurchase(clinicId, sup._id, { subtotal: 200, iva: 0, subtotal0: 200, deductible: false, day: 12 });
+  // Nota de venta / RISE → 516.
+  await makePurchase(clinicId, sup._id, { subtotal: 50, iva: 0, subtotal0: 50, docType: 'NOTA_VENTA', day: 13 });
+
+  const d = await draft(clinicId, userId, '104');
+  assert.equal(d.cells['500'], 400, 'gravada ≠0% con derecho');
+  assert.equal(d.cells['520'], 60, 'IVA con derecho');
+  assert.equal(d.cells['507'], 300, 'gravada ≠0% sin derecho');
+  assert.equal(d.cells['522'], 45, 'IVA sin derecho (ya al gasto)');
+  assert.equal(d.cells['518'], 200, 'tarifa 0% SIN derecho tiene su propio casillero');
+  assert.equal(d.cells['517'], 0, 'no hay compras 0% con derecho');
+  assert.equal(d.cells['516'], 50, 'RISE / nota de venta');
+  assert.equal(d.cells['529'], 105, 'IVA total = 60 + 45');
+  assert.equal(d.cells['530'], 60, 'IVA disponible = solo el que da derecho');
+  // El total de adquisiciones no duplica ni pierde ninguna base.
+  assert.equal(d.cells['521'], 950, '400 + 300 + 200 + 50 = total neto de compras');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('14) borrador: se elimina físicamente; una finalizada NO se borra (se anula)', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: inMonth() });
+  await makeSale(clinicId, { baseGravada: 100, iva: 15 });
+
+  const d = await draft(clinicId, userId, '104');
+  const del = await run(decls.remove, H.mockReq(clinicId, userId, {}, { params: { id: String(d.declaration._id) } }));
+  assert.ok(del.statusCode < 400, JSON.stringify(del.payload));
+  assert.equal(await SriDeclaration.countDocuments({ clinic: clinicId }), 0, 'el borrador se borró físicamente');
+
+  // Una finalizada no se puede borrar: se anula para conservar el rastro contable.
+  const d2 = await draft(clinicId, userId, '104');
+  const fin = okPayload(await finalize(clinicId, userId, d2.declaration._id));
+  const delFin = await run(decls.remove, H.mockReq(clinicId, userId, {}, { params: { id: String(fin.declaration._id) } }));
+  assert.equal(delFin.statusCode, 400);
+  assert.match(delFin.payload.message, /anula|borrador/i);
+  assert.equal((await SriDeclaration.findById(fin.declaration._id)).status, 'FINALIZED', 'sigue finalizada');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('15) la definición expandida trae los nuevos casilleros oficiales del 104', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: inMonth() });
+  const d = await draft(clinicId, userId, '104');
+  const boxes = d.definition.cells.map((c) => c.box);
+  // Ventas: bruto/neto/IVA + reparto 0%. Compras: con/sin derecho, 0% con/sin derecho, RISE.
+  for (const b of ['401', '411', '421', '500', '510', '520', '507', '522', '517', '518', '516']) {
+    assert.ok(boxes.includes(b), `falta el casillero ${b} en la definición`);
+  }
+  // Todo el 104 sigue declarado NO verificado hasta contrastar con el formulario oficial.
+  assert.equal(d.definition.verified, false);
+  assert.ok(d.definition.cells.every((c) => c.boxVerified === false), 'cada casillero marca boxVerified:false');
 });

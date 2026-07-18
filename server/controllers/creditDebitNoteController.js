@@ -48,6 +48,38 @@ function affectedSerie(origin) {
   return origin.serie || `${origin.estab || ''}-${origin.ptoEmi || ''}-${origin.secuencial || ''}`;
 }
 
+/**
+ * Tarifa y desglose por tarifa de una nota de crédito/débito.
+ *  - Si el cuerpo trae un `taxBreakdown` explícito, se respeta.
+ *  - Si trae `ivaRate`, se usa esa tarifa.
+ *  - Si no, se infiere del IVA: IVA>0 ⇒ toda la base es gravada (≠0%); IVA=0 ⇒ tarifa 0%.
+ * La declaración SRI resta la nota de la base de su misma tarifa a partir de esto.
+ */
+function deriveNoteTax(body = {}, subtotal, iva) {
+  const num = (x) => +Number(x || 0).toFixed(2);
+  if (body.taxBreakdown && typeof body.taxBreakdown === 'object') {
+    const tb = body.taxBreakdown;
+    const taxBreakdown = {
+      base0: num(tb.base0), baseGravada: num(tb.baseGravada), baseExento: num(tb.baseExento),
+      baseNoObjeto: num(tb.baseNoObjeto), iva: num(tb.iva != null ? tb.iva : iva),
+    };
+    const rate = body.ivaRate != null ? Number(body.ivaRate) : (taxBreakdown.baseGravada > 0 ? 15 : 0);
+    return { ivaRate: rate, taxBreakdown };
+  }
+  const rate = body.ivaRate != null ? Number(body.ivaRate) : (iva > 0 ? 15 : 0);
+  const gravada = rate > 0 || iva > 0;
+  return {
+    ivaRate: rate,
+    taxBreakdown: {
+      base0: gravada ? 0 : num(subtotal),
+      baseGravada: gravada ? num(subtotal) : 0,
+      baseExento: 0,
+      baseNoObjeto: 0,
+      iva: num(iva),
+    },
+  };
+}
+
 async function getOrigin(refModel, refDoc, clinicId, session) {
   if (refModel === 'Invoice') return Invoice.findOne({ _id: refDoc, clinic: clinicId }).session(session);
   if (refModel === 'PurchaseInvoice') return PurchaseInvoice.findOne({ _id: refDoc, clinic: clinicId }).session(session);
@@ -67,6 +99,11 @@ exports.create = async (req, res) => {
       const noteIva = +Number(iva || 0).toFixed(2);
       const noteTotal = +Number(total || (noteSubtotal + noteIva)).toFixed(2);
       if (noteTotal <= 0) throw Object.assign(new Error('Total de nota invalido'), { status: 400 });
+
+      // Tarifa/desglose de la nota: para que las declaraciones SRI resten la nota de la
+      // base de su MISMA tarifa. Se toma el desglose explícito si viene; si no, se infiere
+      // del IVA (>0 ⇒ base gravada ≠0%, =0 ⇒ base tarifa 0%).
+      const { ivaRate: noteRate, taxBreakdown: noteTb } = deriveNoteTax(req.body, noteSubtotal, noteIva);
 
       const origin = await getOrigin(refModel, refDoc, req.clinicId, session);
       if (!origin) throw Object.assign(new Error('Documento referencia no encontrado'), { status: 404 });
@@ -96,6 +133,8 @@ exports.create = async (req, res) => {
         subtotal: noteSubtotal,
         iva: noteIva,
         total: noteTotal,
+        ivaRate: noteRate,
+        taxBreakdown: noteTb,
         createdBy: req.user._id,
       }], { session });
 
