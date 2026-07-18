@@ -1,12 +1,12 @@
 import { useEffect, useState, useCallback } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
-import { HiOutlineArchiveBox, HiOutlineArrowDownTray, HiOutlineArrowTopRightOnSquare, HiOutlineDocumentText } from 'react-icons/hi2';
+import { HiOutlineArchiveBox, HiOutlineArrowDownTray, HiOutlineEye } from 'react-icons/hi2';
 import Field from '../../components/Field';
 import ProductSelect from '../../components/ProductSelect';
-import JournalEntryViewModal from '../../components/JournalEntryViewModal';
+import InventoryMovementDetailModal from '../../components/InventoryMovementDetailModal';
 import { fmt, fmtDate } from './_utils';
-import { sourceDeepLink, sourceLabel } from './sourceDocs';
+import { sourceLabel } from './sourceDocs';
 
 /**
  * KARDEX VALORIZADO. Todo lo que se ve aquí lo calcula `services/kardexService` en el backend:
@@ -30,7 +30,7 @@ export default function Kardex() {
   const [busqueda, setBusqueda] = useState('');   // código o código de barras
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [entry, setEntry] = useState(null);
+  const [detalle, setDetalle] = useState(null);   // fila abierta en el hub de consulta
 
   useEffect(() => {
     api.get('/products').then((r) => setProducts(r.data?.items || r.data || [])).catch(() => {});
@@ -80,12 +80,6 @@ export default function Kardex() {
       || String(x.barcode || '').toLowerCase() === q);
     if (!p) { toast.error('Ningún producto con ese código o código de barras'); return; }
     setFilters((f) => ({ ...f, product: p._id }));
-  };
-
-  const abrirDoc = (row) => {
-    const link = sourceDeepLink({ sourceModel: row.documento?.model, sourceRef: row.documento?.ref });
-    if (!link) { toast('Este origen no tiene pantalla propia'); return; }
-    window.open(link, '_blank');
   };
 
   const porBodega = !!filters.warehouse;
@@ -269,19 +263,12 @@ export default function Kardex() {
                       {conCostos && <td className="px-2 py-2 text-right font-mono font-semibold">{fmt(m.saldoValor)}</td>}
                       <td className="px-2 py-2 text-slate-500">{m.usuario || '—'}</td>
                       <td className="px-2 py-2">
-                        <div className="flex items-center gap-1 justify-end">
-                          {m.documento && (
-                            <button onClick={() => abrirDoc(m)} title="Abrir documento origen"
-                              className="p-1 rounded hover:bg-slate-100 text-slate-500 bg-transparent border-none cursor-pointer">
-                              <HiOutlineArrowTopRightOnSquare className="w-4 h-4" />
-                            </button>
-                          )}
-                          {m.journalEntry && (
-                            <button onClick={() => setEntry(m.journalEntry)} title="Ver asiento"
-                              className="p-1 rounded hover:bg-slate-100 text-slate-500 bg-transparent border-none cursor-pointer">
-                              <HiOutlineDocumentText className="w-4 h-4" />
-                            </button>
-                          )}
+                        <div className="flex items-center justify-end">
+                          <button onClick={() => setDetalle(m)}
+                            title="Ver detalle: movimiento de inventario, asiento contable y factura (solo consulta)"
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded-lg text-[11px] font-semibold text-emerald-700 bg-emerald-50 border border-emerald-200 hover:bg-emerald-100 cursor-pointer">
+                            <HiOutlineEye className="w-4 h-4" /> Ver detalle
+                          </button>
                         </div>
                       </td>
                     </tr>
@@ -313,11 +300,12 @@ export default function Kardex() {
         </>
       )}
 
-      <JournalEntryViewModal
-        isOpen={!!entry}
-        onClose={() => setEntry(null)}
-        entryId={entry}
-        title="Asiento del movimiento"
+      <InventoryMovementDetailModal
+        isOpen={!!detalle}
+        onClose={() => setDetalle(null)}
+        movement={detalle}
+        producto={data?.producto}
+        conCostos={conCostos}
       />
     </div>
   );
