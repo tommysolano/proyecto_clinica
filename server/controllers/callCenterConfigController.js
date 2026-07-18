@@ -414,6 +414,7 @@ exports.testWhatsappAccount = async (req, res) => {
     const token = decryptSecret(doc.accessToken);
     const V = process.env.WHATSAPP_API_VERSION || 'v23.0';
     const checks = [];
+    let tokenUser = null; // usuario del sistema dueño del token (GET /me)
 
     // 1) Inspección del token (un token puede inspeccionarse a sí mismo).
     let dbg = null;
@@ -501,16 +502,36 @@ exports.testWhatsappAccount = async (req, res) => {
         });
       } else {
         // Hay WABA ID guardado pero Meta no reportó restricción granular para el
-        // scope de mensajería: el permiso aplica a todo lo que el usuario del
-        // sistema tenga asignado.
+        // scope de mensajería. OJO: esto puede ser un admin sin restricción, pero
+        // también un token sin NINGUNA WABA para mensajería — se muestra el dato
+        // crudo para no interpretar de más.
         checks.push({
           ok: true,
           label: 'Cuentas de WhatsApp asignadas al token',
-          detail: 'Meta no reporta restricción por WABA para este token (aplica a todos los activos del usuario del sistema).',
+          detail: `Meta no reporta target_ids para el permiso de mensajería. granular_scopes crudo: ${JSON.stringify(dbg.granular_scopes || [])}`,
           fix: '',
         });
       }
     }
+
+    // 1b) Identidad del token: QUÉ usuario del sistema lo generó. Con varios
+    // usuarios/empresas de nombres parecidos, esto delata tokens del usuario
+    // equivocado (los activos se asignan por usuario, no por empresa).
+    try {
+      const rm = await fetch(`https://graph.facebook.com/${V}/me?fields=id,name`, {
+        headers: { Authorization: `Bearer ${token}` },
+      });
+      const mj = await rm.json().catch(() => ({}));
+      if (rm.ok && mj?.id) {
+        tokenUser = mj;
+        checks.push({
+          ok: true,
+          label: 'Identidad del token',
+          detail: `El token pertenece al usuario del sistema «${mj.name || '(sin nombre)'}» (ID ${mj.id}).`,
+          fix: '',
+        });
+      }
+    } catch { /* sin red: se omite */ }
 
     // 2) Acceso al número concreto con ese token + su ESTADO real: si el número
     // no está registrado en Cloud API o sigue operando en la app del teléfono
@@ -590,6 +611,41 @@ exports.testWhatsappAccount = async (req, res) => {
             detail: `"${oj.name || ''}" pertenece a la empresa «${owner.name || 'desconocida'}» (ID ${owner.id || 'n/d'})${obo ? ` · operada en nombre de «${obo.name}» (ID ${obo.id})` : ''}. Si esa empresa NO es tu Business Manager, ahí está la causa: no puedes dar permisos sobre una WABA ajena.`,
             fix: '',
           });
+
+          // Permisos EXACTOS (tasks) de cada usuario sobre ESTA WABA según Meta.
+          // Es la prueba reina del #200: si el dueño del token no aparece aquí o
+          // aparece sin control total, el envío se rechaza aunque pueda leer.
+          if (owner.id) {
+            try {
+              const ru = await fetch(
+                `https://graph.facebook.com/${V}/${doc.businessAccountId}/assigned_users?business=${owner.id}&fields=id,name,tasks&limit=50`,
+                { headers: { Authorization: `Bearer ${token}` } }
+              );
+              const uj = await ru.json().catch(() => ({}));
+              if (ru.ok) {
+                const users = uj.data || [];
+                const rows = users.map((u) => `«${u.name || u.id}» → [${(u.tasks || []).join(', ')}]`);
+                const mine = tokenUser ? users.find((u) => String(u.id) === String(tokenUser.id)) : null;
+                const mineTasks = mine?.tasks || [];
+                const fullish = ['MANAGE', 'DEVELOP', 'FULL_CONTROL', 'MESSAGING'];
+                const hasFull = mineTasks.some((t) => fullish.includes(String(t).toUpperCase()));
+                checks.push({
+                  ok: tokenUser ? !!mine && hasFull : true,
+                  label: 'Permisos del dueño del token sobre ESTA WABA (tasks)',
+                  detail: `Usuarios asignados a la WABA: ${rows.join(' · ') || '(ninguno)'}${
+                    tokenUser
+                      ? mine
+                        ? ` — el dueño del token («${tokenUser.name}») tiene: [${mineTasks.join(', ')}].`
+                        : ` — el dueño del token («${tokenUser.name}», ID ${tokenUser.id}) NO está en la lista: esta WABA no está asignada a ESE usuario del sistema.`
+                      : ''
+                  }`,
+                  fix: tokenUser && (!mine || !hasFull)
+                    ? 'Business Manager → Usuarios del sistema → selecciona EXACTAMENTE ese usuario → Asignar activos → Cuentas de WhatsApp → elige la WABA por ID (hay varias con el mismo nombre) → activa CONTROL TOTAL → regenera el token y guárdalo aquí.'
+                    : '',
+                });
+              }
+            } catch { /* sin red: se omite */ }
+          }
         }
         const rp = await fetch(
           `https://graph.facebook.com/${V}/${doc.businessAccountId}/phone_numbers?fields=id,display_phone_number`,
