@@ -506,33 +506,47 @@ export default function SriDeclarations() {
                     </table>
                   )}
 
-                  {/* El 103 lleva una fila por cada código de retención usado en el período. */}
+                  {/* El 103 lleva un casillero DINÁMICO por cada código de retención usado. */}
                   {formType === '103' && section.key === 'PROVEEDORES' && (
-                    <table className="w-full text-sm">
-                      <thead className="bg-slate-50 text-[11px] uppercase text-slate-500">
-                        <tr>
-                          <th className="px-3 py-1.5 text-left">Código</th>
-                          <th className="px-3 py-1.5 text-left">Concepto</th>
-                          <th className="px-3 py-1.5 text-right">Comprob.</th>
-                          <th className="px-3 py-1.5 text-right">Base</th>
-                          <th className="px-3 py-1.5 text-right">Valor retenido</th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {rows103.map((r) => (
-                          <tr key={r.code} className="border-t border-slate-100">
-                            <td className="px-3 py-1.5 font-mono">{r.code}</td>
-                            <td className="px-3 py-1.5 text-slate-600">{r.description || '—'}</td>
-                            <td className="px-3 py-1.5 text-right font-mono text-slate-500">{r.docs?.length || 0}</td>
-                            <td className="px-3 py-1.5 text-right font-mono">{fmt(r.base)}</td>
-                            <td className="px-3 py-1.5 text-right font-mono">{fmt(r.amount)}</td>
+                    <>
+                      <p className="px-4 pt-2 text-[11px] text-slate-400">
+                        Un casillero por cada <b>código de retención</b> usado en el período. Van apareciendo
+                        automáticamente a medida que se emiten retenciones a proveedores; su base y valor retenido
+                        salen de los comprobantes de retención.
+                      </p>
+                      <table className="w-full text-sm">
+                        <thead className="bg-slate-50 text-[11px] uppercase text-slate-500">
+                          <tr>
+                            <th className="px-3 py-1.5 text-left">Casillero (código)</th>
+                            <th className="px-3 py-1.5 text-left">Concepto</th>
+                            <th className="px-3 py-1.5 text-right">Comprob.</th>
+                            <th className="px-3 py-1.5 text-right">Base</th>
+                            <th className="px-3 py-1.5 text-right">Valor retenido</th>
                           </tr>
-                        ))}
-                        {!rows103.length && (
-                          <tr><td colSpan={5} className="px-3 py-4 text-center text-slate-400 text-xs">Sin retenciones de renta a proveedores en el período.</td></tr>
-                        )}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody>
+                          {rows103.map((r) => (
+                            <tr key={r.code} className="border-t border-slate-100">
+                              <td className="px-3 py-1.5 font-mono">{r.code}</td>
+                              <td className="px-3 py-1.5 text-slate-600">{r.description || '—'}</td>
+                              <td className="px-3 py-1.5 text-right font-mono text-slate-500">{r.docs?.length || 0}</td>
+                              <td className="px-3 py-1.5 text-right font-mono">{fmt(r.base)}</td>
+                              <td className="px-3 py-1.5 text-right font-mono">{fmt(r.amount)}</td>
+                            </tr>
+                          ))}
+                          {rows103.length > 0 && (
+                            <tr className="border-t border-slate-200 bg-slate-50/80 font-semibold">
+                              <td className="px-3 py-1.5" colSpan={3}>Total retenido a proveedores</td>
+                              <td className="px-3 py-1.5 text-right font-mono">{fmt(rows103.reduce((s, r) => s + (r.base || 0), 0))}</td>
+                              <td className="px-3 py-1.5 text-right font-mono">{fmt(rows103.reduce((s, r) => s + (r.amount || 0), 0))}</td>
+                            </tr>
+                          )}
+                          {!rows103.length && (
+                            <tr><td colSpan={5} className="px-3 py-4 text-center text-slate-400 text-xs">Aún no hay retenciones de renta a proveedores en el período. Los casilleros aparecen al emitir retenciones.</td></tr>
+                          )}
+                        </tbody>
+                      </table>
+                    </>
                   )}
                 </div>
               );

@@ -115,6 +115,28 @@ IVA ventas/compras, así que el cierre usa el neto).
 > `boxVerified: false`. Por eso el formulario como conjunto se mantiene `verified: false` hasta
 > contrastar TODO contra el PDF/XML real (cuando la contadora los deje en `docs/`).
 
+### Formulario 103 (retenciones en la fuente)
+
+- **Casillero 302 (relación de dependencia):** se alimenta de las **nóminas CERRADAS/PAGADAS**
+  del período (`utils/payrollWithholding.js`, compartido con el endpoint `GET /payroll/withholding`).
+  Base = ingresos gravados (sueldo + horas extra + bonos + comisiones + rubros gravables), valor
+  retenido = IR descontado en el rol. Al cerrar un rol, el `recompute` del 103 lo refleja
+  automáticamente. *(La prueba end-to-end del cierre de rol queda pendiente del fix del bug de
+  nómina "tabla de impuesto a la renta año 1926"; la conexión 103↔nómina se prueba directamente
+  vía `payrollWithholdingForPeriod`.)*
+- **Casilleros de retención a proveedores (dinámicos):** uno por cada **código de retención** de
+  renta usado en el período (catálogo `RetentionRule`). Van apareciendo a medida que se emiten
+  retenciones; su base y valor salen de la cabecera `retentions` de la compra (misma fuente de la
+  que se genera el `RetentionVoucher`, sin doble conteo).
+- **Casillero 332 (no sujetos a retención):** se llena automáticamente con la **base neta de
+  compras que NO se retuvo**. Incluye tanto los comprobantes sin ninguna retención como la
+  **porción no retenida** de los parcialmente retenidos, de modo que **332 = total neto de compras
+  − suma de bases retenidas**. Así la suma de las bases del 103 (códigos + 332) **cuadra** con el
+  total neto de compras del período (base sin impuestos: 0% + 15% + no objeto + exenta).
+- **Coherencia:** el recompute concilia `base retenida + 332 = total neto de compras` y, si no
+  cuadra (p. ej. una base retenida mayor que el subtotal de su comprobante), avisa y **bloquea la
+  finalización** (`BASES_103_DESCUADRADAS` / `RETENCION_SOBRE_BASE`), igual que el aviso del 104.
+
 ### Eliminar borradores
 
 `DELETE /tax-declarations/:id` borra **físicamente** una declaración **solo en estado DRAFT**

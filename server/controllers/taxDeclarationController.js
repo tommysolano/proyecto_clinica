@@ -407,7 +407,8 @@ exports.finalize = async (req, res) => {
         if (error) throw badRequest(error);
       }
       const blocking = (result.warnings || []).filter((w) => w.severity !== 'info' && [
-        'IVA_GASTO_EXCEDE', 'IVA_GASTO_NEGATIVO', 'IMPUESTO_Y_CREDITO', 'BASE_0_DESCUADRADA', 'BASE_EXCEDE_COMPRAS', 'RETENCION_DUPLICADA',
+        'IVA_GASTO_EXCEDE', 'IVA_GASTO_NEGATIVO', 'IMPUESTO_Y_CREDITO', 'BASE_0_DESCUADRADA',
+        'BASE_EXCEDE_COMPRAS', 'BASES_103_DESCUADRADAS', 'RETENCION_SOBRE_BASE', 'RETENCION_DUPLICADA',
       ].includes(w.code));
       if (blocking.length) throw badRequest(`No se puede finalizar: ${blocking.map((w) => w.message).join(' · ')}`);
 

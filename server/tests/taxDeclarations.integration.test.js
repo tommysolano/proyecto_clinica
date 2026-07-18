@@ -17,6 +17,7 @@ const Invoice = require('../models/Invoice');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
 const CreditDebitNote = require('../models/CreditDebitNote');
 const Payroll = require('../models/Payroll');
+const { payrollWithholdingForPeriod } = require('../utils/payrollWithholding');
 const Payable = require('../models/Payable');
 const JournalEntry = require('../models/JournalEntry');
 const FiscalPeriod = require('../models/FiscalPeriod');
@@ -567,4 +568,84 @@ test('15) la definición replica la numeración oficial del 104 (bruto/neto/IVA 
   assert.equal(credito.boxVerified, false, 'la sección de crédito sigue pendiente de confirmar');
   // Las secciones de compras y ventas usan el formato oficial de 3 columnas.
   assert.equal(d.definition.sections.find((s) => s.key === 'COMPRAS').layout, 'GRID3');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('16) F103: el 332 suma las bases NO retenidas (incluida la porción no retenida) y cuadra', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: inMonth() });
+  const sup = await H.makeSupplier(clinicId);
+  // Comprobante 1000 retenido PARCIALMENTE (base retenida 800 → 200 no sujeta).
+  await makePurchase(clinicId, sup._id, {
+    subtotal: 1000, iva: 150, day: 5,
+    retentions: [{ type: 'RENTA', code: '303', description: 'Honorarios', baseAmount: 800, percentage: 10, amount: 80 }],
+  });
+  // Comprobante sin retención (todo su subtotal es no sujeto).
+  await makePurchase(clinicId, sup._id, { subtotal: 500, iva: 75, day: 6 });
+  // Comprobante retenido TOTAL (nada queda para el 332).
+  await makePurchase(clinicId, sup._id, {
+    subtotal: 300, iva: 45, day: 7,
+    retentions: [{ type: 'RENTA', code: '303', description: 'Honorarios', baseAmount: 300, percentage: 10, amount: 30 }],
+  });
+
+  const d = await draft(clinicId, userId, '103');
+  assert.equal(d.cells['332'], 700, '200 (porción no retenida) + 500 (sin retención) + 0');
+  assert.equal(d.cells['399'], 110, 'total retenido = 80 + 30');
+  const snap = d.declaration.snapshot;
+  assert.equal(snap.proveedores.baseRetenida, 1100, 'base retenida 800 + 300');
+  assert.equal(snap.comprasDelPeriodo.subtotal, 1800, 'total neto de compras');
+  // La suma de bases del 103 cuadra con el total neto de compras.
+  const cuadre = d.conciliaciones.find((c) => c.key === 'BASES_CUADRAN');
+  assert.ok(cuadre && cuadre.ok, 'retenida (1100) + no sujeta (700) = compras (1800)');
+  assert.ok(!(d.warnings || []).some((w) => w.code === 'BASES_103_DESCUADRADAS'), 'no hay descuadre');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('17) F103: un casillero dinámico por cada código de retención usado', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: inMonth() });
+  const sup = await H.makeSupplier(clinicId);
+  await makePurchase(clinicId, sup._id, {
+    subtotal: 1000, iva: 150, day: 5,
+    retentions: [{ type: 'RENTA', code: '303', description: 'Honorarios profesionales', baseAmount: 1000, percentage: 10, amount: 100 }],
+  });
+  await makePurchase(clinicId, sup._id, {
+    subtotal: 2000, iva: 300, day: 6,
+    retentions: [{ type: 'RENTA', code: '312', description: 'Transferencia de bienes', baseAmount: 2000, percentage: 1, amount: 20 }],
+  });
+
+  const d = await draft(clinicId, userId, '103');
+  const rows = d.declaration.snapshot.proveedores.rows;
+  assert.equal(rows.length, 2, 'aparece un casillero por cada código (303 y 312)');
+  const byCode = Object.fromEntries(rows.map((r) => [r.code, r]));
+  assert.equal(byCode['303'].base, 1000);
+  assert.equal(byCode['303'].amount, 100);
+  assert.equal(byCode['312'].base, 2000);
+  assert.equal(byCode['312'].amount, 20);
+  assert.equal(d.cells['399'], 120, 'total = 100 + 20');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('18) F103: el casillero 302 se alimenta de la nómina cerrada (relación de dependencia)', async () => {
+  const { clinicId, userId } = await H.seedClinic({ date: inMonth() });
+  await Payroll.create({
+    clinic: clinicId, year: YEAR, month: MONTH, period: `${YEAR}-0${MONTH}`, status: 'CERRADO',
+    totalNeto: 1800,
+    items: [
+      { employee: new H.mongoose.Types.ObjectId(), employeeName: 'Ana Pérez', identificacion: '0102030405', baseSalary: 1000, decimoTercero: 83.33, iessPersonal: 94.5, impuestoRenta: 25, netoPagar: 963.83 },
+      { employee: new H.mongoose.Types.ObjectId(), employeeName: 'Luis Gómez', identificacion: '0908070605', baseSalary: 1500, decimoTercero: 125, iessPersonal: 141.75, impuestoRenta: 60, netoPagar: 1298.25 },
+    ],
+  });
+
+  // La fuente compartida (utils/payrollWithholding) ve la nómina cerrada…
+  const wh = await payrollWithholdingForPeriod({ clinicId, year: YEAR, month: MONTH });
+  assert.equal(wh.baseGravada, 2500, 'base gravada = suma de sueldos (1000 + 1500)');
+  assert.equal(wh.total, 85, 'IR retenido = 25 + 60');
+  assert.equal(wh.baseImponibleNeta, 2263.75, 'gravada − IESS personal (2500 − 236.25)');
+
+  // …y el 103 la refleja en el 302 y el 399.
+  const d = await draft(clinicId, userId, '103');
+  assert.equal(d.cells['302'], 2500, 'base laboral = ingresos gravados');
+  assert.equal(d.cells['399'], 85, 'sin compras: total = IR de nómina');
+  assert.equal(d.declaration.snapshot.dependencia.retenido, 85);
+  const conc = d.conciliaciones.find((c) => c.key === 'LABORAL_VS_NOMINAS');
+  assert.ok(conc && /2 rol|base gravada 2500/.test(conc.detalle));
 });
