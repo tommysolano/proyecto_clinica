@@ -3,7 +3,7 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import { fmt, fmtDate } from './_utils';
-import { HiOutlineDocumentText } from 'react-icons/hi2';
+import { HiOutlineDocumentText, HiOutlineArrowDownTray } from 'react-icons/hi2';
 
 const STATUS_CLS = {
   ABIERTO: 'bg-slate-100 text-slate-600',
@@ -12,26 +12,55 @@ const STATUS_CLS = {
   ANULADO: 'bg-rose-100 text-rose-700',
 };
 
+/** Fecha de hoy LOCAL (Ecuador) en YYYY-MM-DD, no UTC (ver docs/FLUJO_DE_CAJA.md). */
+const hoyLocal = () => {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+};
+
 export default function Receivables() {
   const [side, setSide] = useState('AR'); // AR = CxC, AP = CxP
   const [view, setView] = useState('aging'); // aging | docs
+  const [asOf, setAsOf] = useState(hoyLocal()); // fecha de corte del aging / días vencidos
+  const [q, setQ] = useState(''); // filtro por nombre de cliente/proveedor
   const [aging, setAging] = useState({ rows: [], totals: {} });
   const [docs, setDocs] = useState([]);
   const [statement, setStatement] = useState(null);
   const [stmtParty, setStmtParty] = useState('');
 
+  /** Los mismos filtros que se envían a pantalla se envían al Excel: cuadran por construcción. */
+  const queryParams = useCallback(() => {
+    const p = { side };
+    if (asOf) p.asOf = asOf;
+    if (q.trim()) p.q = q.trim();
+    return p;
+  }, [side, asOf, q]);
+
   const load = useCallback(async () => {
     try {
       if (view === 'aging') {
-        const r = await api.get('/subledger/aging', { params: { side } });
+        const r = await api.get('/subledger/aging', { params: queryParams() });
         setAging(r.data || { rows: [], totals: {} });
       } else {
-        const r = await api.get('/subledger', { params: { side } });
+        const r = await api.get('/subledger', { params: queryParams() });
         setDocs(r.data || []);
       }
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
-  }, [side, view]);
+  }, [view, queryParams]);
   useEffect(() => { load(); }, [load]);
+
+  /** Descarga el Excel de la vista actual respetando side, vista y filtros (mismo patrón que el flujo de caja). */
+  const exportar = async () => {
+    try {
+      const params = { ...queryParams(), view: view === 'aging' ? 'aging' : 'documents' };
+      const res = await api.get('/subledger/export.xlsx', { params, responseType: 'blob' });
+      const u = URL.createObjectURL(res.data);
+      const a = document.createElement('a');
+      const base = side === 'AP' ? 'cuentas_por_pagar' : 'cuentas_por_cobrar';
+      a.href = u; a.download = `${base}_${view === 'aging' ? 'antiguedad' : 'documentos'}.xlsx`; a.click();
+      URL.revokeObjectURL(u);
+    } catch { toast.error('Error al exportar'); }
+  };
 
   const openStatement = async (partyRef, partyName) => {
     if (!partyRef) return;
@@ -47,7 +76,7 @@ export default function Receivables() {
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Cartera</h1>
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-wrap items-center">
           <div className="flex rounded-xl overflow-hidden border border-emerald-200">
             <button onClick={() => setSide('AR')} className={`px-4 py-2 text-sm ${side === 'AR' ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600'}`}>Por Cobrar</button>
             <button onClick={() => setSide('AP')} className={`px-4 py-2 text-sm ${side === 'AP' ? 'bg-emerald-600 text-white' : 'bg-white text-slate-600'}`}>Por Pagar</button>
@@ -57,6 +86,24 @@ export default function Receivables() {
             <button onClick={() => setView('docs')} className={`px-4 py-2 text-sm ${view === 'docs' ? 'bg-slate-700 text-white' : 'bg-white text-slate-600'}`}>Documentos</button>
           </div>
         </div>
+      </div>
+
+      {/* Filtros: fecha de corte y contraparte. Se envían igual a la pantalla y al Excel. */}
+      <div className="flex flex-wrap items-end gap-2">
+        <label className="text-xs text-slate-500 flex flex-col gap-1">
+          Fecha de corte
+          <input type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)}
+            className="px-3 py-2 border border-slate-200 rounded-lg text-sm" />
+        </label>
+        <label className="text-xs text-slate-500 flex flex-col gap-1 flex-1 min-w-[180px]">
+          {side === 'AR' ? 'Cliente' : 'Proveedor'}
+          <input type="text" value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar por nombre…"
+            className="px-3 py-2 border border-slate-200 rounded-lg text-sm" />
+        </label>
+        <button onClick={exportar}
+          className="px-3 py-2 bg-slate-700 text-white rounded-xl text-sm flex items-center gap-1.5">
+          <HiOutlineArrowDownTray className="w-4 h-4" /> Descargar Excel
+        </button>
       </div>
 
       {view === 'aging' && (

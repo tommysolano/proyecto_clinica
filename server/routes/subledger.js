@@ -6,5 +6,6 @@ router.use(auth, requireClinic);
 router.get('/', requireRole('admin', 'contabilidad', 'cajero'), c.list);
 router.get('/aging', requireRole('admin', 'contabilidad'), c.aging);
 router.get('/statement', requireRole('admin', 'contabilidad', 'cajero'), c.statement);
+router.get('/export.xlsx', requireRole('admin', 'contabilidad'), c.exportExcel);
 
 module.exports = router;
