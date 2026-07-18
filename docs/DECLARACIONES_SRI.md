@@ -80,33 +80,40 @@ el backend valida contra la misma definición. La versión usada se congela en c
 
 ### Formulario 104 como RÉPLICA (no resumen)
 
-El 104 (`104-borrador-2026.2`) reproduce la estructura del formulario oficial —una fila por
-combinación tipo de comprobante × tarifa × derecho a crédito— en lugar de un resumen:
+El 104 (`104-borrador-2026.3`) reproduce la estructura del formulario oficial con el formato de
+**3 columnas** por concepto — **Valor Bruto / Valor Neto (= Bruto − N/C) / Impuesto Generado** —
+en lugar de un resumen. La numeración de adquisiciones y ventas está **confirmada contra el
+formulario oficial** que mostró la contadora:
 
-- **Ventas:** `401` valor bruto gravadas ≠0%, `411` valor neto (= 401 − notas de crédito),
-  `421`/`499` IVA sobre el neto, `403`/`405` reparto de la base 0% (sin/con derecho, editable),
-  `431` no objeto, `434` exento.
-- **Compras:** `500`/`510`/`520` gravadas ≠0% **con** derecho (bruto/neto/IVA), `507`/`522`
-  gravadas ≠0% **sin** derecho (su IVA ya fue al gasto), `517` tarifa 0% **con** derecho,
-  `518` tarifa 0% **sin** derecho *(el caso "compra en feriado tarifa 0 sin derecho" que antes
-  no sumaba en ningún casillero)*, `516` **RISE / nota de venta**, `515` importaciones
-  (placeholder), `519` no objeto/exento, `521` total, `529` IVA total, `530` IVA crédito.
+- **Ventas:** `401/411/421` gravadas ≠0%, `403/413` tarifa 0% **sin** derecho, `405/415`
+  tarifa 0% **con** derecho (403/405 editables: el reparto lo define el contador), `431/441`
+  no objeto, `434/444` exentas, `409/419/429` **TOTAL** (bruto/neto/IVA).
+- **Adquisiciones:** `500/510/520` gravadas ≠0% con derecho (excluye activos fijos),
+  `501/511/521` **activos fijos** con derecho, `540/550/560` tarifa **5%** con derecho,
+  `502/512/522` gravadas ≠0% **sin** derecho *(incluye la "compra en feriado tarifa distinta
+  de 0 sin derecho")*, `503-505/513-515/523-525` importaciones, `526/527` ajuste de IVA por NC
+  de distinta tarifa, `506/516` importaciones 0%, `507/517` tarifa **0%** (incluye activos
+  fijos), `508/518` **RISE / negocios populares**, `509/519/529` **TOTAL**, `531/541` no
+  objeto, `532/542` exentas, `543` y `544/554` **notas de crédito por compensar el próximo mes**.
 
 Cada compra se clasifica automáticamente por `docType` + tarifa (`subtotal15`/`subtotal0`/…) +
-`deductible` (proxy del derecho a crédito). El `docType = NOTA_VENTA` va entero al casillero
-RISE. **Nada queda sin casillero.**
+`deductible` (derecho a crédito) + `lineType` (**activo fijo** por línea) + `ivaRate` (**5%** por
+línea). `docType = NOTA_VENTA` va entero a RISE. **Nada queda sin casillero.** Importaciones y 5%
+se muestran aunque hoy suelan quedar en 0 (el registro de compras aún no marca importaciones).
 
 **Notas de crédito** (`CreditDebitNote`, `kind: NC`): las EMITIDAS sobre ventas y las RECIBIDAS
 sobre compras se restan automáticamente de la base **y del IVA de su misma tarifa** (valor
 neto = bruto − NC). La tarifa se toma del `taxBreakdown`/`ivaRate` de la nota; las notas
-antiguas la infieren del IVA (>0 ⇒ gravada, =0 ⇒ 0%). Restar la NC también deja el cierre
-contable correcto (el asiento de la NC ya movió IVA ventas/compras, así que el cierre usa el neto).
+antiguas la infieren del IVA (>0 ⇒ gravada, =0 ⇒ 0%). Si una NC deja el neto de una tarifa en
+negativo, el excedente pasa a **"por compensar el próximo mes"** (`543` para 0%, `544/554` para
+gravadas). Restar la NC también deja el cierre contable correcto (el asiento de la NC ya movió
+IVA ventas/compras, así que el cierre usa el neto).
 
-> ⚠ Los **números** de los casilleros nuevos (411, 510, 516, 518, 520, 522…) se derivaron del
-> instructivo pero **no** están confirmados contra el PDF/XML oficial: todo el 104 sigue
-> `verified: false` y cada casillero `boxVerified: false`. Cuando la contadora entregue sus
-> formularios 103/104 reales (en `docs/`), se contrastan etiquetas y números y se marcan
-> `boxVerified: true` los que correspondan.
+> ⚠ Confirmado contra el formulario oficial: la sección de **adquisiciones** y la de **ventas**
+> (`boxVerified: true`). **Pendiente** de confirmar: la sección de **crédito tributario /
+> resumen / pago** (`530/563/564/565/601/602/605/607/609/615/721/902`), que sigue
+> `boxVerified: false`. Por eso el formulario como conjunto se mantiene `verified: false` hasta
+> contrastar TODO contra el PDF/XML real (cuando la contadora los deje en `docs/`).
 
 ### Eliminar borradores
 

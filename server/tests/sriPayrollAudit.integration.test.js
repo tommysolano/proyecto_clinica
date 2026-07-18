@@ -480,7 +480,7 @@ test('X1) el cliente no puede manipular casilleros calculados, totales ni snapsh
     snapshot: { ventas: { iva: 0 } },
     status: 'FINALIZED',
   }));
-  assert.equal(r.cells['499'], 150, 'las ventas se recalculan del origen');
+  assert.equal(r.cells['429'], 150, 'las ventas se recalculan del origen');
   assert.equal(r.declaration.totals.impuestoPorPagar, 100, '150 − (60 − 10 al gasto)');
   assert.equal(r.declaration.status, 'DRAFT', 'el estado no se deja pisar');
   assert.equal(r.declaration.snapshot.ventas.iva, 150, 'el snapshot lo escribe el backend');
@@ -506,7 +506,7 @@ test('V1) el IVA no deducible se carga al gasto UNA sola vez (en la compra, no e
   assert.equal(d.cells['530'], 60, 'IVA disponible: excluye el que ya fue al gasto');
   assert.equal(d.cells['565'], 0, 'nada que reclasificar');
   assert.equal(d.cells['564'], 60);
-  assert.equal(d.cells['507'], 200, 'la base sin derecho a crédito se reporta aparte');
+  assert.equal(d.cells['502'], 200, 'la base gravada sin derecho a crédito se reporta en 502');
 
   // El tope del IVA al gasto es el disponible, no el IVA total.
   const over = await run(decls.update, H.mockReq(clinicId, userId, { cells: { 565: 61 } }, { params: { id: String(d.declaration._id) } }));

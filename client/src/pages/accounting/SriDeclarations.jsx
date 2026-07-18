@@ -73,6 +73,78 @@ function CellRow({ cell, value, editable, onChange }) {
   );
 }
 
+/** Una celda de valor (bruto/neto/impuesto) dentro de la grilla oficial de 3 columnas. */
+function GridValueCell({ cell, value, editable, onChange }) {
+  if (!cell) return <td className="px-2 py-2 text-right text-slate-300">—</td>;
+  const isEditable = cell.kind === 'EDITABLE' && editable;
+  return (
+    <td className="px-2 py-2 text-right align-top">
+      <div className="text-[10px] font-mono text-slate-400 leading-none mb-1">{cell.box}</div>
+      {isEditable ? (
+        <NumericInput
+          step="0.01"
+          value={value ?? 0}
+          onChange={(e) => onChange(cell.box, e.target.value)}
+          className="w-24 border border-amber-300 bg-amber-50/50 rounded-lg px-2 py-1 text-right font-mono text-sm"
+        />
+      ) : (
+        <span className={`font-mono text-sm ${cell.kind === 'FORMULA' ? 'font-semibold text-slate-800' : 'text-slate-600'}`}>
+          {cellText(cell, value)}
+        </span>
+      )}
+    </td>
+  );
+}
+
+/**
+ * Sección del 104 con el formato OFICIAL de 3 columnas (Valor Bruto / Valor Neto = Bruto −
+ * N/C / Impuesto Generado). Agrupa los casilleros por `rowKey`: cada concepto es una fila y
+ * cada `col` (BRUTO/NETO/IVA) su casillero. Mantiene visibles los números de casillero.
+ */
+function GridSection({ cells, cellValue, editable, onChange }) {
+  const groups = [];
+  const byKey = new Map();
+  for (const c of cells) {
+    if (!byKey.has(c.rowKey)) {
+      const g = { rowKey: c.rowKey, label: c.rowLabel || c.label, order: c.order, total: c.kind === 'FORMULA', help: c.help };
+      byKey.set(c.rowKey, g);
+      groups.push(g);
+    }
+    const g = byKey.get(c.rowKey);
+    g[c.col] = c;
+    if (c.help) g.help = c.help;
+    if (c.kind === 'FORMULA') g.total = true;
+  }
+  groups.sort((a, b) => a.order - b.order);
+  return (
+    <div className="overflow-x-auto">
+      <table className="w-full text-sm">
+        <thead className="bg-slate-50 text-[11px] uppercase text-slate-500">
+          <tr>
+            <th className="px-3 py-1.5 text-left">Concepto</th>
+            <th className="px-2 py-1.5 text-right w-28">Valor bruto</th>
+            <th className="px-2 py-1.5 text-right w-28">Valor neto</th>
+            <th className="px-2 py-1.5 text-right w-28">Impuesto</th>
+          </tr>
+        </thead>
+        <tbody>
+          {groups.map((g) => (
+            <tr key={g.rowKey} className={`border-t border-slate-100 align-top ${g.total ? 'bg-slate-50/80 font-semibold' : ''}`}>
+              <td className="px-3 py-2">
+                <div className="text-sm text-slate-700">{g.label}</div>
+                {g.help && <div className="text-[11px] text-slate-400 mt-0.5">{g.help}</div>}
+              </td>
+              <GridValueCell cell={g.BRUTO} value={g.BRUTO && cellValue(g.BRUTO.box)} editable={editable} onChange={onChange} />
+              <GridValueCell cell={g.NETO} value={g.NETO && cellValue(g.NETO.box)} editable={editable} onChange={onChange} />
+              <GridValueCell cell={g.IVA} value={g.IVA && cellValue(g.IVA.box)} editable={editable} onChange={onChange} />
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function SriDeclarations() {
   const now = new Date();
   const [formType, setFormType] = useState('104');
@@ -422,13 +494,17 @@ export default function SriDeclarations() {
               return (
                 <div key={section.key} className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
                   <div className="px-4 py-2 bg-slate-100 text-xs uppercase font-semibold text-slate-600">{section.label}</div>
-                  <table className="w-full">
-                    <tbody>
-                      {cells.map((c) => (
-                        <CellRow key={c.box} cell={c} value={cellValue(c.box)} editable={isDraft} onChange={setCell} />
-                      ))}
-                    </tbody>
-                  </table>
+                  {section.layout === 'GRID3' ? (
+                    <GridSection cells={cells} cellValue={cellValue} editable={isDraft} onChange={setCell} />
+                  ) : (
+                    <table className="w-full">
+                      <tbody>
+                        {cells.map((c) => (
+                          <CellRow key={c.box} cell={c} value={cellValue(c.box)} editable={isDraft} onChange={setCell} />
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
 
                   {/* El 103 lleva una fila por cada código de retención usado en el período. */}
                   {formType === '103' && section.key === 'PROVEEDORES' && (

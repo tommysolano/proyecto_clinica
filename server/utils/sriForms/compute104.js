@@ -1,33 +1,26 @@
 /**
- * CÁLCULO DEL FORMULARIO 104 (IVA) para un período.
+ * CÁLCULO DEL FORMULARIO 104 (IVA) para un período — numeración OFICIAL (3 columnas
+ * Bruto / Neto = Bruto − N/C / Impuesto), ver server/utils/sriForms/definitions.js.
  *
- * Fuentes (las mismas que ya usan los reportes, para que declaración y reporte no
- * se contradigan):
- *   - Ventas:  Invoice AUTORIZADAS cuya fecha FISCAL cae en el período, con su
- *              desglose por tarifa (snapshot `taxBreakdown`).
- *   - Compras: PurchaseInvoice no ANULADAS con fechaEmisión en el período.
- *   - Notas de crédito: CreditDebitNote (kind NC) del período. Las EMITIDAS sobre
- *              facturas restan de las ventas de su misma tarifa; las RECIBIDAS sobre
- *              compras restan de las compras de su misma tarifa (valor NETO = bruto − NC).
- *   - Retenciones de IVA RECIBIDAS: CardSettlement contabilizadas del período.
- *   - Retenciones de IVA EFECTUADAS como agente: cabecera `retentions` de las compras.
+ * Fuentes:
+ *   - Ventas:  Invoice AUTORIZADAS cuya fecha FISCAL cae en el período (desglose por tarifa).
+ *   - Compras: PurchaseInvoice no ANULADAS con fechaEmisión en el período. La partición
+ *              activo fijo / tarifa 5% se deriva de las LÍNEAS (lineType, ivaRate); el resto,
+ *              de la cabecera (subtotal15/subtotal0/…).
+ *   - Notas de crédito: CreditDebitNote (kind NC). Emitidas sobre ventas restan de las ventas
+ *              de su tarifa; recibidas sobre compras restan del NETO de las compras de su
+ *              tarifa. El excedente (NC > adquisiciones de esa tarifa) va a "por compensar el
+ *              próximo mes": 543 (0%) / 544-554 (gravadas).
+ *   - Retenciones de IVA recibidas: CardSettlement contabilizadas del período.
+ *   - Retenciones de IVA efectuadas como agente: cabecera `retentions` de las compras.
  *
- * Clasificación de compras (una fila por combinación tipo de comprobante × tarifa ×
- * derecho a crédito), replicando el formulario oficial:
- *   - NOTA DE VENTA (RISE)          → casillero 516 (toda su base).
- *   - Factura/liquidación gravada ≠0% deducible   → 500 (base) + 520 (IVA, con derecho).
- *   - Factura/liquidación gravada ≠0% NO deducible → 507 (base) + 522 (IVA, al gasto).
- *   - Tarifa 0% deducible           → 517.  Tarifa 0% NO deducible → 518.
- *   - No objeto / exento            → 519.
- *   El "derecho a crédito" se toma de la marca `deductible` de la compra (único dato
- *   disponible); la contadora puede reclasificar el IVA al gasto (casillero 565).
- *
- * Reglas de IVA que respeta:
- *   - El IVA de una compra NO deducible ya se cargó al gasto al registrarla: no está
- *     en la cuenta «IVA en compras» y por lo tanto NO se vuelve a reclasificar aquí.
- *   - El IVA "disponible" de esta declaración (casillero 530) es solo el que quedó
- *     como activo (`vatCreditAmount`), NETO del IVA de las notas de crédito de compras.
- *   - El IVA al gasto sugerido = disponible × (1 − factor de proporcionalidad).
+ * Clasificación de compras (una fila por combinación tipo × tarifa × derecho × activo fijo):
+ *   - NOTA DE VENTA (RISE / negocios populares) → 508 (toda su base).
+ *   - Gravada ≠0% deducible, línea NO activo fijo → 500/520.  Línea ACTIVO_FIJO → 501/521.
+ *   - Gravada 5% deducible → 540/560.
+ *   - Gravada ≠0% NO deducible (sin derecho) → 502/522 (su IVA ya fue al gasto).
+ *   - Tarifa 0% (deducible o no) → 507.  No objeto → 531.  Exenta → 532.
+ *   El "derecho a crédito" se toma de `deductible`; el activo fijo, de `lineType`.
  */
 const Invoice = require('../../models/Invoice');
 const PurchaseInvoice = require('../../models/PurchaseInvoice');
@@ -37,6 +30,14 @@ const { invoiceTaxBreakdown } = require('../invoiceTaxBreakdown');
 const { invoiceFiscalDate, purchaseFiscalDate, inRange } = require('../reportDateRange');
 
 const r2 = (n) => +(Number(n) || 0).toFixed(2);
+const pos = (n) => Math.max(0, r2(n));
+
+/** Tarifa de IVA de una línea de compra normalizada a porcentaje (15, 5, 0…). */
+function lineRate(it) {
+  const n = Number(it.ivaRate);
+  if (!Number.isFinite(n) || n <= 0) return 0;
+  return n <= 1 ? n * 100 : n;
+}
 
 /** IVA de una compra que se contabilizó como crédito tributario (activo). */
 function creditVat(p) {
@@ -45,10 +46,9 @@ function creditVat(p) {
 }
 
 /**
- * Desglose por tarifa de una nota de crédito. Prefiere el snapshot `taxBreakdown` de la
- * nota; si no lo tiene (notas antiguas), infiere la tarifa por el IVA: iva>0 ⇒ toda la
- * base es gravada (≠0%), iva=0 ⇒ toda la base es tarifa 0%. `ivaRate` (si viene) refuerza
- * la inferencia. Así la resta de notas de crédito cae SIEMPRE en la base de su misma tarifa.
+ * Desglose por tarifa de una nota de crédito. Prefiere su snapshot `taxBreakdown`; si no lo
+ * tiene (notas antiguas) infiere: iva>0 ⇒ base gravada (≠0%), iva=0 ⇒ tarifa 0%. `ivaRate`
+ * (si viene) refuerza la inferencia. Así la resta cae en la base de su misma tarifa.
  */
 function noteBreakdown(n) {
   const subtotal = Number(n.subtotal) || 0;
@@ -73,10 +73,7 @@ function noteBreakdown(n) {
 /** Notas de crédito NC de un lado (ventas/compras) agregadas por tarifa. */
 async function loadCreditNotes({ clinicId, start, end, direction, refModel }) {
   const notes = await CreditDebitNote.find({
-    clinic: clinicId,
-    kind: 'NC',
-    direction,
-    refModel,
+    clinic: clinicId, kind: 'NC', direction, refModel,
     estado: { $ne: 'ANULADA' },
     fechaEmision: { $gte: start, $lte: end },
   }).lean();
@@ -134,14 +131,33 @@ async function compute104({ clinicId, range, editable = {} }) {
     });
   }
 
-  // ── Notas de crédito del período (restan de la base de su misma tarifa)
+  // ── Notas de crédito del período
   const ncVentas = await loadCreditNotes({ clinicId, start, end, direction: 'EMITIDA', refModel: 'Invoice' });
   const ncCompras = await loadCreditNotes({ clinicId, start, end, direction: 'RECIBIDA', refModel: 'PurchaseInvoice' });
 
-  // Ventas NETAS de notas de crédito (la base neta es la que genera IVA).
-  const ventaGravadaNeta = r2(v.baseGravada - ncVentas.baseGravada);
-  const ventaIvaNeto = r2(v.iva - ncVentas.iva);
-  const base0Neto = r2(v.base0 - ncVentas.base0);
+  // Ventas: valor neto = bruto − notas de crédito.
+  const ventaGravadaNeta = pos(v.baseGravada - ncVentas.baseGravada);
+  const ventaIvaNeto = pos(v.iva - ncVentas.iva);
+  const base0Bruto = v.base0;
+  const noObjetoNetoV = pos(v.baseNoObjeto - ncVentas.baseNoObjeto);
+  const exentoNetoV = pos(v.baseExento - ncVentas.baseExento);
+
+  // Reparto editable de la base 0% de ventas (bruto): 403 sin derecho / 405 con derecho.
+  const has403 = editable['403'] != null;
+  const has405 = editable['405'] != null;
+  const b403 = r2(has403 ? editable['403'] : (has405 ? Math.max(0, base0Bruto - Number(editable['405'] || 0)) : base0Bruto));
+  const b405 = r2(has405 ? editable['405'] : Math.max(0, base0Bruto - b403));
+  if (r2(b403 + b405) !== base0Bruto) {
+    warnings.push({
+      code: 'BASE_0_DESCUADRADA',
+      message: `El reparto de la base tarifa 0% (403 + 405 = ${r2(b403 + b405).toFixed(2)}) no coincide con la base 0% real de las ventas (${base0Bruto.toFixed(2)}). `
+        + 'Suele pasar cuando aparecen ventas 0% nuevas después de guardar el borrador: decida cuánto va a cada casillero (con o sin derecho a crédito) y guarde. No se finaliza hasta que cuadre.',
+    });
+  }
+  // Neto 0% = bruto − notas de crédito 0% (se restan primero de "sin derecho").
+  let remNc0 = ncVentas.base0;
+  const n413 = pos(b403 - remNc0); remNc0 = Math.max(0, r2(remNc0 - b403));
+  const n415 = pos(b405 - remNc0); remNc0 = Math.max(0, r2(remNc0 - b405));
 
   // ── Compras
   const compras = await PurchaseInvoice.find({
@@ -151,46 +167,59 @@ async function compute104({ clinicId, range, editable = {} }) {
   }).lean();
 
   const c = {
-    conDerechoGravadaBruta: 0, // 500
-    sinDerechoGravada: 0,      // 507
-    cero0ConDerecho: 0,        // 517 (bruto, antes de NC 0%)
-    cero0SinDerecho: 0,        // 518
-    rise: 0,                   // 516
-    importaciones: 0,          // 515 (placeholder)
-    noObjetoExento: 0,         // 519
-    ivaConDerechoBruto: 0,     // 520 (antes de NC)
-    ivaSinDerecho: 0,          // 522 (al gasto)
-    ivaTotalBruto: 0,          // 529 (antes de NC)
-    retIvaEfectuada: 0,        // 721
+    g500: 0, g501: 0, g540: 0, g502: 0, b507: 0, b508: 0, b531: 0, b532: 0,
+    i520: 0, i521: 0, i560: 0, i522: 0,
+    retIvaEfectuada: 0,
   };
   const retIvaDocs = [];
   for (const p of compras) {
-    const gravada = r2((Number(p.subtotal12) || 0) + (Number(p.subtotal15) || 0));
+    const headerGravada = r2((Number(p.subtotal12) || 0) + (Number(p.subtotal15) || 0));
     const base0 = Number(p.subtotal0) || 0;
-    const noObjetoExento = (Number(p.subtotalNoObjeto) || 0) + (Number(p.subtotalExento) || 0);
+    const noObjeto = Number(p.subtotalNoObjeto) || 0;
+    const exento = Number(p.subtotalExento) || 0;
     const iva = Number(p.iva) || 0;
     const conDerecho = p.deductible !== false;
     const isRise = p.docType === 'NOTA_VENTA';
 
     if (isRise) {
-      // Contribuyente RISE / nota de venta: toda la base va al casillero RISE; su IVA
-      // (si lo hubiera) no es crédito.
-      c.rise += r2(gravada + base0 + noObjetoExento);
-      c.ivaSinDerecho += iva;
+      // RISE / negocios populares: toda la base va al 508; su IVA (raro) no es crédito.
+      c.b508 += r2(headerGravada + base0 + noObjeto + exento);
+      c.i522 += iva;
     } else {
-      if (conDerecho) {
-        c.conDerechoGravadaBruta += gravada;
-        c.cero0ConDerecho += base0;
-      } else {
-        c.sinDerechoGravada += gravada;
-        c.cero0SinDerecho += base0;
+      // Partición activo fijo / tarifa 5% desde las líneas (solo aplica a la base gravada).
+      let afBase = 0, afIva = 0, base5 = 0, iva5 = 0;
+      for (const it of p.items || []) {
+        const rate = lineRate(it);
+        if (rate <= 0) continue; // las líneas 0% se toman de subtotal0 (cabecera)
+        const base = Number(it.subtotal) || 0;
+        const itIva = Number(it.ivaAmount != null ? it.ivaAmount : (base * rate) / 100) || 0;
+        if (it.lineType === 'ACTIVO_FIJO') { afBase += base; afIva += itIva; }
+        else if (rate === 5) { base5 += base; iva5 += itIva; }
       }
-      c.noObjetoExento += noObjetoExento;
-      const credit = creditVat(p);
-      c.ivaConDerechoBruto += credit;
-      c.ivaSinDerecho += r2(iva - credit);
+      afBase = Math.min(r2(afBase), headerGravada);
+      base5 = Math.min(r2(base5), r2(headerGravada - afBase));
+      const nonAf5Gravada = pos(headerGravada - afBase - base5);
+
+      if (conDerecho) {
+        const credit = creditVat(p);
+        c.g500 += nonAf5Gravada;
+        c.g501 += afBase;
+        c.g540 += base5;
+        const ivaAf = Math.min(r2(afIva), credit);
+        const iva5c = Math.min(r2(iva5), r2(credit - ivaAf));
+        c.i521 += ivaAf;
+        c.i560 += iva5c;
+        c.i520 += pos(credit - ivaAf - iva5c);
+        // La parte del IVA no recuperable de una compra deducible ya fue al gasto.
+        c.i522 += pos(iva - credit);
+      } else {
+        c.g502 += headerGravada; // sin derecho: no se subdivide por activo fijo ni 5%
+        c.i522 += iva;
+      }
+      c.b507 += base0;
+      c.b531 += noObjeto;
+      c.b532 += exento;
     }
-    c.ivaTotalBruto += iva;
 
     // Retenciones de IVA efectuadas como agente (cabecera = fuente única).
     for (const rt of p.retentions || []) {
@@ -199,31 +228,46 @@ async function compute104({ clinicId, range, editable = {} }) {
       if (amount <= 0) continue;
       c.retIvaEfectuada += amount;
       retIvaDocs.push({
-        purchase: String(p._id),
-        serie: p.serie || '',
-        fecha: purchaseFiscalDate(p),
-        code: rt.code || '',
-        base: r2(rt.baseAmount),
-        amount: r2(amount),
+        purchase: String(p._id), serie: p.serie || '', fecha: purchaseFiscalDate(p),
+        code: rt.code || '', base: r2(rt.baseAmount), amount: r2(amount),
         account: rt.account ? String(rt.account) : null,
       });
     }
   }
   for (const k of Object.keys(c)) c[k] = r2(c[k]);
 
-  // Compras NETAS de notas de crédito recibidas (la NC de compras resta de la base y del
-  // IVA con derecho a crédito, que es donde se contabilizó).
-  const conDerechoGravadaNeta = r2(c.conDerechoGravadaBruta - ncCompras.baseGravada);
-  const cero0ConDerechoNeto = r2(c.cero0ConDerecho - ncCompras.base0);
-  const ivaConDerechoNeto = r2(c.ivaConDerechoBruto - ncCompras.iva);
-  const ivaTotalNeto = r2(c.ivaTotalBruto - ncCompras.iva);
-  const ivaDisponible = ivaConDerechoNeto; // el que quedó como activo (crédito tributario)
+  // Neto de compras = bruto − notas de crédito recibidas. La NC gravada resta de las filas
+  // con derecho (500→501→540); el excedente va a "por compensar" (544/554). La NC 0% resta
+  // del 507; su excedente va al 543.
+  let remB = ncCompras.baseGravada;
+  const n510 = pos(c.g500 - remB); remB = Math.max(0, r2(remB - c.g500));
+  const n511 = pos(c.g501 - remB); remB = Math.max(0, r2(remB - c.g501));
+  const n550 = pos(c.g540 - remB); remB = Math.max(0, r2(remB - c.g540));
+  const comp544 = r2(remB);
+
+  let remI = ncCompras.iva;
+  const n520 = pos(c.i520 - remI); remI = Math.max(0, r2(remI - c.i520));
+  const n521 = pos(c.i521 - remI); remI = Math.max(0, r2(remI - c.i521));
+  const n560 = pos(c.i560 - remI); remI = Math.max(0, r2(remI - c.i560));
+  const comp554 = r2(remI);
+
+  const n517 = pos(c.b507 - ncCompras.base0);
+  const comp543 = pos(ncCompras.base0 - c.b507);
+  const n518 = c.b508;
+  const n512 = c.g502;
+  const n541 = pos(c.b531 - ncCompras.baseNoObjeto);
+  const n542 = pos(c.b532 - ncCompras.baseExento);
+
+  const ivaConDerechoNeto = r2(n520 + n521 + n560); // 530 (disponible)
+  const ivaTotalNeto = r2(ivaConDerechoNeto + c.i522); // 529
+  const ivaDisponible = ivaConDerechoNeto;
+
+  const totalBrutoCompras = r2(c.g500 + c.g501 + c.g540 + c.g502 + c.b507 + c.b508);
+  const totalNetoCompras = r2(n510 + n511 + n550 + n512 + n517 + n518);
 
   // ── Retenciones de IVA que NOS efectuaron (activo «Retención IVA por cobrar»)
   const settlements = await CardSettlement.find({
-    clinic: clinicId,
-    status: 'CONTABILIZADO',
-    issueDate: { $gte: start, $lte: end },
+    clinic: clinicId, status: 'CONTABILIZADO', issueDate: { $gte: start, $lte: end },
   }).lean();
   let retIvaRecibida = 0;
   const retRecibidaDocs = [];
@@ -238,84 +282,60 @@ async function compute104({ clinicId, range, editable = {} }) {
   }
   retIvaRecibida = r2(retIvaRecibida);
 
-  // ── Casilleros editables (reparto de la base 0% y IVA al gasto)
-  const base0Total = base0Neto;
-  const has403 = editable['403'] != null;
-  const has405 = editable['405'] != null;
-  // Por defecto toda la base 0% va a "sin derecho a crédito" (criterio conservador:
-  // no infla el factor de proporcionalidad).
-  const b403 = r2(has403 ? editable['403'] : (has405 ? Math.max(0, base0Total - Number(editable['405'] || 0)) : base0Total));
-  const b405 = r2(has405 ? editable['405'] : Math.max(0, base0Total - b403));
-  if (r2(b403 + b405) !== base0Total) {
-    warnings.push({
-      code: 'BASE_0_DESCUADRADA',
-      message: `El reparto de la base tarifa 0% (403 + 405 = ${r2(b403 + b405).toFixed(2)}) no coincide con la base 0% real de las ventas neta de notas de crédito (${base0Total.toFixed(2)}). `
-        + 'Suele pasar cuando aparecen ventas 0% nuevas después de guardar el borrador: decida cuánto va a cada casillero (con o sin derecho a crédito) y guarde. No se finaliza hasta que cuadre.',
-    });
-  }
-
-  // Factor de proporcionalidad: qué parte de las ventas (netas de NC) da derecho a crédito.
-  const ventasConDerecho = r2(ventaGravadaNeta + b405);
-  const ventasParaFactor = r2(ventaGravadaNeta + b403 + b405);
+  // ── Factor de proporcionalidad y crédito tributario
+  const ventasConDerecho = r2(ventaGravadaNeta + n415);
+  const ventasParaFactor = r2(ventaGravadaNeta + n413 + n415);
   const factor = ventasParaFactor > 0 ? +(ventasConDerecho / ventasParaFactor).toFixed(4) : 1;
 
-  const ivaAlGastoSugerido = r2(ivaDisponible * (1 - factor));
+  const ivaAlGastoSugerido = pos(ivaDisponible * (1 - factor));
   const ivaAlGasto = r2(editable['565'] != null ? editable['565'] : ivaAlGastoSugerido);
   const ivaUtilizable = r2(ivaDisponible - ivaAlGasto);
-
   const creditoAnterior = r2(editable['605'] || 0);
 
-  // ── Resumen impositivo (sobre el IVA de ventas NETO de notas de crédito)
-  const impuestoCausado = r2(Math.max(0, ventaIvaNeto - ivaUtilizable));
-  const creditoGenerado = r2(Math.max(0, ivaUtilizable - ventaIvaNeto));
+  // ── Resumen impositivo (sobre el IVA de ventas neto de notas de crédito)
+  const impuestoCausado = pos(ventaIvaNeto - ivaUtilizable);
+  const creditoGenerado = pos(ivaUtilizable - ventaIvaNeto);
   const neto = r2(impuestoCausado - creditoAnterior - retIvaRecibida);
-  const impuestoPorPagar = r2(Math.max(0, neto));
-  // Saldo a favor que se arrastra: el crédito generado + lo no consumido del arrastre
-  // y de las retenciones recibidas.
+  const impuestoPorPagar = pos(neto);
   const creditoProximoMes = r2(creditoGenerado + Math.max(0, -neto));
   const totalAPagar = r2(impuestoPorPagar + c.retIvaEfectuada);
 
-  const totalComprasNeto = r2(
-    conDerechoGravadaNeta + c.sinDerechoGravada + cero0ConDerechoNeto + c.cero0SinDerecho
-    + c.rise + c.importaciones + c.noObjetoExento
-  );
+  const totalVentasBruto = r2(v.baseGravada + b403 + b405 + v.baseNoObjeto + v.baseExento);
+  const totalVentasNeto = r2(ventaGravadaNeta + n413 + n415 + noObjetoNetoV + exentoNetoV);
 
   const computed = {
-    401: v.baseGravada,
-    411: ventaGravadaNeta,
-    421: ventaIvaNeto,
-    431: v.baseNoObjeto,
-    434: v.baseExento,
-    419: r2(ventaGravadaNeta + b403 + b405 + v.baseNoObjeto + v.baseExento),
-    499: ventaIvaNeto,
-    500: c.conDerechoGravadaBruta,
-    510: conDerechoGravadaNeta,
-    520: ivaConDerechoNeto,
-    507: c.sinDerechoGravada,
-    522: c.ivaSinDerecho,
-    517: cero0ConDerechoNeto,
-    518: c.cero0SinDerecho,
-    516: c.rise,
-    515: c.importaciones,
-    519: c.noObjetoExento,
-    521: totalComprasNeto,
-    529: ivaTotalNeto,
-    530: ivaDisponible,
-    563: factor,
-    564: ivaUtilizable,
-    601: impuestoCausado,
-    602: creditoGenerado,
-    607: retIvaRecibida,
-    609: impuestoPorPagar,
-    615: creditoProximoMes,
-    721: c.retIvaEfectuada,
-    902: totalAPagar,
+    // Ventas
+    401: v.baseGravada, 411: ventaGravadaNeta, 421: ventaIvaNeto,
+    413: n413, 415: n415,
+    431: v.baseNoObjeto, 441: noObjetoNetoV,
+    434: v.baseExento, 444: exentoNetoV,
+    409: totalVentasBruto, 419: totalVentasNeto, 429: ventaIvaNeto,
+    // Compras
+    500: c.g500, 510: n510, 520: n520,
+    501: c.g501, 511: n511, 521: n521,
+    540: c.g540, 550: n550, 560: n560,
+    502: c.g502, 512: n512, 522: c.i522,
+    503: 0, 513: 0, 523: 0,
+    504: 0, 514: 0, 524: 0,
+    505: 0, 515: 0, 525: 0,
+    526: 0, 527: 0,
+    506: 0, 516: 0,
+    507: c.b507, 517: n517,
+    508: c.b508, 518: n518,
+    509: totalBrutoCompras, 519: totalNetoCompras, 529: ivaTotalNeto,
+    531: c.b531, 541: n541,
+    532: c.b532, 542: n542,
+    543: comp543, 544: comp544, 554: comp554,
+    // Crédito
+    530: ivaDisponible, 563: factor, 564: ivaUtilizable,
+    // Resumen
+    601: impuestoCausado, 602: creditoGenerado, 607: retIvaRecibida,
+    609: impuestoPorPagar, 615: creditoProximoMes,
+    // Agente / pago
+    721: c.retIvaEfectuada, 902: totalAPagar,
   };
-  // Los editables se devuelven resueltos (con su valor por defecto si no se capturaron).
   const editableResolved = { 403: b403, 405: b405, 565: ivaAlGasto, 605: creditoAnterior };
-
-  // Topes para validar los casilleros editables.
-  const limits = { _base0Total: base0Total, 530: ivaDisponible };
+  const limits = { _base0Bruto: base0Bruto, 530: ivaDisponible };
 
   // ── Conciliaciones y advertencias
   const conciliaciones = [
@@ -342,10 +362,16 @@ async function compute104({ clinicId, range, editable = {} }) {
       ok: true,
     },
     {
+      key: 'COMPRAS_TOTAL',
+      label: 'Total adquisiciones (509) = suma de las filas',
+      detalle: `Bruto ${totalBrutoCompras.toFixed(2)} · Neto ${totalNetoCompras.toFixed(2)} · IVA ${ivaTotalNeto.toFixed(2)}`,
+      ok: true,
+    },
+    {
       key: 'IVA_COMPRAS',
-      label: 'IVA de compras: con derecho + sin derecho = IVA total (neto de NC)',
-      detalle: `${ivaDisponible.toFixed(2)} + ${c.ivaSinDerecho.toFixed(2)} = ${ivaTotalNeto.toFixed(2)}`,
-      ok: r2(ivaDisponible + c.ivaSinDerecho) === ivaTotalNeto,
+      label: 'IVA de compras: con derecho (530) + sin derecho (522) = IVA total (529)',
+      detalle: `${ivaDisponible.toFixed(2)} + ${c.i522.toFixed(2)} = ${ivaTotalNeto.toFixed(2)}`,
+      ok: r2(ivaDisponible + c.i522) === ivaTotalNeto,
     },
     {
       key: 'IVA_UTILIZABLE',
@@ -357,19 +383,17 @@ async function compute104({ clinicId, range, editable = {} }) {
       key: 'FACTOR',
       label: 'Factor de proporcionalidad',
       detalle: ventasParaFactor > 0
-        ? `(${ventaGravadaNeta.toFixed(2)} gravadas + ${b405.toFixed(2)} tarifa 0% con derecho) / ${ventasParaFactor.toFixed(2)} = ${factor}`
+        ? `(${ventaGravadaNeta.toFixed(2)} gravadas + ${n415.toFixed(2)} tarifa 0% con derecho) / ${ventasParaFactor.toFixed(2)} = ${factor}`
         : 'Sin ventas en el período: se asume factor 1 (todo el IVA de compras es utilizable).',
       ok: true,
     },
     {
       // LIMITACIÓN CONOCIDA (ver definitions.js): la compra solo distingue "deducible" de
-      // "no deducible". NO hay un campo que marque si el IVA es de ATRIBUCIÓN DIRECTA a
-      // ventas con derecho a crédito, directa a ventas sin derecho, o COMÚN (el único que
-      // debería someterse al factor). No se inventa esa clasificación: todo el IVA
-      // acreditable se trata como COMÚN. El contador ajusta el casillero 565 si hace falta.
+      // "no deducible". No se inventa la atribución directa vs. común: todo el IVA acreditable
+      // se trata como COMÚN y se somete al factor. El contador ajusta el casillero 565.
       key: 'IVA_ATRIBUCION',
       label: 'Atribución del IVA de compras (limitación)',
-      detalle: `El sistema no registra si cada compra es de atribución directa o común: los ${ivaDisponible.toFixed(2)} de IVA acreditable se tratan como IVA COMÚN y se someten al factor. El IVA sin derecho a crédito (${c.ivaSinDerecho.toFixed(2)}) ya fue al gasto al registrar la compra y no entra aquí.`,
+      detalle: `Los ${ivaDisponible.toFixed(2)} de IVA con derecho a crédito se tratan como IVA COMÚN y se someten al factor. El IVA sin derecho (${c.i522.toFixed(2)}) ya fue al gasto al registrar la compra.`,
       ok: true,
     },
   ];
@@ -378,31 +402,23 @@ async function compute104({ clinicId, range, editable = {} }) {
       code: 'IVA_ATRIBUCION_DIRECTA',
       severity: 'info',
       message: factor < 1
-        ? `El factor de proporcionalidad se aplica a TODO el IVA acreditable (${ivaDisponible.toFixed(2)}) porque las compras no registran atribución directa. Si parte de ese IVA es directamente atribuible a ventas con derecho a crédito, ajuste el casillero 565 (IVA al gasto) con su contador.`
+        ? `El factor de proporcionalidad se aplica a TODO el IVA acreditable (${ivaDisponible.toFixed(2)}) porque las compras no registran atribución directa. Si parte es directamente atribuible a ventas con derecho a crédito, ajuste el casillero 565 (IVA al gasto) con su contador.`
         : 'Las compras no registran si el IVA es de atribución directa o común. En este período el factor es 1, así que no cambia el resultado, pero la clasificación está pendiente de definir con el contador.',
     });
   }
-  if (ivaAlGasto > ivaDisponible + 0.005) {
+  if (comp543 > 0 || comp544 > 0 || comp554 > 0) {
     warnings.push({
-      code: 'IVA_GASTO_EXCEDE',
-      message: `El IVA al gasto (${ivaAlGasto.toFixed(2)}) supera el IVA disponible (${ivaDisponible.toFixed(2)}).`,
+      code: 'NC_COMPRAS_POR_COMPENSAR',
+      severity: 'info',
+      message: `Las notas de crédito de compras superan las adquisiciones de su tarifa en el período. El excedente queda "por compensar el próximo mes": ${comp543 > 0 ? `0% $${comp543.toFixed(2)} (casillero 543)` : ''}${comp544 > 0 ? ` gravadas $${comp544.toFixed(2)} base (544) / $${comp554.toFixed(2)} IVA (554)` : ''}.`.replace(/\s+/g, ' ').trim(),
     });
+  }
+  if (ivaAlGasto > ivaDisponible + 0.005) {
+    warnings.push({ code: 'IVA_GASTO_EXCEDE', message: `El IVA al gasto (${ivaAlGasto.toFixed(2)}) supera el IVA disponible (${ivaDisponible.toFixed(2)}).` });
   }
   if (ivaAlGasto < 0) warnings.push({ code: 'IVA_GASTO_NEGATIVO', message: 'El IVA al gasto no puede ser negativo.' });
   if (impuestoPorPagar > 0 && creditoProximoMes > 0) {
     warnings.push({ code: 'IMPUESTO_Y_CREDITO', message: 'La declaración no puede tener a la vez impuesto por pagar y crédito tributario.' });
-  }
-  if (ventaGravadaNeta < 0 || base0Total < 0 || ventaIvaNeto < 0) {
-    warnings.push({
-      code: 'NC_VENTAS_EXCEDEN',
-      message: 'Las notas de crédito de ventas del período superan las ventas del mismo período. Verifique el arrastre: el excedente suele declararse contra el mes siguiente.',
-    });
-  }
-  if (conDerechoGravadaNeta < 0 || ivaDisponible < 0) {
-    warnings.push({
-      code: 'NC_COMPRAS_EXCEDEN',
-      message: 'Las notas de crédito de compras del período superan las compras del mismo período. Verifique el período de las notas de crédito recibidas.',
-    });
   }
   if (c.retIvaEfectuada > 0) {
     warnings.push({
@@ -415,8 +431,7 @@ async function compute104({ clinicId, range, editable = {} }) {
   const snapshot = {
     ventas: {
       count: ventas.length,
-      base0: base0Total,
-      base0Bruta: v.base0,
+      base0: base0Bruto,
       baseGravada: ventaGravadaNeta,
       baseGravadaBruta: v.baseGravada,
       baseExento: v.baseExento,
@@ -428,50 +443,42 @@ async function compute104({ clinicId, range, editable = {} }) {
     },
     compras: {
       count: compras.length,
-      conDerechoGravadaBruta: c.conDerechoGravadaBruta,
-      conDerechoGravadaNeta,
-      sinDerechoGravada: c.sinDerechoGravada,
-      cero0ConDerecho: cero0ConDerechoNeto,
-      cero0SinDerecho: c.cero0SinDerecho,
-      rise: c.rise,
-      importaciones: c.importaciones,
-      noObjetoExento: c.noObjetoExento,
-      ivaConDerecho: ivaDisponible,
-      ivaSinDerecho: c.ivaSinDerecho,
+      gravadaConDerechoBruta: c.g500,
+      gravadaConDerechoNeta: n510,
+      activoFijoConDerecho: c.g501,
+      gravada5: c.g540,
+      gravadaSinDerecho: c.g502,
+      tarifa0: c.b507,
+      rise: c.b508,
+      noObjeto: c.b531,
+      exento: c.b532,
+      ivaConDerecho: ivaConDerechoNeto,
+      ivaSinDerecho: c.i522,
       ivaTotal: ivaTotalNeto,
       ivaDisponible,
-      ivaYaAlGasto: c.ivaSinDerecho,
+      ivaYaAlGasto: c.i522,
       docs: compras.slice(0, 500).map((p) => ({
-        id: String(p._id),
-        serie: p.serie || '',
-        fecha: purchaseFiscalDate(p),
-        docType: p.docType || 'FACTURA',
-        subtotal: r2(p.subtotal),
-        iva: r2(p.iva),
-        ivaCredito: r2(creditVat(p)),
-        deducible: p.deductible !== false,
+        id: String(p._id), serie: p.serie || '', fecha: purchaseFiscalDate(p),
+        docType: p.docType || 'FACTURA', subtotal: r2(p.subtotal), iva: r2(p.iva),
+        ivaCredito: r2(creditVat(p)), deducible: p.deductible !== false,
       })),
     },
     notasCredito: {
-      ventas: ncVentas,
-      compras: ncCompras,
+      ventas: ncVentas, compras: ncCompras,
+      porCompensar: { base0: comp543, baseGravada: comp544, iva: comp554 },
     },
     retencionesIvaEfectuadas: { total: c.retIvaEfectuada, docs: retIvaDocs },
     retencionesIvaRecibidas: { total: retIvaRecibida, docs: retRecibidaDocs },
     factorProporcionalidad: factor,
-    ivaDisponible,
-    ivaUtilizable,
-    ivaAlGasto,
-    creditoAnterior,
+    ivaDisponible, ivaUtilizable, ivaAlGasto, creditoAnterior,
   };
 
   const totals = {
-    ventasBase: r2(ventaGravadaNeta + base0Total + v.baseExento + v.baseNoObjeto),
+    ventasBase: totalVentasNeto,
     ventasIva: ventaIvaNeto,
-    comprasBase: computed[521],
+    comprasBase: totalNetoCompras,
     comprasIva: ivaTotalNeto,
-    ivaUtilizable,
-    ivaAlGasto,
+    ivaUtilizable, ivaAlGasto,
     retencionesEfectuadas: c.retIvaEfectuada,
     impuestoPorPagar,
     creditoTributario: creditoProximoMes,
@@ -486,7 +493,7 @@ async function compute104({ clinicId, range, editable = {} }) {
     conciliaciones,
     warnings,
     snapshot,
-    suggestions: { 565: ivaAlGastoSugerido, 403: base0Total, 405: 0 },
+    suggestions: { 565: ivaAlGastoSugerido, 403: base0Bruto, 405: 0 },
   };
 }
 
