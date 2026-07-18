@@ -29,7 +29,7 @@ const Celda = ({ value, onClick, className = '' }) => (
   </td>
 );
 
-export default function CashFlowMatrix({ data, onCell }) {
+export default function CashFlowMatrix({ data, onCell, onAddProvider }) {
   const [abiertas, setAbiertas] = useState({});
   const dias = data.days;
   const cats = data.config.categories;
@@ -53,7 +53,12 @@ export default function CashFlowMatrix({ data, onCell }) {
       {dias.map((d) => <td key={d.date} />)}
     </tr>,
     ...(cats?.[direction] || [])
-      .filter((c) => c.isActive !== false && tieneDatos(direction, c))
+      // Las categorías de egreso asignables se muestran aunque estén vacías, para que cada una
+      // tenga su botón «Agregar»; el resto solo si tiene datos (o si se piden las vacías).
+      .filter((c) => c.isActive !== false && (
+        tieneDatos(direction, c)
+        || (direction === 'EGRESO' && onAddProvider && !c.isLoan && c.key !== 'SIN_CLASIFICAR')
+      ))
       .flatMap((cat) => {
         const subs = (cat.subcategories || []).filter((s) => s.isActive !== false && tieneDatos(direction, cat, s.key));
         const abierta = abiertas[`${direction}:${cat.key}`];
@@ -72,6 +77,16 @@ export default function CashFlowMatrix({ data, onCell }) {
                 ) : <span className="w-3.5" />}
                 {cat.label}
                 {cat.isLoan && <span className="text-[9px] font-bold text-violet-600 bg-violet-50 px-1 rounded">PRÉSTAMO</span>}
+                {/* Asignar proveedores a esta categoría de egreso (exclusión progresiva). */}
+                {direction === 'EGRESO' && !cat.isLoan && cat.key !== 'SIN_CLASIFICAR' && onAddProvider && (
+                  <button
+                    onClick={() => onAddProvider(cat.key, cat.label)}
+                    title="Asignar proveedores a esta categoría"
+                    className="ml-1 text-[9px] font-semibold px-1.5 py-0.5 rounded bg-emerald-50 text-emerald-700 border border-emerald-200 hover:bg-emerald-100 cursor-pointer"
+                  >
+                    + Agregar
+                  </button>
+                )}
               </span>
             </th>
             {dias.map((d) => (

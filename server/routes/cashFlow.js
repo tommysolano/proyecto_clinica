@@ -39,4 +39,9 @@ router.post('/mappings', c.createMapping);
 router.put('/mappings/:id', c.updateMapping);
 router.delete('/mappings/:id', c.deleteMapping);
 
+// Asignación de proveedores a categorías de egreso (reglas SUPPLIER con exclusión progresiva)
+router.get('/suppliers', c.suppliers);
+router.post('/suppliers/assign', c.assignSupplier);
+router.post('/suppliers/unassign', c.unassignSupplier);
+
 module.exports = router;

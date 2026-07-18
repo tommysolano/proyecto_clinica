@@ -36,7 +36,7 @@ const CashFlowManualItem = require('../models/CashFlowManualItem');
 const CashFlowPlan = require('../models/CashFlowPlan');
 const { getAccount } = require('../utils/accountMap');
 const { effectivePaymentDate, nextBusinessDay, isBusinessDay, dayKey } = require('../utils/paymentSchedule');
-const { defaultCategories, MODULE_DEFAULTS, SIN_CLASIFICAR } = require('../utils/cashFlowCategories');
+const { defaultCategories, mergeExpenseDefaults, MODULE_DEFAULTS, SIN_CLASIFICAR } = require('../utils/cashFlowCategories');
 const { resolveReceivableEconomicObligations } = require('./receivableObligations');
 
 const r2 = (n) => +(Number(n) || 0).toFixed(2);
@@ -72,11 +72,16 @@ function parseLocalDate(value) {
 async function getConfig(clinicId) {
   let cfg = await CashFlowConfig.findOne({ clinic: clinicId });
   if (cfg) {
+    let dirty = false;
     if (!cfg.categories?.INGRESO?.length) {
-      const def = defaultCategories();
-      cfg.categories = def;
-      await cfg.save();
+      cfg.categories = defaultCategories();
+      dirty = true;
+    } else if (mergeExpenseDefaults(cfg.categories)) {
+      // Config existente: incorpora las categorías de egreso nuevas (idempotente).
+      cfg.markModified('categories');
+      dirty = true;
     }
+    if (dirty) await cfg.save();
     return cfg;
   }
   try {
@@ -753,8 +758,11 @@ async function buildProjection(clinicId, { from, to, filters = {} } = {}) {
     _id: String(a._id),
     saldoInicial: saldosCuenta.get(String(a._id)) || 0,
   }));
-  let saldo = r2(cuentasConSaldo.reduce((s, a) => s + a.saldoInicial, 0));
-  const saldoInicialTotal = saldo;
+  // AUTO = saldo del mayor al cierre del día anterior; MANUAL = valor fijado por la clínica.
+  const saldoInicialAuto = r2(cuentasConSaldo.reduce((s, a) => s + a.saldoInicial, 0));
+  const modoSaldoManual = cfg.openingBalanceMode === 'MANUAL';
+  const saldoInicialTotal = modoSaldoManual ? r2(cfg.openingBalanceManual) : saldoInicialAuto;
+  let saldo = saldoInicialTotal;
 
   const resultado = [];
   for (const k of days) {
@@ -848,6 +856,22 @@ async function buildProjection(clinicId, { from, to, filters = {} } = {}) {
       mensaje: 'El detalle no concilia con los totales de las celdas.' });
   }
 
+  // ── Proveedores con CxP abierta y SIN categoría asignada (regla SUPPLIER) ─────────────
+  // Se muestran (solo el nombre) para ir a clasificarlos; al asignarles una categoría
+  // desaparecen. Es independiente de en qué celda cae su CxP mientras tanto.
+  const supplierMapped = new Set(
+    mappings.filter((m) => m.matchType === 'SUPPLIER' && m.direction === 'EGRESO').map((m) => String(m.matchValue))
+  );
+  const pendientesMap = new Map();
+  for (const p of payables) {
+    if (p.party?.model !== 'Supplier' || !p.party?.ref) continue;
+    const ref = String(p.party.ref);
+    if (supplierMapped.has(ref)) continue;
+    if (!pendientesMap.has(ref)) pendientesMap.set(ref, { ref, name: p.party.name || '—' });
+  }
+  const proveedoresPendientes = [...pendientesMap.values()]
+    .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+
   return {
     rango: { from: desde, to: startOfDay(hasta), dias: days.length, calendario: calendar },
     config: {
@@ -856,10 +880,15 @@ async function buildProjection(clinicId, { from, to, filters = {} } = {}) {
       overdueBucket: cfg.overdueBucket,
       showEmptyCategories: cfg.showEmptyCategories,
       categories: cfg.categories,
+      openingBalanceMode: modoSaldoManual ? 'MANUAL' : 'AUTO',
+      openingBalanceManual: r2(cfg.openingBalanceManual),
     },
     cuentas: cuentasConSaldo,
     saldoInicial: saldoInicialTotal,
+    saldoInicialAuto,
+    saldoInicialManual: modoSaldoManual ? r2(cfg.openingBalanceManual) : null,
     saldoFinal: saldo,
+    proveedoresPendientes,
     days: resultado,
     detalle: detalleFinal,
     alertas,

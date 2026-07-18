@@ -8,7 +8,7 @@ import {
 import api from '../../api/axios';
 import Modal from '../../components/Modal';
 import JournalEntryViewModal from '../../components/JournalEntryViewModal';
-import { fmt, fmtDate, today } from './_utils';
+import { fmt, fmtDate } from './_utils';
 import { newIdempotencyKey, withIdempotencyKey } from '../../utils/idempotency';
 import CashFlowMatrix from './_CashFlowMatrix';
 import CashFlowCellModal from './_CashFlowCellModal';
@@ -29,10 +29,18 @@ const ESTADO_PARTIDA = {
  * Ningún saldo se calcula aquí: todo viene del motor del backend.
  */
 
-const enDias = (n) => {
+/**
+ * Fecha LOCAL 'YYYY-MM-DD' desplazada `n` días. Se arma con getFullYear/Month/Date (hora
+ * local) y NO con toISOString (UTC): en Ecuador (UTC−5) el ISO de la tarde ya es "mañana", y
+ * por eso el flujo arrancaba un día tarde. `enDias(0)` = HOY.
+ */
+const enDias = (n = 0) => {
   const d = new Date();
   d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, '0');
+  const day = String(d.getDate()).padStart(2, '0');
+  return `${y}-${m}-${day}`;
 };
 
 const SEVERIDAD = {
@@ -43,7 +51,7 @@ const SEVERIDAD = {
 
 export default function CashFlow() {
   const [tab, setTab] = useState('proyeccion');
-  const [from, setFrom] = useState(today());
+  const [from, setFrom] = useState(enDias(0)); // arranca HOY
   const [to, setTo] = useState(enDias(30));
   const [filtros, setFiltros] = useState({ onlyOverdue: false, onlyUnclassified: false, party: '' });
   const [data, setData] = useState(null);
@@ -57,6 +65,9 @@ export default function CashFlow() {
   const [estadoItems, setEstadoItems] = useState('');
   const [liquidar, setLiquidar] = useState(null);
   const [entryModal, setEntryModal] = useState(null);
+  // Asignación de proveedores a categorías de egreso.
+  const [providerModal, setProviderModal] = useState(null); // { mode, category?, categoryLabel?, supplier? }
+  const [suppliers, setSuppliers] = useState(null);          // { disponibles, asignados }
 
   const params = useCallback(() => ({
     from,
@@ -137,6 +148,33 @@ export default function CashFlow() {
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
 
+  // ── Asignación de proveedores a categorías de egreso ──
+  const cargarSuppliers = useCallback(async () => {
+    try { const r = await api.get('/cash-flow/suppliers'); setSuppliers(r.data); }
+    catch (e) { toast.error(e.response?.data?.message || 'Error al cargar proveedores'); }
+  }, []);
+
+  const abrirAgregar = (category, categoryLabel) => { setProviderModal({ mode: 'category', category, categoryLabel }); cargarSuppliers(); };
+  const abrirClasificar = (supplier) => { setProviderModal({ mode: 'supplier', supplier }); cargarSuppliers(); };
+
+  const asignarProveedor = async (supplierId, category, cerrar) => {
+    try {
+      await api.post('/cash-flow/suppliers/assign', { supplierId, category });
+      toast.success('Proveedor asignado a la categoría.');
+      if (cerrar) setProviderModal(null); else await cargarSuppliers();
+      cargar(); // refresca la proyección: sale de pendientes y cae en su categoría
+    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+  };
+
+  const quitarProveedor = async (supplierId) => {
+    try {
+      await api.post('/cash-flow/suppliers/unassign', { supplierId });
+      toast.success('Proveedor quitado: vuelve a estar disponible en todas las categorías.');
+      await cargarSuppliers();
+      cargar();
+    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-2">
@@ -144,7 +182,7 @@ export default function CashFlow() {
           <HiOutlineArrowsRightLeft className="text-emerald-600" /> Flujo de Caja
         </h1>
         <div className="flex gap-2">
-          <button onClick={() => setNueva({ direction: 'EGRESO', plannedDate: today(), key: newIdempotencyKey() })}
+          <button onClick={() => setNueva({ direction: 'EGRESO', plannedDate: enDias(0), key: newIdempotencyKey() })}
             className="px-3 py-2 bg-emerald-600 text-white rounded-xl text-sm flex items-center gap-1.5 shadow-sm shadow-emerald-600/20">
             <HiOutlinePlus className="w-4 h-4" /> Partida manual
           </button>
@@ -226,15 +264,19 @@ export default function CashFlow() {
             </div>
           )}
 
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Stat title="Disponible al inicio" value={fmt(data.saldoInicial)} icon={<HiOutlineBanknotes />} />
-            <Stat title="Ingresos del rango" value={fmt(data.totales.ingresos)} color="text-emerald-700" />
-            <Stat title="Egresos del rango" value={fmt(data.totales.egresos)} color="text-rose-600" />
-            <Stat title="Saldo proyectado" value={fmt(data.saldoFinal)}
-              color={data.saldoFinal < 0 ? 'text-rose-600' : 'text-slate-800'} />
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+            <div className="lg:col-span-2 grid grid-cols-2 md:grid-cols-4 gap-3">
+              <Stat title="Disponible al inicio" value={fmt(data.saldoInicial)} icon={<HiOutlineBanknotes />}
+                subtitle={data.config?.openingBalanceMode === 'MANUAL' ? 'Saldo inicial manual' : 'Del libro mayor'} />
+              <Stat title="Ingresos del rango" value={fmt(data.totales.ingresos)} color="text-emerald-700" />
+              <Stat title="Egresos del rango" value={fmt(data.totales.egresos)} color="text-rose-600" />
+              <Stat title="Saldo proyectado" value={fmt(data.saldoFinal)}
+                color={data.saldoFinal < 0 ? 'text-rose-600' : 'text-slate-800'} />
+            </div>
+            <PendingProvidersPanel proveedores={data.proveedoresPendientes || []} onClasificar={abrirClasificar} />
           </div>
 
-          <CashFlowMatrix data={data} onCell={setCell} />
+          <CashFlowMatrix data={data} onCell={setCell} onAddProvider={abrirAgregar} />
 
           <div className="text-xs text-slate-500 flex flex-wrap gap-x-4 gap-y-1">
             <span>{data.documentos} documento(s) en el rango.</span>
@@ -446,16 +488,128 @@ export default function CashFlow() {
       />
 
       {config && <ConfigModal data={config} onClose={() => setConfig(null)} onSaved={() => { setConfig(null); cargar(); }} />}
+
+      {providerModal && (
+        <ProviderAssignModal
+          modal={providerModal}
+          suppliers={suppliers}
+          categories={data?.config?.categories}
+          onAssign={asignarProveedor}
+          onUnassign={quitarProveedor}
+          onClose={() => setProviderModal(null)}
+        />
+      )}
     </div>
   );
 }
 
-function Stat({ title, value, color = 'text-slate-800', icon }) {
+function Stat({ title, value, color = 'text-slate-800', icon, subtitle }) {
   return (
     <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4">
       <p className="text-xs text-slate-500 flex items-center gap-1">{icon}{title}</p>
       <p className={`text-2xl font-bold font-mono ${color}`}>{value}</p>
+      {subtitle && <p className="text-[10px] text-slate-400 mt-0.5">{subtitle}</p>}
     </div>
+  );
+}
+
+/**
+ * Recuadro (derecha del resumen) con los NOMBRES de los proveedores que tienen deudas
+ * pendientes pero aún no están en ninguna categoría. Al asignarlos, desaparecen. Sin montos:
+ * solo el aviso para ir a clasificarlos.
+ */
+function PendingProvidersPanel({ proveedores, onClasificar }) {
+  return (
+    <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4">
+      <p className="text-xs font-semibold text-slate-700 flex items-center gap-1">
+        <HiOutlineExclamationTriangle className="w-4 h-4 text-amber-500" />
+        Proveedores pendientes de clasificar
+      </p>
+      {proveedores.length ? (
+        <>
+          <p className="text-[11px] text-slate-400 mt-0.5">Tienen deudas pendientes y no están en una categoría. Clic para asignarlos.</p>
+          <div className="mt-2 flex flex-wrap gap-1.5">
+            {proveedores.map((p) => (
+              <button key={p.ref} onClick={() => onClasificar(p)}
+                className="text-xs px-2 py-1 rounded-lg bg-amber-50 text-amber-800 border border-amber-200 hover:bg-amber-100 cursor-pointer">
+                {p.name}
+              </button>
+            ))}
+          </div>
+        </>
+      ) : (
+        <p className="text-xs text-slate-400 mt-2">Todos los proveedores con deudas ya están clasificados.</p>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Asignación de proveedores a categorías de egreso.
+ *  · mode 'category': el botón «Agregar» de una categoría → lista de proveedores DISPONIBLES
+ *    (con deudas y sin categoría; los ya asignados a otra categoría no salen) + los ya
+ *    asignados a ESTA categoría (para quitarlos).
+ *  · mode 'supplier': un proveedor pendiente → se elige a qué categoría va.
+ */
+function ProviderAssignModal({ modal, suppliers, categories, onAssign, onUnassign, onClose }) {
+  const egresoCats = (categories?.EGRESO || []).filter((c) => c.isActive !== false && !c.isLoan && c.key !== 'SIN_CLASIFICAR');
+
+  if (modal.mode === 'supplier') {
+    return (
+      <Modal isOpen onClose={onClose} title={`Clasificar a ${modal.supplier.name}`}>
+        <p className="text-sm text-slate-600 mb-3">
+          Elige la categoría de egreso para <b>{modal.supplier.name}</b>. Todas sus cuentas por pagar caerán ahí con su vencimiento.
+        </p>
+        <div className="grid grid-cols-2 gap-2">
+          {egresoCats.map((c) => (
+            <button key={c.key} onClick={() => onAssign(modal.supplier.ref, c.key, true)}
+              className="px-3 py-2 rounded-xl border border-slate-200 text-sm hover:bg-emerald-50 hover:border-emerald-300 cursor-pointer text-left">
+              {c.label}
+            </button>
+          ))}
+        </div>
+      </Modal>
+    );
+  }
+
+  const disponibles = suppliers?.disponibles || [];
+  const asignados = (suppliers?.asignados || []).filter((s) => s.category === modal.category);
+  return (
+    <Modal isOpen onClose={onClose} size="lg" title={`Proveedores · ${modal.categoryLabel}`}>
+      <div className="space-y-4">
+        <div>
+          <p className="text-xs font-semibold text-slate-700 mb-1">Disponibles (con deudas, sin categoría)</p>
+          <p className="text-[11px] text-slate-400 mb-2">Un proveedor ya asignado a otra categoría no aparece aquí.</p>
+          <div className="border border-slate-200 rounded-xl divide-y divide-slate-100 max-h-64 overflow-auto">
+            {disponibles.map((s) => (
+              <div key={s.ref} className="px-3 py-2 flex items-center justify-between gap-2 text-sm">
+                <span>{s.name}<span className="text-[11px] text-slate-400 ml-2">{s.docs} doc · pendiente {fmt(s.pendiente)}</span></span>
+                <button onClick={() => onAssign(s.ref, modal.category, false)}
+                  className="text-xs px-2.5 py-1 rounded-lg bg-emerald-600 text-white cursor-pointer">Agregar</button>
+              </div>
+            ))}
+            {suppliers && !disponibles.length && (
+              <div className="px-3 py-6 text-center text-xs text-slate-400">No hay proveedores disponibles sin clasificar.</div>
+            )}
+            {!suppliers && <div className="px-3 py-6 text-center text-xs text-slate-400">Cargando…</div>}
+          </div>
+        </div>
+        {asignados.length > 0 && (
+          <div>
+            <p className="text-xs font-semibold text-slate-700 mb-1">Ya en «{modal.categoryLabel}»</p>
+            <div className="border border-slate-200 rounded-xl divide-y divide-slate-100">
+              {asignados.map((s) => (
+                <div key={s.ref} className="px-3 py-2 flex items-center justify-between text-sm">
+                  <span>{s.name}<span className="text-[11px] text-slate-400 ml-2">pendiente {fmt(s.pendiente)}</span></span>
+                  <button onClick={() => onUnassign(s.ref)}
+                    className="text-xs px-2.5 py-1 rounded-lg border border-rose-200 text-rose-600 hover:bg-rose-50 cursor-pointer">Quitar</button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }
 
@@ -637,6 +791,8 @@ function ConfigModal({ data, onClose, onSaved }) {
         minimumBalanceThreshold: Number(c.minimumBalanceThreshold) || 0,
         showEmptyCategories: c.showEmptyCategories,
         overdueBucket: c.overdueBucket,
+        openingBalanceMode: c.openingBalanceMode || 'AUTO',
+        openingBalanceManual: Number(c.openingBalanceManual) || 0,
       });
       toast.success('Configuración guardada');
       onSaved();
@@ -660,8 +816,35 @@ function ConfigModal({ data, onClose, onSaved }) {
             ))}
           </div>
           <p className="text-[11px] text-slate-500 mt-1">
-            Se resuelven por rol contable (caja, caja chica, bancos) e incluyen sus cuentas hijas. El saldo
-            inicial sale del libro mayor, nunca de un saldo tecleado.
+            Se resuelven por rol contable (caja, caja chica, bancos) e incluyen sus cuentas hijas.
+          </p>
+        </div>
+
+        {/* Saldo inicial de la proyección: del mayor (auto) o tecleado (manual). */}
+        <div>
+          <p className="text-xs font-semibold text-slate-700 mb-1">Saldo bancario inicial de la proyección</p>
+          <div className="grid grid-cols-2 gap-3">
+            <label className="block">
+              <span className="text-xs text-slate-500">Modo</span>
+              <select value={c.openingBalanceMode || 'AUTO'}
+                onChange={(e) => setC({ ...c, openingBalanceMode: e.target.value })}
+                className="w-full border border-slate-200 rounded-xl px-3 py-2">
+                <option value="AUTO">Automático (saldo del libro mayor)</option>
+                <option value="MANUAL">Manual (lo escribo yo)</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="text-xs text-slate-500">Saldo inicial manual</span>
+              <input type="number" step="0.01" value={c.openingBalanceManual ?? 0}
+                disabled={(c.openingBalanceMode || 'AUTO') !== 'MANUAL'}
+                onChange={(e) => setC({ ...c, openingBalanceManual: e.target.value })}
+                className="w-full border border-slate-200 rounded-xl px-3 py-2 font-mono disabled:bg-slate-50 disabled:text-slate-400" />
+            </label>
+          </div>
+          <p className="text-[11px] text-slate-500 mt-1">
+            <b>Automático</b>: la suma de las cuentas de caja/banco al cierre del día anterior, leída del libro
+            mayor. <b>Manual</b>: el valor que escribas aquí (útil al arrancar el módulo, cuando el mayor aún no
+            refleja el efectivo real). El resto de la proyección no cambia.
           </p>
         </div>
 

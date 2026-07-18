@@ -81,6 +81,7 @@ exports.updateConfig = async (req, res) => {
       'cashAccounts', 'bankAccounts', 'includeChildAccounts', 'defaultHorizonDays', 'maxRangeDays',
       'includeSaturdays', 'holidays', 'sriDueDayOfMonth', 'categories',
       'minimumBalanceThreshold', 'showEmptyCategories', 'overdueBucket',
+      'openingBalanceMode', 'openingBalanceManual',
     ];
     for (const k of campos) if (b[k] !== undefined) cfg[k] = b[k];
     if (b.resetCategories === true) cfg.categories = defaultCategories();
@@ -967,6 +968,112 @@ exports.deleteMapping = async (req, res) => {
   try {
     const rule = await CashFlowMapping.findOneAndDelete({ _id: req.params.id, clinic: req.clinicId });
     if (!rule) throw notFound('Regla no encontrada.');
+    res.json({ ok: true });
+  } catch (e) { fail(res, e); }
+};
+
+// ═══════════════════════════ ASIGNACIÓN DE PROVEEDORES A CATEGORÍAS ═══════════════════════════
+//
+// Un proveedor se ASIGNA a una categoría de egreso con una regla SUPPLIER (misma infraestructura
+// de clasificación): desde ahí TODAS sus CxP caen en esa categoría con su vencimiento. La lista
+// de "disponibles" (lo que ofrece el botón «Agregar» de cada categoría) EXCLUYE a los proveedores
+// ya asignados a cualquier categoría (exclusión progresiva).
+
+/** Proveedores con CxP abierta: disponibles (sin categoría) y asignados (con su categoría). */
+exports.suppliers = async (req, res) => {
+  try {
+    const Supplier = require('../models/Supplier');
+    const cfg = await svc.getConfig(req.clinicId);
+    const catLabel = new Map((cfg.categories?.EGRESO || []).map((c) => [c.key, c.label]));
+
+    const [payables, rules] = await Promise.all([
+      Payable.find({
+        clinic: req.clinicId, status: { $in: ['ABIERTO', 'PARCIAL'] }, balance: { $gt: 0.005 }, 'party.model': 'Supplier',
+      }).lean(),
+      CashFlowMapping.find({ clinic: req.clinicId, direction: 'EGRESO', matchType: 'SUPPLIER', isActive: true }).lean(),
+    ]);
+    const ruleByRef = new Map(rules.map((r) => [String(r.matchValue), r]));
+
+    // Proveedores con saldo pendiente, agregados por proveedor.
+    const pend = new Map();
+    for (const p of payables) {
+      const ref = p.party?.ref ? String(p.party.ref) : null;
+      if (!ref) continue;
+      const cur = pend.get(ref) || { ref, name: p.party?.name || '—', pendiente: 0, docs: 0 };
+      cur.pendiente = svc.r2(cur.pendiente + (Number(p.balance) || 0));
+      cur.docs += 1;
+      pend.set(ref, cur);
+    }
+
+    // Disponibles = con CxP abierta y SIN regla (exclusión progresiva).
+    const disponibles = [...pend.values()]
+      .filter((s) => !ruleByRef.has(s.ref))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    // Asignados = reglas SUPPLIER, con el nombre del proveedor y su pendiente (0 si ya no debe).
+    const refs = rules.map((r) => r.matchValue).filter(Boolean);
+    const sups = refs.length
+      ? await Supplier.find({ _id: { $in: refs } }).select('razonSocial name').lean()
+      : [];
+    const supName = new Map(sups.map((s) => [String(s._id), s.razonSocial || s.name || '—']));
+    const asignados = rules.map((r) => {
+      const ref = String(r.matchValue);
+      const p = pend.get(ref);
+      return {
+        ref,
+        mappingId: String(r._id),
+        name: p?.name || supName.get(ref) || '—',
+        category: r.category,
+        categoryLabel: catLabel.get(r.category) || r.category,
+        subcategory: r.subcategory || null,
+        pendiente: p?.pendiente || 0,
+        docs: p?.docs || 0,
+      };
+    }).sort((a, b) => a.name.localeCompare(b.name));
+
+    res.json({ disponibles, asignados });
+  } catch (e) { fail(res, e); }
+};
+
+/** Asigna (o reasigna) un proveedor a una categoría de egreso: crea/actualiza la regla SUPPLIER. */
+exports.assignSupplier = async (req, res) => {
+  try {
+    const { supplierId, category, subcategory } = req.body || {};
+    if (!supplierId) throw badRequest('Falta el proveedor.');
+    if (!category) throw badRequest('Falta la categoría.');
+    const cfg = await svc.getConfig(req.clinicId);
+    const cat = (cfg.categories?.EGRESO || []).find((c) => c.key === category && c.isActive !== false);
+    if (!cat) throw badRequest('La categoría de egreso no existe o está inactiva.');
+
+    const filtro = {
+      clinic: req.clinicId, direction: 'EGRESO', matchType: 'SUPPLIER', matchValue: String(supplierId),
+    };
+    let rule;
+    try {
+      rule = await CashFlowMapping.create({
+        ...filtro, category, subcategory: subcategory || null, createdBy: req.user._id,
+      });
+    } catch (e) {
+      // Ya estaba asignado (reasignación): se actualiza la categoría, no se duplica.
+      if (e.code !== 11000) throw e;
+      rule = await CashFlowMapping.findOneAndUpdate(
+        filtro,
+        { category, subcategory: subcategory || null, isActive: true, updatedBy: req.user._id },
+        { new: true }
+      );
+    }
+    res.json({ ok: true, rule });
+  } catch (e) { fail(res, e); }
+};
+
+/** Quita un proveedor de su categoría (borra la regla): vuelve a estar disponible en todas. */
+exports.unassignSupplier = async (req, res) => {
+  try {
+    const { supplierId } = req.body || {};
+    if (!supplierId) throw badRequest('Falta el proveedor.');
+    await CashFlowMapping.findOneAndDelete({
+      clinic: req.clinicId, direction: 'EGRESO', matchType: 'SUPPLIER', matchValue: String(supplierId),
+    });
     res.json({ ok: true });
   } catch (e) { fail(res, e); }
 };

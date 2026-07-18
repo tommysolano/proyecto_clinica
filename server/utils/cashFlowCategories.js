@@ -46,18 +46,32 @@ const DEFAULT_INCOME = [
   },
 ];
 
-/** Categorías de EGRESO. */
+/**
+ * Categorías de EGRESO. Subclasificación que pidió la contadora: los proveedores se ASIGNAN a
+ * una de estas categorías (una regla `SUPPLIER` por proveedor) y desde ahí todas sus CxP caen
+ * en su categoría con su vencimiento. Las etiquetas y el árbol son EDITABLES por la clínica.
+ *
+ * Las `key` son estables (reglas y overrides las referencian): «Proveedores de inventario» y
+ * «Otros gastos» conservan las keys históricas PROVEEDORES / OTROS_PAGOS y solo cambian de
+ * etiqueta; HONORARIOS_DOCTORES es la única realmente nueva.
+ */
 const DEFAULT_EXPENSE = [
   {
     key: 'PROVEEDORES',
-    label: 'Proveedores',
+    label: 'Proveedores de inventario',
     order: 10,
     subcategories: [],
   },
   {
-    key: 'OTROS_PAGOS',
-    label: 'Otros pagos',
+    key: 'HONORARIOS_DOCTORES',
+    label: 'Honorarios de doctores',
     order: 20,
+    subcategories: [],
+  },
+  {
+    key: 'OTROS_PAGOS',
+    label: 'Otros gastos',
+    order: 30,
     subcategories: [
       { key: 'VIATICOS', label: 'Viáticos', order: 10 },
       { key: 'DEV_CLIENTES', label: 'Devoluciones a clientes', order: 20 },
@@ -74,7 +88,7 @@ const DEFAULT_EXPENSE = [
   {
     key: 'GASTOS_FIJOS',
     label: 'Gastos fijos',
-    order: 30,
+    order: 40,
     subcategories: [
       { key: 'SUELDOS', label: 'Sueldos', order: 10 },
       { key: 'COMISIONES', label: 'Comisiones', order: 20 },
@@ -92,7 +106,7 @@ const DEFAULT_EXPENSE = [
   {
     key: 'PRESTAMOS_PAGADOS',
     label: 'Préstamos',
-    order: 40,
+    order: 50,
     isLoan: true,
     subcategories: [
       { key: 'CAPITAL', label: 'Capital', order: 10 },
@@ -101,6 +115,12 @@ const DEFAULT_EXPENSE = [
     ],
   },
 ];
+
+// Categorías auto-sembradas con el nombre viejo que se renombran (sin pisar personalizaciones).
+const EXPENSE_RELABEL = {
+  PROVEEDORES: { from: 'Proveedores', to: 'Proveedores de inventario' },
+  OTROS_PAGOS: { from: 'Otros pagos', to: 'Otros gastos' },
+};
 
 /** Categoría comodín: nunca se oculta, para que un documento sin regla no desaparezca. */
 const UNCLASSIFIED = {
@@ -115,6 +135,34 @@ function defaultCategories() {
     INGRESO: [...DEFAULT_INCOME, { ...UNCLASSIFIED }].map((c) => ({ ...c, isActive: true })),
     EGRESO: [...DEFAULT_EXPENSE, { ...UNCLASSIFIED }].map((c) => ({ ...c, isActive: true })),
   };
+}
+
+/**
+ * Fusiona en una config EXISTENTE las categorías de egreso por defecto que falten (idempotente
+ * y NO destructivo). Añade las nuevas por `key`, aplica los renombres de las auto-sembradas
+ * (solo si conservan el label viejo, para no pisar personalizaciones) y ordena por `order`
+ * dejando «Sin clasificar» al final. Devuelve true si cambió algo (para guardar solo entonces).
+ */
+function mergeExpenseDefaults(categories) {
+  if (!categories) return false;
+  const list = categories.EGRESO || (categories.EGRESO = []);
+  const byKey = new Map(list.map((c) => [c.key, c]));
+  let changed = false;
+  for (const def of DEFAULT_EXPENSE) {
+    const existing = byKey.get(def.key);
+    if (!existing) {
+      list.push({ ...def, isActive: true });
+      changed = true;
+      continue;
+    }
+    const rel = EXPENSE_RELABEL[def.key];
+    if (rel && existing.label === rel.from) { existing.label = rel.to; changed = true; }
+  }
+  if (changed) {
+    // Reordenar respetando `order`; «Sin clasificar» (999) queda al final.
+    list.sort((a, b) => (a.order || 0) - (b.order || 0));
+  }
+  return changed;
 }
 
 /**
@@ -137,6 +185,7 @@ const MODULE_DEFAULTS = {
 
 module.exports = {
   defaultCategories,
+  mergeExpenseDefaults,
   MODULE_DEFAULTS,
   SIN_CLASIFICAR,
   UNCLASSIFIED,

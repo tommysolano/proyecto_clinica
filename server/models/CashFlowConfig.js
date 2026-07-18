@@ -55,6 +55,14 @@ const cashFlowConfigSchema = new mongoose.Schema(
       _id: false,
     }],
 
+    // ── Saldo inicial de la proyección ─────────────────────────────────────────────
+    // AUTO  = saldo de las cuentas de caja/banco al cierre del día anterior, leído del MAYOR
+    //         (fuente auditable; es lo que hace por defecto).
+    // MANUAL= la clínica fija el saldo de arranque a mano (`openingBalanceManual`), útil cuando
+    //         el mayor todavía no refleja el efectivo real (arranque del módulo).
+    openingBalanceMode: { type: String, enum: ['AUTO', 'MANUAL'], default: 'AUTO' },
+    openingBalanceManual: { type: Number, default: 0 },
+
     // ── SRI ──────────────────────────────────────────────────────────────────────
     // El vencimiento real lo fija la declaración (SriDeclaration.dueDate). Esto solo sirve
     // para estimar cuando una declaración todavía no lo trae.

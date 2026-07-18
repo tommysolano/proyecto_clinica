@@ -138,6 +138,37 @@ descripción. Existe un tipo de regla `DESCRIPTION`, pero solo si el usuario la 
 es el último nivel de prioridad. Los préstamos se marcan **explícitamente** (`origin: PRESTAMO`)
 y su capital/interés/comisión **se capturan**, no se deducen de ningún asiento.
 
+### Categorías de egreso y asignación de proveedores
+
+Los egresos se subclasifican en cinco categorías por defecto (editables): **Proveedores de
+inventario**, **Honorarios de doctores**, **Otros gastos**, **Gastos fijos** y **Préstamos**.
+Una config existente incorpora las que le falten sin pisar personalizaciones
+(`mergeExpenseDefaults`, idempotente).
+
+Cada proveedor se **asigna** a una categoría desde el botón «＋ Agregar» de esa categoría en la
+matriz (o desde el aviso de pendientes). La asignación es una regla `SUPPLIER` (nivel 2 de la
+clasificación): desde ahí **todas** las CxP de ese proveedor caen en su categoría con su
+vencimiento. Endpoints: `GET /cash-flow/suppliers` (disponibles/asignados), `POST
+/cash-flow/suppliers/assign`, `POST /cash-flow/suppliers/unassign`.
+
+- **Exclusión progresiva:** el selector «Agregar» solo ofrece proveedores con deuda pendiente
+  que **no están asignados a ninguna categoría**. Al asignar a José, deja de aparecer como
+  opción en las demás categorías. Quitarlo lo vuelve a hacer disponible en todas.
+- **Proveedores pendientes de clasificar:** el recuadro a la derecha del resumen lista los
+  **nombres** (sin montos) de los proveedores con CxP abierta y sin categoría. Al asignarlos,
+  desaparecen. Mientras tanto su CxP sigue proyectándose en el default de módulo
+  (Proveedores de inventario), así que ningún egreso se pierde.
+
+## Saldo bancario inicial
+
+El saldo del primer día tiene dos modos (`CashFlowConfig.openingBalanceMode`):
+
+- **AUTO** (por defecto): la suma de las cuentas de caja/banco al cierre del día anterior,
+  leída del **libro mayor** (auditable).
+- **MANUAL**: un valor tecleado por la clínica (`openingBalanceManual`), útil al arrancar el
+  módulo cuando el mayor aún no refleja el efectivo real. La proyección informa siempre el
+  saldo AUTO aparte (`saldoInicialAuto`), y el resumen indica qué modo está activo.
+
 ## Partidas manuales y liquidación
 
 Una previsión (`CashFlowManualItem`) **no genera asiento**: es una previsión, no un hecho
