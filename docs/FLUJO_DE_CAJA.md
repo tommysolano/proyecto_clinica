@@ -130,7 +130,9 @@ Prioridad (la fila dice **por qué** se clasificó así, en `clasificadaPor`):
 2. regla por **tercero** (proveedor / cliente)
 3. regla por **cuenta contable** o concepto
 4. regla por **origen** (`sourceModel` / `sourceAction` / tipo de documento)
-5. **por defecto del módulo** (una CxP de compra → Proveedores; de nómina → Sueldos; de SRI → SRI)
+5. **por defecto del módulo** (nómina → Sueldos; SRI → SRI). Las **compras de proveedor NO
+   tienen default**: una CxP de un proveedor sin clasificar cae en «Sin clasificar», no en
+   «Proveedores de inventario» (así no se mezclan montos ajenos en esa categoría).
 6. **Sin clasificar** (se ve, no desaparece, y genera alerta)
 
 Un préstamo, un impuesto o un gasto fijo **nunca** se clasifican buscando palabras en la
@@ -156,8 +158,10 @@ vencimiento. Endpoints: `GET /cash-flow/suppliers` (disponibles/asignados), `POS
   opción en las demás categorías. Quitarlo lo vuelve a hacer disponible en todas.
 - **Proveedores pendientes de clasificar:** el recuadro a la derecha del resumen lista los
   **nombres** (sin montos) de los proveedores con CxP abierta y sin categoría. Al asignarlos,
-  desaparecen. Mientras tanto su CxP sigue proyectándose en el default de módulo
-  (Proveedores de inventario), así que ningún egreso se pierde.
+  desaparecen. Mientras tanto su CxP se proyecta en la fila **«Sin clasificar»** de los egresos
+  (monto visible pero **separado**, sin ensuciar «Proveedores de inventario»), así que ningún
+  egreso se pierde. Doble señal: el **monto** en la fila SIN_CLASIFICAR y los **nombres** en el
+  recuadro; ambos desaparecen al asignar el proveedor.
 
 ## Saldo bancario inicial
 

@@ -106,15 +106,26 @@ test('3) la proyección agrupa cada CxP en la categoría del proveedor y lista l
   let data = await svc.buildProjection(clinicId, { from: HOY, to: dia(30) });
   // Pepito, sin categoría, aparece en pendientes; los otros dos no.
   assert.deepEqual(data.proveedoresPendientes.map((p) => p.name), ['Pepito (arreglos)']);
-  // Cada CxP cae en la categoría de su proveedor. Pepito (sin regla) cae en el default de módulo.
+  // Cada CxP cae en la categoría de su proveedor. Pepito (sin regla) NO ensucia «Proveedores de
+  // inventario»: queda en su propia fila SIN_CLASIFICAR, con el monto visible pero separado.
   assert.equal(catTotal(data, 'EGRESO', 'HONORARIOS_DOCTORES'), 500, 'la CxP de Pablito va a Honorarios');
-  assert.equal(catTotal(data, 'EGRESO', 'PROVEEDORES'), 500, 'José (300) + Pepito por default (200)');
+  assert.equal(catTotal(data, 'EGRESO', 'PROVEEDORES'), 300, 'solo José, sin mezclar a Pepito');
+  assert.equal(catTotal(data, 'EGRESO', 'SIN_CLASIFICAR'), 200, 'Pepito sin clasificar, en su propia fila');
+  // Y esa fila SIN_CLASIFICAR se pinta (existe como categoría de egreso en la config).
+  assert.ok(data.config.categories.EGRESO.some((c) => c.key === 'SIN_CLASIFICAR'),
+    'la fila «Sin clasificar» existe para que el monto sea visible en la matriz y el Excel');
+  // El detalle de la fila SIN_CLASIFICAR concilia EXACTAMENTE con su celda (Excel = matriz = API).
+  const detSinClasif = data.detalle
+    .filter((r) => !r.esReal && r.day && r.direction === 'EGRESO' && r.category === 'SIN_CLASIFICAR')
+    .reduce((s, r) => s + r.saldo, 0);
+  assert.equal(svc.r2(detSinClasif), catTotal(data, 'EGRESO', 'SIN_CLASIFICAR'), 'detalle = celda en SIN_CLASIFICAR');
 
-  // Al clasificar a Pepito desaparece de pendientes y su CxP se mueve a Otros gastos.
+  // Al clasificar a Pepito desaparece de pendientes y de SIN_CLASIFICAR: su CxP se mueve a Otros gastos.
   ok(await assign(clinicId, userId, pepe._id, 'OTROS_PAGOS'));
   data = await svc.buildProjection(clinicId, { from: HOY, to: dia(30) });
   assert.equal(data.proveedoresPendientes.length, 0, 'ya no hay proveedores pendientes');
   assert.equal(catTotal(data, 'EGRESO', 'OTROS_PAGOS'), 200, 'Pepito ahora en Otros gastos');
+  assert.equal(catTotal(data, 'EGRESO', 'SIN_CLASIFICAR'), 0, 'ya no queda nada sin clasificar');
   assert.equal(catTotal(data, 'EGRESO', 'PROVEEDORES'), 300, 'solo José');
 
   // Quitar a Pablito lo vuelve a hacer disponible y pendiente.

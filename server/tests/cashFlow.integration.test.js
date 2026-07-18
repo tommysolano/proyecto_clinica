@@ -175,7 +175,8 @@ test('5-7) vencimiento en viernes y sábado no se desplaza; el domingo se proyec
 
   // Y el vencimiento LEGAL sigue siendo el domingo (no se tocó).
   assert.equal(key(new Date(filaDe('Domingo').dueDate)), key(domingo), 'el dueDate legal no se modifica');
-  assert.equal(celda(data, lunes, 'EGRESO', 'PROVEEDORES'), 300);
+  // La compra no tiene proveedor clasificado, así que cae en SIN_CLASIFICAR (no en Proveedores).
+  assert.equal(celda(data, lunes, 'EGRESO', 'SIN_CLASIFICAR'), 300);
 });
 
 test('8-9) la fecha planificada prevalece (antes o después del vencimiento) y no toca el dueDate', async () => {
@@ -236,6 +237,11 @@ test('11-14) compra con vencimiento explícito: pago parcial reduce y pago total
   const sup = await H.makeSupplier(clinicId);
   const gasto = await ChartOfAccount.findOne({ clinic: clinicId, code: '6.1.99' });
   const vence = dia(9);
+
+  // La clínica clasificó a este proveedor como de inventario: sus CxP van a PROVEEDORES.
+  ok(await run(ctrl.assignSupplier, H.mockReq(clinicId, userId, {
+    supplierId: String(sup._id), category: 'PROVEEDORES',
+  })));
 
   const pi = ok(await run(purchases.create, H.mockReq(clinicId, userId, {
     supplier: sup._id, fechaEmision: dia(-1), fechaVencimiento: vence, serie: '001-001-000000801',
@@ -495,8 +501,10 @@ test('27-30) regla por proveedor, override individual, guardar regla futura y "s
   assert.equal(fLuz.category, 'GASTOS_FIJOS');
   assert.equal(fLuz.subcategory, 'SERVICIOS_BASICOS');
   assert.equal(fLuz.clasificadaPor, 'REGLA_SUPPLIER', 'la UI puede explicar POR QUÉ se clasificó así');
-  assert.equal(fOtro.category, 'PROVEEDORES', 'sin regla, manda el módulo');
-  assert.equal(fOtro.clasificadaPor, 'MODULO');
+  // Insumos SA no está clasificado: su compra NO se mete a la fuerza en «Proveedores de
+  // inventario» (mezclaría montos ajenos), queda SIN_CLASIFICAR hasta que se le asigne categoría.
+  assert.equal(fOtro.category, 'SIN_CLASIFICAR', 'sin regla, la compra de proveedor queda sin clasificar');
+  assert.equal(fOtro.clasificadaPor, 'SIN_CLASIFICAR');
 
   // 28) override individual: gana al módulo y a la regla.
   ok(await run(ctrl.classifyDoc, H.mockReq(clinicId, userId, {
@@ -555,7 +563,8 @@ test('31) dos clínicas con reglas distintas para el mismo tipo de documento', a
   const da = await proj(a.clinicId, HOY, dia(10));
   const db = await proj(b.clinicId, HOY, dia(10));
   assert.equal(da.detalle[0].category, 'GASTOS_FIJOS', 'la regla de A aplica en A');
-  assert.equal(db.detalle[0].category, 'PROVEEDORES', 'y NO se filtra a la clínica B');
+  // B no tiene regla: su compra queda SIN_CLASIFICAR (y NO hereda la de A).
+  assert.equal(db.detalle[0].category, 'SIN_CLASIFICAR', 'la regla de A no se filtra a la clínica B');
   assert.equal(await CashFlowMapping.countDocuments({ clinic: b.clinicId }), 0);
 });
 
@@ -936,7 +945,8 @@ test('config: apagar los sábados los convierte en no hábiles y desplaza al lun
 
   const data = await proj(clinicId, HOY, dia(20));
   assert.ok(!data.days.includes(key(sabado)), 'el sábado deja de tener columna');
-  assert.equal(celda(data, lunes, 'EGRESO', 'PROVEEDORES'), 120, 'y su obligación pasa al lunes');
+  // Proveedor sin clasificar: la CxP cae en SIN_CLASIFICAR (lo que se prueba aquí es el desplazamiento al lunes).
+  assert.equal(celda(data, lunes, 'EGRESO', 'SIN_CLASIFICAR'), 120, 'y su obligación pasa al lunes');
   const fila = data.detalle.find((d) => d.tercero === 'Sabatina');
   assert.equal(key(new Date(fila.dueDate)), key(sabado), 'el vencimiento legal sigue siendo el sábado');
 });

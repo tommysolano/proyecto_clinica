@@ -158,6 +158,12 @@ function mergeExpenseDefaults(categories) {
     const rel = EXPENSE_RELABEL[def.key];
     if (rel && existing.label === rel.from) { existing.label = rel.to; changed = true; }
   }
+  // La compra de un proveedor sin regla cae en SIN_CLASIFICAR y necesita su fila en la matriz:
+  // si una config vieja no tuviera el comodín, se añade (nunca se oculta).
+  if (!byKey.has(SIN_CLASIFICAR)) {
+    list.push({ ...UNCLASSIFIED, isActive: true });
+    changed = true;
+  }
   if (changed) {
     // Reordenar respetando `order`; «Sin clasificar» (999) queda al final.
     list.sort((a, b) => (a.order || 0) - (b.order || 0));
@@ -172,13 +178,20 @@ function mergeExpenseDefaults(categories) {
  * Deliberadamente NO mira la descripción: un préstamo, un impuesto o un gasto fijo se
  * reconocen por su origen (`sourceModel`) o por una regla explícita, nunca por buscar
  * palabras sueltas en un texto libre.
+ *
+ * OJO — las COMPRAS de proveedor (`Payable:PurchaseInvoice`) NO tienen default a propósito:
+ * una CxP de un proveedor que la clínica todavía NO clasificó cae en SIN_CLASIFICAR (el
+ * fallback de `classify`), NO en «Proveedores de inventario». Meterla ahí por defecto
+ * mezclaba montos ajenos —honorarios de doctores, servicios, préstamos— en esa categoría y
+ * distorsionaba su total. Así el monto se ve, pero separado en su propia fila «Sin
+ * clasificar», junto con el aviso de nombres del panel derecho. En cuanto se asigna el
+ * proveedor a una categoría (regla SUPPLIER), TODAS sus CxP se mueven ahí en el próximo cálculo.
  */
 const MODULE_DEFAULTS = {
   // Ingresos
   'Receivable:Sale': { category: 'CLIENTES', subcategory: 'CLIENTES_CXC' },
   'Receivable:Invoice': { category: 'CLIENTES', subcategory: 'CLIENTES_CXC' },
-  // Egresos
-  'Payable:PurchaseInvoice': { category: 'PROVEEDORES', subcategory: null },
+  // Egresos (las compras de proveedor sin regla quedan SIN_CLASIFICAR — ver nota de arriba).
   'Payable:Payroll': { category: 'GASTOS_FIJOS', subcategory: 'SUELDOS' },
   'Payable:SriDeclaration': { category: 'GASTOS_FIJOS', subcategory: 'SRI' },
 };
