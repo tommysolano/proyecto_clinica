@@ -788,6 +788,23 @@ function WhatsappNumbersManager() {
     }
   };
 
+  // Registra el número en Cloud API (POST /register con PIN de 6 dígitos). Se
+  // ofrece cuando el diagnóstico ve el número PENDING/no CONNECTED (típico tras
+  // migrarlo de WABA). Al terminar re-corre el diagnóstico para ver el estado.
+  const registerNumber = async () => {
+    if (!diagModal?.accId) return;
+    setDiagModal((m) => ({ ...m, registering: true }));
+    try {
+      const r = await api.post(`/call-center-config/whatsapp/accounts/${diagModal.accId}/register`, { pin: diagModal.pin });
+      toast.success(r.data?.message || 'Número registrado en Cloud API');
+      setDiagModal((m) => ({ ...m, registering: false }));
+      testAccount({ _id: diagModal.accId, label: diagModal.label });
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'Meta rechazó el registro');
+      setDiagModal((m) => ({ ...m, registering: false }));
+    }
+  };
+
   if (loading) return <div className="text-slate-500 text-sm">Cargando números…</div>;
 
   return (
@@ -1221,6 +1238,33 @@ function WhatsappNumbersManager() {
                   El error de Meta “(#200) You do not have the necessary permissions…” aparece cuando el token
                   no tiene el permiso de mensajería o no tiene asignada esta cuenta de WhatsApp Business (WABA).
                 </p>
+                {diagModal.checks.some((c) => c.label === 'Estado del número en Cloud API' && !c.ok) && (
+                  <div className="border-t border-slate-100 pt-3">
+                    <label className="text-xs font-semibold text-slate-600 block mb-1">
+                      Registrar número en Cloud API
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        value={diagModal.pin || ''}
+                        onChange={(e) => setDiagModal({ ...diagModal, pin: e.target.value.replace(/[^\d]/g, '').slice(0, 6) })}
+                        placeholder="Elige un PIN de 6 dígitos"
+                        maxLength={6}
+                        className="flex-1 border border-slate-200 rounded-lg px-3 py-2 text-sm font-mono"
+                      />
+                      <button
+                        onClick={registerNumber}
+                        disabled={!/^\d{6}$/.test(diagModal.pin || '') || diagModal.registering}
+                        className="px-3 py-2 bg-emerald-600 text-white rounded-lg text-sm cursor-pointer border-none disabled:opacity-50"
+                      >
+                        {diagModal.registering ? 'Registrando…' : 'Registrar'}
+                      </button>
+                    </div>
+                    <p className="text-[10px] text-slate-400 mt-1">
+                      Este PIN queda como la verificación en dos pasos del número — <b>guárdalo</b>. Si el número
+                      ya tenía un PIN activo, escribe ese mismo.
+                    </p>
+                  </div>
+                )}
                 <div className="border-t border-slate-100 pt-3">
                   <label className="text-xs font-semibold text-slate-600 block mb-1">
                     Prueba de envío REAL (reproduce el error exacto de Meta)

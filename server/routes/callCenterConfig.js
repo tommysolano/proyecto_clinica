@@ -25,6 +25,7 @@ router.get('/whatsapp/accounts/:id/qr', ctrl.getWhatsappAccountQr);
 router.post('/whatsapp/accounts/:id/connect', ctrl.connectWhatsappAccount);
 router.post('/whatsapp/accounts/:id/disconnect', ctrl.disconnectWhatsappAccount);
 router.post('/whatsapp/accounts/:id/test', ctrl.testWhatsappAccount);
+router.post('/whatsapp/accounts/:id/register', ctrl.registerWhatsappNumber);
 router.post('/whatsapp/accounts/:id/quality', ctrl.refreshWhatsappAccountQuality);
 router.post('/whatsapp/capi/test', ctrl.testConversionsApi);
 

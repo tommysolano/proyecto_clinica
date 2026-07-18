@@ -569,6 +569,30 @@ exports.testWhatsappAccount = async (req, res) => {
       });
     }
 
+    // 2a) Re-suscribir la app a la WABA con ESTE token (idempotente y sin efectos
+    // secundarios: si ya estaba suscrita, Meta responde success). Corre ANTES del
+    // chequeo de apps conectadas para que ese chequeo vea el estado ya reparado.
+    // Caso real: WABA creada fuera de la app o suscrita con un token viejo.
+    if (doc.businessAccountId) {
+      try {
+        const rsub = await fetch(
+          `https://graph.facebook.com/${V}/${doc.businessAccountId}/subscribed_apps`,
+          { method: 'POST', headers: { Authorization: `Bearer ${token}` } }
+        );
+        const sj2 = await rsub.json().catch(() => ({}));
+        checks.push({
+          ok: !!(rsub.ok && sj2.success !== false),
+          label: 'Re-suscripción de la app a la WABA (con el token actual)',
+          detail: rsub.ok
+            ? `Meta aceptó la (re)suscripción: ${JSON.stringify(sj2)}.`
+            : sj2?.error?.message || 'Meta rechazó la re-suscripción.',
+          fix: rsub.ok
+            ? ''
+            : 'El token no pudo suscribir su app a esta WABA: revisa que tenga whatsapp_business_management con control total sobre ELLA.',
+        });
+      } catch { /* sin red: se omite */ }
+    }
+
     // 2b) La WABA guardada: ¿realmente contiene este número? Con varias cuentas
     // del MISMO nombre en el Business Manager es fácil guardar el ID equivocado.
     if (doc.businessAccountId) {
@@ -700,31 +724,6 @@ exports.testWhatsappAccount = async (req, res) => {
       } catch { /* sin red: se omiten estos chequeos */ }
     }
 
-    // 2c) Re-suscribir la app a la WABA con ESTE token (idempotente y sin efectos
-    // secundarios: si ya estaba suscrita, Meta responde success). Una suscripción
-    // creada con un token viejo/caducado puede dejar el vínculo app↔WABA a medias
-    // (webhooks entran pero el envío da #200); re-crearla con el token vigente lo
-    // repara. Caso real: WABA creada en WhatsApp Manager, fuera de la app.
-    if (doc.businessAccountId) {
-      try {
-        const rsub = await fetch(
-          `https://graph.facebook.com/${V}/${doc.businessAccountId}/subscribed_apps`,
-          { method: 'POST', headers: { Authorization: `Bearer ${token}` } }
-        );
-        const sj2 = await rsub.json().catch(() => ({}));
-        checks.push({
-          ok: !!(rsub.ok && sj2.success !== false),
-          label: 'Re-suscripción de la app a la WABA (con el token actual)',
-          detail: rsub.ok
-            ? `Meta aceptó la (re)suscripción: ${JSON.stringify(sj2)}.`
-            : sj2?.error?.message || 'Meta rechazó la re-suscripción.',
-          fix: rsub.ok
-            ? ''
-            : 'El token no pudo suscribir su app a esta WABA: revisa que tenga whatsapp_business_management con control total sobre ELLA.',
-        });
-      } catch { /* sin red: se omite */ }
-    }
-
     // 3) Envío REAL de prueba (opcional, si mandan un número destino): reproduce
     // el error exacto de Meta al enviar (p.ej. #200), que el simple "leer" no detecta.
     const testTo = String(req.body?.to || '').replace(/[^\d]/g, '');
@@ -757,6 +756,47 @@ exports.testWhatsappAccount = async (req, res) => {
     res.json({ ok, checks, info: r.ok ? data : null });
   } catch (err) {
     res.status(500).json({ message: 'Error de prueba', error: err.message });
+  }
+};
+
+/**
+ * POST /whatsapp/accounts/:id/register — registra el número en Cloud API.
+ * Necesario cuando el número queda verificado pero PENDING (típico tras migrarlo
+ * de WABA): Meta exige POST /{phone_id}/register con un PIN de 6 dígitos. Si el
+ * número tiene verificación en dos pasos activa el PIN debe coincidir; si está
+ * desactivada, este PIN queda como el nuevo (guárdalo).
+ */
+exports.registerWhatsappNumber = async (req, res) => {
+  try {
+    const doc = await WhatsappAccount.findById(req.params.id);
+    if (!doc) return res.status(404).json({ message: 'Número no encontrado' });
+    if (doc.connectionType !== 'cloud_api') {
+      return res.status(400).json({ message: 'El registro aplica solo a números Cloud API.' });
+    }
+    if (!doc.accessToken || !doc.phoneNumberId) {
+      return res.status(400).json({ message: 'Falta accessToken o phoneNumberId' });
+    }
+    const pin = String(req.body?.pin || '').replace(/[^\d]/g, '');
+    if (pin.length !== 6) {
+      return res.status(400).json({ message: 'El PIN debe tener exactamente 6 dígitos.' });
+    }
+    const token = decryptSecret(doc.accessToken);
+    const V = process.env.WHATSAPP_API_VERSION || 'v23.0';
+    const r = await fetch(`https://graph.facebook.com/${V}/${doc.phoneNumberId}/register`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ messaging_product: 'whatsapp', pin }),
+    });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok || j.success === false) {
+      return res.status(400).json({
+        message: j?.error?.message || 'Meta rechazó el registro del número.',
+        error: j?.error || null,
+      });
+    }
+    res.json({ success: true, message: 'Número registrado en Cloud API. Vuelve a Probar: el estado debe salir CONNECTED.' });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al registrar el número', error: err.message });
   }
 };
 
