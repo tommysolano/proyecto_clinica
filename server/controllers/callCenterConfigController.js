@@ -458,7 +458,7 @@ exports.testWhatsappAccount = async (req, res) => {
       checks.push({
         ok: true,
         label: 'App y emisión del token',
-        detail: `App: ${dbg.application || 'desconocida'}${dbg.app_id ? ` (ID ${dbg.app_id})` : ''}${
+        detail: `App: ${dbg.application || 'desconocida'}${dbg.app_id ? ` (ID ${dbg.app_id})` : ''}${dbg.type ? ` · tipo de token: ${dbg.type}` : ''}${
           dbg.issued_at
             ? ` · emitido el ${new Date(dbg.issued_at * 1000).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' })}`
             : ''
@@ -698,6 +698,31 @@ exports.testWhatsappAccount = async (req, res) => {
           }
         }
       } catch { /* sin red: se omiten estos chequeos */ }
+    }
+
+    // 2c) Re-suscribir la app a la WABA con ESTE token (idempotente y sin efectos
+    // secundarios: si ya estaba suscrita, Meta responde success). Una suscripción
+    // creada con un token viejo/caducado puede dejar el vínculo app↔WABA a medias
+    // (webhooks entran pero el envío da #200); re-crearla con el token vigente lo
+    // repara. Caso real: WABA creada en WhatsApp Manager, fuera de la app.
+    if (doc.businessAccountId) {
+      try {
+        const rsub = await fetch(
+          `https://graph.facebook.com/${V}/${doc.businessAccountId}/subscribed_apps`,
+          { method: 'POST', headers: { Authorization: `Bearer ${token}` } }
+        );
+        const sj2 = await rsub.json().catch(() => ({}));
+        checks.push({
+          ok: !!(rsub.ok && sj2.success !== false),
+          label: 'Re-suscripción de la app a la WABA (con el token actual)',
+          detail: rsub.ok
+            ? `Meta aceptó la (re)suscripción: ${JSON.stringify(sj2)}.`
+            : sj2?.error?.message || 'Meta rechazó la re-suscripción.',
+          fix: rsub.ok
+            ? ''
+            : 'El token no pudo suscribir su app a esta WABA: revisa que tenga whatsapp_business_management con control total sobre ELLA.',
+        });
+      } catch { /* sin red: se omite */ }
     }
 
     // 3) Envío REAL de prueba (opcional, si mandan un número destino): reproduce
