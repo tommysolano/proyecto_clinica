@@ -25,6 +25,10 @@ import {
   HiOutlineArrowUturnLeft,
   HiOutlineMicrophone,
   HiOutlinePhone,
+  HiOutlineArrowLeft,
+  HiOutlineInformationCircle,
+  HiOutlineBarsArrowDown,
+  HiOutlineBarsArrowUp,
 } from 'react-icons/hi2';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
@@ -164,6 +168,17 @@ export default function Chats() {
   const [opportunityModal, setOpportunityModal] = useState(false);
   const [appointmentModal, setAppointmentModal] = useState(false);
   const [quotationModal, setQuotationModal] = useState(false);
+  // Panel de info del contacto como cajón lateral cuando la columna derecha
+  // no cabe (pantallas pequeñas / sidebar del sistema abierto).
+  const [infoOpen, setInfoOpen] = useState(false);
+  // Orden de la lista: 'recent' = destacados arriba + actividad más nueva primero;
+  // 'oldest' = puro orden de llegada (el que más tiempo lleva esperando, primero).
+  const [sortOrder, setSortOrder] = useState(() => localStorage.getItem('chats.sortOrder') || 'recent');
+  const toggleSortOrder = () => {
+    const next = sortOrder === 'recent' ? 'oldest' : 'recent';
+    setSortOrder(next);
+    localStorage.setItem('chats.sortOrder', next);
+  };
   const messagesEndRef = useRef(null);
   const [agents, setAgents] = useState([]);
 
@@ -316,6 +331,14 @@ export default function Chats() {
     () => conversations.find((c) => c._id === activeId),
     [conversations, activeId]
   );
+  // Lista según el orden elegido. El backend manda destacados arriba + recientes
+  // primero; 'oldest' reordena aquí por llegada pura (sin anclar destacados).
+  const sortedConversations = useMemo(() => {
+    if (sortOrder !== 'oldest') return conversations;
+    return [...conversations].sort(
+      (a, b) => new Date(a.lastMessageAt || 0) - new Date(b.lastMessageAt || 0)
+    );
+  }, [conversations, sortOrder]);
   const activeWindowClosed = isWhatsappWindowClosed(activeConv);
   const activeOptedOut = isOptedOut(activeConv);
 
@@ -573,7 +596,7 @@ export default function Chats() {
   };
 
   return (
-    <div className="h-[calc(100vh-96px)] flex flex-col">
+    <div className="@container h-[calc(100vh-96px)] sm:h-[calc(100vh-112px)] lg:h-[calc(100vh-128px)] flex flex-col">
       {/* Barra de pestañas + acciones (el título va en la cabecera del sistema) */}
       <div className="flex items-center justify-between gap-2 mb-2 border-b border-slate-200">
         <div className="flex gap-1 flex-wrap">
@@ -614,9 +637,13 @@ export default function Chats() {
           onRangeChange={(next) => { setStatsRange(next); loadStats(next); }}
         />
       ) : (
-        <div className="flex-1 grid grid-cols-1 lg:grid-cols-[320px_1fr_320px] gap-3 min-h-0">
+        // Columnas según el ancho REAL disponible (container queries, no viewport):
+        // - angosto: una sola vista (lista O conversación, estilo WhatsApp móvil)
+        // - medio (≥768px de contenedor): lista + conversación; la info va en un cajón
+        // - ancho (≥1280px de contenedor): las 3 columnas de siempre
+        <div className="flex-1 grid grid-cols-1 @3xl:grid-cols-[280px_minmax(0,1fr)] @7xl:grid-cols-[300px_minmax(0,1fr)_320px] grid-rows-[minmax(0,1fr)] gap-3 min-h-0">
           {/* Lista de conversaciones */}
-          <div className="bg-white border border-slate-200 rounded-xl flex flex-col overflow-hidden">
+          <div className={`bg-white border border-slate-200 rounded-xl flex-col overflow-hidden min-h-0 ${activeId ? 'hidden @3xl:flex' : 'flex'}`}>
             <div className="p-2 border-b border-slate-100 flex gap-1">
               <div className="relative flex-1">
                 <HiOutlineMagnifyingGlass className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
@@ -627,6 +654,19 @@ export default function Chats() {
                   className="w-full pl-8 pr-2 py-1.5 text-sm border border-slate-200 rounded-lg"
                 />
               </div>
+              <button
+                onClick={toggleSortOrder}
+                className={`p-1.5 rounded-lg ${sortOrder === 'oldest' ? 'text-emerald-700 bg-emerald-50 hover:bg-emerald-100' : 'text-slate-500 hover:bg-slate-50'}`}
+                title={sortOrder === 'oldest'
+                  ? 'Orden: primeros en llegar primero (orden de llegada). Clic para ver los más recientes primero.'
+                  : 'Orden: últimos en llegar primero (destacados arriba). Clic para atender por orden de llegada.'}
+              >
+                {sortOrder === 'oldest' ? (
+                  <HiOutlineBarsArrowUp className="w-4 h-4" />
+                ) : (
+                  <HiOutlineBarsArrowDown className="w-4 h-4" />
+                )}
+              </button>
               <button
                 onClick={() => loadConversations(
                   tab === 'mine' ? { assigned: 'me' }
@@ -647,7 +687,7 @@ export default function Chats() {
               ) : conversations.length === 0 ? (
                 <div className="p-8 text-sm text-slate-400 text-center">Sin conversaciones</div>
               ) : (
-                conversations.map((c) => (
+                sortedConversations.map((c) => (
                   <ConversationRow
                     key={c._id}
                     conv={c}
@@ -661,7 +701,7 @@ export default function Chats() {
           </div>
 
           {/* Panel principal de mensajes */}
-          <div className="bg-white border border-slate-200 rounded-xl flex flex-col overflow-hidden min-h-0">
+          <div className={`bg-white border border-slate-200 rounded-xl flex-col overflow-hidden min-h-0 min-w-0 ${activeId ? 'flex' : 'hidden @3xl:flex'}`}>
             {!activeConv ? (
               <div className="flex-1 flex items-center justify-center text-sm text-slate-400">
                 Selecciona un chat para empezar
@@ -679,6 +719,8 @@ export default function Chats() {
                   meId={user?._id}
                   calling={calling}
                   onCall={() => voiceCall.startCall(activeConv)}
+                  onBack={() => setActiveId(null)}
+                  onToggleInfo={() => setInfoOpen(true)}
                 />
                 <div ref={messagesEndRef} className="flex-1 overflow-y-auto bg-slate-50 p-4 space-y-2">
                   {messages.map((m) => (
@@ -1093,7 +1135,7 @@ export default function Chats() {
                         !!activeConv?.blocked || activeWindowClosed || activeOptedOut ||
                         !!templateDraft.name || voiceNoteAttached
                       }
-                      className="flex-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm resize-none disabled:bg-slate-100"
+                      className="flex-1 min-w-0 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm resize-none disabled:bg-slate-100"
                     />
                     )}
                     {recorder.recording ? (
@@ -1151,7 +1193,7 @@ export default function Chats() {
                       }
                       className="px-3 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1"
                     >
-                      <HiOutlinePaperAirplane className="w-4 h-4" /> Enviar
+                      <HiOutlinePaperAirplane className="w-4 h-4" /> <span className="hidden @2xl:inline">Enviar</span>
                     </button>
                       </>
                     )}
@@ -1161,8 +1203,8 @@ export default function Chats() {
             )}
           </div>
 
-          {/* Panel lateral derecho - info y oportunidad */}
-          <div className="bg-white border border-slate-200 rounded-xl overflow-y-auto p-3 hidden lg:block">
+          {/* Panel lateral derecho - info y oportunidad (columna fija solo en ancho) */}
+          <div className="bg-white border border-slate-200 rounded-xl overflow-y-auto p-3 hidden @7xl:block">
             {activeConv ? (
               <SidePanel
                 conv={activeConv}
@@ -1179,6 +1221,38 @@ export default function Chats() {
               <div className="text-sm text-slate-400">Sin chat seleccionado</div>
             )}
           </div>
+
+          {/* Cajón de info del contacto cuando la columna derecha no cabe */}
+          {infoOpen && activeConv && (
+            <div className="fixed inset-0 z-40 @7xl:hidden" onClick={() => setInfoOpen(false)}>
+              <div className="absolute inset-0 bg-black/30" />
+              <div
+                className="absolute right-0 top-0 bottom-0 w-[340px] max-w-[92vw] bg-white shadow-2xl overflow-y-auto p-3"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <div className="flex justify-end mb-1">
+                  <button
+                    onClick={() => setInfoOpen(false)}
+                    className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 bg-transparent border-none cursor-pointer"
+                    title="Cerrar"
+                  >
+                    <HiOutlineXMark className="w-5 h-5" />
+                  </button>
+                </div>
+                <SidePanel
+                  conv={activeConv}
+                  agents={agents}
+                  meId={user?._id}
+                  onUpdated={(c) => {
+                    setConversations((prev) => prev.map((x) => (x._id === c._id ? c : x)));
+                  }}
+                  onEditOpportunity={() => setOpportunityModal(true)}
+                  onScheduleAppointment={() => setAppointmentModal(true)}
+                  onCreateQuotation={() => setQuotationModal(true)}
+                />
+              </div>
+            </div>
+          )}
         </div>
       )}
 
@@ -1429,25 +1503,34 @@ function ConversationRow({ conv, active, onClick, onToggleFeatured }) {
   );
 }
 
-function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpportunity, onCreateAppointment, onCreateQuotation, meId, calling, onCall }) {
+function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpportunity, onCreateAppointment, onCreateQuotation, meId, calling, onCall, onBack, onToggleInfo }) {
   const canTake = !conv.assignedTo || String(conv.assignedTo._id || conv.assignedTo) !== String(meId);
   // "Esperando respuesta" cuando el último mensaje es entrante (del paciente).
   const waitingReply = conv.lastMessageDirection === 'in';
   return (
-    <div className="border-b border-slate-100 p-3 flex items-center gap-3">
-      <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold">
+    <div className="border-b border-slate-100 p-3 flex items-center gap-2">
+      {onBack && (
+        <button
+          onClick={onBack}
+          className="@3xl:hidden p-1.5 -ml-1 rounded-lg text-slate-500 hover:bg-slate-100 bg-transparent border-none cursor-pointer shrink-0"
+          title="Volver a la lista"
+        >
+          <HiOutlineArrowLeft className="w-5 h-5" />
+        </button>
+      )}
+      <div className="w-10 h-10 rounded-full bg-emerald-100 text-emerald-700 flex items-center justify-center font-bold shrink-0">
         {(conv.contactName || conv.phone || '?').slice(0, 2).toUpperCase()}
       </div>
-      <div className="flex-1">
+      <div className="flex-1 min-w-0">
         <div className="font-semibold text-slate-800 flex items-center gap-2">
-          {conv.contactName || conv.phone}
+          <span className="truncate">{conv.contactName || conv.phone}</span>
           {waitingReply && (
             <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700" title="El paciente espera respuesta">
               Esperando respuesta
             </span>
           )}
         </div>
-        <div className="text-xs text-slate-500">
+        <div className="text-xs text-slate-500 truncate">
           {conv.phone}
           {conv.patient && (
             <span className="ml-2 text-emerald-700">· Paciente vinculado</span>
@@ -1467,7 +1550,7 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpport
           title={conv.blocked ? 'Contacto bloqueado' : calling?.enabled ? 'Llamar por WhatsApp' : (calling?.reason || 'Comprobando si este número puede llamar…')}
           className="text-xs px-2 py-1 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed border-none cursor-pointer flex items-center gap-1"
         >
-          <HiOutlinePhone className="w-3.5 h-3.5" /> Llamar
+          <HiOutlinePhone className="w-3.5 h-3.5" /> <span className="hidden @4xl:inline">Llamar</span>
         </button>
         {canTake && (
           <button
@@ -1491,21 +1574,21 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpport
           className="text-xs px-2 py-1 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-lg flex items-center gap-1"
         >
           <HiOutlineTag className="w-3.5 h-3.5" />
-          {conv.opportunity?.isOpportunity ? 'Editar / añadir oportunidad' : 'Crear oportunidad'}
+          <span className="hidden @4xl:inline">{conv.opportunity?.isOpportunity ? 'Editar / añadir oportunidad' : 'Crear oportunidad'}</span>
         </button>
         {conv.patient && (
           <button
             onClick={onCreateAppointment}
             className="text-xs px-2 py-1 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded-lg flex items-center gap-1"
           >
-            <HiOutlineCalendarDays className="w-3.5 h-3.5" /> Crear cita
+            <HiOutlineCalendarDays className="w-3.5 h-3.5" /> <span className="hidden @4xl:inline">Crear cita</span>
           </button>
         )}
         <button
           onClick={onCreateQuotation}
           className="text-xs px-2 py-1 bg-amber-50 text-amber-700 hover:bg-amber-100 rounded-lg flex items-center gap-1"
         >
-          <HiOutlineDocumentDuplicate className="w-3.5 h-3.5" /> Cotización
+          <HiOutlineDocumentDuplicate className="w-3.5 h-3.5" /> <span className="hidden @4xl:inline">Cotización</span>
         </button>
         <button
           onClick={onToggleFeatured}
@@ -1518,6 +1601,15 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpport
             <HiOutlineStar className="w-4 h-4 text-slate-400" />
           )}
         </button>
+        {onToggleInfo && (
+          <button
+            onClick={onToggleInfo}
+            className="@7xl:hidden p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 bg-transparent border-none cursor-pointer"
+            title="Info del contacto y oportunidad"
+          >
+            <HiOutlineInformationCircle className="w-4 h-4" />
+          </button>
+        )}
       </div>
     </div>
   );
@@ -1605,7 +1697,7 @@ function MessageBubble({ msg, onReply, onJumpTo }) {
       {isOut && <ReplyButton onClick={onReply} />}
       <div
         id={`msg-${msg._id}`}
-        className={`max-w-[70%] rounded-lg px-3 py-2 text-sm shadow-sm transition-shadow ${
+        className={`max-w-[85%] @3xl:max-w-[70%] rounded-lg px-3 py-2 text-sm shadow-sm transition-shadow ${
           isOut ? 'bg-emerald-500 text-white' : 'bg-white border border-slate-200 text-slate-800'
         }`}
       >
