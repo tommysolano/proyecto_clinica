@@ -2,12 +2,14 @@ const CardSettlement = require('../models/CardSettlement');
 const BankAccount = require('../models/BankAccount');
 const BankTransaction = require('../models/BankTransaction');
 const ChartOfAccount = require('../models/ChartOfAccount');
+const RetentionRule = require('../models/RetentionRule');
 const Sale = require('../models/Sale');
 const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 
 const round = (n) => +(Number(n) || 0).toFixed(2);
 const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+const RET_TYPES = ['RENTA', 'IVA'];
 
 /**
  * Busca ventas pagadas con tarjeta para cargarlas en una liquidación.
@@ -46,34 +48,99 @@ exports.searchCardSales = async (req, res) => {
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 
+/** Catálogo de reglas ACTIVAS de la clínica, indexado por `TIPO|codigo` (la más reciente gana). */
+async function loadRetentionRules(clinicId, session) {
+  const rules = await RetentionRule.find({ clinic: clinicId, active: true })
+    .sort({ createdAt: 1 }).session(session || null).lean();
+  const map = new Map();
+  for (const r of rules) map.set(`${r.type}|${r.code}`, r); // el último (más reciente) prevalece
+  return map;
+}
+
 /**
- * Recalcula los totales de la liquidación a partir de sus transacciones y
- * retenciones. El "a pagar" de cada transacción se deriva para mantener el
- * cuadre contable: aPagar = deposito - comisión - iva - retIva.
+ * Deriva las filas de retención SOLAS a partir de las bases digitadas en las transacciones y
+ * recalcula todos los totales. Elimina la digitación manual: el contador solo pone las bases
+ * (baseRetIr / baseRetIva) por transacción y, en cada fila de retención, escoge el código SRI.
+ *
+ * Reglas (fuente única, se aplican al guardar Y al acreditar):
+ *   · base de la fila RENTA = Σ baseRetIr de las transacciones; base de la fila IVA = Σ baseRetIva.
+ *   · si una base es 0 su fila NO existe; si es > 0 la fila existe (se crea/actualiza sola).
+ *   · el % SIEMPRE proviene de la RetentionRule del código elegido (nunca se digita); el valor
+ *     es base × % / 100. El % guardado es el SNAPSHOT con el que se calculó: si la regla ya no
+ *     existe (se borró/versionó) se conserva el % previo en vez de perderlo.
+ *   · a pagar por transacción = deposito - comisión - iva (las retenciones se aplican al neto).
  */
-function computeTotals(doc) {
-  let totalDeposit = 0, totalCommission = 0, totalIva = 0, totalRetIva = 0, totalToPay = 0;
+async function recomputeSettlement(doc, clinicId, session) {
+  let totalDeposit = 0, totalCommission = 0, totalIva = 0, totalToPay = 0;
+  const baseByType = { RENTA: 0, IVA: 0 };
   (doc.transactions || []).forEach((t) => {
     const deposit = Number(t.deposit) || 0;
     const commission = Number(t.commission) || 0;
     const iva = Number(t.iva) || 0;
-    const retIva = Number(t.retIva) || 0;
-    t.toPay = round(deposit - commission - iva - retIva);
+    t.toPay = round(deposit - commission - iva);
     totalDeposit += deposit;
     totalCommission += commission;
     totalIva += iva;
-    totalRetIva += retIva;
     totalToPay += t.toPay;
+    baseByType.RENTA += Number(t.baseRetIr) || 0;
+    baseByType.IVA += Number(t.baseRetIva) || 0;
   });
-  const totalRetIr = (doc.retentions || [])
-    .filter((r) => r.type === 'RENTA')
-    .reduce((s, r) => s + (Number(r.value) || 0), 0);
+  baseByType.RENTA = round(baseByType.RENTA);
+  baseByType.IVA = round(baseByType.IVA);
+
+  const rules = await loadRetentionRules(clinicId, session);
+  const prevByType = new Map((doc.retentions || []).map((r) => [r.type, r]));
+  const rows = [];
+  for (const type of RET_TYPES) {
+    const base = baseByType[type];
+    if (base <= 0) continue; // base 0 → la fila desaparece
+    const prev = prevByType.get(type);
+    const sriCode = (prev?.sriCode || '').trim();
+    let percentage = Number(prev?.percentage) || 0; // snapshot previo
+    if (sriCode) {
+      const rule = rules.get(`${type}|${sriCode}`);
+      if (rule) percentage = Number(rule.rate) || 0; // el % manda desde la regla
+    }
+    const row = {
+      issueDate: prev?.issueDate || doc.issueDate || null,
+      retentionNumber: prev?.retentionNumber || '',
+      authorization: prev?.authorization || '',
+      type,
+      sriCode,
+      base,
+      percentage: round(percentage),
+      value: round(base * percentage / 100),
+    };
+    if (prev?._id) row._id = prev._id; // conserva el id del subdocumento
+    rows.push(row);
+  }
+  doc.retentions = rows;
+
+  const rentaRow = rows.find((r) => r.type === 'RENTA');
+  const ivaRow = rows.find((r) => r.type === 'IVA');
   doc.totalDeposit = round(totalDeposit);
   doc.totalCommission = round(totalCommission);
   doc.totalIva = round(totalIva);
-  doc.totalRetIva = round(totalRetIva);
-  doc.totalRetIr = round(totalRetIr);
+  doc.totalRetIr = round(rentaRow?.value || 0);
+  doc.totalRetIva = round(ivaRow?.value || 0);
   doc.totalToPay = round(totalToPay);
+}
+
+/**
+ * Verifica que cada fila de retención tenga un código SRI válido con % determinado. Devuelve la
+ * lista de problemas (vacía si todo está bien). Se usa al guardar y al acreditar.
+ */
+function retentionProblems(doc) {
+  const problemas = [];
+  for (const r of doc.retentions || []) {
+    const etiqueta = r.type === 'IVA' ? 'IVA' : 'renta';
+    if (!String(r.sriCode || '').trim()) {
+      problemas.push(`Falta el código SRI de la retención de ${etiqueta} (base ${round(r.base)}).`);
+    } else if (round(r.percentage) <= 0) {
+      problemas.push(`El código ${r.sriCode} no corresponde a una regla de retención de ${etiqueta} activa: no se pudo determinar el porcentaje.`);
+    }
+  }
+  return problemas;
 }
 
 /** Resuelve una cuenta: usa la seleccionada, o el rol del mapa de cuentas configurable. */
@@ -110,7 +177,9 @@ exports.create = async (req, res) => {
     const count = await CardSettlement.countDocuments({ clinic: req.clinicId });
     const code = `LIQ-${new Date().getFullYear()}-${String(count + 1).padStart(5, '0')}`;
     const s = new CardSettlement({ ...req.body, clinic: req.clinicId, code, createdBy: req.user._id });
-    computeTotals(s);
+    await recomputeSettlement(s, req.clinicId);
+    const problemas = retentionProblems(s);
+    if (problemas.length) return res.status(400).json({ message: problemas.join(' ') });
     await s.save();
     res.status(201).json(s);
   } catch (e) { res.status(400).json({ message: e.message }); }
@@ -123,7 +192,9 @@ exports.update = async (req, res) => {
     if (s.status !== 'BORRADOR') return res.status(400).json({ message: 'Solo se editan liquidaciones en BORRADOR' });
     const { code, status, journalEntry, bankTransaction, clinic, ...rest } = req.body;
     Object.assign(s, rest);
-    computeTotals(s);
+    await recomputeSettlement(s, req.clinicId);
+    const problemas = retentionProblems(s);
+    if (problemas.length) return res.status(400).json({ message: problemas.join(' ') });
     await s.save();
     res.json(s);
   } catch (e) { res.status(400).json({ message: e.message }); }
@@ -143,7 +214,9 @@ exports.accredit = async (req, res) => {
         if (s.status !== 'BORRADOR') throw Object.assign(new Error('No esta en BORRADOR'), { status: 400 });
         if (!s.bankAccount) throw Object.assign(new Error('Selecciona el banco donde se acredita'), { status: 400 });
 
-        computeTotals(s);
+        await recomputeSettlement(s, req.clinicId, session);
+        const problemas = retentionProblems(s);
+        if (problemas.length) throw Object.assign(new Error(problemas.join(' ')), { status: 400 });
         const accreditedAt = req.body.accreditedAt ? new Date(req.body.accreditedAt) : (s.issueDate || new Date());
         await assertPeriodOpen(req.clinicId, accreditedAt, { session });
         const bank = await BankAccount.findOne({ _id: s.bankAccount, clinic: req.clinicId }).session(session);
@@ -157,7 +230,9 @@ exports.accredit = async (req, res) => {
         const retIvaAcc = s.totalRetIva > 0 ? await resolveAccount(req.clinicId, s.retIvaAccount, 'retIvaPorCobrar', session) : null;
         const retIrAcc = s.totalRetIr > 0 ? await resolveAccount(req.clinicId, s.retIrAccount, 'retRentaPorCobrar', session) : null;
 
-        const netToBank = round(s.totalToPay - s.totalRetIr);
+        // El neto a banco resta AMBAS retenciones: el "a pagar" por transacción ya no incluye la
+        // retención de IVA (que ahora se calcula a nivel de la fila de retención, no por línea).
+        const netToBank = round(s.totalToPay - s.totalRetIr - s.totalRetIva);
         const lines = [];
         if (netToBank > 0) lines.push({ account: bankAcc._id, debit: netToBank, credit: 0, description: `Acreditacion liquidacion ${s.code}` });
         (s.transactions || []).forEach((t) => {

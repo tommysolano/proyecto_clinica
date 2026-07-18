@@ -14,11 +14,14 @@ const settlementTxnSchema = new mongoose.Schema(
     deposit: { type: Number, default: 0 },     // deposito (bruto acreditado)
     commission: { type: Number, default: 0 },  // comisión
     iva: { type: Number, default: 0 },         // iva (sobre la comisión)
-    baseRetIr: { type: Number, default: 0 },   // base ret ir
-    baseRetIva: { type: Number, default: 0 },  // base ret iva
-    baseIr: { type: Number, default: 0 },      // base ir
-    retIva: { type: Number, default: 0 },      // ret iva
-    toPay: { type: Number, default: 0 },       // a pagar (neto)
+    // BASES de retención (lo ÚNICO que digita el contador por transacción). Las filas de la
+    // sección "Retenciones" —tipo, base, % y valor— se derivan solas de estas bases (ver
+    // controller). Los antiguos campos redundantes `baseIr` y `retIva` se eliminaron: las
+    // liquidaciones ya contabilizadas conservan sus TOTALES (totalRetIva/totalToPay), que es
+    // lo que se lee; no se vuelven a escribir esos campos por transacción.
+    baseRetIr: { type: Number, default: 0 },   // base para retención en la fuente (RENTA)
+    baseRetIva: { type: Number, default: 0 },  // base para retención de IVA
+    toPay: { type: Number, default: 0 },       // a pagar (deposito - comisión - iva)
   },
   { _id: true }
 );

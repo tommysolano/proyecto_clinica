@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, useMemo } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
@@ -8,16 +8,19 @@ import NumericInput from '../../components/NumericInput';
 import SearchableSelect from '../../components/SearchableSelect';
 import AccountSelect from '../../components/AccountSelect';
 
-// Códigos SRI frecuentes en liquidaciones de tarjeta (referenciales, editables)
-const SRI_RENTA = ['332', '343', '344', '304'];
-const SRI_IVA = ['721', '723', '725'];
+// Las retenciones se derivan de las bases digitadas en las transacciones: una fila RENTA (si hay
+// base ret IR) y/o una fila IVA (si hay base ret IVA). El código SRI se escoge del catálogo de
+// reglas de la clínica y el % viene de la regla (nunca se digita). Ver recomputeSettlement.
+const RET_TYPES = ['RENTA', 'IVA'];
+const RET_LABEL = { RENTA: 'Retención en la fuente (renta)', IVA: 'Retención de IVA' };
 
-const EMPTY_TXN = { date: today(), recap: '', account: '', costCenter: '', deposit: 0, commission: 0, iva: 0, baseRetIr: 0, baseRetIva: 0, baseIr: 0, retIva: 0 };
-const EMPTY_RET = { issueDate: today(), retentionNumber: '', authorization: '', type: 'RENTA', sriCode: '', base: 0, percentage: 0, value: 0 };
+const EMPTY_TXN = { date: today(), recap: '', account: '', costCenter: '', deposit: 0, commission: 0, iva: 0, baseRetIr: 0, baseRetIva: 0 };
+const EMPTY_RET_META = () => ({ RENTA: emptyMeta(), IVA: emptyMeta() });
+const emptyMeta = () => ({ issueDate: today(), retentionNumber: '', authorization: '', sriCode: '', percentage: 0 });
 const EMPTY = {
   issueDate: today(), docType: 'LIQUIDACION', supplier: '', bankAccount: '', docNumber: '', commissionToSettle: 0,
   receivableAccount: '', commissionAccount: '', ivaAccount: '', retIvaAccount: '', retIrAccount: '',
-  transactions: [{ ...EMPTY_TXN }], retentions: [], sourceSales: [], notes: '',
+  transactions: [{ ...EMPTY_TXN }], sourceSales: [], notes: '',
 };
 const EMPTY_PICKER = { lote: '', from: today(), to: today(), includeSettled: false };
 
@@ -29,9 +32,11 @@ export default function CardSettlements() {
   const [suppliers, setSuppliers] = useState([]);
   const [accounts, setAccounts] = useState([]);
   const [costCenters, setCostCenters] = useState([]);
+  const [rules, setRules] = useState([]);        // catálogo de reglas de retención (activas)
   const [show, setShow] = useState(false);
   const [editId, setEditId] = useState(null);
   const [form, setForm] = useState(EMPTY);
+  const [retMeta, setRetMeta] = useState(EMPTY_RET_META()); // datos que sí digita el usuario por tipo
   const [viewItem, setViewItem] = useState(null);
   // Cargador de facturas por lote/fecha
   const [picker, setPicker] = useState(EMPTY_PICKER);
@@ -48,22 +53,60 @@ export default function CardSettlements() {
     api.get('/suppliers').then((r) => setSuppliers((r.data || []).filter((s) => (s.roles || []).includes('PROVEEDOR')))).catch(() => {});
     api.get('/chart-of-accounts').then((r) => setAccounts(r.data || [])).catch(() => {});
     api.get('/cost-centers').then((r) => setCostCenters(r.data || [])).catch(() => {});
+    api.get('/retention-rules', { params: { active: 'true' } }).then((r) => setRules(r.data || [])).catch(() => {});
     load();
   }, []);
 
-  // Totales derivados (espejo del backend)
-  const totals = (() => {
-    let deposit = 0, commission = 0, iva = 0, retIva = 0, toPay = 0;
+  // Reglas por tipo (para el dropdown) e indexadas por código (para resolver el %).
+  const rulesByType = useMemo(() => ({
+    RENTA: rules.filter((r) => r.type === 'RENTA'),
+    IVA: rules.filter((r) => r.type === 'IVA'),
+  }), [rules]);
+  const ruleByKey = useMemo(() => {
+    const m = {};
+    rules.forEach((r) => { m[`${r.type}|${r.code}`] = r; });
+    return m;
+  }, [rules]);
+
+  // Bases sumadas de TODAS las transacciones, por tipo (fuente única de la base de cada retención).
+  const baseByType = useMemo(() => {
+    const b = { RENTA: 0, IVA: 0 };
+    (form.transactions || []).forEach((t) => { b.RENTA += +t.baseRetIr || 0; b.IVA += +t.baseRetIva || 0; });
+    return { RENTA: round(b.RENTA), IVA: round(b.IVA) };
+  }, [form.transactions]);
+
+  // Filas de retención DERIVADAS: existe una fila por tipo solo si su base > 0. El % viene de la
+  // regla del código elegido (si no, cae al snapshot previo); el valor = base × % / 100.
+  const retentionRows = useMemo(() => RET_TYPES
+    .filter((type) => baseByType[type] > 0)
+    .map((type) => {
+      const meta = retMeta[type] || emptyMeta();
+      const rule = meta.sriCode ? ruleByKey[`${type}|${meta.sriCode}`] : null;
+      const percentage = rule ? Number(rule.rate) || 0 : (+meta.percentage || 0);
+      const base = baseByType[type];
+      return {
+        type, base,
+        issueDate: meta.issueDate, retentionNumber: meta.retentionNumber, authorization: meta.authorization,
+        sriCode: meta.sriCode, percentage: round(percentage), value: round(base * percentage / 100),
+      };
+    }), [baseByType, retMeta, ruleByKey]);
+
+  // Totales derivados (espejo del backend): a pagar = depósito - comisión - iva; neto resta ambas retenciones.
+  const totals = useMemo(() => {
+    let deposit = 0, commission = 0, iva = 0, toPay = 0;
     (form.transactions || []).forEach((t) => {
-      const d = +t.deposit || 0, c = +t.commission || 0, i = +t.iva || 0, ri = +t.retIva || 0;
-      deposit += d; commission += c; iva += i; retIva += ri; toPay += round(d - c - i - ri);
+      const d = +t.deposit || 0, c = +t.commission || 0, i = +t.iva || 0;
+      deposit += d; commission += c; iva += i; toPay += round(d - c - i);
     });
-    const retIr = (form.retentions || []).filter((r) => r.type === 'RENTA').reduce((s, r) => s + (+r.value || 0), 0);
-    return { deposit: round(deposit), commission: round(commission), iva: round(iva), retIva: round(retIva), retIr: round(retIr), toPay: round(toPay), net: round(toPay - retIr) };
-  })();
+    const retIr = retentionRows.filter((r) => r.type === 'RENTA').reduce((s, r) => s + r.value, 0);
+    const retIva = retentionRows.filter((r) => r.type === 'IVA').reduce((s, r) => s + r.value, 0);
+    return { deposit: round(deposit), commission: round(commission), iva: round(iva), retIva: round(retIva), retIr: round(retIr), toPay: round(toPay), net: round(toPay - retIr - retIva) };
+  }, [form.transactions, retentionRows]);
+
+  const setRetMetaField = (type, patch) => setRetMeta((m) => ({ ...m, [type]: { ...m[type], ...patch } }));
 
   const resetPicker = () => { setPicker(EMPTY_PICKER); setPickerResults([]); setPicked({}); };
-  const openNew = () => { setEditId(null); setForm(EMPTY); resetPicker(); setShow(true); };
+  const openNew = () => { setEditId(null); setForm(EMPTY); setRetMeta(EMPTY_RET_META()); resetPicker(); setShow(true); };
   const openEdit = async (id) => {
     try {
       const r = await api.get(`/card-settlements/${id}`);
@@ -78,9 +121,20 @@ export default function CardSettlements() {
         transactions: (d.transactions || []).map((t) => ({
           ...t, date: t.date ? t.date.slice(0, 10) : '', account: t.account?._id || t.account || '', costCenter: t.costCenter?._id || t.costCenter || '',
         })),
-        retentions: (d.retentions || []).map((r2) => ({ ...r2, issueDate: r2.issueDate ? r2.issueDate.slice(0, 10) : '' })),
         sourceSales: d.sourceSales || [],
       });
+      // Los datos que digita el usuario (fecha/número/autorización/código) se rehidratan por tipo;
+      // la base, el % y el valor se vuelven a derivar solos.
+      const rm = EMPTY_RET_META();
+      (d.retentions || []).forEach((r2) => {
+        if (!rm[r2.type]) return;
+        rm[r2.type] = {
+          issueDate: r2.issueDate ? r2.issueDate.slice(0, 10) : today(),
+          retentionNumber: r2.retentionNumber || '', authorization: r2.authorization || '',
+          sriCode: r2.sriCode || '', percentage: +r2.percentage || 0,
+        };
+      });
+      setRetMeta(rm);
       resetPicker();
       setEditId(id); setShow(true);
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
@@ -135,20 +189,20 @@ export default function CardSettlements() {
   const setTxn = (i, patch) => { const a = [...form.transactions]; a[i] = { ...a[i], ...patch }; setForm({ ...form, transactions: a }); };
   const addTxn = () => setForm({ ...form, transactions: [...form.transactions, { ...EMPTY_TXN }] });
   const delTxn = (i) => setForm({ ...form, transactions: form.transactions.filter((_, x) => x !== i) });
-  const setRet = (i, patch) => { const a = [...form.retentions]; a[i] = { ...a[i], ...patch }; setForm({ ...form, retentions: a }); };
-  const addRet = () => setForm({ ...form, retentions: [...form.retentions, { ...EMPTY_RET }] });
-  const delRet = (i) => setForm({ ...form, retentions: form.retentions.filter((_, x) => x !== i) });
 
   const submit = async (e) => {
     e.preventDefault();
     if (!form.transactions.length) return toast.error('Agrega al menos una transacción');
+    // Misma validación que el backend: ninguna retención sin código SRI (fuente de error humano).
+    const sinCodigo = retentionRows.find((r) => !String(r.sriCode || '').trim());
+    if (sinCodigo) return toast.error(`Escoge el código SRI de la ${RET_LABEL[sinCodigo.type].toLowerCase()} (base $${fmt(sinCodigo.base)}).`);
     try {
-      const payload = { ...form };
+      const payload = { ...form, retentions: retentionRows };
       ['receivableAccount', 'commissionAccount', 'ivaAccount', 'retIvaAccount', 'retIrAccount', 'supplier', 'bankAccount'].forEach((k) => { if (!payload[k]) payload[k] = null; });
       payload.transactions = payload.transactions.map((t) => ({ ...t, account: t.account || null, costCenter: t.costCenter || null }));
       if (editId) { await api.put(`/card-settlements/${editId}`, payload); toast.success('Liquidación actualizada'); }
       else { await api.post('/card-settlements', payload); toast.success('Liquidación creada'); }
-      setShow(false); setForm(EMPTY); setEditId(null); load();
+      setShow(false); setForm(EMPTY); setRetMeta(EMPTY_RET_META()); setEditId(null); load();
     } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
   };
 
@@ -199,7 +253,7 @@ export default function CardSettlements() {
                 <td className="px-3 py-2 text-xs">{s.bankAccount?.name || '—'}</td>
                 <td className="px-3 py-2 text-right font-mono">${fmt(s.totalDeposit)}</td>
                 <td className="px-3 py-2 text-right font-mono text-rose-600">{fmt(s.totalCommission)}</td>
-                <td className="px-3 py-2 text-right font-mono font-semibold text-emerald-700">${fmt(s.totalToPay - s.totalRetIr)}</td>
+                <td className="px-3 py-2 text-right font-mono font-semibold text-emerald-700">${fmt(s.totalDeposit - s.totalCommission - s.totalIva - s.totalRetIr - s.totalRetIva)}</td>
                 <td className="px-3 py-2 text-center">{statusBadge(s.status)}</td>
                 <td className="px-3 py-2">
                   <div className="flex items-center justify-end gap-1.5">
@@ -343,16 +397,16 @@ export default function CardSettlements() {
           <div className="border rounded-lg p-3">
             <div className="flex justify-between items-center mb-2"><p className="font-semibold text-sm">Transacciones</p><button type="button" onClick={addTxn} className="text-emerald-600 text-sm flex items-center gap-1"><HiOutlinePlus /> Transacción</button></div>
             <div className="overflow-x-auto">
-              <table className="tbl text-xs min-w-[1100px]">
+              <table className="tbl text-xs min-w-[900px]">
                 <thead><tr className="text-slate-500 text-left">
                   <th className="px-1 py-1">Fecha</th><th className="px-1 py-1">#Recap</th><th className="px-1 py-1">Cuenta</th><th className="px-1 py-1">Centro de costo</th>
                   <th className="px-1 py-1 text-right">Depósito</th><th className="px-1 py-1 text-right">Comisión</th><th className="px-1 py-1 text-right">IVA</th>
-                  <th className="px-1 py-1 text-right">Base ret IR</th><th className="px-1 py-1 text-right">Base ret IVA</th><th className="px-1 py-1 text-right">Base IR</th>
-                  <th className="px-1 py-1 text-right">Ret IVA</th><th className="px-1 py-1 text-right">A pagar</th><th></th>
+                  <th className="px-1 py-1 text-right">Base retención renta</th><th className="px-1 py-1 text-right">Base retención IVA</th>
+                  <th className="px-1 py-1 text-right">A pagar</th><th></th>
                 </tr></thead>
                 <tbody>
                   {form.transactions.map((t, i) => {
-                    const toPay = round((+t.deposit || 0) - (+t.commission || 0) - (+t.iva || 0) - (+t.retIva || 0));
+                    const toPay = round((+t.deposit || 0) - (+t.commission || 0) - (+t.iva || 0));
                     return (
                       <tr key={i}>
                         <td className="px-0.5 py-0.5"><input type="date" value={t.date} onChange={(e) => setTxn(i, { date: e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-32" /></td>
@@ -362,10 +416,8 @@ export default function CardSettlements() {
                         <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.deposit} onChange={(e) => setTxn(i, { deposit: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-24 text-right" /></td>
                         <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.commission} onChange={(e) => setTxn(i, { commission: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-24 text-right" /></td>
                         <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.iva} onChange={(e) => setTxn(i, { iva: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-20 text-right" /></td>
-                        <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.baseRetIr} onChange={(e) => setTxn(i, { baseRetIr: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-24 text-right" /></td>
-                        <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.baseRetIva} onChange={(e) => setTxn(i, { baseRetIva: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-24 text-right" /></td>
-                        <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.baseIr} onChange={(e) => setTxn(i, { baseIr: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-20 text-right" /></td>
-                        <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.retIva} onChange={(e) => setTxn(i, { retIva: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-20 text-right" /></td>
+                        <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.baseRetIr} onChange={(e) => setTxn(i, { baseRetIr: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-28 text-right" title="Base para la retención en la fuente (renta)" /></td>
+                        <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.baseRetIva} onChange={(e) => setTxn(i, { baseRetIva: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-28 text-right" title="Base para la retención de IVA" /></td>
                         <td className="px-1 py-0.5 text-right font-mono font-semibold text-emerald-700">{fmt(toPay)}</td>
                         <td className="px-0.5 py-0.5 text-center"><button type="button" onClick={() => delTxn(i)} className="text-rose-600">×</button></td>
                       </tr>
@@ -377,37 +429,60 @@ export default function CardSettlements() {
                   <td className="px-1 py-1 text-right font-mono">{fmt(totals.deposit)}</td>
                   <td className="px-1 py-1 text-right font-mono">{fmt(totals.commission)}</td>
                   <td className="px-1 py-1 text-right font-mono">{fmt(totals.iva)}</td>
-                  <td colSpan={2}></td><td></td>
-                  <td className="px-1 py-1 text-right font-mono">{fmt(totals.retIva)}</td>
+                  <td className="px-1 py-1 text-right font-mono">{fmt(baseByType.RENTA)}</td>
+                  <td className="px-1 py-1 text-right font-mono">{fmt(baseByType.IVA)}</td>
                   <td className="px-1 py-1 text-right font-mono text-emerald-700">{fmt(totals.toPay)}</td><td></td>
                 </tr></tfoot>
               </table>
             </div>
           </div>
 
-          {/* Retenciones */}
+          {/* Retenciones (se generan solas desde las bases de las transacciones) */}
           <div className="border rounded-lg p-3">
-            <div className="flex justify-between items-center mb-2"><p className="font-semibold text-sm">Retenciones</p><button type="button" onClick={addRet} className="text-emerald-600 text-sm flex items-center gap-1"><HiOutlinePlus /> Retención</button></div>
-            <datalist id="sri-renta">{SRI_RENTA.map((c) => <option key={c} value={c} />)}</datalist>
-            <datalist id="sri-iva">{SRI_IVA.map((c) => <option key={c} value={c} />)}</datalist>
-            {form.retentions.length > 0 && (
-              <div className="hidden md:grid grid-cols-9 gap-1.5 mb-1 text-[10px] text-slate-400 uppercase px-1">
-                <span>Fecha emisión</span><span>N° retención</span><span>Autorización</span><span>Tipo</span><span>Cód. SRI</span><span className="text-right">Base</span><span className="text-right">%</span><span className="text-right">Valor</span><span></span>
-              </div>
+            <div className="flex items-center gap-2 mb-2">
+              <p className="font-semibold text-sm">Retenciones</p>
+              <span className="text-xs text-slate-500">Se crean solas al ingresar bases en las transacciones. Solo escoge el código SRI; el % y el valor se calculan solos.</span>
+            </div>
+            {retentionRows.length === 0 ? (
+              <p className="text-xs text-slate-400 py-2">Sin retenciones: ingresa una base de retención (renta o IVA) en alguna transacción y la fila aparecerá aquí.</p>
+            ) : (
+              <>
+                <div className="hidden md:grid grid-cols-12 gap-1.5 mb-1 text-[10px] text-slate-400 uppercase px-1">
+                  <span className="col-span-2">Tipo</span><span className="col-span-2">Fecha emisión</span><span className="col-span-2">N° retención</span><span className="col-span-2">Autorización</span>
+                  <span className="col-span-2">Código SRI</span><span className="text-right">Base</span><span className="text-right">%</span>
+                </div>
+                {retentionRows.map((r) => {
+                  const faltaCodigo = !String(r.sriCode || '').trim();
+                  return (
+                    <div key={r.type} className="grid grid-cols-2 md:grid-cols-12 gap-1.5 mb-2 md:mb-1 items-center border-b md:border-0 pb-2 md:pb-0">
+                      <span className="md:col-span-2 text-xs font-semibold text-slate-700">{RET_LABEL[r.type]}</span>
+                      <input type="date" value={r.issueDate || ''} onChange={(e) => setRetMetaField(r.type, { issueDate: e.target.value })} className="md:col-span-2 border border-slate-200 rounded px-1 py-1 text-xs" title="Fecha emisión" />
+                      <input placeholder="N° retención" value={r.retentionNumber} onChange={(e) => setRetMetaField(r.type, { retentionNumber: e.target.value })} className="md:col-span-2 border border-slate-200 rounded px-1 py-1 text-xs" />
+                      <input placeholder="Autorización" value={r.authorization} onChange={(e) => setRetMetaField(r.type, { authorization: e.target.value })} className="md:col-span-2 border border-slate-200 rounded px-1 py-1 text-xs" />
+                      <div className={`md:col-span-2 ${faltaCodigo ? 'rounded ring-1 ring-rose-300' : ''}`}>
+                        <SearchableSelect
+                          options={rulesByType[r.type] || []}
+                          value={r.sriCode}
+                          onChange={(v) => setRetMetaField(r.type, { sriCode: v })}
+                          getValue={(o) => o.code}
+                          getLabel={(o) => `${o.code} — ${o.description || ''} (${o.rate}%)`}
+                          getSearchText={(o) => `${o.code} ${o.description || ''}`}
+                          placeholder="Escoge el código…"
+                          searchPlaceholder="Buscar código o descripción…"
+                          size="sm"
+                          menuMinWidth={320}
+                          wrapOptions
+                        />
+                      </div>
+                      <span className="text-right font-mono text-xs" title="Base = suma de las bases de las transacciones">{fmt(r.base)}</span>
+                      <span className="text-right font-mono text-xs">{r.percentage ? `${r.percentage}%` : '—'}</span>
+                      <span className="col-span-2 md:hidden text-right font-mono text-xs">Valor: ${fmt(r.value)}</span>
+                    </div>
+                  );
+                })}
+                <p className="text-[11px] text-slate-400 mt-1">La base es la suma de las bases de las transacciones (solo lectura). El porcentaje viene de la regla del código y el valor se calcula solo.</p>
+              </>
             )}
-            {form.retentions.map((r, i) => (
-              <div key={i} className="grid grid-cols-2 md:grid-cols-9 gap-1.5 mb-1 items-center">
-                <input type="date" value={r.issueDate} onChange={(e) => setRet(i, { issueDate: e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs" title="Fecha emisión" />
-                <input placeholder="N° retención" value={r.retentionNumber} onChange={(e) => setRet(i, { retentionNumber: e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs" />
-                <input placeholder="Autorización" value={r.authorization} onChange={(e) => setRet(i, { authorization: e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs" />
-                <select value={r.type} onChange={(e) => setRet(i, { type: e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs"><option value="RENTA">RENTA</option><option value="IVA">IVA</option></select>
-                <input placeholder="Cód. SRI" list={r.type === 'IVA' ? 'sri-iva' : 'sri-renta'} value={r.sriCode} onChange={(e) => setRet(i, { sriCode: e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs" />
-                <NumericInput step="0.01" placeholder="Base" value={r.base} onChange={(e) => setRet(i, { base: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs text-right" title="Base" />
-                <NumericInput step="0.01" placeholder="%" value={r.percentage} onChange={(e) => { const p = +e.target.value; setRet(i, { percentage: p, value: round((+r.base || 0) * p / 100) }); }} className="border border-slate-200 rounded px-1 py-1 text-xs text-right" title="%" />
-                <NumericInput step="0.01" placeholder="Valor" value={r.value} onChange={(e) => setRet(i, { value: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 text-xs text-right" title="Valor" />
-                <button type="button" onClick={() => delRet(i)} className="text-rose-600 text-sm">×</button>
-              </div>
-            ))}
           </div>
 
           {/* Resumen */}
@@ -443,14 +518,16 @@ export default function CardSettlements() {
               <table className="tbl text-xs">
                 <thead className="bg-slate-50"><tr>
                   <th className="px-2 py-1 text-left">Fecha</th><th className="px-2 py-1 text-left">#Recap</th><th className="px-2 py-1 text-right">Depósito</th>
-                  <th className="px-2 py-1 text-right">Comisión</th><th className="px-2 py-1 text-right">IVA</th><th className="px-2 py-1 text-right">Ret IVA</th><th className="px-2 py-1 text-right">A pagar</th>
+                  <th className="px-2 py-1 text-right">Comisión</th><th className="px-2 py-1 text-right">IVA</th>
+                  <th className="px-2 py-1 text-right">Base ret. renta</th><th className="px-2 py-1 text-right">Base ret. IVA</th><th className="px-2 py-1 text-right">A pagar</th>
                 </tr></thead>
                 <tbody>
                   {(viewItem.transactions || []).map((t, i) => (
                     <tr key={i} className="border-t">
                       <td className="px-2 py-1">{fmtDate(t.date)}</td><td className="px-2 py-1">{t.recap}</td>
                       <td className="px-2 py-1 text-right font-mono">{fmt(t.deposit)}</td><td className="px-2 py-1 text-right font-mono">{fmt(t.commission)}</td>
-                      <td className="px-2 py-1 text-right font-mono">{fmt(t.iva)}</td><td className="px-2 py-1 text-right font-mono">{fmt(t.retIva)}</td>
+                      <td className="px-2 py-1 text-right font-mono">{fmt(t.iva)}</td>
+                      <td className="px-2 py-1 text-right font-mono">{fmt(t.baseRetIr)}</td><td className="px-2 py-1 text-right font-mono">{fmt(t.baseRetIva)}</td>
                       <td className="px-2 py-1 text-right font-mono font-semibold">{fmt(t.toPay)}</td>
                     </tr>
                   ))}
@@ -477,7 +554,9 @@ export default function CardSettlements() {
             )}
             <div className="flex flex-wrap justify-end gap-4 bg-slate-50 rounded-lg p-3">
               <span>Depósito: <b className="font-mono">${fmt(viewItem.totalDeposit)}</b></span>
-              <span>Neto a banco: <b className="font-mono text-emerald-700">${fmt(viewItem.totalToPay - viewItem.totalRetIr)}</b></span>
+              <span>Ret. IVA: <b className="font-mono">${fmt(viewItem.totalRetIva)}</b></span>
+              <span>Ret. renta: <b className="font-mono">${fmt(viewItem.totalRetIr)}</b></span>
+              <span>Neto a banco: <b className="font-mono text-emerald-700">${fmt(viewItem.totalDeposit - viewItem.totalCommission - viewItem.totalIva - viewItem.totalRetIr - viewItem.totalRetIva)}</b></span>
             </div>
           </div>
         )}
