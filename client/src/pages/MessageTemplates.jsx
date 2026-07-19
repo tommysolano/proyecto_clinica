@@ -11,9 +11,11 @@ import {
   HiOutlineXMark,
   HiOutlineExclamationTriangle,
   HiOutlinePaperAirplane,
+  HiOutlineArrowUpTray,
 } from 'react-icons/hi2';
 import Modal from '../components/Modal';
 import WhatsappPreview from '../components/WhatsappPreview';
+import BulkUploadModal from '../components/BulkUploadModal';
 
 const BUTTON_TYPES = [
   { value: 'quick_reply', label: 'Respuesta rápida' },
@@ -83,6 +85,7 @@ export default function MessageTemplates() {
   const [syncing, setSyncing] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [submittingId, setSubmittingId] = useState(null);
+  const [bulkOpen, setBulkOpen] = useState(false);
   const bodyRef = useRef(null);
 
   // Inserta {{variable}} en el cuerpo, donde esté el cursor.
@@ -254,6 +257,12 @@ export default function MessageTemplates() {
             <HiOutlineArrowPath className={syncing ? 'animate-spin' : ''} /> Sincronizar con Meta
           </button>
           <button
+            onClick={() => setBulkOpen(true)}
+            className="px-3 py-2 border border-slate-200 rounded-lg text-sm flex items-center gap-1 bg-white cursor-pointer"
+          >
+            <HiOutlineArrowUpTray /> Carga masiva
+          </button>
+          <button
             onClick={() => setEditing(blank())}
             className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm flex items-center gap-1 cursor-pointer border-none"
           >
@@ -341,6 +350,18 @@ export default function MessageTemplates() {
           })}
         </div>
       )}
+
+      <BulkUploadModal
+        open={bulkOpen}
+        onClose={() => setBulkOpen(false)}
+        title="Carga masiva de plantillas"
+        description="Sube muchas plantillas de una vez. Se crean como BORRADOR; luego las revisas y las envías a Meta una por una."
+        steps={['Cada plantilla creada queda en borrador hasta que pulses “Enviar a Meta”.']}
+        templateUrl="/message-templates/bulk/template"
+        templateFilename="plantilla_plantillas_whatsapp.xlsx"
+        uploadUrl="/message-templates/bulk"
+        onImported={load}
+      />
 
       <Modal isOpen={!!editing} onClose={() => setEditing(null)} title={editing?._id ? 'Editar plantilla' : 'Nueva plantilla'} size="xl">
         {editing && (

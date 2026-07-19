@@ -9,8 +9,10 @@ import {
   HiOutlinePencil,
   HiOutlineFolder,
   HiOutlineFolderPlus,
+  HiOutlineArrowUpTray,
 } from 'react-icons/hi2';
 import Modal from '../components/Modal';
+import BulkUploadModal from '../components/BulkUploadModal';
 
 const TRIGGERS = [
   { value: 'appointment_created', label: 'Cita agendada' },
@@ -47,6 +49,7 @@ export default function Workflows() {
   const [presets, setPresets] = useState([]);
   const [enrollView, setEnrollView] = useState(null); // workflow cuyas inscripciones se ven
   const [activityView, setActivityView] = useState(null); // workflow cuya actividad de disparador se ve
+  const [bulkOpen, setBulkOpen] = useState(false);
 
   const load = async () => {
     try {
@@ -144,8 +147,23 @@ export default function Workflows() {
           <h1 className="text-2xl font-bold flex items-center gap-2"><HiOutlineBolt className="text-emerald-600" /> Automatizaciones (Workflows)</h1>
           <p className="text-sm text-slate-500 mt-1">Organízalas en carpetas. Cada automatización se dispara por eventos (citas, tratamientos, ventas, cumpleaños) o por chat (palabra clave, mensaje entrante).</p>
         </div>
-        <button onClick={openNew} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm flex items-center gap-1 cursor-pointer border-none"><HiOutlinePlus /> Nuevo workflow</button>
+        <div className="flex gap-2">
+          <button onClick={() => setBulkOpen(true)} className="px-3 py-2 border border-slate-200 rounded-lg text-sm flex items-center gap-1 bg-white cursor-pointer"><HiOutlineArrowUpTray /> Carga masiva</button>
+          <button onClick={openNew} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm flex items-center gap-1 cursor-pointer border-none"><HiOutlinePlus /> Nuevo workflow</button>
+        </div>
       </div>
+
+      <BulkUploadModal
+        open={bulkOpen}
+        onClose={() => setBulkOpen(false)}
+        title="Carga masiva de automatizaciones"
+        description="Sube varias automatizaciones de una vez (formato multi-paso: agrupa las filas por nombre). Se crean INACTIVAS; luego las revisas y las activas."
+        steps={['Cada automatización creada queda inactiva hasta que pulses “Activar”.']}
+        templateUrl="/workflows/bulk/template"
+        templateFilename="plantilla_automatizaciones.xlsx"
+        uploadUrl="/workflows/bulk"
+        onImported={load}
+      />
 
       {presets.length > 0 && (
         <div className="mb-5 border border-emerald-100 bg-emerald-50/50 rounded-xl p-4">

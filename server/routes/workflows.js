@@ -8,6 +8,11 @@ router.use(require('../middleware/callCenterScope'));
 
 const ROLES = ['admin', 'marketing'];
 
+// Carga masiva por Excel (descargar plantilla + subir lleno). Antes de '/:id'.
+const bulk = require('../controllers/marketingImportController');
+router.get('/bulk/template', requireRole(...ROLES), bulk.downloadAutomatizacionesTemplate);
+router.post('/bulk', requireRole(...ROLES), bulk.uploadMiddleware, bulk.importAutomatizacionesExcel);
+
 router.get('/folders', requireRole(...ROLES), ctrl.listFolders);
 router.post('/folders', requireRole(...ROLES), ctrl.createFolder);
 router.put('/folders/:id', requireRole(...ROLES), ctrl.renameFolder);

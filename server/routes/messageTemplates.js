@@ -8,6 +8,11 @@ router.use(require('../middleware/callCenterScope'));
 
 const ROLES = ['admin', 'marketing'];
 
+// Carga masiva por Excel (descargar plantilla + subir lleno). Antes de '/:id'.
+const bulk = require('../controllers/marketingImportController');
+router.get('/bulk/template', requireRole(...ROLES), bulk.downloadPlantillasTemplate);
+router.post('/bulk', requireRole(...ROLES), bulk.uploadMiddleware, bulk.importPlantillasExcel);
+
 router.get('/', requireRole(...ROLES), ctrl.list);
 router.post('/', requireRole(...ROLES), ctrl.create);
 router.post('/upload-image', requireRole(...ROLES), ctrl.uploadHeaderImage);
