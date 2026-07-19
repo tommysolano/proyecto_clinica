@@ -25,8 +25,14 @@ const payrollItemSchema = new mongoose.Schema(
     absenceDays: { type: Number, default: 0 }, // faltas injustificadas (reducen el sueldo)
     // Elegibilidad de fondos de reserva (snapshot al generar; ≥1 año o activado).
     eligibleFondos: { type: Boolean, default: false },
+    // Prorrateo de fondos de reserva (0..1): <1 si el aniversario del año cae dentro del período.
+    fondosReservaFactor: { type: Number, default: 1 },
     monthlySalary: { type: Number, default: 0 }, // sueldo contractual completo (para prorrateo)
     baseSalary: { type: Number, default: 0 },    // sueldo GANADO del período (tras ausencias)
+    // Anticipo de la 1ª quincena ya PAGADO (activo/CxC al empleado). En el rol de quincena es
+    // el único importe; en el cierre de mes se descuenta del neto y se acredita para saldar el
+    // anticipo. Es distinto de `anticipos` (deducciones tipo ANTICIPO del catálogo).
+    anticipoQuincena: { type: Number, default: 0 },
     // Ingresos
     overtime: { type: Number, default: 0 },
     bonuses: { type: Number, default: 0 },
@@ -39,6 +45,17 @@ const payrollItemSchema = new mongoose.Schema(
     // por pagar en vez de gasto; no se acumula provisión como si no se tomaran).
     vacacionesContraProvision: { type: Number, default: 0 },
     otherIncome: { type: Number, default: 0 },
+    // Ingresos fijos recurrentes del empleado (snapshot al generar). Se suman al ingreso; gravan
+    // IESS solo si `aportaIess`. La cuenta sale de `account` o de la cuenta de sueldos del depto.
+    fixedIncomes: {
+      type: [new mongoose.Schema({
+        concepto: { type: String, default: '' },
+        monto: { type: Number, default: 0 },
+        aportaIess: { type: Boolean, default: false },
+        account: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },
+      }, { _id: false })],
+      default: [],
+    },
     // Rubros flexibles agregados por el usuario (cuenta desde el concepto).
     earnings: { type: [payrollLineSchema], default: [] },
     deductions: { type: [payrollLineSchema], default: [] },
@@ -93,8 +110,12 @@ const payrollSchema = new mongoose.Schema(
   {
     clinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', required: true, index: true },
     code: String,
-    year: { type: Number, required: true },
+    year: { type: Number, required: true, min: 2000, max: 2100 },
     month: { type: Number, required: true, min: 1, max: 12 },
+    // Tipo de período. MENSUAL = rol mensual completo (default histórico). Nómina quincenal:
+    // QUINCENA_1 = anticipo de la 1ª quincena (solo sueldo, sin IESS ni beneficios);
+    // CIERRE_MES = liquidación del mes completo descontando el anticipo ya pagado.
+    periodType: { type: String, enum: ['MENSUAL', 'QUINCENA_1', 'CIERRE_MES'], default: 'MENSUAL' },
     period: String, // YYYY-MM
     description: String,
     items: { type: [payrollItemSchema], default: [] },
@@ -156,7 +177,9 @@ payrollSchema.virtual('pendingAmount').get(function () {
 payrollSchema.set('toJSON', { virtuals: true });
 payrollSchema.set('toObject', { virtuals: true });
 
-payrollSchema.index({ clinic: 1, year: 1, month: 1 }, { unique: true });
+// Un rol por (clínica, año, mes, TIPO de período): así conviven la quincena y el cierre del
+// mismo mes. Los roles antiguos (sin periodType) migran a 'MENSUAL' (ver scripts/migratePayrollPeriodType.js).
+payrollSchema.index({ clinic: 1, year: 1, month: 1, periodType: 1 }, { unique: true });
 // Idempotencia de pagos: una clave no puede reutilizarse en otro rol de la misma clínica.
 // (Dentro de un mismo rol la protección es el chequeo transaccional de markPaid, que se
 // serializa por conflicto de escritura sobre este documento.) Parcial: los pagos legacy

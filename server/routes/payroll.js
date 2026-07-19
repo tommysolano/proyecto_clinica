@@ -16,6 +16,7 @@ router.get('/linkable-users', requireRole('admin', 'contabilidad'), c.listLinkab
 router.get('/employees/:id', requireRole('admin', 'contabilidad'), c.getEmployee);
 router.post('/employees', requireRole('admin', 'contabilidad'), c.createEmployee);
 router.put('/employees/:id', requireRole('admin', 'contabilidad'), c.updateEmployee);
+router.post('/employees/:id/fondos-mode', requireRole('admin', 'contabilidad'), c.setFondosReservaMode);
 router.delete('/employees/:id', requireRole('admin'), c.deleteEmployee);
 
 router.get('/loans', requireRole('admin', 'contabilidad'), c.listLoans);

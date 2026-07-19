@@ -40,6 +40,9 @@ async function seedPayrollClinic() {
     clinic: clinicId, code: `EMP-${Math.floor(Math.random() * 1e6)}`,
     firstName: 'Ana', lastName: 'Pérez', identificacion: `17${Math.floor(Math.random() * 1e8)}`,
     hireDate: new Date(YEAR - 2, 0, 1), baseSalary: 1000, active: true,
+    // Opta explícitamente a fondos de reserva (con la nómina quincenal, el modo se DECIDE al
+    // cumplir el año; sin decisión no se generan). Aquí interesa la obligación, no los fondos.
+    receivesFondosReserva: true, fondosReservaModeSet: true,
   });
   return { clinicId, userId };
 }

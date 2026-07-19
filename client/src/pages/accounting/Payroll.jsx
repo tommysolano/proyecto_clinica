@@ -18,6 +18,12 @@ import useDocDeepLink from '../../hooks/useDocDeepLink';
 const lastDayOfMonth = (year, month) => new Date(year, month, 0).toISOString().slice(0, 10);
 
 const MONTHS = ['', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
+const PERIOD_TYPES = [
+  ['MENSUAL', 'Rol mensual', 'Mes completo (todos los empleados).'],
+  ['QUINCENA_1', 'Quincena (anticipo)', 'Anticipo del sueldo a los empleados quincenales. Solo sueldo, sin IESS ni beneficios.'],
+  ['CIERRE_MES', 'Cierre de mes', 'Liquida el mes completo y descuenta el anticipo ya pagado en la quincena.'],
+];
+const PERIOD_LABEL = { MENSUAL: 'Mensual', QUINCENA_1: 'Quincena', CIERRE_MES: 'Cierre de mes' };
 const STATUS_STYLE = {
   BORRADOR: 'bg-amber-100 text-amber-700',
   CERRADO: 'bg-emerald-100 text-emerald-700',
@@ -294,7 +300,8 @@ export default function Payroll() {
   const [year, setYear] = useState(new Date().getFullYear());
   const [list, setList] = useState([]);
   const [show, setShow] = useState(false);
-  const [form, setForm] = useState({ year: new Date().getFullYear(), month: new Date().getMonth() + 1 });
+  const [form, setForm] = useState({ year: new Date().getFullYear(), month: new Date().getMonth() + 1, periodType: 'MENSUAL' });
+  const [fondosPending, setFondosPending] = useState(null); // { list, year, month, periodType }
   const [selected, setSelected] = useState(null);
   const [banks, setBanks] = useState([]);
   const [concepts, setConcepts] = useState([]);
@@ -317,9 +324,30 @@ export default function Payroll() {
   }, []);
 
   const generate = async (e) => {
-    e.preventDefault();
-    try { const r = await api.post('/payroll/generate', form); toast.success('Rol generado'); setShow(false); setSelected(r.data); load(); }
-    catch (err) { toast.error(err.response?.data?.message || 'Error'); }
+    if (e?.preventDefault) e.preventDefault();
+    try {
+      const r = await api.post('/payroll/generate', form);
+      toast.success('Rol generado');
+      setShow(false); setSelected(r.data); load();
+      // Empleados que cumplieron 1 año y aún no tienen definido el modo de fondos de reserva:
+      // se pregunta MENSUALIZAR/ACUMULAR y luego se regenera para que el cálculo los incluya.
+      const pend = r.data?.pendingFondosDecisions || [];
+      if (pend.length) setFondosPending({ list: pend, year: form.year, month: form.month, periodType: form.periodType });
+    } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
+  };
+
+  // Define el modo de fondos de reserva de un empleado (desde el modal del aniversario).
+  const decideFondos = async (employeeId, mode) => {
+    try {
+      await api.post(`/payroll/employees/${employeeId}/fondos-mode`, { mode });
+      setFondosPending((fp) => {
+        const rest = (fp?.list || []).filter((x) => String(x.employee) !== String(employeeId));
+        if (rest.length) return { ...fp, list: rest };
+        // Última decisión: regenerar el rol para incluir los fondos ya definidos.
+        generate();
+        return null;
+      });
+    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
 
   const open = async (p) => { const r = await api.get(`/payroll/${p._id}`); setSelected(r.data); };
@@ -429,7 +457,10 @@ export default function Payroll() {
                   <span className="font-medium text-sm">{MONTHS[p.month]} {p.year}</span>
                   <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${STATUS_STYLE[p.status] || ''}`}>{p.status}</span>
                 </div>
-                <div className="text-xs text-slate-500 font-mono">Neto ${fmt(p.totalNeto)}</div>
+                <div className="text-xs text-slate-500 font-mono flex items-center gap-1.5">
+                  {p.periodType && p.periodType !== 'MENSUAL' && <span className="px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 text-[9px] font-semibold not-italic">{PERIOD_LABEL[p.periodType]}</span>}
+                  Neto ${fmt(p.totalNeto)}
+                </div>
               </button>
             ))}
             {!list.length && <div className="px-3 py-6 text-center text-xs text-slate-400">Sin roles en {year}. Genera un período.</div>}
@@ -441,7 +472,7 @@ export default function Payroll() {
           <div className="lg:col-span-3 bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4">
             <div className="flex flex-wrap justify-between items-center gap-2 mb-3">
               <div>
-                <h2 className="font-semibold text-slate-800">Rol {MONTHS[selected.month]} {selected.year}</h2>
+                <h2 className="font-semibold text-slate-800">Rol {MONTHS[selected.month]} {selected.year}{selected.periodType && selected.periodType !== 'MENSUAL' ? ` · ${PERIOD_LABEL[selected.periodType]}` : ''}</h2>
                 <span className={`px-2 py-0.5 rounded-full text-[11px] font-semibold ${STATUS_STYLE[selected.status] || ''}`}>{selected.status}</span>
               </div>
               <div className="flex flex-wrap gap-2">
@@ -601,6 +632,34 @@ export default function Payroll() {
         hideOriginLink
       />
 
+      {/* Fondos de reserva: decisión al cumplir el año */}
+      <Modal isOpen={!!fondosPending} onClose={() => setFondosPending(null)} title="Fondos de reserva — empleados que cumplieron el año">
+        {fondosPending && (
+          <div className="space-y-3">
+            <p className="text-sm text-slate-600">
+              Estos empleados cumplieron <b>un año</b> y ya tienen derecho a fondos de reserva. Decide cómo se manejan:
+              <b> Mensualizar</b> (se paga en el rol cada mes) o <b>Acumular</b> (se provisiona al pasivo, no se paga en el rol).
+              Al terminar se regenera el rol para incluirlos.
+            </p>
+            <div className="space-y-2">
+              {fondosPending.list.map((f) => (
+                <div key={f.employee} className="flex items-center justify-between gap-2 border border-slate-200 rounded-xl px-3 py-2">
+                  <div>
+                    <p className="text-sm font-medium text-slate-800">{f.name}</p>
+                    <p className="text-[11px] text-slate-500">Cumplió el año el {fmtDate(f.anniversary)}</p>
+                  </div>
+                  <div className="flex gap-2">
+                    <button onClick={() => decideFondos(f.employee, 'MENSUALIZADO')} className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-xs">Mensualizar</button>
+                    <button onClick={() => decideFondos(f.employee, 'ACUMULADO')} className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs">Acumular</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+            <p className="text-[11px] text-slate-400">También puedes definir el modo luego en la ficha del empleado.</p>
+          </div>
+        )}
+      </Modal>
+
       {/* Generar período */}
       <Modal isOpen={show} onClose={() => setShow(false)} title="Generar rol de nómina">
         <form onSubmit={generate} className="space-y-3">
@@ -612,6 +671,12 @@ export default function Payroll() {
               </select>
             </Field>
           </div>
+          <Field label="Tipo de período" required>
+            <select value={form.periodType} onChange={(e) => setForm({ ...form, periodType: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+              {PERIOD_TYPES.map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+            <p className="text-[11px] text-slate-500 mt-1">{PERIOD_TYPES.find((p) => p[0] === form.periodType)?.[2]}</p>
+          </Field>
           <p className="text-xs text-slate-500">Se generará (o regenerará, si está en borrador) el rol con los empleados activos del período, sus préstamos y deducciones pendientes.</p>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Generar</button></div>
         </form>

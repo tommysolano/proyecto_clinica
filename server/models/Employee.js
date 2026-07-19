@@ -26,6 +26,22 @@ const employeeSchema = new mongoose.Schema(
     paymentBankAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'BankAccount', default: null },
     contractType: { type: String, enum: ['INDEFINIDO', 'FIJO', 'EVENTUAL', 'PRACTICAS', 'TIEMPO_PARCIAL'], default: 'INDEFINIDO' },
     paymentFrequency: { type: String, enum: ['MENSUAL', 'QUINCENAL', 'SEMANAL'], default: 'MENSUAL' },
+    // Anticipo de la 1ª quincena: % del sueldo. null = usa el de PayrollConfig.
+    anticipoQuincenaPct: { type: Number, default: null, min: 0, max: 100 },
+    // Ingresos fijos recurrentes (ej. "Alimentación $50/mes"). Se suman en el rol MENSUAL/CIERRE
+    // (en quincena solo si includeInQuincena). Afectan la base de IESS solo si aportaIess.
+    fixedIncomes: {
+      type: [new mongoose.Schema({
+        concepto: { type: String, required: true, trim: true },
+        monto: { type: Number, required: true, min: 0 },
+        aportaIess: { type: Boolean, default: false },
+        includeInQuincena: { type: Boolean, default: false },
+        // Cuenta contable del concepto (opcional): si no, va a la cuenta de sueldos del depto.
+        account: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },
+        activo: { type: Boolean, default: true },
+      }, { _id: true })],
+      default: [],
+    },
     // Tipo de sueldo pactado en el contrato.
     // - GROSS: baseSalary es el sueldo bruto (ingreso afecto a IESS/IR). Es el caso estándar.
     // - NET: el contrato es por sueldo neto a recibir; baseSalary representa el bruto
@@ -64,6 +80,10 @@ const employeeSchema = new mongoose.Schema(
     receivesDecimoTercero: { type: Boolean, default: true },
     receivesDecimoCuarto: { type: Boolean, default: true },
     receivesFondosReserva: { type: Boolean, default: false }, // se activa al cumplir 1 año
+    // Los fondos de reserva se ganan al cumplir 1 AÑO con el empleador (regla legal EC). El modo
+    // (MENSUALIZAR/ACUMULAR) se DECIDE al llegar el aniversario: mientras `fondosReservaModeSet`
+    // sea false y el empleado ya cumplió el año, la generación del rol pide la decisión (modal).
+    fondosReservaModeSet: { type: Boolean, default: false },
     decimoTerceroAcumulado: { type: String, enum: ['ACUMULADO', 'MENSUALIZADO'], default: 'MENSUALIZADO' },
     decimoCuartoAcumulado: { type: String, enum: ['ACUMULADO', 'MENSUALIZADO'], default: 'MENSUALIZADO' },
     fondosReservaAcumulado: { type: String, enum: ['ACUMULADO', 'MENSUALIZADO'], default: 'MENSUALIZADO' },

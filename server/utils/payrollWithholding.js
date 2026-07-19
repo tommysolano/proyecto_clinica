@@ -54,7 +54,9 @@ function classifyEarning(line, concept) {
  * @returns {Promise<{ total, baseGravada, baseImponibleNeta, iessPersonal, empleados, excluidos, warnings, payrolls }>}
  */
 async function payrollWithholdingForPeriod({ clinicId, year, month }) {
-  const rolls = await Payroll.find({ clinic: clinicId, year, month }).lean();
+  // La QUINCENA_1 es un anticipo (sin IESS ni IR): NO entra en la base de retención del 103.
+  // La retención sale del cierre de mes / rol mensual, que tiene el sueldo completo y el IR.
+  const rolls = await Payroll.find({ clinic: clinicId, year, month, periodType: { $ne: 'QUINCENA_1' } }).lean();
   const incluidos = rolls.filter((p) => INCLUDED_STATUSES.includes(p.status));
   const borradores = rolls.filter((p) => p.status === 'BORRADOR');
   const warnings = [];

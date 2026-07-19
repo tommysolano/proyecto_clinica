@@ -15,6 +15,7 @@ const ACCOUNT_LABELS = {
   irPorPagar: 'Impuesto a la renta por pagar',
   prestamosPorCobrar: 'Préstamos empleados por cobrar',
   cxcEmpleados: 'CxC empleados (deducciones)',
+  anticipoQuincena: 'Anticipo de quincena por cobrar',
   provisionesPorPagar: 'Provisiones por pagar',
   decimoTerceroPorPagar: 'Décimo tercero por pagar',
   decimoCuartoPorPagar: 'Décimo cuarto por pagar',
@@ -72,7 +73,9 @@ export default function PayrollConfig() {
             <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">% IECE</span><NumericInput step="0.01" value={cfg.iece} onChange={num('iece')} className={inputCls} /></label>
             <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">% SECAP</span><NumericInput step="0.01" value={cfg.secap} onChange={num('secap')} className={inputCls} /></label>
             <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">% Fondos de reserva</span><NumericInput step="0.01" value={cfg.fondosReserva} onChange={num('fondosReserva')} className={inputCls} /></label>
+            <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">% Anticipo de quincena (del sueldo)</span><NumericInput step="0.01" value={cfg.anticipoQuincenaPct ?? 40} onChange={num('anticipoQuincenaPct')} className={inputCls} /></label>
           </div>
+          <p className="text-[11px] text-slate-500">El anticipo de la 1ª quincena es este % del sueldo (sin IESS). Sobreescribible por empleado en su ficha.</p>
           <button onClick={saveCfg} className="px-5 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button>
         </div>
       )}
@@ -311,7 +314,7 @@ function IncomeTax({ tables, reload }) {
     <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4 space-y-4">
       <div className="flex justify-between items-center">
         <h2 className="font-semibold text-slate-700">Impuesto a la renta (tabla por año)</h2>
-        <button onClick={seed} className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs">Sembrar tabla SRI 2024</button>
+        <button onClick={seed} className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs">Sembrar tabla del año {year}</button>
       </div>
       <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
         Los rangos son configurables. La semilla usa la tabla SRI 2024: <b>valida/actualiza los valores vigentes</b> del año antes de declarar.

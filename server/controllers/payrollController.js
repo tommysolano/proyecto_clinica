@@ -190,9 +190,46 @@ exports.listLinkableUsers = async (req, res) => {
 };
 // Normaliza referencias opcionales: '' no debe castearse a ObjectId.
 function cleanEmployeeRefs(obj) {
-  ['departmentRef', 'positionRef', 'paymentBankAccount', 'salaryOriginClinic', 'costCenter'].forEach((k) => {
+  ['departmentRef', 'positionRef', 'paymentBankAccount', 'salaryOriginClinic', 'costCenter', 'user'].forEach((k) => {
     if (obj[k] === '' || obj[k] === undefined) obj[k] = null;
   });
+}
+
+/**
+ * Traduce los errores de guardado de empleado a un mensaje CLARO (el bug del usuario vinculado
+ * mostraba errores crudos tipo «... ficha de empleado» / cast de fecha). Devuelve string o null.
+ */
+function friendlyEmployeeError(err) {
+  if (err?.code === 11000) {
+    const field = Object.keys(err.keyPattern || err.keyValue || {}).find((k) => k !== 'clinic') || '';
+    if (field.includes('identificacion')) return 'Ya existe un empleado con esa identificación (cédula/RUC) en la clínica.';
+    if (field.includes('code')) return 'Ya existe un empleado con ese código en la clínica.';
+    return 'Ya existe un empleado con esos datos (identificación o código duplicado).';
+  }
+  if (err?.name === 'ValidationError') {
+    const paths = Object.keys(err.errors || {});
+    if (paths.includes('hireDate')) return 'La fecha de ingreso es obligatoria y debe ser una fecha válida.';
+    if (paths.includes('baseSalary')) return 'El sueldo base es obligatorio y debe ser un número válido.';
+    const first = err.errors[paths[0]];
+    if (first) return `Dato inválido en «${paths[0]}»: ${first.message}`;
+  }
+  if (err?.name === 'CastError' && err.path === 'hireDate') return 'La fecha de ingreso no es válida.';
+  return null;
+}
+
+/**
+ * Comprueba si un usuario ya está vinculado a OTRA ficha de empleado y devuelve un mensaje claro
+ * (indicando el nombre y si esa ficha está inactiva, que era la fuente de confusión al re-vincular).
+ */
+async function userLinkConflict(clinicId, userId, excludeEmployeeId = null) {
+  const filter = { clinic: clinicId, user: userId };
+  if (excludeEmployeeId) filter._id = { $ne: excludeEmployeeId };
+  const dup = await Employee.findOne(filter).select('firstName lastName active');
+  if (!dup) return null;
+  const quien = `${dup.firstName || ''} ${dup.lastName || ''}`.trim() || 'otro empleado';
+  return dup.active === false
+    ? `Ese usuario ya está vinculado a la ficha INACTIVA de «${quien}». Reactívala o desvincula el usuario de ella antes de volver a usarlo.`
+    : `Ese usuario ya está vinculado a la ficha de «${quien}».`;
 }
 
 exports.createEmployee = async (req, res) => {
@@ -204,8 +241,8 @@ exports.createEmployee = async (req, res) => {
     if (!data.user) {
       delete data.user;
     } else {
-      const dup = await Employee.findOne({ clinic: req.clinicId, user: data.user });
-      if (dup) return res.status(400).json({ message: 'Ese usuario ya tiene una ficha de empleado' });
+      const conflict = await userLinkConflict(req.clinicId, data.user);
+      if (conflict) return res.status(400).json({ message: conflict });
     }
     // Si vienen datos de tipo NET pero no baseSalary, calcular el bruto inicial.
     if (data.salaryType === 'NET' && data.netSalary > 0 && !data.baseSalary) {
@@ -225,7 +262,7 @@ exports.createEmployee = async (req, res) => {
     const e = await Employee.create(data);
     res.status(201).json(e);
   }
-  catch (err) { res.status(400).json({ message: err.message }); }
+  catch (err) { res.status(400).json({ message: friendlyEmployeeError(err) || err.message }); }
 };
 exports.updateEmployee = async (req, res) => {
   try {
@@ -235,11 +272,11 @@ exports.updateEmployee = async (req, res) => {
     cleanEmployeeRefs(patch);
     // El vínculo con usuario solo se aplica si viene un id válido; '' no debe
     // intentar castearse a ObjectId (rompería el guardado en edición normal).
-    if (!patch.user) {
+    if (patch.user == null || patch.user === '') {
       delete patch.user;
     } else if (String(patch.user) !== String(e.user || '')) {
-      const dup = await Employee.findOne({ clinic: req.clinicId, user: patch.user, _id: { $ne: e._id } });
-      if (dup) return res.status(400).json({ message: 'Ese usuario ya tiene una ficha de empleado' });
+      const conflict = await userLinkConflict(req.clinicId, patch.user, e._id);
+      if (conflict) return res.status(400).json({ message: conflict });
     }
     // Si se cambia a NET, recalcular baseSalary a partir de netSalary
     if (patch.salaryType === 'NET' && patch.netSalary && patch.netSalary > 0) {
@@ -265,7 +302,7 @@ exports.updateEmployee = async (req, res) => {
     delete patch.salaryChangeReason;
     delete patch.salaryHistory; // no permitir sobrescribir el historial desde el body
     Object.assign(e, patch); await e.save(); res.json(e);
-  } catch (err) { res.status(400).json({ message: err.message }); }
+  } catch (err) { res.status(400).json({ message: friendlyEmployeeError(err) || err.message }); }
 };
 exports.deleteEmployee = async (req, res) => {
   const e = await Employee.findOne({ _id: req.params.id, clinic: req.clinicId });
@@ -314,37 +351,151 @@ exports.updateLoan = async (req, res) => {
 // El IR ya NO se calcula con tabla hardcodeada: el motor recomputeItem usa la
 // tabla parametrizable (PayrollIncomeTaxTable) vía utils/payrollTax.
 
+const DAY_MS = 1000 * 60 * 60 * 24;
+const startOfDayLocal = (d) => { const x = new Date(d); x.setHours(0, 0, 0, 0); return x; };
+const clamp01 = (n) => Math.max(0, Math.min(1, n));
+
+/** Suma los totales de una lista de ítems del rol. */
+function sumItemTotals(items) {
+  return items.reduce((a, i) => ({
+    totalIngresos: r2(a.totalIngresos + (i.totalIngresos || 0)),
+    totalEgresos: r2(a.totalEgresos + (i.totalEgresos || 0)),
+    totalNeto: r2(a.totalNeto + (i.netoPagar || 0)),
+    totalProvisiones: r2(a.totalProvisiones + (i.totalProvisiones || 0)),
+  }), { totalIngresos: 0, totalEgresos: 0, totalNeto: 0, totalProvisiones: 0 });
+}
+
+/** Guarda (crea o regenera) el rol del período/tipo con los ítems y totales dados. */
+async function upsertPayroll({ clinicId, existing, y, m, period, periodType, items, userId }) {
+  const totals = sumItemTotals(items);
+  if (existing) {
+    existing.items = items;
+    Object.assign(existing, totals);
+    await existing.save();
+    return existing;
+  }
+  const count = await Payroll.countDocuments({ clinic: clinicId });
+  const suffix = periodType === 'QUINCENA_1' ? 'Q1' : (periodType === 'CIERRE_MES' ? 'CM' : 'M');
+  const code = `ROL-${y}${String(m).padStart(2, '0')}-${suffix}-${String(count + 1).padStart(4, '0')}`;
+  return Payroll.create({
+    clinic: clinicId, code, year: y, month: m, period, periodType,
+    items, ...totals, createdBy: userId,
+  });
+}
+
 /**
  * Genera (o regenera) borrador de rol para un período.
- * body: { year, month }
+ * body: { year, month, periodType? = 'MENSUAL' | 'QUINCENA_1' | 'CIERRE_MES' }
+ *
+ * - MENSUAL: rol mensual completo (todos los empleados activos) — comportamiento histórico.
+ * - QUINCENA_1: anticipo de la 1ª quincena para los empleados QUINCENALES (solo % del sueldo,
+ *   sin IESS ni beneficios; contablemente va a la cuenta de anticipo por cobrar).
+ * - CIERRE_MES: liquida el mes completo y DESCUENTA el anticipo ya pagado en la quincena.
+ *
+ * Devuelve además `pendingFondosDecisions`: empleados que cumplieron 1 año y aún no tienen
+ * definido el modo de fondos de reserva (la UI abre el modal MENSUALIZAR/ACUMULAR).
  */
 exports.generatePayroll = async (req, res) => {
   try {
     const { year, month } = req.body;
-    const y = parseInt(year), m = parseInt(month);
-    if (!y || !m) return res.status(400).json({ message: 'year y month requeridos' });
+    const periodType = ['QUINCENA_1', 'CIERRE_MES', 'MENSUAL'].includes(req.body.periodType) ? req.body.periodType : 'MENSUAL';
+    const y = parseInt(year, 10), m = parseInt(month, 10);
+    // Validación de rango: evita el año corrupto (p.ej. un «26» que Date convierte en 1926) que
+    // luego reventaba el cierre con «No hay tabla de IR para el año 1926».
+    if (!Number.isInteger(y) || y < 2000 || y > 2100) return res.status(400).json({ message: 'El año del rol debe estar entre 2000 y 2100.' });
+    if (!Number.isInteger(m) || m < 1 || m > 12) return res.status(400).json({ message: 'El mes del rol debe estar entre 1 y 12.' });
     const period = `${y}-${String(m).padStart(2, '0')}`;
+    const periodStart = new Date(y, m - 1, 1);
     const endOfMonth = new Date(y, m, 0);
+    const totalDays = (endOfMonth - periodStart) / DAY_MS + 1;
 
-    const existing = await Payroll.findOne({ clinic: req.clinicId, year: y, month: m });
+    const existing = await Payroll.findOne({ clinic: req.clinicId, year: y, month: m, periodType });
     if (existing && existing.status !== 'BORRADOR') {
       return res.status(400).json({ message: 'El rol ya está cerrado o pagado' });
     }
-    const employees = await Employee.find({ clinic: req.clinicId, active: true, hireDate: { $lte: endOfMonth } });
     const R = await getRates(req.clinicId);
-    // Departamentos parametrizados (para el snapshot de tipo de gasto en cada ítem).
+    const anticipoPctDefault = R._config?.anticipoQuincenaPct != null ? R._config.anticipoQuincenaPct : 40;
+
+    // Empleados del período según el tipo (la quincena solo cubre a los QUINCENALES).
+    const empFilter = { clinic: req.clinicId, active: true, hireDate: { $lte: endOfMonth } };
+    if (periodType === 'QUINCENA_1') empFilter.paymentFrequency = 'QUINCENAL';
+    const employees = await Employee.find(empFilter);
     const depts = await PayrollDepartment.find({ clinic: req.clinicId });
     const deptById = new Map(depts.map((d) => [String(d._id), d]));
-    // Contexto del motor de cálculo (fuente única): tasas, tabla IR y flags de conceptos.
+    const deptSnap = (emp) => (emp.departmentRef ? deptById.get(String(emp.departmentRef)) : null);
+
+    // ── QUINCENA_1: anticipo = % del sueldo (solo sueldo, sin IESS ni beneficios) ──────────
+    if (periodType === 'QUINCENA_1') {
+      const items = [];
+      for (const emp of employees) {
+        const base = effectiveBaseSalary(emp);
+        const pct = emp.anticipoQuincenaPct != null ? emp.anticipoQuincenaPct : anticipoPctDefault;
+        const anticipo = r2(base * pct / 100);
+        if (anticipo <= 0) continue;
+        const dept = deptSnap(emp);
+        items.push({
+          employee: emp._id, employeeName: `${emp.firstName} ${emp.lastName}`, identificacion: emp.identificacion,
+          departmentRef: emp.departmentRef || null, departmentType: dept?.type || '',
+          daysWorked: 15, absenceDays: 0, monthlySalary: base, baseSalary: 0,
+          anticipoQuincena: anticipo, fixedIncomes: [], earnings: [], deductions: [],
+          totalIngresos: 0, totalEgresos: 0, netoPagar: anticipo, totalProvisiones: 0,
+        });
+      }
+      const payroll = await upsertPayroll({ clinicId: req.clinicId, existing, y, m, period, periodType, items, userId: req.user._id });
+      return res.json({ ...payroll.toObject(), pendingFondosDecisions: [] });
+    }
+
+    // ── MENSUAL / CIERRE_MES: liquidación completa ─────────────────────────────────────────
     const taxTable = await getActiveIncomeTaxTable(req.clinicId, y);
     const conceptMap = await loadConceptFlags(req.clinicId);
     const ctx = { rates: R, taxTable, conceptMap, sbu: R.SBU_2024 };
 
+    // Anticipos ya pagados en la quincena de este mes (para descontarlos en el cierre).
+    const anticipoByEmp = new Map();
+    if (periodType === 'CIERRE_MES') {
+      const quincena = await Payroll.findOne({ clinic: req.clinicId, year: y, month: m, periodType: 'QUINCENA_1' });
+      // El cierre solo procede si la quincena NO existe o ya está contabilizada/pagada: el asiento
+      // del cierre acredita el anticipo por cobrar que debitó la quincena; si la quincena sigue en
+      // borrador ese activo no existe todavía y el neto quedaría mal.
+      if (quincena && quincena.status === 'BORRADOR') {
+        return res.status(400).json({ message: 'La quincena de este mes está en borrador: ciérrala (o págala) antes de generar el cierre de mes.' });
+      }
+      if (quincena && quincena.status !== 'ANULADO') {
+        for (const it of (quincena.items || [])) anticipoByEmp.set(String(it.employee), r2(it.anticipoQuincena || it.netoPagar || 0));
+      }
+    }
+
+    const pendingFondosDecisions = [];
     const items = [];
     for (const emp of employees) {
-      const yearsWorked = (endOfMonth - new Date(emp.hireDate)) / (1000 * 60 * 60 * 24 * 365);
-      const eligibleFondos = emp.receivesFondosReserva || yearsWorked >= 1;
       const base = effectiveBaseSalary(emp);
+      const hire = startOfDayLocal(emp.hireDate);
+
+      // Prorrateo por FECHA DE INGRESO: un empleado que entró a mitad de mes gana solo los días
+      // trabajados. Así el sueldo ganado, el IESS y el neto se calculan sobre la MISMA base.
+      let daysWorked = 30;
+      if (hire > periodStart) {
+        const worked = (endOfMonth - hire) / DAY_MS + 1;
+        daysWorked = Math.max(0, Math.min(30, Math.round((30 * worked) / totalDays)));
+      }
+
+      // Fondos de reserva: se ganan al cumplir 1 AÑO. Elegible si ya llegó el aniversario; el
+      // modo (mensualizar/acumular) se DECIDE al llegar (si no, se pide por modal y no se generan).
+      const anniversary = new Date(hire); anniversary.setFullYear(hire.getFullYear() + 1);
+      const eligibleByTime = anniversary <= endOfMonth;
+      const alreadyDecided = !!(emp.fondosReservaModeSet || emp.receivesFondosReserva);
+      if (eligibleByTime && !alreadyDecided) {
+        pendingFondosDecisions.push({ employee: String(emp._id), name: `${emp.firstName} ${emp.lastName}`, anniversary });
+      }
+      // Proporcional si el aniversario cae dentro del período.
+      let fondosReservaFactor = 1;
+      if (anniversary > endOfMonth) fondosReservaFactor = 0;
+      else if (anniversary > periodStart) fondosReservaFactor = clamp01(((endOfMonth - anniversary) / DAY_MS + 1) / totalDays);
+
+      // Ingresos fijos activos (snapshot). En cierre/mensual siempre; en quincena no aplica aquí.
+      const fixedIncomes = (emp.fixedIncomes || [])
+        .filter((f) => f.activo !== false && (Number(f.monto) || 0) > 0)
+        .map((f) => ({ concepto: f.concepto, monto: r2(f.monto), aportaIess: !!f.aportaIess, account: f.account || null }));
 
       // Préstamos vigentes (cuota pendiente del período).
       const loans = await EmployeeLoan.find({ clinic: req.clinicId, employee: emp._id, status: 'ACTIVO' });
@@ -360,44 +511,45 @@ exports.generatePayroll = async (req, res) => {
         else otherDeductions += dd.amount; // CONSUMO / UNIFORME / OTRO
       }
 
-      const dept = emp.departmentRef ? deptById.get(String(emp.departmentRef)) : null;
+      const dept = deptSnap(emp);
       const item = {
         employee: emp._id, employeeName: `${emp.firstName} ${emp.lastName}`, identificacion: emp.identificacion,
         departmentRef: emp.departmentRef || null, departmentType: dept?.type || '',
-        daysWorked: 30, absenceDays: 0, monthlySalary: base, baseSalary: base,
-        eligibleFondos,
+        // daysWorked prorrateado por ingreso; absenceDays null para que el motor NO lo sobrescriba.
+        daysWorked, absenceDays: null, monthlySalary: base, baseSalary: base,
+        eligibleFondos: eligibleByTime && alreadyDecided,
+        fondosReservaFactor,
+        fixedIncomes,
+        anticipoQuincena: anticipoByEmp.get(String(emp._id)) || 0,
         prestamoEmpresa: +prestamoEmpresa.toFixed(2),
         multas: +multas.toFixed(2), anticipos: +anticipos.toFixed(2), otherDeductions: +otherDeductions.toFixed(2),
         earnings: [], deductions: [],
       };
-      // MOTOR ÚNICO: décimos/fondos, IESS, IR (tabla), provisiones y totales.
+      // MOTOR ÚNICO: sueldo ganado, décimos/fondos, IESS (sobre lo ganado), IR, provisiones y totales.
       recomputeItem(item, { ...ctx, employee: emp });
       items.push(item);
     }
 
-    const totals = items.reduce((a, i) => ({
-      totalIngresos: a.totalIngresos + i.totalIngresos,
-      totalEgresos: a.totalEgresos + i.totalEgresos,
-      totalNeto: a.totalNeto + i.netoPagar,
-      totalProvisiones: a.totalProvisiones + i.totalProvisiones,
-    }), { totalIngresos: 0, totalEgresos: 0, totalNeto: 0, totalProvisiones: 0 });
-
-    let payroll;
-    if (existing) {
-      existing.items = items;
-      Object.assign(existing, totals);
-      await existing.save();
-      payroll = existing;
-    } else {
-      const count = await Payroll.countDocuments({ clinic: req.clinicId });
-      const code = `ROL-${y}${String(m).padStart(2, '0')}-${String(count + 1).padStart(4, '0')}`;
-      payroll = await Payroll.create({
-        clinic: req.clinicId, code, year: y, month: m, period,
-        items, ...totals, createdBy: req.user._id,
-      });
-    }
-    res.json(payroll);
+    const payroll = await upsertPayroll({ clinicId: req.clinicId, existing, y, m, period, periodType, items, userId: req.user._id });
+    res.json({ ...payroll.toObject(), pendingFondosDecisions });
   } catch (e) { res.status(400).json({ message: e.message }); }
+};
+
+/**
+ * Define el modo de fondos de reserva de un empleado que cumplió el año (lo llama el modal).
+ * body: { mode: 'MENSUALIZADO' | 'ACUMULADO' }
+ */
+exports.setFondosReservaMode = async (req, res) => {
+  try {
+    const mode = req.body?.mode === 'ACUMULADO' ? 'ACUMULADO' : 'MENSUALIZADO';
+    const e = await Employee.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!e) return res.status(404).json({ message: 'No encontrado' });
+    e.fondosReservaAcumulado = mode;
+    e.receivesFondosReserva = true;
+    e.fondosReservaModeSet = true;
+    await e.save();
+    res.json(e);
+  } catch (err) { res.status(400).json({ message: err.message }); }
 };
 
 exports.listPayrolls = async (req, res) => {

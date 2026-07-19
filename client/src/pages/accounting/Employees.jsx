@@ -11,7 +11,15 @@ import { HiOutlinePlus, HiOutlineUserGroup, HiOutlinePencilSquare, HiOutlineTras
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 
-const EMPTY = { code: '', identificacion: '', tipoIdentificacion: 'CEDULA', firstName: '', lastName: '', email: '', phone: '', position: '', department: '', departmentRef: '', positionRef: '', paymentMethod: 'TRANSFERENCIA', contractType: 'INDEFINIDO', paymentFrequency: 'MENSUAL', salaryType: 'GROSS', baseSalary: 460, netSalary: 0, salaryChangeReason: '', hireDate: today(), chargesFamily: 0, deductible: true, salaryOriginClinic: '', bankName: '', bankAccount: '', bankAccountType: '', receivesDecimoTercero: true, receivesDecimoCuarto: true, receivesFondosReserva: false, decimoTerceroAcumulado: 'MENSUALIZADO', decimoCuartoAcumulado: 'MENSUALIZADO', fondosReservaAcumulado: 'MENSUALIZADO', user: '' };
+const EMPTY = { code: '', identificacion: '', tipoIdentificacion: 'CEDULA', firstName: '', lastName: '', email: '', phone: '', position: '', department: '', departmentRef: '', positionRef: '', paymentMethod: 'TRANSFERENCIA', contractType: 'INDEFINIDO', paymentFrequency: 'MENSUAL', anticipoQuincenaPct: '', salaryType: 'GROSS', baseSalary: 460, netSalary: 0, salaryChangeReason: '', hireDate: today(), chargesFamily: 0, deductible: true, salaryOriginClinic: '', bankName: '', bankAccount: '', bankAccountType: '', receivesDecimoTercero: true, receivesDecimoCuarto: true, receivesFondosReserva: false, decimoTerceroAcumulado: 'MENSUALIZADO', decimoCuartoAcumulado: 'MENSUALIZADO', fondosReservaAcumulado: 'MENSUALIZADO', fixedIncomes: [], user: '' };
+
+// Fecha en la que un empleado gana derecho a fondos de reserva: 1 año desde su ingreso.
+const fondosReservaDate = (hireDate) => {
+  if (!hireDate) return null;
+  const h = new Date(hireDate);
+  if (Number.isNaN(h.getTime())) return null;
+  return new Date(h.getFullYear() + 1, h.getMonth(), h.getDate());
+};
 
 // Separa un nombre completo en nombres/apellidos (heurística simple ES).
 const splitName = (full = '') => {
@@ -89,6 +97,11 @@ export default function Employees() {
     try {
       const payload = { ...form };
       if (!payload.salaryOriginClinic) payload.salaryOriginClinic = null;
+      payload.anticipoQuincenaPct = payload.anticipoQuincenaPct === '' || payload.anticipoQuincenaPct == null ? null : +payload.anticipoQuincenaPct;
+      // Ingresos fijos: solo los que tienen concepto y monto; monto/flags normalizados.
+      payload.fixedIncomes = (payload.fixedIncomes || [])
+        .filter((f) => (f.concepto || '').trim())
+        .map((f) => ({ concepto: f.concepto.trim(), monto: +f.monto || 0, aportaIess: !!f.aportaIess, includeInQuincena: !!f.includeInQuincena, activo: f.activo !== false }));
       if (payload.salaryType === 'NET') {
         payload.baseSalary = grossUp(Number(payload.netSalary || 0));
       } else {
@@ -107,6 +120,13 @@ export default function Employees() {
     if (!bruto) return 0;
     return +(bruto * (1 - IESS_PERSONAL)).toFixed(2);
   })();
+
+  // Fondos de reserva: solo desde que el empleado cumple 1 año con el empleador.
+  const fondosDate = fondosReservaDate(form.hireDate);
+  const fondosApplies = fondosDate ? fondosDate <= new Date() : false;
+  const setFixed = (i, patch) => setForm((f) => ({ ...f, fixedIncomes: f.fixedIncomes.map((x, idx) => (idx === i ? { ...x, ...patch } : x)) }));
+  const addFixed = () => setForm((f) => ({ ...f, fixedIncomes: [...(f.fixedIncomes || []), { concepto: '', monto: 0, aportaIess: false, includeInQuincena: false, activo: true }] }));
+  const delFixed = (i) => setForm((f) => ({ ...f, fixedIncomes: f.fixedIncomes.filter((_, idx) => idx !== i) }));
 
   return (
     <div className="space-y-4">
@@ -203,6 +223,11 @@ export default function Employees() {
             </Field>
             <Field label="Tipo de contrato"><select value={form.contractType} onChange={(e) => setForm({ ...form, contractType: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>INDEFINIDO</option><option>FIJO</option><option>EVENTUAL</option><option>JUVENIL</option></select></Field>
             <Field label="Frecuencia de pago"><select value={form.paymentFrequency} onChange={(e) => setForm({ ...form, paymentFrequency: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>MENSUAL</option><option>QUINCENAL</option></select></Field>
+            {form.paymentFrequency === 'QUINCENAL' && (
+              <Field label="% anticipo quincena" hint="Vacío = usa el % de la configuración de nómina (por defecto 40%).">
+                <NumericInput value={form.anticipoQuincenaPct} onChange={(e) => setForm({ ...form, anticipoQuincenaPct: e.target.value })} placeholder="40" className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+              </Field>
+            )}
             <Field label="Forma de pago"><select value={form.paymentMethod} onChange={(e) => setForm({ ...form, paymentMethod: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option value="TRANSFERENCIA">Transferencia</option><option value="CHEQUE">Cheque</option><option value="EFECTIVO">Efectivo</option></select></Field>
             <Field label="Fecha de ingreso" required><input type="date" required value={form.hireDate} onChange={(e) => setForm({ ...form, hireDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Cargas familiares"><NumericInput value={form.chargesFamily} onChange={(e) => setForm({ ...form, chargesFamily: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
@@ -258,14 +283,41 @@ export default function Employees() {
             <div className="flex gap-4 flex-wrap">
               <label className="text-sm flex items-center gap-1"><input type="checkbox" checked={form.receivesDecimoTercero} onChange={(e) => setForm({ ...form, receivesDecimoTercero: e.target.checked })} /> Décimo tercero</label>
               <label className="text-sm flex items-center gap-1"><input type="checkbox" checked={form.receivesDecimoCuarto} onChange={(e) => setForm({ ...form, receivesDecimoCuarto: e.target.checked })} /> Décimo cuarto</label>
-              <label className="text-sm flex items-center gap-1"><input type="checkbox" checked={form.receivesFondosReserva} onChange={(e) => setForm({ ...form, receivesFondosReserva: e.target.checked })} /> Fondos de reserva</label>
+              <label className={`text-sm flex items-center gap-1 ${!fondosApplies ? 'opacity-50' : ''}`} title={!fondosApplies ? 'Disponible al cumplir 1 año' : ''}><input type="checkbox" disabled={!fondosApplies} checked={form.receivesFondosReserva} onChange={(e) => setForm({ ...form, receivesFondosReserva: e.target.checked })} /> Fondos de reserva</label>
               <label className="text-sm flex items-center gap-1"><input type="checkbox" checked={form.deductible} onChange={(e) => setForm({ ...form, deductible: e.target.checked })} /> Gasto deducible</label>
             </div>
             <div className="grid grid-cols-3 gap-3">
               <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Décimo 13ro</span><select value={form.decimoTerceroAcumulado} onChange={(e) => setForm({ ...form, decimoTerceroAcumulado: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option>MENSUALIZADO</option><option>ACUMULADO</option></select></label>
               <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Décimo 14to</span><select value={form.decimoCuartoAcumulado} onChange={(e) => setForm({ ...form, decimoCuartoAcumulado: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option>MENSUALIZADO</option><option>ACUMULADO</option></select></label>
-              <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Fondos reserva</span><select value={form.fondosReservaAcumulado} onChange={(e) => setForm({ ...form, fondosReservaAcumulado: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option>MENSUALIZADO</option><option>ACUMULADO</option></select></label>
+              <label className="text-xs flex flex-col gap-1">
+                <span className="text-slate-600">Fondos reserva</span>
+                <select value={form.fondosReservaAcumulado} disabled={!fondosApplies} onChange={(e) => setForm({ ...form, fondosReservaAcumulado: e.target.value })} className={`border border-slate-200 rounded-xl px-3.5 py-2.5 ${!fondosApplies ? 'bg-slate-100 text-slate-400' : ''}`}><option>MENSUALIZADO</option><option>ACUMULADO</option></select>
+              </label>
             </div>
+            {!fondosApplies && fondosDate && (
+              <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                Los fondos de reserva se ganan al cumplir <b>1 año</b>: este empleado los generará desde el <b>{fmtDate(fondosDate)}</b>. Hasta entonces el campo queda deshabilitado.
+              </p>
+            )}
+          </div>
+
+          {/* Ingresos fijos recurrentes */}
+          <div className="bg-slate-50 border border-slate-100 rounded-xl p-3 space-y-2">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-semibold text-slate-700">Ingresos fijos (se suman en cada rol)</div>
+              <button type="button" onClick={addFixed} className="px-2.5 py-1 bg-emerald-600 text-white rounded-lg text-xs flex items-center gap-1"><HiOutlinePlus className="w-3.5 h-3.5" /> Agregar</button>
+            </div>
+            <p className="text-[11px] text-slate-500">Ej. «Alimentación $50/mes». Se suman en el rol mensual/cierre (en quincena solo si lo marcas). Gravan IESS solo si lo indicas.</p>
+            {(form.fixedIncomes || []).length === 0 && <p className="text-xs text-slate-400">Sin ingresos fijos.</p>}
+            {(form.fixedIncomes || []).map((f, i) => (
+              <div key={i} className="grid grid-cols-12 gap-2 items-center bg-white border border-slate-200 rounded-lg px-2 py-1.5">
+                <input placeholder="Concepto" value={f.concepto} onChange={(e) => setFixed(i, { concepto: e.target.value })} className="col-span-4 border border-slate-200 rounded px-2 py-1 text-sm" />
+                <NumericInput step="0.01" placeholder="Monto" value={f.monto} onChange={(e) => setFixed(i, { monto: +e.target.value })} className="col-span-2 border border-slate-200 rounded px-2 py-1 text-sm text-right" />
+                <label className="col-span-3 text-[11px] flex items-center gap-1 text-slate-600"><input type="checkbox" checked={!!f.aportaIess} onChange={(e) => setFixed(i, { aportaIess: e.target.checked })} /> Aporta IESS</label>
+                <label className="col-span-2 text-[11px] flex items-center gap-1 text-slate-600"><input type="checkbox" checked={!!f.includeInQuincena} onChange={(e) => setFixed(i, { includeInQuincena: e.target.checked })} /> En quincena</label>
+                <button type="button" onClick={() => delFixed(i)} className="col-span-1 text-rose-600 text-right"><HiOutlineTrash className="w-4 h-4 inline" /></button>
+              </div>
+            ))}
           </div>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Origen del sueldo (sede)">

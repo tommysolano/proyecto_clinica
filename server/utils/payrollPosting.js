@@ -80,6 +80,12 @@ function recomputeItem(item, ctx = {}) {
   const earnIess = earnings.reduce((s, e) => s + (flagOf(e).affectsIess ? (Number(e.amount) || 0) : 0), 0);
   const earnIr = earnings.reduce((s, e) => s + (flagOf(e).affectsIncomeTax ? (Number(e.amount) || 0) : 0), 0);
 
+  // Ingresos fijos recurrentes (snapshot en el ítem). Suman al ingreso; gravan IESS solo si
+  // `aportaIess` (no afectan IR salvo que se capture como rubro flexible con concepto).
+  const fixedIncomes = (item.fixedIncomes || []).filter((f) => (Number(f.monto) || 0) > 0);
+  const fixed = r2(fixedIncomes.reduce((s, f) => s + (Number(f.monto) || 0), 0));
+  const fixedIess = r2(fixedIncomes.reduce((s, f) => s + (f.aportaIess ? (Number(f.monto) || 0) : 0), 0));
+
   // Extras fijos legacy que gravan (normalmente 0; el flujo nuevo usa earnings[]).
   const gravaFijo = (Number(item.overtime) || 0) + (Number(item.commissions) || 0) + (Number(item.bonuses) || 0);
 
@@ -89,12 +95,15 @@ function recomputeItem(item, ctx = {}) {
   const d4Mens = emp.receivesDecimoCuarto !== false && emp.decimoCuartoAcumulado === 'MENSUALIZADO';
   const eligibleFondos = item.eligibleFondos != null ? item.eligibleFondos : (emp.receivesFondosReserva || false);
   const frMens = eligibleFondos && emp.fondosReservaAcumulado === 'MENSUALIZADO';
+  // Los fondos de reserva se ganan DESDE el aniversario del año: el factor (0..1) prorratea el
+  // período si el aniversario cae a mitad de mes (lo calcula el controlador; 1 por defecto).
+  const frFactor = item.fondosReservaFactor != null ? Math.max(0, Math.min(1, Number(item.fondosReservaFactor))) : 1;
   item.decimoTercero = d3Mens ? r2(earnedBase / 12) : 0;
   item.decimoCuarto = d4Mens ? r2((sbu || 0) / 12) : 0;
-  item.fondosReserva = frMens ? r2(earnedBase * R.FONDOS_RESERVA) : 0;
+  item.fondosReserva = frMens ? r2(earnedBase * R.FONDOS_RESERVA * frFactor) : 0;
 
-  // Base imponible IESS (décimos/fondos/vacaciones NO gravan).
-  const iessBase = r2(earnedBase + gravaFijo + earnIess);
+  // Base imponible IESS (décimos/fondos/vacaciones NO gravan; los ingresos fijos solo si aportan).
+  const iessBase = r2(earnedBase + gravaFijo + earnIess + fixedIess);
   item.iessPersonal = r2(iessBase * R.IESS_PERSONAL);
   item.iessPatronal = r2(iessBase * R.IESS_PATRONAL);
   item.iece = r2(iessBase * R.IECE);
@@ -119,17 +128,17 @@ function recomputeItem(item, ctx = {}) {
   item.provDecimoTercero = emp.decimoTerceroAcumulado === 'ACUMULADO' ? r2(earnedBase / 12) : 0;
   item.provDecimoCuarto = emp.decimoCuartoAcumulado === 'ACUMULADO' ? r2((sbu || 0) / 12) : 0;
   item.provVacaciones = r2(earnedBase / 24);
-  item.provFondosReserva = (eligibleFondos && emp.fondosReservaAcumulado === 'ACUMULADO') ? r2(earnedBase * R.FONDOS_RESERVA) : 0;
+  item.provFondosReserva = (eligibleFondos && emp.fondosReservaAcumulado === 'ACUMULADO') ? r2(earnedBase * R.FONDOS_RESERVA * frFactor) : 0;
 
-  // Totales.
+  // Totales. El anticipo de quincena ya pagado se descuenta del neto del cierre de mes.
   item.totalIngresos = r2(
     earnedBase + gravaFijo + item.decimoTercero + item.decimoCuarto + item.fondosReserva
-    + (Number(item.vacaciones) || 0) + (Number(item.otherIncome) || 0) + earn
+    + (Number(item.vacaciones) || 0) + (Number(item.otherIncome) || 0) + earn + fixed
   );
   item.totalEgresos = r2(
     item.iessPersonal + item.impuestoRenta + (Number(item.prestamoIess) || 0)
-    + (Number(item.prestamoEmpresa) || 0) + (Number(item.anticipos) || 0) + (Number(item.multas) || 0)
-    + (Number(item.otherDeductions) || 0) + ded
+    + (Number(item.prestamoEmpresa) || 0) + (Number(item.anticipos) || 0) + (Number(item.anticipoQuincena) || 0)
+    + (Number(item.multas) || 0) + (Number(item.otherDeductions) || 0) + ded
   );
   item.netoPagar = r2(item.totalIngresos - item.totalEgresos);
   item.totalProvisiones = r2(
@@ -145,7 +154,7 @@ async function resolveConfigAccounts(clinicId, cfg, session) {
   const code = (k, def) => a[k] || def;
   const [
     sueldos, beneficios, iessPatronal, gastoVacaciones,
-    iessPorPagar, sueldosPorPagar, irPorPagar, prestamosPorCobrar, cxcEmpleados,
+    iessPorPagar, sueldosPorPagar, irPorPagar, prestamosPorCobrar, cxcEmpleados, anticipoQuincena,
     decimoTerceroPorPagar, decimoCuartoPorPagar, fondosReservaPorPagar, vacacionesPorPagar,
   ] = await Promise.all([
     accByCode(clinicId, code('sueldos', '6.1.01'), session),
@@ -157,6 +166,7 @@ async function resolveConfigAccounts(clinicId, cfg, session) {
     accByCode(clinicId, code('irPorPagar', '2.1.02.05'), session),
     accByCode(clinicId, code('prestamosPorCobrar', '1.1.02.04'), session),
     accByCode(clinicId, code('cxcEmpleados', '1.1.02.06'), session),
+    accByCode(clinicId, code('anticipoQuincena', '1.1.02.06'), session),
     accByCode(clinicId, code('decimoTerceroPorPagar', '2.1.03.03'), session),
     accByCode(clinicId, code('decimoCuartoPorPagar', '2.1.03.04'), session),
     accByCode(clinicId, code('fondosReservaPorPagar', '2.1.03.05'), session),
@@ -164,7 +174,7 @@ async function resolveConfigAccounts(clinicId, cfg, session) {
   ]);
   return {
     sueldos, beneficios, iessPatronal, gastoVacaciones,
-    iessPorPagar, sueldosPorPagar, irPorPagar, prestamosPorCobrar, cxcEmpleados,
+    iessPorPagar, sueldosPorPagar, irPorPagar, prestamosPorCobrar, cxcEmpleados, anticipoQuincena,
     decimoTerceroPorPagar, decimoCuartoPorPagar, fondosReservaPorPagar, vacacionesPorPagar,
   };
 }
@@ -225,6 +235,26 @@ async function buildPayrollEntryLines(payroll, { clinicId, session } = {}) {
     return conceptCache.get(k);
   };
 
+  // ── QUINCENA: anticipo del sueldo. Solo mueve dinero al empleado, NO reconoce gasto:
+  //    Débito «Anticipo de sueldo por cobrar» / Crédito «Sueldos por pagar» (neto = anticipo).
+  //    El gasto del mes y el IESS se reconocen en el CIERRE, que descuenta este anticipo.
+  if (payroll.periodType === 'QUINCENA_1') {
+    for (const it of payroll.items || []) {
+      const anticipo = r2(it.anticipoQuincena || it.netoPagar || 0);
+      if (anticipo <= 0) continue;
+      add(general.anticipoQuincena, anticipo, 0, 'Anticipo quincena (por cobrar al empleado)');
+      add(general.sueldosPorPagar, 0, anticipo, 'Anticipo quincena por pagar');
+    }
+    const lines = [...agg.values()].map((l) => {
+      const net = r2(l.debit - l.credit);
+      return net >= 0
+        ? { account: l.account, debit: net, credit: 0, description: l.description }
+        : { account: l.account, debit: 0, credit: r2(-net), description: l.description };
+    }).filter((l) => l.debit > 0 || l.credit > 0);
+    if (!lines.length) { const err = new Error('La quincena no tiene anticipos para contabilizar.'); err.status = 400; throw err; }
+    return { lines, config: general };
+  }
+
   for (const it of payroll.items || []) {
     const dept = await resolveDeptExpenseAccounts(clinicId, it.departmentRef, general, deptCache, session);
 
@@ -246,14 +276,27 @@ async function buildPayrollEntryLines(payroll, { clinicId, session } = {}) {
         conceptEarnAcct.push({ acc: accDoc, amount: amt, name: e.name });
       } else earnToDept += amt;
     }
+    // Ingresos fijos: con cuenta propia van a su cuenta; sin cuenta, a la de sueldos del depto.
+    const fixedAcct = [];
+    let fixedToDept = 0;
+    for (const f of it.fixedIncomes || []) {
+      const amt = Number(f.monto) || 0;
+      if (amt <= 0) continue;
+      if (f.account) {
+        const accDoc = await accById(clinicId, f.account, session);
+        if (!accDoc) { const err = new Error(`El ingreso fijo «${f.concepto || 'ingreso'}» apunta a una cuenta inexistente.`); err.status = 400; throw err; }
+        fixedAcct.push({ acc: accDoc, amount: amt, name: f.concepto });
+      } else fixedToDept += amt;
+    }
     const vacContra = Number(it.vacacionesContraProvision) || 0;
     const salaryExpense = r2(
       (it.baseSalary || 0) + (it.overtime || 0) + (it.bonuses || 0) + (it.commissions || 0)
       + (it.decimoTercero || 0) + (it.decimoCuarto || 0) + (it.fondosReserva || 0)
-      + (it.vacaciones || 0) + (it.otherIncome || 0) + earnToDept - vacContra
+      + (it.vacaciones || 0) + (it.otherIncome || 0) + earnToDept + fixedToDept - vacContra
     );
     if (salaryExpense > 0) add(dept.sueldos, salaryExpense, 0, 'Sueldos y remuneraciones');
     for (const ce of conceptEarnAcct) if (ce.amount > 0) add(ce.acc, ce.amount, 0, ce.name || 'Rubro de nómina');
+    for (const fe of fixedAcct) if (fe.amount > 0) add(fe.acc, fe.amount, 0, fe.name || 'Ingreso fijo');
     if (vacContra > 0) add(general.vacacionesPorPagar, vacContra, 0, 'Vacaciones gozadas (contra provisión)');
 
     // Provisiones patronales y de beneficios (gasto).
@@ -268,6 +311,9 @@ async function buildPayrollEntryLines(payroll, { clinicId, session } = {}) {
     if (iessTotal > 0) add(general.iessPorPagar, 0, iessTotal, 'IESS por pagar');
     if ((it.impuestoRenta || 0) > 0) add(general.irPorPagar, 0, it.impuestoRenta, 'Retención impuesto a la renta');
     if ((it.prestamoEmpresa || 0) > 0) add(general.prestamosPorCobrar, 0, it.prestamoEmpresa, 'Préstamos empleados (recuperación)');
+    // Anticipo de quincena ya pagado: se acredita el «Anticipo por cobrar» para saldarlo (lo
+    // debitó la quincena). Así el mes reconoce el gasto completo y el neto sale ya descontado.
+    if ((it.anticipoQuincena || 0) > 0) add(general.anticipoQuincena, 0, it.anticipoQuincena, 'Descuento anticipo quincena');
     const genericDed = r2((it.multas || 0) + (it.anticipos || 0) + (it.otherDeductions || 0) + (it.prestamoIess || 0));
     if (genericDed > 0) add(general.cxcEmpleados, 0, genericDed, 'Deducciones empleados');
     for (const d of it.deductions || []) {

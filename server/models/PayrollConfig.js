@@ -8,6 +8,9 @@ const payrollConfigSchema = new mongoose.Schema(
   {
     clinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', required: true, unique: true, index: true },
     paymentFrequency: { type: String, enum: ['MENSUAL', 'QUINCENAL'], default: 'MENSUAL' },
+    // Anticipo de la 1ª quincena: % del SUELDO que se paga como anticipo (la contadora usa 40%).
+    // Sobreescribible por empleado (Employee.anticipoQuincenaPct). Solo sueldo, sin IESS.
+    anticipoQuincenaPct: { type: Number, default: 40, min: 0, max: 100 },
     // Tasas (en %, se dividen entre 100 al usarse)
     iessPersonal: { type: Number, default: 9.45 },
     iessPatronal: { type: Number, default: 11.15 },
@@ -27,6 +30,9 @@ const payrollConfigSchema = new mongoose.Schema(
       irPorPagar: { type: String, default: '2.1.02.05' },
       prestamosPorCobrar: { type: String, default: '1.1.02.04' },
       cxcEmpleados: { type: String, default: '1.1.02.06' },
+      // Anticipo de sueldo por cobrar al empleado (activo). Se debita al pagar la quincena y se
+      // acredita en el cierre de mes para saldarlo. Por defecto reusa la CxC de empleados.
+      anticipoQuincena: { type: String, default: '1.1.02.06' },
       // Provisiones por pagar desglosadas por beneficio (antes: una sola cuenta).
       provisionesPorPagar: { type: String, default: '2.1.03.03' },
       decimoTerceroPorPagar: { type: String, default: '2.1.03.03' },
