@@ -228,12 +228,35 @@ async function buildPayrollEntryLines(payroll, { clinicId, session } = {}) {
     row.credit = r2(row.credit + (credit || 0));
   };
 
-  const conceptCache = new Map();
-  const loadConcept = async (id) => {
+  // Catálogo de conceptos (una sola lectura). Se indexa por código y por _id para
+  // resolver la cuenta POR DEPARTAMENTO (override) con herencia a la cuenta general.
+  const concepts = await PayrollConcept.find({ clinic: clinicId }).session(session || null).lean();
+  const conceptByCode = new Map(concepts.map((c) => [c.code, c]));
+  const conceptById = new Map(concepts.map((c) => [String(c._id), c]));
+  const loadConcept = async (id) => conceptById.get(String(id)) || null;
+
+  // Cache de cuentas resueltas por _id (evita relecturas al agregar por cuenta).
+  const acctCache = new Map();
+  const resolveAcc = async (id) => {
+    if (!id) return null;
     const k = String(id);
-    if (!conceptCache.has(k)) conceptCache.set(k, await PayrollConcept.findOne({ _id: id, clinic: clinicId }).session(session || null));
-    return conceptCache.get(k);
+    if (!acctCache.has(k)) acctCache.set(k, await accById(clinicId, id, session));
+    return acctCache.get(k);
   };
+  /** _id de la cuenta primaria del concepto para un departamento: override del depto → cuenta general. */
+  const conceptAccId = (concept, deptRef) => {
+    if (!concept) return null;
+    if (deptRef) {
+      const ov = (concept.deptAccounts || []).find((d) => String(d.department) === String(deptRef));
+      if (ov && ov.account) return ov.account;
+    }
+    const isPayable = concept.type === 'EGRESO' || concept.type === 'OBLIGACION';
+    return (isPayable ? concept.payableAccount : concept.defaultAccount) || null;
+  };
+  /** Cuenta (doc) del concepto por departamento; null si el concepto no resuelve cuenta. */
+  const conceptDeptAccount = async (concept, deptRef) => resolveAcc(conceptAccId(concept, deptRef));
+  /** Cuenta de un rubro de INGRESO estándar por su código, con fallback a la cuenta de sueldos del depto. */
+  const incomeAccountByCode = async (code, deptRef, fallback) => (await conceptDeptAccount(conceptByCode.get(code), deptRef)) || fallback;
 
   // ── QUINCENA: anticipo del sueldo. Solo mueve dinero al empleado, NO reconoce gasto:
   //    Débito «Anticipo de sueldo por cobrar» / Crédito «Sueldos por pagar» (neto = anticipo).
@@ -258,45 +281,56 @@ async function buildPayrollEntryLines(payroll, { clinicId, session } = {}) {
   for (const it of payroll.items || []) {
     const dept = await resolveDeptExpenseAccounts(clinicId, it.departmentRef, general, deptCache, session);
 
-    // Ingresos que van a la cuenta de sueldos del departamento (rubros sin concepto),
-    // menos las vacaciones contra provisión. Un rubro CON concepto exige la cuenta
-    // del concepto (bloquea el cierre si falta).
-    const conceptEarnAcct = [];
+    // Rubros de INGRESO estructurados: cada uno se carga a la cuenta de SU concepto según el
+    // departamento del empleado (override del depto → cuenta general del concepto → cuenta de
+    // sueldos del depto). Si el catálogo no configura estos conceptos, TODOS caen a la cuenta de
+    // sueldos del depto y se agregan en una sola línea (== comportamiento histórico).
+    if ((it.baseSalary || 0) > 0) add(await incomeAccountByCode('ING-SUELDO', it.departmentRef, dept.sueldos), it.baseSalary, 0, 'Sueldos y remuneraciones');
+    if ((it.overtime || 0) > 0) add(await incomeAccountByCode('ING-HE50', it.departmentRef, dept.sueldos), it.overtime, 0, 'Horas extra');
+    if ((it.bonuses || 0) > 0) add(await incomeAccountByCode('ING-BONIFICACION', it.departmentRef, dept.sueldos), it.bonuses, 0, 'Bonificación');
+    if ((it.commissions || 0) > 0) add(await incomeAccountByCode('ING-COMISIONES', it.departmentRef, dept.sueldos), it.commissions, 0, 'Comisiones');
+
+    // Rubros flexibles CON concepto: exigen la cuenta del concepto (por departamento). Sin
+    // concepto → cuenta de sueldos del depto.
     let earnToDept = 0;
     for (const e of it.earnings || []) {
       const amt = Number(e.amount) || 0;
       if (amt <= 0) continue;
       if (e.concept) {
         const c = await loadConcept(e.concept);
-        const accDoc = c && c.defaultAccount ? await accById(clinicId, c.defaultAccount, session) : null;
+        const accDoc = await conceptDeptAccount(c, it.departmentRef);
         if (!accDoc) {
           const err = new Error(`El concepto «${e.name || c?.name || e.code || 'ingreso'}» no tiene cuenta de gasto configurada.`);
           err.status = 400; throw err;
         }
-        conceptEarnAcct.push({ acc: accDoc, amount: amt, name: e.name });
+        add(accDoc, amt, 0, e.name || c?.name || 'Rubro de nómina');
       } else earnToDept += amt;
     }
-    // Ingresos fijos: con cuenta propia van a su cuenta; sin cuenta, a la de sueldos del depto.
-    const fixedAcct = [];
-    let fixedToDept = 0;
+
+    // Ingresos fijos: cuenta del CONCEPTO por departamento (preferido) → cuenta directa legacy →
+    // cuenta de sueldos del depto.
     for (const f of it.fixedIncomes || []) {
       const amt = Number(f.monto) || 0;
       if (amt <= 0) continue;
-      if (f.account) {
-        const accDoc = await accById(clinicId, f.account, session);
+      let accDoc = f.concept ? await conceptDeptAccount(await loadConcept(f.concept), it.departmentRef) : null;
+      if (!accDoc && f.account) {
+        accDoc = await accById(clinicId, f.account, session);
         if (!accDoc) { const err = new Error(`El ingreso fijo «${f.concepto || 'ingreso'}» apunta a una cuenta inexistente.`); err.status = 400; throw err; }
-        fixedAcct.push({ acc: accDoc, amount: amt, name: f.concepto });
-      } else fixedToDept += amt;
+      }
+      if (!accDoc) accDoc = dept.sueldos;
+      add(accDoc, amt, 0, f.concepto || 'Ingreso fijo');
     }
+
+    // Resto de ingresos que históricamente se agrupan en la cuenta de sueldos del depto
+    // (décimos/fondos mensualizados, vacaciones, otros ingresos, rubros flexibles sin concepto),
+    // menos las vacaciones gozadas pagadas contra la provisión.
     const vacContra = Number(it.vacacionesContraProvision) || 0;
-    const salaryExpense = r2(
-      (it.baseSalary || 0) + (it.overtime || 0) + (it.bonuses || 0) + (it.commissions || 0)
-      + (it.decimoTercero || 0) + (it.decimoCuarto || 0) + (it.fondosReserva || 0)
-      + (it.vacaciones || 0) + (it.otherIncome || 0) + earnToDept + fixedToDept - vacContra
+    const lumpToDept = r2(
+      (it.decimoTercero || 0) + (it.decimoCuarto || 0) + (it.fondosReserva || 0)
+      + (it.vacaciones || 0) + (it.otherIncome || 0) + earnToDept - vacContra
     );
-    if (salaryExpense > 0) add(dept.sueldos, salaryExpense, 0, 'Sueldos y remuneraciones');
-    for (const ce of conceptEarnAcct) if (ce.amount > 0) add(ce.acc, ce.amount, 0, ce.name || 'Rubro de nómina');
-    for (const fe of fixedAcct) if (fe.amount > 0) add(fe.acc, fe.amount, 0, fe.name || 'Ingreso fijo');
+    if (lumpToDept > 0) add(dept.sueldos, lumpToDept, 0, 'Otros ingresos de nómina');
+    else if (lumpToDept < 0) add(dept.sueldos, 0, -lumpToDept, 'Ajuste vacaciones gozadas');
     if (vacContra > 0) add(general.vacacionesPorPagar, vacContra, 0, 'Vacaciones gozadas (contra provisión)');
 
     // Provisiones patronales y de beneficios (gasto).
@@ -322,7 +356,7 @@ async function buildPayrollEntryLines(payroll, { clinicId, session } = {}) {
       let acc = general.cxcEmpleados;
       if (d.concept) {
         const c = await loadConcept(d.concept);
-        acc = c && c.payableAccount ? await accById(clinicId, c.payableAccount, session) : null;
+        acc = await conceptDeptAccount(c, it.departmentRef);
         if (!acc) {
           const err = new Error(`El concepto «${d.name || c?.name || d.code || 'descuento'}» no tiene cuenta por pagar configurada.`);
           err.status = 400; throw err;

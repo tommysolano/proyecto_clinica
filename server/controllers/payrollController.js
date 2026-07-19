@@ -495,7 +495,7 @@ exports.generatePayroll = async (req, res) => {
       // Ingresos fijos activos (snapshot). En cierre/mensual siempre; en quincena no aplica aquí.
       const fixedIncomes = (emp.fixedIncomes || [])
         .filter((f) => f.activo !== false && (Number(f.monto) || 0) > 0)
-        .map((f) => ({ concepto: f.concepto, monto: r2(f.monto), aportaIess: !!f.aportaIess, account: f.account || null }));
+        .map((f) => ({ concepto: f.concepto, monto: r2(f.monto), aportaIess: !!f.aportaIess, concept: f.concept || null, account: f.account || null }));
 
       // Préstamos vigentes (cuota pendiente del período).
       const loans = await EmployeeLoan.find({ clinic: req.clinicId, employee: emp._id, status: 'ACTIVO' });
@@ -1125,11 +1125,21 @@ exports.updatePosition = async (req, res) => {
 };
 
 // ---- Conceptos (rubros) ----
+/** Normaliza los overrides de cuenta por departamento: descarta filas sin depto o sin cuenta. */
+function cleanDeptAccounts(arr) {
+  if (!Array.isArray(arr)) return [];
+  return arr
+    .map((d) => ({ department: d.department || d.dept || null, account: d.account || null }))
+    .filter((d) => d.department && d.account);
+}
+
 exports.listConcepts = async (req, res) => {
   const filter = { clinic: req.clinicId };
   if (req.query.type) filter.type = req.query.type;
   const items = await PayrollConcept.find(filter)
     .populate('defaultAccount payableAccount', 'code name')
+    .populate('deptAccounts.department', 'name type')
+    .populate('deptAccounts.account', 'code name')
     .sort({ type: 1, code: 1 });
   res.json(items);
 };
@@ -1138,6 +1148,7 @@ exports.createConcept = async (req, res) => {
     const data = { ...req.body, clinic: req.clinicId };
     if (!data.defaultAccount) data.defaultAccount = null;
     if (!data.payableAccount) data.payableAccount = null;
+    data.deptAccounts = cleanDeptAccounts(data.deptAccounts);
     const c = await PayrollConcept.create(data);
     res.status(201).json(c);
   } catch (e) { res.status(400).json({ message: e.message }); }
@@ -1149,6 +1160,7 @@ exports.updateConcept = async (req, res) => {
     const patch = { ...req.body }; delete patch.clinic;
     if (patch.defaultAccount === '') patch.defaultAccount = null;
     if (patch.payableAccount === '') patch.payableAccount = null;
+    if (patch.deptAccounts !== undefined) patch.deptAccounts = cleanDeptAccounts(patch.deptAccounts);
     Object.assign(c, patch);
     await c.save();
     res.json(c);
@@ -1170,12 +1182,15 @@ const STANDARD_CONCEPTS = [
   { code: 'ING-HE25', name: 'Horas extra 25%', type: 'INGRESO', category: 'HORAS_EXTRAS', rate: 25, affectsIess: true, affectsDecimos: true, affectsIncomeTax: true, isTaxableIncome: true },
   { code: 'ING-HE50', name: 'Horas extra 50%', type: 'INGRESO', category: 'HORAS_EXTRAS', rate: 50, affectsIess: true, affectsDecimos: true, affectsIncomeTax: true, isTaxableIncome: true },
   { code: 'ING-HE100', name: 'Horas extra 100%', type: 'INGRESO', category: 'HORAS_EXTRAS', rate: 100, affectsIess: true, affectsDecimos: true, affectsIncomeTax: true, isTaxableIncome: true },
+  { code: 'ING-DEVOLUCION-DIAS', name: 'Devolución de días laborados', type: 'INGRESO', category: 'SUELDO', affectsIess: true, affectsDecimos: true, affectsIncomeTax: true, isTaxableIncome: true },
+  { code: 'ING-OTROS', name: 'Otros ingresos', type: 'INGRESO', category: 'OTRO' },
   { code: 'ING-VACACIONES', name: 'Vacaciones', type: 'INGRESO', category: 'VACACIONES', isVacation: true, isNonTaxableIncome: true },
   { code: 'ING-FONDOS-RESERVA', name: 'Fondos de reserva', type: 'INGRESO', category: 'FONDOS_RESERVA', rate: 8.33, isFondosReserva: true, isNonTaxableIncome: true },
   { code: 'ING-DECIMO-TERCERO', name: 'Décimo tercero', type: 'INGRESO', category: 'DECIMO', isDecimoTercero: true, isNonTaxableIncome: true },
   { code: 'ING-DECIMO-CUARTO', name: 'Décimo cuarto', type: 'INGRESO', category: 'DECIMO', isDecimoCuarto: true, isNonTaxableIncome: true },
   // Egresos
   { code: 'EGR-ANTICIPO', name: 'Anticipo', type: 'EGRESO', category: 'ANTICIPO', isDiscount: true },
+  { code: 'EGR-ANTICIPO-QUINCENA', name: 'Anticipo quincenal', type: 'EGRESO', category: 'ANTICIPO', isDiscount: true },
   { code: 'EGR-PREST-HIPOTECARIO', name: 'Préstamo hipotecario', type: 'EGRESO', category: 'PRESTAMO', isDiscount: true },
   { code: 'EGR-PREST-QUIROGRAFARIO', name: 'Préstamo quirografario', type: 'EGRESO', category: 'PRESTAMO', isDiscount: true },
   { code: 'EGR-PREST-PERSONAL', name: 'Préstamo personal', type: 'EGRESO', category: 'PRESTAMO', isDiscount: true },
@@ -1184,8 +1199,9 @@ const STANDARD_CONCEPTS = [
   { code: 'EGR-CELULAR', name: 'Celular', type: 'EGRESO', category: 'DESCUENTO', isDiscount: true },
   { code: 'EGR-AUSENCIAS', name: 'Ausencias', type: 'EGRESO', category: 'AUSENCIA', isDiscount: true },
   { code: 'EGR-EXT-CONYUGAL', name: 'Extensión conyugal', type: 'EGRESO', category: 'DESCUENTO', isDiscount: true },
+  { code: 'EGR-DESCUENTOS', name: 'Descuentos', type: 'EGRESO', category: 'DESCUENTO', isDiscount: true },
   { code: 'EGR-IMPUESTO-RENTA', name: 'Impuesto a la renta', type: 'EGRESO', category: 'IMPUESTO', isIncomeTaxWithholding: true },
-  { code: 'EGR-OTROS', name: 'Otros descuentos', type: 'EGRESO', category: 'DESCUENTO', isDiscount: true },
+  { code: 'EGR-OTROS', name: 'Otros egresos', type: 'EGRESO', category: 'DESCUENTO', isDiscount: true },
   // Obligaciones / provisiones
   { code: 'OBL-IESS-PERSONAL', name: 'IESS personal', type: 'OBLIGACION', category: 'IESS', rate: 9.45, isPersonalIess: true },
   { code: 'OBL-IESS-PATRONAL', name: 'Aporte patronal', type: 'OBLIGACION', category: 'IESS', rate: 11.15 },

@@ -38,9 +38,21 @@ const payrollConceptSchema = new mongoose.Schema(
     isDiscount: { type: Boolean, default: false },
     isPersonalIess: { type: Boolean, default: false },
     isIncomeTaxWithholding: { type: Boolean, default: false },
-    // Cuentas (refs al plan). El rol NUNCA pide cuenta manual: sale de aquí.
+    // Cuentas GENERALES (refs al plan). El rol NUNCA pide cuenta manual: sale de aquí.
     defaultAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null }, // gasto (INGRESO/PROVISION)
     payableAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null }, // por pagar / CxC (EGRESO/PROVISION/OBLIGACION)
+    // Cuenta POR DEPARTAMENTO (override). El valor del rubro se carga a la cuenta del
+    // departamento del empleado; si el departamento no define su override, HEREDA la cuenta
+    // general de arriba (defaultAccount para ingresos/provisiones, payableAccount para egresos).
+    // `account` es el lado primario del concepto (gasto para INGRESO/PROVISION, por pagar/CxC
+    // para EGRESO/OBLIGACION), igual que en la resolución general.
+    deptAccounts: {
+      type: [new mongoose.Schema({
+        department: { type: mongoose.Schema.Types.ObjectId, ref: 'PayrollDepartment', required: true },
+        account: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', required: true },
+      }, { _id: false })],
+      default: [],
+    },
     active: { type: Boolean, default: true },
   },
   { timestamps: true }

@@ -52,6 +52,9 @@ const payrollItemSchema = new mongoose.Schema(
         concepto: { type: String, default: '' },
         monto: { type: Number, default: 0 },
         aportaIess: { type: Boolean, default: false },
+        // Snapshot del concepto (su cuenta se resuelve por departamento al cerrar) y de la
+        // cuenta directa legacy como respaldo.
+        concept: { type: mongoose.Schema.Types.ObjectId, ref: 'PayrollConcept', default: null },
         account: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },
       }, { _id: false })],
       default: [],

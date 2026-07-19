@@ -26,6 +26,9 @@ export default function Decimos() {
   return (
     <div className="space-y-4">
       <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineGift className="text-emerald-600" /> Plantillas de Décimos</h1>
+      <p className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+        Esta pantalla es informativa (cálculo del décimo para pagarlo o cruzarlo). La <b>contabilización</b> del décimo se genera como <b>provisión mensual en el rol</b> (Décimo tercero/cuarto por pagar) y su asiento se consulta desde el rol con «Ver asiento».
+      </p>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-3 flex gap-2 items-end flex-wrap">
         <Field label="Tipo de décimo"><select value={type} onChange={(e) => setType(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2">
           <option value="DECIMO_TERCERO">Décimo Tercero (13ro)</option>

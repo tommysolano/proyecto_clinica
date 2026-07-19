@@ -57,6 +57,7 @@ export default function Employees() {
   const [users, setUsers] = useState([]);
   const [depts, setDepts] = useState([]);
   const [positions, setPositions] = useState([]);
+  const [concepts, setConcepts] = useState([]);
 
   const load = async () => {
     try { const r = await api.get('/payroll/employees'); setList(r.data || []); }
@@ -69,6 +70,7 @@ export default function Employees() {
     api.get('/clinics').then((r) => setClinics(r.data || [])).catch(() => {});
     api.get('/payroll/departments').then((r) => setDepts(r.data || [])).catch(() => {});
     api.get('/payroll/positions').then((r) => setPositions(r.data || [])).catch(() => {});
+    api.get('/payroll/concepts', { params: { type: 'INGRESO' } }).then((r) => setConcepts(r.data || [])).catch(() => {});
   }, []);
 
   // Cargos filtrados por el departamento elegido (o todos si no hay depto).
@@ -101,7 +103,7 @@ export default function Employees() {
       // Ingresos fijos: solo los que tienen concepto y monto; monto/flags normalizados.
       payload.fixedIncomes = (payload.fixedIncomes || [])
         .filter((f) => (f.concepto || '').trim())
-        .map((f) => ({ concepto: f.concepto.trim(), monto: +f.monto || 0, aportaIess: !!f.aportaIess, includeInQuincena: !!f.includeInQuincena, activo: f.activo !== false }));
+        .map((f) => ({ concepto: f.concepto.trim(), monto: +f.monto || 0, aportaIess: !!f.aportaIess, includeInQuincena: !!f.includeInQuincena, concept: f.concept || null, activo: f.activo !== false }));
       if (payload.salaryType === 'NET') {
         payload.baseSalary = grossUp(Number(payload.netSalary || 0));
       } else {
@@ -125,7 +127,7 @@ export default function Employees() {
   const fondosDate = fondosReservaDate(form.hireDate);
   const fondosApplies = fondosDate ? fondosDate <= new Date() : false;
   const setFixed = (i, patch) => setForm((f) => ({ ...f, fixedIncomes: f.fixedIncomes.map((x, idx) => (idx === i ? { ...x, ...patch } : x)) }));
-  const addFixed = () => setForm((f) => ({ ...f, fixedIncomes: [...(f.fixedIncomes || []), { concepto: '', monto: 0, aportaIess: false, includeInQuincena: false, activo: true }] }));
+  const addFixed = () => setForm((f) => ({ ...f, fixedIncomes: [...(f.fixedIncomes || []), { concepto: '', monto: 0, aportaIess: false, includeInQuincena: false, concept: '', activo: true }] }));
   const delFixed = (i) => setForm((f) => ({ ...f, fixedIncomes: f.fixedIncomes.filter((_, idx) => idx !== i) }));
 
   return (
@@ -307,15 +309,24 @@ export default function Employees() {
               <div className="text-sm font-semibold text-slate-700">Ingresos fijos (se suman en cada rol)</div>
               <button type="button" onClick={addFixed} className="px-2.5 py-1 bg-emerald-600 text-white rounded-lg text-xs flex items-center gap-1"><HiOutlinePlus className="w-3.5 h-3.5" /> Agregar</button>
             </div>
-            <p className="text-[11px] text-slate-500">Ej. «Alimentación $50/mes». Se suman en el rol mensual/cierre (en quincena solo si lo marcas). Gravan IESS solo si lo indicas.</p>
+            <p className="text-[11px] text-slate-500">Ej. «Alimentación $50/mes». Se suman en el rol mensual/cierre (en quincena solo si lo marcas). Gravan IESS solo si lo indicas. El <b>concepto</b> define la cuenta contable por departamento.</p>
             {(form.fixedIncomes || []).length === 0 && <p className="text-xs text-slate-400">Sin ingresos fijos.</p>}
             {(form.fixedIncomes || []).map((f, i) => (
               <div key={i} className="grid grid-cols-12 gap-2 items-center bg-white border border-slate-200 rounded-lg px-2 py-1.5">
-                <input placeholder="Concepto" value={f.concepto} onChange={(e) => setFixed(i, { concepto: e.target.value })} className="col-span-4 border border-slate-200 rounded px-2 py-1 text-sm" />
-                <NumericInput step="0.01" placeholder="Monto" value={f.monto} onChange={(e) => setFixed(i, { monto: +e.target.value })} className="col-span-2 border border-slate-200 rounded px-2 py-1 text-sm text-right" />
-                <label className="col-span-3 text-[11px] flex items-center gap-1 text-slate-600"><input type="checkbox" checked={!!f.aportaIess} onChange={(e) => setFixed(i, { aportaIess: e.target.checked })} /> Aporta IESS</label>
-                <label className="col-span-2 text-[11px] flex items-center gap-1 text-slate-600"><input type="checkbox" checked={!!f.includeInQuincena} onChange={(e) => setFixed(i, { includeInQuincena: e.target.checked })} /> En quincena</label>
+                <input placeholder="Etiqueta (concepto)" value={f.concepto} onChange={(e) => setFixed(i, { concepto: e.target.value })} className="col-span-5 border border-slate-200 rounded px-2 py-1 text-sm" />
+                <NumericInput step="0.01" placeholder="Monto" value={f.monto} onChange={(e) => setFixed(i, { monto: +e.target.value })} className="col-span-3 border border-slate-200 rounded px-2 py-1 text-sm text-right" />
+                <select
+                  value={f.concept || ''}
+                  onChange={(e) => { const c = concepts.find((x) => x._id === e.target.value); setFixed(i, { concept: e.target.value, concepto: (f.concepto || '').trim() ? f.concepto : (c?.name || '') }); }}
+                  className="col-span-3 border border-slate-200 rounded px-1.5 py-1 text-xs"
+                  title="Concepto contable (define la cuenta por departamento)"
+                >
+                  <option value="">Cuenta: sueldos del depto.</option>
+                  {concepts.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}
+                </select>
                 <button type="button" onClick={() => delFixed(i)} className="col-span-1 text-rose-600 text-right"><HiOutlineTrash className="w-4 h-4 inline" /></button>
+                <label className="col-span-6 text-[11px] flex items-center gap-1 text-slate-600"><input type="checkbox" checked={!!f.aportaIess} onChange={(e) => setFixed(i, { aportaIess: e.target.checked })} /> Aporta IESS</label>
+                <label className="col-span-6 text-[11px] flex items-center gap-1 text-slate-600"><input type="checkbox" checked={!!f.includeInQuincena} onChange={(e) => setFixed(i, { includeInQuincena: e.target.checked })} /> Incluir en quincena</label>
               </div>
             ))}
           </div>

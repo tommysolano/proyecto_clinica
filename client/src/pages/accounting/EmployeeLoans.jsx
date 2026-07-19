@@ -3,9 +3,10 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
-import { HiOutlinePlus, HiOutlineBanknotes } from 'react-icons/hi2';
+import { HiOutlinePlus, HiOutlineBanknotes, HiOutlineEye } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
+import JournalEntryViewModal from '../../components/JournalEntryViewModal';
 
 const EMPTY = { employee: '', type: 'EMPRESA', principal: 0, installmentsCount: 12, startDate: today(), description: '' };
 
@@ -14,6 +15,7 @@ export default function EmployeeLoans() {
   const [employees, setEmployees] = useState([]);
   const [show, setShow] = useState(false);
   const [form, setForm] = useState(EMPTY);
+  const [entryLoan, setEntryLoan] = useState(null); // préstamo cuyo asiento se está viendo
 
   const load = async () => {
     try { const r = await api.get('/payroll/loans'); setList(r.data || []); }
@@ -43,6 +45,7 @@ export default function EmployeeLoans() {
             <th className="px-3 py-2 text-left">Inicio</th><th className="px-3 py-2 text-right">Capital</th>
             <th className="px-3 py-2 text-right">Cuota</th><th className="px-3 py-2 text-right">Saldo</th>
             <th className="px-3 py-2 text-center">Estado</th>
+            <th className="px-3 py-2 text-center">Asiento</th>
           </tr></thead>
           <tbody>
             {list.map((l) => (
@@ -54,11 +57,22 @@ export default function EmployeeLoans() {
                 <td className="px-3 py-2 text-right font-mono">${fmt(l.installmentAmount)}</td>
                 <td className="px-3 py-2 text-right font-mono font-semibold">${fmt(l.balance)}</td>
                 <td className="px-3 py-2 text-center text-xs">{l.status}</td>
+                <td className="px-3 py-2 text-center">
+                  <button onClick={() => setEntryLoan(l)} className="inline-flex items-center gap-1 text-slate-600 hover:text-emerald-600 text-xs" title="Ver el asiento contable del préstamo (solo lectura)"><HiOutlineEye className="w-4 h-4" /> Ver</button>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
+
+      <JournalEntryViewModal
+        isOpen={!!entryLoan}
+        onClose={() => setEntryLoan(null)}
+        source={entryLoan ? { model: 'EmployeeLoan', ref: entryLoan._id } : null}
+        title="Asiento del préstamo"
+        emptyHint="El desembolso y la recuperación del préstamo se reflejan en el asiento del rol de pagos (descuento «Préstamos empleados»). Este préstamo aún no tiene un asiento propio."
+      />
       <Modal isOpen={show} onClose={() => setShow(false)} title="Nuevo préstamo">
         <form onSubmit={submit} className="space-y-3">
           <Field label="Empleado" required>

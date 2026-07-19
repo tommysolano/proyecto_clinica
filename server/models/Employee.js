@@ -36,7 +36,11 @@ const employeeSchema = new mongoose.Schema(
         monto: { type: Number, required: true, min: 0 },
         aportaIess: { type: Boolean, default: false },
         includeInQuincena: { type: Boolean, default: false },
-        // Cuenta contable del concepto (opcional): si no, va a la cuenta de sueldos del depto.
+        // Concepto del catálogo: su cuenta se resuelve POR DEPARTAMENTO del empleado (con
+        // herencia a la cuenta general del concepto). Es la fuente preferida de la cuenta.
+        concept: { type: mongoose.Schema.Types.ObjectId, ref: 'PayrollConcept', default: null },
+        // Cuenta contable directa (opcional, legacy): solo se usa si no hay `concept`; si tampoco
+        // hay cuenta, cae a la cuenta de sueldos del depto.
         account: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },
         activo: { type: Boolean, default: true },
       }, { _id: true })],
