@@ -29,6 +29,7 @@ import {
   HiOutlineInformationCircle,
   HiOutlineBarsArrowDown,
   HiOutlineBarsArrowUp,
+  HiOutlinePhoto,
 } from 'react-icons/hi2';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
@@ -858,9 +859,9 @@ export default function Chats() {
                       disabled={composerDisabled}
                     />
                   )}
-                  <div className="relative flex flex-wrap @2xl:flex-nowrap gap-2 items-end">
+                  <div className="relative">
                     {slashOpen && (
-                      <div className="absolute bottom-full left-0 mb-1 w-72 max-h-64 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg z-30">
+                      <div className="absolute bottom-full left-0 mb-1 w-72 max-w-[92vw] max-h-64 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg z-30">
                         {savedReplies
                           .filter((r) => !slashQuery || r.shortcut.includes(slashQuery) || (r.title || '').toLowerCase().includes(slashQuery))
                           .slice(0, 20)
@@ -897,7 +898,7 @@ export default function Chats() {
                       </div>
                     )}
                     {pickerTab && (
-                      <div className="absolute bottom-full left-0 mb-1 w-96 max-h-80 flex flex-col bg-white border border-slate-200 rounded-lg shadow-lg z-30 overflow-hidden">
+                      <div className="absolute bottom-full left-0 mb-1 w-96 max-w-[92vw] max-h-80 flex flex-col bg-white border border-slate-200 rounded-lg shadow-lg z-30 overflow-hidden">
                         <div className="flex border-b border-slate-100 bg-white shrink-0">
                           {[
                             ['auto', '⚡ Automatizaciones'],
@@ -1089,24 +1090,9 @@ export default function Chats() {
                         </div>
                       </div>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => setGalleryOpen(true)}
-                      className="px-2 py-2 bg-white border border-slate-200 rounded-lg text-slate-600 hover:bg-slate-50 cursor-pointer"
-                      title="Galería de imágenes"
-                    >
-                      🖼
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => { setPickerTab((v) => (v ? null : 'auto')); setPickerQuery(''); }}
-                      className={`px-2 py-2 border rounded-lg cursor-pointer disabled:opacity-50 flex items-center ${pickerTab || templateDraft.name ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'}`}
-                      title="Automatizaciones, plantillas y mensajes guardados"
-                    >
-                      <HiOutlinePlus className="w-4 h-4" />
-                    </button>
+                    {/* Fila 1: el cuadro de texto ocupa TODO el ancho (o el indicador de grabación) */}
                     {recorder.recording ? (
-                      <div className="order-first w-full @2xl:order-none @2xl:w-auto flex-1 flex items-center gap-2 border border-rose-200 bg-rose-50 rounded-xl px-3.5 py-2.5">
+                      <div className="w-full flex items-center gap-2 border border-rose-200 bg-rose-50 rounded-xl px-3.5 py-3">
                         <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse flex-shrink-0" />
                         <span className="text-sm font-semibold text-rose-700 tabular-nums">
                           {formatDuration(recorder.seconds)}
@@ -1114,103 +1100,127 @@ export default function Chats() {
                         <span className="text-xs text-rose-500 truncate">Grabando nota de voz…</span>
                       </div>
                     ) : (
-                    <textarea
-                      ref={composerRef}
-                      value={draft}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setDraft(v);
-                        // Detectar comando "/" al inicio del último token
-                        const lastSlashAt = v.lastIndexOf('/');
-                        if (lastSlashAt >= 0 && (lastSlashAt === 0 || /\s/.test(v[lastSlashAt - 1]))) {
-                          const q = v.slice(lastSlashAt + 1).toLowerCase();
-                          if (!q.includes(' ')) {
-                            setSlashQuery(q);
-                            setSlashOpen(true);
-                            return;
+                      <textarea
+                        ref={composerRef}
+                        value={draft}
+                        onChange={(e) => {
+                          const v = e.target.value;
+                          setDraft(v);
+                          // Detectar comando "/" al inicio del último token
+                          const lastSlashAt = v.lastIndexOf('/');
+                          if (lastSlashAt >= 0 && (lastSlashAt === 0 || /\s/.test(v[lastSlashAt - 1]))) {
+                            const q = v.slice(lastSlashAt + 1).toLowerCase();
+                            if (!q.includes(' ')) {
+                              setSlashQuery(q);
+                              setSlashOpen(true);
+                              return;
+                            }
                           }
+                          setSlashOpen(false);
+                        }}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Escape') setSlashOpen(false);
+                          if (e.key === 'Enter' && !e.shiftKey) {
+                            e.preventDefault();
+                            sendMessage();
+                          }
+                        }}
+                        onPaste={handleComposerPaste}
+                        placeholder={
+                          templateDraft.name
+                            ? 'Se enviará la plantilla seleccionada…'
+                            : voiceNoteAttached
+                              ? 'Una nota de voz se envía sola, sin texto'
+                              : 'Escribe un mensaje…   ·   / para guardados   ·   pega una imagen'
                         }
-                        setSlashOpen(false);
-                      }}
-                      onKeyDown={(e) => {
-                        if (e.key === 'Escape') setSlashOpen(false);
-                        if (e.key === 'Enter' && !e.shiftKey) {
-                          e.preventDefault();
-                          sendMessage();
-                        }
-                      }}
-                      onPaste={handleComposerPaste}
-                      placeholder={
-                        templateDraft.name
-                          ? 'Se enviará la plantilla seleccionada…'
-                          : voiceNoteAttached
-                            ? 'Una nota de voz se envía sola, sin texto'
-                            : 'Escribe un mensaje... (pega una imagen o usa / para mensajes guardados)'
-                      }
-                      rows={2}
-                      disabled={composerDisabled}
-                      className="order-first w-full @2xl:order-none @2xl:w-auto flex-1 min-w-0 min-h-[46px] max-h-40 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm resize-none disabled:bg-slate-100"
-                    />
+                        rows={2}
+                        disabled={composerDisabled}
+                        className="w-full min-h-[52px] max-h-40 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm resize-y disabled:bg-slate-100"
+                      />
                     )}
-                    {recorder.recording ? (
-                      <>
-                        <button
-                          type="button"
-                          onClick={recorder.cancel}
-                          title="Descartar la grabación"
-                          className="px-3 py-2 bg-white border border-slate-200 text-slate-500 rounded-xl hover:text-rose-600 hover:border-rose-300 cursor-pointer flex items-center"
-                        >
-                          <HiOutlineTrash className="w-4 h-4" />
-                        </button>
-                        <button
-                          type="button"
-                          onClick={recorder.stop}
-                          title="Detener y adjuntar la nota de voz"
-                          className="px-3 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 cursor-pointer flex items-center"
-                        >
-                          <HiOutlineCheckCircle className="w-4 h-4" />
-                        </button>
-                      </>
-                    ) : (
-                      <>
-                    <button
-                      type="button"
-                      onClick={startRecording}
-                      disabled={
-                        !!activeConv?.blocked || activeWindowClosed || activeOptedOut ||
-                        !!templateDraft.name || attachingMedia || !!attachmentDraft
-                      }
-                      title="Grabar una nota de voz"
-                      className="px-3 py-2 bg-white border border-slate-200 text-slate-600 rounded-xl hover:border-emerald-400 hover:text-emerald-600 disabled:opacity-50 cursor-pointer flex items-center"
-                    >
-                      <HiOutlineMicrophone className="w-4 h-4" />
-                    </button>
-                    <button
-                      onClick={suggestReply}
-                      disabled={suggesting || !!activeConv?.blocked || activeOptedOut || activeWindowClosed || voiceNoteAttached}
-                      title="Sugerir respuesta con IA"
-                      className="px-3 py-2 bg-white border border-slate-200 text-slate-600 rounded-xl hover:border-emerald-400 disabled:opacity-50 flex items-center gap-1"
-                    >
-                      <HiOutlineSparkles className="w-4 h-4" /> {suggesting ? '...' : 'IA'}
-                    </button>
-                    <button
-                      onClick={sendMessage}
-                      disabled={
-                        !!activeConv?.blocked ||
-                        activeOptedOut ||
-                        attachingMedia ||
-                        (templateDraft.name.trim()
-                          ? false
-                          : activeWindowClosed
-                            ? true
-                            : !draft.trim() && !attachmentDraft)
-                      }
-                      className="px-3 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 disabled:opacity-50 flex items-center gap-1"
-                    >
-                      <HiOutlinePaperAirplane className="w-4 h-4" /> <span className="hidden @2xl:inline">Enviar</span>
-                    </button>
-                      </>
-                    )}
+                    {/* Fila 2: acciones, debajo del cuadro y con todo el ancho disponible */}
+                    <div className="flex items-center gap-1.5 mt-1.5">
+                      {recorder.recording ? (
+                        <>
+                          <button
+                            type="button"
+                            onClick={recorder.cancel}
+                            title="Descartar la grabación"
+                            className="p-2 bg-white border border-slate-200 text-slate-500 rounded-xl hover:text-rose-600 hover:border-rose-300 cursor-pointer flex items-center"
+                          >
+                            <HiOutlineTrash className="w-5 h-5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={recorder.stop}
+                            title="Detener y adjuntar la nota de voz"
+                            className="ml-auto px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 cursor-pointer flex items-center gap-1.5"
+                          >
+                            <HiOutlineCheckCircle className="w-5 h-5" />
+                            <span className="text-sm font-medium">Adjuntar</span>
+                          </button>
+                        </>
+                      ) : (
+                        <>
+                          <button
+                            type="button"
+                            onClick={() => setGalleryOpen(true)}
+                            title="Galería de imágenes"
+                            className="p-2 bg-white border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 hover:border-emerald-300 cursor-pointer flex items-center"
+                          >
+                            <HiOutlinePhoto className="w-5 h-5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => { setPickerTab((v) => (v ? null : 'auto')); setPickerQuery(''); }}
+                            title="Automatizaciones, plantillas y mensajes guardados"
+                            className={`p-2 border rounded-xl cursor-pointer disabled:opacity-50 flex items-center ${pickerTab || templateDraft.name ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-emerald-300'}`}
+                          >
+                            <HiOutlinePlus className="w-5 h-5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={startRecording}
+                            disabled={
+                              !!activeConv?.blocked || activeWindowClosed || activeOptedOut ||
+                              !!templateDraft.name || attachingMedia || !!attachmentDraft
+                            }
+                            title="Grabar una nota de voz"
+                            className="p-2 bg-white border border-slate-200 text-slate-600 rounded-xl hover:border-emerald-400 hover:text-emerald-600 disabled:opacity-50 cursor-pointer flex items-center"
+                          >
+                            <HiOutlineMicrophone className="w-5 h-5" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={suggestReply}
+                            disabled={suggesting || !!activeConv?.blocked || activeOptedOut || activeWindowClosed || voiceNoteAttached}
+                            title="Sugerir respuesta con IA"
+                            className="p-2 bg-white border border-slate-200 text-slate-600 rounded-xl hover:border-emerald-400 disabled:opacity-50 cursor-pointer flex items-center gap-1"
+                          >
+                            <HiOutlineSparkles className="w-5 h-5" />
+                            <span className="hidden @sm:inline text-xs font-medium">{suggesting ? '…' : 'IA'}</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={sendMessage}
+                            disabled={
+                              !!activeConv?.blocked ||
+                              activeOptedOut ||
+                              attachingMedia ||
+                              (templateDraft.name.trim()
+                                ? false
+                                : activeWindowClosed
+                                  ? true
+                                  : !draft.trim() && !attachmentDraft)
+                            }
+                            className="ml-auto px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
+                          >
+                            <HiOutlinePaperAirplane className="w-5 h-5" />
+                            <span className="text-sm font-medium">Enviar</span>
+                          </button>
+                        </>
+                      )}
+                    </div>
                   </div>
                 </div>
               </>
