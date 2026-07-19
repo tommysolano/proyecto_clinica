@@ -46,11 +46,14 @@ function canMutateConversation(req, conv) {
 
 exports.listConversations = async (req, res) => {
   try {
-    const { status, featured, opportunity, assigned, q, stage, agent, unread } = req.query;
+    const { status, featured, opportunity, assigned, q, stage, agent, unread, excludeFeatured } = req.query;
     const filter = buildVisibilityFilter(req);
 
     if (status) filter.status = status;
     if (featured === 'true') filter.isFeatured = true;
+    // Los destacados viven en su propia pestaña: se excluyen del listado "Todos"
+    // para que no anclen chats viejos sobre los de actividad reciente.
+    if (excludeFeatured === 'true') filter.isFeatured = { $ne: true };
     if (opportunity === 'true') filter['opportunity.isOpportunity'] = true;
     if (stage) filter['opportunity.stage'] = stage;
     if (assigned === 'me') filter.assignedTo = req.user._id;
@@ -67,7 +70,7 @@ exports.listConversations = async (req, res) => {
       .populate('patient', 'firstName lastName cedula phone whatsapp marketing')
       .populate('assignedTo', 'name email')
       .populate('whatsappAccount', 'label connectionType displayPhone connectedPhone')
-      .sort({ isFeatured: -1, lastMessageAt: -1 })
+      .sort({ lastMessageAt: -1 })
       .limit(300);
 
     res.json(conversations);
@@ -1255,6 +1258,12 @@ exports.sendGalleryImage = async (req, res) => {
     conv.lastMessagePreview = `[imagen]`;
     conv.lastMessageAt = new Date();
     conv.lastMessageDirection = 'out';
+    // Responder (aunque sea con una imagen) limpia el pendiente de no leído.
+    conv.unreadCount = 0;
+    await Message.updateMany(
+      { conversation: conv._id, direction: 'in', isRead: false },
+      { isRead: true }
+    );
     await conv.save();
     res.status(201).json(msg);
   } catch (err) {
@@ -1384,15 +1393,10 @@ exports.listMessages = async (req, res) => {
       .populate('sentBy', 'name')
       .sort({ createdAt: 1 })
       .limit(500);
-    // Marcar mensajes entrantes como leídos cuando el agente abre el chat
-    await Message.updateMany(
-      { conversation: conv._id, direction: 'in', isRead: false },
-      { isRead: true }
-    );
-    if (conv.unreadCount > 0) {
-      conv.unreadCount = 0;
-      await conv.save();
-    }
+    // A propósito NO se marca como leído al abrir el chat: la notificación de
+    // "no leído" debe permanecer hasta que el agente RESPONDA (ver messaging.send
+    // y sendGalleryImage). Así, si el agente lee un mensaje y salta a otro chat,
+    // el pendiente sigue visible y no se pierde entre tantas conversaciones.
     res.json(messages);
   } catch (err) {
     res.status(500).json({ message: 'Error al listar mensajes', error: err.message });

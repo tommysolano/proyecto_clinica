@@ -40,6 +40,8 @@ import { imageFromClipboard, imageFileToDataUrl, pastedImageName, readFileAsData
 import useVoiceRecorder, { formatDuration } from '../hooks/useVoiceRecorder';
 import useWhatsappCall from '../hooks/useWhatsappCall';
 import CallPanel from '../components/CallPanel';
+import ChatComposerToolbar from '../components/ChatComposerToolbar';
+import { renderWhatsappText } from '../utils/whatsappText';
 
 // Etiquetas de los disparadores (para mostrar los flujos en el menú de
 // automatizaciones del compositor).
@@ -203,6 +205,21 @@ export default function Chats() {
     }
   };
 
+  // Parámetros de /chats según la pestaña activa. La pestaña "Todos" excluye los
+  // destacados: éstos viven solo en su propia pestaña (no anclan la lista general).
+  const paramsForTab = (q = debouncedSearch) => {
+    const params = {};
+    if (tab === 'mine') params.assigned = 'me';
+    else if (tab === 'featured') params.featured = 'true';
+    else if (tab === 'opportunities') params.opportunity = 'true';
+    else if (tab === 'unread') params.unread = 'true';
+    // "Todos" oculta los destacados (viven en su pestaña), salvo al buscar: una
+    // búsqueda debe poder encontrar a cualquiera, esté destacado o no.
+    else if (tab === 'all' && !q) params.excludeFeatured = 'true';
+    if (q) params.q = q;
+    return params;
+  };
+
   const loadStats = async (range = statsRange) => {
     try {
       const r = await api.get('/chats/stats', {
@@ -218,9 +235,9 @@ export default function Chats() {
     try {
       const r = await api.get(`/chats/${id}/messages`);
       setMessages(r.data || []);
-      setConversations((prev) =>
-        prev.map((c) => (c._id === id ? { ...c, unreadCount: 0 } : c))
-      );
+      // Abrir un chat NO lo marca como leído: el badge de "no leído" permanece
+      // hasta que el agente responda (ver sendMessage). Así no se pierde el
+      // pendiente al saltar entre conversaciones.
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al cargar mensajes');
     }
@@ -253,13 +270,7 @@ export default function Chats() {
   }, []);
 
   useEffect(() => {
-    const params = {};
-    if (tab === 'mine') params.assigned = 'me';
-    if (tab === 'featured') params.featured = 'true';
-    if (tab === 'opportunities') params.opportunity = 'true';
-    if (tab === 'unread') params.unread = 'true';
-    if (debouncedSearch) params.q = debouncedSearch;
-    loadConversations(params);
+    loadConversations(paramsForTab());
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [tab, debouncedSearch]);
 
@@ -278,12 +289,7 @@ export default function Chats() {
       if (payload?.conversationId && String(payload.conversationId) === String(activeId)) {
         loadMessages(activeId);
       }
-      const params = {};
-      if (tab === 'mine') params.assigned = 'me';
-      if (tab === 'featured') params.featured = 'true';
-      if (tab === 'opportunities') params.opportunity = 'true';
-      if (debouncedSearch) params.q = debouncedSearch;
-      loadConversations(params);
+      loadConversations(paramsForTab());
     },
     [activeId, tab, debouncedSearch]
   );
@@ -311,14 +317,9 @@ export default function Chats() {
   useSocketEvent(
     'chat:updated',
     () => {
-      const params = {};
-      if (tab === 'mine') params.assigned = 'me';
-      if (tab === 'featured') params.featured = 'true';
-      if (tab === 'opportunities') params.opportunity = 'true';
-      if (search) params.q = search;
-      loadConversations(params);
+      loadConversations(paramsForTab());
     },
-    [tab, search]
+    [tab, debouncedSearch]
   );
 
   useEffect(() => {
@@ -341,6 +342,12 @@ export default function Chats() {
   }, [conversations, sortOrder]);
   const activeWindowClosed = isWhatsappWindowClosed(activeConv);
   const activeOptedOut = isOptedOut(activeConv);
+  // El compositor de texto está inhabilitado cuando no se puede escribir libre:
+  // contacto bloqueado, ventana de 24h cerrada, opt-out, plantilla seleccionada
+  // o una nota de voz preparada (que se envía sola).
+  const composerDisabled =
+    !!activeConv?.blocked || activeWindowClosed || activeOptedOut ||
+    !!templateDraft.name || attachmentDraft?.type === 'audio';
 
   const suggestReply = async () => {
     if (!activeId) return;
@@ -406,6 +413,8 @@ export default function Chats() {
                 lastMessagePreview: preview.slice(0, 140),
                 lastMessageAt: r.data.createdAt,
                 lastMessageDirection: 'out',
+                // Responder limpia el pendiente de no leído (igual que el backend).
+                unreadCount: 0,
               }
             : c
         )
@@ -557,7 +566,13 @@ export default function Chats() {
       const r = await api.post(`/chats/${conv._id}/featured`, {
         isFeatured: !conv.isFeatured,
       });
-      setConversations((prev) => prev.map((c) => (c._id === conv._id ? r.data : c)));
+      // Los destacados no salen en "Todos" y sí en "Destacados": al marcar/quitar,
+      // el chat entra o sale de la pestaña actual (no solo cambia su estrella).
+      setConversations((prev) => {
+        if (tab === 'all' && r.data.isFeatured) return prev.filter((c) => c._id !== conv._id);
+        if (tab === 'featured' && !r.data.isFeatured) return prev.filter((c) => c._id !== conv._id);
+        return prev.map((c) => (c._id === conv._id ? r.data : c));
+      });
       toast.success(r.data.isFeatured ? 'Marcado como destacado' : 'Destacado removido');
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error');
@@ -668,13 +683,7 @@ export default function Chats() {
                 )}
               </button>
               <button
-                onClick={() => loadConversations(
-                  tab === 'mine' ? { assigned: 'me' }
-                    : tab === 'featured' ? { featured: 'true' }
-                    : tab === 'opportunities' ? { opportunity: 'true' }
-                    : tab === 'unread' ? { unread: 'true' }
-                    : {}
-                )}
+                onClick={() => loadConversations(paramsForTab())}
                 className="p-1.5 text-slate-500 hover:bg-slate-50 rounded-lg"
                 title="Recargar"
               >
@@ -841,7 +850,15 @@ export default function Chats() {
                       </button>
                     </div>
                   )}
-                  <div className="relative flex gap-2 items-end">
+                  {!recorder.recording && (
+                    <ChatComposerToolbar
+                      composerRef={composerRef}
+                      value={draft}
+                      onChange={setDraft}
+                      disabled={composerDisabled}
+                    />
+                  )}
+                  <div className="relative flex flex-wrap @2xl:flex-nowrap gap-2 items-end">
                     {slashOpen && (
                       <div className="absolute bottom-full left-0 mb-1 w-72 max-h-64 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg z-30">
                         {savedReplies
@@ -1089,7 +1106,7 @@ export default function Chats() {
                       <HiOutlinePlus className="w-4 h-4" />
                     </button>
                     {recorder.recording ? (
-                      <div className="flex-1 flex items-center gap-2 border border-rose-200 bg-rose-50 rounded-xl px-3.5 py-2.5">
+                      <div className="order-first w-full @2xl:order-none @2xl:w-auto flex-1 flex items-center gap-2 border border-rose-200 bg-rose-50 rounded-xl px-3.5 py-2.5">
                         <span className="w-2.5 h-2.5 rounded-full bg-rose-500 animate-pulse flex-shrink-0" />
                         <span className="text-sm font-semibold text-rose-700 tabular-nums">
                           {formatDuration(recorder.seconds)}
@@ -1131,11 +1148,8 @@ export default function Chats() {
                             : 'Escribe un mensaje... (pega una imagen o usa / para mensajes guardados)'
                       }
                       rows={2}
-                      disabled={
-                        !!activeConv?.blocked || activeWindowClosed || activeOptedOut ||
-                        !!templateDraft.name || voiceNoteAttached
-                      }
-                      className="flex-1 min-w-0 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm resize-none disabled:bg-slate-100"
+                      disabled={composerDisabled}
+                      className="order-first w-full @2xl:order-none @2xl:w-auto flex-1 min-w-0 min-h-[46px] max-h-40 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm resize-none disabled:bg-slate-100"
                     />
                     )}
                     {recorder.recording ? (
@@ -1736,7 +1750,7 @@ function MessageBubble({ msg, onReply, onJumpTo }) {
             Plantilla · {msg.templateName}
           </div>
         )}
-        <div className="whitespace-pre-wrap break-words">{msg.body}</div>
+        <div className="whitespace-pre-wrap break-words">{renderWhatsappText(msg.body)}</div>
         <div className={`text-[10px] mt-1 flex items-center gap-1 ${isOut ? 'text-emerald-100' : 'text-slate-400'}`}>
           {formatTime(msg.createdAt)}
           {isOut && <span>·</span>}

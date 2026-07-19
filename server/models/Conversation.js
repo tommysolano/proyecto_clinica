@@ -10,7 +10,10 @@ const mongoose = require('mongoose');
  * - opportunity: cuando el chat se convierte en una oportunidad de venta/cita,
  *   se completa esta sub-estructura. opportunity.stage sigue el flujo Kanban.
  * - lastMessage*: snapshot del último mensaje para listados rápidos.
- * - unreadCount: incrementado cuando llega un mensaje entrante y nadie lo lee.
+ * - unreadCount: sube con cada mensaje entrante. NO se limpia al abrir el chat:
+ *   el pendiente permanece hasta que un agente RESPONDE (así no se pierde entre
+ *   muchas conversaciones). Se pone en 0 al enviar respuesta (ver messaging.send
+ *   y chatController.sendGalleryImage).
  */
 const opportunitySchema = new mongoose.Schema(
   {

@@ -752,6 +752,14 @@ async function send({
   if (sentBy) {
     conv.lastAgentReplyAt = new Date();
     if (!conv.firstResponseAt) conv.firstResponseAt = conv.lastAgentReplyAt;
+    // El "no leído" se limpia SOLO cuando un agente responde (no al abrir el
+    // chat). Los envíos automáticos/workflows no traen `sentBy`, así que no
+    // borran el pendiente: el chat sigue marcado hasta que alguien conteste.
+    conv.unreadCount = 0;
+    await Message.updateMany(
+      { conversation: conv._id, direction: 'in', isRead: false },
+      { isRead: true }
+    );
   }
   await conv.save();
 
