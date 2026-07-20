@@ -78,7 +78,9 @@ test('Trigger "cita agendada" (grafo): inscribe, registra el fallo de envío y s
   const wf = await graphWorkflow(clinic._id);
 
   const r = await H.runController(appointmentCtrl.createAppointment, H.mockReq(clinic._id, userId, {
-    patient: patient._id, services: [String(prod._id)], date: '2026-07-20', startTime: '10:00',
+    // Fecha futura (no hoy): así el guard "no agendar en hora pasada" no vuelve la prueba
+    // dependiente del reloj de la máquina.
+    patient: patient._id, services: [String(prod._id)], date: futureDate(1), startTime: '10:00',
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
 

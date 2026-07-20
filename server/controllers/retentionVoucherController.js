@@ -18,6 +18,37 @@ function periodoFiscal(d) {
   return `${String(dt.getMonth() + 1).padStart(2, '0')}/${dt.getFullYear()}`;
 }
 
+const monthIdx = (d) => d.getFullYear() * 12 + d.getMonth();
+
+/**
+ * PERIODO FISCAL de una retención (regla de los 5 días que explicó la contadora): la retención
+ * pertenece al periodo de la FACTURA SUSTENTO, no al de su emisión. Por defecto = mes/año del
+ * sustento; el usuario puede cambiarlo en el formulario. Validación (TAREA 3d): no anterior al
+ * mes del sustento ni posterior al mes de emisión de la retención.
+ * @returns {{ month, year, str }} o { error }
+ */
+function resolveRetentionPeriodo(body, sustentoDate, emissionDate) {
+  const s = sustentoDate ? new Date(sustentoDate) : new Date();
+  const e = emissionDate ? new Date(emissionDate) : new Date();
+  let month = s.getMonth() + 1;
+  let year = s.getFullYear();
+  if (body && (body.periodMonth || body.periodYear || body.periodoFiscal)) {
+    if (body.periodoFiscal && /^\d{1,2}\/\d{4}$/.test(String(body.periodoFiscal))) {
+      const [mm, yy] = String(body.periodoFiscal).split('/');
+      month = parseInt(mm, 10); year = parseInt(yy, 10);
+    } else {
+      month = parseInt(body.periodMonth, 10) || month;
+      year = parseInt(body.periodYear, 10) || year;
+    }
+  }
+  if (!(month >= 1 && month <= 12) || !(year >= 2000 && year <= 3000)) return { error: 'Periodo fiscal inválido.' };
+  const chosen = year * 12 + (month - 1);
+  const p = (d) => `${String(d.getMonth() + 1).padStart(2, '0')}/${d.getFullYear()}`;
+  if (chosen < monthIdx(s)) return { error: `El periodo fiscal (${String(month).padStart(2, '0')}/${year}) no puede ser anterior al mes de la factura sustento (${p(s)}).` };
+  if (chosen > monthIdx(e)) return { error: `El periodo fiscal (${String(month).padStart(2, '0')}/${year}) no puede ser posterior al mes de emisión de la retención (${p(e)}).` };
+  return { month, year, str: `${String(month).padStart(2, '0')}/${year}` };
+}
+
 function tipoIdentificacionSujeto(supplier) {
   if (supplier.tipoIdentificacion === 'CEDULA') return '05';
   if (supplier.tipoIdentificacion === 'PASAPORTE') return '06';
@@ -66,18 +97,31 @@ exports.emitFromPurchase = async (req, res) => {
     const { config, p12Buffer, password } = await loadForSigning(req.clinicId);
     const clinic = await Clinic.findById(req.clinicId);
 
-    const secuencial = await config.reserveRetentionSequential();
+    // TAREA 4 — serie multi-sucursal: el usuario elige establecimiento y punto de emisión
+    // (por defecto los de la config). El secuencial es AUTOMÁTICO por serie (no se digita).
+    const estab = String(req.body?.estab || config.establecimiento || '001');
+    const ptoEmi = String(req.body?.ptoEmi || config.puntoEmision || '001');
+    const series = config.availableSeries();
+    if (!series.some((s) => s.estab === estab && (s.puntosEmision || []).includes(ptoEmi))) {
+      return res.status(400).json({ message: `La serie ${estab}-${ptoEmi} no está configurada. Agréguela en Facturación electrónica → Establecimientos y puntos de emisión.` });
+    }
+
+    // TAREA 3 — periodo fiscal: por defecto el de la FACTURA SUSTENTO; editable y validado.
     const fechaEmision = new Date();
+    const periodo = resolveRetentionPeriodo(req.body, inv.fechaEmision, fechaEmision);
+    if (periodo.error) return res.status(400).json({ message: periodo.error });
+
+    const secuencial = await config.constructor.reserveRetentionSeries(req.clinicId, estab, ptoEmi);
     const claveAcceso = generarClaveAcceso({
       fechaEmision,
       tipoComprobante: 'comprobanteRetencion',
       ruc: config.ruc,
       ambiente: config.ambiente,
-      estab: config.establecimiento,
-      puntoEmision: config.puntoEmision,
+      estab,
+      puntoEmision: ptoEmi,
       secuencial,
     });
-    const serie = `${config.establecimiento}-${config.puntoEmision}-${String(secuencial).padStart(9, '0')}`;
+    const serie = `${estab}-${ptoEmi}-${String(secuencial).padStart(9, '0')}`;
 
     // Impuestos del documento soporte (la compra): IVA.
     const impuestosDoc = [];
@@ -112,8 +156,8 @@ exports.emitFromPurchase = async (req, res) => {
         ruc: config.ruc,
         claveAcceso,
         codDoc: '07',
-        estab: config.establecimiento,
-        ptoEmi: config.puntoEmision,
+        estab,
+        ptoEmi,
         secuencial: String(secuencial).padStart(9, '0'),
         dirMatriz: config.direccionMatriz,
         agenteRetencion: config.agenteRetencion || undefined,
@@ -127,7 +171,7 @@ exports.emitFromPurchase = async (req, res) => {
         parteRel: 'NO',
         razonSocialSujetoRetenido: supplier.razonSocial,
         identificacionSujetoRetenido: supplier.ruc,
-        periodoFiscal: periodoFiscal(fechaEmision),
+        periodoFiscal: periodo.str,
       },
       docsSustento: [
         {
@@ -156,14 +200,14 @@ exports.emitFromPurchase = async (req, res) => {
       supplierName: supplier.razonSocial,
       supplierId: supplier.ruc,
       supplierIdType: tipoIdentificacionSujeto(supplier),
-      estab: config.establecimiento,
-      ptoEmi: config.puntoEmision,
+      estab,
+      ptoEmi,
       secuencial: String(secuencial).padStart(9, '0'),
       serie,
       claveAcceso,
       ambiente: config.ambiente,
       fechaEmision,
-      periodoFiscal: periodoFiscal(fechaEmision),
+      periodoFiscal: periodo.str,
       purchaseSerie: inv.serie || '',
       purchaseAuthorization: inv.autorizacion || '',
       purchaseIssueDate: inv.fechaEmision || null,
@@ -233,7 +277,36 @@ exports.emitFromPurchase = async (req, res) => {
       voucher.mensajesSri = [...(voucher.mensajesSri || []), { identificador: 'EXCEPTION', mensaje: error.message }];
       try { await voucher.save(); } catch (_) {}
     }
-    res.status(500).json({ message: 'Error al emitir retención', error: error.message });
+    // Errores de configuración/certificado son de negocio (accionables), no fallos del servidor.
+    const msg = String(error.message || '');
+    if (/config|certificad|incompleta|firma|p12|contraseñ/i.test(msg)) {
+      return res.status(400).json({
+        message: `No se pudo emitir la retención: ${msg}. Revise la configuración de facturación electrónica (RUC, establecimiento, punto de emisión y certificado .p12) en Ajustes → Facturación electrónica.`,
+      });
+    }
+    res.status(error.status || 500).json({ message: 'Error al emitir retención', error: msg });
+  }
+};
+
+/**
+ * Contexto para emitir una retención: series disponibles (estab-ptoEmi) y los valores por
+ * defecto de la sucursal. El periodo fiscal sugerido lo calcula el front desde la fecha de la
+ * factura sustento (regla de los 5 días).
+ */
+exports.config = async (req, res) => {
+  try {
+    const InvoicingConfig = require('../models/InvoicingConfig');
+    const cfg = await InvoicingConfig.findOne({ clinic: req.clinicId });
+    if (!cfg) return res.json({ configured: false, series: [], defaultEstab: '001', defaultPtoEmi: '001' });
+    res.json({
+      configured: true,
+      series: cfg.availableSeries(),
+      defaultEstab: cfg.establecimiento || '001',
+      defaultPtoEmi: cfg.puntoEmision || '001',
+      ambiente: cfg.ambiente,
+    });
+  } catch (e) {
+    res.status(500).json({ message: e.message });
   }
 };
 

@@ -12,6 +12,7 @@ const { resolvePurchaseDueDate } = require('../utils/purchaseDueDate');
 const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { openPayable, voidPayable } = require('../utils/subledger');
+const { invoiceDate } = require('../utils/dates');
 const kardex = require('../utils/kardex');
 const { parsePurchaseInvoiceXml } = require('../utils/sriXmlParser');
 const { computeRetention, groupLineRetentions, lineRetentionList } = require('../utils/retentionCalculator');
@@ -571,7 +572,9 @@ exports.create = async (req, res) => {
         // `strictAccounts` lo fija el servidor (no el cliente): marca que esta compra
         // nace bajo el flujo estricto, para que futuras ediciones NO caigan al genérico.
         const data = { ...req.body, clinic: req.clinicId, createdBy: req.user._id, strictAccounts: true };
-        if (data.fechaEmision) data.fechaEmision = new Date(data.fechaEmision);
+        // Ancla al mediodía local: una fecha del día 1 enviada como medianoche UTC no debe caer
+        // en el mes anterior (Ecuador UTC−5) y desaparecer del 103/104.
+        if (data.fechaEmision) data.fechaEmision = invoiceDate(data.fechaEmision);
         calcTotals(data);
         await assertPeriodOpen(req.clinicId, data.fechaEmision || new Date(), { session });
         const sup = await Supplier.findOne({ _id: data.supplier, clinic: req.clinicId }).session(session);
@@ -796,7 +799,7 @@ exports.update = async (req, res) => {
         // su retención MANUAL de cabecera al editar; solo el flujo nuevo re-deriva desde líneas.
         const wasStrict = inv.strictAccounts === true;
         await assertPeriodOpen(req.clinicId, inv.fechaEmision, { session });
-        const nextDate = req.body.fechaEmision ? new Date(req.body.fechaEmision) : inv.fechaEmision;
+        const nextDate = req.body.fechaEmision ? invoiceDate(req.body.fechaEmision) : inv.fechaEmision;
         await assertPeriodOpen(req.clinicId, nextDate, { session });
         if (inv.journalEntry) {
           await reverseEntry({
@@ -819,7 +822,7 @@ exports.update = async (req, res) => {
         // El snapshot del SRI y su aceptación los controla el servidor (no se pisan por body).
         const { sriTotals: _st, sriMismatchAccepted: _sma, ...updateBody } = req.body;
         Object.assign(inv, updateBody);
-        if (inv.fechaEmision) inv.fechaEmision = new Date(inv.fechaEmision);
+        if (inv.fechaEmision) inv.fechaEmision = invoiceDate(inv.fechaEmision);
         // Toda compra editada queda bajo el flujo estricto (la cuenta salió de la categoría).
         inv.strictAccounts = true;
         calcTotals(inv);
@@ -934,9 +937,9 @@ function parseSriDate(s) {
   const f = String(s || '').trim().split(/\s+/)[0]; // descarta la hora si viene "01/06/2026 10:03:32"
   if (!f) return null;
   const dmy = f.match(/^(\d{1,2})[/\-.](\d{1,2})[/\-.](\d{2,4})$/);
-  if (dmy) { const y = dmy[3].length === 2 ? '20' + dmy[3] : dmy[3]; const d = new Date(`${y}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}T00:00:00`); return isNaN(d) ? null : d; }
+  if (dmy) { const y = dmy[3].length === 2 ? '20' + dmy[3] : dmy[3]; const d = new Date(`${y}-${dmy[2].padStart(2, '0')}-${dmy[1].padStart(2, '0')}T12:00:00`); return isNaN(d) ? null : d; }
   const ymd = f.match(/^(\d{4})[/\-.](\d{1,2})[/\-.](\d{1,2})$/);
-  if (ymd) { const d = new Date(`${ymd[1]}-${ymd[2].padStart(2, '0')}-${ymd[3].padStart(2, '0')}T00:00:00`); return isNaN(d) ? null : d; }
+  if (ymd) { const d = new Date(`${ymd[1]}-${ymd[2].padStart(2, '0')}-${ymd[3].padStart(2, '0')}T12:00:00`); return isNaN(d) ? null : d; }
   const d = new Date(f);
   return isNaN(d) ? null : d;
 }
@@ -1310,7 +1313,7 @@ exports.authorize = async (req, res) => {
             await classifyAndValidateItems(rest.items, { clinicId: req.clinicId, supplier: supForItems, session });
           }
           Object.assign(inv, rest);
-          if (inv.fechaEmision) inv.fechaEmision = new Date(inv.fechaEmision);
+          if (inv.fechaEmision) inv.fechaEmision = invoiceDate(inv.fechaEmision);
           calcTotals(inv);
         }
         await assertPeriodOpen(req.clinicId, inv.fechaEmision, { session });

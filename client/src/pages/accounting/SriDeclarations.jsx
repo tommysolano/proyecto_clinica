@@ -159,6 +159,7 @@ export default function SriDeclarations() {
   const [payModal, setPayModal] = useState(null);
   const [banks, setBanks] = useState([]);
   const [entryModal, setEntryModal] = useState(null);
+  const [show332, setShow332] = useState(false); // detalle auditable del casillero 332
 
   const decl = data?.declaration;
   const def = data?.definition;
@@ -442,8 +443,8 @@ export default function SriDeclarations() {
                     </>
                   )}
                   {decl.journalEntry && (
-                    <button onClick={() => setEntryModal(decl.journalEntry)} className="px-3 py-1.5 bg-slate-700 text-white rounded-lg text-sm flex items-center gap-1">
-                      <HiOutlineEye className="w-4 h-4" /> Ver asiento
+                    <button onClick={() => setEntryModal({ model: 'SriDeclaration', ref: decl._id })} className="px-3 py-1.5 bg-slate-700 text-white rounded-lg text-sm flex items-center gap-1">
+                      <HiOutlineEye className="w-4 h-4" /> Ver asiento{decl.paymentJournalEntry ? 's' : ''}
                     </button>
                   )}
                   <button onClick={downloadXml} className="px-3 py-1.5 bg-slate-200 text-slate-700 rounded-lg text-sm flex items-center gap-1" title="No es el XML oficial del SRI">
@@ -462,6 +463,51 @@ export default function SriDeclarations() {
                 <Chip label="Retenciones a pagar" value={`$${fmt(totals.retencionesEfectuadas)}`} />
                 <Chip label="Total a pagar al SRI" value={`$${fmt(totals.totalAPagar)}`} tone="emerald" />
               </div>
+
+              {/* Retenciones de IVA efectuadas: PUNTO APARTE (se pagan siempre, aunque haya crédito). */}
+              {formType === '104' && (totals.retencionesEfectuadas > 0 || (decl.snapshot?.retencionesIvaEfectuadas?.docs || []).length > 0) && (
+                <div className="mt-3 rounded-2xl border border-indigo-200 bg-indigo-50/50 overflow-hidden">
+                  <div className="px-4 py-2 bg-indigo-100/70 text-xs uppercase font-semibold text-indigo-800">
+                    Retenciones de IVA efectuadas (agente de retención) — se pagan siempre
+                  </div>
+                  <div className="px-4 py-2 text-xs text-slate-600">
+                    Por mucho crédito tributario que exista, estas retenciones de IVA efectuadas a proveedores se pagan igual.
+                    Se suman al valor a pagar del 104 como un punto aparte, después del cierre del crédito.
+                  </div>
+                  <div className="px-4 pb-3 overflow-x-auto">
+                    <table className="w-full text-xs">
+                      <thead className="bg-white/60 text-[10px] uppercase text-slate-500">
+                        <tr>
+                          <th className="px-2 py-1 text-left">Serie compra</th>
+                          <th className="px-2 py-1 text-left">Fecha</th>
+                          <th className="px-2 py-1 text-left">Código</th>
+                          <th className="px-2 py-1 text-right">Base</th>
+                          <th className="px-2 py-1 text-right">Retenido</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {(decl.snapshot?.retencionesIvaEfectuadas?.docs || []).map((d, i) => (
+                          <tr key={i} className="border-t border-indigo-100">
+                            <td className="px-2 py-1 font-mono">{d.serie || '—'}</td>
+                            <td className="px-2 py-1">{d.fecha ? fmtDate(d.fecha) : '—'}</td>
+                            <td className="px-2 py-1">{d.code || '—'}</td>
+                            <td className="px-2 py-1 text-right font-mono">{fmt(d.base)}</td>
+                            <td className="px-2 py-1 text-right font-mono">{fmt(d.amount)}</td>
+                          </tr>
+                        ))}
+                        <tr className="border-t border-indigo-200 bg-white/70 font-semibold">
+                          <td className="px-2 py-1" colSpan={4}>Retenciones de IVA efectuadas (casillero 721)</td>
+                          <td className="px-2 py-1 text-right font-mono">{fmt(totals.retencionesEfectuadas)}</td>
+                        </tr>
+                        <tr className="bg-emerald-50 font-semibold text-emerald-800">
+                          <td className="px-2 py-1" colSpan={4}>Total a pagar = impuesto tras crédito ({fmt(totals.impuestoPorPagar)}) + retenciones IVA ({fmt(totals.retencionesEfectuadas)})</td>
+                          <td className="px-2 py-1 text-right font-mono">{fmt(totals.totalAPagar)}</td>
+                        </tr>
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
 
               {/* Estado de la obligación (saldo real de la CxP, no derivado de los totales) */}
               {obligacion && (
@@ -546,6 +592,53 @@ export default function SriDeclarations() {
                           )}
                         </tbody>
                       </table>
+
+                      {/* Detalle AUDITABLE del casillero 332 (base no sujeta a retención): la lista de
+                          comprobantes que lo componen, para verificar el número a mano. */}
+                      <div className="px-4 pt-3 pb-1">
+                        <button
+                          type="button"
+                          onClick={() => setShow332((v) => !v)}
+                          className="text-xs font-medium text-emerald-700 hover:underline flex items-center gap-1"
+                        >
+                          {show332 ? '▾' : '▸'} Detalle del casillero 332 (base no sujeta a retención) — {decl.snapshot?.noSujetos?.count || 0} comprobante(s), total {fmt(decl.snapshot?.noSujetos?.base || 0)}
+                        </button>
+                        {show332 && (
+                          <div className="mt-2 overflow-x-auto border border-slate-200 rounded-xl">
+                            <table className="w-full text-xs">
+                              <thead className="bg-slate-50 text-[10px] uppercase text-slate-500">
+                                <tr>
+                                  <th className="px-3 py-1.5 text-left">Serie</th>
+                                  <th className="px-3 py-1.5 text-left">Fecha</th>
+                                  <th className="px-3 py-1.5 text-left">Proveedor</th>
+                                  <th className="px-3 py-1.5 text-left">Tipo</th>
+                                  <th className="px-3 py-1.5 text-right">Base no sujeta</th>
+                                </tr>
+                              </thead>
+                              <tbody>
+                                {(decl.snapshot?.noSujetos?.docs || []).map((d, i) => (
+                                  <tr key={i} className="border-t border-slate-100">
+                                    <td className="px-3 py-1.5 font-mono">{d.serie || '—'}</td>
+                                    <td className="px-3 py-1.5">{d.fecha ? fmtDate(d.fecha) : '—'}</td>
+                                    <td className="px-3 py-1.5 text-slate-600">{d.proveedor || '—'}</td>
+                                    <td className="px-3 py-1.5 text-slate-500">{d.docType === 'NOTA_CREDITO_REC' ? 'NC recibida' : (d.docType || 'FACTURA')}</td>
+                                    <td className={`px-3 py-1.5 text-right font-mono ${d.base < 0 ? 'text-rose-600' : ''}`}>{fmt(d.base)}</td>
+                                  </tr>
+                                ))}
+                                {!(decl.snapshot?.noSujetos?.docs || []).length && (
+                                  <tr><td colSpan={5} className="px-3 py-3 text-center text-slate-400">Sin comprobantes con base no sujeta en el período.</td></tr>
+                                )}
+                                {(decl.snapshot?.noSujetos?.docs || []).length > 0 && (
+                                  <tr className="border-t border-slate-200 bg-slate-50/80 font-semibold">
+                                    <td className="px-3 py-1.5" colSpan={4}>Total casillero 332</td>
+                                    <td className="px-3 py-1.5 text-right font-mono">{fmt(decl.snapshot?.noSujetos?.base || 0)}</td>
+                                  </tr>
+                                )}
+                              </tbody>
+                            </table>
+                          </div>
+                        )}
+                      </div>
                     </>
                   )}
                 </div>
@@ -683,8 +776,9 @@ export default function SriDeclarations() {
       <JournalEntryViewModal
         isOpen={!!entryModal}
         onClose={() => setEntryModal(null)}
-        entryId={entryModal}
-        title="Asiento de la declaración"
+        source={entryModal}
+        title="Asientos de la declaración (cierre y pago)"
+        emptyHint="Al finalizar se genera el asiento de cierre de impuestos; al pagar, el asiento del pago (SRI por pagar contra banco). Aquí se listan ambos."
         hideOriginLink
       />
     </div>

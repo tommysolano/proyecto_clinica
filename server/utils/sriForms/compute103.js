@@ -30,6 +30,18 @@ const { payrollWithholdingForPeriod } = require('../payrollWithholding');
 const r2 = (n) => +(Number(n) || 0).toFixed(2);
 
 /**
+ * Base sin impuestos (magnitud positiva) de la cabecera de una compra. Usa el `subtotal` de
+ * cabecera; si por alguna vía quedó en 0, lo DERIVA del desglose (subtotal0 + 12% + 15% + no
+ * objeto + exento), para que el 332 no se quede corto por un header sin poblar.
+ */
+function headerBase(p) {
+  const s = Number(p.subtotal) || 0;
+  if (s > 0) return s;
+  return (Number(p.subtotal0) || 0) + (Number(p.subtotal12) || 0) + (Number(p.subtotal15) || 0)
+    + (Number(p.subtotalNoObjeto) || 0) + (Number(p.subtotalExento) || 0);
+}
+
+/**
  * @param {object} args { clinicId, range }  range: { start, end, year, month }
  */
 async function compute103({ clinicId, range }) {
@@ -40,7 +52,7 @@ async function compute103({ clinicId, range }) {
     clinic: clinicId,
     status: { $ne: 'ANULADA' },
     fechaEmision: { $gte: start, $lte: end },
-  }).lean();
+  }).populate('supplier', 'razonSocial ruc').lean();
 
   // ── Retenciones de renta por código (fuente única: cabecera) + no sujetos (332)
   const byCode = new Map();
@@ -50,7 +62,9 @@ async function compute103({ clinicId, range }) {
   let baseRetenida = 0;
 
   for (const p of compras) {
-    const subtotal = r2(p.subtotal);
+    // Nota de crédito RECIBIDA: RESTA de la base (devuelve compra); nota de débito y facturas SUMAN.
+    const isNC = p.docType === 'NOTA_CREDITO_REC';
+    const subtotal = r2(headerBase(p));
     const rentaRets = (p.retentions || []).filter((r) => r.type === 'RENTA' && (Number(r.amount) || 0) > 0);
 
     let baseRetenidaDoc = 0;
@@ -88,19 +102,24 @@ async function compute103({ clinicId, range }) {
 
     // Porción NO sujeta a retención del comprobante (332): la base que no se retuvo.
     // Cubre tanto los comprobantes sin retención como la parte no retenida de los
-    // parcialmente retenidos.
-    const noSujetoDoc = r2(Math.max(0, subtotal - baseRetenidaDoc));
-    if (noSujetoDoc > 0) {
+    // parcialmente retenidos. En una NC recibida es NEGATIVA (resta del 332).
+    const noSujetoMagnitud = r2(Math.max(0, subtotal - baseRetenidaDoc));
+    const noSujetoDoc = isNC ? r2(-noSujetoMagnitud) : noSujetoMagnitud;
+    if (noSujetoDoc !== 0) {
       noSujetos.push({
         purchase: String(p._id),
         serie: p.serie || '',
+        proveedor: p.supplier?.razonSocial || '',
+        docType: p.docType || 'FACTURA',
         fecha: purchaseFiscalDate(p),
         base: noSujetoDoc,
-        subtotal,
+        subtotal: isNC ? r2(-subtotal) : subtotal,
         baseRetenida: baseRetenidaDoc,
-        motivo: baseRetenidaDoc > 0
-          ? 'Porción no sujeta a retención del comprobante (parcialmente retenido)'
-          : 'Comprobante sin retención de renta',
+        motivo: isNC
+          ? 'Nota de crédito recibida (resta de la base no sujeta)'
+          : (baseRetenidaDoc > 0
+            ? 'Porción no sujeta a retención del comprobante (parcialmente retenido)'
+            : 'Comprobante sin retención de renta'),
       });
     }
     if (baseRetenidaDoc > subtotal + 0.01) {
@@ -111,12 +130,36 @@ async function compute103({ clinicId, range }) {
     }
   }
 
+  // ── Coherencia con el PERIODO FISCAL del comprobante de retención (regla de los 5 días).
+  // El 103 suma las retenciones por la fecha de la factura sustento, que por defecto COINCIDE con
+  // el periodo fiscal del comprobante. Si el contador cambió a mano ese periodo a otro mes, se
+  // AVISA (no se reasigna en silencio) para que revise dónde debe declararse.
+  if (range.year && range.month) {
+    const RetentionVoucher = require('../../models/RetentionVoucher');
+    const periodoRango = `${String(range.month).padStart(2, '0')}/${range.year}`;
+    const purchaseIds = compras.map((p) => p._id);
+    const vouchers = purchaseIds.length
+      ? await RetentionVoucher.find({ clinic: clinicId, purchaseInvoice: { $in: purchaseIds }, estado: { $ne: 'ANULADA' } })
+        .select('purchaseInvoice periodoFiscal serie').lean()
+      : [];
+    const distintos = vouchers.filter((v) => v.periodoFiscal && v.periodoFiscal !== periodoRango);
+    if (distintos.length) {
+      warnings.push({
+        code: 'RETENCION_PERIODO_DISTINTO',
+        severity: 'info',
+        message: `${distintos.length} comprobante(s) de retención tienen un periodo fiscal distinto de ${periodoRango} `
+          + `(${[...new Set(distintos.map((v) => v.periodoFiscal))].join(', ')}). El 103 las suma por la fecha de la factura sustento; `
+          + 'si deben declararse en otro mes, ajústelo con su contador.',
+      });
+    }
+  }
+
   // ── Relación de dependencia (nóminas cerradas / pagadas)
   const dependencia = await payrollWithholdingForPeriod({ clinicId, year: range.year, month: range.month });
   warnings.push(...dependencia.warnings);
 
   const baseNoSujeta = r2(noSujetos.reduce((s, d) => s + d.base, 0));
-  const totalComprasBase = r2(compras.reduce((s, p) => s + (Number(p.subtotal) || 0), 0));
+  const totalComprasBase = r2(compras.reduce((s, p) => s + (p.docType === 'NOTA_CREDITO_REC' ? -headerBase(p) : headerBase(p)), 0));
   const sumaBasesCompras = r2(baseRetenida + baseNoSujeta);
   const totalGeneral = r2(totalRetenido + dependencia.total);
 

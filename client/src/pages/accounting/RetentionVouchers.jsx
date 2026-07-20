@@ -70,13 +70,26 @@ export default function RetentionVouchers() {
       <Modal isOpen={!!sel} onClose={() => setSel(null)} title={`Retención ${sel?.serie || ''}`}>
         {sel && (
           <div className="space-y-3 text-sm">
+            {/* ENCABEZADO completo del comprobante (como Contífico): antes de los porcentajes/valores. */}
+            <div className="rounded-xl border border-slate-200 bg-slate-50/60 p-3">
+              <p className="text-[11px] uppercase tracking-wide text-slate-400 mb-2">Comprobante de retención (07)</p>
+              <div className="grid grid-cols-2 gap-x-4 gap-y-1.5">
+                <div><span className="text-slate-500">N.º comprobante:</span> <b className="font-mono">{sel.serie}</b></div>
+                <div><span className="text-slate-500">Serie (estab-ptoEmi-sec.):</span> <span className="font-mono text-xs">{sel.estab}-{sel.ptoEmi}-{sel.secuencial}</span></div>
+                <div><span className="text-slate-500">Fecha de emisión:</span> <b>{fmtDate(sel.fechaEmision)}</b></div>
+                <div><span className="text-slate-500">Periodo fiscal:</span> <b>{sel.periodoFiscal}</b></div>
+                <div><span className="text-slate-500">Ambiente:</span> {sel.ambiente === '2' ? 'Producción' : 'Pruebas'}</div>
+                <div><span className="text-slate-500">Estado:</span> <span className={`px-2 py-0.5 rounded-full text-[11px] ${ESTADO_CLS[sel.estado] || 'bg-slate-100 text-slate-600'}`}>{sel.estado}</span></div>
+                <div className="col-span-2 break-all"><span className="text-slate-500">N.º autorización:</span> {sel.numeroAutorizacion ? <span className="font-mono text-xs">{sel.numeroAutorizacion}</span> : <span className="text-amber-600 text-xs">Pendiente de autorización del SRI ({sel.estado})</span>}</div>
+                {sel.fechaAutorizacion && <div className="col-span-2"><span className="text-slate-500">Fecha autorización:</span> {fmtDate(sel.fechaAutorizacion)}</div>}
+                <div className="col-span-2 break-all"><span className="text-slate-500">Clave de acceso:</span> <span className="font-mono text-xs">{sel.claveAcceso}</span></div>
+              </div>
+            </div>
             <div className="grid grid-cols-2 gap-2">
               <div><span className="text-slate-500">Proveedor:</span> {sel.supplierName}</div>
-              <div><span className="text-slate-500">RUC:</span> {sel.supplierId}</div>
-              <div><span className="text-slate-500">Período:</span> {sel.periodoFiscal}</div>
-              <div><span className="text-slate-500">Estado:</span> {sel.estado}</div>
-              <div className="col-span-2 break-all"><span className="text-slate-500">Clave acceso:</span> <span className="font-mono text-xs">{sel.claveAcceso}</span></div>
-              {sel.numeroAutorizacion && <div className="col-span-2 break-all"><span className="text-slate-500">Autorización:</span> <span className="font-mono text-xs">{sel.numeroAutorizacion}</span></div>}
+              <div><span className="text-slate-500">RUC/CI:</span> {sel.supplierId}</div>
+              <div><span className="text-slate-500">Factura sustento:</span> <span className="font-mono text-xs">{sel.purchaseSerie || '—'}</span></div>
+              <div><span className="text-slate-500">Fecha sustento:</span> {sel.purchaseIssueDate ? fmtDate(sel.purchaseIssueDate) : '—'}</div>
             </div>
             <table className="tbl text-xs">
               <thead className="bg-slate-50"><tr><th className="px-2 py-1 text-left">Tipo</th><th className="px-2 py-1 text-left">Código</th><th className="px-2 py-1 text-right">Base</th><th className="px-2 py-1 text-right">%</th><th className="px-2 py-1 text-right">Retenido</th></tr></thead>

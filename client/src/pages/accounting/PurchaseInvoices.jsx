@@ -114,6 +114,8 @@ export default function PurchaseInvoices() {
   const [payInv, setPayInv] = useState(null); // factura a pagar
   const [payForm, setPayForm] = useState({ method: 'TRANSFERENCIA', bankAccount: '', voucherNumber: '', checkNumber: '', amount: 0, date: today() });
   const [formError, setFormError] = useState(''); // error visible DENTRO del modal (no solo toast)
+  const [retModal, setRetModal] = useState(null); // { purchase, series, estab, ptoEmi, periodMonth, periodYear }
+  const [retEmitting, setRetEmitting] = useState(false);
   const [sriMismatch, setSriMismatch] = useState(null); // { sri, entered, diff, payload } → modal de confirmación
   // { warehouse, esperado, elegido } → el centro elegido no es el predeterminado de la bodega.
   const [ccMismatch, setCcMismatch] = useState(null);
@@ -630,10 +632,37 @@ export default function PurchaseInvoices() {
   // Deep-link desde el Libro Mayor (?doc=<id>): abre la factura de compra.
   useDocDeepLink((id) => loadIntoForm({ _id: id }, 'edit'));
 
+  // Abre el modal de emisión: carga series (estab/ptoEmi) y precarga el periodo fiscal con el
+  // de la FACTURA SUSTENTO (regla de los 5 días de la contadora).
   const emitRetention = async (p) => {
-    if (!confirm('¿Emitir el comprobante de retención electrónico de esta compra?')) return;
-    try { await api.post(`/retention-vouchers/from-purchase/${p._id}`); toast.success('Retención emitida'); load(); }
-    catch (e) { toast.error(e.response?.data?.message || 'Error al emitir retención'); }
+    try {
+      const { data: cfg } = await api.get('/retention-vouchers/config');
+      if (!cfg.configured) { toast.error('Falta configurar la facturación electrónica.'); return; }
+      const sustento = p.fechaEmision ? new Date(p.fechaEmision) : new Date();
+      const series = cfg.series || [];
+      const estab = cfg.defaultEstab || series[0]?.estab || '001';
+      const ptoEmi = (series.find((s) => s.estab === estab)?.puntosEmision || [cfg.defaultPtoEmi || '001'])[0];
+      setRetModal({
+        purchase: p, series,
+        estab, ptoEmi,
+        periodMonth: sustento.getMonth() + 1,
+        periodYear: sustento.getFullYear(),
+        sustentoLabel: `${p.serie || ''} · ${fmtDate(p.fechaEmision)}`,
+      });
+    } catch (e) { toast.error(e.response?.data?.message || 'No se pudo preparar la emisión'); }
+  };
+
+  const submitRetention = async () => {
+    if (!retModal) return;
+    setRetEmitting(true);
+    try {
+      await api.post(`/retention-vouchers/from-purchase/${retModal.purchase._id}`, {
+        estab: retModal.estab, ptoEmi: retModal.ptoEmi,
+        periodMonth: retModal.periodMonth, periodYear: retModal.periodYear,
+      });
+      toast.success('Retención emitida'); setRetModal(null); load();
+    } catch (e) { toast.error(e.response?.data?.message || 'Error al emitir retención'); }
+    finally { setRetEmitting(false); }
   };
 
   const voidIt = async (p) => {
@@ -1282,6 +1311,50 @@ export default function PurchaseInvoices() {
       {journalInv && (
         <JournalEntryEditor isOpen={!!journalInv} onClose={() => setJournalInv(null)} entryId={journalInv.journalEntry?._id || journalInv.journalEntry} postUrl={`/purchase-invoices/${journalInv._id}/journal`} title={`Asiento de compra ${journalInv.serie || ''}`} onSaved={load} />
       )}
+
+      {/* Emisión del comprobante de retención: serie (estab/ptoEmi) y periodo fiscal (regla 5 días) */}
+      <Modal isOpen={!!retModal} onClose={() => setRetModal(null)} title="Emitir comprobante de retención" size="md">
+        {retModal && (
+          <div className="space-y-3 text-sm">
+            <p className="text-xs text-slate-500">Factura sustento: <b>{retModal.sustentoLabel}</b>. El secuencial y el número de autorización son electrónicos: se generan automáticamente.</p>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Establecimiento</label>
+                <select value={retModal.estab}
+                  onChange={(e) => {
+                    const estab = e.target.value;
+                    const pts = retModal.series.find((s) => s.estab === estab)?.puntosEmision || ['001'];
+                    setRetModal((m) => ({ ...m, estab, ptoEmi: pts.includes(m.ptoEmi) ? m.ptoEmi : pts[0] }));
+                  }}
+                  className="w-full border border-slate-200 rounded-xl px-3 py-2">
+                  {retModal.series.map((s) => <option key={s.estab} value={s.estab}>{s.estab}{s.name ? ` — ${s.name}` : ''}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Punto de emisión</label>
+                <select value={retModal.ptoEmi} onChange={(e) => setRetModal((m) => ({ ...m, ptoEmi: e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-2">
+                  {(retModal.series.find((s) => s.estab === retModal.estab)?.puntosEmision || ['001']).map((pt) => <option key={pt} value={pt}>{pt}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Periodo fiscal — mes</label>
+                <select value={retModal.periodMonth} onChange={(e) => setRetModal((m) => ({ ...m, periodMonth: +e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-2">
+                  {['Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'].map((mn, i) => <option key={i} value={i + 1}>{mn}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Periodo fiscal — año</label>
+                <input type="number" value={retModal.periodYear} onChange={(e) => setRetModal((m) => ({ ...m, periodYear: +e.target.value }))} className="w-full border border-slate-200 rounded-xl px-3 py-2" />
+              </div>
+            </div>
+            <p className="text-[11px] text-slate-400">El periodo fiscal pertenece al mes de la factura sustento (aunque la retención se emita días después). No puede ser anterior al mes del sustento ni posterior al mes de hoy.</p>
+            <div className="flex justify-end gap-2 pt-1">
+              <button type="button" onClick={() => setRetModal(null)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button>
+              <button type="button" disabled={retEmitting} onClick={submitRetention} className="px-4 py-2 bg-indigo-600 text-white rounded-xl disabled:opacity-60">{retEmitting ? 'Emitiendo…' : 'Emitir retención'}</button>
+            </div>
+          </div>
+        )}
+      </Modal>
 
       {/* Pago de la factura (CxP) → genera el movimiento bancario para conciliación */}
       <Modal isOpen={!!payInv} onClose={() => setPayInv(null)} title={`Pagar compra ${payInv?.serie || ''}`} size="md">

@@ -58,6 +58,7 @@ exports.upsertConfig = async (req, res) => {
       'direccionEstablecimiento',
       'establecimiento',
       'puntoEmision',
+      'establishments',
       'secuencial',
       'retentionSequential',
       'ambiente',
