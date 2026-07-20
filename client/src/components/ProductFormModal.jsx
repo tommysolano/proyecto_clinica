@@ -142,11 +142,12 @@ export default function ProductFormModal({
     return () => { cancelled = true; };
   }, [isOpen]);
 
-  // Categorías contables de inventario (kind INVENTARIO) para el selector de insumos.
+  // Categorías contables (INVENTARIO para insumos, SERVICIO para servicios). Se cargan todas y
+  // se filtran por clase según el tipo de producto.
   useEffect(() => {
     if (!isOpen) return;
     let cancelled = false;
-    api.get('/inventory-advanced/categories', { params: { kind: 'INVENTARIO' } })
+    api.get('/inventory-advanced/categories')
       .then((r) => { if (!cancelled) setInvCategories((r.data || []).filter((c) => c.active !== false)); })
       .catch(() => { if (!cancelled) setInvCategories([]); });
     return () => { cancelled = true; };
@@ -156,6 +157,9 @@ export default function ProductFormModal({
   const pickerProducts = catalog.length ? catalog : products;
 
   const isInsumo = productForm.category === 'insumo';
+  const isService = productForm.category === 'servicio';
+  const inventarioCats = invCategories.filter((c) => c.kind === 'INVENTARIO');
+  const servicioCats = invCategories.filter((c) => c.kind === 'SERVICIO');
   const selectedCat = invCategories.find((c) => c._id === productForm.inventoryCategory) || null;
   const acctLabel = (a) => (a && (a.code || a.name) ? `${a.code || ''} ${a.name || ''}`.trim() : null);
   // Producto legacy: insumo existente con `categoria` de texto pero sin categoría contable.
@@ -165,7 +169,6 @@ export default function ProductFormModal({
     e.preventDefault();
     setSaving(true);
     try {
-      const isService = productForm.category === 'servicio';
       // Un servicio (o programa) se considera ilimitado: no maneja stock físico.
       const unlimited = isService || productForm.category === 'programa';
       // Al CREAR un insumo se exige categoría contable; al editar un producto legacy
@@ -174,10 +177,10 @@ export default function ProductFormModal({
         toast.error('Seleccione una categoría contable de inventario para el insumo.');
         return; // el finally restablece saving
       }
-      // La categoría contable de inventario es la fuente principal solo para físicos.
-      // Servicios/programas no llevan categoría de NINGÚN tipo (son solo para insumos):
-      // se envían ambas vacías para limpiar también datos antiguos.
-      const inventoryCategory = !unlimited ? (productForm.inventoryCategory || null) : null;
+      // La categoría contable es la fuente de cuentas: para insumos físicos (INVENTARIO) y
+      // también para SERVICIOS (categoría de clase SERVICIO, que aporta la cuenta de ingreso).
+      // Los programas y demás ilimitados no llevan categoría.
+      const inventoryCategory = (!unlimited || isService) ? (productForm.inventoryCategory || null) : null;
       const data = {
         ...productForm,
         inventoryCategory,
@@ -292,7 +295,7 @@ export default function ProductFormModal({
                 Categoría contable <span className="text-rose-500">*</span>
               </label>
               <SearchableSelect
-                options={invCategories}
+                options={inventarioCats}
                 value={productForm.inventoryCategory}
                 onChange={(v) => setProductForm({ ...productForm, inventoryCategory: v })}
                 getLabel={(c) => `${c.code ? c.code + ' - ' : ''}${c.name}`}
@@ -302,7 +305,7 @@ export default function ProductFormModal({
                 searchPlaceholder="Buscar categoría contable…"
                 allowClear
               />
-              {invCategories.length === 0 && (
+              {inventarioCats.length === 0 && (
                 <p className="text-[11px] text-amber-600 mt-1">
                   No hay categorías de inventario configuradas. Créalas en <strong>Contabilidad → Categorías de Inventario</strong>.
                 </p>
@@ -326,6 +329,34 @@ export default function ProductFormModal({
                 <p className="text-[11px] text-amber-700 mt-1 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1">
                   ⚠ Categoría antigua sin configuración contable{productForm.categoria ? ` ("${productForm.categoria}")` : ''}. Debe asignarse una categoría contable.
                 </p>
+              )}
+            </div>
+          ) : isService ? (
+            <div className="sm:col-span-2">
+              <label className="block text-sm font-medium text-slate-700 mb-1.5">Categoría contable de servicio</label>
+              <SearchableSelect
+                options={servicioCats}
+                value={productForm.inventoryCategory}
+                onChange={(v) => setProductForm({ ...productForm, inventoryCategory: v })}
+                getLabel={(c) => `${c.code ? c.code + ' - ' : ''}${c.name}`}
+                getValue={(c) => c._id}
+                getSearchText={(c) => `${c.code || ''} ${c.name}`}
+                placeholder="— Sin categoría (usa la cuenta genérica de ingreso) —"
+                searchPlaceholder="Buscar categoría de servicio…"
+                allowClear
+              />
+              <p className="text-[11px] text-slate-400 mt-1">
+                Opcional. Si eliges una categoría de servicio, el ingreso de la venta se contabilizará en la cuenta de ingreso de esa categoría; si no, va a la cuenta genérica de ingresos por servicios.
+              </p>
+              {servicioCats.length === 0 && (
+                <p className="text-[11px] text-amber-600 mt-1">
+                  No hay categorías de servicio configuradas. Créalas en <strong>Contabilidad → Categorías de Inventario</strong> (clase «Servicio»).
+                </p>
+              )}
+              {selectedCat && (
+                <div className="mt-2 text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg p-2">
+                  <p>Ingreso por venta: <span className="font-mono text-slate-700">{acctLabel(selectedCat.incomeAccount) || '— sin configurar —'}</span></p>
+                </div>
               )}
             </div>
           ) : null}

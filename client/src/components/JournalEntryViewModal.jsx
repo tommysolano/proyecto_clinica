@@ -76,16 +76,31 @@ export default function JournalEntryViewModal({ isOpen, onClose, entryId, source
         </div>
       )}
 
+      {entries.length > 1 && (
+        <p className="mb-3 text-xs text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-3 py-2">
+          Este documento tiene varios asientos (en orden cronológico). Los reversados/anulados se conservan para auditoría y quedan atenuados; el <b className="text-emerald-700">VIGENTE</b> es el que está en efecto.
+        </p>
+      )}
+
       <div className="space-y-5">
-        {entries.map((e) => (
-          <div key={e._id} className={`border rounded-xl overflow-hidden ${e.status === 'ANULADO' ? 'border-rose-200 opacity-70' : 'border-slate-200'}`}>
+        {entries.map((e) => {
+          // "Reversado" = el asiento fue anulado por una edición/anulación posterior (isReversed)
+          // o su estado es ANULADO. El resto de asientos contabilizados están VIGENTES.
+          const reversed = e.isReversed || e.status === 'ANULADO';
+          const badge = reversed
+            ? { cls: 'bg-rose-100 text-rose-700', text: e.status === 'ANULADO' ? 'ANULADO' : 'REVERSADO' }
+            : e.status === 'BORRADOR'
+              ? { cls: 'bg-amber-100 text-amber-700', text: 'BORRADOR' }
+              : { cls: 'bg-emerald-100 text-emerald-700', text: 'VIGENTE' };
+          return (
+          <div key={e._id} className={`border rounded-xl overflow-hidden ${reversed ? 'border-rose-200 opacity-70' : 'border-slate-200'}`}>
             <div className="bg-slate-50 px-4 py-2.5 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600">
               <span>Asiento: <b className="font-mono text-slate-800">{e.number}</b></span>
               <span>Fecha: <b>{fmtDate(e.date)}</b></span>
               <span>Origen: <b>{sourceLabel(e)}</b></span>
               <span>Usuario: <b>{e.createdBy?.name || '—'}</b></span>
               <span>Registrado: <b>{fmtDateTime(e.createdAt)}</b></span>
-              <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${e.status === 'BORRADOR' ? 'bg-amber-100 text-amber-700' : e.status === 'ANULADO' ? 'bg-rose-100 text-rose-700' : 'bg-emerald-100 text-emerald-700'}`}>{e.status}</span>
+              <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${badge.cls}`}>{badge.text}</span>
               <span className="flex-1" />
               <button onClick={() => downloadPdf(e)} className="inline-flex items-center gap-1 px-2.5 py-1 bg-slate-700 text-white rounded-lg text-[11px]" title="Descargar PDF del asiento">
                 <HiOutlineArrowDownTray className="w-3.5 h-3.5" /> PDF
@@ -132,7 +147,8 @@ export default function JournalEntryViewModal({ isOpen, onClose, entryId, source
               </table>
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
     </Modal>
   );

@@ -118,6 +118,7 @@ exports.createSale = async (req, res) => {
     }
 
     {
+      const saleWarnings = [];
       const txSaleId = await runInTransaction(async (session) => {
         const saleDate = req.body.date ? new Date(req.body.date) : new Date();
         await assertPeriodOpen(req.clinicId, saleDate, { session });
@@ -475,9 +476,31 @@ exports.createSale = async (req, res) => {
             txLines.push({ account, debit: 0, credit: +amount.toFixed(2), description: 'Ingreso productos' });
           }
         }
+        // Ingreso por SERVICIOS: si el servicio tiene categoría de inventario (tipo SERVICIO)
+        // con cuenta de ingreso, esa cuenta MANDA (regla de la contadora); si no la tiene, se
+        // usa el rol genérico 'ingresoServicios' y se avisa (no se bloquea: el genérico es un
+        // ingreso válido, a diferencia del costo). Se agrupa por cuenta (una línea por cuenta).
+        const uncategorizedServices = new Set();
         if (serviceBase > 0) {
-          const accServ = await getAccount(req.clinicId, 'ingresoServicios');
-          txLines.push({ account: accServ._id, debit: 0, credit: serviceBase, description: 'Ingreso servicios' });
+          const serviceIncomeByAccount = new Map();
+          let accServDefault = null;
+          for (const i of txSaleItems) {
+            if (i.category !== 'servicio' || isDeferred(i)) continue;
+            const base = Number(i.taxBase || 0) + Number(i.discountTaxBase || 0);
+            if (base <= 0) continue;
+            const prod = txProductMap.get(String(i.product));
+            let acc = prod?.inventoryCategory?.incomeAccount || null;
+            if (!acc) {
+              if (!accServDefault) accServDefault = await getAccount(req.clinicId, 'ingresoServicios');
+              acc = accServDefault._id;
+              uncategorizedServices.add(i.productName);
+            }
+            const key = String(acc);
+            serviceIncomeByAccount.set(key, { account: acc, amount: (serviceIncomeByAccount.get(key)?.amount || 0) + base });
+          }
+          for (const { account, amount } of serviceIncomeByAccount.values()) {
+            txLines.push({ account, debit: 0, credit: +amount.toFixed(2), description: 'Ingreso servicios' });
+          }
         }
         let accDeferred = null;
         let accDeferredIncomeTarget = null;
@@ -496,25 +519,51 @@ exports.createSale = async (req, res) => {
         }
 
         // Asiento de COSTO por producto vendido (Débito: costo de venta / Crédito: inventario),
-        // valorado por el kardex (capas FIFO). Las cuentas salen de la categoría contable del
-        // producto (expenseAccount/assetAccount) → cuentas legacy del producto → rol por defecto.
-        const costoDefault = await getAccount(req.clinicId, 'costoProductos');
-        const inventarioDefault = await getAccount(req.clinicId, 'inventario');
+        // valorado por el kardex (capas FIFO). Las cuentas salen ÚNICA y EXCLUSIVAMENTE de la
+        // categoría de inventario del producto (expenseAccount/assetAccount). SIN respaldos
+        // silenciosos: si el producto no tiene categoría, o la categoría no tiene esas cuentas,
+        // la venta NO se contabiliza —se bloquea con un mensaje que dice exactamente qué falta—.
+        // (Regla de la contadora: la cuenta de costo/inventario solo sale de la categoría.)
+        const costLines = [];
         for (const it of txSaleItems) {
           const prod = txProductMap.get(String(it.product));
           if (!prod || txIsUnlimited(prod)) continue;
           const totalCost = +Number(it._cogs || 0).toFixed(2);
           if (totalCost <= 0) continue;
           const cat = prod.inventoryCategory || null;
-          txLines.push({ account: cat?.expenseAccount || prod.expenseAccount || costoDefault._id, debit: totalCost, credit: 0, description: `Costo venta ${it.productName}` });
-          txLines.push({ account: cat?.assetAccount || prod.inventoryAccount || inventarioDefault._id, debit: 0, credit: totalCost, description: `Salida inventario ${it.productName}` });
+          if (!cat) {
+            throw Object.assign(new Error(
+              `El producto "${it.productName}" no tiene categoría de inventario asignada. `
+              + 'Asígnele una categoría con cuentas configuradas en Inventario → Categorías antes de vender este producto.'
+            ), { status: 400 });
+          }
+          if (!cat.expenseAccount) {
+            throw Object.assign(new Error(
+              `La categoría "${cat.name}" del producto "${it.productName}" no tiene cuenta de costo configurada. `
+              + 'Configúrela en Inventario → Categorías antes de vender este producto.'
+            ), { status: 400 });
+          }
+          if (!cat.assetAccount) {
+            throw Object.assign(new Error(
+              `La categoría "${cat.name}" del producto "${it.productName}" no tiene cuenta de inventario configurada. `
+              + 'Configúrela en Inventario → Categorías antes de vender este producto.'
+            ), { status: 400 });
+          }
+          costLines.push({ account: cat.expenseAccount, debit: totalCost, credit: 0, description: `Costo venta ${it.productName}` });
+          costLines.push({ account: cat.assetAccount, debit: 0, credit: totalCost, description: `Salida inventario ${it.productName}` });
         }
 
         // Centro de costo de la venta: el resuelto contra la bodega (no el crudo del body).
-        // Va en la cabecera del asiento y en CADA línea —ingreso, IVA, CxC y COSTO DE VENTA—,
-        // que es lo que permite leer el margen del centro sin cruzar documentos a mano.
+        // Va en la cabecera de AMBOS asientos y en CADA línea —ingreso, IVA, CxC y costo de
+        // venta—, que es lo que permite leer el margen del centro sin cruzar documentos a mano.
         const txCostCenter = cc.costCenter || null;
         for (const l of txLines) if (!l.costCenter) l.costCenter = txCostCenter;
+        for (const l of costLines) if (!l.costCenter) l.costCenter = txCostCenter;
+
+        // DOS asientos por venta (contadora): (1) la venta —ingresos, IVA, cobro/CxC— y
+        // (2) el costo —costo de venta contra inventario—. Mismo documento origen (Sale) con
+        // sourceAction distinguible (POST vs POST_COST) para que el by-source los traiga ambos.
+        // Todo en la misma transacción: se crean los dos o ninguno.
         const txEntry = await createEntry({
           clinicId: req.clinicId,
           date: saleDate,
@@ -530,11 +579,30 @@ exports.createSale = async (req, res) => {
           session,
         });
         txSale.journalEntry = txEntry._id;
+        let costEntry = null;
+        if (costLines.length) {
+          costEntry = await createEntry({
+            clinicId: req.clinicId,
+            date: saleDate,
+            description: `Costo venta ${txSale.saleNumber}`,
+            source: 'VENTA',
+            sourceRef: txSale._id,
+            sourceModel: 'Sale',
+            sourceAction: 'POST_COST',
+            lines: costLines,
+            userId: req.user._id,
+            doctor: txSale.doctor || null,
+            costCenter: txCostCenter,
+            session,
+          });
+          txSale.costJournalEntry = costEntry._id;
+        }
         await txSale.save({ session });
-        // El movimiento de inventario apunta a su asiento (trazabilidad desde el kardex).
+        // El movimiento de inventario apunta al asiento de COSTO (donde vive la salida de
+        // inventario); si la venta no movió inventario, al asiento de la venta.
         await InventoryMovement.updateMany(
           { clinic: req.clinicId, sourceModel: 'Sale', sourceRef: txSale._id },
-          { $set: { journalEntry: txEntry._id } },
+          { $set: { journalEntry: (costEntry || txEntry)._id } },
           { session }
         );
         await auditarDiferencias(cc.aviso ? [cc.aviso] : [], {
@@ -586,6 +654,16 @@ exports.createSale = async (req, res) => {
             account: clientesAcc._id,
           }, { session });
         }
+        // Aviso (no bloqueante) por servicios sin categoría: su ingreso fue al rol genérico
+        // 'ingresoServicios'. Conviene categorizarlos para que el ingreso vaya a la cuenta de
+        // su categoría (a diferencia del costo, aquí no se bloquea: el genérico es válido).
+        saleWarnings.length = 0; // idempotente ante reintentos de la transacción
+        if (uncategorizedServices.size) {
+          saleWarnings.push(
+            `Servicios sin categoría de inventario (su ingreso fue a la cuenta genérica): ${[...uncategorizedServices].join(', ')}. `
+            + 'Asígneles una categoría de tipo SERVICIO en Inventario → Categorías para contabilizar su ingreso en la cuenta de la categoría.'
+          );
+        }
         return txSale._id;
       });
 
@@ -605,7 +683,9 @@ exports.createSale = async (req, res) => {
           services: (txPopulated.items || []).map((it) => String(it.product)).filter(Boolean),
         });
       }
-      return res.status(201).json(txPopulated);
+      const responseBody = txPopulated.toObject ? txPopulated.toObject() : txPopulated;
+      if (saleWarnings.length) responseBody.warnings = saleWarnings;
+      return res.status(201).json(responseBody);
     }
   } catch (error) {
     // Carrera de idempotencia: otra petición con la misma clave ganó. Devolvemos esa venta.
@@ -755,6 +835,21 @@ async function reverseSaleTx(session, { clinicId, saleId, userId, reversalDate, 
       date: reversalDate,
       session,
     });
+  }
+  // Anula TAMBIÉN el asiento de costo de venta (segundo asiento de la venta). Se reversa
+  // solo si sigue vigente: un asiento ya reversado (p.ej. por una edición previa) lanzaría.
+  if (sale.costJournalEntry) {
+    const costEntry = await JournalEntry.findOne({ _id: sale.costJournalEntry, clinic: clinicId }).session(session);
+    if (costEntry && costEntry.status === 'CONTABILIZADO' && !costEntry.isReversed) {
+      await reverseEntry({
+        clinicId,
+        entryId: sale.costJournalEntry,
+        userId,
+        reason: 'Anulacion venta (costo)',
+        date: reversalDate,
+        session,
+      });
+    }
   }
   // Ingreso diferido: reversa los asientos de reconocimiento ya emitidos y anula los documentos.
   const deferreds = await DeferredIncome.find({

@@ -112,7 +112,7 @@ export default function InventoryMovementDetailModal({ isOpen, onClose, movement
         source={doc ? { model: doc.model, ref: doc.ref } : null}
         entryId={doc ? null : m.journalEntry}
         title="Movimiento contable (asiento)"
-        emptyHint="Para las ventas, el costo de venta y la salida de inventario van en el mismo asiento de la venta."
+        emptyHint="Una venta genera DOS asientos: el de la venta (ingreso e IVA) y el del costo (costo de venta y salida de inventario). Aquí se listan ambos."
       />
       <DocumentPreviewModal
         isOpen={verFactura}

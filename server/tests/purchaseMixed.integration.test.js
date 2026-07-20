@@ -251,28 +251,27 @@ test('gasto con product colgado pero lineType GASTO NO se convierte en inventari
   assert.equal((await Product.findById(prod._id)).stock, 3, 'NO mueve stock');
 });
 
-test('compra LEGACY con cuenta legacy en la línea de inventario sigue contabilizando al editar', async () => {
+test('editar una compra LEGACY con producto SIN categoría ahora se BLOQUEA (estricto único, sin ruta tolerante)', async () => {
   const { clinicId, userId } = await setup();
   const sup = await H.makeSupplier(clinicId);
   const legacyAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '1.1.04.02' }); // cuenta de inventario legacy
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: null }); // sin categoría (legacy)
-  // Factura antigua ya REGISTRADA, sin asiento, con la cuenta legacy YA asignada en la línea.
+  // Factura antigua ya REGISTRADA (strictAccounts=false), con la cuenta legacy en la línea.
   const legacy = await PurchaseInvoice.create({
     clinic: clinicId, supplier: sup._id, fechaEmision: new Date('2026-06-05'), serie: '001-001-000000777',
+    strictAccounts: false,
     items: [{ description: 'Insumo legacy', product: prod._id, account: legacyAcc._id, quantity: 5, unitPrice: 4, subtotal: 20, ivaRate: 0 }],
     subtotal: 20, total: 20, balance: 20, status: 'REGISTRADA',
   });
+  // Editar ahora exige categoría (Tarea 1.2): sin ella, bloquea con un mensaje que guía a configurarla.
   const upd = await H.runController(purchase.update, H.mockReq(clinicId, userId, {
     fechaEmision: new Date('2026-06-05'),
-    items: [{ description: 'Insumo legacy', product: prod._id, account: legacyAcc._id, quantity: 5, unitPrice: 4, subtotal: 20, ivaRate: 0 }],
+    items: [{ description: 'Insumo legacy', lineType: 'INVENTARIO', product: prod._id, quantity: 5, unitPrice: 4, subtotal: 20, ivaRate: 0 }],
   }, { params: { id: String(legacy._id) } }));
-  assert.equal(upd.statusCode, 200, JSON.stringify(upd.payload));
-  // Debe respetar la cuenta legacy de la línea (no genérica) al contabilizar.
-  assert.equal(await H.accountBalanceByCode(clinicId, '1.1.04.02'), 20, 'usa la cuenta legacy de la línea');
-  assert.equal(await H.accountBalanceByCode(clinicId, '1.1.04.01'), 0, 'no usa la genérica');
-  assert.ok((await H.assertLedgerBalanced(clinicId)).balanced);
-  // El documento sigue marcado como legacy (no se "actualiza" a estricto).
-  assert.notEqual((await PurchaseInvoice.findById(legacy._id)).strictAccounts, true);
+  assert.equal(upd.statusCode, 400, JSON.stringify(upd.payload));
+  assert.match(upd.payload.message, /categoría contable/i);
+  // No recontabilizó nada nuevo.
+  assert.equal(await H.accountBalanceByCode(clinicId, '1.1.04.02'), 0, 'no contabiliza a la cuenta legacy');
 });
 
 // ── update ESTRICTO para compras del flujo nuevo (sin tolerancia legacy) ────────

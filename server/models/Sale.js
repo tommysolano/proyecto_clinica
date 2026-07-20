@@ -136,8 +136,13 @@ const saleSchema = new mongoose.Schema(
       default: 'completada',
     },
     invoice: { type: mongoose.Schema.Types.ObjectId, ref: 'Invoice' },
-    // Asiento contable autogenerado
+    // Asiento contable de la VENTA (ingresos + IVA + cobro/CxC). El costo de venta va en un
+    // asiento SEPARADO (`costJournalEntry`): la contadora pidió dos asientos por venta —el de
+    // la venta y el del costo— en vez de uno combinado. El endpoint by-source trae ambos.
     journalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
+    // Asiento de COSTO DE VENTA (débito costo / crédito inventario, valorado por kardex FIFO).
+    // Solo existe cuando la venta mueve inventario (no en ventas de puro servicio).
+    costJournalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
     notes: String,
     // Marca si es la primera venta/servicio del paciente (paciente nuevo).
     isFirstVisit: { type: Boolean, default: false },

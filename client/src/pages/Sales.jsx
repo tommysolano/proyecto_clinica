@@ -418,7 +418,7 @@ export default function Sales() {
    */
   const enviarVenta = async (paymentPayload, extra = {}) => {
     try {
-      await api.post('/sales', {
+      const res = await api.post('/sales', {
         ...form,
         ...paymentPayload,
         recommendedBy: form.recommendedBy || null,
@@ -435,6 +435,8 @@ export default function Sales() {
       toast.success(extra.costCenterConfirmed
         ? 'Venta registrada con el centro de costo elegido (diferencia auditada)'
         : 'Venta registrada');
+      // Avisos no bloqueantes (p.ej. servicios sin categoría: su ingreso fue a la cuenta genérica).
+      for (const w of (res.data?.warnings || [])) toast(w, { icon: '⚠️', duration: 7000 });
       setCcMismatch(null);
       setModalOpen(false);
       fetchSales();

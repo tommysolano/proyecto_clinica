@@ -346,9 +346,21 @@ async function validateAssetCategory(clinicId, cat) {
   }
 }
 
+/**
+ * Categoría de SERVICIO: su única cuenta es la de INGRESO por venta (obligatoria y de
+ * movimiento). No maneja inventario, costo ni depreciación. Se limpian esos campos para que
+ * una categoría de servicio nunca arrastre cuentas de inventario/activo por error.
+ */
+async function validateServiceCategory(clinicId, cat) {
+  await assertMovementAccount(clinicId, cat.incomeAccount, 'cuenta de ingreso');
+}
+// Anula los campos que una categoría de SERVICIO no usa (inventario/activo/depreciación).
+const SERVICE_UNUSED_FIELDS = ['assetAccount', 'expenseAccount', 'depreciationAccount', 'accumDepreciationAccount', 'impairmentAssetAccount', 'impairmentExpenseAccount', 'depreciationRate', 'usefulLifeYears', 'usefulLifeMonths', 'residualPercent', 'noDepreciate'];
+
 exports.createCategory = async (req, res) => {
   try {
     if (req.body.kind === 'ACTIVO_FIJO') await validateAssetCategory(req.clinicId, req.body);
+    if (req.body.kind === 'SERVICIO') { await validateServiceCategory(req.clinicId, req.body); for (const k of SERVICE_UNUSED_FIELDS) delete req.body[k]; }
     const c = await InventoryCategory.create({ ...req.body, clinic: req.clinicId });
     res.status(201).json(c);
   } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
@@ -359,6 +371,7 @@ exports.updateCategory = async (req, res) => {
     if (!c) return res.status(404).json({ message: 'No encontrada' });
     const merged = { ...c.toObject(), ...req.body };
     if (merged.kind === 'ACTIVO_FIJO') await validateAssetCategory(req.clinicId, merged);
+    if (merged.kind === 'SERVICIO') { await validateServiceCategory(req.clinicId, merged); for (const k of SERVICE_UNUSED_FIELDS) { req.body[k] = undefined; c[k] = undefined; } }
     Object.assign(c, req.body); await c.save(); res.json(c);
   } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };

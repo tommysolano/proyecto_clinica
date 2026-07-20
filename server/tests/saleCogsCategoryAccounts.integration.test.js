@@ -12,6 +12,7 @@ const H = require('./_integrationHelpers');
 
 const sale = require('../controllers/saleController');
 const purchase = require('../controllers/purchaseInvoiceController');
+const journal = require('../controllers/journalEntryController');
 const ChartOfAccount = require('../models/ChartOfAccount');
 const InventoryCategory = require('../models/InventoryCategory');
 const JournalEntry = require('../models/JournalEntry');
@@ -70,16 +71,24 @@ test('venta de producto: asiento venta+costo con las cuentas de la CATEGORÍA de
   const led = await H.assertLedgerBalanced(clinicId);
   assert.ok(led.balanced, `mayor descuadrado ${led.debit} vs ${led.credit}`);
 
-  // Visible desde la factura: la venta guarda su asiento y éste contiene las 2 líneas de costo.
+  // DOS asientos por venta (contadora): el de la venta (ingreso+IVA) y el del costo (COGS+inventario).
   const s = await Sale.findById(r.payload._id);
-  assert.ok(s.journalEntry, 'la venta referencia su asiento');
-  const entry = await JournalEntry.findById(s.journalEntry);
-  const costLine = entry.lines.find((l) => /Costo venta/.test(l.description));
-  const invLine = entry.lines.find((l) => /Salida inventario/.test(l.description));
-  const ivaLine = entry.lines.find((l) => /IVA en ventas/.test(l.description));
-  assert.ok(costLine && costLine.debit === 80, 'Débito: costo de venta 80');
-  assert.ok(invLine && invLine.credit === 80, 'Crédito: inventario 80');
-  assert.ok(ivaLine && ivaLine.credit === 30, 'Crédito: IVA ventas 30');
+  assert.ok(s.journalEntry, 'la venta referencia su asiento de venta');
+  assert.ok(s.costJournalEntry, 'la venta referencia su asiento de costo (separado)');
+  assert.notEqual(String(s.journalEntry), String(s.costJournalEntry), 'son dos asientos distintos');
+  const ventaEntry = await JournalEntry.findById(s.journalEntry);
+  const costEntry = await JournalEntry.findById(s.costJournalEntry);
+  // Asiento de VENTA: IVA en ventas al haber; NO contiene el costo de venta.
+  const ivaLine = ventaEntry.lines.find((l) => /IVA en ventas/.test(l.description));
+  assert.ok(ivaLine && ivaLine.credit === 30, 'Asiento venta: IVA ventas 30 al haber');
+  assert.ok(!ventaEntry.lines.some((l) => /Costo venta/.test(l.description)), 'el costo NO va en el asiento de venta');
+  assert.ok(ventaEntry.sourceAction === 'POST' && costEntry.sourceAction === 'POST_COST', 'sourceActions distinguibles');
+  // Asiento de COSTO: débito costo de venta / crédito inventario, valorado por kardex.
+  const costLine = costEntry.lines.find((l) => /Costo venta/.test(l.description));
+  const invLine = costEntry.lines.find((l) => /Salida inventario/.test(l.description));
+  assert.ok(costLine && costLine.debit === 80, 'Asiento costo: costo de venta 80 al debe');
+  assert.ok(invLine && invLine.credit === 80, 'Asiento costo: inventario 80 al haber');
+  assert.ok(Math.abs(costEntry.totalDebit - costEntry.totalCredit) < 0.01, 'asiento de costo cuadrado');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -109,15 +118,132 @@ test('venta FIFO multicapa con categoría propia: COGS pondera capas y sale de l
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-test('producto SIN categoría (legacy) sigue cayendo al rol genérico (no rompe ventas viejas)', async () => {
+test('producto SIN categoría con costo se BLOQUEA (regla nueva: sin categoría no se contabiliza el costo)', async () => {
   const { clinicId, userId } = await H.seedClinic();
-  // Producto legacy sin categoría contable y sin capas: vende con costo promedio de respaldo.
+  // Producto sin categoría contable con stock: al vender, el costo NO tiene de dónde salir → bloqueo.
   const prod = await H.makeProduct(clinicId, { category: 'insumo', salePrice: 115, purchasePrice: 40, stock: 5, averageCost: 40, inventoryCategory: null });
   const r = await H.runController(sale.createSale, H.mockReq(clinicId, userId, {
     items: [{ product: prod._id, quantity: 1, unitPrice: 115 }], paymentMethod: 'efectivo',
   }));
+  assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
+  assert.match(r.payload.message, /categoría de inventario/i);
+  // Nada contabilizado a medias: ni ingreso ni costo, y el stock intacto.
+  assert.equal(await H.accountBalanceByCode(clinicId, '4.1.02'), 0, 'no debe registrar ingreso');
+  assert.equal(await H.accountBalanceByCode(clinicId, '5.1.01'), 0, 'no debe registrar costo');
+  assert.equal((await require('../models/Product').findById(prod._id)).stock, 5, 'stock intacto (rollback)');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('producto SIN categoría cuya categoría no tiene cuenta de costo se BLOQUEA nombrando la categoría', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  // Categoría con inventario pero SIN cuenta de costo.
+  const inv = await ChartOfAccount.create({ clinic: clinicId, code: '1.1.04.88', name: 'Inv X', type: 'ACTIVO', nature: 'DEBITO', allowsMovement: true });
+  const cat = await InventoryCategory.create({ clinic: clinicId, code: 'SINCOSTO', name: 'Sin costo', kind: 'INVENTARIO', assetAccount: inv._id });
+  const prod = await H.makeProduct(clinicId, { category: 'insumo', salePrice: 115, purchasePrice: 40, stock: 5, averageCost: 40, inventoryCategory: cat._id });
+  const r = await H.runController(sale.createSale, H.mockReq(clinicId, userId, {
+    items: [{ product: prod._id, quantity: 1, unitPrice: 115 }], paymentMethod: 'efectivo',
+  }));
+  assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
+  assert.match(r.payload.message, /Sin costo/, 'el mensaje nombra la categoría');
+  assert.match(r.payload.message, /cuenta de costo/i);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('venta de SOLO servicio con categoría SERVICIO: un solo asiento, ingreso en la cuenta de la categoría', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  // Cuenta de ingreso PROPIA de la categoría de servicio (distinta del rol genérico 4.1.01).
+  const incSvc = await ChartOfAccount.create({ clinic: clinicId, code: '4.1.55', name: 'Ingreso consultas', type: 'INGRESO', nature: 'CREDITO', allowsMovement: true });
+  const catSvc = await InventoryCategory.create({ clinic: clinicId, code: 'SVC', name: 'Consultas', kind: 'SERVICIO', incomeAccount: incSvc._id });
+  const serv = await H.makeProduct(clinicId, { category: 'servicio', unlimited: true, salePrice: 50, inventoryCategory: catSvc._id });
+
+  const r = await H.runController(sale.createSale, H.mockReq(clinicId, userId, {
+    items: [{ product: serv._id, quantity: 1, unitPrice: 50 }], paymentMethod: 'efectivo',
+  }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
-  assert.equal(await H.accountBalanceByCode(clinicId, '4.1.02'), -100, 'ingreso genérico');
-  assert.equal(await H.accountBalanceByCode(clinicId, '5.1.01'), 40, 'costo genérico (promedio de respaldo)');
+  const s = await Sale.findById(r.payload._id);
+  assert.ok(s.journalEntry, 'asiento de venta');
+  assert.equal(s.costJournalEntry, null, 'un servicio NO genera asiento de costo');
+  // El ingreso va a la cuenta de la CATEGORÍA (4.1.55), no al rol genérico de servicios (4.1.01).
+  assert.ok((await H.accountBalanceByCode(clinicId, '4.1.55')) < 0, 'ingreso en la cuenta de la categoría de servicio');
+  assert.equal(await H.accountBalanceByCode(clinicId, '4.1.01'), 0, 'NO usa el ingreso genérico de servicios');
   assert.ok((await H.assertLedgerBalanced(clinicId)).balanced);
+  // Sin categoría con incomeAccount, un servicio cae al genérico pero AVISA (no bloquea).
+  const serv2 = await H.makeProduct(clinicId, { category: 'servicio', unlimited: true, salePrice: 30, inventoryCategory: null });
+  const r2 = await H.runController(sale.createSale, H.mockReq(clinicId, userId, {
+    items: [{ product: serv2._id, quantity: 1, unitPrice: 30 }], paymentMethod: 'efectivo',
+  }));
+  assert.equal(r2.statusCode, 201, JSON.stringify(r2.payload));
+  assert.ok(Array.isArray(r2.payload.warnings) && r2.payload.warnings.length >= 1, 'avisa que conviene categorizar el servicio');
+  assert.ok((await H.accountBalanceByCode(clinicId, '4.1.01')) < 0, 'servicio sin categoría usa el ingreso genérico de servicios');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('anular una venta reversa AMBOS asientos (venta y costo)', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const { cat } = await customCategory(clinicId);
+  const prod = await H.makeProduct(clinicId, { category: 'insumo', salePrice: 115, purchasePrice: 40, stock: 0, inventoryCategory: cat._id });
+  const sup = await H.makeSupplier(clinicId);
+  await H.runController(purchase.create, H.mockReq(clinicId, userId, {
+    supplier: sup._id, fechaEmision: new Date(), items: [{ description: 'Med', product: prod._id, quantity: 10, unitPrice: 40, ivaRate: 15, subtotal: 400 }],
+  }));
+  const r = await H.runController(sale.createSale, H.mockReq(clinicId, userId, {
+    items: [{ product: prod._id, quantity: 2, unitPrice: 115 }], paymentMethod: 'efectivo',
+  }));
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  const s = await Sale.findById(r.payload._id);
+  assert.ok(s.journalEntry && s.costJournalEntry);
+
+  const cancel = await H.runController(sale.cancelSale, H.mockReq(clinicId, userId, {}, { params: { id: String(s._id) } }));
+  assert.equal(cancel.statusCode, 200, JSON.stringify(cancel.payload));
+  // Los DOS asientos originales quedan reversados (rastro de auditoría), no borrados.
+  const venta = await JournalEntry.findById(s.journalEntry);
+  const costo = await JournalEntry.findById(s.costJournalEntry);
+  assert.equal(venta.isReversed, true, 'el asiento de venta quedó reversado');
+  assert.equal(costo.isReversed, true, 'el asiento de costo quedó reversado');
+  // Efecto neto en el mayor: cero en costo (5.1.77) e inventario vuelve a 400.
+  assert.equal(await H.accountBalanceByCode(clinicId, '5.1.77'), 0, 'costo neto 0 tras anular');
+  assert.equal(await H.accountBalanceByCode(clinicId, '1.1.04.77'), 400, 'inventario vuelve a 400');
+  assert.ok((await H.assertLedgerBalanced(clinicId)).balanced);
+  assert.equal((await Sale.findById(s._id)).status, 'anulada');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('by-source (visor Kardex/documento): trae AMBOS asientos y, tras editar, muestra reversado + vigente', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const { cat } = await customCategory(clinicId);
+  const prod = await H.makeProduct(clinicId, { category: 'insumo', salePrice: 115, purchasePrice: 40, stock: 0, inventoryCategory: cat._id });
+  const sup = await H.makeSupplier(clinicId);
+  await H.runController(purchase.create, H.mockReq(clinicId, userId, {
+    supplier: sup._id, fechaEmision: new Date(), items: [{ description: 'Med', product: prod._id, quantity: 10, unitPrice: 40, ivaRate: 15, subtotal: 400 }],
+  }));
+  const r = await H.runController(sale.createSale, H.mockReq(clinicId, userId, {
+    items: [{ product: prod._id, quantity: 2, unitPrice: 115 }], paymentMethod: 'efectivo',
+  }));
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  const s = await Sale.findById(r.payload._id);
+
+  // by-source devuelve los DOS asientos del documento (venta + costo), ambos vigentes.
+  let bs = await H.runController(journal.bySource, H.mockReq(clinicId, userId, {}, { query: { model: 'Sale', ref: String(s._id) } }));
+  assert.equal(bs.statusCode, 200);
+  assert.equal(bs.payload.length, 2, 'venta + costo');
+  assert.ok(bs.payload.every((e) => !e.isReversed), 'ambos vigentes');
+  assert.ok(bs.payload.some((e) => e.sourceAction === 'POST') && bs.payload.some((e) => e.sourceAction === 'POST_COST'));
+
+  // Editar manualmente el asiento de venta: el original queda REVERSADO y aparece el nuevo VIGENTE.
+  const desc = await ChartOfAccount.findOne({ clinic: clinicId, code: '4.1.03' });
+  const caja = await ChartOfAccount.findOne({ clinic: clinicId, code: '1.1.01.01' });
+  const edit = await H.runController(sale.editJournalSale, H.mockReq(clinicId, userId, {
+    lines: [
+      { account: caja._id, debit: 230, credit: 0, description: 'Caja' },
+      { account: desc._id, debit: 0, credit: 230, description: 'Ingreso (editado)' },
+    ],
+  }, { params: { id: String(s._id) } }));
+  assert.equal(edit.statusCode, 200, JSON.stringify(edit.payload));
+
+  bs = await H.runController(journal.bySource, H.mockReq(clinicId, userId, {}, { query: { model: 'Sale', ref: String(s._id) } }));
+  const reversados = bs.payload.filter((e) => e.isReversed);
+  const vigentes = bs.payload.filter((e) => !e.isReversed);
+  assert.ok(reversados.length >= 1, 'el asiento de venta original quedó reversado y visible (historial)');
+  assert.ok(vigentes.some((e) => /editado/.test(e.description) || e.sourceAction.startsWith('EDIT')), 'el asiento editado queda VIGENTE');
+  assert.ok(vigentes.some((e) => e.sourceAction === 'POST_COST'), 'el asiento de costo sigue vigente');
 });

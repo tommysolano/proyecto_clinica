@@ -6,6 +6,25 @@ const { findAccount, ensureAccountByCode } = require('./accounting');
  * Catálogo de "roles" de cuenta usados por la contabilidad automática.
  * Cada rol tiene una cuenta por defecto (code o taxCode) que se usa si el
  * contador no configuró una específica en AccountingConfig.
+ *
+ * REGLA DE CATEGORÍAS (contadora): la cuenta de INVENTARIO, COSTO e INGRESO de un producto sale
+ * de su categoría contable (InventoryCategory), NO de estos roles genéricos. Tras esa regla:
+ *   · `costoProductos` (5.1.01): YA NO se usa al vender (el costo sale de category.expenseAccount).
+ *      Solo queda en el migrador `migrateProductCategoriesToInventoryCategories.js`, que SIEMBRA
+ *      el expenseAccount de las categorías a partir de este rol (uso legítimo: configura la
+ *      categoría, no contabiliza una venta).
+ *   · `inventario` (1.1.04.01): YA NO se usa al vender/comprar (sale de category.assetAccount).
+ *      Sigue en módulos que NO dependen de un solo producto/categoría o son administrativos:
+ *        - Tomas físicas / ajustes de inventario (inventoryAdvancedController): usa la cuenta de
+ *          la BODEGA y, si no tiene, este rol —un ajuste abarca muchos productos, no una categoría—.
+ *        - Consumo interno por empleado (employeeDeductionController): ahora prefiere
+ *          category.assetAccount y solo cae a este rol si el producto no tiene categoría (no bloquea).
+ *   · `ingresoProductos`/`ingresoServicios`: son cuentas de INGRESO válidas; se usan como respaldo
+ *      cuando el producto/servicio no tiene categoría con cuenta de ingreso (no se bloquea, porque
+ *      un ingreso genérico es correcto de naturaleza, a diferencia del costo).
+ * El SEED de estas cuentas (defaultChartOfAccounts) es de naturaleza correcta (5.1.01=COSTO,
+ * 1.1.04.01=ACTIVO): el costo mal ubicado del pasado venía del fallback legacy del producto
+ * (`product.expenseAccount`/`inventoryAccount`), ya eliminado — no del seed ni de estos roles.
  */
 const ACCOUNT_ROLES = {
   caja:                 { group: 'Activo',  label: 'Caja general',              code: '1.1.01.01' },

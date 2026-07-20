@@ -76,6 +76,10 @@ const crearVenta = (clinicId, userId, body) => run(sales.createSale, H.mockReq(c
 const asientoDe = (clinicId, sourceModel, sourceRef) => JournalEntry.findOne({
   clinic: clinicId, sourceModel, sourceRef, source: { $in: ['COMPRA', 'VENTA'] }, status: 'CONTABILIZADO',
 });
+// Todos los asientos del documento (una venta genera DOS: venta POST + costo POST_COST).
+const asientosDe = (clinicId, sourceModel, sourceRef) => JournalEntry.find({
+  clinic: clinicId, sourceModel, sourceRef, source: { $in: ['COMPRA', 'VENTA'] }, status: 'CONTABILIZADO',
+}).sort({ createdAt: 1 });
 
 // ══════════════════════════════ COMPRAS ══════════════════════════════
 
@@ -235,20 +239,24 @@ test('10) el asiento de INGRESO y el de COSTO (COGS) llevan el centro de la vent
     items: [{ product: String(prod._id), quantity: 2, unitPrice: 20 }],
   }));
 
-  const asiento = await asientoDe(clinicId, 'Sale', venta._id);
-  assert.ok(asiento.lines.length >= 4);
-  for (const l of asiento.lines) {
+  // DOS asientos: venta (POST) y costo (POST_COST). El centro va en TODAS las líneas de AMBOS.
+  const asientos = await asientosDe(clinicId, 'Sale', venta._id);
+  assert.equal(asientos.length, 2, 'venta genera asiento de venta y asiento de costo');
+  const allLines = asientos.flatMap((a) => a.lines);
+  assert.ok(allLines.length >= 4);
+  for (const l of allLines) {
     assert.equal(idOf(l.costCenter), String(ccQuiro._id), `la línea "${l.description}" debe llevar el centro`);
   }
-  // El COGS es el real del FIFO: 2 × 5.
-  const cogs = asiento.lines.find((l) => /Costo venta/i.test(l.description));
+  // El COGS es el real del FIFO: 2 × 5, y vive en el asiento de costo (POST_COST).
+  const costEntry = asientos.find((a) => a.sourceAction === 'POST_COST');
+  const cogs = costEntry.lines.find((l) => /Costo venta/i.test(l.description));
   assert.equal(cogs.debit, 10);
 
-  // El movimiento de salida también: misma bodega, mismo centro, y con su asiento.
+  // El movimiento de salida también: misma bodega, mismo centro, y con su asiento (el de costo).
   const mov = await InventoryMovement.findOne({ clinic: clinicId, sourceRef: venta._id, type: 'salida' });
   assert.equal(idOf(mov.warehouse), String(bodega._id), 'la salida sale de SU bodega');
   assert.equal(idOf(mov.costCenter), String(ccQuiro._id));
-  assert.equal(idOf(mov.journalEntry), String(asiento._id), 'trazabilidad kardex → asiento');
+  assert.equal(idOf(mov.journalEntry), String(costEntry._id), 'trazabilidad kardex → asiento de costo');
 });
 
 test('11) un SERVICIO sin bodega no recibe un centro inventado', async () => {
@@ -477,8 +485,8 @@ test('21) REGRESIÓN: la venta consume las capas de SU bodega, no las de cualqui
     items: [{ product: String(prod._id), quantity: 2, unitPrice: 20 }],
   }));
 
-  const asiento = await asientoDe(clinicId, 'Sale', venta._id);
-  const cogs = asiento.lines.find((l) => /Costo venta/i.test(l.description));
+  const asientos = await asientosDe(clinicId, 'Sale', venta._id);
+  const cogs = asientos.flatMap((a) => a.lines).find((l) => /Costo venta/i.test(l.description));
   assert.equal(cogs.debit, 22, 'FIFO DENTRO de la bodega: 2 × 11');
 
   const enQuiro = await kardex.currentStock({ clinicId, product: prod._id, warehouse: bodega._id });

@@ -13,7 +13,10 @@ const inventoryCategorySchema = new mongoose.Schema(
     clinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', required: true, index: true },
     code: { type: String, required: true, trim: true },
     name: { type: String, required: true, trim: true },
-    kind: { type: String, enum: ['INVENTARIO', 'ACTIVO_FIJO'], required: true },
+    // SERVICIO: categoría de servicios (no maneja inventario ni depreciación); su única cuenta
+    // contable es la de INGRESO por venta (incomeAccount). Sirve para que el ingreso de la venta
+    // de un servicio se contabilice en la cuenta de SU categoría en vez del rol genérico.
+    kind: { type: String, enum: ['INVENTARIO', 'ACTIVO_FIJO', 'SERVICIO'], required: true },
     parent: { type: mongoose.Schema.Types.ObjectId, ref: 'InventoryCategory', default: null },
     // Para activos fijos:
     depreciationRate: { type: Number, default: 0 }, // % anual

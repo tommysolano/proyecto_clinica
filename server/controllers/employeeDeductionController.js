@@ -138,7 +138,7 @@ exports.internalConsumption = async (req, res) => {
       const movements = [];
 
       for (const it of clean) {
-        const prod = await Product.findOne({ _id: it.product, clinic: req.clinicId }).session(session);
+        const prod = await Product.findOne({ _id: it.product, clinic: req.clinicId }).populate('inventoryCategory', 'assetAccount').session(session);
         if (!prod) throw Object.assign(new Error('Producto no encontrado'), { status: 400 });
         if (prod.unlimited || prod.category === 'servicio') {
           throw Object.assign(new Error(`"${prod.name}" es un servicio/ilimitado y no se puede consumir como insumo`), { status: 400 });
@@ -169,8 +169,13 @@ exports.internalConsumption = async (req, res) => {
         });
 
         if (cost > 0) {
+          // La cuenta de inventario (crédito) sale de la CATEGORÍA del producto (misma regla que
+          // ventas/compras); solo si el producto no tiene categoría se usa el rol genérico —este
+          // flujo administrativo no bloquea, a diferencia de la venta—. Ya no se usa la cuenta
+          // legacy del producto (`prod.inventoryAccount`), que era la que descuadraba las cuentas.
+          const invAcc = prod.inventoryCategory?.assetAccount || inventarioDefault._id;
           lines.push({ account: (gastoDefault?._id || inventarioDefault._id), debit: cost, credit: 0, description: `Consumo interno ${prod.name}` });
-          lines.push({ account: prod.inventoryAccount || inventarioDefault._id, debit: 0, credit: cost, description: `Salida inventario ${prod.name}` });
+          lines.push({ account: invAcc, debit: 0, credit: cost, description: `Salida inventario ${prod.name}` });
         }
         total += cost;
       }

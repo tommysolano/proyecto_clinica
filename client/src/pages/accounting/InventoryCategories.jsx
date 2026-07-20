@@ -88,9 +88,11 @@ export default function InventoryCategories() {
   const nameById = (id) => list.find((c) => c._id === id)?.name || '';
   // Cuentas que le faltan a una categoría INVENTARIO (para alertas visuales).
   const INV_ACCOUNT_LABELS = { assetAccount: 'inventario', expenseAccount: 'costo/gasto', incomeAccount: 'ingreso' };
-  const invMissing = (c) => (c.kind === 'INVENTARIO'
-    ? Object.keys(INV_ACCOUNT_LABELS).filter((k) => !idOf(c[k]))
-    : []);
+  const invMissing = (c) => {
+    if (c.kind === 'INVENTARIO') return Object.keys(INV_ACCOUNT_LABELS).filter((k) => !idOf(c[k]));
+    if (c.kind === 'SERVICIO') return idOf(c.incomeAccount) ? [] : ['incomeAccount'];
+    return [];
+  };
   const formInvMissing = form.kind === 'INVENTARIO'
     ? Object.keys(INV_ACCOUNT_LABELS).filter((k) => !form[k])
     : [];
@@ -151,7 +153,7 @@ export default function InventoryCategories() {
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-2 gap-3">
             <Field label="Código" required><input required placeholder="Ej: INV-01" value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className={inputCls} /></Field>
-            <Field label="Clase"><select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value, parent: '' })} className={inputCls}><option value="INVENTARIO">Inventario</option><option value="ACTIVO_FIJO">Activo fijo</option></select></Field>
+            <Field label="Clase"><select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value, parent: '' })} className={inputCls}><option value="INVENTARIO">Inventario</option><option value="SERVICIO">Servicio</option><option value="ACTIVO_FIJO">Activo fijo</option></select></Field>
             <Field label="Nombre" required className="col-span-2"><input required placeholder="Ej: Medicamentos" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} /></Field>
             <Field label="Categoría padre" hint="Elige una categoría para crear un TIPO (subcategoría) dentro de ella. Déjalo en blanco para una categoría raíz." className="col-span-2">
               <SearchableSelect
@@ -166,7 +168,21 @@ export default function InventoryCategories() {
               />
             </Field>
           </div>
-          {form.kind === 'ACTIVO_FIJO' ? (
+          {form.kind === 'SERVICIO' ? (
+            <>
+              <p className="text-xs font-semibold text-slate-500 pt-1">Cuenta contable del servicio</p>
+              <p className="text-[11px] text-slate-400 -mt-1">Un servicio no maneja inventario ni costo ni depreciación: su única cuenta es la de ingreso por venta. El ingreso de la venta de este servicio se contabilizará en esta cuenta.</p>
+              <div className="grid grid-cols-2 gap-3">
+                {acctField('Ingreso por venta', 'incomeAccount', 'col-span-2')}
+                {!form.incomeAccount && (
+                  <p className="col-span-2 text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1 flex items-center gap-1">
+                    <HiOutlineExclamationTriangle className="w-3.5 h-3.5 shrink-0" />
+                    La cuenta de ingreso es obligatoria para una categoría de servicio.
+                  </p>
+                )}
+              </div>
+            </>
+          ) : form.kind === 'ACTIVO_FIJO' ? (
             <div className="rounded-xl border border-slate-200 p-3 space-y-3">
               <div>
                 <p className="text-sm font-semibold text-slate-700">Configuración contable del activo fijo</p>

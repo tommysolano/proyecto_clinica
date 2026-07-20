@@ -202,80 +202,60 @@ function inferLineType(it) {
 }
 
 /**
- * Resuelve la cuenta de INVENTARIO (activo) de una línea.
- *   - `strict` (compras NUEVAS / autorización): la cuenta SALE de
- *     `InventoryCategory.assetAccount`. Si el producto no tiene categoría, o la
- *     categoría no tiene cuenta de inventario, se BLOQUEA con mensaje claro. Nunca
- *     cae a `it.account` manual, ni a `product.inventoryAccount`, ni al genérico.
- *   - no estricto (documentos ANTIGUOS que se editan): intenta la categoría; si no
- *     hay, usa la cuenta legacy ya booked (`it.account`) → `product.inventoryAccount`
- *     → genérico `inventario`. Este fallback SOLO existe para no romper compras que ya
- *     estaban contabilizadas antes de esta regla.
+ * Resuelve la cuenta de INVENTARIO (activo) de una línea de compra. SIEMPRE estricta (regla
+ * de la contadora, sin fallback silencioso — se aplica tanto al crear/autorizar como al editar):
+ * la cuenta SALE ÚNICA y EXCLUSIVAMENTE de `InventoryCategory.assetAccount`. Si el producto no
+ * tiene categoría, o su categoría no tiene cuenta de inventario, se BLOQUEA con un mensaje que
+ * dice exactamente qué falta y dónde configurarlo. Nunca cae a una cuenta manual, ni a
+ * `product.inventoryAccount`, ni a un rol genérico.
+ *
+ * OJO: una compra de inventario DEBITA la cuenta de inventario (activo); NO usa la cuenta de
+ * costo ni la de ingreso —esas se exigen y usan al VENDER (ver saleController)—. Por eso aquí
+ * solo se requiere `assetAccount`: pedir "cuenta de ingreso" al editar una COMPRA era el error
+ * que confundía a la contadora ("¿por qué una compra me pide una cuenta de ingreso?").
  */
-async function resolveInventoryAccount(it, { clinicId, session, strict, label = '' }) {
+async function resolveInventoryAccount(it, { clinicId, session, label = '' }) {
   const who = label ? `"${label}"` : 'de la línea';
   let cat = null;
   if (it.inventoryCategory) {
-    cat = await InventoryCategory.findOne({ _id: it.inventoryCategory, clinic: clinicId }).select('name assetAccount expenseAccount incomeAccount').session(session || null);
+    cat = await InventoryCategory.findOne({ _id: it.inventoryCategory, clinic: clinicId }).select('name assetAccount').session(session || null);
   }
-  let prod = null;
   if (!cat && it.product) {
-    prod = await Product.findOne({ _id: it.product, clinic: clinicId }).select('inventoryCategory inventoryAccount').session(session || null);
+    const prod = await Product.findOne({ _id: it.product, clinic: clinicId }).select('inventoryCategory').session(session || null);
     if (prod?.inventoryCategory) {
-      cat = await InventoryCategory.findOne({ _id: prod.inventoryCategory, clinic: clinicId }).select('name assetAccount expenseAccount incomeAccount').session(session || null);
+      cat = await InventoryCategory.findOne({ _id: prod.inventoryCategory, clinic: clinicId }).select('name assetAccount').session(session || null);
       if (cat) it.inventoryCategory = cat._id;
     }
   }
-  if (cat) {
-    if (strict) {
-      // La categoría debe estar COMPLETA: inventario (activo), costo/gasto e ingreso.
-      const missing = [];
-      if (!cat.assetAccount) missing.push('cuenta de inventario');
-      if (!cat.expenseAccount) missing.push('cuenta de costo/gasto');
-      if (!cat.incomeAccount) missing.push('cuenta de ingreso');
-      if (missing.length) {
-        throw Object.assign(new Error(
-          `La categoría contable "${cat.name}" del producto ${who} no tiene ${missing.join(' ni ')}. `
-          + 'Complétala en Contabilidad → Categorías Inventario/Activos antes de contabilizar.'
-        ), { status: 400 });
-      }
-    }
-    if (cat.assetAccount) return cat.assetAccount;
-  } else if (strict) {
+  if (!cat) {
     throw Object.assign(new Error(
       `El producto ${who} no tiene una categoría contable asignada. `
-      + 'Edita el producto en Inventario y asígnale una categoría contable antes de contabilizar la factura.'
+      + 'Edita el producto en Inventario → Categorías y asígnale una categoría con cuenta de inventario antes de guardar la factura.'
     ), { status: 400 });
   }
-  // Fallback legacy (solo documentos existentes / no estricto).
-  if (it.account) return it.account;
-  if (!prod && it.product) prod = await Product.findOne({ _id: it.product, clinic: clinicId }).select('inventoryAccount').session(session || null);
-  if (prod?.inventoryAccount) return prod.inventoryAccount;
-  const def = await getAccount(clinicId, 'inventario', { session });
-  return def?._id || null;
+  if (!cat.assetAccount) {
+    throw Object.assign(new Error(
+      `La categoría contable "${cat.name}" del producto ${who} no tiene cuenta de inventario configurada. `
+      + 'Configúrela en Inventario → Categorías antes de guardar la factura.'
+    ), { status: 400 });
+  }
+  return cat.assetAccount;
 }
 
 /**
- * Resuelve la cuenta de ACTIVO_FIJO de una línea.
- *   - `strict` (compras NUEVAS / autorización): requiere categoría de activo fijo y
- *     que ésta tenga `assetAccount`. Si falta, BLOQUEA con mensaje claro. No usa cuenta
- *     manual (`fa.assetAccount`/`it.account`).
- *   - no estricto (documentos ANTIGUOS): usa `fa.assetAccount` → categoría → `it.account`;
- *     si no hay nada, bloquea.
+ * Resuelve la cuenta de ACTIVO_FIJO de una línea. SIEMPRE estricta (regla de la contadora, al
+ * crear/autorizar y al editar): requiere una categoría de tipo activo fijo y que ésta tenga
+ * `assetAccount`. Si falta, BLOQUEA con mensaje claro. Nunca usa una cuenta manual
+ * (`fa.assetAccount`/`it.account`): todo lo contable del activo lo manda su categoría.
  */
-async function resolveFixedAssetAccount(it, { clinicId, session, strict }) {
+async function resolveFixedAssetAccount(it, { clinicId, session }) {
   const fa = it.fixedAsset || {};
-  let cat = null;
-  if (fa.category) cat = await InventoryCategory.findOne({ _id: fa.category, clinic: clinicId }).select('assetAccount').session(session || null);
-  if (strict) {
-    if (!cat) throw Object.assign(new Error('La línea de activo fijo requiere una categoría de activo fijo.'), { status: 400 });
-    if (!cat.assetAccount) throw Object.assign(new Error('La categoría de activo fijo no tiene cuenta de activo configurada.'), { status: 400 });
-    return cat.assetAccount;
-  }
-  if (fa.assetAccount) return fa.assetAccount;
-  if (cat?.assetAccount) return cat.assetAccount;
-  if (it.account) return it.account;
-  throw Object.assign(new Error('La categoría de activo fijo no tiene cuenta de activo configurada.'), { status: 400 });
+  const cat = fa.category
+    ? await InventoryCategory.findOne({ _id: fa.category, clinic: clinicId }).select('assetAccount').session(session || null)
+    : null;
+  if (!cat) throw Object.assign(new Error('La línea de activo fijo requiere una categoría de activo fijo. Selecciónela antes de guardar la factura.'), { status: 400 });
+  if (!cat.assetAccount) throw Object.assign(new Error('La categoría de activo fijo no tiene cuenta de activo configurada. Configúrela en Inventario → Categorías antes de guardar la factura.'), { status: 400 });
+  return cat.assetAccount;
 }
 
 /**
@@ -336,12 +316,14 @@ async function guardSriTotals(inv, req, session) {
  *   - ACTIVO_FIJO: requiere valor y categoría de activo fijo; NO admite distribución ni
  *     cuenta manual; la cuenta sale de la categoría (ver `resolveFixedAssetAccount`).
  *
- * @param {boolean} strict  true en compras NUEVAS y en autorización: bloquea inventario/
- *   activo sin cuenta de categoría y no acepta cuenta manual. false al editar documentos
- *   existentes (compatibilidad legacy).
+ * Las cuentas de INVENTARIO y ACTIVO_FIJO salen SIEMPRE de la categoría contable (regla de la
+ * contadora, sin fallback silencioso): rige tanto al crear/autorizar como al EDITAR. Ya no hay
+ * "modo tolerante" para documentos legacy —al editar una compra vieja también se exige la
+ * categoría, con un mensaje que guía a configurarla—.
+ *
  * @param {boolean} requireGastoAccount  exige cuenta/split en GASTO (contabilización).
  */
-async function classifyAndValidateItems(items, { clinicId, supplier, session, strict = false, requireGastoAccount = true }) {
+async function classifyAndValidateItems(items, { clinicId, supplier, session, requireGastoAccount = true }) {
   for (const it of items || []) {
     it.lineType = inferLineType(it);
     const label = it.description || '(sin descripción)';
@@ -353,34 +335,28 @@ async function classifyAndValidateItems(items, { clinicId, supplier, session, st
       }
       if (!it.product) throw Object.assign(new Error(`Selecciona el producto en la línea de inventario "${label}".`), { status: 400 });
       if (!(Number(it.quantity) > 0)) throw Object.assign(new Error(`Ingresa la cantidad en la línea de inventario "${label}".`), { status: 400 });
-      // Inventario NO acepta cuenta manual en compras nuevas: la cuenta la manda la categoría.
-      if (strict) { it.account = null; it.accountSplits = []; }
-      const acc = await resolveInventoryAccount(it, { clinicId, session, strict, label });
-      it.account = acc || null;
+      // Inventario NO acepta cuenta manual: la cuenta la manda la categoría del producto.
+      it.account = null; it.accountSplits = [];
+      it.account = await resolveInventoryAccount(it, { clinicId, session, label });
     } else if (it.lineType === 'ACTIVO_FIJO') {
       if (Array.isArray(it.accountSplits) && it.accountSplits.length) {
         throw Object.assign(new Error(`La línea de activo fijo "${label}" no admite distribución de cuentas`), { status: 400 });
       }
       if (!(value > 0)) throw Object.assign(new Error(`El activo fijo "${label}" requiere un valor`), { status: 400 });
-      // Activo fijo NO acepta cuenta manual ni parámetros contables en compras nuevas:
-      // TODO lo contable lo manda la categoría (se limpian los datos contables de la captura).
-      if (strict) {
-        it.account = null; it.accountSplits = [];
-        if (it.fixedAsset) {
-          it.fixedAsset.assetAccount = null; it.fixedAsset.depreciationAccount = null; it.fixedAsset.accumDepreciationAccount = null;
-          it.fixedAsset.depreciationRate = 0; it.fixedAsset.usefulLifeMonths = 0; it.fixedAsset.residualPercent = 0;
-        }
+      // Activo fijo NO acepta cuenta manual ni parámetros contables: TODO lo contable lo manda
+      // la categoría (se limpian los datos contables de la captura).
+      it.account = null; it.accountSplits = [];
+      if (it.fixedAsset) {
+        it.fixedAsset.assetAccount = null; it.fixedAsset.depreciationAccount = null; it.fixedAsset.accumDepreciationAccount = null;
+        it.fixedAsset.depreciationRate = 0; it.fixedAsset.usefulLifeMonths = 0; it.fixedAsset.residualPercent = 0;
       }
-      const acc = await resolveFixedAssetAccount(it, { clinicId, session, strict });
-      it.account = acc || null;
-      // En compras nuevas, la categoría debe estar COMPLETA (incluida la config de
-      // depreciación si el activo se deprecia); si no, se bloquea con mensaje claro.
-      if (strict) {
-        const fa = it.fixedAsset || {};
-        const cat = fa.category ? await InventoryCategory.findOne({ _id: fa.category, clinic: clinicId }).session(session || null) : null;
-        const rest = assetCategoryIssues(cat).filter((x) => x !== 'cuenta de activo'); // la cuenta de activo ya la valida resolveFixedAssetAccount
-        if (rest.length) throw Object.assign(new Error(`La categoría de activo fijo no tiene configuración contable completa (falta: ${rest.join(', ')})`), { status: 400 });
-      }
+      it.account = await resolveFixedAssetAccount(it, { clinicId, session });
+      // La categoría debe estar COMPLETA (incluida la config de depreciación si el activo se
+      // deprecia); si no, se bloquea con mensaje claro.
+      const fa = it.fixedAsset || {};
+      const cat = fa.category ? await InventoryCategory.findOne({ _id: fa.category, clinic: clinicId }).session(session || null) : null;
+      const rest = assetCategoryIssues(cat).filter((x) => x !== 'cuenta de activo'); // la cuenta de activo ya la valida resolveFixedAssetAccount
+      if (rest.length) throw Object.assign(new Error(`La categoría de activo fijo no tiene configuración contable completa (falta: ${rest.join(', ')}). Complétala en Inventario → Categorías antes de guardar la factura.`), { status: 400 });
     } else { // GASTO
       // No reclasificar en silencio: si el usuario marcó GASTO, se ignora cualquier
       // producto/activo colgado (no sube stock ni crea activo).
@@ -458,13 +434,18 @@ async function resolveRetentionPayableAccount(rule, { clinicId, session }) {
  * línea (sí RENTA + IVA, o códigos distintos).
  *
  * Compatibilidad:
- *   - Compras del flujo nuevo (`strictAccounts === true`): retenciones SIEMPRE por línea;
+ *   - Compras del flujo nuevo (`forceHeaderFromLines`): retenciones SIEMPRE por línea;
  *     la cabecera se re-deriva (aunque quede vacía) para no arrastrar retenciones
  *     manuales obsoletas.
  *   - Compras legacy: si hay retenciones por línea se derivan; si no, se conserva la
  *     captura manual de cabecera (`inv.retentions`).
+ *
+ * `forceHeaderFromLines` desacopla el flujo de RETENCIONES del de CUENTAS: al editar una compra
+ * legacy ahora se exige categoría (cuentas estrictas), pero su retención MANUAL de cabecera se
+ * conserva —no se re-deriva—. Si no se pasa, se infiere de `inv.strictAccounts` (create/authorize).
  */
-async function applyLineRetentions(inv, { clinicId, session }) {
+async function applyLineRetentions(inv, { clinicId, session, forceHeaderFromLines }) {
+  const forceHeader = forceHeaderFromLines !== undefined ? forceHeaderFromLines : (inv.strictAccounts === true);
   let hasLine = false;
   for (const it of inv.items || []) {
     const label = it.description || '(sin descripción)';
@@ -489,7 +470,7 @@ async function applyLineRetentions(inv, { clinicId, session }) {
     it.retentions = resolved;
     it.retention = resolved[0] || null; // compat singular (primer elemento)
   }
-  if (inv.strictAccounts === true || hasLine) {
+  if (forceHeader || hasLine) {
     inv.retentions = groupLineRetentions(inv.items);
   }
   inv.retentionTotal = +((inv.retentions || []).reduce((s, r) => s + (Number(r.amount) || 0), 0)).toFixed(2);
@@ -595,10 +576,10 @@ exports.create = async (req, res) => {
         await assertPeriodOpen(req.clinicId, data.fechaEmision || new Date(), { session });
         const sup = await Supplier.findOne({ _id: data.supplier, clinic: req.clinicId }).session(session);
         if (!sup) throw Object.assign(new Error('Proveedor no encontrado'), { status: 400 });
-        // Clasifica/valida por tipo de línea (la cuenta por defecto del proveedor
-        // se aplica SOLO a líneas GASTO, dentro del helper). Compra NUEVA => strict:
-        // inventario/activo deben resolver su cuenta desde la categoría contable.
-        await classifyAndValidateItems(data.items, { clinicId: req.clinicId, supplier: sup, session, strict: true });
+        // Clasifica/valida por tipo de línea (la cuenta por defecto del proveedor se aplica SOLO
+        // a líneas GASTO, dentro del helper). Inventario/activo resuelven su cuenta SIEMPRE desde
+        // la categoría contable (sin fallback).
+        await classifyAndValidateItems(data.items, { clinicId: req.clinicId, supplier: sup, session });
         // Centro de costo efectivo de cada línea ANTES de guardar: lo que se contabiliza es lo
         // que queda escrito en la compra (y no otra cosa calculada aparte al vuelo).
         const avisos = await applyCostCenterPolicy(data, req, session);
@@ -644,7 +625,14 @@ async function postPurchaseJournal(inv, req, session, sourceAction = 'POST') {
       continue;
     }
     const accountId = it.account;
-    if (!accountId) continue;
+    // Nunca omitir una línea sin cuenta en silencio: eso dejaba el asiento descuadrado y el
+    // usuario veía el críptico "Asiento descuadrado" en vez de saber QUÉ línea falta configurar.
+    if (!accountId) {
+      throw Object.assign(new Error(
+        `La línea "${it.description || '(sin descripción)'}" no tiene cuenta contable resuelta. `
+        + 'Revise su categoría (inventario/activo) o asígnele una cuenta de gasto antes de guardar la factura.'
+      ), { status: 400 });
+    }
     lines.push({ account: accountId, debit: it.subtotal, credit: 0, description: it.description, costCenter: it.costCenter || inv.costCenter || null });
   }
   if (inv.iva > 0) {
@@ -799,14 +787,14 @@ exports.update = async (req, res) => {
         const inv = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
         if (!inv) throw Object.assign(new Error('No encontrada'), { status: 404 });
         if (inv.status !== 'REGISTRADA') throw Object.assign(new Error('No editable en su estado'), { status: 400 });
-        // ¿Documento LEGACY real? Solo entonces se tolera el fallback de cuentas al editar.
-        // El marcador autoritativo es `strictAccounts`: toda compra creada/autorizada bajo
-        // el flujo nuevo lo trae en true; las anteriores (asiento ya generado, item.account
-        // guardado, etc.) lo tienen falso. Así, una compra del flujo nuevo se valida
-        // ESTRICTO también al editar: si pierde la categoría/cuenta, falla con mensaje claro
-        // en vez de caer al genérico.
-        const isLegacyDoc = inv.strictAccounts !== true;
-        const strictUpdate = !isLegacyDoc;
+        // Edición SIEMPRE estricta (regla de la contadora): ya no hay "ruta tolerante" para
+        // documentos legacy. Editar una compra vieja también exige la categoría contable; si el
+        // producto no la tiene, se bloquea con un mensaje que guía a configurarla (en vez de caer
+        // al genérico en silencio). Los documentos ya contabilizados NO se recontabilizan solos:
+        // esto rige únicamente cuando el usuario decide editar la factura.
+        // Estrictez de RETENCIONES (independiente de la de cuentas): una compra legacy conserva
+        // su retención MANUAL de cabecera al editar; solo el flujo nuevo re-deriva desde líneas.
+        const wasStrict = inv.strictAccounts === true;
         await assertPeriodOpen(req.clinicId, inv.fechaEmision, { session });
         const nextDate = req.body.fechaEmision ? new Date(req.body.fechaEmision) : inv.fechaEmision;
         await assertPeriodOpen(req.clinicId, nextDate, { session });
@@ -821,24 +809,22 @@ exports.update = async (req, res) => {
           });
         }
         await revertInventoryEntries(inv, req, session);
-        // Edición: `strictUpdate` según sea documento nuevo (estricto) o legacy real
-        // (tolerante). La clasificación se hace sobre los ítems CRUDOS del body (antes del
-        // casteo) para conservar la señal de `lineType` explícito vs ausente; si no vienen
-        // ítems en el body, se reclasifican los ya almacenados.
+        // La clasificación (estricta) se hace sobre los ítems CRUDOS del body (antes del casteo)
+        // para conservar la señal de `lineType` explícito vs ausente; si no vienen ítems en el
+        // body, se reclasifican los ya almacenados.
         const supForItems = await Supplier.findById(req.body.supplier || inv.supplier).session(session);
         if (Array.isArray(req.body.items)) {
-          await classifyAndValidateItems(req.body.items, { clinicId: req.clinicId, supplier: supForItems, session, strict: strictUpdate });
+          await classifyAndValidateItems(req.body.items, { clinicId: req.clinicId, supplier: supForItems, session });
         }
         // El snapshot del SRI y su aceptación los controla el servidor (no se pisan por body).
         const { sriTotals: _st, sriMismatchAccepted: _sma, ...updateBody } = req.body;
         Object.assign(inv, updateBody);
         if (inv.fechaEmision) inv.fechaEmision = new Date(inv.fechaEmision);
-        // `strictAccounts` lo controla el servidor: no se deja pisar por el body y se
-        // conserva/afianza según la naturaleza del documento (nuevo permanece estricto).
-        inv.strictAccounts = strictUpdate;
+        // Toda compra editada queda bajo el flujo estricto (la cuenta salió de la categoría).
+        inv.strictAccounts = true;
         calcTotals(inv);
         if (!Array.isArray(req.body.items)) {
-          await classifyAndValidateItems(inv.items, { clinicId: req.clinicId, supplier: supForItems, session, strict: strictUpdate });
+          await classifyAndValidateItems(inv.items, { clinicId: req.clinicId, supplier: supForItems, session });
         }
         // La edición re-contabiliza: vuelve a verificar contra los totales del SRI.
         if (await guardSriTotals(inv, req, session)) inv.sriMismatchAccepted = true;
@@ -846,7 +832,7 @@ exports.update = async (req, res) => {
         await auditarDiferencias(avisosCC, {
           clinicId: req.clinicId, req, entity: 'purchase-invoices', entityId: inv._id, session,
         });
-        await applyLineRetentions(inv, { clinicId: req.clinicId, session });
+        await applyLineRetentions(inv, { clinicId: req.clinicId, session, forceHeaderFromLines: wasStrict });
         await inv.save({ session });
         await postPurchaseJournal(inv, req, session, `UPDATE:${Date.now()}`);
         await postInventoryEntries(inv, req, session);
@@ -1321,7 +1307,7 @@ exports.authorize = async (req, res) => {
           // El snapshot del SRI y su aceptación los controla el servidor (no se pisan por body).
           const { status, clinic, journalEntry, sriTotals, sriMismatchAccepted, ...rest } = req.body;
           if (Array.isArray(rest.items)) {
-            await classifyAndValidateItems(rest.items, { clinicId: req.clinicId, supplier: supForItems, session, strict: true });
+            await classifyAndValidateItems(rest.items, { clinicId: req.clinicId, supplier: supForItems, session });
           }
           Object.assign(inv, rest);
           if (inv.fechaEmision) inv.fechaEmision = new Date(inv.fechaEmision);
@@ -1329,7 +1315,7 @@ exports.authorize = async (req, res) => {
         }
         await assertPeriodOpen(req.clinicId, inv.fechaEmision, { session });
         if (!(req.body && Array.isArray(req.body.items))) {
-          await classifyAndValidateItems(inv.items, { clinicId: req.clinicId, supplier: supForItems, session, strict: true });
+          await classifyAndValidateItems(inv.items, { clinicId: req.clinicId, supplier: supForItems, session });
         }
         // Verificación contra el SRI: bloquea con 409 (payload SRI_MISMATCH) salvo
         // confirmación explícita; al confirmar queda marcada y auditada.
