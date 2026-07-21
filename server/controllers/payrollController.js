@@ -12,10 +12,12 @@ const EmployeeDeduction = require('../models/EmployeeDeduction');
 const PayrollIncomeTaxTable = require('../models/PayrollIncomeTaxTable');
 const Payable = require('../models/Payable');
 const JournalEntry = require('../models/JournalEntry');
-const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
+const ChartOfAccount = require('../models/ChartOfAccount');
+const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen, ensureAccountByCode } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { openPayable, applyToPayable, voidPayable } = require('../utils/subledger');
 const { recomputeItem, buildPayrollEntryLines, resolveConfigAccounts } = require('../utils/payrollPosting');
+const { DEPT_TYPES, POSTING_DEFAULT_CODES, DEPT_NAME_HINTS } = PayrollConfig;
 const { DEFAULT_IR_RANGES_2024, getActiveIncomeTaxTable } = require('../utils/payrollTax');
 const { payrollWithholdingForPeriod } = require('../utils/payrollWithholding');
 const {
@@ -112,17 +114,151 @@ async function getRates(clinicId) {
 }
 
 // ----- Configuración de nómina -----
+
+// Los 4 departamentos estándar sembrados por clínica (la contadora solo crea CARGOS).
+const STANDARD_DEPARTMENTS = [
+  { name: 'Administrativo', type: 'ADMINISTRATIVO' },
+  { name: 'Ventas', type: 'VENTAS' },
+  { name: 'Costos', type: 'COSTOS' },
+  { name: 'Otros', type: 'OTROS' },
+];
+
+/**
+ * Siembra (idempotente) los 4 departamentos estándar de la clínica. Devuelve todos los
+ * departamentos. Si ya existe uno del mismo TIPO no crea otro (reutiliza el existente,
+ * p.ej. tras la migración de departamentos personalizados).
+ */
+async function ensureStandardDepartments(clinicId) {
+  const existing = await PayrollDepartment.find({ clinic: clinicId });
+  const byType = new Map(existing.map((d) => [d.type, d]));
+  const toCreate = STANDARD_DEPARTMENTS
+    .filter((s) => !byType.has(s.type))
+    .map((s) => ({ clinic: clinicId, name: s.name, type: s.type }));
+  if (toCreate.length) {
+    // Evita chocar con el índice único (clinic, name): salta nombres ya usados.
+    const names = new Set(existing.map((d) => d.name));
+    const safe = toCreate.filter((d) => !names.has(d.name));
+    if (safe.length) await PayrollDepartment.insertMany(safe, { ordered: false }).catch(() => {});
+  }
+  return PayrollDepartment.find({ clinic: clinicId }).sort({ name: 1 });
+}
+
+/**
+ * Rellena los campos de cuenta AÚN NO DEFINIDOS (undefined) de la config con valores por
+ * defecto: los rubros centrales por CÓDIGO (creando la cuenta si hace falta) y los rubros
+ * granulares de ingreso por NOMBRE (si ya existe una cuenta similar en el plan). No pisa
+ * las cuentas que la contadora ya asignó ni las que dejó en blanco a propósito (null).
+ * Idempotente. Devuelve true si cambió algo.
+ */
+async function seedPayrollAccountDefaults(cfg, clinicId) {
+  cfg.accounts = cfg.accounts || {};
+  cfg.accounts.global = cfg.accounts.global || {};
+  cfg.accounts.byDepartment = cfg.accounts.byDepartment || {};
+  let changed = false;
+
+  const setIfUnset = (bucket, field, id) => {
+    if (id && bucket[field] === undefined) { bucket[field] = id; changed = true; }
+  };
+
+  // Globales por código.
+  for (const [field, code] of Object.entries(POSTING_DEFAULT_CODES.global)) {
+    if (cfg.accounts.global[field] === undefined) {
+      const acc = await ensureAccountByCode(clinicId, code);
+      setIfUnset(cfg.accounts.global, field, acc?._id);
+    }
+  }
+  // Cuentas de GASTO por nombre (para pre-cargar los granulares de ingreso, sin crear cuentas).
+  const gastoAccounts = await ChartOfAccount.find({ clinic: clinicId, type: { $in: ['GASTO', 'COSTO'] }, allowsMovement: { $ne: false } }).select('name');
+  const findByName = (re) => gastoAccounts.find((a) => re.test(a.name || ''));
+
+  for (const type of DEPT_TYPES) {
+    cfg.accounts.byDepartment[type] = cfg.accounts.byDepartment[type] || {};
+    const bucket = cfg.accounts.byDepartment[type];
+    for (const [field, code] of Object.entries(POSTING_DEFAULT_CODES.byDepartment)) {
+      if (bucket[field] === undefined) {
+        const acc = await ensureAccountByCode(clinicId, code);
+        setIfUnset(bucket, field, acc?._id);
+      }
+    }
+    for (const [field, re] of Object.entries(DEPT_NAME_HINTS)) {
+      if (bucket[field] === undefined) {
+        const acc = findByName(re);
+        if (acc) setIfUnset(bucket, field, acc._id);
+      }
+    }
+  }
+  if (changed) { cfg.markModified('accounts'); }
+  return changed;
+}
+
 exports.getConfig = async (req, res) => {
-  let cfg = await PayrollConfig.findOne({ clinic: req.clinicId });
-  if (!cfg) cfg = await PayrollConfig.create({ clinic: req.clinicId });
-  res.json(cfg);
+  try {
+    let cfg = await PayrollConfig.findOne({ clinic: req.clinicId });
+    await ensureStandardDepartments(req.clinicId);
+    if (!cfg) {
+      // Config NUEVA: se siembra con las cuentas predeterminadas (la contadora las revisa/ajusta).
+      cfg = new PayrollConfig({ clinic: req.clinicId });
+      await seedPayrollAccountDefaults(cfg, req.clinicId);
+      await cfg.save();
+    }
+    // Config EXISTENTE (incl. legacy sin la nueva estructura): se devuelve tal cual. No se
+    // auto-siembra para NO pre-empujar la migración (migratePayrollAccounts preserva el mapeo
+    // explícito legacy). Mientras tanto, el posteo resuelve defaults en línea para lo que falte.
+    res.json(cfg);
+  } catch (e) { res.status(400).json({ message: e.message }); }
 };
+
+// Normaliza los campos de cuenta de un bucket: '' → null (bug 3.3: un select vacío no debe
+// castearse a ObjectId y reventar el guardado). Deja los ObjectId tal cual.
+function sanitizeAccountBucket(bucket) {
+  if (!bucket || typeof bucket !== 'object') return bucket;
+  const out = {};
+  for (const [k, v] of Object.entries(bucket)) out[k] = (v === '' || v == null) ? null : v;
+  return out;
+}
+
 exports.updateConfig = async (req, res) => {
   try {
     let cfg = await PayrollConfig.findOne({ clinic: req.clinicId });
     if (!cfg) cfg = new PayrollConfig({ clinic: req.clinicId });
     const patch = { ...req.body }; delete patch.clinic;
+    // Sanitiza el mapeo de cuentas: '' → null en global y en cada departamento.
+    if (patch.accounts && typeof patch.accounts === 'object') {
+      const acc = { ...patch.accounts };
+      if (acc.global) acc.global = sanitizeAccountBucket(acc.global);
+      if (acc.byDepartment && typeof acc.byDepartment === 'object') {
+        const bd = {};
+        for (const [type, bucket] of Object.entries(acc.byDepartment)) bd[type] = sanitizeAccountBucket(bucket);
+        acc.byDepartment = bd;
+      }
+      patch.accounts = acc;
+      cfg.accounts = { global: acc.global || {}, byDepartment: acc.byDepartment || {} };
+      cfg.markModified('accounts');
+      delete patch.accounts;
+    }
     Object.assign(cfg, patch);
+    await cfg.save();
+    res.json(cfg);
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
+
+/**
+ * Copia las cuentas de GASTO por departamento de un TIPO a otro (evita configurar 4 veces
+ * lo mismo). body: { from: 'ADMINISTRATIVO', to: 'VENTAS' }.
+ */
+exports.copyDepartmentAccounts = async (req, res) => {
+  try {
+    const from = String(req.body?.from || '').toUpperCase();
+    const to = String(req.body?.to || '').toUpperCase();
+    if (!DEPT_TYPES.includes(from) || !DEPT_TYPES.includes(to) || from === to) {
+      return res.status(400).json({ message: 'Departamentos de origen/destino inválidos.' });
+    }
+    let cfg = await PayrollConfig.findOne({ clinic: req.clinicId });
+    if (!cfg) cfg = new PayrollConfig({ clinic: req.clinicId });
+    cfg.accounts = cfg.accounts || {}; cfg.accounts.byDepartment = cfg.accounts.byDepartment || {};
+    const src = cfg.accounts.byDepartment[from] ? (cfg.accounts.byDepartment[from].toObject ? cfg.accounts.byDepartment[from].toObject() : cfg.accounts.byDepartment[from]) : {};
+    cfg.accounts.byDepartment[to] = { ...src };
+    cfg.markModified('accounts');
     await cfg.save();
     res.json(cfg);
   } catch (e) { res.status(400).json({ message: e.message }); }
@@ -435,7 +571,7 @@ exports.generatePayroll = async (req, res) => {
         const dept = deptSnap(emp);
         items.push({
           employee: emp._id, employeeName: `${emp.firstName} ${emp.lastName}`, identificacion: emp.identificacion,
-          departmentRef: emp.departmentRef || null, departmentType: dept?.type || '',
+          departmentRef: emp.departmentRef || null, departmentType: dept?.type || '', costCenter: emp.costCenter || null,
           daysWorked: 15, absenceDays: 0, monthlySalary: base, baseSalary: 0,
           anticipoQuincena: anticipo, fixedIncomes: [], earnings: [], deductions: [],
           totalIngresos: 0, totalEgresos: 0, netoPagar: anticipo, totalProvisiones: 0,
@@ -514,7 +650,7 @@ exports.generatePayroll = async (req, res) => {
       const dept = deptSnap(emp);
       const item = {
         employee: emp._id, employeeName: `${emp.firstName} ${emp.lastName}`, identificacion: emp.identificacion,
-        departmentRef: emp.departmentRef || null, departmentType: dept?.type || '',
+        departmentRef: emp.departmentRef || null, departmentType: dept?.type || '', costCenter: emp.costCenter || null,
         // daysWorked prorrateado por ingreso; absenceDays null para que el motor NO lo sobrescriba.
         daysWorked, absenceDays: null, monthlySalary: base, baseSalary: base,
         eligibleFondos: eligibleByTime && alreadyDecided,
@@ -1075,9 +1211,9 @@ exports.markPaid = async (req, res) => {
 
 // ---- Departamentos ----
 exports.listDepartments = async (req, res) => {
-  const items = await PayrollDepartment.find({ clinic: req.clinicId })
-    .populate('accounts.sueldos accounts.beneficios accounts.iessPatronal', 'code name')
-    .sort({ name: 1 });
+  // Siembra (idempotente) los 4 departamentos estándar: la contadora no los crea a mano,
+  // solo escoge el departamento al crear un CARGO o un empleado.
+  const items = await ensureStandardDepartments(req.clinicId);
   res.json(items);
 };
 exports.createDepartment = async (req, res) => {

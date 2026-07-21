@@ -1,47 +1,89 @@
 import { useEffect, useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
-import { HiOutlineCog6Tooth, HiOutlinePlus } from 'react-icons/hi2';
+import { HiOutlineCog6Tooth, HiOutlinePlus, HiOutlineDocumentDuplicate } from 'react-icons/hi2';
 import NumericInput from '../../components/NumericInput';
 import SharedAccountSelect from '../../components/AccountSelect';
 
-const ACCOUNT_LABELS = {
-  sueldos: 'Gasto sueldos (general)',
-  beneficios: 'Gasto beneficios sociales',
-  iessPatronal: 'Gasto aporte patronal',
-  gastoVacaciones: 'Gasto vacaciones',
-  iessPorPagar: 'IESS por pagar',
-  sueldosPorPagar: 'Sueldos por pagar',
-  irPorPagar: 'Impuesto a la renta por pagar',
-  prestamosPorCobrar: 'Préstamos empleados por cobrar',
-  cxcEmpleados: 'CxC empleados (deducciones)',
-  anticipoQuincena: 'Anticipo de quincena por cobrar',
-  provisionesPorPagar: 'Provisiones por pagar',
-  decimoTerceroPorPagar: 'Décimo tercero por pagar',
-  decimoCuartoPorPagar: 'Décimo cuarto por pagar',
-  fondosReservaPorPagar: 'Fondos de reserva por pagar',
-  vacacionesPorPagar: 'Vacaciones por pagar',
-};
-
 const inputCls = 'border border-slate-200 rounded-xl px-3.5 py-2.5 w-full';
-const TABS = [['params', 'Parámetros'], ['accounts', 'Cuentas'], ['depts', 'Departamentos'], ['positions', 'Cargos'], ['concepts', 'Conceptos'], ['incometax', 'Impuesto Renta']];
+const TABS = [['params', 'Parámetros'], ['accounts', 'Cuentas Contables'], ['positions', 'Cargos'], ['incometax', 'Impuesto Renta']];
+
+// Tipos de cuenta admitidos por letra (A Activo, P Pasivo, G Costos/Gastos, I Ingresos).
+const TYPE_MAP = { A: ['ACTIVO'], P: ['PASIVO'], G: ['GASTO', 'COSTO'], I: ['INGRESO'] };
+const typesFor = (letters) => letters.flatMap((l) => TYPE_MAP[l] || []);
+const filterFor = (letters) => { const t = typesFor(letters); return (a) => t.includes(a.type); };
+
+const DEPARTMENTS = [['ADMINISTRATIVO', 'Administrativo'], ['VENTAS', 'Ventas'], ['COSTOS', 'Costos'], ['OTROS', 'Otros']];
+
+// Campos de GASTO por departamento (cambian al elegir departamento arriba).
+const DEPT_INCOME = [
+  ['sueldo', 'Sueldo', ['G']],
+  ['alimentacion', 'Alimentación', ['G']],
+  ['transporte', 'Transporte', ['G']],
+  ['vivienda', 'Vivienda', ['G']],
+  ['comisiones', 'Comisiones', ['G']],
+  ['horasExtra', 'Horas Extra', ['G']],
+  ['bonificaciones', 'Bonificaciones', ['G']],
+  ['otrosIngresos', 'Otros', ['G', 'P', 'A']],
+  ['devBeneficios', 'Dev. Beneficios Sociales', ['G', 'P', 'A']],
+  ['devDiasMultas', 'Dev. Días laborados/multas', ['G', 'P', 'A']],
+];
+const DEPT_EXPENSE = [
+  ['dec3Gasto', 'Décimo Tercero — Gasto', ['G']],
+  ['dec4Gasto', 'Décimo Cuarto — Gasto', ['G']],
+  ['fondosReservaGasto', 'Fondos de Reserva — Gasto', ['G']],
+  ['vacacionesGasto', 'Vacaciones — Gasto', ['G']],
+  ['aportePatronalGasto', 'Aporte Patronal — Gasto', ['G']],
+  ['secapGasto', 'SECAP/IECE — Gasto', ['G']],
+];
+
+// Campos GLOBALES de balance (no cambian por departamento).
+const GLOBAL_DISCOUNTS = [
+  ['anticipos', 'Anticipos a Empleado', ['A']],
+  ['descuento', 'Descuento', ['A', 'P']],
+  ['multa', 'Multa', ['A', 'P', 'I']],
+  ['ausencias', 'Ausencias', ['A', 'P']],
+  ['comisariato', 'Comisariato', ['A', 'P']],
+  ['farmacia', 'Farmacia', ['A', 'P']],
+  ['seguros', 'Seguros', ['A', 'P']],
+  ['celular', 'Celular', ['A', 'P']],
+  ['descuentoDiasNoLaborados', 'Descuento días/horas no laborados', ['A', 'P']],
+];
+const GLOBAL_OTHER = [
+  ['prestamoQuirografario', 'Préstamo Quirografario', ['P']],
+  ['prestamoHipotecario', 'Préstamo Hipotecario', ['P']],
+  ['prestamoPersonal', 'Préstamo Personal', ['A']],
+  ['otrosEgresos', 'Otros', ['A', 'P']],
+  ['impRenta', 'Imp. Renta', ['P']],
+];
+const GLOBAL_EMPLOYEE = [
+  ['sueldosPorPagar', 'Sueldos x pagar', ['P']],
+  ['dec3Pasivo', 'Décimo Tercero — Pasivo', ['P']],
+  ['dec4Pasivo', 'Décimo Cuarto — Pasivo', ['P']],
+  ['fondosReservaPasivo', 'Fondos de Reserva — Pasivo', ['P']],
+  ['vacacionesPasivo', 'Vacaciones — Pasivo', ['P']],
+];
+const GLOBAL_IESS = [
+  ['iessPersonal', '9.45% Aporte Personal IESS', ['P']],
+  ['aporteConyugal', '3.41% Aporte Conyugal IESS', ['P']],
+  ['aportePatronalPasivo', 'Aporte Patronal — Pasivo', ['P']],
+  ['secapPasivo', 'SECAP/IECE — Pasivo', ['P']],
+];
 
 export default function PayrollConfig() {
   const [tab, setTab] = useState('params');
   const [cfg, setCfg] = useState(null);
   const [accounts, setAccounts] = useState([]);
-  const [depts, setDepts] = useState([]);
   const [positions, setPositions] = useState([]);
-  const [concepts, setConcepts] = useState([]);
+  const [depts, setDepts] = useState([]);
   const [irTables, setIrTables] = useState([]);
 
   const loadCfg = () => api.get('/payroll/config').then((r) => setCfg(r.data)).catch((e) => toast.error(e.response?.data?.message || 'Error'));
-  const loadDepts = () => api.get('/payroll/departments').then((r) => setDepts(r.data || [])).catch(() => {});
   const loadPositions = () => api.get('/payroll/positions').then((r) => setPositions(r.data || [])).catch(() => {});
-  const loadConcepts = () => api.get('/payroll/concepts').then((r) => setConcepts(r.data || [])).catch(() => {});
+  const loadDepts = () => api.get('/payroll/departments').then((r) => setDepts(r.data || [])).catch(() => {});
   const loadIrTables = () => api.get('/payroll/income-tax').then((r) => setIrTables(r.data || [])).catch(() => {});
   useEffect(() => {
-    loadCfg(); loadDepts(); loadPositions(); loadConcepts(); loadIrTables();
+    loadCfg(); loadPositions(); loadDepts(); loadIrTables();
     api.get('/chart-of-accounts', { params: { active: true } }).then((r) => setAccounts(r.data || [])).catch(() => {});
   }, []);
 
@@ -80,83 +122,142 @@ export default function PayrollConfig() {
         </div>
       )}
 
-      {tab === 'accounts' && (
-        <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4 space-y-3">
-          <h2 className="font-semibold text-slate-700">Cuentas contables generales (fallback si el departamento no define la suya)</h2>
-          <div className="grid grid-cols-2 gap-3">
-            {Object.keys(ACCOUNT_LABELS).map((k) => (
-              <label key={k} className="text-xs flex flex-col gap-1"><span className="text-slate-600">{ACCOUNT_LABELS[k]}</span>
-                <input value={cfg.accounts?.[k] || ''} onChange={(e) => setCfg({ ...cfg, accounts: { ...cfg.accounts, [k]: e.target.value } })} className={inputCls} placeholder="Código del plan" />
-              </label>
-            ))}
-          </div>
-          <button onClick={saveCfg} className="px-5 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button>
-        </div>
-      )}
-
-      {tab === 'depts' && <Departments accounts={accounts} depts={depts} reload={loadDepts} />}
+      {tab === 'accounts' && <AccountsTab cfg={cfg} setCfg={setCfg} accounts={accounts} saveCfg={saveCfg} reload={loadCfg} />}
       {tab === 'positions' && <Positions depts={depts} positions={positions} reload={loadPositions} />}
-      {tab === 'concepts' && <Concepts accounts={accounts} concepts={concepts} depts={depts} reload={loadConcepts} />}
       {tab === 'incometax' && <IncomeTax tables={irTables} reload={loadIrTables} />}
     </div>
   );
 }
 
-function AccountSelect({ value, onChange, accounts, placeholder = 'Sin cuenta' }) {
-  return <SharedAccountSelect accounts={accounts} value={value || ''} onChange={onChange} emptyOption={placeholder} />;
+// Etiqueta con las letras de tipo de cuenta admitidas (A/P/G/I).
+function TypeBadges({ letters }) {
+  return (
+    <span className="flex gap-1">
+      {letters.map((l) => <span key={l} className="inline-flex w-4 h-4 items-center justify-center rounded border border-slate-300 text-[9px] font-bold text-slate-500">{l}</span>)}
+    </span>
+  );
 }
 
-// ---- Departamentos ----
-function Departments({ accounts, depts, reload }) {
-  const EMPTY = { name: '', type: 'ADMINISTRATIVO', accounts: { sueldos: '', beneficios: '', iessPatronal: '' } };
-  const [form, setForm] = useState(EMPTY);
-  const [editing, setEditing] = useState(null);
+function AccountField({ label, letters, value, onChange, accounts }) {
+  return (
+    <label className="text-xs flex flex-col gap-1">
+      <span className="flex items-center gap-1.5 text-slate-600">{label} <TypeBadges letters={letters} /></span>
+      <SharedAccountSelect accounts={accounts} value={value || ''} onChange={onChange} filter={filterFor(letters)} emptyOption="Sin cuenta" />
+    </label>
+  );
+}
 
-  const save = async () => {
+// ---- Pestaña de Cuentas Contables (estructura Contífico) ----
+function AccountsTab({ cfg, setCfg, accounts, saveCfg, reload }) {
+  const [dept, setDept] = useState('ADMINISTRATIVO');
+  const [copyTo, setCopyTo] = useState('VENTAS');
+
+  const deptVal = (field) => cfg.accounts?.byDepartment?.[dept]?.[field] || '';
+  const setDeptVal = (field, v) => setCfg({
+    ...cfg,
+    accounts: {
+      ...cfg.accounts,
+      byDepartment: {
+        ...cfg.accounts?.byDepartment,
+        [dept]: { ...cfg.accounts?.byDepartment?.[dept], [field]: v },
+      },
+    },
+  });
+  const globalVal = (field) => cfg.accounts?.global?.[field] || '';
+  const setGlobalVal = (field, v) => setCfg({
+    ...cfg,
+    accounts: { ...cfg.accounts, global: { ...cfg.accounts?.global, [field]: v } },
+  });
+
+  const copyAccounts = async () => {
+    if (dept === copyTo) return;
     try {
-      const payload = { ...form, accounts: { ...form.accounts } };
-      if (editing) await api.put(`/payroll/departments/${editing}`, payload);
-      else await api.post('/payroll/departments', payload);
-      toast.success('Guardado'); setForm(EMPTY); setEditing(null); reload();
+      await api.put('/payroll/config', cfg); // guarda lo actual antes de copiar
+      const r = await api.post('/payroll/config/copy-department', { from: dept, to: copyTo });
+      setCfg(r.data);
+      toast.success(`Cuentas de gasto copiadas a ${DEPARTMENTS.find(([k]) => k === copyTo)?.[1]}`);
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
-  const edit = (d) => { setEditing(d._id); setForm({ name: d.name, type: d.type, accounts: { sueldos: d.accounts?.sueldos?._id || '', beneficios: d.accounts?.beneficios?._id || '', iessPatronal: d.accounts?.iessPatronal?._id || '' } }); };
 
   return (
-    <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4 space-y-4">
-      <h2 className="font-semibold text-slate-700">Departamentos</h2>
-      <div className="grid grid-cols-2 gap-3">
-        <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Nombre</span><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} /></label>
-        <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Tipo (clasificación del gasto)</span>
-          <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} className={inputCls}><option>ADMINISTRATIVO</option><option>VENTAS</option><option>COSTOS</option><option>OTRO</option></select>
-        </label>
-        <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Cuenta gasto sueldos</span><AccountSelect value={form.accounts.sueldos} onChange={(v) => setForm({ ...form, accounts: { ...form.accounts, sueldos: v } })} accounts={accounts} /></label>
-        <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Cuenta gasto beneficios</span><AccountSelect value={form.accounts.beneficios} onChange={(v) => setForm({ ...form, accounts: { ...form.accounts, beneficios: v } })} accounts={accounts} /></label>
-        <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Cuenta gasto aporte patronal</span><AccountSelect value={form.accounts.iessPatronal} onChange={(v) => setForm({ ...form, accounts: { ...form.accounts, iessPatronal: v } })} accounts={accounts} /></label>
-      </div>
-      <div className="flex gap-2">
-        <button onClick={save} className="px-4 py-2 bg-emerald-600 text-white rounded-xl flex items-center gap-1"><HiOutlinePlus /> {editing ? 'Actualizar' : 'Agregar'}</button>
-        {editing && <button onClick={() => { setEditing(null); setForm(EMPTY); }} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button>}
-      </div>
-      <table className="tbl text-sm">
-        <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Nombre</th><th className="px-3 py-2 text-left">Tipo</th><th className="px-3 py-2 text-left">Cuenta sueldos</th><th></th></tr></thead>
-        <tbody>
-          {depts.map((d) => (
-            <tr key={d._id} className="border-t">
-              <td className="px-3 py-2">{d.name}</td>
-              <td className="px-3 py-2 text-xs">{d.type}</td>
-              <td className="px-3 py-2 text-xs">{d.accounts?.sueldos ? `${d.accounts.sueldos.code} ${d.accounts.sueldos.name}` : <span className="text-amber-600">⚠ sin cuenta</span>}</td>
-              <td className="px-3 py-2 text-right"><button onClick={() => edit(d)} className="text-blue-600 text-xs">Editar</button></td>
-            </tr>
+    <div className="space-y-4">
+      {/* Selector de departamento */}
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4 space-y-3">
+        <div className="flex gap-2 flex-wrap items-center">
+          {DEPARTMENTS.map(([k, l]) => (
+            <button key={k} onClick={() => setDept(k)} className={`px-3 py-1.5 rounded-lg text-xs ${dept === k ? 'bg-emerald-600 text-white' : 'bg-slate-100 text-slate-600'}`}>{l}</button>
           ))}
-          {depts.length === 0 && <tr><td colSpan={4} className="px-3 py-4 text-center text-slate-400">Sin departamentos.</td></tr>}
-        </tbody>
-      </table>
+        </div>
+        <p className="text-[11px] text-slate-500">
+          Revisa las cuentas predeterminadas del sistema; modifícalas si es necesario. Junto a cada campo se indican los tipos de cuenta admitidos: <b>A</b> Activo, <b>P</b> Pasivo, <b>G</b> Costos y Gastos, <b>I</b> Ingresos. Las cuentas de <b>gasto</b> son por departamento; las de <b>balance</b> son generales (más abajo).
+        </p>
+        <div className="flex items-end gap-2 flex-wrap">
+          <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Copiar cuentas de gasto a</span>
+            <select value={copyTo} onChange={(e) => setCopyTo(e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2">
+              {DEPARTMENTS.filter(([k]) => k !== dept).map(([k, l]) => <option key={k} value={k}>{l}</option>)}
+            </select>
+          </label>
+          <button onClick={copyAccounts} className="px-3 py-2 bg-slate-200 rounded-xl text-xs flex items-center gap-1"><HiOutlineDocumentDuplicate /> Copiar cuentas de {DEPARTMENTS.find(([k]) => k === dept)?.[1]}</button>
+        </div>
+      </div>
+
+      {/* Ingresos del empleado (por departamento) */}
+      <Section title={`Ingresos del Empleado — ${DEPARTMENTS.find(([k]) => k === dept)?.[1]}`} subtitle="Cuentas de gasto correspondientes a los rubros que recibe el empleado.">
+        <div className="grid grid-cols-2 gap-3">
+          {DEPT_INCOME.map(([f, l, t]) => <AccountField key={f} label={l} letters={t} value={deptVal(f)} onChange={(v) => setDeptVal(f, v)} accounts={accounts} />)}
+        </div>
+      </Section>
+
+      {/* Gastos de provisiones e IESS (por departamento) */}
+      <Section title={`Provisiones y aportes — Gasto (${DEPARTMENTS.find(([k]) => k === dept)?.[1]})`} subtitle="Cuentas de gasto de décimos, fondos de reserva, vacaciones y aportes patronales de este departamento (el pasivo es general).">
+        <div className="grid grid-cols-2 gap-3">
+          {DEPT_EXPENSE.map(([f, l, t]) => <AccountField key={f} label={l} letters={t} value={deptVal(f)} onChange={(v) => setDeptVal(f, v)} accounts={accounts} />)}
+        </div>
+      </Section>
+
+      <div className="bg-emerald-50/60 border border-emerald-200 rounded-xl px-4 py-2 text-xs text-emerald-800 font-semibold">
+        Cuentas generales — aplican a todos los departamentos (no cambian con el selector de arriba)
+      </div>
+
+      <Section title="Egresos/Descuentos al Empleado" subtitle="Cuentas de activo/pasivo de los rubros descontados al empleado.">
+        <div className="grid grid-cols-2 gap-3">
+          {GLOBAL_DISCOUNTS.map(([f, l, t]) => <AccountField key={f} label={l} letters={t} value={globalVal(f)} onChange={(v) => setGlobalVal(f, v)} accounts={accounts} />)}
+        </div>
+      </Section>
+      <Section title="Otros Egresos" subtitle="Préstamos y otros rubros descontados al empleado.">
+        <div className="grid grid-cols-2 gap-3">
+          {GLOBAL_OTHER.map(([f, l, t]) => <AccountField key={f} label={l} letters={t} value={globalVal(f)} onChange={(v) => setGlobalVal(f, v)} accounts={accounts} />)}
+        </div>
+      </Section>
+      <Section title="Obligaciones con el Empleado" subtitle="Pasivos de las obligaciones sociales con el empleado.">
+        <div className="grid grid-cols-2 gap-3">
+          {GLOBAL_EMPLOYEE.map(([f, l, t]) => <AccountField key={f} label={l} letters={t} value={globalVal(f)} onChange={(v) => setGlobalVal(f, v)} accounts={accounts} />)}
+        </div>
+      </Section>
+      <Section title="Obligaciones con el IESS" subtitle="Pasivos de los aportes del empleador con el IESS.">
+        <div className="grid grid-cols-2 gap-3">
+          {GLOBAL_IESS.map(([f, l, t]) => <AccountField key={f} label={l} letters={t} value={globalVal(f)} onChange={(v) => setGlobalVal(f, v)} accounts={accounts} />)}
+        </div>
+      </Section>
+
+      <button onClick={saveCfg} className="px-5 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar cuentas</button>
     </div>
   );
 }
 
-// ---- Cargos ----
+function Section({ title, subtitle, children }) {
+  return (
+    <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
+      <div className="bg-emerald-600 text-white px-4 py-2.5 font-semibold text-sm">{title}</div>
+      <div className="p-4 space-y-3">
+        {subtitle && <p className="text-[11px] text-slate-500">{subtitle}</p>}
+        {children}
+      </div>
+    </div>
+  );
+}
+
+// ---- Cargos (contra departamentos estándar) ----
 function Positions({ depts, positions, reload }) {
   const EMPTY = { name: '', department: '' };
   const [form, setForm] = useState(EMPTY);
@@ -171,10 +272,11 @@ function Positions({ depts, positions, reload }) {
   return (
     <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4 space-y-4">
       <h2 className="font-semibold text-slate-700">Cargos</h2>
+      <p className="text-[11px] text-slate-500">Los departamentos (Administrativo, Ventas, Costos, Otros) son fijos: aquí solo creas los CARGOS y los asocias a uno de ellos.</p>
       <div className="grid grid-cols-2 gap-3">
-        <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Nombre</span><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} /></label>
+        <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Nombre del cargo</span><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} /></label>
         <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Departamento</span>
-          <select value={form.department || ''} onChange={(e) => setForm({ ...form, department: e.target.value })} className={inputCls}><option value="">Sin departamento</option>{depts.map((d) => <option key={d._id} value={d._id}>{d.name}</option>)}</select>
+          <select value={form.department || ''} onChange={(e) => setForm({ ...form, department: e.target.value })} className={inputCls}><option value="">Seleccione…</option>{depts.map((d) => <option key={d._id} value={d._id}>{d.name}{d.type ? ` (${d.type})` : ''}</option>)}</select>
         </label>
       </div>
       <div className="flex gap-2">
@@ -192,126 +294,6 @@ function Positions({ depts, positions, reload }) {
             </tr>
           ))}
           {positions.length === 0 && <tr><td colSpan={3} className="px-3 py-4 text-center text-slate-400">Sin cargos.</td></tr>}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-// ---- Conceptos (rubros) ----
-const CONCEPT_RDEP_FLAGS = [
-  ['isTaxableIncome', 'Ing. gravado'],
-  ['isNonTaxableIncome', 'Ing. no gravado'],
-  ['affectsIess', 'Aporta IESS'],
-  ['affectsIncomeTax', 'Afecta IR'],
-  ['affectsDecimos', 'Afecta decimos'],
-  ['isDecimoTercero', 'Decimo tercero'],
-  ['isDecimoCuarto', 'Decimo cuarto'],
-  ['isFondosReserva', 'Fondos reserva'],
-  ['isVacation', 'Vacaciones'],
-  ['isReimbursement', 'Reembolso'],
-  ['isOtherNonTaxable', 'Otro no gravado'],
-  ['isDiscount', 'Descuento'],
-  ['isPersonalIess', 'IESS personal'],
-  ['isIncomeTaxWithholding', 'IR retenido'],
-];
-
-function Concepts({ accounts, concepts, depts = [], reload }) {
-  const flagDefaults = Object.fromEntries(CONCEPT_RDEP_FLAGS.map(([k]) => [k, false]));
-  const EMPTY = { code: '', name: '', type: 'INGRESO', category: '', rate: 0, defaultAccount: '', payableAccount: '', deptAccounts: {}, active: true, ...flagDefaults };
-  const [form, setForm] = useState(EMPTY);
-  const [editing, setEditing] = useState(null);
-  const toggleFlag = (k) => setForm({ ...form, [k]: !form[k] });
-  const flagSummary = (c) => CONCEPT_RDEP_FLAGS.filter(([k]) => c[k]).map(([, label]) => label).join(', ');
-  // El lado primario del concepto: gasto (ingreso/provisión) o por pagar/CxC (egreso/obligación).
-  const isPayableSide = (t) => t === 'EGRESO' || t === 'OBLIGACION';
-  const setDeptAcc = (deptId, v) => setForm((f) => ({ ...f, deptAccounts: { ...f.deptAccounts, [deptId]: v } }));
-  const save = async () => {
-    try {
-      // Convierte el mapa {deptId: accountId} a [{department, account}] (sin filas vacías).
-      const deptAccounts = Object.entries(form.deptAccounts || {})
-        .filter(([, acc]) => acc)
-        .map(([department, account]) => ({ department, account }));
-      const payload = { ...form, deptAccounts };
-      if (editing) await api.put(`/payroll/concepts/${editing}`, payload);
-      else await api.post('/payroll/concepts', payload);
-      toast.success('Guardado'); setForm(EMPTY); setEditing(null); reload();
-    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
-  };
-  const seed = async () => {
-    if (!confirm('¿Sembrar el catálogo estándar de conceptos? No duplica los existentes.')) return;
-    try { const r = await api.post('/payroll/concepts/seed'); toast.success(`Creados ${r.data.created}`); reload(); }
-    catch (e) { toast.error(e.response?.data?.message || 'Error'); }
-  };
-  return (
-    <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4 space-y-4">
-      <div className="flex justify-between items-center">
-        <h2 className="font-semibold text-slate-700">Conceptos / rubros</h2>
-        <button onClick={seed} className="px-3 py-1.5 bg-indigo-600 text-white rounded-lg text-xs">Sembrar estándar</button>
-      </div>
-      <div className="grid grid-cols-3 gap-3">
-        <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Código</span><input value={form.code} onChange={(e) => setForm({ ...form, code: e.target.value })} className={inputCls} /></label>
-        <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Nombre</span><input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className={inputCls} /></label>
-        <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Tipo</span>
-          <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} className={inputCls}><option>INGRESO</option><option>EGRESO</option><option>PROVISION</option><option>OBLIGACION</option></select>
-        </label>
-        <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">% (opcional)</span><NumericInput step="0.01" value={form.rate} onChange={(e) => setForm({ ...form, rate: +e.target.value })} className={inputCls} /></label>
-        <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Cuenta gasto general (ingreso/provisión)</span><AccountSelect value={form.defaultAccount} onChange={(v) => setForm({ ...form, defaultAccount: v })} accounts={accounts} /></label>
-        <label className="text-xs flex flex-col gap-1"><span className="text-slate-600">Cuenta por pagar / CxC general (egreso)</span><AccountSelect value={form.payableAccount} onChange={(v) => setForm({ ...form, payableAccount: v })} accounts={accounts} /></label>
-      </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-        {CONCEPT_RDEP_FLAGS.map(([k, label]) => (
-          <label key={k} className="text-xs flex items-center gap-2 border border-slate-200 rounded-lg px-2 py-1.5 bg-slate-50">
-            <input type="checkbox" checked={!!form[k]} onChange={() => toggleFlag(k)} />
-            <span className="text-slate-700">{label}</span>
-          </label>
-        ))}
-      </div>
-
-      {/* Matriz concepto × departamento: cuenta específica por departamento (con herencia). */}
-      {depts.length > 0 ? (
-        <div className="border border-slate-200 rounded-xl p-3 space-y-2 bg-slate-50/60">
-          <div className="flex items-baseline justify-between flex-wrap gap-1">
-            <h3 className="text-sm font-semibold text-slate-700">Cuenta por departamento</h3>
-            <span className="text-[11px] text-slate-500">Si un departamento no define su cuenta, hereda la {isPayableSide(form.type) ? 'cuenta por pagar' : 'cuenta de gasto'} general.</span>
-          </div>
-          <div className="space-y-1.5">
-            {depts.map((d) => (
-              <div key={d._id} className="grid grid-cols-[minmax(120px,180px)_1fr] items-center gap-2">
-                <span className="text-xs text-slate-600 truncate">{d.name} <span className="text-slate-400">({d.type})</span></span>
-                <AccountSelect
-                  value={form.deptAccounts?.[d._id] || ''}
-                  onChange={(v) => setDeptAcc(d._id, v)}
-                  accounts={accounts}
-                  emptyOption="Heredar cuenta general"
-                />
-              </div>
-            ))}
-          </div>
-        </div>
-      ) : (
-        <p className="text-[11px] text-slate-500">Crea departamentos (pestaña «Departamentos») para asignar una cuenta por departamento a cada concepto.</p>
-      )}
-
-      <div className="flex gap-2">
-        <button onClick={save} className="px-4 py-2 bg-emerald-600 text-white rounded-xl flex items-center gap-1"><HiOutlinePlus /> {editing ? 'Actualizar' : 'Agregar'}</button>
-        {editing && <button onClick={() => { setEditing(null); setForm(EMPTY); }} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button>}
-      </div>
-      <table className="tbl text-sm">
-        <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Código</th><th className="px-3 py-2 text-left">Nombre</th><th className="px-3 py-2 text-left">Tipo</th><th className="px-3 py-2 text-left">Cuenta general</th><th className="px-3 py-2 text-left">Por depto.</th><th className="px-3 py-2 text-left">Clasificación</th><th></th></tr></thead>
-        <tbody>
-          {concepts.map((c) => (
-            <tr key={c._id} className="border-t">
-              <td className="px-3 py-2 font-mono text-xs">{c.code}</td>
-              <td className="px-3 py-2">{c.name}</td>
-              <td className="px-3 py-2 text-xs">{c.type}</td>
-              <td className="px-3 py-2 text-xs">{c.defaultAccount ? `${c.defaultAccount.code}` : (c.payableAccount ? `${c.payableAccount.code}` : <span className="text-slate-400">—</span>)}</td>
-              <td className="px-3 py-2 text-xs">{(c.deptAccounts?.length) ? <span className="px-2 py-0.5 rounded-full bg-indigo-50 text-indigo-700 text-[11px]">{c.deptAccounts.length} depto.</span> : <span className="text-slate-400">—</span>}</td>
-              <td className="px-3 py-2 text-[11px] text-slate-600 max-w-xs">{flagSummary(c) || <span className="text-amber-600">Sin clasificación RDEP</span>}</td>
-              <td className="px-3 py-2 text-right"><button onClick={() => { setEditing(c._id); setForm({ code: c.code, name: c.name, type: c.type, category: c.category || '', rate: c.rate || 0, defaultAccount: c.defaultAccount?._id || '', payableAccount: c.payableAccount?._id || '', deptAccounts: Object.fromEntries((c.deptAccounts || []).map((da) => [String(da.department?._id || da.department), da.account?._id || da.account || ''])), active: c.active, ...Object.fromEntries(CONCEPT_RDEP_FLAGS.map(([k]) => [k, !!c[k]])) }); }} className="text-blue-600 text-xs">Editar</button></td>
-            </tr>
-          ))}
-          {concepts.length === 0 && <tr><td colSpan={7} className="px-3 py-4 text-center text-slate-400">Sin conceptos. Usa «Sembrar estándar».</td></tr>}
         </tbody>
       </table>
     </div>

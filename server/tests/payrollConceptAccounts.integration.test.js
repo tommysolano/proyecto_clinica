@@ -1,9 +1,10 @@
 /**
- * CONFIGURACIÓN CONTABLE DE NÓMINA POR CONCEPTO × DEPARTAMENTO (revisión de la contadora).
+ * CONFIGURACIÓN CONTABLE DE NÓMINA POR DEPARTAMENTO (revisión de la contadora, estructura Contífico).
  * Sobre los controllers reales:
- *  - cada valor del rol se carga a la cuenta del CONCEPTO según el DEPARTAMENTO del empleado
+ *  - cada valor del rol se carga a la cuenta configurada del DEPARTAMENTO del empleado
  *    (Sueldo y Alimentación en Administrativo vs Costos → cuentas distintas);
- *  - HERENCIA: si el departamento no define su override, se usa la cuenta general del concepto;
+ *  - los ingresos fijos se rutean por su rubro de la sección Ingresos (alimentación/transporte)
+ *    a la cuenta del departamento del empleado;
  *  - las provisiones y el asiento completo cuadran (debe = haber);
  *  - el cruce con el Formulario 103: base 302 = ingresos gravados − IESS personal.
  */
@@ -14,6 +15,7 @@ const H = require('./_integrationHelpers');
 const payroll = require('../controllers/payrollController');
 const ChartOfAccount = require('../models/ChartOfAccount');
 const PayrollDepartment = require('../models/PayrollDepartment');
+const PayrollConfig = require('../models/PayrollConfig');
 const PayrollConcept = require('../models/PayrollConcept');
 const Employee = require('../models/Employee');
 const PayrollIncomeTaxTable = require('../models/PayrollIncomeTaxTable');
@@ -35,6 +37,11 @@ async function mkAcc(clinicId, code, name, type) {
 }
 async function acc(clinicId, code) { return ChartOfAccount.findOne({ clinic: clinicId, code }); }
 async function concept(clinicId, code) { return PayrollConcept.findOne({ clinic: clinicId, code }); }
+async function setByDept(clinicId, type, field, accId) {
+  await PayrollConfig.findOneAndUpdate(
+    { clinic: clinicId }, { $set: { [`accounts.byDepartment.${type}.${field}`]: accId ?? null } }, { upsert: true }
+  );
+}
 
 let seq = 0;
 async function makeEmployee(clinicId, o = {}) {
@@ -51,51 +58,32 @@ async function makeEmployee(clinicId, o = {}) {
   });
 }
 
-test('cada valor cae en la cuenta de su departamento; herencia; provisiones cuadran; cruce 103', async () => {
+test('cada valor cae en la cuenta configurada de su departamento; provisiones cuadran; cruce 103', async () => {
   const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-15') });
 
-  // Cuentas específicas por departamento (Admin=gasto, Costos=costo) para Sueldo y Alimentación,
-  // más una cuenta GENERAL de Transporte (sin override de depto → prueba la herencia).
+  // Cuentas específicas por departamento (Admin=gasto, Costos=costo) para Sueldo/Alimentación,
+  // más una cuenta de Transporte del departamento Administrativo.
   await mkAcc(clinicId, '6.1.90', 'Sueldos Administrativo', 'GASTO');
   await mkAcc(clinicId, '5.1.90', 'Sueldos Costos', 'COSTO');
   await mkAcc(clinicId, '6.1.91', 'Alimentación Administrativo', 'GASTO');
   await mkAcc(clinicId, '5.1.91', 'Alimentación Costos', 'COSTO');
-  await mkAcc(clinicId, '6.1.92', 'Transporte (general)', 'GASTO');
+  await mkAcc(clinicId, '6.1.92', 'Transporte Administrativo', 'GASTO');
 
-  // Departamentos con su cuenta de sueldos base (obligatoria en el posteo).
-  const admin = await PayrollDepartment.create({
-    clinic: clinicId, name: 'Administración', type: 'ADMINISTRATIVO',
-    accounts: { sueldos: (await acc(clinicId, '6.1.01'))._id },
-  });
-  const costos = await PayrollDepartment.create({
-    clinic: clinicId, name: 'Producción', type: 'COSTOS',
-    accounts: { sueldos: (await acc(clinicId, '5.1.01'))._id },
-  });
+  // Departamentos estándar (la contadora solo elige el TIPO; el gasto se rutea por config).
+  const admin = await PayrollDepartment.create({ clinic: clinicId, name: 'Administración', type: 'ADMINISTRATIVO' });
+  const costos = await PayrollDepartment.create({ clinic: clinicId, name: 'Producción', type: 'COSTOS' });
 
-  // Catálogo estándar de conceptos (idempotente) y mapeo de cuentas por depto.
+  // Catálogo estándar de conceptos (los ingresos fijos referencian ING-ALIMENTACION / ING-TRANSPORTE).
   ok(await H.runController(payroll.seedConcepts, req(clinicId, userId)));
-  const sueldo = await concept(clinicId, 'ING-SUELDO');
   const alim = await concept(clinicId, 'ING-ALIMENTACION');
   const transp = await concept(clinicId, 'ING-TRANSPORTE');
 
-  // Sueldo: cuenta por departamento (sin cuenta general → obliga a resolver por depto).
-  ok(await H.runController(payroll.updateConcept, req(clinicId, userId, {
-    deptAccounts: [
-      { department: String(admin._id), account: String((await acc(clinicId, '6.1.90'))._id) },
-      { department: String(costos._id), account: String((await acc(clinicId, '5.1.90'))._id) },
-    ],
-  }, { params: { id: String(sueldo._id) } })));
-  // Alimentación: cuenta por departamento.
-  ok(await H.runController(payroll.updateConcept, req(clinicId, userId, {
-    deptAccounts: [
-      { department: String(admin._id), account: String((await acc(clinicId, '6.1.91'))._id) },
-      { department: String(costos._id), account: String((await acc(clinicId, '5.1.91'))._id) },
-    ],
-  }, { params: { id: String(alim._id) } })));
-  // Transporte: SOLO cuenta general (sin override) → prueba la herencia.
-  ok(await H.runController(payroll.updateConcept, req(clinicId, userId, {
-    defaultAccount: String((await acc(clinicId, '6.1.92'))._id), deptAccounts: [],
-  }, { params: { id: String(transp._id) } })));
+  // Configuración de cuentas de GASTO por departamento (estructura Contífico).
+  await setByDept(clinicId, 'ADMINISTRATIVO', 'sueldo', (await acc(clinicId, '6.1.90'))._id);
+  await setByDept(clinicId, 'ADMINISTRATIVO', 'alimentacion', (await acc(clinicId, '6.1.91'))._id);
+  await setByDept(clinicId, 'ADMINISTRATIVO', 'transporte', (await acc(clinicId, '6.1.92'))._id);
+  await setByDept(clinicId, 'COSTOS', 'sueldo', (await acc(clinicId, '5.1.90'))._id);
+  await setByDept(clinicId, 'COSTOS', 'alimentacion', (await acc(clinicId, '5.1.91'))._id);
 
   // Empleados: Admin (sueldo 800 + alimentación 50 + transporte 30) y Costos (sueldo 700 + alimentación 40).
   await makeEmployee(clinicId, {
@@ -122,10 +110,9 @@ test('cada valor cae en la cuenta de su departamento; herencia; provisiones cuad
   assert.equal(await H.accountBalanceByCode(clinicId, '5.1.90'), 700, 'Sueldo Costos → cuenta Costos');
   assert.equal(await H.accountBalanceByCode(clinicId, '6.1.91'), 50, 'Alimentación Admin → cuenta Admin');
   assert.equal(await H.accountBalanceByCode(clinicId, '5.1.91'), 40, 'Alimentación Costos → cuenta Costos');
-  // HERENCIA: transporte no tiene override de depto → usó la cuenta GENERAL del concepto.
-  assert.equal(await H.accountBalanceByCode(clinicId, '6.1.92'), 30, 'Transporte hereda la cuenta general');
-  // Las cuentas de sueldos base de los deptos NO recibieron el sueldo (lo tomó el concepto).
-  assert.equal(await H.accountBalanceByCode(clinicId, '6.1.01'), 0, 'la cuenta base del depto no duplica el sueldo');
+  assert.equal(await H.accountBalanceByCode(clinicId, '6.1.92'), 30, 'Transporte Admin → cuenta Admin');
+  // La cuenta general de sueldos (6.1.01) NO recibió nada (todo se ruteó por departamento).
+  assert.equal(await H.accountBalanceByCode(clinicId, '6.1.01'), 0, 'la cuenta general no duplica el sueldo');
 
   // ── El asiento completo (con provisiones) cuadra: debe = haber ───────────────────────────
   const entry = await JournalEntry.findById(closed.journalEntry);

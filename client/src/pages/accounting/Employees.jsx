@@ -11,7 +11,7 @@ import { HiOutlinePlus, HiOutlineUserGroup, HiOutlinePencilSquare, HiOutlineTras
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 
-const EMPTY = { code: '', identificacion: '', tipoIdentificacion: 'CEDULA', firstName: '', lastName: '', email: '', phone: '', position: '', department: '', departmentRef: '', positionRef: '', paymentMethod: 'TRANSFERENCIA', contractType: 'INDEFINIDO', paymentFrequency: 'MENSUAL', anticipoQuincenaPct: '', salaryType: 'GROSS', baseSalary: 460, netSalary: 0, salaryChangeReason: '', hireDate: today(), chargesFamily: 0, deductible: true, salaryOriginClinic: '', bankName: '', bankAccount: '', bankAccountType: '', receivesDecimoTercero: true, receivesDecimoCuarto: true, receivesFondosReserva: false, decimoTerceroAcumulado: 'MENSUALIZADO', decimoCuartoAcumulado: 'MENSUALIZADO', fondosReservaAcumulado: 'MENSUALIZADO', fixedIncomes: [], user: '' };
+const EMPTY = { code: '', identificacion: '', tipoIdentificacion: 'CEDULA', firstName: '', lastName: '', email: '', phone: '', position: '', department: '', departmentRef: '', positionRef: '', paymentMethod: 'TRANSFERENCIA', contractType: 'INDEFINIDO', paymentFrequency: 'MENSUAL', anticipoQuincenaPct: '', salaryType: 'GROSS', baseSalary: 460, netSalary: 0, salaryChangeReason: '', hireDate: today(), chargesFamily: 0, deductible: true, salaryOriginClinic: '', costCenter: '', bankName: '', bankAccount: '', bankAccountType: '', receivesDecimoTercero: true, receivesDecimoCuarto: true, receivesFondosReserva: false, decimoTerceroAcumulado: 'MENSUALIZADO', decimoCuartoAcumulado: 'MENSUALIZADO', fondosReservaAcumulado: 'MENSUALIZADO', fixedIncomes: [], user: '' };
 
 // Fecha en la que un empleado gana derecho a fondos de reserva: 1 año desde su ingreso.
 const fondosReservaDate = (hireDate) => {
@@ -58,6 +58,7 @@ export default function Employees() {
   const [depts, setDepts] = useState([]);
   const [positions, setPositions] = useState([]);
   const [concepts, setConcepts] = useState([]);
+  const [costCenters, setCostCenters] = useState([]);
 
   const load = async () => {
     try { const r = await api.get('/payroll/employees'); setList(r.data || []); }
@@ -71,6 +72,7 @@ export default function Employees() {
     api.get('/payroll/departments').then((r) => setDepts(r.data || [])).catch(() => {});
     api.get('/payroll/positions').then((r) => setPositions(r.data || [])).catch(() => {});
     api.get('/payroll/concepts', { params: { type: 'INGRESO' } }).then((r) => setConcepts(r.data || [])).catch(() => {});
+    api.get('/cost-centers').then((r) => setCostCenters(r.data || [])).catch(() => {});
   }, []);
 
   // Cargos filtrados por el departamento elegido (o todos si no hay depto).
@@ -221,6 +223,12 @@ export default function Employees() {
               <select value={form.positionRef || ''} onChange={(e) => setForm({ ...form, positionRef: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
                 <option value="">Seleccione…</option>
                 {positionsForDept.map((p) => <option key={p._id} value={p._id}>{p.name}</option>)}
+              </select>
+            </Field>
+            <Field label="Centro de costo" hint="El gasto de nómina de este empleado se asigna a este centro (estado de resultados por centro de costo).">
+              <select value={form.costCenter || ''} onChange={(e) => setForm({ ...form, costCenter: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
+                <option value="">Sin centro de costo</option>
+                {costCenters.map((cc) => <option key={cc._id} value={cc._id}>{cc.code} — {cc.name}</option>)}
               </select>
             </Field>
             <Field label="Tipo de contrato"><select value={form.contractType} onChange={(e) => setForm({ ...form, contractType: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>INDEFINIDO</option><option>FIJO</option><option>EVENTUAL</option><option>JUVENIL</option></select></Field>

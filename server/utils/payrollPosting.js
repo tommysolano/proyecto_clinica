@@ -1,17 +1,23 @@
 /**
  * Posteo contable de nómina PARAMETRIZADO. Las cuentas no se capturan a mano en el
- * rol: se resuelven desde departamento / concepto / configuración. Este módulo:
- *  - recalcula los totales de cada ítem (con prorrateo por días trabajados);
- *  - resuelve las cuentas de gasto por DEPARTAMENTO (Admin/Ventas/Costos) y las
- *    cuentas de obligaciones/provisiones desde PayrollConfig;
- *  - construye el asiento CUADRADO del cierre, agregando por cuenta;
- *  - bloquea el cierre si falta una cuenta crítica (mensaje claro).
+ * rol: se resuelven desde la CONFIGURACIÓN de nómina (PayrollConfig.accounts), que
+ * replica la estructura de RRHH de Contífico:
+ *
+ *  - cuentas de GASTO por DEPARTAMENTO del empleado (Admin/Ventas/Costos/Otros);
+ *  - cuentas de BALANCE globales (descuentos, préstamos, por pagar, IESS por pagar);
+ *  - cada línea de GASTO lleva el CENTRO DE COSTO del empleado (reportes por centro);
+ *  - se BLOQUEA el cierre si un rubro con valor no tiene cuenta (nombra rubro + depto).
+ *
+ * Resolución de cada campo: `config → default por código` (solo para los rubros
+ * centrales, para que una clínica sin configurar contabilice igual). Los rubros
+ * granulares que administra la contadora no tienen default: si se usan sin cuenta,
+ * el cierre se bloquea (nunca se adivina una cuenta).
  */
 const { ensureAccountByCode, findAccount } = require('./accounting');
 const PayrollConfig = require('../models/PayrollConfig');
-const PayrollDepartment = require('../models/PayrollDepartment');
 const PayrollConcept = require('../models/PayrollConcept');
 const ChartOfAccount = require('../models/ChartOfAccount');
+const { POSTING_DEFAULT_CODES } = PayrollConfig;
 
 const r2 = (n) => +(Number(n) || 0).toFixed(2);
 
@@ -27,6 +33,14 @@ async function accByCode(clinicId, code, session) {
 async function accById(clinicId, id, session) {
   if (!id) return null;
   return ChartOfAccount.findOne({ _id: id, clinic: clinicId }).session(session || null);
+}
+
+/** Normaliza el tipo de departamento a una de las 4 claves estándar. */
+function normalizeDeptType(t) {
+  const up = String(t || '').toUpperCase();
+  if (up === 'OTRO' || up === 'OTROS') return 'OTROS';
+  if (['ADMINISTRATIVO', 'VENTAS', 'COSTOS'].includes(up)) return up;
+  return 'ADMINISTRATIVO'; // sin departamento / legacy → Administrativo
 }
 
 const { computeIncomeTax } = require('./payrollTax');
@@ -148,248 +162,280 @@ function recomputeItem(item, ctx = {}) {
   return item;
 }
 
-/** Resuelve todas las cuentas GENERALES de PayrollConfig (fallback / obligaciones). */
-async function resolveConfigAccounts(clinicId, cfg, session) {
-  const a = cfg?.accounts || {};
-  const code = (k, def) => a[k] || def;
-  const [
-    sueldos, beneficios, iessPatronal, gastoVacaciones,
-    iessPorPagar, sueldosPorPagar, irPorPagar, prestamosPorCobrar, cxcEmpleados, anticipoQuincena,
-    decimoTerceroPorPagar, decimoCuartoPorPagar, fondosReservaPorPagar, vacacionesPorPagar,
-  ] = await Promise.all([
-    accByCode(clinicId, code('sueldos', '6.1.01'), session),
-    accByCode(clinicId, code('beneficios', '6.1.02'), session),
-    accByCode(clinicId, code('iessPatronal', '6.1.03'), session),
-    accByCode(clinicId, code('gastoVacaciones', '6.1.07'), session),
-    accByCode(clinicId, code('iessPorPagar', '2.1.03.02'), session),
-    accByCode(clinicId, code('sueldosPorPagar', '2.1.03.01'), session),
-    accByCode(clinicId, code('irPorPagar', '2.1.02.05'), session),
-    accByCode(clinicId, code('prestamosPorCobrar', '1.1.02.04'), session),
-    accByCode(clinicId, code('cxcEmpleados', '1.1.02.06'), session),
-    accByCode(clinicId, code('anticipoQuincena', '1.1.02.06'), session),
-    accByCode(clinicId, code('decimoTerceroPorPagar', '2.1.03.03'), session),
-    accByCode(clinicId, code('decimoCuartoPorPagar', '2.1.03.04'), session),
-    accByCode(clinicId, code('fondosReservaPorPagar', '2.1.03.05'), session),
-    accByCode(clinicId, code('vacacionesPorPagar', '2.1.03.06'), session),
-  ]);
-  return {
-    sueldos, beneficios, iessPatronal, gastoVacaciones,
-    iessPorPagar, sueldosPorPagar, irPorPagar, prestamosPorCobrar, cxcEmpleados, anticipoQuincena,
-    decimoTerceroPorPagar, decimoCuartoPorPagar, fondosReservaPorPagar, vacacionesPorPagar,
-  };
-}
+// Etiquetas legibles de cada rubro (para el mensaje de bloqueo).
+const RUBRO_LABELS = {
+  sueldo: 'Sueldo', alimentacion: 'Alimentación', transporte: 'Transporte', vivienda: 'Vivienda',
+  comisiones: 'Comisiones', horasExtra: 'Horas extra', bonificaciones: 'Bonificaciones',
+  otrosIngresos: 'Otros ingresos', devBeneficios: 'Devolución beneficios sociales',
+  devDiasMultas: 'Devolución días/multas',
+  dec3Gasto: 'Gasto décimo tercero', dec4Gasto: 'Gasto décimo cuarto',
+  fondosReservaGasto: 'Gasto fondos de reserva', vacacionesGasto: 'Gasto vacaciones',
+  aportePatronalGasto: 'Gasto aporte patronal', secapGasto: 'Gasto SECAP/IECE',
+  anticipos: 'Anticipos a empleado', descuento: 'Descuento', multa: 'Multa', ausencias: 'Ausencias',
+  comisariato: 'Comisariato', farmacia: 'Farmacia', seguros: 'Seguros', celular: 'Celular',
+  descuentoDiasNoLaborados: 'Descuento días no laborados',
+  prestamoQuirografario: 'Préstamo quirografario', prestamoHipotecario: 'Préstamo hipotecario',
+  prestamoPersonal: 'Préstamo personal', otrosEgresos: 'Otros egresos', impRenta: 'Impuesto a la renta',
+  sueldosPorPagar: 'Sueldos por pagar', dec3Pasivo: 'Décimo tercero por pagar',
+  dec4Pasivo: 'Décimo cuarto por pagar', fondosReservaPasivo: 'Fondos de reserva por pagar',
+  vacacionesPasivo: 'Vacaciones por pagar', iessPersonal: 'Aporte personal IESS',
+  aporteConyugal: 'Aporte conyugal IESS', aportePatronalPasivo: 'Aporte patronal por pagar',
+  secapPasivo: 'SECAP/IECE por pagar',
+};
+const DEPT_LABEL = { ADMINISTRATIVO: 'Administrativo', VENTAS: 'Ventas', COSTOS: 'Costos', OTROS: 'Otros' };
+
+// Concepto (código del catálogo) → campo de ingreso por departamento.
+const INCOME_FIELD_BY_CODE = {
+  'ING-SUELDO': 'sueldo', 'ING-ALIMENTACION': 'alimentacion', 'ING-TRANSPORTE': 'transporte',
+  'ING-VIVIENDA': 'vivienda', 'ING-COMISIONES': 'comisiones',
+  'ING-HE25': 'horasExtra', 'ING-HE50': 'horasExtra', 'ING-HE100': 'horasExtra',
+  'ING-BONIFICACION': 'bonificaciones', 'ING-DEVOLUCION-DIAS': 'devDiasMultas',
+  'ING-OTROS': 'otrosIngresos', 'ING-VACACIONES': 'vacacionesGasto',
+  'ING-FONDOS-RESERVA': 'fondosReservaGasto', 'ING-DECIMO-TERCERO': 'dec3Gasto', 'ING-DECIMO-CUARTO': 'dec4Gasto',
+};
+// Concepto (código) → campo de egreso global.
+const DEDUCTION_FIELD_BY_CODE = {
+  'EGR-ANTICIPO': 'anticipos', 'EGR-ANTICIPO-QUINCENA': 'anticipos',
+  'EGR-PREST-HIPOTECARIO': 'prestamoHipotecario', 'EGR-PREST-QUIROGRAFARIO': 'prestamoQuirografario',
+  'EGR-PREST-PERSONAL': 'prestamoPersonal', 'EGR-MULTAS': 'multa', 'EGR-SEGURO': 'seguros',
+  'EGR-CELULAR': 'celular', 'EGR-AUSENCIAS': 'ausencias', 'EGR-DESCUENTOS': 'descuento',
+  'EGR-IMPUESTO-RENTA': 'impRenta', 'EGR-OTROS': 'otrosEgresos', 'EGR-EXT-CONYUGAL': 'descuento',
+};
 
 /**
- * Cuentas de GASTO del departamento del empleado. Si el empleado tiene
- * departamento parametrizado, su cuenta de sueldos es OBLIGATORIA (no hay
- * fallback silencioso → cumple "bloquear si falta config crítica"). Las de
- * beneficios/patronal caen a la general si no están definidas.
+ * Resolutor de cuentas de la configuración. Para cada campo:
+ *   - config[scope][field] es ObjectId → se usa;
+ *   - config[scope][field] === null (la contadora lo dejó en blanco a propósito) → null;
+ *   - no está definido (clínica/legacy sin configurar) → default por código si el rubro
+ *     es central; si no, null.
+ * `require*` bloquea con mensaje claro cuando un rubro CON VALOR resuelve a null.
  */
-async function resolveDeptExpenseAccounts(clinicId, deptRef, general, deptCache, session) {
-  if (!deptRef) return { sueldos: general.sueldos, beneficios: general.beneficios, iessPatronal: general.iessPatronal };
-  const key = String(deptRef);
-  let dept = deptCache.get(key);
-  if (dept === undefined) {
-    dept = await PayrollDepartment.findOne({ _id: deptRef, clinic: clinicId }).session(session || null);
-    deptCache.set(key, dept);
-  }
-  if (!dept) return { sueldos: general.sueldos, beneficios: general.beneficios, iessPatronal: general.iessPatronal };
-  const da = dept.accounts || {};
-  const sueldos = await accById(clinicId, da.sueldos, session);
-  if (!sueldos) {
-    const err = new Error(`El departamento «${dept.name}» no tiene cuenta de gasto de sueldos configurada.`);
-    err.status = 400;
-    throw err;
-  }
-  const beneficios = (await accById(clinicId, da.beneficios, session)) || general.beneficios;
-  const iessPatronal = (await accById(clinicId, da.iessPatronal, session)) || general.iessPatronal;
-  return { sueldos, beneficios, iessPatronal };
+function makeAccountResolver(clinicId, cfg, session) {
+  const cache = new Map();
+  const resolveId = async (id) => {
+    const k = String(id);
+    if (!cache.has(k)) cache.set(k, await accById(clinicId, id, session));
+    return cache.get(k);
+  };
+  const codeCache = new Map();
+  const resolveCode = async (code) => {
+    if (!codeCache.has(code)) codeCache.set(code, await accByCode(clinicId, code, session));
+    return codeCache.get(code);
+  };
+
+  const resolve = async (scope, field, deptType) => {
+    const bucket = scope === 'global'
+      ? cfg?.accounts?.global
+      : cfg?.accounts?.byDepartment?.[deptType];
+    const raw = bucket ? bucket[field] : undefined;
+    if (raw) return resolveId(raw); // ObjectId configurado
+    // Sin cuenta (null o undefined) → default por código si el rubro es CENTRAL. Los rubros
+    // granulares que administra la contadora no tienen default: resuelven a null y bloquean.
+    const code = (scope === 'global' ? POSTING_DEFAULT_CODES.global : POSTING_DEFAULT_CODES.byDepartment)[field];
+    return code ? resolveCode(code) : null;
+  };
+
+  const gAcc = (field) => resolve('global', field);
+  const dAcc = (deptType, field) => resolve('dept', field, deptType);
+  return { gAcc, dAcc };
+}
+
+/** Cuentas GLOBALES relevantes para otros módulos (obligación del neto, pago). */
+async function resolveConfigAccounts(clinicId, cfg, session) {
+  const { gAcc } = makeAccountResolver(clinicId, cfg, session);
+  const sueldosPorPagar = await gAcc('sueldosPorPagar');
+  return { sueldosPorPagar };
 }
 
 /**
- * Construye las líneas del asiento de cierre de rol, agregadas por cuenta.
- * Debita gastos por departamento; acredita sueldos por pagar, IESS, IR, préstamos,
- * deducciones y provisiones. Vacaciones gozadas van contra provisión.
- * @returns {Promise<Array<{account, debit, credit, description}>>}
+ * Construye las líneas del asiento de cierre de rol, agregadas por (cuenta, centro de
+ * costo). Debita gastos por DEPARTAMENTO con el CENTRO DE COSTO del empleado; acredita
+ * sueldos por pagar, IESS, IR, préstamos, deducciones y provisiones (cuentas globales,
+ * sin centro de costo). Bloquea si un rubro con valor no tiene cuenta configurada.
+ * @returns {Promise<{ lines, config }>}
  */
 async function buildPayrollEntryLines(payroll, { clinicId, session } = {}) {
   const cfg = await PayrollConfig.findOne({ clinic: clinicId }).session(session || null);
-  const general = await resolveConfigAccounts(clinicId, cfg, session);
-  const deptCache = new Map();
+  const { gAcc, dAcc } = makeAccountResolver(clinicId, cfg, session);
 
-  // agregador: idCuenta → { account, debit, credit }
+  // Código del rubro por su concepto (los ingresos fijos guardan `concept` pero no `code`).
+  const concepts = await PayrollConcept.find({ clinic: clinicId }).select('code').session(session || null).lean();
+  const codeById = new Map(concepts.map((c) => [String(c._id), c.code]));
+  const codeOf = (line) => line.code || (line.concept ? codeById.get(String(line.concept)) : null);
+
+  // agregador: `cuentaId|centroCosto` → { account, costCenter, debit, credit, description }
   const agg = new Map();
-  const add = (account, debit, credit, description) => {
+  const add = (account, debit, credit, description, costCenter = null) => {
     if (!account) return;
-    const k = String(account._id);
-    if (!agg.has(k)) agg.set(k, { account: account._id, debit: 0, credit: 0, description });
+    const k = `${String(account._id)}|${costCenter ? String(costCenter) : ''}`;
+    if (!agg.has(k)) agg.set(k, { account: account._id, costCenter: costCenter || null, debit: 0, credit: 0, description });
     const row = agg.get(k);
     row.debit = r2(row.debit + (debit || 0));
     row.credit = r2(row.credit + (credit || 0));
   };
 
-  // Catálogo de conceptos (una sola lectura). Se indexa por código y por _id para
-  // resolver la cuenta POR DEPARTAMENTO (override) con herencia a la cuenta general.
-  const concepts = await PayrollConcept.find({ clinic: clinicId }).session(session || null).lean();
-  const conceptByCode = new Map(concepts.map((c) => [c.code, c]));
-  const conceptById = new Map(concepts.map((c) => [String(c._id), c]));
-  const loadConcept = async (id) => conceptById.get(String(id)) || null;
-
-  // Cache de cuentas resueltas por _id (evita relecturas al agregar por cuenta).
-  const acctCache = new Map();
-  const resolveAcc = async (id) => {
-    if (!id) return null;
-    const k = String(id);
-    if (!acctCache.has(k)) acctCache.set(k, await accById(clinicId, id, session));
-    return acctCache.get(k);
-  };
-  /** _id de la cuenta primaria del concepto para un departamento: override del depto → cuenta general. */
-  const conceptAccId = (concept, deptRef) => {
-    if (!concept) return null;
-    if (deptRef) {
-      const ov = (concept.deptAccounts || []).find((d) => String(d.department) === String(deptRef));
-      if (ov && ov.account) return ov.account;
+  // Exige la cuenta de GASTO de un rubro por departamento (bloquea nombrando rubro + depto).
+  const reqDept = async (deptType, field) => {
+    const acc = await dAcc(deptType, field);
+    if (!acc) {
+      const err = new Error(`No hay cuenta configurada para «${RUBRO_LABELS[field] || field}» del departamento ${DEPT_LABEL[deptType] || deptType}. Configúrala en Nómina → Configuración → Cuentas Contables.`);
+      err.status = 400; throw err;
     }
-    const isPayable = concept.type === 'EGRESO' || concept.type === 'OBLIGACION';
-    return (isPayable ? concept.payableAccount : concept.defaultAccount) || null;
+    return acc;
   };
-  /** Cuenta (doc) del concepto por departamento; null si el concepto no resuelve cuenta. */
-  const conceptDeptAccount = async (concept, deptRef) => resolveAcc(conceptAccId(concept, deptRef));
-  /** Cuenta de un rubro de INGRESO estándar por su código, con fallback a la cuenta de sueldos del depto. */
-  const incomeAccountByCode = async (code, deptRef, fallback) => (await conceptDeptAccount(conceptByCode.get(code), deptRef)) || fallback;
+  // Exige una cuenta GLOBAL de balance (bloquea nombrando el rubro).
+  const reqGlobal = async (field) => {
+    const acc = await gAcc(field);
+    if (!acc) {
+      const err = new Error(`No hay cuenta configurada para «${RUBRO_LABELS[field] || field}» (cuentas generales). Configúrala en Nómina → Configuración → Cuentas Contables.`);
+      err.status = 400; throw err;
+    }
+    return acc;
+  };
 
   // ── QUINCENA: anticipo del sueldo. Solo mueve dinero al empleado, NO reconoce gasto:
-  //    Débito «Anticipo de sueldo por cobrar» / Crédito «Sueldos por pagar» (neto = anticipo).
-  //    El gasto del mes y el IESS se reconocen en el CIERRE, que descuenta este anticipo.
+  //    Débito «Anticipos a empleado» / Crédito «Sueldos por pagar» (neto = anticipo).
   if (payroll.periodType === 'QUINCENA_1') {
     for (const it of payroll.items || []) {
       const anticipo = r2(it.anticipoQuincena || it.netoPagar || 0);
       if (anticipo <= 0) continue;
-      add(general.anticipoQuincena, anticipo, 0, 'Anticipo quincena (por cobrar al empleado)');
-      add(general.sueldosPorPagar, 0, anticipo, 'Anticipo quincena por pagar');
+      add(await reqGlobal('anticipos'), anticipo, 0, 'Anticipo quincena (por cobrar al empleado)');
+      add(await reqGlobal('sueldosPorPagar'), 0, anticipo, 'Anticipo quincena por pagar');
     }
-    const lines = [...agg.values()].map((l) => {
-      const net = r2(l.debit - l.credit);
-      return net >= 0
-        ? { account: l.account, debit: net, credit: 0, description: l.description }
-        : { account: l.account, debit: 0, credit: r2(-net), description: l.description };
-    }).filter((l) => l.debit > 0 || l.credit > 0);
+    const lines = collapse(agg);
     if (!lines.length) { const err = new Error('La quincena no tiene anticipos para contabilizar.'); err.status = 400; throw err; }
-    return { lines, config: general };
+    return { lines, config: { sueldosPorPagar: await gAcc('sueldosPorPagar') } };
   }
 
   for (const it of payroll.items || []) {
-    const dept = await resolveDeptExpenseAccounts(clinicId, it.departmentRef, general, deptCache, session);
+    const deptType = normalizeDeptType(it.departmentType);
+    const cc = it.costCenter || null; // centro de costo del empleado → líneas de GASTO
 
-    // Rubros de INGRESO estructurados: cada uno se carga a la cuenta de SU concepto según el
-    // departamento del empleado (override del depto → cuenta general del concepto → cuenta de
-    // sueldos del depto). Si el catálogo no configura estos conceptos, TODOS caen a la cuenta de
-    // sueldos del depto y se agregan en una sola línea (== comportamiento histórico).
-    if ((it.baseSalary || 0) > 0) add(await incomeAccountByCode('ING-SUELDO', it.departmentRef, dept.sueldos), it.baseSalary, 0, 'Sueldos y remuneraciones');
-    if ((it.overtime || 0) > 0) add(await incomeAccountByCode('ING-HE50', it.departmentRef, dept.sueldos), it.overtime, 0, 'Horas extra');
-    if ((it.bonuses || 0) > 0) add(await incomeAccountByCode('ING-BONIFICACION', it.departmentRef, dept.sueldos), it.bonuses, 0, 'Bonificación');
-    if ((it.commissions || 0) > 0) add(await incomeAccountByCode('ING-COMISIONES', it.departmentRef, dept.sueldos), it.commissions, 0, 'Comisiones');
+    // ── Ingresos estructurados (gasto por departamento) ──────────────────────────────
+    if ((it.baseSalary || 0) > 0) add(await reqDept(deptType, 'sueldo'), it.baseSalary, 0, 'Sueldos y remuneraciones', cc);
+    if ((it.overtime || 0) > 0) add(await reqDept(deptType, 'horasExtra'), it.overtime, 0, 'Horas extra', cc);
+    if ((it.commissions || 0) > 0) add(await reqDept(deptType, 'comisiones'), it.commissions, 0, 'Comisiones', cc);
+    if ((it.bonuses || 0) > 0) add(await reqDept(deptType, 'bonificaciones'), it.bonuses, 0, 'Bonificación', cc);
+    // Décimos/fondos MENSUALIZADOS (ingreso): van a su cuenta de gasto por departamento.
+    if ((it.decimoTercero || 0) > 0) add(await reqDept(deptType, 'dec3Gasto'), it.decimoTercero, 0, 'Décimo tercero (mensualizado)', cc);
+    if ((it.decimoCuarto || 0) > 0) add(await reqDept(deptType, 'dec4Gasto'), it.decimoCuarto, 0, 'Décimo cuarto (mensualizado)', cc);
+    if ((it.fondosReserva || 0) > 0) add(await reqDept(deptType, 'fondosReservaGasto'), it.fondosReserva, 0, 'Fondos de reserva (mensualizado)', cc);
+    if ((it.otherIncome || 0) > 0) add(await reqDept(deptType, 'otrosIngresos'), it.otherIncome, 0, 'Otros ingresos', cc);
 
-    // Rubros flexibles CON concepto: exigen la cuenta del concepto (por departamento). Sin
-    // concepto → cuenta de sueldos del depto.
-    let earnToDept = 0;
+    // Vacaciones gozadas: la parte contra provisión debita el PASIVO; el resto es gasto del depto.
+    const vacContra = Number(it.vacacionesContraProvision) || 0;
+    const vacResto = r2((Number(it.vacaciones) || 0) - vacContra);
+    if (vacContra > 0) add(await reqGlobal('vacacionesPasivo'), vacContra, 0, 'Vacaciones gozadas (contra provisión)');
+    if (vacResto > 0) add(await reqDept(deptType, 'vacacionesGasto'), vacResto, 0, 'Vacaciones pagadas', cc);
+    else if (vacResto < 0) add(await reqGlobal('vacacionesPasivo'), 0, -vacResto, 'Ajuste vacaciones');
+
+    // Rubros flexibles de INGRESO: cuenta según su concepto/código (por departamento).
     for (const e of it.earnings || []) {
       const amt = Number(e.amount) || 0;
       if (amt <= 0) continue;
-      if (e.concept) {
-        const c = await loadConcept(e.concept);
-        const accDoc = await conceptDeptAccount(c, it.departmentRef);
-        if (!accDoc) {
-          const err = new Error(`El concepto «${e.name || c?.name || e.code || 'ingreso'}» no tiene cuenta de gasto configurada.`);
-          err.status = 400; throw err;
-        }
-        add(accDoc, amt, 0, e.name || c?.name || 'Rubro de nómina');
-      } else earnToDept += amt;
+      const field = INCOME_FIELD_BY_CODE[codeOf(e)] || 'otrosIngresos';
+      const acc = await dAcc(deptType, field);
+      if (!acc) {
+        const err = new Error(`El rubro «${e.name || e.code || 'ingreso'}» (${RUBRO_LABELS[field] || field}) no tiene cuenta de gasto configurada para el departamento ${DEPT_LABEL[deptType] || deptType}.`);
+        err.status = 400; throw err;
+      }
+      add(acc, amt, 0, e.name || 'Rubro de nómina', cc);
     }
 
-    // Ingresos fijos: cuenta del CONCEPTO por departamento (preferido) → cuenta directa legacy →
-    // cuenta de sueldos del depto.
+    // Ingresos fijos recurrentes: cuenta directa (legacy) o por su concepto/código y departamento.
     for (const f of it.fixedIncomes || []) {
       const amt = Number(f.monto) || 0;
       if (amt <= 0) continue;
-      let accDoc = f.concept ? await conceptDeptAccount(await loadConcept(f.concept), it.departmentRef) : null;
-      if (!accDoc && f.account) {
-        accDoc = await accById(clinicId, f.account, session);
-        if (!accDoc) { const err = new Error(`El ingreso fijo «${f.concepto || 'ingreso'}» apunta a una cuenta inexistente.`); err.status = 400; throw err; }
+      let acc = null;
+      if (f.account) {
+        acc = await accById(clinicId, f.account, session);
+        if (!acc) { const err = new Error(`El ingreso fijo «${f.concepto || 'ingreso'}» apunta a una cuenta inexistente.`); err.status = 400; throw err; }
+      } else {
+        const field = INCOME_FIELD_BY_CODE[codeOf(f)] || 'otrosIngresos';
+        acc = await dAcc(deptType, field);
+        if (!acc) {
+          const err = new Error(`El ingreso fijo «${f.concepto || RUBRO_LABELS[field] || 'ingreso'}» no tiene cuenta de gasto configurada para el departamento ${DEPT_LABEL[deptType] || deptType}.`);
+          err.status = 400; throw err;
+        }
       }
-      if (!accDoc) accDoc = dept.sueldos;
-      add(accDoc, amt, 0, f.concepto || 'Ingreso fijo');
+      add(acc, amt, 0, f.concepto || 'Ingreso fijo', cc);
     }
 
-    // Resto de ingresos que históricamente se agrupan en la cuenta de sueldos del depto
-    // (décimos/fondos mensualizados, vacaciones, otros ingresos, rubros flexibles sin concepto),
-    // menos las vacaciones gozadas pagadas contra la provisión.
-    const vacContra = Number(it.vacacionesContraProvision) || 0;
-    const lumpToDept = r2(
-      (it.decimoTercero || 0) + (it.decimoCuarto || 0) + (it.fondosReserva || 0)
-      + (it.vacaciones || 0) + (it.otherIncome || 0) + earnToDept - vacContra
-    );
-    if (lumpToDept > 0) add(dept.sueldos, lumpToDept, 0, 'Otros ingresos de nómina');
-    else if (lumpToDept < 0) add(dept.sueldos, 0, -lumpToDept, 'Ajuste vacaciones gozadas');
-    if (vacContra > 0) add(general.vacacionesPorPagar, vacContra, 0, 'Vacaciones gozadas (contra provisión)');
+    // ── Provisiones (acumulados): gasto del departamento contra pasivo global ─────────
+    if ((it.provDecimoTercero || 0) > 0) {
+      add(await reqDept(deptType, 'dec3Gasto'), it.provDecimoTercero, 0, 'Provisión décimo tercero', cc);
+      add(await reqGlobal('dec3Pasivo'), 0, it.provDecimoTercero, 'Décimo tercero por pagar');
+    }
+    if ((it.provDecimoCuarto || 0) > 0) {
+      add(await reqDept(deptType, 'dec4Gasto'), it.provDecimoCuarto, 0, 'Provisión décimo cuarto', cc);
+      add(await reqGlobal('dec4Pasivo'), 0, it.provDecimoCuarto, 'Décimo cuarto por pagar');
+    }
+    if ((it.provFondosReserva || 0) > 0) {
+      add(await reqDept(deptType, 'fondosReservaGasto'), it.provFondosReserva, 0, 'Provisión fondos de reserva', cc);
+      add(await reqGlobal('fondosReservaPasivo'), 0, it.provFondosReserva, 'Fondos de reserva por pagar');
+    }
+    if ((it.provVacaciones || 0) > 0) {
+      add(await reqDept(deptType, 'vacacionesGasto'), it.provVacaciones, 0, 'Provisión vacaciones', cc);
+      add(await reqGlobal('vacacionesPasivo'), 0, it.provVacaciones, 'Vacaciones por pagar');
+    }
 
-    // Provisiones patronales y de beneficios (gasto).
-    const patronal = r2((it.iessPatronal || 0) + (it.iece || 0) + (it.secap || 0));
-    if (patronal > 0) add(dept.iessPatronal, patronal, 0, 'Aporte patronal IESS');
-    const benExpense = r2((it.provDecimoTercero || 0) + (it.provDecimoCuarto || 0) + (it.provFondosReserva || 0));
-    if (benExpense > 0) add(dept.beneficios, benExpense, 0, 'Provisión beneficios sociales');
-    if ((it.provVacaciones || 0) > 0) add(general.gastoVacaciones, it.provVacaciones, 0, 'Provisión vacaciones');
+    // ── Aportes al IESS: gasto por departamento contra pasivo global ──────────────────
+    if ((it.iessPatronal || 0) > 0) {
+      add(await reqDept(deptType, 'aportePatronalGasto'), it.iessPatronal, 0, 'Aporte patronal IESS', cc);
+      add(await reqGlobal('aportePatronalPasivo'), 0, it.iessPatronal, 'Aporte patronal por pagar');
+    }
+    const secapExpense = r2((it.iece || 0) + (it.secap || 0));
+    if (secapExpense > 0) {
+      add(await reqDept(deptType, 'secapGasto'), secapExpense, 0, 'SECAP/IECE', cc);
+      add(await reqGlobal('secapPasivo'), 0, secapExpense, 'SECAP/IECE por pagar');
+    }
+    if ((it.iessPersonal || 0) > 0) add(await reqGlobal('iessPersonal'), 0, it.iessPersonal, 'Aporte personal IESS');
 
-    // Créditos: obligaciones y descuentos.
-    const iessTotal = r2((it.iessPersonal || 0) + patronal);
-    if (iessTotal > 0) add(general.iessPorPagar, 0, iessTotal, 'IESS por pagar');
-    if ((it.impuestoRenta || 0) > 0) add(general.irPorPagar, 0, it.impuestoRenta, 'Retención impuesto a la renta');
-    if ((it.prestamoEmpresa || 0) > 0) add(general.prestamosPorCobrar, 0, it.prestamoEmpresa, 'Préstamos empleados (recuperación)');
-    // Anticipo de quincena ya pagado: se acredita el «Anticipo por cobrar» para saldarlo (lo
-    // debitó la quincena). Así el mes reconoce el gasto completo y el neto sale ya descontado.
-    if ((it.anticipoQuincena || 0) > 0) add(general.anticipoQuincena, 0, it.anticipoQuincena, 'Descuento anticipo quincena');
-    const genericDed = r2((it.multas || 0) + (it.anticipos || 0) + (it.otherDeductions || 0) + (it.prestamoIess || 0));
-    if (genericDed > 0) add(general.cxcEmpleados, 0, genericDed, 'Deducciones empleados');
+    // ── Egresos / descuentos (créditos a cuentas globales de balance) ─────────────────
+    if ((it.impuestoRenta || 0) > 0) add(await reqGlobal('impRenta'), 0, it.impuestoRenta, 'Retención impuesto a la renta');
+    if ((it.prestamoEmpresa || 0) > 0) add(await reqGlobal('prestamoPersonal'), 0, it.prestamoEmpresa, 'Préstamo empleado (recuperación)');
+    if ((it.prestamoIess || 0) > 0) add(await reqGlobal('prestamoQuirografario'), 0, it.prestamoIess, 'Préstamo quirografario (recuperación)');
+    if ((it.anticipoQuincena || 0) > 0) add(await reqGlobal('anticipos'), 0, it.anticipoQuincena, 'Descuento anticipo quincena');
+    if ((it.anticipos || 0) > 0) add(await reqGlobal('anticipos'), 0, it.anticipos, 'Descuento anticipos');
+    if ((it.multas || 0) > 0) add(await reqGlobal('multa'), 0, it.multas, 'Descuento multas');
+    if ((it.otherDeductions || 0) > 0) add(await reqGlobal('descuento'), 0, it.otherDeductions, 'Otros descuentos');
     for (const d of it.deductions || []) {
       const amt = Number(d.amount) || 0;
       if (amt <= 0) continue;
-      let acc = general.cxcEmpleados;
-      if (d.concept) {
-        const c = await loadConcept(d.concept);
-        acc = await conceptDeptAccount(c, it.departmentRef);
-        if (!acc) {
-          const err = new Error(`El concepto «${d.name || c?.name || d.code || 'descuento'}» no tiene cuenta por pagar configurada.`);
-          err.status = 400; throw err;
-        }
+      const field = DEDUCTION_FIELD_BY_CODE[codeOf(d)] || 'descuento';
+      const acc = await gAcc(field);
+      if (!acc) {
+        const err = new Error(`El descuento «${d.name || d.code || 'descuento'}» (${RUBRO_LABELS[field] || field}) no tiene cuenta configurada en las cuentas generales.`);
+        err.status = 400; throw err;
       }
       add(acc, 0, amt, d.name || 'Descuento');
     }
 
-    // Provisiones por pagar (desglosadas).
-    if ((it.provDecimoTercero || 0) > 0) add(general.decimoTerceroPorPagar, 0, it.provDecimoTercero, 'Décimo tercero por pagar');
-    if ((it.provDecimoCuarto || 0) > 0) add(general.decimoCuartoPorPagar, 0, it.provDecimoCuarto, 'Décimo cuarto por pagar');
-    if ((it.provFondosReserva || 0) > 0) add(general.fondosReservaPorPagar, 0, it.provFondosReserva, 'Fondos de reserva por pagar');
-    if ((it.provVacaciones || 0) > 0) add(general.vacacionesPorPagar, 0, it.provVacaciones, 'Vacaciones por pagar');
-
-    // Neto a pagar.
-    if ((it.netoPagar || 0) > 0) add(general.sueldosPorPagar, 0, it.netoPagar, 'Sueldos por pagar');
+    // ── Neto a pagar ──────────────────────────────────────────────────────────────────
+    if ((it.netoPagar || 0) > 0) add(await reqGlobal('sueldosPorPagar'), 0, it.netoPagar, 'Sueldos por pagar');
   }
 
-  // Netear por cuenta: una misma cuenta puede recibir débito y crédito (p.ej.
-  // vacaciones por pagar recibe la provisión del mes y el pago de lo gozado). El
-  // asiento no admite una línea con débito y crédito a la vez → dejar un solo lado.
-  const lines = [...agg.values()].map((l) => {
-    const net = r2(l.debit - l.credit);
-    return net >= 0
-      ? { account: l.account, debit: net, credit: 0, description: l.description }
-      : { account: l.account, debit: 0, credit: r2(-net), description: l.description };
-  }).filter((l) => l.debit > 0 || l.credit > 0);
+  const lines = collapse(agg);
   if (!lines.length) {
     const err = new Error('El rol no tiene montos para contabilizar.');
     err.status = 400;
     throw err;
   }
-  return { lines, config: general };
+  return { lines, config: { sueldosPorPagar: await gAcc('sueldosPorPagar') } };
 }
 
-module.exports = { recomputeItem, buildPayrollEntryLines, resolveConfigAccounts, accByCode };
+/**
+ * Netea por (cuenta, centro de costo): una misma cuenta puede recibir débito y crédito
+ * (p.ej. vacaciones por pagar recibe la provisión del mes y el pago de lo gozado). El
+ * asiento no admite una línea con débito y crédito a la vez → dejar un solo lado.
+ */
+function collapse(agg) {
+  return [...agg.values()].map((l) => {
+    const net = r2(l.debit - l.credit);
+    return net >= 0
+      ? { account: l.account, costCenter: l.costCenter, debit: net, credit: 0, description: l.description }
+      : { account: l.account, costCenter: l.costCenter, debit: 0, credit: r2(-net), description: l.description };
+  }).filter((l) => l.debit > 0 || l.credit > 0);
+}
+
+module.exports = { recomputeItem, buildPayrollEntryLines, resolveConfigAccounts, accByCode, normalizeDeptType };

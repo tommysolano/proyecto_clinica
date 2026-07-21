@@ -10,8 +10,9 @@ const payrollDepartmentSchema = new mongoose.Schema(
   {
     clinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', required: true, index: true },
     name: { type: String, required: true, trim: true },
-    // Clasificación funcional del gasto (define a qué grupo del P&L va).
-    type: { type: String, enum: ['ADMINISTRATIVO', 'VENTAS', 'COSTOS', 'OTRO'], default: 'ADMINISTRATIVO' },
+    // Clasificación funcional del gasto (define a qué grupo del P&L va y la clave de las cuentas
+    // por departamento). 'OTROS' es el estándar; 'OTRO' se conserva por compatibilidad legacy.
+    type: { type: String, enum: ['ADMINISTRATIVO', 'VENTAS', 'COSTOS', 'OTROS', 'OTRO'], default: 'ADMINISTRATIVO' },
     // Cuentas de GASTO de este departamento (refs al plan). Opcionales: si faltan,
     // el cierre usa las cuentas generales de PayrollConfig (compat legacy).
     accounts: {

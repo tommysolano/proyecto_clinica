@@ -21,6 +21,9 @@ const payrollItemSchema = new mongoose.Schema(
     // Snapshot del departamento (clasifica el gasto en el P&L y resuelve la cuenta).
     departmentRef: { type: mongoose.Schema.Types.ObjectId, ref: 'PayrollDepartment', default: null },
     departmentType: { type: String, default: '' }, // ADMINISTRATIVO/VENTAS/COSTOS/OTRO snapshot
+    // Centro de costo del empleado (snapshot). El asiento del rol lo asigna a las líneas
+    // de GASTO de este empleado → el estado de resultados por centro refleja su nómina.
+    costCenter: { type: mongoose.Schema.Types.ObjectId, ref: 'CostCenter', default: null },
     daysWorked: { type: Number, default: 30 },
     absenceDays: { type: Number, default: 0 }, // faltas injustificadas (reducen el sueldo)
     // Elegibilidad de fondos de reserva (snapshot al generar; ≥1 año o activado).

@@ -25,6 +25,7 @@ router.put('/loans/:id', requireRole('admin', 'contabilidad'), c.updateLoan);
 
 router.get('/config', requireRole('admin', 'contabilidad'), c.getConfig);
 router.put('/config', requireRole('admin', 'contabilidad'), c.updateConfig);
+router.post('/config/copy-department', requireRole('admin', 'contabilidad'), c.copyDepartmentAccounts);
 router.get('/decimos', requireRole('admin', 'contabilidad'), c.generateDecimos);
 
 // Catálogos parametrizados (departamentos, cargos, conceptos/rubros)

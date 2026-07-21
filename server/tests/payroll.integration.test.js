@@ -34,6 +34,15 @@ test.beforeEach(async () => { await H.resetDb(); });
 
 const acc = (clinicId, code) => ChartOfAccount.findOne({ clinic: clinicId, code });
 
+const PayrollConfig = require('../models/PayrollConfig');
+const PayrollConcept = require('../models/PayrollConcept');
+// Fija una cuenta de gasto por departamento (accId puede ser null = "dejada en blanco").
+async function setByDept(clinicId, type, field, accId) {
+  await PayrollConfig.findOneAndUpdate(
+    { clinic: clinicId }, { $set: { [`accounts.byDepartment.${type}.${field}`]: accId ?? null } }, { upsert: true }
+  );
+}
+
 async function makeDept(clinicId, { name, type = 'ADMINISTRATIVO', sueldosCode = '6.1.01', withAccount = true } = {}) {
   const accounts = {};
   if (withAccount) {
@@ -126,6 +135,8 @@ test('6) cierre de empleado de ventas debita la cuenta de gasto de ventas', asyn
   const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-15') });
   // Cuenta de gasto de ventas: usamos 6.1.15 (Publicidad/marketing) como cuenta de ventas de ejemplo.
   const ventas = await makeDept(clinicId, { name: 'Ventas', type: 'VENTAS', sueldosCode: '6.1.15' });
+  // La configuración rutea el sueldo del departamento VENTAS a su cuenta de gasto (6.1.15).
+  await setByDept(clinicId, 'VENTAS', 'sueldo', (await acc(clinicId, '6.1.15'))._id);
   await makeEmployee(clinicId, { departmentRef: ventas._id, baseSalary: 800 });
   const p = await generateAndClose(clinicId, userId);
   const r = await H.runController(payroll.closePayroll, req(clinicId, userId, {}, { id: String(p._id) }));
@@ -222,16 +233,21 @@ test('11) el cierre genera un asiento contable cuadrado con trazabilidad NOMINA'
   assert.equal(+entry.totalDebit.toFixed(2), +entry.totalCredit.toFixed(2));
 });
 
-// ── 12) Cierre falla si falta cuenta crítica ──────────────────────────────────
-test('12) el cierre falla si el departamento no tiene cuenta de sueldos', async () => {
+// ── 12) Cierre falla si un rubro con valor no tiene cuenta (rubro granular sin default) ─────
+test('12) el cierre falla si un rubro con valor no tiene cuenta configurada (nombra rubro y depto)', async () => {
   const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-15') });
-  const sinCuenta = await makeDept(clinicId, { name: 'SinCuenta', withAccount: false });
-  await makeEmployee(clinicId, { departmentRef: sinCuenta._id, baseSalary: 600 });
-  const p = await generateAndClose(clinicId, userId);
-  const r = await H.runController(payroll.closePayroll, req(clinicId, userId, {}, { id: String(p._id) }));
+  const admin = await makeDept(clinicId, { name: 'Admin', type: 'ADMINISTRATIVO' });
+  const emp = await makeEmployee(clinicId, { departmentRef: admin._id, baseSalary: 600 });
+  const gen = await H.runController(payroll.generatePayroll, H.mockReq(clinicId, userId, { year: 2026, month: 6 }));
+  await ensureIrTable(clinicId, 2026);
+  // Horas extra tiene VALOR pero no hay cuenta de horas extra configurada (rubro sin default).
+  await H.runController(payroll.updatePayrollItem, req(clinicId, userId,
+    { employeeId: String(emp._id), patch: { overtime: 100 } }, { id: String(gen.payload._id) }));
+  const r = await H.runController(payroll.closePayroll, req(clinicId, userId, {}, { id: String(gen.payload._id) }));
   assert.equal(r.statusCode, 400);
-  assert.match(r.payload.message, /cuenta de gasto de sueldos/i);
-  const reloaded = await Payroll.findById(p._id);
+  assert.match(r.payload.message, /Horas extra/i);
+  assert.match(r.payload.message, /Administrativo/i);
+  const reloaded = await Payroll.findById(gen.payload._id);
   assert.equal(reloaded.status, 'BORRADOR', 'no se cerró');
 });
 
@@ -376,20 +392,23 @@ test('E) comisión con concepto que afecta IESS recalcula IESS', async () => {
   assert.ok(it.iessPersonal > iessAntes);
 });
 
-// F) Concepto usado sin cuenta bloquea el cierre.
-test('F) concepto sin cuenta configurada bloquea el cierre', async () => {
+// F) Rubro granular con valor y sin cuenta configurada bloquea el cierre (nombra rubro + depto).
+test('F) rubro sin cuenta configurada bloquea el cierre nombrando rubro y departamento', async () => {
   const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-15') });
-  const admin = await makeDept(clinicId, { name: 'Admin' });
-  const rc = await H.runController(payroll.createConcept, H.mockReq(clinicId, userId, { code: 'ING-X', name: 'Bono sin cuenta', type: 'INGRESO' }));
-  const emp = await makeEmployee(clinicId, { departmentRef: admin._id, baseSalary: 600 });
+  const admin = await makeDept(clinicId, { name: 'Admin', type: 'ADMINISTRATIVO' });
+  await H.runController(payroll.seedConcepts, H.mockReq(clinicId, userId, {}));
+  const alim = await PayrollConcept.findOne({ clinic: clinicId, code: 'ING-ALIMENTACION' });
+  // Ingreso fijo de "Alimentación" sin cuenta de alimentación configurada en Administrativo.
+  await makeEmployee(clinicId, {
+    departmentRef: admin._id, baseSalary: 600,
+    fixedIncomes: [{ concepto: 'Alimentación', monto: 50, aportaIess: false, concept: alim._id }],
+  });
   const gen = await H.runController(payroll.generatePayroll, H.mockReq(clinicId, userId, { year: 2026, month: 6 }));
   await ensureIrTable(clinicId, 2026);
-  await H.runController(payroll.updatePayrollItem, req(clinicId, userId,
-    { employeeId: String(emp._id), patch: { earnings: [{ concept: String(rc.payload._id), code: 'ING-X', name: 'Bono sin cuenta', amount: 80 }] } },
-    { id: String(gen.payload._id) }));
   const r = await H.runController(payroll.closePayroll, req(clinicId, userId, {}, { id: String(gen.payload._id) }));
   assert.equal(r.statusCode, 400);
-  assert.match(r.payload.message, /no tiene cuenta de gasto/i);
+  assert.match(r.payload.message, /alimentaci[oó]n/i);
+  assert.match(r.payload.message, /Administrativo/i);
 });
 
 // G) La provisión de vacaciones usa la cuenta configurada (vacaciones por pagar).
