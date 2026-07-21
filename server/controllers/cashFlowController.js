@@ -1120,7 +1120,11 @@ exports.projectionExcel = async (req, res) => {
 
     const linea = (label, values, opts = {}) => {
       const row = ws.addRow([label, ...values]);
-      if (opts.bold) row.font = { bold: true };
+      const font = {};
+      if (opts.bold) font.bold = true;
+      // Fuente más clara para las sublíneas de proveedor (estilo diferenciado, como en la matriz).
+      if (opts.light) { font.italic = true; font.color = { argb: 'FF6B7280' }; }
+      if (Object.keys(font).length) row.font = font;
       if (opts.fill) {
         row.eachCell((c) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: opts.fill } }; });
       }
@@ -1143,6 +1147,13 @@ exports.projectionExcel = async (req, res) => {
           const vs = dias.map((d) => d.categorias?.[direction]?.[cat.key]?.subs?.[sub.key] || 0);
           if (!cfg.showEmptyCategories && !vs.some((v) => v)) continue;
           linea(`· ${sub.label}`, vs, { indent: 3 });
+        }
+        // Sublíneas por PROVEEDOR (solo egresos): "a quién le debo" dentro de la categoría. La
+        // suma de las filas de proveedor = la fila de la categoría (mismo origen que la matriz).
+        if (direction === 'EGRESO') {
+          for (const prov of (data.proveedoresPorCategoria?.[cat.key] || [])) {
+            linea(`   ↳ ${prov.name}`, dias.map((d) => prov.byDay?.[d.date] || 0), { indent: 3, light: true });
+          }
         }
       }
       const totales = dias.map((d) => (direction === 'INGRESO' ? d.ingresos : d.egresos));

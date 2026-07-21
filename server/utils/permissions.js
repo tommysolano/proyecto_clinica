@@ -19,10 +19,14 @@ const CAPS = {
     'warehouse.view', 'warehouse.manage',
     'sales.report', 'sales.export', 'sales.presets',
     'journal.view',
+    // Flujo de caja: ve la proyección/Excel Y configura (clasifica, reglas, saldo, partidas).
+    'cashflow.view', 'cashflow.manage',
   ],
   // La caja ve el inventario para trabajar (cantidades) y puede iniciar/contar una toma,
   // pero NO ve costos, no confirma el ajuste contable, no exporta y no abre asientos.
-  cajero: ['inventory.view', 'count.start', 'count.edit', 'warehouse.view', 'sales.report'],
+  // En el FLUJO DE CAJA solo VISUALIZA (proyección + Excel + detalle): la clasificación,
+  // el saldo manual, las partidas y las reglas las hace contabilidad/admin (cashflow.manage).
+  cajero: ['inventory.view', 'count.start', 'count.edit', 'warehouse.view', 'sales.report', 'cashflow.view'],
   // Enfermería y bodega consultan existencias; nada de dinero.
   enfermeria: ['inventory.view', 'count.start', 'count.edit', 'warehouse.view'],
   // Marketing solo mira ventas (sin costos ni márgenes) y no exporta.

@@ -61,16 +61,20 @@ export default function CashFlowMatrix({ data, onCell, onAddProvider }) {
       ))
       .flatMap((cat) => {
         const subs = (cat.subcategories || []).filter((s) => s.isActive !== false && tieneDatos(direction, cat, s.key));
+        // Sublíneas por proveedor (solo egresos): "a quién le debo" dentro de la categoría.
+        const provs = direction === 'EGRESO' ? (data.proveedoresPorCategoria?.[cat.key] || []) : [];
+        const expandible = subs.length > 0 || provs.length > 0;
         const abierta = abiertas[`${direction}:${cat.key}`];
         const filas = [
           <tr key={`${direction}:${cat.key}`} className="border-t border-slate-100 hover:bg-slate-50">
             <th className="sticky left-0 z-10 bg-white px-3 py-1.5 text-left text-xs font-semibold text-slate-700">
               <span className="flex items-center gap-1">
-                {subs.length > 0 ? (
+                {expandible ? (
                   <button
                     onClick={() => toggle(`${direction}:${cat.key}`)}
                     className="bg-transparent border-none p-0 text-slate-400 hover:text-slate-700 cursor-pointer flex items-center"
                     aria-label={abierta ? 'Contraer' : 'Expandir'}
+                    title={provs.length ? `${provs.length} proveedor(es)` : undefined}
                   >
                     {abierta ? <HiOutlineChevronDown className="w-3.5 h-3.5" /> : <HiOutlineChevronRight className="w-3.5 h-3.5" />}
                   </button>
@@ -113,6 +117,28 @@ export default function CashFlowMatrix({ data, onCell, onAddProvider }) {
                     onClick={() => onCell({
                       date: d.date, direction, category: cat.key, subcategory: s.key,
                       label: `${cat.label} · ${s.label}`,
+                    })}
+                  />
+                ))}
+              </tr>
+            );
+          }
+          // Sublíneas por proveedor (egresos): nombre + montos por día. La suma cuadra con la
+          // celda de la categoría. Clic en una celda abre el detalle filtrado por ese proveedor.
+          for (const prov of provs) {
+            filas.push(
+              <tr key={`${direction}:${cat.key}:prov:${prov.key}`} className="border-t border-slate-50 bg-amber-50/30">
+                <th className="sticky left-0 z-10 bg-amber-50/50 px-3 py-1 pl-9 text-left text-[11px] font-normal text-slate-600">
+                  <span className="text-slate-400 mr-1">↳</span>{prov.name}
+                </th>
+                {dias.map((d) => (
+                  <Celda
+                    key={d.date}
+                    value={prov.byDay?.[d.date] || 0}
+                    className="text-slate-600"
+                    onClick={() => onCell({
+                      date: d.date, direction, category: cat.key, party: prov.name,
+                      label: `${cat.label} · ${prov.name}`,
                     })}
                   />
                 ))}

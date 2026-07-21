@@ -856,6 +856,30 @@ async function buildProjection(clinicId, { from, to, filters = {} } = {}) {
       mensaje: 'El detalle no concilia con los totales de las celdas.' });
   }
 
+  // ── Desglose por PROVEEDOR de cada categoría de EGRESO (sublíneas de la matriz/Excel) ──
+  // Pedido de la contadora: bajo cada categoría de egreso, ver "a quién le debo" y cuánto por
+  // día. Se agrega desde el MISMO `detalleFinal` que alimenta las celdas → la suma de las
+  // sublíneas es EXACTAMENTE la celda de la categoría (invariante detalle=celda). Solo egresos.
+  const desglose = new Map(); // categoría → Map(claveProveedor → { ref, name, total, byDay })
+  for (const row of detalleFinal) {
+    if (row.direction !== 'EGRESO' || !row.day || row.transferenciaInterna) continue;
+    const monto = r2(row.esReal ? row.total : row.saldo);
+    if (!monto) continue;
+    const nombre = (row.tercero && String(row.tercero).trim()) || '—';
+    const key = row.terceroRef ? `ref:${row.terceroRef}` : `name:${nombre.toLowerCase()}`;
+    let catMap = desglose.get(row.category);
+    if (!catMap) { catMap = new Map(); desglose.set(row.category, catMap); }
+    let prov = catMap.get(key);
+    if (!prov) { prov = { key, ref: row.terceroRef || null, name: nombre, total: 0, byDay: {} }; catMap.set(key, prov); }
+    prov.total = r2(prov.total + monto);
+    prov.byDay[row.day] = r2((prov.byDay[row.day] || 0) + monto);
+  }
+  const proveedoresPorCategoria = {};
+  for (const [cat, m] of desglose) {
+    proveedoresPorCategoria[cat] = [...m.values()]
+      .sort((a, b) => b.total - a.total || String(a.name).localeCompare(String(b.name)));
+  }
+
   // ── Proveedores con CxP abierta y SIN categoría asignada (regla SUPPLIER) ─────────────
   // Se muestran (solo el nombre) para ir a clasificarlos; al asignarles una categoría
   // desaparecen. Es independiente de en qué celda cae su CxP mientras tanto.
@@ -889,6 +913,8 @@ async function buildProjection(clinicId, { from, to, filters = {} } = {}) {
     saldoInicialManual: modoSaldoManual ? r2(cfg.openingBalanceManual) : null,
     saldoFinal: saldo,
     proveedoresPendientes,
+    // Sublíneas por proveedor de cada categoría de egreso (la suma cuadra con la celda).
+    proveedoresPorCategoria,
     days: resultado,
     detalle: detalleFinal,
     alertas,

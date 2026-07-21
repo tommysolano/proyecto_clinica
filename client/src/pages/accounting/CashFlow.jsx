@@ -6,6 +6,7 @@ import {
   HiOutlinePencilSquare, HiOutlineXCircle, HiOutlineEye,
 } from 'react-icons/hi2';
 import api from '../../api/axios';
+import { useAuth } from '../../context/AuthContext';
 import Modal from '../../components/Modal';
 import JournalEntryViewModal from '../../components/JournalEntryViewModal';
 import { fmt, fmtDate } from './_utils';
@@ -50,6 +51,11 @@ const SEVERIDAD = {
 };
 
 export default function CashFlow() {
+  // Solo admin/contabilidad configuran (clasifican, reglas, saldo, partidas). El resto de roles
+  // con acceso (cashflow.view) SOLO visualiza: se ocultan los controles de edición. El backend
+  // igual bloquea la escritura (cashflow.manage), esto es coherencia de UI.
+  const { hasRole } = useAuth();
+  const canManage = hasRole('admin', 'contabilidad');
   const [tab, setTab] = useState('proyeccion');
   const [from, setFrom] = useState(enDias(0)); // arranca HOY
   const [to, setTo] = useState(enDias(30));
@@ -182,16 +188,20 @@ export default function CashFlow() {
           <HiOutlineArrowsRightLeft className="text-emerald-600" /> Flujo de Caja
         </h1>
         <div className="flex gap-2">
-          <button onClick={() => setNueva({ direction: 'EGRESO', plannedDate: enDias(0), key: newIdempotencyKey() })}
-            className="px-3 py-2 bg-emerald-600 text-white rounded-xl text-sm flex items-center gap-1.5 shadow-sm shadow-emerald-600/20">
-            <HiOutlinePlus className="w-4 h-4" /> Partida manual
-          </button>
+          {canManage && (
+            <button onClick={() => setNueva({ direction: 'EGRESO', plannedDate: enDias(0), key: newIdempotencyKey() })}
+              className="px-3 py-2 bg-emerald-600 text-white rounded-xl text-sm flex items-center gap-1.5 shadow-sm shadow-emerald-600/20">
+              <HiOutlinePlus className="w-4 h-4" /> Partida manual
+            </button>
+          )}
           <button onClick={exportar} className="px-3 py-2 bg-slate-700 text-white rounded-xl text-sm flex items-center gap-1.5">
             <HiOutlineArrowDownTray className="w-4 h-4" /> Excel
           </button>
-          <button onClick={abrirConfig} className="px-3 py-2 border border-slate-200 rounded-xl text-sm flex items-center gap-1.5 text-slate-600">
-            <HiOutlineCog6Tooth className="w-4 h-4" /> Configuración
-          </button>
+          {canManage && (
+            <button onClick={abrirConfig} className="px-3 py-2 border border-slate-200 rounded-xl text-sm flex items-center gap-1.5 text-slate-600">
+              <HiOutlineCog6Tooth className="w-4 h-4" /> Configuración
+            </button>
+          )}
         </div>
       </div>
 
@@ -273,10 +283,10 @@ export default function CashFlow() {
               <Stat title="Saldo proyectado" value={fmt(data.saldoFinal)}
                 color={data.saldoFinal < 0 ? 'text-rose-600' : 'text-slate-800'} />
             </div>
-            <PendingProvidersPanel proveedores={data.proveedoresPendientes || []} onClasificar={abrirClasificar} />
+            {canManage && <PendingProvidersPanel proveedores={data.proveedoresPendientes || []} onClasificar={abrirClasificar} />}
           </div>
 
-          <CashFlowMatrix data={data} onCell={setCell} onAddProvider={abrirAgregar} />
+          <CashFlowMatrix data={data} onCell={setCell} onAddProvider={canManage ? abrirAgregar : undefined} />
 
           <div className="text-xs text-slate-500 flex flex-wrap gap-x-4 gap-y-1">
             <span>{data.documentos} documento(s) en el rango.</span>
@@ -400,7 +410,7 @@ export default function CashFlow() {
                       </td>
                       <td className="px-3 py-2">
                         <div className="flex items-center gap-1 justify-end">
-                          {m.status === 'PLANIFICADO' && (
+                          {canManage && m.status === 'PLANIFICADO' && (
                             <>
                               <button onClick={() => setLiquidar(m)} title="Liquidar"
                                 className="px-2 py-1 rounded-lg bg-emerald-600 text-white flex items-center gap-1 border-none cursor-pointer">
@@ -446,6 +456,7 @@ export default function CashFlow() {
           cell={cell}
           range={{ from, to }}
           categories={data?.config?.categories}
+          canManage={canManage}
           onClose={() => setCell(null)}
           onChanged={() => { cargar(); cargarItems(); }}
           onSettled={trasLiquidar}

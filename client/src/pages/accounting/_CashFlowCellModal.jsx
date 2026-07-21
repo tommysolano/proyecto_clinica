@@ -17,7 +17,7 @@ import ManualSettleModal from './_ManualSettleModal';
  * El total del modal se compara contra el valor de la celda que devolvió la API: si no
  * cuadraran, se avisa en vez de mostrar dos números distintos sin explicación.
  */
-export default function CashFlowCellModal({ cell, range, categories, onClose, onChanged, onSettled }) {
+export default function CashFlowCellModal({ cell, range, categories, canManage = false, onClose, onChanged, onSettled }) {
   const [data, setData] = useState(null);
   const [accion, setAccion] = useState(null);   // { tipo, row }
   const [form, setForm] = useState({});
@@ -31,6 +31,8 @@ export default function CashFlowCellModal({ cell, range, categories, onClose, on
           from: range.from, to: range.to,
           date: cell.date, direction: cell.direction,
           category: cell.category, subcategory: cell.subcategory || undefined,
+          // Solo presente cuando se pincha la sublínea de un proveedor: filtra el detalle a él.
+          party: cell.party || undefined,
         },
       });
       setData(r.data);
@@ -195,7 +197,7 @@ export default function CashFlowCellModal({ cell, range, categories, onClose, on
                         )}
                         {/* Una PREVISIÓN se liquida (contabilizando el movimiento o enlazando uno
                             real): no basta con cambiarle el estado. Solo si sigue planificada. */}
-                        {row.docModel === 'CashFlowManualItem' && row.estado === 'PLANIFICADO' && (
+                        {canManage && row.docModel === 'CashFlowManualItem' && row.estado === 'PLANIFICADO' && (
                           <>
                             <button onClick={() => setLiquidar(row)} title="Liquidar (crear o vincular el movimiento real)"
                               className="p-1 rounded hover:bg-emerald-50 text-emerald-600 bg-transparent border-none cursor-pointer">
@@ -208,7 +210,7 @@ export default function CashFlowCellModal({ cell, range, categories, onClose, on
                             </button>
                           </>
                         )}
-                        {!row.esReal && (
+                        {canManage && !row.esReal && (
                           <>
                             <button
                               onClick={() => { setAccion({ tipo: 'reprogramar', row }); setForm({ newDate: cell.date, reason: '' }); }}
