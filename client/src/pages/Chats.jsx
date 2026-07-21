@@ -238,7 +238,8 @@ export default function Chats() {
 
   const isSupervisor = role === 'marketing';
   const isAdmin = role === 'admin' || user?.isSuperAdmin;
-  const canAutoAssign = isSupervisor || isAdmin;
+  // Solo admin/supervisor pueden asignar chats a OTROS agentes (asignación manual).
+  const canAssignOthers = isSupervisor || isAdmin;
 
   // Solo la respuesta de la última búsqueda actualiza la lista: descarta
   // respuestas fuera de orden que sobrescribirían con datos obsoletos.
@@ -680,14 +681,16 @@ export default function Chats() {
     }
   };
 
-  // Reparte la conversación al agente con menos chats abiertos (round-robin).
-  const autoAssignChat = async (conv) => {
+  // Asignación MANUAL a un agente concreto (solo admin/marketing). El sistema ya
+  // NO reparte solo (se quitó el auto-asignar/round-robin del inbox): un supervisor
+  // decide quién atiende cada chat.
+  const assignToAgent = async (conv, userId) => {
     try {
-      const r = await api.post(`/chats/${conv._id}/auto-assign`, {});
+      const r = await api.post(`/chats/${conv._id}/assign`, { userId });
       setConversations((prev) => prev.map((c) => (c._id === conv._id ? r.data : c)));
       toast.success(`Asignado a ${r.data.assignedToName || 'un agente'}`);
     } catch (err) {
-      toast.error(err.response?.data?.message || 'No se pudo auto-asignar');
+      toast.error(err.response?.data?.message || 'No se pudo asignar');
     }
   };
 
@@ -803,7 +806,9 @@ export default function Chats() {
                   conv={activeConv}
                   onToggleFeatured={() => toggleFeatured(activeConv)}
                   onTake={() => takeChat(activeConv)}
-                  onAutoAssign={canAutoAssign ? () => autoAssignChat(activeConv) : null}
+                  agents={agents}
+                  canAssignOthers={canAssignOthers}
+                  onAssignAgent={(userId) => assignToAgent(activeConv, userId)}
                   onOpenOpportunity={() => setOpportunityModal(true)}
                   onCreateAppointment={() => setAppointmentModal(true)}
                   onCreateQuotation={() => setQuotationModal(true)}
@@ -1664,19 +1669,60 @@ function HeaderActionsMenu({ actions }) {
   );
 }
 
-function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpportunity, onCreateAppointment, onCreateQuotation, onMarkRead, onEnableCalling, isAdmin, meId, calling, onCall, onBack, onToggleInfo }) {
+// Menú para ASIGNAR el chat a un agente concreto (solo admin/supervisor).
+// Sustituye al viejo "auto-asignar": la repartición ya no la decide el sistema.
+function AssignMenu({ agents, assignedId, onAssign }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative shrink-0">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        title="Asignar este chat a un agente"
+        className="p-1.5 bg-slate-50 text-slate-600 hover:bg-slate-100 rounded-lg border-none cursor-pointer flex items-center gap-1"
+      >
+        <HiOutlineUsers className="w-4 h-4" />
+        <span className="hidden @5xl:inline text-xs">Asignar</span>
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-full mt-1 w-56 max-w-[80vw] bg-white border border-slate-200 rounded-lg shadow-lg z-50 py-1 max-h-72 overflow-y-auto">
+            <div className="px-3 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wide">Asignar chat a</div>
+            {agents.length === 0 && <div className="px-3 py-2 text-xs text-slate-400">No hay agentes disponibles.</div>}
+            {agents.map((a) => {
+              const active = String(assignedId || '') === String(a._id);
+              return (
+                <button
+                  key={a._id}
+                  onClick={() => { setOpen(false); onAssign(a._id); }}
+                  className={`w-full text-left px-3 py-2 text-sm bg-white hover:bg-slate-50 border-none cursor-pointer flex items-center justify-between gap-2 ${active ? 'text-emerald-700 font-semibold' : 'text-slate-700'}`}
+                >
+                  <span className="truncate">{a.name}</span>
+                  {active && <HiOutlineCheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ChatHeader({ conv, onToggleFeatured, onTake, agents = [], canAssignOthers, onAssignAgent, onOpenOpportunity, onCreateAppointment, onCreateQuotation, onMarkRead, onEnableCalling, isAdmin, meId, calling, onCall, onBack, onToggleInfo }) {
   const canTake = !conv.assignedTo || String(conv.assignedTo._id || conv.assignedTo) !== String(meId);
   // "Esperando respuesta" cuando el último mensaje es entrante (del paciente).
   const waitingReply = conv.lastMessageDirection === 'in';
   // Un admin puede encender las llamadas de un número Cloud API que las tiene
   // apagadas (sin entrar a Meta). Por QR es imposible: no se ofrece.
   const canEnableCalls = isAdmin && calling && calling.enabled === false && calling.canEnable;
+  const assignedId = conv.assignedTo?._id || conv.assignedTo || null;
 
   // Acciones secundarias: en línea en pantallas anchas, en el menú "⋯" cuando no
-  // caben. Una sola fuente de verdad para ambos modos.
+  // caben. Una sola fuente de verdad para ambos modos. El auto-asignar (round-robin)
+  // se quitó: ahora un supervisor asigna a mano con el menú "Asignar" (abajo).
   const actions = [
-    canTake && { key: 'take', label: 'Tomar', icon: HiOutlineUserPlus, onClick: onTake },
-    onAutoAssign && { key: 'auto', label: 'Auto-asignar', icon: HiOutlineUsers, onClick: onAutoAssign },
+    canTake && { key: 'take', label: 'Tomar (asignármelo)', icon: HiOutlineUserPlus, onClick: onTake },
     {
       key: 'opp',
       label: conv.opportunity?.isOpportunity ? 'Editar / añadir oportunidad' : 'Crear oportunidad',
@@ -1740,6 +1786,12 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpport
         >
           <HiOutlinePhone className="w-4 h-4" /> <span className="hidden @5xl:inline">Llamar</span>
         </button>
+
+        {/* Asignación MANUAL a un agente (solo admin/supervisor). El sistema ya no
+            reparte solo; un supervisor decide quién atiende cada chat. */}
+        {canAssignOthers && (
+          <AssignMenu agents={agents} assignedId={assignedId} onAssign={onAssignAgent} />
+        )}
 
         {/* Acciones en línea (solo icono + tooltip) cuando hay ancho (≥ @5xl).
             Se mantienen sin texto para que nunca desborden la columna: la versión

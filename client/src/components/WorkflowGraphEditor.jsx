@@ -39,6 +39,8 @@ import {
   HiOutlinePhoto,
   HiOutlineMegaphone,
   HiOutlineUserMinus,
+  HiOutlineDocumentDuplicate,
+  HiOutlineSquare2Stack,
 } from 'react-icons/hi2';
 
 // Tipos de paso disponibles en el lienzo (sin 'trigger', que es el nodo inicial).
@@ -263,6 +265,25 @@ function AddButton({ onClick, style, className = '' }) {
   );
 }
 
+// Barra flotante de acciones del paso (copiar / duplicar / eliminar), visible al
+// pasar el cursor sobre el nodo. No aparece en el disparador (sin estas acciones).
+function NodeActions({ data }) {
+  if (!data.onDelete) return null;
+  return (
+    <div className="nodrag nopan absolute -top-3 right-1 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity bg-white border border-slate-200 rounded-lg shadow-sm px-0.5 py-0.5 z-10">
+      <button type="button" title="Copiar paso" onClick={(e) => { e.stopPropagation(); data.onCopy(); }} className="p-1 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer">
+        <HiOutlineSquare2Stack className="w-3.5 h-3.5" />
+      </button>
+      <button type="button" title="Duplicar paso" onClick={(e) => { e.stopPropagation(); data.onDuplicate(); }} className="p-1 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer">
+        <HiOutlineDocumentDuplicate className="w-3.5 h-3.5" />
+      </button>
+      <button type="button" title="Eliminar paso" onClick={(e) => { e.stopPropagation(); data.onDelete(); }} className="p-1 text-slate-400 hover:text-rose-600 bg-transparent border-none cursor-pointer">
+        <HiOutlineTrash className="w-3.5 h-3.5" />
+      </button>
+    </div>
+  );
+}
+
 // ─────────── Nodos personalizados ───────────
 // Cada disparador se muestra como su PROPIA tarjeta (estilo Daplox/GoHighLevel),
 // más una tarjeta "Añadir nuevo activador". Todas comparten el mismo flujo de
@@ -288,7 +309,7 @@ function TriggerNode({ data }) {
         <div
           key={i}
           onClick={(e) => { e.stopPropagation(); data.onSelectTrigger(i); }}
-          className="nodrag group relative rounded-xl border-2 border-emerald-500 bg-white shadow-sm px-3 py-2.5 cursor-pointer hover:shadow-md transition-shadow"
+          className="group relative rounded-xl border-2 border-emerald-500 bg-white shadow-sm px-3 py-2.5 cursor-grab active:cursor-grabbing hover:shadow-md transition-shadow"
         >
           <div className="flex items-center gap-2">
             <span className="inline-flex items-center justify-center w-7 h-7 rounded-lg bg-emerald-100 text-emerald-600 shrink-0">
@@ -330,7 +351,8 @@ function TriggerNode({ data }) {
 
 function ActionNode({ data, selected }) {
   return (
-    <div className="relative">
+    <div className="relative group">
+      <NodeActions data={data} />
       <div className={`rounded-xl border bg-white px-3 py-2.5 text-xs shadow-sm min-w-[200px] ${selected ? 'border-emerald-500 ring-2 ring-emerald-200' : 'border-slate-300'}`}>
         <Handle type="target" position={Position.Top} style={{ background: '#94a3b8' }} />
         <div className="flex items-center gap-2">
@@ -351,7 +373,8 @@ function ActionNode({ data, selected }) {
 
 function BranchNode({ data, selected }) {
   return (
-    <div className="relative">
+    <div className="relative group">
+      <NodeActions data={data} />
       <div className={`rounded-xl border bg-amber-50 px-3 py-2.5 text-xs shadow-sm min-w-[210px] ${selected ? 'border-amber-500 ring-2 ring-amber-200' : 'border-amber-300'}`}>
         <Handle type="target" position={Position.Top} style={{ background: '#94a3b8' }} />
         <div className="flex items-center gap-2">
@@ -433,6 +456,94 @@ function descendantIdsInclusive(edges, startId) {
   return out;
 }
 
+// ─────────── Reordenar arrastrando (soltar un paso sobre una conexión) ───────────
+const REORDER_DIST = 90; // px: cercanía al centro de una línea para insertar ahí
+
+function nodeCenter(n) {
+  const w = n.width || n.__rf?.width || 200;
+  const h = n.height || n.__rf?.height || 64;
+  return { x: (n.position?.x || 0) + w / 2, y: (n.position?.y || 0) + h / 2 };
+}
+
+// Arista más cercana al centro del nodo soltado (excluyendo las suyas propias).
+// Devuelve la arista si está dentro del radio, o null si se soltó en vacío.
+function findDropEdge(dragged, rfNodes, edges) {
+  const dc = nodeCenter(dragged);
+  let best = null;
+  let bestD = Infinity;
+  for (const e of edges) {
+    if (e.source === dragged.id || e.target === dragged.id) continue;
+    const A = rfNodes.find((n) => n.id === e.source);
+    const B = rfNodes.find((n) => n.id === e.target);
+    if (!A || !B) continue;
+    const a = nodeCenter(A);
+    const b = nodeCenter(B);
+    const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const d = Math.hypot(dc.x - mid.x, dc.y - mid.y);
+    if (d < bestD) { bestD = d; best = e; }
+  }
+  return bestD <= REORDER_DIST ? best : null;
+}
+
+// Fija la conexión (source, handle) → target, reemplazando la que hubiera en ese
+// mismo handle (cada salida apunta a un solo paso). IDs únicos por handle.
+function setEdge(list, source, target, handle = 'default') {
+  const kept = list.filter((e) => !(e.source === source && (e.sourceHandle || 'default') === handle));
+  kept.push({ id: `e-${source}-${target}-${handle}`, source, target, sourceHandle: handle });
+  return kept;
+}
+
+function graphHasCycle(edges) {
+  const adj = {};
+  edges.forEach((e) => { (adj[e.source] ||= []).push(e.target); });
+  const state = {}; // 1 = en la pila, 2 = terminado
+  const dfs = (u) => {
+    state[u] = 1;
+    for (const v of adj[u] || []) {
+      if (state[v] === 1) return true;
+      if (!state[v] && dfs(v)) return true;
+    }
+    state[u] = 2;
+    return false;
+  };
+  return Object.keys(adj).some((u) => !state[u] && dfs(u));
+}
+
+/**
+ * Reordena el paso `dId` insertándolo dentro de la conexión `targetEdge` (A→B):
+ * lo saca de su sitio actual (conecta su padre directo con su hijo) y lo mete
+ * entre A y B. Solo pasos lineales (una salida por defecto, sin ramas Sí/No).
+ * Devuelve las nuevas aristas o null si no aplica / crearía un bucle.
+ */
+function spliceNodeIntoEdge(dId, targetEdge, modelNodes, edges) {
+  const dNode = modelNodes.find((n) => n.id === dId);
+  if (!dNode || dNode.type === 'trigger') return null; // el disparador es la raíz
+  if (isBranch(dNode.type)) return null; // ramas: reordenar por arrastre es ambiguo
+  const A = targetEdge.source;
+  const B = targetEdge.target;
+  if (A === dId || B === dId) return null; // soltó sobre su propia conexión: nada
+
+  const incoming = edges.filter((e) => e.target === dId);
+  const outgoing = edges.filter((e) => e.source === dId);
+  const defOut = outgoing.filter((e) => (e.sourceHandle || 'default') === 'default');
+  if (outgoing.length > defOut.length || defOut.length > 1) return null; // tiene ramas
+  const dChild = defOut[0]?.target || null;
+
+  const handle = targetEdge.sourceHandle || 'default';
+  // Fuera todas las aristas de D y la conexión objetivo.
+  let next = edges.filter((e) => e.source !== dId && e.target !== dId && e.id !== targetEdge.id);
+  // Puentea: los padres de D pasan a apuntar directo a su hijo (si tenía).
+  if (dChild) {
+    incoming.forEach((pi) => { next = setEdge(next, pi.source, dChild, pi.sourceHandle || 'default'); });
+  }
+  // Inserta D entre A y B.
+  next = setEdge(next, A, dId, handle);
+  next = setEdge(next, dId, B, 'default');
+
+  if (graphHasCycle(next)) return null;
+  return next;
+}
+
 /**
  * Editor visual de workflows como grafo a pantalla completa (estilo GoHighLevel).
  * Toda la estructura se construye con los botones "+" del propio diagrama:
@@ -450,6 +561,10 @@ export default function WorkflowGraphEditor({
   const [selectedId, setSelectedId] = useState(null);
   const [selectedTrigger, setSelectedTrigger] = useState(null); // { nodeId, idx }
   const [adding, setAdding] = useState(null); // { mode:'append', sourceId, sourceHandle } | { mode:'insert', edgeId }
+  // Portapapeles de un paso copiado ({ type, data }); se pega desde el selector "+".
+  const [clipboard, setClipboard] = useState(null);
+  // Posición del nodo al empezar a arrastrar, para no reordenar por un roce mínimo.
+  const dragStartRef = useRef(null);
 
   // Asegura que siempre exista al menos un nodo disparador (un flujo).
   const modelNodes = useMemo(() => {
@@ -485,6 +600,10 @@ export default function WorkflowGraphEditor({
           onAddTrigger: () => addTriggerToNode(n.id),
           onRemoveTrigger: (i) => removeTrigger(n.id, i),
           onDeleteFlow: () => deleteFlow(n.id),
+          // Acciones rápidas del paso (barra al pasar el cursor). No en el disparador.
+          onCopy: isTrig ? undefined : () => copyNode(n.id),
+          onDuplicate: isTrig ? undefined : () => duplicateNode(n.id),
+          onDelete: isTrig ? undefined : () => deleteNode(n.id),
         },
       };
     }),
@@ -498,10 +617,38 @@ export default function WorkflowGraphEditor({
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState(flowNodes);
   useEffect(() => { setRfNodes(flowNodes); }, [flowNodes, setRfNodes]);
 
-  const onNodeDragStop = useCallback(() => {
-    const posById = new Map(rfNodes.map((n) => [n.id, n.position]));
-    const next = modelNodes.map((n) => (posById.has(n.id) ? { ...n, position: posById.get(n.id) } : n));
-    onChange?.({ nodes: next, edges });
+  const onNodeDragStart = useCallback((_evt, node) => {
+    dragStartRef.current = { id: node.id, ...node.position };
+  }, []);
+
+  // Al soltar: si el paso se dejó ENCIMA de una conexión, se REORDENA (se inserta
+  // ahí y se re-cablea). Si se soltó en vacío, solo se guarda su nueva posición.
+  const onNodeDragStop = useCallback((_evt, node) => {
+    const persistPositions = () => {
+      const posById = new Map(rfNodes.map((n) => [n.id, n.position]));
+      const next = modelNodes.map((n) => (posById.has(n.id) ? { ...n, position: posById.get(n.id) } : n));
+      onChange?.({ nodes: next, edges });
+    };
+
+    const start = dragStartRef.current;
+    dragStartRef.current = null;
+    const moved = start && start.id === node.id
+      ? Math.hypot((node.position?.x || 0) - start.x, (node.position?.y || 0) - start.y)
+      : 0;
+    const draggedModel = modelNodes.find((n) => n.id === node.id);
+    // Reordenar solo si se movió de verdad (evita reordenar por un clic-arrastre mínimo).
+    if (draggedModel && draggedModel.type !== 'trigger' && moved > 30) {
+      const target = findDropEdge(node, rfNodes, edges);
+      if (target) {
+        const newEdges = spliceNodeIntoEdge(node.id, target, modelNodes, edges);
+        if (newEdges) {
+          onChange?.({ nodes: autoLayout(modelNodes, newEdges), edges: newEdges });
+          toast.success('Paso reordenado');
+          return;
+        }
+      }
+    }
+    persistPositions();
   }, [rfNodes, modelNodes, edges, onChange]);
 
   const deleteEdge = useCallback((edgeId) => {
@@ -595,9 +742,11 @@ export default function WorkflowGraphEditor({
 
   // Inserta/añade un nodo del tipo elegido según el contexto `adding`.
   // Posiciona el nodo nuevo respecto a su origen (no reorganiza el resto).
-  const handlePickStep = (type) => {
+  // `presetData` permite PEGAR un paso copiado (misma configuración).
+  const handlePickStep = (type, presetData = null) => {
     const id = `n${Date.now()}`;
-    const newModelNode = { id, type, position: { x: 0, y: 0 }, data: newNodeData(type) };
+    const data = presetData ? JSON.parse(JSON.stringify(presetData)) : newNodeData(type);
+    const newModelNode = { id, type, position: { x: 0, y: 0 }, data };
 
     if (adding?.mode === 'append') {
       const src = modelNodes.find((n) => n.id === adding.sourceId);
@@ -649,6 +798,50 @@ export default function WorkflowGraphEditor({
     setSelectedId(null);
   };
 
+  // Copia la configuración de un paso al portapapeles interno (para "Pegar" desde
+  // cualquier "+" del diagrama). No modifica el flujo.
+  const copyNode = (id) => {
+    const src = modelNodes.find((n) => n.id === id);
+    if (!src || src.type === 'trigger') return;
+    setClipboard({ type: src.type, data: JSON.parse(JSON.stringify(src.data || {})) });
+    toast.success('Paso copiado. Pulsa un "+" y elige "Pegar" para insertarlo.');
+  };
+
+  // Duplica un paso: crea una copia con su misma configuración. Para pasos lineales
+  // se inserta JUSTO DESPUÉS del original (listo para usar); las ramas (Sí/No) se
+  // duplican al lado, sin conectar (conéctalas donde quieras).
+  const duplicateNode = (id) => {
+    const src = modelNodes.find((n) => n.id === id);
+    if (!src || src.type === 'trigger') return;
+    const newId = `n${Date.now()}`;
+    const clone = {
+      id: newId,
+      type: src.type,
+      position: { x: (src.position?.x || 0) + GAP_X * 0.5, y: (src.position?.y || 0) + GAP_Y * 0.6 },
+      data: JSON.parse(JSON.stringify(src.data || {})),
+    };
+    const defEdge = isBranch(src.type)
+      ? null
+      : edges.find((e) => e.source === id && (e.sourceHandle || 'default') === 'default');
+    if (defEdge) {
+      // original → copia → (antiguo hijo del original)
+      let nextEdges = edges.filter((e) => e.id !== defEdge.id);
+      nextEdges = setEdge(nextEdges, id, newId, 'default');
+      nextEdges = setEdge(nextEdges, newId, defEdge.target, 'default');
+      const shift = descendantIdsInclusive(nextEdges, defEdge.target);
+      const shifted = modelNodes.map((n) => (shift.has(n.id) ? { ...n, position: { x: n.position?.x || 0, y: (n.position?.y || 0) + GAP_Y } } : n));
+      onChange?.({ nodes: [...shifted, clone], edges: nextEdges });
+    } else if (!isBranch(src.type)) {
+      // El original no tenía continuación: la copia queda enganchada tras él.
+      onChange?.({ nodes: [...modelNodes, clone], edges: setEdge(edges, id, newId, 'default') });
+    } else {
+      // Rama: copia suelta (el usuario decide dónde conectarla).
+      onChange?.({ nodes: [...modelNodes, clone], edges });
+    }
+    setSelectedId(newId);
+    toast.success('Paso duplicado');
+  };
+
   const tidy = () => onChange?.({ nodes: autoLayout(modelNodes, edges), edges });
 
   const selectedNode = modelNodes.find((n) => n.id === selectedId && n.type !== 'trigger');
@@ -665,10 +858,12 @@ export default function WorkflowGraphEditor({
           nodeTypes={nodeTypes}
           edgeTypes={edgeTypes}
           onNodesChange={onNodesChange}
+          onNodeDragStart={onNodeDragStart}
           onNodeDragStop={onNodeDragStop}
           onConnect={onConnect}
           isValidConnection={isValidConnection}
           connectionRadius={38}
+          nodeDragThreshold={6}
           onNodeClick={(_, n) => { if (n.type === 'trigger') { setSelectedTrigger({ nodeId: n.id, idx: 0 }); setSelectedId(null); } else { setSelectedId(n.id); setSelectedTrigger(null); } }}
           onPaneClick={() => { setSelectedId(null); setSelectedTrigger(null); }}
           nodesDraggable
@@ -708,7 +903,7 @@ export default function WorkflowGraphEditor({
             Auto-organizar
           </button>
           <span className="hidden md:inline-flex items-center px-3 py-1.5 bg-white/80 border border-slate-200 rounded-lg text-[11px] text-slate-400 shadow-sm select-none">
-            Arrastra desde el punto de abajo de un nodo hasta otro para conectarlos · clic en una línea y luego en ✕ para desconectar
+            Arrastra un paso sobre una línea para reordenarlo · pasa el cursor sobre un paso para copiar/duplicar/eliminar · arrastra desde el punto de abajo para conectar
           </span>
         </div>
 
@@ -736,7 +931,7 @@ export default function WorkflowGraphEditor({
 
         {/* Selector de paso (al pulsar "+") */}
         {adding && (
-          <StepPicker onPick={handlePickStep} onClose={() => setAdding(null)} />
+          <StepPicker onPick={handlePickStep} onClose={() => setAdding(null)} clipboard={clipboard} />
         )}
       </div>
     </ReactFlowProvider>
@@ -766,7 +961,7 @@ function Drawer({ title, onClose, onDelete, children }) {
 }
 
 // ─────────── Selector de pasos ───────────
-function StepPicker({ onPick, onClose }) {
+function StepPicker({ onPick, onClose, clipboard }) {
   const [q, setQ] = useState('');
   const ql = q.trim().toLowerCase();
   return (
@@ -776,6 +971,17 @@ function StepPicker({ onPick, onClose }) {
           <span className="text-sm font-bold text-slate-700">Añadir un paso</span>
           <button type="button" onClick={onClose} className="p-1 text-slate-400 hover:text-slate-700 bg-transparent border-none cursor-pointer"><HiOutlineXMark className="w-5 h-5" /></button>
         </div>
+        {/* Pegar el paso copiado (mismo tipo + configuración). */}
+        {clipboard && (
+          <button
+            type="button"
+            onClick={() => onPick(clipboard.type, clipboard.data)}
+            className="mx-3 mt-3 px-3 py-2 border-2 border-dashed border-emerald-300 bg-emerald-50/60 rounded-lg text-sm text-emerald-700 cursor-pointer hover:bg-emerald-50 hover:border-emerald-400 flex items-center gap-2"
+          >
+            <HiOutlineSquare2Stack className="w-4 h-4 shrink-0" />
+            Pegar «{STEP_DEFS[clipboard.type] || clipboard.type}» copiado
+          </button>
+        )}
         <div className="p-3 border-b border-slate-100">
           <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar paso…" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
         </div>
