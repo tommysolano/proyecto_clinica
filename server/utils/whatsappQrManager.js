@@ -147,14 +147,34 @@ async function setAccountStatus(accountId, patch) {
 
 const ACK_STATUS = { '-1': 'failed', 1: 'sent', 2: 'delivered', 3: 'read', 4: 'read' };
 
-// Tipo de whatsapp-web.js → enum de Message.mediaType. 'ptt' es la nota de voz;
-// un sticker es un webp, así que se guarda como imagen (el enum no tiene
-// 'sticker' y devolverlo hacía fallar el guardado del mensaje entrante).
+// Tipo de whatsapp-web.js → enum de Message.mediaType. 'ptt' es la nota de voz.
+// 'sticker' se conserva como tal para pintarlo pequeño/transparente en el chat.
 function mapQrMediaType(t) {
   if (t === 'ptt') return 'audio';
-  if (t === 'sticker') return 'image';
-  if (['image', 'audio', 'video', 'document'].includes(t)) return t;
+  if (['image', 'audio', 'video', 'document', 'sticker'].includes(t)) return t;
   return 'document';
+}
+
+// Descarga la media inline de un mensaje QR y arma el objeto media para la
+// ingesta ({ type, dataUrl, caption, filename, size }). null si no hay/ falla.
+async function extractQrMedia(msg) {
+  if (!msg.hasMedia) return null;
+  try {
+    const m = await msg.downloadMedia();
+    if (!m || !m.data) return null;
+    const dataUrl = `data:${m.mimetype};base64,${m.data}`;
+    return {
+      type: mapQrMediaType(msg.type),
+      dataUrl,
+      caption: msg.body || '',
+      // El nombre del archivo lo trae el propio mensaje (documentos).
+      filename: m.filename || msg._data?.filename || '',
+      // whatsapp-web.js informa el tamaño en _data.size (bytes) cuando existe.
+      size: Number(msg._data?.size) || 0,
+    };
+  } catch {
+    return null; // media no disponible
+  }
 }
 
 /**
@@ -383,19 +403,7 @@ async function connect(accountId, { userId } = {}) {
       const phone = from.replace(/@.*$/, '').replace(/[^\d]/g, '');
       if (!phone) return;
 
-      let media = null;
-      if (msg.hasMedia) {
-        try {
-          const m = await msg.downloadMedia();
-          if (m && m.data) {
-            media = {
-              type: mapQrMediaType(msg.type),
-              dataUrl: `data:${m.mimetype};base64,${m.data}`,
-              caption: msg.body || '',
-            };
-          }
-        } catch { /* media no disponible */ }
-      }
+      const media = await extractQrMedia(msg);
       if (!String(msg.body || '').trim() && !media) return; // nada que mostrar
 
       const account2 = await WhatsappAccount.findById(accountId);
@@ -443,6 +451,44 @@ async function connect(accountId, { userId } = {}) {
       });
     } catch (e) {
       console.error('[whatsapp-qr message]', e.message);
+    }
+  });
+
+  // Mensaje SALIENTE creado (incluye los que el agente escribe desde el teléfono,
+  // fuera del CRM). Solo nos interesan los `fromMe`: los entrantes ya los maneja
+  // el evento 'message'. La ingesta deduplica los que envió el propio sistema.
+  client.on('message_create', async (msg) => {
+    try {
+      if (!msg.fromMe || msg.isStatus) return;
+      const to = typeof msg.to === 'string' ? msg.to : '';
+      if (!/@(c\.us|lid)$/.test(to)) return; // solo chats directos (no grupos)
+      if (!CONTENT_TYPES.includes(msg.type)) return;
+      const phone = to.replace(/@.*$/, '').replace(/[^\d]/g, '');
+      if (!phone) return;
+
+      const media = await extractQrMedia(msg);
+      if (!String(msg.body || '').trim() && !media) return;
+
+      const account2 = await WhatsappAccount.findById(accountId);
+      const clinicId = await require('./callCenterClinic').resolveCallCenterClinicId();
+      if (!clinicId) return;
+
+      const serializedId =
+        msg.id?._serialized || msg._data?.id?._serialized || msg._data?.id?.id || '';
+
+      const { ingestExternalOutbound } = require('../controllers/chatController');
+      await ingestExternalOutbound({
+        clinicId,
+        account: account2,
+        phone,
+        externalUserId: to,
+        body: msg.body || '',
+        media,
+        externalId: serializedId,
+        contactName: msg._data?.notifyName || '',
+      });
+    } catch (e) {
+      console.error('[whatsapp-qr message_create]', e.message);
     }
   });
 

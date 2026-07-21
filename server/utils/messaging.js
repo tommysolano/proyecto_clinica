@@ -23,11 +23,19 @@ function computeWhatsappWindowExpiresAt(lastIncomingAt = new Date()) {
 
 function getWhatsappWindowExpiresAt(conv) {
   if (!conv) return null;
-  if (conv.window24hExpiresAt) return new Date(conv.window24hExpiresAt);
-  if (conv.lastMessageDirection === 'in' && conv.lastMessageAt) {
-    return computeWhatsappWindowExpiresAt(conv.lastMessageAt);
+  // Fuente de verdad = último ENTRANTE. Se toma el máximo entre el campo cacheado
+  // y `lastInboundAt` por si uno quedó desfasado; así un mensaje saliente (agente
+  // que responde / cotización) nunca "cierra" una ventana que sigue abierta.
+  const candidates = [];
+  if (conv.window24hExpiresAt) candidates.push(new Date(conv.window24hExpiresAt).getTime());
+  if (conv.lastInboundAt) candidates.push(computeWhatsappWindowExpiresAt(conv.lastInboundAt).getTime());
+  // Compatibilidad con conversaciones viejas sin `lastInboundAt`: si el último
+  // mensaje fue entrante, la ventana sale de él.
+  if (!candidates.length && conv.lastMessageDirection === 'in' && conv.lastMessageAt) {
+    candidates.push(computeWhatsappWindowExpiresAt(conv.lastMessageAt).getTime());
   }
-  return null;
+  if (!candidates.length) return null;
+  return new Date(Math.max(...candidates));
 }
 
 function isWhatsappWindowOpen(conv, now = new Date()) {

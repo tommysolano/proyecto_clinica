@@ -65,15 +65,22 @@ exports.getCallingStatus = async (req, res) => {
     const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
     const resolved = await resolveCallingAccount(conv);
-    if (!resolved.ok) return res.json({ enabled: false, reason: resolved.reason });
+    // El número es QR (o no hay número): no se puede habilitar nada, es un límite
+    // duro de WhatsApp Web. `canEnable:false` para que el front no ofrezca el botón.
+    if (!resolved.ok) return res.json({ enabled: false, canEnable: false, reason: resolved.reason });
     const settings = await calls.getCallingSettings(resolved.creds);
     if (!settings.ok) {
-      return res.json({ enabled: false, reason: settings.error || 'No se pudo consultar la configuración de llamadas.' });
+      return res.json({ enabled: false, canEnable: false, reason: settings.error || 'No se pudo consultar la configuración de llamadas.' });
     }
     const status = String(settings.calling?.status || '').toUpperCase();
     return res.json({
       enabled: status === 'ENABLED',
-      reason: status === 'ENABLED' ? '' : 'Las llamadas no están habilitadas en este número de WhatsApp.',
+      // Es un número Cloud API cuyas llamadas están APAGADAS: un admin puede
+      // encenderlas desde la UI (POST /calling-enable) sin entrar a Meta.
+      canEnable: status !== 'ENABLED',
+      reason: status === 'ENABLED'
+        ? ''
+        : 'Las llamadas no están habilitadas en este número de WhatsApp. Un administrador puede activarlas.',
       status,
     });
   } catch (err) {

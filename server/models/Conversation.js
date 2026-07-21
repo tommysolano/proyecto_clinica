@@ -90,6 +90,12 @@ const conversationSchema = new mongoose.Schema(
     blockedAt: { type: Date },
     blockedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     window24hExpiresAt: { type: Date, default: null, index: true },
+    // Fecha del ÚLTIMO mensaje ENTRANTE (del contacto). Es la fuente de verdad de
+    // la ventana de 24h de WhatsApp: sobrevive a los mensajes salientes (cuando un
+    // agente responde o envía una cotización, `lastMessageDirection` pasa a 'out'
+    // pero la ventana sigue viva 24h desde este momento). Antes, sin este campo,
+    // un chat contestado hace minutos aparecía como "ventana cerrada".
+    lastInboundAt: { type: Date, default: null },
     attribution: {
       adId: { type: String, trim: true, default: '' },
       campaign: { type: String, trim: true, default: '' },

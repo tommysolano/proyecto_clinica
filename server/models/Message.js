@@ -17,7 +17,18 @@ const messageSchema = new mongoose.Schema(
     direction: { type: String, enum: ['in', 'out'], required: true },
     body: { type: String, trim: true },
     mediaUrl: { type: String, trim: true },
-    mediaType: { type: String, enum: ['image', 'audio', 'video', 'document', null], default: null },
+    // 'sticker' es un webp de WhatsApp: se guarda con su tipo propio para poder
+    // pintarlo pequeño y transparente (no como una imagen normal en una burbuja).
+    mediaType: { type: String, enum: ['image', 'audio', 'video', 'document', 'sticker', null], default: null },
+    // Nombre original del archivo adjunto (documentos): "REPORTE DE PLASMA.xlsx".
+    // Permite mostrar la tarjeta de documento igual que WhatsApp en vez de un
+    // genérico "Ver adjunto".
+    mediaName: { type: String, trim: true, default: '' },
+    // Tamaño del adjunto en bytes (si el proveedor lo informa) para la tarjeta.
+    mediaSize: { type: Number, default: 0 },
+    // Cómo llegó/salió el mensaje. 'phone' marca los enviados desde el teléfono
+    // (número QR) fuera de nuestro sistema, para distinguirlos en la burbuja.
+    origin: { type: String, enum: ['system', 'phone', ''], default: '' },
     // Identificadores externos (WhatsApp message id)
     externalId: { type: String, index: true },
     // Respuesta interactiva (botón o lista de WhatsApp): id + título del elemento

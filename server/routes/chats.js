@@ -94,6 +94,7 @@ router.post('/:id/notes', requireRole(...CALL_CENTER_ROLES), ctrl.addInternalNot
 router.post('/:id/suggest-reply', requireRole(...CALL_CENTER_ROLES), ctrl.suggestReply);
 router.post('/:id/summary', requireRole(...CALL_CENTER_ROLES), ctrl.summarizeConversation);
 router.post('/:id/featured', requireRole(...CALL_CENTER_ROLES), ctrl.toggleFeatured);
+router.post('/:id/read', requireRole(...CALL_CENTER_ROLES), ctrl.markConversationRead);
 router.post('/:id/block', requireRole(...CALL_CENTER_ROLES), ctrl.toggleBlocked);
 router.post('/:id/opportunity', requireRole(...CALL_CENTER_ROLES), ctrl.setOpportunity);
 router.delete('/:id/opportunity', requireRole(...CALL_CENTER_ROLES), ctrl.removeOpportunity);

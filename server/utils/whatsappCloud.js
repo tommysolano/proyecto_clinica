@@ -36,7 +36,7 @@ async function downloadMedia(creds, mediaId, { maxBytes = 4 * 1024 * 1024 } = {}
     const buf = Buffer.from(await binRes.arrayBuffer());
     if (buf.length > maxBytes) return { ok: false, tooLarge: true, mimeType: meta.mime_type };
     const mimeType = meta.mime_type || 'application/octet-stream';
-    return { ok: true, dataUrl: `data:${mimeType};base64,${buf.toString('base64')}`, mimeType };
+    return { ok: true, dataUrl: `data:${mimeType};base64,${buf.toString('base64')}`, mimeType, size: buf.length };
   } catch {
     return { ok: false };
   }

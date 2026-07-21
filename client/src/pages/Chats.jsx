@@ -30,6 +30,10 @@ import {
   HiOutlineBarsArrowDown,
   HiOutlineBarsArrowUp,
   HiOutlinePhoto,
+  HiOutlineEllipsisHorizontal,
+  HiOutlineEnvelopeOpen,
+  HiOutlineUserPlus,
+  HiOutlineUsers,
 } from 'react-icons/hi2';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
@@ -93,19 +97,33 @@ function formatTime(date) {
   return new Date(date).toLocaleTimeString('es-EC', { timeZone: 'America/Guayaquil', hour: '2-digit', minute: '2-digit' });
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+// El número de este chat es QR (WhatsApp Web). `effectiveConnectionType` lo
+// resuelve el backend: el del número asignado, o el del número por defecto si el
+// chat no tiene uno. Los chats viejos sin número asignado ya no se tratan por
+// error como Cloud API (que era lo que cerraba la ventana indebidamente).
+function isQrConversation(conv) {
+  return conv?.effectiveConnectionType === 'qr' || conv?.whatsappAccount?.connectionType === 'qr';
+}
+
 function getWindow24hExpiresAt(conv) {
   if (!conv || conv.channel !== 'whatsapp') return null;
-  if (conv.window24hExpiresAt) return new Date(conv.window24hExpiresAt);
-  if (conv.lastMessageDirection === 'in' && conv.lastMessageAt) {
-    return new Date(new Date(conv.lastMessageAt).getTime() + 24 * 60 * 60 * 1000);
+  // Fuente de verdad = último ENTRANTE (sobrevive a los mensajes salientes). Se
+  // toma el máximo de todo lo disponible para no cerrar una ventana viva.
+  const times = [];
+  if (conv.window24hExpiresAt) times.push(new Date(conv.window24hExpiresAt).getTime());
+  if (conv.lastInboundAt) times.push(new Date(conv.lastInboundAt).getTime() + DAY_MS);
+  if (!times.length && conv.lastMessageDirection === 'in' && conv.lastMessageAt) {
+    times.push(new Date(conv.lastMessageAt).getTime() + DAY_MS);
   }
-  return null;
+  return times.length ? new Date(Math.max(...times)) : null;
 }
 
 function isWhatsappWindowClosed(conv) {
   if (!conv || conv.channel !== 'whatsapp') return false;
   // Los números QR (WhatsApp Web) no tienen ventana de 24h: se puede escribir siempre.
-  if (conv.whatsappAccount?.connectionType === 'qr') return false;
+  if (isQrConversation(conv)) return false;
   const expiresAt = getWindow24hExpiresAt(conv);
   return !expiresAt || expiresAt.getTime() <= Date.now();
 }
@@ -600,6 +618,35 @@ export default function Chats() {
     setTimeout(() => el.classList.remove('ring-2', 'ring-emerald-400', 'rounded-lg'), 1600);
   };
 
+  // Marca el chat como leído SIN responder: quita la notificación de no leído.
+  const markRead = async (conv) => {
+    try {
+      await api.post(`/chats/${conv._id}/read`);
+      setConversations((prev) => prev.map((c) => (c._id === conv._id ? { ...c, unreadCount: 0 } : c)));
+      // Si estamos en la pestaña "No leídos", el chat ya no pertenece ahí.
+      if (tab === 'unread') {
+        setConversations((prev) => prev.filter((c) => c._id !== conv._id));
+      }
+      toast.success('Marcado como leído');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo marcar como leído');
+    }
+  };
+
+  // Habilita las llamadas del número Cloud API de este chat (acción de admin).
+  const enableCalling = async () => {
+    if (!activeId) return;
+    try {
+      await api.post(`/chats/${activeId}/calling-enable`);
+      toast.success('Llamadas habilitadas. Puede tardar unos minutos en activarse en WhatsApp.');
+      // Reconsultar el estado para refrescar el botón de llamar.
+      const { data } = await api.get(`/chats/${activeId}/calling-status`);
+      setCalling(data);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudieron habilitar las llamadas');
+    }
+  };
+
   // Reparte la conversación al agente con menos chats abiertos (round-robin).
   const autoAssignChat = async (conv) => {
     try {
@@ -704,6 +751,7 @@ export default function Chats() {
                     active={c._id === activeId}
                     onClick={() => setActiveId(c._id)}
                     onToggleFeatured={() => toggleFeatured(c)}
+                    onMarkRead={() => markRead(c)}
                   />
                 ))
               )}
@@ -726,6 +774,9 @@ export default function Chats() {
                   onOpenOpportunity={() => setOpportunityModal(true)}
                   onCreateAppointment={() => setAppointmentModal(true)}
                   onCreateQuotation={() => setQuotationModal(true)}
+                  onMarkRead={() => markRead(activeConv)}
+                  onEnableCalling={enableCalling}
+                  isAdmin={isAdmin}
                   meId={user?._id}
                   calling={calling}
                   onCall={() => voiceCall.startCall(activeConv)}
@@ -1451,7 +1502,7 @@ function GalleryModal({ images, onClose, onChange, onSend }) {
 
 // ============= Sub-componentes =============
 
-function ConversationRow({ conv, active, onClick, onToggleFeatured }) {
+function ConversationRow({ conv, active, onClick, onToggleFeatured, onMarkRead }) {
   const meta = conv.opportunity?.isOpportunity ? stageMeta(conv.opportunity.stage) : null;
   return (
     <div
@@ -1487,9 +1538,18 @@ function ConversationRow({ conv, active, onClick, onToggleFeatured }) {
               {conv.lastMessagePreview || <em className="text-slate-300">Sin mensajes</em>}
             </span>
             {conv.unreadCount > 0 && (
-              <span className="bg-emerald-600 text-white text-[10px] rounded-full px-1.5 min-w-[18px] text-center">
-                {conv.unreadCount}
-              </span>
+              <button
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onMarkRead?.();
+                }}
+                title="Marcar como leído"
+                className="bg-emerald-600 text-white text-[10px] rounded-full px-1.5 min-w-[18px] text-center border-none cursor-pointer hover:bg-emerald-700 flex items-center gap-0.5 group/unread"
+              >
+                <HiOutlineEnvelopeOpen className="w-3 h-3 hidden group-hover/unread:inline" />
+                <span className="group-hover/unread:hidden">{conv.unreadCount}</span>
+                <span className="hidden group-hover/unread:inline">Leído</span>
+              </button>
             )}
           </div>
           <div className="flex items-center gap-1 mt-1">
@@ -1527,10 +1587,69 @@ function ConversationRow({ conv, active, onClick, onToggleFeatured }) {
   );
 }
 
-function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpportunity, onCreateAppointment, onCreateQuotation, meId, calling, onCall, onBack, onToggleInfo }) {
+// Menú desplegable de acciones (⋯) para pantallas estrechas: agrupa todas las
+// acciones del chat que no caben en la barra. Cierra al elegir o al hacer clic
+// fuera. Se usa cuando la cabecera no tiene ancho para mostrarlas en línea.
+function HeaderActionsMenu({ actions }) {
+  const [open, setOpen] = useState(false);
+  if (!actions.length) return null;
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen((v) => !v)}
+        className="p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 bg-transparent border-none cursor-pointer"
+        title="Más acciones"
+      >
+        <HiOutlineEllipsisHorizontal className="w-5 h-5" />
+      </button>
+      {open && (
+        <>
+          {/* Fondo transparente para cerrar al hacer clic fuera. */}
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 top-full mt-1 w-56 max-w-[80vw] bg-white border border-slate-200 rounded-lg shadow-lg z-50 py-1 overflow-hidden">
+            {actions.map((a) => (
+              <button
+                key={a.key}
+                onClick={() => { setOpen(false); a.onClick(); }}
+                className="w-full text-left px-3 py-2 text-sm bg-white hover:bg-slate-50 border-none cursor-pointer flex items-center gap-2 text-slate-700"
+              >
+                <a.icon className={`w-4 h-4 shrink-0 ${a.iconClass || 'text-slate-400'}`} />
+                {a.label}
+              </button>
+            ))}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpportunity, onCreateAppointment, onCreateQuotation, onMarkRead, onEnableCalling, isAdmin, meId, calling, onCall, onBack, onToggleInfo }) {
   const canTake = !conv.assignedTo || String(conv.assignedTo._id || conv.assignedTo) !== String(meId);
   // "Esperando respuesta" cuando el último mensaje es entrante (del paciente).
   const waitingReply = conv.lastMessageDirection === 'in';
+  // Un admin puede encender las llamadas de un número Cloud API que las tiene
+  // apagadas (sin entrar a Meta). Por QR es imposible: no se ofrece.
+  const canEnableCalls = isAdmin && calling && calling.enabled === false && calling.canEnable;
+
+  // Acciones secundarias: en línea en pantallas anchas, en el menú "⋯" cuando no
+  // caben. Una sola fuente de verdad para ambos modos.
+  const actions = [
+    canTake && { key: 'take', label: 'Tomar', icon: HiOutlineUserPlus, onClick: onTake },
+    onAutoAssign && { key: 'auto', label: 'Auto-asignar', icon: HiOutlineUsers, onClick: onAutoAssign },
+    {
+      key: 'opp',
+      label: conv.opportunity?.isOpportunity ? 'Editar / añadir oportunidad' : 'Crear oportunidad',
+      icon: HiOutlineTag,
+      iconClass: 'text-emerald-600',
+      onClick: onOpenOpportunity,
+    },
+    conv.patient && { key: 'appt', label: 'Crear cita', icon: HiOutlineCalendarDays, iconClass: 'text-indigo-600', onClick: onCreateAppointment },
+    { key: 'quote', label: 'Cotización', icon: HiOutlineDocumentDuplicate, iconClass: 'text-amber-600', onClick: onCreateQuotation },
+    conv.unreadCount > 0 && { key: 'read', label: 'Marcar como leído', icon: HiOutlineEnvelopeOpen, onClick: onMarkRead },
+    canEnableCalls && { key: 'enablecall', label: 'Habilitar llamadas', icon: HiOutlinePhone, iconClass: 'text-emerald-600', onClick: onEnableCalling },
+  ].filter(Boolean);
+
   return (
     <div className="border-b border-slate-100 p-3 flex items-center gap-2">
       {onBack && (
@@ -1549,8 +1668,13 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpport
         <div className="font-semibold text-slate-800 flex items-center gap-2">
           <span className="truncate">{conv.contactName || conv.phone}</span>
           {waitingReply && (
-            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700" title="El paciente espera respuesta">
+            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-rose-100 text-rose-700 shrink-0 hidden @xl:inline" title="El paciente espera respuesta">
               Esperando respuesta
+            </span>
+          )}
+          {conv.unreadCount > 0 && (
+            <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-emerald-600 text-white shrink-0" title="Mensajes sin leer">
+              {conv.unreadCount}
             </span>
           )}
         </div>
@@ -1564,7 +1688,7 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpport
           )}
         </div>
       </div>
-      <div className="flex gap-1 flex-wrap justify-end">
+      <div className="flex items-center gap-1 shrink-0">
         {/* Llamar por WhatsApp. Solo los números Cloud API pueden llamar: si el
             chat usa un número QR o Meta no tiene las llamadas habilitadas, el
             botón queda deshabilitado explicando por qué en vez de fallar al pulsar. */}
@@ -1572,51 +1696,30 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpport
           onClick={onCall}
           disabled={!calling?.enabled || conv.blocked}
           title={conv.blocked ? 'Contacto bloqueado' : calling?.enabled ? 'Llamar por WhatsApp' : (calling?.reason || 'Comprobando si este número puede llamar…')}
-          className="text-xs px-2 py-1 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed border-none cursor-pointer flex items-center gap-1"
+          className="text-xs px-2 py-1.5 bg-emerald-600 text-white rounded-lg hover:bg-emerald-700 disabled:opacity-40 disabled:cursor-not-allowed border-none cursor-pointer flex items-center gap-1 shrink-0"
         >
-          <HiOutlinePhone className="w-3.5 h-3.5" /> <span className="hidden @4xl:inline">Llamar</span>
+          <HiOutlinePhone className="w-4 h-4" /> <span className="hidden @5xl:inline">Llamar</span>
         </button>
-        {canTake && (
-          <button
-            onClick={onTake}
-            className="text-xs px-2 py-1 bg-slate-100 hover:bg-slate-200 rounded-xl"
-          >
-            Tomar
-          </button>
-        )}
-        {onAutoAssign && (
-          <button
-            onClick={onAutoAssign}
-            className="text-xs px-2 py-1 bg-slate-100 hover:bg-slate-200 rounded-xl"
-            title="Asignar al agente con menos chats abiertos (round-robin)"
-          >
-            Auto-asignar
-          </button>
-        )}
-        <button
-          onClick={onOpenOpportunity}
-          className="text-xs px-2 py-1 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 rounded-lg flex items-center gap-1"
-        >
-          <HiOutlineTag className="w-3.5 h-3.5" />
-          <span className="hidden @4xl:inline">{conv.opportunity?.isOpportunity ? 'Editar / añadir oportunidad' : 'Crear oportunidad'}</span>
-        </button>
-        {conv.patient && (
-          <button
-            onClick={onCreateAppointment}
-            className="text-xs px-2 py-1 bg-indigo-50 text-indigo-700 hover:bg-indigo-100 rounded-lg flex items-center gap-1"
-          >
-            <HiOutlineCalendarDays className="w-3.5 h-3.5" /> <span className="hidden @4xl:inline">Crear cita</span>
-          </button>
-        )}
-        <button
-          onClick={onCreateQuotation}
-          className="text-xs px-2 py-1 bg-amber-50 text-amber-700 hover:bg-amber-100 rounded-lg flex items-center gap-1"
-        >
-          <HiOutlineDocumentDuplicate className="w-3.5 h-3.5" /> <span className="hidden @4xl:inline">Cotización</span>
-        </button>
+
+        {/* Acciones en línea (solo icono + tooltip) cuando hay ancho (≥ @5xl).
+            Se mantienen sin texto para que nunca desborden la columna: la versión
+            con etiquetas está en el menú "⋯" de pantallas estrechas. */}
+        <div className="hidden @5xl:flex items-center gap-1">
+          {actions.map((a) => (
+            <button
+              key={a.key}
+              onClick={a.onClick}
+              title={a.label}
+              className="p-1.5 bg-slate-50 text-slate-600 hover:bg-slate-100 rounded-lg border-none cursor-pointer flex items-center shrink-0"
+            >
+              <a.icon className={`w-4 h-4 ${a.iconClass || ''}`} />
+            </button>
+          ))}
+        </div>
+
         <button
           onClick={onToggleFeatured}
-          className={`p-1.5 rounded-lg ${conv.isFeatured ? 'bg-amber-50' : 'hover:bg-slate-50'}`}
+          className={`p-1.5 rounded-lg shrink-0 ${conv.isFeatured ? 'bg-amber-50' : 'hover:bg-slate-50'}`}
           title={conv.isFeatured ? 'Quitar destacado' : 'Marcar destacado'}
         >
           {conv.isFeatured ? (
@@ -1628,12 +1731,17 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpport
         {onToggleInfo && (
           <button
             onClick={onToggleInfo}
-            className="@7xl:hidden p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 bg-transparent border-none cursor-pointer"
+            className="@7xl:hidden p-1.5 rounded-lg text-slate-500 hover:bg-slate-100 bg-transparent border-none cursor-pointer shrink-0"
             title="Info del contacto y oportunidad"
           >
             <HiOutlineInformationCircle className="w-4 h-4" />
           </button>
         )}
+
+        {/* Menú "⋯" con las acciones, SOLO en pantallas estrechas (< @5xl). */}
+        <div className="@5xl:hidden">
+          <HeaderActionsMenu actions={actions} />
+        </div>
       </div>
     </div>
   );
@@ -1661,22 +1769,85 @@ function DeliveryBadge({ msg }) {
   );
 }
 
-function MessageMedia({ msg }) {
+// Tamaño de archivo legible (para la tarjeta de documento).
+function formatFileSize(bytes) {
+  const n = Number(bytes) || 0;
+  if (n <= 0) return '';
+  if (n < 1024) return `${n} B`;
+  if (n < 1024 * 1024) return `${(n / 1024).toFixed(0)} KB`;
+  return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+// Emoji según la extensión del documento, para que se reconozca de un vistazo.
+function docIcon(name) {
+  const ext = String(name || '').split('.').pop().toLowerCase();
+  if (['xls', 'xlsx', 'csv', 'ods'].includes(ext)) return '📊';
+  if (['doc', 'docx', 'odt', 'rtf'].includes(ext)) return '📝';
+  if (['pdf'].includes(ext)) return '📕';
+  if (['ppt', 'pptx', 'odp'].includes(ext)) return '📈';
+  if (['zip', 'rar', '7z', 'gz'].includes(ext)) return '🗜️';
+  return '📄';
+}
+
+function MessageMedia({ msg, isOut }) {
   const url = msg.mediaUrl;
-  if (!url) return null;
   const type = msg.mediaType || '';
+  if (!url) {
+    // Media que no se pudo descargar/guardar: al menos indicar qué era.
+    if (type) {
+      return (
+        <div className={`text-xs italic mb-1 ${isOut ? 'text-emerald-100' : 'text-slate-400'}`}>
+          {type === 'document' ? (msg.mediaName || 'Documento') : type} (no disponible)
+        </div>
+      );
+    }
+    return null;
+  }
   const isImage = type === 'image' || /^data:image\//.test(url);
+  const isSticker = type === 'sticker';
   const isAudio = type === 'audio' || /^data:audio\//.test(url);
+  const isVideo = type === 'video' || /^data:video\//.test(url);
+
+  // Sticker: pequeño y sin marco (como en WhatsApp), fondo transparente.
+  if (isSticker) {
+    return <img src={url} alt="sticker" className="max-h-28 w-auto mb-1 block bg-transparent" />;
+  }
   if (isImage) {
-    return <img src={url} alt="adjunto" className="rounded-lg max-h-60 w-auto mb-1 block" />;
+    return (
+      <a href={url} target="_blank" rel="noreferrer" className="block mb-1">
+        <img src={url} alt="adjunto" className="rounded-lg max-h-60 w-auto block" />
+      </a>
+    );
+  }
+  if (isVideo) {
+    return <video controls src={url} className="rounded-lg max-h-60 w-auto mb-1 block max-w-full" />;
   }
   if (isAudio) {
     return <audio controls src={url} className="mb-1 w-full max-w-[240px]" />;
   }
-  // Documento u otro: enlace de descarga.
+  // Documento: tarjeta con icono, nombre y tamaño (como WhatsApp), no un genérico
+  // "Ver adjunto". El nombre real llega en `mediaName`.
+  const name = msg.mediaName || 'Documento';
+  const size = formatFileSize(msg.mediaSize);
   return (
-    <a href={url} target="_blank" rel="noreferrer" download className="underline text-xs block mb-1">
-      📎 Ver adjunto
+    <a
+      href={url}
+      target="_blank"
+      rel="noreferrer"
+      download={name}
+      className={`flex items-center gap-2 mb-1 rounded-lg px-2.5 py-2 no-underline ${
+        isOut ? 'bg-emerald-600/40 hover:bg-emerald-600/60' : 'bg-slate-100 hover:bg-slate-200'
+      }`}
+    >
+      <span className="text-2xl leading-none shrink-0">{docIcon(name)}</span>
+      <span className="min-w-0">
+        <span className={`block text-xs font-semibold truncate ${isOut ? 'text-white' : 'text-slate-700'}`}>
+          {name}
+        </span>
+        <span className={`block text-[10px] ${isOut ? 'text-emerald-100' : 'text-slate-400'}`}>
+          {size ? `${size} · ` : ''}Descargar
+        </span>
+      </span>
     </a>
   );
 }
@@ -1711,8 +1882,11 @@ function quoteFailureText(code) {
 function MessageBubble({ msg, onReply, onJumpTo }) {
   const isOut = msg.direction === 'out';
   // Etiqueta de remitente: quién envió el mensaje (agente con acceso al chat, o
-  // "Automático" para respuestas de flujos/workflows). Solo en salientes.
-  const senderLabel = isOut ? (msg.sentByName || (msg.isAutoReply ? 'Automático' : 'Equipo')) : null;
+  // "Automático" para flujos, o "WhatsApp (teléfono)" si se envió desde el móvil
+  // fuera del sistema). Solo en salientes.
+  const senderLabel = isOut
+    ? (msg.origin === 'phone' ? '📱 WhatsApp (teléfono)' : msg.sentByName || (msg.isAutoReply ? 'Automático' : 'Equipo'))
+    : null;
   const reply = msg.replyTo && (msg.replyTo.body || msg.replyTo.mediaType || msg.replyTo.senderName)
     ? msg.replyTo
     : null;
@@ -1754,7 +1928,7 @@ function MessageBubble({ msg, onReply, onJumpTo }) {
             <span>{quoteFailureText(msg.quoteResult)}</span>
           </div>
         )}
-        <MessageMedia msg={msg} />
+        <MessageMedia msg={msg} isOut={isOut} />
         {msg.templateName && (
           <div className={`text-[10px] font-medium mb-0.5 ${isOut ? 'text-emerald-100' : 'text-slate-500'}`}>
             Plantilla · {msg.templateName}

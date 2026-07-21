@@ -73,11 +73,32 @@ exports.listConversations = async (req, res) => {
       .sort({ lastMessageAt: -1 })
       .limit(300);
 
-    res.json(conversations);
+    // Tipo de conexión EFECTIVO por chat: el de su número, o el del número por
+    // defecto si no tiene uno asignado. El front lo usa para saber si aplica la
+    // ventana de 24h (los números QR no la tienen). Un solo query extra.
+    const defaultType = await resolveDefaultConnectionType();
+    const out = conversations.map((c) => {
+      const o = c.toObject();
+      o.effectiveConnectionType = o.whatsappAccount?.connectionType || defaultType;
+      return o;
+    });
+
+    res.json(out);
   } catch (err) {
     res.status(500).json({ message: 'Error al listar conversaciones', error: err.message });
   }
 };
+
+// Tipo de conexión del número por defecto (cloud_api | qr). Se usa para los chats
+// sin número asignado: así el front sabe si aplicarles la ventana de 24h.
+async function resolveDefaultConnectionType() {
+  try {
+    const def = await require('../utils/whatsappGateway').getDefaultAccount();
+    return def?.connectionType || 'cloud_api';
+  } catch {
+    return 'cloud_api';
+  }
+}
 
 // Repuebla un documento de conversación con los campos que la UI necesita
 // (paciente, agente, productos de la oportunidad). Se usa al devolver el conv
@@ -105,9 +126,37 @@ exports.getConversation = async (req, res) => {
       .populate('opportunity.interestedIn.product', 'name salePrice')
       .populate('opportunities.interestedIn.product', 'name salePrice');
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
-    res.json(conv);
+    const o = conv.toObject();
+    o.effectiveConnectionType = o.whatsappAccount?.connectionType || (await resolveDefaultConnectionType());
+    res.json(o);
   } catch (err) {
     res.status(500).json({ message: 'Error al obtener conversación', error: err.message });
+  }
+};
+
+/**
+ * Marca una conversación como leída: pone el contador de no leídos en 0 y marca
+ * los entrantes como leídos, SIN necesidad de responder. Es un estado interno del
+ * CRM (nunca se manda "visto" a WhatsApp), para poder quitar la notificación de un
+ * chat que ya se atendió por otra vía.
+ */
+exports.markConversationRead = async (req, res) => {
+  try {
+    const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
+    if (!canMutateConversation(req, conv)) {
+      return res.status(403).json({ message: 'No puedes modificar esta conversación' });
+    }
+    conv.unreadCount = 0;
+    await conv.save();
+    await Message.updateMany(
+      { conversation: conv._id, direction: 'in', isRead: false },
+      { isRead: true }
+    );
+    emitToCallCenter('chat:updated', { id: conv._id });
+    res.json({ ok: true, unreadCount: 0 });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al marcar como leído', error: err.message });
   }
 };
 
@@ -1704,6 +1753,7 @@ exports.simulateIncoming = async (req, res) => {
     conv.lastMessageAt = msg.createdAt;
     conv.lastMessagePreview = body.slice(0, 140);
     conv.lastMessageDirection = 'in';
+    conv.lastInboundAt = msg.createdAt;
     conv.window24hExpiresAt = messaging.computeWhatsappWindowExpiresAt(msg.createdAt);
     conv.unreadCount = (conv.unreadCount || 0) + 1;
     if (conv.status === 'closed') conv.status = 'open';
@@ -1825,6 +1875,108 @@ async function applyIncomingOptOut({ clinicId, conv, incomingText }) {
   return true;
 }
 
+// Texto corto para la bandeja cuando el mensaje es solo media (sin pie).
+function mediaPreviewText(type, name) {
+  const labels = {
+    image: '📷 Foto',
+    video: '🎬 Video',
+    audio: '🎤 Nota de voz',
+    document: '📄 Documento',
+    sticker: '🌟 Sticker',
+  };
+  const base = labels[type] || (type ? '📎 Adjunto' : '');
+  return name && type === 'document' ? `${base} · ${name}` : base;
+}
+
+/**
+ * Ingresa un mensaje SALIENTE que se envió desde el teléfono (número QR),
+ * FUERA de nuestro sistema. whatsapp-web.js lo entrega por `message_create` con
+ * `fromMe=true`; así el historial del CRM refleja también lo que el agente
+ * contestó directo desde WhatsApp en el celular.
+ *
+ * Dedup: los mensajes que ESTE sistema envió también disparan `message_create`.
+ * Se descartan (a) por `externalId` (wamid ya guardado) y (b) por un saliente
+ * reciente con el mismo texto (nuestro envío puede no haber guardado aún el
+ * wamid cuando llega el evento).
+ */
+async function ingestExternalOutbound({ clinicId, account, externalUserId, phone, body, media, externalId, contactName }) {
+  const normalizedPhone = normalizePhone(phone || externalUserId);
+  if (!normalizedPhone) return;
+  // (a) ¿Ya lo tenemos por su wamid?
+  if (externalId) {
+    const dup = await Message.findOne({ clinic: clinicId, externalId, direction: 'out' }).select('_id');
+    if (dup) return;
+  }
+  const conv = await Conversation.findOne({ clinic: clinicId, channel: 'whatsapp', phone: normalizedPhone });
+  // Sin conversación previa no creamos una desde un saliente del teléfono: sería
+  // un chat que el agente inició fuera del CRM y del que no tenemos contexto.
+  if (!conv) return;
+
+  let mediaUrl = null;
+  let mediaType = null;
+  let mediaName = '';
+  let mediaSize = 0;
+  let finalBody = body || '';
+  if (media) {
+    mediaName = String(media.filename || '').slice(0, 200);
+    if (media.dataUrl) {
+      mediaUrl = media.dataUrl;
+      mediaType = media.type;
+      mediaSize = Number(media.size) || 0;
+    }
+    if (!finalBody) finalBody = media.caption || '';
+  }
+
+  // (b) Dedup por texto reciente: un saliente idéntico creado por nuestro envío
+  // en los últimos 40s (aún sin wamid) es el mismo mensaje, no uno del teléfono.
+  const since = new Date(Date.now() - 40 * 1000);
+  const recentSame = await Message.findOne({
+    clinic: clinicId,
+    conversation: conv._id,
+    direction: 'out',
+    createdAt: { $gte: since },
+    ...(finalBody ? { body: finalBody } : { mediaType: mediaType || null }),
+  }).select('_id');
+  if (recentSame) {
+    // Es nuestro envío: aprovechamos para respaldar el wamid si no lo tenía.
+    if (externalId) {
+      await Message.updateOne(
+        { _id: recentSame._id, externalId: { $in: [null, ''] } },
+        { externalId }
+      ).catch(() => {});
+    }
+    return;
+  }
+
+  const msg = await Message.create({
+    clinic: clinicId,
+    conversation: conv._id,
+    direction: 'out',
+    body: finalBody,
+    mediaUrl,
+    mediaType,
+    mediaName,
+    mediaSize,
+    externalId: externalId || undefined,
+    origin: 'phone',
+    sentByName: 'WhatsApp (teléfono)',
+    deliveryStatus: 'sent',
+  });
+  conv.lastMessageAt = msg.createdAt;
+  conv.lastMessagePreview = (finalBody || mediaPreviewText(mediaType, mediaName)).slice(0, 140);
+  conv.lastMessageDirection = 'out';
+  // Responder desde el teléfono también cuenta como responder: se limpia el
+  // pendiente de "no leído" (coherente con la regla del sistema).
+  conv.unreadCount = 0;
+  if (account && !conv.whatsappAccount) conv.whatsappAccount = account._id;
+  await Message.updateMany(
+    { conversation: conv._id, direction: 'in', isRead: false },
+    { isRead: true }
+  );
+  await conv.save();
+  emitToCallCenter('chat:message', { conversationId: conv._id, message: msg });
+}
+
 // Procesa un evento "normalizado" (externalUserId, body, contactName) creando/
 // actualizando la conversación correspondiente.
 async function ingestExternalMessage({ clinicId, channel, externalUserId, body, contactName, externalId, phone, referral, media, account, interactiveReply, contextId }) {
@@ -1913,16 +2065,20 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   }
   if (conv.blocked) return;
 
-  // Media entrante (imagen/audio/documento/video de WhatsApp): se descarga y
-  // persiste como dataUrl base64 para no perderla. Cap de tamaño en downloadMedia.
+  // Media entrante (imagen/audio/documento/video/sticker de WhatsApp): se descarga
+  // y persiste como dataUrl base64 para no perderla. Cap de tamaño en downloadMedia.
   let mediaUrl = null;
   let mediaType = null;
+  let mediaName = '';
+  let mediaSize = 0;
   let finalBody = body || '';
   if (media && channel === 'whatsapp') {
+    mediaName = String(media.filename || '').slice(0, 200);
     if (media.dataUrl) {
       // Número QR: la media llega ya descargada inline (whatsapp-web.js).
       mediaUrl = media.dataUrl;
       mediaType = media.type;
+      mediaSize = Number(media.size) || 0;
     } else if (media.id && account) {
       // Cloud API: se descarga por id usando las credenciales del número.
       const gateway = require('../utils/whatsappGateway');
@@ -1930,9 +2086,13 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
       if (dl.ok) {
         mediaUrl = dl.dataUrl;
         mediaType = media.type;
+        mediaSize = Number(dl.size) || 0;
+        if (!mediaName && dl.filename) mediaName = String(dl.filename).slice(0, 200);
       }
     }
-    if (!finalBody) finalBody = media.caption || `[${media.type}]`;
+    // El texto de la burbuja es SOLO el pie real; el nombre del documento va
+    // aparte en `mediaName` (se pinta como tarjeta) y los stickers no llevan texto.
+    if (!finalBody) finalBody = media.caption || '';
   }
 
   // Cita entrante: el contacto respondió a un mensaje específico. Meta manda el
@@ -1968,14 +2128,17 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
     body: finalBody,
     mediaUrl,
     mediaType,
+    mediaName,
+    mediaSize,
     externalId,
     ...(interactiveReply ? { interactiveReply } : {}),
     ...(replyTo ? { replyTo } : {}),
     deliveryStatus: 'delivered',
   });
   conv.lastMessageAt = msg.createdAt;
-  conv.lastMessagePreview = String(finalBody || '').slice(0, 140);
+  conv.lastMessagePreview = (finalBody || mediaPreviewText(mediaType, mediaName)).slice(0, 140);
   conv.lastMessageDirection = 'in';
+  conv.lastInboundAt = msg.createdAt;
   conv.window24hExpiresAt = messaging.computeWhatsappWindowExpiresAt(msg.createdAt);
   conv.unreadCount = (conv.unreadCount || 0) + 1;
   if (conv.status === 'closed') conv.status = 'open';
@@ -2007,6 +2170,8 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
 
 // Expuesto para que whatsappQrManager reutilice el mismo pipeline de ingesta.
 exports.ingestExternalMessage = ingestExternalMessage;
+// Salientes enviados desde el teléfono (número QR), fuera del sistema.
+exports.ingestExternalOutbound = ingestExternalOutbound;
 // Lo reutiliza el controller de llamadas: una llamada entrante debe vincularse
 // al mismo paciente que un mensaje entrante del mismo número.
 exports.findPatientForIncoming = findPatientForIncoming;
@@ -2121,7 +2286,14 @@ exports.webhookWhatsappReceive = async (req, res) => {
             : m.video
             ? { type: 'video', id: m.video.id, caption: m.video.caption || '' }
             : m.document
-            ? { type: 'document', id: m.document.id, caption: m.document.caption || m.document.filename || '' }
+            ? {
+                type: 'document',
+                id: m.document.id,
+                // El nombre del archivo va aparte (se pinta como tarjeta); el
+                // caption solo si el usuario escribió un pie de verdad.
+                caption: m.document.caption || '',
+                filename: m.document.filename || '',
+              }
             : m.sticker
             ? { type: 'sticker', id: m.sticker.id }
             : null;
