@@ -10,13 +10,16 @@ const crypto = require('crypto');
  *  - Purchase  → venta pagada (contado) o cobro registrado (crédito). Lleva
  *                value + currency (obligatorios para ROAS).
  *
- * Reglas de Meta que se respetan aquí:
- *  - user_data hasheado en SHA-256, normalizado (trim + minúsculas; el teléfono
- *    solo dígitos con código de país).
- *  - action_source: 'chat' (la conversión ocurre en una conversación, no en web).
+ * Reglas de Meta que se respetan aquí (spec oficial de business messaging / CTWA:
+ * developers.facebook.com/documentation/ads-commerce/conversions-api/business-messaging):
+ *  - action_source: 'business_messaging' + messaging_channel: 'whatsapp'. OJO: el
+ *    valor 'chat' es aceptado por la API pero NO atribuye la conversión al anuncio
+ *    click-to-WhatsApp — el evento entra sin error pero no optimiza la campaña.
+ *  - user_data: ctwa_clid (SIN hashear, matching fuerte del anuncio) +
+ *    whatsapp_business_account_id (WABA). El teléfono/email/nombre se hashean en
+ *    SHA-256 (normalizados: trim + minúsculas; teléfono solo dígitos con código de
+ *    país) — Meta los ignora en WhatsApp pero no estorban.
  *  - event_id único para deduplicación (los reintentos no duplican conversiones).
- *  - ctwa_clid (click-to-WhatsApp) se envía SIN hashear: es el matching más
- *    fuerte cuando el contacto llegó desde un anuncio.
  *
  * La configuración (datasetId + accessToken CAPI) vive en CallCenterWhatsappConfig
  * (singleton global). Si CAPI está deshabilitado o sin credenciales, todas las
@@ -41,6 +44,31 @@ function normalizePhoneForCapi(raw) {
   return digits || null;
 }
 
+/**
+ * WABA (WhatsApp Business Account) id para los eventos: primero el configurado a
+ * mano; si no, el del número Cloud API por defecto (los números QR no tienen WABA).
+ * Meta lo exige en user_data para atribuir conversiones de business messaging.
+ */
+async function resolveWabaId(override) {
+  if (override && String(override).trim()) return String(override).trim();
+  try {
+    const WhatsappAccount = require('../models/WhatsappAccount');
+    const acc =
+      (await WhatsappAccount.findOne({
+        connectionType: 'cloud_api',
+        isDefault: true,
+        businessAccountId: { $nin: ['', null] },
+      })) ||
+      (await WhatsappAccount.findOne({
+        connectionType: 'cloud_api',
+        businessAccountId: { $nin: ['', null] },
+      }));
+    return acc?.businessAccountId || '';
+  } catch {
+    return '';
+  }
+}
+
 /** Config CAPI activa o null (deshabilitada / incompleta). */
 async function getCapiConfig() {
   const CallCenterWhatsappConfig = require('../models/CallCenterWhatsappConfig');
@@ -52,13 +80,15 @@ async function getCapiConfig() {
     datasetId: capi.datasetId,
     accessToken: decryptSecret(capi.accessToken),
     testEventCode: capi.testEventCode || '',
+    wabaId: await resolveWabaId(capi.whatsappBusinessAccountId),
   };
 }
 
 /**
- * Construye el user_data con matching hasheado. `ctwaClid` va en claro (regla de Meta).
+ * Construye el user_data con matching hasheado. `ctwa_clid` y
+ * `whatsapp_business_account_id` van en claro (regla de Meta para business messaging).
  */
-function buildUserData({ phone, email, firstName, lastName, ctwaClid }) {
+function buildUserData({ phone, email, firstName, lastName, ctwaClid, wabaId }) {
   const userData = {};
   const ph = hashSha256(normalizePhoneForCapi(phone));
   if (ph) userData.ph = [ph];
@@ -69,6 +99,7 @@ function buildUserData({ phone, email, firstName, lastName, ctwaClid }) {
   const ln = hashSha256(lastName);
   if (ln) userData.ln = [ln];
   if (ctwaClid) userData.ctwa_clid = String(ctwaClid);
+  if (wabaId) userData.whatsapp_business_account_id = String(wabaId);
   return userData;
 }
 
@@ -86,7 +117,7 @@ async function sendConversionEvent({ eventName, eventId, user = {}, customData =
     const cfg = await getCapiConfig();
     if (!cfg) return { ok: false, skipped: true, reason: 'capi_not_configured' };
 
-    const userData = buildUserData(user);
+    const userData = buildUserData({ ...user, wabaId: cfg.wabaId });
     // Sin ningún identificador no hay matching posible: no vale la pena enviar.
     if (!userData.ph && !userData.em && !userData.ctwa_clid) {
       return { ok: false, skipped: true, reason: 'no_user_identifiers' };
@@ -98,7 +129,10 @@ async function sendConversionEvent({ eventName, eventId, user = {}, customData =
           event_name: eventName,
           event_time: Math.floor(Date.now() / 1000),
           event_id: eventId || `${eventName.toLowerCase()}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`,
-          action_source: 'chat',
+          // Business messaging (no 'chat'): así Meta atribuye la conversión al
+          // anuncio click-to-WhatsApp vía ctwa_clid.
+          action_source: 'business_messaging',
+          messaging_channel: 'whatsapp',
           user_data: userData,
           custom_data: { lead_source: 'whatsapp_crm', ...customData },
         },

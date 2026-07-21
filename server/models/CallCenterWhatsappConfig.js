@@ -27,6 +27,9 @@ const callCenterWhatsappConfigSchema = new mongoose.Schema(
       datasetId: { type: String, default: '' }, // Pixel ID / Dataset ID del Administrador de Eventos
       accessToken: { type: String, default: '' }, // cifrado — token de la Conversions API
       testEventCode: { type: String, default: '' }, // código "Probar eventos" (solo pruebas)
+      // WABA id para user_data (business messaging). Opcional: si se deja vacío se
+      // toma del número Cloud API por defecto (WhatsappAccount.businessAccountId).
+      whatsappBusinessAccountId: { type: String, default: '' },
     },
     // Meta Marketing API: para añadir/quitar contactos de Públicos Personalizados
     // (retargeting) desde las automatizaciones. Necesita un token de Usuario del

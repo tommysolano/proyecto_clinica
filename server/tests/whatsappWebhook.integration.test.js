@@ -169,7 +169,7 @@ test('webhook de calidad: FLAGGED marca el número en ROJO y crea alerta', async
   assert.equal(alert.severity, 'error');
 });
 
-test('CAPI: envía Lead con teléfono hasheado, action_source chat y event_id', async () => {
+test('CAPI: envía Lead con teléfono hasheado, action_source business_messaging y event_id', async () => {
   await seedWhatsapp();
   const cfg = await CallCenterWhatsappConfig.getSingleton();
   cfg.conversionsApi = { enabled: true, datasetId: 'DS123', accessToken: 'capi-token', testEventCode: '' };
@@ -198,7 +198,10 @@ test('CAPI: envía Lead con teléfono hasheado, action_source chat y event_id', 
   const ev = calls[0].body.data[0];
   assert.equal(ev.event_name, 'Lead');
   assert.equal(ev.event_id, 'lead_conv1');
-  assert.equal(ev.action_source, 'chat');
+  // Formato oficial de CTWA/business messaging (no 'chat'): así Meta atribuye la
+  // conversión al anuncio click-to-WhatsApp.
+  assert.equal(ev.action_source, 'business_messaging');
+  assert.equal(ev.messaging_channel, 'whatsapp');
   const expectedPh = crypto.createHash('sha256').update('593999000111').digest('hex');
   assert.deepEqual(ev.user_data.ph, [expectedPh]);
   assert.equal(ev.user_data.ctwa_clid, 'CLID-abc');

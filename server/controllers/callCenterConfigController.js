@@ -240,6 +240,7 @@ const appConfigPayload = (req, cfg) => {
       datasetId: cfg.conversionsApi?.datasetId || '',
       accessToken: maskSecret(cfg.conversionsApi?.accessToken || ''),
       testEventCode: cfg.conversionsApi?.testEventCode || '',
+      whatsappBusinessAccountId: cfg.conversionsApi?.whatsappBusinessAccountId || '',
     },
     marketingApi: {
       enabled: Boolean(cfg.marketingApi?.enabled),
@@ -879,6 +880,7 @@ exports.updateWhatsappAppConfig = async (req, res) => {
       capi.accessToken = req.body.capiAccessToken ? encryptSecret(req.body.capiAccessToken) : '';
     }
     if (typeof req.body.capiTestEventCode === 'string') capi.testEventCode = req.body.capiTestEventCode.trim();
+    if (typeof req.body.capiWabaId === 'string') capi.whatsappBusinessAccountId = req.body.capiWabaId.trim();
     cfg.conversionsApi = capi;
     // Marketing API: token (cifrado) de Usuario del Sistema con ads_management.
     const mkt = cfg.marketingApi || {};

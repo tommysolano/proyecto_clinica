@@ -434,7 +434,7 @@ const blankAccount = () => ({
 function WhatsappNumbersManager() {
   const [appCfg, setAppCfg] = useState(null);
   const [appDraft, setAppDraft] = useState({ appSecret: '', verifyToken: '' });
-  const [capiDraft, setCapiDraft] = useState({ enabled: false, datasetId: '', accessToken: '', testEventCode: '' });
+  const [capiDraft, setCapiDraft] = useState({ enabled: false, datasetId: '', accessToken: '', testEventCode: '', wabaId: '' });
   const [marketingDraft, setMarketingDraft] = useState({ enabled: false, accessToken: '', adAccountId: '' });
   const [savingApp, setSavingApp] = useState(false);
   const [testingCapi, setTestingCapi] = useState(false);
@@ -461,6 +461,7 @@ function WhatsappNumbersManager() {
         datasetId: a.data?.conversionsApi?.datasetId || '',
         accessToken: '',
         testEventCode: a.data?.conversionsApi?.testEventCode || '',
+        wabaId: a.data?.conversionsApi?.whatsappBusinessAccountId || '',
       });
       setMarketingDraft({
         enabled: Boolean(a.data?.marketingApi?.enabled),
@@ -619,6 +620,7 @@ function WhatsappNumbersManager() {
         capiEnabled: capiDraft.enabled,
         capiDatasetId: capiDraft.datasetId,
         capiTestEventCode: capiDraft.testEventCode,
+        capiWabaId: capiDraft.wabaId,
         marketingEnabled: marketingDraft.enabled,
       };
       if (appDraft.appSecret) payload.appSecret = appDraft.appSecret;
@@ -634,6 +636,7 @@ function WhatsappNumbersManager() {
         datasetId: r.data?.conversionsApi?.datasetId || '',
         accessToken: '',
         testEventCode: r.data?.conversionsApi?.testEventCode || '',
+        wabaId: r.data?.conversionsApi?.whatsappBusinessAccountId || '',
       });
       setMarketingDraft({
         enabled: Boolean(r.data?.marketingApi?.enabled),
@@ -914,6 +917,18 @@ function WhatsappNumbersManager() {
               />
               <span className="text-[11px] text-slate-400">
                 Solo para pruebas ("Probar eventos"). Déjalo vacío en producción.
+              </span>
+            </label>
+            <label className="block text-sm">
+              <span className="text-slate-700 font-medium">WABA ID (opcional)</span>
+              <input
+                value={capiDraft.wabaId}
+                onChange={(e) => setCapiDraft({ ...capiDraft, wabaId: e.target.value })}
+                placeholder="Auto (número Cloud API)"
+                className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm font-mono"
+              />
+              <span className="text-[11px] text-slate-400">
+                Cuenta de WhatsApp Business. Si lo dejas vacío se toma del número Cloud API por defecto.
               </span>
             </label>
           </div>

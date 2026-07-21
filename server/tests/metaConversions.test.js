@@ -38,4 +38,11 @@ test('omits empty identifiers from user_data', () => {
   assert.equal('em' in ud, false);
   assert.equal('fn' in ud, false);
   assert.equal('ctwa_clid' in ud, false);
+  assert.equal('whatsapp_business_account_id' in ud, false);
+});
+
+test('includes WABA id in user_data (business messaging) sin hashear', () => {
+  const ud = capi.buildUserData({ ctwaClid: 'CLID1', wabaId: '123456789012345' });
+  assert.equal(ud.whatsapp_business_account_id, '123456789012345');
+  assert.equal(ud.ctwa_clid, 'CLID1');
 });
