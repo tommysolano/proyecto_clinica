@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState, Fragment } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
@@ -95,6 +95,39 @@ function timeAgo(date) {
 function formatTime(date) {
   if (!date) return '';
   return new Date(date).toLocaleTimeString('es-EC', { timeZone: 'America/Guayaquil', hour: '2-digit', minute: '2-digit' });
+}
+
+// Clave YYYY-MM-DD en hora de Ecuador, para agrupar mensajes por día.
+function ecDateKey(date) {
+  return new Date(date).toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' });
+}
+
+// Etiqueta del separador de día en el chat: "Hoy", "Ayer" o la fecha completa.
+// Sin esto solo se veía la hora y un mensaje viejo parecía de hoy (confundía con
+// la ventana de 24h de WhatsApp).
+function formatDateDivider(date) {
+  const key = ecDateKey(date);
+  const todayKey = ecDateKey(new Date());
+  const yesterdayKey = ecDateKey(new Date(Date.now() - 24 * 60 * 60 * 1000));
+  if (key === todayKey) return 'Hoy';
+  if (key === yesterdayKey) return 'Ayer';
+  return new Date(date).toLocaleDateString('es-EC', {
+    timeZone: 'America/Guayaquil',
+    weekday: 'long',
+    day: 'numeric',
+    month: 'long',
+    year: 'numeric',
+  });
+}
+
+function DateDivider({ date }) {
+  return (
+    <div className="flex justify-center my-3">
+      <span className="text-[11px] font-medium text-slate-500 bg-white border border-slate-200 rounded-full px-3 py-1 shadow-sm capitalize">
+        {formatDateDivider(date)}
+      </span>
+    </div>
+  );
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -784,14 +817,21 @@ export default function Chats() {
                   onToggleInfo={() => setInfoOpen(true)}
                 />
                 <div ref={messagesEndRef} className="flex-1 overflow-y-auto bg-slate-50 p-4 space-y-2">
-                  {messages.map((m) => (
-                    <MessageBubble
-                      key={m._id}
-                      msg={m}
-                      onReply={() => setReplyDraft(m)}
-                      onJumpTo={scrollToMessage}
-                    />
-                  ))}
+                  {messages.map((m, i) => {
+                    // Separador de día cuando cambia la fecha (o en el primero).
+                    const prev = messages[i - 1];
+                    const showDivider = !prev || ecDateKey(prev.createdAt) !== ecDateKey(m.createdAt);
+                    return (
+                      <Fragment key={m._id}>
+                        {showDivider && <DateDivider date={m.createdAt} />}
+                        <MessageBubble
+                          msg={m}
+                          onReply={() => setReplyDraft(m)}
+                          onJumpTo={scrollToMessage}
+                        />
+                      </Fragment>
+                    );
+                  })}
                 </div>
                 <div className="border-t border-slate-100 p-2">
                   {activeConv?.blocked && (
@@ -1936,7 +1976,7 @@ function MessageBubble({ msg, onReply, onJumpTo }) {
         )}
         <div className="whitespace-pre-wrap break-words">{renderWhatsappText(msg.body)}</div>
         <div className={`text-[10px] mt-1 flex items-center gap-1 ${isOut ? 'text-emerald-100' : 'text-slate-400'}`}>
-          {formatTime(msg.createdAt)}
+          <span title={fmtDateTime(msg.createdAt)}>{formatTime(msg.createdAt)}</span>
           {isOut && <span>·</span>}
           {isOut && <DeliveryBadge msg={msg} />}
         </div>
