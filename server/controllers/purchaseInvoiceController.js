@@ -7,6 +7,9 @@ const RecurringAccount = require('../models/RecurringAccount');
 const FixedAsset = require('../models/FixedAsset');
 const InventoryCategory = require('../models/InventoryCategory');
 const RetentionRule = require('../models/RetentionRule');
+// Registra el esquema para poder `populate('retentionVoucher')` en `get` aunque el proceso no
+// haya cargado el módulo de retenciones por otra vía (p.ej. en tests aislados).
+require('../models/RetentionVoucher');
 const Payable = require('../models/Payable');
 const { resolvePurchaseDueDate } = require('../utils/purchaseDueDate');
 const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
@@ -19,6 +22,7 @@ const { computeRetention, groupLineRetentions, lineRetentionList } = require('..
 const { assetCategoryIssues } = require('../utils/fixedAssetConfig');
 const assetsService = require('../services/fixedAssetsFromPurchase');
 const { createResolver, auditarDiferencias } = require('../services/costCenterPolicy');
+const { sendError } = require('../utils/apiError');
 
 /**
  * Memoriza las cuentas de gasto usadas en una compra como "cuentas recurrentes"
@@ -542,7 +546,10 @@ exports.list = async (req, res) => {
 
 exports.get = async (req, res) => {
   const p = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId })
-    .populate('supplier').populate('items.account', 'code name').populate('items.product', 'name code');
+    .populate('supplier').populate('items.account', 'code name').populate('items.product', 'name code')
+    // Encabezado del comprobante de retención emitido (número, autorización/estado, fecha, periodo):
+    // la contadora quiere verlo en el modal ANTES de los porcentajes, como en su sistema anterior.
+    .populate('retentionVoucher', 'estab ptoEmi secuencial serie fechaEmision periodoFiscal estado numeroAutorizacion totalRetenido retentions');
   if (!p) return res.status(404).json({ message: 'No encontrada' });
   res.json(p);
 };
@@ -603,9 +610,10 @@ exports.create = async (req, res) => {
       return res.status(201).json(inv);
     }
   } catch (e) {
-    // El `payload` del error (p.ej. COST_CENTER_MISMATCH con la bodega y los dos centros) viaja
-    // a la pantalla: sin él no se puede explicar la diferencia ni ofrecer confirmarla.
-    res.status(e.status || 400).json({ message: e.message, ...(e.payload || {}) });
+    // `sendError` conserva el `payload` de los errores de negocio (p.ej. COST_CENTER_MISMATCH con
+    // la bodega y los dos centros, que la pantalla necesita para explicar la diferencia) y traduce
+    // los errores crudos de Mongo (E11000) a un 409 legible.
+    sendError(res, e);
   }
 };
 
@@ -847,7 +855,7 @@ exports.update = async (req, res) => {
       const inv = await PurchaseInvoice.findById(invoiceId);
       return res.json(inv);
     }
-  } catch (e) { res.status(e.status || 400).json({ message: e.message, ...(e.payload || {}) }); }
+  } catch (e) { sendError(res, e); }
 };
 
 exports.void = async (req, res) => {
@@ -879,7 +887,7 @@ exports.void = async (req, res) => {
       });
       return res.json(result);
     }
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) { sendError(res, e); }
 };
 
 /**
@@ -1346,7 +1354,7 @@ exports.authorize = async (req, res) => {
       const inv = await PurchaseInvoice.findById(invoiceId);
       return res.json(inv);
     }
-  } catch (e) { res.status(e.status || 400).json({ message: e.message, ...(e.payload || {}) }); }
+  } catch (e) { sendError(res, e); }
 };
 
 /**
@@ -1380,5 +1388,5 @@ exports.editJournal = async (req, res) => {
     });
     const inv = await PurchaseInvoice.findById(invoiceId).populate('journalEntry');
     return res.json(inv);
-  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+  } catch (e) { sendError(res, e); }
 };

@@ -18,6 +18,7 @@ const ChartOfAccount = require('../models/ChartOfAccount');
 const { PRODUCT_TYPES, PRODUCT_CATEGORIES, normalizeCategoria } = require('../utils/productCategories');
 const { isPhysicalProduct, buildInventoryCategoryIndex, resolveInventoryCategoryForRow, normName } = require('../utils/productCategoryResolver');
 const { normalizeAssetConfig, assetCategoryIssues } = require('../utils/fixedAssetConfig');
+const { sendError } = require('../utils/apiError');
 const ExcelJS = require('exceljs');
 const multer = require('multer');
 
@@ -1078,7 +1079,7 @@ exports.createAsset = async (req, res) => {
     data.name = (b.name && String(b.name).trim()) || cat.name;
     const a = await FixedAsset.create(data);
     res.status(201).json(a);
-  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+  } catch (e) { sendError(res, e); }
 };
 
 exports.updateAsset = async (req, res) => {
@@ -1090,7 +1091,7 @@ exports.updateAsset = async (req, res) => {
     for (const k of ASSET_DESCRIPTIVE) if (req.body[k] !== undefined) a[k] = req.body[k] || null;
     await a.save();
     res.json(a);
-  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+  } catch (e) { sendError(res, e); }
 };
 
 exports.deleteAsset = async (req, res) => {

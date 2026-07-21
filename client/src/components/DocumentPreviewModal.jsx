@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
 import Modal from './Modal';
-import { fmt, fmtDate } from '../pages/accounting/_utils';
+import { fmt, fmtDate, RET_ESTADO_LABEL, retVoucherNumber } from '../pages/accounting/_utils';
 
 /**
  * Visor de SOLO LECTURA de una factura de origen (venta o compra), reutilizable desde
@@ -38,6 +38,12 @@ function normalize(model, doc) {
         ivaAmount: it.ivaAmount,
       })),
       totales: { subtotal: doc.subtotal, descuento: null, iva: doc.iva, total: doc.total },
+      // Retenciones de la compra (encabezado del comprobante emitido + líneas), si existen.
+      retenciones: (Number(doc.retentionTotal) > 0 || (doc.retentions || []).length || (doc.retentionVoucher && typeof doc.retentionVoucher === 'object')) ? {
+        voucher: (doc.retentionVoucher && typeof doc.retentionVoucher === 'object') ? doc.retentionVoucher : null,
+        lineas: (doc.retentions || []).map((r) => ({ type: r.type, code: r.code, description: r.description || '', base: r.baseAmount, rate: r.percentage, amount: r.amount })),
+        total: Number(doc.retentionTotal) || 0,
+      } : null,
     };
   }
   // Sale
@@ -60,6 +66,7 @@ function normalize(model, doc) {
       ivaAmount: it.taxAmount,
     })),
     totales: { subtotal: doc.subtotal, descuento: doc.discountTotal, iva: doc.taxAmount, total: doc.total },
+    retenciones: null,
   };
 }
 
@@ -134,12 +141,70 @@ export default function DocumentPreviewModal({ isOpen, onClose, model, id, title
             </div>
           </div>
 
+          {/* Retenciones (solo lectura): encabezado del comprobante emitido + líneas */}
+          {doc.retenciones && (
+            <div className="border border-slate-200 rounded-xl overflow-hidden">
+              <div className="bg-slate-50 px-4 py-2 border-b border-slate-200">
+                <h3 className="text-sm font-semibold text-slate-700">Retenciones</h3>
+              </div>
+              <div className="p-3 space-y-3">
+                {doc.retenciones.voucher && (
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50/60 px-3 py-2.5 grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2 text-sm">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide text-emerald-700/70">N° comprobante</div>
+                      <div className="font-mono text-slate-700">{retVoucherNumber(doc.retenciones.voucher)}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide text-emerald-700/70">Autorización</div>
+                      {doc.retenciones.voucher.estado === 'AUTORIZADO' && doc.retenciones.voucher.numeroAutorizacion ? (
+                        <div className="font-mono text-[11px] break-all text-slate-700" title={doc.retenciones.voucher.numeroAutorizacion}>{doc.retenciones.voucher.numeroAutorizacion}</div>
+                      ) : (
+                        <div className="text-slate-600">{RET_ESTADO_LABEL[doc.retenciones.voucher.estado] || doc.retenciones.voucher.estado || '—'}</div>
+                      )}
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide text-emerald-700/70">Fecha de emisión</div>
+                      <div className="text-slate-700">{doc.retenciones.voucher.fechaEmision ? fmtDate(doc.retenciones.voucher.fechaEmision) : '—'}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide text-emerald-700/70">Periodo fiscal</div>
+                      <div className="text-slate-700">{doc.retenciones.voucher.periodoFiscal || '—'}</div>
+                    </div>
+                  </div>
+                )}
+                {doc.retenciones.lineas.length > 0 && (
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-sm">
+                      <thead className="text-[11px] uppercase text-slate-400"><tr className="text-left">
+                        <th className="py-1 pr-2">Código</th><th className="py-1 px-2">Concepto</th>
+                        <th className="py-1 px-2 text-right">Base</th><th className="py-1 px-2 text-right">%</th><th className="py-1 px-2 text-right">Valor</th>
+                      </tr></thead>
+                      <tbody>
+                        {doc.retenciones.lineas.map((r, i) => (
+                          <tr key={`${r.type}-${r.code}-${i}`} className="border-t border-slate-100">
+                            <td className="py-1.5 pr-2 font-mono">{r.type} {r.code}</td>
+                            <td className="py-1.5 px-2 text-slate-600">{r.description || '—'}</td>
+                            <td className="py-1.5 px-2 text-right font-mono">{fmt(r.base)}</td>
+                            <td className="py-1.5 px-2 text-right font-mono">{r.rate}%</td>
+                            <td className="py-1.5 px-2 text-right font-mono">{fmt(r.amount)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                      <tfoot><tr className="border-t border-slate-200 font-semibold"><td colSpan={4} className="py-1.5 px-2 text-right">Total retenido</td><td className="py-1.5 px-2 text-right font-mono">{fmt(doc.retenciones.total)}</td></tr></tfoot>
+                    </table>
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Totales */}
           <div className="flex justify-end">
             <div className="w-full sm:w-72 space-y-1 text-sm">
               <Total label="Subtotal" value={doc.totales.subtotal} />
               {doc.totales.descuento ? <Total label="Descuento" value={doc.totales.descuento} /> : null}
               <Total label="IVA" value={doc.totales.iva} />
+              {doc.retenciones?.total ? <Total label="(−) Retenciones" value={-doc.retenciones.total} /> : null}
               <Total label="Total" value={doc.totales.total} bold />
             </div>
           </div>

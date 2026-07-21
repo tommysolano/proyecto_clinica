@@ -16,6 +16,16 @@ export const fmtDate = (d) => {
 
 export const today = () => new Date().toISOString().slice(0, 10);
 
+// Encabezado del comprobante de retención (compartido por el modal de compra y el visor de solo lectura).
+export const RET_ESTADO_LABEL = {
+  BORRADOR: 'Borrador', EN_COLA: 'En cola', FIRMADO: 'Firmado', RECIBIDA: 'Recibida en el SRI',
+  AUTORIZADO: 'Autorizado', NO_AUTORIZADO: 'No autorizado', DEVUELTA: 'Devuelta por el SRI',
+  ERROR: 'Con error', ANULADA: 'Anulada', PENDIENTE_ANULACION: 'Pendiente de anulación', REGISTRADA: 'Registrada',
+};
+// Número legible del comprobante (estab-ptoEmi-secuencial), con la serie como respaldo.
+export const retVoucherNumber = (v) => (v?.estab && v?.ptoEmi && v?.secuencial)
+  ? `${v.estab}-${v.ptoEmi}-${v.secuencial}` : (v?.serie || '—');
+
 export const startOfMonth = () => {
   const d = new Date();
   return new Date(d.getFullYear(), d.getMonth(), 1).toISOString().slice(0, 10);

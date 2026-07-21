@@ -124,9 +124,28 @@ async function syncFixedAssetsForInvoice(inv, { clinicId, userId, session = null
       .filter((a) => a.purchaseLineIndex != null && a.purchaseUnitIndex != null)
       .map((a) => [`${a.purchaseLineIndex}:${a.purchaseUnitIndex}`, a])
   );
-  const buscarExistente = (p) => (p.lineId && porLineId.get(`${p.lineId}:${p.unitIndex}`))
-    || porIndice.get(`${p.lineIndex}:${p.unitIndex}`)
-    || null;
+  // ÚLTIMO RECURSO: por CÓDIGO. Un activo de ESTA compra que ya usa el código personalizado que
+  // esta unidad volvería a asignar es EL MISMO activo, aunque no lo reconozcan ni el `lineId` ni el
+  // índice. Sin esto, reprocesar la compra (editar, o agregar una retención, que re-guarda la
+  // compra) intentaba CREAR un segundo activo con ese código y reventaba con el crudo
+  // `E11000 duplicate key {clinic, code}` en la cara del usuario. Ocurre con activos legacy sin
+  // identidad de línea (creados antes de que existieran estos campos) y cuando se reordena o quita
+  // una línea sin conservar su `lineId` (el front regenera el `lineId` en cada envío).
+  const porCodigo = new Map(existentes.filter((a) => a.code).map((a) => [a.code, a]));
+  const codigoDe = (p) => {
+    const raw = p.item && p.item.fixedAsset && p.item.fixedAsset.code;
+    return (raw && String(raw).trim() && p.units === 1) ? String(raw).trim() : null;
+  };
+  const buscarExistente = (p) => {
+    if (p.lineId) {
+      const porLinea = porLineId.get(`${p.lineId}:${p.unitIndex}`);
+      if (porLinea) return porLinea;
+    }
+    const porPos = porIndice.get(`${p.lineIndex}:${p.unitIndex}`);
+    if (porPos) return porPos;
+    const cod = codigoDe(p);
+    return (cod && porCodigo.get(cod)) || null;
+  };
 
   const stats = {
     creados: 0, actualizados: 0, conservados: 0, eliminados: 0, huerfanos: [],

@@ -4,7 +4,7 @@ import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineDocumentText, HiOutlineArrowDownTray, HiOutlineXMark, HiOutlineTrash, HiOutlineExclamationTriangle, HiOutlineCube, HiOutlineBanknotes, HiOutlineBuildingOffice2, HiOutlineCheck, HiOutlineEllipsisVertical } from 'react-icons/hi2';
-import { fmt, fmtDate, today } from './_utils';
+import { fmt, fmtDate, today, RET_ESTADO_LABEL, retVoucherNumber } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import JournalEntryEditor from '../../components/JournalEntryEditor';
 import SearchableSelect from '../../components/SearchableSelect';
@@ -116,6 +116,7 @@ export default function PurchaseInvoices() {
   const [formError, setFormError] = useState(''); // error visible DENTRO del modal (no solo toast)
   const [retModal, setRetModal] = useState(null); // { purchase, series, estab, ptoEmi, periodMonth, periodYear }
   const [retEmitting, setRetEmitting] = useState(false);
+  const [retVoucher, setRetVoucher] = useState(null); // comprobante de retención emitido (encabezado) de la compra abierta
   const [sriMismatch, setSriMismatch] = useState(null); // { sri, entered, diff, payload } → modal de confirmación
   // { warehouse, esperado, elegido } → el centro elegido no es el predeterminado de la bodega.
   const [ccMismatch, setCcMismatch] = useState(null);
@@ -496,7 +497,7 @@ export default function PurchaseInvoices() {
     return api.post('/purchase-invoices', payload);
   };
 
-  const closeForm = () => { setShow(false); setForm(EMPTY); setAuthorizeId(null); setEditId(null); setFormError(''); setSriMismatch(null); setCcMismatch(null); };
+  const closeForm = () => { setShow(false); setForm(EMPTY); setAuthorizeId(null); setEditId(null); setFormError(''); setSriMismatch(null); setCcMismatch(null); setRetVoucher(null); };
 
   const submit = async (e) => {
     e.preventDefault();
@@ -573,6 +574,9 @@ export default function PurchaseInvoices() {
     try {
       const r = await api.get(`/purchase-invoices/${p._id}`);
       const d = r.data;
+      // Encabezado del comprobante de retención emitido (si lo hay): se muestra en la sección
+      // de retenciones ANTES de los porcentajes.
+      setRetVoucher(d.retentionVoucher && typeof d.retentionVoucher === 'object' ? d.retentionVoucher : null);
       setForm({
         ...EMPTY, ...d,
         supplier: d.supplier?._id || d.supplier || '',
@@ -795,7 +799,7 @@ export default function PurchaseInvoices() {
         <div className="flex gap-2">
           {hasRole('admin') && <button onClick={wipeAll} title="Borrar todas las compras de esta sucursal (reinicio)" className="px-4 py-2 bg-rose-600 text-white rounded-lg flex items-center gap-2"><HiOutlineXMark /> Reiniciar compras</button>}
           <button onClick={() => { setImportMode('xml'); setShowImport(true); }} className="px-4 py-2 bg-amber-500 text-white rounded-lg flex items-center gap-2"><HiOutlineArrowDownTray /> Importar SRI</button>
-          <button onClick={() => { setForm({ ...EMPTY, items: [makeItem('GASTO')] }); setActiveSections(['GASTO']); setRowMenuUid(null); setAuthorizeId(null); setEditId(null); setShowAdvanced(false); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
+          <button onClick={() => { setForm({ ...EMPTY, items: [makeItem('GASTO')] }); setActiveSections(['GASTO']); setRowMenuUid(null); setAuthorizeId(null); setEditId(null); setShowAdvanced(false); setRetVoucher(null); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
         </div>
       </div>
 
@@ -1147,8 +1151,8 @@ export default function PurchaseInvoices() {
           </SectionCard>
           )}
 
-          {/* ── Retenciones: resumen compacto de solo lectura (solo si hay retenciones) ── */}
-          {retSummary.length > 0 && (
+          {/* ── Retenciones: resumen compacto de solo lectura (si hay retenciones o comprobante emitido) ── */}
+          {(retSummary.length > 0 || retVoucher) && (
             <div className="border border-slate-200 rounded-xl overflow-hidden">
               <div className="flex flex-wrap items-center gap-2 bg-slate-50 px-3 py-2 border-b border-slate-200">
                 <HiOutlineBanknotes className="w-4 h-4 text-emerald-600" />
@@ -1156,6 +1160,33 @@ export default function PurchaseInvoices() {
                 <span className="text-[11px] text-slate-400">Automáticas: se calculan del código elegido en cada línea.</span>
               </div>
               <div className="p-3 space-y-2">
+                {/* ENCABEZADO del comprobante emitido (antes de los porcentajes): número, autorización
+                    o estado, fecha de emisión y periodo fiscal — como en el sistema anterior. */}
+                {retVoucher && (
+                  <div className="rounded-lg border border-emerald-200 bg-emerald-50/60 px-3 py-2.5 grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2 text-sm">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide text-emerald-700/70">N° comprobante</div>
+                      <div className="font-mono text-slate-700">{retVoucherNumber(retVoucher)}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide text-emerald-700/70">Autorización</div>
+                      {retVoucher.estado === 'AUTORIZADO' && retVoucher.numeroAutorizacion ? (
+                        <div className="font-mono text-[11px] break-all text-slate-700" title={retVoucher.numeroAutorizacion}>{retVoucher.numeroAutorizacion}</div>
+                      ) : (
+                        <div className="text-slate-600">{RET_ESTADO_LABEL[retVoucher.estado] || retVoucher.estado || '—'}</div>
+                      )}
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide text-emerald-700/70">Fecha de emisión</div>
+                      <div className="text-slate-700">{retVoucher.fechaEmision ? fmtDate(retVoucher.fechaEmision) : '—'}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide text-emerald-700/70">Periodo fiscal</div>
+                      <div className="text-slate-700">{retVoucher.periodoFiscal || '—'}</div>
+                    </div>
+                  </div>
+                )}
+                {retSummary.length > 0 && (
                 <div className="overflow-x-auto">
                   <table className="w-full text-sm">
                     <thead className="text-[11px] uppercase text-slate-400"><tr className="text-left">
@@ -1176,6 +1207,7 @@ export default function PurchaseInvoices() {
                     <tfoot><tr className="border-t border-slate-200 font-semibold"><td colSpan={4} className="py-1.5 px-2 text-right">Total retenido</td><td className="py-1.5 px-2 text-right font-mono">{fmt(totals.retTotal)}</td></tr></tfoot>
                   </table>
                 </div>
+                )}
                 <details className="text-[11px]">
                   <summary className="cursor-pointer text-slate-500">Datos adicionales de retención</summary>
                   <div className="mt-2 max-w-xs">
