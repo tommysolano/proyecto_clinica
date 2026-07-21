@@ -2191,8 +2191,12 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
                           )}
                         </div>
                         {(o.attribution?.adId || o.attribution?.campaign) && (
-                          <div className="text-[10px] text-violet-700 bg-violet-50 border border-violet-100 rounded px-1.5 py-0.5 inline-block">
-                            📣 {o.attribution.campaign || `Anuncio ${o.attribution.adId}`}
+                          <div
+                            title={o.attribution.adId ? `ID del anuncio (source_id de Meta): ${o.attribution.adId}` : ''}
+                            className="text-[10px] text-violet-700 bg-violet-50 border border-violet-100 rounded px-1.5 py-0.5 inline-block"
+                          >
+                            📣 {o.attribution.campaign ? `${o.attribution.campaign} ` : 'Anuncio '}
+                            {o.attribution.adId ? `#${o.attribution.adId}` : ''}
                           </div>
                         )}
                         {(o.interestedIn || []).length > 0 && (
@@ -2816,8 +2820,12 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
               <span className="text-xs font-bold text-emerald-700 flex items-center gap-2 min-w-0">
                 Oportunidad #{idx + 1}
                 {(it.attribution?.adId || it.attribution?.campaign) && (
-                  <span className="text-[10px] font-normal text-violet-700 bg-violet-50 border border-violet-100 rounded px-1.5 py-0.5 truncate">
-                    📣 {it.attribution.campaign || `Anuncio ${it.attribution.adId}`}
+                  <span
+                    title={it.attribution.adId ? `ID del anuncio (source_id de Meta): ${it.attribution.adId}` : ''}
+                    className="text-[10px] font-normal text-violet-700 bg-violet-50 border border-violet-100 rounded px-1.5 py-0.5 truncate"
+                  >
+                    📣 {it.attribution.campaign ? `${it.attribution.campaign} ` : 'Anuncio '}
+                    {it.attribution.adId ? `#${it.attribution.adId}` : ''}
                   </span>
                 )}
               </span>
