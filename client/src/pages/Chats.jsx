@@ -34,6 +34,8 @@ import {
   HiOutlineEnvelopeOpen,
   HiOutlineUserPlus,
   HiOutlineUsers,
+  HiOutlinePlay,
+  HiOutlinePause,
 } from 'react-icons/hi2';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
@@ -238,8 +240,8 @@ export default function Chats() {
 
   const isSupervisor = role === 'marketing';
   const isAdmin = role === 'admin' || user?.isSuperAdmin;
-  // Solo admin/supervisor pueden asignar chats a OTROS agentes (asignación manual).
-  const canAssignOthers = isSupervisor || isAdmin;
+  // Auto-asignar (round-robin) SOLO para admin/supervisor; el call center no lo ve.
+  const canAutoAssign = isSupervisor || isAdmin;
 
   // Solo la respuesta de la última búsqueda actualiza la lista: descarta
   // respuestas fuera de orden que sobrescribirían con datos obsoletos.
@@ -681,16 +683,15 @@ export default function Chats() {
     }
   };
 
-  // Asignación MANUAL a un agente concreto (solo admin/marketing). El sistema ya
-  // NO reparte solo (se quitó el auto-asignar/round-robin del inbox): un supervisor
-  // decide quién atiende cada chat.
-  const assignToAgent = async (conv, userId) => {
+  // Reparte la conversación al agente con menos chats abiertos (round-robin).
+  // Solo lo usan admin/supervisor (el call center no ve el botón).
+  const autoAssignChat = async (conv) => {
     try {
-      const r = await api.post(`/chats/${conv._id}/assign`, { userId });
+      const r = await api.post(`/chats/${conv._id}/auto-assign`, {});
       setConversations((prev) => prev.map((c) => (c._id === conv._id ? r.data : c)));
       toast.success(`Asignado a ${r.data.assignedToName || 'un agente'}`);
     } catch (err) {
-      toast.error(err.response?.data?.message || 'No se pudo asignar');
+      toast.error(err.response?.data?.message || 'No se pudo auto-asignar');
     }
   };
 
@@ -806,9 +807,7 @@ export default function Chats() {
                   conv={activeConv}
                   onToggleFeatured={() => toggleFeatured(activeConv)}
                   onTake={() => takeChat(activeConv)}
-                  agents={agents}
-                  canAssignOthers={canAssignOthers}
-                  onAssignAgent={(userId) => assignToAgent(activeConv, userId)}
+                  onAutoAssign={canAutoAssign ? () => autoAssignChat(activeConv) : null}
                   onOpenOpportunity={() => setOpportunityModal(true)}
                   onCreateAppointment={() => setAppointmentModal(true)}
                   onCreateQuotation={() => setQuotationModal(true)}
@@ -1669,60 +1668,20 @@ function HeaderActionsMenu({ actions }) {
   );
 }
 
-// Menú para ASIGNAR el chat a un agente concreto (solo admin/supervisor).
-// Sustituye al viejo "auto-asignar": la repartición ya no la decide el sistema.
-function AssignMenu({ agents, assignedId, onAssign }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="relative shrink-0">
-      <button
-        onClick={() => setOpen((v) => !v)}
-        title="Asignar este chat a un agente"
-        className="p-1.5 bg-slate-50 text-slate-600 hover:bg-slate-100 rounded-lg border-none cursor-pointer flex items-center gap-1"
-      >
-        <HiOutlineUsers className="w-4 h-4" />
-        <span className="hidden @5xl:inline text-xs">Asignar</span>
-      </button>
-      {open && (
-        <>
-          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-          <div className="absolute right-0 top-full mt-1 w-56 max-w-[80vw] bg-white border border-slate-200 rounded-lg shadow-lg z-50 py-1 max-h-72 overflow-y-auto">
-            <div className="px-3 py-1.5 text-[11px] font-semibold text-slate-400 uppercase tracking-wide">Asignar chat a</div>
-            {agents.length === 0 && <div className="px-3 py-2 text-xs text-slate-400">No hay agentes disponibles.</div>}
-            {agents.map((a) => {
-              const active = String(assignedId || '') === String(a._id);
-              return (
-                <button
-                  key={a._id}
-                  onClick={() => { setOpen(false); onAssign(a._id); }}
-                  className={`w-full text-left px-3 py-2 text-sm bg-white hover:bg-slate-50 border-none cursor-pointer flex items-center justify-between gap-2 ${active ? 'text-emerald-700 font-semibold' : 'text-slate-700'}`}
-                >
-                  <span className="truncate">{a.name}</span>
-                  {active && <HiOutlineCheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />}
-                </button>
-              );
-            })}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-function ChatHeader({ conv, onToggleFeatured, onTake, agents = [], canAssignOthers, onAssignAgent, onOpenOpportunity, onCreateAppointment, onCreateQuotation, onMarkRead, onEnableCalling, isAdmin, meId, calling, onCall, onBack, onToggleInfo }) {
+function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpportunity, onCreateAppointment, onCreateQuotation, onMarkRead, onEnableCalling, isAdmin, meId, calling, onCall, onBack, onToggleInfo }) {
   const canTake = !conv.assignedTo || String(conv.assignedTo._id || conv.assignedTo) !== String(meId);
   // "Esperando respuesta" cuando el último mensaje es entrante (del paciente).
   const waitingReply = conv.lastMessageDirection === 'in';
   // Un admin puede encender las llamadas de un número Cloud API que las tiene
   // apagadas (sin entrar a Meta). Por QR es imposible: no se ofrece.
   const canEnableCalls = isAdmin && calling && calling.enabled === false && calling.canEnable;
-  const assignedId = conv.assignedTo?._id || conv.assignedTo || null;
 
   // Acciones secundarias: en línea en pantallas anchas, en el menú "⋯" cuando no
-  // caben. Una sola fuente de verdad para ambos modos. El auto-asignar (round-robin)
-  // se quitó: ahora un supervisor asigna a mano con el menú "Asignar" (abajo).
+  // caben. El "Auto-asignar" (round-robin) solo llega para admin/supervisor
+  // (`onAutoAssign` es null para el call center).
   const actions = [
-    canTake && { key: 'take', label: 'Tomar (asignármelo)', icon: HiOutlineUserPlus, onClick: onTake },
+    canTake && { key: 'take', label: 'Tomar', icon: HiOutlineUserPlus, onClick: onTake },
+    onAutoAssign && { key: 'auto', label: 'Auto-asignar', icon: HiOutlineUsers, onClick: onAutoAssign },
     {
       key: 'opp',
       label: conv.opportunity?.isOpportunity ? 'Editar / añadir oportunidad' : 'Crear oportunidad',
@@ -1786,12 +1745,6 @@ function ChatHeader({ conv, onToggleFeatured, onTake, agents = [], canAssignOthe
         >
           <HiOutlinePhone className="w-4 h-4" /> <span className="hidden @5xl:inline">Llamar</span>
         </button>
-
-        {/* Asignación MANUAL a un agente (solo admin/supervisor). El sistema ya no
-            reparte solo; un supervisor decide quién atiende cada chat. */}
-        {canAssignOthers && (
-          <AssignMenu agents={agents} assignedId={assignedId} onAssign={onAssignAgent} />
-        )}
 
         {/* Acciones en línea (solo icono + tooltip) cuando hay ancho (≥ @5xl).
             Se mantienen sin texto para que nunca desborden la columna: la versión
@@ -1881,6 +1834,95 @@ function docIcon(name) {
   return '📄';
 }
 
+function fmtAudioTime(s) {
+  if (!s || !Number.isFinite(s)) return '0:00';
+  const m = Math.floor(s / 60);
+  const sec = Math.floor(s % 60);
+  return `${m}:${String(sec).padStart(2, '0')}`;
+}
+
+// Reproductor de nota de voz estilo WhatsApp: botón play/pausa, barra de progreso
+// y duración. Reemplaza al <audio controls> nativo (que se veía pobre).
+function AudioPlayer({ src, isOut }) {
+  const audioRef = useRef(null);
+  const [playing, setPlaying] = useState(false);
+  const [current, setCurrent] = useState(0);
+  const [duration, setDuration] = useState(0);
+
+  // Las notas de voz de MediaRecorder/OGG a veces reportan duration=Infinity hasta
+  // que se busca al final; se fuerza UNA vez para conocer la duración real.
+  const onLoadedMeta = () => {
+    const a = audioRef.current;
+    if (!a) return;
+    if (a.duration === Infinity || Number.isNaN(a.duration)) {
+      const onSeeked = () => {
+        a.removeEventListener('seeked', onSeeked);
+        setDuration(Number.isFinite(a.duration) ? a.duration : 0);
+        a.currentTime = 0;
+      };
+      a.addEventListener('seeked', onSeeked);
+      try { a.currentTime = 1e6; } catch { /* noop */ }
+    } else {
+      setDuration(a.duration || 0);
+    }
+  };
+
+  const toggle = () => {
+    const a = audioRef.current;
+    if (!a) return;
+    if (a.paused) a.play().catch(() => {});
+    else a.pause();
+  };
+
+  const seek = (e) => {
+    const a = audioRef.current;
+    if (!a || !duration) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ratio = Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width));
+    a.currentTime = ratio * duration;
+  };
+
+  const pct = duration ? Math.min(100, (current / duration) * 100) : 0;
+  // Muestra el tiempo transcurrido mientras suena; la duración total en reposo.
+  const shown = playing || current > 0 ? current : duration;
+
+  return (
+    <div className={`flex items-center gap-2 mb-1 min-w-[190px] max-w-[280px] ${isOut ? 'text-white' : 'text-slate-700'}`}>
+      <audio
+        ref={audioRef}
+        src={src}
+        preload="metadata"
+        onLoadedMetadata={onLoadedMeta}
+        onDurationChange={() => {
+          const d = audioRef.current?.duration;
+          if (Number.isFinite(d) && d > 0) setDuration(d);
+        }}
+        onTimeUpdate={() => setCurrent(audioRef.current?.currentTime || 0)}
+        onPlay={() => setPlaying(true)}
+        onPause={() => setPlaying(false)}
+        onEnded={() => { setPlaying(false); setCurrent(0); }}
+      />
+      <button
+        type="button"
+        onClick={toggle}
+        title={playing ? 'Pausar' : 'Reproducir'}
+        className={`shrink-0 w-9 h-9 rounded-full flex items-center justify-center border-none cursor-pointer ${isOut ? 'bg-white/25 hover:bg-white/40 text-white' : 'bg-emerald-500 hover:bg-emerald-600 text-white'}`}
+      >
+        {playing ? <HiOutlinePause className="w-4 h-4" /> : <HiOutlinePlay className="w-4 h-4 ml-0.5" />}
+      </button>
+      <div className="flex-1 min-w-0">
+        <div onClick={seek} className={`h-1.5 rounded-full cursor-pointer ${isOut ? 'bg-white/30' : 'bg-slate-200'}`}>
+          <div className={`h-full rounded-full ${isOut ? 'bg-white' : 'bg-emerald-500'}`} style={{ width: `${pct}%` }} />
+        </div>
+        <div className={`text-[10px] mt-1 tabular-nums ${isOut ? 'text-emerald-100' : 'text-slate-400'}`}>
+          {fmtAudioTime(shown)}
+        </div>
+      </div>
+      <span className="text-lg shrink-0" aria-hidden>🎤</span>
+    </div>
+  );
+}
+
 function MessageMedia({ msg, isOut }) {
   const url = msg.mediaUrl;
   const type = msg.mediaType || '';
@@ -1915,7 +1957,7 @@ function MessageMedia({ msg, isOut }) {
     return <video controls src={url} className="rounded-lg max-h-60 w-auto mb-1 block max-w-full" />;
   }
   if (isAudio) {
-    return <audio controls src={url} className="mb-1 w-full max-w-[240px]" />;
+    return <AudioPlayer src={url} isOut={isOut} />;
   }
   // Documento: tarjeta con icono, nombre y tamaño (como WhatsApp), no un genérico
   // "Ver adjunto". El nombre real llega en `mediaName`.

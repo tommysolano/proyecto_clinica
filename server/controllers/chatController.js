@@ -2310,6 +2310,26 @@ exports.webhookWhatsappReceive = async (req, res) => {
             : m.button
             ? { id: m.button.payload || '', title: m.button.text || '', type: 'button_reply' }
             : null;
+          // Atribución click-to-WhatsApp (anuncios Meta): solo viene en el 1er
+          // mensaje tras tocar el anuncio y SOLO en números Cloud API. Se registra
+          // en el log para poder auditar que llega y comparar el ID del anuncio
+          // (source_id) con el configurado en el disparador ctwa_ad.
+          const referral = m.referral
+            ? {
+                adId: m.referral.source_id || '',
+                campaign: m.referral.headline || m.referral.body || '',
+                ctwaClid: m.referral.ctwa_clid || '',
+              }
+            : null;
+          if (m.referral) {
+            console.log(
+              '[ctwa_ad] mensaje desde anuncio — source_id=%s source_type=%s ctwa_clid=%s de %s',
+              m.referral.source_id || '(vacío)',
+              m.referral.source_type || '(sin tipo)',
+              m.referral.ctwa_clid || '(sin clid)',
+              m.from
+            );
+          }
           // eslint-disable-next-line no-await-in-loop
           await ingestExternalMessage({
             clinicId,
@@ -2324,14 +2344,7 @@ exports.webhookWhatsappReceive = async (req, res) => {
             externalId: m.id,
             // Cita: wamid del mensaje al que el contacto respondió (si respondió a uno).
             contextId: m.context?.id || '',
-            // Atribución click-to-WhatsApp (anuncios Meta): solo viene en el 1er mensaje.
-            referral: m.referral
-              ? {
-                  adId: m.referral.source_id || '',
-                  campaign: m.referral.headline || m.referral.body || '',
-                  ctwaClid: m.referral.ctwa_clid || '',
-                }
-              : null,
+            referral,
           });
         }
       }

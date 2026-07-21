@@ -1244,10 +1244,44 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
   };
 
   const destPhone = phone || conversation.phone || '';
+
+  // Rastro visible en Workflows → Actividad para los triggers de CHAT (antes solo
+  // los eventos de cita/venta se registraban): así se puede auditar si el
+  // disparador por anuncio (ctwa_ad) inscribió, se saltó o no coincidió.
+  const patientName =
+    `${patient?.firstName || ''} ${patient?.lastName || ''}`.trim() ||
+    conversation.contactName || destPhone;
+  const trace = (wf, eventType, decision, detail) => {
+    try {
+      require('../models/WorkflowTriggerEvent')
+        .create({ clinic: clinicId, workflow: wf._id, patient: patient?._id || patient || null, patientName, eventType, decision, detail })
+        .catch(() => {});
+    } catch { /* noop */ }
+  };
+  // Tipo de evento representativo para el rastro (prioriza ctwa_ad si vino de anuncio).
+  const traceType = msgAdId ? 'ctwa_ad' : (isNew ? 'new_conversation' : 'inbound_message');
+
   let enrolled = 0;
   for (const wf of workflows) {
     // Cada flujo (nodo trigger) de chat que coincida se inscribe por separado.
     const flows = matchingFlows(wf, matchesChat);
+    if (!flows.length) {
+      // Solo interesa el rastro de "no coincidió" para workflows del MISMO tipo de
+      // disparo que este mensaje (p.ej. si vino de anuncio, los ctwa_ad que no
+      // casaron por adFilter), para no llenar la Actividad de ruido.
+      const relevant = getAllChatTriggers(wf).some((tr) => tr.type === traceType);
+      if (relevant) {
+        trace(
+          wf,
+          traceType,
+          'no_match',
+          traceType === 'ctwa_ad'
+            ? `El mensaje llegó desde el anuncio ${msgAdId}, pero no coincidió con el/los ID(s) configurados en el disparador (o la audiencia no encajó).`
+            : 'El mensaje llegó pero el disparador de chat no coincidió (audiencia o palabra clave).'
+        );
+      }
+      continue;
+    }
     for (const flow of flows) {
       // Anti-duplicado: una inscripción viva por (workflow, conversación, flujo).
       // eslint-disable-next-line no-await-in-loop
@@ -1257,7 +1291,10 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
         startNodeId: flow.startNodeId,
         status: { $in: ['active', 'waiting'] },
       });
-      if (existing) continue;
+      if (existing) {
+        trace(wf, traceType, 'skipped_duplicate', 'Este chat ya tiene una inscripción activa/en espera en este flujo; no se crea otra hasta que termine.');
+        continue;
+      }
 
       let enrollment;
       try {
@@ -1278,6 +1315,7 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
         if (e.code === 11000) continue;
         throw e;
       }
+      trace(wf, traceType, 'enrolled', 'Inscripción creada desde el chat; los pasos y resultados quedan en "Inscritos" → registro de ejecución.');
       // eslint-disable-next-line no-await-in-loop
       await Workflow.updateOne({ _id: wf._id }, { $inc: { 'stats.enrolled': 1 } });
       // eslint-disable-next-line no-await-in-loop
@@ -1288,6 +1326,14 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
     }
   }
   return { enrolled };
+}
+
+// Todos los disparadores de chat de un workflow (de sus nodos trigger + legacy),
+// para decidir si registrar un "no coincidió" del tipo de mensaje actual.
+function getAllChatTriggers(wf) {
+  const triggerNodes = (wf.nodes || []).filter((n) => n.type === 'trigger');
+  if (triggerNodes.length) return triggerNodes.flatMap((tn) => triggersOfNode(wf, tn));
+  return getTriggers(wf);
 }
 
 /**

@@ -41,6 +41,7 @@ import {
   HiOutlineUserMinus,
   HiOutlineDocumentDuplicate,
   HiOutlineSquare2Stack,
+  HiOutlineClipboard,
 } from 'react-icons/hi2';
 
 // Tipos de paso disponibles en el lienzo (sin 'trigger', que es el nodo inicial).
@@ -265,6 +266,35 @@ function AddButton({ onClick, style, className = '' }) {
   );
 }
 
+// Botón "pegar aquí" (estilo Daplox): aparece junto al "+" cuando hay un paso
+// copiado. Un clic pega el paso copiado en ese punto, sin abrir el selector.
+function PasteButton({ onClick }) {
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      className="nodrag nopan flex items-center justify-center w-6 h-6 rounded-full bg-white border-2 border-violet-400 text-violet-600 shadow-sm hover:bg-violet-500 hover:text-white hover:border-violet-500 cursor-pointer transition-colors"
+      title="Pegar el paso copiado aquí"
+    >
+      <HiOutlineClipboard className="w-3.5 h-3.5" />
+    </button>
+  );
+}
+
+// Fila de controles bajo un nodo: el "+" para añadir y, si hay algo copiado, el
+// botón de pegar al lado. Posición absoluta respecto al nodo.
+function AddRow({ data, handle, left = '50%' }) {
+  return (
+    <div
+      style={{ position: 'absolute', left, bottom: -30, transform: 'translateX(-50%)' }}
+      className="nodrag nopan flex items-center gap-1"
+    >
+      <AddButton onClick={() => data.onAppend(handle)} />
+      {data._hasClipboard && <PasteButton onClick={() => data.onPasteAppend(handle)} />}
+    </div>
+  );
+}
+
 // Barra flotante de acciones del paso (copiar / duplicar / eliminar), visible al
 // pasar el cursor sobre el nodo. No aparece en el disparador (sin estas acciones).
 function NodeActions({ data }) {
@@ -342,9 +372,7 @@ function TriggerNode({ data }) {
         <HiOutlinePlus className="w-4 h-4" /> Añadir nuevo activador
       </button>
       <Handle type="source" position={Position.Bottom} style={{ background: '#10b981' }} />
-      {!data._hasDefaultOut && (
-        <AddButton onClick={() => data.onAppend('default')} style={{ position: 'absolute', left: '50%', bottom: -30, transform: 'translateX(-50%)' }} />
-      )}
+      {!data._hasDefaultOut && <AddRow data={data} handle="default" />}
     </div>
   );
 }
@@ -364,9 +392,7 @@ function ActionNode({ data, selected }) {
         </div>
         <Handle type="source" position={Position.Bottom} style={{ background: '#94a3b8' }} />
       </div>
-      {!data._hasDefaultOut && (
-        <AddButton onClick={() => data.onAppend('default')} style={{ position: 'absolute', left: '50%', bottom: -30, transform: 'translateX(-50%)' }} />
-      )}
+      {!data._hasDefaultOut && <AddRow data={data} handle="default" />}
     </div>
   );
 }
@@ -391,12 +417,8 @@ function BranchNode({ data, selected }) {
         <Handle id="yes" type="source" position={Position.Bottom} style={{ left: '25%', background: '#10b981' }} />
         <Handle id="no" type="source" position={Position.Bottom} style={{ left: '75%', background: '#f43f5e' }} />
       </div>
-      {!data._hasYesOut && (
-        <AddButton onClick={() => data.onAppend('yes')} style={{ position: 'absolute', left: '25%', bottom: -30, transform: 'translateX(-50%)' }} />
-      )}
-      {!data._hasNoOut && (
-        <AddButton onClick={() => data.onAppend('no')} style={{ position: 'absolute', left: '75%', bottom: -30, transform: 'translateX(-50%)' }} />
-      )}
+      {!data._hasYesOut && <AddRow data={data} handle="yes" left="25%" />}
+      {!data._hasNoOut && <AddRow data={data} handle="no" left="75%" />}
     </div>
   );
 }
@@ -416,6 +438,7 @@ function PlusEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
         >
           {label && <span className={`text-[9px] font-bold px-1 rounded ${label === 'Sí' ? 'text-emerald-600' : 'text-rose-600'}`}>{label}</span>}
           <AddButton onClick={() => data.onInsert(id)} />
+          {data.hasClipboard && <PasteButton onClick={() => data.onPasteInsert(id)} />}
           {selected && (
             <button
               type="button"
@@ -573,6 +596,7 @@ export default function WorkflowGraphEditor({
   }, [nodes]);
 
   const triggerNodeCount = useMemo(() => modelNodes.filter((n) => n.type === 'trigger').length, [modelNodes]);
+  const hasClipboard = !!clipboard;
 
   // Conjunto de handles ocupados por nodo, para saber qué salidas están libres.
   const outHandles = useMemo(() => {
@@ -604,18 +628,34 @@ export default function WorkflowGraphEditor({
           onCopy: isTrig ? undefined : () => copyNode(n.id),
           onDuplicate: isTrig ? undefined : () => duplicateNode(n.id),
           onDelete: isTrig ? undefined : () => deleteNode(n.id),
+          // Pegar el paso copiado directo bajo este nodo (icono junto al "+").
+          _hasClipboard: hasClipboard,
+          onPasteAppend: (handle) => pasteAt({ mode: 'append', sourceId: n.id, sourceHandle: handle }),
         },
       };
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [modelNodes, outHandles, triggerNodeCount]
+    [modelNodes, outHandles, triggerNodeCount, hasClipboard]
   );
 
   // Estado interno de react-flow para que arrastrar sea FLUIDO (sin parpadeo):
   // el drag actualiza este estado local; al soltar, persistimos en el modelo.
   // Se inicializa con los nodos ya calculados para que `fitView` funcione al montar.
   const [rfNodes, setRfNodes, onNodesChange] = useNodesState(flowNodes);
-  useEffect(() => { setRfNodes(flowNodes); }, [flowNodes, setRfNodes]);
+  // Al re-sincronizar el modelo → react-flow se MEZCLA en vez de reemplazar: se
+  // conservan las dimensiones ya MEDIDAS (width/height) y el estado interno de
+  // cada nodo, actualizando solo tipo/posición/datos. Reemplazar el array entero
+  // hacía que react-flow volviera a medir todos los nodos y el diagrama
+  // "desaparecía" un instante en cada movimiento.
+  useEffect(() => {
+    setRfNodes((prev) => {
+      const prevById = new Map(prev.map((n) => [n.id, n]));
+      return flowNodes.map((fn) => {
+        const old = prevById.get(fn.id);
+        return old ? { ...old, type: fn.type, position: fn.position, data: fn.data } : fn;
+      });
+    });
+  }, [flowNodes, setRfNodes]);
 
   const onNodeDragStart = useCallback((_evt, node) => {
     dragStartRef.current = { id: node.id, ...node.position };
@@ -662,10 +702,13 @@ export default function WorkflowGraphEditor({
       data: {
         onInsert: (edgeId) => setAdding({ mode: 'insert', edgeId }),
         onDeleteEdge: deleteEdge,
+        hasClipboard,
+        onPasteInsert: (edgeId) => pasteAt({ mode: 'insert', edgeId }),
       },
       label: e.sourceHandle === 'yes' ? 'Sí' : e.sourceHandle === 'no' ? 'No' : undefined,
     })),
-    [edges, deleteEdge]
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [edges, deleteEdge, hasClipboard]
   );
 
   // ── Conexión manual con el mouse (arrastrar desde un punto a otro nodo) ──
@@ -740,30 +783,30 @@ export default function WorkflowGraphEditor({
     setSelectedTrigger(null);
   };
 
-  // Inserta/añade un nodo del tipo elegido según el contexto `adding`.
-  // Posiciona el nodo nuevo respecto a su origen (no reorganiza el resto).
-  // `presetData` permite PEGAR un paso copiado (misma configuración).
-  const handlePickStep = (type, presetData = null) => {
+  // Inserta un nodo (nuevo o PEGADO) en un contexto dado ({mode:'append'|'insert'}).
+  // `presetData` = configuración a copiar (pegar); si no, valores por defecto.
+  const insertStep = (type, presetData, context) => {
+    if (!context) return;
     const id = `n${Date.now()}`;
     const data = presetData ? JSON.parse(JSON.stringify(presetData)) : newNodeData(type);
     const newModelNode = { id, type, position: { x: 0, y: 0 }, data };
 
-    if (adding?.mode === 'append') {
-      const src = modelNodes.find((n) => n.id === adding.sourceId);
+    if (context.mode === 'append') {
+      const src = modelNodes.find((n) => n.id === context.sourceId);
       const base = src?.position || { x: 0, y: 0 };
-      const dx = adding.sourceHandle === 'yes' ? -GAP_X / 2 : adding.sourceHandle === 'no' ? GAP_X / 2 : 0;
+      const dx = context.sourceHandle === 'yes' ? -GAP_X / 2 : context.sourceHandle === 'no' ? GAP_X / 2 : 0;
       newModelNode.position = { x: base.x + dx, y: base.y + GAP_Y };
-      const newEdge = { id: `e-${adding.sourceId}-${id}`, source: adding.sourceId, target: id, sourceHandle: adding.sourceHandle || 'default' };
+      const newEdge = { id: `e-${context.sourceId}-${id}`, source: context.sourceId, target: id, sourceHandle: context.sourceHandle || 'default' };
       onChange?.({ nodes: [...modelNodes, newModelNode], edges: [...edges, newEdge] });
-    } else if (adding?.mode === 'insert') {
-      const target = edges.find((e) => e.id === adding.edgeId);
+    } else if (context.mode === 'insert') {
+      const target = edges.find((e) => e.id === context.edgeId);
       if (!target) { setAdding(null); return; }
       const dst = modelNodes.find((n) => n.id === target.target);
       const src = modelNodes.find((n) => n.id === target.source);
       newModelNode.position = dst?.position
         ? { x: dst.position.x, y: dst.position.y }
         : { x: src?.position?.x || 0, y: (src?.position?.y || 0) + GAP_Y };
-      const rest = edges.filter((e) => e.id !== adding.edgeId);
+      const rest = edges.filter((e) => e.id !== context.edgeId);
       const e1 = { id: `e-${target.source}-${id}`, source: target.source, target: id, sourceHandle: target.sourceHandle || 'default' };
       const e2 = { id: `e-${id}-${target.target}`, source: id, target: target.target, sourceHandle: 'default' };
       const newEdges = [...rest, e1, e2];
@@ -776,6 +819,12 @@ export default function WorkflowGraphEditor({
     setSelectedId(id); // abre el panel de configuración del paso recién creado
     setSelectedTrigger(null);
   };
+
+  // Al elegir un tipo en el selector "+": inserta en el contexto guardado en `adding`.
+  const handlePickStep = (type) => insertStep(type, null, adding);
+  // Pegar el paso copiado DIRECTAMENTE (sin abrir el selector), estilo Daplox:
+  // el icono de pegar aparece junto a cada "+" cuando hay algo copiado.
+  const pasteAt = (context) => { if (clipboard) insertStep(clipboard.type, clipboard.data, context); };
 
   const updateNodeData = (id, patch) => {
     const next = modelNodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...patch } } : n));
@@ -804,7 +853,7 @@ export default function WorkflowGraphEditor({
     const src = modelNodes.find((n) => n.id === id);
     if (!src || src.type === 'trigger') return;
     setClipboard({ type: src.type, data: JSON.parse(JSON.stringify(src.data || {})) });
-    toast.success('Paso copiado. Pulsa un "+" y elige "Pegar" para insertarlo.');
+    toast.success('Paso copiado. Pega con el icono 📋 que aparece junto a cualquier "+".');
   };
 
   // Duplica un paso: crea una copia con su misma configuración. Para pasos lineales
@@ -903,7 +952,7 @@ export default function WorkflowGraphEditor({
             Auto-organizar
           </button>
           <span className="hidden md:inline-flex items-center px-3 py-1.5 bg-white/80 border border-slate-200 rounded-lg text-[11px] text-slate-400 shadow-sm select-none">
-            Arrastra un paso sobre una línea para reordenarlo · pasa el cursor sobre un paso para copiar/duplicar/eliminar · arrastra desde el punto de abajo para conectar
+            Arrastra un paso sobre una línea para reordenarlo · pasa el cursor sobre un paso para copiar/duplicar/eliminar · tras copiar, pega con el icono junto a un “+”
           </span>
         </div>
 
@@ -931,7 +980,7 @@ export default function WorkflowGraphEditor({
 
         {/* Selector de paso (al pulsar "+") */}
         {adding && (
-          <StepPicker onPick={handlePickStep} onClose={() => setAdding(null)} clipboard={clipboard} />
+          <StepPicker onPick={handlePickStep} onClose={() => setAdding(null)} />
         )}
       </div>
     </ReactFlowProvider>
@@ -961,7 +1010,7 @@ function Drawer({ title, onClose, onDelete, children }) {
 }
 
 // ─────────── Selector de pasos ───────────
-function StepPicker({ onPick, onClose, clipboard }) {
+function StepPicker({ onPick, onClose }) {
   const [q, setQ] = useState('');
   const ql = q.trim().toLowerCase();
   return (
@@ -971,17 +1020,6 @@ function StepPicker({ onPick, onClose, clipboard }) {
           <span className="text-sm font-bold text-slate-700">Añadir un paso</span>
           <button type="button" onClick={onClose} className="p-1 text-slate-400 hover:text-slate-700 bg-transparent border-none cursor-pointer"><HiOutlineXMark className="w-5 h-5" /></button>
         </div>
-        {/* Pegar el paso copiado (mismo tipo + configuración). */}
-        {clipboard && (
-          <button
-            type="button"
-            onClick={() => onPick(clipboard.type, clipboard.data)}
-            className="mx-3 mt-3 px-3 py-2 border-2 border-dashed border-emerald-300 bg-emerald-50/60 rounded-lg text-sm text-emerald-700 cursor-pointer hover:bg-emerald-50 hover:border-emerald-400 flex items-center gap-2"
-          >
-            <HiOutlineSquare2Stack className="w-4 h-4 shrink-0" />
-            Pegar «{STEP_DEFS[clipboard.type] || clipboard.type}» copiado
-          </button>
-        )}
         <div className="p-3 border-b border-slate-100">
           <input autoFocus value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar paso…" className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm" />
         </div>
