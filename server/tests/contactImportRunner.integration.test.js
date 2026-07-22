@@ -86,11 +86,14 @@ test('columna Sucursal: cada contacto cae en SU sede; nombre no reconocido → s
   const quito = await Clinic.create({ name: 'Quito' });
   const gye = await Clinic.create({ name: 'Guayaquil' });
 
+  const clinicaNorte = await Clinic.create({ name: 'Clínica Norte' });
+
   const file = writeCsv([
     ['Nombre', 'Celular', 'Sucursal'],
     ['Ana', '0999111222', 'Quito'],
     ['Beto', '0988776655', 'GUAYAQUIL'], // mayúsculas: se resuelve igual
     ['Caro', '0977665544', 'Cuenca'], // no existe → cae en la sede por defecto
+    ['Deni', '0966554433', 'clinica norte'], // sin tilde ni mayúsculas: igual coincide
   ]);
   const batch = await ContactImport.create({
     clinic: clinicId, fileName: 'c.csv', filePath: file, status: 'pending', createdBy: userId,
@@ -104,12 +107,14 @@ test('columna Sucursal: cada contacto cae en SU sede; nombre no reconocido → s
 
   const done = await ContactImport.findById(batch._id);
   assert.equal(done.status, 'done', done.errorMessage);
-  assert.equal(done.created, 3);
+  assert.equal(done.created, 4);
 
   assert.equal(String((await Contact.findOne({ phone: '593999111222' })).clinic), String(quito._id));
   assert.equal(String((await Contact.findOne({ phone: '593988776655' })).clinic), String(gye._id));
   // Sucursal desconocida → sede por defecto del asistente (batch.clinic).
   assert.equal(String((await Contact.findOne({ phone: '593977665544' })).clinic), String(clinicId));
+  // Sin tilde ni mayúsculas ("clinica norte" == "Clínica Norte"): coincide igual.
+  assert.equal(String((await Contact.findOne({ phone: '593966554433' })).clinic), String(clinicaNorte._id));
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -85,6 +85,7 @@ exports.template = async (req, res) => {
       { header: 'Apellido', key: 'apellido', width: 20 },
       { header: 'Teléfono', key: 'telefono', width: 18 },
       { header: 'Correo', key: 'correo', width: 26 },
+      { header: 'Sucursal', key: 'sucursal', width: 20 },
       { header: 'Etiquetas', key: 'etiquetas', width: 24 },
     ];
 
@@ -100,8 +101,8 @@ exports.template = async (req, res) => {
     // Ejemplos: el teléfono va como STRING, no como número, para que herede el
     // formato de texto y sirva de guía de cómo escribirlo.
     const ejemplos = [
-      { nombre: 'Emily', apellido: 'Torres Vera', telefono: '0999111222', correo: 'emily@correo.com', etiquetas: 'feria-julio, interesada' },
-      { nombre: 'Dome', apellido: '', telefono: '0988776655', correo: '', etiquetas: 'feria-julio' },
+      { nombre: 'Emily', apellido: 'Torres Vera', telefono: '0999111222', correo: 'emily@correo.com', sucursal: 'Quito', etiquetas: 'feria-julio, interesada' },
+      { nombre: 'Dome', apellido: '', telefono: '0988776655', correo: '', sucursal: 'Guayaquil', etiquetas: 'feria-julio' },
     ];
     ejemplos.forEach((e) => ws.addRow(e));
 
@@ -116,9 +117,13 @@ exports.template = async (req, res) => {
       '3. El teléfono puede ir como 0999111222 o +593 99 911 1222: el sistema lo normaliza.',
       '4. Deja el teléfono con formato de TEXTO (ya viene así en la plantilla). Si Excel',
       '   lo convierte a número, un 0999111222 se vuelve 9,99E+08 y esa fila se descarta.',
-      '5. Puedes añadir tus propias columnas (Ciudad, Interés…): al importar decides a qué',
+      '5. Sucursal (opcional): escribe el NOMBRE de la sede a la que pertenece el contacto',
+      '   (p. ej. Quito). No importan mayúsculas ni tildes. El contacto queda en esa sucursal',
+      '   y el flujo de automatización puede tomar un camino distinto según la sede. Si la',
+      '   dejas vacía o el nombre no coincide con ninguna sucursal, va a la sede por defecto.',
+      '6. Puedes añadir tus propias columnas (Ciudad, Interés…): al importar decides a qué',
       '   campo va cada una, o las guardas como dato adicional del contacto.',
-      '6. Borra estas dos filas de ejemplo antes de subir el archivo.',
+      '7. Borra estas dos filas de ejemplo antes de subir el archivo.',
     ];
     lines.forEach((t, i) => {
       const row = help.getRow(i + 1);

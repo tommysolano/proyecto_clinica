@@ -25,7 +25,13 @@ const MAX_STORED_ERRORS = 200; // muestra para la UI: 47k errores no caben en un
 // ahí al contacto y poder bifurcar el flujo por sucursal (nodo Dividir / condición
 // clinic). Si el nombre no coincide con ninguna sede, el contacto cae en la sucursal
 // por defecto del asistente (batch.clinic).
-const normClinicName = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+//
+// El emparejamiento NO es sensible a mayúsculas NI a acentos ("GUAYAQUIL",
+// "Guayaquil" y "guayaquíl" son la misma sede) y colapsa espacios: el usuario
+// escribe el nombre a mano en el Excel y no debe cuadrar tildes ni mayúsculas.
+const normClinicName = (s) => String(s || '')
+  .normalize('NFD').replace(/[̀-ͯ]/g, '') // quita acentos/tildes
+  .trim().toLowerCase().replace(/\s+/g, ' ');
 
 async function buildClinicResolver() {
   const Clinic = require('../models/Clinic');
