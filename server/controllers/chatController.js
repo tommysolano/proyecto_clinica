@@ -749,11 +749,12 @@ exports.uploadSavedReplyMedia = async (req, res) => {
       return res.status(400).json({ message: 'Archivo inválido: solo imágenes, videos o audios' });
     }
     const kind = parsed.kind;
-    const MAX_LEN = { video: 14_000_000, audio: 7_000_000, image: 2_500_000 }; // ~10MB, ~5MB, ~1.8MB
+    // Topes en CARACTERES de data URL base64 (~1.33× el tamaño real del archivo).
+    const MAX_LEN = { video: 43_000_000, audio: 21_000_000, image: 8_000_000 }; // ~32MB, ~15MB, ~6MB
     const TOO_BIG = {
-      video: 'Video demasiado grande (máx ~10MB)',
-      audio: 'Audio demasiado grande (máx ~5MB)',
-      image: 'Imagen demasiado grande (máx ~1.8MB)',
+      video: 'Video demasiado grande (máx ~32MB)',
+      audio: 'Audio demasiado grande (máx ~15MB)',
+      image: 'Imagen demasiado grande (máx ~6MB)',
     };
     if (dataUrl.length > MAX_LEN[kind]) {
       return res.status(400).json({ message: TOO_BIG[kind] });
@@ -1315,8 +1316,8 @@ exports.uploadGallery = async (req, res) => {
     if (!dataUrl || !/^data:image\/(png|jpe?g|webp|gif);base64,/.test(dataUrl)) {
       return res.status(400).json({ message: 'Imagen inválida' });
     }
-    if (dataUrl.length > 2_500_000) {
-      return res.status(400).json({ message: 'Imagen demasiado grande (máx ~1.8MB)' });
+    if (dataUrl.length > 8_000_000) {
+      return res.status(400).json({ message: 'Imagen demasiado grande (máx ~6MB)' });
     }
     const mimeMatch = dataUrl.match(/^data:(image\/[a-zA-Z0-9+]+);/);
     const img = await ChatGalleryImage.create({

@@ -67,7 +67,11 @@ app.use(
   })
 );
 app.use(express.json({
-  limit: '10mb',
+  // La media del chat viaja como data URL base64 dentro del JSON (base64 infla
+  // ~33%), así que este tope es el techo real de subida. 50mb admite un video de
+  // ~32MB. OJO PRODUCCIÓN: nginx debe tener client_max_body_size >= 50m o cortará
+  // el upload con 413 antes de llegar aquí.
+  limit: '50mb',
   verify: (req, _res, buf) => {
     req.rawBody = buf;
   },

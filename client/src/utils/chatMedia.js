@@ -8,8 +8,8 @@
  * antes de subirla en vez de dejar que el envío falle.
  */
 
-// Holgura bajo el cap del backend (2.5M caracteres de data URL).
-const MAX_IMAGE_DATAURL = 2_000_000;
+// Holgura bajo el cap del backend (8M caracteres de data URL ≈ 6MB).
+const MAX_IMAGE_DATAURL = 7_500_000;
 
 export function readFileAsDataUrl(file) {
   return new Promise((resolve, reject) => {

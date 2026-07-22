@@ -1606,7 +1606,7 @@ function GalleryModal({ images, onClose, onChange, onSend }) {
   const upload = async (file) => {
     if (!file) return;
     if (!file.type.startsWith('image/')) return toast.error('Solo imágenes');
-    if (file.size > 1.8 * 1024 * 1024) return toast.error('Máximo 1.8MB');
+    if (file.size > 6 * 1024 * 1024) return toast.error('Máximo 6MB');
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {

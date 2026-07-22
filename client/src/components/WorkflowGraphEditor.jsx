@@ -1320,8 +1320,8 @@ function NodeAttachment({ d, set }) {
     const isImage = file.type.startsWith('image/');
     const isVideo = file.type.startsWith('video/');
     if (!isImage && !isVideo) return toast.error('Solo imágenes o videos');
-    if (isImage && file.size > 1.8 * 1024 * 1024) return toast.error('Imagen: máximo 1.8MB');
-    if (isVideo && file.size > 10 * 1024 * 1024) return toast.error('Video: máximo 10MB');
+    if (isImage && file.size > 6 * 1024 * 1024) return toast.error('Imagen: máximo 6MB');
+    if (isVideo && file.size > 32 * 1024 * 1024) return toast.error('Video: máximo 32MB');
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {

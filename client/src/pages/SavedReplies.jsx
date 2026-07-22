@@ -424,8 +424,8 @@ function SavedReplyModal({ reply, folders, defaultFolder = '', onClose, onSaved 
     const isImage = file.type.startsWith('image/');
     const isVideo = file.type.startsWith('video/');
     if (!isImage && !isVideo) return toast.error('Solo imágenes o videos');
-    if (isImage && file.size > 1.8 * 1024 * 1024) return toast.error('Imagen: máximo 1.8MB');
-    if (isVideo && file.size > 10 * 1024 * 1024) return toast.error('Video: máximo 10MB');
+    if (isImage && file.size > 6 * 1024 * 1024) return toast.error('Imagen: máximo 6MB');
+    if (isVideo && file.size > 32 * 1024 * 1024) return toast.error('Video: máximo 32MB');
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {
@@ -598,7 +598,7 @@ function SavedReplyModal({ reply, folders, defaultFolder = '', onClose, onSaved 
                   onClick={() => fileRef.current?.click()}
                   className="w-full text-xs py-2 rounded-lg border border-dashed border-emerald-300 text-emerald-700 bg-emerald-50/40 hover:bg-emerald-100 cursor-pointer disabled:opacity-50"
                 >
-                  {uploading ? 'Subiendo…' : '↥ Añadir adjunto (imagen máx 1.8MB, video máx 10MB)'}
+                  {uploading ? 'Subiendo…' : '↥ Añadir adjunto (imagen máx 6MB, video máx 32MB)'}
                 </button>
                 <div className="flex gap-2">
                   <input
