@@ -64,6 +64,17 @@ function canReplyConversation(req, conv) {
 exports.canMutateConversation = canMutateConversation;
 exports.canReplyConversation = canReplyConversation;
 
+// Motivos por los que un envío se OMITE (no llegó a intentarse con el proveedor).
+// Compartido por todas las rutas de envío para dar el mismo mensaje al agente.
+const SEND_SKIP_REASONS = {
+  blocked: 'Este contacto está bloqueado.',
+  opt_out: 'Este paciente solicitó no recibir mensajes.',
+  no_whatsapp_consent: 'Este paciente no tiene consentimiento de WhatsApp.',
+  out_of_window: 'La ventana de 24h está cerrada. Usa una plantilla aprobada.',
+  invalid_recipient: 'Destinatario inválido.',
+  provider_unavailable: 'No hay un número de WhatsApp conectado para enviar. Revisa la conexión en Configuración del Call Center.',
+};
+
 // =================== Conversaciones ===================
 
 exports.listConversations = async (req, res) => {
@@ -1360,30 +1371,56 @@ exports.sendGalleryImage = async (req, res) => {
   try {
     const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
-    if (conv.blocked) return res.status(403).json({ message: 'Contacto bloqueado' });
-    const img = await ChatGalleryImage.findOne({ _id: req.body.imageId, clinic: req.clinicId });
+    if (!canReplyConversation(req, conv)) {
+      return res.status(403).json({ message: 'No puedes enviar mensajes en esta conversación' });
+    }
+    if (conv.blocked) return res.status(403).json({ message: 'Este contacto está bloqueado.' });
+    const img = await ChatGalleryImage.findOne({ _id: req.body.imageId, clinic: req.clinicId }).select('_id name mimeType');
     if (!img) return res.status(404).json({ message: 'Imagen no encontrada' });
-    const msg = await Message.create({
-      clinic: req.clinicId,
-      conversation: conv._id,
-      direction: 'out',
-      body: req.body.caption || `[imagen: ${img.name}]`,
-      mediaUrl: img.dataUrl,
-      mediaType: 'image',
+
+    // La media se envía DE VERDAD por el proveedor (Cloud la sube a Meta por id,
+    // QR por bytes) usando su URL pública. BUG anterior: esta ruta SOLO creaba el
+    // mensaje en la BD (deliveryStatus por defecto 'sent') y NUNCA contactaba a
+    // WhatsApp — la imagen se veía "enviada" pero jamás le llegaba al contacto.
+    const mime = String(img.mimeType || '');
+    const kind = mime.startsWith('video') ? 'video' : mime.startsWith('audio') ? 'audio' : 'image';
+    const result = await messaging.send({
+      clinicId: req.clinicId,
+      channel: conv.channel || 'whatsapp',
+      conversation: conv,
+      to: conv.phone,
+      patient: conv.patient,
+      body: (req.body.caption || '').toString().trim(),
+      mediaUrl: publicMediaUrl(req, img._id),
+      mediaType: kind,
       sentBy: req.user._id,
       sentByName: req.user.name,
     });
-    conv.lastMessagePreview = `[imagen]`;
-    conv.lastMessageAt = new Date();
-    conv.lastMessageDirection = 'out';
-    // Responder (aunque sea con una imagen) limpia el pendiente de no leído.
-    conv.unreadCount = 0;
-    await Message.updateMany(
-      { conversation: conv._id, direction: 'in', isRead: false },
-      { isRead: true }
-    );
-    await conv.save();
-    res.status(201).json(msg);
+
+    if (result.skipped) {
+      return res.status(409).json({
+        message: SEND_SKIP_REASONS[result.reason] || 'El mensaje fue omitido.',
+        code: result.reason,
+      });
+    }
+    // El proveedor rechazó la media (QR desconectado, Meta la rechazó, muy grande):
+    // NUNCA 201 "enviado". El mensaje queda FALLIDO con su motivo y el front lo
+    // muestra en rojo con "Reintentar".
+    if (!result.ok) {
+      return res.status(502).json({
+        message: result.errorMessage || 'No se pudo enviar la imagen: el proveedor de WhatsApp la rechazó.',
+        code: result.errorCode || 'send_failed',
+        deliveryStatus: result.deliveryStatus || 'failed',
+        chatMessage: result.message,
+      });
+    }
+    if (!conv.assignedTo) {
+      conv.assignedTo = req.user._id;
+      conv.assignedToName = req.user.name;
+      conv.assignedAt = new Date();
+      await conv.save();
+    }
+    res.status(201).json(result.message);
   } catch (err) {
     res.status(500).json({ message: 'Error al enviar imagen', error: err.message });
   }
@@ -1602,16 +1639,8 @@ exports.sendMessage = async (req, res) => {
     });
 
     if (result.skipped) {
-      const reasons = {
-        blocked: 'Este contacto está bloqueado.',
-        opt_out: 'Este paciente solicitó no recibir mensajes.',
-        no_whatsapp_consent: 'Este paciente no tiene consentimiento de WhatsApp.',
-        out_of_window: 'La ventana de 24h está cerrada. Usa una plantilla aprobada.',
-        invalid_recipient: 'Destinatario inválido.',
-        provider_unavailable: 'No hay un número de WhatsApp conectado para enviar. Revisa la conexión en Configuración del Call Center.',
-      };
       return res.status(409).json({
-        message: reasons[result.reason] || 'El mensaje fue omitido.',
+        message: SEND_SKIP_REASONS[result.reason] || 'El mensaje fue omitido.',
         code: result.reason,
       });
     }
@@ -3043,23 +3072,29 @@ exports.createQuotationFromChat = async (req, res) => {
       `Hola ${quotation.clientName || ''}, te enviamos la cotización ${quotation.quotationNumber} ` +
       `por un total de $${Number(quotation.total || 0).toFixed(2)}.\n${pdfUrl}`;
 
-    const msg = await Message.create({
-      clinic: req.clinicId,
-      conversation: conv._id,
-      direction: 'out',
+    // El enlace se envía DE VERDAD por el proveedor (antes solo se creaba el
+    // mensaje con deliveryStatus 'sent' y NUNCA salía a WhatsApp). Si el proveedor
+    // lo rechaza, el mensaje queda FALLIDO con su motivo, no un "enviado" falso.
+    const result = await messaging.send({
+      clinicId: req.clinicId,
+      channel: conv.channel || 'whatsapp',
+      conversation: conv,
+      to: conv.phone,
+      patient: conv.patient,
       body,
-      deliveryStatus: 'sent',
       sentBy: req.user._id,
       sentByName: req.user.name,
     });
-    conv.lastMessageAt = msg.createdAt;
-    conv.lastMessagePreview = body.slice(0, 140);
-    conv.lastMessageDirection = 'out';
-    await conv.save();
-    emitToCallCenter('chat:message', { conversationId: conv._id, message: msg });
     emitToCallCenter('chat:updated', { id: conv._id });
 
-    res.status(201).json({ quotation, pdfUrl, message: msg, conversation: conv });
+    res.status(201).json({
+      quotation,
+      pdfUrl,
+      message: result.message || null,
+      deliveryStatus: result.deliveryStatus || (result.skipped ? 'skipped' : 'failed'),
+      sendError: result.ok ? null : (result.errorMessage || SEND_SKIP_REASONS[result.reason] || 'No se pudo enviar el enlace por WhatsApp.'),
+      conversation: conv,
+    });
   } catch (err) {
     res.status(500).json({ message: 'Error al crear cotización desde chat', error: err.message });
   }

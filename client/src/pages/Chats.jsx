@@ -1596,7 +1596,14 @@ export default function Chats() {
               setGalleryOpen(false);
               loadMessages(activeId);
             } catch (err) {
-              toast.error(err.response?.data?.message || 'Error al enviar');
+              // 502 = el proveedor RECHAZÓ la imagen: el mensaje queda FALLIDO en el
+              // chat (burbuja roja con motivo). Se cierra y recarga para verlo, en
+              // vez de dejar el modal como si nada (antes parecía "enviado").
+              toast.error(err.response?.data?.message || 'No se pudo enviar la imagen');
+              if (err.response?.status === 502) {
+                setGalleryOpen(false);
+                loadMessages(activeId);
+              }
             }
           }}
         />
