@@ -1224,6 +1224,9 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
   // referral.source_id → adId. Se usa el del mensaje y no conv.attribution para que
   // el trigger dispare solo al llegar desde el anuncio (no en cada mensaje posterior).
   const msgAdId = String(referral?.adId || '').trim();
+  // Título del anuncio (headline). Meta lo manda en referral.headline; `campaign`
+  // es el fallback (headline||body) que guarda el webhook.
+  const msgAdText = String(referral?.headline || referral?.campaign || '').toLowerCase();
 
   const matchesChat = (tr) => {
     if (!tr || !types.includes(tr.type)) return false;
@@ -1231,11 +1234,21 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
     if (tr.type === 'keyword' && !keywordMatchesTrigger(tr, text)) return false;
     if (tr.type === 'ctwa_ad') {
       if (!msgAdId) return false; // este mensaje no vino de un anuncio
-      const wanted = String(tr.adFilter || '')
+      const wantedIds = String(tr.adFilter || '')
         .split(',')
         .map((s) => s.trim())
         .filter(Boolean);
-      if (wanted.length && !wanted.includes(msgAdId)) return false;
+      const wantedText = String(tr.adTextFilter || '')
+        .split(',')
+        .map((s) => s.trim().toLowerCase())
+        .filter(Boolean);
+      // Si hay algún filtro, el mensaje debe casar por ID O por texto del título.
+      // Si no hay ninguno → cualquier anuncio dispara.
+      if (wantedIds.length || wantedText.length) {
+        const idOk = wantedIds.includes(msgAdId);
+        const textOk = wantedText.some((t) => msgAdText.includes(t));
+        if (!idOk && !textOk) return false;
+      }
     }
     // Audiencia: new = sin paciente vinculado, existing = con paciente.
     if (tr.audience === 'new' && patient) return false;
@@ -1276,7 +1289,7 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
           traceType,
           'no_match',
           traceType === 'ctwa_ad'
-            ? `El mensaje llegó desde el anuncio ${msgAdId}, pero no coincidió con el/los ID(s) configurados en el disparador (o la audiencia no encajó).`
+            ? `El mensaje llegó desde el anuncio ${msgAdId} (título: "${msgAdText || '—'}"), pero no coincidió con el/los ID(s) ni con el/los texto(s) del disparador (o la audiencia no encajó). Tip: el ID del anuncio cambia al editarlo en Meta; filtra por texto del título o deja los filtros vacíos.`
             : 'El mensaje llegó pero el disparador de chat no coincidió (audiencia o palabra clave).'
         );
       }

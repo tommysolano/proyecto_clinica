@@ -179,8 +179,14 @@ const triggerSchema = new mongoose.Schema(
     // Trigger 'tag_added': solo dispara si se añade esta etiqueta (vacío = cualquiera).
     tagFilter: { type: String, trim: true, default: '' },
     // Trigger 'ctwa_ad': ID(s) del anuncio de Meta (referral.source_id), separados
-    // por coma. Vacío = cualquier anuncio.
+    // por coma. Vacío = cualquier anuncio. OJO: el source_id cambia cuando se edita
+    // el anuncio en Meta, así que filtrar por ID es frágil (mejor por texto).
     adFilter: { type: String, trim: true, default: '' },
+    // Trigger 'ctwa_ad': texto(s) que debe contener el TÍTULO del anuncio
+    // (referral.headline), separados por coma. Sobrevive a los cambios de ID.
+    // Si adFilter y adTextFilter están vacíos → cualquier anuncio. Si alguno tiene
+    // valor, el mensaje coincide si casa por ID O por texto.
+    adTextFilter: { type: String, trim: true, default: '' },
   },
   { _id: false }
 );

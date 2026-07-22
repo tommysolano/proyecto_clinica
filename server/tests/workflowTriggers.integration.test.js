@@ -234,8 +234,8 @@ test('Cita creada DESDE EL CHAT (createAppointmentFromChat) también dispara el 
 // Disparador "mensaje desde anuncio (Meta Ads)": un flujo puede vincularse a
 // VARIOS anuncios (adFilter = IDs separados por coma). Dispara con cualquiera de
 // ellos y NO con anuncios ajenos ni con mensajes normales (sin anuncio).
-function ctwaWorkflow(clinicId, adFilter) {
-  const tr = { type: 'ctwa_ad', audience: 'all', adFilter };
+function ctwaWorkflow(clinicId, adFilter, adTextFilter = '') {
+  const tr = { type: 'ctwa_ad', audience: 'all', adFilter, adTextFilter };
   return Workflow.create({
     clinic: clinicId,
     name: 'Anuncio Meta',
@@ -298,6 +298,31 @@ test('Trigger "mensaje desde anuncio" (ctwa_ad) SIN filtro: dispara con cualquie
   });
   assert.equal(r.enrolled, 1, 'sin filtro, cualquier anuncio debía disparar el flujo');
   assert.ok(await WorkflowEnrollment.findOne({ workflow: wf._id, conversation: conv._id }));
+});
+
+test('Trigger "mensaje desde anuncio" (ctwa_ad) por TÍTULO del anuncio (sobrevive al cambio de ID)', async () => {
+  const Conversation = require('../models/Conversation');
+  const clinic = await Clinic.create({ name: 'Principal' });
+  // Filtra por texto "Profilaxis" (ID vacío): debe disparar sin importar el source_id.
+  const wf = await ctwaWorkflow(clinic._id, '', 'Profilaxis');
+
+  // Anuncio con un ID nunca visto pero cuyo título contiene "Profilaxis" → inscribe.
+  const conv1 = await Conversation.create({ clinic: clinic._id, phone: '593990000010', channel: 'whatsapp' });
+  const r1 = await workflowEngine.enrollForChatMessage({
+    clinicId: clinic._id, conversation: conv1, patient: null,
+    phone: conv1.phone, text: 'Hola', isNew: true,
+    referral: { adId: '52577706872785', headline: 'Agendar Profilaxis🦶' },
+  });
+  assert.equal(r1.enrolled, 1, 'el título contiene "Profilaxis" → debía disparar aunque el ID sea nuevo');
+
+  // Anuncio cuyo título NO contiene el texto → no inscribe.
+  const conv2 = await Conversation.create({ clinic: clinic._id, phone: '593990000011', channel: 'whatsapp' });
+  const r2 = await workflowEngine.enrollForChatMessage({
+    clinicId: clinic._id, conversation: conv2, patient: null,
+    phone: conv2.phone, text: 'Hola', isNew: true,
+    referral: { adId: '999', headline: 'Blanqueamiento dental' },
+  });
+  assert.equal(r2.enrolled, 0, 'un anuncio de otro tema no debía disparar el flujo');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -575,7 +575,7 @@ function spliceNodeIntoEdge(dId, targetEdge, modelNodes, edges) {
  *  - clic en un nodo: abre el panel de configuración (drawer) sobre el lienzo.
  *  - clic en el disparador: abre la configuración del disparador.
  */
-const defaultTrigger = () => ({ type: 'appointment_created', audience: 'all', serviceFilter: null, keywords: [], matchType: 'contains', tagFilter: '', adFilter: '' });
+const defaultTrigger = () => ({ type: 'appointment_created', audience: 'all', serviceFilter: null, keywords: [], matchType: 'contains', tagFilter: '', adFilter: '', adTextFilter: '' });
 
 export default function WorkflowGraphEditor({
   nodes = [], edges = [], onChange,
@@ -1201,13 +1201,25 @@ function TriggerConfig({ trigger = {}, onChange, products = [], clinics = [] }) 
       )}
       {trigger.type === 'ctwa_ad' && (
         <div className="text-sm">
-          <span className="text-slate-600 block mb-1">IDs de anuncios (vacío = cualquier anuncio)</span>
+          <span className="text-slate-600 block mb-1">Título del anuncio contiene (recomendado)</span>
+          <input
+            value={trigger.adTextFilter || ''}
+            onChange={(e) => set({ adTextFilter: e.target.value })}
+            placeholder="ej. Profilaxis  (varios separados por coma)"
+            className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm"
+          />
+          <span className="text-[11px] text-slate-400 block mt-1 mb-3">
+            Dispara si el <b>título del anuncio</b> contiene este texto. Es lo más estable: a
+            diferencia del ID, el título no cambia aunque edites o recrees el anuncio. Varios
+            separados por coma (dispara con cualquiera).
+          </span>
+          <span className="text-slate-600 block mb-1">IDs de anuncios (opcional, vacío = cualquiera)</span>
           <AdIdsInput value={trigger.adFilter || ''} onChange={(v) => set({ adFilter: v })} />
-          <span className="text-[11px] text-slate-400 block mt-1">
-            El "Identificador del anuncio" del Administrador de Anuncios de Meta. Puedes vincular
-            varios: el flujo se dispara cuando alguien escribe tocando cualquiera de ellos
-            (click-to-WhatsApp). Requiere el número conectado por la API de Meta (Cloud API); los
-            números conectados por QR no reciben el dato del anuncio.
+          <span className="text-[11px] text-amber-600 block mt-1">
+            ⚠️ Ojo: Meta <b>cambia el ID</b> del anuncio cada vez que lo editas, así que filtrar por
+            ID se rompe seguido. Copia el ID desde la tarjeta "📣 desde anuncio" del chat (no del
+            Administrador de Anuncios: no coinciden). Si dejas ambos filtros vacíos, dispara con
+            cualquier anuncio. Requiere número Cloud API (los QR no reciben el dato del anuncio).
           </span>
         </div>
       )}
