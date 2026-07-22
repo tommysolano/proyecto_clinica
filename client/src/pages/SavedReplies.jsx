@@ -44,6 +44,10 @@ function typeOf(reply) {
   return reply.attachment?.url ? reply.attachment.type || 'document' : 'text';
 }
 
+// Pseudo-carpeta para los mensajes sin carpeta (no navegable como ruta real: el
+// carácter nulo nunca puede formar parte de un nombre escrito por el usuario).
+const UNFILED = '/__unfiled__';
+
 // Normaliza una ruta de carpeta: quita barras dobles/espacios y segmentos vacíos.
 // "  CITA / Recordatorios / " -> "CITA/Recordatorios"
 function normFolderPath(raw) {
@@ -112,11 +116,29 @@ export default function SavedReplies() {
       .sort((a, b) => a.name.localeCompare(b.name));
   }, [allFolderPaths, path, list]);
 
-  // Mensajes que viven DIRECTAMENTE en la carpeta actual (no en subcarpetas).
-  const messagesHere = useMemo(
-    () => list.filter((r) => normFolderPath(r.folder) === path),
-    [list, path]
-  );
+  const hasAnyFolder = allFolderPaths.size > 0;
+  // Mensajes sin carpeta (van bajo la pseudo-carpeta "Sin carpeta" cuando existen carpetas).
+  const looseMessages = useMemo(() => list.filter((r) => !normFolderPath(r.folder)), [list]);
+
+  // Filas de CARPETA a mostrar en el nivel actual (se pintan como lista, no tarjetas).
+  const folderRows = useMemo(() => {
+    if (path === UNFILED) return [];
+    const rows = [...childFolders];
+    // "Sin carpeta" solo en la raíz, solo si hay mensajes sueltos Y existen carpetas
+    // (si no hay carpetas, los sueltos se listan directo, sin pseudo-carpeta).
+    if (path === '' && hasAnyFolder && looseMessages.length) {
+      rows.push({ name: 'Sin carpeta', full: UNFILED, count: looseMessages.length, unfiled: true });
+    }
+    return rows;
+  }, [childFolders, path, hasAnyFolder, looseMessages]);
+
+  // Mensajes a listar en el nivel actual. En la raíz NO se muestran mensajes si hay
+  // carpetas (van dentro de sus carpetas o de "Sin carpeta").
+  const messageRows = useMemo(() => {
+    if (path === UNFILED) return looseMessages;
+    if (path === '') return hasAnyFolder ? [] : looseMessages;
+    return list.filter((r) => normFolderPath(r.folder) === path);
+  }, [path, list, hasAnyFolder, looseMessages]);
 
   // Búsqueda global (ignora la carpeta): busca en TODO el árbol.
   const searchResults = useMemo(() => {
@@ -131,8 +153,13 @@ export default function SavedReplies() {
     );
   }, [list, search]);
 
-  // Segmentos del breadcrumb (ruta tipo Windows).
-  const crumbs = path ? path.split('/') : [];
+  // Segmentos del breadcrumb (ruta tipo Windows). "Sin carpeta" es un nivel especial.
+  const crumbItems =
+    path === UNFILED
+      ? [{ label: 'Sin carpeta', to: UNFILED }]
+      : path
+        ? path.split('/').map((seg, i, arr) => ({ label: seg, to: arr.slice(0, i + 1).join('/') }))
+        : [];
 
   const remove = async (r) => {
     if (!window.confirm(`¿Eliminar el mensaje guardado "${r.title || `/${r.shortcut}`}"?`)) return;
@@ -196,19 +223,18 @@ export default function SavedReplies() {
           >
             <HiOutlineFolder className="w-4 h-4" /> Mensajes Guardados
           </button>
-          {crumbs.map((seg, i) => {
-            const to = crumbs.slice(0, i + 1).join('/');
-            const isLast = i === crumbs.length - 1;
+          {crumbItems.map((c, i) => {
+            const isLast = i === crumbItems.length - 1;
             return (
-              <span key={to} className="inline-flex items-center gap-1">
+              <span key={c.to} className="inline-flex items-center gap-1">
                 <HiOutlineChevronRight className="w-3.5 h-3.5 text-slate-300" />
                 <button
-                  onClick={() => setPath(to)}
+                  onClick={() => setPath(c.to)}
                   className={`px-2 py-1 rounded-lg border cursor-pointer ${
                     isLast ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
                   }`}
                 >
-                  {seg}
+                  {c.label}
                 </button>
               </span>
             );
@@ -216,48 +242,48 @@ export default function SavedReplies() {
         </div>
       )}
 
-      {/* Carpetas (grid tipo explorador) — solo fuera de la búsqueda */}
-      {!showingSearch && childFolders.length > 0 && (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 mb-4">
-          {childFolders.map((f) => (
+      {/* Carpetas como LISTA (tipo explorador) — solo fuera de la búsqueda */}
+      {!showingSearch && folderRows.length > 0 && (
+        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden mb-4">
+          {folderRows.map((f) => (
             <button
               key={f.full}
               onClick={() => setPath(f.full)}
-              className="flex items-center gap-2 p-3 rounded-xl border border-slate-200 bg-white hover:bg-emerald-50/50 hover:border-emerald-200 cursor-pointer text-left transition-colors"
+              className="w-full flex items-center gap-3 px-4 py-3 border-b border-slate-100 last:border-b-0 hover:bg-emerald-50/50 cursor-pointer text-left bg-transparent border-x-0 border-t-0"
             >
-              <HiOutlineFolder className="w-6 h-6 text-amber-500 shrink-0" />
-              <div className="min-w-0">
-                <div className="text-sm font-medium text-slate-700 truncate">{f.name}</div>
-                <div className="text-[11px] text-slate-400">{f.count} mensaje(s)</div>
-              </div>
+              <HiOutlineFolder className={`w-5 h-5 shrink-0 ${f.unfiled ? 'text-slate-400' : 'text-amber-500'}`} />
+              <span className="flex-1 text-sm font-medium text-slate-700 truncate">{f.name}</span>
+              <span className="text-xs text-slate-400 whitespace-nowrap">{f.count} mensaje(s)</span>
+              <HiOutlineChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
             </button>
           ))}
         </div>
       )}
 
-      {/* Mensajes: los de la carpeta actual, o los resultados de búsqueda */}
-      <SavedRepliesTable
-        loading={loading}
-        rows={showingSearch ? searchResults : messagesHere}
-        showFolderColumn={showingSearch}
-        onEdit={(r) => { setEditing(r); setModalOpen(true); }}
-        onRemove={remove}
-        emptyText={
-          list.length === 0
-            ? 'Aún no hay mensajes guardados. Crea el primero con “Nuevo mensaje guardado”.'
-            : showingSearch
-              ? 'Sin resultados para la búsqueda.'
-              : childFolders.length > 0
-                ? 'Esta carpeta no tiene mensajes directos (mira las subcarpetas de arriba).'
+      {/* Mensajes: solo cuando corresponde mostrarlos (dentro de una carpeta, en
+          "Sin carpeta", en la raíz sin carpetas, o en resultados de búsqueda). */}
+      {(showingSearch || messageRows.length > 0 || folderRows.length === 0) && (
+        <SavedRepliesTable
+          loading={loading}
+          rows={showingSearch ? searchResults : messageRows}
+          showFolderColumn={showingSearch}
+          onEdit={(r) => { setEditing(r); setModalOpen(true); }}
+          onRemove={remove}
+          emptyText={
+            list.length === 0
+              ? 'Aún no hay mensajes guardados. Crea el primero con “Nuevo mensaje guardado”.'
+              : showingSearch
+                ? 'Sin resultados para la búsqueda.'
                 : 'Carpeta vacía. Crea un mensaje aquí con “Nuevo mensaje guardado”.'
-        }
-      />
+          }
+        />
+      )}
 
       {modalOpen && (
         <SavedReplyModal
           reply={editing}
           folders={folderOptions}
-          defaultFolder={editing ? '' : path}
+          defaultFolder={editing || path === UNFILED ? '' : path}
           onClose={() => setModalOpen(false)}
           onSaved={(saved) => {
             setList((prev) => {
