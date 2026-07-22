@@ -1368,6 +1368,103 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
   return { enrolled };
 }
 
+/**
+ * Inscribe los workflows disparados por un CAMBIO DE ETAPA de la oportunidad de
+ * un chat (trigger 'opportunity_stage'). Lo invocan las mutaciones de oportunidad
+ * del chatController vía el evento de dominio OPPORTUNITY_STAGE_CHANGED cuando un
+ * agente mueve la oportunidad en el chat/Kanban. NO se dispara desde el paso
+ * move_stage (evita cascadas workflow→workflow).
+ * payload: { clinicId, conversationId, patientId?, phone?, stage }
+ */
+async function enrollForOpportunityStage(payload = {}) {
+  const { conversationId, stage } = payload;
+  const clinicId = payload.clinicId ? String(payload.clinicId) : null;
+  if (!clinicId || !conversationId || !stage) return { enrolled: 0 };
+  const workflows = await Workflow.find({
+    clinic: clinicId,
+    active: true,
+    $or: [{ 'trigger.type': 'opportunity_stage' }, { 'triggers.type': 'opportunity_stage' }],
+  });
+  if (!workflows.length) return { enrolled: 0 };
+
+  const conversation = await Conversation.findById(conversationId);
+  if (!conversation) return { enrolled: 0 };
+  const patient = conversation.patient ? await Patient.findById(conversation.patient) : null;
+  const phone = payload.phone || conversation.phone || '';
+
+  const matches = (tr) => {
+    if (!tr || tr.type !== 'opportunity_stage') return false;
+    const want = String(tr.stageFilter || '').trim();
+    if (want && want !== stage) return false; // filtro por etapa (vacío = cualquiera)
+    // Audiencia: new = sin paciente vinculado, existing = con paciente.
+    if (tr.audience === 'new' && patient) return false;
+    if (tr.audience === 'existing' && !patient) return false;
+    return true;
+  };
+
+  const patientName =
+    `${patient?.firstName || ''} ${patient?.lastName || ''}`.trim() ||
+    conversation.contactName || phone;
+  const trace = (wf, decision, detail) => {
+    try {
+      require('../models/WorkflowTriggerEvent')
+        .create({ clinic: clinicId, workflow: wf._id, patient: patient?._id || conversation.patient || null, patientName, eventType: 'opportunity_stage', decision, detail })
+        .catch(() => {});
+    } catch { /* noop */ }
+  };
+
+  let enrolled = 0;
+  for (const wf of workflows) {
+    const flows = matchingFlows(wf, matches);
+    if (!flows.length) continue; // otra etapa u otra audiencia: sin ruido en Actividad
+    for (const flow of flows) {
+      // Anti-duplicado: una inscripción viva por (workflow, conversación, flujo, etapa).
+      // No se repite mientras siga activa/en espera para esta misma etapa; una etapa
+      // distinta (o volver a entrar tras terminar) sí crea una nueva.
+      // eslint-disable-next-line no-await-in-loop
+      const existing = await WorkflowEnrollment.findOne({
+        workflow: wf._id,
+        conversation: conversation._id,
+        startNodeId: flow.startNodeId,
+        'context.stage': stage,
+        status: { $in: ['active', 'waiting'] },
+      });
+      if (existing) {
+        trace(wf, 'skipped_duplicate', `Ya hay una inscripción activa/en espera de este flujo para la etapa "${stage}".`);
+        continue;
+      }
+      let enrollment;
+      try {
+        // eslint-disable-next-line no-await-in-loop
+        enrollment = await WorkflowEnrollment.create({
+          clinic: clinicId,
+          workflow: wf._id,
+          patient: patient?._id || conversation.patient || null,
+          conversation: conversation._id,
+          stepIndex: 0,
+          currentNodeId: flow.currentNodeId,
+          startNodeId: flow.startNodeId,
+          status: 'active',
+          nextRunAt: new Date(),
+          context: { phone, conversationId: String(conversation._id), stage },
+        });
+      } catch (e) {
+        if (e.code === 11000) continue;
+        throw e;
+      }
+      trace(wf, 'enrolled', `La oportunidad entró a la etapa "${stage}"; inscripción creada.`);
+      // eslint-disable-next-line no-await-in-loop
+      await Workflow.updateOne({ _id: wf._id }, { $inc: { 'stats.enrolled': 1 } });
+      // eslint-disable-next-line no-await-in-loop
+      await executeEnrollment(enrollment).catch((err) =>
+        console.error('[workflowEngine] opportunity_stage enrollment error', enrollment._id, err.message)
+      );
+      enrolled++;
+    }
+  }
+  return { enrolled };
+}
+
 // Todos los disparadores de chat de un workflow (de sus nodos trigger + legacy),
 // para decidir si registrar un "no coincidió" del tipo de mensaje actual.
 function getAllChatTriggers(wf) {
@@ -1535,6 +1632,10 @@ function subscribeDomainEvents() {
   Object.entries(map).forEach(([event, triggerType]) => {
     onDomainEvent(event, (payload) => enrollForEvent(triggerType, payload));
   });
+  // Cambio de etapa de oportunidad (chat/Kanban): inscribe los flujos con trigger
+  // 'opportunity_stage'. No pasa por enrollForEvent (necesita la conversación, no
+  // el paciente) sino por su propio enrolador basado en el chat.
+  onDomainEvent(DOMAIN_EVENTS.OPPORTUNITY_STAGE_CHANGED, (payload) => enrollForOpportunityStage(payload));
 }
 
 module.exports = {
@@ -1556,6 +1657,7 @@ module.exports = {
   nextNodeId,
   enrollForEvent,
   enrollForChatMessage,
+  enrollForOpportunityStage,
   processDueEnrollments,
   resumeOnReply,
   syncEnrollmentsForAppointment,

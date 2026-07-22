@@ -122,6 +122,10 @@ const TRIGGER_TYPES = [
   'keyword',
   'new_conversation',
   'tag_added',
+  // La oportunidad del chat entró a una etapa del embudo (nuevo/contactado/…).
+  // Filtrable por etapa (trigger.stageFilter). Se dispara al mover la oportunidad
+  // desde el chat/Kanban, no desde un paso move_stage (para evitar cascadas).
+  'opportunity_stage',
   // Mensaje entrante desde un anuncio click-to-WhatsApp de Meta (el webhook trae
   // `referral.source_id` = ID del anuncio). Permite un workflow por anuncio.
   'ctwa_ad',
@@ -178,6 +182,13 @@ const triggerSchema = new mongoose.Schema(
     matchType: { type: String, enum: ['contains', 'exact', 'starts', ''], default: 'contains' },
     // Trigger 'tag_added': solo dispara si se añade esta etiqueta (vacío = cualquiera).
     tagFilter: { type: String, trim: true, default: '' },
+    // Trigger 'opportunity_stage': solo dispara al entrar a esta etapa del embudo
+    // (nuevo/contactado/interesado/agendado/ganado/perdido). Vacío = cualquier etapa.
+    stageFilter: {
+      type: String,
+      enum: ['nuevo', 'contactado', 'interesado', 'agendado', 'ganado', 'perdido', ''],
+      default: '',
+    },
     // Trigger 'ctwa_ad': ID(s) del anuncio de Meta (referral.source_id), separados
     // por coma. Vacío = cualquier anuncio. OJO: el source_id cambia cuando se edita
     // el anuncio en Meta, así que filtrar por ID es frágil (mejor por texto).

@@ -30,6 +30,10 @@ const DOMAIN_EVENTS = {
   QUOTATION_SENT: 'quotation.sent',
   TAG_ADDED: 'patient.tag_added',
   PAYMENT_RECEIVED: 'payment.received',
+  // La oportunidad de un chat entró a una etapa del embudo (nuevo/contactado/…).
+  // Lo emiten las mutaciones de oportunidad del chatController (modal del chat,
+  // agendar desde el chat). Permite disparar workflows "cuando entra a la etapa X".
+  OPPORTUNITY_STAGE_CHANGED: 'opportunity.stage_changed',
 };
 
 /**

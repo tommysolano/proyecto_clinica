@@ -131,6 +131,7 @@ export const TRIGGERS = [
   { value: 'keyword', label: 'Palabra clave (chat)' },
   { value: 'new_conversation', label: 'Nueva conversación (chat)' },
   { value: 'tag_added', label: 'Etiqueta añadida' },
+  { value: 'opportunity_stage', label: 'Entró a una etapa de oportunidad' },
   { value: 'ctwa_ad', label: 'Mensaje desde anuncio (Meta Ads)' },
   { value: 'contact_import', label: 'Contactos importados (Excel)' },
 ];
@@ -1130,6 +1131,7 @@ function TriggerConfig({ trigger = {}, onChange, products = [], clinics = [] }) 
   const set = (patch) => onChange?.({ ...trigger, ...patch });
   const isApptTrigger = trigger.type?.startsWith('appointment');
   const isChatTrigger = ['inbound_message', 'keyword', 'new_conversation', 'ctwa_ad'].includes(trigger.type);
+  const isOppTrigger = trigger.type === 'opportunity_stage';
   const bookable = products.filter((p) => ['servicio', 'programa'].includes(p.category));
   return (
     <div className="grid gap-3">
@@ -1139,7 +1141,7 @@ function TriggerConfig({ trigger = {}, onChange, products = [], clinics = [] }) 
           {TRIGGERS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
         </select>
       </label>
-      {(isApptTrigger || isChatTrigger) && (
+      {(isApptTrigger || isChatTrigger || isOppTrigger) && (
         <label className="text-sm">
           <span className="text-slate-600 block mb-1">Audiencia</span>
           <select value={trigger.audience || 'all'} onChange={(e) => set({ audience: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm">
@@ -1147,7 +1149,21 @@ function TriggerConfig({ trigger = {}, onChange, products = [], clinics = [] }) 
           </select>
         </label>
       )}
-      {!isChatTrigger && clinics.length > 1 && (
+      {isOppTrigger && (
+        <label className="text-sm">
+          <span className="text-slate-600 block mb-1">Etapa a la que entra</span>
+          <select value={trigger.stageFilter || ''} onChange={(e) => set({ stageFilter: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm">
+            <option value="">Cualquier etapa</option>
+            {STAGES.map((s) => <option key={s} value={s}>{STAGE_LABELS[s] || s}</option>)}
+          </select>
+          <span className="text-[11px] text-slate-400 block mt-1">
+            Se dispara cuando un agente mueve la oportunidad del chat a esta etapa (o a cualquiera si
+            lo dejas vacío), desde el chat o al agendar. No se dispara con el paso "Etapa de
+            oportunidad" de otra automatización (para evitar cascadas).
+          </span>
+        </label>
+      )}
+      {!isChatTrigger && !isOppTrigger && clinics.length > 1 && (
         <label className="text-sm">
           <span className="text-slate-600 block mb-1">Solo si ocurre en esta sucursal</span>
           <select

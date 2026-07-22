@@ -412,6 +412,7 @@ exports.setOpportunity = async (req, res) => {
       return res.status(403).json({ message: 'No puedes crear oportunidad en esta conversación' });
     }
     const op = conv.opportunity || {};
+    const prevStage = op.isOpportunity ? op.stage : null;
     op.isOpportunity = true;
     if (req.body.stage) op.stage = req.body.stage;
     if (Array.isArray(req.body.interestedIn)) {
@@ -428,6 +429,7 @@ exports.setOpportunity = async (req, res) => {
     if (!op.createdAt) op.createdAt = new Date();
     conv.opportunity = op;
     await conv.save();
+    if (req.body.stage && req.body.stage !== prevStage) notifyOpportunityStage(conv, req.body.stage);
     res.json(conv);
   } catch (err) {
     res.status(500).json({ message: 'Error al actualizar oportunidad', error: err.message });
@@ -492,6 +494,28 @@ const syncPrimaryOpportunity = (conv) => {
   conv.markModified('opportunity');
 };
 
+/**
+ * Emite el evento de dominio "la oportunidad entró a la etapa X" para disparar
+ * los workflows con trigger 'opportunity_stage'. Se llama SOLO cuando la etapa
+ * cambió de verdad (o al crear una oportunidad nueva), no en cada guardado, para
+ * no reinscribir de más. No pasa por el paso move_stage (evita cascadas).
+ */
+const notifyOpportunityStage = (conv, stage) => {
+  if (!conv || !stage) return;
+  try {
+    const { emitDomainEvent, DOMAIN_EVENTS } = require('../utils/events');
+    emitDomainEvent(DOMAIN_EVENTS.OPPORTUNITY_STAGE_CHANGED, {
+      clinicId: String(conv.clinic),
+      conversationId: String(conv._id),
+      patientId: conv.patient ? String(conv.patient) : null,
+      phone: conv.phone || '',
+      stage,
+    });
+  } catch {
+    /* la emisión nunca debe romper el guardado de la oportunidad */
+  }
+};
+
 exports.addOpportunity = async (req, res) => {
   try {
     const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
@@ -515,6 +539,8 @@ exports.addOpportunity = async (req, res) => {
     // Mantener compat: opportunity principal = última creada.
     syncPrimaryOpportunity(conv);
     await conv.save();
+    // Una oportunidad nueva entró a su etapa → dispara workflows 'opportunity_stage'.
+    notifyOpportunityStage(conv, opp.stage);
     await populateConversation(conv);
     res.status(201).json(conv);
   } catch (err) {
@@ -532,6 +558,7 @@ exports.updateOpportunityAt = async (req, res) => {
       return res.status(404).json({ message: 'Oportunidad no encontrada' });
     }
     const current = conv.opportunities[idx];
+    const prevStage = current.stage;
     if (Array.isArray(req.body.interestedIn)) {
       current.interestedIn = await enrichInterested(req.clinicId, req.body.interestedIn);
       current.expectedValue = await sumInterestedValue(req.clinicId, current.interestedIn);
@@ -545,6 +572,8 @@ exports.updateOpportunityAt = async (req, res) => {
     conv.markModified('opportunities');
     syncPrimaryOpportunity(conv);
     await conv.save();
+    // Solo si la etapa cambió de verdad → dispara workflows 'opportunity_stage'.
+    if (req.body.stage && req.body.stage !== prevStage) notifyOpportunityStage(conv, req.body.stage);
     await populateConversation(conv);
     res.json(conv);
   } catch (err) {
@@ -2853,6 +2882,7 @@ exports.createAppointmentFromChat = async (req, res) => {
     }
 
     // Link primera cita a la oportunidad
+    const prevStage = conv.opportunity?.isOpportunity ? conv.opportunity.stage : null;
     conv.opportunity = conv.opportunity || {};
     conv.opportunity.isOpportunity = true;
     conv.opportunity.stage = 'agendado';
@@ -2860,6 +2890,8 @@ exports.createAppointmentFromChat = async (req, res) => {
     conv.opportunity.convertedAt = new Date();
     await conv.save();
     emitToCallCenter('chat:updated', { id: conv._id });
+    // Agendar desde el chat mueve la oportunidad a "agendado" → dispara workflows.
+    if (prevStage !== 'agendado') notifyOpportunityStage(conv, 'agendado');
 
     res.status(201).json({
       appointment: created[0],

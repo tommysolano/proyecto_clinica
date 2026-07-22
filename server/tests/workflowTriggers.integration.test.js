@@ -386,6 +386,76 @@ test('applyOpportunityStage: si ya hay oportunidad CAMBIA la etapa de la princip
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Disparador "opportunity_stage": la oportunidad de un chat entra a una etapa del
+// embudo → arranca el flujo. Filtrable por etapa (stageFilter).
+test('Trigger "opportunity_stage": dispara al entrar a la etapa filtrada, no a otras, y ejecuta el flujo', async () => {
+  const Conversation = require('../models/Conversation');
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const conv = await Conversation.create({ clinic: clinic._id, phone: '593990002200', channel: 'whatsapp' });
+  const tr = { type: 'opportunity_stage', audience: 'all', stageFilter: 'interesado' };
+  const wf = await Workflow.create({
+    clinic: clinic._id, name: 'Etapa interesado', active: true,
+    triggers: [tr], trigger: tr, steps: [],
+    nodes: [
+      { id: 'trigger', type: 'trigger', position: { x: 0, y: 0 }, data: { triggers: [tr] } },
+      { id: 'n1', type: 'add_tag', position: { x: 0, y: 130 }, data: { tag: 'llego-a-interesado' } },
+    ],
+    edges: [{ id: 'e1', source: 'trigger', target: 'n1', sourceHandle: 'default' }],
+  });
+
+  // Otra etapa → no dispara el flujo filtrado por "interesado".
+  const r0 = await workflowEngine.enrollForOpportunityStage({
+    clinicId: String(clinic._id), conversationId: String(conv._id), stage: 'contactado',
+  });
+  assert.equal(r0.enrolled, 0, 'una etapa distinta no debe disparar el flujo filtrado por "interesado"');
+
+  // La etapa filtrada → inscribe y ejecuta el paso (add_tag).
+  const r1 = await workflowEngine.enrollForOpportunityStage({
+    clinicId: String(clinic._id), conversationId: String(conv._id), stage: 'interesado',
+  });
+  assert.equal(r1.enrolled, 1, 'entrar a "interesado" debe disparar el flujo');
+  const after = await waitFor(async () => {
+    const c = await Conversation.findById(conv._id);
+    return (c.tags || []).includes('llego-a-interesado') ? c : null;
+  });
+  assert.ok(after, 'el paso del flujo (add_tag) debió correr sobre la conversación');
+  assert.ok(wf, 'workflow creado');
+});
+
+test('Cambiar la etapa desde el chat (updateOpportunityAt) dispara el workflow "opportunity_stage"', async () => {
+  const chatCtrl = require('../controllers/chatController');
+  const Conversation = require('../models/Conversation');
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const userId = new H.mongoose.Types.ObjectId();
+  const conv = await Conversation.create({
+    clinic: clinic._id, phone: '593990002300', channel: 'whatsapp',
+    opportunities: [{ isOpportunity: true, stage: 'nuevo', createdAt: new Date() }],
+  });
+  const tr = { type: 'opportunity_stage', audience: 'all', stageFilter: 'ganado' };
+  await Workflow.create({
+    clinic: clinic._id, name: 'Ganado', active: true,
+    triggers: [tr], trigger: tr, steps: [],
+    nodes: [
+      { id: 'trigger', type: 'trigger', position: { x: 0, y: 0 }, data: { triggers: [tr] } },
+      { id: 'n1', type: 'add_tag', position: { x: 0, y: 130 }, data: { tag: 'cliente-ganado' } },
+    ],
+    edges: [{ id: 'e1', source: 'trigger', target: 'n1', sourceHandle: 'default' }],
+  });
+
+  const r = await H.runController(
+    chatCtrl.updateOpportunityAt,
+    H.mockReq(clinic._id, userId, { stage: 'ganado' }, { params: { id: String(conv._id), idx: '0' } })
+  );
+  assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
+
+  const after = await waitFor(async () => {
+    const c = await Conversation.findById(conv._id);
+    return (c.tags || []).includes('cliente-ganado') ? c : null;
+  });
+  assert.ok(after, 'mover la oportunidad a "ganado" desde el chat debe disparar el flujo');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Nodos de Marketing (Meta): se ejecutan a través de performAction y, sin
 // credenciales configuradas, registran el motivo en el log sin romper el flujo.
 function metaNodeWorkflow(clinicId, node) {
