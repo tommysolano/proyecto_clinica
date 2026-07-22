@@ -310,7 +310,7 @@ function AppRoutes() {
                 <Route
                   path="/workflows"
                   element={
-                    <RoleRoute roles={['admin', 'marketing']}>
+                    <RoleRoute roles={['admin', 'marketing', 'call_center']}>
                       <Workflows />
                     </RoleRoute>
                   }
@@ -318,7 +318,7 @@ function AppRoutes() {
                 <Route
                   path="/workflows/new"
                   element={
-                    <RoleRoute roles={['admin', 'marketing']}>
+                    <RoleRoute roles={['admin', 'marketing', 'call_center']}>
                       <WorkflowEditor />
                     </RoleRoute>
                   }
@@ -326,7 +326,7 @@ function AppRoutes() {
                 <Route
                   path="/workflows/:id/edit"
                   element={
-                    <RoleRoute roles={['admin', 'marketing']}>
+                    <RoleRoute roles={['admin', 'marketing', 'call_center']}>
                       <WorkflowEditor />
                     </RoleRoute>
                   }

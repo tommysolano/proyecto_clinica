@@ -13,7 +13,9 @@ const bulk = require('../controllers/marketingImportController');
 router.get('/bulk/template', requireRole(...ROLES), bulk.downloadPlantillasTemplate);
 router.post('/bulk', requireRole(...ROLES), bulk.uploadMiddleware, bulk.importPlantillasExcel);
 
-router.get('/', requireRole(...ROLES), ctrl.list);
+// El call center puede LEER la lista (para elegir plantilla en un paso de
+// automatización), pero no crear/editar/borrar plantillas.
+router.get('/', requireRole(...ROLES, 'call_center'), ctrl.list);
 router.post('/', requireRole(...ROLES), ctrl.create);
 router.post('/upload-image', requireRole(...ROLES), ctrl.uploadHeaderImage);
 router.post('/sync-whatsapp', requireRole(...ROLES), ctrl.syncWhatsapp);

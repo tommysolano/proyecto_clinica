@@ -8,6 +8,6 @@ const VIEW_ROLES = ['admin', 'call_center', 'marketing'];
 
 router.get('/commissions', requireRole(...VIEW_ROLES), ctrl.getCommissions);
 router.get('/summary', requireRole(...VIEW_ROLES), ctrl.getAgentSummary);
-router.get('/agents', requireRole('admin', 'marketing', 'contabilidad'), ctrl.listAgents);
+router.get('/agents', requireRole('admin', 'marketing', 'contabilidad', 'call_center'), ctrl.listAgents);
 
 module.exports = router;

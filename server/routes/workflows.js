@@ -6,7 +6,7 @@ router.use(auth, requireClinic);
 // CRM global: opera sobre la clínica ancla del call center (no por sucursal).
 router.use(require('../middleware/callCenterScope'));
 
-const ROLES = ['admin', 'marketing'];
+const ROLES = ['admin', 'marketing', 'call_center'];
 
 // Carga masiva por Excel (descargar plantilla + subir lleno). Antes de '/:id'.
 const bulk = require('../controllers/marketingImportController');
