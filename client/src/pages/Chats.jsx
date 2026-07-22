@@ -523,6 +523,27 @@ export default function Chats() {
     }
   };
 
+  // Reintenta un mensaje que quedó FALLIDO (mismo contenido, nuevo intento por el
+  // mismo endpoint). Si vuelve a fallar, muestra el motivo real del proveedor.
+  const retrySend = async (msg) => {
+    if (!msg) return;
+    const convId = msg.conversation || activeId;
+    if (!convId) return;
+    const payload = msg.templateName
+      ? { templateName: msg.templateName, templateLanguage: 'es' }
+      : {
+          body: msg.body || '',
+          ...(msg.mediaUrl ? { mediaUrl: msg.mediaUrl, mediaType: msg.mediaType || 'image' } : {}),
+        };
+    try {
+      await api.post(`/chats/${convId}/messages`, payload);
+      toast.success('Mensaje reenviado');
+      if (String(convId) === String(activeId)) loadMessages(activeId);
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo reenviar el mensaje');
+    }
+  };
+
   // Sube un adjunto ya leído como data URL y lo deja preparado en el composer.
   // Devuelve true si quedó listo. El uploader es el mismo que usan los mensajes
   // guardados: almacena la media y devuelve una URL pública que ambos gateways
@@ -977,6 +998,7 @@ export default function Chats() {
                           msg={m}
                           onReply={() => setReplyDraft(m)}
                           onJumpTo={scrollToMessage}
+                          onRetry={retrySend}
                         />
                       </Fragment>
                     );
@@ -2357,8 +2379,11 @@ function highlightMatches(text, term, isOut) {
   return out;
 }
 
-function MessageBubble({ msg, onReply, onJumpTo, highlight }) {
+function MessageBubble({ msg, onReply, onJumpTo, highlight, onRetry }) {
   const isOut = msg.direction === 'out';
+  // Un saliente FALLIDO se muestra en ROJO (no verde) con un aviso claro y botón
+  // "Reintentar": es peligroso que un mensaje que nunca salió parezca enviado.
+  const failed = isOut && msg.deliveryStatus === 'failed';
   // Con el buscador abierto se resalta el término; si no, formato WhatsApp normal.
   const bodyContent = highlight && highlight.trim()
     ? highlightMatches(msg.body, highlight, isOut)
@@ -2378,7 +2403,11 @@ function MessageBubble({ msg, onReply, onJumpTo, highlight }) {
       <div
         id={`msg-${msg._id}`}
         className={`max-w-[85%] @3xl:max-w-[70%] rounded-lg px-3 py-2 text-sm shadow-sm transition-shadow ${
-          isOut ? 'bg-emerald-500 text-white' : 'bg-white border border-slate-200 text-slate-800'
+          failed
+            ? 'bg-rose-500 text-white ring-2 ring-rose-300'
+            : isOut
+              ? 'bg-emerald-500 text-white'
+              : 'bg-white border border-slate-200 text-slate-800'
         }`}
       >
         {senderLabel && (
@@ -2438,7 +2467,24 @@ function MessageBubble({ msg, onReply, onJumpTo, highlight }) {
           </div>
         )}
         <div className="whitespace-pre-wrap break-words">{bodyContent}</div>
-        <div className={`text-[10px] mt-1 flex items-center gap-1 ${isOut ? 'text-emerald-100' : 'text-slate-400'}`}>
+        {failed && (
+          <div className="mt-1.5 rounded-md bg-white/20 px-2 py-1.5 text-[11px] leading-snug">
+            <div className="flex items-center gap-1 font-bold">
+              <HiOutlineExclamationTriangle className="w-3.5 h-3.5 shrink-0" /> No se envió — el contacto NO lo recibió
+            </div>
+            {msg.errorMessage && <div className="text-white/95 mt-0.5 break-words">{msg.errorMessage}</div>}
+            {onRetry && (
+              <button
+                type="button"
+                onClick={() => onRetry(msg)}
+                className="mt-1.5 inline-flex items-center gap-1 bg-white text-rose-600 font-bold rounded-md px-2.5 py-1 text-[11px] border-none cursor-pointer hover:bg-rose-50"
+              >
+                <HiOutlineArrowPath className="w-3.5 h-3.5" /> Reintentar
+              </button>
+            )}
+          </div>
+        )}
+        <div className={`text-[10px] mt-1 flex items-center gap-1 ${failed ? 'text-rose-100' : isOut ? 'text-emerald-100' : 'text-slate-400'}`}>
           <span title={fmtDateTime(msg.createdAt)}>{formatTime(msg.createdAt)}</span>
           {isOut && <span>·</span>}
           {isOut && <DeliveryBadge msg={msg} />}
