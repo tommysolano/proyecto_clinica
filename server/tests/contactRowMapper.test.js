@@ -45,6 +45,34 @@ test('guessField: una columna "Hora" se propone como sendTime', () => {
   assert.equal(guessField('Horario'), 'sendTime');
 });
 
+test('guessField: "Agencia"/"Oficina" se reconocen como Sucursal (cada clínica nombra sus sedes distinto)', () => {
+  assert.equal(guessField('Agencia'), 'clinic');
+  assert.equal(guessField('Oficina'), 'clinic');
+  assert.equal(guessField('Sucursal'), 'clinic');
+  assert.equal(guessField('Sede'), 'clinic');
+});
+
+test('guessField: columnas de datos (Servicio, Ciudad…) se proponen como campo personalizado, no "No importar"', () => {
+  assert.equal(guessField('Servicio'), 'custom:servicio');
+  assert.equal(guessField('Programa'), 'custom:programa');
+  assert.equal(guessField('Ciudad'), 'custom:ciudad');
+  assert.equal(guessField('Especialidad'), 'custom:especialidad');
+  // Una columna sin sentido reconocible sigue en "No importar" (cadena vacía).
+  assert.equal(guessField('xyz123'), '');
+});
+
+test('mapRow: "Servicio" auto-mapeado a custom guarda el valor en customFields', () => {
+  const r = mapRow(
+    { Phone: '0999111222', Servicio: 'Programa Prostata' },
+    [
+      { column: 'Phone', field: 'phone' },
+      { column: 'Servicio', field: 'custom:servicio' },
+    ]
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.contact.customFields.servicio, 'Programa Prostata');
+});
+
 test('mapRow: la hora se guarda en sendTime (no como campo del contacto)', () => {
   const r = mapRow(
     { Celular: '0999111222', Hora: '0.3333333' },

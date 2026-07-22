@@ -364,6 +364,12 @@ function StepMapping({ analysis, mapping, setMapping }) {
         <b>Omitir vacíos</b> (recomendado): una celda vacía no toca el dato que ya tenías. Si lo
         desactivas, una celda vacía <b>borra</b> ese dato del contacto.
       </p>
+      <p className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-2 mt-2">
+        ¿Una columna quedó en <b>No importar</b> y no quieres perderla? Elige <b>Campo personalizado…</b>{' '}
+        y ponle un nombre (p. ej. <code className="font-mono bg-white px-1 rounded">servicio</code>): se
+        guarda en el contacto y luego sirve para segmentar o para las plantillas. La <b>Sucursal</b> úsala
+        para que el flujo tome un camino por sede.
+      </p>
     </div>
   );
 }

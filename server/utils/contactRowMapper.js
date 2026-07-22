@@ -166,15 +166,37 @@ const GUESSES = [
   [/^(first ?name|nombres?|given)/i, 'firstName'],
   [/^(last ?name|apellidos?|surname)/i, 'lastName'],
   [/^(e-?mail|correo)/i, 'email'],
-  [/^(sucursal|sede|clinica|clínica|branch|location|local)/i, 'clinic'],
+  // Sucursal/sede del contacto: se le suman "agencia" y "oficina" porque cada
+  // clínica nombra sus sedes a su manera (un caso real traía la columna "Agencia").
+  [/^(sucursal|sede|agencia|oficina|clinica|clínica|branch|office|location|local)/i, 'clinic'],
   [/^(hora|horario|hora ?de ?env[ií]o|send ?time|schedule)/i, 'sendTime'],
   [/^(tags?|etiquetas?)/i, 'tags'],
   [/^(notes?|notas|observaciones)/i, 'notes'],
 ];
 
+// Columnas que NO son un campo propio del contacto pero conviene GUARDAR: se
+// proponen como CAMPO PERSONALIZADO (con la clave derivada del propio título) en
+// vez de "No importar", que confundía ("¿por qué no se importa el servicio?").
+// Así "Servicio" queda como custom:servicio y luego sirve para segmentar/plantillas.
+const CUSTOM_FIELD_HINTS = /^(servicio|programa|producto|plan|tratamiento|inter[eé]s|especialidad|campa[ñn]a|origen|fuente|ciudad|provincia|direcci[oó]n|edad|g[eé]nero|sexo|c[eé]dula|cedula|dni|documento|ocupaci[oó]n|empresa|cargo)/i;
+
+/** Clave segura para un campo personalizado a partir del título de la columna. */
+function customKeyFromColumn(column) {
+  return String(column || '')
+    .normalize('NFD').replace(/[̀-ͯ]/g, '') // sin tildes
+    .trim().toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '')
+    .slice(0, 40);
+}
+
 function guessField(column) {
   const c = String(column || '').trim();
   for (const [re, field] of GUESSES) if (re.test(c)) return field;
+  // Columnas "de datos" reconocibles → campo personalizado con su propia clave.
+  if (CUSTOM_FIELD_HINTS.test(c)) {
+    const key = customKeyFromColumn(c);
+    if (key) return `custom:${key}`;
+  }
   return '';
 }
 
