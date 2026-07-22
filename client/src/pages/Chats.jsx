@@ -2038,6 +2038,27 @@ function MessageBubble({ msg, onReply, onJumpTo }) {
             <HiOutlineUserCircle className="w-3.5 h-3.5" /> {senderLabel}
           </div>
         )}
+        {/* Anuncio de origen (click-to-WhatsApp): de qué anuncio nos escriben.
+            Solo entrantes y solo el 1er mensaje tras tocar el anuncio lo trae. */}
+        {!isOut && msg.referral && (msg.referral.headline || msg.referral.sourceUrl || msg.referral.sourceId) && (
+          <div className="mb-1.5 rounded-md border border-violet-200 bg-violet-50 px-2 py-1.5 text-[11px] leading-snug text-slate-700">
+            <div className="flex items-center gap-1 text-violet-700 font-semibold mb-0.5">📣 Mensaje desde anuncio</div>
+            {msg.referral.headline && (
+              <div><span className="font-semibold">Headline:</span> {msg.referral.headline}</div>
+            )}
+            {msg.referral.sourceUrl && (
+              <div className="truncate">
+                <span className="font-semibold">Source URL:</span>{' '}
+                <a href={msg.referral.sourceUrl} target="_blank" rel="noreferrer" className="text-sky-600 underline">
+                  {msg.referral.sourceUrl}
+                </a>
+              </div>
+            )}
+            {msg.referral.sourceId && (
+              <div className="text-slate-400" title="ID del anuncio (source_id de Meta)">ID anuncio: {msg.referral.sourceId}</div>
+            )}
+          </div>
+        )}
         {/* Mensaje citado (respuesta a uno específico): clic para saltar al original */}
         {reply && (
           <button

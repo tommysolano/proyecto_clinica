@@ -39,6 +39,17 @@ const messageSchema = new mongoose.Schema(
       type: { type: String, enum: ['button_reply', 'list_reply', ''], default: '' },
     },
     templateName: { type: String, trim: true, default: '' },
+    // Anuncio click-to-WhatsApp del que nació ESTE mensaje (solo entrantes, y solo
+    // en el primer mensaje tras tocar el anuncio). Snapshot para pintar en el chat
+    // "de qué anuncio nos escriben" (headline + link), como en la captura de Daplox.
+    referral: {
+      sourceId: { type: String, trim: true, default: '' }, // = referral.source_id (Ad ID)
+      sourceType: { type: String, trim: true, default: '' }, // ad | post
+      sourceUrl: { type: String, trim: true, default: '' }, // enlace fb.me/…
+      headline: { type: String, trim: true, default: '' },
+      body: { type: String, trim: true, default: '' },
+      ctwaClid: { type: String, trim: true, default: '' },
+    },
     // Respuesta a un mensaje específico (cita estilo WhatsApp). Snapshot para
     // renderizar la burbuja citada sin populate; `message` apunta al original
     // para poder saltar a él; `externalId` es el wamid que se manda a WhatsApp

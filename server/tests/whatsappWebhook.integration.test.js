@@ -99,6 +99,10 @@ test('ingesta texto entrante: conversación + mensaje + atribución click-to-Wha
   assert.equal(msg.body, 'Vi su anuncio');
   assert.equal(msg.externalId, 'wamid.text1');
   assert.equal(msg.direction, 'in');
+  // El anuncio de origen queda en el mensaje para pintarlo en el chat.
+  assert.equal(msg.referral.sourceId, 'ad_777');
+  assert.equal(msg.referral.headline, 'Promo julio');
+  assert.equal(msg.referral.ctwaClid, 'CLID-abc');
 });
 
 test('reintento de Meta (mismo message id) NO duplica el mensaje', async () => {

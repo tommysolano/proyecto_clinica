@@ -2133,6 +2133,19 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
     externalId,
     ...(interactiveReply ? { interactiveReply } : {}),
     ...(replyTo ? { replyTo } : {}),
+    // Anuncio del que vino este mensaje (solo lo trae el 1er mensaje tras el clic).
+    ...(referral && referral.adId
+      ? {
+          referral: {
+            sourceId: referral.adId,
+            sourceType: referral.sourceType || '',
+            sourceUrl: referral.sourceUrl || '',
+            headline: referral.headline || '',
+            body: referral.body || '',
+            ctwaClid: referral.ctwaClid || '',
+          },
+        }
+      : {}),
     deliveryStatus: 'delivered',
   });
   conv.lastMessageAt = msg.createdAt;
@@ -2319,6 +2332,11 @@ exports.webhookWhatsappReceive = async (req, res) => {
                 adId: m.referral.source_id || '',
                 campaign: m.referral.headline || m.referral.body || '',
                 ctwaClid: m.referral.ctwa_clid || '',
+                // Detalle completo para mostrar en el chat de qué anuncio vino.
+                headline: m.referral.headline || '',
+                body: m.referral.body || '',
+                sourceUrl: m.referral.source_url || '',
+                sourceType: m.referral.source_type || '',
               }
             : null;
           if (m.referral) {
