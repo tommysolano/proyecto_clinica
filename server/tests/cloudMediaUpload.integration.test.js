@@ -74,6 +74,49 @@ test('Cloud sendMedia: un DOCUMENTO se sube por id y viaja con su nombre de arch
   }
 });
 
+test('metaUploadMime: los TEXTOS no soportados por Meta (CSV, JSON, XML…) se degradan a text/plain', () => {
+  // Imagen/video/audio y documentos ya soportados: intactos.
+  assert.equal(wa.metaUploadMime('image/png'), 'image/png');
+  assert.equal(wa.metaUploadMime('application/pdf'), 'application/pdf');
+  assert.equal(wa.metaUploadMime('application/vnd.ms-excel'), 'application/vnd.ms-excel');
+  // Textos que Meta rechaza (#100) → text/plain.
+  assert.equal(wa.metaUploadMime('text/csv'), 'text/plain');
+  assert.equal(wa.metaUploadMime('text/csv; charset=utf-8'), 'text/plain');
+  assert.equal(wa.metaUploadMime('application/json'), 'text/plain');
+  assert.equal(wa.metaUploadMime('text/tab-separated-values'), 'text/plain');
+  assert.equal(wa.metaUploadMime('application/xml'), 'text/plain');
+  // Binario exótico: se deja como está (Meta lo rechazará y el envío será fallido, no "enviado").
+  assert.equal(wa.metaUploadMime('application/zip'), 'application/zip');
+});
+
+test('Cloud sendMedia: un CSV se sube como text/plain (Meta lo acepta) pero conserva su nombre .csv', async () => {
+  const { clinicId } = await H.seedClinic();
+  const csv = await ChatGalleryImage.create({
+    clinic: clinicId, name: 'reco prueba.csv',
+    dataUrl: 'data:text/csv;base64,YSxiLGMKMSwyLDMK', mimeType: 'text/csv',
+  });
+
+  const calls = [];
+  const origFetch = global.fetch;
+  global.fetch = async (url, opts) => {
+    calls.push({ url: String(url), opts });
+    if (String(url).endsWith('/media')) return { ok: true, json: async () => ({ id: 'MEDIA_CSV' }) };
+    return { ok: true, json: async () => ({ messages: [{ id: 'wamid.CSV' }] }) };
+  };
+  try {
+    const r = await wa.sendMedia(creds, '593999999999', `https://x/api/public/media/${csv._id}`, '', 'document');
+    assert.equal(r.ok, true, JSON.stringify(r));
+    // La subida usa text/plain (no text/csv, que Meta rechaza con #100).
+    assert.equal(calls[0].opts.body.get('type'), 'text/plain', 'el CSV se sube como text/plain');
+    const body = JSON.parse(calls[1].opts.body);
+    assert.equal(body.type, 'document');
+    assert.equal(body.document.id, 'MEDIA_CSV');
+    assert.equal(body.document.filename, 'reco prueba.csv', 'el contacto lo recibe con su nombre real .csv');
+  } finally {
+    global.fetch = origFetch;
+  }
+});
+
 test('Cloud sendMedia: un data URL inline también se SUBE a Meta y se envía por id', async () => {
   await H.seedClinic();
   const calls = [];

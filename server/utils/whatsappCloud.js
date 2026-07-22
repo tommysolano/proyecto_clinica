@@ -91,6 +91,35 @@ async function sendText(creds, to, body, contextMessageId) {
   });
 }
 
+// Meta Cloud API acepta un set CERRADO de MIME para documentos (ver error #100
+// "Param file must be a file with one of the following types…"). Los formatos de
+// TEXTO fuera de ese set (CSV, TSV, JSON, XML, Markdown, logs…) se suben como
+// text/plain: Meta los acepta y el contacto los recibe igual, con su NOMBRE real
+// (reco prueba.csv), porque el filename del documento es independiente del MIME.
+const META_DOC_MIME = new Set([
+  'text/plain', 'application/pdf', 'application/vnd.ms-powerpoint', 'application/msword',
+  'application/vnd.ms-excel',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+]);
+const TEXT_LIKE_MIME = /^(text\/|application\/(csv|json|x-ndjson|xml|xhtml\+xml|x-yaml|yaml|x-sh|javascript|x-www-form-urlencoded))/i;
+
+/**
+ * Ajusta el MIME de subida a lo que Meta acepta. Imagen/video/audio pasan tal
+ * cual; un MIME de documento ya soportado se conserva; cualquier tipo TEXTO no
+ * soportado (CSV, JSON, XML…) se degrada a text/plain para que Meta no lo rechace
+ * con el error #100. Un binario exótico (zip, rar…) se deja como está: si Meta lo
+ * rechaza, el envío se marca FALLIDO (la verdad), nunca "enviado" en falso.
+ */
+function metaUploadMime(mimeType) {
+  const m = String(mimeType || '').split(';')[0].trim().toLowerCase() || 'application/octet-stream';
+  if (m.startsWith('image/') || m.startsWith('video/') || m.startsWith('audio/')) return m;
+  if (META_DOC_MIME.has(m)) return m;
+  if (TEXT_LIKE_MIME.test(m)) return 'text/plain';
+  return m;
+}
+
 /**
  * Sube los BYTES de una media a Meta (endpoint /media) y devuelve su media id.
  * Enviar la media por id (en vez de por link) evita que Meta tenga que DESCARGAR
@@ -102,7 +131,7 @@ async function sendText(creds, to, body, contextMessageId) {
 async function uploadMedia(creds, { buffer, mimeType }) {
   if (!isConfigured(creds)) return { ok: false, simulated: true };
   const apiVersion = creds.apiVersion || DEFAULT_API_VERSION;
-  const mime = mimeType || 'application/octet-stream';
+  const mime = metaUploadMime(mimeType);
   const ext = (mime.split('/')[1] || 'bin').split(';')[0].replace('jpeg', 'jpg');
   try {
     const form = new FormData();
@@ -246,4 +275,4 @@ async function sendBulk(creds, recipients, builderFn) {
   return results;
 }
 
-module.exports = { DEFAULT_API_VERSION, isConfigured, sendText, sendMedia, uploadMedia, sendTemplate, sendBulk, downloadMedia };
+module.exports = { DEFAULT_API_VERSION, isConfigured, sendText, sendMedia, uploadMedia, metaUploadMime, sendTemplate, sendBulk, downloadMedia };
