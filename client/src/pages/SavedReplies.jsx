@@ -7,6 +7,7 @@ import {
   HiOutlinePencilSquare,
   HiOutlineTrash,
   HiOutlineFolder,
+  HiOutlineChevronRight,
   HiOutlinePaperClip,
   HiOutlinePaperAirplane,
   HiOutlineXMark,
@@ -43,11 +44,21 @@ function typeOf(reply) {
   return reply.attachment?.url ? reply.attachment.type || 'document' : 'text';
 }
 
+// Normaliza una ruta de carpeta: quita barras dobles/espacios y segmentos vacíos.
+// "  CITA / Recordatorios / " -> "CITA/Recordatorios"
+function normFolderPath(raw) {
+  return String(raw || '')
+    .split('/')
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .join('/');
+}
+
 export default function SavedReplies() {
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
-  const [folder, setFolder] = useState(''); // '' = todas
+  const [path, setPath] = useState(''); // ruta de carpeta actual ('' = raíz)
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null); // reply en edición o null (nuevo)
 
@@ -67,24 +78,61 @@ export default function SavedReplies() {
     load();
   }, []);
 
-  const folders = useMemo(() => {
+  // Todas las rutas de carpeta que existen (incluyendo ancestros implícitos: si
+  // hay "CITA/Recordatorios", "CITA" también cuenta como carpeta).
+  const allFolderPaths = useMemo(() => {
     const set = new Set();
-    list.forEach((r) => r.folder && set.add(r.folder));
-    return [...set].sort((a, b) => a.localeCompare(b));
+    list.forEach((r) => {
+      const parts = normFolderPath(r.folder).split('/').filter(Boolean);
+      for (let i = 0; i < parts.length; i++) set.add(parts.slice(0, i + 1).join('/'));
+    });
+    return set;
   }, [list]);
 
-  const filtered = useMemo(() => {
+  // Para el datalist del modal (todas las rutas, ordenadas).
+  const folderOptions = useMemo(() => [...allFolderPaths].sort((a, b) => a.localeCompare(b)), [allFolderPaths]);
+
+  // Subcarpetas inmediatas de la carpeta actual + nº de mensajes que contiene cada una.
+  const childFolders = useMemo(() => {
+    const prefix = path ? path + '/' : '';
+    const names = new Map(); // nombre -> ruta completa
+    allFolderPaths.forEach((fp) => {
+      if (path && !fp.startsWith(prefix)) return;
+      const rest = path ? fp.slice(prefix.length) : fp;
+      const name = rest.split('/')[0];
+      if (name) names.set(name, prefix + name);
+    });
+    const countIn = (full) =>
+      list.filter((r) => {
+        const f = normFolderPath(r.folder);
+        return f === full || f.startsWith(full + '/');
+      }).length;
+    return [...names.entries()]
+      .map(([name, full]) => ({ name, full, count: countIn(full) }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+  }, [allFolderPaths, path, list]);
+
+  // Mensajes que viven DIRECTAMENTE en la carpeta actual (no en subcarpetas).
+  const messagesHere = useMemo(
+    () => list.filter((r) => normFolderPath(r.folder) === path),
+    [list, path]
+  );
+
+  // Búsqueda global (ignora la carpeta): busca en TODO el árbol.
+  const searchResults = useMemo(() => {
     const q = search.trim().toLowerCase();
-    return list.filter((r) => {
-      if (folder && (r.folder || '') !== folder) return false;
-      if (!q) return true;
-      return (
+    if (!q) return null;
+    return list.filter(
+      (r) =>
         (r.title || '').toLowerCase().includes(q) ||
         (r.shortcut || '').toLowerCase().includes(q) ||
-        (r.body || '').toLowerCase().includes(q)
-      );
-    });
-  }, [list, search, folder]);
+        (r.body || '').toLowerCase().includes(q) ||
+        normFolderPath(r.folder).toLowerCase().includes(q)
+    );
+  }, [list, search]);
+
+  // Segmentos del breadcrumb (ruta tipo Windows).
+  const crumbs = path ? path.split('/') : [];
 
   const remove = async (r) => {
     if (!window.confirm(`¿Eliminar el mensaje guardado "${r.title || `/${r.shortcut}`}"?`)) return;
@@ -97,6 +145,8 @@ export default function SavedReplies() {
     }
   };
 
+  const showingSearch = searchResults !== null;
+
   return (
     <div>
       <div className="flex items-center justify-between flex-wrap gap-2 mb-4">
@@ -105,7 +155,7 @@ export default function SavedReplies() {
             <HiOutlineChatBubbleBottomCenterText className="text-emerald-600" /> Mensajes Guardados
           </h1>
           <p className="text-xs text-slate-500">
-            Crea y reutiliza fragmentos de texto con emojis, formato y adjuntos. En el chat se insertan
+            Organiza tus fragmentos en carpetas (y subcarpetas). En el chat se insertan
             escribiendo <code className="font-mono bg-slate-100 px-1 py-0.5 rounded">/atajo</code>.
           </p>
         </div>
@@ -117,126 +167,97 @@ export default function SavedReplies() {
         </button>
       </div>
 
-      {/* Filtros: búsqueda + carpetas */}
+      {/* Barra: búsqueda */}
       <div className="flex items-center gap-2 flex-wrap mb-3">
         <div className="relative">
           <HiOutlineMagnifyingGlass className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar por nombre, atajo o contenido..."
+            placeholder="Buscar en todas las carpetas..."
             className="w-72 pl-8 pr-3 py-1.5 text-sm border border-slate-200 rounded-lg bg-white"
           />
         </div>
-        <div className="flex items-center gap-1 flex-wrap">
+        {showingSearch && (
+          <span className="text-xs text-slate-500">
+            {searchResults.length} resultado(s) para “{search.trim()}”
+          </span>
+        )}
+      </div>
+
+      {/* Breadcrumb tipo Windows (solo fuera de la búsqueda) */}
+      {!showingSearch && (
+        <div className="flex items-center gap-1 flex-wrap mb-3 text-sm">
           <button
-            onClick={() => setFolder('')}
-            className={`px-2.5 py-1 text-xs rounded-full border cursor-pointer ${
-              !folder ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+            onClick={() => setPath('')}
+            className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg border cursor-pointer ${
+              !path ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
             }`}
           >
-            Todas
+            <HiOutlineFolder className="w-4 h-4" /> Mensajes Guardados
           </button>
-          {folders.map((f) => (
+          {crumbs.map((seg, i) => {
+            const to = crumbs.slice(0, i + 1).join('/');
+            const isLast = i === crumbs.length - 1;
+            return (
+              <span key={to} className="inline-flex items-center gap-1">
+                <HiOutlineChevronRight className="w-3.5 h-3.5 text-slate-300" />
+                <button
+                  onClick={() => setPath(to)}
+                  className={`px-2 py-1 rounded-lg border cursor-pointer ${
+                    isLast ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
+                  }`}
+                >
+                  {seg}
+                </button>
+              </span>
+            );
+          })}
+        </div>
+      )}
+
+      {/* Carpetas (grid tipo explorador) — solo fuera de la búsqueda */}
+      {!showingSearch && childFolders.length > 0 && (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2 mb-4">
+          {childFolders.map((f) => (
             <button
-              key={f}
-              onClick={() => setFolder(folder === f ? '' : f)}
-              className={`px-2.5 py-1 text-xs rounded-full border cursor-pointer flex items-center gap-1 ${
-                folder === f ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-              }`}
+              key={f.full}
+              onClick={() => setPath(f.full)}
+              className="flex items-center gap-2 p-3 rounded-xl border border-slate-200 bg-white hover:bg-emerald-50/50 hover:border-emerald-200 cursor-pointer text-left transition-colors"
             >
-              <HiOutlineFolder className="w-3.5 h-3.5" /> {f}
+              <HiOutlineFolder className="w-6 h-6 text-amber-500 shrink-0" />
+              <div className="min-w-0">
+                <div className="text-sm font-medium text-slate-700 truncate">{f.name}</div>
+                <div className="text-[11px] text-slate-400">{f.count} mensaje(s)</div>
+              </div>
             </button>
           ))}
         </div>
-      </div>
+      )}
 
-      <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
-        <div className="overflow-x-auto">
-          <table className="w-full text-sm">
-            <thead>
-              <tr className="bg-slate-50 text-left text-xs text-slate-500 uppercase tracking-wide">
-                <th className="px-4 py-2.5 font-semibold">Nombre</th>
-                <th className="px-4 py-2.5 font-semibold">Cuerpo</th>
-                <th className="px-4 py-2.5 font-semibold">Tipo</th>
-                <th className="px-4 py-2.5 font-semibold">Carpeta</th>
-                <th className="px-4 py-2.5 font-semibold">Actualización</th>
-                <th className="px-4 py-2.5 font-semibold text-right">Acciones</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr><td colSpan={6} className="px-4 py-8 text-center text-slate-400">Cargando...</td></tr>
-              ) : filtered.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-4 py-10 text-center text-slate-400 text-sm">
-                    {list.length === 0
-                      ? 'Aún no hay mensajes guardados. Crea el primero con “Nuevo mensaje guardado”.'
-                      : 'Sin resultados para el filtro actual.'}
-                  </td>
-                </tr>
-              ) : (
-                filtered.map((r) => {
-                  const t = typeOf(r);
-                  const meta = ATTACH_META[t];
-                  return (
-                    <tr key={r._id} className="border-t border-slate-100 hover:bg-slate-50/60">
-                      <td className="px-4 py-2.5 align-top">
-                        <div className="font-semibold text-slate-700">{r.title || '—'}</div>
-                        <span className="text-[11px] font-mono bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded">/{r.shortcut}</span>
-                      </td>
-                      <td className="px-4 py-2.5 align-top max-w-md">
-                        <div className="text-slate-600 text-xs whitespace-pre-wrap break-words line-clamp-2">{r.body}</div>
-                        {r.attachment?.url && (
-                          <div className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-1">
-                            <HiOutlinePaperClip className="w-3 h-3" /> {r.attachment.name || 'Adjunto'}
-                          </div>
-                        )}
-                      </td>
-                      <td className="px-4 py-2.5 align-top">
-                        {meta ? (
-                          <span className={`text-[11px] px-2 py-0.5 rounded-full inline-flex items-center gap-1 ${meta.chip}`}>
-                            <meta.icon className="w-3.5 h-3.5" /> {meta.label}
-                          </span>
-                        ) : (
-                          <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700">Texto</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-2.5 align-top text-xs text-slate-500">
-                        {r.folder ? (
-                          <span className="inline-flex items-center gap-1"><HiOutlineFolder className="w-3.5 h-3.5" /> {r.folder}</span>
-                        ) : '—'}
-                      </td>
-                      <td className="px-4 py-2.5 align-top text-xs text-slate-500 whitespace-nowrap">{fmtDateTime(r.updatedAt)}</td>
-                      <td className="px-4 py-2.5 align-top text-right whitespace-nowrap">
-                        <button
-                          onClick={() => { setEditing(r); setModalOpen(true); }}
-                          title="Editar"
-                          className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg bg-transparent border-none cursor-pointer"
-                        >
-                          <HiOutlinePencilSquare className="w-4 h-4" />
-                        </button>
-                        <button
-                          onClick={() => remove(r)}
-                          title="Eliminar"
-                          className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-lg bg-transparent border-none cursor-pointer"
-                        >
-                          <HiOutlineTrash className="w-4 h-4" />
-                        </button>
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
-      </div>
+      {/* Mensajes: los de la carpeta actual, o los resultados de búsqueda */}
+      <SavedRepliesTable
+        loading={loading}
+        rows={showingSearch ? searchResults : messagesHere}
+        showFolderColumn={showingSearch}
+        onEdit={(r) => { setEditing(r); setModalOpen(true); }}
+        onRemove={remove}
+        emptyText={
+          list.length === 0
+            ? 'Aún no hay mensajes guardados. Crea el primero con “Nuevo mensaje guardado”.'
+            : showingSearch
+              ? 'Sin resultados para la búsqueda.'
+              : childFolders.length > 0
+                ? 'Esta carpeta no tiene mensajes directos (mira las subcarpetas de arriba).'
+                : 'Carpeta vacía. Crea un mensaje aquí con “Nuevo mensaje guardado”.'
+        }
+      />
 
       {modalOpen && (
         <SavedReplyModal
           reply={editing}
-          folders={folders}
+          folders={folderOptions}
+          defaultFolder={editing ? '' : path}
           onClose={() => setModalOpen(false)}
           onSaved={(saved) => {
             setList((prev) => {
@@ -251,13 +272,97 @@ export default function SavedReplies() {
   );
 }
 
+// Tabla de mensajes guardados reutilizable (para la carpeta actual o la búsqueda).
+function SavedRepliesTable({ loading, rows, showFolderColumn, onEdit, onRemove, emptyText }) {
+  const cols = showFolderColumn ? 6 : 5;
+  return (
+    <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm">
+          <thead>
+            <tr className="bg-slate-50 text-left text-xs text-slate-500 uppercase tracking-wide">
+              <th className="px-4 py-2.5 font-semibold">Nombre</th>
+              <th className="px-4 py-2.5 font-semibold">Cuerpo</th>
+              <th className="px-4 py-2.5 font-semibold">Tipo</th>
+              {showFolderColumn && <th className="px-4 py-2.5 font-semibold">Carpeta</th>}
+              <th className="px-4 py-2.5 font-semibold">Actualización</th>
+              <th className="px-4 py-2.5 font-semibold text-right">Acciones</th>
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={cols} className="px-4 py-8 text-center text-slate-400">Cargando...</td></tr>
+            ) : rows.length === 0 ? (
+              <tr><td colSpan={cols} className="px-4 py-10 text-center text-slate-400 text-sm">{emptyText}</td></tr>
+            ) : (
+              rows.map((r) => {
+                const t = typeOf(r);
+                const meta = ATTACH_META[t];
+                return (
+                  <tr key={r._id} className="border-t border-slate-100 hover:bg-slate-50/60">
+                    <td className="px-4 py-2.5 align-top">
+                      <div className="font-semibold text-slate-700">{r.title || '—'}</div>
+                      <span className="text-[11px] font-mono bg-emerald-50 text-emerald-700 px-1.5 py-0.5 rounded">/{r.shortcut}</span>
+                    </td>
+                    <td className="px-4 py-2.5 align-top max-w-md">
+                      <div className="text-slate-600 text-xs whitespace-pre-wrap break-words line-clamp-2">{r.body}</div>
+                      {r.attachment?.url && (
+                        <div className="text-[11px] text-slate-400 mt-0.5 flex items-center gap-1">
+                          <HiOutlinePaperClip className="w-3 h-3" /> {r.attachment.name || 'Adjunto'}
+                        </div>
+                      )}
+                    </td>
+                    <td className="px-4 py-2.5 align-top">
+                      {meta ? (
+                        <span className={`text-[11px] px-2 py-0.5 rounded-full inline-flex items-center gap-1 ${meta.chip}`}>
+                          <meta.icon className="w-3.5 h-3.5" /> {meta.label}
+                        </span>
+                      ) : (
+                        <span className="text-[11px] px-2 py-0.5 rounded-full bg-emerald-50 text-emerald-700">Texto</span>
+                      )}
+                    </td>
+                    {showFolderColumn && (
+                      <td className="px-4 py-2.5 align-top text-xs text-slate-500">
+                        {r.folder ? (
+                          <span className="inline-flex items-center gap-1"><HiOutlineFolder className="w-3.5 h-3.5" /> {r.folder}</span>
+                        ) : '—'}
+                      </td>
+                    )}
+                    <td className="px-4 py-2.5 align-top text-xs text-slate-500 whitespace-nowrap">{fmtDateTime(r.updatedAt)}</td>
+                    <td className="px-4 py-2.5 align-top text-right whitespace-nowrap">
+                      <button
+                        onClick={() => onEdit(r)}
+                        title="Editar"
+                        className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg bg-transparent border-none cursor-pointer"
+                      >
+                        <HiOutlinePencilSquare className="w-4 h-4" />
+                      </button>
+                      <button
+                        onClick={() => onRemove(r)}
+                        title="Eliminar"
+                        className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-lg bg-transparent border-none cursor-pointer"
+                      >
+                        <HiOutlineTrash className="w-4 h-4" />
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
 // ===================== Modal crear/editar =====================
 
-function SavedReplyModal({ reply, folders, onClose, onSaved }) {
+function SavedReplyModal({ reply, folders, defaultFolder = '', onClose, onSaved }) {
   const [form, setForm] = useState({
     title: reply?.title || '',
     shortcut: reply?.shortcut || '',
-    folder: reply?.folder || '',
+    folder: reply?.folder || defaultFolder || '',
     body: reply?.body || '',
     attachment: reply?.attachment?.url ? { ...reply.attachment } : null,
   });
@@ -409,12 +514,15 @@ function SavedReplyModal({ reply, folders, onClose, onSaved }) {
               list="saved-reply-folders"
               value={form.folder}
               onChange={(e) => setForm((f) => ({ ...f, folder: e.target.value }))}
-              placeholder="Sin carpeta (escribe para crear una nueva)"
+              placeholder="Sin carpeta — usa / para subcarpetas (ej. CITA/Recordatorios)"
               className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm"
             />
             <datalist id="saved-reply-folders">
               {folders.map((f) => <option key={f} value={f} />)}
             </datalist>
+            <p className="text-[10px] text-slate-400 mt-1">
+              Usa <code className="font-mono">/</code> para anidar (ej. <code className="font-mono">CITA/Recordatorios</code>). La carpeta se crea sola al guardar.
+            </p>
           </div>
 
           <div>
