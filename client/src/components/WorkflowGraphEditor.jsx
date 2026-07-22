@@ -56,7 +56,7 @@ export const STEP_DEFS = {
   condition: 'Condición (sí/no)',
   add_tag: 'Añadir etiqueta',
   remove_tag: 'Quitar etiqueta',
-  move_stage: 'Mover etapa',
+  move_stage: 'Etapa de oportunidad',
   set_appointment_status: 'Cambiar estado de cita',
   assign_agent: 'Asignar agente',
   create_task: 'Crear tarea',
@@ -141,6 +141,14 @@ export const AUDIENCES = [
 ];
 
 const STAGES = ['nuevo', 'contactado', 'interesado', 'agendado', 'ganado', 'perdido'];
+const STAGE_LABELS = {
+  nuevo: 'Nuevo',
+  contactado: 'Contactado',
+  interesado: 'Interesado',
+  agendado: 'Agendado',
+  ganado: 'Ganado',
+  perdido: 'Perdido',
+};
 const FIELDS = [
   { value: 'tag', label: 'Etiqueta del paciente' },
   { value: 'stage', label: 'Etapa de oportunidad' },
@@ -242,7 +250,7 @@ function summarize(n) {
       ? `${d.daysBefore === 0 ? 'el día de la cita' : d.daysBefore === 1 ? '1 día antes' : `${d.daysBefore} días antes`} a las ${d.atTime || '—'}`
       : `${Math.abs((d.offsetMinutes || 0) / 60)}h ${(d.offsetMinutes || 0) < 0 ? 'antes' : 'después'}`;
     case 'add_tag': case 'remove_tag': return d.tag;
-    case 'move_stage': return d.stage;
+    case 'move_stage': return STAGE_LABELS[d.stage] || d.stage;
     case 'condition': case 'goal': return `${d.field} ${d.op} ${d.value || ''}`;
     case 'assign_agent': return d.assignMode === 'user' ? 'Agente fijo' : 'Round-robin';
     case 'meta_capi': return `Evento ${d.metaEventName || 'Lead'}${Number(d.metaValue) > 0 ? ` · ${d.metaValue} ${d.metaCurrency || 'USD'}` : ''}`;
@@ -1475,7 +1483,13 @@ function NodeConfig({ node, onChange, templates, agents, clinics = [], audiences
           {clinics.map((c) => <option key={c._id} value={c._id}>{c.nombreComercial || c.name}</option>)}
         </select>
       )}
-      {d.op !== 'exists' && d.field !== 'hasPatient' && d.field !== 'lastReply' && d.field !== 'clinic' && (
+      {d.op !== 'exists' && d.field === 'stage' && (
+        <select value={d.value || ''} onChange={(e) => set({ value: e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+          <option value="">Selecciona etapa…</option>
+          {STAGES.map((s) => <option key={s} value={s}>{STAGE_LABELS[s] || s}</option>)}
+        </select>
+      )}
+      {d.op !== 'exists' && !['hasPatient', 'lastReply', 'clinic', 'stage'].includes(d.field) && (
         <input value={d.value || ''} onChange={(e) => set({ value: e.target.value })} placeholder="valor" className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
       )}
       <p className="text-[11px] text-slate-400">
@@ -1489,9 +1503,15 @@ function NodeConfig({ node, onChange, templates, agents, clinics = [], audiences
     <input value={d.tag || ''} onChange={(e) => set({ tag: e.target.value })} placeholder="etiqueta" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
   );
   if (t === 'move_stage') return (
-    <select value={d.stage || 'contactado'} onChange={(e) => set({ stage: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
-      {STAGES.map((s) => <option key={s} value={s}>{s}</option>)}
-    </select>
+    <div className="grid gap-2">
+      <select value={d.stage || 'contactado'} onChange={(e) => set({ stage: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+        {STAGES.map((s) => <option key={s} value={s}>{STAGE_LABELS[s] || s}</option>)}
+      </select>
+      <p className="text-[11px] text-slate-400">
+        Mueve la oportunidad del chat a esta etapa del embudo. Si el chat <b>aún no tiene
+        oportunidad</b>, se crea una en esta etapa (visible en el chat y en el Kanban de Oportunidades).
+      </p>
+    </div>
   );
   if (t === 'set_appointment_status') return (
     <select value={d.appointmentStatus || 'confirmada'} onChange={(e) => set({ appointmentStatus: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">

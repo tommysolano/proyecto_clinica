@@ -326,6 +326,66 @@ test('Trigger "mensaje desde anuncio" (ctwa_ad) por TÍTULO del anuncio (sobrevi
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Paso "Etapa de oportunidad" (move_stage): debe operar sobre el modelo canónico
+// `conv.opportunities[]` (el que leen el modal de Oportunidades del chat y el
+// Kanban global), NO solo sobre el espejo legacy `conv.opportunity`.
+function stageWorkflow(clinicId, stage) {
+  const tr = { type: 'new_conversation', audience: 'all' };
+  return Workflow.create({
+    clinic: clinicId, name: 'Etapa auto', active: true,
+    triggers: [tr], trigger: tr, steps: [],
+    nodes: [
+      { id: 'trigger', type: 'trigger', position: { x: 0, y: 0 }, data: { triggers: [tr] } },
+      { id: 'n1', type: 'move_stage', position: { x: 0, y: 130 }, data: { stage } },
+    ],
+    edges: [{ id: 'e1', source: 'trigger', target: 'n1', sourceHandle: 'default' }],
+  });
+}
+
+test('Paso "Etapa de oportunidad" (grafo): crea la oportunidad en opportunities[] y sincroniza el espejo legacy', async () => {
+  const Conversation = require('../models/Conversation');
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const conv = await Conversation.create({ clinic: clinic._id, phone: '593990001100', channel: 'whatsapp' });
+  const wf = await stageWorkflow(clinic._id, 'interesado');
+
+  const r = await workflowEngine.enrollForChatMessage({
+    clinicId: clinic._id, conversation: conv, patient: null,
+    phone: conv.phone, text: 'Hola', isNew: true,
+  });
+  assert.equal(r.enrolled, 1, 'la nueva conversación debió inscribir el flujo');
+
+  const after = await waitFor(async () => {
+    const c = await Conversation.findById(conv._id);
+    return c && Array.isArray(c.opportunities) && c.opportunities.length ? c : null;
+  });
+  assert.ok(after, 'el paso debe CREAR la oportunidad en opportunities[] (visible en el modal del chat)');
+  assert.equal(after.opportunities[0].stage, 'interesado');
+  assert.equal(after.opportunities[0].isOpportunity, true);
+  // Espejo legacy en sync (lo leen el panel lateral, los listados y el embudo).
+  assert.equal(after.opportunity.stage, 'interesado');
+  assert.equal(after.opportunity.isOpportunity, true);
+});
+
+test('applyOpportunityStage: si ya hay oportunidad CAMBIA la etapa de la principal (sin duplicar) y marca convertedAt en "ganado"', async () => {
+  const Conversation = require('../models/Conversation');
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const conv = await Conversation.create({
+    clinic: clinic._id, phone: '593990001200', channel: 'whatsapp',
+    opportunities: [{ isOpportunity: true, stage: 'nuevo', createdAt: new Date() }],
+  });
+
+  await workflowEngine.applyOpportunityStage(conv, 'ganado');
+
+  const after = await Conversation.findById(conv._id);
+  assert.equal(after.opportunities.length, 1, 'no debe DUPLICAR: cambia la etapa de la oportunidad existente');
+  assert.equal(after.opportunities[0].stage, 'ganado');
+  assert.ok(after.opportunities[0].convertedAt, 'al pasar a "ganado" debe fijar convertedAt');
+  // Espejo legacy sincronizado con la principal.
+  assert.equal(after.opportunity.stage, 'ganado');
+  assert.equal(after.opportunity.isOpportunity, true);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Nodos de Marketing (Meta): se ejecutan a través de performAction y, sin
 // credenciales configuradas, registran el motivo en el log sin romper el flujo.
 function metaNodeWorkflow(clinicId, node) {

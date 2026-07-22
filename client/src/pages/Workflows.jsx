@@ -365,7 +365,7 @@ const STEP_LABELS = {
   goal: 'Objetivo',
   add_tag: 'Añadir etiqueta',
   remove_tag: 'Quitar etiqueta',
-  move_stage: 'Mover etapa',
+  move_stage: 'Etapa de oportunidad',
   set_appointment_status: 'Cambiar estado de cita',
   assign_agent: 'Asignar agente',
   create_task: 'Crear tarea',

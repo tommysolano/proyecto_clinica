@@ -304,6 +304,44 @@ async function applyTag(patient, conversation, tag, { remove = false } = {}) {
 }
 
 /**
+ * Añade o cambia la ETAPA de la oportunidad de la conversación operando sobre el
+ * modelo canónico `conv.opportunities[]` (el que leen el modal de Oportunidades
+ * del chat y el embudo global). Si el chat aún no tiene oportunidad, CREA una en
+ * esta etapa; si ya existe, cambia la etapa de la PRINCIPAL (la última). Mantiene
+ * en sync el espejo legacy `conv.opportunity` (igual que syncPrimaryOpportunity
+ * del chatController), que leen el panel lateral y los listados, y emite
+ * `chat:opportunity` para refrescar el embudo/panel en vivo.
+ *
+ * ANTES este paso escribía SOLO en `conv.opportunity` (legacy): el cambio no
+ * aparecía en el modal de Oportunidades ni en el embudo cuando el chat ya tenía
+ * entradas en `opportunities[]`, y una edición manual posterior lo borraba
+ * (syncPrimaryOpportunity resetea el legacy si el array está vacío).
+ */
+async function applyOpportunityStage(conversation, stage) {
+  if (!conversation || !stage) return;
+  const list = Array.isArray(conversation.opportunities) ? conversation.opportunities : [];
+  if (list.length === 0) {
+    conversation.opportunities = [{ isOpportunity: true, stage, createdAt: new Date() }];
+  } else {
+    const primary = list[list.length - 1];
+    primary.isOpportunity = true;
+    primary.stage = stage;
+    if (stage === 'ganado' && !primary.convertedAt) primary.convertedAt = new Date();
+  }
+  conversation.markModified('opportunities');
+  // Espejo legacy = última del array (misma regla que el chatController).
+  const primary = conversation.opportunities[conversation.opportunities.length - 1];
+  conversation.opportunity = primary?.toObject ? primary.toObject() : { ...primary };
+  conversation.markModified('opportunity');
+  await conversation.save();
+  try {
+    emitToCallCenter('chat:opportunity', { conversationId: conversation._id });
+  } catch {
+    /* realtime opcional */
+  }
+}
+
+/**
  * Evalúa un predicado de condition/goal contra el paciente y la conversación.
  * PURO y testeable.
  */
@@ -512,13 +550,7 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
       if (step.tag) await applyTag(patient, await loadConv(), step.tag, { remove: true });
       break;
     case 'move_stage':
-      if (step.stage) {
-        const conversation = await loadConv();
-        if (conversation) {
-          conversation.opportunity = { ...(conversation.opportunity?.toObject ? conversation.opportunity.toObject() : conversation.opportunity || {}), isOpportunity: true, stage: step.stage };
-          await conversation.save();
-        }
-      }
+      if (step.stage) await applyOpportunityStage(await loadConv(), step.stage);
       break;
     case 'meta_capi': {
       // Reporta un evento de conversión a Meta (Conversions API) con los datos
@@ -1033,25 +1065,20 @@ async function executeEnrollment(enrollment) {
     } else if (step.type === 'goal') {
       if (evaluateCondition(step, { patient, conversation, context: ctx })) break; // objetivo cumplido → fin
       i++;
-    } else if (step.type === 'add_tag' && step.tag && patient) {
+    } else if (step.type === 'add_tag' && step.tag) {
+      // Sin `&& patient`: los contactos del CRM no tienen paciente, pero la
+      // etiqueta debe verse igual en la conversación (applyTag tolera paciente nulo).
       // eslint-disable-next-line no-await-in-loop
       await applyTag(patient, conversation, step.tag);
       i++;
-    } else if (step.type === 'remove_tag' && step.tag && patient) {
+    } else if (step.type === 'remove_tag' && step.tag) {
       // eslint-disable-next-line no-await-in-loop
       await applyTag(patient, conversation, step.tag, { remove: true });
       i++;
     } else if (step.type === 'move_stage' && step.stage) {
       if (!conversation) conversation = await loadConversationForPatient(enrollment.clinic, phone, patient?._id);
-      if (conversation) {
-        conversation.opportunity = {
-          ...(conversation.opportunity?.toObject ? conversation.opportunity.toObject() : conversation.opportunity || {}),
-          isOpportunity: true,
-          stage: step.stage,
-        };
-        // eslint-disable-next-line no-await-in-loop
-        await conversation.save();
-      }
+      // eslint-disable-next-line no-await-in-loop
+      if (conversation) await applyOpportunityStage(conversation, step.stage);
       i++;
     } else {
       i++; // paso desconocido → saltar
@@ -1514,6 +1541,7 @@ module.exports = {
   classifyReply,
   computeWaitUntil,
   evaluateCondition,
+  applyOpportunityStage,
   keywordMatchesTrigger,
   getTriggers,
   triggersOfNode,
