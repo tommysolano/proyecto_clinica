@@ -150,6 +150,39 @@ const STAGE_LABELS = {
   ganado: 'Ganado',
   perdido: 'Perdido',
 };
+
+// Unidades del paso "Esperar (tiempo)". Se guarda `waitMinutes` (lo que lee el
+// motor, admite fracciones para los segundos) + `waitUnit`/`waitValue` para que
+// el editor reabra con la MISMA unidad que eligió el usuario.
+const WAIT_UNITS = [
+  { value: 'seconds', label: 'segundos' },
+  { value: 'minutes', label: 'minutos' },
+  { value: 'hours', label: 'horas' },
+  { value: 'days', label: 'días' },
+];
+const WAIT_UNIT_MIN = { seconds: 1 / 60, minutes: 1, hours: 60, days: 1440 };
+// Workflows viejos solo tenían minutos: deriva una unidad "bonita" desde waitMinutes.
+function deriveWaitUnit(mins) {
+  const m = Number(mins) || 0;
+  if (m > 0 && m % 1440 === 0) return 'days';
+  if (m > 0 && m % 60 === 0) return 'hours';
+  if (m > 0 && m < 1) return 'seconds';
+  return 'minutes';
+}
+// { unit, value } efectivos de un nodo wait (usa lo guardado o lo deriva).
+function waitParts(d = {}) {
+  const unit = d.waitUnit || deriveWaitUnit(d.waitMinutes);
+  const value =
+    d.waitValue != null && d.waitValue !== ''
+      ? Number(d.waitValue)
+      : Math.round((Number(d.waitMinutes) || 0) / (WAIT_UNIT_MIN[unit] || 1));
+  return { unit, value };
+}
+function formatWaitSummary(d = {}) {
+  const { unit, value } = waitParts(d);
+  const label = WAIT_UNITS.find((u) => u.value === unit)?.label || 'min';
+  return `${value} ${label}`;
+}
 const FIELDS = [
   { value: 'tag', label: 'Etiqueta del paciente' },
   { value: 'stage', label: 'Etapa de oportunidad' },
@@ -172,7 +205,7 @@ const REPLY_VALUES = [
 
 export const newNodeData = (type) => ({
   body: '', templateName: '', templateLanguage: 'es', emailSubject: '',
-  waitMinutes: 60, waitEvent: 'appointment_date', offsetMinutes: -1440, timeoutMinutes: 720,
+  waitMinutes: 60, waitValue: 60, waitUnit: 'minutes', waitEvent: 'appointment_date', offsetMinutes: -1440, timeoutMinutes: 720,
   waitMode: 'clock', daysBefore: 1, atTime: '18:00',
   appointmentStatus: 'confirmada', field: 'tag', op: 'eq', value: '', tag: '', stage: 'contactado',
   assignMode: 'roundrobin', assignUser: null, taskTitle: '', taskDueOffsetMinutes: 1440,
@@ -246,7 +279,7 @@ function summarize(n) {
     case 'send_media': return d.mediaUrl ? `📎 ${d.mediaName || (d.mediaType === 'video' ? 'Video' : 'Imagen')}` : 'Sin archivo';
     case 'send_template': return d.templateName;
     case 'send_email': return d.emailSubject || d.body;
-    case 'wait': return `${d.waitMinutes} min`;
+    case 'wait': return formatWaitSummary(d);
     case 'wait_until': return d.waitMode === 'clock'
       ? `${d.daysBefore === 0 ? 'el día de la cita' : d.daysBefore === 1 ? '1 día antes' : `${d.daysBefore} días antes`} a las ${d.atTime || '—'}`
       : `${Math.abs((d.offsetMinutes || 0) / 60)}h ${(d.offsetMinutes || 0) < 0 ? 'antes' : 'después'}`;
@@ -1417,13 +1450,27 @@ function NodeConfig({ node, onChange, templates, agents, clinics = [], audiences
       <p className="text-[11px] text-slate-400">Se envía al email del paciente. Incluye enlace de baja automático.</p>
     </div>
   );
-  if (t === 'wait') return (
-    <div className="flex items-center gap-2 text-sm">
-      <span>Esperar</span>
-      <NumericInput value={d.waitMinutes || 0} onChange={(e) => set({ waitMinutes: Number(e.target.value) })} className="w-24 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-      <span>min</span>
-    </div>
-  );
+  if (t === 'wait') {
+    const { unit, value } = waitParts(d);
+    // Guarda waitMinutes (lo que ejecuta el motor, fraccionario para segundos) y
+    // recuerda unit/value para reabrir con la misma unidad.
+    const apply = (v, u) => set({ waitValue: v, waitUnit: u, waitMinutes: Number(v || 0) * (WAIT_UNIT_MIN[u] || 1) });
+    return (
+      <div className="grid gap-2 text-sm">
+        <div className="flex items-center gap-2">
+          <span>Esperar</span>
+          <NumericInput value={value} onChange={(e) => apply(Number(e.target.value), unit)} className="w-24 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+          <select value={unit} onChange={(e) => apply(value, e.target.value)} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+            {WAIT_UNITS.map((u) => <option key={u.value} value={u.value}>{u.label}</option>)}
+          </select>
+        </div>
+        <p className="text-[11px] text-slate-400">
+          El flujo se pausa este tiempo y sigue con el paso siguiente. Las esperas de menos de un
+          minuto (segundos) son aproximadas: se retoman en la siguiente pasada del motor (~20 s).
+        </p>
+      </div>
+    );
+  }
   if (t === 'wait_until') return (
     <div className="grid gap-2 text-sm">
       <select

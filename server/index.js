@@ -198,7 +198,10 @@ connectDB().then(() => {
   workflowEngine.subscribeDomainEvents();
   // Meta Conversions API (CAPI): reporta Lead/Schedule/Purchase a Meta si está configurada.
   require('./utils/metaConversions').subscribeDomainEvents();
-  setInterval(() => { workflowEngine.processDueEnrollments().catch(() => {}); }, 60 * 1000);
+  // Cada 20s (antes 60s): así las esperas de menos de un minuto del paso "Esperar
+  // (tiempo)" — p. ej. 15/30 segundos entre dos mensajes — se retoman con una
+  // resolución razonable en vez de esperar siempre al minuto.
+  setInterval(() => { workflowEngine.processDueEnrollments().catch(() => {}); }, 20 * 1000);
   // Job: cumpleaños del día (dispara workflows patient_birthday).
   require('./utils/birthdayJob').startBirthdayJob();
   // Job: abandono automático de tratamientos (dispara workflows
