@@ -832,12 +832,16 @@ async function sendMedia(account, to, url, caption, type = 'image', quotedMessag
       mime = resp.headers.get('content-type') || mime;
       b64 = Buffer.from(await resp.arrayBuffer()).toString('base64');
     }
+    if (!b64) {
+      return { ok: false, errorCode: 'qr_media_unreadable', error: `No se pudo leer ${what} para enviarla.` };
+    }
     const { MessageMedia } = require('whatsapp-web.js');
     const media = new MessageMedia(mime, b64, isVoice ? 'nota-de-voz.ogg' : 'imagen');
     // Una nota de voz no admite pie (en WhatsApp tampoco se le puede añadir texto).
     const opts = isVoice
       ? { sendAudioAsVoice: true }
       : { caption: String(caption || '').slice(0, 1024) };
+    console.log('[wa-qr sendMedia] enviando kind=%s mime=%s bytes≈%d chat=%s', type, mime, Math.floor(b64.length * 0.75), r.chatId);
     // La cita se resuelve igual que en texto: getMessageById + reply() para que
     // el contacto vea el adjunto como respuesta al mensaje citado.
     const { sent, quote } = await withTimeout(
@@ -845,9 +849,16 @@ async function sendMedia(account, to, url, caption, type = 'image', quotedMessag
       60000,
       `Tiempo agotado enviando ${what} (la sesión puede estar inestable)`
     );
+    const wamid = sent?.id?._serialized || '';
+    if (!wamid) {
+      // whatsapp-web.js no devolvió un id de mensaje: el envío NO se confirmó.
+      console.warn('[wa-qr sendMedia] la sesión NO devolvió wamid (envío no confirmado) chat=%s', r.chatId);
+      return { ok: false, errorCode: 'qr_media_unconfirmed', error: `WhatsApp no confirmó el envío de ${what} (la sesión puede estar inestable). Reintenta.` };
+    }
+    console.log('[wa-qr sendMedia] enviado OK wamid=%s', wamid);
     return {
       ok: true,
-      data: { messages: [{ id: sent?.id?._serialized || '' }] },
+      data: { messages: [{ id: wamid }] },
       ...(quotedMessageId || quoteBody ? { quote } : {}),
     };
   } catch (e) {

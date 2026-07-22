@@ -136,8 +136,14 @@ async function sendMedia(creds, to, url, caption, type = 'image', contextMessage
   if (!isConfigured(creds)) return { ok: false, simulated: true, reason: 'WhatsApp Cloud no configurado' };
   const kind = ['image', 'video', 'document', 'audio'].includes(type) ? type : 'image';
 
-  let media = null;
-  // Media autoalojada: subir los bytes a Meta y enviar por id (no por link).
+  // Bytes del adjunto. La media PROPIA (autoalojada /api/public/media/:id o un
+  // data URL inline) SIEMPRE se sube a Meta y se envía por id. NO se cae al link:
+  // enviar por link deja a Meta el trabajo de DESCARGAR nuestra URL y, cuando no
+  // lo logra, ACEPTA el mensaje (200 → "enviado") pero NUNCA lo entrega — la causa
+  // real de "media marcada como enviada que nunca llega". Solo las URLs EXTERNAS
+  // (p.ej. cabecera de plantilla alojada fuera) van por link.
+  let buffer = null;
+  let byteMime = null;
   const selfHosted = String(url || '').match(/\/api\/public\/media\/([a-f0-9]{24})/i);
   if (selfHosted) {
     const img = await require('../models/ChatGalleryImage')
@@ -146,30 +152,54 @@ async function sendMedia(creds, to, url, caption, type = 'image', contextMessage
       .lean()
       .catch(() => null);
     const parsed = img?.dataUrl ? require('./dataUrl').parseDataUrl(img.dataUrl) : null;
-    if (parsed) {
-      const up = await uploadMedia(creds, {
-        buffer: Buffer.from(parsed.b64, 'base64'),
-        mimeType: parsed.mimeType || img.mimeType,
-      });
-      // La subida falló (media muy grande para WhatsApp, tipo no soportado…):
-      // se devuelve el error para que el envío se marque FALLIDO, no "enviado".
-      if (!up.ok && !up.simulated) return { ok: false, status: up.status, error: up.error, data: up.data };
-      if (up.ok) media = { id: up.id };
+    if (!parsed) {
+      console.warn('[wa-cloud sendMedia] adjunto propio ILEGIBLE id=%s (no se envía por link para no mentir "enviado")', selfHosted[1]);
+      return { ok: false, errorCode: 'media_unreadable', error: 'No se pudo leer el archivo adjunto para enviarlo (media no encontrada o dañada).' };
     }
+    buffer = Buffer.from(parsed.b64, 'base64');
+    byteMime = parsed.mimeType || img.mimeType;
+  } else if (/^data:/i.test(String(url || ''))) {
+    const parsed = require('./dataUrl').parseDataUrl(url);
+    if (!parsed) {
+      return { ok: false, errorCode: 'media_unreadable', error: 'Adjunto inválido (data URL dañado).' };
+    }
+    buffer = Buffer.from(parsed.b64, 'base64');
+    byteMime = parsed.mimeType;
   }
-  // URL externa o media no resuelta: se envía por link (comportamiento previo).
-  if (!media) media = { link: String(url || '') };
+
+  let media;
+  if (buffer) {
+    const up = await uploadMedia(creds, { buffer, mimeType: byteMime });
+    // La subida falló (media muy grande para WhatsApp, tipo no soportado…): se
+    // devuelve el error para que el envío se marque FALLIDO, NO "enviado".
+    if (!up.ok) {
+      console.warn('[wa-cloud sendMedia] subida a Meta FALLÓ kind=%s mime=%s bytes=%d error=%s', kind, byteMime, buffer.length, up.error || '');
+      return { ok: false, status: up.status, errorCode: 'media_upload_failed', error: up.error || 'No se pudo subir el archivo a WhatsApp.', data: up.data };
+    }
+    media = { id: up.id };
+    console.log('[wa-cloud sendMedia] subida OK id=%s kind=%s mime=%s bytes=%d', up.id, kind, byteMime, buffer.length);
+  } else {
+    // URL externa: se envía por link (Meta la descarga; debe ser pública).
+    media = { link: String(url || '') };
+    console.log('[wa-cloud sendMedia] envío por LINK externo kind=%s url=%s', kind, String(url || '').slice(0, 120));
+  }
 
   // Las notas de voz no llevan pie: Meta rechaza el payload si el audio trae
   // caption (igual que en la app, donde a un audio no se le puede añadir texto).
   if (caption && kind !== 'audio') media.caption = String(caption).slice(0, 1024);
-  return postToMeta(creds, {
+  const res = await postToMeta(creds, {
     messaging_product: 'whatsapp',
     to: phone,
     type: kind,
     ...(contextMessageId ? { context: { message_id: contextMessageId } } : {}),
     [kind]: media,
   });
+  if (res.ok) {
+    console.log('[wa-cloud sendMedia] Meta aceptó kind=%s wamid=%s', kind, res.data?.messages?.[0]?.id || '');
+  } else {
+    console.warn('[wa-cloud sendMedia] Meta RECHAZÓ el envío kind=%s error=%s', kind, res.error || '');
+  }
+  return res;
 }
 
 /**

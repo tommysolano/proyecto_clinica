@@ -47,6 +47,45 @@ test('Cloud sendMedia: sube los bytes a Meta y envía por media id (no por link)
   }
 });
 
+test('Cloud sendMedia: un data URL inline también se SUBE a Meta y se envía por id', async () => {
+  await H.seedClinic();
+  const calls = [];
+  const origFetch = global.fetch;
+  global.fetch = async (url, opts) => {
+    calls.push({ url: String(url), opts });
+    if (String(url).endsWith('/media')) return { ok: true, json: async () => ({ id: 'MEDIA_ID_DATA' }) };
+    return { ok: true, json: async () => ({ messages: [{ id: 'wamid.OUT2' }] }) };
+  };
+  try {
+    const r = await wa.sendMedia(creds, '593999999999', 'data:image/png;base64,iVBORw0KGgo=', 'pie', 'image');
+    assert.equal(r.ok, true, JSON.stringify(r));
+    assert.ok(calls[0].url.endsWith('/123/media'), 'primero sube los bytes del data URL');
+    const body = JSON.parse(calls[1].opts.body);
+    assert.equal(body.image.id, 'MEDIA_ID_DATA', 'se envía por media id');
+    assert.equal(body.image.link, undefined, 'NO por link');
+  } finally {
+    global.fetch = origFetch;
+  }
+});
+
+test('Cloud sendMedia: media propia ILEGIBLE → ok:false (NO cae al link que mentiría "enviado")', async () => {
+  await H.seedClinic();
+  const fakeId = 'a'.repeat(24); // ObjectId válido pero inexistente
+  const origFetch = global.fetch;
+  let messagesCalled = false;
+  global.fetch = async (url) => {
+    if (String(url).endsWith('/messages')) messagesCalled = true;
+    return { ok: true, json: async () => ({ messages: [{ id: 'x' }] }) };
+  };
+  try {
+    const r = await wa.sendMedia(creds, '593999999999', `https://x/api/public/media/${fakeId}`, '', 'image');
+    assert.equal(r.ok, false, 'media propia que no se puede leer ⇒ falla, no "enviado"');
+    assert.equal(messagesCalled, false, 'NO se llama a /messages con un link que Meta no podría entregar');
+  } finally {
+    global.fetch = origFetch;
+  }
+});
+
 test('Cloud sendMedia: si la subida a Meta falla (media muy grande) → ok:false, no "enviado"', async () => {
   const { clinicId } = await H.seedClinic();
   const img = await ChatGalleryImage.create({

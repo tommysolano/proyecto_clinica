@@ -415,10 +415,11 @@ async function sendToProvider({ clinicId, channel, conv, body, templateInfo, acc
         templateInfo.components
       );
     }
-    // Adjunto suelto por Cloud API: se envía el link público con el texto como
-    // caption. Un data URL no es enviable por link → cae a texto solo (el
-    // adjunto queda igualmente visible en la burbuja del chat interno).
-    if (mediaUrl && !/^data:/i.test(String(mediaUrl))) {
+    // Adjunto suelto por Cloud API. La media (URL pública propia o data URL) la
+    // sube el gateway a Meta y la envía por id; NUNCA se degrada a "solo texto"
+    // en silencio (eso marcaba "enviado" un mensaje SIN su adjunto). Si el envío
+    // de la media falla, el resultado es FALLIDO con motivo, no un texto vacío.
+    if (mediaUrl) {
       return gateway.sendMedia(account, conv.phone, mediaUrl, body || '', mediaType || 'image', contextMessageId);
     }
     return gateway.sendText(account, conv.phone, body || '', contextMessageId);

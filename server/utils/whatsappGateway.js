@@ -87,18 +87,16 @@ async function sendText(account, to, body, contextMessageId, quoteBody) {
 }
 
 /**
- * Envía media (imagen/video/documento/audio por URL) con texto de pie. Por QR la
- * sesión descarga los bytes y los manda como MessageMedia; por Cloud API se
- * envía el link (Meta lo descarga: debe ser una URL pública, no un data URL).
- * `type` importa: un 'audio' se manda como NOTA DE VOZ, no como archivo adjunto.
+ * Envía media (imagen/video/documento/audio) con texto de pie. Por QR la sesión
+ * descarga los bytes (de Mongo si es media propia, o de la URL) y los manda como
+ * MessageMedia. Por Cloud API la media PROPIA (autoalojada o data URL inline) se
+ * SUBE a Meta y se envía por id; solo las URLs externas van por link. `type`
+ * importa: un 'audio' se manda como NOTA DE VOZ, no como archivo adjunto.
  */
 async function sendMedia(account, to, url, caption, type = 'image', contextMessageId, quoteBody) {
   if (!account) return { ok: false, errorCode: 'provider_unavailable', error: 'Sin número de WhatsApp configurado' };
   if (account.connectionType === 'qr') {
     return require('./whatsappQrManager').sendMedia(account, to, url, caption, type, contextMessageId, quoteBody);
-  }
-  if (/^data:/i.test(String(url || ''))) {
-    return { ok: false, error: 'La Cloud API no acepta data URLs: usa una URL pública' };
   }
   return wa.sendMedia(cloudCreds(account), to, url, caption, type, contextMessageId);
 }
