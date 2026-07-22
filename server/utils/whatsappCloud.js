@@ -92,15 +92,74 @@ async function sendText(creds, to, body, contextMessageId) {
 }
 
 /**
- * Envía media (imagen/video/documento/audio) por URL pública con texto de pie.
- * Meta descarga la URL, por lo que debe ser accesible desde fuera (no data URLs).
- * El audio debe ser ogg/opus, mpeg, mp4, aac o amr (ver utils/audioTranscode).
+ * Sube los BYTES de una media a Meta (endpoint /media) y devuelve su media id.
+ * Enviar la media por id (en vez de por link) evita que Meta tenga que DESCARGAR
+ * nuestra URL pública — la causa típica de "media que se marca enviada pero nunca
+ * llega": el texto va inline y llega, pero Meta no logra bajar el link de la media
+ * (URL no alcanzable, HTTPS, tamaño, timeout). Devuelve { ok, id } o el error de
+ * Meta (media muy grande, tipo no soportado, etc.) para marcar el envío fallido.
+ */
+async function uploadMedia(creds, { buffer, mimeType }) {
+  if (!isConfigured(creds)) return { ok: false, simulated: true };
+  const apiVersion = creds.apiVersion || DEFAULT_API_VERSION;
+  const mime = mimeType || 'application/octet-stream';
+  const ext = (mime.split('/')[1] || 'bin').split(';')[0].replace('jpeg', 'jpg');
+  try {
+    const form = new FormData();
+    form.append('messaging_product', 'whatsapp');
+    form.append('type', mime);
+    form.append('file', new Blob([buffer], { type: mime }), `archivo.${ext}`);
+    const res = await fetch(`https://graph.facebook.com/${apiVersion}/${creds.phoneNumberId}/media`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${creds.accessToken}` },
+      body: form,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.id) {
+      return { ok: false, status: res.status, error: data?.error?.message || `No se pudo subir la media a WhatsApp (HTTP ${res.status})`, data };
+    }
+    return { ok: true, id: data.id };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+}
+
+/**
+ * Envía media (imagen/video/documento/audio) con texto de pie. Si la URL es
+ * autoalojada (/api/public/media/:id) se SUBEN los bytes a Meta y se envía por id
+ * (más fiable que por link, ver uploadMedia). Para URLs externas se manda el link
+ * (Meta las descarga; no admite data URLs). Audio: ogg/opus, mpeg, mp4, aac o amr.
  */
 async function sendMedia(creds, to, url, caption, type = 'image', contextMessageId) {
   const phone = normalizePhone(to);
   if (!phone) return { ok: false, error: 'Teléfono inválido' };
+  if (!isConfigured(creds)) return { ok: false, simulated: true, reason: 'WhatsApp Cloud no configurado' };
   const kind = ['image', 'video', 'document', 'audio'].includes(type) ? type : 'image';
-  const media = { link: String(url || '') };
+
+  let media = null;
+  // Media autoalojada: subir los bytes a Meta y enviar por id (no por link).
+  const selfHosted = String(url || '').match(/\/api\/public\/media\/([a-f0-9]{24})/i);
+  if (selfHosted) {
+    const img = await require('../models/ChatGalleryImage')
+      .findById(selfHosted[1])
+      .select('dataUrl mimeType')
+      .lean()
+      .catch(() => null);
+    const parsed = img?.dataUrl ? require('./dataUrl').parseDataUrl(img.dataUrl) : null;
+    if (parsed) {
+      const up = await uploadMedia(creds, {
+        buffer: Buffer.from(parsed.b64, 'base64'),
+        mimeType: parsed.mimeType || img.mimeType,
+      });
+      // La subida falló (media muy grande para WhatsApp, tipo no soportado…):
+      // se devuelve el error para que el envío se marque FALLIDO, no "enviado".
+      if (!up.ok && !up.simulated) return { ok: false, status: up.status, error: up.error, data: up.data };
+      if (up.ok) media = { id: up.id };
+    }
+  }
+  // URL externa o media no resuelta: se envía por link (comportamiento previo).
+  if (!media) media = { link: String(url || '') };
+
   // Las notas de voz no llevan pie: Meta rechaza el payload si el audio trae
   // caption (igual que en la app, donde a un audio no se le puede añadir texto).
   if (caption && kind !== 'audio') media.caption = String(caption).slice(0, 1024);
@@ -152,4 +211,4 @@ async function sendBulk(creds, recipients, builderFn) {
   return results;
 }
 
-module.exports = { DEFAULT_API_VERSION, isConfigured, sendText, sendMedia, sendTemplate, sendBulk, downloadMedia };
+module.exports = { DEFAULT_API_VERSION, isConfigured, sendText, sendMedia, uploadMedia, sendTemplate, sendBulk, downloadMedia };
