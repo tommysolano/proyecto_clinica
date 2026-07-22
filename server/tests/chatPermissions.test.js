@@ -1,0 +1,46 @@
+/**
+ * Permisos del chat compartido del call center.
+ *
+ * Bug auditado: un agente veía el chat de un compañero (asignado a otro) y al
+ * intentar ENVIAR texto recibía "No puedes enviar mensajes en esta conversación",
+ * mientras que el dueño (admin) sí podía. No era un problema de "computadora":
+ * enviar texto exigía tener el chat asignado (pero enviar imágenes no). Ahora
+ * responder es de toda la bandeja; administrar (reasignar/editar/borrar) sigue
+ * restringido por asignación.
+ */
+const test = require('node:test');
+const assert = require('node:assert/strict');
+const chatCtrl = require('../controllers/chatController');
+
+const superadmin = { user: { _id: 'super', isSuperAdmin: true } };
+const admin = { user: { _id: 'owner' }, role: 'admin' };
+const marketing = { user: { _id: 'mkt' }, role: 'marketing' };
+const jaime = { user: { _id: 'jaime' }, role: 'call_center' };
+const ana = { user: { _id: 'ana' }, role: 'call_center' };
+const doctor = { user: { _id: 'doc' }, role: 'doctor' };
+
+const chatDeJaime = { assignedTo: 'jaime' };
+const chatSinAsignar = { assignedTo: null };
+
+test('canReplyConversation: cualquier agente del call center responde cualquier chat (bandeja compartida)', () => {
+  // El caso del bug: Ana respondiendo el chat asignado a Jaime.
+  assert.equal(chatCtrl.canReplyConversation(ana, chatDeJaime), true);
+  assert.equal(chatCtrl.canReplyConversation(jaime, chatDeJaime), true);
+  assert.equal(chatCtrl.canReplyConversation(admin, chatDeJaime), true);
+  assert.equal(chatCtrl.canReplyConversation(marketing, chatDeJaime), true);
+  assert.equal(chatCtrl.canReplyConversation(superadmin, chatDeJaime), true);
+  // Un rol ajeno al CRM (p. ej. doctor) no puede responder.
+  assert.equal(chatCtrl.canReplyConversation(doctor, chatDeJaime), false);
+});
+
+test('canMutateConversation: administrar sigue restringido por asignación', () => {
+  // Ana NO puede administrar el chat de Jaime (reasignar/editar/borrar/oportunidad).
+  assert.equal(chatCtrl.canMutateConversation(ana, chatDeJaime), false);
+  // Jaime sí (es suyo); cualquiera puede sobre un chat sin asignar.
+  assert.equal(chatCtrl.canMutateConversation(jaime, chatDeJaime), true);
+  assert.equal(chatCtrl.canMutateConversation(ana, chatSinAsignar), true);
+  // Admin y super-admin siempre.
+  assert.equal(chatCtrl.canMutateConversation(admin, chatDeJaime), true);
+  assert.equal(chatCtrl.canMutateConversation(superadmin, chatDeJaime), true);
+  assert.equal(chatCtrl.canMutateConversation(doctor, chatDeJaime), false);
+});

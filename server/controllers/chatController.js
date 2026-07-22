@@ -36,11 +36,33 @@ function canMutateConversation(req, conv) {
   if (req.user?.isSuperAdmin) return true;
   if (req.role === 'admin' || req.role === 'marketing') return true;
   if (req.role === 'call_center') {
-    // Puede mutar si está asignado a él o si todavía no tiene asignación.
+    // Puede ADMINISTRAR (reasignar, editar, destacar, oportunidades, bloquear,
+    // borrar) si está asignado a él o si todavía no tiene asignación.
     return !conv.assignedTo || String(conv.assignedTo) === String(req.user._id);
   }
   return false;
 }
+
+/**
+ * ¿Puede este usuario RESPONDER (enviar mensajes) en esta conversación? El call
+ * center comparte UNA sola bandeja: cualquier agente puede contestar cualquier
+ * chat, esté asignado a quien esté (la asignación es un indicador de "quién lo
+ * atiende", no un candado). Las acciones administrativas siguen restringidas por
+ * canMutateConversation.
+ *
+ * Antes, enviar TEXTO exigía tener el chat asignado, pero enviar imágenes (send-
+ * image) no: un agente veía el chat de un compañero y podía mandar la imagen pero
+ * NO el texto ("No puedes enviar mensajes en esta conversación"). Este permiso
+ * unifica el criterio: responder es de toda la bandeja.
+ */
+function canReplyConversation(req, conv) {
+  if (req.user?.isSuperAdmin) return true;
+  return ['admin', 'marketing', 'call_center'].includes(req.role);
+}
+
+// Expuestos para pruebas unitarias del modelo de permisos del chat.
+exports.canMutateConversation = canMutateConversation;
+exports.canReplyConversation = canReplyConversation;
 
 // =================== Conversaciones ===================
 
@@ -1522,7 +1544,9 @@ exports.sendMessage = async (req, res) => {
   try {
     const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
-    if (!canMutateConversation(req, conv)) {
+    // Responder es de toda la bandeja compartida (no exige tener el chat asignado);
+    // así funciona igual que enviar una imagen. Ver canReplyConversation.
+    if (!canReplyConversation(req, conv)) {
       return res.status(403).json({ message: 'No puedes enviar mensajes en esta conversación' });
     }
     if (conv.blocked) {
