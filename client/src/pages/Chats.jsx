@@ -11,6 +11,8 @@ import {
   HiStar,
   HiOutlinePaperAirplane,
   HiOutlineMagnifyingGlass,
+  HiOutlineChevronUp,
+  HiOutlineChevronDown,
   HiOutlineArrowPath,
   HiOutlinePlus,
   HiOutlineSparkles,
@@ -104,20 +106,25 @@ function ecDateKey(date) {
   return new Date(date).toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' });
 }
 
-// Etiqueta del separador de día en el chat: "Hoy", "Ayer" o la fecha completa.
-// Sin esto solo se veía la hora y un mensaje viejo parecía de hoy (confundía con
-// la ventana de 24h de WhatsApp).
+// Etiqueta del separador de día en el chat, estilo WhatsApp: "Hoy", "Ayer", el
+// día de la semana ("Sábado", "Miércoles") si fue en los últimos 7 días, o la
+// fecha corta (12/05/2026) si es más antiguo. Sin esto un mensaje viejo parecía
+// de hoy (confundía con la ventana de 24h de WhatsApp).
 function formatDateDivider(date) {
   const key = ecDateKey(date);
   const todayKey = ecDateKey(new Date());
-  const yesterdayKey = ecDateKey(new Date(Date.now() - 24 * 60 * 60 * 1000));
   if (key === todayKey) return 'Hoy';
+  const yesterdayKey = ecDateKey(new Date(Date.now() - 24 * 60 * 60 * 1000));
   if (key === yesterdayKey) return 'Ayer';
+  // Diferencia en días entre fechas EC (los keys YYYY-MM-DD se parsean a UTC 00:00).
+  const diffDays = Math.round((Date.parse(todayKey) - Date.parse(key)) / (24 * 60 * 60 * 1000));
+  if (diffDays > 1 && diffDays < 7) {
+    return new Date(date).toLocaleDateString('es-EC', { timeZone: 'America/Guayaquil', weekday: 'long' });
+  }
   return new Date(date).toLocaleDateString('es-EC', {
     timeZone: 'America/Guayaquil',
-    weekday: 'long',
-    day: 'numeric',
-    month: 'long',
+    day: '2-digit',
+    month: '2-digit',
     year: 'numeric',
   });
 }
@@ -186,6 +193,11 @@ export default function Chats() {
   const [conversations, setConversations] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [messages, setMessages] = useState([]);
+  // Buscador DENTRO del chat abierto (estilo WhatsApp): resalta y salta entre
+  // coincidencias del mensaje buscado en la conversación activa.
+  const [chatSearchOpen, setChatSearchOpen] = useState(false);
+  const [chatSearch, setChatSearch] = useState('');
+  const [chatMatchIdx, setChatMatchIdx] = useState(0);
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebounce(search, 300);
   const [stats, setStats] = useState(null);
@@ -654,6 +666,39 @@ export default function Chats() {
     setTimeout(() => el.classList.remove('ring-2', 'ring-emerald-400', 'rounded-lg'), 1600);
   };
 
+  // Coincidencias del buscador dentro del chat (ids de mensajes, orden cronológico).
+  const chatMatches = useMemo(() => {
+    const q = chatSearch.trim().toLowerCase();
+    if (!q) return [];
+    return messages.filter((m) => (m.body || '').toLowerCase().includes(q)).map((m) => m._id);
+  }, [messages, chatSearch]);
+
+  // Al cambiar el texto: salta a la coincidencia MÁS RECIENTE (como WhatsApp).
+  useEffect(() => {
+    if (!chatSearchOpen) return;
+    if (!chatMatches.length) { setChatMatchIdx(0); return; }
+    const last = chatMatches.length - 1;
+    setChatMatchIdx(last);
+    scrollToMessage(chatMatches[last]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [chatSearch, chatSearchOpen]);
+
+  // Cerrar/limpiar el buscador al cambiar de conversación.
+  useEffect(() => {
+    setChatSearchOpen(false);
+    setChatSearch('');
+    setChatMatchIdx(0);
+  }, [activeId]);
+
+  const gotoChatMatch = (delta) => {
+    if (!chatMatches.length) return;
+    const n = chatMatches.length;
+    const next = (chatMatchIdx + delta + n) % n;
+    setChatMatchIdx(next);
+    scrollToMessage(chatMatches[next]);
+  };
+  const closeChatSearch = () => { setChatSearchOpen(false); setChatSearch(''); setChatMatchIdx(0); };
+
   // Marca el chat como leído SIN responder: quita la notificación de no leído.
   const markRead = async (conv) => {
     try {
@@ -819,7 +864,54 @@ export default function Chats() {
                   onCall={() => voiceCall.startCall(activeConv)}
                   onBack={() => setActiveId(null)}
                   onToggleInfo={() => setInfoOpen(true)}
+                  onToggleSearch={() => setChatSearchOpen((v) => !v)}
+                  searchActive={chatSearchOpen}
                 />
+                {/* Buscador dentro de la conversación (estilo WhatsApp) */}
+                {chatSearchOpen && (
+                  <div className="border-b border-slate-100 px-3 py-2 flex items-center gap-2 bg-white">
+                    <HiOutlineMagnifyingGlass className="w-4 h-4 text-slate-400 shrink-0" />
+                    <input
+                      autoFocus
+                      value={chatSearch}
+                      onChange={(e) => setChatSearch(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Enter') { e.preventDefault(); gotoChatMatch(e.shiftKey ? -1 : 1); }
+                        if (e.key === 'Escape') closeChatSearch();
+                      }}
+                      placeholder="Buscar en esta conversación…"
+                      className="flex-1 text-sm border-none outline-none bg-transparent"
+                    />
+                    {chatSearch.trim() && (
+                      <span className="text-xs text-slate-400 shrink-0 tabular-nums">
+                        {chatMatches.length ? `${chatMatchIdx + 1}/${chatMatches.length}` : '0/0'}
+                      </span>
+                    )}
+                    <button
+                      onClick={() => gotoChatMatch(-1)}
+                      disabled={!chatMatches.length}
+                      title="Anterior (más arriba)"
+                      className="p-1 rounded-lg text-slate-500 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed bg-transparent border-none cursor-pointer shrink-0"
+                    >
+                      <HiOutlineChevronUp className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={() => gotoChatMatch(1)}
+                      disabled={!chatMatches.length}
+                      title="Siguiente (más abajo)"
+                      className="p-1 rounded-lg text-slate-500 hover:bg-slate-100 disabled:opacity-30 disabled:cursor-not-allowed bg-transparent border-none cursor-pointer shrink-0"
+                    >
+                      <HiOutlineChevronDown className="w-4 h-4" />
+                    </button>
+                    <button
+                      onClick={closeChatSearch}
+                      title="Cerrar búsqueda"
+                      className="p-1 rounded-lg text-slate-500 hover:bg-slate-100 bg-transparent border-none cursor-pointer shrink-0"
+                    >
+                      <HiOutlineXMark className="w-4 h-4" />
+                    </button>
+                  </div>
+                )}
                 <div ref={messagesEndRef} className="flex-1 overflow-y-auto bg-slate-50 p-4 space-y-2">
                   {messages.map((m, i) => {
                     // Separador de día cuando cambia la fecha (o en el primero).
@@ -829,6 +921,7 @@ export default function Chats() {
                       <Fragment key={m._id}>
                         {showDivider && <DateDivider date={m.createdAt} />}
                         <MessageBubble
+                          highlight={chatSearchOpen ? chatSearch : ''}
                           msg={m}
                           onReply={() => setReplyDraft(m)}
                           onJumpTo={scrollToMessage}
@@ -1668,7 +1761,7 @@ function HeaderActionsMenu({ actions }) {
   );
 }
 
-function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpportunity, onCreateAppointment, onCreateQuotation, onMarkRead, onEnableCalling, isAdmin, meId, calling, onCall, onBack, onToggleInfo }) {
+function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpportunity, onCreateAppointment, onCreateQuotation, onMarkRead, onEnableCalling, isAdmin, meId, calling, onCall, onBack, onToggleInfo, onToggleSearch, searchActive }) {
   const canTake = !conv.assignedTo || String(conv.assignedTo._id || conv.assignedTo) !== String(meId);
   // "Esperando respuesta" cuando el último mensaje es entrante (del paciente).
   const waitingReply = conv.lastMessageDirection === 'in';
@@ -1762,6 +1855,15 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpport
           ))}
         </div>
 
+        {onToggleSearch && (
+          <button
+            onClick={onToggleSearch}
+            className={`p-1.5 rounded-lg shrink-0 border-none cursor-pointer ${searchActive ? 'bg-emerald-50 text-emerald-700' : 'text-slate-500 hover:bg-slate-50'}`}
+            title="Buscar en esta conversación"
+          >
+            <HiOutlineMagnifyingGlass className="w-4 h-4" />
+          </button>
+        )}
         <button
           onClick={onToggleFeatured}
           className={`p-1.5 rounded-lg shrink-0 ${conv.isFeatured ? 'bg-amber-50' : 'hover:bg-slate-50'}`}
@@ -2013,8 +2115,37 @@ function quoteFailureText(code) {
   return `${base} (${reason.slice(0, 90)})`;
 }
 
-function MessageBubble({ msg, onReply, onJumpTo }) {
+// Resalta (en <mark>) las coincidencias del texto buscado dentro del cuerpo del
+// mensaje. Solo se usa mientras el buscador del chat está abierto con texto.
+function highlightMatches(text, term, isOut) {
+  const t = String(text || '');
+  const q = String(term || '').trim();
+  if (!q) return t;
+  const lower = t.toLowerCase();
+  const ql = q.toLowerCase();
+  const out = [];
+  let i = 0;
+  let k = 0;
+  while (i < t.length) {
+    const idx = lower.indexOf(ql, i);
+    if (idx === -1) { out.push(t.slice(i)); break; }
+    if (idx > i) out.push(t.slice(i, idx));
+    out.push(
+      <mark key={k++} className={`rounded px-0.5 ${isOut ? 'bg-yellow-300 text-slate-900' : 'bg-yellow-200 text-slate-900'}`}>
+        {t.slice(idx, idx + q.length)}
+      </mark>
+    );
+    i = idx + q.length;
+  }
+  return out;
+}
+
+function MessageBubble({ msg, onReply, onJumpTo, highlight }) {
   const isOut = msg.direction === 'out';
+  // Con el buscador abierto se resalta el término; si no, formato WhatsApp normal.
+  const bodyContent = highlight && highlight.trim()
+    ? highlightMatches(msg.body, highlight, isOut)
+    : renderWhatsappText(msg.body);
   // Etiqueta de remitente: quién envió el mensaje (agente con acceso al chat, o
   // "Automático" para flujos, o "WhatsApp (teléfono)" si se envió desde el móvil
   // fuera del sistema). Solo en salientes.
@@ -2089,7 +2220,7 @@ function MessageBubble({ msg, onReply, onJumpTo }) {
             Plantilla · {msg.templateName}
           </div>
         )}
-        <div className="whitespace-pre-wrap break-words">{renderWhatsappText(msg.body)}</div>
+        <div className="whitespace-pre-wrap break-words">{bodyContent}</div>
         <div className={`text-[10px] mt-1 flex items-center gap-1 ${isOut ? 'text-emerald-100' : 'text-slate-400'}`}>
           <span title={fmtDateTime(msg.createdAt)}>{formatTime(msg.createdAt)}</span>
           {isOut && <span>·</span>}
