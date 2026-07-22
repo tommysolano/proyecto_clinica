@@ -48,25 +48,43 @@ async function buildClinicResolver() {
 }
 
 // ── Inscripción en workflows (disparador 'contact_import') ──
-// Los arranques se ESCALONAN: uno cada SLOT_SECONDS dentro de la franja horaria.
-// Inscribir 47k contactos con arranque inmediato dispararía el primer paso de
-// todos a la vez — la misma ráfaga que el goteo existe para evitar.
-const SLOT_SECONDS = 20;      // ≈180 arranques/hora, ~2.000/día en la franja
+// Los arranques se ESCALONAN (goteo): entre un contacto y el siguiente se esperan
+// `dripSeconds` (lo configura el usuario). Inscribir 47k contactos con arranque
+// inmediato dispararía el primer paso de todos a la vez — la ráfaga que el goteo evita.
+const DEFAULT_DRIP_SECONDS = 20; // ≈180 arranques/hora si no se configura otra cosa
 const ENROLL_HOUR_FROM = 9;   // hora local Ecuador (TZ del proceso)
 const ENROLL_HOUR_TO = 20;
 
+/** dripSeconds válido y acotado (1s … 1h). */
+function dripOf(batch) {
+  return Math.min(3600, Math.max(1, Number(batch?.dripSeconds) || DEFAULT_DRIP_SECONDS));
+}
+
 /**
- * Siguiente hueco de arranque: `prev` + SLOT_SECONDS, movido a la franja
- * 09:00–20:00 (nadie quiere el primer mensaje de un workflow a las 3 am).
+ * Siguiente hueco de arranque para los contactos SIN hora propia: `prev` + drip,
+ * movido a la franja 09:00–20:00 (nadie quiere el primer mensaje a las 3 am).
  */
-function nextEnrollSlot(prev) {
-  const t = new Date(prev.getTime() + SLOT_SECONDS * 1000);
+function nextEnrollSlot(prev, stepSeconds = DEFAULT_DRIP_SECONDS) {
+  const t = new Date(prev.getTime() + stepSeconds * 1000);
   if (t.getHours() < ENROLL_HOUR_FROM) {
     t.setHours(ENROLL_HOUR_FROM, 0, 0, 0);
   } else if (t.getHours() >= ENROLL_HOUR_TO) {
     t.setDate(t.getDate() + 1);
     t.setHours(ENROLL_HOUR_FROM, 0, 0, 0);
   }
+  return t;
+}
+
+/**
+ * Próxima vez que ocurre la hora local "HH:MM": hoy si aún no pasó, mañana si ya pasó.
+ * En hora de Ecuador (el proceso corre con TZ America/Guayaquil), así que "08:00" es
+ * 8 am en Ecuador. La hora EXPLÍCITA del Excel manda sobre la franja 09:00–20:00.
+ */
+function nextOccurrenceOfLocalTime(hhmm, now = new Date()) {
+  const [h, m] = String(hhmm || '').split(':').map((n) => parseInt(n, 10));
+  const t = new Date(now);
+  t.setHours(h || 0, m || 0, 0, 0);
+  if (t.getTime() <= now.getTime()) t.setDate(t.getDate() + 1);
   return t;
 }
 
@@ -80,9 +98,17 @@ function nextEnrollSlot(prev) {
  *   nextRunAt sea futuro, y dispararía todos los arranques de golpe.
  * - Dedup por (workflow, contacto) vivo: reimportar el archivo no duplica.
  */
-async function enrollInWorkflows(batch, phoneClinics, onProgress) {
-  // phoneClinics: Map teléfono → sucursal del contacto (para bifurcar por sede).
-  const entries = phoneClinics instanceof Map ? [...phoneClinics] : (phoneClinics || []).map((p) => [p, String(batch.clinic)]);
+async function enrollInWorkflows(batch, phoneInfo, onProgress) {
+  // phoneInfo: Map teléfono → { clinic, sendTime }.  clinic = sucursal del contacto
+  // (para bifurcar por sede); sendTime = "HH:MM" opcional del Excel (arranque a esa
+  // hora). Retrocompat: también acepta Map tel→clinicId o un array de teléfonos.
+  const normInfo = (v) =>
+    v && typeof v === 'object' && !(v instanceof Date)
+      ? { clinic: v.clinic ? String(v.clinic) : '', sendTime: v.sendTime || '' }
+      : { clinic: v ? String(v) : '', sendTime: '' };
+  const entries = phoneInfo instanceof Map
+    ? [...phoneInfo].map(([p, v]) => [p, normInfo(v)])
+    : (phoneInfo || []).map((p) => [p, { clinic: String(batch.clinic), sendTime: '' }]);
   if (!batch.workflows?.length || !entries.length) return 0;
   const Workflow = require('../models/Workflow');
   const WorkflowEnrollment = require('../models/WorkflowEnrollment');
@@ -94,17 +120,38 @@ async function enrollInWorkflows(batch, phoneClinics, onProgress) {
     .filter((x) => x.flows.length);
   if (!perWorkflow.length) return 0;
 
+  const infoByPhone = new Map(entries); // teléfono → { clinic, sendTime }
+
   // Agrupar los teléfonos por SUCURSAL del contacto: así se consulta con el índice
   // (clinic, phone) en vez de barrer por teléfono suelto, y el contacto se encuentra
   // aunque su Excel lo mandara a otra sede.
   const byClinic = new Map();
-  for (const [phone, cid] of entries) {
-    const k = String(cid || batch.clinic);
+  for (const [phone, info] of entries) {
+    const k = info.clinic || String(batch.clinic);
     if (!byClinic.has(k)) byClinic.set(k, []);
     byClinic.get(k).push(phone);
   }
 
-  let slot = new Date();
+  // ── Programación del arranque (goteo) ──
+  // Con hora propia ("Hora de envío" del Excel): se agrupa por hora y, dentro de cada
+  // hora, se separan por `drip` para no dispararlos todos a la vez. Sin hora propia:
+  // se escalona por `drip` dentro de la franja 09:00–20:00.
+  const drip = dripOf(batch);
+  const startNow = new Date();
+  let windowSlot = new Date(startNow);           // contactos SIN hora propia
+  const hourCursor = new Map();                  // "HH:MM" → siguiente Date libre
+  const scheduleStart = (sendTime) => {
+    if (sendTime) {
+      const base = nextOccurrenceOfLocalTime(sendTime, startNow);
+      let next = hourCursor.get(sendTime);
+      if (!next || next.getTime() < base.getTime()) next = new Date(base);
+      hourCursor.set(sendTime, new Date(next.getTime() + drip * 1000));
+      return next;
+    }
+    windowSlot = nextEnrollSlot(windowSlot, drip);
+    return windowSlot;
+  };
+
   let enrolled = 0;
   const createdByWf = new Map(); // workflowId → inscripciones creadas de verdad
 
@@ -123,6 +170,7 @@ async function enrollInWorkflows(batch, phoneClinics, onProgress) {
         .lean();
 
       for (const contact of contacts) {
+        const sendTime = (infoByPhone.get(contact.phone) || {}).sendTime || '';
         for (const { wf, flows } of perWorkflow) {
           for (const flow of flows) {
             // eslint-disable-next-line no-await-in-loop
@@ -134,7 +182,7 @@ async function enrollInWorkflows(batch, phoneClinics, onProgress) {
             }).select('_id');
             if (dup) continue;
 
-            slot = nextEnrollSlot(slot);
+            const slot = scheduleStart(sendTime);
             // eslint-disable-next-line no-await-in-loop
             await WorkflowEnrollment.create({
               // La inscripción corre en la clínica del asistente (contexto del call
@@ -315,9 +363,9 @@ async function runImport(batchId) {
     const resolveClinic = await buildClinicResolver();
 
     // Dentro del archivo puede venir el mismo número dos veces; sin esto, la misma
-    // tanda haría dos upserts al mismo contacto y Mongo se queja. Se guarda además
-    // la sucursal resuelta de cada teléfono para inscribir por sede al terminar.
-    const seen = new Map(); // phone → clinicId (sucursal del contacto)
+    // tanda haría dos upserts al mismo contacto y Mongo se queja. Se guarda además,
+    // por teléfono, la sucursal resuelta y la hora de envío para inscribir al terminar.
+    const seen = new Map(); // phone → { clinic, sendTime }
 
     await iterateRows(batch.filePath, batch.fileName, async (row, rowNo) => {
       batch.processedRows++;
@@ -336,11 +384,15 @@ async function runImport(batchId) {
         if (resolved) mapped.contact.clinic = resolved;
         delete mapped.contact.clinicName;
       }
+      // La hora de envío NO es campo del contacto: se saca para no escribirla en el
+      // documento y se conserva aparte para programar el arranque del workflow.
+      const sendTime = mapped.contact.sendTime || '';
+      delete mapped.contact.sendTime;
       if (seen.has(mapped.contact.phone)) {
         batch.skipped++; // repetido dentro del propio archivo
         return;
       }
-      seen.set(mapped.contact.phone, String(mapped.contact.clinic || batch.clinic));
+      seen.set(mapped.contact.phone, { clinic: String(mapped.contact.clinic || batch.clinic), sendTime });
       pending.push(mapped.contact);
       if (pending.length >= BATCH_SIZE) await flush();
     });
@@ -357,9 +409,9 @@ async function runImport(batchId) {
     // contactos ya están dentro y el error queda en el lote sin marcarlo fallido.
     if (batch.workflows?.length) {
       try {
-        // `seen` = Map teléfono→sucursal de todo el archivo (creados Y actualizados;
-        // los actualizados no llevan importBatch, así que no hay otra forma de
-        // encontrarlos). El filtro de consentimiento se aplica dentro.
+        // `seen` = Map teléfono→{clinic, sendTime} de todo el archivo (creados Y
+        // actualizados; los actualizados no llevan importBatch, así que no hay otra
+        // forma de encontrarlos). El filtro de consentimiento se aplica dentro.
         batch.enrolled = await enrollInWorkflows(batch, seen, (n) => {
           batch.enrolled = n;
           progress();
@@ -447,4 +499,4 @@ async function revertImport(batchId) {
   return { ok: true, deleted: del.deletedCount || 0, cleaned, cancelledEnrollments: cancelled.modifiedCount || 0 };
 }
 
-module.exports = { runImport, processPendingImports, revertImport, enrollInWorkflows, nextEnrollSlot, BATCH_SIZE };
+module.exports = { runImport, processPendingImports, revertImport, enrollInWorkflows, nextEnrollSlot, nextOccurrenceOfLocalTime, BATCH_SIZE };

@@ -86,6 +86,7 @@ exports.template = async (req, res) => {
       { header: 'Teléfono', key: 'telefono', width: 18 },
       { header: 'Correo', key: 'correo', width: 26 },
       { header: 'Sucursal', key: 'sucursal', width: 20 },
+      { header: 'Hora de envío', key: 'hora', width: 14 },
       { header: 'Etiquetas', key: 'etiquetas', width: 24 },
     ];
 
@@ -95,14 +96,17 @@ exports.template = async (req, res) => {
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8F5E9' } };
     });
 
-    // Toda la columna del teléfono como texto (incluye lo que el usuario escriba).
+    // Teléfono Y hora como TEXTO: si Excel trata "08:00" como hora, la guarda como
+    // fracción de día (0,3333) y al importar salían "demasiados decimales". Como texto,
+    // "08:00" se queda tal cual.
     ws.getColumn('telefono').numFmt = '@';
+    ws.getColumn('hora').numFmt = '@';
 
-    // Ejemplos: el teléfono va como STRING, no como número, para que herede el
-    // formato de texto y sirva de guía de cómo escribirlo.
+    // Ejemplos: el teléfono y la hora van como STRING, no como número, para que
+    // hereden el formato de texto y sirvan de guía de cómo escribirlos.
     const ejemplos = [
-      { nombre: 'Emily', apellido: 'Torres Vera', telefono: '0999111222', correo: 'emily@correo.com', sucursal: 'Quito', etiquetas: 'feria-julio, interesada' },
-      { nombre: 'Dome', apellido: '', telefono: '0988776655', correo: '', sucursal: 'Guayaquil', etiquetas: 'feria-julio' },
+      { nombre: 'Emily', apellido: 'Torres Vera', telefono: '0999111222', correo: 'emily@correo.com', sucursal: 'Quito', hora: '08:00', etiquetas: 'feria-julio, interesada' },
+      { nombre: 'Dome', apellido: '', telefono: '0988776655', correo: '', sucursal: 'Guayaquil', hora: '14:00', etiquetas: 'feria-julio' },
     ];
     ejemplos.forEach((e) => ws.addRow(e));
 
@@ -121,9 +125,13 @@ exports.template = async (req, res) => {
       '   (p. ej. Quito). No importan mayúsculas ni tildes. El contacto queda en esa sucursal',
       '   y el flujo de automatización puede tomar un camino distinto según la sede. Si la',
       '   dejas vacía o el nombre no coincide con ninguna sucursal, va a la sede por defecto.',
-      '6. Puedes añadir tus propias columnas (Ciudad, Interés…): al importar decides a qué',
+      '6. Hora de envío (opcional): la hora a la que quieres que le llegue el PRIMER mensaje',
+      '   del workflow a ese contacto, en formato 24h HH:MM (p. ej. 08:00, 14:30). Escríbela',
+      '   como TEXTO (ya viene así). Si ya pasó esa hora hoy, sale mañana a esa hora. Si la',
+      '   dejas vacía, el contacto entra dentro de la franja normal (09:00–20:00).',
+      '7. Puedes añadir tus propias columnas (Ciudad, Interés…): al importar decides a qué',
       '   campo va cada una, o las guardas como dato adicional del contacto.',
-      '7. Borra estas dos filas de ejemplo antes de subir el archivo.',
+      '8. Borra estas dos filas de ejemplo antes de subir el archivo.',
     ];
     lines.forEach((t, i) => {
       const row = help.getRow(i + 1);
@@ -169,7 +177,7 @@ exports.analyze = async (req, res) => {
 /** Paso 4: confirma y encola la importación. */
 exports.create = async (req, res) => {
   try {
-    const { uploadId, fileName, mapping, mode, tags, groups, whatsappOptIn, consentSource, workflows } = req.body;
+    const { uploadId, fileName, mapping, mode, tags, groups, whatsappOptIn, consentSource, workflows, dripSeconds } = req.body;
     // basename() evita que un uploadId manipulado ("../../etc/passwd") salga del
     // directorio de subidas.
     const filePath = path.join(UPLOAD_DIR, path.basename(String(uploadId || '')));
@@ -228,6 +236,8 @@ exports.create = async (req, res) => {
         skipEmpty: m.skipEmpty !== false,
       })),
       mode: ['upsert', 'create', 'update'].includes(mode) ? mode : 'upsert',
+      // Goteo: segundos entre el arranque de un contacto y el siguiente (1s…1h).
+      dripSeconds: Math.min(3600, Math.max(1, Number(dripSeconds) || 20)),
       tags: (Array.isArray(tags) ? tags : []).map((t) => String(t).trim()).filter(Boolean),
       groups: groupIds,
       workflows: workflowIds,

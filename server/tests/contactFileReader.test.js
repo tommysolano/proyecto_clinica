@@ -52,3 +52,35 @@ test('.ods da un mensaje claro (no un error críptico)', async () => {
     /ods.*no se admiten|Microsoft Excel|\.csv/i
   );
 });
+
+test('formatCellDate: una celda-fecha se muestra legible (hora sola → HH:MM), no como ISO', () => {
+  // Ancla de Excel (1899): la celda es SOLO una hora del día.
+  assert.equal(reader.formatCellDate(new Date(Date.UTC(1899, 11, 31, 8, 0, 0))), '08:00');
+  assert.equal(reader.formatCellDate(new Date(Date.UTC(1899, 11, 30, 14, 30, 0))), '14:30');
+  // Fecha real → YYYY-MM-DD; con hora → añade HH:MM.
+  assert.equal(reader.formatCellDate(new Date(Date.UTC(2026, 6, 22, 0, 0, 0))), '2026-07-22');
+  assert.equal(reader.formatCellDate(new Date(Date.UTC(2026, 6, 22, 14, 30, 0))), '2026-07-22 14:30');
+});
+
+test('XLSX con celda de HORA: end-to-end queda en "HH:MM" (adiós a los "demasiados decimales")', async () => {
+  // Reproduce el bug real: Excel guarda "08:00" como una fracción de día y el lector
+  // en STREAMING de ExcelJS la entrega como número crudo (1,3333…). Da igual cómo
+  // llegue: al mapearla a la Hora de envío, parseSendTime la deja en "08:00".
+  const ExcelJS = require('exceljs');
+  const { parseSendTime } = require('../utils/contactRowMapper');
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet('C');
+  ws.addRow(['Nombre', 'Telefono', 'Hora']);
+  const r1 = ws.addRow(['Ana', '0999111222', new Date(Date.UTC(1899, 11, 31, 8, 0, 0))]);
+  r1.getCell(3).numFmt = 'hh:mm';
+  const r2 = ws.addRow(['Beto', '0988776655', new Date(Date.UTC(1899, 11, 31, 14, 30, 0))]);
+  r2.getCell(3).numFmt = 'hh:mm';
+  const file = path.join(os.tmpdir(), `hora_${Date.now()}_${Math.random().toString(36).slice(2)}.xlsx`);
+  await wb.xlsx.writeFile(file);
+
+  const rows = [];
+  await reader.iterateRows(file, 'hora.xlsx', (o) => rows.push(o));
+  assert.equal(parseSendTime(rows[0].Hora), '08:00', `de "${rows[0].Hora}" → 08:00`);
+  assert.equal(parseSendTime(rows[1].Hora), '14:30', `de "${rows[1].Hora}" → 14:30`);
+  fs.unlinkSync(file);
+});

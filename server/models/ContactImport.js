@@ -74,6 +74,11 @@ const contactImportSchema = new mongoose.Schema(
     // Al terminar la importación, el runner inscribe a los contactos del archivo
     // de forma ESCALONADA (no de golpe: sería la ráfaga que el goteo evita).
     workflows: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Workflow' }],
+    // GOTEO: segundos de espera entre el arranque de un contacto y el siguiente.
+    // Lo configura el usuario en el asistente. Sin columna "Hora de envío" escalona
+    // todo dentro de 09:00–20:00; CON esa columna, agrupa por hora y separa por este
+    // intervalo a los que comparten la misma hora (para no dispararlos a la vez).
+    dripSeconds: { type: Number, default: 20, min: 1, max: 3600 },
     whatsappOptIn: { type: Boolean, default: true },
     consentSource: { type: String, trim: true, default: '' },
 

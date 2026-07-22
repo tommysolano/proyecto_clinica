@@ -26,9 +26,61 @@ const FIELD_OPTIONS = [
   { value: 'displayName', label: 'Nombre completo / como aparece en WhatsApp' },
   { value: 'email', label: 'Correo electrónico' },
   { value: 'clinic', label: 'Sucursal (nombre de la sede)' },
+  { value: 'sendTime', label: 'Hora de envío del 1er mensaje (HH:MM)' },
   { value: 'tags', label: 'Etiquetas (separadas por coma)' },
   { value: 'notes', label: 'Notas' },
 ];
+
+/**
+ * Normaliza la HORA de envío de una celda a "HH:MM" (24h) o '' si no es una hora.
+ *
+ * Tolera lo que llega de un Excel/CSV real:
+ *   "8:00", "14:30", "8", "8 am", "2:30 pm"  → texto que el usuario escribió
+ *   "0.3333333"                              → fracción de día de Excel (8:00). Es la
+ *                                              causa de los "demasiados decimales": una
+ *                                              celda con formato hora exportada como número.
+ *   "1899-12-31T08:00:00.000Z" / "... 08:00" → celda-fecha ya formateada por el lector
+ */
+function parseSendTime(raw) {
+  const s = String(raw ?? '').trim();
+  if (!s) return '';
+  const hhmm = (h, m) => `${String(h).padStart(2, '0')}:${String(m).padStart(2, '0')}`;
+
+  // "HH:MM" con am/pm opcional (dentro de un texto o de una fecha con hora).
+  let m = s.match(/(\d{1,2}):(\d{2})(?::\d{2})?\s*(a\.?m\.?|p\.?m\.?)?/i);
+  if (m) {
+    let h = parseInt(m[1], 10);
+    const min = parseInt(m[2], 10);
+    const ap = (m[3] || '').toLowerCase();
+    if (ap.startsWith('p') && h < 12) h += 12;
+    if (ap.startsWith('a') && h === 12) h = 0;
+    if (h <= 23 && min <= 59) return hhmm(h, min);
+    return '';
+  }
+
+  // Hora entera suelta: "8", "8am", "8 pm".
+  m = s.match(/^(\d{1,2})\s*(a\.?m\.?|p\.?m\.?)?$/i);
+  if (m) {
+    let h = parseInt(m[1], 10);
+    const ap = (m[2] || '').toLowerCase();
+    if (ap.startsWith('p') && h < 12) h += 12;
+    if (ap.startsWith('a') && h === 12) h = 0;
+    if (h <= 23) return hhmm(h, 0);
+    return '';
+  }
+
+  // Fracción de día de Excel (0 < x < 1 = hora del día; un serial completo 45000.58
+  // también trae su parte fraccional). Acepta coma o punto decimal.
+  const num = Number(s.replace(',', '.'));
+  if (Number.isFinite(num) && num > 0 && num < 100000) {
+    const frac = num - Math.floor(num);
+    if (frac > 0 || num < 1) {
+      const total = Math.round(frac * 24 * 60);
+      return hhmm(Math.floor(total / 60) % 24, total % 60);
+    }
+  }
+  return '';
+}
 
 const splitTags = (v) =>
   String(v || '')
@@ -69,6 +121,9 @@ function mapRow(row, mapping) {
     // real (no es un campo directo del contacto). Se guarda aparte para no escribir
     // "clinicName" como si fuera un campo del documento.
     if (m.field === 'clinic') { if (value) out.clinicName = value; continue; }
+    // La hora de envío NO es un campo del contacto: el runner la usa para programar
+    // el arranque del workflow (nextRunAt) de ESE contacto. Se guarda aparte.
+    if (m.field === 'sendTime') { const t = parseSendTime(value); if (t) out.sendTime = t; continue; }
     if (m.field === 'tags') { out.tags.push(...splitTags(value)); continue; }
     if (m.field.startsWith('custom:')) {
       const key = m.field.slice('custom:'.length).trim();
@@ -112,6 +167,7 @@ const GUESSES = [
   [/^(last ?name|apellidos?|surname)/i, 'lastName'],
   [/^(e-?mail|correo)/i, 'email'],
   [/^(sucursal|sede|clinica|clínica|branch|location|local)/i, 'clinic'],
+  [/^(hora|horario|hora ?de ?env[ií]o|send ?time|schedule)/i, 'sendTime'],
   [/^(tags?|etiquetas?)/i, 'tags'],
   [/^(notes?|notas|observaciones)/i, 'notes'],
 ];
@@ -133,4 +189,4 @@ function suggestMapping(headers) {
   });
 }
 
-module.exports = { mapRow, suggestMapping, guessField, splitFullName, FIELD_OPTIONS, CORE_FIELDS };
+module.exports = { mapRow, suggestMapping, guessField, splitFullName, parseSendTime, FIELD_OPTIONS, CORE_FIELDS };

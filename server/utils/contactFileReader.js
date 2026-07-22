@@ -37,6 +37,29 @@ function isSupported(fileName) {
   return [...TEXT_EXTS, '.xlsx', '.xls'].includes(extOf(fileName));
 }
 
+/**
+ * Formatea una celda-fecha de Excel de forma LEGIBLE, no como ISO.
+ *
+ * Excel guarda las horas como fracción de día sobre una fecha ancla (30/12/1899) y
+ * ExcelJS las entrega como Date en UTC: una celda "8:00" llega como 1899-12-31T08:00Z.
+ * Devolverla con `toISOString()` mostraba "1899-12-31T08:00:00.000Z" — y cuando la hora
+ * venía como número crudo (export de Google Sheets), aparecía "0.3333333": los
+ * "demasiados decimales en las horas" que reportó el usuario. Se normaliza a:
+ *   solo hora  → "HH:MM"              (fecha ancla de Excel: la celda es una hora del día)
+ *   fecha      → "YYYY-MM-DD"
+ *   fecha+hora → "YYYY-MM-DD HH:MM"
+ */
+function formatCellDate(d) {
+  const yyyy = d.getUTCFullYear();
+  const hh = String(d.getUTCHours()).padStart(2, '0');
+  const mi = String(d.getUTCMinutes()).padStart(2, '0');
+  if (yyyy <= 1900) return `${hh}:${mi}`; // ancla 1899/1900 → es SOLO una hora
+  const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const dd = String(d.getUTCDate()).padStart(2, '0');
+  const hasTime = d.getUTCHours() || d.getUTCMinutes() || d.getUTCSeconds();
+  return hasTime ? `${yyyy}-${mm}-${dd} ${hh}:${mi}` : `${yyyy}-${mm}-${dd}`;
+}
+
 // Una celda de ExcelJS puede ser fórmula, rich text o hipervínculo.
 function cellText(v) {
   if (v === null || v === undefined) return '';
@@ -44,7 +67,7 @@ function cellText(v) {
     if ('result' in v) return cellText(v.result);
     if ('text' in v) return cellText(v.text);
     if ('hyperlink' in v) return cellText(v.text || v.hyperlink);
-    if (v instanceof Date) return v.toISOString();
+    if (v instanceof Date) return formatCellDate(v);
     if ('richText' in v) return (v.richText || []).map((t) => t.text).join('');
   }
   return String(v).trim();
@@ -310,4 +333,4 @@ async function iterateRows(filePath, fileName, onRow) {
     : xlsxIterateSafe(filePath, onRow);
 }
 
-module.exports = { readHeaders, iterateRows, isSupported, extOf, SAMPLE_SIZE };
+module.exports = { readHeaders, iterateRows, isSupported, extOf, formatCellDate, SAMPLE_SIZE };

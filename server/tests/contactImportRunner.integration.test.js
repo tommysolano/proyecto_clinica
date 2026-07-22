@@ -425,6 +425,74 @@ test('importar con workflow: inscribe escalonado, en waiting, y respeta el conse
   assert.equal(fresh.stats.enrolled, 2);
 });
 
+test('hora de envío por contacto: el arranque se programa a ESA hora, con goteo entre los que comparten hora', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const wf = await makeImportWorkflow(clinicId);
+  await Contact.create([
+    { clinic: clinicId, phone: '593999111111', firstName: 'A', source: 'import' },
+    { clinic: clinicId, phone: '593999222222', firstName: 'B', source: 'import' },
+    { clinic: clinicId, phone: '593999333333', firstName: 'C', source: 'import' },
+  ]);
+  const batch = await ContactImport.create({
+    clinic: clinicId, fileName: 'x.csv', status: 'done', mapping: MAPPING,
+    workflows: [wf._id], createdBy: userId, dripSeconds: 45,
+  });
+
+  // Dos contactos a las 08:00 y uno a las 14:00 (hora local del Excel).
+  const info = new Map([
+    ['593999111111', { clinic: String(clinicId), sendTime: '08:00' }],
+    ['593999222222', { clinic: String(clinicId), sendTime: '08:00' }],
+    ['593999333333', { clinic: String(clinicId), sendTime: '14:00' }],
+  ]);
+  assert.equal(await enrollInWorkflows(batch, info), 3);
+
+  const es = await WorkflowEnrollment.find({ workflow: wf._id });
+  const at = (phone) => es.find((e) => e.context.phone === phone).nextRunAt;
+  const a = at('593999111111'), b = at('593999222222'), c = at('593999333333');
+
+  // Cada uno arranca a SU hora local.
+  assert.equal(a.getHours(), 8);
+  assert.equal(b.getHours(), 8);
+  assert.equal(c.getHours(), 14);
+  // Goteo: los dos de las 8 no salen a la vez, sino separados 45s (uno en :00, otro en :45).
+  assert.equal(Math.abs(b.getTime() - a.getTime()), 45 * 1000, 'los que comparten hora se separan por el goteo');
+  assert.deepEqual([a.getSeconds(), b.getSeconds()].sort(), [0, 45]);
+  // El de las 14:00 arranca en su propia hora, no arrastrado por los de las 8.
+  assert.equal(c.getMinutes(), 0);
+  assert.equal(c.getSeconds(), 0);
+  // Todos en el futuro (hoy si aún no pasó la hora, mañana si ya pasó).
+  for (const e of es) assert.ok(e.nextRunAt > new Date());
+});
+
+test('goteo configurable: sin hora propia, dripSeconds separa un contacto del siguiente', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const wf = await makeImportWorkflow(clinicId);
+  await Contact.create([
+    { clinic: clinicId, phone: '593999111111', firstName: 'A', source: 'import' },
+    { clinic: clinicId, phone: '593999222222', firstName: 'B', source: 'import' },
+  ]);
+  const batch = await ContactImport.create({
+    clinic: clinicId, fileName: 'x.csv', status: 'done', mapping: MAPPING,
+    workflows: [wf._id], createdBy: userId, dripSeconds: 30,
+  });
+
+  assert.equal(await enrollInWorkflows(batch, ['593999111111', '593999222222']), 2);
+  const es = await WorkflowEnrollment.find({ workflow: wf._id }).sort({ nextRunAt: 1 });
+  assert.equal((es[1].nextRunAt.getTime() - es[0].nextRunAt.getTime()) / 1000, 30, 'respeta los 30s configurados');
+});
+
+test('nextOccurrenceOfLocalTime: hoy si la hora aún no pasó, mañana si ya pasó', () => {
+  const { nextOccurrenceOfLocalTime } = require('../utils/contactImportRunner');
+  const base = new Date(2026, 6, 22, 10, 0, 0); // 22-jul 10:00
+  const manana = nextOccurrenceOfLocalTime('08:00', base); // 08:00 ya pasó → mañana
+  assert.equal(manana.getDate(), 23);
+  assert.equal(manana.getHours(), 8);
+  const hoy = nextOccurrenceOfLocalTime('14:30', base); // 14:30 aún no → hoy
+  assert.equal(hoy.getDate(), 22);
+  assert.equal(hoy.getHours(), 14);
+  assert.equal(hoy.getMinutes(), 30);
+});
+
 test('reinscribir el mismo lote no duplica inscripciones', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const wf = await makeImportWorkflow(clinicId);

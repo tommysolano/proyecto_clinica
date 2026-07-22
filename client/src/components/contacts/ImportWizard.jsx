@@ -37,6 +37,7 @@ export default function ImportWizard({ groups, onClose, onDone }) {
     workflows: [],
     whatsappOptIn: true,
     consentSource: '',
+    dripSeconds: 20,
   });
   const [busy, setBusy] = useState(false);
   const [workflows, setWorkflows] = useState([]);
@@ -91,6 +92,7 @@ export default function ImportWizard({ groups, onClose, onDone }) {
         workflows: opts.workflows,
         whatsappOptIn: opts.whatsappOptIn,
         consentSource: opts.consentSource.trim(),
+        dripSeconds: opts.dripSeconds,
       });
       toast.success('Importación encolada: verás el progreso en la pestaña Importaciones');
       onDone();
@@ -448,10 +450,44 @@ function StepOptions({ opts, setOpts, staticGroups, workflows }) {
         ) : (
           <p className="text-[10px] text-slate-400 mt-1">
             Al terminar la importación, los contactos con consentimiento entran al workflow de forma
-            escalonada (uno cada pocos segundos, de 09:00 a 20:00) para proteger tu número — no en ráfaga.
+            escalonada (goteo) para proteger tu número — no en ráfaga.
           </p>
         )}
       </div>
+
+      {/* Goteo + hora de envío: solo tienen sentido si hay un workflow que trabaje los contactos. */}
+      {opts.workflows.length > 0 && (
+        <div className="border border-violet-200 bg-violet-50/40 rounded-xl p-3 space-y-2">
+          <label className="text-xs font-semibold text-slate-600 block">
+            Goteo: segundos de espera entre cada mensaje
+          </label>
+          <div className="flex items-center gap-2">
+            <input
+              type="number"
+              min={1}
+              max={3600}
+              value={opts.dripSeconds}
+              onChange={(e) => setOpts((s) => ({ ...s, dripSeconds: e.target.value }))}
+              onBlur={(e) => {
+                const n = Math.min(3600, Math.max(1, Math.round(Number(e.target.value) || 20)));
+                setOpts((s) => ({ ...s, dripSeconds: n }));
+              }}
+              className="w-24 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+            />
+            <span className="text-xs text-slate-500">segundos entre un contacto y el siguiente</span>
+          </div>
+          <p className="text-[10px] text-slate-400">
+            Controla cuánto se espera entre el arranque de un contacto y el del siguiente. Más segundos =
+            más lento y más seguro para tu número.
+          </p>
+          <p className="text-[11px] text-violet-800 bg-white border border-violet-200 rounded-lg px-2.5 py-2">
+            💡 <b>¿Quieres decidir la hora exacta por contacto?</b> Añade una columna <b>Hora de envío</b> en
+            tu Excel (formato 24h, p. ej. <code className="font-mono">08:00</code> o <code className="font-mono">14:30</code>) y,
+            en el paso anterior, asígnala al campo <b>“Hora de envío del 1er mensaje”</b>. Cada contacto
+            recibirá el primer mensaje a su hora; los que compartan hora se separan por estos segundos de goteo.
+          </p>
+        </div>
+      )}
 
       <div className="border border-slate-200 rounded-xl p-3 space-y-2">
         <label className="flex items-start gap-2 cursor-pointer">
@@ -528,6 +564,12 @@ function StepConfirm({ analysis, mapping, opts, groups, workflows, mappedCount }
             <span className="text-slate-300">ninguno</span>
           )}
         </Row>
+        {workflowName && (
+          <Row label="Goteo">
+            {opts.dripSeconds}s entre cada contacto
+            {mapping.some((m) => m.field === 'sendTime') && ' · hora por contacto (columna del Excel)'}
+          </Row>
+        )}
         <Row label="Consentimiento">
           {opts.whatsappOptIn ? (
             <span className="text-emerald-700 inline-flex items-center gap-1">
