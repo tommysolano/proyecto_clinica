@@ -792,6 +792,28 @@ function mapProviderStatus(status) {
   return null;
 }
 
+// Orden natural de la entrega. El estado solo debe AVANZAR.
+const STATUS_RANK = { queued: 0, sent: 1, delivered: 2, read: 3 };
+
+/**
+ * ¿Debe el estado `next` reemplazar al `current`? Los webhooks de Meta y los acks
+ * de whatsapp-web.js son callbacks INDEPENDIENTES que llegan fuera de orden y se
+ * reintentan. Sin esta guarda, un 'sent' tardío pisa un 'delivered'/'read' real, o
+ * —lo más peligroso— un estado tardío REVIVE un 'failed' y el sistema muestra
+ * "enviado/entregado" un mensaje que el contacto NUNCA recibió. Reglas:
+ *  - 'failed' es TERMINAL: no se revive con estados posteriores.
+ *  - un 'failed' entrante gana solo sobre 'queued'/'sent' (Meta aceptó el POST pero
+ *    después no pudo entregar); nunca borra una entrega real ('delivered'/'read').
+ *  - el resto solo aplica si AVANZA en el rango (nunca retrocede).
+ */
+function shouldApplyStatus(current, next) {
+  if (current === next) return false;
+  if (!current) return true;
+  if (current === 'failed') return false;
+  if (next === 'failed') return current === 'queued' || current === 'sent';
+  return (STATUS_RANK[next] ?? -1) > (STATUS_RANK[current] ?? -1);
+}
+
 function timestampFieldForStatus(status) {
   if (status === 'sent') return 'sentAt';
   if (status === 'delivered') return 'deliveredAt';
@@ -826,6 +848,14 @@ async function updateMessageStatus({
     }
   }
   if (!msg) return { ok: false, reason: 'message_not_found' };
+
+  // Solo AVANZAR el estado: un callback fuera de orden no debe pisar una entrega
+  // real ni revivir un 'failed'. Si no aplica, se ignora sin tocar la etiqueta
+  // (así "entregado"/"leído"/"fallido" son fiables y no mienten sobre la entrega).
+  const apply = shouldApplyStatus(msg.deliveryStatus, deliveryStatus);
+  if (!apply) {
+    return { ok: true, message: msg, ignored: true, deliveryStatus: msg.deliveryStatus };
+  }
 
   msg.deliveryStatus = deliveryStatus;
   const at = timestamp ? new Date(Number(timestamp) * 1000) : new Date();
@@ -866,6 +896,7 @@ module.exports = {
   mapProviderStatus,
   normalizePhone,
   send,
+  shouldApplyStatus,
   timestampFieldForStatus,
   updateMessageStatus,
 };

@@ -21,6 +21,8 @@ import {
   HiOutlineUserCircle,
   HiOutlineXMark,
   HiOutlineCheckCircle,
+  HiOutlineCheck,
+  HiOutlineClock,
   HiOutlineDocumentDuplicate,
   HiOutlineTrash,
   HiOutlineExclamationTriangle,
@@ -2133,23 +2135,36 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpport
   );
 }
 
+// El texto es el mismo, pero el ÍCONO y el tooltip distinguen lo que de verdad
+// pasó: "enviado" (un ✓) = WhatsApp lo aceptó pero AÚN NO se confirma que llegó al
+// contacto; "entregado" (✓✓) = llegó a su teléfono; "leído" (✓✓ azul) = lo leyó.
+// Así nadie confunde "enviado" con "le llegó al contacto".
 const DELIVERY_META = {
-  queued: { label: 'en cola', className: 'text-slate-200' },
-  sent: { label: 'enviado', className: 'text-emerald-100' },
-  delivered: { label: 'entregado', className: 'text-emerald-100' },
-  read: { label: 'leido', className: 'text-sky-100' },
-  failed: { label: 'fallido', className: 'text-rose-100' },
+  queued: { label: 'en cola', className: 'text-slate-200', icon: 'clock', tip: 'En cola — todavía no se envía.' },
+  sent: { label: 'enviado', className: 'text-emerald-100/80', icon: 'one', tip: 'Enviado a WhatsApp. Aún SIN confirmar que le llegó al contacto.' },
+  delivered: { label: 'entregado', className: 'text-emerald-100', icon: 'two', tip: 'Entregado: llegó al teléfono del contacto.' },
+  read: { label: 'leido', className: 'text-sky-200', icon: 'two', tip: 'Leído por el contacto.' },
+  failed: { label: 'fallido', className: 'text-rose-100', icon: 'fail', tip: 'No se envió — el contacto NO lo recibió.' },
 };
+
+// Doble check estilo WhatsApp (dos ✓ solapados).
+function DoubleCheck({ className }) {
+  return (
+    <span className={`relative inline-block w-4 h-3 ${className || ''}`}>
+      <HiOutlineCheck className="w-3 h-3 absolute left-0 top-0" />
+      <HiOutlineCheck className="w-3 h-3 absolute left-1 top-0" />
+    </span>
+  );
+}
 
 function DeliveryBadge({ msg }) {
   const meta = DELIVERY_META[msg.deliveryStatus] || DELIVERY_META.sent;
   return (
-    <span className={`inline-flex items-center gap-0.5 ${meta.className}`} title={msg.errorMessage || meta.label}>
-      {msg.deliveryStatus === 'failed' ? (
-        <HiOutlineExclamationTriangle className="w-3 h-3" />
-      ) : msg.deliveryStatus === 'read' ? (
-        <HiOutlineCheckCircle className="w-3 h-3" />
-      ) : null}
+    <span className={`inline-flex items-center gap-0.5 ${meta.className}`} title={msg.errorMessage || meta.tip}>
+      {meta.icon === 'fail' && <HiOutlineExclamationTriangle className="w-3 h-3" />}
+      {meta.icon === 'clock' && <HiOutlineClock className="w-3 h-3" />}
+      {meta.icon === 'one' && <HiOutlineCheck className="w-3 h-3" />}
+      {meta.icon === 'two' && <DoubleCheck />}
       {meta.label}
     </span>
   );
