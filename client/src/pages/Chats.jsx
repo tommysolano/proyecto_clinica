@@ -1597,6 +1597,24 @@ export default function Chats() {
 
 // ============= Modales nuevos =============
 
+// Miniatura de una imagen de la galería. Carga la imagen real (por `url` público
+// o dataUrl) con carga diferida; si falla, cae a un icono para no dejar el hueco.
+function GalleryThumb({ src, alt }) {
+  const [failed, setFailed] = useState(false);
+  if (!src || failed) {
+    return <span className="text-3xl" role="img" aria-label="imagen">🖼</span>;
+  }
+  return (
+    <img
+      src={src}
+      alt={alt || ''}
+      loading="lazy"
+      onError={() => setFailed(true)}
+      className="w-full h-full object-cover"
+    />
+  );
+}
+
 function GalleryModal({ images, onClose, onChange, onSend }) {
   const [list, setList] = useState(images);
   const [caption, setCaption] = useState('');
@@ -1655,10 +1673,10 @@ function GalleryModal({ images, onClose, onChange, onSend }) {
           {list.map((img) => (
             <div key={img._id} className={`border rounded p-1 cursor-pointer ${selected === img._id ? 'border-emerald-500 ring-2 ring-emerald-200' : 'border-slate-200'}`}
               onClick={() => setSelected(img._id)}>
-              <div className="aspect-square bg-slate-100 rounded flex items-center justify-center text-3xl">
-                🖼
+              <div className="aspect-square bg-slate-100 rounded overflow-hidden flex items-center justify-center">
+                <GalleryThumb src={img.url || img.dataUrl} alt={img.name} />
               </div>
-              <div className="text-[10px] text-slate-500 truncate mt-1">{img.name}</div>
+              <div className="text-[10px] text-slate-500 truncate mt-1" title={img.name}>{img.name}</div>
               <button
                 type="button"
                 onClick={(e) => { e.stopPropagation(); remove(img._id); }}

@@ -774,9 +774,7 @@ exports.uploadSavedReplyMedia = async (req, res) => {
       size: dataUrl.length,
       createdBy: req.user._id,
     });
-    let base = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}/api`;
-    base = base.replace(/\/+$/, '').replace(/\/api$/, '');
-    res.status(201).json({ id: img._id, url: `${base}/api/public/media/${img._id}`, type: kind, name: img.name });
+    res.status(201).json({ id: img._id, url: publicMediaUrl(req, img._id), type: kind, name: img.name });
   } catch (err) {
     res.status(500).json({ message: 'Error al subir adjunto', error: err.message });
   }
@@ -1299,12 +1297,26 @@ exports.deleteAutoMessage = async (req, res) => {
 
 const ChatGalleryImage = require('../models/ChatGalleryImage');
 
+/**
+ * URL pública (sin auth) que sirve los BYTES de una imagen de la galería por id
+ * (mediaController.serve decodifica el data URL). La usa el <img> de la galería
+ * para mostrar la MINIATURA REAL en vez de un icono genérico (el listado no trae
+ * el dataUrl, que es pesado), y también Meta para las cabeceras de plantilla.
+ */
+function publicMediaUrl(req, id) {
+  let base = process.env.PUBLIC_API_URL || `${req.protocol}://${req.get('host')}/api`;
+  base = base.replace(/\/+$/, '').replace(/\/api$/, '');
+  return `${base}/api/public/media/${id}`;
+}
+
 exports.listGallery = async (req, res) => {
   try {
+    // No se trae el dataUrl (pesa MBs): el <img> carga la miniatura por `url`.
     const list = await ChatGalleryImage.find({ clinic: req.clinicId })
       .select('name mimeType size createdAt')
-      .sort({ createdAt: -1 });
-    res.json(list);
+      .sort({ createdAt: -1 })
+      .lean();
+    res.json(list.map((g) => ({ ...g, url: publicMediaUrl(req, g._id) })));
   } catch (err) {
     res.status(500).json({ message: 'Error', error: err.message });
   }
@@ -1328,7 +1340,7 @@ exports.uploadGallery = async (req, res) => {
       size: dataUrl.length,
       createdBy: req.user._id,
     });
-    res.status(201).json({ _id: img._id, name: img.name, mimeType: img.mimeType, size: img.size });
+    res.status(201).json({ _id: img._id, name: img.name, mimeType: img.mimeType, size: img.size, url: publicMediaUrl(req, img._id) });
   } catch (err) {
     res.status(500).json({ message: 'Error al subir', error: err.message });
   }
