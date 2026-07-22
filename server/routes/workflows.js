@@ -15,8 +15,7 @@ router.post('/bulk', requireRole(...ROLES), bulk.uploadMiddleware, bulk.importAu
 
 router.get('/folders', requireRole(...ROLES), ctrl.listFolders);
 router.post('/folders', requireRole(...ROLES), ctrl.createFolder);
-router.put('/folders/:id', requireRole(...ROLES), ctrl.renameFolder);
-router.delete('/folders/:id', requireRole(...ROLES), ctrl.deleteFolder);
+router.delete('/folders', requireRole(...ROLES), ctrl.deleteFolder); // ?path=Citas/Recordatorios
 
 router.get('/', requireRole(...ROLES), ctrl.list);
 // Públicos Personalizados de Meta (selector del nodo de Facebook).

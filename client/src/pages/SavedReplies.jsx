@@ -3,11 +3,9 @@ import toast from 'react-hot-toast';
 import {
   HiOutlineChatBubbleBottomCenterText,
   HiOutlinePlus,
-  HiOutlineMagnifyingGlass,
   HiOutlinePencilSquare,
   HiOutlineTrash,
   HiOutlineFolder,
-  HiOutlineChevronRight,
   HiOutlinePaperClip,
   HiOutlinePaperAirplane,
   HiOutlineXMark,
@@ -18,6 +16,7 @@ import {
 import api from '../api/axios';
 import Modal from '../components/Modal';
 import WhatsappTextArea from '../components/WhatsappTextArea';
+import FolderExplorer, { normFolderPath } from '../components/FolderExplorer';
 import { fmtDateTime } from '../utils/date';
 
 // Convierte los marcadores de WhatsApp (*negrita*, _cursiva_, ~tachado~) a HTML
@@ -44,33 +43,23 @@ function typeOf(reply) {
   return reply.attachment?.url ? reply.attachment.type || 'document' : 'text';
 }
 
-// Pseudo-carpeta para los mensajes sin carpeta (no navegable como ruta real: el
-// carácter nulo nunca puede formar parte de un nombre escrito por el usuario).
-const UNFILED = '/__unfiled__';
-
-// Normaliza una ruta de carpeta: quita barras dobles/espacios y segmentos vacíos.
-// "  CITA / Recordatorios / " -> "CITA/Recordatorios"
-function normFolderPath(raw) {
-  return String(raw || '')
-    .split('/')
-    .map((s) => s.trim())
-    .filter(Boolean)
-    .join('/');
-}
-
 export default function SavedReplies() {
   const [list, setList] = useState([]);
+  const [folders, setFolders] = useState([]); // carpetas persistidas (registro)
   const [loading, setLoading] = useState(true);
-  const [search, setSearch] = useState('');
-  const [path, setPath] = useState(''); // ruta de carpeta actual ('' = raíz)
   const [modalOpen, setModalOpen] = useState(false);
   const [editing, setEditing] = useState(null); // reply en edición o null (nuevo)
+  const [newFolder, setNewFolder] = useState(''); // carpeta destino al crear desde una carpeta
 
   const load = async () => {
     try {
       setLoading(true);
-      const r = await api.get('/chats/saved-replies');
+      const [r, f] = await Promise.all([
+        api.get('/chats/saved-replies'),
+        api.get('/chats/saved-replies/folders').catch(() => ({ data: [] })),
+      ]);
       setList(r.data || []);
+      setFolders(f.data || []);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al cargar mensajes guardados');
     } finally {
@@ -82,84 +71,47 @@ export default function SavedReplies() {
     load();
   }, []);
 
-  // Todas las rutas de carpeta que existen (incluyendo ancestros implícitos: si
-  // hay "CITA/Recordatorios", "CITA" también cuenta como carpeta).
-  const allFolderPaths = useMemo(() => {
-    const set = new Set();
-    list.forEach((r) => {
-      const parts = normFolderPath(r.folder).split('/').filter(Boolean);
-      for (let i = 0; i < parts.length; i++) set.add(parts.slice(0, i + 1).join('/'));
-    });
-    return set;
-  }, [list]);
+  const registryPaths = useMemo(() => folders.map((f) => f.name), [folders]);
 
-  // Para el datalist del modal (todas las rutas, ordenadas).
-  const folderOptions = useMemo(() => [...allFolderPaths].sort((a, b) => a.localeCompare(b)), [allFolderPaths]);
+  // Opciones para el datalist del modal: rutas del registro ∪ de los mensajes.
+  const folderOptions = useMemo(() => {
+    const set = new Set(registryPaths.map(normFolderPath).filter(Boolean));
+    list.forEach((r) => { const f = normFolderPath(r.folder); if (f) set.add(f); });
+    return [...set].sort((a, b) => a.localeCompare(b));
+  }, [registryPaths, list]);
 
-  // Subcarpetas inmediatas de la carpeta actual + nº de mensajes que contiene cada una.
-  const childFolders = useMemo(() => {
-    const prefix = path ? path + '/' : '';
-    const names = new Map(); // nombre -> ruta completa
-    allFolderPaths.forEach((fp) => {
-      if (path && !fp.startsWith(prefix)) return;
-      const rest = path ? fp.slice(prefix.length) : fp;
-      const name = rest.split('/')[0];
-      if (name) names.set(name, prefix + name);
-    });
-    const countIn = (full) =>
-      list.filter((r) => {
-        const f = normFolderPath(r.folder);
-        return f === full || f.startsWith(full + '/');
-      }).length;
-    return [...names.entries()]
-      .map(([name, full]) => ({ name, full, count: countIn(full) }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-  }, [allFolderPaths, path, list]);
-
-  const hasAnyFolder = allFolderPaths.size > 0;
-  // Mensajes sin carpeta (van bajo la pseudo-carpeta "Sin carpeta" cuando existen carpetas).
-  const looseMessages = useMemo(() => list.filter((r) => !normFolderPath(r.folder)), [list]);
-
-  // Filas de CARPETA a mostrar en el nivel actual (se pintan como lista, no tarjetas).
-  const folderRows = useMemo(() => {
-    if (path === UNFILED) return [];
-    const rows = [...childFolders];
-    // "Sin carpeta" solo en la raíz, solo si hay mensajes sueltos Y existen carpetas
-    // (si no hay carpetas, los sueltos se listan directo, sin pseudo-carpeta).
-    if (path === '' && hasAnyFolder && looseMessages.length) {
-      rows.push({ name: 'Sin carpeta', full: UNFILED, count: looseMessages.length, unfiled: true });
+  // Crea la carpeta (y sus ancestros) en el registro para que persista aunque esté vacía.
+  const createFolder = async (full) => {
+    try {
+      await api.post('/chats/saved-replies/folders', { name: full });
+      setFolders((prev) => {
+        const names = new Set(prev.map((f) => f.name));
+        const segs = full.split('/');
+        const add = [];
+        for (let i = 0; i < segs.length; i++) {
+          const p = segs.slice(0, i + 1).join('/');
+          if (!names.has(p)) add.push({ _id: p, name: p });
+        }
+        return [...prev, ...add];
+      });
+      return true;
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'No se pudo crear la carpeta');
+      return false;
     }
-    return rows;
-  }, [childFolders, path, hasAnyFolder, looseMessages]);
+  };
 
-  // Mensajes a listar en el nivel actual. En la raíz NO se muestran mensajes si hay
-  // carpetas (van dentro de sus carpetas o de "Sin carpeta").
-  const messageRows = useMemo(() => {
-    if (path === UNFILED) return looseMessages;
-    if (path === '') return hasAnyFolder ? [] : looseMessages;
-    return list.filter((r) => normFolderPath(r.folder) === path);
-  }, [path, list, hasAnyFolder, looseMessages]);
-
-  // Búsqueda global (ignora la carpeta): busca en TODO el árbol.
-  const searchResults = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    if (!q) return null;
-    return list.filter(
-      (r) =>
-        (r.title || '').toLowerCase().includes(q) ||
-        (r.shortcut || '').toLowerCase().includes(q) ||
-        (r.body || '').toLowerCase().includes(q) ||
-        normFolderPath(r.folder).toLowerCase().includes(q)
-    );
-  }, [list, search]);
-
-  // Segmentos del breadcrumb (ruta tipo Windows). "Sin carpeta" es un nivel especial.
-  const crumbItems =
-    path === UNFILED
-      ? [{ label: 'Sin carpeta', to: UNFILED }]
-      : path
-        ? path.split('/').map((seg, i, arr) => ({ label: seg, to: arr.slice(0, i + 1).join('/') }))
-        : [];
+  const deleteFolder = async (full) => {
+    try {
+      await api.delete('/chats/saved-replies/folders', { params: { path: full } });
+      setFolders((prev) => prev.filter((f) => f.name !== full && !f.name.startsWith(full + '/')));
+      toast.success('Carpeta eliminada');
+      return true;
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'No se pudo eliminar la carpeta');
+      return false;
+    }
+  };
 
   const remove = async (r) => {
     if (!window.confirm(`¿Eliminar el mensaje guardado "${r.title || `/${r.shortcut}`}"?`)) return;
@@ -172,7 +124,17 @@ export default function SavedReplies() {
     }
   };
 
-  const showingSearch = searchResults !== null;
+  const openNew = (currentPath) => {
+    setEditing(null);
+    setNewFolder(currentPath || '');
+    setModalOpen(true);
+  };
+
+  const matchItem = (r, q) =>
+    (r.title || '').toLowerCase().includes(q) ||
+    (r.shortcut || '').toLowerCase().includes(q) ||
+    (r.body || '').toLowerCase().includes(q) ||
+    normFolderPath(r.folder).toLowerCase().includes(q);
 
   return (
     <div>
@@ -182,108 +144,51 @@ export default function SavedReplies() {
             <HiOutlineChatBubbleBottomCenterText className="text-emerald-600" /> Mensajes Guardados
           </h1>
           <p className="text-xs text-slate-500">
-            Organiza tus fragmentos en carpetas (y subcarpetas). En el chat se insertan
+            Organiza tus fragmentos en carpetas y subcarpetas. En el chat se insertan
             escribiendo <code className="font-mono bg-slate-100 px-1 py-0.5 rounded">/atajo</code>.
           </p>
         </div>
-        <button
-          onClick={() => { setEditing(null); setModalOpen(true); }}
-          className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 flex items-center gap-1 border-none cursor-pointer"
-        >
-          <HiOutlinePlus className="w-4 h-4" /> Nuevo mensaje guardado
-        </button>
       </div>
 
-      {/* Barra: búsqueda */}
-      <div className="flex items-center gap-2 flex-wrap mb-3">
-        <div className="relative">
-          <HiOutlineMagnifyingGlass className="absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
-          <input
-            value={search}
-            onChange={(e) => setSearch(e.target.value)}
-            placeholder="Buscar en todas las carpetas..."
-            className="w-72 pl-8 pr-3 py-1.5 text-sm border border-slate-200 rounded-lg bg-white"
-          />
-        </div>
-        {showingSearch && (
-          <span className="text-xs text-slate-500">
-            {searchResults.length} resultado(s) para “{search.trim()}”
-          </span>
-        )}
-      </div>
-
-      {/* Breadcrumb tipo Windows (solo fuera de la búsqueda) */}
-      {!showingSearch && (
-        <div className="flex items-center gap-1 flex-wrap mb-3 text-sm">
+      <FolderExplorer
+        rootLabel="Mensajes Guardados"
+        items={list}
+        getFolder={(r) => r.folder}
+        matchItem={matchItem}
+        registryPaths={registryPaths}
+        itemNoun="mensaje(s)"
+        onCreateFolder={createFolder}
+        onDeleteFolder={deleteFolder}
+        searchPlaceholder="Buscar en todas las carpetas..."
+        toolbar={(currentPath) => (
           <button
-            onClick={() => setPath('')}
-            className={`inline-flex items-center gap-1 px-2 py-1 rounded-lg border cursor-pointer ${
-              !path ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-            }`}
+            onClick={() => openNew(currentPath)}
+            className="px-3 py-1.5 text-sm bg-emerald-600 text-white rounded-lg shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 flex items-center gap-1 border-none cursor-pointer whitespace-nowrap"
           >
-            <HiOutlineFolder className="w-4 h-4" /> Mensajes Guardados
+            <HiOutlinePlus className="w-4 h-4" /> Nuevo mensaje guardado
           </button>
-          {crumbItems.map((c, i) => {
-            const isLast = i === crumbItems.length - 1;
-            return (
-              <span key={c.to} className="inline-flex items-center gap-1">
-                <HiOutlineChevronRight className="w-3.5 h-3.5 text-slate-300" />
-                <button
-                  onClick={() => setPath(c.to)}
-                  className={`px-2 py-1 rounded-lg border cursor-pointer ${
-                    isLast ? 'bg-emerald-50 text-emerald-700 border-emerald-200' : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-50'
-                  }`}
-                >
-                  {c.label}
-                </button>
-              </span>
-            );
-          })}
-        </div>
-      )}
-
-      {/* Carpetas como LISTA (tipo explorador) — solo fuera de la búsqueda */}
-      {!showingSearch && folderRows.length > 0 && (
-        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden mb-4">
-          {folderRows.map((f) => (
-            <button
-              key={f.full}
-              onClick={() => setPath(f.full)}
-              className="w-full flex items-center gap-3 px-4 py-3 border-b border-slate-100 last:border-b-0 hover:bg-emerald-50/50 cursor-pointer text-left bg-transparent border-x-0 border-t-0"
-            >
-              <HiOutlineFolder className={`w-5 h-5 shrink-0 ${f.unfiled ? 'text-slate-400' : 'text-amber-500'}`} />
-              <span className="flex-1 text-sm font-medium text-slate-700 truncate">{f.name}</span>
-              <span className="text-xs text-slate-400 whitespace-nowrap">{f.count} mensaje(s)</span>
-              <HiOutlineChevronRight className="w-4 h-4 text-slate-300 shrink-0" />
-            </button>
-          ))}
-        </div>
-      )}
-
-      {/* Mensajes: solo cuando corresponde mostrarlos (dentro de una carpeta, en
-          "Sin carpeta", en la raíz sin carpetas, o en resultados de búsqueda). */}
-      {(showingSearch || messageRows.length > 0 || folderRows.length === 0) && (
-        <SavedRepliesTable
-          loading={loading}
-          rows={showingSearch ? searchResults : messageRows}
-          showFolderColumn={showingSearch}
-          onEdit={(r) => { setEditing(r); setModalOpen(true); }}
-          onRemove={remove}
-          emptyText={
-            list.length === 0
-              ? 'Aún no hay mensajes guardados. Crea el primero con “Nuevo mensaje guardado”.'
-              : showingSearch
-                ? 'Sin resultados para la búsqueda.'
-                : 'Carpeta vacía. Crea un mensaje aquí con “Nuevo mensaje guardado”.'
-          }
-        />
-      )}
+        )}
+        renderItems={({ rows, showFolderColumn, emptyText }) => (
+          <SavedRepliesTable
+            loading={loading}
+            rows={rows}
+            showFolderColumn={showFolderColumn}
+            onEdit={(r) => { setEditing(r); setNewFolder(''); setModalOpen(true); }}
+            onRemove={remove}
+            emptyText={
+              list.length === 0
+                ? 'Aún no hay mensajes guardados. Crea el primero con “Nuevo mensaje guardado”.'
+                : emptyText
+            }
+          />
+        )}
+      />
 
       {modalOpen && (
         <SavedReplyModal
           reply={editing}
           folders={folderOptions}
-          defaultFolder={editing || path === UNFILED ? '' : path}
+          defaultFolder={editing ? '' : newFolder}
           onClose={() => setModalOpen(false)}
           onSaved={(saved) => {
             setList((prev) => {

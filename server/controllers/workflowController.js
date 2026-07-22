@@ -1,6 +1,7 @@
 const Workflow = require('../models/Workflow');
 const WorkflowEnrollment = require('../models/WorkflowEnrollment');
 const WorkflowFolder = require('../models/WorkflowFolder');
+const { makeFolderCrud, normFolderPath } = require('../utils/folderCrud');
 
 /**
  * Normaliza el payload de un workflow antes de guardarlo. Los selects del
@@ -37,60 +38,13 @@ function sanitizeWorkflowPayload(body = {}) {
   return out;
 }
 
-// ─────────── Carpetas ───────────
-exports.listFolders = async (req, res) => {
-  try {
-    const folders = await WorkflowFolder.find({ clinic: req.clinicId }).sort({ name: 1 }).lean();
-    res.json(folders);
-  } catch (e) {
-    res.status(500).json({ message: 'Error al listar carpetas', error: e.message });
-  }
-};
-
-exports.createFolder = async (req, res) => {
-  try {
-    const name = (req.body.name || '').trim();
-    if (!name) return res.status(400).json({ message: 'El nombre de la carpeta es requerido' });
-    const exists = await WorkflowFolder.findOne({ clinic: req.clinicId, name });
-    if (exists) return res.status(400).json({ message: 'Ya existe una carpeta con ese nombre' });
-    const folder = await WorkflowFolder.create({ clinic: req.clinicId, name, createdBy: req.user._id });
-    res.status(201).json(folder);
-  } catch (e) {
-    res.status(500).json({ message: 'Error al crear carpeta', error: e.message });
-  }
-};
-
-exports.renameFolder = async (req, res) => {
-  try {
-    const name = (req.body.name || '').trim();
-    if (!name) return res.status(400).json({ message: 'Nombre requerido' });
-    const folder = await WorkflowFolder.findOne({ _id: req.params.id, clinic: req.clinicId });
-    if (!folder) return res.status(404).json({ message: 'Carpeta no encontrada' });
-    const oldName = folder.name;
-    folder.name = name;
-    await folder.save();
-    // Mover los workflows de la carpeta al nuevo nombre.
-    await Workflow.updateMany({ clinic: req.clinicId, folder: oldName }, { folder: name });
-    res.json(folder);
-  } catch (e) {
-    res.status(500).json({ message: 'Error al renombrar carpeta', error: e.message });
-  }
-};
-
-exports.deleteFolder = async (req, res) => {
-  try {
-    const folder = await WorkflowFolder.findOne({ _id: req.params.id, clinic: req.clinicId });
-    if (!folder) return res.status(404).json({ message: 'Carpeta no encontrada' });
-    const count = await Workflow.countDocuments({ clinic: req.clinicId, folder: folder.name });
-    if (count > 0) {
-      return res.status(400).json({ message: `La carpeta tiene ${count} automatización(es). Muévelas o elimínalas primero.` });
-    }
-    await folder.deleteOne();
-    res.json({ message: 'Carpeta eliminada' });
-  } catch (e) {
-    res.status(500).json({ message: 'Error al eliminar carpeta', error: e.message });
-  }
-};
+// ─────────── Carpetas (anidadas, tipo Windows) ───────────
+// Rutas con '/' ("Citas/Recordatorios"): carpetas dentro de carpetas. El registro
+// persiste la carpeta aunque esté vacía. Lógica compartida en utils/folderCrud.
+const wfFolders = makeFolderCrud({ FolderModel: WorkflowFolder, ItemModel: Workflow, folderField: 'folder' });
+exports.listFolders = wfFolders.list;
+exports.createFolder = wfFolders.create;
+exports.deleteFolder = wfFolders.remove; // DELETE /folders?path=...
 
 exports.list = async (req, res) => {
   try {
@@ -121,7 +75,7 @@ exports.create = async (req, res) => {
     const payload = sanitizeWorkflowPayload(req.body);
     const wf = await Workflow.create({
       ...payload,
-      folder: (req.body.folder || 'General').trim() || 'General',
+      folder: normFolderPath(req.body.folder) || 'General',
       clinic: req.clinicId,
       createdBy: req.user._id,
     });

@@ -662,6 +662,18 @@ exports.toggleBlocked = async (req, res) => {
 
 const SavedReply = require('../models/SavedReply');
 
+// ─────────── Carpetas de mensajes guardados (anidadas, tipo Windows) ───────────
+// Rutas con '/' ("CITA/Recordatorios"). El registro persiste una carpeta aunque
+// esté vacía, para poder crear subcarpetas antes de meterles mensajes.
+const savedReplyFolders = require('../utils/folderCrud').makeFolderCrud({
+  FolderModel: require('../models/SavedReplyFolder'),
+  ItemModel: SavedReply,
+  folderField: 'folder',
+});
+exports.listSavedReplyFolders = savedReplyFolders.list;
+exports.createSavedReplyFolder = savedReplyFolders.create;
+exports.deleteSavedReplyFolder = savedReplyFolders.remove; // DELETE ...?path=...
+
 exports.listSavedReplies = async (req, res) => {
   try {
     // Más usados primero (el menú del chat muestra el top 4 por defecto).

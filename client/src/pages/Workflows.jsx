@@ -8,11 +8,11 @@ import {
   HiOutlineBolt,
   HiOutlinePencil,
   HiOutlineFolder,
-  HiOutlineFolderPlus,
   HiOutlineArrowUpTray,
 } from 'react-icons/hi2';
 import Modal from '../components/Modal';
 import BulkUploadModal from '../components/BulkUploadModal';
+import FolderExplorer, { normFolderPath } from '../components/FolderExplorer';
 
 const TRIGGERS = [
   { value: 'appointment_created', label: 'Cita agendada' },
@@ -45,7 +45,6 @@ export default function Workflows() {
   const navigate = useNavigate();
   const [list, setList] = useState([]);
   const [folders, setFolders] = useState([]);
-  const [selectedFolder, setSelectedFolder] = useState('__all__');
   const [presets, setPresets] = useState([]);
   const [enrollView, setEnrollView] = useState(null); // workflow cuyas inscripciones se ven
   const [activityView, setActivityView] = useState(null); // workflow cuya actividad de disparador se ve
@@ -67,47 +66,42 @@ export default function Workflows() {
   };
   useEffect(() => { load(); }, []);
 
-  // Nombres de carpeta = carpetas creadas + las usadas por algún workflow.
-  const folderNames = useMemo(() => {
-    const set = new Set(folders.map((f) => f.name));
-    list.forEach((wf) => set.add(wf.folder || 'General'));
-    return [...set].sort();
-  }, [folders, list]);
+  const registryPaths = useMemo(() => folders.map((f) => f.name), [folders]);
 
-  const visibleList = useMemo(
-    () => (selectedFolder === '__all__' ? list : list.filter((wf) => (wf.folder || 'General') === selectedFolder)),
-    [list, selectedFolder]
-  );
-
-  const createFolder = async () => {
-    const name = window.prompt('Nombre de la nueva carpeta:');
-    if (!name || !name.trim()) return;
+  const createFolder = async (full) => {
     try {
-      await api.post('/workflows/folders', { name: name.trim() });
-      toast.success('Carpeta creada');
-      setSelectedFolder(name.trim());
-      load();
+      await api.post('/workflows/folders', { name: full });
+      setFolders((prev) => {
+        const names = new Set(prev.map((f) => f.name));
+        const segs = full.split('/');
+        const add = [];
+        for (let i = 0; i < segs.length; i++) {
+          const p = segs.slice(0, i + 1).join('/');
+          if (!names.has(p)) add.push({ _id: p, name: p });
+        }
+        return [...prev, ...add];
+      });
+      return true;
     } catch (e) {
-      toast.error(e.response?.data?.message || 'Error al crear carpeta');
+      toast.error(e.response?.data?.message || 'No se pudo crear la carpeta');
+      return false;
     }
   };
-  const deleteFolder = async (folder) => {
-    if (!window.confirm(`¿Eliminar la carpeta "${folder.name}"?`)) return;
+  const deleteFolder = async (full) => {
     try {
-      await api.delete(`/workflows/folders/${folder._id}`);
+      await api.delete('/workflows/folders', { params: { path: full } });
+      setFolders((prev) => prev.filter((f) => f.name !== full && !f.name.startsWith(full + '/')));
       toast.success('Carpeta eliminada');
-      if (selectedFolder === folder.name) setSelectedFolder('__all__');
-      load();
+      return true;
     } catch (e) {
-      toast.error(e.response?.data?.message || 'Error al eliminar carpeta');
+      toast.error(e.response?.data?.message || 'No se pudo eliminar la carpeta');
+      return false;
     }
   };
 
-  const openNew = () => {
-    const folder = selectedFolder === '__all__' ? '' : `?folder=${encodeURIComponent(selectedFolder)}`;
-    navigate(`/workflows/new${folder}`);
+  const openNew = (currentPath) => {
+    navigate(`/workflows/new${currentPath ? `?folder=${encodeURIComponent(currentPath)}` : ''}`);
   };
-
   const openEdit = (wf) => navigate(`/workflows/${wf._id}/edit`);
 
   const installPreset = async (key) => {
@@ -140,16 +134,47 @@ export default function Workflows() {
     }
   };
 
+  const matchItem = (wf, q) =>
+    (wf.name || '').toLowerCase().includes(q) ||
+    normFolderPath(wf.folder || 'General').toLowerCase().includes(q) ||
+    triggerSummary(wf).toLowerCase().includes(q);
+
+  const renderCard = (wf) => (
+    <div key={wf._id} className="border border-slate-200 rounded-xl p-4 bg-white flex justify-between gap-4">
+      <div>
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="font-semibold">{wf.name}</span>
+          <span className={`text-xs px-2 py-0.5 rounded-full ${wf.active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{wf.active ? 'Activo' : 'Pausado'}</span>
+          <span className="text-xs text-slate-400 inline-flex items-center gap-1"><HiOutlineFolder className="w-3.5 h-3.5" /> {wf.folder || 'General'}</span>
+          <span className="text-xs text-slate-400">{triggerSummary(wf)} · {((wf.nodes || []).filter((n) => n.type !== 'trigger').length) || wf.steps?.length || 0} paso(s)</span>
+        </div>
+        <div className="text-xs text-slate-400 mt-1">Inscritos: {wf.stats?.enrolled || 0} · Completados: {wf.stats?.completed || 0}</div>
+      </div>
+      <div className="flex items-start gap-1 shrink-0">
+        <button onClick={() => toggleActive(wf)} className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer">{wf.active ? 'Pausar' : 'Activar'}</button>
+        <button onClick={() => setEnrollView(wf)} className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer">Inscritos</button>
+        <button
+          onClick={() => setActivityView(wf)}
+          title="Por cada evento (cita, pago…): si inscribió al paciente o por qué no"
+          className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer"
+        >
+          Actividad
+        </button>
+        <button onClick={() => openEdit(wf)} className="p-2 text-slate-500 hover:text-emerald-600 bg-transparent border-none cursor-pointer"><HiOutlinePencil /></button>
+        <button onClick={() => remove(wf._id)} className="p-2 text-slate-500 hover:text-red-600 bg-transparent border-none cursor-pointer"><HiOutlineTrash /></button>
+      </div>
+    </div>
+  );
+
   return (
     <div className="p-6 max-w-6xl mx-auto">
       <div className="flex items-center justify-between mb-6">
         <div>
           <h1 className="text-2xl font-bold flex items-center gap-2"><HiOutlineBolt className="text-emerald-600" /> Automatizaciones (Workflows)</h1>
-          <p className="text-sm text-slate-500 mt-1">Organízalas en carpetas. Cada automatización se dispara por eventos (citas, tratamientos, ventas, cumpleaños) o por chat (palabra clave, mensaje entrante).</p>
+          <p className="text-sm text-slate-500 mt-1">Organízalas en carpetas y subcarpetas. Cada automatización se dispara por eventos (citas, tratamientos, ventas, cumpleaños) o por chat (palabra clave, mensaje entrante).</p>
         </div>
         <div className="flex gap-2">
           <button onClick={() => setBulkOpen(true)} className="px-3 py-2 border border-slate-200 rounded-lg text-sm flex items-center gap-1 bg-white cursor-pointer"><HiOutlineArrowUpTray /> Carga masiva</button>
-          <button onClick={openNew} className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm flex items-center gap-1 cursor-pointer border-none"><HiOutlinePlus /> Nuevo workflow</button>
         </div>
       </div>
 
@@ -178,74 +203,34 @@ export default function Workflows() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 lg:grid-cols-[240px_1fr] gap-4">
-        {/* Sidebar de carpetas */}
-        <aside className="bg-white rounded-2xl border border-slate-200 shadow-sm p-3 h-max">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-xs font-semibold text-slate-500 uppercase tracking-wider">Carpetas</span>
-            <button onClick={createFolder} title="Nueva carpeta" className="p-1 text-emerald-600 hover:bg-emerald-50 rounded-lg bg-transparent border-none cursor-pointer">
-              <HiOutlineFolderPlus className="w-5 h-5" />
-            </button>
-          </div>
-          <button onClick={() => setSelectedFolder('__all__')} className={`w-full text-left px-3 py-2 rounded-lg text-sm mb-1 cursor-pointer border-none flex items-center justify-between ${selectedFolder === '__all__' ? 'bg-emerald-600 text-white' : 'bg-transparent text-slate-700 hover:bg-slate-50'}`}>
-            <span>Todas</span>
-            <span className="text-xs opacity-70">{list.length}</span>
+      <FolderExplorer
+        rootLabel="Automatizaciones"
+        items={list}
+        getFolder={(wf) => wf.folder || 'General'}
+        matchItem={matchItem}
+        registryPaths={registryPaths}
+        itemNoun="automatización(es)"
+        onCreateFolder={createFolder}
+        onDeleteFolder={deleteFolder}
+        searchPlaceholder="Buscar automatización en todas las carpetas..."
+        toolbar={(currentPath) => (
+          <button
+            onClick={() => openNew(currentPath)}
+            className="px-4 py-2 bg-emerald-600 text-white rounded-lg text-sm flex items-center gap-1 cursor-pointer border-none whitespace-nowrap"
+          >
+            <HiOutlinePlus /> Nuevo workflow
           </button>
-          {folderNames.map((name) => {
-            const folderDoc = folders.find((f) => f.name === name);
-            const count = list.filter((wf) => (wf.folder || 'General') === name).length;
-            return (
-              <div key={name} className="group flex items-center">
-                <button onClick={() => setSelectedFolder(name)} className={`flex-1 text-left px-3 py-2 rounded-lg text-sm mb-1 cursor-pointer border-none flex items-center justify-between gap-2 ${selectedFolder === name ? 'bg-emerald-600 text-white' : 'bg-transparent text-slate-700 hover:bg-slate-50'}`}>
-                  <span className="flex items-center gap-2 truncate"><HiOutlineFolder className="w-4 h-4 shrink-0" /> {name}</span>
-                  <span className="text-xs opacity-70">{count}</span>
-                </button>
-                {folderDoc && (
-                  <button onClick={() => deleteFolder(folderDoc)} title="Eliminar carpeta" className="p-1 text-slate-300 hover:text-red-500 bg-transparent border-none cursor-pointer opacity-0 group-hover:opacity-100">
-                    <HiOutlineTrash className="w-4 h-4" />
-                  </button>
-                )}
-              </div>
-            );
-          })}
-          {folderNames.length === 0 && <p className="text-xs text-slate-400 px-2 py-3">Crea una carpeta para organizar tus automatizaciones.</p>}
-        </aside>
-
-        {/* Lista de automatizaciones (filtrada por carpeta) */}
-        <div className="grid gap-3 content-start">
-          {visibleList.length === 0 && (
+        )}
+        renderItems={({ rows, emptyText }) =>
+          rows.length === 0 ? (
             <div className="text-center py-16 text-slate-400 border border-dashed border-slate-200 rounded-xl">
-              {selectedFolder === '__all__' ? 'Aún no hay automatizaciones.' : 'Sin automatizaciones en esta carpeta.'}
+              {list.length === 0 ? 'Aún no hay automatizaciones.' : emptyText}
             </div>
-          )}
-          {visibleList.map((wf) => (
-            <div key={wf._id} className="border border-slate-200 rounded-xl p-4 bg-white flex justify-between gap-4">
-              <div>
-                <div className="flex items-center gap-2 flex-wrap">
-                  <span className="font-semibold">{wf.name}</span>
-                  <span className={`text-xs px-2 py-0.5 rounded-full ${wf.active ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>{wf.active ? 'Activo' : 'Pausado'}</span>
-                  <span className="text-xs text-slate-400 inline-flex items-center gap-1"><HiOutlineFolder className="w-3.5 h-3.5" /> {wf.folder || 'General'}</span>
-                  <span className="text-xs text-slate-400">{triggerSummary(wf)} · {((wf.nodes || []).filter((n) => n.type !== 'trigger').length) || wf.steps?.length || 0} paso(s)</span>
-                </div>
-                <div className="text-xs text-slate-400 mt-1">Inscritos: {wf.stats?.enrolled || 0} · Completados: {wf.stats?.completed || 0}</div>
-              </div>
-              <div className="flex items-start gap-1 shrink-0">
-                <button onClick={() => toggleActive(wf)} className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer">{wf.active ? 'Pausar' : 'Activar'}</button>
-                <button onClick={() => setEnrollView(wf)} className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer">Inscritos</button>
-                <button
-                  onClick={() => setActivityView(wf)}
-                  title="Por cada evento (cita, pago…): si inscribió al paciente o por qué no"
-                  className="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer"
-                >
-                  Actividad
-                </button>
-                <button onClick={() => openEdit(wf)} className="p-2 text-slate-500 hover:text-emerald-600 bg-transparent border-none cursor-pointer"><HiOutlinePencil /></button>
-                <button onClick={() => remove(wf._id)} className="p-2 text-slate-500 hover:text-red-600 bg-transparent border-none cursor-pointer"><HiOutlineTrash /></button>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
+          ) : (
+            <div className="grid gap-3 content-start">{rows.map(renderCard)}</div>
+          )
+        }
+      />
 
       {enrollView && (
         <EnrollmentsModal workflow={enrollView} onClose={() => setEnrollView(null)} />
