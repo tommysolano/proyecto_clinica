@@ -1608,10 +1608,29 @@ exports.sendMessage = async (req, res) => {
         no_whatsapp_consent: 'Este paciente no tiene consentimiento de WhatsApp.',
         out_of_window: 'La ventana de 24h está cerrada. Usa una plantilla aprobada.',
         invalid_recipient: 'Destinatario inválido.',
+        provider_unavailable: 'No hay un número de WhatsApp conectado para enviar. Revisa la conexión en Configuración del Call Center.',
       };
       return res.status(409).json({
         message: reasons[result.reason] || 'El mensaje fue omitido.',
         code: result.reason,
+      });
+    }
+
+    // El proveedor RECHAZÓ el envío (QR desconectado, error de Meta, etc.): el
+    // mensaje quedó como FALLIDO. NUNCA devolver 201 "enviado" en este caso: el
+    // agente DEBE saber que el mensaje NO llegó (antes se devolvía 201 y el chat
+    // lo mostraba como enviado — peligroso: "dice enviado y nunca llega"). El
+    // mensaje fallido igual queda en el chat (por socket) con su motivo.
+    if (!result.ok) {
+      console.warn(
+        '[sendMessage] envío FALLIDO conv=%s user=%s code=%s msg=%s',
+        String(conv._id), String(req.user?._id), result.errorCode || '', result.errorMessage || ''
+      );
+      return res.status(502).json({
+        message: result.errorMessage || 'No se pudo enviar el mensaje: el proveedor de WhatsApp lo rechazó.',
+        code: result.errorCode || 'send_failed',
+        deliveryStatus: result.deliveryStatus || 'failed',
+        chatMessage: result.message,
       });
     }
 

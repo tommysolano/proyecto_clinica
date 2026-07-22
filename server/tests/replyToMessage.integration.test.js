@@ -50,9 +50,12 @@ test('sendMessage con replyTo guarda el snapshot del mensaje citado y el remiten
   const req = H.mockReq(clinicId, userId, { body: 'Cuesta $80, agenda cuando gustes', replyTo: String(incoming._id) }, { params: { id: String(conv._id) } });
   req.user.name = 'Dra. Ana';
   const out = await H.runController(chat.sendMessage, req);
-  assert.equal(out.statusCode, 201, JSON.stringify(out.payload));
+  // El proveedor stub (token vacío) RECHAZA el envío: la respuesta es 502 "no se
+  // pudo enviar" (ya no un 201 falso "enviado"), pero el mensaje se PERSISTE con
+  // su replyTo y queda visible como fallido. El mensaje viaja en `chatMessage`.
+  assert.equal(out.statusCode, 502, JSON.stringify(out.payload));
 
-  const saved = await Message.findById(out.payload._id);
+  const saved = await Message.findById(out.payload.chatMessage._id);
   assert.ok(saved.replyTo, 'persiste replyTo');
   assert.equal(String(saved.replyTo.message), String(incoming._id));
   assert.equal(saved.replyTo.direction, 'in');
@@ -76,7 +79,8 @@ test('replyTo de otra conversación se ignora (no se cita un mensaje ajeno)', as
   const req = H.mockReq(clinicId, userId, { body: 'hola', replyTo: String(foreignMsg._id) }, { params: { id: String(conv._id) } });
   req.user.name = 'Agente';
   const out = await H.runController(chat.sendMessage, req);
-  assert.equal(out.statusCode, 201, JSON.stringify(out.payload));
-  const saved = await Message.findById(out.payload._id);
+  // Proveedor stub rechaza → 502, pero el mensaje se persiste (sin cita ajena).
+  assert.equal(out.statusCode, 502, JSON.stringify(out.payload));
+  const saved = await Message.findById(out.payload.chatMessage._id);
   assert.ok(!saved.replyTo?.message, 'no se cita un mensaje de otra conversación');
 });
