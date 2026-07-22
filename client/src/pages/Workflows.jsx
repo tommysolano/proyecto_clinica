@@ -362,6 +362,7 @@ const STEP_LABELS = {
   wait_until: 'Espera hasta la cita',
   wait_reply: 'Esperar respuesta',
   condition: 'Condición',
+  split: 'Dividir (bifurcación)',
   goal: 'Objetivo',
   add_tag: 'Añadir etiqueta',
   remove_tag: 'Quitar etiqueta',

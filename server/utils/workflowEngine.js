@@ -617,6 +617,27 @@ function findStartNode(workflow) {
   return nodes.find((n) => !targets.has(n.id)) || nodes[0] || null;
 }
 
+/**
+ * Elige UNA ruta del nodo Dividir (split) según el tipo de distribución.
+ * 'random' (por defecto): reparto aleatorio ponderado por el % de cada ruta (A/B
+ * testing, "como tirar un dado"). PURO y testeable: `rand` inyectable en tests.
+ * Devuelve la ruta elegida ({ id, name, percent }) o null si no hay rutas.
+ */
+function pickSplitRoute(routes, rand = Math.random) {
+  const list = (routes || []).filter((r) => r && r.id);
+  if (!list.length) return null;
+  const weights = list.map((r) => Math.max(0, Number(r.percent) || 0));
+  const total = weights.reduce((a, b) => a + b, 0);
+  // Sin porcentajes válidos (todos 0): reparto uniforme para no dejar el flujo muerto.
+  if (total <= 0) return list[Math.floor(rand() * list.length)] || list[0];
+  let roll = rand() * total;
+  for (let i = 0; i < list.length; i += 1) {
+    roll -= weights[i];
+    if (roll < 0) return list[i];
+  }
+  return list[list.length - 1];
+}
+
 /** Siguiente nodo siguiendo la arista del handle indicado (yes/no/default). */
 function nextNodeId(workflow, nodeId, handle = 'default') {
   const edges = workflow.edges || [];
@@ -703,6 +724,17 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
       const pass = evaluateCondition(data, { patient, conversation: convRef.current, context: ctx });
       pushLog(enrollment, { nodeId: currentId, type, info: pass ? 'Rama Sí' : 'Rama No' });
       currentId = nextNodeId(workflow, currentId, pass ? 'yes' : 'no');
+    } else if (type === 'split') {
+      // Bifurcación: reparte el contacto por una de las rutas (cada ruta es una
+      // salida con su propio sourceHandle = route.id). Si la ruta elegida no está
+      // conectada a nada, el flujo termina para ese contacto (rama vacía).
+      const route = pickSplitRoute(data.routes);
+      pushLog(enrollment, {
+        nodeId: currentId,
+        type,
+        info: route ? `Ruta «${route.name || route.id}»` : 'Sin rutas configuradas',
+      });
+      currentId = route ? nextNodeId(workflow, currentId, route.id) : null;
     } else if (type === 'goal') {
       if (evaluateCondition(data, { patient, conversation: convRef.current, context: ctx })) {
         pushLog(enrollment, { nodeId: currentId, type, info: 'Objetivo cumplido: fin del flujo' });
@@ -1655,6 +1687,7 @@ module.exports = {
   executeGraphEnrollment,
   findStartNode,
   nextNodeId,
+  pickSplitRoute,
   enrollForEvent,
   enrollForChatMessage,
   enrollForOpportunityStage,

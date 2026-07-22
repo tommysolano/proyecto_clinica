@@ -42,6 +42,7 @@ import {
   HiOutlineDocumentDuplicate,
   HiOutlineSquare2Stack,
   HiOutlineClipboard,
+  HiOutlineShare,
 } from 'react-icons/hi2';
 
 // Tipos de paso disponibles en el lienzo (sin 'trigger', que es el nodo inicial).
@@ -54,6 +55,7 @@ export const STEP_DEFS = {
   wait_until: 'Esperar hasta la cita / hora fija',
   wait_reply: 'Esperar respuesta',
   condition: 'Condición (sí/no)',
+  split: 'Dividir (bifurcación)',
   add_tag: 'Añadir etiqueta',
   remove_tag: 'Quitar etiqueta',
   move_stage: 'Etapa de oportunidad',
@@ -73,7 +75,7 @@ export const STEP_DEFS = {
 const STEP_GROUPS = [
   { title: 'Comunicación', icon: HiOutlineChatBubbleLeftRight, types: ['send_message', 'send_media', 'send_template', 'send_email', 'ai_reply', 'request_review'] },
   { title: 'Esperas', icon: HiOutlineClock, types: ['wait', 'wait_until', 'wait_reply'] },
-  { title: 'Lógica', icon: HiOutlineArrowsRightLeft, types: ['condition', 'goal'] },
+  { title: 'Lógica', icon: HiOutlineArrowsRightLeft, types: ['condition', 'split', 'goal'] },
   { title: 'Contacto / CRM', icon: HiOutlineTag, types: ['add_tag', 'remove_tag', 'move_stage', 'assign_agent', 'set_appointment_status'] },
   { title: 'Marketing (Meta / Facebook)', icon: HiOutlineMegaphone, types: ['meta_capi', 'fb_audience_add', 'fb_audience_remove'] },
   { title: 'Otros', icon: HiOutlineCog6Tooth, types: ['create_task', 'webhook'] },
@@ -91,6 +93,7 @@ const STEP_ICONS = {
   wait_until: { icon: HiOutlineCalendarDays, cls: 'bg-indigo-100 text-indigo-600' },
   wait_reply: { icon: HiOutlineChatBubbleLeftRight, cls: 'bg-indigo-100 text-indigo-600' },
   condition: { icon: HiOutlineArrowsRightLeft, cls: 'bg-amber-100 text-amber-600' },
+  split: { icon: HiOutlineShare, cls: 'bg-fuchsia-100 text-fuchsia-600' },
   goal: { icon: HiOutlineFlag, cls: 'bg-rose-100 text-rose-600' },
   add_tag: { icon: HiOutlineTag, cls: 'bg-teal-100 text-teal-600' },
   remove_tag: { icon: HiOutlineTag, cls: 'bg-slate-100 text-slate-500' },
@@ -211,9 +214,18 @@ export const newNodeData = (type) => ({
   assignMode: 'roundrobin', assignUser: null, taskTitle: '', taskDueOffsetMinutes: 1440,
   webhookUrl: '', webhookMethod: 'POST',
   metaEventName: 'Lead', metaValue: 0, metaCurrency: 'USD', audienceId: '', audienceName: '',
+  // Dividir (split): dos rutas 50/50 por defecto (A/B). Cada ruta es una salida
+  // con su propio handle = route.id; el motor reparte por % (Random Split).
+  ...(type === 'split'
+    ? { distribution: 'random', routes: [{ id: 'ra', name: 'Ruta A', percent: 50 }, { id: 'rb', name: 'Ruta B', percent: 50 }] }
+    : {}),
 });
 
+// Genera un id de ruta único y estable dentro de un split (handle de la salida).
+const newRouteId = () => `r${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
+
 const isBranch = (t) => t === 'condition' || t === 'goal';
+const isSplit = (t) => t === 'split';
 
 // Convierte el modelo lineal `steps` a nodos/aristas (migración de workflows viejos).
 export function stepsToGraph(steps = [], triggerLabel = 'Disparador') {
@@ -286,6 +298,7 @@ function summarize(n) {
     case 'add_tag': case 'remove_tag': return d.tag;
     case 'move_stage': return STAGE_LABELS[d.stage] || d.stage;
     case 'condition': case 'goal': return `${d.field} ${d.op} ${d.value || ''}`;
+    case 'split': return `Aleatorio · ${(d.routes || []).map((r) => `${r.name} ${Number(r.percent) || 0}%`).join(' / ')}`;
     case 'assign_agent': return d.assignMode === 'user' ? 'Agente fijo' : 'Round-robin';
     case 'meta_capi': return `Evento ${d.metaEventName || 'Lead'}${Number(d.metaValue) > 0 ? ` · ${d.metaValue} ${d.metaCurrency || 'USD'}` : ''}`;
     case 'fb_audience_add': case 'fb_audience_remove': return d.audienceName || d.audienceId || 'Sin público';
@@ -465,7 +478,51 @@ function BranchNode({ data, selected }) {
   );
 }
 
-const nodeTypes = { trigger: TriggerNode, action: ActionNode, branch: BranchNode };
+// Nodo Dividir (bifurcación): una salida por RUTA, repartidas a lo ancho del
+// nodo. Cada handle usa el id de la ruta; el "+" bajo cada ruta libre permite
+// encadenar su rama. Estilo Daplox/GoHighLevel (Random Split).
+function SplitNode({ data, selected }) {
+  const routes = data.routes || [];
+  const used = new Set(data._usedHandles || []);
+  const n = Math.max(routes.length, 1);
+  return (
+    <div className="relative group">
+      <NodeActions data={data} />
+      <div className={`rounded-xl border bg-fuchsia-50 px-3 py-2.5 text-xs shadow-sm min-w-[230px] ${selected ? 'border-fuchsia-500 ring-2 ring-fuchsia-200' : 'border-fuchsia-300'}`}>
+        <Handle type="target" position={Position.Top} style={{ background: '#94a3b8' }} />
+        <div className="flex items-center gap-2">
+          <StepIcon type="split" />
+          <div className="min-w-0">
+            <div className="font-semibold text-fuchsia-700">{STEP_DEFS.split}</div>
+            <div className="text-[10px] text-fuchsia-600/80 mt-0.5">Aleatorio · {routes.length} rutas</div>
+          </div>
+        </div>
+        <div className="flex mt-2 border-t border-fuchsia-200/70 pt-1.5">
+          {routes.map((r) => (
+            <div key={r.id} className="flex-1 min-w-0 text-center px-0.5">
+              <div className="text-[10px] font-semibold text-fuchsia-700 truncate" title={r.name}>{r.name}</div>
+              <div className="text-[9px] font-bold text-fuchsia-500">{Number(r.percent) || 0}%</div>
+            </div>
+          ))}
+        </div>
+        {routes.map((r, i) => (
+          <Handle
+            key={r.id}
+            id={r.id}
+            type="source"
+            position={Position.Bottom}
+            style={{ left: `${((i + 0.5) / n) * 100}%`, background: '#d946ef' }}
+          />
+        ))}
+      </div>
+      {routes.map((r, i) => (
+        !used.has(r.id) && <AddRow key={r.id} data={data} handle={r.id} left={`${((i + 0.5) / n) * 100}%`} />
+      ))}
+    </div>
+  );
+}
+
+const nodeTypes = { trigger: TriggerNode, action: ActionNode, branch: BranchNode, split: SplitNode };
 
 // ─────────── Arista con "+" para insertar y "×" para desconectar ───────────
 function PlusEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, label, selected }) {
@@ -499,7 +556,7 @@ function PlusEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
 const edgeTypes = { plus: PlusEdge };
 
 function toFlowNode(n) {
-  const rfType = n.type === 'trigger' ? 'trigger' : isBranch(n.type) ? 'branch' : 'action';
+  const rfType = n.type === 'trigger' ? 'trigger' : isSplit(n.type) ? 'split' : isBranch(n.type) ? 'branch' : 'action';
   return {
     id: n.id,
     type: rfType,
@@ -661,6 +718,8 @@ export default function WorkflowGraphEditor({
           _hasDefaultOut: used.has('default'),
           _hasYesOut: used.has('yes'),
           _hasNoOut: used.has('no'),
+          _usedHandles: [...used], // para el nodo Dividir: qué rutas ya están conectadas
+
           onAppend: (handle) => setAdding({ mode: 'append', sourceId: n.id, sourceHandle: handle }),
           onSelectTrigger: (i) => { setSelectedTrigger({ nodeId: n.id, idx: i }); setSelectedId(null); },
           onAddTrigger: () => addTriggerToNode(n.id),
@@ -737,6 +796,15 @@ export default function WorkflowGraphEditor({
     onChange?.({ nodes: modelNodes, edges: edges.filter((e) => e.id !== edgeId) });
   }, [modelNodes, edges, onChange]);
 
+  // Nombre de ruta por (nodo split, handle) para etiquetar sus aristas.
+  const splitRouteName = useMemo(() => {
+    const m = {};
+    modelNodes.forEach((n) => {
+      if (n.type === 'split') (n.data?.routes || []).forEach((r) => { m[`${n.id}:${r.id}`] = r.name; });
+    });
+    return m;
+  }, [modelNodes]);
+
   const flowEdges = useMemo(
     () => edges.map((e) => ({
       ...e,
@@ -747,10 +815,13 @@ export default function WorkflowGraphEditor({
         hasClipboard,
         onPasteInsert: (edgeId) => pasteAt({ mode: 'insert', edgeId }),
       },
-      label: e.sourceHandle === 'yes' ? 'Sí' : e.sourceHandle === 'no' ? 'No' : undefined,
+      label:
+        e.sourceHandle === 'yes' ? 'Sí'
+          : e.sourceHandle === 'no' ? 'No'
+            : splitRouteName[`${e.source}:${e.sourceHandle}`] || undefined,
     })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [edges, deleteEdge, hasClipboard]
+    [edges, deleteEdge, hasClipboard, splitRouteName]
   );
 
   // ── Conexión manual con el mouse (arrastrar desde un punto a otro nodo) ──
@@ -836,7 +907,13 @@ export default function WorkflowGraphEditor({
     if (context.mode === 'append') {
       const src = modelNodes.find((n) => n.id === context.sourceId);
       const base = src?.position || { x: 0, y: 0 };
-      const dx = context.sourceHandle === 'yes' ? -GAP_X / 2 : context.sourceHandle === 'no' ? GAP_X / 2 : 0;
+      let dx = context.sourceHandle === 'yes' ? -GAP_X / 2 : context.sourceHandle === 'no' ? GAP_X / 2 : 0;
+      // Dividir: cada ruta baja bajo su columna (repartidas a la izquierda/derecha).
+      if (src?.type === 'split') {
+        const routes = src.data?.routes || [];
+        const idx = routes.findIndex((r) => r.id === context.sourceHandle);
+        if (idx >= 0 && routes.length > 1) dx = (idx - (routes.length - 1) / 2) * GAP_X;
+      }
       newModelNode.position = { x: base.x + dx, y: base.y + GAP_Y };
       const newEdge = { id: `e-${context.sourceId}-${id}`, source: context.sourceId, target: id, sourceHandle: context.sourceHandle || 'default' };
       onChange?.({ nodes: [...modelNodes, newModelNode], edges: [...edges, newEdge] });
@@ -871,6 +948,17 @@ export default function WorkflowGraphEditor({
   const updateNodeData = (id, patch) => {
     const next = modelNodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...patch } } : n));
     onChange?.({ nodes: next, edges });
+  };
+
+  // Quitar una ruta de un nodo Dividir: además de sacarla de los datos, elimina la
+  // arista que salía de esa ruta (si no, quedaría una conexión huérfana).
+  const removeSplitRoute = (nodeId, routeId) => {
+    const node = modelNodes.find((n) => n.id === nodeId);
+    const routes = (node?.data?.routes || []).filter((r) => r.id !== routeId);
+    if (routes.length < 1) return; // un split necesita al menos una ruta
+    const nextNodes = modelNodes.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, routes } } : n));
+    const nextEdges = edges.filter((e) => !(e.source === nodeId && e.sourceHandle === routeId));
+    onChange?.({ nodes: nextNodes, edges: nextEdges });
   };
 
   const deleteNode = (id) => {
@@ -911,7 +999,10 @@ export default function WorkflowGraphEditor({
       position: { x: (src.position?.x || 0) + GAP_X * 0.5, y: (src.position?.y || 0) + GAP_Y * 0.6 },
       data: JSON.parse(JSON.stringify(src.data || {})),
     };
-    const defEdge = isBranch(src.type)
+    // Las ramas (condición/objetivo) y el Dividir tienen varias salidas: se
+    // duplican SUELTAS (el usuario decide dónde conectar cada rama).
+    const branchLike = isBranch(src.type) || isSplit(src.type);
+    const defEdge = branchLike
       ? null
       : edges.find((e) => e.source === id && (e.sourceHandle || 'default') === 'default');
     if (defEdge) {
@@ -922,7 +1013,7 @@ export default function WorkflowGraphEditor({
       const shift = descendantIdsInclusive(nextEdges, defEdge.target);
       const shifted = modelNodes.map((n) => (shift.has(n.id) ? { ...n, position: { x: n.position?.x || 0, y: (n.position?.y || 0) + GAP_Y } } : n));
       onChange?.({ nodes: [...shifted, clone], edges: nextEdges });
-    } else if (!isBranch(src.type)) {
+    } else if (!branchLike) {
       // El original no tenía continuación: la copia queda enganchada tras él.
       onChange?.({ nodes: [...modelNodes, clone], edges: setEdge(edges, id, newId, 'default') });
     } else {
@@ -1016,7 +1107,7 @@ export default function WorkflowGraphEditor({
             onClose={() => setSelectedId(null)}
             onDelete={() => deleteNode(selectedNode.id)}
           >
-            <NodeConfig node={selectedNode} onChange={(patch) => updateNodeData(selectedNode.id, patch)} templates={templates} agents={agents} clinics={clinics} audiences={audiences} audiencesNotice={audiencesNotice} />
+            <NodeConfig node={selectedNode} onChange={(patch) => updateNodeData(selectedNode.id, patch)} onRemoveRoute={(routeId) => removeSplitRoute(selectedNode.id, routeId)} templates={templates} agents={agents} clinics={clinics} audiences={audiences} audiencesNotice={audiencesNotice} />
           </Drawer>
         )}
 
@@ -1410,10 +1501,73 @@ function NodeAttachment({ d, set }) {
 }
 
 // ─────────── Formulario de configuración por tipo de nodo ───────────
-function NodeConfig({ node, onChange, templates, agents, clinics = [], audiences = [], audiencesNotice = '' }) {
+function NodeConfig({ node, onChange, onRemoveRoute, templates, agents, clinics = [], audiences = [], audiencesNotice = '' }) {
   const d = node.data || {};
   const set = (patch) => onChange(patch);
   const t = node.type;
+
+  if (t === 'split') {
+    const routes = d.routes || [];
+    const total = routes.reduce((a, r) => a + (Number(r.percent) || 0), 0);
+    const patchRoute = (id, patch) => set({ routes: routes.map((r) => (r.id === id ? { ...r, ...patch } : r)) });
+    const addRoute = () => {
+      const n = routes.length + 1;
+      set({ routes: [...routes, { id: newRouteId(), name: `Ruta ${String.fromCharCode(64 + n)}`, percent: 0 }] });
+    };
+    return (
+      <div className="grid gap-3 text-sm">
+        <div>
+          <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Tipo de distribución</label>
+          <select value={d.distribution || 'random'} onChange={(e) => set({ distribution: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+            <option value="random">Reparto aleatorio (Random Split)</option>
+          </select>
+          <p className="text-[11px] text-slate-400 mt-1">
+            Reparte los contactos al azar (como tirar un dado) entre las rutas, según el % de cada
+            una. Sirve para A/B testing: probar qué rama funciona mejor.
+          </p>
+        </div>
+        <div>
+          <div className="flex items-center justify-between mb-1">
+            <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Rutas</label>
+            <span className={`text-[11px] font-bold ${total === 100 ? 'text-emerald-600' : 'text-amber-600'}`}>Suma: {total}%</span>
+          </div>
+          <div className="grid gap-1.5">
+            {routes.map((r) => (
+              <div key={r.id} className="flex items-center gap-1.5">
+                <input
+                  value={r.name}
+                  onChange={(e) => patchRoute(r.id, { name: e.target.value })}
+                  placeholder="Nombre de la ruta"
+                  className="flex-1 min-w-0 border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+                />
+                <NumericInput value={Number(r.percent) || 0} onChange={(e) => patchRoute(r.id, { percent: Number(e.target.value) })} className="w-16 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+                <span className="text-slate-400 text-xs">%</span>
+                <button
+                  type="button"
+                  title="Quitar ruta"
+                  disabled={routes.length <= 1}
+                  onClick={() => onRemoveRoute?.(r.id)}
+                  className="p-1 text-slate-300 hover:text-rose-600 disabled:opacity-30 disabled:hover:text-slate-300 bg-transparent border-none cursor-pointer disabled:cursor-not-allowed"
+                >
+                  <HiOutlineTrash className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+          <button type="button" onClick={addRoute} className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-fuchsia-600 hover:text-fuchsia-700 bg-transparent border-none cursor-pointer">
+            <HiOutlinePlus className="w-4 h-4" /> Añadir ruta
+          </button>
+          {total !== 100 && (
+            <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5 mt-2">
+              Lo ideal es que los porcentajes sumen 100. Si no, el reparto respeta las proporciones
+              que pongas (peso relativo de cada ruta).
+            </p>
+          )}
+          <p className="text-[11px] text-slate-400 mt-1">Conecta cada ruta a su rama con el “+” que aparece debajo del nodo.</p>
+        </div>
+      </div>
+    );
+  }
 
   if (t === 'send_message') return (
     <div className="grid gap-2">
