@@ -46,15 +46,21 @@ const VARIABLE_CATALOG = [
 // Datos de ejemplo para la previsualización (así el usuario ve el mensaje "real").
 const SAMPLE_VARS = Object.fromEntries(VARIABLE_CATALOG.map((v) => [v.key, v.example]));
 
-// Documenta las variables del cuerpo con el ejemplo del catálogo: Meta exige un
-// ejemplo por variable al registrar y con ejemplos realistas aprueba mejor.
-const varsFromBody = (body = '') => {
+// Documenta TODAS las variables de la plantilla (cabecera + cuerpo + pie) con su
+// ejemplo del catálogo: Meta exige un ejemplo por variable al registrar (para la
+// cabecera y el cuerpo) y con ejemplos realistas aprueba mejor.
+const varsFromTemplate = (t = {}) => {
+  const text = `${t.headerText || ''} ${t.body || ''} ${t.footer || ''}`;
   const keys = [];
-  for (const m of String(body).matchAll(/\{\{\s*([\w]+)\s*\}\}/g)) {
+  for (const m of String(text).matchAll(/\{\{\s*([\w]+)\s*\}\}/g)) {
     if (!keys.includes(m[1])) keys.push(m[1]);
   }
   return keys.map((k) => ({ key: k, example: VARIABLE_CATALOG.find((v) => v.key === k)?.example || '' }));
 };
+
+// Nº de variables DISTINTAS en un texto (para el tope de 1 en la cabecera de Meta).
+const countVars = (text = '') =>
+  new Set([...String(text).matchAll(/\{\{\s*([\w]+)\s*\}\}/g)].map((m) => m[1])).size;
 
 const STATUS_BADGE = {
   draft: { label: 'Borrador', cls: 'bg-slate-100 text-slate-600' },
@@ -87,14 +93,39 @@ export default function MessageTemplates() {
   const [submittingId, setSubmittingId] = useState(null);
   const [bulkOpen, setBulkOpen] = useState(false);
   const bodyRef = useRef(null);
+  const headerRef = useRef(null);
+  const footerRef = useRef(null);
+  // Campo donde caerá la próxima variable: el último que el usuario tocó.
+  const focusRef = useRef('body');
+  const [focusField, setFocusField] = useState('body');
 
-  // Inserta {{variable}} en el cuerpo, donde esté el cursor.
+  // Config de cada campo insertable: su ref (para el cursor) y cómo leer/escribir
+  // su texto dentro de `editing`. Así una sola función inserta en cabecera/cuerpo/pie.
+  const FIELD_META = {
+    header: { label: 'Cabecera', el: () => headerRef.current, get: (p) => p.headerText || '', set: (p, v) => ({ ...p, headerText: v }) },
+    body: { label: 'Cuerpo', el: () => bodyRef.current, get: (p) => p.body || '', set: (p, v) => ({ ...p, body: v }) },
+    footer: { label: 'Pie', el: () => footerRef.current, get: (p) => p.footer || '', set: (p, v) => ({ ...p, footer: v }) },
+  };
+
+  const focusOn = (field) => { focusRef.current = field; setFocusField(field); };
+
+  // Inserta {{variable}} en el campo enfocado (cabecera/cuerpo/pie), donde esté el cursor.
   const insertVariable = (key) => {
+    const field = FIELD_META[focusRef.current] ? focusRef.current : 'body';
+    const meta = FIELD_META[field];
     const token = `{{${key}}}`;
-    const el = bodyRef.current;
+    const el = meta.el();
     setEditing((prev) => {
-      const body = prev.body || '';
-      const start = el?.selectionStart ?? body.length;
+      const text = meta.get(prev);
+      // Meta admite SOLO 1 variable en la cabecera: no dejar meter una segunda distinta.
+      if (field === 'header') {
+        const already = new RegExp(`\\{\\{\\s*${key}\\s*\\}\\}`).test(text);
+        if (countVars(text) >= 1 && !already) {
+          toast.error('Meta permite solo 1 variable en la cabecera');
+          return prev;
+        }
+      }
+      const start = el?.selectionStart ?? text.length;
       const end = el?.selectionEnd ?? start;
       if (el) {
         requestAnimationFrame(() => {
@@ -103,7 +134,7 @@ export default function MessageTemplates() {
           el.setSelectionRange(pos, pos);
         });
       }
-      return { ...prev, body: body.slice(0, start) + token + body.slice(end) };
+      return meta.set(prev, text.slice(0, start) + token + text.slice(end));
     });
   };
 
@@ -178,8 +209,8 @@ export default function MessageTemplates() {
       return;
     }
     try {
-      // Documentar las variables con ejemplos del catálogo (Meta los exige).
-      const payload = { ...editing, variables: varsFromBody(editing.body) };
+      // Documentar TODAS las variables (cabecera + cuerpo) con ejemplos (Meta los exige).
+      const payload = { ...editing, variables: varsFromTemplate(editing) };
       if (editing._id) {
         await api.put(`/message-templates/${editing._id}`, payload);
         toast.success('Plantilla actualizada');
@@ -427,12 +458,20 @@ export default function MessageTemplates() {
                     </select>
                   </div>
                   {editing.headerType === 'text' && (
-                    <input
-                      value={editing.headerText || ''}
-                      onChange={(e) => setEditing({ ...editing, headerText: e.target.value })}
-                      placeholder="Título de la cabecera"
-                      className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
-                    />
+                    <>
+                      <input
+                        ref={headerRef}
+                        value={editing.headerText || ''}
+                        onChange={(e) => setEditing({ ...editing, headerText: e.target.value })}
+                        onFocus={() => focusOn('header')}
+                        placeholder="Título de la cabecera (p. ej. Hola {{nombre}})"
+                        className="w-full border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                      />
+                      <p className="text-[10px] text-slate-400 mt-1">
+                        Puedes usar <b>1 variable</b> aquí (es el máximo que permite Meta en la cabecera).
+                        Selecciona este campo y pulsa una variable abajo.
+                      </p>
+                    </>
                   )}
                   {(editing.headerType === 'image' || editing.headerType === 'document') && (
                     <div className="flex items-center gap-3">
@@ -477,17 +516,20 @@ export default function MessageTemplates() {
                   ref={bodyRef}
                   value={editing.body}
                   onChange={(e) => setEditing({ ...editing, body: e.target.value })}
+                  onFocus={() => focusOn('body')}
                   rows={5}
                   className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
                   placeholder="Hola {{nombre}}, te recordamos tu cita de {{servicio}} el {{fecha}} a las {{hora}}."
                 />
               </label>
 
-              {/* Insertador de variables: un clic en vez de escribir {{...}} a mano */}
+              {/* Insertador de variables: un clic en vez de escribir {{...}} a mano.
+                  Cae en el campo que tengas seleccionado (cabecera / cuerpo / pie). */}
               {editing.channel === 'whatsapp' && (
                 <div className="border border-emerald-100 rounded-lg p-3 bg-emerald-50/40 -mt-1">
                   <p className="text-[11px] font-semibold text-slate-500 uppercase mb-1.5">
-                    Insertar variable en el cuerpo
+                    Insertar variable en: <span className="text-emerald-700">{FIELD_META[focusField]?.label || 'Cuerpo'}</span>
+                    <span className="text-slate-400 normal-case font-normal"> (haz clic en cabecera, cuerpo o pie para cambiar dónde)</span>
                   </p>
                   <div className="flex flex-wrap items-center gap-1.5">
                     {VARIABLE_CATALOG.map((v) => (
@@ -513,11 +555,30 @@ export default function MessageTemplates() {
                     (p. ej. recordatorio); en campañas sin cita se usa el ejemplo. Al registrarla en
                     Meta se convierten a {'{{1}}, {{2}}…'} automáticamente.
                   </p>
+                  <p className="text-[11px] text-slate-400 mt-1">
+                    Meta admite variables en la <b>cabecera</b> (1) y el <b>cuerpo</b> (varias), pero{' '}
+                    <b>no en el pie</b>.
+                  </p>
                 </div>
               )}
               <label className="text-sm">
                 <span className="text-slate-600">Pie (opcional)</span>
-                <input value={editing.footer || ''} onChange={(e) => setEditing({ ...editing, footer: e.target.value })} className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                <input
+                  ref={footerRef}
+                  value={editing.footer || ''}
+                  onChange={(e) => setEditing({ ...editing, footer: e.target.value })}
+                  onFocus={() => focusOn('footer')}
+                  className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+                />
+                {editing.channel === 'whatsapp' && countVars(editing.footer) > 0 && (
+                  <p className="text-[11px] text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-1.5 mt-1 flex items-start gap-1">
+                    <HiOutlineExclamationTriangle className="w-4 h-4 shrink-0 mt-px" />
+                    <span>
+                      Meta <b>no permite variables en el pie</b>: una plantilla con variable aquí será
+                      rechazada. Para personalizar, usa la <b>cabecera</b> (1 variable) o el <b>cuerpo</b>.
+                    </span>
+                  </p>
+                )}
               </label>
 
               {/* Botones (solo WhatsApp) */}

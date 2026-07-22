@@ -188,35 +188,45 @@ async function enrichTemplateHeader(clinicId, templateInfo, patient, appointment
     clinic: clinicId,
     channel: 'whatsapp',
     name: templateInfo.name,
-  }).select('headerType headerMediaUrl body variables').lean();
+  }).select('headerType headerText headerMediaUrl body variables').lean();
   if (!tpl) return templateInfo;
 
   const info = { ...templateInfo, components: [...(templateInfo.components || [])] };
 
+  // Resolutor de variables por NOMBRE (paciente + cita real + contacto), perezoso y
+  // COMPARTIDO por el cuerpo y la cabecera de texto (no reconstruirlo dos veces).
+  const exampleOf = new Map((tpl.variables || []).map((v) => [v.key, v.example]));
+  const firstName =
+    String(patient?.firstName || '').trim() ||
+    String(contact?.firstName || '').trim() ||
+    String(contact?.displayName || '').trim().split(' ')[0] ||
+    '';
+  let _known = null;
+  const resolveVar = async (key) => {
+    if (!_known) _known = await buildKnownVariableResolver(patient, appointmentId, contact);
+    let val = _known(key);
+    if (!val) val = exampleOf.get(key) || '';
+    if (!val) val = firstName || '-'; // Meta rechaza parámetros vacíos
+    return String(val);
+  };
+  const varKeysOf = (text) => {
+    const out = [];
+    for (const m of String(text || '').matchAll(/\{\{\s*([^}\s]+)\s*\}\}/g)) {
+      if (!out.includes(m[1])) out.push(m[1]);
+    }
+    return out;
+  };
+
   // ── 1) Parámetros del cuerpo ──
   // Variables distintas en orden de aparición (mismo criterio que el registro).
-  const keys = [];
-  for (const m of String(tpl.body || '').matchAll(/\{\{\s*([^}\s]+)\s*\}\}/g)) {
-    if (!keys.includes(m[1])) keys.push(m[1]);
-  }
+  const keys = varKeysOf(tpl.body);
   const expected = keys.length;
   const bodyIdx = info.components.findIndex((c) => c.type === 'body');
   let params = bodyIdx >= 0 ? [...(info.components[bodyIdx].parameters || [])] : [];
   if (params.length > expected) params = params.slice(0, expected);
   if (params.length < expected) {
-    const exampleOf = new Map((tpl.variables || []).map((v) => [v.key, v.example]));
-    const firstName =
-      String(patient?.firstName || '').trim() ||
-      String(contact?.firstName || '').trim() ||
-      String(contact?.displayName || '').trim().split(' ')[0] ||
-      '';
-    const known = await buildKnownVariableResolver(patient, appointmentId, contact);
     for (let i = params.length; i < expected; i++) {
-      const key = keys[i];
-      let val = known(key);
-      if (!val) val = exampleOf.get(key) || '';
-      if (!val) val = firstName || '-'; // Meta rechaza parámetros vacíos
-      params.push({ type: 'text', text: String(val) });
+      params.push({ type: 'text', text: await resolveVar(keys[i]) });
     }
   }
   if (expected === 0) {
@@ -225,6 +235,22 @@ async function enrichTemplateHeader(clinicId, templateInfo, patient, appointment
     info.components[bodyIdx] = { ...info.components[bodyIdx], parameters: params };
   } else {
     info.components.push({ type: 'body', parameters: params });
+  }
+
+  // ── 1b) Cabecera de TEXTO con variable ──
+  // Si la cabecera es texto y trae {{var}}, Meta EXIGE su parámetro (si falta →
+  // #132000 "number of parameters does not match"). Meta admite 1 variable en la
+  // cabecera; se resuelve por nombre igual que el cuerpo.
+  if (tpl.headerType === 'text' && /\{\{/.test(tpl.headerText || '')) {
+    const alreadyHasHeader = info.components.some((c) => c.type === 'header');
+    if (!alreadyHasHeader) {
+      const hkeys = varKeysOf(tpl.headerText);
+      if (hkeys.length) {
+        const hparams = [];
+        for (const key of hkeys) hparams.push({ type: 'text', text: await resolveVar(key) });
+        info.components.unshift({ type: 'header', parameters: hparams });
+      }
+    }
   }
 
   // ── 2) Cabecera multimedia ──
@@ -897,6 +923,7 @@ module.exports = {
   WHATSAPP_WINDOW_MS,
   buildKnownVariableResolver,
   buildTemplateComponents,
+  enrichTemplateHeader,
   computeWhatsappWindowExpiresAt,
   getWhatsappWindowExpiresAt,
   isOptOutText,

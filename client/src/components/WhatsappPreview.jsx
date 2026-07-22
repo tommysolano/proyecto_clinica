@@ -55,7 +55,7 @@ export default function WhatsappPreview({ template = {}, sampleVars }) {
         </div>
 
         {/* Pie */}
-        {footer && <div className="text-[11px] text-slate-400 mt-1">{footer}</div>}
+        {footer && <div className="text-[11px] text-slate-400 mt-1">{fillVars(footer, sampleVars)}</div>}
 
         <div className="text-[10px] text-slate-400 text-right mt-0.5">{hh} ✓✓</div>
       </div>
