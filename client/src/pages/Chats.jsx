@@ -38,6 +38,9 @@ import {
   HiOutlineUsers,
   HiOutlinePlay,
   HiOutlinePause,
+  HiOutlinePencilSquare,
+  HiOutlineUser,
+  HiOutlineChartBar,
 } from 'react-icons/hi2';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
@@ -189,7 +192,20 @@ function fillSavedVariables(text, conv) {
 
 export default function Chats() {
   const { role, user } = useAuth();
-  const [tab, setTab] = useState('all'); // all | mine | featured | opportunities | board
+  // Navegación en dos niveles (estilo Daplox):
+  //  - `view` (riel izquierdo): 'inbox' (bandeja) | 'opportunities' | 'board'.
+  //  - `scope` (riel izquierdo, solo bandeja): 'mine' = solo los asignados a mí,
+  //    'all' = todos los chats de todos (grupal). Se recuerda entre sesiones.
+  //  - `filter` (barra superior, solo bandeja): 'all' | 'unread' | 'featured'.
+  const [view, setView] = useState('inbox');
+  const [scope, setScope] = useState(() => localStorage.getItem('chats.scope') || 'all');
+  const [filter, setFilter] = useState('all');
+  const [newChatOpen, setNewChatOpen] = useState(false);
+  const selectScope = (s) => {
+    setView('inbox');
+    setScope(s);
+    localStorage.setItem('chats.scope', s);
+  };
   const [conversations, setConversations] = useState([]);
   const [activeId, setActiveId] = useState(null);
   const [messages, setMessages] = useState([]);
@@ -272,17 +288,22 @@ export default function Chats() {
     }
   };
 
-  // Parámetros de /chats según la pestaña activa. La pestaña "Todos" excluye los
-  // destacados: éstos viven solo en su propia pestaña (no anclan la lista general).
-  const paramsForTab = (q = debouncedSearch) => {
+  // Parámetros de /chats según la vista + alcance + filtro activos.
+  //  - Oportunidades: todas las conversaciones marcadas como oportunidad.
+  //  - Bandeja: el alcance (mine/all) se combina con el filtro superior. El
+  //    filtro "Todos" excluye los destacados (viven en su propio filtro), salvo
+  //    al buscar: una búsqueda debe encontrar a cualquiera, esté destacado o no.
+  const paramsForView = (q = debouncedSearch) => {
     const params = {};
-    if (tab === 'mine') params.assigned = 'me';
-    else if (tab === 'featured') params.featured = 'true';
-    else if (tab === 'opportunities') params.opportunity = 'true';
-    else if (tab === 'unread') params.unread = 'true';
-    // "Todos" oculta los destacados (viven en su pestaña), salvo al buscar: una
-    // búsqueda debe poder encontrar a cualquiera, esté destacado o no.
-    else if (tab === 'all' && !q) params.excludeFeatured = 'true';
+    if (view === 'opportunities') {
+      params.opportunity = 'true';
+      if (q) params.q = q;
+      return params;
+    }
+    if (scope === 'mine') params.assigned = 'me';
+    if (filter === 'unread') params.unread = 'true';
+    else if (filter === 'featured') params.featured = 'true';
+    else if (filter === 'all' && !q) params.excludeFeatured = 'true';
     if (q) params.q = q;
     return params;
   };
@@ -337,9 +358,10 @@ export default function Chats() {
   }, []);
 
   useEffect(() => {
-    loadConversations(paramsForTab());
+    if (view === 'board') return; // el tablero de supervisión no usa la lista
+    loadConversations(paramsForView());
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [tab, debouncedSearch]);
+  }, [view, scope, filter, debouncedSearch]);
 
   useEffect(() => {
     if (activeId) loadMessages(activeId);
@@ -356,9 +378,9 @@ export default function Chats() {
       if (payload?.conversationId && String(payload.conversationId) === String(activeId)) {
         loadMessages(activeId);
       }
-      loadConversations(paramsForTab());
+      if (view !== 'board') loadConversations(paramsForView());
     },
-    [activeId, tab, debouncedSearch]
+    [activeId, view, scope, filter, debouncedSearch]
   );
   useSocketEvent(
     'chat:message:status',
@@ -384,9 +406,9 @@ export default function Chats() {
   useSocketEvent(
     'chat:updated',
     () => {
-      loadConversations(paramsForTab());
+      if (view !== 'board') loadConversations(paramsForView());
     },
-    [tab, debouncedSearch]
+    [view, scope, filter, debouncedSearch]
   );
 
   useEffect(() => {
@@ -634,10 +656,10 @@ export default function Chats() {
         isFeatured: !conv.isFeatured,
       });
       // Los destacados no salen en "Todos" y sí en "Destacados": al marcar/quitar,
-      // el chat entra o sale de la pestaña actual (no solo cambia su estrella).
+      // el chat entra o sale del filtro actual (no solo cambia su estrella).
       setConversations((prev) => {
-        if (tab === 'all' && r.data.isFeatured) return prev.filter((c) => c._id !== conv._id);
-        if (tab === 'featured' && !r.data.isFeatured) return prev.filter((c) => c._id !== conv._id);
+        if (view === 'inbox' && filter === 'all' && r.data.isFeatured) return prev.filter((c) => c._id !== conv._id);
+        if (view === 'inbox' && filter === 'featured' && !r.data.isFeatured) return prev.filter((c) => c._id !== conv._id);
         return prev.map((c) => (c._id === conv._id ? r.data : c));
       });
       toast.success(r.data.isFeatured ? 'Marcado como destacado' : 'Destacado removido');
@@ -704,8 +726,8 @@ export default function Chats() {
     try {
       await api.post(`/chats/${conv._id}/read`);
       setConversations((prev) => prev.map((c) => (c._id === conv._id ? { ...c, unreadCount: 0 } : c)));
-      // Si estamos en la pestaña "No leídos", el chat ya no pertenece ahí.
-      if (tab === 'unread') {
+      // Si estamos en el filtro "No leídos", el chat ya no pertenece ahí.
+      if (view === 'inbox' && filter === 'unread') {
         setConversations((prev) => prev.filter((c) => c._id !== conv._id));
       }
       toast.success('Marcado como leído');
@@ -728,6 +750,24 @@ export default function Chats() {
     }
   };
 
+  // Nuevo chat: abre (o crea) la conversación con un número y la deja lista para
+  // escribir. Como no hay ventana de 24h abierta con un contacto nuevo, el
+  // compositor solo permitirá enviar una plantilla aprobada (igual que Daplox).
+  const createNewChat = async ({ phone, contactName }) => {
+    const { data: conv } = await api.post('/chats', { phone, contactName });
+    setNewChatOpen(false);
+    // Nos aseguramos de que el chat recién creado sea visible: bandeja global,
+    // filtro "Todos" (el contacto viene sin no-leídos ni destacado).
+    setView('inbox');
+    setScope('all');
+    localStorage.setItem('chats.scope', 'all');
+    setFilter('all');
+    setConversations((prev) => [conv, ...prev.filter((c) => String(c._id) !== String(conv._id))]);
+    setActiveId(conv._id);
+    toast.success('Chat listo. Para el primer mensaje envía una plantilla aprobada (botón +).');
+    return conv;
+  };
+
   // Reparte la conversación al agente con menos chats abiertos (round-robin).
   // Solo lo usan admin/supervisor (el call center no ve el botón).
   const autoAssignChat = async (conv) => {
@@ -741,39 +781,51 @@ export default function Chats() {
   };
 
   return (
-    <div className="@container h-[calc(100vh-96px)] sm:h-[calc(100vh-112px)] lg:h-[calc(100vh-128px)] flex flex-col">
-      {/* Barra de pestañas + acciones (el título va en la cabecera del sistema) */}
-      <div className="flex items-center justify-between gap-2 mb-2 border-b border-slate-200">
-        <div className="flex gap-1 flex-wrap">
-          {[
-            { id: 'all', label: 'Todos' },
-            { id: 'unread', label: 'No leídos' },
-            { id: 'mine', label: 'Mis chats' },
-            { id: 'featured', label: 'Destacados' },
-            { id: 'opportunities', label: 'Oportunidades' },
-            ...(isAdmin || isSupervisor ? [{ id: 'board', label: 'Supervisión' }] : []),
-          ].map((t) => (
-            <button
-              key={t.id}
-              onClick={() => setTab(t.id)}
-              className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px ${
-                tab === t.id
-                  ? 'border-emerald-600 text-emerald-700'
-                  : 'border-transparent text-slate-500 hover:text-slate-700'
-              }`}
-            >
-              {t.label}
-              {t.id === 'featured' && stats?.featuredCount > 0 && (
-                <span className="ml-1.5 bg-amber-100 text-amber-700 text-[10px] px-1.5 rounded-full">
-                  {stats.featuredCount}
-                </span>
-              )}
-            </button>
-          ))}
-        </div>
-      </div>
+    <div className="h-[calc(100vh-96px)] sm:h-[calc(100vh-112px)] lg:h-[calc(100vh-128px)] flex flex-row gap-2 sm:gap-3">
+      {/* Riel de navegación (estilo Daplox): nuevo chat + alcance + vistas */}
+      <ChatRail
+        view={view}
+        scope={scope}
+        canSupervise={isAdmin || isSupervisor}
+        onNewChat={() => setNewChatOpen(true)}
+        onSelectScope={selectScope}
+        onSelectView={setView}
+      />
 
-      {tab === 'board' ? (
+      {/* Contenido: el @container mide el ancho REAL de la bandeja (sin el riel),
+          para que los breakpoints de columnas sigan siendo correctos. */}
+      <div className="@container flex-1 flex flex-col min-h-0">
+        {/* Filtros de la bandeja (solo aplican a Mi chat / Grupal) */}
+        {view === 'inbox' && (
+          <div className="flex items-center justify-between gap-2 mb-2 border-b border-slate-200">
+            <div className="flex gap-1 flex-wrap">
+              {[
+                { id: 'unread', label: 'No leídos' },
+                { id: 'all', label: 'Todos' },
+                { id: 'featured', label: 'Destacados' },
+              ].map((t) => (
+                <button
+                  key={t.id}
+                  onClick={() => setFilter(t.id)}
+                  className={`px-3 py-2 text-sm font-medium border-b-2 -mb-px ${
+                    filter === t.id
+                      ? 'border-emerald-600 text-emerald-700'
+                      : 'border-transparent text-slate-500 hover:text-slate-700'
+                  }`}
+                >
+                  {t.label}
+                  {t.id === 'featured' && stats?.featuredCount > 0 && (
+                    <span className="ml-1.5 bg-amber-100 text-amber-700 text-[10px] px-1.5 rounded-full">
+                      {stats.featuredCount}
+                    </span>
+                  )}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+
+      {view === 'board' ? (
         <SupervisorBoard
           stats={stats}
           reload={() => loadStats()}
@@ -813,7 +865,7 @@ export default function Chats() {
                 )}
               </button>
               <button
-                onClick={() => loadConversations(paramsForTab())}
+                onClick={() => loadConversations(paramsForView())}
                 className="p-1.5 text-slate-500 hover:bg-slate-50 rounded-lg"
                 title="Recargar"
               >
@@ -1467,6 +1519,8 @@ export default function Chats() {
           )}
         </div>
       )}
+      </div>
+      {/* fin del contenido (@container); los modales viven fuera, en el riel+contenido */}
 
       {opportunityModal && activeConv && (
         <OpportunityModal
@@ -1522,6 +1576,9 @@ export default function Chats() {
             }
           }}
         />
+      )}
+      {newChatOpen && (
+        <NewChatModal onClose={() => setNewChatOpen(false)} onCreate={createNewChat} />
       )}
       {/* Fuera del chat activo a propósito: una llamada entrante debe sonar
           aunque el agente esté mirando otra conversación. */}
@@ -1638,6 +1695,148 @@ function GalleryModal({ images, onClose, onChange, onSend }) {
 }
 
 // ============= Sub-componentes =============
+
+// Riel de navegación vertical (estilo Daplox): a la izquierda de la bandeja.
+//  - "Nuevo" abre el compositor para escribirle a un número nuevo (solo plantillas).
+//  - "Mi chat" / "Grupal" cambian el alcance de la bandeja (asignados a mí / todos).
+//  - "Oportun." y "Superv." son vistas aparte (esta última solo admin/marketing).
+// El buscador NO va aquí a propósito: se queda en la cabecera de la lista.
+function RailItem(props) {
+  // Icon se declara como const (mayúscula) para que se pueda usar como <Icon/>
+  // sin que el linter la marque como no usada (varsIgnorePattern '^[A-Z_]').
+  const { Icon, label, active, onClick } = props;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={label}
+      className={`w-full flex flex-col items-center gap-1 py-2.5 rounded-xl border-none cursor-pointer transition-colors ${
+        active
+          ? 'bg-emerald-50 text-emerald-700'
+          : 'bg-transparent text-slate-500 hover:bg-slate-50 hover:text-slate-700'
+      }`}
+    >
+      <Icon className="w-6 h-6" />
+      <span className="text-[10px] font-medium leading-tight text-center">{label}</span>
+    </button>
+  );
+}
+
+function ChatRail({ view, scope, canSupervise, onNewChat, onSelectScope, onSelectView }) {
+  return (
+    <div className="w-[64px] sm:w-[72px] shrink-0 bg-white border border-slate-200 rounded-xl flex flex-col items-stretch p-1.5 gap-0.5 overflow-y-auto">
+      <button
+        type="button"
+        onClick={onNewChat}
+        title="Nuevo chat"
+        className="w-full flex flex-col items-center gap-1 py-2.5 rounded-xl border-none cursor-pointer bg-emerald-600 text-white hover:bg-emerald-700 shadow-sm shadow-emerald-600/20"
+      >
+        <HiOutlinePencilSquare className="w-6 h-6" />
+        <span className="text-[10px] font-semibold leading-tight text-center">Nuevo</span>
+      </button>
+      <div className="h-px bg-slate-100 mx-2 my-1.5" />
+      <RailItem
+        Icon={HiOutlineUser}
+        label="Mi chat"
+        active={view === 'inbox' && scope === 'mine'}
+        onClick={() => onSelectScope('mine')}
+      />
+      <RailItem
+        Icon={HiOutlineUsers}
+        label="Grupal"
+        active={view === 'inbox' && scope === 'all'}
+        onClick={() => onSelectScope('all')}
+      />
+      <div className="h-px bg-slate-100 mx-2 my-1.5" />
+      <RailItem
+        Icon={HiOutlineTag}
+        label="Oportun."
+        active={view === 'opportunities'}
+        onClick={() => onSelectView('opportunities')}
+      />
+      {canSupervise && (
+        <RailItem
+          Icon={HiOutlineChartBar}
+          label="Superv."
+          active={view === 'board'}
+          onClick={() => onSelectView('board')}
+        />
+      )}
+    </div>
+  );
+}
+
+// Modal "Nuevo chat": abre una conversación con un número que aún no ha escrito.
+// Como no hay ventana de 24h abierta, el primer mensaje debe ser una plantilla
+// aprobada (se recuerda en el compositor). El backend normaliza el número a
+// E.164 (0999… → 593999…) y vincula al paciente si ya existe con ese teléfono.
+function NewChatModal({ onClose, onCreate }) {
+  const [phone, setPhone] = useState('');
+  const [contactName, setContactName] = useState('');
+  const [saving, setSaving] = useState(false);
+  const submit = async () => {
+    if (!phone.trim()) return toast.error('Escribe un número de teléfono');
+    setSaving(true);
+    try {
+      await onCreate({ phone: phone.trim(), contactName: contactName.trim() });
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo crear el chat');
+    } finally {
+      setSaving(false);
+    }
+  };
+  return (
+    <ModalShell title="Nuevo chat" onClose={onClose} size="sm">
+      <div className="space-y-3">
+        <div>
+          <label className="text-xs font-semibold text-slate-600 block mb-1">Teléfono</label>
+          <input
+            autoFocus
+            value={phone}
+            onChange={(e) => setPhone(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
+            placeholder="0999123456 o 593999123456"
+            className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm"
+          />
+          <p className="text-[11px] text-slate-400 mt-1">
+            Número de Ecuador: puedes escribirlo con 0 o con 593. Se detecta al paciente si ya existe.
+          </p>
+        </div>
+        <div>
+          <label className="text-xs font-semibold text-slate-600 block mb-1">Nombre (opcional)</label>
+          <input
+            value={contactName}
+            onChange={(e) => setContactName(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') submit(); }}
+            placeholder="Nombre del contacto"
+            className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm"
+          />
+        </div>
+        <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2">
+          El contacto aún no ha escrito, así que el primer mensaje debe ser una
+          <b> plantilla aprobada</b>. Al abrir el chat, elígela con el botón <b>+</b>.
+        </div>
+        <div className="flex justify-end gap-2 pt-1">
+          <button
+            type="button"
+            onClick={onClose}
+            className="px-3 py-1.5 text-xs border border-slate-200 rounded-lg bg-white cursor-pointer"
+          >
+            Cancelar
+          </button>
+          <button
+            type="button"
+            disabled={saving || !phone.trim()}
+            onClick={submit}
+            className="px-3 py-1.5 text-xs bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 disabled:opacity-50 border-none cursor-pointer"
+          >
+            {saving ? 'Creando…' : 'Abrir chat'}
+          </button>
+        </div>
+      </div>
+    </ModalShell>
+  );
+}
 
 function ConversationRow({ conv, active, onClick, onToggleFeatured, onMarkRead }) {
   const meta = conv.opportunity?.isOpportunity ? stageMeta(conv.opportunity.stage) : null;

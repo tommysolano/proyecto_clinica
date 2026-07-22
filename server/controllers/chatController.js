@@ -162,8 +162,13 @@ exports.markConversationRead = async (req, res) => {
 
 exports.createConversation = async (req, res) => {
   try {
-    const phone = normalizePhone(req.body.phone);
-    if (!phone) return res.status(400).json({ message: 'Teléfono inválido' });
+    // Normalización fuerte a E.164 (0999… → 593999…): un chat nuevo debe quedar
+    // con un número al que de verdad se pueda escribir por WhatsApp.
+    const norm = require('../utils/phoneNormalize').normalizePhone(req.body.phone);
+    if (!norm.ok) {
+      return res.status(400).json({ message: `Teléfono inválido${norm.reason ? `: ${norm.reason}` : ''}` });
+    }
+    const phone = norm.phone;
 
     // Detectar duplicado
     let conv = await Conversation.findOne({ clinic: req.clinicId, phone });
