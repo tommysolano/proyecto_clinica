@@ -29,6 +29,10 @@ const messageSchema = new mongoose.Schema(
     // Cómo llegó/salió el mensaje. 'phone' marca los enviados desde el teléfono
     // (número QR) fuera de nuestro sistema, para distinguirlos en la burbuja.
     origin: { type: String, enum: ['system', 'phone', ''], default: '' },
+    // Número (global) por el que ENTRÓ/salió este mensaje. En los ENTRANTES es el
+    // número al que el contacto escribió: sirve para responder por el mismo número
+    // aunque la conversación no tenga enlazada la cuenta (auto-cura la ruta).
+    whatsappAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'WhatsappAccount', default: null },
     // Identificadores externos (WhatsApp message id)
     externalId: { type: String, index: true },
     // Respuesta interactiva (botón o lista de WhatsApp): id + título del elemento

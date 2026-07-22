@@ -85,12 +85,17 @@ router.delete('/gallery/:id', requireRole(...CALL_CENTER_ROLES), ctrl.deleteGall
 router.get('/opportunities/all', requireRole(...CALL_CENTER_ROLES), ctrl.listAllOpportunities);
 router.post('/opportunities/bulk-whatsapp', requireRole(...CALL_CENTER_ROLES), ctrl.bulkWhatsappOpportunities);
 
+// Números (globales) conectados, para el selector "responder desde" del chat.
+router.get('/accounts', requireRole(...CALL_CENTER_ROLES), ctrl.listChatAccounts);
+
 router.get('/', requireRole(...CALL_CENTER_ROLES), ctrl.listConversations);
 router.post('/', requireRole(...CALL_CENTER_ROLES), ctrl.createConversation);
 router.post('/simulate', requireRole(...CALL_CENTER_ROLES), ctrl.simulateIncoming);
 
 router.get('/:id', requireRole(...CALL_CENTER_ROLES), ctrl.getConversation);
 router.put('/:id', requireRole(...CALL_CENTER_ROLES), ctrl.updateConversation);
+// Fijar por qué número (global) se responde ESTA conversación (normalmente se enlaza solo al recibir).
+router.patch('/:id/account', requireRole(...CALL_CENTER_ROLES), ctrl.setConversationAccount);
 router.post('/:id/assign', requireRole(...CALL_CENTER_ROLES), ctrl.assignConversation);
 router.post('/:id/auto-assign', requireRole(...CALL_CENTER_ROLES), ctrl.autoAssign);
 router.get('/:id/notes', requireRole(...CALL_CENTER_ROLES), ctrl.listInternalNotes);

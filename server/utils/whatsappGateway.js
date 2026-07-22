@@ -32,11 +32,44 @@ async function getAccountById(id) {
   return WhatsappAccount.findById(id);
 }
 
-/** Cuenta por la que responder una conversación: la suya si está activa, o la por defecto. */
+/**
+ * Cuenta por la que responder una conversación. Prioridad:
+ *   1) El número ENLAZADO a la conversación (el que la ingesta guardó al recibir).
+ *   2) Si no hay (conversación vieja, o el enlace se perdió): el número por el que
+ *      ENTRÓ el ÚLTIMO mensaje del contacto — así se responde SIEMPRE por el número
+ *      al que el cliente escribió, no por el número por defecto. Además AUTO-CURA la
+ *      conversación (deja `conv.whatsappAccount` fijado para la próxima vez).
+ *   3) Como último recurso, el número por defecto.
+ * Todo esto es lo que permite responder desde el mismo número al que cada contacto
+ * escribe, teniendo varios números conectados a la vez (QR y/o Cloud API).
+ */
 async function resolveAccountForConversation(conv) {
   if (conv && conv.whatsappAccount) {
     const acc = await getAccountById(conv.whatsappAccount);
     if (acc && acc.enabled) return acc;
+  }
+  if (conv && conv._id) {
+    try {
+      const Message = require('../models/Message');
+      const lastIn = await Message.findOne({
+        conversation: conv._id,
+        direction: 'in',
+        whatsappAccount: { $ne: null },
+      })
+        .sort({ createdAt: -1 })
+        .select('whatsappAccount')
+        .lean();
+      if (lastIn?.whatsappAccount) {
+        const acc = await getAccountById(lastIn.whatsappAccount);
+        if (acc && acc.enabled) {
+          // Auto-cura: enlaza la conversación al número por el que entró el contacto.
+          if (typeof conv.whatsappAccount !== 'undefined') conv.whatsappAccount = acc._id;
+          return acc;
+        }
+      }
+    } catch {
+      /* sin acceso a mensajes: cae al número por defecto */
+    }
   }
   return getDefaultAccount();
 }

@@ -2789,13 +2789,7 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
         <div className="text-xs font-semibold text-slate-500 mb-1">Detalles</div>
         <div className="text-xs text-slate-600 space-y-0.5">
           <div>Canal: <span className="text-slate-800">{conv.channel}</span></div>
-          {conv.whatsappAccount?.label && (
-            <div>
-              Número:{' '}
-              <span className="text-slate-800">{conv.whatsappAccount.label}</span>
-              <span className="text-slate-400"> · {conv.whatsappAccount.connectionType === 'qr' ? 'QR' : 'Cloud API'}</span>
-            </div>
-          )}
+          {conv.channel === 'whatsapp' && <ReplyNumberSelector conv={conv} onUpdated={onUpdated} />}
           <div>Estado: <span className="text-slate-800">{conv.status}</span></div>
           <div>Creado: {(() => {
             const d = new Date(conv.createdAt);
@@ -2828,6 +2822,68 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
           {conv.blocked ? 'Desbloquear contacto' : 'Bloquear contacto'}
         </button>
       </div>
+    </div>
+  );
+}
+
+// Selector "Responder desde": muestra por qué número (global) se responde ESTA
+// conversación y permite cambiarlo. Normalmente el sistema lo enlaza SOLO al recibir
+// (se responde desde el mismo número al que el contacto escribió); esto da control y
+// visibilidad, y arregla conversaciones viejas que caían en el número por defecto.
+function ReplyNumberSelector({ conv, onUpdated }) {
+  const [accounts, setAccounts] = useState([]);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    api.get('/chats/accounts').then((r) => { if (alive) setAccounts(r.data || []); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
+
+  const current = String(conv.whatsappAccount?._id || conv.whatsappAccount || '');
+  const labelOf = (a) => `${a.label}${a.connectionType === 'qr' ? ' · QR' : ' · Cloud API'}`;
+
+  const change = async (id) => {
+    if (!id || id === current) return;
+    setSaving(true);
+    try {
+      const r = await api.patch(`/chats/${conv._id}/account`, { whatsappAccountId: id });
+      onUpdated?.(r.data);
+      toast.success('Esta conversación responderá desde ese número');
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'No se pudo cambiar el número');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  // Con un solo número no hay nada que elegir: se muestra cuál es.
+  if (accounts.length <= 1) {
+    const only = conv.whatsappAccount || accounts[0];
+    if (!only?.label) return null;
+    return (
+      <div>
+        Responder desde: <span className="text-slate-800">{only.label}</span>
+        {only.connectionType && (
+          <span className="text-slate-400"> · {only.connectionType === 'qr' ? 'QR' : 'Cloud API'}</span>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-1 flex-wrap">
+      <span>Responder desde:</span>
+      <select
+        value={current}
+        disabled={saving}
+        onChange={(e) => change(e.target.value)}
+        title="El número por el que sale tu respuesta. Se enlaza solo al número por el que el contacto te escribió; puedes cambiarlo aquí."
+        className="border border-slate-200 rounded-md px-1.5 py-0.5 text-xs bg-white cursor-pointer disabled:opacity-50"
+      >
+        {!current && <option value="">(elige un número)</option>}
+        {accounts.map((a) => <option key={a._id} value={a._id}>{labelOf(a)}</option>)}
+      </select>
     </div>
   );
 }

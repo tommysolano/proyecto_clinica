@@ -1706,6 +1706,55 @@ exports.sendMessage = async (req, res) => {
 };
 
 /**
+ * GET /chats/accounts — números (globales) conectados, para el selector
+ * "responder desde" del chat. Sólo campos no sensibles (sin tokens ni secretos).
+ */
+exports.listChatAccounts = async (req, res) => {
+  try {
+    const WhatsappAccount = require('../models/WhatsappAccount');
+    const accounts = await WhatsappAccount.find({ enabled: true })
+      .select('label connectionType displayPhone connectedPhone status isDefault')
+      .sort({ isDefault: -1, createdAt: 1 })
+      .lean();
+    res.json(accounts);
+  } catch (e) {
+    res.status(500).json({ message: 'Error al listar números', error: e.message });
+  }
+};
+
+/**
+ * PATCH /chats/:id/account — fija por qué número (global) se responde ESTA
+ * conversación. Normalmente el número se enlaza SOLO al recibir (por eso se puede
+ * responder desde el mismo número al que el contacto escribió); esto permite
+ * corregirlo o elegirlo a mano.
+ */
+exports.setConversationAccount = async (req, res) => {
+  try {
+    const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
+    if (!canReplyConversation(req, conv)) {
+      return res.status(403).json({ message: 'No puedes cambiar el número de esta conversación' });
+    }
+    const WhatsappAccount = require('../models/WhatsappAccount');
+    if (!mongoose.isValidObjectId(req.body.whatsappAccountId)) {
+      return res.status(400).json({ message: 'Número no válido' });
+    }
+    const acc = await WhatsappAccount.findOne({ _id: req.body.whatsappAccountId, enabled: true });
+    if (!acc) return res.status(400).json({ message: 'Número no válido o deshabilitado' });
+    conv.whatsappAccount = acc._id;
+    await conv.save();
+    const populated = await Conversation.findById(conv._id)
+      .populate('whatsappAccount', 'label connectionType displayPhone connectedPhone')
+      .lean();
+    populated.effectiveConnectionType = populated.whatsappAccount?.connectionType || 'cloud_api';
+    emitToCallCenter('chat:conversation:updated', { conversationId: conv._id, whatsappAccount: populated.whatsappAccount });
+    res.json(populated);
+  } catch (e) {
+    res.status(500).json({ message: 'Error al cambiar el número', error: e.message });
+  }
+};
+
+/**
  * Envío externo legacy — DESHABILITADO. Toda la mensajería saliente pasa ahora
  * por la puerta única en utils/messaging.js. Se conserva la firma sólo para
  * referencia histórica; no se invoca desde ningún flujo.
@@ -2294,6 +2343,8 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
           },
         }
       : {}),
+    // Número por el que entró (para responder por el mismo, aun sin enlazar la conv).
+    whatsappAccount: account?._id || null,
     deliveryStatus: 'delivered',
   });
   conv.lastMessageAt = msg.createdAt;
