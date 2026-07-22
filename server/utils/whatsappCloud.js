@@ -144,11 +144,12 @@ async function sendMedia(creds, to, url, caption, type = 'image', contextMessage
   // (p.ej. cabecera de plantilla alojada fuera) van por link.
   let buffer = null;
   let byteMime = null;
+  let docFilename = ''; // nombre real del archivo (documentos): lo ve el contacto
   const selfHosted = String(url || '').match(/\/api\/public\/media\/([a-f0-9]{24})/i);
   if (selfHosted) {
     const img = await require('../models/ChatGalleryImage')
       .findById(selfHosted[1])
-      .select('dataUrl mimeType')
+      .select('dataUrl mimeType name')
       .lean()
       .catch(() => null);
     const parsed = img?.dataUrl ? require('./dataUrl').parseDataUrl(img.dataUrl) : null;
@@ -158,6 +159,7 @@ async function sendMedia(creds, to, url, caption, type = 'image', contextMessage
     }
     buffer = Buffer.from(parsed.b64, 'base64');
     byteMime = parsed.mimeType || img.mimeType;
+    docFilename = img?.name || '';
   } else if (/^data:/i.test(String(url || ''))) {
     const parsed = require('./dataUrl').parseDataUrl(url);
     if (!parsed) {
@@ -187,6 +189,9 @@ async function sendMedia(creds, to, url, caption, type = 'image', contextMessage
   // Las notas de voz no llevan pie: Meta rechaza el payload si el audio trae
   // caption (igual que en la app, donde a un audio no se le puede añadir texto).
   if (caption && kind !== 'audio') media.caption = String(caption).slice(0, 1024);
+  // Un documento se muestra con su NOMBRE de archivo (contrato.pdf), no como un
+  // adjunto sin nombre: Meta lo toma del campo `filename` del objeto document.
+  if (kind === 'document' && docFilename) media.filename = String(docFilename).slice(0, 240);
   const res = await postToMeta(creds, {
     messaging_product: 'whatsapp',
     to: phone,

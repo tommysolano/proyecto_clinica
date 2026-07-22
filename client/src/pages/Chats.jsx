@@ -23,6 +23,7 @@ import {
   HiOutlineCheckCircle,
   HiOutlineCheck,
   HiOutlineClock,
+  HiOutlinePaperClip,
   HiOutlineDocumentDuplicate,
   HiOutlineTrash,
   HiOutlineExclamationTriangle,
@@ -489,7 +490,7 @@ export default function Chats() {
         : {
             body,
             ...(attachmentDraft
-              ? { mediaUrl: attachmentDraft.url, mediaType: attachmentDraft.type || 'image' }
+              ? { mediaUrl: attachmentDraft.url, mediaType: attachmentDraft.type || 'image', mediaName: attachmentDraft.name || '', mediaSize: attachmentDraft.size || 0 }
               : {}),
             ...(replyDraft ? { replyTo: replyDraft._id } : {}),
           };
@@ -535,7 +536,7 @@ export default function Chats() {
       ? { templateName: msg.templateName, templateLanguage: 'es' }
       : {
           body: msg.body || '',
-          ...(msg.mediaUrl ? { mediaUrl: msg.mediaUrl, mediaType: msg.mediaType || 'image' } : {}),
+          ...(msg.mediaUrl ? { mediaUrl: msg.mediaUrl, mediaType: msg.mediaType || 'image', mediaName: msg.mediaName || '', mediaSize: msg.mediaSize || 0 } : {}),
         };
     try {
       await api.post(`/chats/${convId}/messages`, payload);
@@ -550,17 +551,38 @@ export default function Chats() {
   // Devuelve true si quedó listo. El uploader es el mismo que usan los mensajes
   // guardados: almacena la media y devuelve una URL pública que ambos gateways
   // (Cloud API y QR) saben resolver.
-  const attachMedia = async ({ dataUrl, name, type }) => {
+  const attachMedia = async ({ dataUrl, name, type, size = 0 }) => {
     setAttachingMedia(true);
     try {
       const { data } = await api.post('/chats/saved-replies/upload', { name, dataUrl });
-      setAttachmentDraft({ url: data.url, type: data.type || type, name: data.name || name });
+      setAttachmentDraft({ url: data.url, type: data.type || type, name: data.name || name, size });
       return true;
     } catch (err) {
       toast.error(err.response?.data?.message || err.message || 'No se pudo adjuntar');
       return false;
     } finally {
       setAttachingMedia(false);
+    }
+  };
+
+  // Adjuntar un ARCHIVO cualquiera (documento PDF/Word/Excel, imagen, video…) desde
+  // el explorador. El tipo lo decide el MIME real; lo que no sea imagen/video/audio
+  // viaja como DOCUMENTO (con su nombre e icono, como en WhatsApp).
+  const filePickRef = useRef(null);
+  const handleFilePick = async (e) => {
+    const file = e.target.files?.[0];
+    e.target.value = ''; // permite volver a elegir el mismo archivo
+    if (!file || attachingMedia) return;
+    const m = (file.type || '').toLowerCase();
+    const type = m.startsWith('image/') ? 'image' : m.startsWith('video/') ? 'video' : m.startsWith('audio/') ? 'audio' : 'document';
+    try {
+      let dataUrl = type === 'image' ? await imageFileToDataUrl(file) : await readFileAsDataUrl(file);
+      // Archivos sin tipo MIME: se marcan como binario para que el backend los
+      // acepte como documento en vez de rechazarlos por "data URL inválido".
+      if (/^data:;base64,/i.test(dataUrl)) dataUrl = dataUrl.replace(/^data:;base64,/i, 'data:application/octet-stream;base64,');
+      await attachMedia({ dataUrl, name: file.name, type, size: file.size });
+    } catch (err) {
+      toast.error(err.message || 'No se pudo adjuntar el archivo');
     }
   };
 
@@ -1433,6 +1455,25 @@ export default function Chats() {
                             className="p-2 bg-white border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 hover:border-emerald-300 cursor-pointer flex items-center"
                           >
                             <HiOutlinePhoto className="w-5 h-5" />
+                          </button>
+                          <input
+                            ref={filePickRef}
+                            type="file"
+                            className="hidden"
+                            onChange={handleFilePick}
+                            accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.txt,.zip,.rar,image/*,video/*,audio/*"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => filePickRef.current?.click()}
+                            disabled={
+                              !!activeConv?.blocked || activeWindowClosed || activeOptedOut ||
+                              !!templateDraft.name || attachingMedia || !!attachmentDraft
+                            }
+                            title="Adjuntar archivo (PDF, Word, Excel, imagen…)"
+                            className="p-2 bg-white border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 hover:border-emerald-300 disabled:opacity-50 cursor-pointer flex items-center"
+                          >
+                            <HiOutlinePaperClip className="w-5 h-5" />
                           </button>
                           <button
                             type="button"

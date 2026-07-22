@@ -67,7 +67,7 @@ test('actualizar: cambia carpeta, quita el adjunto y respeta el atajo manual', a
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-test('upload: acepta imagen y video, rechaza otros tipos y tamaños excesivos', async () => {
+test('upload: acepta imagen, video y DOCUMENTOS; rechaza tamaños excesivos', async () => {
   const { clinicId, userId } = await H.seedClinic();
 
   const img = await H.runController(chat.uploadSavedReplyMedia, H.mockReq(clinicId, userId, { name: 'foto.png', dataUrl: PNG_DATA_URL }));
@@ -80,13 +80,22 @@ test('upload: acepta imagen y video, rechaza otros tipos y tamaños excesivos', 
   assert.equal(vid.statusCode, 201, JSON.stringify(vid.payload));
   assert.equal(vid.payload.type, 'video');
 
-  const pdf = await H.runController(chat.uploadSavedReplyMedia, H.mockReq(clinicId, userId, { dataUrl: 'data:application/pdf;base64,AAAA' }));
-  assert.equal(pdf.statusCode, 400, 'solo imagen/video');
+  // PDF / Word / Excel → se aceptan como DOCUMENTO (antes se rechazaban).
+  const pdf = await H.runController(chat.uploadSavedReplyMedia, H.mockReq(clinicId, userId, { name: 'contrato.pdf', dataUrl: 'data:application/pdf;base64,JVBERi0=' }));
+  assert.equal(pdf.statusCode, 201, JSON.stringify(pdf.payload));
+  assert.equal(pdf.payload.type, 'document');
+  assert.equal(pdf.payload.name, 'contrato.pdf', 'conserva el nombre del archivo para el envío');
 
-  const hugeImg = await H.runController(chat.uploadSavedReplyMedia, H.mockReq(clinicId, userId, { dataUrl: 'data:image/png;base64,' + 'A'.repeat(2_600_000) }));
+  const xlsx = await H.runController(chat.uploadSavedReplyMedia, H.mockReq(clinicId, userId, { name: 'precios.xlsx', dataUrl: 'data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,UEsDBAo=' }));
+  assert.equal(xlsx.statusCode, 201, JSON.stringify(xlsx.payload));
+  assert.equal(xlsx.payload.type, 'document');
+
+  // Imagen por encima del tope (~6MB → 8M chars base64) → rechazada.
+  const hugeImg = await H.runController(chat.uploadSavedReplyMedia, H.mockReq(clinicId, userId, { dataUrl: 'data:image/png;base64,' + 'A'.repeat(8_100_000) }));
   assert.equal(hugeImg.statusCode, 400);
-  const hugeVid = await H.runController(chat.uploadSavedReplyMedia, H.mockReq(clinicId, userId, { dataUrl: 'data:video/mp4;base64,' + 'A'.repeat(14_100_000) }));
-  assert.equal(hugeVid.statusCode, 400);
+  // Documento demasiado grande (tope ~10MB por el límite de BSON de Mongo).
+  const hugeDoc = await H.runController(chat.uploadSavedReplyMedia, H.mockReq(clinicId, userId, { name: 'x.pdf', dataUrl: 'data:application/pdf;base64,' + 'A'.repeat(15_000_000) }));
+  assert.equal(hugeDoc.statusCode, 400);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

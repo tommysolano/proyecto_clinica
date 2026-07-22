@@ -47,6 +47,33 @@ test('Cloud sendMedia: sube los bytes a Meta y envía por media id (no por link)
   }
 });
 
+test('Cloud sendMedia: un DOCUMENTO se sube por id y viaja con su nombre de archivo', async () => {
+  const { clinicId } = await H.seedClinic();
+  const doc = await ChatGalleryImage.create({
+    clinic: clinicId, name: 'contrato-2026.pdf',
+    dataUrl: 'data:application/pdf;base64,JVBERi0xLjQK', mimeType: 'application/pdf',
+  });
+
+  const calls = [];
+  const origFetch = global.fetch;
+  global.fetch = async (url, opts) => {
+    calls.push({ url: String(url), opts });
+    if (String(url).endsWith('/media')) return { ok: true, json: async () => ({ id: 'MEDIA_DOC' }) };
+    return { ok: true, json: async () => ({ messages: [{ id: 'wamid.DOC' }] }) };
+  };
+  try {
+    const r = await wa.sendMedia(creds, '593999999999', `https://x/api/public/media/${doc._id}`, 'aquí el contrato', 'document');
+    assert.equal(r.ok, true, JSON.stringify(r));
+    const body = JSON.parse(calls[1].opts.body);
+    assert.equal(body.type, 'document');
+    assert.equal(body.document.id, 'MEDIA_DOC', 'se envía por id');
+    assert.equal(body.document.filename, 'contrato-2026.pdf', 'el documento lleva su nombre de archivo');
+    assert.equal(body.document.caption, 'aquí el contrato');
+  } finally {
+    global.fetch = origFetch;
+  }
+});
+
 test('Cloud sendMedia: un data URL inline también se SUBE a Meta y se envía por id', async () => {
   await H.seedClinic();
   const calls = [];

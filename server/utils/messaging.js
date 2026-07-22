@@ -541,6 +541,8 @@ async function send({
   subject,
   mediaUrl,
   mediaType,
+  mediaName,
+  mediaSize,
   sentBy,
   sentByName,
   isAutoReply = false,
@@ -647,8 +649,11 @@ async function send({
   let preview = textBody;
   if (!preview) {
     if (templateInfo) preview = await renderTemplateText(templateInfo);
-    else if (mediaUrl) preview = mediaType === 'audio' ? '[nota de voz]' : '[media]';
-    else preview = '';
+    else if (mediaUrl) {
+      preview = mediaType === 'audio' ? '[nota de voz]'
+        : mediaType === 'document' ? `📎 ${mediaName || 'Archivo'}`
+          : '[media]';
+    } else preview = '';
   }
   // La cabecera multimedia de la plantilla se guarda en el mensaje para que la
   // burbuja del chat muestre la plantilla TAL CUAL la recibe el paciente.
@@ -660,6 +665,8 @@ async function send({
     body: preview,
     mediaUrl: mediaUrl || tplMedia?.url || null,
     mediaType: mediaType || tplMedia?.type || null,
+    mediaName: mediaName || '',
+    mediaSize: Number(mediaSize) || 0,
     templateName: templateInfo?.name || '',
     ...(replyTo ? { replyTo } : {}),
     deliveryStatus: 'queued',

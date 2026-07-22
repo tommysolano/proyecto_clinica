@@ -811,7 +811,8 @@ async function sendMedia(account, to, url, caption, type = 'image', quotedMessag
     return { ok: false, errorCode: 'qr_not_connected', error: 'El número QR no está conectado' };
   }
   const isVoice = type === 'audio';
-  const what = isVoice ? 'la nota de voz' : 'la imagen';
+  const isDoc = type === 'document';
+  const what = isVoice ? 'la nota de voz' : isDoc ? 'el archivo' : 'la imagen';
   try {
     const r = await resolveChatId(entry, to);
     if (!r.ok) return r;
@@ -819,13 +820,15 @@ async function sendMedia(account, to, url, caption, type = 'image', quotedMessag
     // directo de Mongo; una URL externa se descarga.
     let mime = isVoice ? 'audio/ogg' : 'image/jpeg';
     let b64 = '';
+    let fileName = ''; // nombre real del documento (lo ve el contacto)
     const m = String(url || '').match(/\/api\/public\/media\/([a-f0-9]{24})/i);
     if (m) {
-      const img = await require('../models/ChatGalleryImage').findById(m[1]).select('dataUrl mimeType').lean();
+      const img = await require('../models/ChatGalleryImage').findById(m[1]).select('dataUrl mimeType name').lean();
       const parsed = require('./dataUrl').parseDataUrl(img?.dataUrl);
-      if (!parsed) return { ok: false, error: `No se pudo leer ${what} guardada` };
+      if (!parsed) return { ok: false, error: `No se pudo leer ${what} guardado` };
       mime = parsed.mimeType || img.mimeType || mime;
       b64 = parsed.b64;
+      fileName = img?.name || '';
     } else {
       const resp = await withTimeout(fetch(url), 20000, `Tiempo agotado descargando ${what}`);
       if (!resp.ok) return { ok: false, error: `No se pudo descargar ${what} (HTTP ${resp.status})` };
@@ -833,14 +836,20 @@ async function sendMedia(account, to, url, caption, type = 'image', quotedMessag
       b64 = Buffer.from(await resp.arrayBuffer()).toString('base64');
     }
     if (!b64) {
-      return { ok: false, errorCode: 'qr_media_unreadable', error: `No se pudo leer ${what} para enviarla.` };
+      return { ok: false, errorCode: 'qr_media_unreadable', error: `No se pudo leer ${what} para enviarlo.` };
     }
     const { MessageMedia } = require('whatsapp-web.js');
-    const media = new MessageMedia(mime, b64, isVoice ? 'nota-de-voz.ogg' : 'imagen');
-    // Una nota de voz no admite pie (en WhatsApp tampoco se le puede añadir texto).
+    // El 3er argumento es el NOMBRE del archivo: un documento debe llevar el suyo
+    // real (contrato.pdf) para que el contacto lo vea y lo pueda abrir.
+    const mediaName = isVoice ? 'nota-de-voz.ogg' : isDoc ? (fileName || 'archivo') : 'imagen';
+    const media = new MessageMedia(mime, b64, mediaName);
+    // Nota de voz: sin pie. Documento: se fuerza a enviarse como ADJUNTO (no como
+    // una vista previa) con `sendMediaAsDocument`, así llega con su nombre e icono.
     const opts = isVoice
       ? { sendAudioAsVoice: true }
-      : { caption: String(caption || '').slice(0, 1024) };
+      : isDoc
+        ? { sendMediaAsDocument: true, caption: String(caption || '').slice(0, 1024) }
+        : { caption: String(caption || '').slice(0, 1024) };
     console.log('[wa-qr sendMedia] enviando kind=%s mime=%s bytes≈%d chat=%s', type, mime, Math.floor(b64.length * 0.75), r.chatId);
     // La cita se resuelve igual que en texto: getMessageById + reply() para que
     // el contacto vea el adjunto como respuesta al mensaje citado.

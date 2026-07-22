@@ -64,6 +64,16 @@ function canReplyConversation(req, conv) {
 exports.canMutateConversation = canMutateConversation;
 exports.canReplyConversation = canReplyConversation;
 
+// Clasifica un tipo MIME en la categoría de media de WhatsApp. Todo lo que no sea
+// imagen/video/audio (PDF, Word, Excel, ZIP…) se envía como DOCUMENTO adjunto.
+function mediaKindOf(mimeType) {
+  const m = String(mimeType || '').toLowerCase();
+  if (m.startsWith('image/')) return 'image';
+  if (m.startsWith('video/')) return 'video';
+  if (m.startsWith('audio/')) return 'audio';
+  return 'document';
+}
+
 // Motivos por los que un envío se OMITE (no llegó a intentarse con el proveedor).
 // Compartido por todas las rutas de envío para dar el mismo mensaje al agente.
 const SEND_SKIP_REASONS = {
@@ -756,16 +766,21 @@ exports.uploadSavedReplyMedia = async (req, res) => {
     const { name } = req.body;
     let { dataUrl } = req.body;
     const parsed = require('../utils/dataUrl').parseDataUrl(dataUrl);
-    if (!parsed || !['image', 'video', 'audio'].includes(parsed.kind)) {
-      return res.status(400).json({ message: 'Archivo inválido: solo imágenes, videos o audios' });
+    if (!parsed) {
+      return res.status(400).json({ message: 'Archivo inválido' });
     }
-    const kind = parsed.kind;
+    // Clasifica por el tipo MIME: imagen/video/audio se envían como tales; TODO lo
+    // demás (PDF, Word, Excel, ZIP…) se manda como DOCUMENTO adjunto.
+    const kind = mediaKindOf(parsed.mimeType);
     // Topes en CARACTERES de data URL base64 (~1.33× el tamaño real del archivo).
-    const MAX_LEN = { video: 43_000_000, audio: 21_000_000, image: 8_000_000 }; // ~32MB, ~15MB, ~6MB
+    // El documento se guarda como base64 en Mongo (tope real de BSON 16MB), por eso
+    // ~10MB de archivo — cubre PDFs/Office normales sin reventar el documento.
+    const MAX_LEN = { video: 43_000_000, audio: 21_000_000, image: 8_000_000, document: 14_000_000 };
     const TOO_BIG = {
       video: 'Video demasiado grande (máx ~32MB)',
       audio: 'Audio demasiado grande (máx ~15MB)',
       image: 'Imagen demasiado grande (máx ~6MB)',
+      document: 'Archivo demasiado grande (máx ~10MB)',
     };
     if (dataUrl.length > MAX_LEN[kind]) {
       return res.status(400).json({ message: TOO_BIG[kind] });
@@ -1626,6 +1641,8 @@ exports.sendMessage = async (req, res) => {
       body: outboundBody,
       mediaUrl: req.body.mediaUrl || null,
       mediaType: req.body.mediaType || null,
+      mediaName: req.body.mediaName || '',
+      mediaSize: req.body.mediaSize || 0,
       replyTo,
       template: templateName
         ? {
