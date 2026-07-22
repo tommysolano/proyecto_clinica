@@ -44,6 +44,20 @@ test('pickSplitRoute respeta pesos relativos aunque no sumen 100', () => {
   assert.equal(engine.pickSplitRoute(routes, () => 0.3).id, 'rb'); // 0.3*40=12 > 10
 });
 
+test('pickClinicRoute: elige la ruta de la sucursal del contacto; sin match → fallback', () => {
+  const routes = [
+    { id: 'rq', clinicId: 'AAA', name: 'Quito' },
+    { id: 'rg', clinicId: 'BBB', name: 'Guayaquil' },
+    { id: 'ro', isFallback: true, name: 'Otras' },
+  ];
+  assert.equal(engine.pickClinicRoute(routes, 'AAA').id, 'rq');
+  assert.equal(engine.pickClinicRoute(routes, 'BBB').id, 'rg');
+  assert.equal(engine.pickClinicRoute(routes, 'ZZZ').id, 'ro'); // sin coincidencia → fallback
+  assert.equal(engine.pickClinicRoute(routes, '').id, 'ro');
+  // Sin fallback y sin match → null (termina la rama).
+  assert.equal(engine.pickClinicRoute(routes.slice(0, 2), 'ZZZ'), null);
+});
+
 // ─────────── Integración: el motor sigue la ruta elegida ───────────
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
@@ -100,4 +114,53 @@ test('split 0/100 lleva SIEMPRE por la ruta B', async () => {
   const fresh = await Patient.findById(patient._id).lean();
   assert.ok((fresh.tags || []).includes('rama-B'), 'tomó la ruta B (100%)');
   assert.ok(!(fresh.tags || []).includes('rama-A'));
+});
+
+test('split POR SUCURSAL enruta por la sede del contacto (context.eventClinicId)', async () => {
+  const main = await Clinic.create({ name: 'Call Center' });
+  const quito = await Clinic.create({ name: 'Quito' });
+  const gye = await Clinic.create({ name: 'Guayaquil' });
+  const patient = await Patient.create({ clinic: main._id, firstName: 'Sara', lastName: 'P', phone: '0991112223' });
+
+  const wf = await Workflow.create({
+    clinic: main._id, name: 'Split sucursal', active: true,
+    triggers: [{ type: 'contact_import', audience: 'all' }],
+    nodes: [
+      { id: 'trigger', type: 'trigger', position: { x: 0, y: 0 }, data: { triggers: [{ type: 'contact_import' }] } },
+      { id: 'sp', type: 'split', position: { x: 0, y: 130 }, data: { distribution: 'clinic', routes: [
+        { id: 'rq', clinicId: String(quito._id), name: 'Quito' },
+        { id: 'rg', clinicId: String(gye._id), name: 'Guayaquil' },
+        { id: 'ro', isFallback: true, name: 'Otras' },
+      ] } },
+      { id: 'tq', type: 'add_tag', position: { x: -120, y: 260 }, data: { tag: 'sede-quito' } },
+      { id: 'tg', type: 'add_tag', position: { x: 0, y: 260 }, data: { tag: 'sede-gye' } },
+      { id: 'to', type: 'add_tag', position: { x: 120, y: 260 }, data: { tag: 'sede-otra' } },
+    ],
+    edges: [
+      { id: 'e0', source: 'trigger', target: 'sp', sourceHandle: 'default' },
+      { id: 'eq', source: 'sp', target: 'tq', sourceHandle: 'rq' },
+      { id: 'eg', source: 'sp', target: 'tg', sourceHandle: 'rg' },
+      { id: 'eo', source: 'sp', target: 'to', sourceHandle: 'ro' },
+    ],
+  });
+
+  const run = async (eventClinicId) => {
+    const e = await WorkflowEnrollment.create({
+      clinic: main._id, workflow: wf._id, patient: patient._id,
+      currentNodeId: 'sp', startNodeId: 'trigger', status: 'active',
+      context: { eventClinicId: String(eventClinicId) },
+    });
+    await engine.executeEnrollment(await WorkflowEnrollment.findById(e._id));
+  };
+
+  await run(gye._id); // el contacto está en Guayaquil → rama gye
+  let tags = (await Patient.findById(patient._id).lean()).tags || [];
+  assert.ok(tags.includes('sede-gye'), 'enrutó a la sede de Guayaquil');
+  assert.ok(!tags.includes('sede-quito'));
+
+  // Una sucursal que NO es ruta → fallback "Otras".
+  const otra = await Clinic.create({ name: 'Cuenca' });
+  await run(otra._id);
+  tags = (await Patient.findById(patient._id).lean()).tags || [];
+  assert.ok(tags.includes('sede-otra'), 'sin ruta para la sede → fallback');
 });

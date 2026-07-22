@@ -20,6 +20,27 @@ const { emitToCallCenter } = require('../realtime');
 const BATCH_SIZE = 500;      // filas por bulkWrite
 const MAX_STORED_ERRORS = 200; // muestra para la UI: 47k errores no caben en un doc
 
+// ── Resolución de la SUCURSAL por fila (columna "Sucursal" del Excel) ──
+// El Excel trae el NOMBRE de la sede; se resuelve a la sucursal real para ubicar
+// ahí al contacto y poder bifurcar el flujo por sucursal (nodo Dividir / condición
+// clinic). Si el nombre no coincide con ninguna sede, el contacto cae en la sucursal
+// por defecto del asistente (batch.clinic).
+const normClinicName = (s) => String(s || '').trim().toLowerCase().replace(/\s+/g, ' ');
+
+async function buildClinicResolver() {
+  const Clinic = require('../models/Clinic');
+  const clinics = await Clinic.find({}).select('_id name').lean();
+  const byName = new Map();
+  for (const c of clinics) {
+    const key = normClinicName(c.name);
+    if (key && !byName.has(key)) byName.set(key, String(c._id));
+  }
+  return (name) => {
+    const key = normClinicName(name);
+    return key ? byName.get(key) || null : null;
+  };
+}
+
 // ── Inscripción en workflows (disparador 'contact_import') ──
 // Los arranques se ESCALONAN: uno cada SLOT_SECONDS dentro de la franja horaria.
 // Inscribir 47k contactos con arranque inmediato dispararía el primer paso de
@@ -53,8 +74,10 @@ function nextEnrollSlot(prev) {
  *   nextRunAt sea futuro, y dispararía todos los arranques de golpe.
  * - Dedup por (workflow, contacto) vivo: reimportar el archivo no duplica.
  */
-async function enrollInWorkflows(batch, phones, onProgress) {
-  if (!batch.workflows?.length || !phones.length) return 0;
+async function enrollInWorkflows(batch, phoneClinics, onProgress) {
+  // phoneClinics: Map teléfono → sucursal del contacto (para bifurcar por sede).
+  const entries = phoneClinics instanceof Map ? [...phoneClinics] : (phoneClinics || []).map((p) => [p, String(batch.clinic)]);
+  if (!batch.workflows?.length || !entries.length) return 0;
   const Workflow = require('../models/Workflow');
   const WorkflowEnrollment = require('../models/WorkflowEnrollment');
   const { matchingFlows } = require('./workflowEngine');
@@ -65,59 +88,75 @@ async function enrollInWorkflows(batch, phones, onProgress) {
     .filter((x) => x.flows.length);
   if (!perWorkflow.length) return 0;
 
+  // Agrupar los teléfonos por SUCURSAL del contacto: así se consulta con el índice
+  // (clinic, phone) en vez de barrer por teléfono suelto, y el contacto se encuentra
+  // aunque su Excel lo mandara a otra sede.
+  const byClinic = new Map();
+  for (const [phone, cid] of entries) {
+    const k = String(cid || batch.clinic);
+    if (!byClinic.has(k)) byClinic.set(k, []);
+    byClinic.get(k).push(phone);
+  }
+
   let slot = new Date();
   let enrolled = 0;
   const createdByWf = new Map(); // workflowId → inscripciones creadas de verdad
 
-  for (let i = 0; i < phones.length; i += BATCH_SIZE) {
-    const chunk = phones.slice(i, i + BATCH_SIZE);
-    // eslint-disable-next-line no-await-in-loop
-    const contacts = await Contact.find({
-      clinic: batch.clinic,
-      phone: { $in: chunk },
-      active: true,
-      'marketing.whatsappOptIn': true,
-      'marketing.optOutAt': null,
-    })
-      .select('_id phone patient')
-      .lean();
+  for (const [clinicId, clinicPhones] of byClinic) {
+    for (let i = 0; i < clinicPhones.length; i += BATCH_SIZE) {
+      const chunk = clinicPhones.slice(i, i + BATCH_SIZE);
+      // eslint-disable-next-line no-await-in-loop
+      const contacts = await Contact.find({
+        clinic: clinicId,
+        phone: { $in: chunk },
+        active: true,
+        'marketing.whatsappOptIn': true,
+        'marketing.optOutAt': null,
+      })
+        .select('_id phone patient clinic')
+        .lean();
 
-    for (const contact of contacts) {
-      for (const { wf, flows } of perWorkflow) {
-        for (const flow of flows) {
-          // eslint-disable-next-line no-await-in-loop
-          const dup = await WorkflowEnrollment.findOne({
-            workflow: wf._id,
-            'context.contactId': String(contact._id),
-            startNodeId: flow.startNodeId,
-            status: { $in: ['active', 'waiting'] },
-          }).select('_id');
-          if (dup) continue;
+      for (const contact of contacts) {
+        for (const { wf, flows } of perWorkflow) {
+          for (const flow of flows) {
+            // eslint-disable-next-line no-await-in-loop
+            const dup = await WorkflowEnrollment.findOne({
+              workflow: wf._id,
+              'context.contactId': String(contact._id),
+              startNodeId: flow.startNodeId,
+              status: { $in: ['active', 'waiting'] },
+            }).select('_id');
+            if (dup) continue;
 
-          slot = nextEnrollSlot(slot);
-          // eslint-disable-next-line no-await-in-loop
-          await WorkflowEnrollment.create({
-            clinic: batch.clinic,
-            workflow: wf._id,
-            patient: contact.patient || null,
-            stepIndex: 0,
-            currentNodeId: flow.currentNodeId,
-            startNodeId: flow.startNodeId,
-            status: 'waiting',
-            nextRunAt: slot,
-            context: {
-              phone: contact.phone,
-              contactId: String(contact._id),
-              importBatchId: String(batch._id),
-              eventType: 'contact_import',
-            },
-          });
-          enrolled++;
-          createdByWf.set(String(wf._id), (createdByWf.get(String(wf._id)) || 0) + 1);
+            slot = nextEnrollSlot(slot);
+            // eslint-disable-next-line no-await-in-loop
+            await WorkflowEnrollment.create({
+              // La inscripción corre en la clínica del asistente (contexto del call
+              // center / mensajería, sin cambios). La SUCURSAL del contacto viaja en
+              // el contexto para bifurcar el flujo (nodo Dividir por sucursal / condición).
+              clinic: batch.clinic,
+              workflow: wf._id,
+              patient: contact.patient || null,
+              stepIndex: 0,
+              currentNodeId: flow.currentNodeId,
+              startNodeId: flow.startNodeId,
+              status: 'waiting',
+              nextRunAt: slot,
+              context: {
+                phone: contact.phone,
+                contactId: String(contact._id),
+                importBatchId: String(batch._id),
+                eventType: 'contact_import',
+                eventClinicId: String(contact.clinic || batch.clinic),
+              },
+            });
+            enrolled++;
+            createdByWf.set(String(wf._id), (createdByWf.get(String(wf._id)) || 0) + 1);
+          }
         }
       }
+      if (onProgress) onProgress(enrolled);
     }
-    if (onProgress) onProgress(enrolled);
   }
 
   for (const [wfId, n] of createdByWf) {
@@ -131,7 +170,11 @@ async function enrollInWorkflows(batch, phones, onProgress) {
 function buildOps(rows, batch) {
   const ops = [];
   for (const c of rows) {
-    const { phone, tags = [], customFields = {}, ...fields } = c;
+    // `clinic` (sucursal resuelta de la fila) va SOLO en el filtro y $setOnInsert,
+    // nunca en $set: no se re-ubica a un contacto ya existente ni choca con
+    // $setOnInsert. `clinicName` (crudo) tampoco se escribe como campo.
+    const { phone, tags = [], customFields = {}, clinic: rowClinic, clinicName, ...fields } = c;
+    const clinicId = rowClinic || batch.clinic;
 
     // Los campos del archivo que sí venían. Los ausentes NO se tocan: así
     // reimportar un archivo sin la columna Nombre no borra los nombres.
@@ -152,7 +195,7 @@ function buildOps(rows, batch) {
       // existe (puede haberse dado de baja, y una reimportación no puede
       // resucitarle el opt-in en silencio).
       $setOnInsert: {
-        clinic: batch.clinic,
+        clinic: clinicId,
         phone,
         source: 'import',
         importBatch: batch._id,
@@ -164,7 +207,7 @@ function buildOps(rows, batch) {
 
     ops.push({
       updateOne: {
-        filter: { clinic: batch.clinic, phone },
+        filter: { clinic: clinicId, phone },
         update,
         upsert: batch.mode !== 'update', // 'update' = solo tocar los que ya existen
       },
@@ -181,15 +224,24 @@ async function flushBatch(rows, batch) {
   if (!rows.length) return { created: 0, updated: 0, skipped: 0 };
 
   // Modo 'create' (solo crear): hay que saber cuáles ya existen para no tocarlos.
+  // Con sucursal por fila, "existir" es por (sucursal, teléfono): se agrupa por
+  // sede para consultar con el índice (clinic, phone) y no barrer por teléfono suelto.
   let toWrite = rows;
   let skipped = 0;
   if (batch.mode === 'create') {
-    const phones = rows.map((r) => r.phone);
-    const existing = await Contact.find({ clinic: batch.clinic, phone: { $in: phones } })
-      .select('phone')
-      .lean();
-    const known = new Set(existing.map((e) => e.phone));
-    toWrite = rows.filter((r) => !known.has(r.phone));
+    const byClinic = new Map();
+    for (const r of rows) {
+      const cid = String(r.clinic || batch.clinic);
+      if (!byClinic.has(cid)) byClinic.set(cid, []);
+      byClinic.get(cid).push(r.phone);
+    }
+    const known = new Set();
+    for (const [cid, phones] of byClinic) {
+      // eslint-disable-next-line no-await-in-loop
+      const existing = await Contact.find({ clinic: cid, phone: { $in: phones } }).select('phone').lean();
+      existing.forEach((e) => known.add(`${cid}:${e.phone}`));
+    }
+    toWrite = rows.filter((r) => !known.has(`${String(r.clinic || batch.clinic)}:${r.phone}`));
     skipped = rows.length - toWrite.length;
   }
   if (!toWrite.length) return { created: 0, updated: 0, skipped };
@@ -252,9 +304,14 @@ async function runImport(batchId) {
       progress();
     };
 
-    // Dentro del archivo puede venir el mismo número dos veces; sin esto, la
-    // misma tanda haría dos upserts al mismo contacto y Mongo se queja.
-    const seen = new Set();
+    // Resolutor de sucursal por NOMBRE (columna "Sucursal" del Excel), cargado una
+    // sola vez. Si la fila no trae sucursal (o no coincide), cae en batch.clinic.
+    const resolveClinic = await buildClinicResolver();
+
+    // Dentro del archivo puede venir el mismo número dos veces; sin esto, la misma
+    // tanda haría dos upserts al mismo contacto y Mongo se queja. Se guarda además
+    // la sucursal resuelta de cada teléfono para inscribir por sede al terminar.
+    const seen = new Map(); // phone → clinicId (sucursal del contacto)
 
     await iterateRows(batch.filePath, batch.fileName, async (row, rowNo) => {
       batch.processedRows++;
@@ -266,11 +323,18 @@ async function runImport(batchId) {
         }
         return;
       }
+      // Resolver la sucursal de la fila (nombre → sede real). Sin coincidencia, se
+      // deja sin `clinic` y buildOps usa la sucursal por defecto del asistente.
+      if (mapped.contact.clinicName) {
+        const resolved = resolveClinic(mapped.contact.clinicName);
+        if (resolved) mapped.contact.clinic = resolved;
+        delete mapped.contact.clinicName;
+      }
       if (seen.has(mapped.contact.phone)) {
         batch.skipped++; // repetido dentro del propio archivo
         return;
       }
-      seen.add(mapped.contact.phone);
+      seen.set(mapped.contact.phone, String(mapped.contact.clinic || batch.clinic));
       pending.push(mapped.contact);
       if (pending.length >= BATCH_SIZE) await flush();
     });
@@ -287,10 +351,10 @@ async function runImport(batchId) {
     // contactos ya están dentro y el error queda en el lote sin marcarlo fallido.
     if (batch.workflows?.length) {
       try {
-        // `seen` = todos los teléfonos válidos del archivo (creados Y actualizados;
+        // `seen` = Map teléfono→sucursal de todo el archivo (creados Y actualizados;
         // los actualizados no llevan importBatch, así que no hay otra forma de
         // encontrarlos). El filtro de consentimiento se aplica dentro.
-        batch.enrolled = await enrollInWorkflows(batch, [...seen], (n) => {
+        batch.enrolled = await enrollInWorkflows(batch, seen, (n) => {
           batch.enrolled = n;
           progress();
         });

@@ -8,6 +8,8 @@
  *
  * Campos destino admitidos en `mapping[].field`:
  *   phone · email · firstName · lastName · displayName · notes
+ *   clinic          → nombre de la SUCURSAL del contacto (el runner lo resuelve a
+ *                     la sede y ubica el contacto ahí; permite bifurcar el flujo)
  *   tags            → separa por coma/;/| y las suma a las del lote
  *   custom:<clave>  → va a Contact.customFields
  *   ''              → columna ignorada
@@ -23,6 +25,7 @@ const FIELD_OPTIONS = [
   { value: 'lastName', label: 'Apellidos' },
   { value: 'displayName', label: 'Nombre completo / como aparece en WhatsApp' },
   { value: 'email', label: 'Correo electrónico' },
+  { value: 'clinic', label: 'Sucursal (nombre de la sede)' },
   { value: 'tags', label: 'Etiquetas (separadas por coma)' },
   { value: 'notes', label: 'Notas' },
 ];
@@ -62,6 +65,10 @@ function mapRow(row, mapping) {
     if (!value && m.skipEmpty !== false) continue;
 
     if (m.field === 'phone') { rawPhone = value; continue; }
+    // La sucursal viene como NOMBRE en el Excel; el runner la resuelve a la sede
+    // real (no es un campo directo del contacto). Se guarda aparte para no escribir
+    // "clinicName" como si fuera un campo del documento.
+    if (m.field === 'clinic') { if (value) out.clinicName = value; continue; }
     if (m.field === 'tags') { out.tags.push(...splitTags(value)); continue; }
     if (m.field.startsWith('custom:')) {
       const key = m.field.slice('custom:'.length).trim();
@@ -104,6 +111,7 @@ const GUESSES = [
   [/^(first ?name|nombres?|given)/i, 'firstName'],
   [/^(last ?name|apellidos?|surname)/i, 'lastName'],
   [/^(e-?mail|correo)/i, 'email'],
+  [/^(sucursal|sede|clinica|clínica|branch|location|local)/i, 'clinic'],
   [/^(tags?|etiquetas?)/i, 'tags'],
   [/^(notes?|notas|observaciones)/i, 'notes'],
 ];

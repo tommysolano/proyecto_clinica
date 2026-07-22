@@ -26,8 +26,15 @@ function extOf(fileName) {
   return path.extname(String(fileName || '')).toLowerCase();
 }
 
+// .tsv/.txt = valores separados por TAB (Google Sheets: Archivo → Descargar →
+// Valores separados por tabuladores). Se leen por la misma vía que el CSV.
+const TEXT_EXTS = ['.csv', '.tsv', '.txt'];
+function isTextFile(fileName) {
+  return TEXT_EXTS.includes(extOf(fileName));
+}
+
 function isSupported(fileName) {
-  return ['.csv', '.xlsx', '.xls'].includes(extOf(fileName));
+  return [...TEXT_EXTS, '.xlsx', '.xls'].includes(extOf(fileName));
 }
 
 // Una celda de ExcelJS puede ser fórmula, rich text o hipervínculo.
@@ -60,21 +67,50 @@ function normalizeHeaders(raw) {
   });
 }
 
-// ─────────────────────────── CSV ───────────────────────────
+// ─────────────────────────── CSV / TSV ───────────────────────────
 
-function csvStream(filePath) {
+/**
+ * Detecta el separador leyendo la PRIMERA línea del archivo. Google Sheets y Excel
+ * exportan CSV con distintos separadores según el idioma del equipo: en configuraciones
+ * donde la coma es el separador decimal, el CSV sale con PUNTO Y COMA, y forzar la
+ * coma metía todas las columnas en una sola → "el archivo no tiene cabeceras". Se
+ * elige el separador (coma, punto y coma o tab) más frecuente en la cabecera.
+ */
+function detectDelimiter(filePath, fileName) {
+  // .tsv/.txt son por definición separados por tabulador.
+  if (['.tsv', '.txt'].includes(extOf(fileName))) return '\t';
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    const buf = Buffer.alloc(8192);
+    const n = fs.readSync(fd, buf, 0, buf.length, 0);
+    fs.closeSync(fd);
+    let text = buf.slice(0, n).toString('utf8');
+    if (text.charCodeAt(0) === 0xfeff) text = text.slice(1); // BOM
+    const firstLine = text.split(/\r?\n/)[0] || '';
+    const counts = { ',': 0, ';': 0, '\t': 0 };
+    for (const ch of firstLine) if (ch in counts) counts[ch] += 1;
+    const best = Object.entries(counts).sort((a, b) => b[1] - a[1])[0];
+    return best && best[1] > 0 ? best[0] : ',';
+  } catch {
+    return ',';
+  }
+}
+
+function csvStream(filePath, fileName = filePath) {
   return fs.createReadStream(filePath).pipe(
     parse({
-      bom: true,               // Excel exporta CSV con BOM y ensucia la 1ª cabecera
+      bom: true,               // Excel/Sheets exportan CSV con BOM y ensucia la 1ª cabecera
+      delimiter: detectDelimiter(filePath, fileName), // coma, ';' o tab según el archivo
       relax_column_count: true, // filas con columnas de más/menos no rompen la importación
+      relax_quotes: true,       // comillas sueltas de Sheets/Excel no abortan la lectura
       skip_empty_lines: true,
       trim: true,
     })
   );
 }
 
-async function csvHeaders(filePath) {
-  const stream = csvStream(filePath);
+async function csvHeaders(filePath, fileName = filePath) {
+  const stream = csvStream(filePath, fileName);
   let headers = null;
   const samples = new Map();
   let rows = 0;
@@ -99,8 +135,8 @@ async function csvHeaders(filePath) {
   return { headers: headers || [], samples };
 }
 
-async function csvIterate(filePath, onRow) {
-  const stream = csvStream(filePath);
+async function csvIterate(filePath, onRow, fileName = filePath) {
+  const stream = csvStream(filePath, fileName);
   let headers = null;
   let rowNo = 1;
   for await (const record of stream) {
@@ -182,15 +218,80 @@ async function xlsxIterate(filePath, onRow) {
   }
 }
 
+// ── Respaldo XLSX en carga completa ──
+// El lector en STREAMING de exceljs es delicado con .xlsx generados por otras
+// herramientas (Google Sheets, LibreOffice, exportadores) que omiten estructuras
+// que exceljs espera (dimension, sharedStrings) → "Cannot read properties of
+// undefined". Cargar el libro entero es más tolerante. Solo se usa como RESPALDO
+// (y con archivos de tamaño razonable) para no comerse la RAM con 47k filas.
+const FULL_LOAD_MAX_BYTES = 12 * 1024 * 1024;
+
+async function xlsxWorkbookRows(filePath) {
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.readFile(filePath);
+  const ws = wb.worksheets[0];
+  if (!ws) return { headers: [], rows: [] };
+  const rows = [];
+  let headers = null;
+  ws.eachRow((row) => {
+    const values = row.values.slice(1);
+    if (!headers) { headers = normalizeHeaders(values); return; }
+    const obj = {};
+    headers.forEach((h, i) => { obj[h] = cellText(values[i]); });
+    rows.push(obj);
+  });
+  return { headers: headers || [], rows };
+}
+
+function tooBigToFullLoad(filePath) {
+  try { return fs.statSync(filePath).size > FULL_LOAD_MAX_BYTES; } catch { return false; }
+}
+
+async function xlsxHeadersSafe(filePath) {
+  try {
+    return await xlsxHeaders(filePath);
+  } catch (err) {
+    if (tooBigToFullLoad(filePath)) throw err; // demasiado grande: no cargar entero
+    const { headers, rows } = await xlsxWorkbookRows(filePath);
+    const samples = new Map();
+    headers.forEach((h) => samples.set(h, []));
+    rows.slice(0, SAMPLE_SIZE).forEach((r) => headers.forEach((h) => { if (r[h]) samples.get(h).push(r[h]); }));
+    return { headers, samples };
+  }
+}
+
+async function xlsxIterateSafe(filePath, onRow) {
+  try {
+    return await xlsxIterate(filePath, onRow);
+  } catch (err) {
+    if (tooBigToFullLoad(filePath)) throw err;
+    const { rows } = await xlsxWorkbookRows(filePath);
+    let rowNo = 1;
+    for (const obj of rows) { rowNo += 1; await onRow(obj, rowNo); }
+    return undefined;
+  }
+}
+
 // ─────────────────────────── API ───────────────────────────
 
 /**
  * Cabeceras + hasta 3 valores de muestra por columna (paso "Asignar").
  * @returns {{ headers: string[], samples: Array<{ column, values: string[] }> }}
  */
+function guardUnsupported(fileName) {
+  const ext = extOf(fileName);
+  // Google Sheets ofrece .ods, que exceljs NO sabe leer: un mensaje claro evita el
+  // error críptico y le dice al usuario cómo exportar bien desde Google Sheets.
+  if (ext === '.ods') {
+    throw new Error('Los archivos .ods (OpenDocument) no se admiten. En Google Sheets usa Archivo → Descargar → Microsoft Excel (.xlsx) o Valores separados por comas (.csv).');
+  }
+}
+
 async function readHeaders(filePath, fileName = filePath) {
-  const fn = extOf(fileName) === '.csv' ? csvHeaders : xlsxHeaders;
-  const { headers, samples } = await fn(filePath);
+  guardUnsupported(fileName);
+  const { headers, samples } = isTextFile(fileName)
+    ? await csvHeaders(filePath, fileName)
+    : await xlsxHeadersSafe(filePath);
   return {
     headers,
     samples: headers.map((h) => ({ column: h, values: samples.get(h) || [] })),
@@ -203,8 +304,10 @@ async function readHeaders(filePath, fileName = filePath) {
  * usuario coincidan con lo que tiene abierto en Excel.
  */
 async function iterateRows(filePath, fileName, onRow) {
-  const fn = extOf(fileName) === '.csv' ? csvIterate : xlsxIterate;
-  return fn(filePath, onRow);
+  guardUnsupported(fileName);
+  return isTextFile(fileName)
+    ? csvIterate(filePath, onRow, fileName)
+    : xlsxIterateSafe(filePath, onRow);
 }
 
 module.exports = { readHeaders, iterateRows, isSupported, extOf, SAMPLE_SIZE };

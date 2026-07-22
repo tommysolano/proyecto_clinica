@@ -80,6 +80,68 @@ test('importa un CSV: crea contactos con el teléfono normalizado y las etiqueta
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+test('columna Sucursal: cada contacto cae en SU sede; nombre no reconocido → sede por defecto', async () => {
+  const { clinicId, userId } = await H.seedClinic(); // sede por defecto del asistente
+  const Clinic = require('../models/Clinic');
+  const quito = await Clinic.create({ name: 'Quito' });
+  const gye = await Clinic.create({ name: 'Guayaquil' });
+
+  const file = writeCsv([
+    ['Nombre', 'Celular', 'Sucursal'],
+    ['Ana', '0999111222', 'Quito'],
+    ['Beto', '0988776655', 'GUAYAQUIL'], // mayúsculas: se resuelve igual
+    ['Caro', '0977665544', 'Cuenca'], // no existe → cae en la sede por defecto
+  ]);
+  const batch = await ContactImport.create({
+    clinic: clinicId, fileName: 'c.csv', filePath: file, status: 'pending', createdBy: userId,
+    mapping: [
+      { column: 'Nombre', field: 'displayName' },
+      { column: 'Celular', field: 'phone' },
+      { column: 'Sucursal', field: 'clinic' },
+    ],
+  });
+  await runImport(batch._id);
+
+  const done = await ContactImport.findById(batch._id);
+  assert.equal(done.status, 'done', done.errorMessage);
+  assert.equal(done.created, 3);
+
+  assert.equal(String((await Contact.findOne({ phone: '593999111222' })).clinic), String(quito._id));
+  assert.equal(String((await Contact.findOne({ phone: '593988776655' })).clinic), String(gye._id));
+  // Sucursal desconocida → sede por defecto del asistente (batch.clinic).
+  assert.equal(String((await Contact.findOne({ phone: '593977665544' })).clinic), String(clinicId));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+test('columna Sucursal + workflow: la inscripción lleva la sede en context.eventClinicId', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const Clinic = require('../models/Clinic');
+  const gye = await Clinic.create({ name: 'Guayaquil' });
+  const wf = await makeImportWorkflow(clinicId);
+
+  const file = writeCsv([
+    ['Nombre', 'Celular', 'Sucursal'],
+    ['Ana', '0999111222', 'Guayaquil'],
+  ]);
+  const batch = await ContactImport.create({
+    clinic: clinicId, fileName: 'c.csv', filePath: file, status: 'pending', createdBy: userId,
+    workflows: [wf._id],
+    mapping: [
+      { column: 'Nombre', field: 'displayName' },
+      { column: 'Celular', field: 'phone' },
+      { column: 'Sucursal', field: 'clinic' },
+    ],
+  });
+  await runImport(batch._id);
+
+  const e = await WorkflowEnrollment.findOne({ workflow: wf._id });
+  assert.ok(e, 'se inscribió el contacto importado');
+  assert.equal(String(e.context.eventClinicId), String(gye._id), 'la sede del Excel viaja en el contexto para bifurcar');
+  // La inscripción corre en la clínica del asistente (contexto de mensajería), sin cambios.
+  assert.equal(String(e.clinic), String(clinicId));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 test('reimportar el mismo archivo NO duplica: actualiza por teléfono', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const f1 = writeCsv([['Nombre', 'Celular', 'Correo', 'Ciudad'], ['Ligia', '0999111222', 'v1@x.com', 'Guayaquil']]);

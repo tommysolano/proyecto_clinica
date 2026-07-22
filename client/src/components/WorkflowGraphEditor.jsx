@@ -298,7 +298,9 @@ function summarize(n) {
     case 'add_tag': case 'remove_tag': return d.tag;
     case 'move_stage': return STAGE_LABELS[d.stage] || d.stage;
     case 'condition': case 'goal': return `${d.field} ${d.op} ${d.value || ''}`;
-    case 'split': return `Aleatorio · ${(d.routes || []).map((r) => `${r.name} ${Number(r.percent) || 0}%`).join(' / ')}`;
+    case 'split': return d.distribution === 'clinic'
+      ? `Por sucursal · ${(d.routes || []).map((r) => (r.isFallback ? 'Otras' : r.name || '—')).join(' / ')}`
+      : `Aleatorio · ${(d.routes || []).map((r) => `${r.name} ${Number(r.percent) || 0}%`).join(' / ')}`;
     case 'assign_agent': return d.assignMode === 'user' ? 'Agente fijo' : 'Round-robin';
     case 'meta_capi': return `Evento ${d.metaEventName || 'Lead'}${Number(d.metaValue) > 0 ? ` · ${d.metaValue} ${d.metaCurrency || 'USD'}` : ''}`;
     case 'fb_audience_add': case 'fb_audience_remove': return d.audienceName || d.audienceId || 'Sin público';
@@ -483,6 +485,7 @@ function BranchNode({ data, selected }) {
 // encadenar su rama. Estilo Daplox/GoHighLevel (Random Split).
 function SplitNode({ data, selected }) {
   const routes = data.routes || [];
+  const byClinic = data.distribution === 'clinic';
   const used = new Set(data._usedHandles || []);
   const n = Math.max(routes.length, 1);
   return (
@@ -494,14 +497,14 @@ function SplitNode({ data, selected }) {
           <StepIcon type="split" />
           <div className="min-w-0">
             <div className="font-semibold text-fuchsia-700">{STEP_DEFS.split}</div>
-            <div className="text-[10px] text-fuchsia-600/80 mt-0.5">Aleatorio · {routes.length} rutas</div>
+            <div className="text-[10px] text-fuchsia-600/80 mt-0.5">{byClinic ? 'Por sucursal' : 'Aleatorio'} · {routes.length} rutas</div>
           </div>
         </div>
         <div className="flex mt-2 border-t border-fuchsia-200/70 pt-1.5">
           {routes.map((r) => (
             <div key={r.id} className="flex-1 min-w-0 text-center px-0.5">
-              <div className="text-[10px] font-semibold text-fuchsia-700 truncate" title={r.name}>{r.name}</div>
-              <div className="text-[9px] font-bold text-fuchsia-500">{Number(r.percent) || 0}%</div>
+              <div className="text-[10px] font-semibold text-fuchsia-700 truncate" title={r.name}>{r.isFallback ? 'Otras' : r.name || '—'}</div>
+              <div className="text-[9px] font-bold text-fuchsia-500">{byClinic ? (r.isFallback ? 'sin match' : 'sede') : `${Number(r.percent) || 0}%`}</div>
             </div>
           ))}
         </div>
@@ -1508,40 +1511,79 @@ function NodeConfig({ node, onChange, onRemoveRoute, templates, agents, clinics 
 
   if (t === 'split') {
     const routes = d.routes || [];
+    const byClinic = d.distribution === 'clinic';
     const total = routes.reduce((a, r) => a + (Number(r.percent) || 0), 0);
     const patchRoute = (id, patch) => set({ routes: routes.map((r) => (r.id === id ? { ...r, ...patch } : r)) });
     const addRoute = () => {
-      const n = routes.length + 1;
-      set({ routes: [...routes, { id: newRouteId(), name: `Ruta ${String.fromCharCode(64 + n)}`, percent: 0 }] });
+      if (byClinic) {
+        set({ routes: [...routes, { id: newRouteId(), name: 'Sucursal', clinicId: '' }] });
+      } else {
+        const n = routes.length + 1;
+        set({ routes: [...routes, { id: newRouteId(), name: `Ruta ${String.fromCharCode(64 + n)}`, percent: 0 }] });
+      }
     };
+    // Al cambiar de modo NO se tocan los ids de ruta (las conexiones se conservan):
+    // solo se reinterpretan (% en aleatorio, sucursal en "por sucursal").
+    const changeDistribution = (dist) => {
+      if (dist === 'clinic') {
+        const converted = routes.map((r, i) => ({ id: r.id, name: r.name, clinicId: r.clinicId || '', isFallback: !!r.isFallback || (routes.length > 1 && i === routes.length - 1) }));
+        set({ distribution: 'clinic', routes: converted });
+      } else {
+        set({ distribution: 'random', routes: routes.map((r) => ({ id: r.id, name: r.name, percent: Number(r.percent) || 0 })) });
+      }
+    };
+    const hasFallback = routes.some((r) => r.isFallback);
     return (
       <div className="grid gap-3 text-sm">
         <div>
           <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Tipo de distribución</label>
-          <select value={d.distribution || 'random'} onChange={(e) => set({ distribution: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+          <select value={d.distribution || 'random'} onChange={(e) => changeDistribution(e.target.value)} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
             <option value="random">Reparto aleatorio (Random Split)</option>
+            <option value="clinic">Por sucursal del contacto</option>
           </select>
           <p className="text-[11px] text-slate-400 mt-1">
-            Reparte los contactos al azar (como tirar un dado) entre las rutas, según el % de cada
-            una. Sirve para A/B testing: probar qué rama funciona mejor.
+            {byClinic
+              ? 'Cada contacto sigue la ruta de SU sucursal (la que traía el Excel importado, o la sede del evento). Añade una ruta por sucursal y una ruta “Otras” para los que no coincidan.'
+              : 'Reparte los contactos al azar (como tirar un dado) entre las rutas, según el % de cada una. Sirve para A/B testing.'}
           </p>
         </div>
         <div>
           <div className="flex items-center justify-between mb-1">
             <label className="text-[11px] font-semibold text-slate-500 uppercase tracking-wide">Rutas</label>
-            <span className={`text-[11px] font-bold ${total === 100 ? 'text-emerald-600' : 'text-amber-600'}`}>Suma: {total}%</span>
+            {!byClinic && <span className={`text-[11px] font-bold ${total === 100 ? 'text-emerald-600' : 'text-amber-600'}`}>Suma: {total}%</span>}
           </div>
           <div className="grid gap-1.5">
             {routes.map((r) => (
               <div key={r.id} className="flex items-center gap-1.5">
-                <input
-                  value={r.name}
-                  onChange={(e) => patchRoute(r.id, { name: e.target.value })}
-                  placeholder="Nombre de la ruta"
-                  className="flex-1 min-w-0 border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
-                />
-                <NumericInput value={Number(r.percent) || 0} onChange={(e) => patchRoute(r.id, { percent: Number(e.target.value) })} className="w-16 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-                <span className="text-slate-400 text-xs">%</span>
+                {byClinic ? (
+                  <select
+                    value={r.isFallback ? '__fallback__' : (r.clinicId || '')}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      if (v === '__fallback__') patchRoute(r.id, { isFallback: true, clinicId: '', name: 'Otras sucursales' });
+                      else {
+                        const cl = clinics.find((c) => String(c._id) === v);
+                        patchRoute(r.id, { isFallback: false, clinicId: v, name: cl?.nombreComercial || cl?.name || 'Sucursal' });
+                      }
+                    }}
+                    className="flex-1 min-w-0 border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+                  >
+                    <option value="">Elige sucursal…</option>
+                    {clinics.map((c) => <option key={c._id} value={c._id}>{c.nombreComercial || c.name}</option>)}
+                    <option value="__fallback__">Otras sucursales / sin coincidencia</option>
+                  </select>
+                ) : (
+                  <>
+                    <input
+                      value={r.name}
+                      onChange={(e) => patchRoute(r.id, { name: e.target.value })}
+                      placeholder="Nombre de la ruta"
+                      className="flex-1 min-w-0 border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+                    />
+                    <NumericInput value={Number(r.percent) || 0} onChange={(e) => patchRoute(r.id, { percent: Number(e.target.value) })} className="w-16 border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
+                    <span className="text-slate-400 text-xs">%</span>
+                  </>
+                )}
                 <button
                   type="button"
                   title="Quitar ruta"
@@ -1557,7 +1599,13 @@ function NodeConfig({ node, onChange, onRemoveRoute, templates, agents, clinics 
           <button type="button" onClick={addRoute} className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-fuchsia-600 hover:text-fuchsia-700 bg-transparent border-none cursor-pointer">
             <HiOutlinePlus className="w-4 h-4" /> Añadir ruta
           </button>
-          {total !== 100 && (
+          {byClinic && !hasFallback && (
+            <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5 mt-2">
+              Sin una ruta “Otras sucursales”, los contactos cuya sucursal no coincida con ninguna ruta
+              terminan el flujo sin seguir ninguna rama.
+            </p>
+          )}
+          {!byClinic && total !== 100 && (
             <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5 mt-2">
               Lo ideal es que los porcentajes sumen 100. Si no, el reparto respeta las proporciones
               que pongas (peso relativo de cada ruta).

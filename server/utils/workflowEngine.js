@@ -638,6 +638,19 @@ function pickSplitRoute(routes, rand = Math.random) {
   return list[list.length - 1];
 }
 
+/**
+ * Elige la ruta del split POR SUCURSAL del contacto: la ruta cuyo `clinicId`
+ * coincide con la sede del contacto; si ninguna coincide, la ruta marcada como
+ * `isFallback` ("otras sucursales"), o null si no hay. PURO y testeable.
+ */
+function pickClinicRoute(routes, clinicId) {
+  const list = (routes || []).filter((r) => r && r.id);
+  if (!list.length) return null;
+  const cid = String(clinicId || '');
+  const match = cid && list.find((r) => !r.isFallback && String(r.clinicId || '') === cid);
+  return match || list.find((r) => r.isFallback) || null;
+}
+
 /** Siguiente nodo siguiendo la arista del handle indicado (yes/no/default). */
 function nextNodeId(workflow, nodeId, handle = 'default') {
   const edges = workflow.edges || [];
@@ -726,14 +739,27 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
       currentId = nextNodeId(workflow, currentId, pass ? 'yes' : 'no');
     } else if (type === 'split') {
       // Bifurcación: reparte el contacto por una de las rutas (cada ruta es una
-      // salida con su propio sourceHandle = route.id). Si la ruta elegida no está
-      // conectada a nada, el flujo termina para ese contacto (rama vacía).
-      const route = pickSplitRoute(data.routes);
-      pushLog(enrollment, {
-        nodeId: currentId,
-        type,
-        info: route ? `Ruta «${route.name || route.id}»` : 'Sin rutas configuradas',
-      });
+      // salida con su propio sourceHandle = route.id). Dos modos:
+      //  - 'clinic': por la SUCURSAL del contacto (la del Excel importado / evento).
+      //  - 'random' (defecto): reparto aleatorio ponderado por % (A/B).
+      // Si la ruta elegida no está conectada, el flujo termina (rama vacía).
+      let route;
+      if (data.distribution === 'clinic') {
+        const cid = ctx.eventClinicId || String(enrollment.clinic || '');
+        route = pickClinicRoute(data.routes, cid);
+        pushLog(enrollment, {
+          nodeId: currentId,
+          type,
+          info: route ? `Sucursal → «${route.name || route.id}»` : 'Sin ruta para esa sucursal',
+        });
+      } else {
+        route = pickSplitRoute(data.routes);
+        pushLog(enrollment, {
+          nodeId: currentId,
+          type,
+          info: route ? `Ruta «${route.name || route.id}»` : 'Sin rutas configuradas',
+        });
+      }
       currentId = route ? nextNodeId(workflow, currentId, route.id) : null;
     } else if (type === 'goal') {
       if (evaluateCondition(data, { patient, conversation: convRef.current, context: ctx })) {
@@ -1688,6 +1714,7 @@ module.exports = {
   findStartNode,
   nextNodeId,
   pickSplitRoute,
+  pickClinicRoute,
   enrollForEvent,
   enrollForChatMessage,
   enrollForOpportunityStage,

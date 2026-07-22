@@ -59,7 +59,7 @@ exports.uploadMiddleware = multer({
   limits: { fileSize: 30 * 1024 * 1024 },
   fileFilter: (req, file, cb) => {
     if (!isSupported(file.originalname)) {
-      return cb(new Error('Formato no admitido: sube un archivo .csv, .xlsx o .xls'));
+      return cb(new Error('Formato no admitido: sube un archivo .xlsx, .csv o .tsv. Desde Google Sheets usa Archivo → Descargar → Microsoft Excel (.xlsx) o Valores separados por comas (.csv).'));
     }
     cb(null, true);
   },
