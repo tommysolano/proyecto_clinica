@@ -208,6 +208,32 @@ exports.enrollments = async (req, res) => {
 };
 
 /**
+ * POST /workflows/:id/enrollments/:enrollId/cancel — cancela una inscripción viva
+ * (waiting/active). Sirve para desbloquear a un contacto: mientras tiene una
+ * inscripción viva en el flujo, el dedup no lo vuelve a inscribir (reimportar lo
+ * salta). Cancelarla lo libera para el próximo envío. No revive lo ya enviado.
+ */
+exports.cancelEnrollment = async (req, res) => {
+  try {
+    const enroll = await WorkflowEnrollment.findOne({
+      _id: req.params.enrollId,
+      workflow: req.params.id,
+      clinic: req.clinicId,
+    });
+    if (!enroll) return res.status(404).json({ message: 'Inscripción no encontrada' });
+    if (!['waiting', 'active'].includes(enroll.status)) {
+      return res.status(400).json({ message: `La inscripción está "${enroll.status}": no hay nada que cancelar.` });
+    }
+    enroll.status = 'cancelled';
+    enroll.nextRunAt = null;
+    await enroll.save();
+    res.json({ ok: true, enrollment: enroll });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al cancelar la inscripción', error: err.message });
+  }
+};
+
+/**
  * GET /workflows/:id/activity — rastro del disparador: por cada evento de
  * dominio, si este workflow inscribió al paciente o por qué NO (duplicado,
  * audiencia/filtro sin coincidir). Responde "agendé una cita y no pasó nada".

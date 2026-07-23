@@ -379,12 +379,29 @@ function EnrollmentsModal({ workflow, onClose }) {
 
   const fmt = (d) => (d ? new Date(d).toLocaleString('es-EC', { timeZone: 'America/Guayaquil', day: '2-digit', month: '2-digit', hour: '2-digit', minute: '2-digit' }) : '—');
 
+  const [cancelling, setCancelling] = useState(null);
+  const cancelEnrollment = async (e, ev) => {
+    ev.stopPropagation();
+    if (!window.confirm('¿Cancelar esta inscripción? El contacto quedará libre para volver a entrar al flujo en el próximo envío (no des-envía lo ya enviado).')) return;
+    setCancelling(e._id);
+    try {
+      await api.post(`/workflows/${workflow._id}/enrollments/${e._id}/cancel`);
+      setRows((prev) => prev.map((r) => (r._id === e._id ? { ...r, status: 'cancelled', nextRunAt: null } : r)));
+      toast.success('Inscripción cancelada: el contacto quedó libre');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo cancelar');
+    } finally {
+      setCancelling(null);
+    }
+  };
+
   return (
     <Modal isOpen onClose={onClose} title={`Inscritos — ${workflow.name}`} size="xl">
       <div>
         <p className="text-xs text-slate-500 -mt-1 mb-4">
           Pacientes que pasaron por esta automatización. Haz clic en una fila para ver el
           <b> registro de ejecución</b>: qué hizo cada paso y por qué falló un envío (p.ej. ventana de 24h de WhatsApp).
+          Una inscripción <b>En espera</b> bloquea que ese contacto vuelva a entrar al flujo — <b>Cancélala</b> para liberarlo.
         </p>
         <div className="mb-3">
           <label className="text-xs text-slate-500 mr-2">Filtrar por estado</label>
@@ -410,6 +427,7 @@ function EnrollmentsModal({ workflow, onClose }) {
                   <th className="text-center px-3 py-2">Pasos OK / fallidos</th>
                   <th className="text-left px-3 py-2">Próxima ejecución</th>
                   <th className="text-left px-3 py-2">Último error</th>
+                  <th className="text-center px-3 py-2">Acción</th>
                 </tr>
               </thead>
               <tbody>
@@ -435,10 +453,23 @@ function EnrollmentsModal({ workflow, onClose }) {
                         <td className="px-3 py-2 max-w-[260px]">
                           {e.lastError ? <span className="text-[11px] text-rose-600 line-clamp-2">{e.lastError}</span> : <span className="text-slate-300">—</span>}
                         </td>
+                        <td className="px-3 py-2 text-center">
+                          {['waiting', 'active'].includes(e.status) ? (
+                            <button
+                              onClick={(ev) => cancelEnrollment(e, ev)}
+                              disabled={cancelling === e._id}
+                              className="text-[11px] px-2 py-1 border border-rose-200 text-rose-700 rounded-lg bg-white hover:bg-rose-50 cursor-pointer disabled:opacity-50"
+                            >
+                              {cancelling === e._id ? '…' : 'Cancelar'}
+                            </button>
+                          ) : (
+                            <span className="text-slate-300">—</span>
+                          )}
+                        </td>
                       </tr>
                       {isOpen && (
                         <tr className="border-t border-slate-100 bg-slate-50/60">
-                          <td colSpan={5} className="px-4 py-3">
+                          <td colSpan={6} className="px-4 py-3">
                             {log.length === 0 ? (
                               <p className="text-xs text-slate-400">Sin registro de ejecución (inscripción anterior a esta versión o aún sin pasos ejecutados).</p>
                             ) : (

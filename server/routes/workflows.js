@@ -25,6 +25,8 @@ router.post('/presets/:key', requireRole(...ROLES), ctrl.installPreset);
 router.post('/', requireRole(...ROLES), ctrl.create);
 router.get('/:id', requireRole(...ROLES), ctrl.get);
 router.get('/:id/enrollments', requireRole(...ROLES), ctrl.enrollments);
+// Cancela una inscripción viva (desbloquea al contacto para el próximo envío).
+router.post('/:id/enrollments/:enrollId/cancel', requireRole(...ROLES), ctrl.cancelEnrollment);
 router.get('/:id/activity', requireRole(...ROLES), ctrl.activity);
 router.put('/:id', requireRole(...ROLES), ctrl.update);
 router.delete('/:id', requireRole(...ROLES), ctrl.remove);
