@@ -113,7 +113,9 @@ test('suggestMapping: adivina las columnas comunes y no repite campo', () => {
   assert.equal(byCol['First Name'], 'firstName');
   assert.equal(byCol['Last Name'], 'lastName');
   assert.equal(byCol['Email'], 'email');
-  assert.equal(byCol['Ciudad'], ''); // no se inventa nada
+  // "Ciudad" es una columna de datos reconocible: se propone como campo personalizado
+  // (para segmentar/usar de variable), no como "No importar".
+  assert.equal(byCol['Ciudad'], 'custom:ciudad');
   // 'Nombres' también sería firstName, pero ya está tomado: dos columnas al mismo
   // campo se pisarían, así que se deja sin asignar para que el usuario decida.
   assert.equal(byCol['Nombres'], '');

@@ -26,7 +26,6 @@ const FIELD_OPTIONS = [
   { value: 'displayName', label: 'Nombre completo / como aparece en WhatsApp' },
   { value: 'email', label: 'Correo electrónico' },
   { value: 'clinic', label: 'Sucursal (nombre de la sede)' },
-  { value: 'sendTime', label: 'Hora de envío del 1er mensaje (HH:MM)' },
   { value: 'tags', label: 'Etiquetas (separadas por coma)' },
   { value: 'notes', label: 'Notas' },
 ];
@@ -82,6 +81,10 @@ function parseSendTime(raw) {
   return '';
 }
 
+// Claves de campo personalizado que son una HORA del día: su valor se normaliza a
+// "HH:MM" (via parseSendTime) para que la variable de la plantilla salga limpia.
+const TIME_CUSTOM_KEYS = /^(hora|horario|hora_cita|hora_de_cita|horacita|hora_de_la_cita)$/i;
+
 const splitTags = (v) =>
   String(v || '')
     .split(/[,;|]/)
@@ -127,7 +130,14 @@ function mapRow(row, mapping) {
     if (m.field === 'tags') { out.tags.push(...splitTags(value)); continue; }
     if (m.field.startsWith('custom:')) {
       const key = m.field.slice('custom:'.length).trim();
-      if (key) out.customFields[key] = value;
+      if (key) {
+        // Si la columna es una HORA (hora/horario de la cita), se normaliza a "HH:MM"
+        // para que la variable {{hora}} salga limpia aunque el Excel la haya guardado
+        // como fracción de día (0,3333). Se hace SOLO para claves de hora reconocidas:
+        // un decimal de otra columna (precio, tasa…) NO se toca. Si no parece hora, se
+        // conserva el valor original (no se pierde el dato).
+        out.customFields[key] = TIME_CUSTOM_KEYS.test(key) ? (parseSendTime(value) || value) : value;
+      }
       continue;
     }
     if (CORE_FIELDS.includes(m.field)) out[m.field] = value;
@@ -169,7 +179,6 @@ const GUESSES = [
   // Sucursal/sede del contacto: se le suman "agencia" y "oficina" porque cada
   // clínica nombra sus sedes a su manera (un caso real traía la columna "Agencia").
   [/^(sucursal|sede|agencia|oficina|clinica|clínica|branch|office|location|local)/i, 'clinic'],
-  [/^(hora|horario|hora ?de ?env[ií]o|send ?time|schedule)/i, 'sendTime'],
   [/^(tags?|etiquetas?)/i, 'tags'],
   [/^(notes?|notas|observaciones)/i, 'notes'],
 ];
@@ -178,7 +187,13 @@ const GUESSES = [
 // proponen como CAMPO PERSONALIZADO (con la clave derivada del propio título) en
 // vez de "No importar", que confundía ("¿por qué no se importa el servicio?").
 // Así "Servicio" queda como custom:servicio y luego sirve para segmentar/plantillas.
-const CUSTOM_FIELD_HINTS = /^(servicio|programa|producto|plan|tratamiento|inter[eé]s|especialidad|campa[ñn]a|origen|fuente|ciudad|provincia|direcci[oó]n|edad|g[eé]nero|sexo|c[eé]dula|cedula|dni|documento|ocupaci[oó]n|empresa|cargo)/i;
+//
+// "Hora"/"Fecha" van AQUÍ (no a una "hora de envío"): en un archivo de
+// recordatorios son la hora/fecha de la CITA a la que el paciente debe llegar,
+// es decir una VARIABLE de la plantilla ({{hora}}/{{fecha}}), no la hora a la que
+// se dispara la campaña. La hora de envío se decide al importar (inmediato / a una
+// hora), no por columna — mapear "Hora" a envío retrasaba toda la campaña a mañana.
+const CUSTOM_FIELD_HINTS = /^(servicio|programa|producto|plan|tratamiento|inter[eé]s|especialidad|campa[ñn]a|origen|fuente|ciudad|provincia|direcci[oó]n|edad|g[eé]nero|sexo|c[eé]dula|cedula|dni|documento|ocupaci[oó]n|empresa|cargo|hora|horario|fecha|d[ií]a|doctor|m[eé]dico|medico|profesional)/i;
 
 /** Clave segura para un campo personalizado a partir del título de la columna. */
 function customKeyFromColumn(column) {

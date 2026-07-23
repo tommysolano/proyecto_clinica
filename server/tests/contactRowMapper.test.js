@@ -1,8 +1,9 @@
 /**
- * Mapeo de filas → contacto, con foco en la HORA de envío (`sendTime`): el usuario
- * escribe la hora en el Excel y el sistema debe entenderla venga como "8:00", como
- * hora entera o como la fracción de día de Excel (0,3333) que causaba los
- * "demasiados decimales".
+ * Mapeo de filas → contacto. La columna "Hora" del Excel es la hora de la CITA (una
+ * VARIABLE de la plantilla, {{hora}}), NO la hora de envío de la campaña: se propone
+ * como campo personalizado, no como disparo. La hora de disparo se decide al importar
+ * (sendMode/sendAt), no por columna. `parseSendTime` sigue existiendo (defensivo) y se
+ * prueba aparte.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -39,10 +40,13 @@ test('parseSendTime: basura → cadena vacía', () => {
   assert.equal(parseSendTime(null), '');
 });
 
-test('guessField: una columna "Hora" se propone como sendTime', () => {
-  assert.equal(guessField('Hora'), 'sendTime');
-  assert.equal(guessField('Hora de envío'), 'sendTime');
-  assert.equal(guessField('Horario'), 'sendTime');
+test('guessField: "Hora"/"Horario" se proponen como VARIABLE (custom), no como hora de envío', () => {
+  // En un archivo de recordatorios "Hora" es la hora de la CITA (variable {{hora}}),
+  // no la hora de disparo. Auto-mapearla a envío retrasaba toda la campaña a mañana.
+  assert.equal(guessField('Hora'), 'custom:hora');
+  assert.equal(guessField('Horario'), 'custom:horario');
+  assert.equal(guessField('Fecha'), 'custom:fecha');
+  assert.equal(guessField('Doctor'), 'custom:doctor');
 });
 
 test('guessField: "Agencia"/"Oficina" se reconocen como Sucursal (cada clínica nombra sus sedes distinto)', () => {
@@ -73,15 +77,31 @@ test('mapRow: "Servicio" auto-mapeado a custom guarda el valor en customFields',
   assert.equal(r.contact.customFields.servicio, 'Programa Prostata');
 });
 
-test('mapRow: la hora se guarda en sendTime (no como campo del contacto)', () => {
+test('mapRow: custom:hora normaliza la fracción de Excel a HH:MM; otras columnas decimales NO se tocan', () => {
   const r = mapRow(
-    { Celular: '0999111222', Hora: '0.3333333' },
+    { Celular: '0999111222', Hora: '1.3333333333321207', Precio: '0.15' },
     [
       { column: 'Celular', field: 'phone' },
-      { column: 'Hora', field: 'sendTime' },
+      { column: 'Hora', field: 'custom:hora' },
+      { column: 'Precio', field: 'custom:precio' },
+    ]
+  );
+  assert.equal(r.ok, true);
+  assert.equal(r.contact.customFields.hora, '08:00', 'la hora sí se normaliza (clave de hora)');
+  assert.equal(r.contact.customFields.precio, '0.15', 'un decimal cualquiera se conserva intacto');
+});
+
+test('mapRow: la columna Hora (hora de la cita) se guarda como variable en customFields', () => {
+  // El lector (cellText) ya normaliza la fracción de Excel a "08:00" antes de llegar
+  // aquí; mapRow solo la guarda como dato del contacto para usarla de variable.
+  const r = mapRow(
+    { Celular: '0999111222', Hora: '08:00' },
+    [
+      { column: 'Celular', field: 'phone' },
+      { column: 'Hora', field: 'custom:hora' },
     ]
   );
   assert.equal(r.ok, true);
   assert.equal(r.contact.phone, '593999111222');
-  assert.equal(r.contact.sendTime, '08:00', 'la fracción de Excel quedó en HH:MM');
+  assert.equal(r.contact.customFields.hora, '08:00', 'la hora de la cita queda como variable {{hora}}');
 });

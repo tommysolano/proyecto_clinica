@@ -159,6 +159,13 @@ export default function ImportsTab({ groups, onGroupsChanged }) {
                   </div>
                 )}
 
+                {b.status === 'done' && b.workflows?.length > 0 && b.enrolled > 0 && (
+                  <div className="text-[11px] text-violet-700 bg-violet-50 border border-violet-200 rounded-lg px-2 py-1 mt-2">
+                    ⏰ {b.enrolled.toLocaleString('es-EC')} mensaje(s) programado(s) — {sendWhenText(b)}. Míralos en
+                    Marketing → Automatizaciones (el flujo muestra las inscripciones «En espera»).
+                  </div>
+                )}
+
                 {b.errorMessage && (
                   <div className="text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1 mt-2">
                     {b.errorMessage}
@@ -179,6 +186,13 @@ export default function ImportsTab({ groups, onGroupsChanged }) {
       )}
     </div>
   );
+}
+
+/** Texto legible de CUÁNDO sale el 1er mensaje del lote. */
+function sendWhenText(b) {
+  if (b.sendMode === 'at' && b.sendAt) return `a las ${b.sendAt} (hoy si aún no pasa, mañana si ya pasó)`;
+  if (b.sendMode === 'flow') return 'a la hora configurada en el flujo';
+  return 'de inmediato (con goteo)';
 }
 
 function Counter({ label, value, tone }) {

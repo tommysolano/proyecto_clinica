@@ -198,6 +198,11 @@ const triggerSchema = new mongoose.Schema(
     // Si adFilter y adTextFilter están vacíos → cualquier anuncio. Si alguno tiene
     // valor, el mensaje coincide si casa por ID O por texto.
     adTextFilter: { type: String, trim: true, default: '' },
+    // Trigger 'contact_import': "Hora de envío" por defecto del flujo ("HH:MM"). Al
+    // hacer un envío masivo, el 1er mensaje sale a esta hora salvo que el usuario
+    // elija otra. Vacío = de inmediato. (En flujos de grafo vive en node.data —Mixed—,
+    // pero también se declara aquí para el trigger/triggers legacy.)
+    sendHour: { type: String, trim: true, default: '' },
   },
   { _id: false }
 );

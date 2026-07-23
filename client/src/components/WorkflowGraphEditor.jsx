@@ -1374,6 +1374,22 @@ function TriggerConfig({ trigger = {}, onChange, products = [], clinics = [] }) 
           </span>
         </div>
       )}
+      {trigger.type === 'contact_import' && (
+        <label className="text-sm">
+          <span className="text-slate-600 block mb-1">Hora de envío por defecto (envíos masivos)</span>
+          <input
+            type="time"
+            value={/^\d{1,2}:\d{2}$/.test(trigger.sendHour || '') ? trigger.sendHour : ''}
+            onChange={(e) => set({ sendHour: e.target.value })}
+            className="w-40 border border-slate-200 rounded-lg px-2 py-2 text-sm"
+          />
+          <span className="text-[11px] text-slate-400 block mt-1">
+            Al importar contactos a este flujo, el 1er mensaje se enviará a esta hora (hoy si aún no
+            pasa, mañana si ya pasó). Déjalo vacío para enviar de inmediato. Al hacer el envío masivo
+            el sistema avisará y podrás usar esta hora o indicar otra en ese momento.
+          </span>
+        </label>
+      )}
     </div>
   );
 }

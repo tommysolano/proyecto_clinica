@@ -86,7 +86,7 @@ exports.template = async (req, res) => {
       { header: 'Teléfono', key: 'telefono', width: 18 },
       { header: 'Correo', key: 'correo', width: 26 },
       { header: 'Sucursal', key: 'sucursal', width: 20 },
-      { header: 'Hora de envío', key: 'hora', width: 14 },
+      { header: 'Hora de la cita', key: 'hora', width: 14 },
       { header: 'Etiquetas', key: 'etiquetas', width: 24 },
     ];
 
@@ -97,8 +97,8 @@ exports.template = async (req, res) => {
     });
 
     // Teléfono Y hora como TEXTO: si Excel trata "08:00" como hora, la guarda como
-    // fracción de día (0,3333) y al importar salían "demasiados decimales". Como texto,
-    // "08:00" se queda tal cual.
+    // fracción de día (0,3333). Como texto, "08:00" se queda tal cual (y el sistema
+    // igual la normaliza si viene como fracción).
     ws.getColumn('telefono').numFmt = '@';
     ws.getColumn('hora').numFmt = '@';
 
@@ -125,12 +125,13 @@ exports.template = async (req, res) => {
       '   (p. ej. Quito). No importan mayúsculas ni tildes. El contacto queda en esa sucursal',
       '   y el flujo de automatización puede tomar un camino distinto según la sede. Si la',
       '   dejas vacía o el nombre no coincide con ninguna sucursal, va a la sede por defecto.',
-      '6. Hora de envío (opcional): la hora a la que quieres que le llegue el PRIMER mensaje',
-      '   del workflow a ese contacto, en formato 24h HH:MM (p. ej. 08:00, 14:30). Escríbela',
-      '   como TEXTO (ya viene así). Si ya pasó esa hora hoy, sale mañana a esa hora. Si la',
-      '   dejas vacía, el contacto entra dentro de la franja normal (09:00–20:00).',
-      '7. Puedes añadir tus propias columnas (Ciudad, Interés…): al importar decides a qué',
-      '   campo va cada una, o las guardas como dato adicional del contacto.',
+      '6. Hora de la cita (opcional): es la hora a la que el paciente debe llegar a la clínica.',
+      '   Es un DATO del contacto que puedes usar como variable en la plantilla (p. ej. "te',
+      '   esperamos a las {{hora}}"), NO la hora a la que se envía el mensaje. La HORA DE ENVÍO',
+      '   de la campaña se elige al importar (de inmediato o a una hora que tú indicas).',
+      '7. Puedes añadir tus propias columnas (Ciudad, Interés, Doctor…): al importar decides a',
+      '   qué campo va cada una, o las guardas como dato adicional del contacto para usarlas',
+      '   como variables en la plantilla.',
       '8. Borra estas dos filas de ejemplo antes de subir el archivo.',
     ];
     lines.forEach((t, i) => {
@@ -177,7 +178,7 @@ exports.analyze = async (req, res) => {
 /** Paso 4: confirma y encola la importación. */
 exports.create = async (req, res) => {
   try {
-    const { uploadId, fileName, mapping, mode, tags, groups, whatsappOptIn, consentSource, workflows, dripSeconds } = req.body;
+    const { uploadId, fileName, mapping, mode, tags, groups, whatsappOptIn, consentSource, workflows, dripSeconds, sendMode, sendAt } = req.body;
     // basename() evita que un uploadId manipulado ("../../etc/passwd") salga del
     // directorio de subidas.
     const filePath = path.join(UPLOAD_DIR, path.basename(String(uploadId || '')));
@@ -222,6 +223,14 @@ exports.create = async (req, res) => {
       }
     }
 
+    // Hora de disparo de la campaña (no sale de una columna del Excel; ver modelo).
+    //   now  → de inmediato ·  at → a una hora HH:MM ·  flow → la del propio flujo
+    const safeSendMode = ['now', 'at', 'flow'].includes(sendMode) ? sendMode : 'now';
+    const safeSendAt = /^\d{1,2}:\d{2}$/.test(String(sendAt || '')) ? String(sendAt) : '';
+    if (safeSendMode === 'at' && !safeSendAt) {
+      return res.status(400).json({ message: 'Elegiste "enviar a una hora" pero no indicaste la hora (HH:MM).' });
+    }
+
     const batch = await ContactImport.create({
       clinic: req.clinicId,
       fileName: fileName || 'contactos.csv',
@@ -238,6 +247,8 @@ exports.create = async (req, res) => {
       mode: ['upsert', 'create', 'update'].includes(mode) ? mode : 'upsert',
       // Goteo: segundos entre el arranque de un contacto y el siguiente (1s…1h).
       dripSeconds: Math.min(3600, Math.max(1, Number(dripSeconds) || 20)),
+      sendMode: safeSendMode,
+      sendAt: safeSendAt,
       tags: (Array.isArray(tags) ? tags : []).map((t) => String(t).trim()).filter(Boolean),
       groups: groupIds,
       workflows: workflowIds,

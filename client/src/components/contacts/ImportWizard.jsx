@@ -26,6 +26,25 @@ const MODE_OPTIONS = [
   { value: 'update', label: 'Solo actualizar', hint: 'No añade a nadie nuevo; solo completa datos de los que ya tengo.' },
 ];
 
+const HHMM_RE = /^\d{1,2}:\d{2}$/;
+
+/**
+ * "Hora de envío" que trae configurada el disparador contact_import del flujo
+ * ("HH:MM") o '' si no trae ninguna. Sirve para avisar al usuario y dejarle elegir
+ * entre la hora del flujo y una que indique al importar.
+ */
+function flowSendHourOf(wf) {
+  if (!wf) return '';
+  const triggerNodes = (wf.nodes || []).filter((n) => n.type === 'trigger');
+  const triggers = triggerNodes.length
+    ? triggerNodes.flatMap((n) => n.data?.triggers || [])
+    : [wf.trigger, ...(wf.triggers || [])].filter(Boolean);
+  for (const t of triggers) {
+    if (t?.type === 'contact_import' && HHMM_RE.test(t.sendHour || '')) return t.sendHour;
+  }
+  return '';
+}
+
 export default function ImportWizard({ groups, onClose, onDone }) {
   const [step, setStep] = useState(0);
   const [analysis, setAnalysis] = useState(null); // respuesta de /analyze
@@ -38,6 +57,8 @@ export default function ImportWizard({ groups, onClose, onDone }) {
     whatsappOptIn: true,
     consentSource: '',
     dripSeconds: 20,
+    sendMode: 'now', // 'now' | 'at' | 'flow' — cuándo sale el 1er mensaje
+    sendAt: '',      // "HH:MM" cuando sendMode='at'
   });
   const [busy, setBusy] = useState(false);
   const [workflows, setWorkflows] = useState([]);
@@ -93,6 +114,8 @@ export default function ImportWizard({ groups, onClose, onDone }) {
         whatsappOptIn: opts.whatsappOptIn,
         consentSource: opts.consentSource.trim(),
         dripSeconds: opts.dripSeconds,
+        sendMode: opts.sendMode,
+        sendAt: opts.sendMode === 'at' ? opts.sendAt : '',
       });
       toast.success('Importación encolada: verás el progreso en la pestaña Importaciones');
       onDone();
@@ -182,7 +205,7 @@ export default function ImportWizard({ groups, onClose, onDone }) {
               </button>
             ) : (
               <button
-                disabled={busy}
+                disabled={busy || (opts.workflows.length > 0 && opts.sendMode === 'at' && !HHMM_RE.test(opts.sendAt))}
                 onClick={confirm}
                 className="px-4 py-2 text-sm bg-emerald-600 text-white rounded-xl hover:bg-emerald-700 border-none cursor-pointer disabled:opacity-50"
               >
@@ -441,7 +464,14 @@ function StepOptions({ opts, setOpts, staticGroups, workflows }) {
         </label>
         <select
           value={opts.workflows[0] || ''}
-          onChange={(e) => setOpts((s) => ({ ...s, workflows: e.target.value ? [e.target.value] : [] }))}
+          onChange={(e) => {
+            const id = e.target.value;
+            // Al elegir flujo: si el flujo ya trae su propia hora de envío, se
+            // respeta por defecto (sendMode='flow'); si no, sale de inmediato.
+            const wf = workflows.find((w) => w._id === id);
+            const hasHour = !!flowSendHourOf(wf);
+            setOpts((s) => ({ ...s, workflows: id ? [id] : [], sendMode: id && hasHour ? 'flow' : 'now', sendAt: '' }));
+          }}
           className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm bg-white"
         >
           <option value="">Ninguno</option>
@@ -461,38 +491,9 @@ function StepOptions({ opts, setOpts, staticGroups, workflows }) {
         )}
       </div>
 
-      {/* Goteo + hora de envío: solo tienen sentido si hay un workflow que trabaje los contactos. */}
+      {/* Cuándo enviar + goteo: solo tienen sentido si hay un workflow que trabaje los contactos. */}
       {opts.workflows.length > 0 && (
-        <div className="border border-violet-200 bg-violet-50/40 rounded-xl p-3 space-y-2">
-          <label className="text-xs font-semibold text-slate-600 block">
-            Goteo: segundos de espera entre cada mensaje
-          </label>
-          <div className="flex items-center gap-2">
-            <input
-              type="number"
-              min={1}
-              max={3600}
-              value={opts.dripSeconds}
-              onChange={(e) => setOpts((s) => ({ ...s, dripSeconds: e.target.value }))}
-              onBlur={(e) => {
-                const n = Math.min(3600, Math.max(1, Math.round(Number(e.target.value) || 20)));
-                setOpts((s) => ({ ...s, dripSeconds: n }));
-              }}
-              className="w-24 border border-slate-200 rounded-lg px-3 py-2 text-sm"
-            />
-            <span className="text-xs text-slate-500">segundos entre un contacto y el siguiente</span>
-          </div>
-          <p className="text-[10px] text-slate-400">
-            Controla cuánto se espera entre el arranque de un contacto y el del siguiente. Más segundos =
-            más lento y más seguro para tu número.
-          </p>
-          <p className="text-[11px] text-violet-800 bg-white border border-violet-200 rounded-lg px-2.5 py-2">
-            💡 <b>¿Quieres decidir la hora exacta por contacto?</b> Añade una columna <b>Hora de envío</b> en
-            tu Excel (formato 24h, p. ej. <code className="font-mono">08:00</code> o <code className="font-mono">14:30</code>) y,
-            en el paso anterior, asígnala al campo <b>“Hora de envío del 1er mensaje”</b>. Cada contacto
-            recibirá el primer mensaje a su hora; los que compartan hora se separan por estos segundos de goteo.
-          </p>
-        </div>
+        <SendTimingBox opts={opts} setOpts={setOpts} workflows={workflows} />
       )}
 
       <div className="border border-slate-200 rounded-xl p-3 space-y-2">
@@ -527,14 +528,121 @@ function StepOptions({ opts, setOpts, staticGroups, workflows }) {
   );
 }
 
+/**
+ * "¿Cuándo enviar el primer mensaje?" + goteo. Si el flujo elegido ya trae una
+ * hora de envío configurada, se avisa y se deja elegir entre esa hora, de inmediato
+ * o una hora que el usuario indique aquí.
+ */
+function SendTimingBox({ opts, setOpts, workflows }) {
+  const selectedWf = workflows.find((w) => w._id === opts.workflows[0]);
+  const flowHour = flowSendHourOf(selectedWf);
+
+  const OptionRow = ({ value, title, desc, children }) => (
+    <label
+      className={`flex items-start gap-2 border rounded-lg px-2.5 py-2 cursor-pointer ${
+        opts.sendMode === value ? 'border-violet-300 bg-white' : 'border-slate-200 hover:bg-white/60'
+      }`}
+    >
+      <input
+        type="radio"
+        name="send-mode"
+        checked={opts.sendMode === value}
+        onChange={() => setOpts((s) => ({ ...s, sendMode: value }))}
+        className="mt-0.5 cursor-pointer"
+      />
+      <div className="min-w-0 flex-1">
+        <div className="text-sm font-semibold text-slate-700">{title}</div>
+        {desc && <div className="text-[11px] text-slate-400">{desc}</div>}
+        {children}
+      </div>
+    </label>
+  );
+
+  return (
+    <div className="border border-violet-200 bg-violet-50/40 rounded-xl p-3 space-y-2.5">
+      <div className="text-xs font-semibold text-slate-600">¿Cuándo enviar el primer mensaje?</div>
+
+      {flowHour && (
+        <div className="text-[11px] text-violet-900 bg-white border border-violet-200 rounded-lg px-2.5 py-2">
+          ⏰ Este flujo ya tiene una <b>hora de envío programada ({flowHour})</b>. Puedes respetarla o
+          indicar otra aquí para este envío masivo.
+        </div>
+      )}
+
+      <div className="space-y-1.5">
+        {flowHour && (
+          <OptionRow
+            value="flow"
+            title={`Usar la hora del flujo (${flowHour})`}
+            desc="Respeta lo configurado en la automatización. Hoy si aún no pasa, mañana si ya pasó."
+          />
+        )}
+        <OptionRow
+          value="now"
+          title="Enviar de inmediato"
+          desc="El primer mensaje sale ya (con el goteo entre un contacto y el siguiente)."
+        />
+        <OptionRow
+          value="at"
+          title="A una hora específica"
+          desc="Elige la hora a la que quieres que salgan. Hoy si aún no pasa, mañana si ya pasó."
+        >
+          {opts.sendMode === 'at' && (
+            <input
+              type="time"
+              value={opts.sendAt}
+              onChange={(e) => setOpts((s) => ({ ...s, sendAt: e.target.value }))}
+              className="mt-1.5 w-32 border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+            />
+          )}
+        </OptionRow>
+      </div>
+
+      <div className="pt-1">
+        <label className="text-xs font-semibold text-slate-600 block mb-1">
+          Goteo: segundos de espera entre cada mensaje
+        </label>
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min={1}
+            max={3600}
+            value={opts.dripSeconds}
+            onChange={(e) => setOpts((s) => ({ ...s, dripSeconds: e.target.value }))}
+            onBlur={(e) => {
+              const n = Math.min(3600, Math.max(1, Math.round(Number(e.target.value) || 20)));
+              setOpts((s) => ({ ...s, dripSeconds: n }));
+            }}
+            className="w-24 border border-slate-200 rounded-lg px-3 py-2 text-sm"
+          />
+          <span className="text-xs text-slate-500">segundos entre un contacto y el siguiente</span>
+        </div>
+        <p className="text-[10px] text-slate-400 mt-1">
+          Protege tu número: más segundos = más lento y más seguro. Los que comparten hora se separan
+          por este intervalo.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 // ───────────────────────── Paso 4: confirmar ─────────────────────────
 
 function StepConfirm({ analysis, mapping, opts, groups, workflows, mappedCount }) {
   const mode = MODE_OPTIONS.find((m) => m.value === opts.mode);
   const groupName = groups.find((g) => g._id === opts.groups[0])?.name;
-  const workflowName = workflows.find((w) => w._id === opts.workflows[0])?.name;
+  const selectedWf = workflows.find((w) => w._id === opts.workflows[0]);
+  const workflowName = selectedWf?.name;
+  const flowHour = flowSendHourOf(selectedWf);
   const tagList = opts.tags.split(',').map((t) => t.trim()).filter(Boolean);
   const assigned = mapping.filter((m) => m.field);
+
+  const whenText =
+    opts.sendMode === 'at'
+      ? `A las ${opts.sendAt || '—'} (hoy si aún no pasa, mañana si ya pasó)`
+      : opts.sendMode === 'flow'
+        ? `A la hora del flujo${flowHour ? ` (${flowHour})` : ''}`
+        : 'De inmediato';
 
   return (
     <div className="space-y-3">
@@ -570,12 +678,8 @@ function StepConfirm({ analysis, mapping, opts, groups, workflows, mappedCount }
             <span className="text-slate-300">ninguno</span>
           )}
         </Row>
-        {workflowName && (
-          <Row label="Goteo">
-            {opts.dripSeconds}s entre cada contacto
-            {mapping.some((m) => m.field === 'sendTime') && ' · hora por contacto (columna del Excel)'}
-          </Row>
-        )}
+        {workflowName && <Row label="Cuándo enviar"><span className="text-violet-700">{whenText}</span></Row>}
+        {workflowName && <Row label="Goteo">{opts.dripSeconds}s entre cada contacto</Row>}
         <Row label="Consentimiento">
           {opts.whatsappOptIn ? (
             <span className="text-emerald-700 inline-flex items-center gap-1">

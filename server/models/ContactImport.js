@@ -75,10 +75,20 @@ const contactImportSchema = new mongoose.Schema(
     // de forma ESCALONADA (no de golpe: sería la ráfaga que el goteo evita).
     workflows: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Workflow' }],
     // GOTEO: segundos de espera entre el arranque de un contacto y el siguiente.
-    // Lo configura el usuario en el asistente. Sin columna "Hora de envío" escalona
-    // todo dentro de 09:00–20:00; CON esa columna, agrupa por hora y separa por este
-    // intervalo a los que comparten la misma hora (para no dispararlos a la vez).
+    // Lo configura el usuario en el asistente. Evita disparar el 1er paso de todos
+    // los contactos a la vez (la ráfaga que el goteo previene).
     dripSeconds: { type: Number, default: 20, min: 1, max: 3600 },
+
+    // CUÁNDO enviar el primer mensaje del workflow (se elige al importar, NO por
+    // columna del Excel — la columna "Hora" es la hora de la CITA, una variable de
+    // la plantilla, no la hora de disparo):
+    //   now  → de inmediato (goteo desde ahora)
+    //   at   → a una hora concreta (`sendAt`, "HH:MM" hora Ecuador; hoy si no ha
+    //          pasado, mañana si ya pasó)
+    //   flow → respeta la "Hora de envío" que el propio flujo trae configurada en su
+    //          disparador (si el flujo no trae ninguna, equivale a `now`)
+    sendMode: { type: String, enum: ['now', 'at', 'flow'], default: 'now' },
+    sendAt: { type: String, trim: true, default: '' }, // "HH:MM" cuando sendMode='at'
     whatsappOptIn: { type: Boolean, default: true },
     consentSource: { type: String, trim: true, default: '' },
 
