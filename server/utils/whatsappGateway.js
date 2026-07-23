@@ -12,7 +12,7 @@
  */
 const WhatsappAccount = require('../models/WhatsappAccount');
 const wa = require('./whatsappCloud');
-const { decryptSecret } = require('./secretCrypto');
+const { decryptSecret, isEncrypted } = require('./secretCrypto');
 
 // v20.0 salió de soporte (mediados de 2026): mantener una versión vigente.
 const DEFAULT_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v23.0';
@@ -104,6 +104,28 @@ function cloudCreds(account) {
   };
 }
 
+/**
+ * Guardia previa al envío por Cloud API: si el token, tras descifrarlo, SIGUE
+ * cifrado (`enc:v1:…`), significa que el servidor no tiene la `SECRETS_KEY` con la
+ * que se cifró (falta o cambió). Sin esto se enviaba el blob cifrado a Meta y volvía
+ * "Authentication Error / Cannot parse access token" — un error críptico. Aquí se
+ * corta con un mensaje ACCIONABLE (vuelve a guardar el token) y no se gasta la llamada.
+ */
+function cloudTokenError(account) {
+  const token = decryptSecret(account.accessToken);
+  if (!token || isEncrypted(token)) {
+    return {
+      ok: false,
+      errorCode: 'token_undecryptable',
+      error:
+        `El token de WhatsApp del número «${account.label || 'Cloud API'}» no se pudo descifrar en el ` +
+        'servidor (falta o cambió SECRETS_KEY). Vuelve a guardar el token del número en ' +
+        'Configuración → WhatsApp para que quede cifrado con la clave actual.',
+    };
+  }
+  return null;
+}
+
 function isCloud(account) {
   return account && account.connectionType === 'cloud_api';
 }
@@ -116,7 +138,7 @@ async function sendText(account, to, body, contextMessageId, quoteBody) {
     // quoteBody permite al QR citar por texto si no tenemos el wamid guardado.
     return require('./whatsappQrManager').sendText(account, to, body, contextMessageId, quoteBody);
   }
-  return wa.sendText(cloudCreds(account), to, body, contextMessageId);
+  return cloudTokenError(account) || wa.sendText(cloudCreds(account), to, body, contextMessageId);
 }
 
 /**
@@ -131,7 +153,7 @@ async function sendMedia(account, to, url, caption, type = 'image', contextMessa
   if (account.connectionType === 'qr') {
     return require('./whatsappQrManager').sendMedia(account, to, url, caption, type, contextMessageId, quoteBody);
   }
-  return wa.sendMedia(cloudCreds(account), to, url, caption, type, contextMessageId);
+  return cloudTokenError(account) || wa.sendMedia(cloudCreds(account), to, url, caption, type, contextMessageId);
 }
 
 async function sendTemplate(account, to, templateName, lang, components) {
@@ -140,7 +162,7 @@ async function sendTemplate(account, to, templateName, lang, components) {
     // Una sesión QR no admite plantillas de Meta. El caller debe enviar texto libre.
     return { ok: false, errorCode: 'qr_no_template', error: 'El número QR no admite plantillas; usa texto libre.' };
   }
-  return wa.sendTemplate(cloudCreds(account), to, templateName, lang, components);
+  return cloudTokenError(account) || wa.sendTemplate(cloudCreds(account), to, templateName, lang, components);
 }
 
 async function downloadMedia(account, mediaId, opts) {
@@ -148,6 +170,7 @@ async function downloadMedia(account, mediaId, opts) {
   if (account.connectionType === 'qr') {
     return require('./whatsappQrManager').downloadMedia(account, mediaId, opts);
   }
+  if (cloudTokenError(account)) return { ok: false };
   return wa.downloadMedia(cloudCreds(account), mediaId, opts);
 }
 
@@ -159,6 +182,7 @@ module.exports = {
   getCloudAccountByPhoneNumberId,
   getDefaultCloudAccount,
   cloudCreds,
+  cloudTokenError,
   isCloud,
   sendText,
   sendMedia,
