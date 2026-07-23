@@ -659,22 +659,24 @@ async function send({
         /* sin cita próxima: se usan los ejemplos */
       }
     }
-    // Sin paciente (contactos importados, envíos por teléfono): el contacto del
-    // CRM aporta el nombre para las variables. Búsqueda indexada (clinic, phone).
+    // El CONTACTO del CRM aporta las variables de la campaña ({{servicio}}/{{hora}}…
+    // del Excel importado) y el nombre. Se carga SIEMPRE, aunque el teléfono también
+    // sea un paciente: si no, un contacto que además es paciente (o cuyo número
+    // coincide con uno) perdía sus customFields y las variables caían al EJEMPLO de la
+    // plantilla. La cita real (si la hay) sigue teniendo prioridad en el resolutor;
+    // los customFields solo rellenan lo que la cita no aporta. Búsqueda por teléfono
+    // (CRM global, el contacto puede vivir en cualquier sede).
     let contactRef = null;
-    if (!patientRef) {
-      try {
-        // CRM global: el contacto puede vivir en cualquier sede → buscar por teléfono
-        // (sin filtrar por clínica), si no las variables se quedaban sin datos cuando
-        // el contacto estaba en otra sucursal. `customFields` aporta {{servicio}}/{{hora}}…
-        const ph = conv.phone || normalizePhone(to);
+    try {
+      const ph = conv.phone || normalizePhone(to);
+      if (ph) {
         contactRef = await require('../models/Contact')
           .findOne({ phone: ph })
           .select('firstName lastName displayName customFields')
           .lean();
-      } catch {
-        contactRef = null;
       }
+    } catch {
+      contactRef = null;
     }
     templateInfo = await enrichTemplateHeader(clinicId, templateInfo, patientRef, aptId, contactRef);
   }

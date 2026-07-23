@@ -107,6 +107,37 @@ test('enrichTemplateHeader: {{servicio}}/{{hora}} salen del CONTACTO importado, 
   );
 });
 
+test('enrichTemplateHeader: aunque haya PACIENTE (sin cita), las variables salen de los customFields del contacto', async () => {
+  // Bug real: un contacto cuyo teléfono también es un paciente (resolvePatient lo
+  // encuentra) perdía sus customFields → {{hora}}/{{servicio}} caían al ejemplo. La
+  // cita real tiene prioridad, pero sin cita deben usarse los datos del Excel.
+  const { clinicId } = await H.seedClinic();
+  await MessageTemplate.create({
+    clinic: clinicId, channel: 'whatsapp', name: '24h_flujo_pac',
+    headerType: 'text', headerText: 'Hola',
+    body: 'Recordatorio: tu cita es mañana a las {{hora}} para {{servicio}}.',
+    variables: [
+      { key: 'hora', example: '14:30' },
+      { key: 'servicio', example: 'Limpieza facial' },
+    ],
+  });
+
+  const info = await messaging.enrichTemplateHeader(
+    clinicId,
+    { name: '24h_flujo_pac', language: 'es', components: [] },
+    { firstName: 'Jaime' }, // SÍ hay paciente…
+    null,                    // …pero sin cita (appointmentId null)
+    { firstName: 'Jaime', customFields: { hora: '08:00', servicio: 'Programa Prostata' } }
+  );
+
+  const body = info.components.find((c) => c.type === 'body');
+  assert.deepEqual(
+    body.parameters,
+    [{ type: 'text', text: '08:00' }, { type: 'text', text: 'Programa Prostata' }],
+    'con paciente pero sin cita, las variables toman el dato del Excel, no el ejemplo'
+  );
+});
+
 test('enrichTemplateHeader: cabecera de texto SIN variable no añade parámetros de header', async () => {
   const { clinicId } = await H.seedClinic();
   await MessageTemplate.create({
