@@ -929,51 +929,97 @@ exports.whatsappDiagnostics = async (req, res) => {
     await Promise.all(
       accounts.map((a) => (a.connectionType === 'qr' ? qrManager.reconcileAccount(a).catch(() => {}) : null))
     );
-    const accountsHealth = accounts.map((a) => {
-      let health = 'ok';
-      let detail = '';
-      if (a.connectionType === 'cloud_api') {
-        const tokenErr = gateway.cloudTokenError(a);
-        if (!a.accessToken) {
-          health = 'error';
-          detail = 'Sin token: este número no puede enviar por Cloud API.';
-        } else if (tokenErr) {
-          health = 'error';
-          detail = 'El token no se puede descifrar en el servidor (falta o cambió SECRETS_KEY). Vuelve a guardarlo.';
-        } else if (!a.phoneNumberId) {
-          health = 'error';
-          detail = 'Falta el Phone Number ID.';
+    // Verificación EN VIVO del token de un número Cloud contra Meta (debug_token).
+    // Detecta el caso más doloroso: un token CADUCADO/REVOCADO — Meta responde 190
+    // y todos los envíos por ese número fallan, aunque el token se descifre bien.
+    // Best-effort con timeout corto: si Meta o la red no responden, no rompe el panel.
+    const V = process.env.WHATSAPP_API_VERSION || 'v23.0';
+    const probeCloudToken = async (a) => {
+      const token = decryptSecret(a.accessToken);
+      if (!token || require('../utils/secretCrypto').isEncrypted(token)) return { state: 'undecryptable' };
+      try {
+        const ctrl = new AbortController();
+        const t = setTimeout(() => ctrl.abort(), 5000);
+        const r = await fetch(
+          `https://graph.facebook.com/${V}/debug_token?input_token=${encodeURIComponent(token)}`,
+          { headers: { Authorization: `Bearer ${token}` }, signal: ctrl.signal }
+        );
+        clearTimeout(t);
+        const j = await r.json().catch(() => ({}));
+        const d = j?.data;
+        if (!r.ok || !d) return { state: 'rejected' };
+        const expMs = Number(d.expires_at || 0) * 1000;
+        if (d.is_valid === false || (expMs > 0 && expMs < Date.now())) return { state: 'expired', expMs };
+        return { state: 'valid', expMs };
+      } catch {
+        return { state: 'unknown' }; // sin red / timeout: no concluye
+      }
+    };
+
+    const accountsHealth = await Promise.all(
+      accounts.map(async (a) => {
+        let health = 'ok';
+        let detail = '';
+        if (a.connectionType === 'cloud_api') {
+          const tokenErr = gateway.cloudTokenError(a);
+          if (!a.accessToken) {
+            health = 'error';
+            detail = 'Sin token: este número no puede enviar por Cloud API.';
+          } else if (tokenErr) {
+            health = 'error';
+            detail = 'El token no se puede descifrar en el servidor (falta o cambió SECRETS_KEY). Vuelve a guardarlo.';
+          } else if (!a.phoneNumberId) {
+            health = 'error';
+            detail = 'Falta el Phone Number ID.';
+          } else {
+            // Token descifrable: ahora comprobamos si Meta lo acepta.
+            const probe = await probeCloudToken(a);
+            if (probe.state === 'expired' || probe.state === 'rejected') {
+              health = 'error';
+              detail =
+                'El token está CADUCADO o revocado (Meta lo rechaza con error 190). Genera un token de ' +
+                'Usuario del Sistema (no caduca) y guárdalo en este número.';
+            } else if (probe.state === 'valid') {
+              detail =
+                probe.expMs > 0
+                  ? `Token válido, pero CADUCA el ${new Date(probe.expMs).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' })}. Usa uno de Usuario del Sistema para que no expire.`
+                  : 'Token válido y sin caducidad (Usuario del Sistema). ✔';
+            } else {
+              detail = 'Token descifrable. No se pudo verificar contra Meta ahora (sin red o timeout); usa "Probar".';
+            }
+          }
         } else {
-          detail = 'Token descifrable. Usa "Probar" para verificarlo contra Meta.';
+          // QR: la verdad es la sesión VIVA en memoria, no solo el estado guardado.
+          const snap = qrManager.getLiveSnapshot(a._id);
+          const liveStatus = snap?.status || a.status;
+          if (liveStatus === 'connected') detail = 'Sesión de WhatsApp Web conectada.';
+          else if (['connecting', 'syncing', 'qr_pending'].includes(liveStatus)) {
+            health = 'warn';
+            detail =
+              'La sesión se está sincronizando o espera el escaneo del QR. Mientras tanto, los envíos por este número pueden fallar con "QR no conectado".';
+          } else {
+            health = 'error';
+            detail = 'Sesión de WhatsApp Web desconectada: pulsa "Conectar" y escanea el QR.';
+          }
         }
-      } else {
-        // QR: la verdad es si la sesión está viva.
-        if (a.status === 'connected') detail = 'Sesión de WhatsApp Web conectada.';
-        else if (['connecting', 'syncing', 'qr_pending'].includes(a.status)) {
+        if (!a.enabled) {
           health = 'warn';
-          detail = 'La sesión se está conectando o espera que escanees el QR.';
-        } else {
-          health = 'error';
-          detail = 'Sesión de WhatsApp Web desconectada: pulsa "Conectar" y escanea el QR.';
+          detail = 'Número deshabilitado: no se usa para enviar.';
         }
-      }
-      if (!a.enabled) {
-        health = 'warn';
-        detail = 'Número deshabilitado: no se usa para enviar.';
-      }
-      return {
-        _id: a._id,
-        label: a.label,
-        connectionType: a.connectionType,
-        enabled: a.enabled,
-        isDefault: a.isDefault,
-        status: a.status,
-        displayPhone: a.displayPhone || a.connectedPhone || '',
-        qualityRating: a.qualityRating,
-        health,
-        detail,
-      };
-    });
+        return {
+          _id: a._id,
+          label: a.label,
+          connectionType: a.connectionType,
+          enabled: a.enabled,
+          isDefault: a.isDefault,
+          status: a.status,
+          displayPhone: a.displayPhone || a.connectedPhone || '',
+          qualityRating: a.qualityRating,
+          health,
+          detail,
+        };
+      })
+    );
 
     // 3) Fallidos de las últimas 24 h por causa.
     const since = new Date(Date.now() - 24 * 3600 * 1000);
