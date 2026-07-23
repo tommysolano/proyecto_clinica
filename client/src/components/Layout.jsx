@@ -265,6 +265,9 @@ export default function Layout({ children }) {
     .filter((p) => p.path !== '/' && location.pathname.startsWith(p.path))
     .sort((a, b) => b.path.length - a.path.length)[0];
   const pageTitle = location.pathname === '/' ? 'Inicio' : (matchedTitle?.label || 'Shiluv');
+  // La página de chats gestiona su propio alto/scroll interno: se le da todo el
+  // espacio (padding mínimo) para no desperdiciar la parte superior.
+  const isChatsPage = location.pathname.startsWith('/chats');
 
   return (
     <div className="flex h-screen overflow-hidden bg-body">
@@ -512,13 +515,20 @@ export default function Layout({ children }) {
           </div>
         </header>
 
-        <main className="flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8">
-          {/* El chat aprovecha TODO el ancho (sin tope de 1280px): con la barra
-              lateral colapsada el espacio sobrante lo ocupa la conversación. */}
+        {/* El chat usa TODO el alto y ancho, con padding mínimo: el espacio que
+            antes se desperdiciaba en la parte superior ahora es conversación. El
+            resto de páginas conserva el padding cómodo y el scroll vertical. */}
+        <main
+          className={
+            isChatsPage
+              ? 'flex-1 min-h-0 overflow-hidden p-2 lg:p-3'
+              : 'flex-1 overflow-y-auto p-4 sm:p-6 lg:p-8'
+          }
+        >
           <div
             key={location.pathname}
             className={`page-enter mx-auto w-full ${
-              location.pathname.startsWith('/chats') ? 'max-w-none' : 'max-w-screen-xl'
+              isChatsPage ? 'max-w-none h-full' : 'max-w-screen-xl'
             }`}
           >
             {children}

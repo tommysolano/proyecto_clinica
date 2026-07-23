@@ -307,6 +307,10 @@ export default function Chats() {
   // Mensaje al que se está respondiendo (cita estilo WhatsApp).
   const [replyDraft, setReplyDraft] = useState(null);
   const composerRef = useRef(null);
+  // Compositor COMPACTO por defecto (una línea) para ver más mensajes; se EXPANDE
+  // (más alto) al enfocarlo o cuando ya hay texto/adjunto, para escribir cómodo
+  // mensajes largos — igual que en Daplox.
+  const [composerFocused, setComposerFocused] = useState(false);
 
   // Al pulsar "responder" el cursor pasa directo al editor: sin este foco había
   // que hacer clic en el cuadro antes de poder escribir.
@@ -552,6 +556,10 @@ export default function Chats() {
   const composerDisabled =
     !!activeConv?.blocked || activeWindowClosed || activeOptedOut ||
     !!templateDraft.name || attachmentDraft?.type === 'audio';
+  // El cuadro se expande al enfocarlo o cuando ya hay algo escrito/adjunto (así no
+  // se colapsa a media escritura ni al hacer clic en un botón de acción).
+  const composerExpanded =
+    composerFocused || draft.trim().length > 0 || !!attachmentDraft;
 
   const suggestReply = async () => {
     if (!activeId) return;
@@ -943,7 +951,7 @@ export default function Chats() {
   };
 
   return (
-    <div className="h-[calc(100vh-96px)] sm:h-[calc(100vh-112px)] lg:h-[calc(100vh-128px)] flex flex-row gap-2 sm:gap-3">
+    <div className="h-full min-h-0 flex flex-row gap-2 sm:gap-3">
       {/* Riel de navegación (estilo Daplox): nuevo chat + alcance + vistas */}
       <ChatRail
         view={view}
@@ -1564,16 +1572,24 @@ export default function Chats() {
                           }
                         }}
                         onPaste={handleComposerPaste}
+                        onFocus={() => setComposerFocused(true)}
+                        onBlur={() => setComposerFocused(false)}
                         placeholder={
                           templateDraft.name
                             ? 'Se enviará la plantilla seleccionada…'
                             : voiceNoteAttached
                               ? 'Una nota de voz se envía sola, sin texto'
-                              : 'Escribe un mensaje…   ·   / para guardados   ·   pega una imagen'
+                              : composerExpanded
+                                ? 'Escribe un mensaje…   ·   / para guardados   ·   pega una imagen'
+                                : 'Escribe un mensaje…'
                         }
-                        rows={2}
+                        rows={composerExpanded ? 5 : 1}
                         disabled={composerDisabled}
-                        className="w-full min-h-[52px] max-h-40 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm resize-y disabled:bg-slate-100"
+                        // Compacto (una línea) en reposo; alto y cómodo al enfocar o
+                        // cuando ya hay contenido. resize-y deja ajustarlo a mano.
+                        className={`w-full ${
+                          composerExpanded ? 'min-h-[132px]' : 'min-h-[44px]'
+                        } max-h-[55vh] border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm resize-y disabled:bg-slate-100 transition-[min-height] duration-150`}
                       />
                     )}
                     {/* Fila 2: acciones, debajo del cuadro y con todo el ancho disponible */}
