@@ -22,6 +22,11 @@ const serverLeaseSchema = new mongoose.Schema(
     holder: { type: String, default: '' }, // instanceId del poseedor
     host: { type: String, default: '' },
     pid: { type: Number, default: 0 },
+    // ¿El poseedor es un proceso PRIMARIO (IS_PRIMARY=1, el servidor de producción
+    // que SÍ puede correr las sesiones QR)? Un primario puede arrebatar el arriendo
+    // a un titular NO primario (p.ej. un despliegue de sobra en Render) aunque no
+    // haya vencido: así el QR y los jobs viven siempre en el host correcto.
+    primary: { type: Boolean, default: false },
     expiresAt: { type: Date, required: true },
     renewedAt: { type: Date, default: Date.now },
   },

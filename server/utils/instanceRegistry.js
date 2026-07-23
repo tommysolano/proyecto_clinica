@@ -76,25 +76,34 @@ function jobsEnabled() {
   return process.env.JOBS_DISABLED !== '1';
 }
 
+// ¿Este proceso es el PRIMARIO? El servidor de producción que SÍ puede correr las
+// sesiones QR (Chromium) y los jobs. Se marca con IS_PRIMARY=1 en su .env. Un
+// primario arrebata el liderazgo a cualquier proceso NO primario (p.ej. un
+// despliegue de sobra en Render), así el número de WhatsApp deja de pelearse
+// entre dos servidores y la conexión QR se estabiliza.
+const AM_PRIMARY = process.env.IS_PRIMARY === '1';
+
 /**
- * Intenta tomar (o renovar) el arriendo de los jobs. Atómico: el filtro solo
- * acepta el arriendo si YA es nuestro o si venció. Si otro lo tiene vivo, el
- * upsert intenta insertar un `_id` que ya existe y Mongo devuelve E11000 — que
- * aquí significa exactamente "no soy el líder".
+ * Intenta tomar (o renovar) el arriendo de los jobs. Atómico: el filtro acepta el
+ * arriendo si YA es nuestro, si venció, o —si somos PRIMARIO— si lo tiene un
+ * proceso NO primario (preempción). Si otro lo tiene vigente y no podemos
+ * arrebatarlo, el upsert choca con el `_id` existente y Mongo devuelve E11000 —
+ * que aquí significa exactamente "no soy el líder".
  */
 async function acquireJobsLease() {
   const now = new Date();
   const expiresAt = new Date(now.getTime() + LEASE_MS);
+  const or = [{ holder: INSTANCE_ID }, { expiresAt: { $lte: now } }];
+  if (AM_PRIMARY) or.push({ primary: { $ne: true } });
   try {
     await ServerLease.findOneAndUpdate(
-      { _id: JOBS_ROLE, $or: [{ holder: INSTANCE_ID }, { expiresAt: { $lte: now } }] },
-      { $set: { holder: INSTANCE_ID, host: HOST, pid: PID, expiresAt, renewedAt: now } },
+      { _id: JOBS_ROLE, $or: or },
+      { $set: { holder: INSTANCE_ID, host: HOST, pid: PID, primary: AM_PRIMARY, expiresAt, renewedAt: now } },
       { upsert: true, new: true }
     );
     return true;
   } catch (err) {
-    // 11000 = otro proceso tiene el arriendo vigente. Cualquier otro error se
-    // registra: no queremos quedarnos sin jobs por un fallo mudo de la base.
+    // 11000 = otro proceso tiene el arriendo vigente (y no lo podemos arrebatar).
     if (err?.code !== 11000) console.error('[instancias] error tomando el arriendo de jobs:', err.message);
     return false;
   }
@@ -107,11 +116,8 @@ async function alivePeers() {
 }
 
 async function beat() {
-  const wasLeader = leader;
+  // La transición de liderazgo (ganar/perder) la detecta y registra `start`.
   leader = jobsEnabled() ? await acquireJobsLease() : false;
-  if (wasLeader && !leader) {
-    console.warn('[instancias] ⚠️  este proceso PERDIÓ el arriendo de jobs: deja de ejecutarlos.');
-  }
   await ServerInstance.updateOne(
     { instanceId: INSTANCE_ID },
     {
@@ -124,6 +130,7 @@ async function beat() {
         hasSecretsKey: hasSecretsKey(),
         jobsEnabled: jobsEnabled(),
         isLeader: leader,
+        primary: AM_PRIMARY,
         lastSeenAt: new Date(),
       },
     },
@@ -154,18 +161,24 @@ async function beat() {
 }
 
 /**
- * Arranca el latido. `onLeader` se invoca UNA sola vez, la primera vez que este
- * proceso consigue el arriendo (ahí es donde se registran los jobs).
+ * Arranca el latido y avisa de las TRANSICIONES de liderazgo:
+ *   - `onGainLeadership()` al pasar a ser líder (arranca jobs + sesiones QR).
+ *   - `onLoseLeadership()` al dejar de serlo (APAGA las sesiones QR para no
+ *     pelearse con el nuevo líder — clave para que WhatsApp Web no haga flapping
+ *     cuando hay dos servidores).
+ * Ambas pueden dispararse VARIAS veces (el liderazgo puede ir y volver).
  */
-async function start(onLeader) {
-  let fired = false;
+async function start(onGainLeadership, onLoseLeadership) {
   const tick = async () => {
     try {
+      const was = leader;
       await beat();
-      if (leader && !fired && typeof onLeader === 'function') {
-        fired = true;
-        console.log(`[instancias] este proceso (${INSTANCE_ID}) es el LÍDER: arrancando jobs y WhatsApp QR.`);
-        onLeader();
+      if (leader && !was) {
+        console.log(`[instancias] ${INSTANCE_ID} GANÓ el liderazgo: arrancando jobs y sesiones QR.`);
+        if (typeof onGainLeadership === 'function') onGainLeadership();
+      } else if (!leader && was) {
+        console.warn(`[instancias] ${INSTANCE_ID} PERDIÓ el liderazgo: apagando sesiones QR (otro proceso las tomará).`);
+        if (typeof onLoseLeadership === 'function') onLoseLeadership();
       }
     } catch (err) {
       console.error('[instancias] latido fallido:', err.message);

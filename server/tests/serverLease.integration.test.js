@@ -17,13 +17,15 @@ const JOBS_ROLE = 'jobs';
 const LEASE_MS = 2 * 60 * 1000;
 
 // Copia de la primitiva de instanceRegistry.acquireJobsLease, parametrizada por
-// poseedor y "ahora" para poder simular dos procesos y el paso del tiempo.
-async function tryAcquire(holder, now) {
+// poseedor, "ahora" y si es PRIMARIO, para simular procesos y el paso del tiempo.
+async function tryAcquire(holder, now, amPrimary = false) {
   const expiresAt = new Date(now.getTime() + LEASE_MS);
+  const or = [{ holder }, { expiresAt: { $lte: now } }];
+  if (amPrimary) or.push({ primary: { $ne: true } });
   try {
     await ServerLease.findOneAndUpdate(
-      { _id: JOBS_ROLE, $or: [{ holder }, { expiresAt: { $lte: now } }] },
-      { $set: { holder, host: 'h', pid: 1, expiresAt, renewedAt: now } },
+      { _id: JOBS_ROLE, $or: or },
+      { $set: { holder, host: 'h', pid: 1, primary: amPrimary, expiresAt, renewedAt: now } },
       { upsert: true, new: true }
     );
     return true;
@@ -50,6 +52,22 @@ test('solo UN proceso consigue el arriendo de jobs', async () => {
   // El líder renueva sin problema (es su propio arriendo).
   const renew = await tryAcquire('A:1', new Date(now.getTime() + 30000));
   assert.equal(renew, true);
+});
+
+test('un proceso PRIMARIO arrebata el liderazgo a uno NO primario (aunque no haya vencido)', async () => {
+  const t0 = new Date('2026-07-23T12:00:00Z');
+  // Un backend de sobra (p.ej. Render), NO primario, toma el arriendo primero.
+  assert.equal(await tryAcquire('render:1', t0, false), true);
+  // El servidor de PRODUCCIÓN (primario) arranca y lo arrebata en el acto.
+  assert.equal(await tryAcquire('vps:1', new Date(t0.getTime() + 5000), true), true);
+  let lease = await ServerLease.findById(JOBS_ROLE).lean();
+  assert.equal(lease.holder, 'vps:1');
+  assert.equal(lease.primary, true);
+
+  // Y el backend de sobra ya NO puede arrebatárselo al primario (arriendo vigente).
+  assert.equal(await tryAcquire('render:1', new Date(t0.getTime() + 10000), false), false);
+  lease = await ServerLease.findById(JOBS_ROLE).lean();
+  assert.equal(lease.holder, 'vps:1', 'el primario conserva el liderazgo');
 });
 
 test('cuando el arriendo vence, otro proceso lo toma (relevo)', async () => {

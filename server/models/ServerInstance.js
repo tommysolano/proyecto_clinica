@@ -32,6 +32,9 @@ const serverInstanceSchema = new mongoose.Schema(
     jobsEnabled: { type: Boolean, default: true },
     // ¿Es el proceso que ahora mismo ejecuta los jobs y las sesiones QR?
     isLeader: { type: Boolean, default: false },
+    // ¿Está marcado como PRIMARIO (IS_PRIMARY=1)? El host de producción que debe
+    // correr el QR; arrebata el liderazgo a los procesos de sobra (p.ej. Render).
+    primary: { type: Boolean, default: false },
     // Se renueva con cada latido; el TTL borra el registro si el proceso muere.
     lastSeenAt: { type: Date, default: Date.now, expires: 300 },
   },

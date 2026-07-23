@@ -196,15 +196,29 @@ connectDB().then(() => {
   // la sesión de WhatsApp Web). Un proceso con JOBS_DISABLED=1 (dev contra prod)
   // late igual — para ser VISIBLE en el diagnóstico — pero nunca toma el arriendo.
   const registry = require('./utils/instanceRegistry');
-  registry.start(startLeaderJobs);
+  // Al GANAR el liderazgo: cablear los jobs (una sola vez) + arrancar las sesiones
+  // QR. Al PERDERLO: APAGAR las sesiones QR para que el nuevo líder pueda tomarlas
+  // sin pelearse (WhatsApp Web solo admite UNA sesión activa por número — dos
+  // servidores a la vez = auth_failure y flapping). Los jobs por intervalo quedan
+  // cableados una vez y no disparan si no somos líder (leaderOnly).
+  let jobsWired = false;
+  registry.start(
+    () => {
+      if (!jobsWired) { jobsWired = true; wireLeaderJobs(); }
+      // A los 5s para no competir con la inicialización del resto.
+      setTimeout(() => { require('./utils/whatsappQrManager').initEnabledOnBoot().catch(() => {}); }, 5 * 1000);
+    },
+    () => {
+      require('./utils/whatsappQrManager').shutdownAll().catch(() => {});
+    }
+  );
   process.on('SIGINT', () => registry.release());
   process.on('SIGTERM', () => registry.release());
 
-  // Arranca los jobs periódicos y las sesiones de WhatsApp QR. Lo llama el
-  // registro SOLO cuando este proceso es el líder. Cada intervalo se envuelve en
-  // `leaderOnly`: si el proceso pierde el arriendo (otro lo tomó tras un cuelgue),
-  // los jobs dejan de disparar en el acto y no envían en paralelo con el relevo.
-  function startLeaderJobs() {
+  // Cablea los jobs periódicos (una sola vez). Cada intervalo se envuelve en
+  // `leaderOnly`: si el proceso NO es el líder, no dispara — así nunca envía en
+  // paralelo con el líder real.
+  function wireLeaderJobs() {
     const only = registry.leaderOnly;
     // Job: marcar automáticamente como "no asistió" las citas de días pasados.
     require('./utils/autoNoShow').startAutoNoShowJob();
@@ -240,11 +254,8 @@ connectDB().then(() => {
     // (reenvía las EN_COLA y consulta autorización de las recibidas). Cada
     // SRI_RETRY_INTERVAL_MIN minutos (por defecto 5).
     require('./utils/invoiceRetry').startInvoiceRetryJob();
-    // Reconecta los números de WhatsApp por QR (whatsapp-web.js) con sesión guardada.
-    // A los 5s del arranque para no competir con la inicialización del resto.
-    setTimeout(() => {
-      require('./utils/whatsappQrManager').initEnabledOnBoot().catch(() => {});
-    }, 5 * 1000);
+    // (Las sesiones QR las arranca/para el manejador de liderazgo, no aquí: deben
+    //  vivir SOLO mientras este proceso sea líder para no pelearse con otro server.)
     // Job: sincronizar plantillas de WhatsApp con Meta para detectar cambios de
     // categoría/estado y alertar (recategorización = impacto en costo). El webhook
     // notifica al instante; este sondeo es la red de seguridad. Frecuencia
