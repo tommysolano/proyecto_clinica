@@ -713,6 +713,43 @@ test('QR caído: el workflow NO quema el turno — reintenta y envía cuando el 
   }
 });
 
+test('token ilegible (SECRETS_KEY de otro host): NO quema el turno — reintenta para que prod lo envíe', async () => {
+  // Caso real: un `npm run dev` local (sin SECRETS_KEY) conectado a la base de prod
+  // agarra la inscripción y no puede descifrar el token → antes quemaba el turno del
+  // contacto. Ahora se reintenta: el servidor de prod (con la clave) lo envía.
+  const { clinicId, userId } = await H.seedClinic();
+  const WhatsappAccount = require('../models/WhatsappAccount');
+  await WhatsappAccount.create({ label: 'Recepcion', connectionType: 'cloud_api', enabled: true, isDefault: true, phoneNumberId: '1', accessToken: 'enc:v1:x', businessAccountId: 'w' });
+
+  const gw = require('../utils/whatsappGateway');
+  const orig = gw.sendTemplate;
+  gw.sendTemplate = async () => ({ ok: false, errorCode: 'token_undecryptable', error: 'no se pudo descifrar' });
+  try {
+    const wf = await Workflow.create({
+      clinic: clinicId, name: 'Recordatorio', active: true,
+      trigger: { type: 'contact_import' },
+      steps: [{ type: 'send_template', templateName: '24h_flujo', templateLanguage: 'es' }],
+    });
+    await Contact.create({ clinic: clinicId, phone: '593999111222', firstName: 'Jaime', source: 'import' });
+    const batch = await ContactImport.create({
+      clinic: clinicId, fileName: 'x.csv', status: 'done', mapping: MAPPING,
+      workflows: [wf._id], createdBy: userId,
+    });
+    await enrollInWorkflows(batch, ['593999111222']);
+
+    await WorkflowEnrollment.updateMany({ workflow: wf._id }, { $set: { nextRunAt: new Date(Date.now() - 1000) } });
+    const engine = require('../utils/workflowEngine');
+    await engine.processDueEnrollments();
+
+    const e = await WorkflowEnrollment.findOne({ workflow: wf._id });
+    assert.equal(e.status, 'waiting', 'no se pierde: queda esperando el reintento (lo enviará el host con la clave)');
+    assert.ok(e.nextRunAt > new Date(), 'reintento programado en el futuro');
+    assert.equal(e.context.sendRetries, 1);
+  } finally {
+    gw.sendTemplate = orig;
+  }
+});
+
 test('QR caído con los reintentos agotados: fallo definitivo y el flujo sigue', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const WhatsappAccount = require('../models/WhatsappAccount');

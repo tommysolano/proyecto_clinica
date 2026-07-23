@@ -36,6 +36,7 @@ const SEND_FAIL_REASONS = {
   template_header_missing: 'La plantilla requiere una imagen/archivo de cabecera que no está guardado.',
   qr_not_connected: 'El número QR por el que saldría este mensaje está desconectado: reconéctalo en Configuración del Call Center.',
   qr_invalid_number: 'El teléfono del paciente no está en WhatsApp.',
+  token_undecryptable: 'El token de WhatsApp no se pudo descifrar en el servidor que procesó el envío (falta o cambió SECRETS_KEY — p.ej. un servidor de desarrollo local conectado a la base de producción, que no tiene esa clave). Se reintenta: el servidor de producción (con la clave) lo enviará.',
 };
 
 /**
@@ -59,14 +60,20 @@ function sendFailureInfo(result) {
   return SEND_FAIL_REASONS[reason] || result.errorMessage || `No se pudo enviar (${reason}).`;
 }
 
-// Fallos TRANSITORIOS del canal: solo el número QR caído (reconectar lo cura),
-// así que el envío se REINTENTA en vez de quemar el turno del contacto. Caso
-// real: una importación inscribió sus contactos mientras la sesión QR se
-// re-asentaba tras un deploy; todos quedaron "fallido" para siempre con el
-// número ya en verde. OJO: provider_unavailable ("no hay número configurado")
-// NO va aquí — es ausencia de configuración, no un tropiezo: debe fallar claro
-// y al instante, no colgarse 3 horas reintentando.
-const RETRYABLE_SEND_FAILS = new Set([SEND_FAIL_REASONS.qr_not_connected]);
+// Fallos TRANSITORIOS: se REINTENTA en vez de quemar el turno del contacto.
+//  - qr_not_connected: el número QR caído (reconectar lo cura). Caso real: una
+//    importación inscribió sus contactos mientras la sesión QR se re-asentaba tras
+//    un deploy; todos quedaron "fallido" para siempre con el número ya en verde.
+//  - token_undecryptable: el servidor que procesó el envío no pudo descifrar el
+//    token (falta/otra SECRETS_KEY — típico de un `npm run dev` local conectado a la
+//    base de prod). El servidor de producción (con la clave) SÍ puede: reintentar deja
+//    que él lo envíe en vez de perder el mensaje. En prod nunca dispara (descifra bien).
+// OJO: provider_unavailable ("no hay número configurado") NO va aquí — es ausencia de
+// configuración, no un tropiezo: debe fallar claro y al instante.
+const RETRYABLE_SEND_FAILS = new Set([
+  SEND_FAIL_REASONS.qr_not_connected,
+  SEND_FAIL_REASONS.token_undecryptable,
+]);
 const SEND_RETRY_MS = 5 * 60 * 1000; // reintento cada 5 min…
 const SEND_RETRY_MAX = 36; // …hasta ~3 horas; después, fallo definitivo y el flujo sigue
 
