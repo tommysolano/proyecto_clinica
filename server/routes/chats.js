@@ -88,6 +88,10 @@ router.post('/opportunities/bulk-whatsapp', requireRole(...CALL_CENTER_ROLES), c
 // Números (globales) conectados, para el selector "responder desde" del chat.
 router.get('/accounts', requireRole(...CALL_CENTER_ROLES), ctrl.listChatAccounts);
 
+// Contadores de chats NO LEÍDOS (para los badges del riel): { mine, all }.
+// Antes de '/:id' para que no lo capture como un id.
+router.get('/unread-counts', requireRole(...CALL_CENTER_ROLES), ctrl.unreadCounts);
+
 router.get('/', requireRole(...CALL_CENTER_ROLES), ctrl.listConversations);
 router.post('/', requireRole(...CALL_CENTER_ROLES), ctrl.createConversation);
 router.post('/simulate', requireRole(...CALL_CENTER_ROLES), ctrl.simulateIncoming);

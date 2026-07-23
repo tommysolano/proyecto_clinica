@@ -192,6 +192,25 @@ exports.getConversation = async (req, res) => {
  * CRM (nunca se manda "visto" a WhatsApp), para poder quitar la notificación de un
  * chat que ya se atendió por otra vía.
  */
+/**
+ * Contadores de chats NO LEÍDOS para los badges del riel:
+ *   - `mine`: chats sin leer asignados a mí.
+ *   - `all`:  chats sin leer de toda la bandeja del call center.
+ * Cuenta CONVERSACIONES (no mensajes), igual que el badge de Daplox.
+ */
+exports.unreadCounts = async (req, res) => {
+  try {
+    const base = { clinic: req.clinicId, unreadCount: { $gt: 0 } };
+    const [all, mine] = await Promise.all([
+      Conversation.countDocuments(base),
+      Conversation.countDocuments({ ...base, assignedTo: req.user._id }),
+    ]);
+    res.json({ all, mine });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al contar no leídos', error: err.message });
+  }
+};
+
 exports.markConversationRead = async (req, res) => {
   try {
     const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
@@ -572,6 +591,35 @@ const notifyOpportunityStage = (conv, stage) => {
   }
 };
 
+/**
+ * Crea una marca INTERNA dentro del hilo (kind='event'): se muestra a los agentes
+ * como un chip centrado y NUNCA se envía al contacto por WhatsApp. Se emite en vivo
+ * para que aparezca en el chat de todo el equipo. No toca lastMessage* (no debe
+ * mover la conversación en la lista ni cambiar la vista previa).
+ */
+async function createInternalEvent({ clinicId, conv, eventType, body, sentBy, sentByName }) {
+  const msg = await Message.create({
+    clinic: clinicId,
+    conversation: conv._id,
+    kind: 'event',
+    eventType,
+    body,
+    sentBy: sentBy || null,
+    sentByName: sentByName || '',
+  });
+  emitToCallCenter('chat:message', { conversationId: conv._id, message: msg });
+  return msg;
+}
+
+// Texto legible del chip de "oportunidad creada" para el hilo.
+function opportunityEventBody(opp) {
+  const productos = (opp.interestedIn || []).map((i) => i.name).filter(Boolean).join(', ');
+  const partes = [`Oportunidad creada${productos ? `: ${productos}` : ''}`];
+  if (opp.expectedValue) partes.push(`$${Number(opp.expectedValue).toFixed(2)}`);
+  partes.push(`etapa ${opp.stage}`);
+  return partes.join(' · ');
+}
+
 exports.addOpportunity = async (req, res) => {
   try {
     const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
@@ -595,6 +643,15 @@ exports.addOpportunity = async (req, res) => {
     // Mantener compat: opportunity principal = última creada.
     syncPrimaryOpportunity(conv);
     await conv.save();
+    // Marca interna en el hilo (visible solo para el equipo, no se envía al contacto).
+    await createInternalEvent({
+      clinicId: req.clinicId,
+      conv,
+      eventType: 'opportunity_created',
+      body: opportunityEventBody(opp),
+      sentBy: req.user._id,
+      sentByName: req.user.name,
+    }).catch(() => {});
     // Una oportunidad nueva entró a su etapa → dispara workflows 'opportunity_stage'.
     notifyOpportunityStage(conv, opp.stage);
     await populateConversation(conv);

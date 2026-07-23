@@ -283,6 +283,8 @@ export default function Chats() {
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebounce(search, 300);
   const [stats, setStats] = useState(null);
+  // Contadores de chats NO LEÍDOS para los badges del riel (mis chats / grupal).
+  const [unreadCounts, setUnreadCounts] = useState({ mine: 0, all: 0 });
   // Rango del panel de Supervisión. Por defecto, el mes en curso (hora Ecuador).
   const [statsRange, setStatsRange] = useState(() => ({ from: `${todayEc().slice(0, 7)}-01`, to: todayEc() }));
   const [services, setServices] = useState([]);
@@ -389,6 +391,17 @@ export default function Chats() {
     }
   };
 
+  // Contadores de no leídos (mis chats / grupal) para los badges del riel. Se
+  // recarga en cada evento de chat y al marcar como leído.
+  const loadUnreadCounts = async () => {
+    try {
+      const r = await api.get('/chats/unread-counts');
+      setUnreadCounts({ mine: r.data?.mine || 0, all: r.data?.all || 0 });
+    } catch {
+      /* noop */
+    }
+  };
+
   const loadMessages = async (id) => {
     try {
       const r = await api.get(`/chats/${id}/messages`);
@@ -425,6 +438,7 @@ export default function Chats() {
       .then((r) => setTemplates((r.data || []).slice().sort((a, b) => (b.usageCount || 0) - (a.usageCount || 0))))
       .catch(() => {});
     loadStats();
+    loadUnreadCounts();
   }, []);
 
   useEffect(() => {
@@ -449,6 +463,7 @@ export default function Chats() {
         loadMessages(activeId);
       }
       if (view !== 'board') loadConversations(paramsForView());
+      loadUnreadCounts();
     },
     [activeId, view, scope, filter, debouncedSearch]
   );
@@ -477,6 +492,7 @@ export default function Chats() {
     'chat:updated',
     () => {
       if (view !== 'board') loadConversations(paramsForView());
+      loadUnreadCounts();
     },
     [view, scope, filter, debouncedSearch]
   );
@@ -900,6 +916,7 @@ export default function Chats() {
       if (view === 'inbox' && filter === 'unread') {
         setConversations((prev) => prev.filter((c) => c._id !== conv._id));
       }
+      loadUnreadCounts();
       toast.success('Marcado como leído');
     } catch (err) {
       toast.error(err.response?.data?.message || 'No se pudo marcar como leído');
@@ -957,6 +974,7 @@ export default function Chats() {
         view={view}
         scope={scope}
         canSupervise={isAdmin || isSupervisor}
+        unreadCounts={unreadCounts}
         onNewChat={() => setNewChatOpen(true)}
         onSelectScope={selectScope}
         onSelectView={setView}
@@ -984,6 +1002,11 @@ export default function Chats() {
                   }`}
                 >
                   {t.label}
+                  {t.id === 'unread' && (scope === 'mine' ? unreadCounts.mine : unreadCounts.all) > 0 && (
+                    <span className="ml-1.5 bg-emerald-600 text-white text-[10px] px-1.5 rounded-full">
+                      {scope === 'mine' ? unreadCounts.mine : unreadCounts.all}
+                    </span>
+                  )}
                   {t.id === 'featured' && stats?.featuredCount > 0 && (
                     <span className="ml-1.5 bg-amber-100 text-amber-700 text-[10px] px-1.5 rounded-full">
                       {stats.featuredCount}
@@ -1962,25 +1985,32 @@ function GalleryModal({ images, onClose, onChange, onSend }) {
 function RailItem(props) {
   // Icon se declara como const (mayúscula) para que se pueda usar como <Icon/>
   // sin que el linter la marque como no usada (varsIgnorePattern '^[A-Z_]').
-  const { Icon, label, active, onClick } = props;
+  const { Icon, label, active, onClick, badge } = props;
   return (
     <button
       type="button"
       onClick={onClick}
-      title={label}
-      className={`w-full flex flex-col items-center gap-1 py-2.5 rounded-xl border-none cursor-pointer transition-colors ${
+      title={badge ? `${label} · ${badge} sin leer` : label}
+      className={`relative w-full flex flex-col items-center gap-1 py-2.5 rounded-xl border-none cursor-pointer transition-colors ${
         active
           ? 'bg-emerald-50 text-emerald-700'
           : 'bg-transparent text-slate-500 hover:bg-slate-50 hover:text-slate-700'
       }`}
     >
-      <Icon className="w-6 h-6" />
+      <span className="relative">
+        <Icon className="w-6 h-6" />
+        {badge > 0 && (
+          <span className="absolute -top-1.5 -right-2 min-w-[16px] h-4 px-1 rounded-full bg-emerald-600 text-white text-[10px] font-bold flex items-center justify-center shadow-sm">
+            {badge > 99 ? '99+' : badge}
+          </span>
+        )}
+      </span>
       <span className="text-[10px] font-medium leading-tight text-center">{label}</span>
     </button>
   );
 }
 
-function ChatRail({ view, scope, canSupervise, onNewChat, onSelectScope, onSelectView }) {
+function ChatRail({ view, scope, canSupervise, unreadCounts = { mine: 0, all: 0 }, onNewChat, onSelectScope, onSelectView }) {
   return (
     <div className="w-[64px] sm:w-[72px] shrink-0 bg-white border border-slate-200 rounded-xl flex flex-col items-stretch p-1.5 gap-0.5 overflow-y-auto">
       <button
@@ -1996,12 +2026,14 @@ function ChatRail({ view, scope, canSupervise, onNewChat, onSelectScope, onSelec
       <RailItem
         Icon={HiOutlineUser}
         label="Mi chat"
+        badge={unreadCounts.mine}
         active={view === 'inbox' && scope === 'mine'}
         onClick={() => onSelectScope('mine')}
       />
       <RailItem
         Icon={HiOutlineUsers}
         label="Grupal"
+        badge={unreadCounts.all}
         active={view === 'inbox' && scope === 'all'}
         onClick={() => onSelectScope('all')}
       />
@@ -2610,7 +2642,23 @@ function highlightMatches(text, term, isOut) {
   return out;
 }
 
+// Icono del chip según el tipo de evento interno.
+const EVENT_ICON = { opportunity_created: '🎯' };
+
 function MessageBubble({ msg, onReply, onJumpTo, highlight, onRetry }) {
+  // Evento INTERNO del sistema (kind='event'): chip centrado, visible SOLO para el
+  // equipo (nunca se envió al contacto). P.ej. "Oportunidad creada".
+  if (msg.kind === 'event') {
+    return (
+      <div className="flex justify-center my-1.5">
+        <div className="max-w-[85%] text-center text-[11px] text-violet-700 bg-violet-50 border border-violet-200 rounded-full px-3 py-1 flex items-center gap-1.5">
+          <span>{EVENT_ICON[msg.eventType] || '•'}</span>
+          <span className="font-medium">{msg.body}</span>
+          {msg.sentByName && <span className="text-violet-400">· {msg.sentByName}</span>}
+        </div>
+      </div>
+    );
+  }
   const isOut = msg.direction === 'out';
   // Un saliente FALLIDO se muestra en ROJO (no verde) con un aviso claro y botón
   // "Reintentar": es peligroso que un mensaje que nunca salió parezca enviado.

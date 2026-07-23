@@ -14,7 +14,22 @@ const messageSchema = new mongoose.Schema(
       required: true,
       index: true,
     },
-    direction: { type: String, enum: ['in', 'out'], required: true },
+    // 'message' = mensaje real (entrante/saliente por WhatsApp). 'event' = marca
+    // INTERNA del sistema que se muestra dentro del hilo SOLO para el equipo y
+    // NUNCA se envía al contacto (p.ej. "Oportunidad creada"). Se renderiza como
+    // un chip centrado, no como burbuja. Igual que en Daplox.
+    kind: { type: String, enum: ['message', 'event'], default: 'message', index: true },
+    // Tipo del evento interno (cuando kind='event'): 'opportunity_created', …
+    eventType: { type: String, trim: true, default: '' },
+    // Los eventos no tienen dirección (no salen ni entran por WhatsApp): la
+    // dirección solo es obligatoria para los mensajes reales.
+    direction: {
+      type: String,
+      enum: ['in', 'out'],
+      required: function () {
+        return this.kind !== 'event';
+      },
+    },
     body: { type: String, trim: true },
     mediaUrl: { type: String, trim: true },
     // 'sticker' es un webp de WhatsApp: se guarda con su tipo propio para poder
