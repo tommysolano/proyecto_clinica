@@ -88,16 +88,32 @@ async function verifyConnected(key, entry, timeoutMs = 8000) {
   return 'disconnected';
 }
 
-// Chequeo de salud periódico de todas las sesiones conectadas: es la red de
-// seguridad para el caso "desvinculé desde el celular y no llegó ningún evento".
+// Chequeo de salud periódico de todas las sesiones. Dos redes de seguridad:
+//  - Sesión 'connected': verifica que siga viva (getState). Cubre "desvinculé
+//    desde el celular y no llegó ningún evento".
+//  - Sesión con cliente pero estado NO 'connected' (pegada en 'syncing'/
+//    'connecting' porque whatsapp-web.js re-sincronizó sin re-emitir 'ready'):
+//    si getState dice CONNECTED, se CURA a 'connected'. Sin esto, un número que
+//    en realidad funciona (recibe mensajes, el teléfono envía) rechazaba todos
+//    los envíos del sistema con "QR no conectado".
 let healthTimer = null;
 function ensureHealthTimer() {
   if (healthTimer) return;
   healthTimer = setInterval(async () => {
     for (const [key, entry] of Array.from(clients.entries())) {
-      if (entry.status !== 'connected') continue;
-      // eslint-disable-next-line no-await-in-loop
-      await verifyConnected(key, entry, 10000).catch(() => {});
+      if (entry.status === 'connected') {
+        // eslint-disable-next-line no-await-in-loop
+        await verifyConnected(key, entry, 10000).catch(() => {});
+      } else if (entry.client && ['syncing', 'connecting'].includes(entry.status)) {
+        let live = null;
+        try {
+          // eslint-disable-next-line no-await-in-loop
+          live = await withTimeout(entry.client.getState(), 8000, '__timeout__');
+        } catch {
+          live = null;
+        }
+        if (live === 'CONNECTED') healToConnected(key, entry);
+      }
     }
   }, 45000);
   healthTimer.unref?.();
@@ -694,6 +710,62 @@ async function waitForConnected(key, timeoutMs = 45000) {
 }
 
 /**
+ * Cura una entrada a 'connected' cuando la sesión resultó estar viva de verdad,
+ * pero el estado cacheado se había quedado atrás. Desarma los watchdogs de
+ * sincronización (si no, el destructivo podría cerrar una sesión que SÍ funciona)
+ * y refleja el estado en la BD + la UI.
+ */
+function healToConnected(key, entry) {
+  if (!entry || entry.status === 'connected') return;
+  entry.status = 'connected';
+  entry.percent = null;
+  if (entry.syncWatchdog) { clearTimeout(entry.syncWatchdog); entry.syncWatchdog = null; }
+  if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
+  const connectedPhone = (entry.client?.info?.wid?.user || '').toString();
+  setAccountStatus(key, {
+    status: 'connected',
+    ...(connectedPhone ? { connectedPhone, lastConnectedAt: new Date() } : {}),
+  }).catch(() => {});
+  emitStatus(key, { status: 'connected', ...(connectedPhone ? { connectedPhone } : {}) }).catch(() => {});
+  console.log(`[whatsappQr] estado curado a 'connected' para ${key} (la sesión estaba viva; getState=CONNECTED).`);
+}
+
+/**
+ * Devuelve una entrada LISTA PARA ENVIAR, o null si de verdad no hay sesión.
+ *
+ * POR QUÉ: el estado cacheado (`entry.status`) NO es fiable. whatsapp-web.js
+ * re-emite 'authenticated'/'loading_screen' al RE-SINCRONIZAR (tras reiniciar el
+ * VPS, un bache de red, etc.) y deja el estado pegado en 'syncing'/'connecting'
+ * aunque la sesión SÍ funcione — recibe mensajes y el teléfono envía, pero los
+ * envíos del sistema fallaban con "el número QR no está conectado" y el chat
+ * mostraba burbujas rojas con la sesión perfectamente viva. Antes de rendirnos,
+ * preguntamos el estado REAL a la sesión (getState); si responde CONNECTED,
+ * curamos el estado y enviamos igual.
+ */
+async function acquireSendableEntry(key) {
+  let entry = clients.get(key);
+  if (entry && entry.status === 'connected') return entry;
+  if (entry && entry.client) {
+    let live = null;
+    try {
+      live = await withTimeout(entry.client.getState(), 6000, '__timeout__');
+    } catch (e) {
+      // timeout = Chrome ocupado (no muerto): asumimos viva y dejamos que el envío,
+      // con su propio timeout, decida. Otro error = sesión no consultable → null.
+      live = String(e.message) === '__timeout__' ? 'CONNECTED' : null;
+    }
+    if (live === 'CONNECTED') {
+      healToConnected(key, entry);
+      return entry;
+    }
+  }
+  // Sin veredicto de "conectado": si hay una sincronización en curso, espera a que
+  // termine; si no, no está disponible.
+  entry = await waitForConnected(key);
+  return entry && entry.client && entry.status === 'connected' ? entry : null;
+}
+
+/**
  * Localiza DENTRO de la página de WhatsApp Web el mensaje a citar y devuelve su
  * id serializado REAL en el store (`{ id, step }`). NO usa los helpers de alto
  * nivel de whatsapp-web.js (getChatById/fetchMessages/getMessageById): esos
@@ -869,9 +941,8 @@ async function sendResolvingQuote(entry, chatId, content, quotedMessageId, opts 
 /** Envía texto por la sesión QR. Devuelve un shape compatible con messaging. */
 async function sendText(account, to, body, quotedMessageId, quoteBody) {
   const key = String(account._id);
-  let entry = clients.get(key);
-  if (!entry || entry.status !== 'connected') entry = await waitForConnected(key);
-  if (!entry || !entry.client || entry.status !== 'connected') {
+  const entry = await acquireSendableEntry(key);
+  if (!entry) {
     return { ok: false, errorCode: 'qr_not_connected', error: 'El número QR no está conectado' };
   }
   try {
@@ -903,9 +974,8 @@ async function sendText(account, to, body, quotedMessageId, quoteBody) {
  */
 async function sendMedia(account, to, url, caption, type = 'image', quotedMessageId, quoteBody) {
   const key = String(account._id);
-  let entry = clients.get(key);
-  if (!entry || entry.status !== 'connected') entry = await waitForConnected(key);
-  if (!entry || !entry.client || entry.status !== 'connected') {
+  const entry = await acquireSendableEntry(key);
+  if (!entry) {
     return { ok: false, errorCode: 'qr_not_connected', error: 'El número QR no está conectado' };
   }
   const isVoice = type === 'audio';
@@ -1000,6 +1070,8 @@ function getLiveSnapshot(accountId) {
  * - Sin cliente en memoria → cualquier estado activo en BD es viejo → 'disconnected'.
  * - Cliente 'connected' → verificación rápida con getState (2.5s de presupuesto;
  *   si no responde a tiempo se deja como está y el chequeo periódico decide).
+ * - Cliente pegado en 'syncing'/'connecting' pero VIVO (getState=CONNECTED) → se
+ *   CURA a 'connected'. Así la lista y los envíos coinciden con la realidad.
  */
 async function reconcileAccount(doc) {
   const key = String(doc._id);
@@ -1011,9 +1083,20 @@ async function reconcileAccount(doc) {
     }
     return doc;
   }
-  doc.status = entry.status === 'connected'
-    ? await verifyConnected(key, entry, 2500).catch(() => entry.status)
-    : entry.status;
+  if (entry.status === 'connected') {
+    doc.status = await verifyConnected(key, entry, 2500).catch(() => entry.status);
+  } else if (entry.client && ['syncing', 'connecting'].includes(entry.status)) {
+    let live = null;
+    try {
+      live = await withTimeout(entry.client.getState(), 2500, '__timeout__');
+    } catch {
+      live = null;
+    }
+    if (live === 'CONNECTED') healToConnected(key, entry);
+    doc.status = entry.status;
+  } else {
+    doc.status = entry.status;
+  }
   return doc;
 }
 
@@ -1065,4 +1148,6 @@ module.exports = {
   reconcileAccount,
   initEnabledOnBoot,
   shutdownAll,
+  // Solo para pruebas: acceso al mapa de sesiones y a la recuperación de estado.
+  __test: { clients, acquireSendableEntry, healToConnected },
 };
