@@ -177,6 +177,52 @@ async function extractQrMedia(msg) {
   }
 }
 
+// Atribución click-to-WhatsApp (anuncios Meta) para números QR. En Cloud API el
+// webhook trae `referral`; en QR, whatsapp-web.js 1.34.x NO expone el contexto del
+// anuncio como propiedad, pero `getMessageModel` vuelca el modelo COMPLETO en
+// `_data`, así que —si WhatsApp Web lo incluye— llega ahí en crudo bajo algún
+// campo. Lo buscamos de forma defensiva (varias formas conocidas/probables) y lo
+// devolvemos con la MISMA forma que espera ingestExternalMessage (adId, headline…).
+// Devuelve null si no hay señales de anuncio.
+// ¿Este objeto parece el contexto de un anuncio? (trae id o url de la fuente).
+function looksLikeAdCtx(o) {
+  return !!(o && typeof o === 'object' &&
+    (o.sourceUrl || o.source_url || o.sourceId || o.source_id || o.ctwaClid || o.ctwa_clid || o.ctwaSignals));
+}
+
+function extractQrReferral(msg) {
+  const d = msg && msg._data;
+  if (!d || typeof d !== 'object') return null;
+
+  // Ubicaciones conocidas/probables (plano y anidado en contextInfo/quoted).
+  const candidates = [
+    d.ctwaContext, d.ctwaContextData, d.adReplyMetadata, d.externalAdReply,
+    d.contextInfo && d.contextInfo.externalAdReply, d.contextInfo && d.contextInfo.ctwaContext,
+    d.quotedAd && (d.quotedAd.ctwaContext || d.quotedAd),
+  ];
+  let ctx = candidates.find(looksLikeAdCtx) || null;
+
+  // Rescate: barre un nivel (por si la clave cambió entre versiones de la librería).
+  if (!ctx) {
+    for (const v of Object.values(d)) {
+      if (looksLikeAdCtx(v)) { ctx = v; break; }
+      if (v && typeof v === 'object' && (looksLikeAdCtx(v.externalAdReply) || looksLikeAdCtx(v.ctwaContext))) {
+        ctx = v.externalAdReply || v.ctwaContext; break;
+      }
+    }
+  }
+  if (!ctx || typeof ctx !== 'object') return null;
+
+  const adId = ctx.sourceId || ctx.source_id || ctx.adId || '';
+  const sourceUrl = ctx.sourceUrl || ctx.source_url || ctx.url || '';
+  const headline = ctx.title || ctx.headline || '';
+  const body = ctx.description || ctx.body || '';
+  const sourceType = ctx.sourceType || ctx.source_type || (ctx.mediaType != null ? String(ctx.mediaType) : '');
+  const ctwaClid = ctx.ctwaClid || ctx.ctwa_clid || '';
+  if (!adId && !sourceUrl && !headline && !body) return null;
+  return { adId, sourceUrl, headline, body, sourceType, ctwaClid, campaign: headline || body };
+}
+
 /**
  * Inicia (o reutiliza) el cliente de un número QR. `userId` se usa para mandarle
  * el QR directamente a quien pulsó "Conectar".
@@ -434,6 +480,26 @@ async function connect(accountId, { userId } = {}) {
         );
       }
 
+      // Anuncio click-to-WhatsApp (solo lo trae el 1er mensaje tras tocar el anuncio).
+      const referral = extractQrReferral(msg);
+      if (referral) {
+        console.log('[ctwa_ad][qr] mensaje desde anuncio — source_id=%s url=%s de %s',
+          referral.adId || '(vacío)', referral.sourceUrl || '(sin url)', from);
+      } else if (msg._data && typeof msg._data === 'object') {
+        // Sin mapear: si hay SEÑALES de anuncio (clave sospechosa arriba o dentro de
+        // contextInfo) deja las claves reales en el log para ajustar el mapeo con
+        // datos de producción (no se vuelca el cuerpo del mensaje, solo nombres).
+        const adRe = /ctwa|ad_?reply|externalad|source_?url/i;
+        const ci = msg._data.contextInfo;
+        const ciObj = ci && typeof ci === 'object' ? ci : null;
+        const topAdish = Object.keys(msg._data).some((k) => adRe.test(k));
+        const ciAdish = ciObj && Object.keys(ciObj).some((k) => adRe.test(k));
+        if (topAdish || ciAdish) {
+          console.log('[ctwa_ad][qr] posible anuncio NO mapeado — _data:[%s] contextInfo:[%s]',
+            Object.keys(msg._data).join(','), ciObj ? Object.keys(ciObj).join(',') : '—');
+        }
+      }
+
       const { ingestExternalMessage } = require('../controllers/chatController');
       await ingestExternalMessage({
         clinicId,
@@ -448,6 +514,7 @@ async function connect(accountId, { userId } = {}) {
         contactName: msg._data?.notifyName || '',
         externalId: serializedId,
         contextId,
+        referral,
       });
     } catch (e) {
       console.error('[whatsapp-qr message]', e.message);
