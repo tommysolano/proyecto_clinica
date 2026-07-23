@@ -91,6 +91,27 @@ function getIO() {
 }
 
 /**
+ * Foto del estado del tiempo real, para el panel de diagnóstico: cuántos sockets
+ * hay conectados en total y cuántos en la bandeja del call center (los que reciben
+ * `chat:message` en vivo). Si `callcenter` es 0 mientras hay agentes con el chat
+ * abierto, el tiempo real NO está llegando y toca revisar la conexión del socket.
+ */
+function getRealtimeStats() {
+  if (!io) return { up: false, totalSockets: 0, callcenterSockets: 0 };
+  let callcenterSockets = 0;
+  try {
+    callcenterSockets = io.sockets.adapter.rooms.get('callcenter')?.size || 0;
+  } catch {
+    callcenterSockets = 0;
+  }
+  return {
+    up: true,
+    totalSockets: io.of('/').sockets.size,
+    callcenterSockets,
+  };
+}
+
+/**
  * Emite a la sala de una clínica.
  */
 function emitToClinic(clinicId, event, payload) {
@@ -123,4 +144,4 @@ function emitToCallCenter(event, payload) {
   io.to('callcenter').emit(event, payload);
 }
 
-module.exports = { init, getIO, emitToClinic, emitToUser, emitToRole, emitToCallCenter };
+module.exports = { init, getIO, getRealtimeStats, emitToClinic, emitToUser, emitToRole, emitToCallCenter };

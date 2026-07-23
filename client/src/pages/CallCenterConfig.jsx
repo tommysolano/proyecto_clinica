@@ -499,6 +499,18 @@ function HealthPanel({ health, loading, healing, onRefresh, onHeal }) {
             </div>
           </div>
 
+          {/* Tiempo real */}
+          {health.realtime && (
+            <div className="flex items-center gap-2 flex-wrap text-xs border border-slate-100 rounded-lg px-2.5 py-1.5 bg-slate-50/60">
+              <span className={`w-1.5 h-1.5 rounded-full ${health.realtime.callcenterSockets > 0 ? 'bg-emerald-500' : 'bg-amber-500'}`} />
+              <span className="font-medium text-slate-700">Tiempo real</span>
+              <span className="text-slate-500">
+                {health.realtime.up ? 'servidor activo' : 'servidor caído'} · {health.realtime.callcenterSockets} agente(s)
+                conectados a la bandeja en vivo · {health.realtime.totalSockets} socket(s) en total
+              </span>
+            </div>
+          )}
+
           {/* Procesos vivos */}
           <div>
             <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">

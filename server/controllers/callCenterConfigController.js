@@ -1058,6 +1058,9 @@ exports.whatsappDiagnostics = async (req, res) => {
       failures,
       orphanLinks,
       secretsKey: registry.hasSecretsKey(),
+      // Estado del tiempo real: cuántos sockets están conectados a la bandeja. Si es
+      // 0 con agentes usando el chat, el tiempo real no llega (revisar el socket).
+      realtime: require('../realtime').getRealtimeStats(),
       generatedAt: new Date(),
     });
   } catch (err) {

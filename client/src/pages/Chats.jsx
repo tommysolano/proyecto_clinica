@@ -47,7 +47,7 @@ import {
 } from 'react-icons/hi2';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
-import { useSocketEvent } from '../context/SocketContext';
+import { useSocketEvent, useSocket } from '../context/SocketContext';
 import SameSlotPanel from '../components/SameSlotPanel';
 import TagEditor from '../components/TagEditor';
 import { fmtDate, fmtDateTime, todayEc, nowEcHHMM } from '../utils/date';
@@ -476,6 +476,43 @@ export default function Chats() {
     },
     [view, scope, filter, debouncedSearch]
   );
+
+  // Estado del tiempo real (socket). Se muestra en la cabecera y gobierna el
+  // respaldo por sondeo de abajo.
+  const { connected: realtimeConnected } = useSocket();
+
+  // Refresco al VOLVER a la pestaña o recuperar el foco: si mientras estabas en
+  // otra pestaña se perdió algún evento en vivo, al volver ves todo al día sin
+  // pulsar "recargar".
+  useEffect(() => {
+    const refresh = () => {
+      if (document.visibilityState === 'hidden') return;
+      if (view !== 'board') loadConversations(paramsForView());
+      if (activeId) loadMessages(activeId);
+    };
+    window.addEventListener('focus', refresh);
+    document.addEventListener('visibilitychange', refresh);
+    return () => {
+      window.removeEventListener('focus', refresh);
+      document.removeEventListener('visibilitychange', refresh);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId, view, scope, filter, debouncedSearch]);
+
+  // RESPALDO cuando el tiempo real está CAÍDO: sondea cada 8 s para que los
+  // mensajes nuevos aparezcan solos aunque el socket no esté conectado (así nunca
+  // hay que pulsar "recargar"). Cuando el socket funciona, esto NO corre: el
+  // tiempo real ya entrega los mensajes al instante.
+  useEffect(() => {
+    if (realtimeConnected || view === 'board') return undefined;
+    const t = setInterval(() => {
+      if (document.visibilityState === 'hidden') return;
+      loadConversations(paramsForView());
+      if (activeId) loadMessages(activeId);
+    }, 8000);
+    return () => clearInterval(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [realtimeConnected, activeId, view, scope, filter, debouncedSearch]);
 
   useEffect(() => {
     if (messagesEndRef.current) {
@@ -1087,6 +1124,12 @@ export default function Chats() {
                     >
                       <HiOutlineXMark className="w-4 h-4" />
                     </button>
+                  </div>
+                )}
+                {!realtimeConnected && (
+                  <div className="text-[11px] text-amber-800 bg-amber-50 border-b border-amber-200 px-3 py-1 flex items-center gap-1.5">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse" />
+                    Reconectando el tiempo real… los mensajes nuevos siguen llegando (se refresca solo cada pocos segundos).
                   </div>
                 )}
                 <div ref={messagesEndRef} className="flex-1 overflow-y-auto bg-slate-50 p-4 space-y-2">

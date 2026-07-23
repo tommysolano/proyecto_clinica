@@ -19,6 +19,13 @@ export function SocketProvider({ children }) {
   // siempre, el efecto no se re-ejecutaba al llegar el usuario y el socket NO
   // se conectaba nunca (sin error alguno). Usar un id que exista de verdad.
   const userId = user?.id || user?._id || null;
+  // El socket se UNE a la sala 'callcenter' (la que recibe chat:message en vivo)
+  // según el ROL del token con el que conecta. Pero al iniciar sesión el primer
+  // token NO trae clínica ni rol; el rol llega recién al elegir sucursal (segundo
+  // token). Por eso el socket debe RECONECTAR cuando cambia la clínica activa: si
+  // no, un agente (no super-admin) conectaba con el token sin rol, nunca entraba a
+  // 'callcenter' y el tiempo real quedaba muerto para él (había que recargar).
+  const activeClinicId = activeClinic?._id || null;
 
   useEffect(() => {
     const token = localStorage.getItem('token');
@@ -51,14 +58,10 @@ export function SocketProvider({ children }) {
       socketRef.current = null;
       setConnected(false);
     };
-  }, [userId]);
-
-  // Cuando cambia la clínica activa, avisar al server para que mueva la room.
-  useEffect(() => {
-    if (socketRef.current && activeClinic?._id) {
-      socketRef.current.emit('switch-clinic', activeClinic._id);
-    }
-  }, [activeClinic?._id]);
+    // Reconectar al cambiar de usuario O de clínica activa: el token nuevo (con el
+    // rol correcto) hace que el server vuelva a unir el socket a la sala correcta,
+    // incluida 'callcenter'. Sin esto el tiempo real no llegaba tras elegir sede.
+  }, [userId, activeClinicId]);
 
   const subscribe = useCallback((event, handler) => {
     const s = socketRef.current;
