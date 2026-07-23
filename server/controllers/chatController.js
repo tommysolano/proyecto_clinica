@@ -2104,7 +2104,13 @@ async function ingestExternalOutbound({ clinicId, account, externalUserId, phone
     const dup = await Message.findOne({ clinic: clinicId, externalId, direction: 'out' }).select('_id');
     if (dup) return;
   }
-  const conv = await Conversation.findOne({ clinic: clinicId, channel: 'whatsapp', phone: normalizedPhone });
+  // Número oculto (@lid): casar por el JID estable (su `phone` es el número real ya
+  // resuelto, que puede diferir del identificador del LID). Si no, por teléfono.
+  const isLidJid = typeof externalUserId === 'string' && externalUserId.endsWith('@lid');
+  let conv = isLidJid
+    ? await Conversation.findOne({ clinic: clinicId, channel: 'whatsapp', externalUserId })
+    : null;
+  if (!conv) conv = await Conversation.findOne({ clinic: clinicId, channel: 'whatsapp', phone: normalizedPhone });
   // Sin conversación previa no creamos una desde un saliente del teléfono: sería
   // un chat que el agente inició fuera del CRM y del que no tenemos contexto.
   if (!conv) return;
@@ -2185,10 +2191,21 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
     if (dup) return;
   }
   const normalizedPhone = normalizePhone(phone || externalUserId);
-  const findKey = phone
-    ? { clinic: clinicId, channel, phone: normalizedPhone }
-    : { clinic: clinicId, channel, externalUserId };
+  // Contactos de número OCULTO (@lid): su identidad estable es el JID @lid, NO el
+  // teléfono (que se resuelve aparte y puede llegar después). Buscar por externalUserId
+  // evita duplicar el chat y permite CURAR el número mostrado al valor real.
+  const isLidJid = typeof externalUserId === 'string' && externalUserId.endsWith('@lid');
+  const findKey = isLidJid
+    ? { clinic: clinicId, channel, externalUserId }
+    : phone
+      ? { clinic: clinicId, channel, phone: normalizedPhone }
+      : { clinic: clinicId, channel, externalUserId };
   let conv = await Conversation.findOne(findKey);
+  // LID sin chat aún por su JID: ¿ya hay uno con ESE número real (el contacto escribió
+  // antes por Cloud u otro canal)? úsalo para no duplicar (se le fija el JID @lid).
+  if (!conv && isLidJid && phone && normalizedPhone) {
+    conv = await Conversation.findOne({ clinic: clinicId, channel, phone: normalizedPhone });
+  }
   let isNew = false;
   let patient = phone ? await findPatientForIncoming(clinicId, normalizedPhone) : null;
   if (!conv) {
@@ -2224,6 +2241,15 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   // contactos con número oculto. Cura conversaciones creadas solo con dígitos.
   if (externalUserId && conv.externalUserId !== externalUserId) {
     conv.externalUserId = externalUserId;
+  }
+  // Número oculto ya resuelto a su teléfono REAL: mostrarlo en vez del LID. Solo se
+  // actualiza cuando de verdad se resolvió algo distinto al identificador del LID (si
+  // la resolución falló, `phone` = dígitos del LID → no se pisa un número ya bueno).
+  if (isLidJid && phone && normalizedPhone) {
+    const lidDigits = externalUserId.replace(/@lid$/, '').replace(/\D/g, '');
+    if (normalizePhone(lidDigits) !== normalizedPhone && conv.phone !== normalizedPhone) {
+      conv.phone = normalizedPhone;
+    }
   }
   // Si llega atribución (click-to-WhatsApp) y la conversación aún no la tiene, guárdala.
   if (referral && referral.adId && !conv.attribution?.adId) {

@@ -223,6 +223,34 @@ function extractQrReferral(msg) {
   return { adId, sourceUrl, headline, body, sourceType, ctwaClid, campaign: headline || body };
 }
 
+// Caché lid→teléfono real (el mapeo es estable, se guarda por proceso).
+const lidPhoneCache = new Map();
+
+/**
+ * Devuelve los DÍGITOS del número real de un contacto QR a partir de su JID.
+ *  - `…@c.us`: los dígitos ya SON el número real.
+ *  - `…@lid` (número oculto): WhatsApp no expone el teléfono en el JID; se lo pedimos
+ *    con `getContactLidAndPhone` (mapa lid→pn de whatsapp-web.js, que hasta consulta
+ *    a WhatsApp si hace falta). Si no se puede resolver, cae a los dígitos del LID
+ *    (comportamiento anterior) y se reintenta en el próximo mensaje.
+ */
+async function resolveQrPhone(client, jid) {
+  const s = String(jid || '');
+  const raw = s.replace(/@.*$/, '').replace(/\D/g, '');
+  if (!s.endsWith('@lid')) return raw;
+  if (lidPhoneCache.has(s)) return lidPhoneCache.get(s) || raw;
+  try {
+    const out = await withTimeout(client.getContactLidAndPhone([s]), 8000, null);
+    const res = Array.isArray(out) ? out[0] : null;
+    const pn = res && res.pn ? String(res.pn) : '';
+    if (pn.endsWith('@c.us')) {
+      const digits = pn.replace(/@.*$/, '').replace(/\D/g, '');
+      if (digits) { lidPhoneCache.set(s, digits); return digits; }
+    }
+  } catch { /* no se pudo resolver ahora: cae al LID */ }
+  return raw;
+}
+
 /**
  * Inicia (o reutiliza) el cliente de un número QR. `userId` se usa para mandarle
  * el QR directamente a quien pulsó "Conectar".
@@ -446,7 +474,9 @@ async function connect(accountId, { userId } = {}) {
       // Fuera grupos (@g.us), canales (@newsletter) y listas (@broadcast).
       if (!/@(c\.us|lid)$/.test(from)) return;
       if (!CONTENT_TYPES.includes(msg.type)) return;
-      const phone = from.replace(/@.*$/, '').replace(/[^\d]/g, '');
+      // Número real: si el contacto tiene número oculto (@lid) lo resolvemos a su
+      // teléfono verdadero (si no, se mostraría el identificador largo del LID).
+      const phone = await resolveQrPhone(client, from);
       if (!phone) return;
 
       const media = await extractQrMedia(msg);
@@ -530,7 +560,8 @@ async function connect(accountId, { userId } = {}) {
       const to = typeof msg.to === 'string' ? msg.to : '';
       if (!/@(c\.us|lid)$/.test(to)) return; // solo chats directos (no grupos)
       if (!CONTENT_TYPES.includes(msg.type)) return;
-      const phone = to.replace(/@.*$/, '').replace(/[^\d]/g, '');
+      // Mismo número real que en el entrante, para casar el saliente con SU chat.
+      const phone = await resolveQrPhone(client, to);
       if (!phone) return;
 
       const media = await extractQrMedia(msg);
