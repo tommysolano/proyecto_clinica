@@ -1538,27 +1538,50 @@ function getAllChatTriggers(wf) {
   return getTriggers(wf);
 }
 
+// Cuánto se "bloquea" una inscripción al reclamarla, para que si el proceso muere
+// a mitad de ejecución (o un paso tarda), otro tick la retome pasado ese tiempo.
+const CLAIM_LOCK_MS = 2 * 60 * 1000;
+const MAX_PER_TICK = 100;
+
 /**
  * Job: reanuda inscripciones cuya espera ya venció. Recupera además las que
  * quedaron atascadas en 'active' (p.ej. si el proceso murió o un paso lanzó un
  * error a mitad de ejecución): tras 5 min sin avanzar se reintenta.
+ *
+ * RECLAMO ATÓMICO (crítico): en lugar de `find()` + procesar, tomamos cada
+ * inscripción con `findOneAndUpdate` empujando su `nextRunAt` al futuro. Es una
+ * operación atómica a nivel de documento en Mongo: si DOS ticks —o DOS procesos
+ * apuntando a la MISMA base (p.ej. un segundo backend en el VPS, o un dev local
+ * sobre la base de prod)— corren a la vez, el primero "gana" el documento y el
+ * segundo ya NO lo ve vencido. Sin esto, ambos procesaban la misma inscripción y
+ * el mensaje se ENVIABA DUPLICADO (uno la enviaba, otro la reprogramaba a +5 min
+ * → reenvío cada 5 min). El lock también recupera solo si el proceso muere.
  */
 async function processDueEnrollments() {
-  const due = await WorkflowEnrollment.find({
-    $or: [
-      { status: 'waiting', nextRunAt: { $lte: new Date() } },
-      { status: 'active', updatedAt: { $lte: new Date(Date.now() - 5 * 60000) } },
-    ],
-  })
-    .sort({ nextRunAt: 1 })
-    .limit(100);
-  for (const enrollment of due) {
+  let processed = 0;
+  for (let i = 0; i < MAX_PER_TICK; i++) {
+    const now = new Date();
+    // eslint-disable-next-line no-await-in-loop
+    const enrollment = await WorkflowEnrollment.findOneAndUpdate(
+      {
+        $or: [
+          { status: 'waiting', nextRunAt: { $lte: now } },
+          { status: 'active', updatedAt: { $lte: new Date(now.getTime() - 5 * 60000) } },
+        ],
+      },
+      // Empuja nextRunAt (lock de las 'waiting') y bumpea updatedAt vía timestamps
+      // (lock de las 'active' atascadas). executeEnrollment lo sobreescribe luego.
+      { $set: { nextRunAt: new Date(now.getTime() + CLAIM_LOCK_MS) } },
+      { sort: { nextRunAt: 1 }, new: true }
+    );
+    if (!enrollment) break; // no quedan vencidas
     // eslint-disable-next-line no-await-in-loop
     await executeEnrollment(enrollment).catch((err) => {
       console.error('[workflowEngine] enrollment error', enrollment._id, err.message);
     });
+    processed++;
   }
-  return { processed: due.length };
+  return { processed };
 }
 
 /**
