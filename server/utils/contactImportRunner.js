@@ -137,15 +137,13 @@ async function enrollInWorkflows(batch, phoneInfo, onProgress) {
     .filter((x) => x.flows.length);
   if (!perWorkflow.length) return 0;
 
-  // Agrupar los teléfonos por SUCURSAL del contacto: así se consulta con el índice
-  // (clinic, phone) en vez de barrer por teléfono suelto, y el contacto se encuentra
-  // aunque su Excel lo mandara a otra sede.
-  const byClinic = new Map();
-  for (const [phone, info] of entries) {
-    const k = info.clinic || String(batch.clinic);
-    if (!byClinic.has(k)) byClinic.set(k, []);
-    byClinic.get(k).push(phone);
-  }
+  // El contacto se busca por TELÉFONO (no por su sucursal): CRM global, y un contacto
+  // que YA existía conserva su `clinic` original ($setOnInsert), que puede NO ser la
+  // sucursal que trae el Excel de ESTA importación. Filtrar por (clinic resuelta,
+  // phone) se saltaba a esos contactos actualizados → "solo se inscribió uno".
+  // La sucursal del Excel (para bifurcar el flujo) viaja aparte en `infoByPhone`.
+  const infoByPhone = new Map(entries); // teléfono → { clinic } (sede del Excel)
+  const allPhones = entries.map(([p]) => p);
 
   // ── Programación del arranque (goteo) ──
   // Con hora ('at'/'flow'): se agrupa por hora y, dentro de cada hora, se separan por
@@ -168,65 +166,68 @@ async function enrollInWorkflows(batch, phoneInfo, onProgress) {
   };
 
   let enrolled = 0;
+  let skipped = 0; // contactos NO inscritos por ya tener una inscripción viva (dedup)
   const createdByWf = new Map(); // workflowId → inscripciones creadas de verdad
 
-  for (const [clinicId, clinicPhones] of byClinic) {
-    for (let i = 0; i < clinicPhones.length; i += BATCH_SIZE) {
-      const chunk = clinicPhones.slice(i, i + BATCH_SIZE);
-      // eslint-disable-next-line no-await-in-loop
-      const contacts = await Contact.find({
-        clinic: clinicId,
-        phone: { $in: chunk },
-        active: true,
-        'marketing.whatsappOptIn': true,
-        'marketing.optOutAt': null,
-      })
-        .select('_id phone patient clinic')
-        .lean();
+  for (let i = 0; i < allPhones.length; i += BATCH_SIZE) {
+    const chunk = allPhones.slice(i, i + BATCH_SIZE);
+    // eslint-disable-next-line no-await-in-loop
+    const contacts = await Contact.find({
+      phone: { $in: chunk },
+      active: true,
+      'marketing.whatsappOptIn': true,
+      'marketing.optOutAt': null,
+    })
+      .select('_id phone patient clinic')
+      .lean();
 
-      for (const contact of contacts) {
-        for (const { wf, flows, hour } of perWorkflow) {
-          for (const flow of flows) {
-            // eslint-disable-next-line no-await-in-loop
-            const dup = await WorkflowEnrollment.findOne({
-              workflow: wf._id,
-              'context.contactId': String(contact._id),
-              startNodeId: flow.startNodeId,
-              status: { $in: ['active', 'waiting'] },
-            }).select('_id');
-            if (dup) continue;
+    for (const contact of contacts) {
+      // Sucursal a la que lo mandó el Excel de ESTE import (para bifurcar el flujo);
+      // si no vino, la del propio contacto o la del asistente.
+      const eventClinicId =
+        infoByPhone.get(contact.phone)?.clinic || String(contact.clinic || batch.clinic);
+      for (const { wf, flows, hour } of perWorkflow) {
+        for (const flow of flows) {
+          // eslint-disable-next-line no-await-in-loop
+          const dup = await WorkflowEnrollment.findOne({
+            workflow: wf._id,
+            'context.contactId': String(contact._id),
+            startNodeId: flow.startNodeId,
+            status: { $in: ['active', 'waiting'] },
+          }).select('_id');
+          if (dup) { skipped++; continue; }
 
-            const slot = scheduleStart(hour);
-            // eslint-disable-next-line no-await-in-loop
-            await WorkflowEnrollment.create({
-              // La inscripción corre en la clínica del asistente (contexto del call
-              // center / mensajería, sin cambios). La SUCURSAL del contacto viaja en
-              // el contexto para bifurcar el flujo (nodo Dividir por sucursal / condición).
-              clinic: batch.clinic,
-              workflow: wf._id,
-              patient: contact.patient || null,
-              stepIndex: 0,
-              currentNodeId: flow.currentNodeId,
-              startNodeId: flow.startNodeId,
-              status: 'waiting',
-              nextRunAt: slot,
-              context: {
-                phone: contact.phone,
-                contactId: String(contact._id),
-                importBatchId: String(batch._id),
-                eventType: 'contact_import',
-                eventClinicId: String(contact.clinic || batch.clinic),
-              },
-            });
-            enrolled++;
-            createdByWf.set(String(wf._id), (createdByWf.get(String(wf._id)) || 0) + 1);
-          }
+          const slot = scheduleStart(hour);
+          // eslint-disable-next-line no-await-in-loop
+          await WorkflowEnrollment.create({
+            // La inscripción corre en la clínica del asistente (contexto del call
+            // center / mensajería, sin cambios). La SUCURSAL del contacto viaja en
+            // el contexto para bifurcar el flujo (nodo Dividir por sucursal / condición).
+            clinic: batch.clinic,
+            workflow: wf._id,
+            patient: contact.patient || null,
+            stepIndex: 0,
+            currentNodeId: flow.currentNodeId,
+            startNodeId: flow.startNodeId,
+            status: 'waiting',
+            nextRunAt: slot,
+            context: {
+              phone: contact.phone,
+              contactId: String(contact._id),
+              importBatchId: String(batch._id),
+              eventType: 'contact_import',
+              eventClinicId,
+            },
+          });
+          enrolled++;
+          createdByWf.set(String(wf._id), (createdByWf.get(String(wf._id)) || 0) + 1);
         }
       }
-      if (onProgress) onProgress(enrolled);
     }
+    if (onProgress) onProgress(enrolled);
   }
 
+  if (batch && typeof batch === 'object') batch.enrollSkipped = skipped;
   for (const [wfId, n] of createdByWf) {
     // eslint-disable-next-line no-await-in-loop
     await Workflow.updateOne({ _id: wfId }, { $inc: { 'stats.enrolled': n } }).catch(() => {});

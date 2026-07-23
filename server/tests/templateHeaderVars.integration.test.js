@@ -76,6 +76,37 @@ test('enrichTemplateHeader: al enviar, la variable de la cabecera se rellena con
   assert.equal(info.components[0].type, 'header');
 });
 
+test('enrichTemplateHeader: {{servicio}}/{{hora}} salen del CONTACTO importado, no del ejemplo de la plantilla', async () => {
+  // Bug real de producción: un recordatorio a un CONTACTO (sin cita ni paciente)
+  // rellenaba {{hora}}/{{servicio}} con el EJEMPLO de la plantilla ("14:30 / Limpieza
+  // facial") en vez del dato del Excel (customFields del contacto).
+  const { clinicId } = await H.seedClinic();
+  await MessageTemplate.create({
+    clinic: clinicId, channel: 'whatsapp', name: '24h_flujo',
+    headerType: 'text', headerText: 'Hola',
+    body: 'Recordatorio: tu cita es mañana a las {{hora}} para {{servicio}}.',
+    variables: [
+      { key: 'hora', example: '14:30' },
+      { key: 'servicio', example: 'Limpieza facial' },
+    ],
+  });
+
+  const info = await messaging.enrichTemplateHeader(
+    clinicId,
+    { name: '24h_flujo', language: 'es', components: [] },
+    null, // sin paciente
+    null, // sin cita
+    { firstName: 'Carla', customFields: { hora: '14:00', servicio: 'Vital femenino' } }
+  );
+
+  const body = info.components.find((c) => c.type === 'body');
+  assert.deepEqual(
+    body.parameters,
+    [{ type: 'text', text: '14:00' }, { type: 'text', text: 'Vital femenino' }],
+    'las variables toman el dato del Excel del contacto, no el ejemplo'
+  );
+});
+
 test('enrichTemplateHeader: cabecera de texto SIN variable no añade parámetros de header', async () => {
   const { clinicId } = await H.seedClinic();
   await MessageTemplate.create({

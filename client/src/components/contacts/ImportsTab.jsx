@@ -165,6 +165,12 @@ export default function ImportsTab({ groups, onGroupsChanged }) {
                     Marketing → Automatizaciones (el flujo muestra las inscripciones «En espera»).
                   </div>
                 )}
+                {b.status === 'done' && b.workflows?.length > 0 && b.enrollSkipped > 0 && (
+                  <div className="text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-2 py-1 mt-1">
+                    ℹ️ {b.enrollSkipped.toLocaleString('es-EC')} contacto(s) NO se volvieron a encolar: ya tenían un
+                    mensaje pendiente de este flujo (no se duplica).
+                  </div>
+                )}
 
                 {b.errorMessage && (
                   <div className="text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1 mt-2">

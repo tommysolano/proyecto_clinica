@@ -155,16 +155,34 @@ async function buildKnownVariableResolver(patient, appointmentId, contact = null
   const servicio = (apt?.services || []).map((s) => s.name).filter(Boolean).join(', ');
   const doctor = apt?.doctor?.name || '';
   const sede = apt?.clinic?.name || '';
+
+  // Campos personalizados del CONTACTO (importación del CRM): mapa normalizado
+  // clave→valor (sin tildes, minúsculas). Es la fuente de {{servicio}}/{{hora}} y
+  // cualquier otra variable cuando NO hay cita — antes caían al ejemplo de la
+  // plantilla y todos recibían "Limpieza facial / 14:30" en vez del dato del Excel.
+  const norm = (k) => String(k || '').normalize('NFD').replace(/[̀-ͯ]/g, '').trim().toLowerCase();
+  const custom = new Map();
+  const cf = contact?.customFields;
+  if (cf) {
+    const pairs = cf instanceof Map ? [...cf.entries()] : Object.entries(cf);
+    for (const [k, v] of pairs) {
+      if (v != null && String(v).trim() !== '') custom.set(norm(k), String(v).trim());
+    }
+  }
+
   return (key) => {
+    const k = norm(key);
     if (/^(nombre|nombres|firstname|name)$/i.test(key)) return firstName;
     if (/^(apellido|apellidos|lastname)$/i.test(key)) return lastName;
     if (/^(nombre_?completo|fullname)$/i.test(key)) return `${firstName} ${lastName}`.trim();
-    if (/^(fecha(_?cita)?|date|appointmentdate)$/i.test(key)) return fecha;
-    if (/^(hora(_?cita)?|time|appointmenttime)$/i.test(key)) return hora;
-    if (/^(servicios?|service|tratamiento)$/i.test(key)) return servicio;
-    if (/^(doctora?|medico|profesional)$/i.test(key)) return doctor;
-    if (/^(sede|sucursal|clinica|clinic)$/i.test(key)) return sede;
-    return '';
+    // La cita (si hay) MANDA; si no, el campo personalizado del contacto; luego vacío.
+    if (/^(fecha(_?cita)?|date|appointmentdate)$/i.test(key)) return fecha || custom.get(k) || custom.get('fecha') || '';
+    if (/^(hora(_?cita)?|time|appointmenttime)$/i.test(key)) return hora || custom.get(k) || custom.get('hora') || '';
+    if (/^(servicios?|service|tratamiento)$/i.test(key)) return servicio || custom.get(k) || custom.get('servicio') || '';
+    if (/^(doctora?|medico|profesional)$/i.test(key)) return doctor || custom.get(k) || custom.get('doctor') || '';
+    if (/^(sede|sucursal|clinica|clinic)$/i.test(key)) return sede || custom.get(k) || '';
+    // Cualquier otra variable: un campo personalizado del contacto con esa clave.
+    return custom.get(k) || '';
   };
 }
 
@@ -646,9 +664,13 @@ async function send({
     let contactRef = null;
     if (!patientRef) {
       try {
+        // CRM global: el contacto puede vivir en cualquier sede → buscar por teléfono
+        // (sin filtrar por clínica), si no las variables se quedaban sin datos cuando
+        // el contacto estaba en otra sucursal. `customFields` aporta {{servicio}}/{{hora}}…
+        const ph = conv.phone || normalizePhone(to);
         contactRef = await require('../models/Contact')
-          .findOne({ clinic: clinicId, phone: conv.phone || normalizePhone(to) })
-          .select('firstName lastName displayName')
+          .findOne({ phone: ph })
+          .select('firstName lastName displayName customFields')
           .lean();
       } catch {
         contactRef = null;

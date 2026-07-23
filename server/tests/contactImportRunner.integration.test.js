@@ -480,6 +480,45 @@ test('nextOccurrenceOfLocalTime: hoy si la hora aún no pasó, mañana si ya pas
   assert.equal(hoy.getMinutes(), 30);
 });
 
+test('inscribe al contacto aunque su sucursal guardada NO sea la que trae el Excel (busca por teléfono)', async () => {
+  // Bug real: un contacto que YA existía conserva su `clinic` original; si el Excel
+  // de esta importación lo manda a otra sede, filtrar por (clinic resuelta, phone) lo
+  // saltaba → "solo se inscribió uno". Ahora se busca por teléfono.
+  const { clinicId, userId } = await H.seedClinic();
+  const Clinic = require('../models/Clinic');
+  const otra = await Clinic.create({ name: 'Otra Sede' });
+  const wf = await makeImportWorkflow(clinicId);
+  // El contacto vive en OTRA sede (no en batch.clinic).
+  await Contact.create({ clinic: otra._id, phone: '593999111222', firstName: 'Ligia', source: 'import' });
+
+  const batch = await ContactImport.create({
+    clinic: clinicId, fileName: 'x.csv', status: 'done', mapping: MAPPING,
+    workflows: [wf._id], createdBy: userId,
+  });
+  // El Excel dice que va a batch.clinic (sede distinta de donde está guardado).
+  const info = new Map([['593999111222', { clinic: String(clinicId) }]]);
+  assert.equal(await enrollInWorkflows(batch, info), 1, 'se inscribe aunque esté en otra sede');
+  const e = await WorkflowEnrollment.findOne({ workflow: wf._id });
+  assert.ok(e, 'la inscripción se creó');
+  assert.equal(e.context.eventClinicId, String(clinicId), 'la sede del Excel viaja para bifurcar el flujo');
+});
+
+test('reimportar cuenta los saltados por dedup en enrollSkipped', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const wf = await makeImportWorkflow(clinicId);
+  await Contact.create({ clinic: clinicId, phone: '593999111222', firstName: 'Ligia', source: 'import' });
+  const batch = await ContactImport.create({
+    clinic: clinicId, fileName: 'x.csv', status: 'done', mapping: MAPPING,
+    workflows: [wf._id], createdBy: userId,
+  });
+
+  assert.equal(await enrollInWorkflows(batch, ['593999111222']), 1);
+  assert.equal(batch.enrollSkipped, 0, 'la 1ª vez no salta a nadie');
+  // 2ª vez: ya tiene inscripción viva → 0 nuevos, 1 saltado.
+  assert.equal(await enrollInWorkflows(batch, ['593999111222']), 0);
+  assert.equal(batch.enrollSkipped, 1, 'cuenta el que ya estaba inscrito');
+});
+
 test('reinscribir el mismo lote no duplica inscripciones', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const wf = await makeImportWorkflow(clinicId);

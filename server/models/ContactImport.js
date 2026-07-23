@@ -101,6 +101,10 @@ const contactImportSchema = new mongoose.Schema(
     // Inscripciones en workflows creadas por este lote (solo contactos con
     // consentimiento; el arranque de cada una queda escalonado en el tiempo).
     enrolled: { type: Number, default: 0 },
+    // Contactos NO inscritos por ya tener una inscripción VIVA en ese flujo (dedup):
+    // reimportar la misma gente no la vuelve a encolar. Se muestra para que "se
+    // inscribió menos gente de la que subí" no parezca un error.
+    enrollSkipped: { type: Number, default: 0 },
     // Muestra acotada: 47k errores no caben en un documento. No se llama `errors`
     // porque es un nombre reservado de mongoose (choca con la validación del doc).
     rowErrors: { type: [importErrorSchema], default: [] },
