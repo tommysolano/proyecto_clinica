@@ -168,12 +168,75 @@ function getWindow24hExpiresAt(conv) {
   return times.length ? new Date(Math.max(...times)) : null;
 }
 
+// Milisegundos que quedan de ventana según el SERVIDOR (o null si no aplica /
+// está cerrada). El servidor decide si la ventana APLICA (según el número real
+// por el que sale el mensaje) y da el `expiresAt` exacto; el cliente solo compara
+// contra el reloj para que un chat abierto mucho rato refleje el cierre en vivo,
+// sin recalcular la regla (que antes podía discrepar del backend).
+function windowMsRemaining(conv) {
+  const w = conv?.window;
+  if (w && typeof w.applies === 'boolean') {
+    if (!w.applies) return null; // QR u otro canal: sin ventana
+    if (!w.expiresAt) return 0; // aplica pero nunca hubo entrante → cerrada
+    return new Date(w.expiresAt).getTime() - Date.now();
+  }
+  return undefined; // sin dato del servidor: usar el respaldo local
+}
+
 function isWhatsappWindowClosed(conv) {
   if (!conv || conv.channel !== 'whatsapp') return false;
-  // Los números QR (WhatsApp Web) no tienen ventana de 24h: se puede escribir siempre.
+  const ms = windowMsRemaining(conv);
+  if (ms !== undefined) return ms !== null && ms <= 0;
+  // Respaldo para respuestas viejas en caché sin `window`: cálculo local.
   if (isQrConversation(conv)) return false;
   const expiresAt = getWindow24hExpiresAt(conv);
   return !expiresAt || expiresAt.getTime() <= Date.now();
+}
+
+// Último mensaje ENTRANTE del contacto (fecha), para explicar la ventana.
+function lastInboundDate(conv) {
+  const raw =
+    conv?.window?.lastInboundAt ||
+    conv?.lastInboundAt ||
+    (conv?.lastMessageDirection === 'in' ? conv?.lastMessageAt : null);
+  if (!raw) return null;
+  const d = new Date(raw);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+// "hace 3 h", "hace 12 días"… en castellano y sin dependencias.
+function humanizeSince(date) {
+  const ms = Date.now() - date.getTime();
+  const min = Math.floor(ms / 60000);
+  if (min < 1) return 'hace unos segundos';
+  if (min < 60) return `hace ${min} min`;
+  const h = Math.floor(min / 60);
+  if (h < 24) return `hace ${h} h`;
+  const d = Math.floor(h / 24);
+  return d === 1 ? 'hace 1 día' : `hace ${d} días`;
+}
+
+// "faltan 6 h 12 min" para el tiempo que queda de ventana.
+function humanizeRemaining(ms) {
+  const min = Math.max(0, Math.floor(ms / 60000));
+  const h = Math.floor(min / 60);
+  const m = min % 60;
+  if (h <= 0) return `${m} min`;
+  return m ? `${h} h ${m} min` : `${h} h`;
+}
+
+// Fecha + hora completas: "10 jul 2026, 22:39". Se usa en el aviso de la ventana
+// para que "cerrada" venga siempre con el CUÁNDO — en el hilo solo se ve la hora
+// y un mensaje de hace dos semanas parece de anoche.
+function formatDateTimeEc(date) {
+  return new Date(date).toLocaleString('es-EC', {
+    timeZone: 'America/Guayaquil',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 function isOptedOut(conv) {
@@ -1060,8 +1123,37 @@ export default function Chats() {
                   {activeWindowClosed && !activeOptedOut && !templateDraft.name && (
                     <div className="mb-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
                       Ventana de 24h cerrada. Solo puedes enviar una <b>plantilla aprobada</b> — pulsa “Plantilla”.
+                      {(() => {
+                        // El CUÁNDO es la clave: sin la fecha, un chat cuyo último
+                        // entrante fue hace dos semanas parece de anoche (en el hilo
+                        // solo se ve la hora) y la ventana cerrada parece un error.
+                        const last = lastInboundDate(activeConv);
+                        if (!last) {
+                          return (
+                            <div className="mt-0.5 text-amber-700">
+                              Este contacto todavía no te ha escrito, así que nunca se abrió una ventana.
+                            </div>
+                          );
+                        }
+                        return (
+                          <div className="mt-0.5 text-amber-700">
+                            El contacto escribió por última vez el <b>{formatDateTimeEc(last)}</b> ({humanizeSince(last)}); la
+                            ventana se cerró 24 h después.
+                          </div>
+                        );
+                      })()}
                     </div>
                   )}
+                  {(() => {
+                    if (activeWindowClosed || activeOptedOut || templateDraft.name) return null;
+                    const ms = windowMsRemaining(activeConv);
+                    if (!ms || ms <= 0) return null; // null = no aplica (QR); <=0 = cerrada
+                    return (
+                      <div className="mb-2 text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded px-2 py-1">
+                        Ventana de 24h <b>abierta</b>: puedes escribir libremente durante {humanizeRemaining(ms)} más.
+                      </div>
+                    );
+                  })()}
                   {/* Plantilla seleccionada: preview + variables */}
                   {templateDraft.name && (
                     <div className="mb-2 border border-emerald-200 bg-emerald-50/60 rounded-lg p-2">

@@ -899,3 +899,144 @@ exports.updateWhatsappAppConfig = async (req, res) => {
     res.status(500).json({ message: 'Error', error: err.message });
   }
 };
+
+/**
+ * GET /whatsapp/diagnostics — chequeo de salud de TODO el canal de WhatsApp de un
+ * vistazo. Reúne en una sola pantalla las causas reales de "no se envían los
+ * mensajes" que hasta ahora había que reconstruir a mano desde la base:
+ *
+ *  1. BACKENDS VIVOS: si hay más de uno contra la misma base, se DUPLICAN los
+ *     envíos y aparecen "fallidos" fantasma (el gemelo entregó el mensaje). Marca
+ *     además cuál no puede descifrar los tokens (SECRETS_KEY) o corre otro commit.
+ *  2. NÚMEROS: por cada número, si el token es descifrable (Cloud) o la sesión
+ *     está viva (QR), y su rol (por defecto / habilitado).
+ *  3. ENVÍOS FALLIDOS de las últimas 24 h agrupados por causa, con su explicación.
+ *  4. ENLACES HUÉRFANOS: conversaciones apuntando a un número borrado (se pueden
+ *     auto-curar con el botón del panel → POST .../diagnostics/heal).
+ */
+exports.whatsappDiagnostics = async (req, res) => {
+  try {
+    const registry = require('../utils/instanceRegistry');
+    const gateway = require('../utils/whatsappGateway');
+    const Message = require('../models/Message');
+    const Conversation = require('../models/Conversation');
+
+    // 1) Backends vivos + líder de jobs.
+    const cluster = await registry.snapshot();
+
+    // 2) Salud por número.
+    const accounts = await WhatsappAccount.find().sort({ isDefault: -1, createdAt: 1 });
+    await Promise.all(
+      accounts.map((a) => (a.connectionType === 'qr' ? qrManager.reconcileAccount(a).catch(() => {}) : null))
+    );
+    const accountsHealth = accounts.map((a) => {
+      let health = 'ok';
+      let detail = '';
+      if (a.connectionType === 'cloud_api') {
+        const tokenErr = gateway.cloudTokenError(a);
+        if (!a.accessToken) {
+          health = 'error';
+          detail = 'Sin token: este número no puede enviar por Cloud API.';
+        } else if (tokenErr) {
+          health = 'error';
+          detail = 'El token no se puede descifrar en el servidor (falta o cambió SECRETS_KEY). Vuelve a guardarlo.';
+        } else if (!a.phoneNumberId) {
+          health = 'error';
+          detail = 'Falta el Phone Number ID.';
+        } else {
+          detail = 'Token descifrable. Usa "Probar" para verificarlo contra Meta.';
+        }
+      } else {
+        // QR: la verdad es si la sesión está viva.
+        if (a.status === 'connected') detail = 'Sesión de WhatsApp Web conectada.';
+        else if (['connecting', 'syncing', 'qr_pending'].includes(a.status)) {
+          health = 'warn';
+          detail = 'La sesión se está conectando o espera que escanees el QR.';
+        } else {
+          health = 'error';
+          detail = 'Sesión de WhatsApp Web desconectada: pulsa "Conectar" y escanea el QR.';
+        }
+      }
+      if (!a.enabled) {
+        health = 'warn';
+        detail = 'Número deshabilitado: no se usa para enviar.';
+      }
+      return {
+        _id: a._id,
+        label: a.label,
+        connectionType: a.connectionType,
+        enabled: a.enabled,
+        isDefault: a.isDefault,
+        status: a.status,
+        displayPhone: a.displayPhone || a.connectedPhone || '',
+        qualityRating: a.qualityRating,
+        health,
+        detail,
+      };
+    });
+
+    // 3) Fallidos de las últimas 24 h por causa.
+    const since = new Date(Date.now() - 24 * 3600 * 1000);
+    const failsRaw = await Message.aggregate([
+      { $match: { direction: 'out', deliveryStatus: 'failed', createdAt: { $gte: since } } },
+      { $group: { _id: '$errorCode', n: { $sum: 1 }, sample: { $first: '$errorMessage' }, last: { $max: '$createdAt' } } },
+      { $sort: { n: -1 } },
+    ]);
+    const FAIL_HINTS = {
+      token_undecryptable: 'Un backend no tiene la SECRETS_KEY. Si ves 2 backends arriba, mata el de sobra; si no, vuelve a guardar el token.',
+      qr_not_connected: 'La sesión de WhatsApp Web estaba caída al enviar. Reconecta el número QR (o era un segundo backend sin la sesión).',
+      190: 'Token de Meta caducado o revocado. Genera uno de Usuario del Sistema (no caduca) y guárdalo.',
+      200: 'El token no tiene permiso sobre esta WABA. Usa "Probar" para el diagnóstico exacto.',
+      131053: 'Meta rechazó la subida de la media. Revisa formato/tamaño del archivo.',
+      131026: 'Mensaje no entregable (el número no está en WhatsApp o bloqueó al negocio).',
+      out_of_window: 'Se intentó texto libre fuera de la ventana de 24 h. Usa una plantilla aprobada.',
+    };
+    const failures = failsRaw.map((f) => ({
+      code: f._id || '(sin código)',
+      count: f.n,
+      last: f.last,
+      sample: String(f.sample || '').slice(0, 160),
+      hint: FAIL_HINTS[f._id] || '',
+    }));
+
+    // 4) Conversaciones enlazadas a un número que ya no existe.
+    const ids = new Set(accounts.map((a) => String(a._id)));
+    const linked = await Conversation.find({ whatsappAccount: { $ne: null } })
+      .select('whatsappAccount')
+      .lean();
+    const orphanLinks = linked.filter((c) => !ids.has(String(c.whatsappAccount))).length;
+
+    res.json({
+      cluster,
+      accounts: accountsHealth,
+      failures,
+      orphanLinks,
+      secretsKey: registry.hasSecretsKey(),
+      generatedAt: new Date(),
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Error en el diagnóstico', error: err.message });
+  }
+};
+
+/**
+ * POST /whatsapp/diagnostics/heal — auto-cura: desenlaza las conversaciones que
+ * apuntan a un número BORRADO (poniendo `whatsappAccount = null`). Al responder,
+ * `resolveAccountForConversation` volverá a elegir el número por el que entró el
+ * contacto, o el número por defecto — en vez de gastar un query resolviendo un id
+ * muerto en cada envío.
+ */
+exports.healWhatsappLinks = async (req, res) => {
+  try {
+    const Conversation = require('../models/Conversation');
+    const accounts = await WhatsappAccount.find().select('_id').lean();
+    const ids = accounts.map((a) => a._id);
+    const r = await Conversation.updateMany(
+      { whatsappAccount: { $ne: null, $nin: ids } },
+      { $set: { whatsappAccount: null } }
+    );
+    res.json({ ok: true, healed: r.modifiedCount ?? r.nModified ?? 0 });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al reparar enlaces', error: err.message });
+  }
+};

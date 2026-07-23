@@ -25,6 +25,51 @@ test('computes and checks the WhatsApp 24h window', () => {
   );
 });
 
+test('describeWhatsappWindow: fuente única de verdad de la ventana para la UI', () => {
+  const now = new Date('2026-06-18T09:00:00Z');
+  const lastInboundAt = new Date('2026-06-17T10:00:00Z'); // ventana viva hasta 18-jun 10:00Z
+
+  // Cloud API, dentro de la ventana → abierta y aplica.
+  const open = messaging.describeWhatsappWindow(
+    { channel: 'whatsapp', lastInboundAt },
+    'cloud_api',
+    now
+  );
+  assert.equal(open.applies, true);
+  assert.equal(open.open, true);
+  assert.equal(open.expiresAt.toISOString(), '2026-06-18T10:00:00.000Z');
+  assert.ok(open.msRemaining > 0);
+  assert.equal(open.lastInboundAt.toISOString(), lastInboundAt.toISOString());
+
+  // Cloud API, fuera de la ventana → cerrada.
+  const closed = messaging.describeWhatsappWindow(
+    { channel: 'whatsapp', lastInboundAt },
+    'cloud_api',
+    new Date('2026-06-18T10:00:01Z')
+  );
+  assert.equal(closed.open, false);
+  assert.equal(closed.msRemaining, 0);
+
+  // Número QR: la ventana NO aplica, siempre se puede escribir aunque el último
+  // entrante sea de hace días.
+  const qr = messaging.describeWhatsappWindow(
+    { channel: 'whatsapp', lastInboundAt: new Date('2026-06-01T00:00:00Z') },
+    'qr',
+    now
+  );
+  assert.equal(qr.applies, false);
+  assert.equal(qr.open, true);
+
+  // Sin lastInboundAt pero último mensaje entrante (conversación vieja) → sale de él.
+  const legacy = messaging.describeWhatsappWindow(
+    { channel: 'whatsapp', lastMessageDirection: 'in', lastMessageAt: lastInboundAt },
+    'cloud_api',
+    now
+  );
+  assert.equal(legacy.open, true);
+  assert.equal(legacy.lastInboundAt.toISOString(), lastInboundAt.toISOString());
+});
+
 test('detects explicit opt-out keywords without matching normal appointment text', () => {
   assert.equal(messaging.isOptOutText('BAJA'), true);
   assert.equal(messaging.isOptOutText('stop'), true);

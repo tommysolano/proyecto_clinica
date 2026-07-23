@@ -27,6 +27,9 @@ router.post('/whatsapp/accounts/:id/disconnect', ctrl.disconnectWhatsappAccount)
 router.post('/whatsapp/accounts/:id/test', ctrl.testWhatsappAccount);
 router.post('/whatsapp/accounts/:id/register', ctrl.registerWhatsappNumber);
 router.post('/whatsapp/accounts/:id/quality', ctrl.refreshWhatsappAccountQuality);
+// Diagnóstico de salud del canal (backends vivos, tokens, sesiones QR, fallidos).
+router.get('/whatsapp/diagnostics', ctrl.whatsappDiagnostics);
+router.post('/whatsapp/diagnostics/heal', ctrl.healWhatsappLinks);
 router.post('/whatsapp/capi/test', ctrl.testConversionsApi);
 
 router.post('/:channel/test', ctrl.testConnection);

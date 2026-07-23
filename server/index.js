@@ -188,63 +188,72 @@ connectDB().then(() => {
     console.log(`Servidor corriendo en puerto ${PORT} (HTTP + Socket.IO)`);
   });
 
-  // Interruptor para DESARROLLO: el .env local apunta a la base de PRODUCCIÓN,
-  // así que un `npm run dev` sin esto ejecuta los jobs reales (goteo, workflows,
-  // no-show…) y levanta las sesiones de WhatsApp QR compitiendo con el VPS.
-  // Caso real: un dev local se comía las importaciones de contactos de prod.
-  // En el VPS la variable no existe y todo corre normal.
-  if (process.env.JOBS_DISABLED === '1') {
-    console.log('[jobs] JOBS_DISABLED=1: jobs y WhatsApp QR desactivados en esta máquina (modo desarrollo seguro)');
-    return;
-  }
+  // Registro de instancias + elección de LÍDER. Cada backend late en la base; el
+  // que consigue el arriendo de 'jobs' es el ÚNICO que ejecuta los jobs y las
+  // sesiones QR. Esto ataca la causa raíz de los mensajes DUPLICADOS y de las
+  // burbujas rojas "no se envió" en chats donde el mensaje sí llegó: eran dos
+  // backends corriendo a la vez contra la misma base (uno sin SECRETS_KEY / sin
+  // la sesión de WhatsApp Web). Un proceso con JOBS_DISABLED=1 (dev contra prod)
+  // late igual — para ser VISIBLE en el diagnóstico — pero nunca toma el arriendo.
+  const registry = require('./utils/instanceRegistry');
+  registry.start(startLeaderJobs);
+  process.on('SIGINT', () => registry.release());
+  process.on('SIGTERM', () => registry.release());
 
-  // Job: marcar automáticamente como "no asistió" las citas de días pasados.
-  require('./utils/autoNoShow').startAutoNoShowJob();
-  // Job: reanudar flujos de mensajes con pasos de espera vencidos (cada 60s).
-  const { processDueFlowRuns } = require('./controllers/chatController');
-  setInterval(() => { processDueFlowRuns().catch(() => {}); }, 60 * 1000);
-  // Job: procesar mensajes de campañas encolados/vencidos (cada 60s).
-  const { processDueScheduledMessages } = require('./controllers/campaignController');
-  setInterval(() => { processDueScheduledMessages().catch(() => {}); }, 60 * 1000);
-  // Job: importaciones de contactos pendientes (cada 60s). Van fuera de la
-  // petición HTTP porque 47k filas tardan minutos y nginx corta a los 60s.
-  const { processPendingImports } = require('./utils/contactImportRunner');
-  setInterval(() => { processPendingImports().catch(() => {}); }, 60 * 1000);
-  // Job: tandas del envío masivo por goteo (cada 60s). El goteo es lo que evita
-  // que una ráfaga tumbe el número (por QR) o rebote contra el límite de Meta.
-  const { processDueDrips } = require('./utils/dripRunner');
-  setInterval(() => { processDueDrips().catch(() => {}); }, 60 * 1000);
-  // Motor de workflows: suscribe a eventos de dominio + reanuda esperas vencidas.
-  const workflowEngine = require('./utils/workflowEngine');
-  workflowEngine.subscribeDomainEvents();
-  // Meta Conversions API (CAPI): reporta Lead/Schedule/Purchase a Meta si está configurada.
-  require('./utils/metaConversions').subscribeDomainEvents();
-  // Cada 20s (antes 60s): así las esperas de menos de un minuto del paso "Esperar
-  // (tiempo)" — p. ej. 15/30 segundos entre dos mensajes — se retoman con una
-  // resolución razonable en vez de esperar siempre al minuto.
-  setInterval(() => { workflowEngine.processDueEnrollments().catch(() => {}); }, 20 * 1000);
-  // Job: cumpleaños del día (dispara workflows patient_birthday).
-  require('./utils/birthdayJob').startBirthdayJob();
-  // Job: abandono automático de tratamientos (dispara workflows
-  // treatment_abandoned aunque nadie abra la página de Tratamientos).
-  require('./utils/treatmentAbandonment').startTreatmentAbandonmentJob();
-  // Job: reintentar facturas electrónicas pendientes cuando el SRI se cae
-  // (reenvía las EN_COLA y consulta autorización de las recibidas). Cada
-  // SRI_RETRY_INTERVAL_MIN minutos (por defecto 5).
-  require('./utils/invoiceRetry').startInvoiceRetryJob();
-  // Reconecta los números de WhatsApp por QR (whatsapp-web.js) con sesión guardada.
-  // A los 5s del arranque para no competir con la inicialización del resto.
-  setTimeout(() => {
-    require('./utils/whatsappQrManager').initEnabledOnBoot().catch(() => {});
-  }, 5 * 1000);
-  // Job: sincronizar plantillas de WhatsApp con Meta para detectar cambios de
-  // categoría/estado y alertar (recategorización = impacto en costo). El webhook
-  // notifica al instante; este sondeo es la red de seguridad. Frecuencia
-  // configurable con TEMPLATE_SYNC_INTERVAL_MIN (min 5, por defecto 60 minutos).
-  const { syncAllClinicsTemplates } = require('./controllers/messageTemplateController');
-  const TPL_SYNC_MS = Math.max(5, Number(process.env.TEMPLATE_SYNC_INTERVAL_MIN) || 60) * 60 * 1000;
-  setTimeout(() => { syncAllClinicsTemplates().catch(() => {}); }, 30 * 1000);
-  setInterval(() => { syncAllClinicsTemplates().catch(() => {}); }, TPL_SYNC_MS);
+  // Arranca los jobs periódicos y las sesiones de WhatsApp QR. Lo llama el
+  // registro SOLO cuando este proceso es el líder. Cada intervalo se envuelve en
+  // `leaderOnly`: si el proceso pierde el arriendo (otro lo tomó tras un cuelgue),
+  // los jobs dejan de disparar en el acto y no envían en paralelo con el relevo.
+  function startLeaderJobs() {
+    const only = registry.leaderOnly;
+    // Job: marcar automáticamente como "no asistió" las citas de días pasados.
+    require('./utils/autoNoShow').startAutoNoShowJob();
+    // Job: reanudar flujos de mensajes con pasos de espera vencidos (cada 60s).
+    const { processDueFlowRuns } = require('./controllers/chatController');
+    setInterval(only(() => { processDueFlowRuns().catch(() => {}); }), 60 * 1000);
+    // Job: procesar mensajes de campañas encolados/vencidos (cada 60s).
+    const { processDueScheduledMessages } = require('./controllers/campaignController');
+    setInterval(only(() => { processDueScheduledMessages().catch(() => {}); }), 60 * 1000);
+    // Job: importaciones de contactos pendientes (cada 60s). Van fuera de la
+    // petición HTTP porque 47k filas tardan minutos y nginx corta a los 60s.
+    const { processPendingImports } = require('./utils/contactImportRunner');
+    setInterval(only(() => { processPendingImports().catch(() => {}); }), 60 * 1000);
+    // Job: tandas del envío masivo por goteo (cada 60s). El goteo es lo que evita
+    // que una ráfaga tumbe el número (por QR) o rebote contra el límite de Meta.
+    const { processDueDrips } = require('./utils/dripRunner');
+    setInterval(only(() => { processDueDrips().catch(() => {}); }), 60 * 1000);
+    // Motor de workflows: suscribe a eventos de dominio + reanuda esperas vencidas.
+    const workflowEngine = require('./utils/workflowEngine');
+    workflowEngine.subscribeDomainEvents();
+    // Meta Conversions API (CAPI): reporta Lead/Schedule/Purchase a Meta si está configurada.
+    require('./utils/metaConversions').subscribeDomainEvents();
+    // Cada 20s (antes 60s): así las esperas de menos de un minuto del paso "Esperar
+    // (tiempo)" — p. ej. 15/30 segundos entre dos mensajes — se retoman con una
+    // resolución razonable en vez de esperar siempre al minuto.
+    setInterval(only(() => { workflowEngine.processDueEnrollments().catch(() => {}); }), 20 * 1000);
+    // Job: cumpleaños del día (dispara workflows patient_birthday).
+    require('./utils/birthdayJob').startBirthdayJob();
+    // Job: abandono automático de tratamientos (dispara workflows
+    // treatment_abandoned aunque nadie abra la página de Tratamientos).
+    require('./utils/treatmentAbandonment').startTreatmentAbandonmentJob();
+    // Job: reintentar facturas electrónicas pendientes cuando el SRI se cae
+    // (reenvía las EN_COLA y consulta autorización de las recibidas). Cada
+    // SRI_RETRY_INTERVAL_MIN minutos (por defecto 5).
+    require('./utils/invoiceRetry').startInvoiceRetryJob();
+    // Reconecta los números de WhatsApp por QR (whatsapp-web.js) con sesión guardada.
+    // A los 5s del arranque para no competir con la inicialización del resto.
+    setTimeout(() => {
+      require('./utils/whatsappQrManager').initEnabledOnBoot().catch(() => {});
+    }, 5 * 1000);
+    // Job: sincronizar plantillas de WhatsApp con Meta para detectar cambios de
+    // categoría/estado y alertar (recategorización = impacto en costo). El webhook
+    // notifica al instante; este sondeo es la red de seguridad. Frecuencia
+    // configurable con TEMPLATE_SYNC_INTERVAL_MIN (min 5, por defecto 60 minutos).
+    const { syncAllClinicsTemplates } = require('./controllers/messageTemplateController');
+    const TPL_SYNC_MS = Math.max(5, Number(process.env.TEMPLATE_SYNC_INTERVAL_MIN) || 60) * 60 * 1000;
+    setTimeout(only(() => { syncAllClinicsTemplates().catch(() => {}); }), 30 * 1000);
+    setInterval(only(() => { syncAllClinicsTemplates().catch(() => {}); }), TPL_SYNC_MS);
+  }
 }).catch((err) => {
   console.error('No se pudo conectar a MongoDB, abortando:', err.message);
   process.exit(1);

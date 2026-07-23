@@ -120,11 +120,7 @@ exports.listConversations = async (req, res) => {
     // defecto si no tiene uno asignado. El front lo usa para saber si aplica la
     // ventana de 24h (los números QR no la tienen). Un solo query extra.
     const defaultType = await resolveDefaultConnectionType();
-    const out = conversations.map((c) => {
-      const o = c.toObject();
-      o.effectiveConnectionType = o.whatsappAccount?.connectionType || defaultType;
-      return o;
-    });
+    const out = conversations.map((c) => decorateConversation(c.toObject(), defaultType));
 
     res.json(out);
   } catch (err) {
@@ -141,6 +137,21 @@ async function resolveDefaultConnectionType() {
   } catch {
     return 'cloud_api';
   }
+}
+
+/**
+ * Añade a una conversación ya serializada los datos DERIVADOS que necesita la UI:
+ *   - `effectiveConnectionType`: el del número enlazado o, si no tiene (o el
+ *     enlace apunta a un número BORRADO — `populate` devuelve null), el del
+ *     número por defecto, que es justo al que caería el envío real.
+ *   - `window`: estado de la ventana de 24h calculado en el servidor (ver
+ *     `messaging.describeWhatsappWindow`). El navegador ya no la recalcula: una
+ *     sola regla, imposible que las dos vistas discrepen.
+ */
+function decorateConversation(o, defaultType) {
+  o.effectiveConnectionType = o.whatsappAccount?.connectionType || defaultType;
+  o.window = messaging.describeWhatsappWindow(o, o.effectiveConnectionType);
+  return o;
 }
 
 // Repuebla un documento de conversación con los campos que la UI necesita
@@ -169,9 +180,7 @@ exports.getConversation = async (req, res) => {
       .populate('opportunity.interestedIn.product', 'name salePrice')
       .populate('opportunities.interestedIn.product', 'name salePrice');
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
-    const o = conv.toObject();
-    o.effectiveConnectionType = o.whatsappAccount?.connectionType || (await resolveDefaultConnectionType());
-    res.json(o);
+    res.json(decorateConversation(conv.toObject(), await resolveDefaultConnectionType()));
   } catch (err) {
     res.status(500).json({ message: 'Error al obtener conversación', error: err.message });
   }

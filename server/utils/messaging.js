@@ -43,6 +43,44 @@ function isWhatsappWindowOpen(conv, now = new Date()) {
   return Boolean(expiresAt && expiresAt.getTime() > now.getTime());
 }
 
+/**
+ * Estado COMPLETO de la ventana de 24h de una conversación, calculado en el
+ * servidor y enviado tal cual a la UI.
+ *
+ * POR QUÉ: la ventana se calculaba DOS veces (aquí para decidir si se envía, y
+ * otra vez en el navegador para pintar el aviso "ventana cerrada"). Dos copias de
+ * la misma regla = dos formas de equivocarse: bastaba que el front resolviera el
+ * tipo de conexión distinto al que de verdad usa el envío para que el compositor
+ * se bloqueara con la ventana abierta (o al revés). Ahora la regla vive SOLO aquí.
+ *
+ * `connectionType` es el del número por el que REALMENTE saldría el mensaje. Los
+ * números QR (WhatsApp Web) no tienen ventana: `applies:false` → siempre abierta.
+ *
+ * Devuelve también `lastInboundAt` para que la UI pueda decir CUÁNDO escribió el
+ * contacto por última vez, en vez de un "cerrada" sin contexto (el motivo #1 de
+ * "la ventana no se está cumpliendo": el último entrante era de hace días, pero
+ * en el hilo solo se veía la hora y parecía de anoche).
+ */
+function describeWhatsappWindow(conv, connectionType, now = new Date()) {
+  const isWhatsapp = (conv?.channel || 'whatsapp') === 'whatsapp';
+  const applies = isWhatsapp && connectionType !== 'qr';
+  const expiresAt = isWhatsapp ? getWhatsappWindowExpiresAt(conv) : null;
+  const lastInboundAt = conv?.lastInboundAt
+    ? new Date(conv.lastInboundAt)
+    : conv?.lastMessageDirection === 'in' && conv?.lastMessageAt
+      ? new Date(conv.lastMessageAt)
+      : null;
+  const open = !applies || Boolean(expiresAt && expiresAt.getTime() > now.getTime());
+  return {
+    applies,
+    open,
+    expiresAt: expiresAt || null,
+    lastInboundAt,
+    // Milisegundos que quedan de ventana (0 si está cerrada o no aplica).
+    msRemaining: applies && expiresAt ? Math.max(0, expiresAt.getTime() - now.getTime()) : 0,
+  };
+}
+
 function normalizeTextForKeyword(text) {
   return String(text || '')
     .normalize('NFD')
@@ -949,6 +987,7 @@ module.exports = {
   buildTemplateComponents,
   enrichTemplateHeader,
   computeWhatsappWindowExpiresAt,
+  describeWhatsappWindow,
   getWhatsappWindowExpiresAt,
   isOptOutText,
   isWhatsappWindowOpen,
