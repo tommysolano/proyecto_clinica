@@ -12,7 +12,7 @@ import {
 } from 'react-icons/hi2';
 import Modal from '../components/Modal';
 import BulkUploadModal from '../components/BulkUploadModal';
-import FolderExplorer, { normFolderPath } from '../components/FolderExplorer';
+import FolderExplorer, { normFolderPath, MoveToFolderMenu } from '../components/FolderExplorer';
 
 const TRIGGERS = [
   { value: 'appointment_created', label: 'Cita agendada' },
@@ -134,12 +134,23 @@ export default function Workflows() {
     }
   };
 
+  // Mueve una automatización a otra carpeta (o a "General" con '').
+  const moveToFolder = async (wf, folder) => {
+    try {
+      await api.put(`/workflows/${wf._id}`, { folder });
+      toast.success(folder ? `Movido a "${folder}"` : 'Movido a General');
+      load();
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'No se pudo mover');
+    }
+  };
+
   const matchItem = (wf, q) =>
     (wf.name || '').toLowerCase().includes(q) ||
     normFolderPath(wf.folder || 'General').toLowerCase().includes(q) ||
     triggerSummary(wf).toLowerCase().includes(q);
 
-  const renderCard = (wf) => (
+  const renderCard = (wf, allFolders = []) => (
     <div key={wf._id} className="border border-slate-200 rounded-xl p-4 bg-white flex justify-between gap-4">
       <div>
         <div className="flex items-center gap-2 flex-wrap">
@@ -160,6 +171,12 @@ export default function Workflows() {
         >
           Actividad
         </button>
+        <MoveToFolderMenu
+          currentFolder={wf.folder || 'General'}
+          folders={allFolders}
+          onMove={(target) => moveToFolder(wf, target)}
+          buttonClass="px-3 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer flex items-center gap-1"
+        />
         <button onClick={() => openEdit(wf)} className="p-2 text-slate-500 hover:text-emerald-600 bg-transparent border-none cursor-pointer"><HiOutlinePencil /></button>
         <button onClick={() => remove(wf._id)} className="p-2 text-slate-500 hover:text-red-600 bg-transparent border-none cursor-pointer"><HiOutlineTrash /></button>
       </div>
@@ -221,13 +238,13 @@ export default function Workflows() {
             <HiOutlinePlus /> Nuevo workflow
           </button>
         )}
-        renderItems={({ rows, emptyText }) =>
+        renderItems={({ rows, emptyText, folders: allFolders }) =>
           rows.length === 0 ? (
             <div className="text-center py-16 text-slate-400 border border-dashed border-slate-200 rounded-xl">
               {list.length === 0 ? 'Aún no hay automatizaciones.' : emptyText}
             </div>
           ) : (
-            <div className="grid gap-3 content-start">{rows.map(renderCard)}</div>
+            <div className="grid gap-3 content-start">{rows.map((wf) => renderCard(wf, allFolders))}</div>
           )
         }
       />

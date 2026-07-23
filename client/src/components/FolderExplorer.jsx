@@ -241,8 +241,90 @@ export default function FolderExplorer({
           rows: showingSearch ? searchResults : itemRows,
           showFolderColumn: showingSearch,
           currentPath: path === UNFILED ? '' : path,
+          // Lista ordenada de TODAS las carpetas existentes, para el menú "Mover a
+          // carpeta" de cada elemento (ver MoveToFolderMenu).
+          folders: [...allFolderPaths].sort((a, b) => a.localeCompare(b)),
           emptyText,
         })}
+    </div>
+  );
+}
+
+/**
+ * Menú "Mover a carpeta" para un elemento (mensaje guardado o automatización).
+ * Lista las carpetas existentes + "Sin carpeta" + "Nueva carpeta…". Al elegir,
+ * llama a `onMove(rutaDestino)`; la página se encarga de persistirlo y recargar.
+ */
+export function MoveToFolderMenu({ currentFolder = '', folders = [], onMove, buttonClass = '', label = 'Mover' }) {
+  const [open, setOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const current = normFolderPath(currentFolder);
+
+  const doMove = async (target) => {
+    setOpen(false);
+    if (normFolderPath(target) === current) return; // ya está ahí
+    setBusy(true);
+    try {
+      await onMove(normFolderPath(target));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const newFolder = async () => {
+    const name = window.prompt('Carpeta destino (usa "/" para subcarpetas, p. ej. Ventas/Promos):');
+    const clean = normFolderPath(name);
+    if (clean) await doMove(clean);
+  };
+
+  return (
+    <div className="relative inline-block">
+      <button
+        type="button"
+        disabled={busy}
+        onClick={() => setOpen((v) => !v)}
+        title="Mover a otra carpeta"
+        className={buttonClass || 'px-2 py-1 text-xs border border-slate-200 rounded-lg bg-white hover:bg-slate-50 cursor-pointer flex items-center gap-1 disabled:opacity-50'}
+      >
+        <HiOutlineFolder className="w-3.5 h-3.5 text-amber-500" /> {busy ? '…' : label}
+      </button>
+      {open && (
+        <>
+          {/* Capa para cerrar al hacer clic fuera */}
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 mt-1 w-56 max-h-64 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg z-50 py-1">
+            <div className="px-3 py-1 text-[10px] uppercase tracking-wide text-slate-400">Mover a…</div>
+            <button
+              type="button"
+              onClick={() => doMove('')}
+              className={`w-full text-left px-3 py-1.5 text-sm hover:bg-emerald-50 cursor-pointer bg-white border-none flex items-center gap-2 ${!current ? 'text-emerald-700 font-semibold' : 'text-slate-600'}`}
+            >
+              <HiOutlineFolder className="w-4 h-4 text-slate-400" /> Sin carpeta {!current && '✓'}
+            </button>
+            {folders.map((f) => (
+              <button
+                key={f}
+                type="button"
+                onClick={() => doMove(f)}
+                className={`w-full text-left px-3 py-1.5 text-sm hover:bg-emerald-50 cursor-pointer bg-white border-none flex items-center gap-2 ${f === current ? 'text-emerald-700 font-semibold' : 'text-slate-600'}`}
+              >
+                <HiOutlineFolder className="w-4 h-4 text-amber-500" />
+                <span className="truncate">{f}</span>
+                {f === current && '✓'}
+              </button>
+            ))}
+            <div className="border-t border-slate-100 mt-1 pt-1">
+              <button
+                type="button"
+                onClick={newFolder}
+                className="w-full text-left px-3 py-1.5 text-sm hover:bg-emerald-50 cursor-pointer bg-white border-none flex items-center gap-2 text-emerald-700"
+              >
+                <HiOutlineFolderPlus className="w-4 h-4" /> Nueva carpeta…
+              </button>
+            </div>
+          </div>
+        </>
+      )}
     </div>
   );
 }

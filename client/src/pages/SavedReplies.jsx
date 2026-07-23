@@ -16,7 +16,7 @@ import {
 import api from '../api/axios';
 import Modal from '../components/Modal';
 import WhatsappTextArea from '../components/WhatsappTextArea';
-import FolderExplorer, { normFolderPath } from '../components/FolderExplorer';
+import FolderExplorer, { normFolderPath, MoveToFolderMenu } from '../components/FolderExplorer';
 import { fmtDateTime } from '../utils/date';
 
 // Convierte los marcadores de WhatsApp (*negrita*, _cursiva_, ~tachado~) a HTML
@@ -113,6 +113,17 @@ export default function SavedReplies() {
     }
   };
 
+  // Mueve un mensaje guardado a otra carpeta (o a "Sin carpeta" con '').
+  const moveToFolder = async (r, folder) => {
+    try {
+      const { data } = await api.put(`/chats/saved-replies/${r._id}`, { folder });
+      setList((prev) => prev.map((x) => (x._id === r._id ? data : x)));
+      toast.success(folder ? `Movido a "${folder}"` : 'Movido a Sin carpeta');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo mover');
+    }
+  };
+
   const remove = async (r) => {
     if (!window.confirm(`¿Eliminar el mensaje guardado "${r.title || `/${r.shortcut}`}"?`)) return;
     try {
@@ -168,11 +179,13 @@ export default function SavedReplies() {
             <HiOutlinePlus className="w-4 h-4" /> Nuevo mensaje guardado
           </button>
         )}
-        renderItems={({ rows, showFolderColumn, emptyText }) => (
+        renderItems={({ rows, showFolderColumn, emptyText, folders: allFolders }) => (
           <SavedRepliesTable
             loading={loading}
             rows={rows}
             showFolderColumn={showFolderColumn}
+            folders={allFolders}
+            onMove={moveToFolder}
             onEdit={(r) => { setEditing(r); setNewFolder(''); setModalOpen(true); }}
             onRemove={remove}
             emptyText={
@@ -204,7 +217,7 @@ export default function SavedReplies() {
 }
 
 // Tabla de mensajes guardados reutilizable (para la carpeta actual o la búsqueda).
-function SavedRepliesTable({ loading, rows, showFolderColumn, onEdit, onRemove, emptyText }) {
+function SavedRepliesTable({ loading, rows, showFolderColumn, folders = [], onMove, onEdit, onRemove, emptyText }) {
   const cols = showFolderColumn ? 6 : 5;
   return (
     <div className="bg-white border border-slate-200 rounded-xl overflow-hidden">
@@ -261,20 +274,27 @@ function SavedRepliesTable({ loading, rows, showFolderColumn, onEdit, onRemove, 
                     )}
                     <td className="px-4 py-2.5 align-top text-xs text-slate-500 whitespace-nowrap">{fmtDateTime(r.updatedAt)}</td>
                     <td className="px-4 py-2.5 align-top text-right whitespace-nowrap">
-                      <button
-                        onClick={() => onEdit(r)}
-                        title="Editar"
-                        className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg bg-transparent border-none cursor-pointer"
-                      >
-                        <HiOutlinePencilSquare className="w-4 h-4" />
-                      </button>
-                      <button
-                        onClick={() => onRemove(r)}
-                        title="Eliminar"
-                        className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-lg bg-transparent border-none cursor-pointer"
-                      >
-                        <HiOutlineTrash className="w-4 h-4" />
-                      </button>
+                      <div className="inline-flex items-center gap-1 justify-end">
+                        <MoveToFolderMenu
+                          currentFolder={r.folder}
+                          folders={folders}
+                          onMove={(target) => onMove(r, target)}
+                        />
+                        <button
+                          onClick={() => onEdit(r)}
+                          title="Editar"
+                          className="p-1.5 text-slate-500 hover:text-emerald-700 hover:bg-emerald-50 rounded-lg bg-transparent border-none cursor-pointer"
+                        >
+                          <HiOutlinePencilSquare className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => onRemove(r)}
+                          title="Eliminar"
+                          className="p-1.5 text-slate-500 hover:text-rose-600 hover:bg-rose-50 rounded-lg bg-transparent border-none cursor-pointer"
+                        >
+                          <HiOutlineTrash className="w-4 h-4" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 );

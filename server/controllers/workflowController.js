@@ -91,6 +91,8 @@ exports.update = async (req, res) => {
     delete update.clinic;
     delete update._id;
     delete update.stats;
+    // Mover de carpeta: normaliza la ruta (tipo Windows) y nunca la deja vacía.
+    if (update.folder !== undefined) update.folder = normFolderPath(update.folder) || 'General';
     const wf = await Workflow.findOneAndUpdate(
       { _id: req.params.id, clinic: req.clinicId },
       update,
