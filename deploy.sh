@@ -28,12 +28,27 @@ npm run install-all
 echo "==> 3/4 Compilando el frontend (regenera client/dist)"
 npm --prefix client run build
 
-echo "==> 4/4 Reiniciando el backend con PM2"
-# --kill-timeout 15000: pm2 manda SIGINT y espera 15 s antes del SIGKILL. El
-# server usa ese tiempo para cerrar los Chromium de WhatsApp QR con destroy();
-# sin la gracia, la sesión moría a mitad de escritura y tras varios deploys
-# quedaba corrupta (auth_failure → re-escanear el QR).
-pm2 restart clinica-api --update-env --kill-timeout 15000
-pm2 save
+echo "==> 4/4 Reiniciando el backend con PM2 (bajo el usuario 'clinica')"
+# IMPORTANTE: el backend corre bajo el pm2 del usuario `clinica` (God Daemon en
+# /home/clinica/.pm2), NO bajo el de root. GitHub Actions ejecuta este deploy
+# como root, así que un `pm2 restart` a secas apuntaba al pm2 de ROOT (vacío) →
+# fallaba con "clinica-api doesn't exist" y el backend NUNCA se reiniciaba (seguía
+# corriendo código viejo hasta un reboot). Por eso apuntamos SIEMPRE al pm2 de
+# clinica; si el deploy ya se corre como clinica (manual), se usa pm2 directo.
+#
+# `unset SECRETS_KEY`: con --update-env, pm2 reinyecta el entorno de esta shell al
+# proceso. Vaciamos SECRETS_KEY para que NADIE la pise y sea SIEMPRE dotenv
+# (server/.env) la única fuente de la clave. Sin esto, un entorno sin la clave
+# (el de GitHub Actions) la borraba del proceso y los tokens de WhatsApp quedaban
+# ILEGIBLES ("no se pudo descifrar el token") hasta el siguiente reinicio manual.
+#
+# --kill-timeout 15000: da 15 s para cerrar los Chromium de WhatsApp QR (destroy);
+# sin la gracia, la sesión moría a mitad de escritura y quedaba corrupta.
+PM2_CMD='unset SECRETS_KEY; pm2 restart clinica-api --update-env --kill-timeout 15000 && pm2 save'
+if [ "$(id -un)" = "clinica" ]; then
+  bash -lc "$PM2_CMD"
+else
+  sudo -iu clinica bash -lc "$PM2_CMD"
+fi
 
 echo "==> Despliegue completado: $(date)"

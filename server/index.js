@@ -1,5 +1,26 @@
 require('dotenv').config();
 
+// Guardia de arranque: SECRETS_KEY cifra/descifra los tokens de WhatsApp/Meta en
+// reposo. Si el proceso arranca SIN ella (típico: un deploy con `pm2 --update-env`
+// desde una shell sin la clave, o falta en server/.env), los tokens quedan
+// ILEGIBLES y los envíos fallan con "no se pudo descifrar el token" — un fallo
+// que antes era mudo y difícil de diagnosticar. Aquí gritamos en los logs para
+// detectarlo al instante. NO tumbamos el proceso: el resto de la API debe seguir
+// viva; solo el envío por Cloud API se degrada (con su propio error accionable).
+(() => {
+  const k = process.env.SECRETS_KEY;
+  const valid = typeof k === 'string' && (/^[0-9a-fA-F]{64}$/.test(k) || Buffer.from(k, 'base64').length === 32);
+  if (!valid) {
+    console.error('\n' + '='.repeat(70));
+    console.error('[SECRETS_KEY] ⚠️  FALTA o es INVÁLIDA al arrancar.');
+    console.error('  → Los tokens de WhatsApp/Meta NO se podrán descifrar y los');
+    console.error('    envíos por Cloud API fallarán ("no se pudo descifrar el token").');
+    console.error('  → Debe estar en server/.env (64 hex). Revisa que el deploy no la');
+    console.error('    borre (pm2 --update-env desde una shell sin la clave).');
+    console.error('='.repeat(70) + '\n');
+  }
+})();
+
 // Zona horaria de TODO el proceso = Ecuador (Guayaquil, UTC-5, sin horario de
 // verano). Debe ir ANTES de cualquier uso de Date para que getDate()/getHours()/
 // setHours()/toLocaleString(), la fecha de emisión SRI, cortes de "hoy", etc. se
