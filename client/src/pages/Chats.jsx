@@ -420,10 +420,22 @@ export default function Chats() {
     }
   }, [messages]);
 
-  const activeConv = useMemo(
+  // Versión "viva" del chat abierto tomada de la lista filtrada.
+  const liveActiveConv = useMemo(
     () => conversations.find((c) => c._id === activeId),
     [conversations, activeId]
   );
+  // Snapshot del chat abierto: si el chat sale de la lista FILTRADA (p.ej. al
+  // responder en "No leídos" deja de estar sin leer y desaparece de esa lista), el
+  // panel NO debe cerrarse. Guardamos su último estado conocido y lo usamos como
+  // respaldo, para que quede abierto y se pueda seguir escribiendo sin re-buscarlo
+  // (comportamiento estilo Daplox).
+  const [openConvSnap, setOpenConvSnap] = useState(null);
+  useEffect(() => {
+    if (liveActiveConv) setOpenConvSnap(liveActiveConv);
+  }, [liveActiveConv]);
+  const activeConv =
+    liveActiveConv || (openConvSnap && openConvSnap._id === activeId ? openConvSnap : undefined);
   // Lista según el orden elegido. El backend manda destacados arriba + recientes
   // primero; 'oldest' reordena aquí por llegada pura (sin anclar destacados).
   const sortedConversations = useMemo(() => {
@@ -497,20 +509,22 @@ export default function Chats() {
       const r = await api.post(`/chats/${activeId}/messages`, payload);
       setMessages((prev) => [...prev, r.data]);
       const preview = r.data.body || (useTemplate ? `[Plantilla: ${templateName}]` : body);
-      setConversations((prev) =>
-        prev.map((c) =>
-          c._id === activeId
-            ? {
-                ...c,
-                lastMessagePreview: preview.slice(0, 140),
-                lastMessageAt: r.data.createdAt,
-                lastMessageDirection: 'out',
-                // Responder limpia el pendiente de no leído (igual que el backend).
-                unreadCount: 0,
-              }
-            : c
-        )
-      );
+      const convPatch = {
+        lastMessagePreview: preview.slice(0, 140),
+        lastMessageAt: r.data.createdAt,
+        lastMessageDirection: 'out',
+        // Responder limpia el pendiente de no leído (igual que el backend).
+        unreadCount: 0,
+      };
+      // Mantener el chat abierto con datos frescos aunque salga de la lista filtrada.
+      if (activeConv) setOpenConvSnap({ ...activeConv, ...convPatch });
+      setConversations((prev) => {
+        const updated = prev.map((c) => (c._id === activeId ? { ...c, ...convPatch } : c));
+        // En "No leídos", responder saca el chat de esa lista (como Daplox); el panel
+        // sigue abierto por el snapshot, así se puede seguir escribiendo sin buscarlo.
+        if (view === 'inbox' && filter === 'unread') return updated.filter((c) => c._id !== activeId);
+        return updated;
+      });
       if (r.data.deliveryStatus === 'failed') {
         toast.error(r.data.errorMessage || 'No se pudo enviar');
       } else if (useTemplate) {
@@ -771,6 +785,9 @@ export default function Chats() {
     try {
       await api.post(`/chats/${conv._id}/read`);
       setConversations((prev) => prev.map((c) => (c._id === conv._id ? { ...c, unreadCount: 0 } : c)));
+      // Si el chat marcado es el ABIERTO, refresca su snapshot (para que quede
+      // abierto con el badge de no-leído ya en 0 aunque salga de la lista filtrada).
+      setOpenConvSnap((prev) => (prev && prev._id === conv._id ? { ...prev, unreadCount: 0 } : prev));
       // Si estamos en el filtro "No leídos", el chat ya no pertenece ahí.
       if (view === 'inbox' && filter === 'unread') {
         setConversations((prev) => prev.filter((c) => c._id !== conv._id));
