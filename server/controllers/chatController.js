@@ -196,8 +196,12 @@ exports.markConversationRead = async (req, res) => {
   try {
     const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
-    if (!canMutateConversation(req, conv)) {
-      return res.status(403).json({ message: 'No puedes modificar esta conversación' });
+    // Marcar como visto es una acción de BANDEJA (baja el pendiente), no una acción
+    // administrativa: cualquier agente con acceso al chat puede hacerlo, esté el
+    // chat asignado a quien esté — igual que responder. Antes exigía ser el agente
+    // asignado (canMutateConversation) y a los demás les rebotaba con 403.
+    if (!canReplyConversation(req, conv)) {
+      return res.status(403).json({ message: 'No tienes acceso a la bandeja de chats' });
     }
     conv.unreadCount = 0;
     await conv.save();
