@@ -32,28 +32,29 @@ function buildVisibilityFilter(req) {
   return { clinic: req.clinicId };
 }
 
+/**
+ * ¿Puede este usuario ADMINISTRAR esta conversación (editar, destacar, crear/
+ * modificar/eliminar oportunidades, bloquear, reasignar…)? El call center comparte
+ * UNA sola bandeja: cualquier agente del CRM puede hacer TODAS las acciones sobre
+ * CUALQUIER chat, esté asignado a quien esté.
+ *
+ * La asignación (assignedTo) NO es un candado: su única función es que el chat
+ * también aparezca en "mis chats asignados" del agente. Antes un chat tomado por
+ * un compañero bloqueaba al resto (crear oportunidad, editar, borrar…) con 403,
+ * lo que entorpecía el trabajo del equipo. Ahora administrar es de toda la bandeja,
+ * igual que responder (canReplyConversation). Solo se excluye a roles ajenos al
+ * CRM (p. ej. doctor).
+ */
 function canMutateConversation(req, conv) {
   if (req.user?.isSuperAdmin) return true;
-  if (req.role === 'admin' || req.role === 'marketing') return true;
-  if (req.role === 'call_center') {
-    // Puede ADMINISTRAR (reasignar, editar, destacar, oportunidades, bloquear,
-    // borrar) si está asignado a él o si todavía no tiene asignación.
-    return !conv.assignedTo || String(conv.assignedTo) === String(req.user._id);
-  }
-  return false;
+  return ['admin', 'marketing', 'call_center'].includes(req.role);
 }
 
 /**
  * ¿Puede este usuario RESPONDER (enviar mensajes) en esta conversación? El call
  * center comparte UNA sola bandeja: cualquier agente puede contestar cualquier
  * chat, esté asignado a quien esté (la asignación es un indicador de "quién lo
- * atiende", no un candado). Las acciones administrativas siguen restringidas por
- * canMutateConversation.
- *
- * Antes, enviar TEXTO exigía tener el chat asignado, pero enviar imágenes (send-
- * image) no: un agente veía el chat de un compañero y podía mandar la imagen pero
- * NO el texto ("No puedes enviar mensajes en esta conversación"). Este permiso
- * unifica el criterio: responder es de toda la bandeja.
+ * atiende", no un candado).
  */
 function canReplyConversation(req, conv) {
   if (req.user?.isSuperAdmin) return true;
