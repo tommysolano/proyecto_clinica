@@ -57,6 +57,7 @@ import useWhatsappCall from '../hooks/useWhatsappCall';
 import CallPanel from '../components/CallPanel';
 import ChatComposerToolbar from '../components/ChatComposerToolbar';
 import { renderWhatsappText } from '../utils/whatsappText';
+import { downloadFromUrl } from '../utils/download';
 
 // Etiquetas de los disparadores (para mostrar los flujos en el menú de
 // automatizaciones del compositor).
@@ -2589,12 +2590,10 @@ function AudioPlayer({ src, isOut }) {
 
   if (failed) {
     return (
-      <a
-        href={src}
-        target="_blank"
-        rel="noreferrer"
-        download="nota-de-voz.ogg"
-        className={`flex items-center gap-2 mb-1 rounded-lg px-2.5 py-2 no-underline ${
+      <button
+        type="button"
+        onClick={() => saveMediaFile(src, 'nota-de-voz.ogg')}
+        className={`w-full text-left flex items-center gap-2 mb-1 rounded-lg px-2.5 py-2 border-none cursor-pointer ${
           isOut ? 'bg-emerald-600/40 hover:bg-emerald-600/60' : 'bg-slate-100 hover:bg-slate-200'
         }`}
       >
@@ -2605,7 +2604,7 @@ function AudioPlayer({ src, isOut }) {
             Este navegador no puede reproducirla · Descargar
           </span>
         </span>
-      </a>
+      </button>
     );
   }
 
@@ -2645,6 +2644,17 @@ function AudioPlayer({ src, isOut }) {
       <span className="text-lg shrink-0" aria-hidden>🎤</span>
     </div>
   );
+}
+
+// Descarga un adjunto del chat (documento, nota de voz…) a disco. La media entrante
+// se guarda como data: URL y el navegador NO deja descargar/navegar directo a un
+// data: URL; se baja a Blob (downloadFromUrl) para que funcione en todos lados.
+async function saveMediaFile(url, filename) {
+  try {
+    await downloadFromUrl(url, filename);
+  } catch {
+    toast.error('No se pudo descargar el archivo');
+  }
 }
 
 // Etiqueta de la media por tipo, para cuando no se puede mostrar el archivo.
@@ -2724,16 +2734,16 @@ function MessageMedia({ msg, isOut, onRetryMedia }) {
     return <AudioPlayer src={url} isOut={isOut} />;
   }
   // Documento: tarjeta con icono, nombre y tamaño (como WhatsApp), no un genérico
-  // "Ver adjunto". El nombre real llega en `mediaName`.
+  // "Ver adjunto". El nombre real llega en `mediaName`. Al hacer clic se DESCARGA
+  // por Blob (ver saveMediaFile): un enlace directo a un data: URL lo bloquea el
+  // navegador, y por eso los PDF/Word/Excel entrantes "no se dejaban descargar".
   const name = msg.mediaName || 'Documento';
   const size = formatFileSize(msg.mediaSize);
   return (
-    <a
-      href={url}
-      target="_blank"
-      rel="noreferrer"
-      download={name}
-      className={`flex items-center gap-2 mb-1 rounded-lg px-2.5 py-2 no-underline ${
+    <button
+      type="button"
+      onClick={() => saveMediaFile(url, name)}
+      className={`w-full text-left flex items-center gap-2 mb-1 rounded-lg px-2.5 py-2 border-none cursor-pointer ${
         isOut ? 'bg-emerald-600/40 hover:bg-emerald-600/60' : 'bg-slate-100 hover:bg-slate-200'
       }`}
     >
@@ -2746,7 +2756,7 @@ function MessageMedia({ msg, isOut, onRetryMedia }) {
           {size ? `${size} · ` : ''}Descargar
         </span>
       </span>
-    </a>
+    </button>
   );
 }
 

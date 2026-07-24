@@ -68,3 +68,23 @@ export function triggerBlobDownload(blob, filename) {
   a.remove();
   URL.revokeObjectURL(url);
 }
+
+/**
+ * Descarga un archivo desde una URL cualquiera: un `data:` URL base64 (así se
+ * guarda la media entrante del chat) o una URL http(s) del propio servidor
+ * (p. ej. /api/public/media/:id de la media saliente).
+ *
+ * Por qué NO basta un `<a download href="data:…">`: los navegadores BLOQUEAN
+ * descargar/navegar directamente a un data: URL (Chrome: "Not allowed to navigate
+ * top frame to data URL"; Firefox falla con data URLs grandes). Las imágenes se
+ * ven igual porque van dentro de un `<img src>` (no es navegación), pero un
+ * PDF/Word/Excel entrante NO se podía descargar al hacer clic. Aquí bajamos el
+ * contenido a un Blob y disparamos la descarga con un object URL, que sí funciona
+ * en todos los navegadores y sin límite de tamaño del atributo download.
+ */
+export async function downloadFromUrl(url, filename) {
+  const res = await fetch(url);
+  if (!res.ok) throw new Error('No se pudo obtener el archivo');
+  const blob = await res.blob();
+  triggerBlobDownload(blob, filename || 'descarga');
+}
