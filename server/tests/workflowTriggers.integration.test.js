@@ -114,7 +114,7 @@ test('Trigger "cita agendada": paciente SIN teléfono también se inscribe (el f
   const wf = await graphWorkflow(clinic._id);
 
   const r = await H.runController(appointmentCtrl.createAppointment, H.mockReq(clinic._id, userId, {
-    patient: patient._id, services: [String(prod._id)], date: '2026-07-21', startTime: '09:00',
+    patient: patient._id, services: [String(prod._id)], date: futureDate(), startTime: '09:00',
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
 
@@ -148,7 +148,7 @@ test('Trigger "cita agendada" con contacto de número oculto (LID): el mensaje v
   const wf = await graphWorkflow(clinic._id);
 
   const r = await H.runController(appointmentCtrl.createAppointment, H.mockReq(clinic._id, userId, {
-    patient: patient._id, services: [String(prod._id)], date: '2026-07-23', startTime: '09:00',
+    patient: patient._id, services: [String(prod._id)], date: futureDate(), startTime: '09:00',
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
 
@@ -213,7 +213,7 @@ test('Cita creada DESDE EL CHAT (createAppointmentFromChat) también dispara el 
     chatCtrl.createAppointmentFromChat,
     H.mockReq(clinic._id, userId, {
       appointments: [
-        { date: '2026-07-24', startTime: '11:00', services: [{ product: String(prod._id), quantity: 1 }] },
+        { date: futureDate(), startTime: '11:00', services: [{ product: String(prod._id), quantity: 1 }] },
       ],
     }, { params: { id: String(conv._id) } })
   );
@@ -513,9 +513,14 @@ test('Nodo "Añadir a público de Facebook" (fb_audience_add): se ejecuta y regi
 });
 
 /** Día calendario futuro (YYYY-MM-DD) a N días de hoy: las citas no pueden agendarse en el pasado. */
-function futureDate(days) {
+/**
+ * Fecha de agenda SIEMPRE futura (YYYY-MM-DD en hora de Ecuador). Las pruebas que
+ * fijaban la fecha en el código se rompían solas al llegar ese día: no se puede
+ * agendar en el pasado.
+ */
+function futureDate(days = 3) {
   const d = new Date(Date.now() + days * 86400000);
-  return d.toISOString().slice(0, 10);
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Guayaquil' }).format(d);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -776,20 +781,20 @@ test('Cupo por servicio: bloquea la 2ª cita en el mismo horario aunque el servi
   });
 
   const r1 = await H.runController(appointmentCtrl.createAppointment, H.mockReq(branch._id, userId, {
-    patient: p1._id, services: [String(serv._id)], date: '2026-07-22', startTime: '10:00',
+    patient: p1._id, services: [String(serv._id)], date: futureDate(), startTime: '10:00',
   }));
   assert.equal(r1.statusCode, 201, JSON.stringify(r1.payload));
 
   // Misma fecha y hora → cupo (1) agotado, aunque el producto pertenezca a Matriz.
   const r2 = await H.runController(appointmentCtrl.createAppointment, H.mockReq(branch._id, userId, {
-    patient: p2._id, services: [String(serv._id)], date: '2026-07-22', startTime: '10:00',
+    patient: p2._id, services: [String(serv._id)], date: futureDate(), startTime: '10:00',
   }));
   assert.equal(r2.statusCode, 400, 'el cupo no bloqueó la segunda cita');
   assert.match(String(r2.payload.message), /Cupo agotado/);
 
   // Otra hora del mismo día sí se permite (el cupo es por horario).
   const r3 = await H.runController(appointmentCtrl.createAppointment, H.mockReq(branch._id, userId, {
-    patient: p2._id, services: [String(serv._id)], date: '2026-07-22', startTime: '11:00',
+    patient: p2._id, services: [String(serv._id)], date: futureDate(), startTime: '11:00',
   }));
   assert.equal(r3.statusCode, 201, JSON.stringify(r3.payload));
 
@@ -797,7 +802,7 @@ test('Cupo por servicio: bloquea la 2ª cita en el mismo horario aunque el servi
   const Appointment = require('../models/Appointment');
   await Appointment.updateOne({ _id: r1.payload._id }, { status: 'cancelada' });
   const r4 = await H.runController(appointmentCtrl.createAppointment, H.mockReq(branch._id, userId, {
-    patient: p2._id, services: [String(serv._id)], date: '2026-07-22', startTime: '10:00',
+    patient: p2._id, services: [String(serv._id)], date: futureDate(), startTime: '10:00',
   }));
   assert.equal(r4.statusCode, 201, 'una cita cancelada debe liberar su cupo');
 });

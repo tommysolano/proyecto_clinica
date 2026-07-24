@@ -1045,6 +1045,58 @@ exports.whatsappDiagnostics = async (req, res) => {
       hint: FAIL_HINTS[f._id] || '',
     }));
 
+    // 4b) MEDIA ENTRANTE de los últimos 7 días por número. Es la forma de ver si
+    // las fotos/audios que mandan los pacientes están llegando de verdad: un
+    // número con mucho tráfico y CERO media significa que se están perdiendo
+    // (le pasó al número QR: 1600 mensajes recibidos y ni una sola foto).
+    const since7 = new Date(Date.now() - 7 * 24 * 3600 * 1000);
+    const mediaRaw = await Message.aggregate([
+      { $match: { direction: 'in', createdAt: { $gte: since7 } } },
+      {
+        $group: {
+          _id: '$whatsappAccount',
+          mensajes: { $sum: 1 },
+          conMedia: { $sum: { $cond: [{ $ifNull: ['$mediaType', false] }, 1, 0] } },
+          mediaOk: {
+            $sum: {
+              $cond: [
+                { $and: [{ $ifNull: ['$mediaType', false] }, { $gt: [{ $strLenCP: { $ifNull: ['$mediaUrl', ''] } }, 0] }] },
+                1,
+                0,
+              ],
+            },
+          },
+          ultimaMedia: {
+            $max: { $cond: [{ $ifNull: ['$mediaType', false] }, '$createdAt', null] },
+          },
+        },
+      },
+    ]);
+    const incomingMedia = accounts.map((a) => {
+      const r = mediaRaw.find((x) => String(x._id) === String(a._id)) || {};
+      const received = r.mensajes || 0;
+      const withMedia = r.conMedia || 0;
+      const ok = r.mediaOk || 0;
+      let hint = '';
+      if (withMedia && ok < withMedia) {
+        hint = `${withMedia - ok} archivo(s) llegaron pero no se pudieron descargar: se ven en el chat como "no disponible".`;
+      } else if (!withMedia && received >= 50) {
+        hint =
+          'Este número no ha recibido NI UN archivo en 7 días con mucho tráfico de texto: revisa el log del servidor ' +
+          '([whatsapp-qr media]) porque puede que la sesión no esté logrando descargarlos.';
+      }
+      return {
+        _id: a._id,
+        label: a.label,
+        connectionType: a.connectionType,
+        received,
+        withMedia,
+        ok,
+        last: r.ultimaMedia || null,
+        hint,
+      };
+    });
+
     // 4) Conversaciones enlazadas a un número que ya no existe.
     const ids = new Set(accounts.map((a) => String(a._id)));
     const linked = await Conversation.find({ whatsappAccount: { $ne: null } })
@@ -1056,6 +1108,7 @@ exports.whatsappDiagnostics = async (req, res) => {
       cluster,
       accounts: accountsHealth,
       failures,
+      incomingMedia,
       orphanLinks,
       secretsKey: registry.hasSecretsKey(),
       // Estado del tiempo real: cuántos sockets están conectados a la bandeja. Si es

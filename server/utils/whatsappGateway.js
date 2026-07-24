@@ -166,11 +166,12 @@ async function sendTemplate(account, to, templateName, lang, components) {
 }
 
 async function downloadMedia(account, mediaId, opts) {
-  if (!account) return { ok: false };
+  if (!account) return { ok: false, error: 'Sin número de WhatsApp para descargar el archivo' };
   if (account.connectionType === 'qr') {
     return require('./whatsappQrManager').downloadMedia(account, mediaId, opts);
   }
-  if (cloudTokenError(account)) return { ok: false };
+  const tokenErr = cloudTokenError(account);
+  if (tokenErr) return { ok: false, error: tokenErr.error };
   return wa.downloadMedia(cloudCreds(account), mediaId, opts);
 }
 

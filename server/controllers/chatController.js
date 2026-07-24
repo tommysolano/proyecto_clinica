@@ -873,6 +873,11 @@ exports.uploadSavedReplyMedia = async (req, res) => {
       if (!conv.ok) return res.status(400).json({ message: conv.error });
       dataUrl = conv.dataUrl;
       mimeType = conv.mimeType;
+    } else {
+      // Cabecera SIEMPRE limpia (`data:<mime>;base64,…`). El navegador puede meter
+      // parámetros en el tipo (codecs, charset) y eso rompe a quien luego lee el
+      // adjunto por su URL pública. El contenido no se toca.
+      dataUrl = `data:${mimeType};base64,${parsed.b64}`;
     }
     const img = await ChatGalleryImageModel().create({
       clinic: req.clinicId,
@@ -1433,18 +1438,20 @@ exports.listGallery = async (req, res) => {
 exports.uploadGallery = async (req, res) => {
   try {
     const { name, dataUrl } = req.body;
-    if (!dataUrl || !/^data:image\/(png|jpe?g|webp|gif);base64,/.test(dataUrl)) {
+    // Parseo tolerante (el tipo puede traer parámetros) y cabecera normalizada al
+    // guardar, para que el adjunto siempre se pueda servir por su URL pública.
+    const parsed = require('../utils/dataUrl').parseDataUrl(dataUrl);
+    if (!parsed || !/^image\/(png|jpe?g|webp|gif)$/.test(parsed.mimeType)) {
       return res.status(400).json({ message: 'Imagen inválida' });
     }
     if (dataUrl.length > 8_000_000) {
       return res.status(400).json({ message: 'Imagen demasiado grande (máx ~6MB)' });
     }
-    const mimeMatch = dataUrl.match(/^data:(image\/[a-zA-Z0-9+]+);/);
     const img = await ChatGalleryImage.create({
       clinic: req.clinicId,
       name: name || `imagen_${Date.now()}`,
-      dataUrl,
-      mimeType: mimeMatch ? mimeMatch[1] : 'image/png',
+      dataUrl: `data:${parsed.mimeType};base64,${parsed.b64}`,
+      mimeType: parsed.mimeType,
       size: dataUrl.length,
       createdBy: req.user._id,
     });
@@ -2142,6 +2149,33 @@ async function applyIncomingOptOut({ clinicId, conv, incomingText }) {
   return true;
 }
 
+/**
+ * Texto legible para los mensajes de WhatsApp que NO son texto ni media
+ * (ubicación, tarjeta de contacto, reacción, pedido, o un tipo que Meta aún no
+ * documenta). Sin esto se creaba una burbuja COMPLETAMENTE VACÍA en el chat: el
+ * agente veía un hueco y no sabía que el paciente le había mandado algo.
+ */
+function describeNonMediaMessage(m) {
+  if (m.location) {
+    const name = m.location.name || m.location.address || '';
+    return `📍 Ubicación${name ? `: ${name}` : ''}`;
+  }
+  if (Array.isArray(m.contacts) && m.contacts.length) {
+    const who = m.contacts
+      .map((c) => c.name?.formatted_name || c.name?.first_name || '')
+      .filter(Boolean)
+      .join(', ');
+    return `👤 Contacto compartido${who ? `: ${who}` : ''}`;
+  }
+  if (m.reaction) return `${m.reaction.emoji || '👍'} (reacción a un mensaje)`;
+  if (m.order) return '🛒 Pedido del catálogo';
+  if (m.system?.body) return m.system.body;
+  if (m.type === 'unsupported' || m.errors?.length) {
+    return '(mensaje que WhatsApp no permite mostrar aquí — míralo en el teléfono)';
+  }
+  return '';
+}
+
 // Texto corto para la bandeja cuando el mensaje es solo media (sin pie).
 function mediaPreviewText(type, name) {
   const labels = {
@@ -2189,13 +2223,16 @@ async function ingestExternalOutbound({ clinicId, account, externalUserId, phone
   let mediaType = null;
   let mediaName = '';
   let mediaSize = 0;
+  let mediaError = '';
   let finalBody = body || '';
   if (media) {
     mediaName = String(media.filename || '').slice(0, 200);
-    if (media.dataUrl) {
-      mediaUrl = media.dataUrl;
-      mediaType = media.type;
-      mediaSize = Number(media.size) || 0;
+    // El tipo se conserva aunque la descarga falle (ver ingestExternalMessage).
+    mediaType = media.type || null;
+    mediaSize = Number(media.size) || 0;
+    if (media.dataUrl) mediaUrl = media.dataUrl;
+    else if (media.unavailable) {
+      mediaError = String(media.error || 'No se pudo descargar el archivo de WhatsApp.').slice(0, 300);
     }
     if (!finalBody) finalBody = media.caption || '';
   }
@@ -2230,6 +2267,7 @@ async function ingestExternalOutbound({ clinicId, account, externalUserId, phone
     mediaType,
     mediaName,
     mediaSize,
+    ...(mediaError ? { errorCode: 'media_unavailable', errorMessage: mediaError } : {}),
     externalId: externalId || undefined,
     origin: 'phone',
     sentByName: 'WhatsApp (teléfono)',
@@ -2364,24 +2402,40 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   let mediaType = null;
   let mediaName = '';
   let mediaSize = 0;
+  let mediaError = '';
   let finalBody = body || '';
   if (media && channel === 'whatsapp') {
     mediaName = String(media.filename || '').slice(0, 200);
+    mediaSize = Number(media.size) || 0;
+    // El TIPO se guarda SIEMPRE, aunque la descarga falle: así el agente ve
+    // "📷 Foto (no disponible)" en el chat en vez de una burbuja vacía sin
+    // explicación (o —peor— nada, como pasaba antes).
+    mediaType = media.type || null;
     if (media.dataUrl) {
       // Número QR: la media llega ya descargada inline (whatsapp-web.js).
       mediaUrl = media.dataUrl;
-      mediaType = media.type;
-      mediaSize = Number(media.size) || 0;
+    } else if (media.unavailable) {
+      // QR: la sesión de WhatsApp Web no logró entregar los bytes.
+      mediaError = String(media.error || 'No se pudo descargar el archivo de WhatsApp.').slice(0, 300);
     } else if (media.id && account) {
       // Cloud API: se descarga por id usando las credenciales del número.
       const gateway = require('../utils/whatsappGateway');
       const dl = await gateway.downloadMedia(account, media.id);
       if (dl.ok) {
         mediaUrl = dl.dataUrl;
-        mediaType = media.type;
-        mediaSize = Number(dl.size) || 0;
+        mediaSize = Number(dl.size) || mediaSize;
         if (!mediaName && dl.filename) mediaName = String(dl.filename).slice(0, 200);
+      } else {
+        mediaError = String(
+          dl.tooLarge ? 'El archivo es demasiado grande para guardarlo.' : dl.error || 'Meta no entregó el archivo.'
+        ).slice(0, 300);
+        console.warn('[chat media] Cloud API NO entregó la media type=%s id=%s: %s', media.type, media.id, mediaError);
       }
+    } else if (media.id && !account) {
+      // Sin cuenta resuelta (phone_number_id desconocido) no hay credenciales con
+      // las que bajar la media: antes se perdía en silencio.
+      mediaError = 'No se pudo identificar el número de WhatsApp por el que llegó el archivo.';
+      console.warn('[chat media] webhook sin cuenta resuelta: media type=%s id=%s no descargada', media.type, media.id);
     }
     // El texto de la burbuja es SOLO el pie real; el nombre del documento va
     // aparte en `mediaName` (se pinta como tarjeta) y los stickers no llevan texto.
@@ -2423,6 +2477,8 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
     mediaType,
     mediaName,
     mediaSize,
+    // Motivo por el que el archivo no está disponible (se muestra en la burbuja).
+    ...(mediaError ? { errorCode: 'media_unavailable', errorMessage: mediaError } : {}),
     externalId,
     ...(interactiveReply ? { interactiveReply } : {}),
     ...(replyTo ? { replyTo } : {}),
@@ -2478,6 +2534,8 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
 
 // Expuesto para que whatsappQrManager reutilice el mismo pipeline de ingesta.
 exports.ingestExternalMessage = ingestExternalMessage;
+// Texto de los mensajes que no son ni texto ni media (ubicación, contacto…).
+exports.describeNonMediaMessage = describeNonMediaMessage;
 // Salientes enviados desde el teléfono (número QR), fuera del sistema.
 exports.ingestExternalOutbound = ingestExternalOutbound;
 // Lo reutiliza el controller de llamadas: una llamada entrante debe vincularse
@@ -2650,7 +2708,7 @@ exports.webhookWhatsappReceive = async (req, res) => {
             account,
             phone: m.from,
             externalUserId: m.from,
-            body: m.text?.body || m.button?.text || reply?.title || '',
+            body: m.text?.body || m.button?.text || reply?.title || describeNonMediaMessage(m),
             interactiveReply,
             media,
             contactName: contact.profile?.name || '',

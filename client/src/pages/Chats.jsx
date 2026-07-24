@@ -2452,6 +2452,10 @@ function AudioPlayer({ src, isOut }) {
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
+  // El navegador no pudo decodificar el audio (Safari/iOS no reproduce ogg/opus,
+  // que es el formato de TODAS las notas de voz de WhatsApp). En vez de un botón
+  // de play que no hace nada, se ofrece descargarlo.
+  const [failed, setFailed] = useState(false);
 
   // Las notas de voz de MediaRecorder/OGG a veces reportan duration=Infinity hasta
   // que se busca al final; se fuerza UNA vez para conocer la duración real.
@@ -2474,7 +2478,9 @@ function AudioPlayer({ src, isOut }) {
   const toggle = () => {
     const a = audioRef.current;
     if (!a) return;
-    if (a.paused) a.play().catch(() => {});
+    // `play()` puede rechazar (formato no soportado, o audio aún sin cargar): se
+    // avisa en vez de dejar el botón muerto y en silencio.
+    if (a.paused) a.play().catch(() => setFailed(true));
     else a.pause();
   };
 
@@ -2490,12 +2496,35 @@ function AudioPlayer({ src, isOut }) {
   // Muestra el tiempo transcurrido mientras suena; la duración total en reposo.
   const shown = playing || current > 0 ? current : duration;
 
+  if (failed) {
+    return (
+      <a
+        href={src}
+        target="_blank"
+        rel="noreferrer"
+        download="nota-de-voz.ogg"
+        className={`flex items-center gap-2 mb-1 rounded-lg px-2.5 py-2 no-underline ${
+          isOut ? 'bg-emerald-600/40 hover:bg-emerald-600/60' : 'bg-slate-100 hover:bg-slate-200'
+        }`}
+      >
+        <span className="text-2xl leading-none shrink-0">🎤</span>
+        <span className="min-w-0">
+          <span className={`block text-xs font-semibold ${isOut ? 'text-white' : 'text-slate-700'}`}>Nota de voz</span>
+          <span className={`block text-[10px] ${isOut ? 'text-emerald-100' : 'text-slate-400'}`}>
+            Este navegador no puede reproducirla · Descargar
+          </span>
+        </span>
+      </a>
+    );
+  }
+
   return (
     <div className={`flex items-center gap-2 mb-1 min-w-[190px] max-w-[280px] ${isOut ? 'text-white' : 'text-slate-700'}`}>
       <audio
         ref={audioRef}
         src={src}
         preload="metadata"
+        onError={() => setFailed(true)}
         onLoadedMetadata={onLoadedMeta}
         onDurationChange={() => {
           const d = audioRef.current?.duration;
@@ -2527,15 +2556,34 @@ function AudioPlayer({ src, isOut }) {
   );
 }
 
+// Etiqueta de la media por tipo, para cuando no se puede mostrar el archivo.
+const MEDIA_LABEL = {
+  image: '📷 Foto',
+  video: '🎬 Video',
+  audio: '🎤 Nota de voz',
+  document: '📄 Documento',
+  sticker: '🌟 Sticker',
+};
+
 function MessageMedia({ msg, isOut }) {
   const url = msg.mediaUrl;
   const type = msg.mediaType || '';
   if (!url) {
-    // Media que no se pudo descargar/guardar: al menos indicar qué era.
+    // Media que no se pudo descargar/guardar: se dice QUÉ llegó y POR QUÉ no está,
+    // en vez de dejar la burbuja vacía (o perder el mensaje, como antes).
     if (type) {
+      const label = type === 'document' ? `📄 ${msg.mediaName || 'Documento'}` : MEDIA_LABEL[type] || type;
       return (
-        <div className={`text-xs italic mb-1 ${isOut ? 'text-emerald-100' : 'text-slate-400'}`}>
-          {type === 'document' ? (msg.mediaName || 'Documento') : type} (no disponible)
+        <div className={`mb-1 rounded-lg px-2.5 py-2 ${isOut ? 'bg-emerald-600/40' : 'bg-slate-100'}`}>
+          <div className={`text-xs font-semibold ${isOut ? 'text-white' : 'text-slate-600'}`}>{label}</div>
+          <div className={`text-[11px] mt-0.5 ${isOut ? 'text-emerald-100' : 'text-slate-500'}`}>
+            No se pudo descargar el archivo de WhatsApp. Ábrelo en el teléfono.
+          </div>
+          {msg.errorMessage ? (
+            <div className={`text-[10px] mt-0.5 italic ${isOut ? 'text-emerald-100/80' : 'text-slate-400'}`}>
+              {msg.errorMessage}
+            </div>
+          ) : null}
         </div>
       );
     }

@@ -60,8 +60,20 @@ function runFfmpeg(ffmpeg, args, timeoutMs = 30000) {
 }
 
 /**
- * Recibe un data URL de audio y devuelve `{ ok, dataUrl, mimeType }` con el
- * audio en ogg/opus. Si ya venía en ogg lo deja tal cual.
+ * Recibe un data URL de audio y devuelve `{ ok, dataUrl, mimeType }` con el audio
+ * en ogg/opus MONO a 32 kbps, que es exactamente lo que graba la app oficial.
+ *
+ * Se normaliza SIEMPRE, incluso si ya venía en ogg. Antes el ogg pasaba de largo
+ * y eso hacía que la nota de voz dependiera del navegador del agente:
+ *   - Chrome graba webm → se convertía → sonaba bien.
+ *   - Firefox graba `audio/ogg;codecs=opus` (estéreo, ~100 kbps) → pasaba tal cual
+ *     y se guardaba con la cabecera `data:audio/ogg;codecs=opus;base64,…`, que
+ *     nuestro servidor de media no sabía leer (415): la nota no se podía escuchar
+ *     y Meta la rechazaba al bajarla (error 131053 "Media upload error").
+ * De ahí el "los audios funcionan pero a veces fallan": fallaban por navegador.
+ *
+ * Si no hay ffmpeg, un ogg se acepta tal cual (con la cabecera ya saneada) para no
+ * bloquear el envío; cualquier otro formato sí necesita conversión.
  *
  * Se usan ficheros temporales en vez de pipes porque ffmpeg necesita una entrada
  * "buscable" para leer la cabecera de WebM de forma fiable.
@@ -70,17 +82,21 @@ async function toWhatsappVoice(dataUrl) {
   const parsed = parseDataUrl(dataUrl);
   if (!parsed || parsed.kind !== 'audio') return { ok: false, error: 'El audio no es válido' };
   const { mimeType, b64 } = parsed;
-  if (isOggOpus(mimeType)) return { ok: true, dataUrl, mimeType };
+  // Cabecera saneada (sin `;codecs=…`): es lo que se guarda si no hay conversión.
+  const asIs = { ok: true, dataUrl: `data:${mimeType};base64,${b64}`, mimeType };
 
   const ffmpeg = resolveFfmpegPath();
   if (!ffmpeg) {
+    if (isOggOpus(mimeType)) return asIs;
     return { ok: false, error: 'No se puede convertir el audio en este servidor (falta ffmpeg).' };
   }
 
   const id = crypto.randomBytes(8).toString('hex');
   const ext = (mimeType.split('/')[1] || 'webm').split(';')[0];
-  const inPath = path.join(os.tmpdir(), `voz_${id}.${ext}`);
-  const outPath = path.join(os.tmpdir(), `voz_${id}.ogg`);
+  const inPath = path.join(os.tmpdir(), `voz_${id}_in.${ext}`);
+  // El sufijo _out es imprescindible: con un ogg de entrada, entrada y salida
+  // caerían en el MISMO fichero y ffmpeg aborta con "Invalid argument".
+  const outPath = path.join(os.tmpdir(), `voz_${id}_out.ogg`);
   try {
     await fs.promises.writeFile(inPath, Buffer.from(b64, 'base64'));
     // -vn: descarta cualquier pista de video (WebM puede traer una vacía).
@@ -92,14 +108,27 @@ async function toWhatsappVoice(dataUrl) {
       '-c:a', 'libopus', '-b:a', '32k',
       '-f', 'ogg', outPath,
     ]);
-    if (!r.ok) return { ok: false, error: `No se pudo convertir el audio: ${r.error}` };
+    if (!r.ok) {
+      // Un ogg que no se pudo reconvertir se envía como vino: ya es el formato que
+      // WhatsApp entiende y es mejor que dejar al agente sin poder mandar la nota.
+      if (isOggOpus(mimeType)) {
+        console.warn('[audio] no se pudo normalizar un ogg, se envía tal cual: %s', r.error);
+        return asIs;
+      }
+      return { ok: false, error: `No se pudo convertir el audio: ${r.error}` };
+    }
     const out = await fs.promises.readFile(outPath);
+    if (!out.length) {
+      if (isOggOpus(mimeType)) return asIs;
+      return { ok: false, error: 'No se pudo convertir el audio (la conversión quedó vacía).' };
+    }
     return {
       ok: true,
       dataUrl: `data:audio/ogg;base64,${out.toString('base64')}`,
       mimeType: 'audio/ogg',
     };
   } catch (e) {
+    if (isOggOpus(mimeType)) return asIs;
     return { ok: false, error: `No se pudo convertir el audio: ${e.message}` };
   } finally {
     fs.promises.unlink(inPath).catch(() => {});

@@ -67,11 +67,41 @@ test('toWhatsappVoice: convierte el WebM del navegador a ogg/opus', async () => 
   assert.equal(bytes.subarray(0, 4).toString(), 'OggS');
 });
 
-test('toWhatsappVoice: un ogg ya válido se deja intacto (no se re-transcodifica)', async () => {
-  const first = await toWhatsappVoice(makeChromeStyleWebm());
-  const second = await toWhatsappVoice(first.dataUrl);
-  assert.equal(second.ok, true);
-  assert.equal(second.dataUrl, first.dataUrl);
+// Genera un OGG/Opus ESTÉREO con la cabecera que produce Firefox
+// (`audio/ogg;codecs=opus`): así se comprueba de verdad que se normaliza a mono.
+function makeFirefoxStyleOgg() {
+  const ffmpeg = resolveFfmpegPath();
+  const out = path.join(os.tmpdir(), `test_voz_${Date.now()}.ogg`);
+  const r = spawnSync(ffmpeg, [
+    '-y', '-f', 'lavfi', '-i', 'sine=frequency=440:duration=1',
+    '-ac', '2', '-c:a', 'libopus', '-b:a', '96k', '-f', 'ogg', out,
+  ]);
+  assert.equal(r.status, 0, 'no se pudo generar el ogg de prueba');
+  const b64 = fs.readFileSync(out).toString('base64');
+  fs.unlinkSync(out);
+  return `data:audio/ogg;codecs=opus;base64,${b64}`;
+}
+
+test('toWhatsappVoice: la nota grabada en Firefox queda con la cabecera LIMPIA', async () => {
+  // Firefox entrega 'audio/ogg;codecs=opus'. Guardar ese data URL tal cual dejaba
+  // `data:audio/ogg;codecs=opus;base64,…`, que el servidor de media no sabía leer
+  // (415): la nota no se podía escuchar y Meta la rechazaba con el error 131053.
+  const r = await toWhatsappVoice(makeFirefoxStyleOgg());
+  assert.equal(r.ok, true, r.error);
+  assert.equal(r.mimeType, 'audio/ogg');
+  assert.ok(r.dataUrl.startsWith('data:audio/ogg;base64,'), `cabecera sin parámetros, fue: ${r.dataUrl.slice(0, 40)}`);
+  const bytes = Buffer.from(r.dataUrl.split(',')[1], 'base64');
+  assert.equal(bytes.subarray(0, 4).toString(), 'OggS');
+});
+
+test('toWhatsappVoice: normaliza a MONO (la nota suena igual venga del navegador que venga)', async () => {
+  const r = await toWhatsappVoice(makeFirefoxStyleOgg());
+  const out = path.join(os.tmpdir(), `test_check_${Date.now()}.ogg`);
+  fs.writeFileSync(out, Buffer.from(r.dataUrl.split(',')[1], 'base64'));
+  const probe = spawnSync(resolveFfmpegPath(), ['-hide_banner', '-i', out], { encoding: 'utf8' });
+  fs.unlinkSync(out);
+  assert.match(probe.stderr, /Audio: opus/);
+  assert.match(probe.stderr, /mono/, 'WhatsApp graba sus notas de voz en mono');
 });
 
 test('toWhatsappVoice: rechaza lo que no es audio', async () => {

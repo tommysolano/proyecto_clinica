@@ -590,6 +590,37 @@ function HealthPanel({ health, loading, healing, onRefresh, onHeal }) {
             )}
           </div>
 
+          {/* Media entrante (fotos, audios y archivos que mandan los pacientes) */}
+          {(health.incomingMedia || []).length > 0 && (
+            <div>
+              <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide mb-1.5">
+                Archivos recibidos (últimos 7 días)
+              </div>
+              <div className="grid gap-1.5">
+                {health.incomingMedia.map((m) => (
+                  <div
+                    key={String(m._id)}
+                    className={`text-xs border rounded-lg px-2.5 py-1.5 ${
+                      m.hint ? 'border-amber-200 bg-amber-50/50' : 'border-slate-200'
+                    }`}
+                  >
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="font-semibold text-slate-700">{m.label}</span>
+                      <span className="text-[11px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">
+                        {m.connectionType === 'qr' ? 'QR' : 'Cloud API'}
+                      </span>
+                      <span className="text-slate-500">
+                        {m.received} mensajes · <b>{m.ok}</b> de {m.withMedia} archivo(s) descargados
+                      </span>
+                      {m.last && <span className="text-slate-400">último: {fmtHealthTime(m.last)}</span>}
+                    </div>
+                    {m.hint && <div className="text-amber-800 mt-0.5">{m.hint}</div>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* Enlaces huérfanos */}
           {health.orphanLinks > 0 && (
             <div className="flex items-center justify-between gap-2 flex-wrap border border-amber-200 bg-amber-50 rounded-xl px-3 py-2">

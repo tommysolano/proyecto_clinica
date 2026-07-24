@@ -22,23 +22,34 @@ const DEFAULT_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v23.0';
  * Devuelve { ok, dataUrl, mimeType } o { ok:false }. Cap de tamaño para no
  * desbordar el documento de Mongo (la media se guarda como dataUrl base64).
  */
-async function downloadMedia(creds, mediaId, { maxBytes = 4 * 1024 * 1024 } = {}) {
-  if (!isConfigured(creds) || !mediaId) return { ok: false };
+async function downloadMedia(creds, mediaId, { maxBytes = 8 * 1024 * 1024 } = {}) {
+  if (!isConfigured(creds)) return { ok: false, error: 'El número no tiene credenciales de Cloud API.' };
+  if (!mediaId) return { ok: false, error: 'Meta no envió el identificador del archivo.' };
   const apiVersion = creds.apiVersion || DEFAULT_API_VERSION;
   try {
     const metaRes = await fetch(`https://graph.facebook.com/${apiVersion}/${mediaId}`, {
       headers: { Authorization: `Bearer ${creds.accessToken}` },
     });
     const meta = await metaRes.json().catch(() => ({}));
-    if (!metaRes.ok || !meta.url) return { ok: false };
+    if (!metaRes.ok || !meta.url) {
+      return { ok: false, error: meta?.error?.message || `Meta no devolvió la URL del archivo (HTTP ${metaRes.status})` };
+    }
     const binRes = await fetch(meta.url, { headers: { Authorization: `Bearer ${creds.accessToken}` } });
-    if (!binRes.ok) return { ok: false };
+    if (!binRes.ok) return { ok: false, error: `No se pudo descargar el archivo de Meta (HTTP ${binRes.status})` };
     const buf = Buffer.from(await binRes.arrayBuffer());
-    if (buf.length > maxBytes) return { ok: false, tooLarge: true, mimeType: meta.mime_type };
-    const mimeType = meta.mime_type || 'application/octet-stream';
-    return { ok: true, dataUrl: `data:${mimeType};base64,${buf.toString('base64')}`, mimeType, size: buf.length };
-  } catch {
-    return { ok: false };
+    if (buf.length > maxBytes) return { ok: false, tooLarge: true, mimeType: meta.mime_type, size: buf.length };
+    // El mime de Meta puede traer parámetros ('audio/ogg; codecs=opus'): en la
+    // cabecera de un data URL eso lo vuelve ilegible para el navegador.
+    const mimeType = String(meta.mime_type || 'application/octet-stream').split(';')[0].trim().toLowerCase();
+    return {
+      ok: true,
+      dataUrl: `data:${mimeType};base64,${buf.toString('base64')}`,
+      mimeType,
+      size: buf.length,
+      filename: meta.filename || '',
+    };
+  } catch (err) {
+    return { ok: false, error: err.message };
   }
 }
 

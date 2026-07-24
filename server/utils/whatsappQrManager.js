@@ -171,26 +171,145 @@ function mapQrMediaType(t) {
   return 'document';
 }
 
-// Descarga la media inline de un mensaje QR y arma el objeto media para la
-// ingesta ({ type, dataUrl, caption, filename, size }). null si no hay/ falla.
-async function extractQrMedia(msg) {
-  if (!msg.hasMedia) return null;
+// Tope de bytes de una media entrante que se guarda en Mongo: el mensaje lleva el
+// data URL base64 embebido y un documento BSON no puede pasar de 16 MB. Por encima
+// de esto el mensaje se guarda SIN los bytes (pero se ve en el chat qué llegó).
+const MAX_QR_MEDIA_BYTES = 8 * 1024 * 1024;
+
+// Reintentos de descarga. WhatsApp Web emite el mensaje ANTES de terminar de bajar
+// la media (mediaData.mediaStage = 'FETCHING') y whatsapp-web.js devuelve
+// `undefined` en ese instante. Con un solo intento se perdía TODA la media entrante
+// del número QR: 1600+ mensajes recibidos y ni una sola foto/audio guardados.
+const MEDIA_RETRY_DELAYS = [0, 900, 2200, 4000, 6000];
+
+// Tiempo máximo total esperando el archivo de UN mensaje (el resto de mensajes
+// sigue entrando en paralelo; esto solo evita esperas eternas si el navegador
+// se queda colgado).
+const MAX_MEDIA_WAIT_MS = 45000;
+
+function sleep(ms) {
+  return new Promise((r) => setTimeout(r, ms).unref?.());
+}
+
+// El mime de whatsapp-web.js puede traer parámetros ('audio/ogg; codecs=opus').
+// En la cabecera de un data URL eso rompe a los navegadores (y a nuestro servidor
+// de media), así que se guarda solo el tipo base.
+function cleanMime(mimeType, fallback) {
+  const m = String(mimeType || '').split(';')[0].trim().toLowerCase();
+  return /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(m) ? m : fallback;
+}
+
+/**
+ * Por qué WhatsApp Web no entregó la media (queda en el log del VPS para poder
+ * arreglar la causa exacta sin acceso al navegador). Pregunta al store en qué
+ * estado quedó el mensaje: 'FETCHING' = seguía bajando, 'ERROR…' = falló la
+ * descarga, 'REUPLOADING' = media caducada en el teléfono del contacto.
+ */
+async function describeMediaFailure(client, serializedId) {
+  if (!client?.pupPage || !serializedId) return '';
   try {
-    const m = await msg.downloadMedia();
-    if (!m || !m.data) return null;
-    const dataUrl = `data:${m.mimetype};base64,${m.data}`;
-    return {
-      type: mapQrMediaType(msg.type),
-      dataUrl,
-      caption: msg.body || '',
-      // El nombre del archivo lo trae el propio mensaje (documentos).
-      filename: m.filename || msg._data?.filename || '',
-      // whatsapp-web.js informa el tamaño en _data.size (bytes) cuando existe.
-      size: Number(msg._data?.size) || 0,
-    };
-  } catch {
-    return null; // media no disponible
+    const info = await withTimeout(
+      client.pupPage.evaluate(async (id) => {
+        try {
+          const col = window.require('WAWebCollections');
+          const m = col.Msg.get(id) || (await col.Msg.getMessagesById([id]))?.messages?.[0];
+          if (!m) return 'el mensaje no está en el store de WhatsApp Web';
+          return `mediaStage=${m.mediaData?.mediaStage || '(sin mediaData)'} directPath=${m.directPath ? 'sí' : 'no'} mediaKey=${m.mediaKey ? 'sí' : 'no'}`;
+        } catch (e) {
+          return `no se pudo inspeccionar (${e.message})`;
+        }
+      }, serializedId),
+      8000,
+      'timeout inspeccionando el mensaje'
+    );
+    return String(info || '');
+  } catch (e) {
+    return `no se pudo inspeccionar (${e.message})`;
   }
+}
+
+/**
+ * Descarga la media inline de un mensaje QR y arma el objeto media para la
+ * ingesta ({ type, dataUrl, caption, filename, size }).
+ *
+ * Devuelve `null` SOLO si el mensaje no trae media. Si la trae pero no se pudo
+ * bajar, devuelve el objeto con `unavailable: true` y SIN dataUrl: el mensaje se
+ * guarda igual y el agente ve "📷 Foto (no disponible)" en el chat. Nunca se
+ * descarta un mensaje con media —desaparecía del chat sin dejar rastro—.
+ */
+async function extractQrMedia(msg, client, { retryDelays = MEDIA_RETRY_DELAYS } = {}) {
+  if (!msg.hasMedia) return null;
+  const type = mapQrMediaType(msg.type);
+  const filename = msg._data?.filename || '';
+  const size = Number(msg._data?.size) || 0;
+  const base = { type, caption: msg.body || '', filename, size };
+  const serializedId = msg.id?._serialized || msg._data?.id?._serialized || '';
+  let lastError = '';
+  // Tope total: el mensaje espera a su archivo, así que reintentar no puede
+  // retrasarlo eternamente si cada llamada al navegador se queda colgada.
+  const deadline = Date.now() + MAX_MEDIA_WAIT_MS;
+
+  for (let i = 0; i < retryDelays.length; i += 1) {
+    if (i > 0 && Date.now() > deadline) {
+      lastError = lastError || 'WhatsApp Web tardó demasiado en entregar el archivo';
+      break;
+    }
+    if (retryDelays[i]) await sleep(retryDelays[i]);
+    try {
+      // Desde el 2º intento se RELEE el mensaje del store: el objeto que llegó con
+      // el evento puede quedarse con un modelo viejo cuya media nunca se resuelve.
+      let target = msg;
+      if (i > 0 && serializedId && client) {
+        const fresh = await withTimeout(client.getMessageById(serializedId), 10000, 'timeout releyendo el mensaje')
+          .catch(() => null);
+        if (fresh) target = fresh;
+      }
+      // eslint-disable-next-line no-await-in-loop
+      const m = await withTimeout(target.downloadMedia(), 15000, 'timeout descargando la media');
+      if (m && m.data) {
+        const bytes = Math.floor(m.data.length * 0.75);
+        if (bytes > MAX_QR_MEDIA_BYTES) {
+          console.warn('[whatsapp-qr media] %s demasiado grande (%d bytes): se guarda sin el archivo', type, bytes);
+          return { ...base, size: bytes, unavailable: true, error: 'El archivo es demasiado grande para guardarlo.' };
+        }
+        return {
+          ...base,
+          dataUrl: `data:${cleanMime(m.mimetype, 'application/octet-stream')};base64,${m.data}`,
+          filename: m.filename || filename,
+          size: bytes || size,
+        };
+      }
+      lastError = 'WhatsApp Web aún no tenía la media descargada';
+    } catch (e) {
+      lastError = e.message || String(e);
+    }
+  }
+
+  const why = await describeMediaFailure(client, serializedId);
+  console.warn(
+    '[whatsapp-qr media] NO se pudo descargar type=%s id=%s tras %d intentos: %s | %s',
+    msg.type, serializedId || '(sin id)', retryDelays.length, lastError, why
+  );
+  return { ...base, unavailable: true, error: lastError || 'No se pudo descargar la media de WhatsApp.' };
+}
+
+/**
+ * Texto legible para los mensajes QR que no son texto ni media (ubicación,
+ * tarjeta de contacto). Sin esto se descartaban en silencio por "no tener nada
+ * que mostrar" y el agente nunca se enteraba de que el paciente le mandó algo.
+ */
+function describeQrNonMedia(msg) {
+  if (msg.type === 'location') {
+    const loc = msg.location || msg._data?.location || {};
+    const name = loc.name || loc.description || loc.address || '';
+    return `📍 Ubicación${name ? `: ${String(name).slice(0, 120)}` : ''}`;
+  }
+  if (msg.type === 'vcard' || msg.type === 'multi_vcard') {
+    const raw = String(msg.body || msg._data?.vcard || '');
+    const fn = /(?:^|\n)FN:(.+)/i.exec(raw);
+    return `👤 Contacto compartido${fn ? `: ${fn[1].trim().slice(0, 80)}` : ''}`;
+  }
+  return '';
 }
 
 // Atribución click-to-WhatsApp (anuncios Meta) para números QR. En Cloud API el
@@ -495,8 +614,13 @@ async function connect(accountId, { userId } = {}) {
       const phone = await resolveQrPhone(client, from);
       if (!phone) return;
 
-      const media = await extractQrMedia(msg);
-      if (!String(msg.body || '').trim() && !media) return; // nada que mostrar
+      const media = await extractQrMedia(msg, client);
+      // Ubicación / tarjeta de contacto: no traen texto ni media, pero SÍ son un
+      // mensaje real del paciente; se describen en vez de descartarse (y en el
+      // vcard se muestra el nombre, no el volcado crudo del contacto).
+      const described = describeQrNonMedia(msg);
+      const bodyText = described || String(msg.body || '').trim();
+      if (!bodyText && !media) return; // nada que mostrar
 
       const account2 = await WhatsappAccount.findById(accountId);
       const clinicId = await require('./callCenterClinic').resolveCallCenterClinicId();
@@ -555,7 +679,7 @@ async function connect(accountId, { userId } = {}) {
         // JID completo (…@c.us / …@lid): imprescindible para RESPONDER a
         // contactos con número oculto (a un LID no se le puede escribir @c.us).
         externalUserId: from,
-        body: msg.body || '',
+        body: bodyText,
         media,
         contactName: msg._data?.notifyName || '',
         externalId: serializedId,
@@ -580,7 +704,7 @@ async function connect(accountId, { userId } = {}) {
       const phone = await resolveQrPhone(client, to);
       if (!phone) return;
 
-      const media = await extractQrMedia(msg);
+      const media = await extractQrMedia(msg, client);
       if (!String(msg.body || '').trim() && !media) return;
 
       const account2 = await WhatsappAccount.findById(accountId);
@@ -1149,5 +1273,5 @@ module.exports = {
   initEnabledOnBoot,
   shutdownAll,
   // Solo para pruebas: acceso al mapa de sesiones y a la recuperación de estado.
-  __test: { clients, acquireSendableEntry, healToConnected },
+  __test: { clients, acquireSendableEntry, healToConnected, extractQrMedia, describeQrNonMedia },
 };
