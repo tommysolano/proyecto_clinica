@@ -244,6 +244,21 @@ function isOptedOut(conv) {
   return Boolean(marketing?.optOutAt || marketing?.whatsappOptIn === false);
 }
 
+/**
+ * ¿El "teléfono" del chat es en realidad el identificador interno de WhatsApp?
+ *
+ * En los contactos de número oculto (@lid) WhatsApp no comparte el teléfono, y
+ * mostrar ese identificador de 15 dígitos como si fuera un número solo confunde:
+ * no se puede llamar, ni buscar, ni copiar a ningún lado. Mientras no se resuelva
+ * el número real se dice claramente que está oculto.
+ */
+function isHiddenNumber(conv) {
+  const jid = String(conv?.externalUserId || '');
+  if (!jid.endsWith('@lid')) return false;
+  const lidDigits = jid.replace(/@lid$/, '').replace(/\D/g, '');
+  return String(conv?.phone || '').replace(/\D/g, '') === lidDigits;
+}
+
 // Rellena las variables {{nombre}}/{{apellido}}/{{nombre_completo}} de un
 // mensaje guardado con los datos del contacto de la conversación.
 function fillSavedVariables(text, conv) {
@@ -2373,7 +2388,16 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpport
           )}
         </div>
         <div className="text-xs text-slate-500 truncate">
-          {conv.phone}
+          {isHiddenNumber(conv) ? (
+            <span
+              className="italic"
+              title="WhatsApp aún no comparte el teléfono de este contacto (número oculto). Se mostrará en cuanto lo entregue."
+            >
+              Número oculto
+            </span>
+          ) : (
+            conv.phone
+          )}
           {conv.patient && (
             <span className="ml-2 text-emerald-700">· Paciente vinculado</span>
           )}
@@ -2940,7 +2964,15 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
           <HiOutlineUserCircle className="w-4 h-4 text-slate-400" />
           {conv.contactName || 'Sin nombre'}
         </div>
-        <div className="text-xs text-slate-500 mt-0.5">{conv.phone}</div>
+        <div className="text-xs text-slate-500 mt-0.5">
+          {isHiddenNumber(conv) ? (
+            <span className="italic" title="WhatsApp aún no comparte el teléfono de este contacto (número oculto).">
+              Número oculto
+            </span>
+          ) : (
+            conv.phone
+          )}
+        </div>
         {conv.patient && (
           <div className="mt-2 text-xs bg-emerald-50 text-emerald-700 px-2 py-1 rounded">
             Paciente: {conv.patient.firstName} {conv.patient.lastName}

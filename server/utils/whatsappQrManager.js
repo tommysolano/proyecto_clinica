@@ -342,6 +342,115 @@ async function downloadQrMediaInPage(client, serializedId, hash = '') {
   ).catch((e) => ({ ok: false, error: e.message }));
 }
 
+// Etiqueta de derivación de claves de WhatsApp por tipo de archivo. Es parte del
+// protocolo (la usan todas las librerías de WhatsApp) y no cambia con las
+// versiones de WhatsApp Web.
+const WA_MEDIA_KEY_INFO = {
+  image: 'WhatsApp Image Keys',
+  sticker: 'WhatsApp Image Keys',
+  video: 'WhatsApp Video Keys',
+  gif: 'WhatsApp Video Keys',
+  audio: 'WhatsApp Audio Keys',
+  ptt: 'WhatsApp Audio Keys',
+  document: 'WhatsApp Document Keys',
+};
+
+/**
+ * Datos MÍNIMOS con los que se puede bajar un archivo de WhatsApp por nuestra
+ * cuenta: la ruta en el CDN y la clave con la que viene cifrado. Ambos están en
+ * el propio mensaje y no dependen de ninguna función interna del navegador.
+ */
+async function fetchQrMediaKeys(client, serializedId, hash) {
+  if (!client?.pupPage) return null;
+  return withTimeout(
+    client.pupPage.evaluate(async (id, msgHash) => {
+      try {
+        const col = window.require('WAWebCollections');
+        let m = null;
+        if (id) {
+          try {
+            m = col.Msg.get(id) || (await col.Msg.getMessagesById([id]))?.messages?.[0] || null;
+          } catch (e) {
+            m = null;
+          }
+        }
+        if (!m && msgHash) {
+          const models = typeof col.Msg.getModelsArray === 'function' ? col.Msg.getModelsArray() : (col.Msg.models || []);
+          m = models.find((x) => x && x.id && x.id.id === msgHash) || null;
+        }
+        if (!m) return null;
+        const str = (v) => (typeof v === 'string' ? v : v && v.toString ? String(v) : '');
+        return {
+          directPath: str(m.directPath),
+          mediaKey: str(m.mediaKey),
+          filehash: str(m.filehash),
+          type: str(m.type),
+          mimetype: str(m.mimetype),
+          filename: str(m.filename),
+          size: Number(m.size) || 0,
+          mediaStage: (m.mediaData && m.mediaData.mediaStage) || '',
+        };
+      } catch (e) {
+        return null;
+      }
+    }, serializedId || '', hash || ''),
+    15000,
+    'timeout leyendo los datos del archivo'
+  ).catch(() => null);
+}
+
+/**
+ * Baja el archivo del CDN de WhatsApp y lo DESCIFRA aquí, en el servidor.
+ *
+ * Es la vía definitiva cuando el navegador no suelta los bytes: la media de
+ * WhatsApp es un fichero cifrado (AES-256-CBC) que cualquiera puede descargar con
+ * su `directPath`, y solo se puede abrir con la `mediaKey` que viene en el
+ * mensaje. El esquema (HKDF-SHA256 → iv + clave + clave de firma) es parte del
+ * protocolo, así que —al revés que las funciones internas de WhatsApp Web— no se
+ * rompe cuando WhatsApp actualiza su web.
+ *
+ * Se comprueba la firma (MAC) y la huella del archivo: si algo no cuadra se
+ * devuelve error en vez de guardar un archivo corrupto.
+ */
+async function downloadAndDecryptWaMedia({ directPath, mediaKey, filehash, type }) {
+  if (!directPath || !mediaKey) return { ok: false, error: 'el mensaje no trae la ruta o la clave del archivo' };
+  const crypto = require('crypto');
+  try {
+    const info = WA_MEDIA_KEY_INFO[type] || WA_MEDIA_KEY_INFO.image;
+    const expanded = Buffer.from(
+      crypto.hkdfSync('sha256', Buffer.from(mediaKey, 'base64'), Buffer.alloc(32), Buffer.from(info, 'utf8'), 112)
+    );
+    const iv = expanded.subarray(0, 16);
+    const cipherKey = expanded.subarray(16, 48);
+    const macKey = expanded.subarray(48, 80);
+
+    const url = /^https?:\/\//i.test(directPath) ? directPath : `https://mmg.whatsapp.net${directPath}`;
+    const res = await withTimeout(
+      fetch(url, { headers: { Origin: 'https://web.whatsapp.com', Referer: 'https://web.whatsapp.com/' } }),
+      30000,
+      'timeout descargando el archivo cifrado'
+    );
+    if (!res.ok) return { ok: false, error: `el CDN de WhatsApp respondió HTTP ${res.status}` };
+    const enc = Buffer.from(await res.arrayBuffer());
+    if (enc.length <= 10) return { ok: false, error: 'el archivo cifrado llegó vacío' };
+
+    const body = enc.subarray(0, enc.length - 10);
+    const mac = enc.subarray(enc.length - 10);
+    const expected = crypto.createHmac('sha256', macKey).update(Buffer.concat([iv, body])).digest().subarray(0, 10);
+    if (!crypto.timingSafeEqual(mac, expected)) {
+      return { ok: false, error: 'el archivo no pasó la verificación de firma' };
+    }
+    const decipher = crypto.createDecipheriv('aes-256-cbc', cipherKey, iv);
+    const out = Buffer.concat([decipher.update(body), decipher.final()]);
+    if (filehash && crypto.createHash('sha256').update(out).digest('base64') !== filehash) {
+      return { ok: false, error: 'el archivo descifrado no coincide con su huella' };
+    }
+    return { ok: true, buffer: out };
+  } catch (e) {
+    return { ok: false, error: e.message || String(e) };
+  }
+}
+
 /**
  * Por qué WhatsApp Web no entregó la media (queda en el log del VPS para poder
  * arreglar la causa exacta sin acceso al navegador). Pregunta al store en qué
@@ -444,6 +553,27 @@ async function extractQrMedia(msg, client, { retryDelays = MEDIA_RETRY_DELAYS } 
         return pack(alt.data, alt.mimetype, alt.filename, alt.filesize);
       }
       if (alt.error) lastError = `${lastError} | alterna: ${alt.error}`;
+
+      // Plan C — el definitivo: bajar el archivo CIFRADO del CDN de WhatsApp y
+      // descifrarlo aquí. No depende de nada interno del navegador.
+      // eslint-disable-next-line no-await-in-loop
+      const keys = await fetchQrMediaKeys(client, serializedId, hash);
+      if (keys && keys.directPath && keys.mediaKey) {
+        // eslint-disable-next-line no-await-in-loop
+        const direct = await downloadAndDecryptWaMedia(keys);
+        if (direct.ok) {
+          console.log('[whatsapp-qr media] descargada y descifrada desde el CDN type=%s bytes=%d', type, direct.buffer.length);
+          return pack(
+            direct.buffer.toString('base64'),
+            keys.mimetype || msg.mimetype,
+            keys.filename || filename,
+            keys.size
+          );
+        }
+        lastError = `${lastError} | CDN: ${direct.error}`;
+      } else if (keys) {
+        lastError = `${lastError} | CDN: el mensaje no trae ruta/clave (mediaStage=${keys.mediaStage || '?'})`;
+      }
     }
   }
 
@@ -524,27 +654,145 @@ function extractQrReferral(msg) {
 const lidPhoneCache = new Map();
 
 /**
+ * Busca el teléfono REAL (…@c.us) dentro del modelo crudo del mensaje.
+ *
+ * En los chats de número oculto WhatsApp manda igualmente el número del remitente
+ * en algún campo del mensaje (`senderPn`, `participantPn`, `author`…, cambia entre
+ * versiones), así que se barre el modelo de forma defensiva. Es la vía más fiable:
+ * llega con CADA mensaje y no depende de que el mapa lid→teléfono esté cargado.
+ *
+ * `ownPhone` son los dígitos de NUESTRO número: hay que excluirlos porque campos
+ * como `to` traen nuestro propio JID y acabaríamos guardando nuestro número como
+ * el del paciente.
+ */
+function phoneFromMsgData(msg, ownPhone = '') {
+  const d = msg && msg._data;
+  if (!d || typeof d !== 'object') return { phone: '', where: '' };
+  const own = String(ownPhone || '').replace(/\D/g, '');
+  const SKIP = new Set(['to', 'self', 'me', 'recipient']);
+  const asPhone = (v) => {
+    let s = '';
+    if (typeof v === 'string') s = v;
+    else if (v && typeof v === 'object') {
+      if (v._serialized) s = String(v._serialized);
+      else if (v.user && v.server) s = `${v.user}@${v.server}`;
+    }
+    const m = /^(\d{7,15})@c\.us$/.exec(s);
+    if (!m) return '';
+    return own && m[1] === own ? '' : m[1];
+  };
+  for (const [k, v] of Object.entries(d)) {
+    if (SKIP.has(k)) continue;
+    const p = asPhone(v);
+    if (p) return { phone: p, where: k };
+  }
+  for (const [k, v] of Object.entries(d)) {
+    if (SKIP.has(k) || !v || typeof v !== 'object' || Array.isArray(v)) continue;
+    for (const [k2, v2] of Object.entries(v)) {
+      if (SKIP.has(k2)) continue;
+      const p = asPhone(v2);
+      if (p) return { phone: p, where: `${k}.${k2}` };
+    }
+  }
+  return { phone: '', where: '' };
+}
+
+/**
+ * Pregunta a WhatsApp Web, por varias vías, cuál es el teléfono de un LID.
+ * `getContactLidAndPhone` (lo que usa la librería) devuelve vacío cuando el mapa
+ * lid→teléfono aún no está cargado, así que además se consulta el contacto del
+ * store y se fuerza la consulta al servidor.
+ */
+async function lookupLidPhoneInPage(client, lid) {
+  if (!client?.pupPage) return '';
+  const out = await withTimeout(
+    client.pupPage.evaluate(async (jid) => {
+      const digits = (v) => {
+        let s = '';
+        if (typeof v === 'string') s = v;
+        else if (v && typeof v === 'object') {
+          if (v._serialized) s = String(v._serialized);
+          else if (v.user) s = `${v.user}@${v.server || 'c.us'}`;
+        }
+        const m = /^(\d{7,15})@c\.us$/.exec(s);
+        return m ? m[1] : '';
+      };
+      try {
+        const wid = window.require('WAWebWidFactory').createWid(jid);
+        const api = window.require('WAWebApiContact');
+        let p = digits(api.getPhoneNumber && api.getPhoneNumber(wid));
+        if (p) return p;
+        // Forzar la consulta al servidor y volver a preguntar.
+        try {
+          await window.require('WAWebQueryExistsJob').queryWidExists(wid);
+          p = digits(api.getPhoneNumber && api.getPhoneNumber(wid));
+          if (p) return p;
+        } catch (e) { /* sigue con el store local */ }
+        // El contacto del store puede tener ya el número asociado.
+        const col = window.require('WAWebCollections');
+        const c = col.Contact && col.Contact.get(jid);
+        if (c) {
+          for (const k of ['phoneNumber', 'pn', 'userid', 'id', 'displayPhone']) {
+            const v = digits(c[k]);
+            if (v) return v;
+          }
+        }
+        return '';
+      } catch (e) {
+        return '';
+      }
+    }, lid),
+    10000,
+    'timeout resolviendo el número'
+  ).catch(() => '');
+  return String(out || '');
+}
+
+/**
  * Devuelve los DÍGITOS del número real de un contacto QR a partir de su JID.
  *  - `…@c.us`: los dígitos ya SON el número real.
- *  - `…@lid` (número oculto): WhatsApp no expone el teléfono en el JID; se lo pedimos
- *    con `getContactLidAndPhone` (mapa lid→pn de whatsapp-web.js, que hasta consulta
- *    a WhatsApp si hace falta). Si no se puede resolver, cae a los dígitos del LID
- *    (comportamiento anterior) y se reintenta en el próximo mensaje.
+ *  - `…@lid` (número oculto): el identificador largo NO es un teléfono y no le
+ *    sirve de nada al agente. Se resuelve, por este orden: caché → el propio
+ *    mensaje (`phoneFromMsgData`, la vía más fiable) → `getContactLidAndPhone` de
+ *    la librería → consulta directa a WhatsApp Web. Si nada funciona se devuelve
+ *    el LID (como antes) y se reintenta con el siguiente mensaje.
  */
-async function resolveQrPhone(client, jid) {
+async function resolveQrPhone(client, jid, msg = null) {
   const s = String(jid || '');
   const raw = s.replace(/@.*$/, '').replace(/\D/g, '');
   if (!s.endsWith('@lid')) return raw;
   if (lidPhoneCache.has(s)) return lidPhoneCache.get(s) || raw;
+
+  const remember = (digits, via) => {
+    lidPhoneCache.set(s, digits);
+    console.log('[whatsapp-qr lid] %s → %s (vía %s)', s, digits, via);
+    return digits;
+  };
+
+  // 1) El propio mensaje trae el número del remitente en algún campo. Solo se
+  //    usa si sabemos cuál es NUESTRO número: en un mensaje saliente el modelo
+  //    lleva nuestro propio JID y, sin excluirlo, guardaríamos nuestro número
+  //    como el del paciente.
+  const own = String(client?.info?.wid?.user || '').replace(/\D/g, '');
+  if (msg && own) {
+    const found = phoneFromMsgData(msg, own);
+    if (found.phone) return remember(found.phone, `mensaje.${found.where}`);
+  }
+  // 2) El mapa lid→teléfono de la librería.
   try {
     const out = await withTimeout(client.getContactLidAndPhone([s]), 8000, null);
     const res = Array.isArray(out) ? out[0] : null;
     const pn = res && res.pn ? String(res.pn) : '';
     if (pn.endsWith('@c.us')) {
       const digits = pn.replace(/@.*$/, '').replace(/\D/g, '');
-      if (digits) { lidPhoneCache.set(s, digits); return digits; }
+      if (digits) return remember(digits, 'getContactLidAndPhone');
     }
-  } catch { /* no se pudo resolver ahora: cae al LID */ }
+  } catch { /* sigue con la consulta directa */ }
+  // 3) Consulta directa a WhatsApp Web (fuerza la resolución en el servidor).
+  const direct = await lookupLidPhoneInPage(client, s);
+  if (direct) return remember(direct, 'consulta directa');
+
+  console.warn('[whatsapp-qr lid] no se pudo resolver el teléfono de %s (se muestra el identificador)', s);
   return raw;
 }
 
@@ -773,7 +1021,7 @@ async function connect(accountId, { userId } = {}) {
       if (!CONTENT_TYPES.includes(msg.type)) return;
       // Número real: si el contacto tiene número oculto (@lid) lo resolvemos a su
       // teléfono verdadero (si no, se mostraría el identificador largo del LID).
-      const phone = await resolveQrPhone(client, from);
+      const phone = await resolveQrPhone(client, from, msg);
       if (!phone) return;
 
       const media = await extractQrMedia(msg, client);
@@ -864,7 +1112,7 @@ async function connect(accountId, { userId } = {}) {
       if (!/@(c\.us|lid)$/.test(to)) return; // solo chats directos (no grupos)
       if (!CONTENT_TYPES.includes(msg.type)) return;
       // Mismo número real que en el entrante, para casar el saliente con SU chat.
-      const phone = await resolveQrPhone(client, to);
+      const phone = await resolveQrPhone(client, to, msg);
       if (!phone) return;
 
       const media = await extractQrMedia(msg, client);
@@ -1467,7 +1715,8 @@ async function redownloadMedia(account, serializedId) {
     }
   }
 
-  const alt = await downloadQrMediaInPage(entry.client, parts.length >= 3 ? serializedId : '', hash);
+  const pageId = parts.length >= 3 ? serializedId : '';
+  const alt = await downloadQrMediaInPage(entry.client, pageId, hash);
   if (alt.ok && alt.data) {
     const bytes = Math.floor(alt.data.length * 0.75);
     if (bytes > MAX_QR_MEDIA_BYTES) return { ok: false, error: 'El archivo es demasiado grande para guardarlo.' };
@@ -1477,6 +1726,24 @@ async function redownloadMedia(account, serializedId) {
       size: bytes,
       mediaName: alt.filename || '',
     };
+  }
+
+  // Vía definitiva: bajar el archivo cifrado del CDN y descifrarlo aquí.
+  const keys = await fetchQrMediaKeys(entry.client, pageId, hash);
+  if (keys && keys.directPath && keys.mediaKey) {
+    const direct = await downloadAndDecryptWaMedia(keys);
+    if (direct.ok) {
+      if (direct.buffer.length > MAX_QR_MEDIA_BYTES) {
+        return { ok: false, error: 'El archivo es demasiado grande para guardarlo.' };
+      }
+      return {
+        ok: true,
+        dataUrl: `data:${cleanMime(keys.mimetype, 'application/octet-stream')};base64,${direct.buffer.toString('base64')}`,
+        size: direct.buffer.length,
+        mediaName: keys.filename || '',
+      };
+    }
+    return { ok: false, error: `${alt.error || ''} | CDN: ${direct.error}`.replace(/^ \| /, '') };
   }
   return { ok: false, error: alt.error || 'WhatsApp no entregó el archivo.' };
 }
@@ -1586,5 +1853,6 @@ module.exports = {
   __test: {
     clients, acquireSendableEntry, healToConnected, extractQrMedia, describeQrNonMedia,
     findRecentlySentMedia, watchOutgoingMedia, qrMessageId, qrMessageHash, serializeMsgKey,
+    downloadAndDecryptWaMedia, phoneFromMsgData,
   },
 };

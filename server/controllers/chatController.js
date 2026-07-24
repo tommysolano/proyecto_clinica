@@ -2441,7 +2441,22 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   if (isLidJid && phone && normalizedPhone) {
     const lidDigits = externalUserId.replace(/@lid$/, '').replace(/\D/g, '');
     if (normalizePhone(lidDigits) !== normalizedPhone && conv.phone !== normalizedPhone) {
-      conv.phone = normalizedPhone;
+      // (clinic, phone) es ÚNICO: si ya hay OTRO chat con ese número real, cambiarlo
+      // aquí reventaría el guardado (E11000) y el mensaje se perdería. En ese caso se
+      // deja el identificador y se avisa; fusionar los dos chats es decisión humana.
+      const clash = await Conversation.findOne({
+        clinic: clinicId,
+        phone: normalizedPhone,
+        _id: { $ne: conv._id },
+      }).select('_id');
+      if (clash) {
+        console.warn(
+          '[chat lid] %s resuelto a %s, pero ya existe otro chat con ese número (%s): se mantiene el identificador',
+          externalUserId, normalizedPhone, clash._id
+        );
+      } else {
+        conv.phone = normalizedPhone;
+      }
     }
   }
   // Si llega atribución (click-to-WhatsApp) y la conversación aún no la tiene, guárdala.

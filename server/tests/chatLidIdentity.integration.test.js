@@ -52,6 +52,23 @@ test('el contacto ya existía por su número real (Cloud): el @lid se fusiona, n
   assert.equal(convs[0].externalUserId, LID, 'se le fija el JID @lid para poder responder al número oculto');
 });
 
+test('el chat @lid que resuelve a un número YA usado por otro chat no revienta el guardado', async () => {
+  const clinicId = new H.mongoose.Types.ObjectId();
+  // 1) El chat @lid nace SIN número resuelto (se muestra el identificador).
+  await chat.ingestExternalMessage({ clinicId, channel: 'whatsapp', externalUserId: LID, phone: LID_DIGITS, body: 'hola', externalId: 'x1', account: null });
+  // 2) Existe además otro chat con ese número real (llegó por otro canal).
+  await Conversation.create({ clinic: clinicId, channel: 'whatsapp', phone: REAL, contactName: 'Ya existía' });
+  // 3) Ahora SÍ se resuelve el @lid a ese mismo número: (clinic, phone) es único,
+  //    así que cambiarlo lanzaría E11000 y se perdería el mensaje.
+  await chat.ingestExternalMessage({ clinicId, channel: 'whatsapp', externalUserId: LID, phone: REAL, body: 'segundo', externalId: 'x2', account: null });
+
+  const lidConv = await Conversation.findOne({ clinic: clinicId, externalUserId: LID });
+  assert.ok(lidConv, 'el chat del @lid sigue existiendo');
+  assert.equal(lidConv.phone, LID_DIGITS, 'se mantiene el identificador para no chocar con el otro chat');
+  const msgs = await require('../models/Message').find({ conversation: lidConv._id });
+  assert.equal(msgs.length, 2, 'el mensaje NO se pierde por el choque de números');
+});
+
 test('control @c.us: un contacto normal se sigue identificando por su teléfono', async () => {
   const clinicId = new H.mongoose.Types.ObjectId();
   await chat.ingestExternalMessage({ clinicId, channel: 'whatsapp', externalUserId: '593977001122@c.us', phone: '593977001122', body: 'hola', externalId: 'n1', account: null });
