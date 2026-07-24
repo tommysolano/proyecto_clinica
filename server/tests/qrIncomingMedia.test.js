@@ -10,7 +10,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { extractQrMedia, describeQrNonMedia } = require('../utils/whatsappQrManager').__test;
+const { extractQrMedia, describeQrNonMedia, findRecentlySentMedia } = require('../utils/whatsappQrManager').__test;
 
 // Sin esperas reales: los tiempos de reintento se inyectan.
 const FAST = { retryDelays: [0, 0, 0] };
@@ -84,6 +84,47 @@ test('el documento conserva su nombre real y el pie de foto viaja como caption',
   assert.equal(media.type, 'document');
   assert.equal(media.filename, 'reporte julio.pdf');
   assert.equal(media.caption, 'te mando el reporte');
+});
+
+// ─────────────────── verificación del envío de adjuntos (salientes) ───────────────────
+
+// whatsapp-web.js devuelve `undefined` si su colección interna aún no tiene el
+// mensaje al terminar `sendMessage`, aunque YA lo haya puesto a enviar: el video
+// le llegaba al contacto y el sistema lo marcaba fallido (y reintentar duplicaba).
+function fakeEntry(messages) {
+  return {
+    client: {
+      getChatById: async () => ({ fetchMessages: async () => messages }),
+    },
+  };
+}
+
+test('el video que sí salió se confirma leyendo el chat (no se marca fallido)', async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const entry = fakeEntry([
+    { fromMe: false, hasMedia: false, timestamp: now - 300, id: { _serialized: 'viejo_entrante' } },
+    { fromMe: true, hasMedia: true, timestamp: now, id: { _serialized: 'true_593@c.us_NUEVO' } },
+  ]);
+  const wamid = await findRecentlySentMedia(entry, '593999@c.us', Date.now());
+  assert.equal(wamid, 'true_593@c.us_NUEVO');
+});
+
+test('si en el chat no hay ningún adjunto nuestro reciente, el envío sí se da por fallido', async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const entry = fakeEntry([
+    // Adjunto NUESTRO pero de hace una hora: no es el que acabamos de mandar.
+    { fromMe: true, hasMedia: true, timestamp: now - 3600, id: { _serialized: 'true_593@c.us_VIEJO' } },
+    // Y un entrante con media (del contacto): tampoco cuenta.
+    { fromMe: false, hasMedia: true, timestamp: now, id: { _serialized: 'entrante' } },
+  ]);
+  const wamid = await findRecentlySentMedia(entry, '593999@c.us', Date.now());
+  assert.equal(wamid, '');
+});
+
+test('si el chat no se puede leer, no se inventa una confirmación', async () => {
+  const entry = { client: { getChatById: async () => { throw new Error('sesión caída'); } } };
+  const wamid = await findRecentlySentMedia(entry, '593999@c.us', Date.now());
+  assert.equal(wamid, '');
 });
 
 test('ubicaciones y tarjetas de contacto se describen (antes se descartaban)', () => {

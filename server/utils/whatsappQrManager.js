@@ -1088,6 +1088,37 @@ async function sendText(account, to, body, quotedMessageId, quoteBody) {
 }
 
 /**
+ * ¿Salió de verdad el adjunto? Busca en el propio chat un mensaje NUESTRO con
+ * media creado desde que empezó el envío y devuelve su wamid.
+ *
+ * whatsapp-web.js devuelve `undefined` cuando su colección interna todavía no
+ * tiene el mensaje al terminar `sendMessage`, aunque ya lo haya encolado para
+ * enviar — más probable cuanto más pesa el archivo. Sin esta comprobación el
+ * video salía al contacto pero el sistema lo marcaba FALLIDO, y reintentarlo lo
+ * enviaba DOS veces.
+ */
+async function findRecentlySentMedia(entry, chatId, startedAtMs) {
+  // Margen por el desfase de reloj entre el servidor y WhatsApp Web.
+  const sinceSec = Math.floor(startedAtMs / 1000) - 30;
+  for (const wait of [1500, 3000]) {
+    await sleep(wait);
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      const chat = await withTimeout(entry.client.getChatById(chatId), 15000, 'timeout abriendo el chat');
+      // eslint-disable-next-line no-await-in-loop
+      const msgs = await withTimeout(chat.fetchMessages({ limit: 8 }), 20000, 'timeout leyendo el chat');
+      const mine = (msgs || []).filter((m) => m.fromMe && m.hasMedia && Number(m.timestamp || 0) >= sinceSec);
+      const last = mine[mine.length - 1];
+      const id = last?.id?._serialized || '';
+      if (id) return id;
+    } catch (e) {
+      console.warn('[wa-qr sendMedia] no se pudo verificar el envío en el chat: %s', e.message);
+    }
+  }
+  return '';
+}
+
+/**
  * Envía media (URL) con texto de pie por la sesión QR. Lo usan la cabecera de
  * imagen de las plantillas (por QR no existen plantillas de Meta: se manda la
  * imagen real con el cuerpo como caption), los adjuntos del compositor y las
@@ -1104,7 +1135,8 @@ async function sendMedia(account, to, url, caption, type = 'image', quotedMessag
   }
   const isVoice = type === 'audio';
   const isDoc = type === 'document';
-  const what = isVoice ? 'la nota de voz' : isDoc ? 'el archivo' : 'la imagen';
+  const isVideo = type === 'video';
+  const what = isVoice ? 'la nota de voz' : isDoc ? 'el archivo' : isVideo ? 'el video' : 'la imagen';
   try {
     const r = await resolveChatId(entry, to);
     if (!r.ok) return r;
@@ -1133,7 +1165,7 @@ async function sendMedia(account, to, url, caption, type = 'image', quotedMessag
     const { MessageMedia } = require('whatsapp-web.js');
     // El 3er argumento es el NOMBRE del archivo: un documento debe llevar el suyo
     // real (contrato.pdf) para que el contacto lo vea y lo pueda abrir.
-    const mediaName = isVoice ? 'nota-de-voz.ogg' : isDoc ? (fileName || 'archivo') : 'imagen';
+    const mediaName = isVoice ? 'nota-de-voz.ogg' : isDoc ? (fileName || 'archivo') : isVideo ? (fileName || 'video.mp4') : 'imagen';
     const media = new MessageMedia(mime, b64, mediaName);
     // Nota de voz: sin pie. Documento: se fuerza a enviarse como ADJUNTO (no como
     // una vista previa) con `sendMediaAsDocument`, así llega con su nombre e icono.
@@ -1142,21 +1174,38 @@ async function sendMedia(account, to, url, caption, type = 'image', quotedMessag
       : isDoc
         ? { sendMediaAsDocument: true, caption: String(caption || '').slice(0, 1024) }
         : { caption: String(caption || '').slice(0, 1024) };
-    console.log('[wa-qr sendMedia] enviando kind=%s mime=%s bytes≈%d chat=%s', type, mime, Math.floor(b64.length * 0.75), r.chatId);
+    const bytes = Math.floor(b64.length * 0.75);
+    console.log('[wa-qr sendMedia] enviando kind=%s mime=%s bytes≈%d chat=%s', type, mime, bytes, r.chatId);
+    // El tiempo de espera CRECE con el tamaño: un video de 10 MB tiene que
+    // cifrarse y subirse desde el navegador headless, y con el minuto fijo de
+    // antes los videos se marcaban fallidos a mitad de la subida.
+    const sendTimeout = Math.min(300000, 60000 + Math.ceil(bytes / (1024 * 1024)) * 20000);
     // La cita se resuelve igual que en texto: getMessageById + reply() para que
     // el contacto vea el adjunto como respuesta al mensaje citado.
+    const startedAt = Date.now();
     const { sent, quote } = await withTimeout(
       sendResolvingQuote(entry, r.chatId, media, quotedMessageId, opts, quoteBody),
-      60000,
-      `Tiempo agotado enviando ${what} (la sesión puede estar inestable)`
+      sendTimeout,
+      `Tiempo agotado enviando ${what} (${Math.round(bytes / 1048576)} MB): la sesión puede estar inestable o la conexión es lenta`
     );
-    const wamid = sent?.id?._serialized || '';
+    let wamid = sent?.id?._serialized || '';
     if (!wamid) {
-      // whatsapp-web.js no devolvió un id de mensaje: el envío NO se confirmó.
-      console.warn('[wa-qr sendMedia] la sesión NO devolvió wamid (envío no confirmado) chat=%s', r.chatId);
-      return { ok: false, errorCode: 'qr_media_unconfirmed', error: `WhatsApp no confirmó el envío de ${what} (la sesión puede estar inestable). Reintenta.` };
+      // whatsapp-web.js devuelve `undefined` cuando, al terminar, el mensaje aún
+      // no está en su colección interna — aunque YA lo haya puesto a enviar. Antes
+      // se daba por fallido sin más: el video salía igual y el chat lo marcaba en
+      // rojo (y reintentar lo duplicaba). Ahora se COMPRUEBA en el propio chat.
+      console.warn('[wa-qr sendMedia] la sesión no devolvió wamid; verificando en el chat… chat=%s', r.chatId);
+      wamid = await findRecentlySentMedia(entry, r.chatId, startedAt);
+      if (!wamid) {
+        return {
+          ok: false,
+          errorCode: 'qr_media_unconfirmed',
+          error: `WhatsApp no confirmó el envío de ${what} (la sesión puede estar inestable). Reintenta.`,
+        };
+      }
+      console.log('[wa-qr sendMedia] confirmado por verificación en el chat wamid=%s', wamid);
     }
-    console.log('[wa-qr sendMedia] enviado OK wamid=%s', wamid);
+    console.log('[wa-qr sendMedia] enviado OK wamid=%s en %ds', wamid, Math.round((Date.now() - startedAt) / 1000));
     return {
       ok: true,
       data: { messages: [{ id: wamid }] },
@@ -1273,5 +1322,8 @@ module.exports = {
   initEnabledOnBoot,
   shutdownAll,
   // Solo para pruebas: acceso al mapa de sesiones y a la recuperación de estado.
-  __test: { clients, acquireSendableEntry, healToConnected, extractQrMedia, describeQrNonMedia },
+  __test: {
+    clients, acquireSendableEntry, healToConnected, extractQrMedia, describeQrNonMedia,
+    findRecentlySentMedia,
+  },
 };

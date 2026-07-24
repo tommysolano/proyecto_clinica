@@ -402,6 +402,31 @@ export default function Chats() {
     }
   };
 
+  /**
+   * Mensajes guardados y galería. Se RECARGAN cada vez que se abre el selector,
+   * no solo al montar la página: si un agente edita un mensaje guardado en la
+   * página "Mensajes Guardados" (p.ej. le adjunta un video) mientras tiene el
+   * chat abierto en otra pestaña, la copia del chat se quedaba vieja y al
+   * insertarlo se enviaba SOLO el texto — el adjunto se perdía en silencio.
+   */
+  const loadSavedReplies = async () => {
+    try {
+      const r = await api.get('/chats/saved-replies');
+      setSavedReplies(r.data || []);
+    } catch {
+      /* si falla se mantiene la copia anterior */
+    }
+  };
+
+  const loadGallery = async () => {
+    try {
+      const r = await api.get('/chats/gallery');
+      setGallery(r.data || []);
+    } catch {
+      /* noop */
+    }
+  };
+
   const loadMessages = async (id) => {
     try {
       const r = await api.get(`/chats/${id}/messages`);
@@ -427,8 +452,8 @@ export default function Chats() {
         );
       })
       .catch(() => {});
-    api.get('/chats/saved-replies').then((r) => setSavedReplies(r.data || [])).catch(() => {});
-    api.get('/chats/gallery').then((r) => setGallery(r.data || [])).catch(() => {});
+    loadSavedReplies();
+    loadGallery();
     api.get('/chats/workflows-list').then((r) => setChatWorkflows(r.data || [])).catch(() => {});
     api.get('/call-center/agents').then((r) => setAgents(r.data || [])).catch(() => {});
     // Plantillas WhatsApp aprobadas por Meta (para enviar desde el chat),
@@ -782,8 +807,24 @@ export default function Chats() {
 
   // Inserta un mensaje guardado: reemplaza el token "/atajo" (o añade al final),
   // rellena variables con el contacto y prepara el adjunto si lo tiene.
-  const insertSavedReply = (r) => {
-    const body = fillSavedVariables(r.body, activeConv);
+  //
+  // Se pide al servidor la versión VIGENTE antes de insertar (la misma llamada
+  // que ya contaba el uso). La copia que tiene el chat se carga al abrir la
+  // página y se quedaba vieja: si el mensaje guardado se editaba en la otra
+  // pestaña para adjuntarle un video, el chat insertaba la copia SIN adjunto y
+  // el mensaje salía como texto pelado, sin avisar de nada.
+  const insertSavedReply = async (r) => {
+    setSlashOpen(false);
+    setSlashQuery('');
+    setPickerTab(null);
+    let fresh = r;
+    try {
+      const { data } = await api.post(`/chats/saved-replies/${r._id}/used`);
+      if (data?._id) fresh = data;
+    } catch {
+      /* sin respuesta del servidor: se usa la copia local (mejor que no insertar) */
+    }
+    const body = fillSavedVariables(fresh.body, activeConv);
     setDraft((prev) => {
       const lastSlashAt = prev.lastIndexOf('/');
       if (lastSlashAt >= 0 && (lastSlashAt === 0 || /\s/.test(prev[lastSlashAt - 1]))) {
@@ -791,19 +832,16 @@ export default function Chats() {
       }
       return prev ? `${prev} ${body}` : body;
     });
-    if (r.attachment?.url) {
+    if (fresh.attachment?.url) {
       setAttachmentDraft({
-        url: r.attachment.url,
-        type: r.attachment.type || 'image',
-        name: r.attachment.name || r.title || 'adjunto',
+        url: fresh.attachment.url,
+        type: fresh.attachment.type || 'image',
+        name: fresh.attachment.name || fresh.title || 'adjunto',
       });
     }
-    setSlashOpen(false);
-    setSlashQuery('');
-    setPickerTab(null);
-    // Contador "más usados" (ordena el menú); no bloquea la inserción.
-    api.post(`/chats/saved-replies/${r._id}/used`).catch(() => {});
-    setSavedReplies((prev) => prev.map((x) => (x._id === r._id ? { ...x, usageCount: (x.usageCount || 0) + 1 } : x)));
+    setSavedReplies((prev) =>
+      prev.map((x) => (x._id === r._id ? { ...x, ...fresh, usageCount: (x.usageCount || 0) + 1 } : x))
+    );
   };
 
   // Disparo MANUAL de una automatización para este chat (cuando el disparo
@@ -1377,7 +1415,13 @@ export default function Chats() {
                             <button
                               key={k}
                               type="button"
-                              onClick={() => { setPickerTab(k); setPickerQuery(''); }}
+                              onClick={() => {
+                                setPickerTab(k);
+                                setPickerQuery('');
+                                // Datos frescos al cambiar de pestaña: lo que se
+                                // inserte debe ser la versión ACTUAL (con su adjunto).
+                                if (k === 'saved') loadSavedReplies();
+                              }}
                               className={`flex-1 px-2 py-2 text-xs font-semibold border-none cursor-pointer ${pickerTab === k ? 'bg-emerald-50 text-emerald-700 border-b-2 border-emerald-500' : 'bg-white text-slate-500 hover:bg-slate-50'}`}
                             >
                               {label}
@@ -1581,6 +1625,9 @@ export default function Chats() {
                             const q = v.slice(lastSlashAt + 1).toLowerCase();
                             if (!q.includes(' ')) {
                               setSlashQuery(q);
+                              // Al ABRIR el menú (no en cada tecla) se refrescan los
+                              // guardados: así se inserta la versión actual con su adjunto.
+                              if (!slashOpen) loadSavedReplies();
                               setSlashOpen(true);
                               return;
                             }
@@ -1668,7 +1715,11 @@ export default function Chats() {
                           </button>
                           <button
                             type="button"
-                            onClick={() => { setPickerTab((v) => (v ? null : 'auto')); setPickerQuery(''); }}
+                            onClick={() => {
+                              setPickerTab((v) => (v ? null : 'auto'));
+                              setPickerQuery('');
+                              loadSavedReplies(); // ver loadSavedReplies: evita insertar una versión vieja
+                            }}
                             title="Automatizaciones, plantillas y mensajes guardados"
                             className={`p-2 border rounded-xl cursor-pointer disabled:opacity-50 flex items-center ${pickerTab || templateDraft.name ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50 hover:border-emerald-300'}`}
                           >

@@ -754,11 +754,25 @@ exports.listSavedReplies = async (req, res) => {
   }
 };
 
-/** Marca un mensaje guardado como usado (ordena el menú por "más usados"). */
+/**
+ * Marca un mensaje guardado como usado (ordena el menú por "más usados") y
+ * devuelve el documento ACTUALIZADO.
+ *
+ * Devolverlo es lo que garantiza que el chat inserte la versión vigente: la
+ * lista del chat se carga al abrir la página y se quedaba vieja, así que si un
+ * agente le adjuntaba un video al mensaje guardado desde la otra pestaña, el
+ * chat seguía insertando la copia SIN adjunto y el video no se enviaba (el
+ * mensaje salía como texto pelado, sin ningún aviso).
+ */
 exports.markSavedReplyUsed = async (req, res) => {
   try {
-    await SavedReply.updateOne({ _id: req.params.id, clinic: req.clinicId }, { $inc: { usageCount: 1 } });
-    res.json({ ok: true });
+    const updated = await SavedReply.findOneAndUpdate(
+      { _id: req.params.id, clinic: req.clinicId },
+      { $inc: { usageCount: 1 } },
+      { new: true }
+    );
+    if (!updated) return res.status(404).json({ message: 'Mensaje guardado no encontrado' });
+    res.json(updated);
   } catch (err) {
     res.status(500).json({ message: 'Error', error: err.message });
   }
