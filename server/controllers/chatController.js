@@ -1676,6 +1676,77 @@ exports.listMessages = async (req, res) => {
   }
 };
 
+/**
+ * POST /chats/:id/messages/:messageId/retry-media — vuelve a pedir el archivo de
+ * un mensaje entrante cuyo adjunto no se pudo descargar.
+ *
+ * Sin esto, una foto o una nota de voz que falló quedaba perdida para siempre: no
+ * había forma de recuperarla salvo pedirle al paciente que la reenviara. El
+ * archivo sigue estando en WhatsApp (en la sesión del número QR, o en Meta hasta
+ * que caduca), así que se puede volver a intentar cuantas veces haga falta.
+ */
+exports.retryMessageMedia = async (req, res) => {
+  try {
+    const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
+    const msg = await Message.findOne({
+      _id: req.params.messageId,
+      conversation: conv._id,
+      clinic: req.clinicId,
+    });
+    if (!msg) return res.status(404).json({ message: 'Mensaje no encontrado' });
+    if (!msg.mediaType) return res.status(400).json({ message: 'Este mensaje no tiene ningún archivo.' });
+    if (msg.mediaUrl) return res.json(msg); // ya está descargado
+
+    const gateway = require('../utils/whatsappGateway');
+    const account = await gateway.resolveAccountForConversation(conv);
+    if (!account) {
+      return res.status(409).json({ message: 'No hay un número de WhatsApp con el que recuperar el archivo.' });
+    }
+
+    let dataUrl = '';
+    let size = 0;
+    let error = '';
+    if (account.connectionType === 'qr') {
+      // La sesión de WhatsApp Web todavía tiene el mensaje: se le pide de nuevo.
+      const qr = require('../utils/whatsappQrManager');
+      const r = await qr.redownloadMedia(account, msg.externalId);
+      if (r.ok) {
+        dataUrl = r.dataUrl;
+        size = r.size || 0;
+      } else {
+        error = r.error || 'La sesión de WhatsApp no pudo entregar el archivo.';
+      }
+    } else if (msg.mediaExternalId) {
+      const dl = await gateway.downloadMedia(account, msg.mediaExternalId);
+      if (dl.ok) {
+        dataUrl = dl.dataUrl;
+        size = dl.size || 0;
+      } else {
+        error = dl.tooLarge ? 'El archivo es demasiado grande para guardarlo.' : dl.error || 'Meta no entregó el archivo.';
+      }
+    } else {
+      error = 'Este mensaje no guarda el identificador del archivo en WhatsApp (llegó antes de esta mejora).';
+    }
+
+    if (!dataUrl) {
+      msg.errorMessage = String(error).slice(0, 300);
+      await msg.save();
+      return res.status(409).json({ message: `No se pudo recuperar el archivo. ${error}`, messageDoc: msg });
+    }
+
+    msg.mediaUrl = dataUrl;
+    msg.mediaSize = size || msg.mediaSize;
+    msg.errorCode = '';
+    msg.errorMessage = '';
+    await msg.save();
+    emitToCallCenter('chat:message', { conversationId: conv._id, message: msg });
+    res.json(msg);
+  } catch (err) {
+    res.status(500).json({ message: 'Error al recuperar el archivo', error: err.message });
+  }
+};
+
 // Resumen del mensaje citado. `who` (contacto) se pasa aparte porque el mensaje
 // entrante no guarda el nombre del remitente. Devuelve null si no aplica.
 function replySnapshotFrom(quoted, contactName) {
@@ -2491,6 +2562,8 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
     mediaType,
     mediaName,
     mediaSize,
+    // Id del archivo en Meta: permite reintentar la descarga después.
+    mediaExternalId: media?.id || '',
     // Motivo por el que el archivo no está disponible (se muestra en la burbuja).
     ...(mediaError ? { errorCode: 'media_unavailable', errorMessage: mediaError } : {}),
     externalId,

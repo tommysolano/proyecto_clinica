@@ -122,6 +122,67 @@ test('media entrante OK: se guarda el archivo y no se marca ningún error', asyn
   assert.equal(msg.errorCode, '');
 });
 
+// ───────────────── recuperar un archivo que falló ─────────────────
+
+test('reintentar descarga: el archivo se recupera y la burbuja deja de estar en error', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const account = await WhatsappAccount.create({
+    label: 'Recepción', connectionType: 'cloud_api', phoneNumberId: '123', accessToken: 'TOKEN', enabled: true,
+  });
+  const Conversation = require('../models/Conversation');
+  const conv = await Conversation.create({
+    clinic: clinicId, phone: PHONE, channel: 'whatsapp', whatsappAccount: account._id,
+  });
+  const msg = await Message.create({
+    clinic: clinicId, conversation: conv._id, direction: 'in', mediaType: 'audio',
+    mediaExternalId: 'MEDIA_9', errorCode: 'media_unavailable', errorMessage: 'r',
+  });
+
+  const origFetch = global.fetch;
+  global.fetch = async (url) =>
+    String(url).includes('graph.facebook.com')
+      ? { ok: true, json: async () => ({ url: 'https://lookaside.fb/audio', mime_type: 'audio/ogg' }) }
+      : { ok: true, arrayBuffer: async () => Buffer.from('OggS-bytes') };
+  try {
+    const r = await H.runController(
+      chat.retryMessageMedia,
+      H.mockReq(clinicId, userId, {}, { params: { id: String(conv._id), messageId: String(msg._id) } })
+    );
+    assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
+    assert.match(r.payload.mediaUrl, /^data:audio\/ogg;base64,/);
+    assert.equal(r.payload.errorCode, '', 'se limpia el error al recuperarlo');
+  } finally {
+    global.fetch = origFetch;
+  }
+});
+
+test('reintentar descarga: si Meta sigue sin darlo, responde 409 con el motivo', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const account = await WhatsappAccount.create({
+    label: 'Recepción', connectionType: 'cloud_api', phoneNumberId: '123', accessToken: 'TOKEN', enabled: true,
+  });
+  const Conversation = require('../models/Conversation');
+  const conv = await Conversation.create({
+    clinic: clinicId, phone: PHONE, channel: 'whatsapp', whatsappAccount: account._id,
+  });
+  const msg = await Message.create({
+    clinic: clinicId, conversation: conv._id, direction: 'in', mediaType: 'image', mediaExternalId: 'MEDIA_X',
+  });
+
+  const origFetch = global.fetch;
+  global.fetch = async () => ({ ok: false, status: 404, json: async () => ({ error: { message: 'Media not found' } }) });
+  try {
+    const r = await H.runController(
+      chat.retryMessageMedia,
+      H.mockReq(clinicId, userId, {}, { params: { id: String(conv._id), messageId: String(msg._id) } })
+    );
+    assert.equal(r.statusCode, 409);
+    assert.match(r.payload.message, /Media not found/);
+  } finally {
+    global.fetch = origFetch;
+  }
+});
+
 // ───────────────── servidor de media (escuchar la nota de voz) ─────────────────
 
 test('serve: una nota de voz guardada con ;codecs=opus SÍ se puede reproducir', async () => {

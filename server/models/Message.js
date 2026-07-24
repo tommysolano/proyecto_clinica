@@ -41,6 +41,11 @@ const messageSchema = new mongoose.Schema(
     mediaName: { type: String, trim: true, default: '' },
     // Tamaño del adjunto en bytes (si el proveedor lo informa) para la tarjeta.
     mediaSize: { type: Number, default: 0 },
+    // Identificador del archivo EN EL PROVEEDOR (media id de Meta). Permite volver
+    // a pedirle el archivo si la primera descarga falló, sin esperar a que el
+    // contacto lo reenvíe. En números QR no aplica: allí basta el `externalId` del
+    // propio mensaje para volver a bajarlo desde la sesión de WhatsApp Web.
+    mediaExternalId: { type: String, trim: true, default: '' },
     // Cómo llegó/salió el mensaje. 'phone' marca los enviados desde el teléfono
     // (número QR) fuera de nuestro sistema, para distinguirlos en la burbuja.
     origin: { type: String, enum: ['system', 'phone', ''], default: '' },

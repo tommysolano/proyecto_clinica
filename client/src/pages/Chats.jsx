@@ -710,6 +710,21 @@ export default function Chats() {
     }
   };
 
+  // Vuelve a pedirle a WhatsApp el archivo de un mensaje entrante cuyo adjunto no
+  // se pudo descargar (el archivo sigue en WhatsApp: un fallo puntual de la sesión
+  // no tiene por qué costar la foto o la nota de voz del paciente).
+  const retryMedia = async (msg) => {
+    try {
+      const { data } = await api.post(`/chats/${msg.conversation || activeId}/messages/${msg._id}/retry-media`);
+      setMessages((prev) => prev.map((m) => (m._id === data._id ? data : m)));
+      toast.success('Archivo recuperado');
+    } catch (err) {
+      const doc = err.response?.data?.messageDoc;
+      if (doc) setMessages((prev) => prev.map((m) => (m._id === doc._id ? doc : m)));
+      toast.error(err.response?.data?.message || 'No se pudo recuperar el archivo');
+    }
+  };
+
   // Sube un adjunto ya leído como data URL y lo deja preparado en el composer.
   // Devuelve true si quedó listo. El uploader es el mismo que usan los mensajes
   // guardados: almacena la media y devuelve una URL pública que ambos gateways
@@ -1215,6 +1230,7 @@ export default function Chats() {
                           onReply={() => setReplyDraft(m)}
                           onJumpTo={scrollToMessage}
                           onRetry={retrySend}
+                          onRetryMedia={retryMedia}
                         />
                       </Fragment>
                     );
@@ -2616,22 +2632,43 @@ const MEDIA_LABEL = {
   sticker: '🌟 Sticker',
 };
 
-function MessageMedia({ msg, isOut }) {
+function MessageMedia({ msg, isOut, onRetryMedia }) {
+  const [retrying, setRetrying] = useState(false);
   const url = msg.mediaUrl;
   const type = msg.mediaType || '';
   if (!url) {
     // Media que no se pudo descargar/guardar: se dice QUÉ llegó y POR QUÉ no está,
-    // en vez de dejar la burbuja vacía (o perder el mensaje, como antes).
+    // en vez de dejar la burbuja vacía (o perder el mensaje, como antes). El
+    // archivo sigue en WhatsApp, así que se ofrece volver a pedirlo.
     if (type) {
       const label = type === 'document' ? `📄 ${msg.mediaName || 'Documento'}` : MEDIA_LABEL[type] || type;
       return (
         <div className={`mb-1 rounded-lg px-2.5 py-2 ${isOut ? 'bg-emerald-600/40' : 'bg-slate-100'}`}>
           <div className={`text-xs font-semibold ${isOut ? 'text-white' : 'text-slate-600'}`}>{label}</div>
           <div className={`text-[11px] mt-0.5 ${isOut ? 'text-emerald-100' : 'text-slate-500'}`}>
-            No se pudo descargar el archivo de WhatsApp. Ábrelo en el teléfono.
+            No se pudo descargar el archivo de WhatsApp.
           </div>
+          {msg.direction === 'in' && onRetryMedia && (
+            <button
+              type="button"
+              disabled={retrying}
+              onClick={async () => {
+                setRetrying(true);
+                try {
+                  await onRetryMedia(msg);
+                } finally {
+                  setRetrying(false);
+                }
+              }}
+              className={`mt-1.5 px-2 py-1 rounded-md text-[11px] font-semibold border-none cursor-pointer disabled:opacity-60 ${
+                isOut ? 'bg-white/25 text-white hover:bg-white/40' : 'bg-emerald-600 text-white hover:bg-emerald-700'
+              }`}
+            >
+              {retrying ? 'Recuperando…' : 'Reintentar descarga'}
+            </button>
+          )}
           {msg.errorMessage ? (
-            <div className={`text-[10px] mt-0.5 italic ${isOut ? 'text-emerald-100/80' : 'text-slate-400'}`}>
+            <div className={`text-[10px] mt-1 italic break-words ${isOut ? 'text-emerald-100/80' : 'text-slate-400'}`}>
               {msg.errorMessage}
             </div>
           ) : null}
@@ -2744,7 +2781,7 @@ function highlightMatches(text, term, isOut) {
 // Icono del chip según el tipo de evento interno.
 const EVENT_ICON = { opportunity_created: '🎯' };
 
-function MessageBubble({ msg, onReply, onJumpTo, highlight, onRetry }) {
+function MessageBubble({ msg, onReply, onJumpTo, highlight, onRetry, onRetryMedia }) {
   // Evento INTERNO del sistema (kind='event'): chip centrado, visible SOLO para el
   // equipo (nunca se envió al contacto). P.ej. "Oportunidad creada".
   if (msg.kind === 'event') {
@@ -2838,7 +2875,7 @@ function MessageBubble({ msg, onReply, onJumpTo, highlight, onRetry }) {
             <span>{quoteFailureText(msg.quoteResult)}</span>
           </div>
         )}
-        <MessageMedia msg={msg} isOut={isOut} />
+        <MessageMedia msg={msg} isOut={isOut} onRetryMedia={onRetryMedia} />
         {msg.templateName && (
           <div className={`text-[10px] font-medium mb-0.5 ${isOut ? 'text-emerald-100' : 'text-slate-500'}`}>
             Plantilla · {msg.templateName}

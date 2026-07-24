@@ -200,6 +200,90 @@ function cleanMime(mimeType, fallback) {
 }
 
 /**
+ * Descarga la media POR EL CAMINO DE LA PROPIA APP de WhatsApp Web, dentro del
+ * navegador. Es el plan B cuando `msg.downloadMedia()` de whatsapp-web.js falla.
+ *
+ * La librería llama directamente a `WAWebDownloadManager.downloadAndMaybeDecrypt`
+ * con un puñado de campos del mensaje; cuando WhatsApp cambia esa función interna
+ * (pasa en cada actualización de WhatsApp Web) revienta con un error MINIFICADO
+ * —en producción llegaba literalmente como "r"— y se perdía todo archivo entrante
+ * del número QR.
+ *
+ * Aquí se hace lo mismo que hace la app cuando pulsas "descargar": se le pide al
+ * modelo del mensaje que RESUELVA su media (`msg.downloadMedia`, el método del
+ * propio WhatsApp, no el de la librería) y luego se leen los bytes ya descifrados
+ * del blob que queda en memoria (`mediaData.mediaBlob`). Al no depender de firmas
+ * internas, sobrevive a los cambios de WhatsApp Web.
+ *
+ * @returns {{ok:boolean, data?:string, mimetype?:string, filename?:string, filesize?:number, via?:string, error?:string}}
+ */
+async function downloadQrMediaInPage(client, serializedId) {
+  if (!client?.pupPage || !serializedId) return { ok: false, error: 'sin sesión o sin id de mensaje' };
+  return withTimeout(
+    client.pupPage.evaluate(async (id) => {
+      // Descripción legible de un error del navegador (suelen venir minificados).
+      const desc = (e) => {
+        const parts = [e && e.message, e && e.name, e && e.constructor && e.constructor.name, String(e)];
+        return parts.filter(Boolean).join(' / ').slice(0, 200);
+      };
+      try {
+        const col = window.require('WAWebCollections');
+        const msg = col.Msg.get(id) || (await col.Msg.getMessagesById([id]))?.messages?.[0];
+        if (!msg) return { ok: false, error: 'el mensaje no está en el store de WhatsApp Web' };
+
+        // 1) Que WhatsApp resuelva su propia media (descarga + descifrado).
+        let resolveError = '';
+        try {
+          if (!msg.mediaData || msg.mediaData.mediaStage !== 'RESOLVED') {
+            await msg.downloadMedia({ downloadEvenIfExpensive: true, rmrReason: 1 });
+          }
+        } catch (e) {
+          resolveError = desc(e);
+        }
+
+        // 2) Bytes ya descifrados en memoria. `url()` (un blob: del navegador) es
+        //    la vía que usa la propia librería para pintar la media, así que es la
+        //    más estable; se dejan alternativas por si cambia el objeto.
+        const blob = msg.mediaData && msg.mediaData.mediaBlob;
+        let real = null;
+        if (blob) {
+          try {
+            if (typeof Blob !== 'undefined' && blob instanceof Blob) real = blob;
+            else if (typeof blob.forceToBlob === 'function') real = await blob.forceToBlob();
+            else if (blob._blob) real = blob._blob;
+            else if (typeof blob.url === 'function') {
+              const u = blob.url();
+              if (u) real = await (await fetch(u)).blob();
+            }
+          } catch (e) {
+            return { ok: false, error: `no se pudieron leer los bytes (${desc(e)})` };
+          }
+        }
+        if (!real) {
+          const stage = (msg.mediaData && msg.mediaData.mediaStage) || '(sin mediaData)';
+          return { ok: false, error: `sin bytes en memoria — mediaStage=${stage}${resolveError ? ` resolve=${resolveError}` : ''}` };
+        }
+
+        const buf = await real.arrayBuffer();
+        const data = await window.WWebJS.arrayBufferToBase64Async(buf);
+        return {
+          ok: true,
+          data,
+          mimetype: msg.mimetype || real.type || 'application/octet-stream',
+          filename: msg.filename || '',
+          filesize: Number(msg.size) || buf.byteLength,
+          via: 'mediaBlob',
+        };
+      } catch (e) {
+        return { ok: false, error: desc(e) };
+      }
+    }, serializedId),
+    30000,
+    'timeout descargando la media desde el navegador'
+  ).catch((e) => ({ ok: false, error: e.message }));
+}
+
+/**
  * Por qué WhatsApp Web no entregó la media (queda en el log del VPS para poder
  * arreglar la causa exacta sin acceso al navegador). Pregunta al store en qué
  * estado quedó el mensaje: 'FETCHING' = seguía bajando, 'ERROR…' = falló la
@@ -249,6 +333,21 @@ async function extractQrMedia(msg, client, { retryDelays = MEDIA_RETRY_DELAYS } 
   // retrasarlo eternamente si cada llamada al navegador se queda colgada.
   const deadline = Date.now() + MAX_MEDIA_WAIT_MS;
 
+  // Empaqueta los bytes ya en base64 (vengan de donde vengan) para la ingesta.
+  const pack = (data, mimetype, name, informedSize) => {
+    const bytes = Math.floor(data.length * 0.75);
+    if (bytes > MAX_QR_MEDIA_BYTES) {
+      console.warn('[whatsapp-qr media] %s demasiado grande (%d bytes): se guarda sin el archivo', type, bytes);
+      return { ...base, size: bytes, unavailable: true, error: 'El archivo es demasiado grande para guardarlo.' };
+    }
+    return {
+      ...base,
+      dataUrl: `data:${cleanMime(mimetype, 'application/octet-stream')};base64,${data}`,
+      filename: name || filename,
+      size: bytes || informedSize || size,
+    };
+  };
+
   for (let i = 0; i < retryDelays.length; i += 1) {
     if (i > 0 && Date.now() > deadline) {
       lastError = lastError || 'WhatsApp Web tardó demasiado en entregar el archivo';
@@ -266,22 +365,23 @@ async function extractQrMedia(msg, client, { retryDelays = MEDIA_RETRY_DELAYS } 
       }
       // eslint-disable-next-line no-await-in-loop
       const m = await withTimeout(target.downloadMedia(), 15000, 'timeout descargando la media');
-      if (m && m.data) {
-        const bytes = Math.floor(m.data.length * 0.75);
-        if (bytes > MAX_QR_MEDIA_BYTES) {
-          console.warn('[whatsapp-qr media] %s demasiado grande (%d bytes): se guarda sin el archivo', type, bytes);
-          return { ...base, size: bytes, unavailable: true, error: 'El archivo es demasiado grande para guardarlo.' };
-        }
-        return {
-          ...base,
-          dataUrl: `data:${cleanMime(m.mimetype, 'application/octet-stream')};base64,${m.data}`,
-          filename: m.filename || filename,
-          size: bytes || size,
-        };
-      }
+      if (m && m.data) return pack(m.data, m.mimetype, m.filename);
       lastError = 'WhatsApp Web aún no tenía la media descargada';
     } catch (e) {
       lastError = e.message || String(e);
+    }
+
+    // Plan B: la vía de la propia app (ver downloadQrMediaInPage). Se intenta en
+    // CADA vuelta porque cuando WhatsApp cambia sus funciones internas el camino
+    // de la librería falla SIEMPRE, y sin esto no entraría ni un archivo.
+    if (client && serializedId) {
+      // eslint-disable-next-line no-await-in-loop
+      const alt = await downloadQrMediaInPage(client, serializedId);
+      if (alt.ok && alt.data) {
+        console.log('[whatsapp-qr media] descargada por la vía alterna (%s) type=%s', alt.via, type);
+        return pack(alt.data, alt.mimetype, alt.filename, alt.filesize);
+      }
+      if (alt.error) lastError = `${lastError} | alterna: ${alt.error}`;
     }
   }
 
@@ -1221,6 +1321,29 @@ async function downloadMedia() {
   return { ok: false };
 }
 
+/**
+ * Vuelve a bajar el archivo de un mensaje que ya está en el chat, a partir de su
+ * wamid. Lo usa el botón "Reintentar descarga" de la burbuja: el archivo sigue en
+ * WhatsApp, así que un fallo puntual de la sesión no tiene por qué perderlo.
+ */
+async function redownloadMedia(account, serializedId) {
+  if (!serializedId) return { ok: false, error: 'El mensaje no tiene identificador de WhatsApp.' };
+  const entry = await acquireSendableEntry(String(account._id));
+  if (!entry) return { ok: false, error: 'El número QR no está conectado.' };
+  let msg = null;
+  try {
+    msg = await withTimeout(entry.client.getMessageById(serializedId), 15000, 'timeout buscando el mensaje');
+  } catch (e) {
+    return { ok: false, error: e.message };
+  }
+  if (!msg) return { ok: false, error: 'WhatsApp ya no tiene ese mensaje en la sesión.' };
+  const media = await extractQrMedia(msg, entry.client, { retryDelays: [0, 1500, 3000] });
+  if (media && media.dataUrl) {
+    return { ok: true, dataUrl: media.dataUrl, size: media.size || 0, mediaName: media.filename || '' };
+  }
+  return { ok: false, error: media?.error || 'WhatsApp no entregó el archivo.' };
+}
+
 /** Estado vivo de un número (para la UI / endpoints). */
 function getLiveStatus(accountId) {
   return clients.get(String(accountId))?.status || null;
@@ -1316,6 +1439,7 @@ module.exports = {
   sendText,
   sendMedia,
   downloadMedia,
+  redownloadMedia,
   getLiveStatus,
   getLiveSnapshot,
   reconcileAccount,

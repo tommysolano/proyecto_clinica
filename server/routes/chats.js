@@ -124,6 +124,8 @@ router.post('/:id/call-permission', requireRole(...CALL_CENTER_ROLES), callCtrl.
 
 router.get('/:id/messages', requireRole(...CALL_CENTER_ROLES), ctrl.listMessages);
 router.post('/:id/messages', requireRole(...CALL_CENTER_ROLES), ctrl.sendMessage);
+// Vuelve a pedirle a WhatsApp el archivo de un mensaje cuyo adjunto no bajó.
+router.post('/:id/messages/:messageId/retry-media', requireRole(...CALL_CENTER_ROLES), ctrl.retryMessageMedia);
 router.post('/:id/send-image', requireRole(...CALL_CENTER_ROLES), ctrl.sendGalleryImage);
 router.post(
   '/:id/register-patient',
