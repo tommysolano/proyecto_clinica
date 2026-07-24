@@ -191,19 +191,66 @@ async function seedPayrollAccountDefaults(cfg, clinicId) {
   return changed;
 }
 
+/**
+ * COHERENCIA PANTALLA ↔ POSTEO. Siembra en la config los rubros con DEFAULT DE POSTEO que
+ * estén sin cuenta (null O undefined), con la MISMA cuenta que resolvería el cierre de rol
+ * (`makeAccountResolver`: valor falsy → default por código). Así la contadora ve EXACTAMENTE
+ * las cuentas a las que se contabiliza y puede cambiarlas si no está de acuerdo, en lugar de
+ * ver campos vacíos que sin embargo posteaban a una cuenta oculta.
+ *
+ * NO toca:
+ *   - los ObjectId ya asignados (respeta lo que la contadora configuró, incl. mapeo legacy);
+ *   - los rubros SIN default de posteo (alimentación, transporte, comisiones, comisariato,
+ *     farmacia, etc.): quedan en blanco y el cierre los sigue BLOQUEANDO si se usan sin cuenta.
+ *
+ * Idempotente. Devuelve { changed, seeded[] } para el resumen/diagnóstico.
+ */
+async function seedPostingDefaults(cfg, clinicId) {
+  cfg.accounts = cfg.accounts || {};
+  cfg.accounts.global = cfg.accounts.global || {};
+  cfg.accounts.byDepartment = cfg.accounts.byDepartment || {};
+  const seeded = [];
+  let changed = false;
+
+  const fill = async (bucket, scopeLabel, field, code) => {
+    if (bucket[field]) return; // ObjectId ya asignado: no se toca (mismo criterio que el posteo)
+    const acc = await ensureAccountByCode(clinicId, code);
+    if (acc?._id) {
+      bucket[field] = acc._id;
+      changed = true;
+      seeded.push({ scope: scopeLabel, field, code, account: String(acc._id), accountName: acc.name || '' });
+    }
+  };
+
+  for (const [field, code] of Object.entries(POSTING_DEFAULT_CODES.global)) {
+    await fill(cfg.accounts.global, 'global', field, code);
+  }
+  for (const type of DEPT_TYPES) {
+    cfg.accounts.byDepartment[type] = cfg.accounts.byDepartment[type] || {};
+    for (const [field, code] of Object.entries(POSTING_DEFAULT_CODES.byDepartment)) {
+      await fill(cfg.accounts.byDepartment[type], type, field, code);
+    }
+  }
+  if (changed) cfg.markModified('accounts');
+  return { changed, seeded };
+}
+
 exports.getConfig = async (req, res) => {
   try {
     let cfg = await PayrollConfig.findOne({ clinic: req.clinicId });
     await ensureStandardDepartments(req.clinicId);
+    let mustSave = false;
     if (!cfg) {
       // Config NUEVA: se siembra con las cuentas predeterminadas (la contadora las revisa/ajusta).
       cfg = new PayrollConfig({ clinic: req.clinicId });
       await seedPayrollAccountDefaults(cfg, req.clinicId);
-      await cfg.save();
+      mustSave = true;
     }
-    // Config EXISTENTE (incl. legacy sin la nueva estructura): se devuelve tal cual. No se
-    // auto-siembra para NO pre-empujar la migración (migratePayrollAccounts preserva el mapeo
-    // explícito legacy). Mientras tanto, el posteo resuelve defaults en línea para lo que falte.
+    // Coherencia pantalla↔posteo (config nueva o existente): rellena los rubros con default de
+    // posteo que estén vacíos con la MISMA cuenta que usaría el cierre. Solo pisa null/undefined,
+    // nunca un ObjectId ya asignado, así que preserva el mapeo explícito (incl. legacy).
+    const { changed } = await seedPostingDefaults(cfg, req.clinicId);
+    if (mustSave || changed) await cfg.save();
     res.json(cfg);
   } catch (e) { res.status(400).json({ message: e.message }); }
 };

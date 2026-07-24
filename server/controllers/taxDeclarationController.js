@@ -151,7 +151,12 @@ async function computeForm({ clinicId, formType, year, month, editable }) {
   return compute103({ clinicId, range });
 }
 
-/** Vuelve a calcular una declaración en BORRADOR conservando lo capturado. */
+/**
+ * Vuelve a calcular una declaración en BORRADOR conservando lo capturado. REEMPLAZA por
+ * completo la estructura de casilleros (si el snapshot venía de una definición vieja, la
+ * nueva estructura lo sustituye) y sella la `definitionVersion` VIGENTE del código: un
+ * borrador nunca queda etiquetado con una definición que ya no es la actual.
+ */
 async function recomputeDraft(decl, clinicId) {
   const result = await computeForm({
     clinicId,
@@ -163,6 +168,7 @@ async function recomputeDraft(decl, clinicId) {
   decl.computedCells = mapToCells(result.computed);
   decl.editableCells = mapToCells(result.editable);
   decl.totals = result.totals;
+  decl.definitionVersion = getDefinition(decl.formType).definitionVersion;
   decl.snapshot = {
     ...result.snapshot,
     conciliaciones: result.conciliaciones,
@@ -228,11 +234,40 @@ exports.list = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
+/**
+ * GET /tax-declarations/:id
+ *
+ * Un BORRADOR se recalcula SIEMPRE antes de responder (misma ruta que POST /:id/recompute):
+ * así nunca muestra datos rancios por más que se hayan editado las compras/ventas/retenciones
+ * del período después de guardarlo. Las FINALIZED/SUBSTITUTIVE/VOID son el registro de
+ * auditoría: se sirven CONGELADAS tal cual, jamás se recalculan.
+ *
+ * Si el recálculo falla (p. ej. un dato del período quedó inconsistente), NO se rompe la
+ * pantalla: se relee el documento persistido y se devuelve el último cálculo guardado con un
+ * aviso (`recomputeStale`) para que la UI muestre "no se pudo actualizar el cálculo".
+ */
 exports.get = async (req, res) => {
   try {
-    const decl = await SriDeclaration.findOne({ _id: req.params.id, clinic: req.clinicId });
+    let decl = await SriDeclaration.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!decl) return res.status(404).json({ message: 'Declaración no encontrada' });
-    res.json(await present(req.clinicId, decl));
+
+    let extra = {};
+    if (decl.status === 'DRAFT') {
+      try {
+        await recomputeDraft(decl, req.clinicId);
+        await decl.save();
+      } catch (e) {
+        // Se descarta cualquier mutación en memoria y se sirve EXACTAMENTE el snapshot guardado.
+        decl = await SriDeclaration.findOne({ _id: req.params.id, clinic: req.clinicId });
+        if (!decl) return res.status(404).json({ message: 'Declaración no encontrada' });
+        extra = {
+          recomputeStale: true,
+          recomputeMessage: 'No se pudo actualizar el cálculo con los datos actuales; se muestra el último cálculo guardado. '
+            + (e.message || ''),
+        };
+      }
+    }
+    res.json(await present(req.clinicId, decl, extra));
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
@@ -359,6 +394,7 @@ exports.update = async (req, res) => {
     decl.editableCells = mapToCells(result.editable);
     decl.computedCells = mapToCells(result.computed);
     decl.totals = result.totals;
+    decl.definitionVersion = getDefinition(decl.formType).definitionVersion;
     decl.snapshot = { ...result.snapshot, conciliaciones: result.conciliaciones, warnings: result.warnings, computedAt: new Date() };
     if (req.body?.dueDate !== undefined) decl.dueDate = req.body.dueDate ? new Date(req.body.dueDate) : null;
     if (req.body?.plannedPaymentDate !== undefined) {
@@ -415,6 +451,8 @@ exports.finalize = async (req, res) => {
       decl.computedCells = mapToCells(result.computed);
       decl.editableCells = mapToCells(result.editable);
       decl.totals = result.totals;
+      // Congela la definición realmente usada al finalizar (queda inmutable con este sello).
+      decl.definitionVersion = getDefinition(decl.formType).definitionVersion;
       decl.snapshot = { ...result.snapshot, conciliaciones: result.conciliaciones, warnings: result.warnings, computedAt: new Date() };
 
       // Sustitutiva: revierte el efecto contable de la declaración reemplazada ANTES de

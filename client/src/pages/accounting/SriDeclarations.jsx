@@ -373,6 +373,9 @@ export default function SriDeclarations() {
                 <div className="text-xs text-slate-500 font-mono">
                   {h.totals?.totalAPagar > 0 ? `A pagar $${fmt(h.totals.totalAPagar)}` : (h.totals?.creditoTributario > 0 ? `Crédito $${fmt(h.totals.creditoTributario)}` : 'Sin obligación')}
                 </div>
+                {h.status === 'DRAFT' && (
+                  <div className="text-[10px] text-slate-400 italic">Borrador: el total se recalcula al abrirlo</div>
+                )}
               </button>
             ))}
             {!history.length && <div className="px-3 py-6 text-center text-xs text-slate-400">Sin declaraciones del formulario {formType} en {year}.</div>}
@@ -455,6 +458,17 @@ export default function SriDeclarations() {
                   </button>
                 </div>
               </div>
+
+              {/* Aviso: el recálculo automático al abrir el borrador falló; se muestra el último guardado. */}
+              {data?.recomputeStale && (
+                <div className="mb-3 rounded-xl border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800 flex items-start gap-1.5">
+                  <HiOutlineArrowPath className="w-4 h-4 mt-0.5 shrink-0" />
+                  <span>
+                    No se pudo actualizar el cálculo con los datos actuales; se muestra el último cálculo guardado.
+                    {data.recomputeMessage ? ` (${data.recomputeMessage})` : ''} Pulsa <b>Recalcular</b> para reintentar.
+                  </span>
+                </div>
+              )}
 
               {/* Totales */}
               <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
