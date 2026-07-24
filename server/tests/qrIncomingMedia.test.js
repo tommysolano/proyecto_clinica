@@ -10,7 +10,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { extractQrMedia, describeQrNonMedia, findRecentlySentMedia } = require('../utils/whatsappQrManager').__test;
+const {
+  extractQrMedia, describeQrNonMedia, findRecentlySentMedia, watchOutgoingMedia, qrMessageId, qrMessageHash,
+} = require('../utils/whatsappQrManager').__test;
 
 // Sin esperas reales: los tiempos de reintento se inyectan.
 const FAST = { retryDelays: [0, 0, 0] };
@@ -125,6 +127,84 @@ test('si el chat no se puede leer, no se inventa una confirmación', async () =>
   const entry = { client: { getChatById: async () => { throw new Error('sesión caída'); } } };
   const wamid = await findRecentlySentMedia(entry, '593999@c.us', Date.now());
   assert.equal(wamid, '');
+});
+
+// ─────────────────── chats de número oculto (@lid) ───────────────────
+
+// En estos chats whatsapp-web.js NO expone `id._serialized`, y sin la clave
+// completa TODO lo que busca el mensaje por id falla: la descarga del archivo
+// (por eso no entraba ninguna foto ni nota de voz) y el botón de reintentar
+// ("Invalid serialized message id specified").
+test('@lid: la clave del mensaje se reconstruye a partir de sus piezas', () => {
+  const msg = {
+    _data: {
+      id: { fromMe: false, remote: { user: '204496395366461', server: 'lid' }, id: 'ACE14EA2A82FBED950BBB952E4A4AD36' },
+    },
+  };
+  assert.equal(qrMessageId(msg), 'false_204496395366461@lid_ACE14EA2A82FBED950BBB952E4A4AD36');
+  assert.equal(qrMessageHash(msg), 'ACE14EA2A82FBED950BBB952E4A4AD36');
+});
+
+test('cuando la librería SÍ da la clave completa, se respeta tal cual', () => {
+  const msg = { id: { _serialized: 'false_593999@c.us_ABC', id: 'ABC' } };
+  assert.equal(qrMessageId(msg), 'false_593999@c.us_ABC');
+  assert.equal(qrMessageHash(msg), 'ABC');
+});
+
+test('mensaje de grupo: la clave incluye al participante', () => {
+  const msg = {
+    _data: {
+      id: {
+        fromMe: true,
+        remote: { _serialized: '123-456@g.us' },
+        id: 'HASH1',
+        participant: { user: '593999', server: 'c.us' },
+      },
+    },
+  };
+  assert.equal(qrMessageId(msg), 'true_123-456@g.us_HASH1_593999@c.us');
+});
+
+test('sin piezas suficientes no se inventa una clave', () => {
+  assert.equal(qrMessageId({ _data: { id: { fromMe: false, id: 'SOLO_HASH' } } }), '');
+  assert.equal(qrMessageId({}), '');
+});
+
+// ─────────────────── confirmación del envío por evento ───────────────────
+
+function fakeClient() {
+  const handlers = {};
+  return {
+    on: (ev, fn) => { (handlers[ev] = handlers[ev] || []).push(fn); },
+    off: (ev, fn) => { handlers[ev] = (handlers[ev] || []).filter((f) => f !== fn); },
+    emit: (ev, arg) => (handlers[ev] || []).forEach((f) => f(arg)),
+    count: (ev) => (handlers[ev] || []).length,
+  };
+}
+
+test('el adjunto que la sesión anuncia se da por enviado (aunque no devuelva id)', () => {
+  const client = fakeClient();
+  const w = watchOutgoingMedia({ client }, '204496395366461@lid');
+  assert.equal(w.id(), '');
+  client.emit('message_create', {
+    fromMe: true,
+    hasMedia: true,
+    to: '204496395366461@lid',
+    _data: { id: { fromMe: true, remote: { user: '204496395366461', server: 'lid' }, id: 'ENVIADO1' } },
+  });
+  assert.equal(w.id(), 'true_204496395366461@lid_ENVIADO1');
+  w.stop();
+  assert.equal(client.count('message_create'), 0, 'deja de escuchar al terminar');
+});
+
+test('un mensaje de OTRO chat (o sin adjunto) no confirma nuestro envío', () => {
+  const client = fakeClient();
+  const w = watchOutgoingMedia({ client }, '593999@c.us');
+  client.emit('message_create', { fromMe: true, hasMedia: true, to: '111@c.us', id: { _serialized: 'x' } });
+  client.emit('message_create', { fromMe: true, hasMedia: false, to: '593999@c.us', id: { _serialized: 'y' } });
+  client.emit('message_create', { fromMe: false, hasMedia: true, to: '593999@c.us', id: { _serialized: 'z' } });
+  assert.equal(w.id(), '');
+  w.stop();
 });
 
 test('ubicaciones y tarjetas de contacto se describen (antes se descartaban)', () => {

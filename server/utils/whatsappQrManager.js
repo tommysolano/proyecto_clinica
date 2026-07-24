@@ -199,6 +199,51 @@ function cleanMime(mimeType, fallback) {
   return /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(m) ? m : fallback;
 }
 
+/** Un identificador de WhatsApp (Wid) como texto: '5939…@c.us' / '2044…@lid'. */
+function widToString(w) {
+  if (!w) return '';
+  if (typeof w === 'string') return w;
+  if (w._serialized) return w._serialized;
+  if (w.user && w.server) return `${w.user}@${w.server}`;
+  return '';
+}
+
+/**
+ * Clave COMPLETA de un mensaje ('false_2044…@lid_ACE14EA2…').
+ *
+ * En los chats de número oculto (@lid) whatsapp-web.js NO expone `id._serialized`,
+ * y todo lo que identifica un mensaje por id se rompía: la descarga de archivos
+ * (`downloadMedia` busca `Msg.get(this.id._serialized)` → undefined) y el botón de
+ * reintentar ("Invalid serialized message id specified"). Por eso en el número QR
+ * no entraba NI UNA foto ni nota de voz de esos contactos. Aquí se reconstruye a
+ * partir de sus piezas, que sí vienen (`fromMe`, `remote`, `id`).
+ */
+function serializeMsgKey(idObj) {
+  if (!idObj) return '';
+  if (typeof idObj === 'string') return idObj;
+  if (idObj._serialized) return idObj._serialized;
+  const remote = widToString(idObj.remote);
+  const hash = idObj.id || '';
+  if (!remote || !hash) return '';
+  const parts = [idObj.fromMe ? 'true' : 'false', remote, hash];
+  const participant = widToString(idObj.participant);
+  if (participant) parts.push(participant);
+  return parts.join('_');
+}
+
+/** Clave completa de un mensaje de whatsapp-web.js (ver serializeMsgKey). */
+function qrMessageId(msg) {
+  return msg?.id?._serialized || serializeMsgKey(msg?.id) || serializeMsgKey(msg?._data?.id) || '';
+}
+
+/** Parte única (hash) de la clave de un mensaje, sirva o no el resto. */
+function qrMessageHash(msg) {
+  const raw = msg?.id?.id || msg?._data?.id?.id || '';
+  if (raw) return String(raw);
+  const parts = String(qrMessageId(msg) || '').split('_');
+  return parts.length >= 3 ? parts[2] : '';
+}
+
 /**
  * Descarga la media POR EL CAMINO DE LA PROPIA APP de WhatsApp Web, dentro del
  * navegador. Es el plan B cuando `msg.downloadMedia()` de whatsapp-web.js falla.
@@ -217,10 +262,10 @@ function cleanMime(mimeType, fallback) {
  *
  * @returns {{ok:boolean, data?:string, mimetype?:string, filename?:string, filesize?:number, via?:string, error?:string}}
  */
-async function downloadQrMediaInPage(client, serializedId) {
-  if (!client?.pupPage || !serializedId) return { ok: false, error: 'sin sesión o sin id de mensaje' };
+async function downloadQrMediaInPage(client, serializedId, hash = '') {
+  if (!client?.pupPage || (!serializedId && !hash)) return { ok: false, error: 'sin sesión o sin id de mensaje' };
   return withTimeout(
-    client.pupPage.evaluate(async (id) => {
+    client.pupPage.evaluate(async (id, msgHash) => {
       // Descripción legible de un error del navegador (suelen venir minificados).
       const desc = (e) => {
         const parts = [e && e.message, e && e.name, e && e.constructor && e.constructor.name, String(e)];
@@ -228,7 +273,21 @@ async function downloadQrMediaInPage(client, serializedId) {
       };
       try {
         const col = window.require('WAWebCollections');
-        const msg = col.Msg.get(id) || (await col.Msg.getMessagesById([id]))?.messages?.[0];
+        let msg = null;
+        if (id) {
+          try {
+            msg = col.Msg.get(id) || (await col.Msg.getMessagesById([id]))?.messages?.[0] || null;
+          } catch (e) {
+            msg = null; // id no serializable (chats @lid): se busca por el hash
+          }
+        }
+        // Rescate por HASH: identifica el mensaje aunque su clave completa no sirva.
+        if (!msg && msgHash) {
+          const models = typeof col.Msg.getModelsArray === 'function'
+            ? col.Msg.getModelsArray()
+            : (col.Msg.models || []);
+          msg = models.find((m) => m && m.id && m.id.id === msgHash) || null;
+        }
         if (!msg) return { ok: false, error: 'el mensaje no está en el store de WhatsApp Web' };
 
         // 1) Que WhatsApp resuelva su propia media (descarga + descifrado).
@@ -277,7 +336,7 @@ async function downloadQrMediaInPage(client, serializedId) {
       } catch (e) {
         return { ok: false, error: desc(e) };
       }
-    }, serializedId),
+    }, serializedId || '', hash || ''),
     30000,
     'timeout descargando la media desde el navegador'
   ).catch((e) => ({ ok: false, error: e.message }));
@@ -327,7 +386,10 @@ async function extractQrMedia(msg, client, { retryDelays = MEDIA_RETRY_DELAYS } 
   const filename = msg._data?.filename || '';
   const size = Number(msg._data?.size) || 0;
   const base = { type, caption: msg.body || '', filename, size };
-  const serializedId = msg.id?._serialized || msg._data?.id?._serialized || '';
+  // Clave RECONSTRUIDA si hace falta: en chats @lid la librería no la expone y sin
+  // ella no se puede localizar el mensaje para bajar su archivo (ver qrMessageId).
+  const serializedId = qrMessageId(msg);
+  const hash = qrMessageHash(msg);
   let lastError = '';
   // Tope total: el mensaje espera a su archivo, así que reintentar no puede
   // retrasarlo eternamente si cada llamada al navegador se queda colgada.
@@ -361,7 +423,7 @@ async function extractQrMedia(msg, client, { retryDelays = MEDIA_RETRY_DELAYS } 
       if (i > 0 && serializedId && client) {
         const fresh = await withTimeout(client.getMessageById(serializedId), 10000, 'timeout releyendo el mensaje')
           .catch(() => null);
-        if (fresh) target = fresh;
+        if (fresh && fresh.hasMedia) target = fresh;
       }
       // eslint-disable-next-line no-await-in-loop
       const m = await withTimeout(target.downloadMedia(), 15000, 'timeout descargando la media');
@@ -374,9 +436,9 @@ async function extractQrMedia(msg, client, { retryDelays = MEDIA_RETRY_DELAYS } 
     // Plan B: la vía de la propia app (ver downloadQrMediaInPage). Se intenta en
     // CADA vuelta porque cuando WhatsApp cambia sus funciones internas el camino
     // de la librería falla SIEMPRE, y sin esto no entraría ni un archivo.
-    if (client && serializedId) {
+    if (client && (serializedId || hash)) {
       // eslint-disable-next-line no-await-in-loop
-      const alt = await downloadQrMediaInPage(client, serializedId);
+      const alt = await downloadQrMediaInPage(client, serializedId, hash);
       if (alt.ok && alt.data) {
         console.log('[whatsapp-qr media] descargada por la vía alterna (%s) type=%s', alt.via, type);
         return pack(alt.data, alt.mimetype, alt.filename, alt.filesize);
@@ -732,17 +794,18 @@ async function connect(accountId, { userId } = {}) {
       if (msg.hasQuotedMsg) {
         try {
           const q = await msg.getQuotedMessage();
-          contextId = q?.id?._serialized || msg._data?.quotedStanzaID || '';
+          contextId = qrMessageId(q) || msg._data?.quotedStanzaID || '';
         } catch {
           contextId = msg._data?.quotedStanzaID || '';
         }
       }
 
-      // wamid del mensaje: imprescindible para poder CITARLO luego. Se toma de
-      // varias fuentes porque en chats LID (número oculto) whatsapp-web.js a
-      // veces no expone `id._serialized` en el objeto de alto nivel.
-      const serializedId =
-        msg.id?._serialized || msg._data?.id?._serialized || msg._data?.id?.id || '';
+      // Clave del mensaje: imprescindible para citarlo Y para volver a pedirle su
+      // archivo a WhatsApp. En chats LID (número oculto) la librería no expone
+      // `id._serialized`, así que se RECONSTRUYE (ver qrMessageId); antes se
+      // guardaba solo el hash suelto y cualquier búsqueda por id fallaba con
+      // "Invalid serialized message id specified".
+      const serializedId = qrMessageId(msg);
       if (!serializedId) {
         console.warn(
           '[whatsapp-qr] mensaje entrante SIN wamid (no se podrá citar). type=%s from=%s id=%j',
@@ -811,8 +874,7 @@ async function connect(accountId, { userId } = {}) {
       const clinicId = await require('./callCenterClinic').resolveCallCenterClinicId();
       if (!clinicId) return;
 
-      const serializedId =
-        msg.id?._serialized || msg._data?.id?._serialized || msg._data?.id?.id || '';
+      const serializedId = qrMessageId(msg);
 
       const { ingestExternalOutbound } = require('../controllers/chatController');
       await ingestExternalOutbound({
@@ -834,7 +896,7 @@ async function connect(accountId, { userId } = {}) {
   client.on('message_ack', async (msg, ack) => {
     try {
       const status = ACK_STATUS[String(ack)];
-      const externalId = msg.id?._serialized;
+      const externalId = qrMessageId(msg);
       if (!status || !externalId) return;
       const clinicId = await require('./callCenterClinic').resolveCallCenterClinicId();
       if (!clinicId) return;
@@ -1179,7 +1241,7 @@ async function sendText(account, to, body, quotedMessageId, quoteBody) {
     );
     return {
       ok: true,
-      data: { messages: [{ id: sent?.id?._serialized || '' }] },
+      data: { messages: [{ id: qrMessageId(sent) }] },
       ...(quotedMessageId || quoteBody ? { quote } : {}),
     };
   } catch (e) {
@@ -1209,13 +1271,45 @@ async function findRecentlySentMedia(entry, chatId, startedAtMs) {
       const msgs = await withTimeout(chat.fetchMessages({ limit: 8 }), 20000, 'timeout leyendo el chat');
       const mine = (msgs || []).filter((m) => m.fromMe && m.hasMedia && Number(m.timestamp || 0) >= sinceSec);
       const last = mine[mine.length - 1];
-      const id = last?.id?._serialized || '';
+      const id = qrMessageId(last);
       if (id) return id;
     } catch (e) {
       console.warn('[wa-qr sendMedia] no se pudo verificar el envío en el chat: %s', e.message);
     }
   }
   return '';
+}
+
+/**
+ * Escucha el evento `message_create` de la sesión mientras dura un envío y se
+ * queda con el mensaje NUESTRO con adjunto que WhatsApp acaba de crear en ese
+ * chat. Devuelve `{ id(), stop() }`.
+ *
+ * Es la confirmación MÁS fiable de que el adjunto salió: no busca nada por id ni
+ * abre el chat (en los chats de número oculto, @lid, esas búsquedas fallan), sino
+ * que escucha lo que la propia sesión anuncia. Sin esto, un envío que sí llegaba
+ * al contacto se marcaba "no se envió" y al reintentarlo se mandaba dos veces.
+ */
+function watchOutgoingMedia(entry, chatId) {
+  let found = '';
+  const target = String(chatId || '');
+  const onCreate = (m) => {
+    try {
+      if (found || !m?.fromMe || !m.hasMedia) return;
+      const to = typeof m.to === 'string' ? m.to : widToString(m.to);
+      if (to && target && to !== target) return;
+      found = qrMessageId(m);
+    } catch {
+      /* noop */
+    }
+  };
+  entry.client.on('message_create', onCreate);
+  return {
+    id: () => found,
+    stop: () => {
+      try { entry.client.off('message_create', onCreate); } catch { /* noop */ }
+    },
+  };
 }
 
 /**
@@ -1283,28 +1377,51 @@ async function sendMedia(account, to, url, caption, type = 'image', quotedMessag
     // La cita se resuelve igual que en texto: getMessageById + reply() para que
     // el contacto vea el adjunto como respuesta al mensaje citado.
     const startedAt = Date.now();
-    const { sent, quote } = await withTimeout(
-      sendResolvingQuote(entry, r.chatId, media, quotedMessageId, opts, quoteBody),
-      sendTimeout,
-      `Tiempo agotado enviando ${what} (${Math.round(bytes / 1048576)} MB): la sesión puede estar inestable o la conexión es lenta`
-    );
-    let wamid = sent?.id?._serialized || '';
+    // Se empieza a escuchar ANTES de enviar: si la librería no devuelve el id, el
+    // evento de la propia sesión confirma que el adjunto salió (ver watchOutgoingMedia).
+    const watcher = watchOutgoingMedia(entry, r.chatId);
+    let sent;
+    let quote;
+    try {
+      ({ sent, quote } = await withTimeout(
+        sendResolvingQuote(entry, r.chatId, media, quotedMessageId, opts, quoteBody),
+        sendTimeout,
+        `Tiempo agotado enviando ${what} (${Math.round(bytes / 1048576)} MB): la sesión puede estar inestable o la conexión es lenta`
+      ));
+    } catch (e) {
+      // Aunque el envío "falle" por tiempo, WhatsApp puede haberlo mandado igual:
+      // si la sesión anunció el mensaje, se da por enviado (y no se duplica).
+      await sleep(1500);
+      const late = watcher.id();
+      watcher.stop();
+      if (!late) throw e;
+      console.warn('[wa-qr sendMedia] %s — pero la sesión SÍ creó el mensaje (wamid=%s)', e.message, late);
+      return {
+        ok: true,
+        data: { messages: [{ id: late }] },
+        ...(quotedMessageId || quoteBody ? { quote: { applied: false, how: '', reason: 'timeout', wamid: '' } } : {}),
+      };
+    }
+    let wamid = qrMessageId(sent);
     if (!wamid) {
       // whatsapp-web.js devuelve `undefined` cuando, al terminar, el mensaje aún
       // no está en su colección interna — aunque YA lo haya puesto a enviar. Antes
-      // se daba por fallido sin más: el video salía igual y el chat lo marcaba en
-      // rojo (y reintentar lo duplicaba). Ahora se COMPRUEBA en el propio chat.
-      console.warn('[wa-qr sendMedia] la sesión no devolvió wamid; verificando en el chat… chat=%s', r.chatId);
-      wamid = await findRecentlySentMedia(entry, r.chatId, startedAt);
+      // se daba por fallido sin más: el video le llegaba al contacto y el chat lo
+      // marcaba en rojo (y "Reintentar" lo enviaba DOS veces).
+      console.warn('[wa-qr sendMedia] la sesión no devolvió wamid; verificando… chat=%s', r.chatId);
+      await sleep(1500);
+      wamid = watcher.id() || (await findRecentlySentMedia(entry, r.chatId, startedAt));
       if (!wamid) {
+        watcher.stop();
         return {
           ok: false,
           errorCode: 'qr_media_unconfirmed',
           error: `WhatsApp no confirmó el envío de ${what} (la sesión puede estar inestable). Reintenta.`,
         };
       }
-      console.log('[wa-qr sendMedia] confirmado por verificación en el chat wamid=%s', wamid);
+      console.log('[wa-qr sendMedia] confirmado por verificación wamid=%s', wamid);
     }
+    watcher.stop();
     console.log('[wa-qr sendMedia] enviado OK wamid=%s en %ds', wamid, Math.round((Date.now() - startedAt) / 1000));
     return {
       ok: true,
@@ -1330,18 +1447,38 @@ async function redownloadMedia(account, serializedId) {
   if (!serializedId) return { ok: false, error: 'El mensaje no tiene identificador de WhatsApp.' };
   const entry = await acquireSendableEntry(String(account._id));
   if (!entry) return { ok: false, error: 'El número QR no está conectado.' };
+
+  // Hash del mensaje: los mensajes guardados ANTES de reconstruir la clave (chats
+  // @lid) tienen solo el hash, y `getMessageById` los rechaza con "Invalid
+  // serialized message id specified". Con el hash se localizan igual en el store.
+  const parts = String(serializedId).split('_');
+  const hash = parts.length >= 3 ? parts[2] : String(serializedId);
+
   let msg = null;
   try {
     msg = await withTimeout(entry.client.getMessageById(serializedId), 15000, 'timeout buscando el mensaje');
-  } catch (e) {
-    return { ok: false, error: e.message };
+  } catch {
+    msg = null; // id no serializable: se va por la vía del navegador (abajo)
   }
-  if (!msg) return { ok: false, error: 'WhatsApp ya no tiene ese mensaje en la sesión.' };
-  const media = await extractQrMedia(msg, entry.client, { retryDelays: [0, 1500, 3000] });
-  if (media && media.dataUrl) {
-    return { ok: true, dataUrl: media.dataUrl, size: media.size || 0, mediaName: media.filename || '' };
+  if (msg) {
+    const media = await extractQrMedia(msg, entry.client, { retryDelays: [0, 1500, 3000] });
+    if (media && media.dataUrl) {
+      return { ok: true, dataUrl: media.dataUrl, size: media.size || 0, mediaName: media.filename || '' };
+    }
   }
-  return { ok: false, error: media?.error || 'WhatsApp no entregó el archivo.' };
+
+  const alt = await downloadQrMediaInPage(entry.client, parts.length >= 3 ? serializedId : '', hash);
+  if (alt.ok && alt.data) {
+    const bytes = Math.floor(alt.data.length * 0.75);
+    if (bytes > MAX_QR_MEDIA_BYTES) return { ok: false, error: 'El archivo es demasiado grande para guardarlo.' };
+    return {
+      ok: true,
+      dataUrl: `data:${cleanMime(alt.mimetype, 'application/octet-stream')};base64,${alt.data}`,
+      size: bytes,
+      mediaName: alt.filename || '',
+    };
+  }
+  return { ok: false, error: alt.error || 'WhatsApp no entregó el archivo.' };
 }
 
 /** Estado vivo de un número (para la UI / endpoints). */
@@ -1448,6 +1585,6 @@ module.exports = {
   // Solo para pruebas: acceso al mapa de sesiones y a la recuperación de estado.
   __test: {
     clients, acquireSendableEntry, healToConnected, extractQrMedia, describeQrNonMedia,
-    findRecentlySentMedia,
+    findRecentlySentMedia, watchOutgoingMedia, qrMessageId, qrMessageHash, serializeMsgKey,
   },
 };
