@@ -1,0 +1,68 @@
+name: Migrar media del chat
+
+# Solo manual. Saca los adjuntos (videos, audios, fotos) de DENTRO de los
+# documentos de mensaje y los deja en el almacen, dejando en el mensaje solo su
+# URL publica. Es lo que hace que un chat con un video abra al instante en vez de
+# tardar o fallar con "Error al cargar mensajes".
+#
+# Existe como workflow porque el puerto 22 del VPS no siempre es alcanzable desde
+# fuera (firewall de DigitalOcean / ISP), pero GitHub SI entra: son las mismas
+# credenciales que usa el deploy.
+#
+# Por defecto hace un ENSAYO EN SECO que no escribe nada. Para aplicar de verdad
+# hay que elegir "aplicar" a mano en el desplegable.
+on:
+  workflow_dispatch:
+    inputs:
+      modo:
+        description: 'Que hacer'
+        required: true
+        default: 'ensayo'
+        type: choice
+        options:
+          - ensayo
+          - aplicar
+
+# No dejar que dos corran a la vez ni que pise a un despliegue en curso.
+concurrency:
+  group: migrar-media-chat
+  cancel-in-progress: false
+
+jobs:
+  migrar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Migrar por SSH en el VPS
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          script_stop: false
+          # El script tarda varios minutos: lee decenas de MB desde Atlas.
+          command_timeout: 30m
+          script: |
+            export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
+            set -e
+
+            echo '===== commit desplegado ====='
+            git -C /var/www/clinica log -1 --format='%h %s'
+
+            # El script vive en el commit d3641b6 en adelante: sin el, no hay nada
+            # que ejecutar y es mejor decirlo claro que fallar con "module not found".
+            if [ ! -f /var/www/clinica/server/scripts/migrateChatMediaToStorage.js ]; then
+              echo 'ERROR: el VPS todavia no tiene el script. Espera a que termine el deploy y reintenta.'
+              exit 1
+            fi
+
+            cd /var/www/clinica/server
+
+            if [ '${{ inputs.modo }}' = 'aplicar' ]; then
+              echo '===== APLICANDO (escribe en la base) ====='
+              node scripts/migrateChatMediaToStorage.js --commit
+              echo '===== comprobacion posterior ====='
+              node scripts/migrateChatMediaToStorage.js
+            else
+              echo '===== ENSAYO EN SECO (no escribe nada) ====='
+              node scripts/migrateChatMediaToStorage.js
+            fi
