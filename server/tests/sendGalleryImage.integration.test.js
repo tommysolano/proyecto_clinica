@@ -3,8 +3,15 @@
  * WhatsApp. BUG corregido: la ruta /:id/send-image solo creaba el mensaje en la BD
  * (deliveryStatus por defecto 'sent') y NUNCA contactaba a WhatsApp — la imagen se
  * veía "enviada" pero jamás le llegaba al contacto. Ahora pasa por messaging.send:
- * si el proveedor la acepta → 201 con la media por URL pública (Cloud la sube por
- * id); si la rechaza → 502 FALLIDO, nunca un "enviado" falso.
+ * si el proveedor la acepta, la media va por URL pública (Cloud la sube por id);
+ * si la rechaza, el mensaje queda FALLIDO con su motivo.
+ *
+ * La entrega ocurre en SEGUNDO PLANO desde jul-2026 (ver `messaging.send` con
+ * `background`): la respuesta HTTP es 201 'queued' en cuanto el mensaje está
+ * guardado, y el resultado real se escribe poco después — por eso los tests
+ * esperan con `H.waitForStatus`. Lo que NO cambia es la garantía: nunca se
+ * responde 'sent' antes de que el proveedor conteste, así que sigue sin existir
+ * el "dice enviado y nunca llega".
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -54,7 +61,7 @@ test('send-image SALE por el proveedor con la media por URL pública (no crea "e
     assert.equal(caption, 'mira esto');
     assert.equal(type, 'image');
 
-    const saved = await Message.findById(out.payload._id).lean();
+    const saved = await H.waitForStatus(out.payload._id, 'sent');
     assert.equal(saved.deliveryStatus, 'sent', 'quedó enviado SOLO porque el proveedor lo aceptó');
     assert.equal(saved.externalId, 'wamid.GAL1');
     assert.notEqual(saved.body, `[imagen: ${img.name}]`, 'ya no se manda el placeholder de texto');
@@ -63,7 +70,7 @@ test('send-image SALE por el proveedor con la media por URL pública (no crea "e
   }
 });
 
-test('send-image: si el proveedor RECHAZA → 502 FALLIDO, nunca 201 "enviado"', async () => {
+test('send-image: si el proveedor RECHAZA, el mensaje acaba FALLIDO y nunca se muestra como "enviado"', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const { conv, img } = await seed(clinicId);
 
@@ -73,10 +80,17 @@ test('send-image: si el proveedor RECHAZA → 502 FALLIDO, nunca 201 "enviado"',
     const req = H.mockReq(clinicId, userId, { imageId: String(img._id) }, { params: { id: String(conv._id) } });
     const out = await H.runController(chat.sendGalleryImage, req);
 
-    assert.equal(out.statusCode, 502, JSON.stringify(out.payload));
-    assert.match(out.payload.message, /too big/i, 'muestra el motivo real');
-    const saved = await Message.findById(out.payload.chatMessage._id).lean();
+    // La entrega ocurre en segundo plano (la petición ya no espera al proveedor),
+    // así que la respuesta es "aceptado", NO "enviado": el estado que viaja es
+    // 'queued' y el chat pinta "enviando…", nunca un ✓.
+    assert.equal(out.statusCode, 201, JSON.stringify(out.payload));
+    assert.equal(out.payload.deliveryStatus, 'queued', 'jamás responder "sent" antes de que el proveedor conteste');
+
+    // Y cuando el proveedor lo rechaza, el mensaje queda FALLIDO con su motivo:
+    // sigue sin existir el "dice enviado y nunca llega".
+    const saved = await H.waitForStatus(out.payload._id, 'failed');
     assert.equal(saved.deliveryStatus, 'failed', 'el mensaje queda FALLIDO, no "enviado"');
+    assert.match(saved.errorMessage, /too big/i, 'guarda el motivo real para mostrarlo en la burbuja');
   } finally {
     gateway.sendMedia = orig;
   }

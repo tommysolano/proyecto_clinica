@@ -49,6 +49,9 @@ test('responder a un mensaje con wamid pasa quotedMessageId al gateway QR', asyn
     req.user.name = 'Super Administrador Shiluv';
     const out = await H.runController(chat.sendMessage, req);
     assert.equal(out.statusCode, 201, JSON.stringify(out.payload));
+    // La entrega va en segundo plano: se espera a que termine antes de devolver
+    // el stub, o el gateway real se llevaría la llamada a medias.
+    await H.waitForStatus(out.payload._id, 'sent');
   } finally {
     qrManager.sendText = orig;
   }
@@ -93,7 +96,8 @@ test('responder a un mensaje SIN wamid pasa el texto como quoteBody (respaldo po
   try {
     const req = H.mockReq(clinicId, userId, { body: 'hola', replyTo: String(noWamid._id) }, { params: { id: String(conv._id) } });
     req.user.name = 'Agente';
-    await H.runController(chat.sendMessage, req);
+    const out = await H.runController(chat.sendMessage, req);
+    await H.waitForStatus(out.payload._id, 'sent'); // la entrega va en segundo plano
   } finally {
     qrManager.sendText = orig;
   }

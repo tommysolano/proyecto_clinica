@@ -64,6 +64,7 @@ process.on('SIGTERM', () => gracefulExit('SIGTERM'));
 const express = require('express');
 const http = require('http');
 const cors = require('cors');
+const compression = require('compression');
 const connectDB = require('./config/db');
 const realtime = require('./realtime');
 
@@ -87,6 +88,21 @@ app.use(
     credentials: true,
   })
 );
+// Compresión gzip de las respuestas. Los listados del CRM (chats, mensajes,
+// reportes) son JSON muy repetitivo y comprimen a una fracción: es la diferencia
+// entre que la bandeja del call center abra al instante o se arrastre en una
+// conexión de oficina. Se salta lo que ya viene comprimido (imágenes, video,
+// audio servidos por /api/public/media), donde gzip solo gastaría CPU.
+app.use(
+  compression({
+    filter: (req, res) => {
+      const type = String(res.getHeader('Content-Type') || '');
+      if (/^(image|video|audio)\//.test(type)) return false;
+      return compression.filter(req, res);
+    },
+  })
+);
+
 app.use(express.json({
   // La media del chat viaja como data URL base64 dentro del JSON (base64 infla
   // ~33%), así que este tope es el techo real de subida. 50mb admite un video de

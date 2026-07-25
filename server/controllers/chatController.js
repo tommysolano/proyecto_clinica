@@ -8,6 +8,7 @@ const Product = require('../models/Product');
 const Quotation = require('../models/Quotation');
 const { emitToClinic, emitToUser, emitToCallCenter } = require('../realtime');
 const messaging = require('../utils/messaging');
+const chatMedia = require('../utils/chatMedia');
 const { verifyMetaSignature } = require('../utils/metaWebhook');
 
 /**
@@ -608,7 +609,7 @@ async function createInternalEvent({ clinicId, conv, eventType, body, sentBy, se
     sentBy: sentBy || null,
     sentByName: sentByName || '',
   });
-  emitToCallCenter('chat:message', { conversationId: conv._id, message: msg });
+  emitToCallCenter('chat:message', { conversationId: conv._id, message: chatMedia.sanitizeMessageForSocket(msg) });
   return msg;
 }
 
@@ -900,6 +901,7 @@ exports.uploadSavedReplyMedia = async (req, res) => {
       dataUrl,
       mimeType,
       size: dataUrl.length,
+      kind: 'attachment',
       createdBy: req.user._id,
     });
     res.status(201).json({ id: img._id, url: publicMediaUrl(req, img._id), type: kind, name: img.name });
@@ -1440,7 +1442,9 @@ function publicMediaUrl(req, id) {
 exports.listGallery = async (req, res) => {
   try {
     // No se trae el dataUrl (pesa MBs): el <img> carga la miniatura por `url`.
-    const list = await ChatGalleryImage.find({ clinic: req.clinicId })
+    // Se excluye lo que MANDA el contacto ('inbound'): comparte colección para no
+    // duplicar el almacén, pero la galería es lo que el equipo elige para enviar.
+    const list = await ChatGalleryImage.find({ clinic: req.clinicId, kind: { $ne: 'inbound' } })
       .select('name mimeType size createdAt')
       .sort({ createdAt: -1 })
       .lean();
@@ -1468,6 +1472,7 @@ exports.uploadGallery = async (req, res) => {
       dataUrl: `data:${parsed.mimeType};base64,${parsed.b64}`,
       mimeType: parsed.mimeType,
       size: dataUrl.length,
+      kind: 'gallery',
       createdBy: req.user._id,
     });
     res.status(201).json({ _id: img._id, name: img.name, mimeType: img.mimeType, size: img.size, url: publicMediaUrl(req, img._id) });
@@ -1514,23 +1519,18 @@ exports.sendGalleryImage = async (req, res) => {
       mediaType: kind,
       sentBy: req.user._id,
       sentByName: req.user.name,
+      clientId: String(req.body.clientId || '').slice(0, 60),
+      // Igual que el envío del compositor: se acepta y se entrega por detrás. Un
+      // video de la galería tardaba más de un minuto en subir por QR con la
+      // petición HTTP colgada; el estado real llega por `chat:message:status` y
+      // la burbuja se marca en rojo sola si el proveedor lo rechaza.
+      background: true,
     });
 
     if (result.skipped) {
       return res.status(409).json({
         message: SEND_SKIP_REASONS[result.reason] || 'El mensaje fue omitido.',
         code: result.reason,
-      });
-    }
-    // El proveedor rechazó la media (QR desconectado, Meta la rechazó, muy grande):
-    // NUNCA 201 "enviado". El mensaje queda FALLIDO con su motivo y el front lo
-    // muestra en rojo con "Reintentar".
-    if (!result.ok) {
-      return res.status(502).json({
-        message: result.errorMessage || 'No se pudo enviar la imagen: el proveedor de WhatsApp la rechazó.',
-        code: result.errorCode || 'send_failed',
-        deliveryStatus: result.deliveryStatus || 'failed',
-        chatMessage: result.message,
       });
     }
     if (!conv.assignedTo) {
@@ -1659,23 +1659,52 @@ exports.bulkWhatsappOpportunities = async (req, res) => {
 
 // =================== Mensajes ===================
 
+/**
+ * GET /chats/:id/messages — hilo de la conversación.
+ *
+ * Dos reglas que hacen la diferencia entre abrir un chat al instante o no abrirlo:
+ *
+ *  1. NUNCA se devuelven los bytes de un adjunto. Antes se mandaban los data URL
+ *     base64 tal cual: una conversación de 16 mensajes con un video pesaba 6.8 MB
+ *     de JSON y el chat tardaba o fallaba directamente ("Error al cargar
+ *     mensajes"). Ahora el adjunto viaja como URL y lo carga el navegador aparte,
+ *     con caché y por rangos. Los mensajes anteriores a la migración, que aún
+ *     tienen el adjunto dentro, se sirven por `serveMessageMedia`.
+ *
+ *  2. Se devuelven los mensajes MÁS RECIENTES, no los más viejos. El `sort`
+ *     ascendente con `limit(500)` de antes cortaba por el principio: en cuanto una
+ *     conversación pasara de 500 mensajes, el agente habría visto los primeros 500
+ *     y NINGUNO de los recientes — el chat se le quedaría congelado en el pasado.
+ */
 exports.listMessages = async (req, res) => {
   try {
     const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
-    const messages = await Message.find({ conversation: conv._id, clinic: req.clinicId })
-      .populate('sentBy', 'name')
-      .sort({ createdAt: 1 })
-      .limit(500);
+
+    const limit = Math.min(Number(req.query.limit) || 80, 300);
+    // Paginación hacia atrás: el chat pide los anteriores al hacer scroll arriba.
+    const before = req.query.before ? new Date(req.query.before) : null;
+
+    const messages = await Message.find({
+      conversation: conv._id,
+      clinic: req.clinicId,
+      ...(before && !Number.isNaN(before.getTime()) ? { createdAt: { $lt: before } } : {}),
+    })
+      .sort({ createdAt: -1 }) // usa el índice { conversation: 1, createdAt: 1 }
+      .limit(limit)
+      .lean();
+
+    messages.reverse(); // el chat se pinta del más antiguo al más nuevo
     // A propósito NO se marca como leído al abrir el chat: la notificación de
     // "no leído" debe permanecer hasta que el agente RESPONDA (ver messaging.send
     // y sendGalleryImage). Así, si el agente lee un mensaje y salta a otro chat,
     // el pendiente sigue visible y no se pierde entre tantas conversaciones.
-    res.json(messages);
+    res.json(messages.map((m) => chatMedia.sanitizeMessageForSocket(m)));
   } catch (err) {
     res.status(500).json({ message: 'Error al listar mensajes', error: err.message });
   }
 };
+
 
 /**
  * POST /chats/:id/messages/:messageId/retry-media — vuelve a pedir el archivo de
@@ -1736,12 +1765,21 @@ exports.retryMessageMedia = async (req, res) => {
       return res.status(409).json({ message: `No se pudo recuperar el archivo. ${error}`, messageDoc: msg });
     }
 
-    msg.mediaUrl = dataUrl;
-    msg.mediaSize = size || msg.mediaSize;
+    // Los bytes recuperados van al almacén, no dentro del mensaje.
+    const stored = await chatMedia.externalizeMedia({
+      clinicId: req.clinicId,
+      dataUrl,
+      name: msg.mediaName || `${msg.mediaType || 'adjunto'}_${Date.now()}`,
+    });
+    msg.mediaUrl = stored.url;
+    msg.mediaSize = size || stored.size || msg.mediaSize;
     msg.errorCode = '';
     msg.errorMessage = '';
     await msg.save();
-    emitToCallCenter('chat:message', { conversationId: conv._id, message: msg });
+    emitToCallCenter('chat:message', {
+      conversationId: conv._id,
+      message: chatMedia.sanitizeMessageForSocket(msg),
+    });
     res.json(msg);
   } catch (err) {
     res.status(500).json({ message: 'Error al recuperar el archivo', error: err.message });
@@ -1828,30 +1866,24 @@ exports.sendMessage = async (req, res) => {
         : null,
       sentBy: req.user._id,
       sentByName: req.user.name,
+      // El mismo envío pedido dos veces (doble clic, reintento del navegador) se
+      // manda UNA sola vez. Lo genera el chat en el navegador.
+      clientId: String(req.body.clientId || '').slice(0, 60),
+      // ENTREGA EN SEGUNDO PLANO. La petición contesta en cuanto el mensaje está
+      // guardado y anunciado por socket; el agente ve su burbuja al instante y
+      // puede pasar al siguiente chat. Antes esta llamada esperaba a que el
+      // proveedor terminara —hasta 5 minutos con un video por QR— y el call
+      // center perdía ese tiempo mirando un "en cola" que parecía atascado.
+      // El resultado real (enviado / fallido con su motivo) llega por
+      // `chat:message:status`, así que sigue sin haber "dice enviado y nunca
+      // llega": la burbuja se marca en rojo sola si el proveedor lo rechaza.
+      background: true,
     });
 
     if (result.skipped) {
       return res.status(409).json({
         message: SEND_SKIP_REASONS[result.reason] || 'El mensaje fue omitido.',
         code: result.reason,
-      });
-    }
-
-    // El proveedor RECHAZÓ el envío (QR desconectado, error de Meta, etc.): el
-    // mensaje quedó como FALLIDO. NUNCA devolver 201 "enviado" en este caso: el
-    // agente DEBE saber que el mensaje NO llegó (antes se devolvía 201 y el chat
-    // lo mostraba como enviado — peligroso: "dice enviado y nunca llega"). El
-    // mensaje fallido igual queda en el chat (por socket) con su motivo.
-    if (!result.ok) {
-      console.warn(
-        '[sendMessage] envío FALLIDO conv=%s user=%s code=%s msg=%s',
-        String(conv._id), String(req.user?._id), result.errorCode || '', result.errorMessage || ''
-      );
-      return res.status(502).json({
-        message: result.errorMessage || 'No se pudo enviar el mensaje: el proveedor de WhatsApp lo rechazó.',
-        code: result.errorCode || 'send_failed',
-        deliveryStatus: result.deliveryStatus || 'failed',
-        chatMessage: result.message,
       });
     }
 
@@ -2119,7 +2151,7 @@ exports.simulateIncoming = async (req, res) => {
     if (conv.status === 'closed') conv.status = 'open';
     await conv.save();
 
-    emitToCallCenter('chat:message', { conversationId: conv._id, message: msg });
+    emitToCallCenter('chat:message', { conversationId: conv._id, message: chatMedia.sanitizeMessageForSocket(msg) });
     const optedOut = await applyIncomingOptOut({
       clinicId: req.clinicId,
       conv,
@@ -2316,23 +2348,47 @@ async function ingestExternalOutbound({ clinicId, account, externalUserId, phone
     // El tipo se conserva aunque la descarga falle (ver ingestExternalMessage).
     mediaType = media.type || null;
     mediaSize = Number(media.size) || 0;
-    if (media.dataUrl) mediaUrl = media.dataUrl;
-    else if (media.unavailable) {
+    if (media.unavailable) {
       mediaError = String(media.error || 'No se pudo descargar el archivo de WhatsApp.').slice(0, 300);
     }
     if (!finalBody) finalBody = media.caption || '';
   }
 
-  // (b) Dedup por texto reciente: un saliente idéntico creado por nuestro envío
-  // en los últimos 40s (aún sin wamid) es el mismo mensaje, no uno del teléfono.
-  const since = new Date(Date.now() - 40 * 1000);
-  const recentSame = await Message.findOne({
-    clinic: clinicId,
-    conversation: conv._id,
-    direction: 'out',
-    createdAt: { $gte: since },
-    ...(finalBody ? { body: finalBody } : { mediaType: mediaType || null }),
-  }).select('_id');
+  // (b) ¿Es el ECO de un envío NUESTRO que todavía está en vuelo? Un adjunto
+  // pesado tarda en subir: medido en producción, un video sale de la sesión ~72s
+  // después de que creamos el mensaje. WhatsApp anuncia entonces el mensaje por
+  // `message_create` y nosotros aún no le habíamos guardado el wamid, así que la
+  // comprobación (a) no lo reconocía y la ventana fija de 40s tampoco. Resultado:
+  // el video aparecía DOS veces en el chat y su copia se guardaba entera en la
+  // base (los 6.8 MB por conversación que hacían fallar la carga del chat).
+  //
+  // Un saliente propio en estado 'queued' es, por definición, un envío que aún no
+  // ha terminado: si coincide el tipo de adjunto, el eco es ese mismo mensaje.
+  const inFlight = mediaType
+    ? await Message.findOne({
+        clinic: clinicId,
+        conversation: conv._id,
+        direction: 'out',
+        deliveryStatus: 'queued',
+        mediaType,
+      })
+        .sort({ createdAt: -1 })
+        .select('_id')
+    : null;
+
+  // (c) Dedup por texto reciente: un saliente idéntico creado por nuestro envío
+  // hace poco es el mismo mensaje, no uno escrito desde el teléfono. La ventana
+  // se estira con los adjuntos, que son justamente los que tardan en salir.
+  const windowMs = mediaType ? 15 * 60 * 1000 : 60 * 1000;
+  const recentSame =
+    inFlight ||
+    (await Message.findOne({
+      clinic: clinicId,
+      conversation: conv._id,
+      direction: 'out',
+      createdAt: { $gte: new Date(Date.now() - windowMs) },
+      ...(finalBody ? { body: finalBody } : { mediaType: mediaType || null }),
+    }).select('_id'));
   if (recentSame) {
     // Es nuestro envío: aprovechamos para respaldar el wamid si no lo tenía.
     if (externalId) {
@@ -2342,6 +2398,18 @@ async function ingestExternalOutbound({ clinicId, account, externalUserId, phone
       ).catch(() => {});
     }
     return;
+  }
+
+  // Es un mensaje escrito de verdad desde el teléfono: sus bytes se guardan
+  // aparte, igual que los entrantes.
+  if (media?.dataUrl) {
+    const stored = await chatMedia.externalizeMedia({
+      clinicId,
+      dataUrl: media.dataUrl,
+      name: mediaName || `${media.type || 'adjunto'}_${Date.now()}`,
+    });
+    mediaUrl = stored.url;
+    if (!mediaSize && stored.size) mediaSize = stored.size;
   }
 
   const msg = await Message.create({
@@ -2371,7 +2439,7 @@ async function ingestExternalOutbound({ clinicId, account, externalUserId, phone
     { isRead: true }
   );
   await conv.save();
-  emitToCallCenter('chat:message', { conversationId: conv._id, message: msg });
+  emitToCallCenter('chat:message', { conversationId: conv._id, message: chatMedia.sanitizeMessageForSocket(msg) });
 }
 
 // Procesa un evento "normalizado" (externalUserId, body, contactName) creando/
@@ -2513,8 +2581,17 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
     // explicación (o —peor— nada, como pasaba antes).
     mediaType = media.type || null;
     if (media.dataUrl) {
-      // Número QR: la media llega ya descargada inline (whatsapp-web.js).
-      mediaUrl = media.dataUrl;
+      // Número QR: la media llega ya descargada inline (whatsapp-web.js). Los
+      // BYTES se guardan aparte y el mensaje solo se queda con la URL: si no,
+      // una nota de voz de 7 MB se metía dentro del documento y luego viajaba
+      // entera en cada apertura del chat y en cada evento de socket.
+      const stored = await chatMedia.externalizeMedia({
+        clinicId,
+        dataUrl: media.dataUrl,
+        name: mediaName || `${media.type || 'adjunto'}_${Date.now()}`,
+      });
+      mediaUrl = stored.url;
+      if (!mediaSize && stored.size) mediaSize = stored.size;
     } else if (media.unavailable) {
       // QR: la sesión de WhatsApp Web no logró entregar los bytes.
       mediaError = String(media.error || 'No se pudo descargar el archivo de WhatsApp.').slice(0, 300);
@@ -2523,8 +2600,13 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
       const gateway = require('../utils/whatsappGateway');
       const dl = await gateway.downloadMedia(account, media.id);
       if (dl.ok) {
-        mediaUrl = dl.dataUrl;
-        mediaSize = Number(dl.size) || mediaSize;
+        const stored = await chatMedia.externalizeMedia({
+          clinicId,
+          dataUrl: dl.dataUrl,
+          name: mediaName || dl.filename || `${media.type || 'adjunto'}_${Date.now()}`,
+        });
+        mediaUrl = stored.url;
+        mediaSize = Number(dl.size) || stored.size || mediaSize;
         if (!mediaName && dl.filename) mediaName = String(dl.filename).slice(0, 200);
       } else {
         mediaError = String(
@@ -2610,7 +2692,7 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   conv.unreadCount = (conv.unreadCount || 0) + 1;
   if (conv.status === 'closed') conv.status = 'open';
   await conv.save();
-  emitToCallCenter('chat:message', { conversationId: conv._id, message: msg });
+  emitToCallCenter('chat:message', { conversationId: conv._id, message: chatMedia.sanitizeMessageForSocket(msg) });
 
   const optedOut = await applyIncomingOptOut({ clinicId, conv, incomingText: finalBody });
   if (optedOut) return;

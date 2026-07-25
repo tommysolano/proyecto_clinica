@@ -7,8 +7,10 @@ const media = require('../controllers/mediaController');
 
 // Endpoints públicos (sin auth). Hoy: baja de email + auto-agendamiento + reseñas + media.
 
-// Media autoalojada (imágenes de cabecera de plantilla, etc.).
+// Media autoalojada (imágenes de cabecera de plantilla, adjuntos del chat…).
 router.get('/media/:id', media.serve);
+// Adjunto que todavía vive dentro del mensaje (anterior a la migración de media).
+router.get('/message-media/:messageId', media.serveMessageMedia);
 
 // Auto-agendamiento público.
 router.get('/booking/:token', booking.info);

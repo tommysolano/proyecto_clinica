@@ -108,7 +108,7 @@ test('Cloud API: sin cuenta resuelta (phone_number_id desconocido) el archivo no
   assert.equal(msg.errorCode, 'media_unavailable');
 });
 
-test('media entrante OK: se guarda el archivo y no se marca ningún error', async () => {
+test('media entrante OK: el archivo se guarda APARTE y el mensaje solo lleva su URL', async () => {
   const clinicId = new H.mongoose.Types.ObjectId();
   await chat.ingestExternalMessage({
     clinicId, channel: 'whatsapp', externalUserId: `${PHONE}@c.us`, phone: PHONE,
@@ -117,9 +117,34 @@ test('media entrante OK: se guarda el archivo y no se marca ningún error', asyn
   });
   const msg = await Message.findOne({ clinic: clinicId });
   assert.equal(msg.mediaType, 'image');
-  assert.equal(msg.mediaUrl, 'data:image/jpeg;base64,/9j/4AAQ');
   assert.equal(msg.body, 'mira', 'el pie de foto es el cuerpo del mensaje');
   assert.equal(msg.errorCode, '');
+
+  // Los BYTES no viven dentro del mensaje: si lo hicieran, el hilo entero pesaría
+  // megas y el chat tardaría o fallaría al abrir (era el caso hasta jul-2026).
+  assert.ok(!msg.mediaUrl.startsWith('data:'), `el mensaje no debe llevar el base64: ${msg.mediaUrl}`);
+  assert.match(msg.mediaUrl, /^\/api\/public\/media\/[a-f0-9]{24}$/);
+
+  // Y el archivo SIGUE ahí, entero: aligerar el mensaje no puede costar la foto.
+  const ChatGalleryImage = require('../models/ChatGalleryImage');
+  const stored = await ChatGalleryImage.findById(msg.mediaUrl.split('/').pop());
+  assert.equal(stored.dataUrl, 'data:image/jpeg;base64,/9j/4AAQ');
+  assert.equal(stored.kind, 'inbound', 'lo que manda el contacto no sale en la galería del agente');
+});
+
+test('la galería del agente NO se llena con lo que mandan los contactos', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const ChatGalleryImage = require('../models/ChatGalleryImage');
+  await ChatGalleryImage.create({
+    clinic: clinicId, name: 'promo.png', dataUrl: 'data:image/png;base64,AAA', mimeType: 'image/png', kind: 'gallery',
+  });
+  await ChatGalleryImage.create({
+    clinic: clinicId, name: 'selfie-paciente.jpg', dataUrl: 'data:image/jpeg;base64,BBB', mimeType: 'image/jpeg', kind: 'inbound',
+  });
+  const r = await H.runController(chat.listGallery, H.mockReq(clinicId, userId));
+  assert.equal(r.statusCode, 200);
+  const names = r.payload.map((g) => g.name);
+  assert.deepEqual(names, ['promo.png']);
 });
 
 // ───────────────── recuperar un archivo que falló ─────────────────
@@ -149,7 +174,11 @@ test('reintentar descarga: el archivo se recupera y la burbuja deja de estar en 
       H.mockReq(clinicId, userId, {}, { params: { id: String(conv._id), messageId: String(msg._id) } })
     );
     assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
-    assert.match(r.payload.mediaUrl, /^data:audio\/ogg;base64,/);
+    // El archivo recuperado también va al almacén, no dentro del mensaje.
+    assert.match(r.payload.mediaUrl, /^\/api\/public\/media\/[a-f0-9]{24}$/);
+    const ChatGalleryImage = require('../models/ChatGalleryImage');
+    const stored = await ChatGalleryImage.findById(r.payload.mediaUrl.split('/').pop());
+    assert.match(stored.dataUrl, /^data:audio\/ogg;base64,/);
     assert.equal(r.payload.errorCode, '', 'se limpia el error al recuperarlo');
   } finally {
     global.fetch = origFetch;

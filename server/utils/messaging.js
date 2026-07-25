@@ -5,6 +5,7 @@ const CallCenterConfig = require('../models/CallCenterConfig');
 const gateway = require('./whatsappGateway');
 const email = require('./emailProvider');
 const { emitToCallCenter } = require('../realtime');
+const { sanitizeMessageForSocket } = require('./chatMedia');
 
 const WHATSAPP_WINDOW_MS = 24 * 60 * 60 * 1000;
 const DELIVERY_STATUSES = new Set(['queued', 'sent', 'delivered', 'read', 'failed']);
@@ -637,6 +638,16 @@ async function send({
   // para persistir; su `externalId` se manda a WhatsApp como `context` para que
   // el contacto también vea la cita.
   replyTo,
+  // `true` = aceptar el mensaje y entregarlo por detrás (lo usa el chat del call
+  // center). El llamador recibe la respuesta en cuanto el mensaje está guardado,
+  // sin esperar al proveedor; el resultado real llega por `chat:message:status`.
+  // Por defecto false: workflows, campañas y tests siguen siendo síncronos y
+  // conservan el `ok` del proveedor en la misma llamada.
+  background = false,
+  // Identificador que genera el navegador para ESTE envío. Si llega dos veces
+  // (doble clic, reintento del navegador, red inestable) el segundo no se envía:
+  // se devuelve el mensaje ya creado. Ver la comprobación de más abajo.
+  clientId = '',
 }) {
   const normalizedChannel = channel || 'whatsapp';
 
@@ -655,6 +666,27 @@ async function send({
   });
   if (!conv) {
     return { ok: false, skipped: true, reason: 'invalid_recipient' };
+  }
+
+  // Idempotencia: el mismo envío pedido dos veces se manda UNA. Cubre el doble
+  // clic del agente, el reintento automático del navegador y la petición repetida
+  // tras una red inestable — las tres formas en que un paciente acababa
+  // recibiendo el mismo video varias veces.
+  if (clientId) {
+    const already = await Message.findOne({ clinic: clinicId, conversation: conv._id, clientId });
+    if (already) {
+      return {
+        ok: already.deliveryStatus !== 'failed',
+        duplicate: true,
+        messageId: already._id,
+        externalId: already.externalId,
+        deliveryStatus: already.deliveryStatus,
+        errorCode: already.errorCode,
+        errorMessage: already.errorMessage,
+        message: already,
+        conversation: conv,
+      };
+    }
   }
 
   const patientDoc = await resolvePatient({ clinicId, patient, conv, to: conv.phone || to });
@@ -746,22 +778,45 @@ async function send({
   // La cabecera multimedia de la plantilla se guarda en el mensaje para que la
   // burbuja del chat muestre la plantilla TAL CUAL la recibe el paciente.
   const tplMedia = templateInfo?.headerMedia || null;
-  const msg = await Message.create({
-    clinic: clinicId,
-    conversation: conv._id,
-    direction: 'out',
-    body: preview,
-    mediaUrl: mediaUrl || tplMedia?.url || null,
-    mediaType: mediaType || tplMedia?.type || null,
-    mediaName: mediaName || '',
-    mediaSize: Number(mediaSize) || 0,
-    templateName: templateInfo?.name || '',
-    ...(replyTo ? { replyTo } : {}),
-    deliveryStatus: 'queued',
-    sentBy: sentBy || null,
-    sentByName: sentByName || '',
-    isAutoReply,
-  });
+  let msg;
+  try {
+    msg = await Message.create({
+      clinic: clinicId,
+      conversation: conv._id,
+      direction: 'out',
+      body: preview,
+      mediaUrl: mediaUrl || tplMedia?.url || null,
+      mediaType: mediaType || tplMedia?.type || null,
+      mediaName: mediaName || '',
+      mediaSize: Number(mediaSize) || 0,
+      templateName: templateInfo?.name || '',
+      ...(clientId ? { clientId } : {}),
+      ...(replyTo ? { replyTo } : {}),
+      deliveryStatus: 'queued',
+      sentBy: sentBy || null,
+      sentByName: sentByName || '',
+      isAutoReply,
+    });
+  } catch (err) {
+    // Dos peticiones a la vez con el mismo `clientId` (doble clic de verdad
+    // simultáneo): la comprobación de arriba puede no verlas y es el índice único
+    // { conversation, clientId } el que corta la segunda. Se devuelve el mensaje
+    // que ganó la carrera en vez de reventar — el paciente recibe UNO.
+    if (err?.code === 11000 && clientId) {
+      const existing = await Message.findOne({ clinic: clinicId, conversation: conv._id, clientId });
+      if (existing) {
+        return {
+          ok: existing.deliveryStatus !== 'failed',
+          duplicate: true,
+          messageId: existing._id,
+          deliveryStatus: existing.deliveryStatus,
+          message: existing,
+          conversation: conv,
+        };
+      }
+    }
+    throw err;
+  }
 
   // Diagnóstico de citas: un mensaje sin wamid (p.ej. creado por "Simular
   // entrante") NO se puede citar en WhatsApp, aunque el CRM muestre el bloque.
@@ -774,111 +829,182 @@ async function send({
     );
   }
 
-  const providerResult = await sendToProvider({
-    clinicId,
-    channel: normalizedChannel,
-    conv,
-    // Sin plantilla y sin texto el body va vacío: el placeholder '[media]' es
-    // solo para la vista interna, no debe llegar como caption al paciente.
-    body: textBody || (templateInfo ? preview : ''),
-    templateInfo,
-    account,
-    mediaUrl,
-    mediaType,
-    // Cita en WhatsApp: por Cloud API se usa el wamid; por QR, si no tenemos el
-    // wamid guardado, se pasa el TEXTO del mensaje citado para localizarlo en
-    // vivo dentro del chat y citarlo igual.
-    contextMessageId: replyTo?.externalId || null,
-    quoteBody: replyTo ? (replyTo.body || '') : null,
-  });
-
-  if (providerResult.ok) {
-    msg.deliveryStatus = 'sent';
-    msg.externalId = extractProviderMessageId(providerResult);
-    // Contador de uso de la plantilla (ordena el menú del chat por "más usadas").
-    if (templateInfo?.name) {
-      require('../models/MessageTemplate')
-        .updateOne(
-          { clinic: clinicId, channel: 'whatsapp', name: templateInfo.name },
-          { $inc: { usageCount: 1 } }
-        )
-        .catch(() => {});
+  /**
+   * Deja la conversación al día tras aceptar el mensaje. Se aplica ANTES de que
+   * el proveedor conteste: la bandeja tiene que reordenarse en el acto, no dentro
+   * de 72 segundos cuando termine de subir un video.
+   */
+  async function touchConversation() {
+    conv.lastMessageAt = msg.createdAt;
+    conv.lastMessagePreview = preview.slice(0, 140);
+    conv.lastMessageDirection = 'out';
+    // Recuerda por qué número salió, para que las próximas respuestas usen el mismo.
+    if (account && !conv.whatsappAccount) conv.whatsappAccount = account._id;
+    if (sentBy) {
+      conv.lastAgentReplyAt = new Date();
+      if (!conv.firstResponseAt) conv.firstResponseAt = conv.lastAgentReplyAt;
+      // El "no leído" se limpia SOLO cuando un agente responde (no al abrir el
+      // chat). Los envíos automáticos/workflows no traen `sentBy`, así que no
+      // borran el pendiente: el chat sigue marcado hasta que alguien conteste.
+      conv.unreadCount = 0;
+      await Message.updateMany(
+        { conversation: conv._id, direction: 'in', isRead: false },
+        { isRead: true }
+      );
     }
-    msg.statusTimestamps = {
-      ...(msg.statusTimestamps?.toObject ? msg.statusTimestamps.toObject() : msg.statusTimestamps || {}),
-      sentAt: new Date(),
+    await conv.save();
+  }
+
+  // ENVÍO EN SEGUNDO PLANO (lo usa el chat del call center). El mensaje ya está
+  // guardado como 'queued' y se anuncia YA por socket: el agente lo ve al
+  // instante y puede saltar al siguiente chat. La entrega real sigue por detrás y
+  // el estado (enviado/fallido) llega por `chat:message:status`.
+  //
+  // Antes esto era síncrono: la petición HTTP se quedaba colgada hasta 5 minutos
+  // enviando un video por QR (ver whatsappQrManager.sendMedia). El agente creía
+  // que no se había enviado, volvía a pulsar y el paciente recibía el mismo video
+  // tres veces — pasó en producción el 25-jul-2026 a las 19:06, 19:07 y 19:08.
+  if (background) {
+    await touchConversation();
+    // Copia CONGELADA del mensaje tal y como se acepta. `deliver()` sigue
+    // mutando el documento de mongoose por detrás, así que devolver el documento
+    // vivo haría que la respuesta HTTP dijera una cosa u otra según lo rápido que
+    // conteste el proveedor. Lo que el llamador recibe siempre es "aceptado, en
+    // cola"; el desenlace llega por `chat:message:status`.
+    const accepted = sanitizeMessageForSocket(msg);
+    emitToCallCenter('chat:message', { conversationId: conv._id, message: accepted });
+    deliver().catch((err) => {
+      console.error('[messaging] fallo entregando en segundo plano msg=%s: %s', String(msg._id), err.message);
+    });
+    return {
+      ok: true,
+      queued: true,
+      messageId: msg._id,
+      deliveryStatus: 'queued',
+      message: accepted,
+      conversation: conv,
     };
-    // Auditoría de la cita: registra si la respuesta llegó CITADA de verdad.
-    if (replyTo && normalizedChannel === 'whatsapp') {
-      const q = providerResult.quote;
-      if (q) {
-        // QR: el gateway verificó tras enviar si el mensaje lleva la cita.
-        msg.quoteResult = q.applied ? `quoted_by_${q.how}` : `failed:${q.reason || 'not_found'}`;
-        // Si el mensaje citado se localizó EN VIVO (p.ej. por texto), ya
-        // conocemos su wamid: se respalda en el mensaje original para que las
-        // próximas citas vayan directo por id.
-        if (q.wamid && replyTo.message) {
-          await Message.updateOne(
-            { _id: replyTo.message, externalId: { $in: [null, ''] } },
-            { externalId: q.wamid }
-          ).catch(() => {});
+  }
+
+  return deliver();
+
+  // eslint-disable-next-line func-style
+  async function deliver() {
+    const providerResult = await sendToProvider({
+      clinicId,
+      channel: normalizedChannel,
+      conv,
+      // Sin plantilla y sin texto el body va vacío: el placeholder '[media]' es
+      // solo para la vista interna, no debe llegar como caption al paciente.
+      body: textBody || (templateInfo ? preview : ''),
+      templateInfo,
+      account,
+      mediaUrl,
+      mediaType,
+      // Cita en WhatsApp: por Cloud API se usa el wamid; por QR, si no tenemos el
+      // wamid guardado, se pasa el TEXTO del mensaje citado para localizarlo en
+      // vivo dentro del chat y citarlo igual.
+      contextMessageId: replyTo?.externalId || null,
+      quoteBody: replyTo ? (replyTo.body || '') : null,
+    });
+
+    if (providerResult.ok) {
+      msg.deliveryStatus = 'sent';
+      msg.externalId = extractProviderMessageId(providerResult);
+      // Contador de uso de la plantilla (ordena el menú del chat por "más usadas").
+      if (templateInfo?.name) {
+        require('../models/MessageTemplate')
+          .updateOne(
+            { clinic: clinicId, channel: 'whatsapp', name: templateInfo.name },
+            { $inc: { usageCount: 1 } }
+          )
+          .catch(() => {});
+      }
+      msg.statusTimestamps = {
+        ...(msg.statusTimestamps?.toObject ? msg.statusTimestamps.toObject() : msg.statusTimestamps || {}),
+        sentAt: new Date(),
+      };
+      // Auditoría de la cita: registra si la respuesta llegó CITADA de verdad.
+      if (replyTo && normalizedChannel === 'whatsapp') {
+        const q = providerResult.quote;
+        if (q) {
+          // QR: el gateway verificó tras enviar si el mensaje lleva la cita.
+          msg.quoteResult = q.applied ? `quoted_by_${q.how}` : `failed:${q.reason || 'not_found'}`;
+          // Si el mensaje citado se localizó EN VIVO (p.ej. por texto), ya
+          // conocemos su wamid: se respalda en el mensaje original para que las
+          // próximas citas vayan directo por id.
+          if (q.wamid && replyTo.message) {
+            await Message.updateOne(
+              { _id: replyTo.message, externalId: { $in: [null, ''] } },
+              { externalId: q.wamid }
+            ).catch(() => {});
+          }
+        } else {
+          // Cloud API: la cita viaja como `context.message_id`; sin wamid no hay
+          // forma de citar (Meta no admite búsqueda por texto).
+          msg.quoteResult = replyTo.externalId ? 'quoted_by_id' : 'failed:no_wamid';
         }
-      } else {
-        // Cloud API: la cita viaja como `context.message_id`; sin wamid no hay
-        // forma de citar (Meta no admite búsqueda por texto).
-        msg.quoteResult = replyTo.externalId ? 'quoted_by_id' : 'failed:no_wamid';
+        if (msg.quoteResult.startsWith('failed')) {
+          console.warn('[reply] la cita NO se aplicó en WhatsApp:', msg.quoteResult);
+        }
       }
-      if (msg.quoteResult.startsWith('failed')) {
-        console.warn('[reply] la cita NO se aplicó en WhatsApp:', msg.quoteResult);
-      }
+    } else {
+      msg.deliveryStatus = 'failed';
+      msg.errorCode = providerErrorCode(providerResult);
+      // Incluye POR QUÉ NÚMERO salió el intento: con varios números conectados, un
+      // error de permisos (#200) suele ser del número anclado a la conversación,
+      // no del que el usuario cree estar usando.
+      msg.errorMessage =
+        providerErrorMessage(providerResult) +
+        (account?.label ? ` — enviado vía «${account.label}»` : '');
+      msg.statusTimestamps = {
+        ...(msg.statusTimestamps?.toObject ? msg.statusTimestamps.toObject() : msg.statusTimestamps || {}),
+        failedAt: new Date(),
+      };
     }
-  } else {
-    msg.deliveryStatus = 'failed';
-    msg.errorCode = providerErrorCode(providerResult);
-    // Incluye POR QUÉ NÚMERO salió el intento: con varios números conectados, un
-    // error de permisos (#200) suele ser del número anclado a la conversación,
-    // no del que el usuario cree estar usando.
-    msg.errorMessage =
-      providerErrorMessage(providerResult) +
-      (account?.label ? ` — enviado vía «${account.label}»` : '');
-    msg.statusTimestamps = {
-      ...(msg.statusTimestamps?.toObject ? msg.statusTimestamps.toObject() : msg.statusTimestamps || {}),
-      failedAt: new Date(),
+    await msg.save();
+
+    // En segundo plano la conversación ya se actualizó al aceptar el mensaje.
+    if (!background) await touchConversation();
+
+    // El resultado de la entrega viaja como CAMBIO DE ESTADO, no como mensaje
+    // nuevo: en segundo plano la burbuja ya está pintada en el chat y volver a
+    // emitir `chat:message` la duplicaría.
+    if (background) {
+      emitToCallCenter('chat:message:status', {
+        conversationId: conv._id,
+        messageId: msg._id,
+        externalId: msg.externalId,
+        deliveryStatus: msg.deliveryStatus,
+        statusTimestamps: msg.statusTimestamps,
+        errorCode: msg.errorCode,
+        errorMessage: msg.errorMessage,
+      });
+    } else {
+      emitToCallCenter('chat:message', {
+        conversationId: conv._id,
+        message: sanitizeMessageForSocket(msg),
+      });
+    }
+
+    if (!providerResult.ok) {
+      console.warn(
+        '[messaging] envío FALLIDO conv=%s msg=%s code=%s: %s',
+        String(conv._id), String(msg._id), msg.errorCode || '', msg.errorMessage || ''
+      );
+    }
+
+    return {
+      ok: providerResult.ok,
+      messageId: msg._id,
+      externalId: msg.externalId,
+      deliveryStatus: msg.deliveryStatus,
+      errorCode: msg.errorCode,
+      errorMessage: msg.errorMessage,
+      message: msg,
+      conversation: conv,
     };
   }
-  await msg.save();
-
-  conv.lastMessageAt = msg.createdAt;
-  conv.lastMessagePreview = preview.slice(0, 140);
-  conv.lastMessageDirection = 'out';
-  // Recuerda por qué número salió, para que las próximas respuestas usen el mismo.
-  if (account && !conv.whatsappAccount) conv.whatsappAccount = account._id;
-  if (sentBy) {
-    conv.lastAgentReplyAt = new Date();
-    if (!conv.firstResponseAt) conv.firstResponseAt = conv.lastAgentReplyAt;
-    // El "no leído" se limpia SOLO cuando un agente responde (no al abrir el
-    // chat). Los envíos automáticos/workflows no traen `sentBy`, así que no
-    // borran el pendiente: el chat sigue marcado hasta que alguien conteste.
-    conv.unreadCount = 0;
-    await Message.updateMany(
-      { conversation: conv._id, direction: 'in', isRead: false },
-      { isRead: true }
-    );
-  }
-  await conv.save();
-
-  emitToCallCenter('chat:message', { conversationId: conv._id, message: msg });
-
-  return {
-    ok: providerResult.ok,
-    messageId: msg._id,
-    externalId: msg.externalId,
-    deliveryStatus: msg.deliveryStatus,
-    errorCode: msg.errorCode,
-    errorMessage: msg.errorMessage,
-    message: msg,
-    conversation: conv,
-  };
 }
 
 function mapProviderStatus(status) {

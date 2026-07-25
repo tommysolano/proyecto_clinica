@@ -106,6 +106,13 @@ const messageSchema = new mongoose.Schema(
       enum: ['queued', 'sent', 'delivered', 'read', 'failed'],
       default: 'sent',
     },
+    // Identificador que genera el NAVEGADOR para un envío concreto. Es la llave
+    // de idempotencia: si la misma petición llega dos veces (doble clic del
+    // agente, reintento del navegador, red inestable), el segundo intento
+    // reconoce el mensaje ya creado en vez de mandarlo otra vez. Sin esto, un
+    // video lento por QR se enviaba al paciente tantas veces como clics diera el
+    // agente esperando a que "pasara algo".
+    clientId: { type: String, trim: true, default: '' },
     sentBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     sentByName: { type: String, trim: true },
     isAutoReply: { type: Boolean, default: false },
@@ -115,5 +122,12 @@ const messageSchema = new mongoose.Schema(
 );
 
 messageSchema.index({ conversation: 1, createdAt: 1 });
+// Idempotencia del envío: `clientId` es único DENTRO de la conversación. Parcial
+// para no indexar los millones de mensajes que no lo llevan (entrantes, envíos
+// automáticos, todo lo anterior a esta mejora).
+messageSchema.index(
+  { conversation: 1, clientId: 1 },
+  { unique: true, partialFilterExpression: { clientId: { $type: 'string', $gt: '' } } }
+);
 
 module.exports = mongoose.model('Message', messageSchema);

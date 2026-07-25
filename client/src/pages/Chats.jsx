@@ -290,6 +290,12 @@ export default function Chats() {
   };
   const [conversations, setConversations] = useState([]);
   const [activeId, setActiveId] = useState(null);
+  // Espejo del chat abierto para leerlo DENTRO de callbacks asíncronos (envío,
+  // respuestas que llegan tarde) sin quedarse con el valor viejo del closure.
+  const activeIdRef = useRef(null);
+  useEffect(() => {
+    activeIdRef.current = activeId;
+  }, [activeId]);
   const [messages, setMessages] = useState([]);
   // Buscador DENTRO del chat abierto (estilo WhatsApp): resalta y salta entre
   // coincidencias del mensaje buscado en la conversación activa.
@@ -306,6 +312,8 @@ export default function Chats() {
   const [services, setServices] = useState([]);
   const [loading, setLoading] = useState(false);
   const [draft, setDraft] = useState('');
+  // Envío en curso: bloquea el botón (ver sendMessage) y pinta "Enviando…".
+  const [sending, setSending] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
   const [templateDraft, setTemplateDraft] = useState({ name: '', language: 'es', vars: '' });
   const [templates, setTemplates] = useState([]); // plantillas WhatsApp aprobadas
@@ -376,6 +384,16 @@ export default function Chats() {
     }
   };
 
+  // Recarga de la lista AGRUPADA: en horas punta entran varios mensajes por
+  // segundo y cada uno pedía la lista entera. Se junta todo en una sola petición
+  // poco después del último evento, que es lo que de verdad ve el agente.
+  const convRefreshTimer = useRef(null);
+  const refreshConversations = () => {
+    clearTimeout(convRefreshTimer.current);
+    convRefreshTimer.current = setTimeout(() => loadConversations(paramsForView()), 400);
+  };
+  useEffect(() => () => clearTimeout(convRefreshTimer.current), []);
+
   // Parámetros de /chats según la vista + alcance + filtro activos.
   //  - Oportunidades: todas las conversaciones marcadas como oportunidad.
   //  - Bandeja: el alcance (mine/all) se combina con el filtro superior. El
@@ -443,15 +461,81 @@ export default function Chats() {
     }
   };
 
-  const loadMessages = async (id) => {
+  // Igual que en `loadConversations`: solo la respuesta del ÚLTIMO chat pedido
+  // puede pintar. Sin esta guardia, saltar de un chat a otro dejaba la pantalla
+  // con los mensajes del anterior: la petición del chat lento llegaba la última y
+  // pisaba la del chat que el agente ya tenía abierto. Además se ABORTA la
+  // petición que quedó obsoleta, para no gastar la conexión en algo que se va a
+  // descartar (el navegador solo permite unas pocas peticiones a la vez).
+  const msgReqRef = useRef(0);
+  const msgAbortRef = useRef(null);
+  const [messagesLoading, setMessagesLoading] = useState(false);
+  // ¿Quedan mensajes más antiguos por cargar? El hilo trae la última página; los
+  // anteriores se piden solo si el agente los pide (ver loadOlderMessages).
+  const [hasOlder, setHasOlder] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const PAGE_SIZE = 80;
+
+  const loadMessages = async (id, { silent = false } = {}) => {
+    const reqId = ++msgReqRef.current;
+    msgAbortRef.current?.abort();
+    const controller = new AbortController();
+    msgAbortRef.current = controller;
+    if (!silent) setMessagesLoading(true);
     try {
-      const r = await api.get(`/chats/${id}/messages`);
-      setMessages(r.data || []);
+      const r = await api.get(`/chats/${id}/messages`, {
+        params: { limit: PAGE_SIZE },
+        signal: controller.signal,
+      });
+      if (reqId !== msgReqRef.current) return; // respuesta obsoleta: descartar
+      const list = r.data || [];
+      setMessages(list);
+      // Si vino la página entera, es probable que haya conversación más atrás.
+      setHasOlder(list.length >= PAGE_SIZE);
       // Abrir un chat NO lo marca como leído: el badge de "no leído" permanece
       // hasta que el agente responda (ver sendMessage). Así no se pierde el
       // pendiente al saltar entre conversaciones.
     } catch (err) {
+      // Una petición cancelada al cambiar de chat no es un error que mostrar.
+      if (err?.code === 'ERR_CANCELED' || err?.name === 'CanceledError') return;
+      if (reqId !== msgReqRef.current) return;
       toast.error(err.response?.data?.message || 'Error al cargar mensajes');
+    } finally {
+      if (reqId === msgReqRef.current) setMessagesLoading(false);
+    }
+  };
+
+  /**
+   * Trae la página ANTERIOR del hilo y la antepone. El chat abre solo con los
+   * últimos mensajes (así entra al instante aunque la conversación tenga años de
+   * historia); lo de más atrás se carga bajo demanda. Se conserva la posición de
+   * lectura para que al agente no le salte la pantalla.
+   */
+  const loadOlderMessages = async () => {
+    if (!activeId || loadingOlder || !messages.length) return;
+    setLoadingOlder(true);
+    const box = messagesEndRef.current;
+    const prevHeight = box?.scrollHeight || 0;
+    try {
+      const r = await api.get(`/chats/${activeId}/messages`, {
+        params: { limit: PAGE_SIZE, before: messages[0].createdAt },
+      });
+      const older = r.data || [];
+      if (!older.length) {
+        setHasOlder(false);
+        return;
+      }
+      setMessages((prev) => [...older, ...prev]);
+      setHasOlder(older.length >= PAGE_SIZE);
+      // El efecto de auto-scroll lleva el hilo abajo cuando cambian los mensajes;
+      // aquí queremos justo lo contrario: quedarse donde estaba leyendo.
+      requestAnimationFrame(() => {
+        if (box) box.scrollTop = box.scrollHeight - prevHeight;
+      });
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudieron cargar los mensajes anteriores');
+    } finally {
+      setLoadingOlder(false);
     }
   };
 
@@ -489,21 +573,44 @@ export default function Chats() {
   }, [view, scope, filter, debouncedSearch]);
 
   useEffect(() => {
+    // El hilo se vacía SIEMPRE al cambiar de chat. Antes se quedaban a la vista
+    // los mensajes del contacto anterior hasta que llegaba la respuesta del
+    // nuevo: el agente creía que el sistema "no cambiaba de chat" y, peor, podía
+    // ponerse a leer (o a responder sobre) la conversación equivocada.
+    setMessages([]);
     if (activeId) loadMessages(activeId);
-    else setMessages([]);
     setTemplateDraft({ name: '', language: 'es', vars: '' });
     setAttachmentDraft(null);
     setReplyDraft(null);
   }, [activeId]);
 
-  // Realtime — recargar al recibir cambios
+  // Realtime — el mensaje llega ENTERO en el evento, así que se añade al hilo sin
+  // volver a pedirlo. Antes cada mensaje entrante disparaba una recarga completa
+  // de la conversación (con sus adjuntos) y otra de la lista: con el equipo
+  // trabajando, el chat se pasaba el día recargándose encima del agente y las
+  // respuestas se sentían lentas. Si el mensaje ya está (llegó por la respuesta
+  // del envío) se reemplaza en su sitio en vez de duplicarse.
   useSocketEvent(
     'chat:message',
     (payload) => {
-      if (payload?.conversationId && String(payload.conversationId) === String(activeId)) {
-        loadMessages(activeId);
+      const incoming = payload?.message;
+      if (incoming && payload?.conversationId && String(payload.conversationId) === String(activeId)) {
+        setMessages((prev) => {
+          const i = prev.findIndex(
+            (m) =>
+              String(m._id) === String(incoming._id) ||
+              (incoming.clientId && m.clientId && m.clientId === incoming.clientId)
+          );
+          if (i === -1) return [...prev, incoming];
+          const next = prev.slice();
+          next[i] = { ...next[i], ...incoming };
+          return next;
+        });
+      } else if (payload?.conversationId && String(payload.conversationId) === String(activeId)) {
+        // Evento sin cuerpo (emisores antiguos): ahí sí toca releer el hilo.
+        loadMessages(activeId, { silent: true });
       }
-      if (view !== 'board') loadConversations(paramsForView());
+      if (view !== 'board') refreshConversations();
       loadUnreadCounts();
     },
     [activeId, view, scope, filter, debouncedSearch]
@@ -532,7 +639,7 @@ export default function Chats() {
   useSocketEvent(
     'chat:updated',
     () => {
-      if (view !== 'board') loadConversations(paramsForView());
+      if (view !== 'board') refreshConversations();
       loadUnreadCounts();
     },
     [view, scope, filter, debouncedSearch]
@@ -549,7 +656,9 @@ export default function Chats() {
     const refresh = () => {
       if (document.visibilityState === 'hidden') return;
       if (view !== 'board') loadConversations(paramsForView());
-      if (activeId) loadMessages(activeId);
+      // `silent`: es una puesta al día de fondo, no debe parpadear el hilo que el
+      // agente ya está leyendo.
+      if (activeId) loadMessages(activeId, { silent: true });
     };
     window.addEventListener('focus', refresh);
     document.addEventListener('visibilitychange', refresh);
@@ -569,17 +678,32 @@ export default function Chats() {
     const t = setInterval(() => {
       if (document.visibilityState === 'hidden') return;
       loadConversations(paramsForView());
-      if (activeId) loadMessages(activeId);
+      if (activeId) loadMessages(activeId, { silent: true });
     }, 8000);
     return () => clearInterval(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [realtimeConnected, activeId, view, scope, filter, debouncedSearch]);
 
+  // Auto-scroll al final SOLO si el agente ya estaba abajo (o si el hilo acaba de
+  // abrirse). Si está leyendo mensajes de más arriba —o acaba de cargar la página
+  // anterior— bajarlo de golpe le hace perder el punto de lectura.
+  const stickToBottomRef = useRef(true);
   useEffect(() => {
-    if (messagesEndRef.current) {
-      messagesEndRef.current.scrollTop = messagesEndRef.current.scrollHeight;
-    }
+    const box = messagesEndRef.current;
+    if (!box) return;
+    if (stickToBottomRef.current) box.scrollTop = box.scrollHeight;
   }, [messages]);
+
+  const handleThreadScroll = () => {
+    const box = messagesEndRef.current;
+    if (!box) return;
+    // 80px de margen: "abajo del todo" con holgura para el rebote del scroll.
+    stickToBottomRef.current = box.scrollHeight - box.scrollTop - box.clientHeight < 80;
+  };
+  // Al cambiar de chat se vuelve a empezar abajo, como en WhatsApp.
+  useEffect(() => {
+    stickToBottomRef.current = true;
+  }, [activeId]);
 
   // Versión "viva" del chat abierto tomada de la lista filtrada.
   const liveActiveConv = useMemo(
@@ -633,6 +757,11 @@ export default function Chats() {
 
   const sendMessage = async () => {
     if (!activeId || !activeConv) return;
+    // Candado: mientras un envío está en curso NO se acepta otro. Es la mitad del
+    // arreglo al problema de los mensajes repetidos (la otra mitad es `clientId`,
+    // que hace que el servidor reconozca el envío duplicado aunque el candado se
+    // salte por recarga o por dos pestañas abiertas).
+    if (sending) return;
     const windowClosed = isWhatsappWindowClosed(activeConv);
     const optedOut = isOptedOut(activeConv);
     if (optedOut) {
@@ -654,9 +783,23 @@ export default function Chats() {
     }
     if (!useTemplate && !body && !attachmentDraft) return;
     if (!useTemplate && !isVoice) setDraft('');
+
+    // La conversación se FIJA aquí. Antes el resultado se pintaba en el chat que
+    // estuviera abierto al responder el servidor: si el agente pasaba al
+    // siguiente contacto mientras el mensaje salía, la burbuja aterrizaba en la
+    // conversación equivocada y en la de origen no aparecía nada — de ahí el
+    // "cambié de chat y el mensaje no se envió" (sí se enviaba; se perdía de vista).
+    const convId = activeId;
+    const convAtSend = activeConv;
+    // Llave de idempotencia de ESTE envío: si la petición se repite (doble clic,
+    // reintento del navegador), el servidor devuelve el mensaje ya creado.
+    const clientId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+
+    setSending(true);
     try {
       const payload = useTemplate
         ? {
+            clientId,
             templateName,
             templateLanguage: templateDraft.language || 'es',
             templateVars: templateDraft.vars
@@ -665,14 +808,22 @@ export default function Chats() {
               .filter(Boolean),
           }
         : {
+            clientId,
             body,
             ...(attachmentDraft
               ? { mediaUrl: attachmentDraft.url, mediaType: attachmentDraft.type || 'image', mediaName: attachmentDraft.name || '', mediaSize: attachmentDraft.size || 0 }
               : {}),
             ...(replyDraft ? { replyTo: replyDraft._id } : {}),
           };
-      const r = await api.post(`/chats/${activeId}/messages`, payload);
-      setMessages((prev) => [...prev, r.data]);
+      const r = await api.post(`/chats/${convId}/messages`, payload);
+      // El servidor acepta y entrega por detrás, así que esto vuelve enseguida.
+      // Solo se pinta si el agente sigue en ese chat; si ya se movió, el mensaje
+      // está guardado igual y lo verá al volver (y el socket lo anunció).
+      setMessages((prev) => {
+        if (String(convId) !== String(activeIdRef.current)) return prev;
+        if (prev.some((m) => String(m._id) === String(r.data._id))) return prev;
+        return [...prev, r.data];
+      });
       const preview = r.data.body || (useTemplate ? `[Plantilla: ${templateName}]` : body);
       const convPatch = {
         lastMessagePreview: preview.slice(0, 140),
@@ -682,26 +833,28 @@ export default function Chats() {
         unreadCount: 0,
       };
       // Mantener el chat abierto con datos frescos aunque salga de la lista filtrada.
-      if (activeConv) setOpenConvSnap({ ...activeConv, ...convPatch });
+      if (convAtSend && String(convId) === String(activeIdRef.current)) {
+        setOpenConvSnap({ ...convAtSend, ...convPatch });
+      }
       setConversations((prev) => {
-        const updated = prev.map((c) => (c._id === activeId ? { ...c, ...convPatch } : c));
+        const updated = prev.map((c) => (c._id === convId ? { ...c, ...convPatch } : c));
         // En "No leídos", responder saca el chat de esa lista (como Daplox); el panel
         // sigue abierto por el snapshot, así se puede seguir escribiendo sin buscarlo.
-        if (view === 'inbox' && filter === 'unread') return updated.filter((c) => c._id !== activeId);
+        if (view === 'inbox' && filter === 'unread') return updated.filter((c) => c._id !== convId);
         return updated;
       });
-      if (r.data.deliveryStatus === 'failed') {
-        toast.error(r.data.errorMessage || 'No se pudo enviar');
-      } else if (useTemplate) {
-        setTemplateDraft({ name: '', language: 'es', vars: '' });
-      }
-      if (!useTemplate) {
+      if (useTemplate) setTemplateDraft({ name: '', language: 'es', vars: '' });
+      else {
         setAttachmentDraft(null);
         setReplyDraft(null);
       }
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al enviar');
-      if (!windowClosed && !isVoice) setDraft(body);
+      // El texto vuelve al cuadro SOLO si el agente sigue en el mismo chat: si ya
+      // se movió, devolvérselo le metería el mensaje de otro contacto encima.
+      if (!windowClosed && !isVoice && String(convId) === String(activeIdRef.current)) setDraft(body);
+    } finally {
+      setSending(false);
     }
   };
 
@@ -1232,7 +1385,34 @@ export default function Chats() {
                     Reconectando el tiempo real… los mensajes nuevos siguen llegando (se refresca solo cada pocos segundos).
                   </div>
                 )}
-                <div ref={messagesEndRef} className="flex-1 overflow-y-auto bg-slate-50 p-4 space-y-2">
+                <div
+                  ref={messagesEndRef}
+                  onScroll={handleThreadScroll}
+                  className="flex-1 overflow-y-auto bg-slate-50 p-4 space-y-2"
+                >
+                  {/* Señal explícita de que el hilo está cargando: con el panel en
+                      blanco y sin aviso, el agente no sabía si el chat estaba
+                      vacío, si se había colgado o si debía volver a hacer clic. */}
+                  {messagesLoading && !messages.length && (
+                    <div className="flex items-center justify-center gap-2 py-8 text-sm text-slate-400">
+                      <HiOutlineArrowPath className="w-4 h-4 animate-spin" />
+                      Cargando mensajes…
+                    </div>
+                  )}
+                  {/* El chat abre con los últimos mensajes para que entre al
+                      instante; el historial anterior se trae solo si hace falta. */}
+                  {hasOlder && !!messages.length && (
+                    <div className="flex justify-center pb-2">
+                      <button
+                        type="button"
+                        onClick={loadOlderMessages}
+                        disabled={loadingOlder}
+                        className="px-3 py-1 text-xs rounded-full bg-white border border-slate-200 text-slate-600 hover:bg-slate-50 disabled:opacity-60 cursor-pointer"
+                      >
+                        {loadingOlder ? 'Cargando…' : 'Ver mensajes anteriores'}
+                      </button>
+                    </div>
+                  )}
                   {messages.map((m, i) => {
                     // Separador de día cuando cambia la fecha (o en el primero).
                     const prev = messages[i - 1];
@@ -1783,6 +1963,7 @@ export default function Chats() {
                             type="button"
                             onClick={sendMessage}
                             disabled={
+                              sending ||
                               !!activeConv?.blocked ||
                               activeOptedOut ||
                               attachingMedia ||
@@ -1795,7 +1976,7 @@ export default function Chats() {
                             className="ml-auto px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 hover:bg-emerald-700 disabled:opacity-50 cursor-pointer flex items-center gap-1.5"
                           >
                             <HiOutlinePaperAirplane className="w-5 h-5" />
-                            <span className="text-sm font-medium">Enviar</span>
+                            <span className="text-sm font-medium">{sending ? 'Enviando…' : 'Enviar'}</span>
                           </button>
                         </>
                       )}
@@ -2480,7 +2661,11 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpport
 // contacto; "entregado" (✓✓) = llegó a su teléfono; "leído" (✓✓ azul) = lo leyó.
 // Así nadie confunde "enviado" con "le llegó al contacto".
 const DELIVERY_META = {
-  queued: { label: 'en cola', className: 'text-slate-200', icon: 'clock', tip: 'En cola — todavía no se envía.' },
+  // 'queued' = el sistema ya lo aceptó y lo está entregando a WhatsApp. Decía "en
+  // cola — todavía no se envía", que sonaba a atascado: con un video (que tarda
+  // más de un minuto en subir por QR) los agentes lo daban por perdido y lo
+  // reenviaban varias veces. "enviando…" dice lo que de verdad está pasando.
+  queued: { label: 'enviando…', className: 'text-slate-200', icon: 'clock', tip: 'Enviando a WhatsApp. Los videos y audios tardan más; no hace falta reenviarlo.' },
   sent: { label: 'enviado', className: 'text-emerald-100/80', icon: 'one', tip: 'Enviado a WhatsApp. Aún SIN confirmar que le llegó al contacto.' },
   delivered: { label: 'entregado', className: 'text-emerald-100', icon: 'two', tip: 'Entregado: llegó al teléfono del contacto.' },
   read: { label: 'leido', className: 'text-sky-200', icon: 'two', tip: 'Leído por el contacto.' },

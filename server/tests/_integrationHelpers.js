@@ -165,8 +165,32 @@ async function runController(handler, req) {
   return state;
 }
 
+/**
+ * Espera a que un mensaje llegue al estado de entrega esperado.
+ *
+ * Los envíos del chat se entregan EN SEGUNDO PLANO (ver `messaging.send` con
+ * `background`): la petición HTTP contesta en cuanto el mensaje está guardado
+ * como 'queued', y el resultado real ('sent' o 'failed') lo escribe la entrega
+ * poco después. Sin esta espera, un test leería el estado intermedio.
+ */
+async function waitForStatus(messageId, expected, timeoutMs = 3000) {
+  const Message = require('../models/Message');
+  const until = Date.now() + timeoutMs;
+  let last = null;
+  while (Date.now() < until) {
+    // eslint-disable-next-line no-await-in-loop
+    last = await Message.findById(messageId).lean();
+    if (last && last.deliveryStatus === expected) return last;
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((r) => setTimeout(r, 25));
+  }
+  throw new Error(
+    `El mensaje ${messageId} no llegó a '${expected}' en ${timeoutMs}ms (quedó en '${last?.deliveryStatus}')`
+  );
+}
+
 module.exports = {
   startDb, stopDb, resetDb, seedClinic, makeProduct, makeSupplier,
   accountBalanceByCode, assertLedgerBalanced, mockReq, mockRes, runController,
-  mongoose,
+  waitForStatus, mongoose,
 };
