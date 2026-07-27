@@ -648,6 +648,11 @@ async function send({
   // (doble clic, reintento del navegador, red inestable) el segundo no se envía:
   // se devuelve el mensaje ya creado. Ver la comprobación de más abajo.
   clientId = '',
+  // Número por el que FORZAR el envío (id de WhatsappAccount). Sin esto se usa el
+  // del contacto (el último por el que escribió) y, si nunca escribió, el
+  // principal. Lo usan las campañas y las importaciones cuando el usuario elige
+  // "enviar todo desde este número" en vez de dejarlo automático.
+  whatsappAccount = null,
 }) {
   const normalizedChannel = channel || 'whatsapp';
 
@@ -696,11 +701,21 @@ async function send({
     if (consentReason) return { ok: false, skipped: true, reason: consentReason };
   }
 
-  // Resuelve el número (global) por el que se enviará: el de la conversación o el
-  // marcado por defecto. Determina además si aplica la ventana de 24h (solo Cloud API).
+  // Resuelve el número (global) por el que se enviará. Determina además si aplica
+  // la ventana de 24h (solo Cloud API).
+  //   - `whatsappAccount` explícito → ese número, sin discusión (el usuario lo
+  //     eligió a mano en la campaña o en la importación).
+  //   - Sin él → el número del contacto: el enlazado a la conversación o, si no
+  //     hay, aquel por el que ENTRÓ su último mensaje; y si nunca escribió, el
+  //     principal. Es lo que hace que a quien nos escribió por el QR se le
+  //     responda por el QR y no por el número de la API.
   let account = null;
   if (normalizedChannel === 'whatsapp') {
-    account = await gateway.resolveAccountForConversation(conv);
+    if (whatsappAccount) {
+      account = await gateway.getAccountById(whatsappAccount);
+      if (account && !account.enabled) account = null;
+    }
+    if (!account) account = await gateway.resolveAccountForConversation(conv);
     if (!account) return { ok: false, skipped: true, reason: 'provider_unavailable' };
   }
 

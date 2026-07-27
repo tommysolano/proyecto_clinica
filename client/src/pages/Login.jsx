@@ -2,12 +2,19 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import toast from 'react-hot-toast';
-import { HiOutlineShieldCheck, HiOutlineBuildingOffice2, HiOutlineNoSymbol } from 'react-icons/hi2';
+import {
+  HiOutlineShieldCheck,
+  HiOutlineBuildingOffice2,
+  HiOutlineNoSymbol,
+  HiOutlineEye,
+  HiOutlineEyeSlash,
+} from 'react-icons/hi2';
 import shiluvLogo from '../Shiluv-logo-4.png';
 
 export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [step, setStep] = useState('credentials');
   const [availableClinics, setAvailableClinics] = useState([]);
@@ -129,14 +136,34 @@ export default function Login() {
                   </div>
                   <div>
                     <label className="block text-sm font-semibold text-slate-700 mb-1.5">Contraseña</label>
-                    <input
-                      type="password"
-                      value={password}
-                      onChange={(e) => setPassword(e.target.value)}
-                      required
-                      className="w-full px-4 py-3 border border-slate-200 rounded-xl outline-none text-sm bg-slate-50/50"
-                      placeholder="••••••••"
-                    />
+                    {/* El ojito evita el "contraseña incorrecta" por una tecla mal
+                        puesta, que en un teclado con la contraseña oculta no se ve.
+                        `tabIndex={-1}` deja que Tab salte del campo al botón de
+                        entrar sin pasar por aquí. */}
+                    <div className="relative">
+                      <input
+                        type={showPassword ? 'text' : 'password'}
+                        value={password}
+                        onChange={(e) => setPassword(e.target.value)}
+                        required
+                        className="w-full pl-4 pr-12 py-3 border border-slate-200 rounded-xl outline-none text-sm bg-slate-50/50"
+                        placeholder="••••••••"
+                      />
+                      <button
+                        type="button"
+                        tabIndex={-1}
+                        onClick={() => setShowPassword((v) => !v)}
+                        title={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                        aria-label={showPassword ? 'Ocultar contraseña' : 'Mostrar contraseña'}
+                        className="absolute inset-y-0 right-0 px-3.5 flex items-center text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer"
+                      >
+                        {showPassword ? (
+                          <HiOutlineEyeSlash className="w-5 h-5" />
+                        ) : (
+                          <HiOutlineEye className="w-5 h-5" />
+                        )}
+                      </button>
+                    </div>
                   </div>
                   <button
                     type="submit"

@@ -89,6 +89,14 @@ const contactImportSchema = new mongoose.Schema(
     //          disparador (si el flujo no trae ninguna, equivale a `now`)
     sendMode: { type: String, enum: ['now', 'at', 'flow'], default: 'now' },
     sendAt: { type: String, trim: true, default: '' }, // "HH:MM" cuando sendMode='at'
+
+    // DESDE QUÉ NÚMERO sale el mensaje de estos contactos.
+    //   vacío → automático: cada contacto lo recibe por el número con el que ÉL
+    //           nos escribió la última vez y, si nunca escribió, por el principal.
+    //   con valor → toda la importación sale por ese número.
+    // Viaja al contexto de cada inscripción (`whatsappAccountId`) porque el envío
+    // ocurre horas después, cuando este documento ya no está en juego.
+    whatsappAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'WhatsappAccount', default: null },
     whatsappOptIn: { type: Boolean, default: true },
     consentSource: { type: String, trim: true, default: '' },
 
@@ -105,6 +113,15 @@ const contactImportSchema = new mongoose.Schema(
     // reimportar la misma gente no la vuelve a encolar. Se muestra para que "se
     // inscribió menos gente de la que subí" no parezca un error.
     enrollSkipped: { type: Number, default: 0 },
+    // Envíos PENDIENTES de importaciones anteriores de los mismos flujos que este
+    // lote canceló al arrancar (ver `cancelPending`).
+    enrollCancelled: { type: Number, default: 0 },
+    // Aviso no fatal de la inscripción (p.ej. un flujo con dos disparadores).
+    enrollWarning: { type: String, trim: true, default: '' },
+    // Cancelar lo que quedó pendiente de importaciones anteriores de estos flujos.
+    // Sin esto, una campaña de prueba con goteo sigue soltando SU mensaje durante
+    // horas y se mezcla con el envío bueno: el contacto recibe el texto viejo.
+    cancelPending: { type: Boolean, default: true },
     // Muestra acotada: 47k errores no caben en un documento. No se llama `errors`
     // porque es un nombre reservado de mongoose (choca con la validación del doc).
     rowErrors: { type: [importErrorSchema], default: [] },

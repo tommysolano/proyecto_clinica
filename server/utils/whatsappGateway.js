@@ -32,6 +32,11 @@ async function getAccountById(id) {
   return WhatsappAccount.findById(id);
 }
 
+/** Números conectados, el principal primero. */
+async function listEnabledAccounts() {
+  return WhatsappAccount.find({ enabled: true }).sort({ isDefault: -1, createdAt: 1 });
+}
+
 /**
  * Cuenta por la que responder una conversación. Prioridad:
  *   1) El número ENLAZADO a la conversación (el que la ingesta guardó al recibir).
@@ -179,6 +184,7 @@ module.exports = {
   DEFAULT_API_VERSION,
   getDefaultAccount,
   getAccountById,
+  listEnabledAccounts,
   resolveAccountForConversation,
   getCloudAccountByPhoneNumberId,
   getDefaultCloudAccount,

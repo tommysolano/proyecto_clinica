@@ -21,6 +21,25 @@ const { runCampaign } = require('../utils/dripRunner');
 // Niveles de Meta: conversaciones que puede INICIAR el negocio cada 24 h.
 const TIER_LIMITS = { TIER_50: 50, TIER_250: 250, TIER_1K: 1000, TIER_10K: 10000, TIER_100K: 100000 };
 
+/**
+ * Por qué número(s) va a salir esta campaña.
+ *
+ * `whatsappAccount` vacío = AUTOMÁTICO: cada contacto recibe el mensaje por el
+ * número con el que él nos escribió la última vez (y por el principal si nunca
+ * nos escribió). Eso significa que una misma campaña puede salir por varios
+ * números a la vez, así que la validación no puede mirar uno solo: si entre los
+ * conectados hay alguno de Cloud API, la campaña necesita plantilla aprobada,
+ * porque a esos contactos no se les puede mandar texto libre.
+ */
+async function sendingContext(camp) {
+  if (camp.whatsappAccount) {
+    const account = await gateway.getAccountById(camp.whatsappAccount);
+    return { mode: 'fixed', account, accounts: account ? [account] : [] };
+  }
+  const accounts = await gateway.listEnabledAccounts();
+  return { mode: 'auto', account: accounts.find((a) => a.isDefault) || accounts[0] || null, accounts };
+}
+
 exports.list = async (req, res) => {
   try {
     const list = await DripCampaign.find({ clinic: req.clinicId })
@@ -130,13 +149,20 @@ exports.preview = async (req, res) => {
     const days = perDay > 0 ? Math.ceil(remaining / perDay) : null;
 
     // ¿El número aguanta? Solo aplica a Cloud API: el QR no tiene nivel de Meta.
-    const account = camp.whatsappAccount
-      ? await gateway.getAccountById(camp.whatsappAccount)
-      : await gateway.getDefaultAccount();
-    const isCloud = gateway.isCloud(account);
-    const tierLimit = isCloud ? TIER_LIMITS[account?.messagingLimit] || null : null;
+    const ctx = await sendingContext(camp);
+    const { account } = ctx;
+    const cloudAccounts = ctx.accounts.filter((a) => gateway.isCloud(a));
+    const isCloud = ctx.mode === 'fixed' ? gateway.isCloud(account) : cloudAccounts.length > 0;
+    const tierLimit = isCloud && account ? TIER_LIMITS[account.messagingLimit] || null : null;
 
     const warnings = [];
+    if (ctx.mode === 'auto') {
+      warnings.push(
+        'Número automático: cada contacto lo recibirá por el número con el que él escribió la ' +
+          'última vez, y por el principal si nunca escribió. Elige un número concreto si quieres ' +
+          'que toda la campaña salga por el mismo.'
+      );
+    }
     if (isCloud && tierLimit && perDay > tierLimit) {
       warnings.push(
         `Este goteo intentaría ${perDay} mensajes al día, pero Meta permite ${tierLimit} conversaciones nuevas cada 24 h en este número (${account.messagingLimit}). Los que pasen del límite fallarán: baja la tanda o sube el intervalo.`
@@ -148,7 +174,13 @@ exports.preview = async (req, res) => {
       );
     }
     if (!isCloud && camp.templateName) {
-      warnings.push('El número QR no admite plantillas de Meta: se enviará el texto libre de la campaña.');
+      warnings.push('El número QR no admite plantillas de Meta: se enviará el texto de la plantilla como mensaje normal (sin coste).');
+    }
+    if (ctx.mode === 'auto' && cloudAccounts.length && ctx.accounts.length > cloudAccounts.length) {
+      warnings.push(
+        'Se mezclan números de Cloud API y QR: los contactos que vengan del QR recibirán el texto ' +
+          'de la plantilla como mensaje normal (gratis) y solo los de Cloud API se te cobrarán.'
+      );
     }
     // Una variable sin fuente sale como "-" en el mensaje de TODOS. Mejor verlo
     // aquí que en el WhatsApp de 800 personas.
@@ -176,6 +208,7 @@ exports.preview = async (req, res) => {
       remaining,
       perDay,
       estimatedDays: days,
+      accountMode: ctx.mode,
       account: account ? { label: account.label, connectionType: account.connectionType, messagingLimit: account.messagingLimit } : null,
       warnings,
     });
@@ -192,19 +225,24 @@ exports.start = async (req, res) => {
     if (camp.status === 'running') return res.status(409).json({ message: 'La campaña ya está en marcha.' });
     if (camp.status === 'done') return res.status(409).json({ message: 'Esa campaña ya terminó.' });
 
-    const account = camp.whatsappAccount
-      ? await gateway.getAccountById(camp.whatsappAccount)
-      : await gateway.getDefaultAccount();
-    if (!account) return res.status(400).json({ message: 'No hay ningún número de WhatsApp configurado.' });
+    const ctx = await sendingContext(camp);
+    if (!ctx.accounts.length) return res.status(400).json({ message: 'No hay ningún número de WhatsApp configurado.' });
 
     // Cloud API fuera de la ventana de 24h exige plantilla aprobada. Sin esto la
-    // campaña "correría" omitiendo todos los mensajes en silencio.
-    if (gateway.isCloud(account)) {
-      if (!camp.template) {
-        return res.status(400).json({
-          message: 'Este número es de Cloud API: para escribir a contactos nuevos necesitas una plantilla aprobada por Meta.',
-        });
-      }
+    // campaña "correría" omitiendo todos los mensajes en silencio. En modo
+    // automático basta con que UNO de los números conectados sea de Cloud API:
+    // los contactos que salgan por él necesitan la plantilla igual.
+    const necesitaPlantilla = ctx.accounts.some((a) => gateway.isCloud(a));
+    if (necesitaPlantilla && !camp.template) {
+      return res.status(400).json({
+        message:
+          ctx.mode === 'fixed'
+            ? 'Este número es de Cloud API: para escribir a contactos nuevos necesitas una plantilla aprobada por Meta.'
+            : 'Con el número automático hay contactos que saldrán por Cloud API, y ahí solo se puede ' +
+              'mandar una plantilla aprobada por Meta. Elige una plantilla, o fija un número QR para toda la campaña.',
+      });
+    }
+    if (camp.template) {
       const tpl = await MessageTemplate.findById(camp.template);
       if (!tpl || tpl.status !== 'approved') {
         return res.status(400).json({

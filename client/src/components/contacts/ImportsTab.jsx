@@ -172,6 +172,18 @@ export default function ImportsTab({ groups, onGroupsChanged }) {
                   </div>
                 )}
 
+                {b.status === 'done' && b.enrollCancelled > 0 && (
+                  <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1 mt-1">
+                    🛑 Se cancelaron {b.enrollCancelled.toLocaleString('es-EC')} envío(s) que seguían pendientes de
+                    una importación anterior de este flujo, para que no se mezclara su mensaje con este.
+                  </div>
+                )}
+                {b.enrollWarning && (
+                  <div className="text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1 mt-1">
+                    ⚠️ {b.enrollWarning}
+                  </div>
+                )}
+
                 {b.errorMessage && (
                   <div className="text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded-lg px-2 py-1 mt-2">
                     {b.errorMessage}

@@ -209,7 +209,7 @@ function DripModal({ campaign, groups, onClose, onSaved }) {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    api.get('/call-center-config/whatsapp/accounts').then((r) => setAccounts(r.data || [])).catch(() => {});
+    api.get('/contacts/whatsapp-accounts').then((r) => setAccounts(r.data || [])).catch(() => {});
     api.get('/message-templates').then((r) => setTemplates(r.data || [])).catch(() => {});
   }, []);
 
@@ -221,8 +221,14 @@ function DripModal({ campaign, groups, onClose, onSaved }) {
   // La cuenta elegida decide qué se puede mandar: Cloud API exige plantilla
   // aprobada (los contactos importados no tienen ventana de 24h abierta); el QR
   // no admite plantillas de Meta y manda texto libre.
-  const account = accounts.find((a) => a._id === form.whatsappAccount) || accounts.find((a) => a.isDefault) || accounts[0];
-  const isCloud = account?.connectionType === 'cloud_api';
+  //
+  // Sin número elegido el envío es AUTOMÁTICO (cada contacto por el número con el
+  // que él escribió), así que puede salir por varios a la vez: si entre los
+  // conectados hay uno de Cloud API, hace falta plantilla igual.
+  const autoAccount = !form.whatsappAccount;
+  const account = accounts.find((a) => a._id === form.whatsappAccount) || null;
+  const anyCloud = accounts.some((a) => a.connectionType === 'cloud_api');
+  const isCloud = autoAccount ? anyCloud : account?.connectionType === 'cloud_api';
   const approved = templates.filter((t) => t.status === 'approved');
   const selectedTpl = templates.find((t) => t._id === form.template) || null;
   const tplKeys = templateKeys(selectedTpl);
@@ -258,7 +264,13 @@ function DripModal({ campaign, groups, onClose, onSaved }) {
 
   const save = async () => {
     if (!form.name.trim()) return toast.error('La campaña necesita un nombre');
-    if (isCloud && !form.template) return toast.error('Este número es de Cloud API: elige una plantilla aprobada');
+    if (isCloud && !form.template) {
+      return toast.error(
+        autoAccount
+          ? 'Habrá contactos que salgan por Cloud API: elige una plantilla aprobada'
+          : 'Este número es de Cloud API: elige una plantilla aprobada'
+      );
+    }
     if (!isCloud && !form.body.trim()) return toast.error('El número es QR: escribe el texto del mensaje');
     setSaving(true);
     try {
@@ -312,26 +324,38 @@ function DripModal({ campaign, groups, onClose, onSaved }) {
 
           {/* ② Qué les mando */}
           <Section n="2" title="Qué les mando">
-            <label className="text-[11px] text-slate-500 block mb-1">Número de WhatsApp</label>
+            <label className="text-[11px] text-slate-500 block mb-1">¿Desde qué número se envía?</label>
             <select
               disabled={readOnly}
               value={form.whatsappAccount}
               onChange={(e) => setForm((f) => ({ ...f, whatsappAccount: e.target.value }))}
               className="w-full border border-slate-200 rounded-xl px-3 py-2 text-sm bg-white disabled:bg-slate-50 mb-2"
             >
-              <option value="">Número por defecto</option>
+              <option value="">Automático — el último número con el que habló cada contacto</option>
               {accounts.map((a) => (
                 <option key={a._id} value={a._id}>
-                  {a.label} — {a.connectionType === 'cloud_api' ? 'Cloud API' : 'QR (WhatsApp Web)'}
+                  Siempre desde {a.label} — {a.connectionType === 'cloud_api' ? 'Cloud API' : 'QR (WhatsApp Web)'}
                 </option>
               ))}
             </select>
+            {autoAccount && (
+              <p className="text-[10px] text-slate-500 mb-2 -mt-1">
+                A cada contacto le llega por el número al que él escribió la última vez. Si nunca nos
+                ha escrito, sale por el número principal.
+              </p>
+            )}
 
             {isCloud ? (
               <>
                 <div className="text-[11px] text-sky-800 bg-sky-50 border border-sky-200 rounded-lg px-2.5 py-1.5 mb-2">
                   Cloud API: a un contacto sin conversación abierta solo se le puede mandar una{' '}
                   <b>plantilla aprobada</b> por Meta.
+                  {autoAccount && accounts.some((a) => a.connectionType !== 'cloud_api') && (
+                    <>
+                      {' '}A los contactos que vengan de un número QR se les manda el texto de la
+                      plantilla como mensaje normal, y ese <b>no te lo cobra Meta</b>.
+                    </>
+                  )}
                 </div>
                 <select
                   disabled={readOnly}

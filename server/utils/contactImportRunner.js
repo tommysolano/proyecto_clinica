@@ -132,10 +132,42 @@ async function enrollInWorkflows(batch, phoneInfo, onProgress) {
     if (sendMode === 'flow') return flowSendHour(wf);
     return ''; // 'now'
   };
+  // UN SOLO ARRANQUE POR FLUJO. `matchingFlows` devuelve un arranque por cada nodo
+  // disparador que case, y el editor visual permite tener varios disparadores
+  // "Contactos importados" en el mismo diagrama. Inscribir por cada uno mandaba el
+  // MISMO mensaje dos veces al mismo contacto — y con plantillas, Meta cobra las dos.
+  // Para una importación eso nunca es lo deseado: el contacto entra una vez.
+  const avisos = [];
   const perWorkflow = workflows
-    .map((wf) => ({ wf, flows: matchingFlows(wf, (tr) => tr?.type === 'contact_import'), hour: hourForWorkflow(wf) }))
+    .map((wf) => {
+      const flows = matchingFlows(wf, (tr) => tr?.type === 'contact_import');
+      if (flows.length > 1) {
+        avisos.push(
+          `El flujo "${wf.name}" tiene ${flows.length} disparadores "Contactos importados": se usó solo el primero para no enviar el mensaje ${flows.length} veces. Deja uno solo en el editor.`
+        );
+      }
+      return { wf, flows: flows.slice(0, 1), hour: hourForWorkflow(wf) };
+    })
     .filter((x) => x.flows.length);
+  if (batch && typeof batch === 'object') batch.enrollWarning = avisos.join(' ');
   if (!perWorkflow.length) return 0;
+
+  // Cancelar lo que quedó pendiente de importaciones ANTERIORES de estos mismos
+  // flujos: si no, una prueba con goteo sigue soltando su mensaje durante horas y
+  // se mezcla con el envío de verdad ("me llegó el mensaje del Excel anterior").
+  // Solo lo que aún no ha salido; lo ya enviado no se toca.
+  if (batch.cancelPending) {
+    const r = await WorkflowEnrollment.updateMany(
+      {
+        workflow: { $in: perWorkflow.map((x) => x.wf._id) },
+        status: { $in: ['active', 'waiting'] },
+        'context.eventType': 'contact_import',
+        'context.importBatchId': { $ne: String(batch._id) },
+      },
+      { $set: { status: 'cancelled', nextRunAt: null } }
+    );
+    batch.enrollCancelled = r.modifiedCount || 0;
+  }
 
   // El contacto se busca por TELÉFONO (no por su sucursal): CRM global, y un contacto
   // que YA existía conserva su `clinic` original ($setOnInsert), que puede NO ser la
@@ -188,11 +220,14 @@ async function enrollInWorkflows(batch, phoneInfo, onProgress) {
         infoByPhone.get(contact.phone)?.clinic || String(contact.clinic || batch.clinic);
       for (const { wf, flows, hour } of perWorkflow) {
         for (const flow of flows) {
+          // Dedup por (flujo, contacto), SIN mirar el nodo de arranque: si ya tiene
+          // una inscripción viva en este flujo —da igual por dónde entrara— no se
+          // le vuelve a inscribir. Filtrar también por `startNodeId` dejaba pasar
+          // una segunda inscripción por otro disparador del mismo diagrama.
           // eslint-disable-next-line no-await-in-loop
           const dup = await WorkflowEnrollment.findOne({
             workflow: wf._id,
             'context.contactId': String(contact._id),
-            startNodeId: flow.startNodeId,
             status: { $in: ['active', 'waiting'] },
           }).select('_id');
           if (dup) { skipped++; continue; }
@@ -217,6 +252,10 @@ async function enrollInWorkflows(batch, phoneInfo, onProgress) {
               importBatchId: String(batch._id),
               eventType: 'contact_import',
               eventClinicId,
+              // Número FIJADO en el asistente. Vacío = automático: cada contacto
+              // recibirá el mensaje por el número con el que él escribió la última
+              // vez. Viaja aquí porque el envío ocurre horas después.
+              ...(batch.whatsappAccount ? { whatsappAccountId: String(batch.whatsappAccount) } : {}),
             },
           });
           enrolled++;

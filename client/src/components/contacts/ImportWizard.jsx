@@ -59,9 +59,14 @@ export default function ImportWizard({ groups, onClose, onDone }) {
     dripSeconds: 20,
     sendMode: 'now', // 'now' | 'at' | 'flow' — cuándo sale el 1er mensaje
     sendAt: '',      // "HH:MM" cuando sendMode='at'
+    whatsappAccount: '', // '' = automático (el número con el que habló el contacto)
+    cancelPending: true, // cancelar lo que quedó pendiente del envío anterior
   });
   const [busy, setBusy] = useState(false);
   const [workflows, setWorkflows] = useState([]);
+  const [accounts, setAccounts] = useState([]);
+  // Envíos de importaciones anteriores que este flujo todavía no ha soltado.
+  const [pending, setPending] = useState(null);
 
   const staticGroups = groups.filter((g) => g.kind === 'static');
 
@@ -81,7 +86,24 @@ export default function ImportWizard({ groups, onClose, onDone }) {
         setWorkflows((r.data || []).filter((wf) => wf.active && hasImportTrigger(wf)));
       })
       .catch(() => {});
+    api
+      .get('/contacts/whatsapp-accounts')
+      .then((r) => setAccounts(r.data || []))
+      .catch(() => {});
   }, []);
+
+  // Al elegir flujo se consulta qué quedó a medias de la vez anterior: es lo que
+  // explica que a un contacto le llegue el mensaje del Excel pasado.
+  useEffect(() => {
+    const wf = opts.workflows[0];
+    if (!wf) { setPending(null); return; }
+    let alive = true;
+    api
+      .get('/contacts/imports/pending-enrollments', { params: { workflow: wf } })
+      .then((r) => { if (alive) setPending(r.data); })
+      .catch(() => { if (alive) setPending(null); });
+    return () => { alive = false; };
+  }, [opts.workflows]);
 
   const analyze = async (file) => {
     if (!file) return;
@@ -116,6 +138,8 @@ export default function ImportWizard({ groups, onClose, onDone }) {
         dripSeconds: opts.dripSeconds,
         sendMode: opts.sendMode,
         sendAt: opts.sendMode === 'at' ? opts.sendAt : '',
+        whatsappAccount: opts.whatsappAccount || null,
+        cancelPending: opts.cancelPending,
       });
       toast.success('Importación encolada: verás el progreso en la pestaña Importaciones');
       onDone();
@@ -165,7 +189,14 @@ export default function ImportWizard({ groups, onClose, onDone }) {
       )}
 
       {step === 2 && (
-        <StepOptions opts={opts} setOpts={setOpts} staticGroups={staticGroups} workflows={workflows} />
+        <StepOptions
+          opts={opts}
+          setOpts={setOpts}
+          staticGroups={staticGroups}
+          workflows={workflows}
+          accounts={accounts}
+          pending={pending}
+        />
       )}
 
       {step === 3 && (
@@ -175,6 +206,7 @@ export default function ImportWizard({ groups, onClose, onDone }) {
           opts={opts}
           groups={groups}
           workflows={workflows}
+          accounts={accounts}
           mappedCount={mappedCount}
         />
       )}
@@ -399,7 +431,7 @@ function StepMapping({ analysis, mapping, setMapping }) {
 
 // ───────────────────────── Paso 3: opciones ─────────────────────────
 
-function StepOptions({ opts, setOpts, staticGroups, workflows }) {
+function StepOptions({ opts, setOpts, staticGroups, workflows, accounts, pending }) {
   return (
     <div className="space-y-4">
       <div>
@@ -492,8 +524,40 @@ function StepOptions({ opts, setOpts, staticGroups, workflows }) {
       </div>
 
       {/* Cuándo enviar + goteo: solo tienen sentido si hay un workflow que trabaje los contactos. */}
+      {/* Lo que quedó a medias del envío anterior. Es la causa de "me llegó el
+          mensaje del Excel de la vez pasada": un goteo tarda horas en vaciarse. */}
+      {opts.workflows.length > 0 && pending?.pending > 0 && (
+        <div className="border border-amber-300 bg-amber-50 rounded-xl p-3">
+          <div className="flex items-start gap-2">
+            <HiOutlineExclamationTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            <div className="min-w-0">
+              <div className="text-sm font-semibold text-amber-900">
+                Este flujo tiene {pending.pending.toLocaleString('es-EC')} envíos del Excel anterior sin
+                salir todavía
+              </div>
+              <p className="text-[11px] text-amber-800 mt-0.5">
+                Son contactos de una importación previa que aún están en cola. Si no los cancelas, van a
+                recibir el mensaje <b>de aquella campaña</b>, mezclado con este envío.
+              </p>
+              <label className="flex items-start gap-2 mt-2 cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={opts.cancelPending}
+                  onChange={(e) => setOpts((s) => ({ ...s, cancelPending: e.target.checked }))}
+                  className="mt-0.5 cursor-pointer"
+                />
+                <span className="text-xs text-amber-900">
+                  Cancelar esos {pending.pending.toLocaleString('es-EC')} envíos pendientes y quedarme
+                  solo con este. <span className="text-amber-700">Lo ya enviado no se toca.</span>
+                </span>
+              </label>
+            </div>
+          </div>
+        </div>
+      )}
+
       {opts.workflows.length > 0 && (
-        <SendTimingBox opts={opts} setOpts={setOpts} workflows={workflows} />
+        <SendTimingBox opts={opts} setOpts={setOpts} workflows={workflows} accounts={accounts} />
       )}
 
       <div className="border border-slate-200 rounded-xl p-3 space-y-2">
@@ -533,9 +597,10 @@ function StepOptions({ opts, setOpts, staticGroups, workflows }) {
  * hora de envío configurada, se avisa y se deja elegir entre esa hora, de inmediato
  * o una hora que el usuario indique aquí.
  */
-function SendTimingBox({ opts, setOpts, workflows }) {
+function SendTimingBox({ opts, setOpts, workflows, accounts = [] }) {
   const selectedWf = workflows.find((w) => w._id === opts.workflows[0]);
   const flowHour = flowSendHourOf(selectedWf);
+  const autoAccount = !opts.whatsappAccount;
 
   const OptionRow = ({ value, title, desc, children }) => (
     <label
@@ -560,7 +625,33 @@ function SendTimingBox({ opts, setOpts, workflows }) {
 
   return (
     <div className="border border-violet-200 bg-violet-50/40 rounded-xl p-3 space-y-2.5">
-      <div className="text-xs font-semibold text-slate-600">¿Cuándo enviar el primer mensaje?</div>
+      {/* Desde qué número. Automático = cada contacto recibe el mensaje por el
+          número al que ÉL escribió la última vez; quien nunca escribió, por el
+          principal. Es lo que evita contestar por la API a quien nos habló al QR. */}
+      <div>
+        <div className="text-xs font-semibold text-slate-600 mb-1">¿Desde qué número se envía?</div>
+        <select
+          value={opts.whatsappAccount}
+          onChange={(e) => setOpts((s) => ({ ...s, whatsappAccount: e.target.value }))}
+          className="w-full border border-slate-200 rounded-lg px-2.5 py-2 text-sm bg-white"
+        >
+          <option value="">Automático — el último número con el que habló cada contacto</option>
+          {accounts.map((a) => (
+            <option key={a._id} value={a._id}>
+              Siempre desde {a.label} — {a.connectionType === 'cloud_api' ? 'Cloud API' : 'QR (WhatsApp Web)'}
+            </option>
+          ))}
+        </select>
+        <p className="text-[11px] text-slate-500 mt-1">
+          {autoAccount
+            ? 'A quien nos escribió por el número del QR se le responde por el QR, y a quien escribió por el de la API, por la API. Si el contacto nunca nos ha escrito, sale por el número principal.'
+            : 'Toda esta importación saldrá por ese número, aunque el contacto nos haya escrito a otro.'}
+        </p>
+      </div>
+
+      <div className="text-xs font-semibold text-slate-600 pt-1 border-t border-violet-200">
+        ¿Cuándo enviar el primer mensaje?
+      </div>
 
       {flowHour && (
         <div className="text-[11px] text-violet-900 bg-white border border-violet-200 rounded-lg px-2.5 py-2">
@@ -628,7 +719,7 @@ function SendTimingBox({ opts, setOpts, workflows }) {
 
 // ───────────────────────── Paso 4: confirmar ─────────────────────────
 
-function StepConfirm({ analysis, mapping, opts, groups, workflows, mappedCount }) {
+function StepConfirm({ analysis, mapping, opts, groups, workflows, mappedCount, accounts = [] }) {
   const mode = MODE_OPTIONS.find((m) => m.value === opts.mode);
   const groupName = groups.find((g) => g._id === opts.groups[0])?.name;
   const selectedWf = workflows.find((w) => w._id === opts.workflows[0]);
@@ -678,6 +769,15 @@ function StepConfirm({ analysis, mapping, opts, groups, workflows, mappedCount }
             <span className="text-slate-300">ninguno</span>
           )}
         </Row>
+        {workflowName && (
+          <Row label="Desde qué número">
+            <span className="text-violet-700">
+              {opts.whatsappAccount
+                ? `Siempre desde ${accounts.find((a) => a._id === opts.whatsappAccount)?.label || 'el número elegido'}`
+                : 'Automático — el último número con el que habló cada contacto'}
+            </span>
+          </Row>
+        )}
         {workflowName && <Row label="Cuándo enviar"><span className="text-violet-700">{whenText}</span></Row>}
         {workflowName && <Row label="Goteo">{opts.dripSeconds}s entre cada contacto</Row>}
         <Row label="Consentimiento">

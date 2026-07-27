@@ -179,6 +179,29 @@ exports.bulk = async (req, res) => {
   }
 };
 
+/**
+ * Números de WhatsApp conectados, solo lo que necesita el selector "¿desde qué
+ * número se envía?" (etiqueta y método). Existe aparte del listado de
+ * Configuración porque aquel es de admin/marketing, devuelve credenciales y
+ * además reconcilia las sesiones QR: para pintar un desplegable sobra.
+ */
+exports.whatsappAccounts = async (req, res) => {
+  try {
+    const gateway = require('../utils/whatsappGateway');
+    const list = await gateway.listEnabledAccounts();
+    res.json(
+      list.map((a) => ({
+        _id: a._id,
+        label: a.label,
+        connectionType: a.connectionType,
+        isDefault: !!a.isDefault,
+      }))
+    );
+  } catch (err) {
+    res.status(500).json({ message: 'Error al listar los números', error: err.message });
+  }
+};
+
 /** Todas las etiquetas en uso (para los desplegables y filtros). */
 exports.tags = async (req, res) => {
   try {

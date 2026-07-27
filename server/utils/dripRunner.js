@@ -17,7 +17,6 @@ const Conversation = require('../models/Conversation');
 const DripCampaign = require('../models/DripCampaign');
 const MessageTemplate = require('../models/MessageTemplate');
 const messaging = require('./messaging');
-const gateway = require('./whatsappGateway');
 const { buildSendableMatch } = require('./contactAudience');
 const { buildContactTemplateVars } = require('./contactTemplateVars');
 const { emitToCallCenter } = require('../realtime');
@@ -74,10 +73,6 @@ async function runBatch(camp) {
 
   if (!pending.length) return { sent: 0, failed: 0, skipped: 0, remaining: 0 };
 
-  const account = camp.whatsappAccount
-    ? await gateway.getAccountById(camp.whatsappAccount)
-    : await gateway.getDefaultAccount();
-
   // La plantilla se lee UNA vez por tanda (no una por contacto): sus variables se
   // rellenan con los datos de cada contacto. Sin esto, messaging no encuentra
   // paciente y acaba mandando a todos el ejemplo de la plantilla.
@@ -112,6 +107,10 @@ async function runBatch(camp) {
       sentBy: camp.createdBy || null,
       sentByName: camp.createdByName || 'Campaña',
       source: 'drip',
+      // Vacío = automático: cada contacto recibe el mensaje por el número con el
+      // que él nos habló la última vez (y el principal si nunca nos escribió).
+      // Con valor, toda la campaña sale por ese número.
+      whatsappAccount: camp.whatsappAccount || null,
     });
 
     if (r.skipped) skipped++;

@@ -175,10 +175,37 @@ exports.analyze = async (req, res) => {
   }
 };
 
+/**
+ * GET /imports/pending-enrollments?workflow=<id>
+ * Cuántos envíos de importaciones ANTERIORES siguen esperando en ese flujo.
+ * El asistente lo enseña antes de confirmar: es la explicación de "me llegó el
+ * mensaje del Excel de la vez pasada" — una prueba con goteo sigue soltando su
+ * mensaje durante horas después de lanzarla.
+ */
+exports.pendingEnrollments = async (req, res) => {
+  try {
+    const WorkflowEnrollment = require('../models/WorkflowEnrollment');
+    const workflow = String(req.query.workflow || '');
+    if (!mongoose.isValidObjectId(workflow)) return res.json({ pending: 0, nextAt: null });
+    const match = {
+      workflow: new mongoose.Types.ObjectId(workflow),
+      status: { $in: ['active', 'waiting'] },
+      'context.eventType': 'contact_import',
+    };
+    const [pending, next] = await Promise.all([
+      WorkflowEnrollment.countDocuments(match),
+      WorkflowEnrollment.findOne(match).sort({ nextRunAt: 1 }).select('nextRunAt').lean(),
+    ]);
+    res.json({ pending, nextAt: next?.nextRunAt || null });
+  } catch (err) {
+    res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
 /** Paso 4: confirma y encola la importación. */
 exports.create = async (req, res) => {
   try {
-    const { uploadId, fileName, mapping, mode, tags, groups, whatsappOptIn, consentSource, workflows, dripSeconds, sendMode, sendAt } = req.body;
+    const { uploadId, fileName, mapping, mode, tags, groups, whatsappOptIn, consentSource, workflows, dripSeconds, sendMode, sendAt, whatsappAccount, cancelPending } = req.body;
     // basename() evita que un uploadId manipulado ("../../etc/passwd") salga del
     // directorio de subidas.
     const filePath = path.join(UPLOAD_DIR, path.basename(String(uploadId || '')));
@@ -249,6 +276,10 @@ exports.create = async (req, res) => {
       dripSeconds: Math.min(3600, Math.max(1, Number(dripSeconds) || 20)),
       sendMode: safeSendMode,
       sendAt: safeSendAt,
+      // Vacío = automático (cada contacto por el número con el que él escribió).
+      whatsappAccount: mongoose.isValidObjectId(whatsappAccount) ? whatsappAccount : null,
+      // Por defecto SÍ: lo normal es que un envío nuevo sustituya al anterior.
+      cancelPending: cancelPending !== false,
       tags: (Array.isArray(tags) ? tags : []).map((t) => String(t).trim()).filter(Boolean),
       groups: groupIds,
       workflows: workflowIds,

@@ -418,6 +418,10 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
     if (!convRef.current) convRef.current = await loadConversationForPatient(clinicId, phone, patient?._id);
     return convRef.current;
   };
+  // Número por el que sale este envío. Solo lo trae el contexto cuando el usuario
+  // FIJÓ uno al importar el Excel; vacío = automático y lo resuelve messaging con
+  // el último número por el que escribió el contacto.
+  const whatsappAccount = ctx?.whatsappAccountId || null;
   switch (step.type) {
     case 'send_message': {
       // Se envía a la CONVERSACIÓN existente del paciente (imprescindible con
@@ -435,6 +439,7 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
         mediaUrl: step.mediaUrl || null,
         mediaType: step.mediaType || null,
         isAutoReply: true,
+        whatsappAccount,
       });
       return sendFailureInfo(r);
     }
@@ -451,6 +456,7 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
         mediaUrl: step.mediaUrl,
         mediaType: step.mediaType || 'image',
         isAutoReply: true,
+        whatsappAccount,
       });
       return sendFailureInfo(r);
     }
@@ -466,6 +472,7 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
         template: { name: step.templateName, language: step.templateLanguage || 'es' },
         appointmentId: ctx.appointmentId || null,
         isAutoReply: true,
+        whatsappAccount,
       });
       return sendFailureInfo(r);
     }
@@ -863,6 +870,7 @@ async function executeEnrollment(enrollment) {
         mediaUrl: step.mediaUrl || null,
         mediaType: step.mediaType || null,
         isAutoReply: true,
+        whatsappAccount: ctx.whatsappAccountId || null,
       });
       const fail = sendFailureInfo(r);
       if (fail && scheduleSendRetry(enrollment, fail, { stepIndex: i })) {
@@ -889,6 +897,7 @@ async function executeEnrollment(enrollment) {
           mediaUrl: step.mediaUrl,
           mediaType: step.mediaType || 'image',
           isAutoReply: true,
+          whatsappAccount: ctx.whatsappAccountId || null,
         });
         const fail = sendFailureInfo(r);
         if (fail && scheduleSendRetry(enrollment, fail, { stepIndex: i })) {
@@ -912,6 +921,7 @@ async function executeEnrollment(enrollment) {
         template: { name: step.templateName, language: step.templateLanguage || 'es' },
         appointmentId: ctx.appointmentId || null,
         isAutoReply: true,
+        whatsappAccount: ctx.whatsappAccountId || null,
       });
       const fail = sendFailureInfo(r);
       if (fail && scheduleSendRetry(enrollment, fail, { stepIndex: i })) {
