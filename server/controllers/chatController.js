@@ -194,11 +194,37 @@ exports.getConversation = async (req, res) => {
       .populate('opportunity.interestedIn.product', 'name salePrice')
       .populate('opportunities.interestedIn.product', 'name salePrice');
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
-    res.json(decorateConversation(conv.toObject(), await resolveDefaultConnectionType()));
+    const out = decorateConversation(conv.toObject(), await resolveDefaultConnectionType());
+    out.detectedEmail = await findEmailInConversation(conv._id);
+    res.json(out);
   } catch (err) {
     res.status(500).json({ message: 'Error al obtener conversación', error: err.message });
   }
 };
+
+// El correo tal y como lo escribe la gente en un chat: suelto, a veces con la
+// frase alrededor ("mi correo es ana@x.com gracias"). Se busca en el ÚLTIMO
+// mensaje entrante que contenga uno, porque si lo corrigió vale el segundo.
+const EMAIL_RE = /[^\s@,;:<>()[\]"']+@[^\s@,;:<>()[\]"']+\.[a-zA-Z]{2,}/;
+
+/**
+ * Correo que el contacto haya escrito en la conversación, o '' si ninguno.
+ * Se calcula al abrir el chat en vez de guardarse: así también aparece en las
+ * conversaciones antiguas, sin migración ni tocar la ingesta.
+ */
+async function findEmailInConversation(conversationId) {
+  const msg = await Message.findOne({
+    conversation: conversationId,
+    direction: 'in',
+    body: { $regex: '[^\\s@]+@[^\\s@]+\\.[a-zA-Z]{2,}' },
+  })
+    .sort({ createdAt: -1 })
+    .select('body')
+    .lean();
+  const match = msg?.body ? String(msg.body).match(EMAIL_RE) : null;
+  // Se normaliza a minúsculas: los teléfonos escriben "Ana@Gmail.com".
+  return match ? match[0].toLowerCase().replace(/[.,;:]+$/, '') : '';
+}
 
 /**
  * Marca una conversación como leída: pone el contador de no leídos en 0 y marca

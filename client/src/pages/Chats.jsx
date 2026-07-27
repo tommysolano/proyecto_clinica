@@ -773,6 +773,8 @@ export default function Chats() {
       opportunity: detail.opportunity,
       opportunities: detail.opportunities,
       featuredBy: detail.featuredBy,
+      // Correo que el contacto escribió en el chat: solo viene en el detalle.
+      detectedEmail: detail.detectedEmail,
     };
   }, [liveActiveConv, openConvSnap, activeDetail, activeId]);
 
@@ -3198,6 +3200,83 @@ function MessageBubble({ msg, onReply, onJumpTo, highlight, onRetry, onRetryMedi
   );
 }
 
+/**
+ * Una fila "dato + botón de copiar". El icono cambia a un visto un segundo:
+ * el agente necesita saber que copió sin apartar la vista del chat.
+ */
+function CopyRow({ icon: Icon, label, value, empty }) {
+  const [copied, setCopied] = useState(false);
+
+  const copy = () => {
+    navigator.clipboard.writeText(value).then(
+      () => {
+        setCopied(true);
+        setTimeout(() => setCopied(false), 1200);
+        toast.success(`${label} copiado`);
+      },
+      () => toast.error('No se pudo copiar')
+    );
+  };
+
+  return (
+    <div className="flex items-center gap-2 min-w-0">
+      <Icon className="w-4 h-4 text-slate-400 shrink-0" />
+      <div className="min-w-0 flex-1">
+        <div className="text-[10px] text-slate-400 leading-tight">{label}</div>
+        {value ? (
+          <div className="text-xs text-slate-700 truncate" title={value}>{value}</div>
+        ) : (
+          <div className="text-xs text-slate-400 italic">{empty}</div>
+        )}
+      </div>
+      {value && (
+        <button
+          onClick={copy}
+          title={`Copiar ${label.toLowerCase()}`}
+          aria-label={`Copiar ${label.toLowerCase()}`}
+          className="shrink-0 p-1.5 rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 bg-transparent border-none cursor-pointer"
+        >
+          {copied ? (
+            <HiOutlineCheck className="w-4 h-4 text-emerald-600" />
+          ) : (
+            <HiOutlineDocumentDuplicate className="w-4 h-4" />
+          )}
+        </button>
+      )}
+    </div>
+  );
+}
+
+/**
+ * Teléfono y correo del contacto, listos para copiar.
+ *
+ * El correo NO se pide en ningún formulario: sale de lo que el propio contacto
+ * escribió en la conversación (lo detecta el backend al abrir el chat, ver
+ * `findEmailInConversation`). Si el contacto ya es paciente y tiene correo en su
+ * ficha, ese vale como respaldo.
+ */
+function ContactDataBlock({ conv }) {
+  const hidden = isHiddenNumber(conv);
+  const email = conv.detectedEmail || conv.patient?.email || '';
+
+  return (
+    <div className="border border-slate-200 rounded-xl p-2.5 space-y-2 bg-slate-50/50">
+      <CopyRow
+        icon={HiOutlinePhone}
+        label="Número de contacto"
+        value={hidden ? '' : conv.phone}
+        empty="WhatsApp aún no comparte su número"
+      />
+      <CopyRow
+        icon={HiOutlineEnvelopeOpen}
+        label="Correo electrónico"
+        value={email}
+        empty="Aún no lo ha escrito en el chat"
+      />
+    </div>
+  );
+}
+
 function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onScheduleAppointment, onCreateQuotation }) {
   const op = conv.opportunity || {};
   const meta = op.isOpportunity ? stageMeta(op.stage) : null;
@@ -3274,6 +3353,11 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
           </button>
         </div>
       </div>
+
+      {/* Datos para copiar de un clic: el agente los pega en el sistema, en un
+          correo o en una llamada sin tener que buscarlos por el chat. El correo
+          sale de lo que el propio contacto escribió en la conversación. */}
+      <ContactDataBlock conv={conv} />
 
       {registerModal && (
         <RegisterPatientModal
