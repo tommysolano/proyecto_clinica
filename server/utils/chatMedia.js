@@ -52,13 +52,27 @@ function mediaUrlForId(id) {
 async function storeInlineMedia({ clinicId, dataUrl, name, kind = 'inbound', createdBy = null }) {
   const parsed = parseDataUrl(dataUrl);
   if (!parsed) return null;
+  const mongoose = require('mongoose');
+  const mediaStore = require('./mediaStore');
   const ChatGalleryImage = require('../models/ChatGalleryImage');
+
+  const mimeType = parsed.mimeType || 'application/octet-stream';
+  const buffer = Buffer.from(parsed.b64, 'base64');
+
+  // El id se genera aquí porque forma parte del nombre del archivo. Se escribe a
+  // disco ANTES de crear el documento: si la escritura falla no queda un registro
+  // en Mongo apuntando a un archivo inexistente. Al revés (documento sin archivo)
+  // sería un adjunto roto; así, lo peor que puede pasar es un archivo huérfano.
+  const _id = new mongoose.Types.ObjectId();
+  const { storageKey } = await mediaStore.write({ id: _id, buffer, mimeType });
+
   const doc = await ChatGalleryImage.create({
+    _id,
     clinic: clinicId,
     name: String(name || `adjunto_${Date.now()}`).slice(0, 200),
-    dataUrl,
-    mimeType: parsed.mimeType || 'application/octet-stream',
-    size: Buffer.byteLength(parsed.b64, 'utf8'),
+    storageKey,
+    mimeType,
+    size: buffer.length,
     kind,
     ...(createdBy ? { createdBy } : {}),
   });

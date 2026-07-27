@@ -20,15 +20,16 @@ exports.uploadHeaderImage = async (req, res) => {
     if (dataUrl.length > 2_500_000) {
       return res.status(400).json({ message: 'Imagen demasiado grande (máx ~1.8MB)' });
     }
-    const mimeMatch = dataUrl.match(/^data:(image\/[a-zA-Z0-9+]+);/);
-    const img = await ChatGalleryImage.create({
-      clinic: req.clinicId,
-      name: name || `tpl_${Date.now()}`,
+    // Los bytes van al DISCO del servidor, no dentro de Mongo (ver utils/mediaStore).
+    const stored = await require('../utils/chatMedia').storeInlineMedia({
+      clinicId: req.clinicId,
       dataUrl,
-      mimeType: mimeMatch ? mimeMatch[1] : 'image/png',
-      size: dataUrl.length,
+      name: name || `tpl_${Date.now()}`,
+      kind: 'gallery',
       createdBy: req.user._id,
     });
+    if (!stored) return res.status(400).json({ message: 'Imagen inválida' });
+    const img = { _id: stored.id };
     // PUBLIC_API_URL ya incluye "/api" por convención; normalizamos para no
     // duplicarlo (…/api/api/… daba 404) y devolvemos siempre una URL absoluta,
     // necesaria porque Meta descarga esta imagen desde fuera.
@@ -549,10 +550,10 @@ function buildMetaComponents(tpl, headerHandle = '') {
 async function fetchHeaderMediaBytes(url) {
   const m = String(url || '').match(/\/api\/public\/media\/([a-f0-9]{24})/i);
   if (m) {
-    const ChatGalleryImage = require('../models/ChatGalleryImage');
-    const img = await ChatGalleryImage.findById(m[1]).select('dataUrl mimeType').lean();
-    const dm = img?.dataUrl?.match(/^data:([^;]+);base64,(.*)$/);
-    if (dm) return { buffer: Buffer.from(dm[2], 'base64'), mime: dm[1] || img.mimeType || 'image/png' };
+    // Puerta única: el archivo está en disco (lo normal) o todavía en base64
+    // dentro de Mongo (anterior a la migración). Ver utils/mediaStore.
+    const att = await require('../utils/mediaStore').loadAttachment(m[1]).catch(() => null);
+    if (att) return { buffer: att.buffer, mime: att.mimeType || 'image/png' };
     return null;
   }
   try {

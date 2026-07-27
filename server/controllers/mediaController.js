@@ -1,4 +1,5 @@
 const ChatGalleryImage = require('../models/ChatGalleryImage');
+const mediaStore = require('../utils/mediaStore');
 const { parseDataUrl } = require('../utils/dataUrl');
 
 /**
@@ -75,8 +76,27 @@ exports.serveMessageMedia = async (req, res) => {
  */
 exports.serve = async (req, res) => {
   try {
-    const img = await ChatGalleryImage.findById(req.params.id).select('dataUrl mimeType name');
-    if (!img || !img.dataUrl) return res.status(404).send('Not found');
+    const img = await ChatGalleryImage.findById(req.params.id)
+      .select('dataUrl storageKey mimeType name')
+      .lean();
+    if (!img) return res.status(404).send('Not found');
+
+    // Ruta normal desde jul-2026: el archivo está en el disco del servidor y se
+    // envía por STREAM. Cargar en memoria un video de 15 MB por cada agente que
+    // lo abre es justo lo que no queremos repetir.
+    if (img.storageKey) {
+      const total = await mediaStore.size(img.storageKey);
+      if (total != null) {
+        return streamFromDisk(res, img.storageKey, total, {
+          mimeType: img.mimeType || 'application/octet-stream',
+          range: req.headers?.range,
+        });
+      }
+      console.error('[media] falta en disco %s (id=%s)', img.storageKey, req.params.id);
+    }
+
+    // Adjuntos anteriores a la migración: todavía con los bytes dentro de Mongo.
+    if (!img.dataUrl) return res.status(404).send('Not found');
     return sendDataUrl(res, img.dataUrl, {
       fallbackMime: img.mimeType || 'application/octet-stream',
       range: req.headers?.range,
@@ -85,3 +105,30 @@ exports.serve = async (req, res) => {
     return res.status(500).send('Error');
   }
 };
+
+/**
+ * Envía un archivo del disco, atendiendo `Range` (206 Parcial). Los rangos no son
+ * un lujo: sin ellos Safari/iOS no reproduce audio ni video servido por URL.
+ */
+function streamFromDisk(res, storageKey, total, { mimeType, range }) {
+  res.set('Content-Type', mimeType);
+  res.set('Cache-Control', 'public, max-age=31536000, immutable');
+  res.set('Accept-Ranges', 'bytes');
+
+  const m = range && /^bytes=(\d*)-(\d*)$/.exec(String(range).trim());
+  if (m && (m[1] || m[2])) {
+    const start = m[1] ? Number(m[1]) : 0;
+    const end = m[2] ? Math.min(Number(m[2]), total - 1) : total - 1;
+    if (!Number.isFinite(start) || !Number.isFinite(end) || start > end || start >= total) {
+      res.set('Content-Range', `bytes */${total}`);
+      return res.status(416).end();
+    }
+    res.status(206);
+    res.set('Content-Range', `bytes ${start}-${end}/${total}`);
+    res.set('Content-Length', String(end - start + 1));
+    return mediaStore.createReadStream(storageKey, { start, end }).pipe(res);
+  }
+
+  res.set('Content-Length', String(total));
+  return mediaStore.createReadStream(storageKey).pipe(res);
+}

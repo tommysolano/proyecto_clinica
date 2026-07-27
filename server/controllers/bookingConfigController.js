@@ -62,15 +62,16 @@ exports.uploadImage = async (req, res) => {
     if (dataUrl.length > 2_500_000) {
       return res.status(400).json({ message: 'Imagen demasiado grande (máx ~1.8MB)' });
     }
-    const mimeMatch = dataUrl.match(/^data:(image\/[a-zA-Z0-9+]+);/);
-    const img = await ChatGalleryImage.create({
-      clinic: req.clinicId,
-      name: name || `booking_${Date.now()}`,
+    // Los bytes van al DISCO del servidor, no dentro de Mongo (ver utils/mediaStore).
+    const stored = await require('../utils/chatMedia').storeInlineMedia({
+      clinicId: req.clinicId,
       dataUrl,
-      mimeType: mimeMatch ? mimeMatch[1] : 'image/png',
-      size: dataUrl.length,
+      name: name || `booking_${Date.now()}`,
+      kind: 'gallery',
       createdBy: req.user._id,
     });
+    if (!stored) return res.status(400).json({ message: 'Imagen inválida' });
+    const img = { _id: stored.id };
     // PUBLIC_API_URL, por convención del repo, ya incluye "/api" al final. Como
     // abajo añadimos "/api/public/...", eso producía URLs con "/api/api/..." (la
     // imagen daba 404 y el <img> fallaba en silencio). Normalizamos: quitamos el

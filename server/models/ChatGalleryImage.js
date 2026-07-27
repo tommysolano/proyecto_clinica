@@ -13,7 +13,15 @@ const chatGalleryImageSchema = new mongoose.Schema(
       index: true,
     },
     name: { type: String, required: true, trim: true },
-    dataUrl: { type: String, required: true }, // data:image/...;base64,...
+    // Ruta del archivo EN DISCO, relativa a MEDIA_DIR (ver utils/mediaStore).
+    // Es donde viven los adjuntos desde jul-2026: guardar videos como base64 en
+    // Mongo se comía el 88% de la base de datos (149 MB de 169 MB) mientras el
+    // servidor tenía 65 GB de disco libres al lado.
+    storageKey: { type: String, trim: true, default: '' },
+    // Base64 heredado. Ya NO se escribe: solo lo conservan los adjuntos anteriores
+    // a la migración, y `migrateChatMediaToDisk.js` los va vaciando. Se lee como
+    // respaldo (ver mediaStore.loadAttachment) para no perder ningún archivo.
+    dataUrl: { type: String },
     mimeType: { type: String, default: 'image/png' },
     size: { type: Number, default: 0 },
     // Para qué se guardó. 'inbound' es lo que MANDA el contacto (fotos, notas de

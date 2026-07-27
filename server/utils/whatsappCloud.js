@@ -187,19 +187,16 @@ async function sendMedia(creds, to, url, caption, type = 'image', contextMessage
   let docFilename = ''; // nombre real del archivo (documentos): lo ve el contacto
   const selfHosted = String(url || '').match(/\/api\/public\/media\/([a-f0-9]{24})/i);
   if (selfHosted) {
-    const img = await require('../models/ChatGalleryImage')
-      .findById(selfHosted[1])
-      .select('dataUrl mimeType name')
-      .lean()
-      .catch(() => null);
-    const parsed = img?.dataUrl ? require('./dataUrl').parseDataUrl(img.dataUrl) : null;
-    if (!parsed) {
+    // Puerta única: resuelve el adjunto esté en disco (lo normal) o todavía en
+    // base64 dentro de Mongo (anterior a la migración). Ver utils/mediaStore.
+    const att = await require('./mediaStore').loadAttachment(selfHosted[1]).catch(() => null);
+    if (!att) {
       console.warn('[wa-cloud sendMedia] adjunto propio ILEGIBLE id=%s (no se envía por link para no mentir "enviado")', selfHosted[1]);
       return { ok: false, errorCode: 'media_unreadable', error: 'No se pudo leer el archivo adjunto para enviarlo (media no encontrada o dañada).' };
     }
-    buffer = Buffer.from(parsed.b64, 'base64');
-    byteMime = parsed.mimeType || img.mimeType;
-    docFilename = img?.name || '';
+    buffer = att.buffer;
+    byteMime = att.mimeType;
+    docFilename = att.name || '';
   } else if (/^data:/i.test(String(url || ''))) {
     const parsed = require('./dataUrl').parseDataUrl(url);
     if (!parsed) {

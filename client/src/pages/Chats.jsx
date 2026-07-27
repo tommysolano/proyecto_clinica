@@ -645,6 +645,18 @@ export default function Chats() {
     [view, scope, filter, debouncedSearch]
   );
 
+  // Otro agente tocó la oportunidad del chat que tengo abierto: se relee el
+  // detalle (paciente, oportunidades y sus productos), que la lista ya no trae.
+  useSocketEvent(
+    'chat:opportunity',
+    (payload) => {
+      if (payload?.conversationId && String(payload.conversationId) === String(activeIdRef.current)) {
+        loadActiveDetail(activeIdRef.current);
+      }
+    },
+    []
+  );
+
   // Estado del tiempo real (socket). Se muestra en la cabecera y gobierna el
   // respaldo por sondeo de abajo.
   const { connected: realtimeConnected } = useSocket();
@@ -719,8 +731,65 @@ export default function Chats() {
   useEffect(() => {
     if (liveActiveConv) setOpenConvSnap(liveActiveConv);
   }, [liveActiveConv]);
-  const activeConv =
-    liveActiveConv || (openConvSnap && openConvSnap._id === activeId ? openConvSnap : undefined);
+  /**
+   * Detalle COMPLETO del chat abierto (paciente, oportunidades con sus productos,
+   * cita vinculada). La lista ya no trae nada de esto: cargar los datos del
+   * paciente de 300 conversaciones para pintar unas filas que solo muestran
+   * nombre y último mensaje era lo que la hacía tardar segundos. Aquí se pide UNA
+   * conversación, que tarda ~350 ms, y solo cuando el agente la abre.
+   */
+  const [activeDetail, setActiveDetail] = useState(null);
+  const loadActiveDetail = (id) => {
+    if (!id) return Promise.resolve();
+    return api
+      .get(`/chats/${id}`)
+      .then(({ data }) => {
+        // Solo pinta si el agente sigue en ese chat: si ya se movió, esta
+        // respuesta tardía llenaría el panel con los datos del contacto anterior.
+        if (String(data?._id) === String(activeIdRef.current)) setActiveDetail(data);
+      })
+      .catch(() => {});
+  };
+  useEffect(() => {
+    setActiveDetail(null);
+    if (activeId) loadActiveDetail(activeId);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
+
+  // Mezcla EXPLÍCITA. La fila de la lista manda en todo lo que cambia en vivo
+  // (último mensaje, no leídos, ventana de 24h) y el detalle aporta solo los
+  // campos que la lista ya no trae completos. Se enumeran uno a uno a propósito:
+  // con un `{...detail, ...base}` a secas, el `patient` de la fila —que ahora es
+  // solo un identificador— pisaría el objeto entero del paciente y el panel
+  // lateral se quedaría en blanco.
+  const activeConv = useMemo(() => {
+    const base = liveActiveConv || (openConvSnap && openConvSnap._id === activeId ? openConvSnap : undefined);
+    const detail = activeDetail && String(activeDetail._id) === String(activeId) ? activeDetail : null;
+    if (!detail) return base;
+    if (!base) return detail;
+    return {
+      ...base,
+      patient: detail.patient,
+      opportunity: detail.opportunity,
+      opportunities: detail.opportunities,
+      featuredBy: detail.featuredBy,
+    };
+  }, [liveActiveConv, openConvSnap, activeDetail, activeId]);
+
+  /**
+   * Aplica una conversación ya actualizada por el servidor (asignar, etiquetar,
+   * vincular paciente, crear cita, editar oportunidad…). Las respuestas de esas
+   * mutaciones vienen COMPLETAS, así que sirven a la vez de fila de la lista y de
+   * detalle del panel. Hay que refrescar las dos cosas: si solo se actualizara la
+   * lista, el panel seguiría mostrando el paciente o las oportunidades de antes
+   * de guardar, porque esos campos salen del detalle (ver activeConv).
+   */
+  const applyConversationUpdate = (c) => {
+    if (!c?._id) return;
+    setConversations((prev) => prev.map((x) => (String(x._id) === String(c._id) ? c : x)));
+    setOpenConvSnap((prev) => (prev && String(prev._id) === String(c._id) ? c : prev));
+    if (String(c._id) === String(activeIdRef.current)) setActiveDetail(c);
+  };
   // Lista según el orden elegido. El backend manda destacados arriba + recientes
   // primero; 'oldest' reordena aquí por llegada pura (sin anclar destacados).
   const sortedConversations = useMemo(() => {
@@ -1076,7 +1145,7 @@ export default function Chats() {
   const takeChat = async (conv) => {
     try {
       const r = await api.post(`/chats/${conv._id}/assign`, {});
-      setConversations((prev) => prev.map((c) => (c._id === conv._id ? r.data : c)));
+      applyConversationUpdate(r.data);
       toast.success('Chat asignado');
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error');
@@ -1182,7 +1251,7 @@ export default function Chats() {
   const autoAssignChat = async (conv) => {
     try {
       const r = await api.post(`/chats/${conv._id}/auto-assign`, {});
-      setConversations((prev) => prev.map((c) => (c._id === conv._id ? r.data : c)));
+      applyConversationUpdate(r.data);
       toast.success(`Asignado a ${r.data.assignedToName || 'un agente'}`);
     } catch (err) {
       toast.error(err.response?.data?.message || 'No se pudo auto-asignar');
@@ -1995,7 +2064,7 @@ export default function Chats() {
                 agents={agents}
                 meId={user?._id}
                 onUpdated={(c) => {
-                  setConversations((prev) => prev.map((x) => (x._id === c._id ? c : x)));
+                  applyConversationUpdate(c);
                 }}
                 onEditOpportunity={() => setOpportunityModal(true)}
                 onScheduleAppointment={() => setAppointmentModal(true)}
@@ -2028,7 +2097,7 @@ export default function Chats() {
                   agents={agents}
                   meId={user?._id}
                   onUpdated={(c) => {
-                    setConversations((prev) => prev.map((x) => (x._id === c._id ? c : x)));
+                    applyConversationUpdate(c);
                   }}
                   onEditOpportunity={() => setOpportunityModal(true)}
                   onScheduleAppointment={() => setAppointmentModal(true)}
@@ -2048,7 +2117,7 @@ export default function Chats() {
           services={services}
           onClose={() => setOpportunityModal(false)}
           onSaved={(c) => {
-            setConversations((prev) => prev.map((x) => (x._id === c._id ? c : x)));
+            applyConversationUpdate(c);
             setOpportunityModal(false);
           }}
         />
@@ -2059,7 +2128,7 @@ export default function Chats() {
           services={services}
           onClose={() => setAppointmentModal(false)}
           onCreated={(c, count) => {
-            setConversations((prev) => prev.map((x) => (x._id === c._id ? c : x)));
+            applyConversationUpdate(c);
             setAppointmentModal(false);
             toast.success(count > 1 ? `${count} citas creadas desde el chat` : 'Cita creada desde el chat');
           }}

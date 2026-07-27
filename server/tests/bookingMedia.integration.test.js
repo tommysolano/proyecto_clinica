@@ -20,15 +20,43 @@ const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9
 const PNG_DATA_URL = `data:image/png;base64,${PNG_B64}`;
 
 // res que captura headers + body (media.serve usa res.set / res.send con Buffer).
+/**
+ * `res` simulado. Es un Writable DE VERDAD porque el endpoint sirve los archivos
+ * del disco por STREAM (`fs.createReadStream(...).pipe(res)`): un video de 15 MB
+ * no puede cargarse en memoria por cada agente que lo abre. Un mock con solo
+ * `send`/`json` hacía fallar el pipe y el endpoint devolvía 500.
+ */
 function captureRes() {
+  const { Writable } = require('stream');
   const state = { statusCode: 200, headers: {}, body: undefined, done: false };
-  const res = {
-    status(c) { state.statusCode = c; return res; },
-    set(k, v) { if (typeof k === 'object') Object.assign(state.headers, k); else state.headers[k] = v; return res; },
-    send(b) { state.body = b; state.done = true; return res; },
-    json(b) { state.body = b; state.done = true; return res; },
+  const chunks = [];
+  const res = new Writable({
+    write(chunk, _enc, cb) { chunks.push(Buffer.from(chunk)); cb(); },
+  });
+  res.on('finish', () => { state.body = Buffer.concat(chunks); state.done = true; });
+  res.status = (c) => { state.statusCode = c; return res; };
+  res.set = (k, v) => {
+    if (typeof k === 'object') Object.assign(state.headers, k);
+    else state.headers[k] = v;
+    return res;
   };
+  res.send = (b) => {
+    if (b !== undefined) chunks.push(Buffer.isBuffer(b) ? b : Buffer.from(String(b)));
+    res.end();
+    return res;
+  };
+  res.json = (b) => { state.body = b; state.done = true; return res; };
   return { res, state };
+}
+
+/** Espera a que el stream termine de volcar en el `res` simulado. */
+async function drain(state, timeoutMs = 3000) {
+  const until = Date.now() + timeoutMs;
+  while (Date.now() < until && !state.done) {
+    // eslint-disable-next-line no-await-in-loop
+    await new Promise((r) => setTimeout(r, 10));
+  }
+  return state;
 }
 
 test.before(async () => { await H.startDb(); });
@@ -48,16 +76,22 @@ test('subir imagen → se persiste en Mongo → se sirve con los bytes correctos
   assert.ok(up.payload.id, 'devuelve id');
   assert.match(up.payload.url, /\/api\/public\/media\/[a-f0-9]{24}$/, 'url pública autoalojada');
 
-  // 2) Persistencia: el doc queda en la colección con el dataUrl completo.
+  // 2) Persistencia: el registro queda en Mongo, pero los BYTES van al disco del
+  //    servidor (ver utils/mediaStore). Guardarlos en base64 dentro de Mongo se
+  //    comía el 88% de la base de datos.
   const stored = await ChatGalleryImage.findById(up.payload.id);
-  assert.ok(stored, 'la imagen se guardó en Mongo');
-  assert.equal(stored.dataUrl, PNG_DATA_URL, 'guarda el contenido íntegro');
+  assert.ok(stored, 'el registro se guardó en Mongo');
+  assert.ok(stored.storageKey, 'apunta al archivo en disco');
+  assert.ok(!stored.dataUrl, 'NO guarda el base64 dentro de Mongo');
   assert.equal(String(stored.clinic), String(clinicId), 'queda asociada a la clínica');
   assert.equal(stored.mimeType, 'image/png');
+  const onDisk = await require('../utils/mediaStore').read(stored.storageKey);
+  assert.deepEqual(onDisk, Buffer.from(PNG_B64, 'base64'), 'el archivo está íntegro en disco');
 
   // 3) Servir: el endpoint público devuelve los bytes decodificados (sin auth).
   const { res, state } = captureRes();
-  await media.serve({ params: { id: up.payload.id } }, res);
+  await media.serve({ params: { id: up.payload.id }, headers: {} }, res);
+  await drain(state);
   assert.equal(state.statusCode, 200);
   assert.equal(state.headers['Content-Type'], 'image/png');
   assert.ok(Buffer.isBuffer(state.body), 'responde un Buffer');

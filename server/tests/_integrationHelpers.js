@@ -16,14 +16,19 @@ const InventoryCategory = require('../models/InventoryCategory');
 
 let replset = null;
 
+let tempMediaDir = null;
+
 async function startDb() {
   replset = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await mongoose.connect(replset.getUri(), { dbName: 'test' });
+  tempMediaDir = await useTempMediaDir();
 }
 
 async function stopDb() {
   await mongoose.disconnect();
   if (replset) await replset.stop();
+  await cleanupTempMediaDir(tempMediaDir);
+  tempMediaDir = null;
 }
 
 async function resetDb() {
@@ -163,6 +168,28 @@ async function runController(handler, req) {
   await handler(req, res);
   if (!state.done) throw new Error('El controller no respondió (no llamó a res.json/send)');
   return state;
+}
+
+/**
+ * Almacén de media AISLADO para los tests. Sin esto, cualquier test que suba un
+ * adjunto escribiría archivos de verdad en `server/storage/media` del repo y los
+ * iría acumulando ahí para siempre. Se activa en `startDb` y se borra en `stopDb`.
+ */
+async function useTempMediaDir() {
+  const fsp = require('fs/promises');
+  const os = require('os');
+  const path = require('path');
+  if (process.env.MEDIA_DIR) return null; // el test ya eligió el suyo
+  const dir = await fsp.mkdtemp(path.join(os.tmpdir(), 'shiluv-media-test-'));
+  process.env.MEDIA_DIR = dir;
+  return dir;
+}
+
+async function cleanupTempMediaDir(dir) {
+  if (!dir) return;
+  const fsp = require('fs/promises');
+  delete process.env.MEDIA_DIR;
+  await fsp.rm(dir, { recursive: true, force: true }).catch(() => {});
 }
 
 /**

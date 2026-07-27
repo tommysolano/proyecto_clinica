@@ -126,9 +126,13 @@ test('media entrante OK: el archivo se guarda APARTE y el mensaje solo lleva su 
   assert.match(msg.mediaUrl, /^\/api\/public\/media\/[a-f0-9]{24}$/);
 
   // Y el archivo SIGUE ahí, entero: aligerar el mensaje no puede costar la foto.
+  // Los bytes viven en el DISCO del servidor, no dentro de Mongo.
   const ChatGalleryImage = require('../models/ChatGalleryImage');
   const stored = await ChatGalleryImage.findById(msg.mediaUrl.split('/').pop());
-  assert.equal(stored.dataUrl, 'data:image/jpeg;base64,/9j/4AAQ');
+  assert.ok(stored.storageKey, 'el archivo está en disco');
+  assert.ok(!stored.dataUrl, 'y no en Mongo');
+  const bytes = await require('../utils/mediaStore').read(stored.storageKey);
+  assert.deepEqual(bytes, Buffer.from('/9j/4AAQ', 'base64'), 'los bytes originales, intactos');
   assert.equal(stored.kind, 'inbound', 'lo que manda el contacto no sale en la galería del agente');
 });
 
@@ -174,11 +178,13 @@ test('reintentar descarga: el archivo se recupera y la burbuja deja de estar en 
       H.mockReq(clinicId, userId, {}, { params: { id: String(conv._id), messageId: String(msg._id) } })
     );
     assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
-    // El archivo recuperado también va al almacén, no dentro del mensaje.
+    // El archivo recuperado también va al disco, no dentro del mensaje.
     assert.match(r.payload.mediaUrl, /^\/api\/public\/media\/[a-f0-9]{24}$/);
     const ChatGalleryImage = require('../models/ChatGalleryImage');
     const stored = await ChatGalleryImage.findById(r.payload.mediaUrl.split('/').pop());
-    assert.match(stored.dataUrl, /^data:audio\/ogg;base64,/);
+    assert.ok(stored.storageKey, 'el audio recuperado queda en disco');
+    assert.equal(stored.mimeType, 'audio/ogg');
+    assert.ok(await require('../utils/mediaStore').size(stored.storageKey), 'el archivo existe');
     assert.equal(r.payload.errorCode, '', 'se limpia el error al recuperarlo');
   } finally {
     global.fetch = origFetch;

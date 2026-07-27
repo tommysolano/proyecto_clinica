@@ -1589,12 +1589,13 @@ async function sendMedia(account, to, url, caption, type = 'image', quotedMessag
     let fileName = ''; // nombre real del documento (lo ve el contacto)
     const m = String(url || '').match(/\/api\/public\/media\/([a-f0-9]{24})/i);
     if (m) {
-      const img = await require('../models/ChatGalleryImage').findById(m[1]).select('dataUrl mimeType name').lean();
-      const parsed = require('./dataUrl').parseDataUrl(img?.dataUrl);
-      if (!parsed) return { ok: false, error: `No se pudo leer ${what} guardado` };
-      mime = parsed.mimeType || img.mimeType || mime;
-      b64 = parsed.b64;
-      fileName = img?.name || '';
+      // Puerta única: resuelve el adjunto esté en disco (lo normal) o todavía en
+      // base64 dentro de Mongo (anterior a la migración). Ver utils/mediaStore.
+      const att = await require('./mediaStore').loadAttachment(m[1]);
+      if (!att) return { ok: false, errorCode: 'qr_media_unreadable', error: `No se pudo leer ${what} guardado` };
+      mime = att.mimeType || mime;
+      b64 = att.buffer.toString('base64');
+      fileName = att.name || '';
     } else {
       const resp = await withTimeout(fetch(url), 20000, `Tiempo agotado descargando ${what}`);
       if (!resp.ok) return { ok: false, error: `No se pudo descargar ${what} (HTTP ${resp.status})` };
