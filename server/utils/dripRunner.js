@@ -35,9 +35,14 @@ function withinSchedule(camp, now = new Date()) {
   return true;
 }
 
-/** Conversación del contacto (se crea si no existe) para que el envío se vea en el chat. */
+/**
+ * Conversación del contacto (se crea si no existe) para que el envío se vea en el
+ * chat. Cuenta también los chats de "número oculto" (@lid) enlazados a ese
+ * teléfono: si no, la campaña escribe por el chat viejo de Cloud API y no por el
+ * número al que el contacto acaba de escribir. Ver findConversationForPerson.
+ */
 async function conversationFor(clinicId, contact) {
-  let conv = await Conversation.findOne({ clinic: clinicId, channel: 'whatsapp', phone: contact.phone });
+  let conv = await messaging.findConversationForPerson(clinicId, contact.phone, 'whatsapp');
   if (!conv) {
     conv = await Conversation.create({
       clinic: clinicId,
@@ -65,13 +70,36 @@ function personalize(body, contact) {
 async function runBatch(camp) {
   const match = buildSendableMatch(camp.clinic, camp.group ? await camp.populate('group').then((c) => c.group) : null);
   // A los ya enviados no se les repite.
-  const pending = await Contact.find({
+  const found = await Contact.find({
     $and: [match, { _id: { $nin: camp.sentContacts || [] } }],
   })
     .limit(camp.batchSize)
     .lean({ virtuals: true });
 
-  if (!pending.length) return { sent: 0, failed: 0, skipped: 0, remaining: 0 };
+  if (!found.length) return { sent: 0, failed: 0, skipped: 0, remaining: 0 };
+
+  // UN ENVÍO POR TELÉFONO. `Contact` es único por (sede, teléfono): el mismo
+  // número puede tener dos fichas si dos importaciones lo mandaron a sucursales
+  // distintas. Sin este filtro la campaña le manda el mensaje DOS veces a la
+  // misma persona (y Meta cobra las dos). Se queda la ficha actualizada más
+  // recientemente, que es la que trae los datos de esta campaña.
+  const byPhone = new Map();
+  for (const c of found) {
+    const prev = byPhone.get(c.phone);
+    if (!prev || new Date(c.updatedAt || 0) > new Date(prev.updatedAt || 0)) byPhone.set(c.phone, c);
+  }
+  const pending = [...byPhone.values()];
+
+  // Las fichas gemelas se marcan como enviadas junto con la que sí recibe el
+  // mensaje: si no, la siguiente tanda las recogería y enviaría el duplicado igual.
+  const twinsByPhone = new Map();
+  const twins = await Contact.find({ phone: { $in: pending.map((c) => c.phone) } })
+    .select('_id phone')
+    .lean();
+  for (const t of twins) {
+    if (!twinsByPhone.has(t.phone)) twinsByPhone.set(t.phone, []);
+    twinsByPhone.get(t.phone).push(t._id);
+  }
 
   // La plantilla se lee UNA vez por tanda (no una por contacto): sus variables se
   // rellenan con los datos de cada contacto. Sin esto, messaging no encuentra
@@ -111,13 +139,17 @@ async function runBatch(camp) {
       // que él nos habló la última vez (y el principal si nunca nos escribió).
       // Con valor, toda la campaña sale por ese número.
       whatsappAccount: camp.whatsappAccount || null,
+      // Ficha EXACTA de la que salen las variables de la campaña.
+      contactId: contact._id,
     });
 
     if (r.skipped) skipped++;
     else if (r.ok) sent++;
     else failed++;
-    if (!r.skipped) camp.sentContacts.push(contact._id);
-    else camp.sentContacts.push(contact._id); // omitido también se marca: no reintentar cada tanda
+    // El teléfono queda marcado como atendido (también si se omitió: no se
+    // reintenta cada tanda), incluidas sus fichas gemelas de otras sucursales.
+    const done = twinsByPhone.get(contact.phone) || [contact._id];
+    camp.sentContacts.push(...done);
     if (r.errorMessage) camp.lastError = r.errorMessage;
   }
 

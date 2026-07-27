@@ -372,6 +372,35 @@ async function createConversationSafe(payload) {
   }
 }
 
+/**
+ * Conversación de una PERSONA a partir de su teléfono, contando también los chats
+ * de "número oculto" (@lid) que quedaron enlazados a ese número (`linkedPhone`).
+ *
+ * POR QUÉ no basta con buscar por `phone`: quien escribe al número QR puede entrar
+ * con un identificador oculto, y entonces su chat se guarda con el LID como
+ * teléfono. Si esa persona YA tenía un chat por el número de Cloud API, el CRM
+ * acaba con DOS conversaciones suyas. Buscar solo por `phone` encuentra siempre la
+ * de Cloud, así que una campaña le escribía por ahí aunque su última conversación
+ * real fuera la del QR — el "me llegó desde el número equivocado".
+ *
+ * Se devuelve la conversación con el ÚLTIMO MENSAJE ENTRANTE, que es la regla del
+ * negocio: se le escribe por donde él escribió la última vez. A igualdad (o si
+ * ninguna tiene entrantes), manda la del teléfono exacto.
+ */
+async function findConversationForPerson(clinicId, phone, channel) {
+  if (!phone) return null;
+  const q = { clinic: clinicId, $or: [{ phone }, { linkedPhone: phone }] };
+  if (channel) q.channel = channel;
+  const convs = await Conversation.find(q);
+  if (convs.length <= 1) return convs[0] || null;
+  const score = (c) => (c.lastInboundAt ? new Date(c.lastInboundAt).getTime() : 0);
+  return convs.sort((a, b) => {
+    const d = score(b) - score(a);
+    if (d) return d;
+    return (b.phone === phone ? 1 : 0) - (a.phone === phone ? 1 : 0);
+  })[0];
+}
+
 async function resolveConversation({ clinicId, conversation, channel, to, contactName, patient }) {
   if (conversation?._id && typeof conversation.save === 'function') return conversation;
   const conversationId = conversation?._id || conversation;
@@ -382,7 +411,8 @@ async function resolveConversation({ clinicId, conversation, channel, to, contac
 
   const phone = normalizePhone(to);
   if (!phone) return null;
-  let conv = await Conversation.findOne({ clinic: clinicId, phone });
+  // Sin filtrar por canal, igual que siempre: la identidad es el teléfono.
+  let conv = await findConversationForPerson(clinicId, phone, null);
   if (conv) {
     const patientId = patient?._id || patient;
     if (patientId && !conv.patient) {
@@ -653,6 +683,11 @@ async function send({
   // principal. Lo usan las campañas y las importaciones cuando el usuario elige
   // "enviar todo desde este número" en vez de dejarlo automático.
   whatsappAccount = null,
+  // Ficha de CONTACTO exacta de la que salen las variables de la campaña
+  // ({{servicio}}, {{hora}}… del Excel importado). La trae la inscripción del
+  // workflow. Ver la búsqueda del contacto más abajo: sin esto se buscaba por
+  // teléfono y, con dos fichas del mismo número, salía el dato de la campaña VIEJA.
+  contactId = null,
 }) {
   const normalizedChannel = channel || 'whatsapp';
 
@@ -749,16 +784,30 @@ async function send({
     // sea un paciente: si no, un contacto que además es paciente (o cuyo número
     // coincide con uno) perdía sus customFields y las variables caían al EJEMPLO de la
     // plantilla. La cita real (si la hay) sigue teniendo prioridad en el resolutor;
-    // los customFields solo rellenan lo que la cita no aporta. Búsqueda por teléfono
-    // (CRM global, el contacto puede vivir en cualquier sede).
+    // los customFields solo rellenan lo que la cita no aporta.
+    //
+    // POR ID SIEMPRE QUE SE SEPA. `Contact` es único por (sede, teléfono), así que
+    // un mismo número puede tener DOS fichas y buscar por teléfono devolvía la
+    // primera del disco = la MÁS VIEJA. Resultado real en producción (27-jul-2026):
+    // el recordatorio salió con "12:00 / bioresonancia" —la ficha de otra sede,
+    // sin tocar desde el 23-jul— en vez del "08:00 / REVISION" que traía el Excel
+    // recién importado. La inscripción sabe de qué ficha nació: se usa esa.
+    // Como respaldo (envío manual desde el chat, sin inscripción), la más RECIENTE.
     let contactRef = null;
     try {
-      const ph = conv.phone || normalizePhone(to);
-      if (ph) {
-        contactRef = await require('../models/Contact')
-          .findOne({ phone: ph })
-          .select('firstName lastName displayName customFields')
-          .lean();
+      const Contact = require('../models/Contact');
+      const fields = 'firstName lastName displayName customFields';
+      if (contactId) contactRef = await Contact.findById(contactId).select(fields).lean();
+      if (!contactRef) {
+        // En un chat de número oculto, `conv.phone` es el LID y ahí no hay ninguna
+        // ficha: el teléfono real está en `linkedPhone` o es el destino pedido.
+        const phones = [...new Set([normalizePhone(to), conv.linkedPhone, conv.phone].filter(Boolean))];
+        if (phones.length) {
+          contactRef = await Contact.findOne({ phone: { $in: phones } })
+            .sort({ updatedAt: -1 })
+            .select(fields)
+            .lean();
+        }
       }
     } catch {
       contactRef = null;
@@ -1125,6 +1174,7 @@ async function updateMessageStatus({
 module.exports = {
   WHATSAPP_WINDOW_MS,
   buildKnownVariableResolver,
+  findConversationForPerson,
   buildTemplateComponents,
   enrichTemplateHeader,
   computeWhatsappWindowExpiresAt,

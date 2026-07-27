@@ -199,19 +199,37 @@ async function enrollInWorkflows(batch, phoneInfo, onProgress) {
 
   let enrolled = 0;
   let skipped = 0; // contactos NO inscritos por ya tener una inscripción viva (dedup)
+  let duplicatedContacts = 0; // fichas gemelas (mismo teléfono, otra sede) descartadas
   const createdByWf = new Map(); // workflowId → inscripciones creadas de verdad
 
   for (let i = 0; i < allPhones.length; i += BATCH_SIZE) {
     const chunk = allPhones.slice(i, i + BATCH_SIZE);
     // eslint-disable-next-line no-await-in-loop
-    const contacts = await Contact.find({
+    const found = await Contact.find({
       phone: { $in: chunk },
       active: true,
       'marketing.whatsappOptIn': true,
       'marketing.optOutAt': null,
     })
-      .select('_id phone patient clinic')
+      .select('_id phone patient clinic updatedAt')
       .lean();
+
+    // UN CONTACTO POR TELÉFONO. El mismo número puede tener dos fichas (una por
+    // sede) de importaciones antiguas: `Contact` es único por (sede, teléfono),
+    // no por teléfono. Inscribir las dos manda el MISMO mensaje dos veces al
+    // mismo WhatsApp y Meta cobra los dos. Se queda la ficha con los datos de
+    // ESTA campaña: la actualizada más recientemente (el Excel que se acaba de
+    // importar). Las nuevas importaciones ya no crean gemelos (findExistingByPhone),
+    // pero los que ya existían siguen ahí.
+    const bestByPhone = new Map();
+    for (const c of found) {
+      const prev = bestByPhone.get(c.phone);
+      if (!prev || new Date(c.updatedAt || 0) > new Date(prev.updatedAt || 0)) bestByPhone.set(c.phone, c);
+    }
+    const contacts = [...bestByPhone.values()];
+    if (contacts.length < found.length) {
+      duplicatedContacts += found.length - contacts.length;
+    }
 
     for (const contact of contacts) {
       // Sucursal a la que lo mandó el Excel de ESTE import (para bifurcar el flujo);
@@ -220,15 +238,20 @@ async function enrollInWorkflows(batch, phoneInfo, onProgress) {
         infoByPhone.get(contact.phone)?.clinic || String(contact.clinic || batch.clinic);
       for (const { wf, flows, hour } of perWorkflow) {
         for (const flow of flows) {
-          // Dedup por (flujo, contacto), SIN mirar el nodo de arranque: si ya tiene
-          // una inscripción viva en este flujo —da igual por dónde entrara— no se
-          // le vuelve a inscribir. Filtrar también por `startNodeId` dejaba pasar
-          // una segunda inscripción por otro disparador del mismo diagrama.
+          // Dedup por (flujo, TELÉFONO), SIN mirar el nodo de arranque: si ya hay
+          // una inscripción viva en este flujo para ese número —da igual por dónde
+          // entrara ni con qué ficha— no se le vuelve a inscribir. Filtrar por
+          // `startNodeId` dejaba pasar una segunda inscripción por otro disparador
+          // del mismo diagrama; filtrar por `contactId` dejaba pasar la de la ficha
+          // gemela de otra sede. El mensaje lo recibe un TELÉFONO: ahí va el candado.
           // eslint-disable-next-line no-await-in-loop
           const dup = await WorkflowEnrollment.findOne({
             workflow: wf._id,
-            'context.contactId': String(contact._id),
             status: { $in: ['active', 'waiting'] },
+            $or: [
+              { 'context.phone': contact.phone },
+              { 'context.contactId': String(contact._id) },
+            ],
           }).select('_id');
           if (dup) { skipped++; continue; }
 
@@ -266,7 +289,15 @@ async function enrollInWorkflows(batch, phoneInfo, onProgress) {
     if (onProgress) onProgress(enrolled);
   }
 
-  if (batch && typeof batch === 'object') batch.enrollSkipped = skipped;
+  if (batch && typeof batch === 'object') {
+    batch.enrollSkipped = skipped;
+    if (duplicatedContacts) {
+      avisos.push(
+        `${duplicatedContacts} contacto(s) del archivo tenían una ficha repetida en otra sucursal (mismo teléfono): se usó la más reciente y se envió UN solo mensaje a cada número.`
+      );
+      batch.enrollWarning = avisos.join(' ');
+    }
+  }
   for (const [wfId, n] of createdByWf) {
     // eslint-disable-next-line no-await-in-loop
     await Workflow.updateOne({ _id: wfId }, { $inc: { 'stats.enrolled': n } }).catch(() => {});
@@ -274,8 +305,37 @@ async function enrollInWorkflows(batch, phoneInfo, onProgress) {
   return enrolled;
 }
 
+/**
+ * Contactos que YA existen con esos teléfonos, EN CUALQUIER SEDE. Devuelve
+ * Map teléfono → { _id, clinic }.
+ *
+ * POR QUÉ mira todas las sedes: `Contact` es único por (sede, teléfono), así que
+ * el mismo número puede acabar como DOS contactos si dos importaciones lo mandan
+ * a sucursales distintas (la columna "Sucursal" del Excel). Y eso no es un detalle
+ * cosmético: a WhatsApp se le escribe a un TELÉFONO, no a una sucursal, así que
+ * dos contactos = la misma persona inscrita dos veces = **el mismo mensaje dos
+ * veces, cobrado dos veces por Meta** — y con los datos de la campaña partidos
+ * entre las dos fichas (una con el {{servicio}} de este Excel y otra con el del
+ * anterior). Pasó en producción el 27-jul-2026: 3 filas → 4 inscripciones.
+ *
+ * Con esto, un teléfono = UN contacto en toda la organización: si ya existe, la
+ * fila lo ACTUALIZA donde esté en vez de crear un gemelo en otra sede.
+ */
+async function findExistingByPhone(phones) {
+  const found = await Contact.find({ phone: { $in: phones } })
+    .select('_id phone clinic createdAt')
+    .sort({ createdAt: 1 })
+    .lean();
+  const byPhone = new Map();
+  for (const c of found) {
+    // El más antiguo manda (es el que tiene el histórico y las conversaciones).
+    if (!byPhone.has(c.phone)) byPhone.set(c.phone, { _id: c._id, clinic: String(c.clinic) });
+  }
+  return byPhone;
+}
+
 /** Construye el bulkWrite de una tanda respetando el modo de importación. */
-function buildOps(rows, batch) {
+function buildOps(rows, batch, existingByPhone = new Map()) {
   const ops = [];
   for (const c of rows) {
     // `clinic` (sucursal resuelta de la fila) va SOLO en el filtro y $setOnInsert,
@@ -283,6 +343,7 @@ function buildOps(rows, batch) {
     // $setOnInsert. `clinicName` (crudo) tampoco se escribe como campo.
     const { phone, tags = [], customFields = {}, clinic: rowClinic, clinicName, ...fields } = c;
     const clinicId = rowClinic || batch.clinic;
+    const already = existingByPhone.get(phone);
 
     // Los campos del archivo que sí venían. Los ausentes NO se tocan: así
     // reimportar un archivo sin la columna Nombre no borra los nombres.
@@ -315,9 +376,12 @@ function buildOps(rows, batch) {
 
     ops.push({
       updateOne: {
-        filter: { clinic: clinicId, phone },
+        // Si ya existe (en la sede que sea), se actualiza ESE documento: un
+        // teléfono = un contacto. Si no, se crea en la sucursal de la fila.
+        filter: already ? { _id: already._id } : { clinic: clinicId, phone },
         update,
-        upsert: batch.mode !== 'update', // 'update' = solo tocar los que ya existen
+        // Con `_id` en el filtro nunca se hace upsert (el documento ya existe).
+        upsert: !already && batch.mode !== 'update',
       },
     });
   }
@@ -331,30 +395,20 @@ function buildOps(rows, batch) {
 async function flushBatch(rows, batch) {
   if (!rows.length) return { created: 0, updated: 0, skipped: 0 };
 
-  // Modo 'create' (solo crear): hay que saber cuáles ya existen para no tocarlos.
-  // Con sucursal por fila, "existir" es por (sucursal, teléfono): se agrupa por
-  // sede para consultar con el índice (clinic, phone) y no barrer por teléfono suelto.
+  // Quién existe YA, mirando el teléfono en TODA la organización (no por sede):
+  // es lo que evita el contacto gemelo en otra sucursal. Ver findExistingByPhone.
+  const existingByPhone = await findExistingByPhone(rows.map((r) => r.phone));
+
+  // Modo 'create' (solo crear): los que ya existen no se tocan.
   let toWrite = rows;
   let skipped = 0;
   if (batch.mode === 'create') {
-    const byClinic = new Map();
-    for (const r of rows) {
-      const cid = String(r.clinic || batch.clinic);
-      if (!byClinic.has(cid)) byClinic.set(cid, []);
-      byClinic.get(cid).push(r.phone);
-    }
-    const known = new Set();
-    for (const [cid, phones] of byClinic) {
-      // eslint-disable-next-line no-await-in-loop
-      const existing = await Contact.find({ clinic: cid, phone: { $in: phones } }).select('phone').lean();
-      existing.forEach((e) => known.add(`${cid}:${e.phone}`));
-    }
-    toWrite = rows.filter((r) => !known.has(`${String(r.clinic || batch.clinic)}:${r.phone}`));
+    toWrite = rows.filter((r) => !existingByPhone.has(r.phone));
     skipped = rows.length - toWrite.length;
   }
   if (!toWrite.length) return { created: 0, updated: 0, skipped };
 
-  const res = await Contact.bulkWrite(buildOps(toWrite, batch), { ordered: false });
+  const res = await Contact.bulkWrite(buildOps(toWrite, batch, existingByPhone), { ordered: false });
   const created = res.upsertedCount || 0;
   const matched = res.matchedCount || 0;
   // En modo 'update' los que no existían no se escriben: cuentan como omitidos.

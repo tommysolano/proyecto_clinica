@@ -2562,8 +2562,13 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
         _id: { $ne: conv._id },
       }).select('_id');
       if (clash) {
+        // Fusionar los dos chats es decisión humana, pero el sistema SÍ tiene que
+        // saber que son la misma persona: se anota el teléfono real. Sin esta
+        // anotación, un envío dirigido al teléfono solo veía el otro chat y salía
+        // por su número, ignorando que el contacto acaba de escribir por aquí.
+        if (conv.linkedPhone !== normalizedPhone) conv.linkedPhone = normalizedPhone;
         console.warn(
-          '[chat lid] %s resuelto a %s, pero ya existe otro chat con ese número (%s): se mantiene el identificador',
+          '[chat lid] %s resuelto a %s, pero ya existe otro chat con ese número (%s): se mantiene el identificador y se enlazan',
           externalUserId, normalizedPhone, clash._id
         );
       } else {

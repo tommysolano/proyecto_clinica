@@ -240,14 +240,19 @@ function personalize(text, patient) {
 async function renderText(text, patient, ctx = {}) {
   const raw = String(text || '');
   if (!raw.includes('{{')) return raw;
-  // Inscripción de un CONTACTO del CRM (importación): no hay paciente, así que
-  // {{nombre}} sale del contacto guardado en el contexto. Sin esto el saludo
-  // llegaba como "Hola " en blanco.
+  // Inscripción de un CONTACTO del CRM (importación): {{nombre}} sale del contacto
+  // guardado en el contexto (sin esto el saludo llegaba como "Hola " en blanco) y
+  // {{servicio}}/{{hora}}… de sus campos personalizados (las columnas del Excel).
+  // `customFields` FALTABA en el select: en un paso de texto libre esas variables
+  // se resolvían siempre a vacío y se borraban del mensaje.
+  //
+  // Se carga aunque HAYA paciente: la ficha clínica no tiene las columnas del
+  // Excel, y un contacto que además es paciente perdía los datos de su campaña.
   let contact = null;
-  if (!patient && ctx.contactId) {
+  if (ctx.contactId) {
     contact = await require('../models/Contact')
       .findById(ctx.contactId)
-      .select('firstName lastName displayName')
+      .select('firstName lastName displayName customFields')
       .lean()
       .catch(() => null);
   }
@@ -401,7 +406,10 @@ async function loadConversationForPatient(clinicId, phone, patientId) {
     if (byPatient) return byPatient;
   }
   if (!phone) return null;
-  return Conversation.findOne({ clinic: clinicId, phone: messaging.normalizePhone(phone) });
+  // Incluye los chats de "número oculto" (@lid) enlazados a este teléfono y se
+  // queda con aquel en el que el contacto escribió por última vez: es el que
+  // decide por qué número sale la respuesta. Ver findConversationForPerson.
+  return messaging.findConversationForPerson(clinicId, messaging.normalizePhone(phone), null);
 }
 
 // ─────────── Ejecución de acciones (compartida por grafo) ───────────
@@ -422,6 +430,11 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
   // FIJÓ uno al importar el Excel; vacío = automático y lo resuelve messaging con
   // el último número por el que escribió el contacto.
   const whatsappAccount = ctx?.whatsappAccountId || null;
+  // Ficha de contacto de la que salen las variables de la campaña ({{servicio}},
+  // {{hora}}… del Excel). Sin esto messaging la buscaba por teléfono y, con dos
+  // fichas del mismo número, cogía la vieja: el mensaje salía con los datos de la
+  // campaña ANTERIOR.
+  const contactId = ctx?.contactId || null;
   switch (step.type) {
     case 'send_message': {
       // Se envía a la CONVERSACIÓN existente del paciente (imprescindible con
@@ -473,6 +486,7 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
         appointmentId: ctx.appointmentId || null,
         isAutoReply: true,
         whatsappAccount,
+        contactId,
       });
       return sendFailureInfo(r);
     }
@@ -922,6 +936,7 @@ async function executeEnrollment(enrollment) {
         appointmentId: ctx.appointmentId || null,
         isAutoReply: true,
         whatsappAccount: ctx.whatsappAccountId || null,
+        contactId: ctx.contactId || null,
       });
       const fail = sendFailureInfo(r);
       if (fail && scheduleSendRetry(enrollment, fail, { stepIndex: i })) {

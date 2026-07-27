@@ -67,6 +67,14 @@ const conversationSchema = new mongoose.Schema(
     },
     // Identificador del usuario en el canal externo (ej: PSID de Messenger, IGSID, etc.)
     externalUserId: { type: String, trim: true, default: '' },
+    // Teléfono REAL de un chat de "número oculto" (@lid) cuando `phone` no lo puede
+    // guardar porque YA existe otro chat con ese número (p.ej. la persona escribió
+    // antes al número de Cloud API y ahora escribe al QR). (clinic, phone) es único,
+    // así que sin este campo los dos chats quedaban como dos personas distintas y
+    // una campaña dirigida al teléfono no veía nunca la conversación del QR: le
+    // respondía por el número por defecto en vez de por el último que usó el
+    // contacto. Es el enlace que permite tratarlos como la misma persona.
+    linkedPhone: { type: String, trim: true, default: '', index: true },
     // Número de WhatsApp (global) por el que entró/responde esta conversación.
     // Si está vacío, al responder se usa el número marcado como `isDefault`.
     whatsappAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'WhatsappAccount', default: null },
