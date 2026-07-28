@@ -54,6 +54,11 @@ const workflowEnrollmentSchema = new mongoose.Schema(
 );
 
 workflowEnrollmentSchema.index({ status: 1, nextRunAt: 1 });
+// Panel del chat: "qué automatizaciones se activaron en esta conversación".
+// El teléfono se indexa porque las inscripciones de los disparadores de dominio
+// NO guardan `conversation` y solo se las encuentra por ahí.
+workflowEnrollmentSchema.index({ conversation: 1, createdAt: -1 });
+workflowEnrollmentSchema.index({ 'context.phone': 1 });
 // Anti-duplicado: una inscripción activa por (workflow, patient).
 workflowEnrollmentSchema.index(
   { workflow: 1, patient: 1, status: 1 },

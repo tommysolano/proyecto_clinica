@@ -57,6 +57,8 @@ router.post('/calls/:callId/terminate', requireRole(...CALL_CENTER_ROLES), callC
 // Automatizaciones (workflows) desde el chat: listar activas y disparar a mano.
 router.get('/workflows-list', requireRole(...CALL_CENTER_ROLES), ctrl.listWorkflowsForChat);
 router.post('/:id/run-workflow', requireRole(...CALL_CENTER_ROLES), ctrl.runWorkflowManually);
+// Automatizaciones que YA se activaron en este chat (panel del contacto).
+router.get('/:id/automations', requireRole(...CALL_CENTER_ROLES), ctrl.listChatAutomations);
 
 // Mensajes automáticos (legacy)
 router.get('/auto-messages', requireRole(...CALL_CENTER_ROLES), ctrl.listAutoMessages);

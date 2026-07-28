@@ -44,6 +44,7 @@ import {
   HiOutlinePencilSquare,
   HiOutlineUser,
   HiOutlineChartBar,
+  HiOutlineBolt,
 } from 'react-icons/hi2';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
@@ -58,6 +59,7 @@ import CallPanel from '../components/CallPanel';
 import ChatComposerToolbar from '../components/ChatComposerToolbar';
 import { renderWhatsappText } from '../utils/whatsappText';
 import { downloadFromUrl } from '../utils/download';
+import { ENROLL_STATUS, STEP_LABELS } from '../utils/workflowLabels';
 
 // Etiquetas de los disparadores (para mostrar los flujos en el menú de
 // automatizaciones del compositor).
@@ -322,6 +324,8 @@ export default function Chats() {
   const [pickerQuery, setPickerQuery] = useState(''); // buscador del menú (por pestaña)
   const [chatWorkflows, setChatWorkflows] = useState([]); // automatizaciones activas (disparo manual)
   const [runningWf, setRunningWf] = useState(false);
+  // Sube al ejecutar una automatización a mano: refresca la lista del panel derecho.
+  const [automationsVersion, setAutomationsVersion] = useState(0);
   // Mensajes guardados y galería
   const [savedReplies, setSavedReplies] = useState([]);
   const [slashOpen, setSlashOpen] = useState(false);
@@ -1118,6 +1122,7 @@ export default function Chats() {
       } else {
         toast.success('Automatización ejecutada.');
       }
+      setAutomationsVersion((v) => v + 1); // que aparezca ya en el panel del contacto
       setPickerTab(null);
     } catch (e) {
       toast.error(e.response?.data?.message || 'Error al ejecutar la automatización');
@@ -2071,6 +2076,7 @@ export default function Chats() {
                 onEditOpportunity={() => setOpportunityModal(true)}
                 onScheduleAppointment={() => setAppointmentModal(true)}
                 onCreateQuotation={() => setQuotationModal(true)}
+                automationsVersion={automationsVersion}
               />
             ) : (
               <div className="text-sm text-slate-400">Sin chat seleccionado</div>
@@ -2104,6 +2110,7 @@ export default function Chats() {
                   onEditOpportunity={() => setOpportunityModal(true)}
                   onScheduleAppointment={() => setAppointmentModal(true)}
                   onCreateQuotation={() => setQuotationModal(true)}
+                  automationsVersion={automationsVersion}
                 />
               </div>
             </div>
@@ -3277,7 +3284,143 @@ function ContactDataBlock({ conv }) {
   );
 }
 
-function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onScheduleAppointment, onCreateQuotation }) {
+/**
+ * Automatizaciones que se han ACTIVADO en este chat (inscripciones del contacto).
+ *
+ * Va justo debajo de los datos del contacto porque es seguimiento puro: el agente
+ * necesita saber qué le está mandando el sistema por su cuenta antes de escribirle
+ * (no repetir un recordatorio, ver si un envío falló por la ventana de 24h, o
+ * entender por qué el contacto responde a algo que nadie escribió a mano).
+ *
+ * Cada tarjeta se despliega con el registro de ejecución paso a paso.
+ */
+function ChatAutomationsSection({ conv, version = 0 }) {
+  const [rows, setRows] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [openId, setOpenId] = useState(null); // inscripción con el detalle abierto
+  const [tick, setTick] = useState(0); // recarga manual (los pasos corren en el servidor)
+
+  useEffect(() => {
+    let alive = true;
+    setLoading(true);
+    setOpenId(null);
+    api
+      .get(`/chats/${conv._id}/automations`)
+      .then((r) => alive && setRows(Array.isArray(r.data) ? r.data : []))
+      .catch(() => alive && setRows([]))
+      .finally(() => alive && setLoading(false));
+    return () => {
+      alive = false;
+    };
+  }, [conv._id, version, tick]);
+
+  // Por qué entró: el evento guardado al inscribir y, si no, los disparadores
+  // del flujo. 'manual' = la lanzó un agente desde el menú ⚡ del compositor.
+  const reasonOf = (a) => {
+    if (a.eventType === 'manual') return 'Ejecutada a mano por un agente';
+    const label = TRIGGER_LABELS_CHAT[a.eventType];
+    if (label) return label;
+    const fromFlow = (a.triggerTypes || []).map((t) => TRIGGER_LABELS_CHAT[t] || t).join(' / ');
+    return fromFlow || 'Automática';
+  };
+
+  const live = rows.filter((a) => a.status === 'active' || a.status === 'waiting').length;
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <div className="text-xs font-semibold text-slate-500 flex items-center gap-1">
+          <HiOutlineBolt className="w-3.5 h-3.5 text-amber-500" />
+          Automatizaciones{rows.length > 0 ? ` (${rows.length})` : ''}
+          {live > 0 && (
+            <span className="text-[10px] font-medium bg-amber-100 text-amber-700 px-1.5 rounded-full" title="En ejecución o en espera de su próximo paso">
+              {live} activa{live > 1 ? 's' : ''}
+            </span>
+          )}
+        </div>
+        <button
+          onClick={() => setTick((t) => t + 1)}
+          title="Actualizar"
+          aria-label="Actualizar automatizaciones"
+          disabled={loading}
+          className="p-1 rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 bg-transparent border-none cursor-pointer disabled:opacity-50"
+        >
+          <HiOutlineArrowPath className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+        </button>
+      </div>
+      {loading ? (
+        <div className="text-xs text-slate-400">Cargando…</div>
+      ) : rows.length === 0 ? (
+        <div className="text-xs text-slate-400">Ninguna automatización se ha activado en este chat.</div>
+      ) : (
+        <div className="space-y-2">
+          {rows.map((a) => {
+            const st = ENROLL_STATUS[a.status] || ENROLL_STATUS.active;
+            const isOpen = openId === a._id;
+            return (
+              <div key={a._id} className="border border-slate-100 rounded-lg p-2 space-y-1">
+                <div className="flex items-start justify-between gap-2">
+                  <div className="text-xs font-medium text-slate-700 min-w-0 break-words">{a.name}</div>
+                  <span className={`shrink-0 text-[10px] px-1.5 py-0.5 rounded-full ${st.cls}`}>{st.label}</span>
+                </div>
+                <div className="text-[10px] text-slate-500">
+                  {reasonOf(a)} · {fmtDateTime(a.startedAt)}
+                </div>
+                {a.status === 'waiting' && (
+                  <div className="text-[10px] text-amber-700">
+                    {a.waitingForReply
+                      ? 'Esperando la respuesta del contacto'
+                      : `Próximo paso: ${fmtDateTime(a.nextRunAt) || 'por programar'}`}
+                  </div>
+                )}
+                {a.lastError && (
+                  <div className="text-[10px] text-rose-600 bg-rose-50 border border-rose-100 rounded px-1.5 py-1">
+                    {a.lastError}
+                  </div>
+                )}
+                <div className="flex items-center justify-between gap-2">
+                  <div className="text-[10px] text-slate-400">
+                    <span className="text-emerald-600 font-medium">{a.okCount}</span> paso{a.okCount === 1 ? '' : 's'}
+                    {a.failCount > 0 && <span className="text-rose-600 font-medium"> · {a.failCount} fallido{a.failCount > 1 ? 's' : ''}</span>}
+                  </div>
+                  {a.log.length > 0 && (
+                    <button
+                      onClick={() => setOpenId(isOpen ? null : a._id)}
+                      className="text-[10px] text-emerald-600 hover:underline bg-transparent border-none cursor-pointer p-0"
+                    >
+                      {isOpen ? 'Ocultar detalle' : 'Ver detalle'}
+                    </button>
+                  )}
+                </div>
+                {isOpen && (
+                  <ol className="grid gap-1 border-t border-slate-100 pt-1.5">
+                    {a.log.map((l, i) => (
+                      <li key={i} className="text-[10px] flex items-start gap-1.5">
+                        <span className={l.ok ? 'text-emerald-500' : 'text-rose-500'}>{l.ok ? '✓' : '✗'}</span>
+                        <span className="text-slate-400 shrink-0">{fmtDateTime(l.at)}</span>
+                        <span className="min-w-0">
+                          <span className="font-medium text-slate-600">{STEP_LABELS[l.type] || l.type}</span>
+                          {l.info && <span className={l.ok ? ' text-slate-500' : ' text-rose-600'}> — {l.info}</span>}
+                        </span>
+                      </li>
+                    ))}
+                  </ol>
+                )}
+                {!a.deleted && (
+                  <Link to={`/workflows/${a.workflowId}/edit`} className="text-[10px] text-slate-400 hover:text-emerald-600">
+                    Ver la automatización
+                  </Link>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onScheduleAppointment, onCreateQuotation, automationsVersion = 0 }) {
   const op = conv.opportunity || {};
   const meta = op.isOpportunity ? stageMeta(op.stage) : null;
   const [registerModal, setRegisterModal] = useState(false);
@@ -3358,6 +3501,9 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
           correo o en una llamada sin tener que buscarlos por el chat. El correo
           sale de lo que el propio contacto escribió en la conversación. */}
       <ContactDataBlock conv={conv} />
+
+      {/* Qué le está enviando el sistema solo a este contacto (seguimiento). */}
+      <ChatAutomationsSection conv={conv} version={automationsVersion} />
 
       {registerModal && (
         <RegisterPatientModal

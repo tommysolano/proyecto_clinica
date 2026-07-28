@@ -1095,6 +1095,87 @@ exports.runWorkflowManually = async (req, res) => {
 };
 
 /**
+ * GET /chats/:id/automations — automatizaciones que se han activado en ESTE chat.
+ *
+ * El panel del contacto las lista para dar seguimiento: qué flujo entró, en qué
+ * estado quedó (ejecutando / en espera / terminado / cancelado) y qué hizo cada
+ * paso (el `log` de la inscripción, incluidos los envíos que fallaron).
+ *
+ * Una inscripción NO siempre guarda `conversation`: los disparadores de dominio
+ * (cita agendada, cumpleaños, importación…) inscriben al PACIENTE y solo dejan
+ * el teléfono en el contexto. Por eso se busca por conversación, por paciente y
+ * por teléfono (últimos 9 dígitos: el contexto puede traer '09…' y el chat
+ * '5939…'), o el agente vería el panel vacío para el caso más común.
+ */
+exports.listChatAutomations = async (req, res) => {
+  try {
+    const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId }).lean();
+    if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
+
+    const WorkflowEnrollment = require('../models/WorkflowEnrollment');
+    const Workflow = require('../models/Workflow');
+
+    const or = [{ conversation: conv._id }, { 'context.conversationId': String(conv._id) }];
+    if (conv.patient) or.push({ patient: conv.patient });
+    const digits = normalizePhone(conv.phone);
+    // Un chat de "número oculto" (@lid) tiene por teléfono los dígitos del LID:
+    // no es un número real, así que no se busca por él (no identifica a nadie).
+    if (digits && digits.length >= 9 && digits.length <= 13) {
+      // El contexto guarda el teléfono TAL CUAL estaba en la ficha o en el Excel
+      // ('0999111222', '+593 99 911 1222'…): se comparan los últimos 9 dígitos
+      // tolerando separadores entre ellos.
+      const tail = digits.slice(-9).split('').join('\\D*');
+      or.push({ 'context.phone': new RegExp(`${tail}\\D*$`) });
+    }
+
+    const rows = await WorkflowEnrollment.find({ $or: or })
+      .sort({ createdAt: -1 })
+      .limit(30)
+      .lean();
+    if (!rows.length) return res.json([]);
+
+    const wfs = await Workflow.find({ _id: { $in: rows.map((r) => r.workflow) } })
+      .select('name folder nodes triggers')
+      .lean();
+    const byId = new Map(wfs.map((w) => [String(w._id), w]));
+
+    const out = rows.map((e) => {
+      const wf = byId.get(String(e.workflow));
+      // Qué disparó el flujo: el evento guardado en el contexto y, si no, los
+      // disparadores del nodo por el que arrancó esta inscripción.
+      const triggerNode = wf && e.startNodeId ? (wf.nodes || []).find((n) => n.id === e.startNodeId) : null;
+      const triggerTypes = (
+        (triggerNode?.data?.triggers?.length ? triggerNode.data.triggers : wf?.triggers) || []
+      )
+        .map((t) => t.type)
+        .filter(Boolean);
+      const log = e.log || [];
+      return {
+        _id: e._id,
+        workflowId: e.workflow,
+        name: wf?.name || 'Automatización eliminada',
+        folder: wf?.folder || '',
+        deleted: !wf,
+        status: e.status,
+        startedAt: e.createdAt,
+        updatedAt: e.updatedAt,
+        nextRunAt: e.status === 'waiting' ? e.nextRunAt : null,
+        waitingForReply: !!e.waitingForReply,
+        eventType: e.context?.eventType || '',
+        triggerTypes,
+        lastError: e.lastError || '',
+        okCount: log.filter((l) => l.ok !== false).length,
+        failCount: log.filter((l) => l.ok === false).length,
+        log: log.map((l) => ({ at: l.at, type: l.type, ok: l.ok !== false, info: l.info || '' })),
+      };
+    });
+    res.json(out);
+  } catch (err) {
+    res.status(500).json({ message: 'Error al listar las automatizaciones del chat', error: err.message });
+  }
+};
+
+/**
  * Envío de prueba de un fragmento (como el "fragmento de prueba" de Daplox):
  * manda el texto + adjunto al número indicado por el WhatsApp por defecto.
  * No requiere que el fragmento esté guardado: recibe el contenido directo.
