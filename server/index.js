@@ -183,6 +183,7 @@ app.use('/api/deferred-income', require('./routes/deferredIncome'));
 app.use('/api/budgets', require('./routes/budgets'));
 app.use('/api/audit-logs', require('./routes/auditLogs'));
 app.use('/api/data-import', require('./routes/dataImport'));
+app.use('/api/notifications', require('./routes/notifications'));
 
 // Ruta de salud
 app.get('/api/health', (req, res) => {
@@ -280,6 +281,10 @@ connectDB().then(() => {
     const TPL_SYNC_MS = Math.max(5, Number(process.env.TEMPLATE_SYNC_INTERVAL_MIN) || 60) * 60 * 1000;
     setTimeout(only(() => { syncAllClinicsTemplates().catch(() => {}); }), 30 * 1000);
     setInterval(only(() => { syncAllClinicsTemplates().catch(() => {}); }), TPL_SYNC_MS);
+    // Chequeo DIARIO a hora fija (8:00 Ecuador) del estado de las plantillas: si
+    // un día no se pudo preguntar a Meta, avisa en la campana en vez de dejar
+    // pasar el silencio como si todo estuviera en orden.
+    require('./utils/templateDailyCheck').startDailyTemplateCheckJob(only);
   }
 }).catch((err) => {
   console.error('No se pudo conectar a MongoDB, abortando:', err.message);

@@ -323,11 +323,46 @@ async function applyMetaTemplate(clinicId, mt, createdBy) {
 }
 
 /**
+ * Deja constancia de la ÚLTIMA verificación contra Meta (la haga el sondeo
+ * periódico, el chequeo diario o el botón "Sincronizar"). Sirve para enseñar en
+ * pantalla que el sistema sigue vigilando: si un día deja de verificar, el
+ * silencio se nota en vez de parecer "todo en orden".
+ */
+async function recordTemplateCheck(result) {
+  try {
+    const CallCenterWhatsappConfig = require('../models/CallCenterWhatsappConfig');
+    await CallCenterWhatsappConfig.updateOne(
+      { singleton: 'main' },
+      {
+        $set: {
+          templateCheck: {
+            at: new Date(),
+            ok: !!result?.ok,
+            error: result?.ok ? '' : String(result?.error || result?.reason || ''),
+            alerts: result?.alerts || 0,
+          },
+        },
+      },
+      { upsert: true }
+    );
+  } catch {
+    /* la marca es informativa: nunca debe hacer fallar la sincronización */
+  }
+}
+
+/**
  * Sincroniza las plantillas de WhatsApp de una clínica con Meta. Detecta cambios
  * de categoría/estado y levanta alertas. Reutilizable por el endpoint manual y
  * por el job periódico. Devuelve un resumen.
  */
 async function syncTemplatesFromMeta(clinicId, createdBy = null) {
+  const result = await fetchAndApplyMetaTemplates(clinicId, createdBy);
+  await recordTemplateCheck(result);
+  return result;
+}
+
+/** El trabajo en sí (descargar de Meta y aplicar), sin la marca de verificación. */
+async function fetchAndApplyMetaTemplates(clinicId, createdBy = null) {
   // Las plantillas viven en el WABA del número Cloud API por defecto (config global).
   const gateway = require('../utils/whatsappGateway');
   const account = await gateway.getDefaultCloudAccount();
@@ -390,10 +425,25 @@ exports.syncWhatsapp = async (req, res) => {
   }
 };
 
+/**
+ * Estado de la última verificación de plantillas, para mostrarlo junto al botón
+ * de sincronizar: "Verificado hoy 08:00" o el error si no se pudo.
+ */
+exports.checkStatus = async (req, res) => {
+  try {
+    const CallCenterWhatsappConfig = require('../models/CallCenterWhatsappConfig');
+    const cfg = await CallCenterWhatsappConfig.getSingleton();
+    const c = cfg.templateCheck || {};
+    res.json({ at: c.at || null, ok: c.ok ?? null, error: c.error || '', alerts: c.alerts || 0 });
+  } catch (err) {
+    res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
 // ─────────── Alertas (Notifications de plantillas) ───────────
 exports.listAlerts = async (req, res) => {
   try {
-    const filter = { clinic: req.clinicId, type: { $in: ['template_category_changed', 'template_status_changed', 'whatsapp_quality_changed'] } };
+    const filter = { clinic: req.clinicId, type: { $in: ['template_category_changed', 'template_status_changed', 'template_check_failed', 'whatsapp_quality_changed'] } };
     if (req.query.unread === 'true') filter.read = false;
     const list = await Notification.find(filter).sort({ createdAt: -1 }).limit(100);
     res.json(list);
@@ -720,6 +770,7 @@ exports.submit = async (req, res) => {
 
 exports.applyMetaTemplate = applyMetaTemplate;
 exports.syncTemplatesFromMeta = syncTemplatesFromMeta;
+exports.raiseTemplateAlert = raiseTemplateAlert;
 exports.syncAllClinicsTemplates = syncAllClinicsTemplates;
 exports.handleTemplateWebhook = handleTemplateWebhook;
 exports.submitTemplateToMeta = submitTemplateToMeta;

@@ -19,6 +19,7 @@ router.get('/', requireRole(...ROLES, 'call_center'), ctrl.list);
 router.post('/', requireRole(...ROLES), ctrl.create);
 router.post('/upload-image', requireRole(...ROLES), ctrl.uploadHeaderImage);
 router.post('/sync-whatsapp', requireRole(...ROLES), ctrl.syncWhatsapp);
+router.get('/check-status', requireRole(...ROLES), ctrl.checkStatus);
 router.get('/alerts', requireRole(...ROLES), ctrl.listAlerts);
 router.post('/alerts/:id/read', requireRole(...ROLES), ctrl.markAlertRead);
 router.get('/:id', requireRole(...ROLES), ctrl.get);

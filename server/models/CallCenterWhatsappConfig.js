@@ -42,6 +42,15 @@ const callCenterWhatsappConfigSchema = new mongoose.Schema(
       adAccountId: { type: String, default: '' },
     },
     callCenterClinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', default: null },
+    // Última verificación de las plantillas contra Meta (sondeo periódico, chequeo
+    // diario o botón "Sincronizar"). Se guarda para poder ENSEÑAR que el sistema
+    // sigue vigilando: si un día deja de verificar, el silencio se nota.
+    templateCheck: {
+      at: { type: Date, default: null },
+      ok: { type: Boolean, default: null },
+      error: { type: String, default: '' },
+      alerts: { type: Number, default: 0 }, // cambios detectados en esa pasada
+    },
     updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }

@@ -16,6 +16,7 @@ import {
 import Modal from '../components/Modal';
 import WhatsappPreview from '../components/WhatsappPreview';
 import BulkUploadModal from '../components/BulkUploadModal';
+import { fmtDateTime } from '../utils/date';
 
 const BUTTON_TYPES = [
   { value: 'quick_reply', label: 'Respuesta rápida' },
@@ -167,11 +168,20 @@ export default function MessageTemplates() {
   };
 
   const [alerts, setAlerts] = useState([]);
+  // Marca de la última verificación contra Meta (sondeo horario / chequeo diario /
+  // botón Sincronizar). Se muestra bajo el título.
+  const [checkStatus, setCheckStatus] = useState(null);
 
   const loadAlerts = async () => {
     try {
       const { data } = await api.get('/message-templates/alerts', { params: { unread: true } });
       setAlerts(data || []);
+    } catch {
+      /* noop */
+    }
+    try {
+      const { data } = await api.get('/message-templates/check-status');
+      setCheckStatus(data || null);
     } catch {
       /* noop */
     }
@@ -278,6 +288,15 @@ export default function MessageTemplates() {
           <p className="text-sm text-slate-500 mt-1">
             Plantillas aprobadas por Meta para iniciar conversaciones fuera de la ventana de 24h.
           </p>
+          {/* Prueba de que el sistema sigue vigilando: el estado se revisa cada hora
+              y, a hora fija, una vez al día. Si dejara de verificar, se ve aquí. */}
+          {checkStatus?.at && (
+            <p className={`text-xs mt-1 ${checkStatus.ok ? 'text-slate-400' : 'text-amber-600'}`}>
+              {checkStatus.ok
+                ? `Estado verificado con Meta el ${fmtDateTime(checkStatus.at)}`
+                : `Última verificación (${fmtDateTime(checkStatus.at)}) falló: ${checkStatus.error}`}
+            </p>
+          )}
         </div>
         <div className="flex gap-2">
           <button

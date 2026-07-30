@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { roleSatisfies } from '../utils/roles';
+import NotificationBell from './NotificationBell';
 import shiluvLogo from '../Shiluv-logo-4.png';
 import {
   HiOutlineHome,
@@ -509,6 +510,8 @@ export default function Layout({ children }) {
                 {new Date().toLocaleDateString('es-EC', { weekday: 'long', day: 'numeric', month: 'long' })}
               </span>
             </div>
+            {/* Bandeja de notificaciones: entre la fecha y la inicial del usuario. */}
+            <NotificationBell />
             <div className="w-9 h-9 rounded-full bg-gradient-to-br from-emerald-500 to-teal-600 flex items-center justify-center text-white text-sm font-bold shadow-sm" title={user?.name}>
               {(user?.name || '?').trim().charAt(0).toUpperCase()}
             </div>
