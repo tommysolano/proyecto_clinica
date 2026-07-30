@@ -30,10 +30,19 @@ export default function OpportunitiesGlobal() {
   // oportunidad por contacto, teléfono en cualquier formato, servicio o nota.
   const [search, setSearch] = useState('');
   const [stage, setStage] = useState('');
+  // Paginación de la tabla: 50 por página, o TODAS de un tirón (pageSize 0).
+  const [pageSize, setPageSize] = useState(50);
+  const [page, setPage] = useState(1);
   const [selected, setSelected] = useState(new Set());
   const [bulkBody, setBulkBody] = useState('');
   const [bulkResult, setBulkResult] = useState(null);
   const [loading, setLoading] = useState(false);
+
+  // Cualquier cosa que cambie QUÉ filas se ven devuelve la tabla a la página 1:
+  // si no, se quedaría en una página que ya no existe.
+  const changeSearch = (v) => { setSearch(v); setPage(1); };
+  const changeStage = (v) => { setStage(v); setPage(1); };
+  const changePageSize = (v) => { setPageSize(v); setPage(1); };
 
   const load = async () => {
     setLoading(true);
@@ -45,6 +54,7 @@ export default function OpportunitiesGlobal() {
       if (filter.service) params.service = filter.service;
       const r = await api.get('/chats/opportunities/all', { params });
       setList(r.data || []);
+      setPage(1);
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al cargar');
     } finally {
@@ -83,12 +93,20 @@ export default function OpportunitiesGlobal() {
     });
   }, [list, search, stage]);
 
+  // Página en pantalla. El recorte es DERIVADO (no hay estado que corregir): si
+  // el filtro deja menos páginas que la página actual, se muestra la última.
+  const totalPages = pageSize ? Math.max(1, Math.ceil(visible.length / pageSize)) : 1;
+  const safePage = Math.min(page, totalPages);
+  const pageStart = pageSize ? (safePage - 1) * pageSize : 0;
+  const pageRows = pageSize ? visible.slice(pageStart, pageStart + pageSize) : visible;
+
   // Conversaciones (no filas): varias oportunidades pueden ser del mismo chat y el
   // envío masivo es por chat.
   const visibleIds = useMemo(
     () => [...new Set(visible.map((x) => x.conversationId))],
     [visible]
   );
+  const pageIds = [...new Set(pageRows.map((x) => x.conversationId))];
 
   // Al filtrar, la selección se queda en lo que se VE: si no, se enviaría a
   // contactos que ya no están en pantalla.
@@ -109,12 +127,20 @@ export default function OpportunitiesGlobal() {
     });
   };
 
-  const allSelected = visibleIds.length > 0 && visibleIds.every((id) => selected.has(id));
-  const someSelected = selected.size > 0 && !allSelected;
+  // La casilla de la cabecera manda sobre ESTA página (lo que se ve); para marcar
+  // todas las páginas de una vez está el enlace del envío masivo.
+  const pageAllSelected = pageIds.length > 0 && pageIds.every((id) => selected.has(id));
+  const pageSomeSelected = !pageAllSelected && pageIds.some((id) => selected.has(id));
 
   const selectAll = () => setSelected(new Set(visibleIds));
   const clearSel = () => setSelected(new Set());
-  const toggleAll = () => (allSelected ? clearSel() : selectAll());
+  const togglePage = () => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      pageIds.forEach((id) => (pageAllSelected ? next.delete(id) : next.add(id)));
+      return next;
+    });
+  };
 
   const sendBulk = async () => {
     if (selected.size === 0) return toast.error('Selecciona al menos una conversación');
@@ -161,13 +187,13 @@ export default function OpportunitiesGlobal() {
             <HiOutlineMagnifyingGlass className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
             <input
               value={search}
-              onChange={(e) => setSearch(e.target.value)}
+              onChange={(e) => changeSearch(e.target.value)}
               placeholder="Buscar oportunidad: contacto, teléfono, servicio, etapa o nota..."
               className="w-full pl-9 pr-8 py-2 border border-slate-200 rounded-xl text-sm"
             />
             {search && (
               <button
-                onClick={() => setSearch('')}
+                onClick={() => changeSearch('')}
                 title="Limpiar búsqueda"
                 className="absolute right-2 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 bg-transparent border-none cursor-pointer text-lg leading-none"
               >×</button>
@@ -175,7 +201,7 @@ export default function OpportunitiesGlobal() {
           </div>
           <select
             value={stage}
-            onChange={(e) => setStage(e.target.value)}
+            onChange={(e) => changeStage(e.target.value)}
             className="border border-slate-200 rounded-xl px-2 py-2 text-sm"
             aria-label="Filtrar por etapa"
           >
@@ -186,7 +212,7 @@ export default function OpportunitiesGlobal() {
           </select>
           {(search || stage) && (
             <button
-              onClick={() => { setSearch(''); setStage(''); }}
+              onClick={() => { changeSearch(''); changeStage(''); }}
               className="text-xs text-slate-500 underline bg-transparent border-none cursor-pointer"
             >Quitar filtros</button>
           )}
@@ -239,7 +265,11 @@ export default function OpportunitiesGlobal() {
             Mensaje masivo por WhatsApp ({selected.size} seleccionada{selected.size !== 1 ? 's' : ''})
           </p>
           <div className="flex gap-2">
-            <button onClick={selectAll} className="text-xs text-emerald-700 underline bg-transparent border-none cursor-pointer">
+            <button
+              onClick={selectAll}
+              title="Marca todas las conversaciones del listado, de todas las páginas"
+              className="text-xs text-emerald-700 underline bg-transparent border-none cursor-pointer"
+            >
               Seleccionar todas{isFiltered ? ' las filtradas' : ''} ({visibleIds.length})
             </button>
             <button onClick={clearSel} className="text-xs text-slate-500 underline bg-transparent border-none cursor-pointer">
@@ -277,16 +307,18 @@ export default function OpportunitiesGlobal() {
         <table className="tbl">
           <thead className="bg-slate-50 text-slate-600">
             <tr>
-              {/* Seleccionar TODAS de un tirón (respeta el buscador/etapa activos). */}
+              {/* Marca de un tirón las de ESTA página (el enlace de arriba marca todas). */}
               <th className="px-3 py-2 w-8">
                 <input
                   type="checkbox"
-                  checked={allSelected}
-                  ref={(el) => { if (el) el.indeterminate = someSelected; }}
-                  onChange={toggleAll}
-                  disabled={visibleIds.length === 0}
-                  title={allSelected ? 'Quitar la selección' : 'Seleccionar todas'}
-                  aria-label="Seleccionar todas las oportunidades"
+                  checked={pageAllSelected}
+                  ref={(el) => { if (el) el.indeterminate = pageSomeSelected; }}
+                  onChange={togglePage}
+                  disabled={pageIds.length === 0}
+                  title={pageAllSelected
+                    ? 'Quitar la selección de esta página'
+                    : `Seleccionar las ${pageIds.length} de esta página`}
+                  aria-label="Seleccionar las oportunidades de esta página"
                   className="w-4 h-4 accent-emerald-600"
                 />
               </th>
@@ -309,7 +341,7 @@ export default function OpportunitiesGlobal() {
                 </td>
               </tr>
             )}
-            {visible.map((o, i) => (
+            {pageRows.map((o, i) => (
               <tr
                 key={`${o.conversationId}-${i}`}
                 className={`border-t border-slate-100 ${selected.has(o.conversationId) ? 'bg-emerald-50/60' : 'hover:bg-slate-50/50'}`}
@@ -348,6 +380,51 @@ export default function OpportunitiesGlobal() {
             ))}
           </tbody>
         </table>
+
+        {/* Paginación: 50 por página (o todas), con el rango que se está viendo. */}
+        <div className="flex flex-wrap items-center justify-between gap-2 px-4 py-2.5 border-t border-slate-100 text-xs text-slate-500">
+          <div className="flex items-center gap-2">
+            <span>
+              {visible.length === 0
+                ? 'Sin resultados'
+                : pageSize
+                  ? `Mostrando ${pageStart + 1}–${pageStart + pageRows.length} de ${visible.length}`
+                  : `Mostrando todas (${visible.length})`}
+            </span>
+            <select
+              value={pageSize}
+              onChange={(e) => changePageSize(Number(e.target.value))}
+              className="border border-slate-200 rounded-lg px-2 py-1 text-xs bg-white"
+              aria-label="Oportunidades por página"
+            >
+              <option value={50}>50 por página</option>
+              <option value={100}>100 por página</option>
+              <option value={200}>200 por página</option>
+              <option value={0}>Mostrar todas</option>
+            </select>
+          </div>
+          {pageSize > 0 && totalPages > 1 && (
+            <div className="flex items-center gap-2">
+              <span>Página {safePage} de {totalPages}</span>
+              <div className="flex gap-1">
+                <button
+                  disabled={safePage <= 1}
+                  onClick={() => setPage(safePage - 1)}
+                  className="px-2.5 py-1 border border-slate-200 rounded-lg bg-white hover:bg-slate-50 cursor-pointer disabled:opacity-40 disabled:cursor-default"
+                >
+                  ◂ Anterior
+                </button>
+                <button
+                  disabled={safePage >= totalPages}
+                  onClick={() => setPage(safePage + 1)}
+                  className="px-2.5 py-1 border border-slate-200 rounded-lg bg-white hover:bg-slate-50 cursor-pointer disabled:opacity-40 disabled:cursor-default"
+                >
+                  Siguiente ▸
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
