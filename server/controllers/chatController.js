@@ -2345,12 +2345,23 @@ async function validateMetaWebhookRequest(req, clinicId, channel) {
 
 function normalizeMetaStatus(status) {
   const err = (status.errors || [])[0] || {};
+  const p = status.pricing || {};
   return {
     externalId: status.id,
     status: status.status,
     timestamp: status.timestamp,
     errorCode: err.code || err.error_subcode,
     errorMessage: err.title || err.message || err.error_data?.details || '',
+    // Cómo COBRÓ Meta este mensaje (lo manda en el estado 'sent'/'delivered').
+    // Se guarda tal cual para auditar el gasto por plantilla.
+    pricing: p.category || p.type || p.pricing_model || p.billable !== undefined
+      ? {
+        billable: p.billable,
+        category: p.category || '',
+        type: p.type || '',
+        model: p.pricing_model || '',
+      }
+      : null,
   };
 }
 

@@ -63,6 +63,18 @@ const messageSchema = new mongoose.Schema(
       type: { type: String, enum: ['button_reply', 'list_reply', ''], default: '' },
     },
     templateName: { type: String, trim: true, default: '' },
+    // Facturación TAL COMO LA INFORMA META en el webhook de estado (`statuses[].pricing`).
+    // No es un cálculo nuestro: es la categoría con la que Meta cobró ESTE mensaje
+    // y si lo consideró cobrable. Permite auditar el gasto por plantilla; el dinero
+    // se consulta aparte a Meta (ver utils/whatsappSpend.js).
+    billing: {
+      billable: { type: Boolean, default: null },
+      // marketing | utility | authentication | service | referral_conversion…
+      category: { type: String, trim: true, default: '' },
+      // regular | free_customer_service | free_entry_point
+      type: { type: String, trim: true, default: '' },
+      model: { type: String, trim: true, default: '' }, // PMP (por mensaje) | CBP (por conversación)
+    },
     // Anuncio click-to-WhatsApp del que nació ESTE mensaje (solo entrantes, y solo
     // en el primer mensaje tras tocar el anuncio). Snapshot para pintar en el chat
     // "de qué anuncio nos escriben" (headline + link), como en la captura de Daplox.

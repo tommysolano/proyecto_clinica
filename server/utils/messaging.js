@@ -1115,6 +1115,7 @@ async function updateMessageStatus({
   timestamp,
   errorCode,
   errorMessage,
+  pricing = null,
 }) {
   const deliveryStatus = mapProviderStatus(status);
   if (!externalId || !deliveryStatus) {
@@ -1134,6 +1135,25 @@ async function updateMessageStatus({
     }
   }
   if (!msg) return { ok: false, reason: 'message_not_found' };
+
+  // Cómo cobró Meta este mensaje. Se guarda ANTES de la guardia de orden: el
+  // bloque `pricing` viaja en el estado 'sent', que llega después del
+  // 'delivered' con frecuencia — si se ignorara con el estado, se perdería el
+  // único dato que dice con qué categoría se cobró el mensaje.
+  if (pricing) {
+    const prev = msg.billing || {};
+    const next = {
+      billable: pricing.billable ?? prev.billable ?? null,
+      category: String(pricing.category || prev.category || '').toLowerCase(),
+      type: String(pricing.type || prev.type || '').toLowerCase(),
+      model: String(pricing.model || prev.model || '').toUpperCase(),
+    };
+    if (next.billable !== prev.billable || next.category !== (prev.category || '')
+      || next.type !== (prev.type || '') || next.model !== (prev.model || '')) {
+      msg.billing = next;
+      await msg.save();
+    }
+  }
 
   // Solo AVANZAR el estado: un callback fuera de orden no debe pisar una entrega
   // real ni revivir un 'failed'. Si no aplica, se ignora sin tocar la etiqueta

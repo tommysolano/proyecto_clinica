@@ -184,6 +184,7 @@ app.use('/api/budgets', require('./routes/budgets'));
 app.use('/api/audit-logs', require('./routes/auditLogs'));
 app.use('/api/data-import', require('./routes/dataImport'));
 app.use('/api/notifications', require('./routes/notifications'));
+app.use('/api/whatsapp-spend', require('./routes/whatsappSpend'));
 
 // Ruta de salud
 app.get('/api/health', (req, res) => {
@@ -285,6 +286,18 @@ connectDB().then(() => {
     // un día no se pudo preguntar a Meta, avisa en la campana en vez de dejar
     // pasar el silencio como si todo estuviera en orden.
     require('./utils/templateDailyCheck').startDailyTemplateCheckJob(only);
+    // Job: gasto REAL de WhatsApp (lo que Meta cobra por los mensajes de plantilla).
+    // Cada 6 h se vuelven a pedir los últimos 3 días —el día en curso está
+    // incompleto en Meta hasta que cierra— para tener historia propia aunque nadie
+    // abra la página de gastos.
+    const waSpend = require('./utils/whatsappSpend');
+    const syncRecentSpend = () => {
+      const to = waSpend.todayEc();
+      const from = waSpend.ecDate(waSpend.ecDayStartMs(to) - 2 * 24 * 60 * 60 * 1000);
+      return waSpend.syncSpend({ from, to });
+    };
+    setTimeout(only(() => { syncRecentSpend().catch(() => {}); }), 60 * 1000);
+    setInterval(only(() => { syncRecentSpend().catch(() => {}); }), 6 * 60 * 60 * 1000);
   }
 }).catch((err) => {
   console.error('No se pudo conectar a MongoDB, abortando:', err.message);

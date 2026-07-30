@@ -30,6 +30,7 @@ import Chats from './pages/Chats';
 import OpportunitiesGlobal from './pages/OpportunitiesGlobal';
 import Analytics from './pages/Analytics';
 import MessageTemplates from './pages/MessageTemplates';
+import WhatsappSpend from './pages/WhatsappSpend';
 import SavedReplies from './pages/SavedReplies';
 import Contacts from './pages/Contacts';
 import Segments from './pages/Segments';
@@ -272,6 +273,14 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'marketing']}>
                       <MessageTemplates />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/whatsapp-spend"
+                  element={
+                    <RoleRoute roles={['admin', 'marketing']}>
+                      <WhatsappSpend />
                     </RoleRoute>
                   }
                 />
