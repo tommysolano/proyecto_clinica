@@ -1,3 +1,4 @@
+import { lazy, Suspense } from 'react';
 import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { AuthProvider, useAuth } from './context/AuthContext';
@@ -5,99 +6,119 @@ import { SocketProvider } from './context/SocketContext';
 import PrivateRoute from './components/PrivateRoute';
 import RoleRoute from './components/RoleRoute';
 import Layout from './components/Layout';
+import Spinner from './components/Spinner';
+// Login va EAGER a propósito: es la primera pantalla y hacerla perezosa añadiría
+// una petición extra en cadena justo antes de poder escribir el usuario.
 import Login from './pages/Login';
-import DashboardAdmin from './pages/dashboards/DashboardAdmin';
-import DashboardCajero from './pages/dashboards/DashboardCajero';
-import DashboardDoctor from './pages/dashboards/DashboardDoctor';
-import DashboardOptica from './pages/dashboards/DashboardOptica';
-import DashboardCallCenter from './pages/dashboards/DashboardCallCenter';
-import DashboardMarketing from './pages/dashboards/DashboardMarketing';
-import DashboardEnfermero from './pages/dashboards/DashboardEnfermero';
-import Patients from './pages/Patients';
-import PatientDetail from './pages/PatientDetail';
-import Appointments from './pages/Appointments';
-import Inventory from './pages/Inventory';
-import Sales from './pages/Sales';
-import Invoices from './pages/Invoices';
-import InvoicingConfig from './pages/InvoicingConfig';
-import Users from './pages/Users';
-import Clinics from './pages/Clinics';
-import Treatments from './pages/Treatments';
-import Referrals from './pages/Referrals';
-import Quotations from './pages/Quotations';
-import Marketing from './pages/Marketing';
-import Chats from './pages/Chats';
-import OpportunitiesGlobal from './pages/OpportunitiesGlobal';
-import Analytics from './pages/Analytics';
-import MessageTemplates from './pages/MessageTemplates';
-import WhatsappSpend from './pages/WhatsappSpend';
-import SavedReplies from './pages/SavedReplies';
-import Contacts from './pages/Contacts';
-import Segments from './pages/Segments';
-import Campaigns from './pages/Campaigns';
-import Workflows from './pages/Workflows';
-import WorkflowEditor from './pages/WorkflowEditor';
-import Attribution from './pages/Attribution';
-import Reputation from './pages/Reputation';
-import Tasks from './pages/Tasks';
-import PublicBooking from './pages/PublicBooking';
-import BookingConfig from './pages/BookingConfig';
-import CallCenterConfig from './pages/CallCenterConfig';
-import CommissionRules from './pages/CommissionRules';
-import Settings from './pages/Settings';
-import Reports from './pages/Reports';
-import Discounts from './pages/Discounts';
-import Rooms from './pages/Rooms';
-import Blocks from './pages/Blocks';
-import AccessBlocks from './pages/AccessBlocks';
-import ChartOfAccounts from './pages/accounting/ChartOfAccounts';
-import DataImport from './pages/accounting/DataImport';
-import CostCenters from './pages/accounting/CostCenters';
-import FiscalPeriods from './pages/accounting/FiscalPeriods';
-import JournalEntries from './pages/accounting/JournalEntries';
-import Ledger from './pages/accounting/Ledger';
-import TrialBalance from './pages/accounting/TrialBalance';
-import BankAccounts from './pages/accounting/BankAccounts';
-import CashBox from './pages/accounting/CashBox';
-import Reconciliations from './pages/accounting/Reconciliations';
-import Suppliers from './pages/accounting/Suppliers';
-import Payments from './pages/accounting/Payments';
-import PurchaseInvoices from './pages/accounting/PurchaseInvoices';
-import RetentionRules from './pages/accounting/RetentionRules';
-import CreditDebitNotes from './pages/accounting/CreditDebitNotes';
-import Warehouses from './pages/accounting/Warehouses';
-import InventoryCategories from './pages/accounting/InventoryCategories';
-import ConsolidatedInventory from './pages/accounting/ConsolidatedInventory';
-import PhysicalCounts from './pages/accounting/PhysicalCounts';
-import FixedAssets from './pages/accounting/FixedAssets';
-import FinancialReports from './pages/accounting/FinancialReports';
-import ManagementReports from './pages/accounting/ManagementReports';
-import SriReports from './pages/accounting/SriReports';
-import SriDeclarations from './pages/accounting/SriDeclarations';
-import Employees from './pages/accounting/Employees';
-import EmployeeLoans from './pages/accounting/EmployeeLoans';
-import Deductions from './pages/accounting/Deductions';
-import Payroll from './pages/accounting/Payroll';
-import CreditCardBatches from './pages/accounting/CreditCardBatches';
-import AuditLogs from './pages/accounting/AuditLogs';
-import AccountingDashboard from './pages/accounting/AccountingDashboard';
-import Kardex from './pages/accounting/Kardex';
-import CashFlow from './pages/accounting/CashFlow';
-import PayrollConfig from './pages/accounting/PayrollConfig';
-import Decimos from './pages/accounting/Decimos';
-import Checks from './pages/accounting/Checks';
-import CreditCards from './pages/accounting/CreditCards';
-import CardSettlements from './pages/accounting/CardSettlements';
-import SalesReports from './pages/accounting/SalesReports';
-import CashClosing from './pages/accounting/CashClosing';
-import AccountMapping from './pages/accounting/AccountMapping';
-import PeriodBalances from './pages/accounting/PeriodBalances';
-import Budgets from './pages/accounting/Budgets';
-import Receivables from './pages/accounting/Receivables';
-import DeferredIncome from './pages/accounting/DeferredIncome';
-import RetentionVouchers from './pages/accounting/RetentionVouchers';
-import AccountingHealth from './pages/accounting/AccountingHealth';
-import Profitability from './pages/accounting/Profitability';
+
+// =============================================================================
+//  CARGA PEREZOSA DE LAS PÁGINAS (code-splitting)
+// =============================================================================
+//  Antes, las ~90 páginas se importaban de forma estática y Vite las metía TODAS
+//  en un único fichero. Medido el 30-jul-2026: `index-*.js` = 2 661 373 bytes.
+//  Eso significa que la recepcionista descargaba el módulo de nómina, las
+//  declaraciones del SRI, el kárdex, el editor de workflows (`reactflow`) y las
+//  gráficas (`recharts`) ANTES de ver la pantalla de login — para luego no entrar
+//  en ninguna de esas pantallas en todo el día.
+//
+//  Con `lazy()` cada página se convierte en su propio fichero que se descarga la
+//  primera vez que alguien entra en esa ruta. El arranque solo paga el armazón
+//  (router + contextos + Layout + Login) y lo que la ruta actual necesite.
+//
+//  REQUISITO: cada página debe tener `export default`. Si alguna pasa a export
+//  nombrado, aquí hay que hacer `.then(m => ({ default: m.Nombre }))`.
+const DashboardAdmin = lazy(() => import('./pages/dashboards/DashboardAdmin'));
+const DashboardCajero = lazy(() => import('./pages/dashboards/DashboardCajero'));
+const DashboardDoctor = lazy(() => import('./pages/dashboards/DashboardDoctor'));
+const DashboardOptica = lazy(() => import('./pages/dashboards/DashboardOptica'));
+const DashboardCallCenter = lazy(() => import('./pages/dashboards/DashboardCallCenter'));
+const DashboardMarketing = lazy(() => import('./pages/dashboards/DashboardMarketing'));
+const DashboardEnfermero = lazy(() => import('./pages/dashboards/DashboardEnfermero'));
+const Patients = lazy(() => import('./pages/Patients'));
+const PatientDetail = lazy(() => import('./pages/PatientDetail'));
+const Appointments = lazy(() => import('./pages/Appointments'));
+const Inventory = lazy(() => import('./pages/Inventory'));
+const Sales = lazy(() => import('./pages/Sales'));
+const Invoices = lazy(() => import('./pages/Invoices'));
+const InvoicingConfig = lazy(() => import('./pages/InvoicingConfig'));
+const Users = lazy(() => import('./pages/Users'));
+const Clinics = lazy(() => import('./pages/Clinics'));
+const Treatments = lazy(() => import('./pages/Treatments'));
+const Referrals = lazy(() => import('./pages/Referrals'));
+const Quotations = lazy(() => import('./pages/Quotations'));
+const Marketing = lazy(() => import('./pages/Marketing'));
+const Chats = lazy(() => import('./pages/Chats'));
+const OpportunitiesGlobal = lazy(() => import('./pages/OpportunitiesGlobal'));
+const Analytics = lazy(() => import('./pages/Analytics'));
+const MessageTemplates = lazy(() => import('./pages/MessageTemplates'));
+const WhatsappSpend = lazy(() => import('./pages/WhatsappSpend'));
+const SavedReplies = lazy(() => import('./pages/SavedReplies'));
+const Contacts = lazy(() => import('./pages/Contacts'));
+const Segments = lazy(() => import('./pages/Segments'));
+const Campaigns = lazy(() => import('./pages/Campaigns'));
+const Workflows = lazy(() => import('./pages/Workflows'));
+const WorkflowEditor = lazy(() => import('./pages/WorkflowEditor'));
+const Attribution = lazy(() => import('./pages/Attribution'));
+const Reputation = lazy(() => import('./pages/Reputation'));
+const Tasks = lazy(() => import('./pages/Tasks'));
+const PublicBooking = lazy(() => import('./pages/PublicBooking'));
+const BookingConfig = lazy(() => import('./pages/BookingConfig'));
+const CallCenterConfig = lazy(() => import('./pages/CallCenterConfig'));
+const CommissionRules = lazy(() => import('./pages/CommissionRules'));
+const Settings = lazy(() => import('./pages/Settings'));
+const Reports = lazy(() => import('./pages/Reports'));
+const Discounts = lazy(() => import('./pages/Discounts'));
+const Rooms = lazy(() => import('./pages/Rooms'));
+const Blocks = lazy(() => import('./pages/Blocks'));
+const AccessBlocks = lazy(() => import('./pages/AccessBlocks'));
+const ChartOfAccounts = lazy(() => import('./pages/accounting/ChartOfAccounts'));
+const DataImport = lazy(() => import('./pages/accounting/DataImport'));
+const CostCenters = lazy(() => import('./pages/accounting/CostCenters'));
+const FiscalPeriods = lazy(() => import('./pages/accounting/FiscalPeriods'));
+const JournalEntries = lazy(() => import('./pages/accounting/JournalEntries'));
+const Ledger = lazy(() => import('./pages/accounting/Ledger'));
+const TrialBalance = lazy(() => import('./pages/accounting/TrialBalance'));
+const BankAccounts = lazy(() => import('./pages/accounting/BankAccounts'));
+const CashBox = lazy(() => import('./pages/accounting/CashBox'));
+const Reconciliations = lazy(() => import('./pages/accounting/Reconciliations'));
+const Suppliers = lazy(() => import('./pages/accounting/Suppliers'));
+const Payments = lazy(() => import('./pages/accounting/Payments'));
+const PurchaseInvoices = lazy(() => import('./pages/accounting/PurchaseInvoices'));
+const RetentionRules = lazy(() => import('./pages/accounting/RetentionRules'));
+const CreditDebitNotes = lazy(() => import('./pages/accounting/CreditDebitNotes'));
+const Warehouses = lazy(() => import('./pages/accounting/Warehouses'));
+const InventoryCategories = lazy(() => import('./pages/accounting/InventoryCategories'));
+const ConsolidatedInventory = lazy(() => import('./pages/accounting/ConsolidatedInventory'));
+const PhysicalCounts = lazy(() => import('./pages/accounting/PhysicalCounts'));
+const FixedAssets = lazy(() => import('./pages/accounting/FixedAssets'));
+const FinancialReports = lazy(() => import('./pages/accounting/FinancialReports'));
+const ManagementReports = lazy(() => import('./pages/accounting/ManagementReports'));
+const SriReports = lazy(() => import('./pages/accounting/SriReports'));
+const SriDeclarations = lazy(() => import('./pages/accounting/SriDeclarations'));
+const Employees = lazy(() => import('./pages/accounting/Employees'));
+const EmployeeLoans = lazy(() => import('./pages/accounting/EmployeeLoans'));
+const Deductions = lazy(() => import('./pages/accounting/Deductions'));
+const Payroll = lazy(() => import('./pages/accounting/Payroll'));
+const CreditCardBatches = lazy(() => import('./pages/accounting/CreditCardBatches'));
+const AuditLogs = lazy(() => import('./pages/accounting/AuditLogs'));
+const AccountingDashboard = lazy(() => import('./pages/accounting/AccountingDashboard'));
+const Kardex = lazy(() => import('./pages/accounting/Kardex'));
+const CashFlow = lazy(() => import('./pages/accounting/CashFlow'));
+const PayrollConfig = lazy(() => import('./pages/accounting/PayrollConfig'));
+const Decimos = lazy(() => import('./pages/accounting/Decimos'));
+const Checks = lazy(() => import('./pages/accounting/Checks'));
+const CreditCards = lazy(() => import('./pages/accounting/CreditCards'));
+const CardSettlements = lazy(() => import('./pages/accounting/CardSettlements'));
+const SalesReports = lazy(() => import('./pages/accounting/SalesReports'));
+const CashClosing = lazy(() => import('./pages/accounting/CashClosing'));
+const AccountMapping = lazy(() => import('./pages/accounting/AccountMapping'));
+const PeriodBalances = lazy(() => import('./pages/accounting/PeriodBalances'));
+const Budgets = lazy(() => import('./pages/accounting/Budgets'));
+const Receivables = lazy(() => import('./pages/accounting/Receivables'));
+const DeferredIncome = lazy(() => import('./pages/accounting/DeferredIncome'));
+const RetentionVouchers = lazy(() => import('./pages/accounting/RetentionVouchers'));
+const AccountingHealth = lazy(() => import('./pages/accounting/AccountingHealth'));
+const Profitability = lazy(() => import('./pages/accounting/Profitability'));
 
 function SuperAdminRoute({ children }) {
   const { user, loading } = useAuth();
@@ -126,16 +147,34 @@ function RoleDashboard() {
   }
 }
 
+/**
+ * Lo que se ve mientras se descarga el fichero de una página perezosa. Con la
+ * red de la clínica y los ficheros ya cacheados es casi imperceptible; en la
+ * primera visita a una pantalla evita el fogonazo en blanco.
+ */
+function PageFallback() {
+  return (
+    <div className="flex items-center justify-center py-16 text-slate-400">
+      <Spinner className="h-6 w-6" />
+    </div>
+  );
+}
+
 function AppRoutes() {
   return (
-    <Routes>
-      <Route path="/login" element={<Login />} />
-      <Route path="/book/:token" element={<PublicBooking />} />
-      <Route
-        path="/*"
-        element={
-          <PrivateRoute>
-            <Layout>
+    <Suspense fallback={<PageFallback />}>
+      <Routes>
+        <Route path="/login" element={<Login />} />
+        <Route path="/book/:token" element={<PublicBooking />} />
+        <Route
+          path="/*"
+          element={
+            <PrivateRoute>
+              <Layout>
+                {/* Suspense propio DENTRO del Layout: al navegar entre páginas se
+                    recarga solo el contenido y el menú lateral se queda fijo, en
+                    vez de desmontarse y volver a montarse en cada salto. */}
+                <Suspense fallback={<PageFallback />}>
               <Routes>
                 <Route path="/" element={<RoleDashboard />} />
 
@@ -515,11 +554,13 @@ function AppRoutes() {
 
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
-            </Layout>
-          </PrivateRoute>
-        }
-      />
-    </Routes>
+                </Suspense>
+              </Layout>
+            </PrivateRoute>
+          }
+        />
+      </Routes>
+    </Suspense>
   );
 }
 

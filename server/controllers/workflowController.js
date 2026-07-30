@@ -257,7 +257,15 @@ exports.cancelEnrollment = async (req, res) => {
 exports.activity = async (req, res) => {
   try {
     const WorkflowTriggerEvent = require('../models/WorkflowTriggerEvent');
-    const list = await WorkflowTriggerEvent.find({ workflow: req.params.id, clinic: req.clinicId })
+    // Se busca por las DOS formas de fila: la individual (`workflow`), que usan
+    // "inscrito" y "saltado por duplicado", y la AGRUPADA (`workflows[]`), donde
+    // un solo documento recoge todos los workflows que no coincidieron con el
+    // mismo evento. Sin el segundo término, los "no coincidió" desaparecerían de
+    // esta pantalla. Ver el comentario del modelo WorkflowTriggerEvent.
+    const list = await WorkflowTriggerEvent.find({
+      clinic: req.clinicId,
+      $or: [{ workflow: req.params.id }, { 'workflows.workflow': req.params.id }],
+    })
       .sort({ createdAt: -1 })
       .limit(80)
       .lean();

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, Fragment } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback, memo, Fragment } from 'react';
 import { createPortal } from 'react-dom';
 import { Link } from 'react-router-dom';
 import toast from 'react-hot-toast';
@@ -308,7 +308,7 @@ export default function Chats() {
   const debouncedSearch = useDebounce(search, 300);
   const [stats, setStats] = useState(null);
   // Contadores de chats NO LEÍDOS para los badges del riel (mis chats / grupal).
-  const [unreadCounts, setUnreadCounts] = useState({ mine: 0, all: 0 });
+  const [unreadCounts, setUnreadCounts] = useState({ mine: 0, all: 0, featured: 0 });
   // Rango del panel de Supervisión. Por defecto, el mes en curso (hora Ecuador).
   const [statsRange, setStatsRange] = useState(() => ({ from: `${todayEc().slice(0, 7)}-01`, to: todayEc() }));
   const [services, setServices] = useState([]);
@@ -434,7 +434,7 @@ export default function Chats() {
   const loadUnreadCounts = async () => {
     try {
       const r = await api.get('/chats/unread-counts');
-      setUnreadCounts({ mine: r.data?.mine || 0, all: r.data?.all || 0 });
+      setUnreadCounts({ mine: r.data?.mine || 0, all: r.data?.all || 0, featured: r.data?.featured || 0 });
     } catch {
       /* noop */
     }
@@ -566,9 +566,23 @@ export default function Chats() {
       .get('/message-templates', { params: { channel: 'whatsapp', status: 'approved' } })
       .then((r) => setTemplates((r.data || []).slice().sort((a, b) => (b.usageCount || 0) - (a.usageCount || 0))))
       .catch(() => {});
-    loadStats();
+    // OJO: aquí NO se piden las estadísticas. `/chats/stats` son 7 agregaciones
+    // (1,6 s medidos en producción el 30-jul-2026) y solo las usa el tablero de
+    // Supervisión — que la mayoría de agentes no abre nunca. Se cargan en el
+    // efecto de abajo, al entrar en esa vista. El único dato que la bandeja
+    // necesitaba de ahí era el contador de destacados, que ahora viene en
+    // /chats/unread-counts (un countDocuments sobre un índice).
     loadUnreadCounts();
   }, []);
+
+  // Estadísticas de Supervisión: SOLO cuando se abre el tablero. Se piden una vez
+  // por entrada a la vista; dentro del tablero se refrescan con su botón o al
+  // cambiar el rango de fechas.
+  useEffect(() => {
+    if (view !== 'board') return;
+    loadStats();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view]);
 
   useEffect(() => {
     if (view === 'board') return; // el tablero de supervisión no usa la lista
@@ -935,7 +949,7 @@ export default function Chats() {
 
   // Reintenta un mensaje que quedó FALLIDO (mismo contenido, nuevo intento por el
   // mismo endpoint). Si vuelve a fallar, muestra el motivo real del proveedor.
-  const retrySend = async (msg) => {
+  const retrySend = useCallback(async (msg) => {
     if (!msg) return;
     const convId = msg.conversation || activeId;
     if (!convId) return;
@@ -952,12 +966,13 @@ export default function Chats() {
     } catch (err) {
       toast.error(err.response?.data?.message || 'No se pudo reenviar el mensaje');
     }
-  };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeId]);
 
   // Vuelve a pedirle a WhatsApp el archivo de un mensaje entrante cuyo adjunto no
   // se pudo descargar (el archivo sigue en WhatsApp: un fallo puntual de la sesión
   // no tiene por qué costar la foto o la nota de voz del paciente).
-  const retryMedia = async (msg) => {
+  const retryMedia = useCallback(async (msg) => {
     try {
       const { data } = await api.post(`/chats/${msg.conversation || activeId}/messages/${msg._id}/retry-media`);
       setMessages((prev) => prev.map((m) => (m._id === data._id ? data : m)));
@@ -967,7 +982,7 @@ export default function Chats() {
       if (doc) setMessages((prev) => prev.map((m) => (m._id === doc._id ? doc : m)));
       toast.error(err.response?.data?.message || 'No se pudo recuperar el archivo');
     }
-  };
+  }, [activeId]);
 
   // Sube un adjunto ya leído como data URL y lo deja preparado en el composer.
   // Devuelve true si quedó listo. El uploader es el mismo que usan los mensajes
@@ -1131,7 +1146,11 @@ export default function Chats() {
     }
   };
 
-  const toggleFeatured = async (conv) => {
+  // OJO: `toggleFeatured`, `markRead` y `selectConversation` van envueltos en
+  // useCallback porque se pasan como props a ConversationRow, que está memoizado
+  // (ver React.memo abajo). Si se recrearan en cada render, la memoización no
+  // serviría de nada: las 300 filas verían props "nuevas" y se repintarían igual.
+  const toggleFeatured = useCallback(async (conv) => {
     try {
       const r = await api.post(`/chats/${conv._id}/featured`, {
         isFeatured: !conv.isFeatured,
@@ -1147,7 +1166,7 @@ export default function Chats() {
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error');
     }
-  };
+  }, [view, filter]);
 
   const takeChat = async (conv) => {
     try {
@@ -1160,14 +1179,14 @@ export default function Chats() {
   };
 
   // Salta al mensaje original citado y lo resalta un instante.
-  const scrollToMessage = (id) => {
+  const scrollToMessage = useCallback((id) => {
     if (!id) return;
     const el = document.getElementById(`msg-${id}`);
     if (!el) return;
     el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     el.classList.add('ring-2', 'ring-emerald-400', 'rounded-lg');
     setTimeout(() => el.classList.remove('ring-2', 'ring-emerald-400', 'rounded-lg'), 1600);
-  };
+  }, []);
 
   // Coincidencias del buscador dentro del chat (ids de mensajes, orden cronológico).
   const chatMatches = useMemo(() => {
@@ -1203,7 +1222,7 @@ export default function Chats() {
   const closeChatSearch = () => { setChatSearchOpen(false); setChatSearch(''); setChatMatchIdx(0); };
 
   // Marca el chat como leído SIN responder: quita la notificación de no leído.
-  const markRead = async (conv) => {
+  const markRead = useCallback(async (conv) => {
     try {
       await api.post(`/chats/${conv._id}/read`);
       setConversations((prev) => prev.map((c) => (c._id === conv._id ? { ...c, unreadCount: 0 } : c)));
@@ -1219,7 +1238,11 @@ export default function Chats() {
     } catch (err) {
       toast.error(err.response?.data?.message || 'No se pudo marcar como leído');
     }
-  };
+  }, [view, filter]);
+
+  // Seleccionar chat: estable (solo llama a un setter de estado), para que las
+  // filas memoizadas no se invaliden.
+  const selectConversation = useCallback((id) => setActiveId(id), []);
 
   // Habilita las llamadas del número Cloud API de este chat (acción de admin).
   const enableCalling = async () => {
@@ -1305,9 +1328,9 @@ export default function Chats() {
                       {scope === 'mine' ? unreadCounts.mine : unreadCounts.all}
                     </span>
                   )}
-                  {t.id === 'featured' && stats?.featuredCount > 0 && (
+                  {t.id === 'featured' && unreadCounts.featured > 0 && (
                     <span className="ml-1.5 bg-amber-100 text-amber-700 text-[10px] px-1.5 rounded-full">
-                      {stats.featuredCount}
+                      {unreadCounts.featured}
                     </span>
                   )}
                 </button>
@@ -1376,9 +1399,9 @@ export default function Chats() {
                     key={c._id}
                     conv={c}
                     active={c._id === activeId}
-                    onClick={() => setActiveId(c._id)}
-                    onToggleFeatured={() => toggleFeatured(c)}
-                    onMarkRead={() => markRead(c)}
+                    onSelect={selectConversation}
+                    onToggleFeatured={toggleFeatured}
+                    onMarkRead={markRead}
                   />
                 ))
               )}
@@ -1501,7 +1524,7 @@ export default function Chats() {
                         <MessageBubble
                           highlight={chatSearchOpen ? chatSearch : ''}
                           msg={m}
-                          onReply={() => setReplyDraft(m)}
+                          onReply={setReplyDraft}
                           onJumpTo={scrollToMessage}
                           onRetry={retrySend}
                           onRetryMedia={retryMedia}
@@ -2472,17 +2495,32 @@ function NewChatModal({ onClose, onCreate }) {
   );
 }
 
-function ConversationRow({ conv, active, onClick, onToggleFeatured, onMarkRead }) {
+/**
+ * Fila de la bandeja. MEMOIZADA a propósito.
+ *
+ * POR QUÉ: el estado del compositor (`draft`) vive en el componente Chats, que es
+ * el mismo que renderiza estas filas. Sin memoizar, CADA TECLA que el agente
+ * escribía en el cuadro de respuesta repintaba las 300 filas de la lista —cada
+ * una con su `timeAgo()`, su `stageMeta()` y sus iconos—. Eso es lo que se sentía
+ * como "la app va a tirones" al escribir.
+ *
+ * Para que la memoización funcione de verdad, los manejadores llegan ESTABLES
+ * (useCallback en el padre) y reciben la conversación como argumento, en vez de
+ * ser flechas nuevas en cada render (`onClick={() => toggleFeatured(c)}`), que
+ * habrían invalidado la memoización en cada render igualmente.
+ */
+const ConversationRow = memo(function ConversationRow({ conv, active, onSelect, onToggleFeatured, onMarkRead }) {
   const meta = conv.opportunity?.isOpportunity ? stageMeta(conv.opportunity.stage) : null;
+  const select = () => onSelect?.(conv._id);
   return (
     <div
-      onClick={onClick}
+      onClick={select}
       role="button"
       tabIndex={0}
       onKeyDown={(e) => {
         if (e.key === 'Enter' || e.key === ' ') {
           e.preventDefault();
-          onClick?.();
+          select();
         }
       }}
       className={`w-full text-left px-3 py-2.5 border-b border-slate-50 hover:bg-slate-50 cursor-pointer ${
@@ -2511,7 +2549,7 @@ function ConversationRow({ conv, active, onClick, onToggleFeatured, onMarkRead }
               <button
                 onClick={(e) => {
                   e.stopPropagation();
-                  onMarkRead?.();
+                  onMarkRead?.(conv);
                 }}
                 title="Marcar como leído"
                 className="bg-emerald-600 text-white text-[10px] rounded-full px-1.5 min-w-[18px] text-center border-none cursor-pointer hover:bg-emerald-700 flex items-center gap-0.5 group/unread"
@@ -2541,7 +2579,7 @@ function ConversationRow({ conv, active, onClick, onToggleFeatured, onMarkRead }
         <button
           onClick={(e) => {
             e.stopPropagation();
-            onToggleFeatured();
+            onToggleFeatured?.(conv);
           }}
           className="p-0.5"
           title={conv.isFeatured ? 'Quitar destacado' : 'Marcar destacado'}
@@ -2555,7 +2593,7 @@ function ConversationRow({ conv, active, onClick, onToggleFeatured, onMarkRead }
       </div>
     </div>
   );
-}
+});
 
 // Menú desplegable de acciones (⋯) para pantallas estrechas: agrupa todas las
 // acciones del chat que no caben en la barra. Cierra al elegir o al hacer clic
@@ -3080,7 +3118,14 @@ function highlightMatches(text, term, isOut) {
 // Icono del chip según el tipo de evento interno.
 const EVENT_ICON = { opportunity_created: '🎯' };
 
-function MessageBubble({ msg, onReply, onJumpTo, highlight, onRetry, onRetryMedia }) {
+/**
+ * Burbuja de mensaje. MEMOIZADA por el mismo motivo que ConversationRow: el hilo
+ * abierto trae hasta 80 mensajes y se repintaba entero con cada tecla escrita en
+ * el compositor. Los manejadores llegan estables desde el padre (useCallback) y
+ * `onReply` recibe el mensaje como argumento en vez de ser una flecha nueva por
+ * burbuja en cada render.
+ */
+const MessageBubble = memo(function MessageBubble({ msg, onReply, onJumpTo, highlight, onRetry, onRetryMedia }) {
   // Evento INTERNO del sistema (kind='event'): chip centrado, visible SOLO para el
   // equipo (nunca se envió al contacto). P.ej. "Oportunidad creada".
   if (msg.kind === 'event') {
@@ -3113,7 +3158,7 @@ function MessageBubble({ msg, onReply, onJumpTo, highlight, onRetry, onRetryMedi
     : null;
   return (
     <div className={`group flex items-center gap-1.5 ${isOut ? 'justify-end' : 'justify-start'}`}>
-      {isOut && <ReplyButton onClick={onReply} />}
+      {isOut && <ReplyButton onClick={() => onReply?.(msg)} />}
       <div
         id={`msg-${msg._id}`}
         className={`max-w-[85%] @3xl:max-w-[70%] rounded-lg px-3 py-2 text-sm shadow-sm transition-shadow ${
@@ -3204,10 +3249,10 @@ function MessageBubble({ msg, onReply, onJumpTo, highlight, onRetry, onRetryMedi
           {isOut && <DeliveryBadge msg={msg} />}
         </div>
       </div>
-      {!isOut && <ReplyButton onClick={onReply} />}
+      {!isOut && <ReplyButton onClick={() => onReply?.(msg)} />}
     </div>
   );
-}
+});
 
 /**
  * Una fila "dato + botón de copiar". El icono cambia a un visto un segundo:

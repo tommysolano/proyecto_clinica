@@ -359,10 +359,27 @@ server {
         proxy_read_timeout 86400;   # conexiones largas
     }
 
-    client_max_body_size 12M;       # acorde al límite de 10MB del API
+    client_max_body_size 50m;       # acorde al límite de express.json en el API
     listen 80;
 }
 ```
+
+> **Rendimiento — obligatorio.** Este bloque por sí solo NO comprime el frontend
+> ni lo cachea: el `nginx.conf` de Ubuntu trae `gzip on;` pero con `gzip_types`
+> comentado, así que solo comprime `text/html` y el bundle de ~2,6 MB viaja
+> **entero y sin comprimir en cada carga**. Medido en producción el 30-jul-2026:
+> 8,5 s de descarga cuando comprimido son ~600 KB. Se arregla con un fichero
+> aparte (no toca el bloque que reescribe certbot):
+>
+> ```bash
+> cd /var/www/clinica && sudo bash deploy/nginx/aplicar-perf-nginx.sh
+> ```
+>
+> Instala `/etc/nginx/conf.d/clinica-perf.conf` (gzip, `Cache-Control: immutable`
+> en `/assets`, `client_max_body_size 50m`), activa HTTP/2 en la línea
+> `listen ... ssl` y recarga. Verifica con `nginx -t` y **deshace todo** si algo
+> falla. Ver [`deploy/nginx/clinica-perf.conf`](../deploy/nginx/clinica-perf.conf)
+> para el porqué de cada directiva.
 
 > Con este esquema (mismo dominio) puedes dejar `VITE_API_URL` **vacío** y
 > `ALLOWED_ORIGINS=https://app.tudominio.com`. Si usas subdominio aparte para el

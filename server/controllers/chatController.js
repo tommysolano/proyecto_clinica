@@ -126,13 +126,38 @@ exports.listConversations = async (req, res) => {
     // con ancho de banda limitado, así que lo que decide el tiempo es cuántos
     // BYTES viajan, no cuántos documentos.
     //
-    // Por eso NO se traen aquí:
+    // La proyección va por INCLUSIÓN (se enumera lo que SÍ viaja) y no por
+    // exclusión. Con `-internalNotes` seguía viajando todo lo demás. Medido el
+    // 30-jul-2026 sobre las 300 conversaciones reales de producción, lo que
+    // pesaba el payload anterior:
+    //
+    //     opportunities   95,8 KB (25,8%)  ← la lista no lo usa
+    //     opportunity     91,2 KB (24,5%)  ← la fila solo pinta `stage`
+    //     attribution     29,0 KB ( 7,8%)  ← no se usa en NINGUNA parte del front
+    //
+    // O sea: la MITAD del payload eran las oportunidades DUPLICADAS (el array
+    // canónico `opportunities` y su espejo legacy `opportunity`) para pintar una
+    // etiqueta de etapa de dos palabras.
+    //
+    // Resultado real de esta proyección, medido contra la base de producción:
+    //     495 KB → 217 KB  (56% menos)  ·  8 463 ms → 4 551 ms  (46% menos)
+    //
+    // Una lista por inclusión además no vuelve a engordar sola: si mañana se añade
+    // un campo gordo al modelo, no se cuela aquí sin que alguien lo escriba a mano.
+    //
+    // Lo que NO viaja y de dónde sale:
     //   · `internalNotes` — notas largas del equipo; tienen su propio endpoint.
-    //   · el paciente poblado — las filas de la lista no lo usan (solo nombre,
-    //     teléfono, último mensaje, no leídos y etapa). Lo necesita el panel del
-    //     chat abierto, que lo pide aparte con GET /chats/:id (~350 ms para uno).
+    //   · `opportunities[]` y el resto de `opportunity` — del detalle.
+    //   · el paciente poblado (solo va su id, que es lo que la UI necesita para
+    //     saber si el chat tiene paciente) — del detalle.
+    // El detalle es GET /chats/:id (~350 ms), y solo se pide al abrir un chat.
     const conversations = await Conversation.find(filter)
-      .select('-internalNotes')
+      .select(
+        '_id clinic channel phone contactName patient assignedTo assignedToName ' +
+          'status isFeatured featuredNote blocked window24hExpiresAt lastInboundAt ' +
+          'lastMessageAt lastMessagePreview lastMessageDirection unreadCount tags ' +
+          'whatsappAccount createdAt opportunity.isOpportunity opportunity.stage'
+      )
       .populate('assignedTo', 'name email')
       .populate('whatsappAccount', 'label connectionType displayPhone connectedPhone')
       .sort({ lastMessageAt: -1 })
@@ -242,19 +267,27 @@ async function findEmailInConversation(conversationId) {
  * chat que ya se atendió por otra vía.
  */
 /**
- * Contadores de chats NO LEÍDOS para los badges del riel:
- *   - `mine`: chats sin leer asignados a mí.
- *   - `all`:  chats sin leer de toda la bandeja del call center.
+ * Contadores para los badges de la cabecera de la bandeja:
+ *   - `mine`:     chats sin leer asignados a mí.
+ *   - `all`:      chats sin leer de toda la bandeja del call center.
+ *   - `featured`: chats destacados (su propia pestaña).
  * Cuenta CONVERSACIONES (no mensajes), igual que el badge de Daplox.
+ *
+ * `featured` vive aquí y no en /chats/stats a propósito: es UN countDocuments
+ * sobre un índice, mientras que /chats/stats son 7 agregaciones (1,6 s medidos).
+ * Antes la página entera pagaba esas 7 consultas al abrirse solo para pintar
+ * este numerito; ahora las estadísticas se piden únicamente al entrar en
+ * Supervisión, que es la pantalla que de verdad las usa.
  */
 exports.unreadCounts = async (req, res) => {
   try {
     const base = { clinic: req.clinicId, unreadCount: { $gt: 0 } };
-    const [all, mine] = await Promise.all([
+    const [all, mine, featured] = await Promise.all([
       Conversation.countDocuments(base),
       Conversation.countDocuments({ ...base, assignedTo: req.user._id }),
+      Conversation.countDocuments({ clinic: req.clinicId, isFeatured: true }),
     ]);
-    res.json({ all, mine });
+    res.json({ all, mine, featured });
   } catch (err) {
     res.status(500).json({ message: 'Error al contar no leídos', error: err.message });
   }

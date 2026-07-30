@@ -1229,16 +1229,18 @@ async function enrollForEvent(eventType, payload = {}) {
     }
   };
 
+  // Igual que en los disparadores de chat: los "no coincidió" se juntan en UNA
+  // fila al final. El motivo es el mismo para todos (lo dictó el evento, no el
+  // workflow), así que una fila con la lista completa dice exactamente lo mismo
+  // que N filas repetidas. Ver el comentario del modelo WorkflowTriggerEvent.
+  const noMatch = [];
+
   for (const wf of workflows) {
     // Un workflow puede tener varios flujos (nodos trigger) independientes; cada
     // flujo cuyo disparador coincida se inscribe por separado.
     const flows = matchingFlows(wf, (tr) => triggerMatchesEvent(tr, eventType, payload, services));
     if (!flows.length) {
-      trace(
-        wf,
-        'no_match',
-        'El evento ocurrió pero el disparador no coincidió: revisa la audiencia ("solo pacientes nuevos/existentes"), el filtro de servicio o el filtro de sucursal del nodo disparador.'
-      );
+      noMatch.push({ workflow: wf._id, name: wf.name || '' });
       continue;
     }
     for (const flow of flows) {
@@ -1320,6 +1322,19 @@ async function enrollForEvent(eventType, payload = {}) {
       );
     }
   }
+
+  // UNA fila con todos los que no coincidieron.
+  if (noMatch.length) {
+    traceNoMatchGroup({
+      clinicId,
+      workflows: noMatch,
+      patient: patient._id,
+      patientName,
+      eventType,
+      detail:
+        'El evento ocurrió pero el disparador no coincidió: revisa la audiencia ("solo pacientes nuevos/existentes"), el filtro de servicio o el filtro de sucursal del nodo disparador.',
+    });
+  }
 }
 
 /**
@@ -1391,6 +1406,14 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
   // Tipo de evento representativo para el rastro (prioriza ctwa_ad si vino de anuncio).
   const traceType = msgAdId ? 'ctwa_ad' : (isNew ? 'new_conversation' : 'inbound_message');
 
+  // Los "no coincidió" se ACUMULAN y se escriben en UNA sola fila al final, en vez
+  // de una por workflow. Con 17 automatizaciones de anuncio activas, cada mensaje
+  // entrante escribía hasta 17 filas que decían lo mismo y repetían el mismo
+  // párrafo de ayuda (medido: 4 816 filas/día, el 93% de la colección). El motivo
+  // es común a todas —depende del mensaje, no del workflow—, así que una fila con
+  // la lista completa conserva la misma información. Ver WorkflowTriggerEvent.
+  const noMatch = [];
+
   let enrolled = 0;
   for (const wf of workflows) {
     // Cada flujo (nodo trigger) de chat que coincida se inscribe por separado.
@@ -1400,16 +1423,7 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
       // disparo que este mensaje (p.ej. si vino de anuncio, los ctwa_ad que no
       // casaron por adFilter), para no llenar la Actividad de ruido.
       const relevant = getAllChatTriggers(wf).some((tr) => tr.type === traceType);
-      if (relevant) {
-        trace(
-          wf,
-          traceType,
-          'no_match',
-          traceType === 'ctwa_ad'
-            ? `El mensaje llegó desde el anuncio ${msgAdId} (título: "${msgAdText || '—'}"), pero no coincidió con el/los ID(s) ni con el/los texto(s) del disparador (o la audiencia no encajó). Tip: el ID del anuncio cambia al editarlo en Meta; filtra por texto del título o deja los filtros vacíos.`
-            : 'El mensaje llegó pero el disparador de chat no coincidió (audiencia o palabra clave).'
-        );
-      }
+      if (relevant) noMatch.push({ workflow: wf._id, name: wf.name || '' });
       continue;
     }
     for (const flow of flows) {
@@ -1455,7 +1469,50 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
       enrolled++;
     }
   }
+
+  // UNA fila con todos los que no coincidieron (ver el comentario de `noMatch`).
+  if (noMatch.length) {
+    traceNoMatchGroup({
+      clinicId,
+      workflows: noMatch,
+      patient: patient?._id || patient || null,
+      patientName,
+      eventType: traceType,
+      detail:
+        traceType === 'ctwa_ad'
+          ? `El mensaje llegó desde el anuncio ${msgAdId} (título: "${msgAdText || '—'}"), pero no coincidió con el/los ID(s) ni con el/los texto(s) del disparador (o la audiencia no encajó). Tip: el ID del anuncio cambia al editarlo en Meta; filtra por texto del título o deja los filtros vacíos.`
+          : 'El mensaje llegó pero el disparador de chat no coincidió (audiencia o palabra clave).',
+    });
+  }
   return { enrolled };
+}
+
+/**
+ * Escribe UNA fila de rastro para todos los workflows que no coincidieron con el
+ * mismo evento, en vez de una por workflow.
+ *
+ * Es "dispara y olvida" (sin `await`) a propósito: es un cuaderno de diagnóstico,
+ * y el mensaje del paciente jamás debe esperar por él ni fallar si falla.
+ */
+function traceNoMatchGroup({ clinicId, workflows, patient, patientName, eventType, detail }) {
+  if (!clinicId || !workflows?.length) return;
+  try {
+    require('../models/WorkflowTriggerEvent')
+      .create({
+        clinic: clinicId,
+        workflow: null,
+        workflows,
+        count: workflows.length,
+        patient: patient || null,
+        patientName,
+        eventType,
+        decision: 'no_match',
+        detail,
+      })
+      .catch(() => {});
+  } catch {
+    /* noop */
+  }
 }
 
 /**

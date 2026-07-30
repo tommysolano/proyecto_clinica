@@ -347,6 +347,15 @@ function ActivityModal({ workflow, onClose }) {
               <tbody>
                 {rows.map((r) => {
                   const d = ACTIVITY_DECISION[r.decision] || ACTIVITY_DECISION.no_match;
+                  // Fila AGRUPADA: el mismo evento se evaluó contra varias
+                  // automatizaciones y ninguna coincidió. Se guarda una sola fila
+                  // (antes era una por automatización: hasta 17 por mensaje). La
+                  // decisión que se muestra aquí sigue siendo la de ESTA, y de
+                  // propina se ve con cuáles más se comparó.
+                  const otras = (r.workflows || [])
+                    .filter((w) => String(w.workflow) !== String(workflow._id))
+                    .map((w) => w.name)
+                    .filter(Boolean);
                   return (
                     <tr key={r._id} className="border-t border-slate-100">
                       <td className="px-3 py-2 whitespace-nowrap">{fmt(r.createdAt)}</td>
@@ -355,7 +364,15 @@ function ActivityModal({ workflow, onClose }) {
                       <td className="px-3 py-2 text-center">
                         <span className={`text-[11px] px-2 py-0.5 rounded-full whitespace-nowrap ${d.cls}`}>{d.label}</span>
                       </td>
-                      <td className="px-3 py-2 text-xs text-slate-500 max-w-[340px]">{r.detail}</td>
+                      <td className="px-3 py-2 text-xs text-slate-500 max-w-[340px]">
+                        {r.detail}
+                        {otras.length > 0 && (
+                          <div className="text-[11px] text-slate-400 mt-1" title={otras.join(', ')}>
+                            Tampoco coincidieron otras {otras.length}: {otras.slice(0, 3).join(', ')}
+                            {otras.length > 3 ? '…' : ''}
+                          </div>
+                        )}
+                      </td>
                     </tr>
                   );
                 })}
