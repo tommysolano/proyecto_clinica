@@ -10,6 +10,7 @@ const { emitToClinic, emitToUser, emitToCallCenter } = require('../realtime');
 const messaging = require('../utils/messaging');
 const chatMedia = require('../utils/chatMedia');
 const { verifyMetaSignature } = require('../utils/metaWebhook');
+const { phoneSearchRegex } = require('../utils/phoneNormalize');
 
 /**
  * Normaliza un número de teléfono a sólo dígitos (sin +, ni espacios).
@@ -108,7 +109,15 @@ exports.listConversations = async (req, res) => {
 
     if (q) {
       const regex = new RegExp(q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-      filter.$or = [{ contactName: regex }, { phone: regex }, { lastMessagePreview: regex }];
+      // El teléfono se busca por DÍGITOS, en cualquier formato: el chat guarda
+      // 593988535561 y el agente escribe 0988535561, 098 853 5561 o +593…, sin
+      // tener que adivinar el formato (ver utils/phoneNormalize.phoneSearchRegex).
+      const phoneRegex = phoneSearchRegex(q);
+      filter.$or = [
+        { contactName: regex },
+        { phone: phoneRegex || regex },
+        { lastMessagePreview: regex },
+      ];
     }
 
     // LISTA LIGERA. Medido en el servidor de producción el 25-jul-2026: traer las
@@ -1685,6 +1694,11 @@ exports.listAllOpportunities = async (req, res) => {
       .sort({ lastMessageAt: -1 })
       .limit(500);
 
+    // "Paciente" busca por nombre O por teléfono (así lo anuncia el campo). El
+    // teléfono, en cualquier formato: 0988535561 encuentra el 593988535561.
+    const patientQ = String(patient || '').trim().toLowerCase();
+    const patientPhone = patientQ ? phoneSearchRegex(patientQ) : null;
+
     // Aplanar para devolver una oportunidad por fila. OJO: `opportunity` es el
     // ESPEJO de la última del array — si hay array, usar SOLO el array (antes se
     // sumaban ambos y la oportunidad principal salía duplicada en el embudo).
@@ -1702,7 +1716,12 @@ exports.listAllOpportunities = async (req, res) => {
           !(op.interestedIn || []).some((i) => String(i.product) === String(service))
         ) continue;
         const fullName = `${c.patient?.firstName || ''} ${c.patient?.lastName || ''} ${c.contactName || ''}`.toLowerCase();
-        if (patient && !fullName.includes(String(patient).toLowerCase())) continue;
+        if (patientQ) {
+          const byName = fullName.includes(patientQ);
+          const byPhone = !!patientPhone
+            && [c.phone, c.patient?.phone, c.patient?.whatsapp].some((p) => p && patientPhone.test(String(p)));
+          if (!byName && !byPhone) continue;
+        }
         rows.push({
           conversationId: c._id,
           phone: c.phone,

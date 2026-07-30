@@ -96,4 +96,83 @@ function formatPhone(e164) {
   return `+${d}`;
 }
 
-module.exports = { normalizePhone, isEcuadorMobile, formatPhone, DEFAULT_COUNTRY };
+// =================== Búsqueda por teléfono ===================
+//
+// Buscar NO es normalizar. `normalizePhone` exige un número completo y válido;
+// el buscador recibe pedazos ("98853"), formatos locales ("0988535561") e
+// internacionales ("+593 98 853 5561") del MISMO número que en la base está
+// guardado como 593988535561. Antes se buscaba con el texto tal cual, así que
+// el formato local nunca encontraba nada y el usuario tenía que adivinar cómo
+// escribirlo.
+//
+// La regla es genérica (no solo Ecuador): se comparan DÍGITOS, ignorando
+// separadores, y se prueban las variantes con y sin el 0 de marcación nacional
+// (Ecuador, Colombia, Argentina, España…) y con y sin indicativo de país.
+
+// Con menos dígitos que esto la búsqueda casaría con media base: no vale la pena
+// tratar el texto como teléfono (igual se sigue buscando por nombre/mensaje).
+const MIN_SEARCH_DIGITS = 4;
+
+/**
+ * Formas en las que los dígitos escritos pueden aparecer DENTRO del número
+ * guardado en E.164. Ej. "0988535561" → ['0988535561', '988535561'], y
+ * '988535561' sí está dentro de '593988535561'.
+ */
+function phoneSearchVariants(raw, { defaultCountry = DEFAULT_COUNTRY } = {}) {
+  let digits = String(raw ?? '').replace(/\D/g, '');
+  if (digits.length < MIN_SEARCH_DIGITS) return [];
+  // '00' de marcación internacional: equivale al '+'.
+  if (digits.startsWith('00')) digits = digits.slice(2);
+
+  const variants = new Set([digits]);
+
+  // Sin el 0 de marcación nacional: es la parte que SIEMPRE está dentro del E.164.
+  const nsn = digits.replace(/^0+/, '');
+  if (nsn.length >= MIN_SEARCH_DIGITS) variants.add(nsn);
+
+  // Escribió el internacional completo pero el número guardado no lleva país
+  // (contactos antiguos importados a mano): 593988535561 → 988535561 / 0988535561.
+  if (nsn.startsWith(defaultCountry)) {
+    const local = nsn.slice(defaultCountry.length);
+    if (local.length >= MIN_SEARCH_DIGITS) {
+      variants.add(local);
+      variants.add(`0${local}`);
+    }
+  }
+  return [...variants];
+}
+
+// '988' → '9[^0-9]*8[^0-9]*8': casa aunque el guardado tenga '+', espacios o
+// guiones entre medias.
+const loosePattern = (digits) => digits.split('').join('[^0-9]*');
+
+/**
+ * Expresión regular para buscar un teléfono escrito en cualquier formato, o
+ * `null` si el texto no tiene dígitos suficientes para ser un teléfono.
+ * Sirve igual para un filtro de Mongo (`{ phone: regex }`) que para filtrar en
+ * memoria (`regex.test(phone)`).
+ */
+function phoneSearchRegex(raw, opts) {
+  const variants = phoneSearchVariants(raw, opts);
+  if (!variants.length) return null;
+  // Los dígitos no necesitan escaparse: la alternancia es segura.
+  return new RegExp(`(${variants.map(loosePattern).join('|')})`);
+}
+
+/** ¿Alguno de estos teléfonos casa con lo que se escribió en el buscador? */
+function phoneMatchesSearch(raw, phones) {
+  const regex = phoneSearchRegex(raw);
+  if (!regex) return false;
+  const list = Array.isArray(phones) ? phones : [phones];
+  return list.some((p) => p && regex.test(String(p)));
+}
+
+module.exports = {
+  normalizePhone,
+  isEcuadorMobile,
+  formatPhone,
+  phoneSearchVariants,
+  phoneSearchRegex,
+  phoneMatchesSearch,
+  DEFAULT_COUNTRY,
+};

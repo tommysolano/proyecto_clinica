@@ -1333,12 +1333,14 @@ export default function Chats() {
           {/* Lista de conversaciones */}
           <div className={`bg-white border border-slate-200 rounded-xl flex-col overflow-hidden min-h-0 ${activeId ? 'hidden @3xl:flex' : 'flex'}`}>
             <div className="p-2 border-b border-slate-100 flex gap-1">
+              {/* El teléfono se busca en cualquier formato: 0988535561,
+                  098 853 5561 o +593 98 853 5561 encuentran el mismo chat. */}
               <div className="relative flex-1">
                 <HiOutlineMagnifyingGlass className="absolute left-2 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
                 <input
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
-                  placeholder="Buscar nombre, teléfono..."
+                  placeholder="Buscar nombre, teléfono o mensaje..."
                   className="w-full pl-8 pr-2 py-1.5 text-sm border border-slate-200 rounded-lg"
                 />
               </div>
