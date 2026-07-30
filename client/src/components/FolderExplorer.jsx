@@ -5,7 +5,11 @@ import {
   HiOutlineChevronRight,
   HiOutlineMagnifyingGlass,
   HiOutlineTrash,
+  HiOutlinePencil,
+  HiOutlineArrowUturnLeft,
+  HiOutlineExclamationTriangle,
 } from 'react-icons/hi2';
+import Modal from './Modal';
 
 /**
  * Explorador de CARPETAS anidadas tipo Windows (breadcrumb + lista de carpetas +
@@ -32,6 +36,11 @@ export function normFolderPath(raw) {
     .join('/');
 }
 
+/** Nombre de la carpeta (último tramo de la ruta). */
+const leafName = (full) => String(full || '').split('/').filter(Boolean).pop() || '';
+/** Carpeta de arriba: "A/B/C" → "A/B"; "A" → '' (sin carpeta). */
+const parentPath = (full) => String(full || '').split('/').filter(Boolean).slice(0, -1).join('/');
+
 export default function FolderExplorer({
   rootLabel,
   items = [],
@@ -40,7 +49,10 @@ export default function FolderExplorer({
   registryPaths = [],
   itemNoun = 'elemento(s)',
   onCreateFolder,
+  // onDeleteFolder(ruta, modo): 'empty' (vacía) | 'move' (contenido un nivel
+  // arriba) | 'purge' (borra también el contenido). Ver utils/folderCrud.
   onDeleteFolder,
+  onRenameFolder,
   renderItems,
   toolbar = null, // acciones a la derecha del buscador (p. ej. "Nuevo elemento")
   searchPlaceholder = 'Buscar en todas las carpetas...',
@@ -134,9 +146,51 @@ export default function FolderExplorer({
     if (ok !== false) setPath(full); // entrar en la carpeta recién creada
   };
 
-  const removeFolder = async (full) => {
-    const ok = await onDeleteFolder(full);
+  // Borrado en dos tiempos: si la carpeta está VACÍA se borra con una confirmación
+  // normal; si tiene contenido se abre el diálogo para elegir qué hacer con él
+  // (subirlo un nivel o borrarlo también). Antes simplemente no se podía borrar.
+  const [pendingDelete, setPendingDelete] = useState(null); // { full, count }
+  const [deleting, setDeleting] = useState(false);
+
+  const afterDelete = (ok, full) => {
     if (ok !== false && (path === full || path.startsWith(full + '/'))) setPath('');
+  };
+
+  const askRemoveFolder = async (f) => {
+    if (f.count > 0) {
+      setPendingDelete({ full: f.full, count: f.count });
+      return;
+    }
+    if (!window.confirm(`¿Eliminar la carpeta "${leafName(f.full)}"?`)) return;
+    afterDelete(await onDeleteFolder(f.full, 'empty'), f.full);
+  };
+
+  const confirmRemoveFolder = async (mode) => {
+    const { full } = pendingDelete;
+    setDeleting(true);
+    try {
+      const ok = await onDeleteFolder(full, mode);
+      if (ok !== false) setPendingDelete(null);
+      afterDelete(ok, full);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const renameFolder = async (full) => {
+    const current = leafName(full);
+    const name = window.prompt(`Nuevo nombre para la carpeta "${current}":`, current);
+    if (name === null) return; // canceló
+    const clean = normFolderPath(name);
+    if (!clean || clean === current) return;
+    const ok = await onRenameFolder(full, clean);
+    // Si estábamos dentro de la carpeta renombrada (o de una subcarpeta), se
+    // sigue a la ruta nueva en vez de quedarse en una que ya no existe.
+    if (ok !== false && (path === full || path.startsWith(full + '/'))) {
+      const parent = parentPath(full);
+      const to = parent ? `${parent}/${clean}` : clean;
+      setPath(to + path.slice(full.length));
+    }
   };
 
   const emptyText = showingSearch
@@ -220,10 +274,19 @@ export default function FolderExplorer({
                 <span className="flex-1 text-sm font-medium text-slate-700 truncate">{f.name}</span>
                 <span className="text-xs text-slate-400 whitespace-nowrap">{f.count} {itemNoun}</span>
               </button>
+              {!f.unfiled && onRenameFolder && (
+                <button
+                  onClick={() => renameFolder(f.full)}
+                  title="Cambiar el nombre de la carpeta"
+                  className="p-2 text-slate-300 hover:text-emerald-600 bg-transparent border-none cursor-pointer opacity-0 group-hover:opacity-100"
+                >
+                  <HiOutlinePencil className="w-4 h-4" />
+                </button>
+              )}
               {!f.unfiled && (
                 <button
-                  onClick={() => removeFolder(f.full)}
-                  title="Eliminar carpeta (debe estar vacía)"
+                  onClick={() => askRemoveFolder(f)}
+                  title="Eliminar carpeta"
                   className="p-2 mr-1 text-slate-300 hover:text-rose-500 bg-transparent border-none cursor-pointer opacity-0 group-hover:opacity-100"
                 >
                   <HiOutlineTrash className="w-4 h-4" />
@@ -234,6 +297,67 @@ export default function FolderExplorer({
           ))}
         </div>
       )}
+
+      {/* Borrar una carpeta CON contenido: el usuario elige qué pasa con lo de
+          dentro. Borrar es irreversible, así que se dice exactamente cuántos
+          elementos son y a dónde irían. */}
+      <Modal
+        isOpen={!!pendingDelete}
+        onClose={() => !deleting && setPendingDelete(null)}
+        title={`Eliminar la carpeta "${leafName(pendingDelete?.full)}"`}
+        size="sm"
+      >
+        {pendingDelete && (
+          <div className="space-y-4">
+            <div className="flex gap-2.5 text-sm text-slate-600">
+              <HiOutlineExclamationTriangle className="w-5 h-5 text-amber-500 shrink-0 mt-0.5" />
+              <p>
+                La carpeta contiene <b>{pendingDelete.count}</b> {itemNoun}
+                {' '}(incluyendo sus subcarpetas). ¿Qué hacemos con {pendingDelete.count === 1 ? 'ese elemento' : 'ellos'}?
+              </p>
+            </div>
+            <div className="space-y-2">
+              <button
+                disabled={deleting}
+                onClick={() => confirmRemoveFolder('move')}
+                className="w-full text-left px-3.5 py-2.5 rounded-xl border border-slate-200 bg-white hover:border-emerald-300 hover:bg-emerald-50/50 cursor-pointer disabled:opacity-50 flex gap-2.5"
+              >
+                <HiOutlineArrowUturnLeft className="w-5 h-5 text-emerald-600 shrink-0 mt-0.5" />
+                <span>
+                  <span className="block text-sm font-semibold text-slate-800">
+                    Mover el contenido a {parentPath(pendingDelete.full) ? `"${leafName(parentPath(pendingDelete.full))}"` : 'la raíz'} y borrar la carpeta
+                  </span>
+                  <span className="block text-xs text-slate-500 mt-0.5">
+                    Nada se pierde: solo desaparece la carpeta.
+                  </span>
+                </span>
+              </button>
+              <button
+                disabled={deleting}
+                onClick={() => confirmRemoveFolder('purge')}
+                className="w-full text-left px-3.5 py-2.5 rounded-xl border border-rose-200 bg-white hover:bg-rose-50 cursor-pointer disabled:opacity-50 flex gap-2.5"
+              >
+                <HiOutlineTrash className="w-5 h-5 text-rose-500 shrink-0 mt-0.5" />
+                <span>
+                  <span className="block text-sm font-semibold text-rose-700">
+                    Borrar la carpeta y su contenido
+                  </span>
+                  <span className="block text-xs text-slate-500 mt-0.5">
+                    Se eliminan {pendingDelete.count} {itemNoun} y las subcarpetas. No se puede deshacer.
+                  </span>
+                </span>
+              </button>
+            </div>
+            <button
+              disabled={deleting}
+              onClick={() => setPendingDelete(null)}
+              className="w-full px-3 py-2 text-sm text-slate-500 bg-transparent border-none cursor-pointer hover:text-slate-700 disabled:opacity-50"
+            >
+              Cancelar
+            </button>
+          </div>
+        )}
+      </Modal>
 
       {/* Elementos del nivel actual (o resultados de búsqueda) */}
       {(showingSearch || itemRows.length > 0 || folderRows.length === 0) &&

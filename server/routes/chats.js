@@ -38,7 +38,8 @@ router.get('/saved-replies', requireRole(...CALL_CENTER_ROLES), ctrl.listSavedRe
 // Carpetas: ANTES de las rutas '/:id' (si no, DELETE /folders casa con /:id id='folders').
 router.get('/saved-replies/folders', requireRole(...CALL_CENTER_ROLES), ctrl.listSavedReplyFolders);
 router.post('/saved-replies/folders', requireRole(...CALL_CENTER_ROLES), ctrl.createSavedReplyFolder);
-router.delete('/saved-replies/folders', requireRole(...CALL_CENTER_ROLES), ctrl.deleteSavedReplyFolder); // ?path=...
+router.put('/saved-replies/folders', requireRole(...CALL_CENTER_ROLES), ctrl.renameSavedReplyFolder); // { path, name }
+router.delete('/saved-replies/folders', requireRole(...CALL_CENTER_ROLES), ctrl.deleteSavedReplyFolder); // ?path=...&mode=
 router.post('/saved-replies/upload', requireRole(...CALL_CENTER_ROLES), ctrl.uploadSavedReplyMedia);
 router.post('/saved-replies/test', requireRole(...CALL_CENTER_ROLES), ctrl.testSavedReply);
 router.post('/saved-replies', requireRole(...CALL_CENTER_ROLES), ctrl.createSavedReply);

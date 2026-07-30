@@ -791,7 +791,8 @@ const savedReplyFolders = require('../utils/folderCrud').makeFolderCrud({
 });
 exports.listSavedReplyFolders = savedReplyFolders.list;
 exports.createSavedReplyFolder = savedReplyFolders.create;
-exports.deleteSavedReplyFolder = savedReplyFolders.remove; // DELETE ...?path=...
+exports.deleteSavedReplyFolder = savedReplyFolders.remove; // DELETE ...?path=...&mode=empty|move|purge
+exports.renameSavedReplyFolder = savedReplyFolders.rename; // PUT ...{ path, name }
 
 exports.listSavedReplies = async (req, res) => {
   try {

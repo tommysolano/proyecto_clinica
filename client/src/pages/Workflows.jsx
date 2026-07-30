@@ -88,14 +88,38 @@ export default function Workflows() {
       return false;
     }
   };
-  const deleteFolder = async (full) => {
+  // `mode`: 'empty' (vacía) | 'move' (las automatizaciones suben un nivel) |
+  // 'purge' (se borran también). Lo elige el usuario en el diálogo del explorador.
+  const deleteFolder = async (full, mode = 'empty') => {
     try {
-      await api.delete('/workflows/folders', { params: { path: full } });
+      const { data } = await api.delete('/workflows/folders', { params: { path: full, mode } });
       setFolders((prev) => prev.filter((f) => f.name !== full && !f.name.startsWith(full + '/')));
-      toast.success('Carpeta eliminada');
+      if (data?.deletedItems) toast.success(`Carpeta y ${data.deletedItems} automatización(es) eliminadas`);
+      else if (data?.movedItems) toast.success(`Carpeta eliminada · ${data.movedItems} automatización(es) movidas a ${data.movedTo || 'la raíz'}`);
+      else toast.success('Carpeta eliminada');
+      load(); // las automatizaciones cambiaron de carpeta (o ya no están)
       return true;
     } catch (e) {
       toast.error(e.response?.data?.message || 'No se pudo eliminar la carpeta');
+      return false;
+    }
+  };
+
+  const renameFolder = async (full, name) => {
+    try {
+      const { data } = await api.put('/workflows/folders', { path: full, name });
+      toast.success(`Carpeta renombrada a "${name}"`);
+      setFolders((prev) =>
+        prev.map((f) =>
+          f.name === full || f.name.startsWith(full + '/')
+            ? { ...f, name: data.to + f.name.slice(full.length) }
+            : f
+        )
+      );
+      load(); // las automatizaciones de dentro cambiaron de ruta
+      return true;
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'No se pudo renombrar la carpeta');
       return false;
     }
   };
@@ -230,6 +254,7 @@ export default function Workflows() {
         itemNoun="automatización(es)"
         onCreateFolder={createFolder}
         onDeleteFolder={deleteFolder}
+        onRenameFolder={renameFolder}
         searchPlaceholder="Buscar automatización en todas las carpetas..."
         toolbar={(currentPath) => (
           <button

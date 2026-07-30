@@ -10,12 +10,20 @@ const { resolveCallCenterClinicId } = require('../utils/callCenterClinic');
  * Qué tipos puede VER cada rol. La campana está en el header de TODA la app, así
  * que el filtro va por tipo y no por ruta: quien no tenga tipos visibles ve la
  * bandeja vacía en vez de un 403 que rompería el header.
+ *
+ * Regla: las notificaciones de MARKETING (plantillas de WhatsApp, calidad del
+ * número) son solo para admin y marketing — nadie más las ve. Coincide con quién
+ * puede entrar a las páginas donde se actúa sobre ellas (/message-templates y
+ * /call-center-config son admin+marketing): mandar ahí a otro rol sería mandarlo
+ * a una pantalla que no puede abrir.
  */
+const MARKETING_ROLES = ['admin', 'marketing'];
+
 const TYPE_ROLES = {
-  template_category_changed: ['admin', 'marketing'],
-  template_status_changed: ['admin', 'marketing'],
-  template_check_failed: ['admin', 'marketing'],
-  whatsapp_quality_changed: ['admin', 'marketing', 'call_center'],
+  template_category_changed: MARKETING_ROLES,
+  template_status_changed: MARKETING_ROLES,
+  template_check_failed: MARKETING_ROLES,
+  whatsapp_quality_changed: MARKETING_ROLES,
 };
 
 function visibleTypes(req) {

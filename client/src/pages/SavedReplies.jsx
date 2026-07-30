@@ -101,14 +101,38 @@ export default function SavedReplies() {
     }
   };
 
-  const deleteFolder = async (full) => {
+  // `mode`: 'empty' (vacía) | 'move' (los mensajes suben un nivel) | 'purge' (se
+  // borran también). Lo elige el usuario en el diálogo del explorador.
+  const deleteFolder = async (full, mode = 'empty') => {
     try {
-      await api.delete('/chats/saved-replies/folders', { params: { path: full } });
+      const { data } = await api.delete('/chats/saved-replies/folders', { params: { path: full, mode } });
       setFolders((prev) => prev.filter((f) => f.name !== full && !f.name.startsWith(full + '/')));
-      toast.success('Carpeta eliminada');
+      if (data?.deletedItems) toast.success(`Carpeta y ${data.deletedItems} mensaje(s) eliminados`);
+      else if (data?.movedItems) toast.success(`Carpeta eliminada · ${data.movedItems} mensaje(s) movidos a ${data.movedTo || 'Sin carpeta'}`);
+      else toast.success('Carpeta eliminada');
+      load(); // los mensajes cambiaron de carpeta (o ya no están)
       return true;
     } catch (e) {
       toast.error(e.response?.data?.message || 'No se pudo eliminar la carpeta');
+      return false;
+    }
+  };
+
+  const renameFolder = async (full, name) => {
+    try {
+      const { data } = await api.put('/chats/saved-replies/folders', { path: full, name });
+      toast.success(`Carpeta renombrada a "${name}"`);
+      setFolders((prev) =>
+        prev.map((f) =>
+          f.name === full || f.name.startsWith(full + '/')
+            ? { ...f, name: data.to + f.name.slice(full.length) }
+            : f
+        )
+      );
+      load(); // los mensajes de dentro cambiaron de ruta
+      return true;
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'No se pudo renombrar la carpeta');
       return false;
     }
   };
@@ -170,6 +194,7 @@ export default function SavedReplies() {
         itemNoun="mensaje(s)"
         onCreateFolder={createFolder}
         onDeleteFolder={deleteFolder}
+        onRenameFolder={renameFolder}
         searchPlaceholder="Buscar en todas las carpetas..."
         toolbar={(currentPath) => (
           <button

@@ -41,10 +41,24 @@ function sanitizeWorkflowPayload(body = {}) {
 // ─────────── Carpetas (anidadas, tipo Windows) ───────────
 // Rutas con '/' ("Citas/Recordatorios"): carpetas dentro de carpetas. El registro
 // persiste la carpeta aunque esté vacía. Lógica compartida en utils/folderCrud.
-const wfFolders = makeFolderCrud({ FolderModel: WorkflowFolder, ItemModel: Workflow, folderField: 'folder' });
+const wfFolders = makeFolderCrud({
+  FolderModel: WorkflowFolder,
+  ItemModel: Workflow,
+  folderField: 'folder',
+  // Al borrar una carpeta CON sus automatizaciones dentro hay que cancelar las
+  // inscripciones vivas, igual que al borrar una automatización sola: si no, el
+  // motor seguiría intentando avanzar inscripciones de un workflow que ya no está.
+  onItemsDeleted: async (ids) => {
+    await WorkflowEnrollment.updateMany(
+      { workflow: { $in: ids }, status: { $in: ['active', 'waiting'] } },
+      { status: 'cancelled' }
+    );
+  },
+});
 exports.listFolders = wfFolders.list;
 exports.createFolder = wfFolders.create;
-exports.deleteFolder = wfFolders.remove; // DELETE /folders?path=...
+exports.deleteFolder = wfFolders.remove; // DELETE /folders?path=...&mode=empty|move|purge
+exports.renameFolder = wfFolders.rename; // PUT /folders { path, name }
 
 exports.list = async (req, res) => {
   try {

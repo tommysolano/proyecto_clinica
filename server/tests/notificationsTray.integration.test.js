@@ -35,11 +35,10 @@ async function seedAnchor() {
   return clinicId;
 }
 
-const listFor = async (clinicId, role, extra = {}) => {
-  const res = await H.runController(
-    notifications.list,
-    H.mockReq(clinicId, new H.mongoose.Types.ObjectId(), {}, { role, ...extra })
-  );
+const listFor = async (clinicId, role, { isSuperAdmin = false } = {}) => {
+  const req = H.mockReq(clinicId, new H.mongoose.Types.ObjectId(), {}, { role });
+  if (isSuperAdmin) req.user.isSuperAdmin = true;
+  const res = await H.runController(notifications.list, req);
   assert.equal(res.statusCode, 200);
   return res.payload;
 };
@@ -93,23 +92,29 @@ test('se ve desde otra sucursal activa (la alerta vive en la clínica del CRM)',
   assert.equal(items.length, 1);
 });
 
-test('cada rol ve solo lo suyo', async () => {
+test('las notificaciones de marketing SOLO las ven admin y marketing', async () => {
   const clinicId = await seedAnchor();
   await Notification.create({ clinic: clinicId, type: 'template_category_changed', severity: 'error', title: 'plantilla' });
   await Notification.create({ clinic: clinicId, type: 'whatsapp_quality_changed', severity: 'warning', title: 'calidad' });
 
-  const admin = await listFor(clinicId, 'admin');
-  assert.equal(admin.items.length, 2);
+  for (const role of ['admin', 'marketing']) {
+    // eslint-disable-next-line no-await-in-loop
+    const r = await listFor(clinicId, role);
+    assert.equal(r.items.length, 2, `${role} debe ver las dos`);
+    assert.equal(r.unread, 2);
+  }
 
-  // El call center no administra plantillas: solo ve la calidad del número.
-  const callCenter = await listFor(clinicId, 'call_center');
-  assert.deepEqual(callCenter.items.map((x) => x.type), ['whatsapp_quality_changed']);
-  assert.equal(callCenter.unread, 1);
+  // El resto de roles NO las ve: bandeja vacía y contador en 0, nunca un error.
+  for (const role of ['call_center', 'cajero', 'doctor', 'contabilidad', 'enfermero']) {
+    // eslint-disable-next-line no-await-in-loop
+    const r = await listFor(clinicId, role);
+    assert.deepEqual(r.items, [], `${role} no debe ver notificaciones de marketing`);
+    assert.equal(r.unread, 0);
+  }
 
-  // Un doctor no tiene notificaciones: bandeja vacía, nunca un error.
-  const doctor = await listFor(clinicId, 'doctor');
-  assert.deepEqual(doctor.items, []);
-  assert.equal(doctor.unread, 0);
+  // El super-admin lo ve todo, tenga el rol que tenga.
+  const su = await listFor(clinicId, 'doctor', { isSuperAdmin: true });
+  assert.equal(su.items.length, 2);
 });
 
 test('marcar como leída (una y todas) baja el contador', async () => {
