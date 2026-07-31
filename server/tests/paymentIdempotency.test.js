@@ -25,7 +25,7 @@ const gastoLine = (acc, val = 100) => ({ description: 'Gasto', lineType: 'GASTO'
 async function makeGastoPurchase(clinicId, userId, supplier, { serie = '001-001-000000001', val = 100 } = {}) {
   const gasto = await ChartOfAccount.findOne({ clinic: clinicId, code: '6.1.99' });
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: supplier._id, fechaEmision: new Date('2026-06-05'), serie, items: [gastoLine(gasto._id, val)],
+    supplier: supplier._id, fechaEmision: H.docDate(), serie, items: [gastoLine(gasto._id, val)],
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
   return r.payload;
@@ -33,7 +33,7 @@ async function makeGastoPurchase(clinicId, userId, supplier, { serie = '001-001-
 
 // ─────────────────────────────────────────────────────────────────────────────
 test('1) doble submit con misma key: un solo Payment, un solo asiento, sin doble aplicación CxP', async () => {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic({ date: H.docDate() });
   const sup = await H.makeSupplier(clinicId);
   const pi = await makeGastoPurchase(clinicId, userId, sup, { serie: '001-001-000000101', val: 100 });
 
@@ -58,7 +58,7 @@ test('1) doble submit con misma key: un solo Payment, un solo asiento, sin doble
 
 // ─────────────────────────────────────────────────────────────────────────────
 test('2) doble submit por banco con misma key: un solo BankTransaction', async () => {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic({ date: H.docDate() });
   const sup = await H.makeSupplier(clinicId);
   const pi = await makeGastoPurchase(clinicId, userId, sup, { serie: '001-001-000000102', val: 100 });
   const bankAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '1.1.01.03' });
@@ -82,7 +82,7 @@ test('2) doble submit por banco con misma key: un solo BankTransaction', async (
 
 // ─────────────────────────────────────────────────────────────────────────────
 test('3) pre-check: si la clave ya existe, replay sin recrear (concurrencia)', async () => {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic({ date: H.docDate() });
   const sup = await H.makeSupplier(clinicId);
   // Simula que otra petición ya creó el pago con esa clave (carrera ganada).
   const body = {
@@ -99,8 +99,8 @@ test('3) pre-check: si la clave ya existe, replay sin recrear (concurrencia)', a
 
 // ─────────────────────────────────────────────────────────────────────────────
 test('4) la misma key en OTRA clínica sí puede coexistir', async () => {
-  const a = await H.seedClinic({ date: new Date('2026-06-01') });
-  const b = await H.seedClinic({ date: new Date('2026-06-01') });
+  const a = await H.seedClinic({ date: H.docDate() });
+  const b = await H.seedClinic({ date: H.docDate() });
   const supA = await H.makeSupplier(a.clinicId);
   const supB = await H.makeSupplier(b.clinicId);
   const mk = (clinicId, supplier) => ({ type: 'PAGO', method: 'EFECTIVO', partyModel: 'Supplier', partyRef: supplier._id, partyName: 'X', advanceAmount: 25, applications: [], idempotencyKey: 'SHARED-KEY' });
@@ -113,7 +113,7 @@ test('4) la misma key en OTRA clínica sí puede coexistir', async () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 test('5) sin key: comportamiento legacy (dos pagos distintos, no idempotente)', async () => {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic({ date: H.docDate() });
   const sup = await H.makeSupplier(clinicId);
   const body = { type: 'PAGO', method: 'EFECTIVO', partyModel: 'Supplier', partyRef: sup._id, partyName: 'X', advanceAmount: 10, applications: [] };
   const r1 = await H.runController(payments.create, H.mockReq(clinicId, userId, body));

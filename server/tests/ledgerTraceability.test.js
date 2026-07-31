@@ -24,6 +24,15 @@ test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
 test.beforeEach(async () => { await H.resetDb(); });
 
+// El mayor se consulta sobre el MES EN CURSO: los comprobantes ya no admiten fecha
+// anterior a hoy (utils/fiscalDocumentDate), así que un rango fijo del calendario caducaba.
+const RANGO = (() => {
+  const n = new Date();
+  const p2 = (x) => String(x).padStart(2, '0');
+  const fin = new Date(n.getFullYear(), n.getMonth() + 1, 0).getDate();
+  return { desde: `${n.getFullYear()}-${p2(n.getMonth() + 1)}-01`, hasta: `${n.getFullYear()}-${p2(n.getMonth() + 1)}-${p2(fin)}` };
+})();
+
 async function accId(clinicId, code) {
   const a = await ChartOfAccount.findOne({ clinic: clinicId, code });
   return a?._id;
@@ -31,7 +40,7 @@ async function accId(clinicId, code) {
 
 // ── Compra → asiento con origen → el mayor expone cómo abrir el documento ───────
 test('el mayor devuelve entryId/sourceModel/sourceRef para navegar al documento origen', async () => {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic({ date: H.docDate() });
   const invAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '1.1.04.01' });
   const costAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '5.1.01' });
   const incAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '4.1.02' });
@@ -40,14 +49,14 @@ test('el mayor devuelve entryId/sourceModel/sourceRef para navegar al documento 
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id });
 
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [{ description: 'Insumo', lineType: 'INVENTARIO', product: prod._id, quantity: 10, unitPrice: 10, ivaRate: 15, subtotal: 100 }],
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
   const purchaseId = String(r.payload._id);
 
   const led = await H.runController(je.ledger, H.mockReq(clinicId, userId, {}, {
-    query: { account: String(invAcc._id), startDate: '2026-06-01', endDate: '2026-06-30' },
+    query: { account: String(invAcc._id), startDate: RANGO.desde, endDate: RANGO.hasta },
   }));
   assert.equal(led.statusCode, 200, JSON.stringify(led.payload));
   const row = (led.payload.rows || []).find((x) => x.debit === 100);
@@ -60,12 +69,12 @@ test('el mayor devuelve entryId/sourceModel/sourceRef para navegar al documento 
 
 // ── Asiento MANUAL sin origen: el mayor no se rompe y lo marca sin documento ────
 test('un asiento manual sin origen aparece en el mayor sin sourceModel y no rompe', async () => {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic({ date: H.docDate() });
   const debitAcc = await accId(clinicId, '1.1.04.01');
   const creditAcc = await accId(clinicId, '2.1.01.01');
 
   await createEntry({
-    clinicId, date: new Date('2026-06-10'), description: 'Ajuste manual sin documento',
+    clinicId, date: H.docDate(), description: 'Ajuste manual sin documento',
     lines: [
       { account: debitAcc, debit: 50, credit: 0 },
       { account: creditAcc, debit: 0, credit: 50 },
@@ -74,7 +83,7 @@ test('un asiento manual sin origen aparece en el mayor sin sourceModel y no romp
   });
 
   const led = await H.runController(je.ledger, H.mockReq(clinicId, userId, {}, {
-    query: { account: String(debitAcc), startDate: '2026-06-01', endDate: '2026-06-30' },
+    query: { account: String(debitAcc), startDate: RANGO.desde, endDate: RANGO.hasta },
   }));
   assert.equal(led.statusCode, 200, JSON.stringify(led.payload));
   const row = (led.payload.rows || []).find((x) => x.debit === 50);

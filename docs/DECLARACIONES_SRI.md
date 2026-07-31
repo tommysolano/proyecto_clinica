@@ -206,7 +206,93 @@ La UI genera un UUID por intención, lo reutiliza al reintentar, lo renueva al c
 / banco / fecha y lo descarta tras el éxito. El botón se bloquea mientras la petición está en
 curso, pero **la protección real está en el backend**.
 
+## Anexos: RDEP y Accionistas
+
+Pantalla **Contabilidad → Reportería → Anexos SRI** (`/accounting/sri-annexes`). Desde el
+Formulario 103 hay un acceso directo al RDEP del mismo ejercicio.
+
+### RDEP — Retenciones en relación de dependencia (anual)
+
+Es el detalle, empleado por empleado, de lo que el 103 declara mes a mes en el casillero
+laboral. Por eso **usa exactamente la misma fuente y el mismo mapeo** que el 103
+(`utils/payrollWithholding.js`): nóminas `CERRADO`/`PAGADO` del año, excluyendo la
+`QUINCENA_1` (anticipo sin IESS ni IR). Si el 103 y el RDEP no cuadraran, el SRI lo detecta;
+aquí cuadran por construcción y hay un test que lo comprueba.
+
+| Lo calcula el sistema (de la nómina) | Lo captura el contador |
+|---|---|
+| Sueldos ganados del período | Ingresos gravados con **otros** empleadores |
+| Sobresueldos: horas extra, bonos, comisiones y rubros flexibles clasificados como gravados | Aporte personal IESS de otros empleadores |
+| Ingresos **no** gravados (décimos, fondos de reserva, vacaciones) — informativos | Impuesto retenido por otros empleadores |
+| Aporte personal al IESS | Gastos personales: vivienda, salud, educación, alimentación, vestimenta, turismo |
+| Impuesto a la renta retenido por este empleador | Exoneraciones por discapacidad y tercera edad |
+
+`base imponible = (gravados propios + gravados otros) − IESS propio − IESS otros − gastos
+personales − exoneraciones`. El **impuesto causado** se calcula con la tabla del ejercicio
+(`PayrollIncomeTaxTable`, la misma de la nómina); sin tabla del año queda en 0 **con
+advertencia**, nunca en silencio.
+
+Lo capturado se guarda en `RdepAnnex` como *overrides* por identificación —nunca se guardan
+los valores calculados—, así que cerrar un rol tarde no deja el anexo con datos rancios. Los
+campos calculados **no son capturables**: enviarlos devuelve 400 explicando por qué.
+
+La columna **Diferencia** (causado − retenido propio − retenido por otros) es el aviso clásico
+del RDEP: distinta de cero significa que en el ejercicio se retuvo de menos o de más.
+
+### Anexo de Accionistas (APS)
+
+Composición societaria: accionistas, socios, partícipes, miembros del directorio y
+administradores. **No se calcula de nada**: no existe en ningún otro punto del sistema, se
+captura en esta pantalla (`Shareholder`).
+
+- Solo `ACCIONISTA`, `SOCIO` y `PARTICIPE` son **titulares de capital**: son los que deben
+  sumar **exactamente 100 %**. La validación corre al generar el anexo, no al guardar cada
+  titular (durante la captura es normal que la suma esté incompleta).
+- Los miembros del directorio y administradores se reportan con 0 % y **no** cuentan para ese 100 %.
+- Un titular con `fechaHasta` sale del anexo desde ese corte, pero se conserva para el histórico.
+- Se piden **país de residencia** y **paraíso fiscal** porque condicionan la retención de
+  dividendos del 103.
+
+### Salidas
+
+Ambos anexos exportan **Excel** (para revisar y transcribir al DIMM) y un **XML borrador
+técnico** con la misma advertencia que el 103/104: la estructura la definió este sistema, no
+está validada contra el XSD vigente del SRI, no es un archivo DIMM y no está listo para cargar.
+
+## Fecha de los comprobantes: automática y sin retroceso
+
+`utils/fiscalDocumentDate.js` centraliza la regla: **la fecha de emisión es automática (hoy) y
+el sistema no registra un comprobante con fecha anterior a hoy**. Se aplica en las tres vías —
+registro manual, edición e importación TXT/XML del SRI — y también a la factura de venta
+(que se emite con la fecha real de emisión, nunca con una anterior).
+
+Un comprobante atrasado se **rechaza**; nunca se le reescribe la fecha, porque el 103/104 suman
+por la fecha del comprobante y falsearla descuadraría las declaraciones. El importador del SRI
+reporta esas filas como error, fila por fila, y sigue con el resto.
+
+Único matiz —y es lo que hace la regla usable—: al **editar** un documento ya guardado la fecha
+solo se valida si **cambia**. Un comprobante histórico conserva su fecha y se puede corregir;
+lo que se prohíbe es *fijar* una fecha pasada.
+
+> **Consecuencia operativa:** el importador de comprobantes recibidos del SRI ya no puede cargar
+> meses anteriores. Es el efecto directo de la regla; si más adelante hace falta cargar
+> histórico, el punto único a relajar es `assertNotPastDocumentDate` en
+> `purchaseInvoiceController.importTxt` / `importXml`.
+
+## Los asientos contables no se editan
+
+No existe ningún endpoint para reescribir a mano un asiento: se eliminaron los de venta
+(`POST /sales/:id/journal`), compra (`POST /purchase-invoices/:id/journal`) y el `PUT` de
+borradores de `journal-entries`. Un asiento contabilizado se **reversa** (deja rastro) y un
+borrador equivocado se **elimina** y se rehace. Corregir un documento se hace sobre el
+documento: editar la compra reversa y regenera su asiento; anular la venta reversa los suyos.
+
+El visor de asientos busca por **documento origen** (`by-source`), no por un único id, así que
+muestra **todos** los asientos del documento — incluido el de **costo de ventas**, que antes
+había que ir a buscar a los reportes.
+
 ## Migración
 
-Ninguna: las cuentas nuevas se auto-crean al usarse. Para las cuentas por pagar históricas de
-compras sin fecha de vencimiento, ver `scripts/backfillPayableDueDates.js`.
+Ninguna: las cuentas nuevas se auto-crean al usarse. Los anexos tampoco necesitan migración
+(`RdepAnnex` y `Shareholder` nacen vacíos y se llenan al capturarlos). Para las cuentas por
+pagar históricas de compras sin fecha de vencimiento, ver `scripts/backfillPayableDueDates.js`.

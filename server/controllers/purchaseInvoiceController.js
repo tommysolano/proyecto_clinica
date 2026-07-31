@@ -16,6 +16,7 @@ const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOp
 const { getAccount } = require('../utils/accountMap');
 const { openPayable, voidPayable } = require('../utils/subledger');
 const { invoiceDate } = require('../utils/dates');
+const { assertNotPastDocumentDate } = require('../utils/fiscalDocumentDate');
 const kardex = require('../utils/kardex');
 const { parsePurchaseInvoiceXml } = require('../utils/sriXmlParser');
 const { computeRetention, groupLineRetentions, lineRetentionList } = require('../utils/retentionCalculator');
@@ -582,6 +583,8 @@ exports.create = async (req, res) => {
         // Ancla al mediodía local: una fecha del día 1 enviada como medianoche UTC no debe caer
         // en el mes anterior (Ecuador UTC−5) y desaparecer del 103/104.
         if (data.fechaEmision) data.fechaEmision = invoiceDate(data.fechaEmision);
+        // La fecha del comprobante es automática (hoy) y no admite fechas atrasadas.
+        assertNotPastDocumentDate(data.fechaEmision, { label: 'la factura de compra' });
         calcTotals(data);
         await assertPeriodOpen(req.clinicId, data.fechaEmision || new Date(), { session });
         const sup = await Supplier.findOne({ _id: data.supplier, clinic: req.clinicId }).session(session);
@@ -809,6 +812,9 @@ exports.update = async (req, res) => {
         await assertPeriodOpen(req.clinicId, inv.fechaEmision, { session });
         const nextDate = req.body.fechaEmision ? invoiceDate(req.body.fechaEmision) : inv.fechaEmision;
         await assertPeriodOpen(req.clinicId, nextDate, { session });
+        // No se puede MOVER la fecha hacia atrás. Conservar la fecha que ya tenía el documento
+        // sí es válido (si no, una compra histórica no se podría ni corregir).
+        assertNotPastDocumentDate(nextDate, { label: 'la factura de compra', current: inv.fechaEmision });
         if (inv.journalEntry) {
           await reverseEntry({
             clinicId: req.clinicId,
@@ -1106,6 +1112,12 @@ exports.importTxt = async (req, res) => {
       if (seenInFile.has(fileKey)) { skipped++; continue; }
       seenInFile.add(fileKey);
       if ((r.claveAcceso && existingClaves.has(r.claveAcceso)) || (r.serie && existingSerieKeys.has(serieKey))) { skipped++; continue; }
+      // Regla de fechas: ningún comprobante puede quedar registrado con fecha anterior a hoy,
+      // tampoco importado. La fila se RECHAZA (no se le inventa otra fecha: eso falsearía el
+      // 103/104, que suman por la fecha del comprobante).
+      try {
+        assertNotPastDocumentDate(r.fechaEmision, { label: `el comprobante ${r.serie || ''}`.trim() });
+      } catch (dateErr) { errors.push({ line: r.line, error: dateErr.message }); continue; }
       docs.push({
         clinic: req.clinicId, supplier: sup._id,
         docType: r.docType,
@@ -1264,6 +1276,9 @@ exports.importXml = async (req, res) => {
           autorizacion: p.autorizacion, estab: p.estab, ptoEmi: p.ptoEmi, secuencial: p.secuencial,
         });
         if (dup) { skipped++; continue; }
+        // Misma regla de fechas que el importador TXT: un comprobante con fecha anterior a
+        // hoy se rechaza (nunca se le reescribe la fecha).
+        assertNotPastDocumentDate(p.fechaEmision, { label: `el comprobante ${p.serie || ''}`.trim() });
         const data = {
           clinic: req.clinicId, supplier: sup._id, docType: 'FACTURA',
           estab: p.estab, ptoEmi: p.ptoEmi, secuencial: p.secuencial, serie: p.serie,
@@ -1320,8 +1335,12 @@ exports.authorize = async (req, res) => {
           if (Array.isArray(rest.items)) {
             await classifyAndValidateItems(rest.items, { clinicId: req.clinicId, supplier: supForItems, session });
           }
+          const prevDate = inv.fechaEmision;
           Object.assign(inv, rest);
           if (inv.fechaEmision) inv.fechaEmision = invoiceDate(inv.fechaEmision);
+          // Al contabilizar no se puede mover la fecha hacia atrás; conservar la que ya traía
+          // el comprobante importado sí (el rechazo por fecha ocurrió al importarlo).
+          assertNotPastDocumentDate(inv.fechaEmision, { label: 'la factura de compra', current: prevDate });
           calcTotals(inv);
         }
         await assertPeriodOpen(req.clinicId, inv.fechaEmision, { session });
@@ -1357,36 +1376,8 @@ exports.authorize = async (req, res) => {
   } catch (e) { sendError(res, e); }
 };
 
-/**
- * Edición manual del asiento contable (debe/haber) de una compra registrada.
- * El contador puede modificar libremente las líneas; se reversa el asiento actual y se
- * crea uno nuevo cuadrado (partida doble validada en createEntry). Body: { lines:[{account|accountCode, debit, credit, description}], date? }
+/*
+ * NOTA CONTABLE: aquí vivía `editJournal`, que permitía reescribir a mano el asiento de una
+ * compra ya contabilizada. Se ELIMINÓ: un asiento contabilizado es inmutable. Para corregirlo
+ * se edita la FACTURA (`update` reversa y regenera su asiento desde el documento) o se anula.
  */
-exports.editJournal = async (req, res) => {
-  try {
-    const lines = req.body?.lines;
-    if (!Array.isArray(lines) || lines.length < 2) return res.status(400).json({ message: 'El asiento debe tener al menos 2 líneas' });
-    const invoiceId = await runInTransaction(async (session) => {
-      const inv = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
-      if (!inv) throw Object.assign(new Error('No encontrada'), { status: 404 });
-      if (inv.status === 'ANULADA') throw Object.assign(new Error('La compra está anulada'), { status: 400 });
-      if (inv.status === 'POR_AUTORIZAR') throw Object.assign(new Error('Autoriza la compra antes de editar su asiento'), { status: 400 });
-      await assertPeriodOpen(req.clinicId, inv.fechaEmision, { session });
-      const reversalDate = req.body.date ? new Date(req.body.date) : new Date();
-      await assertPeriodOpen(req.clinicId, reversalDate, { session });
-      if (inv.journalEntry) {
-        await reverseEntry({ clinicId: req.clinicId, entryId: inv.journalEntry, userId: req.user._id, reason: 'Edición manual de asiento de compra', date: reversalDate, session });
-      }
-      const entry = await createEntry({
-        clinicId: req.clinicId, date: inv.fechaEmision, description: `Compra ${inv.serie || ''} (asiento editado)`,
-        source: 'COMPRA', sourceRef: inv._id, sourceModel: 'PurchaseInvoice', sourceAction: `EDIT:${Date.now()}`,
-        lines, userId: req.user._id, session,
-      });
-      inv.journalEntry = entry._id;
-      await inv.save({ session });
-      return inv._id;
-    });
-    const inv = await PurchaseInvoice.findById(invoiceId).populate('journalEntry');
-    return res.json(inv);
-  } catch (e) { sendError(res, e); }
-};

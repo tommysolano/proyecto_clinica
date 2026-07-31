@@ -163,6 +163,16 @@ const purchaseInvoiceSchema = new mongoose.Schema(
     retentionTotal: { type: Number, default: 0 },
     retentionNumber: String, // nº comprobante retención emitida
     retentionVoucher: { type: mongoose.Schema.Types.ObjectId, ref: 'RetentionVoucher', default: null },
+    /**
+     * PERIODO FISCAL de la retención, elegido en el formulario de la compra (como en
+     * Contífico: la pestaña «Retención» tiene su propio «P. Fiscal» mes/año). Por defecto es
+     * el mes de la factura sustento; el contador puede moverlo dentro de lo que permite la
+     * regla de los 5 días. Al emitir el comprobante, `retentionVoucherController` lo usa como
+     * valor por defecto (el body de la emisión sigue mandando si envía otro).
+     * Vacío (null) = «usa el mes de la factura sustento».
+     */
+    retentionPeriodMonth: { type: Number, default: null, min: 1, max: 12 },
+    retentionPeriodYear: { type: Number, default: null, min: 2000, max: 3000 },
     balance: { type: Number, default: 0 }, // saldo por pagar
     paid: { type: Boolean, default: false },
     status: { type: String, enum: ['POR_AUTORIZAR', 'REGISTRADA', 'PAGADA', 'ANULADA'], default: 'REGISTRADA' },

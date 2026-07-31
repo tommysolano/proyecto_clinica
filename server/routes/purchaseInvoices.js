@@ -11,7 +11,8 @@ router.put('/:id', requireRole('admin', 'contabilidad'), c.update);
 router.post('/:id/void', requireRole('admin', 'contabilidad'), c.void);
 router.delete('/:id', requireRole('admin', 'contabilidad'), c.remove);
 router.post('/:id/authorize', requireRole('admin', 'contabilidad'), c.authorize);
-router.post('/:id/journal', requireRole('admin', 'contabilidad'), c.editJournal);
+// NO existe endpoint para editar el asiento de una compra: un asiento contabilizado es
+// inmutable. Para corregirlo se EDITA la factura (que reversa y regenera su asiento) o se anula.
 // Reinicio de compras (limpiar importaciones erróneas) — solo admin, con confirmación
 router.post('/wipe', requireRole('admin'), c.wipeAll);
 router.post('/import-txt', requireRole('admin', 'contabilidad'), c.importTxt);

@@ -18,17 +18,30 @@ BRANCH="main"
 
 cd "$APP_DIR"
 
-echo "==> 1/4 Trayendo el ultimo codigo de origin/$BRANCH"
+echo "==> 1/5 Trayendo el ultimo codigo de origin/$BRANCH"
 git fetch --all --prune
 git reset --hard "origin/$BRANCH"
 
-echo "==> 2/4 Instalando dependencias (server + client)"
+echo "==> 2/5 Instalando dependencias (server + client)"
 npm run install-all
 
-echo "==> 3/4 Compilando el frontend (regenera client/dist)"
+echo "==> 3/5 Compilando el frontend (regenera client/dist)"
 npm --prefix client run build
 
-echo "==> 4/4 Reiniciando el backend con PM2 (bajo el usuario 'clinica')"
+echo "==> 4/5 Tareas de UNA SOLA VEZ"
+# Cada tarea lleva su marca en la base (coleccion `onetimetasks`), asi que se ejecuta
+# solo en el PRIMER despliegue que la trae: los siguientes push la encuentran DONE y no
+# hacen nada. Si falla, queda FAILED y el proximo despliegue la reintenta; el fallo NO
+# aborta el despliegue (el codigo nuevo tiene que subir igual), pero sale en el log.
+#
+# Vigente: borrar todas las ventas para empezar las pruebas desde cero (jul-2026).
+# Cuando ya este DONE se puede quitar esta linea sin riesgo (la marca la protege igual).
+if ! ( cd "$APP_DIR/server" && node scripts/wipeSalesOnce.js --commit ); then
+  echo "ADVERTENCIA: la tarea de una sola vez fallo. Revisa el log y reintenta a mano:"
+  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/wipeSalesOnce.js --commit'"
+fi
+
+echo "==> 5/5 Reiniciando el backend con PM2 (bajo el usuario 'clinica')"
 # IMPORTANTE: el backend corre bajo el pm2 del usuario `clinica` (God Daemon en
 # /home/clinica/.pm2), NO bajo el de root. GitHub Actions ejecuta este deploy
 # como root, así que un `pm2 restart` a secas apuntaba al pm2 de ROOT (vacío) →

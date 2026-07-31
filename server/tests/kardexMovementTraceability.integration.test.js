@@ -36,14 +36,14 @@ test('compra + venta: el kardex enlaza factura y asiento (con el costo de venta)
 
   // ── Compra 10 @ 40 → entrada al inventario + asiento de compra ────────────────────────
   const pr = ok(await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-01'), serie: '001-001-000000501',
+    supplier: sup._id, fechaEmision: H.docDate(), serie: '001-001-000000501',
     items: [{ description: 'Insumo X', product: prod._id, quantity: 10, unitPrice: 40, ivaRate: 15, subtotal: 400 }],
   })), 201);
   const purchaseId = pr._id;
 
   // ── Venta 3 @ 115 (contado) → salida + asiento combinado con COGS 3x40=120 ─────────────
   const sr = ok(await H.runController(sale.createSale, H.mockReq(clinicId, userId, {
-    items: [{ product: prod._id, quantity: 3, unitPrice: 115 }], paymentMethod: 'efectivo', date: new Date('2026-06-10'),
+    items: [{ product: prod._id, quantity: 3, unitPrice: 115 }], paymentMethod: 'efectivo', date: H.docDate(),
   })), 201);
   const saleId = sr._id;
 

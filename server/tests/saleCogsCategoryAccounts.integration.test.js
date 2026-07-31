@@ -98,17 +98,19 @@ test('venta FIFO multicapa con categoría propia: COGS pondera capas y sale de l
   const prod = await H.makeProduct(clinicId, { category: 'insumo', salePrice: 115, stock: 0, inventoryCategory: cat._id });
   const sup = await H.makeSupplier(clinicId);
   // Capa 1: 5 @ 10 · Capa 2: 5 @ 20
+  // Las fechas son relativas a HOY (los comprobantes no admiten fecha atrasada); lo que
+  // importa aquí es el ORDEN de las capas, no el mes del calendario.
   await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-01'), serie: '001-001-000000201',
+    supplier: sup._id, fechaEmision: H.docDate(0), serie: '001-001-000000201',
     items: [{ description: 'M', product: prod._id, quantity: 5, unitPrice: 10, ivaRate: 15, subtotal: 50 }],
   }));
   await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-10'), serie: '001-001-000000202',
+    supplier: sup._id, fechaEmision: H.docDate(1), serie: '001-001-000000202',
     items: [{ description: 'M', product: prod._id, quantity: 5, unitPrice: 20, ivaRate: 15, subtotal: 100 }],
   }));
   // Vende 7: FIFO consume 5@10 + 2@20 = 90 de costo.
   const r = await H.runController(sale.createSale, H.mockReq(clinicId, userId, {
-    items: [{ product: prod._id, quantity: 7, unitPrice: 115 }], paymentMethod: 'efectivo', date: new Date('2026-06-15'),
+    items: [{ product: prod._id, quantity: 7, unitPrice: 115 }], paymentMethod: 'efectivo', date: H.docDate(2),
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
   assert.equal(await H.accountBalanceByCode(clinicId, '5.1.77'), 90, 'COGS FIFO ponderado en la cuenta de la categoría');
@@ -208,7 +210,7 @@ test('anular una venta reversa AMBOS asientos (venta y costo)', async () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-test('by-source (visor Kardex/documento): trae AMBOS asientos y, tras editar, muestra reversado + vigente', async () => {
+test('by-source (visor Kardex/documento): trae AMBOS asientos (venta + COSTO) y el asiento no se puede editar', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const { cat } = await customCategory(clinicId);
   const prod = await H.makeProduct(clinicId, { category: 'insumo', salePrice: 115, purchasePrice: 40, stock: 0, inventoryCategory: cat._id });
@@ -229,21 +231,21 @@ test('by-source (visor Kardex/documento): trae AMBOS asientos y, tras editar, mu
   assert.ok(bs.payload.every((e) => !e.isReversed), 'ambos vigentes');
   assert.ok(bs.payload.some((e) => e.sourceAction === 'POST') && bs.payload.some((e) => e.sourceAction === 'POST_COST'));
 
-  // Editar manualmente el asiento de venta: el original queda REVERSADO y aparece el nuevo VIGENTE.
-  const desc = await ChartOfAccount.findOne({ clinic: clinicId, code: '4.1.03' });
-  const caja = await ChartOfAccount.findOne({ clinic: clinicId, code: '1.1.01.01' });
-  const edit = await H.runController(sale.editJournalSale, H.mockReq(clinicId, userId, {
-    lines: [
-      { account: caja._id, debit: 230, credit: 0, description: 'Caja' },
-      { account: desc._id, debit: 0, credit: 230, description: 'Ingreso (editado)' },
-    ],
-  }, { params: { id: String(s._id) } }));
-  assert.equal(edit.statusCode, 200, JSON.stringify(edit.payload));
+  // El visor trae el asiento de COSTO junto al de venta: el costo se ve en el modal del
+  // asiento, sin tener que ir a los reportes.
+  const costEntry = bs.payload.find((e) => e.sourceAction === 'POST_COST');
+  assert.ok(costEntry.lines.some((l) => l.accountCode === '5.1.77' && l.debit > 0), 'el asiento de costo trae la cuenta de costo de ventas');
+  assert.ok(costEntry.lines.some((l) => l.accountCode === '1.1.04.77' && l.credit > 0), 'el asiento de costo acredita inventario');
 
+  // Un asiento contabilizado es INMUTABLE: no existe endpoint para reescribirlo a mano.
+  assert.equal(typeof sale.editJournalSale, 'undefined', 'no debe existir edición manual del asiento de venta');
+  assert.equal(typeof purchase.editJournal, 'undefined', 'no debe existir edición manual del asiento de compra');
+
+  // La única vía de corrección es ANULAR: los originales quedan reversados (auditoría) y
+  // aparecen las reversas; nunca se sobrescribe un asiento.
+  const cancel = await H.runController(sale.cancelSale, H.mockReq(clinicId, userId, {}, { params: { id: String(s._id) } }));
+  assert.equal(cancel.statusCode, 200, JSON.stringify(cancel.payload));
   bs = await H.runController(journal.bySource, H.mockReq(clinicId, userId, {}, { query: { model: 'Sale', ref: String(s._id) } }));
-  const reversados = bs.payload.filter((e) => e.isReversed);
-  const vigentes = bs.payload.filter((e) => !e.isReversed);
-  assert.ok(reversados.length >= 1, 'el asiento de venta original quedó reversado y visible (historial)');
-  assert.ok(vigentes.some((e) => /editado/.test(e.description) || e.sourceAction.startsWith('EDIT')), 'el asiento editado queda VIGENTE');
-  assert.ok(vigentes.some((e) => e.sourceAction === 'POST_COST'), 'el asiento de costo sigue vigente');
+  assert.equal(bs.payload.filter((e) => e.isReversed).length, 2, 'venta y costo quedan reversados y visibles');
+  assert.ok((await H.assertLedgerBalanced(clinicId)).balanced);
 });

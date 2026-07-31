@@ -22,8 +22,12 @@ test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
 test.beforeEach(async () => { await H.resetDb(); });
 
+// El 103 se consulta por el MES EN CURSO (los comprobantes se registran hoy).
+const Y = new Date().getFullYear();
+const M = new Date().getMonth() + 1;
+
 async function setup() {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic({ date: H.docDate() });
   const gasto = await ChartOfAccount.findOne({ clinic: clinicId, code: '6.1.99' });
   const invAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '1.1.04.01' });
   const costAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '5.1.01' });
@@ -47,7 +51,7 @@ test('1) inventario con retención 2%: calcula base y monto automáticamente', a
   const sup = await H.makeSupplier(clinicId);
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id });
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [invLine(prod._id, { rule: String(ruleBienes._id) }, 10, 5, 0)],
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
@@ -70,7 +74,7 @@ test('2) gasto transporte con retención 1%: código distinto en la misma factur
   const { clinicId, userId, gasto, ruleTransp } = await setup();
   const sup = await H.makeSupplier(clinicId);
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [gastoLine(gasto._id, { code: '310', type: 'RENTA' }, 100, 0)],
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
@@ -87,7 +91,7 @@ test('3) compra mixta con dos retenciones: resumen agrupado correcto', async () 
   const sup = await H.makeSupplier(clinicId);
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id });
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [
       invLine(prod._id, { rule: String(ruleBienes._id) }, 10, 5, 0),        // 312: base 50, ret 1
       gastoLine(gasto._id, { rule: String(ruleTransp._id) }, 100, 0),        // 310: base 100, ret 1
@@ -114,7 +118,7 @@ test('4) backend ignora base/porcentaje/monto falsos enviados por el frontend', 
   const sup = await H.makeSupplier(clinicId);
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id });
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [invLine(prod._id, { rule: String(ruleBienes._id), base: 9999, baseAmount: 9999, rate: 99, percentage: 99, amount: 9999 }, 10, 5, 0)],
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
@@ -131,7 +135,7 @@ test('5) regla inactiva falla', async () => {
   const sup = await H.makeSupplier(clinicId);
   const inactive = await RetentionRule.create({ clinic: clinicId, type: 'RENTA', code: '399', description: 'Inactiva', rate: 5, baseType: 'SUBTOTAL_TOTAL', active: false });
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [gastoLine(gasto._id, { rule: String(inactive._id) }, 100, 0)],
   }));
   assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
@@ -146,7 +150,7 @@ test('6) regla con cuenta de retención inválida (otra clínica) falla', async 
   const foreignAcc = await ChartOfAccount.create({ clinic: otherClinic, code: '2.1.02.04', name: 'Ret (otra)', type: 'PASIVO', nature: 'CREDITO', allowsMovement: true });
   const badRule = await RetentionRule.create({ clinic: clinicId, type: 'RENTA', code: '398', rate: 2, baseType: 'SUBTOTAL_TOTAL', payableAccount: foreignAcc._id });
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [gastoLine(gasto._id, { rule: String(badRule._id) }, 100, 0)],
   }));
   assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
@@ -160,7 +164,7 @@ test('7) asiento cuadra: inventario + IVA al debe; CxP neto + retenciones al hab
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id });
   // Inventario 100 + IVA 15 = 115. Retención renta 2% de 100 = 2 (código 312).
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [{ description: 'Insumo', lineType: 'INVENTARIO', product: prod._id, quantity: 10, unitPrice: 10, ivaRate: 15, subtotal: 100, retention: { rule: String(ruleBienes._id) } }],
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
@@ -181,7 +185,7 @@ test('8) CxP (Payable) queda por el neto después de retenciones', async () => {
   const sup = await H.makeSupplier(clinicId);
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id });
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [invLine(prod._id, { rule: String(ruleBienes._id) }, 10, 5, 0)], // total 50, ret 1 → neto 49
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
@@ -197,7 +201,7 @@ test('9) la retención aparece en el mayor con origen COMPRA', async () => {
   const sup = await H.makeSupplier(clinicId);
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id });
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [invLine(prod._id, { rule: String(ruleBienes._id) }, 10, 5, 0)],
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
@@ -215,10 +219,10 @@ test('10) el Formulario 103 toma las retenciones por línea', async () => {
   const sup = await H.makeSupplier(clinicId);
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id });
   await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-15'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [invLine(prod._id, { rule: String(ruleBienes._id) }, 10, 5, 0), gastoLine(gasto._id, { rule: String(ruleTransp._id) }, 100, 0)],
   }));
-  const res = await H.runController(reports.form103, H.mockReq(clinicId, userId, {}, { query: { year: '2026', month: '6' } }));
+  const res = await H.runController(reports.form103, H.mockReq(clinicId, userId, {}, { query: { year: String(Y), month: String(M) } }));
   assert.equal(res.statusCode, 200, JSON.stringify(res.payload));
   const rows = res.payload.rows;
   const r312 = rows.find((x) => x.code === '312');
@@ -235,13 +239,13 @@ test('11) compra legacy con retención de cabecera sigue funcionando', async () 
   const sup = await H.makeSupplier(clinicId);
   // Factura legacy REGISTRADA (sin strictAccounts) con retención MANUAL de cabecera y sin retención por línea.
   const legacy = await PurchaseInvoice.create({
-    clinic: clinicId, supplier: sup._id, fechaEmision: new Date('2026-06-05'), serie: '001-001-000000900',
+    clinic: clinicId, supplier: sup._id, fechaEmision: H.docDate(), serie: '001-001-000000900',
     items: [{ description: 'Servicio', lineType: 'GASTO', account: gasto._id, quantity: 1, unitPrice: 100, subtotal: 100, ivaRate: 0 }],
     retentions: [{ type: 'RENTA', code: '312', description: 'Bienes', baseAmount: 100, percentage: 2, amount: 2 }],
     subtotal: 100, total: 100, retentionTotal: 2, balance: 98, status: 'REGISTRADA',
   });
   const upd = await H.runController(purchase.update, H.mockReq(clinicId, userId, {
-    fechaEmision: new Date('2026-06-05'),
+    fechaEmision: H.docDate(),
     items: [{ description: 'Servicio', lineType: 'GASTO', account: gasto._id, quantity: 1, unitPrice: 100, subtotal: 100, ivaRate: 0 }],
     retentions: [{ type: 'RENTA', code: '312', description: 'Bienes', baseAmount: 100, percentage: 2, amount: 2 }],
   }, { params: { id: String(legacy._id) } }));
@@ -260,7 +264,7 @@ test('12) sin doble conteo si llegan retención de cabecera Y por línea (nueva)
   const sup = await H.makeSupplier(clinicId);
   // Compra NUEVA: el cliente manda ADEMÁS una cabecera manual falsa; debe ignorarse.
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     retentions: [{ type: 'RENTA', code: 'XXX', baseAmount: 100, percentage: 50, amount: 50 }], // cabecera manual falsa
     items: [gastoLine(gasto._id, { rule: String(ruleTransp._id) }, 100, 0)], // línea 310: ret 1
   }));
@@ -281,7 +285,7 @@ test('13) una línea con RENTA + IVA: calcula ambas, CxP neto y asiento cuadran'
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id });
   // Inventario 100 + IVA 15. Renta 2% de 100 = 2; IVA 30% de 15 = 4.5. CxP = 108.5.
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [{ description: 'Insumo', lineType: 'INVENTARIO', product: prod._id, quantity: 10, unitPrice: 10, ivaRate: 15, subtotal: 100,
       retentions: [{ rule: String(ruleBienes._id) }, { rule: String(ruleIva._id) }] }],
   }));
@@ -303,7 +307,7 @@ test('14) resumen agrupa retenciones de varias líneas por type/code', async () 
   const sup = await H.makeSupplier(clinicId);
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id });
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [
       { description: 'Insumo', lineType: 'INVENTARIO', product: prod._id, quantity: 10, unitPrice: 10, ivaRate: 15, subtotal: 100, retentions: [{ rule: String(ruleBienes._id) }, { rule: String(ruleIva._id) }] }, // 312:2, 721:4.5
       { description: 'Transporte', lineType: 'GASTO', account: gasto._id, quantity: 1, unitPrice: 100, ivaRate: 0, subtotal: 100, retentions: [{ rule: String(ruleBienes._id) }, { rule: String(ruleTransp._id) }] }, // 312:2, 310:1
@@ -328,7 +332,7 @@ test('15) backend ignora base/monto/rate falsos en AMBAS retenciones de la líne
   const sup = await H.makeSupplier(clinicId);
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id });
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [{ description: 'Insumo', lineType: 'INVENTARIO', product: prod._id, quantity: 10, unitPrice: 10, ivaRate: 15, subtotal: 100,
       retentions: [
         { rule: String(ruleBienes._id), base: 9999, amount: 9999, rate: 99 },
@@ -350,7 +354,7 @@ test('16) no permite duplicar el mismo type+code en la misma línea', async () =
   const { clinicId, userId, gasto, ruleBienes } = await setup();
   const sup = await H.makeSupplier(clinicId);
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [{ description: 'Gasto', lineType: 'GASTO', account: gasto._id, quantity: 1, unitPrice: 100, ivaRate: 0, subtotal: 100,
       retentions: [{ rule: String(ruleBienes._id) }, { rule: String(ruleBienes._id) }] }], // 312 duplicado
   }));
@@ -363,7 +367,7 @@ test('17) permite RENTA + IVA (tipos distintos) en la misma línea', async () =>
   const { clinicId, userId, gasto, ruleTransp, ruleIva } = await setup();
   const sup = await H.makeSupplier(clinicId);
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [{ description: 'Servicio', lineType: 'GASTO', account: gasto._id, quantity: 1, unitPrice: 100, ivaRate: 15, subtotal: 100,
       retentions: [{ rule: String(ruleTransp._id) }, { rule: String(ruleIva._id) }] }], // 310 renta + 721 iva
   }));
@@ -380,7 +384,7 @@ test('18) compra legacy con item.retention SINGULAR sigue funcionando (se normal
   const sup = await H.makeSupplier(clinicId);
   // Simula un cliente/datos viejos que mandan `retention` singular (no array).
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [{ description: 'Transporte', lineType: 'GASTO', account: gasto._id, quantity: 1, unitPrice: 100, ivaRate: 0, subtotal: 100, retention: { rule: String(ruleTransp._id) } }],
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
@@ -398,11 +402,11 @@ test('19) el Formulario 103 toma AMBAS retenciones RENTA (dos códigos) por lín
   const sup = await H.makeSupplier(clinicId);
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id });
   await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-15'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [{ description: 'Insumo', lineType: 'INVENTARIO', product: prod._id, quantity: 10, unitPrice: 10, ivaRate: 0, subtotal: 100,
       retentions: [{ rule: String(ruleBienes._id) }, { rule: String(ruleTransp._id) }] }], // 312 + 310 (ambas RENTA)
   }));
-  const res = await H.runController(reports.form103, H.mockReq(clinicId, userId, {}, { query: { year: '2026', month: '6' } }));
+  const res = await H.runController(reports.form103, H.mockReq(clinicId, userId, {}, { query: { year: String(Y), month: String(M) } }));
   assert.equal(res.statusCode, 200, JSON.stringify(res.payload));
   const r312 = res.payload.rows.find((x) => x.code === '312');
   const r310 = res.payload.rows.find((x) => x.code === '310');

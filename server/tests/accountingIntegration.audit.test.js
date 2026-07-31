@@ -43,9 +43,17 @@ test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
 test.beforeEach(async () => { await H.resetDb(); });
 
+// Los comprobantes ya no admiten fecha anterior a hoy (utils/fiscalDocumentDate): las
+// pruebas trabajan sobre HOY y el MES EN CURSO, no sobre un mes fijo del calendario.
+const Y = new Date().getFullYear();
+const M = new Date().getMonth() + 1;
+// Día 5 del mes SIGUIENTE (para el caso de período cerrado).
+const MES_SIGUIENTE = { year: M === 12 ? Y + 1 : Y, month: M === 12 ? 1 : M + 1 };
+const FECHA_MES_SIGUIENTE = new Date(MES_SIGUIENTE.year, MES_SIGUIENTE.month - 1, 5, 12, 0, 0);
+
 /** Clínica + categoría de inventario con cuenta + reglas de retención RENTA/IVA. */
 async function setupPurchases() {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic({ date: H.docDate() });
   const invAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '1.1.04.01' });
   const costAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '5.1.01' });
   const incAcc = await ChartOfAccount.findOne({ clinic: clinicId, code: '4.1.02' });
@@ -78,7 +86,7 @@ test('T1) compra inventario con retención: asiento/CxP/kardex/103 integrados', 
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id });
   // Inventario 100 + IVA 15. Renta 2% de 100 = 2; IVA 30% de 15 = 4.5. CxP = 108.5.
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [{ description: 'Insumo', lineType: 'INVENTARIO', product: prod._id, quantity: 10, unitPrice: 10, ivaRate: 15, subtotal: 100,
       retentions: [{ rule: String(ruleRenta._id) }, { rule: String(ruleIva._id) }] }],
   }));
@@ -102,7 +110,7 @@ test('T1) compra inventario con retención: asiento/CxP/kardex/103 integrados', 
   assert.equal(layers[0].unitCost, 10);
 
   // Formulario 103 (RENTA) toma la retención.
-  const f103 = await H.runController(reports.form103, H.mockReq(clinicId, userId, {}, { query: { year: '2026', month: '6' } }));
+  const f103 = await H.runController(reports.form103, H.mockReq(clinicId, userId, {}, { query: { year: String(Y), month: String(M) } }));
   assert.equal(f103.statusCode, 200, JSON.stringify(f103.payload));
   const row = f103.payload.rows.find((x) => x.code === '312');
   assert.ok(row && row.amount === 2, 'el 103 refleja la retención renta');
@@ -114,13 +122,13 @@ test('T2) depreciación idempotente por período (no duplica asiento ni monto)',
   const { clinicId, userId } = await setupPurchases();
   const { cat, depAcc } = await setupAssetCategory(clinicId);
   const sup = await H.makeSupplier(clinicId);
-  await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: new Date('2026-06-05'), items: [afLine(cat._id, 1000)] }));
+  await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: H.docDate(), items: [afLine(cat._id, 1000)] }));
 
-  const first = await H.runController(inv.runDepreciation, H.mockReq(clinicId, userId, { year: 2026, month: 6 }));
+  const first = await H.runController(inv.runDepreciation, H.mockReq(clinicId, userId, { year: Y, month: M }));
   assert.equal(first.statusCode, 200, JSON.stringify(first.payload));
   assert.equal(first.payload.totalDepreciation, 100, 'primer mes: 1000/10');
 
-  const second = await H.runController(inv.runDepreciation, H.mockReq(clinicId, userId, { year: 2026, month: 6 }));
+  const second = await H.runController(inv.runDepreciation, H.mockReq(clinicId, userId, { year: Y, month: M }));
   assert.equal(second.statusCode, 200, JSON.stringify(second.payload));
   assert.equal(second.payload.processed, 0, 'segunda corrida no procesa nada');
   assert.equal(second.payload.totalDepreciation, 0);
@@ -139,7 +147,7 @@ test('T3) baja de activo usa cuentas por rol (remapeo de AccountingConfig)', asy
   const { clinicId, userId } = await setupPurchases();
   const { cat, assetAcc } = await setupAssetCategory(clinicId);
   const sup = await H.makeSupplier(clinicId);
-  await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: new Date('2026-06-05'), items: [afLine(cat._id, 1000)] }));
+  await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: H.docDate(), items: [afLine(cat._id, 1000)] }));
   const asset = await FixedAsset.findOne({ clinic: clinicId });
 
   // El contador remapea el rol otrosIngresos a una cuenta propia.
@@ -147,7 +155,7 @@ test('T3) baja de activo usa cuentas por rol (remapeo de AccountingConfig)', asy
   await AccountingConfig.create({ clinic: clinicId, accounts: { otrosIngresos: otrosIngresosCustom._id } });
 
   // Baja con valor > libro (1000) → ganancia 500 sin banco (ingreso por Caja).
-  const r = await H.runController(inv.disposeAsset, H.mockReq(clinicId, userId, { disposalValue: 1500, disposalDate: new Date('2026-06-20') }, { params: { id: String(asset._id) } }));
+  const r = await H.runController(inv.disposeAsset, H.mockReq(clinicId, userId, { disposalValue: 1500, disposalDate: H.docDate() }, { params: { id: String(asset._id) } }));
   assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
 
   assert.equal(await H.accountBalanceByCode(clinicId, '4.2.90'), -500, 'la ganancia usa la cuenta remapeada por rol');
@@ -166,7 +174,7 @@ test('T4) cobro de venta (Sale) por Payment: baja CxC y contabiliza', async () =
   const prod = await H.makeProduct(clinicId, { category: 'servicio', unlimited: true, salePrice: 100, taxRate: 0, priceIncludesVat: false });
   const saleRes = await H.runController(sales.createSale, H.mockReq(clinicId, userId, {
     items: [{ product: String(prod._id), quantity: 1, unitPrice: 100 }],
-    clientName: 'Cliente crédito', paymentMethod: 'credito', date: new Date('2026-06-10'),
+    clientName: 'Cliente crédito', paymentMethod: 'credito', date: H.docDate(),
   }));
   assert.equal(saleRes.statusCode, 201, JSON.stringify(saleRes.payload));
   const saleId = saleRes.payload._id;
@@ -174,7 +182,7 @@ test('T4) cobro de venta (Sale) por Payment: baja CxC y contabiliza', async () =
 
   // Cobro por Payment aplicando a la venta (docModel 'Sale' — antes rompía el esquema).
   const payRes = await H.runController(payments.create, H.mockReq(clinicId, userId, {
-    type: 'COBRO', method: 'EFECTIVO', date: new Date('2026-06-11'),
+    type: 'COBRO', method: 'EFECTIVO', date: H.docDate(),
     partyModel: 'Patient', partyName: 'Cliente crédito',
     applications: [{ docModel: 'Sale', docRef: String(saleId), amount: saleTotal }],
   }));
@@ -200,7 +208,7 @@ test('T5) pago que excede el saldo de la compra se bloquea', async () => {
   const gasto = await ChartOfAccount.findOne({ clinic: clinicId, code: '6.1.99' });
   // Compra gasto 100 sin retención → CxP 100.
   const pr = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [{ description: 'Gasto', lineType: 'GASTO', account: gasto._id, quantity: 1, unitPrice: 100, ivaRate: 0, subtotal: 100 }],
   }));
   assert.equal(pr.statusCode, 201, JSON.stringify(pr.payload));
@@ -219,11 +227,11 @@ test('T6) todo asiento automático tiene source/sourceModel/sourceRef', async ()
   const sup = await H.makeSupplier(clinicId);
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id });
   await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [{ description: 'Insumo', lineType: 'INVENTARIO', product: prod._id, quantity: 10, unitPrice: 10, ivaRate: 15, subtotal: 100, retentions: [{ rule: String(ruleRenta._id) }] }],
   }));
   const svc = await H.makeProduct(clinicId, { category: 'servicio', unlimited: true, salePrice: 50, taxRate: 0, priceIncludesVat: false });
-  await H.runController(sales.createSale, H.mockReq(clinicId, userId, { items: [{ product: String(svc._id), quantity: 1, unitPrice: 50 }], clientName: 'C', paymentMethod: 'efectivo', date: new Date('2026-06-06') }));
+  await H.runController(sales.createSale, H.mockReq(clinicId, userId, { items: [{ product: String(svc._id), quantity: 1, unitPrice: 50 }], clientName: 'C', paymentMethod: 'efectivo', date: H.docDate() }));
 
   const AUTO = ['VENTA', 'COMPRA', 'PAGO', 'COBRO', 'NOMINA', 'DEPRECIACION', 'BANCO', 'CIERRE', 'CAJA', 'NC', 'ND'];
   const autoEntries = await JournalEntry.find({ clinic: clinicId, status: 'CONTABILIZADO', source: { $in: AUTO } });
@@ -240,10 +248,11 @@ test('T7) período cerrado bloquea la contabilización', async () => {
   const { clinicId, userId, invCat } = await setupPurchases();
   const sup = await H.makeSupplier(clinicId);
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: invCat._id });
-  // Cierra el período de julio 2026.
-  await FiscalPeriod.updateOne({ clinic: clinicId, year: 2026, month: 7 }, { $set: { clinic: clinicId, year: 2026, month: 7, status: 'CERRADO' } }, { upsert: true });
+  // Cierra el período del mes SIGUIENTE (una fecha futura sí se admite: lo que se prueba
+  // aquí es el cierre del período, no la regla de fechas atrasadas).
+  await FiscalPeriod.updateOne({ clinic: clinicId, ...MES_SIGUIENTE }, { $set: { clinic: clinicId, ...MES_SIGUIENTE, status: 'CERRADO' } }, { upsert: true });
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-07-05'),
+    supplier: sup._id, fechaEmision: FECHA_MES_SIGUIENTE,
     items: [{ description: 'Insumo', lineType: 'INVENTARIO', product: prod._id, quantity: 1, unitPrice: 10, ivaRate: 0, subtotal: 10 }],
   }));
   assert.equal(r.statusCode, 400, JSON.stringify(r.payload));

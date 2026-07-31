@@ -134,7 +134,10 @@ test('Bodegas: movimiento con bodega crea capa y el traslado mueve stock entre b
 // ─────────────────────────────────────────────────────────────────────────────
 test('Compras: importar TXT (pipe) crea la factura del proveedor', async () => {
   const { clinicId, userId } = await H.seedClinic();
-  const txt = '0999999999001|Proveedor Uno|FACTURA|001-001-000000123|AUTH123|15/02/2026|100.00|15.00|115.00';
+  // Fecha de HOY: el importador rechaza comprobantes atrasados (utils/fiscalDocumentDate).
+  const hoy = H.docDate();
+  const f = `${String(hoy.getDate()).padStart(2, '0')}/${String(hoy.getMonth() + 1).padStart(2, '0')}/${hoy.getFullYear()}`;
+  const txt = `0999999999001|Proveedor Uno|FACTURA|001-001-000000123|AUTH123|${f}|100.00|15.00|115.00`;
   const r = await H.runController(purchase.importTxt, H.mockReq(clinicId, userId, { text: txt }));
   assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
   assert.equal(r.payload.created, 1, JSON.stringify(r.payload));

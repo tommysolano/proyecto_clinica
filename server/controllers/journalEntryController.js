@@ -201,20 +201,12 @@ exports.approve = async (req, res) => {
   } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
 
-/** Actualiza un asiento en BORRADOR (antes de aprobar). */
-exports.updateDraft = async (req, res) => {
-  try {
-    const entry = await JournalEntry.findOne({ _id: req.params.id, clinic: req.clinicId });
-    if (!entry) return res.status(404).json({ message: 'No encontrado' });
-    if (entry.status !== 'BORRADOR') return res.status(400).json({ message: 'Solo se editan borradores' });
-    const { date, description, lines } = req.body;
-    if (lines) { const { resolved, totalDebit, totalCredit } = await hydrateLines(req.clinicId, lines); entry.lines = resolved; entry.totalDebit = totalDebit; entry.totalCredit = totalCredit; }
-    if (date) entry.date = new Date(date);
-    if (description !== undefined) entry.description = description;
-    await entry.save();
-    res.json(entry);
-  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
-};
+/*
+ * NOTA CONTABLE: aquí vivía `updateDraft`. Se eliminó junto con la edición del asiento de
+ * venta y de compra: en este sistema un asiento NO se edita en ningún momento. Un borrador
+ * equivocado se ELIMINA y se vuelve a crear; un asiento contabilizado se REVERSA (deja
+ * rastro de auditoría). Así lo que se ve en el asiento siempre es lo que generó el documento.
+ */
 
 /** Elimina un asiento en BORRADOR. */
 exports.removeDraft = async (req, res) => {

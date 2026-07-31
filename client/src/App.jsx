@@ -95,6 +95,7 @@ const FinancialReports = lazy(() => import('./pages/accounting/FinancialReports'
 const ManagementReports = lazy(() => import('./pages/accounting/ManagementReports'));
 const SriReports = lazy(() => import('./pages/accounting/SriReports'));
 const SriDeclarations = lazy(() => import('./pages/accounting/SriDeclarations'));
+const SriAnnexes = lazy(() => import('./pages/accounting/SriAnnexes'));
 const Employees = lazy(() => import('./pages/accounting/Employees'));
 const EmployeeLoans = lazy(() => import('./pages/accounting/EmployeeLoans'));
 const Deductions = lazy(() => import('./pages/accounting/Deductions'));
@@ -512,6 +513,7 @@ function AppRoutes() {
                   ['budgets', Budgets],
                   ['sri-reports', SriReports],
                   ['sri-declarations', SriDeclarations],
+                  ['sri-annexes', SriAnnexes],
                   ['employees', Employees],
                   ['loans', EmployeeLoans],
                   ['deductions', Deductions],

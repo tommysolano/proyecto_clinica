@@ -434,18 +434,19 @@ test('FLUJO 16 — Kardex FIFO multicapa: COGS pondera dos capas con costos dist
   const prod = await H.makeProduct(clinicId, { category: 'insumo', salePrice: 115 });
   // Capa 1: 5 @ 10 (más antigua)
   await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-01'),
+    supplier: sup._id, fechaEmision: H.docDate(0),
     items: [{ description: 'I', product: prod._id, quantity: 5, unitPrice: 10, ivaRate: 15, subtotal: 50 }],
   }));
-  // Capa 2: 5 @ 20
+  // Capa 2: 5 @ 20 (posterior; las fechas son relativas a HOY porque un comprobante ya no
+  // se puede registrar con fecha atrasada — lo que importa es el ORDEN de las capas).
   await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-10'),
+    supplier: sup._id, fechaEmision: H.docDate(1),
     items: [{ description: 'I', product: prod._id, quantity: 5, unitPrice: 20, ivaRate: 15, subtotal: 100 }],
   }));
   // Vende 7: consume 5@10 + 2@20 = 50 + 40 = 90 de COGS
   const r = await H.runController(sale.createSale, H.mockReq(clinicId, userId, {
     items: [{ product: prod._id, quantity: 7, unitPrice: 115 }], paymentMethod: 'efectivo',
-    date: new Date('2026-06-15'),
+    date: H.docDate(2),
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
   assert.equal(await H.accountBalanceByCode(clinicId, '5.1.01'), 90); // COGS ponderado

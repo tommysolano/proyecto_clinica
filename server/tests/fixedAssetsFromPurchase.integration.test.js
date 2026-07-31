@@ -23,11 +23,16 @@ test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
 test.beforeEach(async () => { await H.resetDb(); });
 
+// Los comprobantes ya no admiten fecha anterior a hoy (utils/fiscalDocumentDate), así que
+// estas pruebas trabajan sobre HOY y el MES EN CURSO en vez de sobre un mes fijo del calendario.
+const Y = new Date().getFullYear();
+const M = new Date().getMonth() + 1;
+
 const run = (h, req) => H.runController(h, req);
 const ok = (r) => { assert.ok(r.statusCode < 400, JSON.stringify(r.payload)); return r.payload; };
 
 async function setup() {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic({ date: H.docDate() });
   const assetAcc = await ChartOfAccount.create({ clinic: clinicId, code: '1.2.05.10', name: 'Equipos', type: 'ACTIVO', nature: 'DEBITO', allowsMovement: true });
   const depAcc = await ChartOfAccount.create({ clinic: clinicId, code: '5.2.10', name: 'Gasto depreciación', type: 'GASTO', nature: 'DEBITO', allowsMovement: true });
   const accumAcc = await ChartOfAccount.create({ clinic: clinicId, code: '1.2.90.10', name: 'Dep. acumulada', type: 'ACTIVO', nature: 'CREDITO', allowsMovement: true });
@@ -49,7 +54,7 @@ const gastoLine = (accId, val = 50) => ({
   description: 'Servicio', lineType: 'GASTO', quantity: 1, unitPrice: val, ivaRate: 0, subtotal: val, account: accId,
 });
 const crearCompra = (clinicId, userId, sup, items, extra = {}) => run(purchase.create, H.mockReq(clinicId, userId, {
-  supplier: sup._id, fechaEmision: new Date('2026-06-05'), serie: `001-001-${Math.floor(Math.random() * 1e9)}`,
+  supplier: sup._id, fechaEmision: H.docDate(), serie: `001-001-${Math.floor(Math.random() * 1e9)}`,
   items, ...extra,
 }));
 
@@ -103,7 +108,7 @@ test('A4) compra IMPORTADA (POR_AUTORIZAR): no hay activos hasta contabilizar, y
   const { clinicId, userId, cat, sup } = await setup();
   // Una compra importada por XML/TXT nace POR_AUTORIZAR: los activos NO existen todavía.
   const imp = await PurchaseInvoice.create({
-    clinic: clinicId, supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    clinic: clinicId, supplier: sup._id, fechaEmision: H.docDate(),
     serie: '001-001-000123456', status: 'POR_AUTORIZAR', subtotal: 2000, total: 2000, balance: 2000,
     items: [afLine(cat._id, { qty: 2, unit: 1000 })], createdBy: userId,
   });
@@ -126,7 +131,7 @@ test('A5) re-contabilizar la compra NO duplica activos (identidad compra+línea+
 
   // Editar la compra la vuelve a contabilizar (postPurchaseJournal + sync).
   ok(await run(purchase.update, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [afLine(cat._id, { qty: 2, unit: 1000 })],
   }, { params: { id: String(inv._id) } })));
 
@@ -139,13 +144,13 @@ test('A5) re-contabilizar la compra NO duplica activos (identidad compra+línea+
 test('A6) el activo YA DEPRECIADO no se duplica ni se reescribe al re-contabilizar', async () => {
   const { clinicId, userId, cat, sup } = await setup();
   const inv = ok(await crearCompra(clinicId, userId, sup, [afLine(cat._id, { qty: 1, unit: 1000 })]));
-  ok(await run(invCtrl.runDepreciation, H.mockReq(clinicId, userId, { year: 2026, month: 6 })));
+  ok(await run(invCtrl.runDepreciation, H.mockReq(clinicId, userId, { year: Y, month: M })));
   const dep = await FixedAsset.findOne({ clinic: clinicId });
   assert.equal(dep.accumulatedDepreciation, 100);
 
   // Antes esto creaba un SEGUNDO activo (el borrado solo alcanzaba a los no depreciados).
   ok(await run(purchase.update, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [afLine(cat._id, { qty: 1, unit: 1000 })],
   }, { params: { id: String(inv._id) } })));
 
@@ -157,10 +162,10 @@ test('A6) el activo YA DEPRECIADO no se duplica ni se reescribe al re-contabiliz
 test('A7) cambiar el costo de una compra cuyo activo ya se depreció se BLOQUEA', async () => {
   const { clinicId, userId, cat, sup } = await setup();
   const inv = ok(await crearCompra(clinicId, userId, sup, [afLine(cat._id, { qty: 1, unit: 1000 })]));
-  ok(await run(invCtrl.runDepreciation, H.mockReq(clinicId, userId, { year: 2026, month: 6 })));
+  ok(await run(invCtrl.runDepreciation, H.mockReq(clinicId, userId, { year: Y, month: M })));
 
   const r = await run(purchase.update, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [afLine(cat._id, { qty: 1, unit: 2500 })],   // otro costo
   }, { params: { id: String(inv._id) } }));
   assert.equal(r.statusCode, 400);
@@ -184,7 +189,7 @@ test('A8) anular la compra borra el activo SIN historia', async () => {
 test('A9) anular una compra con activo DEPRECIADO se bloquea (no se destruyen asientos)', async () => {
   const { clinicId, userId, cat, sup } = await setup();
   const inv = ok(await crearCompra(clinicId, userId, sup, [afLine(cat._id, { qty: 1, unit: 1000 })]));
-  ok(await run(invCtrl.runDepreciation, H.mockReq(clinicId, userId, { year: 2026, month: 6 })));
+  ok(await run(invCtrl.runDepreciation, H.mockReq(clinicId, userId, { year: Y, month: M })));
 
   const r = await run(purchase.void, H.mockReq(clinicId, userId, {}, { params: { id: String(inv._id) } }));
   assert.equal(r.statusCode, 400);
@@ -205,7 +210,7 @@ test('A10) el diagnóstico detecta faltantes, no contabilizadas y ambiguas; --co
 
   // (b) compra importada sin contabilizar.
   await PurchaseInvoice.create({
-    clinic: clinicId, supplier: sup._id, fechaEmision: new Date('2026-06-06'),
+    clinic: clinicId, supplier: sup._id, fechaEmision: H.docDate(),
     serie: '001-001-000999', status: 'POR_AUTORIZAR', subtotal: 500, total: 500, balance: 500,
     items: [afLine(cat._id, { qty: 1, unit: 500 })], createdBy: userId,
   });
@@ -256,7 +261,7 @@ test('A13) borrar una línea intermedia NO rebindea el activo a la línea equivo
   const doc = await PurchaseInvoice.findById(inv._id);
   const lineaAF = doc.items[1].toObject();
   ok(await run(purchase.update, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [{ ...lineaAF, fixedAsset: { category: cat._id, name: 'Laptop' } }],
   }, { params: { id: String(inv._id) } })));
 
@@ -290,7 +295,7 @@ test('A16) dos contabilizaciones SIMULTÁNEAS no crean unidades duplicadas', asy
   const inv = ok(await crearCompra(clinicId, userId, sup, [afLine(cat._id, { qty: 2, unit: 500 })]));
 
   const editar = () => run(purchase.update, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [afLine(cat._id, { qty: 2, unit: 500 })],
   }, { params: { id: String(inv._id) } }));
   await Promise.allSettled([editar(), editar()]);

@@ -17,6 +17,7 @@ const {
   processInvoice,
   runInvoiceRetryQueue,
 } = require('../utils/invoiceRetry');
+const { isPastDocumentDate } = require('../utils/fiscalDocumentDate');
 
 function fmtFechaEmision(d) {
   const dt = d ? new Date(d) : new Date();
@@ -73,7 +74,12 @@ exports.emitFromSale = async (req, res) => {
     const compradorDir =
       sale.clientAddress || (sale.patient && sale.patient.address) || '';
 
-    const fechaEmision = sale.createdAt || new Date();
+    // FECHA DE EMISIÓN AUTOMÁTICA, nunca atrasada. Normalmente es el momento de la venta
+    // (misma fecha que su asiento); si la venta es de un día anterior, la factura se emite HOY:
+    // una factura electrónica no se emite con fecha pasada (y el SRI la rechazaría).
+    // OJO: esto solo aplica al MOMENTO DE CREAR la factura. Un reintento por caída del SRI
+    // reusa la fecha ya guardada (utils/invoiceRetry): jamás se regenera.
+    const fechaEmision = isPastDocumentDate(sale.createdAt) ? new Date() : (sale.createdAt || new Date());
     const claveAcceso = generarClaveAcceso({
       fechaEmision,
       tipoComprobante: 'factura',

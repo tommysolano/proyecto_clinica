@@ -95,7 +95,7 @@ async function purchasePayable(clinicId, userId, serie, total = 100) {
   const sup = await H.makeSupplier(clinicId);
   const gasto = await ChartOfAccount.findOne({ clinic: clinicId, code: '6.1.99' });
   const pi = ok(await run(purchases.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: inMonth(), serie,
+    supplier: sup._id, fechaEmision: H.docDate(), serie,
     items: [{ description: 'Gasto', lineType: 'GASTO', account: gasto._id, quantity: 1, unitPrice: total, ivaRate: 0, subtotal: total }],
   })));
   return { pi, sup };
@@ -281,7 +281,7 @@ test('G1) pago genérico de CxP: misma clave + contenido distinto ⇒ 409 (antes
   const sup = await H.makeSupplier(clinicId);
   const gasto = await ChartOfAccount.findOne({ clinic: clinicId, code: '6.1.99' });
   const pi = ok(await run(purchases.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: inMonth(), serie: '001-001-000000501',
+    supplier: sup._id, fechaEmision: H.docDate(), serie: '001-001-000000501',
     items: [{ description: 'Gasto', lineType: 'GASTO', account: gasto._id, quantity: 1, unitPrice: 100, ivaRate: 0, subtotal: 100 }],
   })));
 

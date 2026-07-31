@@ -98,7 +98,7 @@ test('B1) todos los caminos de contabilización producen la MISMA fecha (compra 
   const { clinicId, userId } = await H.seedClinic({ date: dia(-5) });
   const gasto = await cuenta(clinicId, '6.1.99');
   const sup15 = await H.makeSupplier(clinicId, { creditDays: 15 });
-  const emision = dia(-1);
+  const emision = dia(0); // HOY: no se registran comprobantes atrasados
   const item = (n) => ([{ description: 'G', lineType: 'GASTO', account: gasto._id, quantity: 1, unitPrice: n, ivaRate: 0, subtotal: n }]);
   const venceDe = async (piId) => (await Payable.findOne({ clinic: clinicId, sourceRef: piId })).dueDate;
 
@@ -147,7 +147,7 @@ test('B1) una CxP con fecha corregida a mano no se recalcula al reabrir la carte
   const gasto = await cuenta(clinicId, '6.1.99');
   const sup = await H.makeSupplier(clinicId, { creditDays: 15 });
   const pi = ok(await run(purchases.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: dia(-1), serie: '001-001-000000910',
+    supplier: sup._id, fechaEmision: dia(0), serie: '001-001-000000910',
     items: [{ description: 'G', lineType: 'GASTO', account: gasto._id, quantity: 1, unitPrice: 100, ivaRate: 0, subtotal: 100 }],
   })));
 
@@ -156,7 +156,7 @@ test('B1) una CxP con fecha corregida a mano no se recalcula al reabrir la carte
 
   // Se vuelve a tocar la compra (actualización): la fecha DERIVADA no puede pisar la manual.
   ok(await run(purchases.update, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: dia(-1), serie: '001-001-000000910',
+    supplier: sup._id, fechaEmision: dia(0), serie: '001-001-000000910',
     items: [{ description: 'G', lineType: 'GASTO', account: gasto._id, quantity: 1, unitPrice: 120, ivaRate: 0, subtotal: 120 }],
   }, { params: { id: String(pi._id) } })));
 

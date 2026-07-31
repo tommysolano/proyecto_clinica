@@ -1023,42 +1023,8 @@ exports.collectSale = async (req, res) => {
   } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
 
-/**
- * Edición manual del asiento contable (debe/haber) de una venta.
- * Reversa el asiento actual y crea uno nuevo cuadrado (validado en createEntry).
- * Body: { lines:[{account|accountCode, debit, credit, description}], date? }
+/*
+ * NOTA CONTABLE: aquí vivía `editJournalSale`, que permitía reescribir a mano el asiento de
+ * una venta ya contabilizada. Se ELIMINÓ: un asiento contabilizado es inmutable. Para
+ * corregirlo se ANULA la venta (que reversa el asiento de ingreso y el de costo) y se rehace.
  */
-exports.editJournalSale = async (req, res) => {
-  try {
-    const JournalEntry = require('../models/JournalEntry');
-    const lines = req.body?.lines;
-    if (!Array.isArray(lines) || lines.length < 2) return res.status(400).json({ message: 'El asiento debe tener al menos 2 líneas' });
-    const saleId = await runInTransaction(async (session) => {
-      const sale = await Sale.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
-      if (!sale) throw Object.assign(new Error('Venta no encontrada'), { status: 404 });
-      if (sale.status === 'anulada') throw Object.assign(new Error('La venta está anulada'), { status: 400 });
-      // Conserva la fecha del asiento original (mismo período); si no hay, usa la fecha de la venta.
-      let entryDate = sale.createdAt || new Date();
-      if (sale.journalEntry) {
-        const orig = await JournalEntry.findById(sale.journalEntry).session(session);
-        if (orig?.date) entryDate = orig.date;
-      }
-      await assertPeriodOpen(req.clinicId, entryDate, { session });
-      const reversalDate = req.body.date ? new Date(req.body.date) : new Date();
-      await assertPeriodOpen(req.clinicId, reversalDate, { session });
-      if (sale.journalEntry) {
-        await reverseEntry({ clinicId: req.clinicId, entryId: sale.journalEntry, userId: req.user._id, reason: 'Edición manual de asiento de venta', date: reversalDate, session });
-      }
-      const entry = await createEntry({
-        clinicId: req.clinicId, date: entryDate, description: `Venta ${sale.saleNumber} (asiento editado)`,
-        source: 'VENTA', sourceRef: sale._id, sourceModel: 'Sale', sourceAction: `EDIT:${Date.now()}`,
-        lines, userId: req.user._id, doctor: sale.doctor || null, session,
-      });
-      sale.journalEntry = entry._id;
-      await sale.save({ session });
-      return sale._id;
-    });
-    const sale = await Sale.findById(saleId).populate('journalEntry');
-    return res.json(sale);
-  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
-};

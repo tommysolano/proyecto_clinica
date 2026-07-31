@@ -18,9 +18,13 @@ test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
 test.beforeEach(async () => { await H.resetDb(); });
 
+// El comprobante se fecha HOY: el importador ya no acepta comprobantes atrasados
+// (utils/fiscalDocumentDate). Antes iba con una fecha fija, que caducaba con el calendario.
+const HOY = H.docDate();
+const F = `${String(HOY.getDate()).padStart(2, '0')}/${String(HOY.getMonth() + 1).padStart(2, '0')}/${HOY.getFullYear()}`;
 const SRI_TXT = [
   'RUC_EMISOR\tRAZON_SOCIAL_EMISOR\tTIPO_COMPROBANTE\tSERIE_COMPROBANTE\tCLAVE_ACCESO\tFECHA_AUTORIZACION\tFECHA_EMISION\tIDENTIFICACION_RECEPTOR\tVALOR_SIN_IMPUESTOS\tIVA\tIMPORTE_TOTAL\tNUMERO_DOCUMENTO_MODIFICADO',
-  '0990004196001\tCORPORACION EL ROSADO S.A.\tFactura\t002-201-000118601\t0106202601099000419600120022010001186010011860110\t01/06/2026 10:03:32\t01/06/2026\t0993404160001\t400\t60\t460\t',
+  `0990004196001\tCORPORACION EL ROSADO S.A.\tFactura\t002-201-000118601\t0106202601099000419600120022010001186010011860110\t${F} 10:03:32\t${F}\t0993404160001\t400\t60\t460\t`,
 ].join('\n');
 
 async function importOne(clinicId, userId) {
@@ -36,7 +40,7 @@ const gastoItems = (accountId, { unitPrice, ivaRate = 15 } = {}) => ([
 
 // ─────────────────────────────────────────────────────────────────────────────
 test('1) el import TXT guarda el snapshot sriTotals del comprobante', async () => {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic();
   const inv = await importOne(clinicId, userId);
   assert.equal(inv.sriTotals.subtotal, 400);
   assert.equal(inv.sriTotals.iva, 60);
@@ -45,7 +49,7 @@ test('1) el import TXT guarda el snapshot sriTotals del comprobante', async () =
 
 // ─────────────────────────────────────────────────────────────────────────────
 test('2) autorizar con valores distintos al SRI → 409 SRI_MISMATCH con el detalle y NO contabiliza', async () => {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic();
   const gasto = await ChartOfAccount.findOne({ clinic: clinicId, code: '6.1.99' });
   const inv = await importOne(clinicId, userId);
 
@@ -69,7 +73,7 @@ test('2) autorizar con valores distintos al SRI → 409 SRI_MISMATCH con el deta
 
 // ─────────────────────────────────────────────────────────────────────────────
 test('3) confirmar bajo responsabilidad (acceptSriMismatch) contabiliza, marca la factura y audita', async () => {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic();
   const gasto = await ChartOfAccount.findOne({ clinic: clinicId, code: '6.1.99' });
   const inv = await importOne(clinicId, userId);
 
@@ -92,7 +96,7 @@ test('3) confirmar bajo responsabilidad (acceptSriMismatch) contabiliza, marca l
 
 // ─────────────────────────────────────────────────────────────────────────────
 test('4) valores que coinciden con el SRI contabilizan directo (sin confirmación)', async () => {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic();
   const gasto = await ChartOfAccount.findOne({ clinic: clinicId, code: '6.1.99' });
   const inv = await importOne(clinicId, userId);
 
@@ -107,7 +111,7 @@ test('4) valores que coinciden con el SRI contabilizan directo (sin confirmació
 
 // ─────────────────────────────────────────────────────────────────────────────
 test('5) diferencias de un centavo NO piden confirmación (tolerancia 0.01)', async () => {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic();
   const gasto = await ChartOfAccount.findOne({ clinic: clinicId, code: '6.1.99' });
   const inv = await importOne(clinicId, userId);
   // Fuerza un SRI con centavo de diferencia respecto a lo que calculará el sistema.

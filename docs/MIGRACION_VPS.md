@@ -424,6 +424,40 @@ curl -s http://127.0.0.1:5000/api/health
   no está en Atlas ni en git.**
 - **`server/.env`:** guárdalo en un gestor de secretos / bóveda offline.
 
+### 12.7 Tareas de UNA SOLA VEZ en el despliegue
+
+`deploy.sh` tiene un paso (4/5) para las tareas que deben ejecutarse **una vez y no
+repetirse** en los siguientes push: un borrado de datos, una corrección puntual, una
+carga inicial.
+
+La marca de "ya se hizo" vive en la base (colección `onetimetasks`, un documento por
+clave), **no en disco**: el despliegue lanza la tarea en cada push, pero solo el primero
+hace algo. Estados: `RUNNING` → `DONE` (no vuelve a correr nunca) o `FAILED` (el
+siguiente despliegue la reintenta). Un fallo **no aborta el despliegue**: se avisa en el
+log y el código nuevo sube igual.
+
+Tarea vigente — **borrar todas las ventas** para empezar las pruebas desde cero
+(`server/scripts/wipeSalesOnce.js`, clave `borrar-ventas-2026-07-31`):
+
+```bash
+cd /var/www/clinica/server
+node scripts/wipeSalesOnce.js            # DRY-RUN: cuenta y no toca nada
+node scripts/wipeSalesOnce.js --estado   # ¿ya se ejecutó?
+node scripts/wipeSalesOnce.js --commit   # borra (solo si la marca no está DONE)
+node scripts/wipeSalesOnce.js --commit --force   # repetir a propósito
+```
+
+Borra las ventas **y todo lo que nace de ellas** (facturas electrónicas, notas de
+crédito, CxC, cobros aplicados solo a esas ventas, ingresos diferidos, asientos con sus
+reversos, movimientos bancarios y de inventario), devuelve el stock a sus capas FIFO y
+recalcula los saldos por cuenta. **No toca** compras, nómina, catálogos, pacientes ni los
+**secuenciales del SRI** (el SRI no admite reutilizar un número ya emitido). Lo que no
+puede resolver solo —lotes/liquidaciones de tarjeta, comisiones contabilizadas y cierres
+de caja que cubran ventas borradas— lo reporta como advertencia para revisarlo a mano.
+
+Para añadir otra tarea: nuevo script con su propia clave y otra línea en el paso 4/5.
+Una vez `DONE`, la línea se puede quitar de `deploy.sh` sin riesgo (la marca ya protege).
+
 ---
 
 ## 13. Plan de migración paso a paso

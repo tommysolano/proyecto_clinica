@@ -35,7 +35,7 @@ const run = (h, req) => H.runController(h, req);
 const ok = (r) => { assert.ok(r.statusCode < 400, JSON.stringify(r.payload)); return r.payload; };
 
 async function setup() {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic({ date: H.docDate() });
   const assetAcc = await ChartOfAccount.create({ clinic: clinicId, code: '1.2.05.10', name: 'Equipo de cómputo', type: 'ACTIVO', nature: 'DEBITO', allowsMovement: true });
   const depAcc = await ChartOfAccount.create({ clinic: clinicId, code: '5.2.10', name: 'Gasto depreciación', type: 'GASTO', nature: 'DEBITO', allowsMovement: true });
   const accumAcc = await ChartOfAccount.create({ clinic: clinicId, code: '1.2.90.10', name: 'Dep. acumulada', type: 'ACTIVO', nature: 'CREDITO', allowsMovement: true });
@@ -63,7 +63,7 @@ const gastoLine = (accId, { val = 25, ivaRate = 15 } = {}) => ({
 
 // La compra real de la reunión: servicio 25 + activo fijo 350 = 375 subtotal, IVA 56.25, total 431.25.
 const crearCompraReunion = (clinicId, userId, sup, cat, gasto, extraAsset = {}) => run(purchase.create, H.mockReq(clinicId, userId, {
-  supplier: sup._id, fechaEmision: new Date('2026-06-05'), serie: `001-001-${Math.floor(Math.random() * 1e9)}`,
+  supplier: sup._id, fechaEmision: H.docDate(), serie: `001-001-${Math.floor(Math.random() * 1e9)}`,
   items: [gastoLine(gasto._id), afLine(cat._id, extraAsset)],
 }));
 
@@ -84,7 +84,7 @@ test('H1) EDITAR una compra con activo fijo LEGACY (sin identidad de línea) NO 
 
   // Editar y guardar la compra (mismo comprobante) la vuelve a contabilizar. Antes: E11000.
   const upd = await run(purchase.update, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [gastoLine(gasto._id), afLine(cat._id)],
   }, { params: { id: String(inv._id) } }));
   assert.ok(upd.statusCode < 400, `no debe reventar: ${JSON.stringify(upd.payload)}`);
@@ -105,7 +105,7 @@ test('H2) EDITAR quitando una línea (el activo cambia de índice) sin conservar
   // Se quita la línea de servicio: el activo pasa a ser la línea 0. El front NO reenvía el `lineId`
   // (lo regenera en cada envío), así que la única pista sería el índice… que también cambió.
   const upd = await run(purchase.update, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [afLine(cat._id)],   // sin lineId, activo ahora en índice 0
   }, { params: { id: String(inv._id) } }));
   assert.ok(upd.statusCode < 400, `no debe reventar: ${JSON.stringify(upd.payload)}`);
@@ -129,7 +129,7 @@ test('H3) AGREGAR una retención renta+IVA a una compra con activo fijo NO revie
 
   // "Agregarle una retención" = re-guardar la compra con la retención en la línea del activo.
   const upd = await run(purchase.update, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [
       gastoLine(gasto._id),
       afLine(cat._id, { ret: [{ rule: String(ruleBienes._id) }, { rule: String(ruleIva._id) }] }),
@@ -152,7 +152,7 @@ test('H3) AGREGAR una retención renta+IVA a una compra con activo fijo NO revie
 test('H4) la retención queda con su ENCABEZADO disponible para el modal (número/estado/fecha/periodo)', async () => {
   const { clinicId, userId, cat, gasto, sup, ruleBienes } = await setup();
   const inv = ok(await run(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'), serie: '001-001-000123456',
+    supplier: sup._id, fechaEmision: H.docDate(), serie: '001-001-000123456',
     items: [gastoLine(gasto._id), afLine(cat._id, { ret: [{ rule: String(ruleBienes._id) }] })],
   })));
   // Al reabrir la compra (GET), el encabezado de retención debe poder construirse: la factura

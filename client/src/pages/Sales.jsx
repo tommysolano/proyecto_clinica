@@ -24,7 +24,7 @@ import {
   HiOutlineArrowDownTray,
   HiOutlineCalculator,
 } from 'react-icons/hi2';
-import JournalEntryEditor from '../components/JournalEntryEditor';
+import JournalEntryViewModal from '../components/JournalEntryViewModal';
 
 const paymentMethods = {
   efectivo: 'Efectivo',
@@ -37,7 +37,7 @@ const methodLabel = (m) => paymentMethods[m] || (m === 'mixto' ? 'Pago mixto' : 
 
 export default function Sales() {
   const { hasRole } = useAuth();
-  const [journalSale, setJournalSale] = useState(null); // venta cuyo asiento se edita
+  const [journalSale, setJournalSale] = useState(null); // venta cuyos asientos se consultan (solo lectura)
   const canCreate = hasRole('admin', 'cajero', 'contabilidad');
   const canCancel = hasRole('admin');
   const canInvoice = hasRole('admin', 'cajero');
@@ -728,7 +728,7 @@ export default function Sales() {
                         <button
                           onClick={() => setJournalSale(s)}
                           className="p-1.5 rounded-lg hover:bg-slate-100 text-slate-400 hover:text-slate-700 bg-transparent border-none cursor-pointer"
-                          title="Ver / editar asiento contable"
+                          title="Ver asientos contables (ingreso y costo)"
                         >
                           <HiOutlineCalculator className="w-4 h-4" />
                         </button>
@@ -1133,10 +1133,14 @@ export default function Sales() {
             </div>
           </div>
 
+          {/* Agregar productos: el buscador manda (es lo que hay que leer para elegir bien) y
+              la cantidad ocupa un ancho fijo pequeño. Anchos con `basis/shrink-0` en vez de
+              `flex-1` + `w-20` sueltos, para que el buscador no se colapse. */}
           <div className="bg-emerald-50/50 rounded-xl p-4">
             <p className="text-sm font-medium text-emerald-700 mb-3">Agregar productos</p>
-            <div className="flex gap-2">
-              <div className="flex-1">
+            <div className="flex flex-wrap sm:flex-nowrap items-end gap-2">
+              <div className="basis-full sm:basis-auto sm:flex-1 min-w-0">
+                <label className="block text-[11px] font-semibold text-slate-500 mb-1">Producto o servicio</label>
                 <ProductAutocomplete
                   products={products}
                   value={currentItem.product}
@@ -1147,18 +1151,21 @@ export default function Sales() {
                   filter={(p) => p.active !== false}
                 />
               </div>
-              <NumericInput
-                min="1"
-                value={currentItem.quantity}
-                onChange={(e) =>
-                  setCurrentItem({ ...currentItem, quantity: e.target.value })
-                }
-                className="input w-20 bg-white"
-              />
+              <div className="w-24 shrink-0">
+                <label className="block text-[11px] font-semibold text-slate-500 mb-1">Cantidad</label>
+                <NumericInput
+                  min="1"
+                  value={currentItem.quantity}
+                  onChange={(e) =>
+                    setCurrentItem({ ...currentItem, quantity: e.target.value })
+                  }
+                  className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white text-center outline-none"
+                />
+              </div>
               <button
                 type="button"
                 onClick={addItem}
-                className="px-4 py-2.5 bg-cyan-600 hover:bg-cyan-700 text-white rounded-xl text-sm font-medium cursor-pointer border-none"
+                className="shrink-0 px-4 py-2 bg-cyan-600 hover:bg-cyan-700 text-white rounded-lg text-sm font-medium cursor-pointer border-none"
               >
                 Agregar
               </button>
@@ -1464,30 +1471,20 @@ export default function Sales() {
         )}
       </Modal>
 
+      {/* Asiento de la venta: SOLO LECTURA y por DOCUMENTO ORIGEN, no por un único id.
+          Una venta genera VARIOS asientos (ingreso + costo de ventas, y sus reversas si se
+          anuló): buscándolos por `source` se ven todos, incluido el del COSTO, que antes
+          había que ir a buscar a los reportes. */}
       {journalSale && (
-        <JournalEntryEditor
+        <JournalEntryViewModal
           isOpen={!!journalSale}
           onClose={() => setJournalSale(null)}
-          entryId={journalSale.journalEntry?._id || journalSale.journalEntry}
-          postUrl={`/sales/${journalSale._id}/journal`}
-          title={`Asiento de venta ${journalSale.saleNumber || ''}`}
-          onSaved={fetchSales}
+          source={{ model: 'Sale', ref: journalSale._id }}
+          title={`Asientos de la venta ${journalSale.saleNumber || ''}`}
+          emptyHint="Al completar la venta se generan el asiento de INGRESO (cliente/caja contra ventas e IVA) y el de COSTO DE VENTAS (costo contra inventario). Aquí se listan todos."
+          hideOriginLink
         />
       )}
-
-      <style>{`
-        .lbl { display:block; font-size:0.875rem; font-weight:500; color:#334155; margin-bottom:0.375rem; }
-        .input {
-          width: 100%;
-          padding: 0.625rem 0.875rem;
-          border: 1px solid #e2e8f0;
-          border-radius: 0.75rem;
-          font-size: 0.875rem;
-          background: rgba(248, 250, 252, 0.5);
-          outline: none;
-        }
-        .input:focus { border-color: #10b981; background: white; }
-      `}</style>
     </div>
   );
 }

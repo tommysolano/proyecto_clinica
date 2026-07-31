@@ -36,6 +36,22 @@ async function resetDb() {
   await Promise.all(Object.values(collections).map((c) => c.deleteMany({})));
 }
 
+/**
+ * Fecha de un comprobante en los tests.
+ *
+ * Los comprobantes ya NO admiten fechas anteriores a hoy (utils/fiscalDocumentDate: la fecha
+ * de emisión es automática y el sistema rechaza registrar atrasado), así que un
+ * `new Date('2026-06-05')` incrustado en un test deja de funcionar en cuanto pasa esa fecha.
+ * Se usa esta fábrica: `docDate()` = hoy y `docDate(n)` = hoy + n días, que sirve para dar
+ * ORDEN a varios documentos (p. ej. capas FIFO) sin depender del calendario.
+ */
+function docDate(offsetDays = 0) {
+  const d = new Date();
+  d.setHours(12, 0, 0, 0);
+  if (offsetDays) d.setDate(d.getDate() + offsetDays);
+  return d;
+}
+
 /** Crea clínica + usuario (solo ids), plan de cuentas y período abierto. */
 async function seedClinic({ date = new Date() } = {}) {
   const clinicId = new mongoose.Types.ObjectId();
@@ -217,7 +233,7 @@ async function waitForStatus(messageId, expected, timeoutMs = 3000) {
 }
 
 module.exports = {
-  startDb, stopDb, resetDb, seedClinic, makeProduct, makeSupplier,
+  startDb, stopDb, resetDb, seedClinic, makeProduct, makeSupplier, docDate,
   accountBalanceByCode, assertLedgerBalanced, mockReq, mockRes, runController,
   waitForStatus, mongoose,
 };

@@ -120,7 +120,7 @@ export default function ProductAutocomplete({
         )}
       </div>
       {open && filtered.length > 0 && (
-        <ul className="absolute z-30 mt-1 w-full bg-white border border-slate-200 rounded-lg shadow-lg max-h-64 overflow-y-auto text-sm">
+        <ul className="absolute z-30 mt-1 w-full min-w-[280px] bg-white border border-slate-200 rounded-lg shadow-lg max-h-64 overflow-y-auto text-sm">
           {filtered.map((p, idx) => (
             <li
               key={p._id}

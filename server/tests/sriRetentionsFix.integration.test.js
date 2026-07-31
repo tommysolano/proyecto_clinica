@@ -23,6 +23,14 @@ test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
 test.beforeEach(async () => { await H.resetDb(); });
 
+// Los comprobantes ya no admiten fecha anterior a hoy (utils/fiscalDocumentDate), así que
+// estas pruebas trabajan sobre el MES EN CURSO en vez de sobre un mes fijo del calendario.
+const NOW = new Date();
+const Y = NOW.getFullYear();
+const M = NOW.getMonth() + 1;
+/** Día `d` del mes en curso, anclado como lo hace el formulario (medianoche UTC). */
+const diaDelMes = (d) => new Date(Date.UTC(Y, M - 1, d));
+
 // ─────────────────────────────────────────────────────────────────────────────
 test('invoiceDate ancla al mediodía local: una fecha "día 1" NO cae en el mes anterior', () => {
   const d = invoiceDate(new Date('2026-05-01')); // como lo manda el form (medianoche UTC)
@@ -35,52 +43,62 @@ test('invoiceDate ancla al mediodía local: una fecha "día 1" NO cae en el mes 
 
 // ─────────────────────────────────────────────────────────────────────────────
 test('332: compra del día 1 (guardada como el form) entra en su mes y suma al 332', async () => {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date(2026, 4, 15) });
+  const { clinicId, userId } = await H.seedClinic();
   const gasto = await ChartOfAccount.findOne({ clinic: clinicId, code: '6.1.99' });
   const sup = await H.makeSupplier(clinicId);
+  // Compra registrada HOY por el formulario (única fecha que el sistema admite).
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: String(sup._id), fechaEmision: new Date('2026-05-01'), serie: '001-001-000000001',
+    supplier: String(sup._id), fechaEmision: H.docDate(), serie: '001-001-000000001',
     items: [{ description: 'Servicio', lineType: 'GASTO', account: gasto._id, quantity: 1, unitPrice: 375, subtotal: 375, ivaRate: 0 }],
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
-  const range = resolveReportRange({ periodType: 'MONTHLY', year: 2026, month: 5 });
+  // REGRESIÓN original: un comprobante del DÍA 1 guardado como lo manda el form (medianoche
+  // UTC) no puede caer en el mes anterior. Se inserta por modelo porque hoy ya no se puede
+  // registrar con fecha atrasada; lo que se comprueba aquí es el ANCLAJE, no el registro.
+  await PurchaseInvoice.create({
+    clinic: clinicId, supplier: sup._id, fechaEmision: invoiceDate(diaDelMes(1)), serie: '001-001-000000002',
+    status: 'REGISTRADA', subtotal: 25, total: 25,
+    items: [{ description: 'Servicio del día 1', lineType: 'GASTO', quantity: 1, unitPrice: 25, subtotal: 25, ivaRate: 0 }],
+  });
+  const range = resolveReportRange({ periodType: 'MONTHLY', year: Y, month: M });
   const res = await compute103({ clinicId, range });
-  assert.equal(res.computed[332], 375, 'el 332 incluye la compra del día 1');
-  assert.equal(res.snapshot.noSujetos.docs.length, 1);
-  assert.equal(res.snapshot.noSujetos.docs[0].serie, '001-001-000000001');
+  assert.equal(res.computed[332], 400, 'el 332 incluye la compra de hoy y la del día 1');
+  assert.equal(res.snapshot.noSujetos.docs.length, 2);
+  assert.ok(res.snapshot.noSujetos.docs.some((d) => d.serie === '001-001-000000002'), 'la del día 1 no se perdió en el mes anterior');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
 test('332: base derivada del desglose cuando el header subtotal quedó en 0', async () => {
-  const { clinicId } = await H.seedClinic({ date: new Date(2026, 4, 15) });
+  const { clinicId } = await H.seedClinic();
   const sup = await H.makeSupplier(clinicId);
   // Compra insertada directo con subtotal de cabecera en 0 pero desglose 15% = 200 (vía "rota").
   await PurchaseInvoice.create({
-    clinic: clinicId, supplier: sup._id, fechaEmision: invoiceDate(new Date('2026-05-10')), serie: '001-001-000000050',
+    clinic: clinicId, supplier: sup._id, fechaEmision: invoiceDate(diaDelMes(1)), serie: '001-001-000000050',
     status: 'REGISTRADA', subtotal: 0, subtotal15: 200, iva: 30, total: 230,
     items: [{ description: 'X', lineType: 'GASTO', quantity: 1, unitPrice: 200, subtotal: 200, ivaRate: 15 }],
   });
-  const range = resolveReportRange({ periodType: 'MONTHLY', year: 2026, month: 5 });
+  const range = resolveReportRange({ periodType: 'MONTHLY', year: Y, month: M });
   const res = await compute103({ clinicId, range });
   assert.equal(res.computed[332], 200, 'deriva la base del desglose 15%');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
 test('332: una NOTA DE CRÉDITO recibida RESTA su base del 332', async () => {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date(2026, 4, 15) });
+  const { clinicId, userId } = await H.seedClinic();
   const gasto = await ChartOfAccount.findOne({ clinic: clinicId, code: '6.1.99' });
   const sup = await H.makeSupplier(clinicId);
-  await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: String(sup._id), fechaEmision: new Date('2026-05-05'), serie: '001-001-000000001',
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
+    supplier: String(sup._id), fechaEmision: H.docDate(), serie: '001-001-000000001',
     items: [{ description: 'Compra', lineType: 'GASTO', account: gasto._id, quantity: 1, unitPrice: 500, subtotal: 500, ivaRate: 0 }],
   }));
-  // NC recibida por 100 (docType NOTA_CREDITO_REC).
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  // NC recibida por 100 (docType NOTA_CREDITO_REC), en el mismo mes.
   await PurchaseInvoice.create({
-    clinic: clinicId, supplier: sup._id, fechaEmision: invoiceDate(new Date('2026-05-20')), serie: '001-001-000000002',
+    clinic: clinicId, supplier: sup._id, fechaEmision: invoiceDate(diaDelMes(1)), serie: '001-001-000000002',
     docType: 'NOTA_CREDITO_REC', status: 'REGISTRADA', subtotal: 100, total: 100,
     items: [{ description: 'Devolución', lineType: 'GASTO', quantity: 1, unitPrice: 100, subtotal: 100, ivaRate: 0 }],
   });
-  const range = resolveReportRange({ periodType: 'MONTHLY', year: 2026, month: 5 });
+  const range = resolveReportRange({ periodType: 'MONTHLY', year: Y, month: M });
   const res = await compute103({ clinicId, range });
   assert.equal(res.computed[332], 400, 'NC resta: 500 - 100');
 });

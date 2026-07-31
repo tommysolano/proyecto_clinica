@@ -6,7 +6,7 @@ import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineDocumentText, HiOutlineArrowDownTray, HiOutlineXMark, HiOutlineTrash, HiOutlineExclamationTriangle, HiOutlineCube, HiOutlineBanknotes, HiOutlineBuildingOffice2, HiOutlineCheck, HiOutlineEllipsisVertical } from 'react-icons/hi2';
 import { fmt, fmtDate, today, RET_ESTADO_LABEL, retVoucherNumber } from './_utils';
 import NumericInput from '../../components/NumericInput';
-import JournalEntryEditor from '../../components/JournalEntryEditor';
+import JournalEntryViewModal from '../../components/JournalEntryViewModal';
 import SearchableSelect from '../../components/SearchableSelect';
 import AccountSelect from '../../components/AccountSelect';
 import ProductFormModal from '../../components/ProductFormModal';
@@ -19,7 +19,9 @@ const expenseAccountFilter = (a) => a.code?.startsWith('6.') || a.code?.startsWi
 // Captura de activo fijo (los datos contables —cuentas, depreciación, vida útil,
 // residual— NO se piden: se derivan de la categoría de activo fijo).
 const EMPTY_FA = { category: '', assetType: '', code: '', name: '', serial: '', location: '', locationClinic: '', acquisitionDate: '', startDate: '', depreciationRate: 0, usefulLifeMonths: 0, residualPercent: 0, assetAccount: '', depreciationAccount: '', accumDepreciationAccount: '' };
-const EMPTY = { supplier: '', docType: 'FACTURA', estab: '001', ptoEmi: '001', secuencial: '', serie: '', claveAcceso: '', autorizacion: '', fechaEmision: today(), fechaVencimiento: '', creditDays: 0, costCenter: '', notes: '', items: [], retentions: [], retentionNumber: '' };
+const EMPTY = { supplier: '', docType: 'FACTURA', estab: '001', ptoEmi: '001', secuencial: '', serie: '', claveAcceso: '', autorizacion: '', fechaEmision: today(), fechaVencimiento: '', creditDays: 0, costCenter: '', notes: '', items: [], retentions: [], retentionNumber: '', retentionPeriodMonth: null, retentionPeriodYear: null };
+
+const MONTHS = ['', 'enero', 'febrero', 'marzo', 'abril', 'mayo', 'junio', 'julio', 'agosto', 'septiembre', 'octubre', 'noviembre', 'diciembre'];
 
 // Tipos de línea que puede contener una factura. La UI muestra solo las secciones
 // activadas (experiencia progresiva) — ver `activeSections` / "¿Qué contiene esta factura?".
@@ -110,13 +112,19 @@ export default function PurchaseInvoices() {
   const [total, setTotal] = useState(0);
   const [pendingTotal, setPendingTotal] = useState(0); // total real de "por autorizar" (todas las páginas)
   const [newProductItemUid, setNewProductItemUid] = useState(null); // línea que dispara "Nuevo producto"
-  const [journalInv, setJournalInv] = useState(null); // factura cuyo asiento se edita
+  const [journalInv, setJournalInv] = useState(null); // factura cuyos asientos se consultan (solo lectura)
   const [payInv, setPayInv] = useState(null); // factura a pagar
   const [payForm, setPayForm] = useState({ method: 'TRANSFERENCIA', bankAccount: '', voucherNumber: '', checkNumber: '', amount: 0, date: today() });
   const [formError, setFormError] = useState(''); // error visible DENTRO del modal (no solo toast)
   const [retModal, setRetModal] = useState(null); // { purchase, series, estab, ptoEmi, periodMonth, periodYear }
   const [retEmitting, setRetEmitting] = useState(false);
   const [retVoucher, setRetVoucher] = useState(null); // comprobante de retención emitido (encabezado) de la compra abierta
+  // Fecha de emisión que traía el comprobante al abrirlo (para no exigirle "hoy" a un
+  // documento histórico que solo se está editando: el backend solo bloquea MOVERLA atrás).
+  const [loadedFechaEmision, setLoadedFechaEmision] = useState('');
+  // Configuración de emisión electrónica de retenciones (series/establecimientos). Se usa
+  // tanto en el encabezado de retención del formulario como en el modal de emisión.
+  const [retConfig, setRetConfig] = useState(null);
   const [sriMismatch, setSriMismatch] = useState(null); // { sri, entered, diff, payload } → modal de confirmación
   // { warehouse, esperado, elegido } → el centro elegido no es el predeterminado de la bodega.
   const [ccMismatch, setCcMismatch] = useState(null);
@@ -157,6 +165,9 @@ export default function PurchaseInvoices() {
     api.get('/cost-centers', { params: { active: true } }).then((r) => setCostCenters(r.data || [])).catch(() => {});
     api.get('/inventory-advanced/categories', { params: { kind: 'ACTIVO_FIJO' } }).then((r) => setAssetCategories(r.data?.items || r.data || [])).catch(() => {});
     api.get('/retention-rules', { params: { active: true } }).then((r) => setRetentionRules(r.data || [])).catch(() => {});
+    // Serie del comprobante de retención (establecimiento / punto de emisión): se muestra en el
+    // encabezado de retención del formulario, como en Contífico.
+    api.get('/retention-vouchers/config').then((r) => setRetConfig(r.data || null)).catch(() => {});
     api.get('/clinics').then((r) => setClinics(r.data?.items || r.data || [])).catch(() => {});
     load();
   }, []);
@@ -370,19 +381,22 @@ export default function PurchaseInvoices() {
     return { type: r.type, code: r.code, description: r.description, rate: r.rate || r.percentage || 0, base: r.base ?? r.baseAmount ?? 0, amount: r.amount || 0, account: r.account };
   };
   // Resumen de retenciones DERIVADO de todas las líneas (o de la cabecera legacy si no hay).
+  // Se listan TODAS las retenciones elegidas, incluso las que aún calculan 0 (línea sin
+  // precio todavía): en cuanto el usuario escoge un código tiene que verlo en el resumen,
+  // no cuando el importe deja de ser cero.
   const retSummary = (() => {
     const map = new Map();
     let anyLine = false;
     for (const it of form.items) {
       for (const r of lineRetList(it)) {
         const info = retInfoOne(it, r);
-        if (!info || !(info.amount > 0)) continue;
+        if (!info) continue;
         anyLine = true;
         const key = `${info.type}|${info.code}`;
         if (!map.has(key)) map.set(key, { ...info, base: 0, amount: 0 });
         const g = map.get(key);
-        g.base = +(g.base + info.base).toFixed(2);
-        g.amount = +(g.amount + info.amount).toFixed(2);
+        g.base = +(g.base + (Number(info.base) || 0)).toFixed(2);
+        g.amount = +(g.amount + (Number(info.amount) || 0)).toFixed(2);
       }
     }
     if (anyLine) return [...map.values()];
@@ -431,6 +445,28 @@ export default function PurchaseInvoices() {
       </div>
     );
   };
+
+  // ── Fecha del comprobante: automática (hoy) y sin fechas atrasadas.
+  // Un documento que YA existía con fecha anterior conserva esa fecha como mínimo permitido:
+  // se puede corregir el resto de la factura sin tener que moverle la fecha.
+  const minDocDate = loadedFechaEmision && loadedFechaEmision < today() ? loadedFechaEmision : today();
+  const pastEmision = !!form.fechaEmision && form.fechaEmision < minDocDate;
+
+  // ── Periodo fiscal de la retención (regla de los 5 días): no puede ser anterior al mes de
+  // la factura sustento ni posterior al mes de emisión (hoy). Se ofrecen solo los válidos.
+  const retPeriodOptions = (() => {
+    const base = form.fechaEmision || today();
+    const [by, bm] = [Number(base.slice(0, 4)), Number(base.slice(5, 7))];
+    const now = new Date();
+    const from = by * 12 + (bm - 1);
+    const to = now.getFullYear() * 12 + now.getMonth();
+    const out = [];
+    for (let i = from; i <= Math.max(from, to); i++) out.push({ year: Math.floor(i / 12), month: (i % 12) + 1 });
+    return out;
+  })();
+  const retPeriodValue = form.retentionPeriodMonth && form.retentionPeriodYear
+    ? `${form.retentionPeriodYear}-${String(form.retentionPeriodMonth).padStart(2, '0')}`
+    : (retPeriodOptions[0] ? `${retPeriodOptions[0].year}-${String(retPeriodOptions[0].month).padStart(2, '0')}` : '');
 
   const totals = (() => {
     let s0 = 0, s12 = 0, s15 = 0, sNo = 0, sEx = 0, iva = 0, discount = 0;
@@ -497,7 +533,7 @@ export default function PurchaseInvoices() {
     return api.post('/purchase-invoices', payload);
   };
 
-  const closeForm = () => { setShow(false); setForm(EMPTY); setAuthorizeId(null); setEditId(null); setFormError(''); setSriMismatch(null); setCcMismatch(null); setRetVoucher(null); };
+  const closeForm = () => { setShow(false); setForm({ ...EMPTY, fechaEmision: today() }); setAuthorizeId(null); setEditId(null); setFormError(''); setSriMismatch(null); setCcMismatch(null); setRetVoucher(null); setLoadedFechaEmision(''); };
 
   const submit = async (e) => {
     e.preventDefault();
@@ -506,6 +542,9 @@ export default function PurchaseInvoices() {
     // El N° de comprobante ahora es un solo campo (001-001-000000123): exige el secuencial
     // salvo que la factura ya traiga una serie (documentos importados/editados).
     if (!form.serie && !(form.secuencial || '').trim()) return fail('Ingresa el N° de comprobante (formato 001-001-000000123)');
+    // Fecha automática sin retroceso: se avisa aquí para no gastar un viaje al servidor
+    // (que vuelve a validarlo: la regla de verdad vive en el backend).
+    if (pastEmision) return fail('La fecha de emisión no puede ser anterior a hoy. Corrige la fecha del comprobante.');
     // Ignora líneas placeholder totalmente vacías (p.ej. la línea inicial de una sección
     // recién activada que no se llegó a usar) para no bloquear el guardado.
     const cleanItems = form.items.filter(lineHasData);
@@ -577,10 +616,13 @@ export default function PurchaseInvoices() {
       // Encabezado del comprobante de retención emitido (si lo hay): se muestra en la sección
       // de retenciones ANTES de los porcentajes.
       setRetVoucher(d.retentionVoucher && typeof d.retentionVoucher === 'object' ? d.retentionVoucher : null);
+      setLoadedFechaEmision(d.fechaEmision ? String(d.fechaEmision).slice(0, 10) : '');
       setForm({
         ...EMPTY, ...d,
         supplier: d.supplier?._id || d.supplier || '',
         fechaEmision: d.fechaEmision ? d.fechaEmision.slice(0, 10) : today(),
+        retentionPeriodMonth: d.retentionPeriodMonth || null,
+        retentionPeriodYear: d.retentionPeriodYear || null,
         fechaVencimiento: d.fechaVencimiento ? String(d.fechaVencimiento).slice(0, 10) : '',
         costCenter: d.costCenter?._id || d.costCenter || '',
         notes: d.notes || '',
@@ -649,8 +691,10 @@ export default function PurchaseInvoices() {
       setRetModal({
         purchase: p, series,
         estab, ptoEmi,
-        periodMonth: sustento.getMonth() + 1,
-        periodYear: sustento.getFullYear(),
+        // Manda el periodo elegido en el formulario de la compra (pestaña «Retención»); si no
+        // se eligió ninguno, el mes de la factura sustento.
+        periodMonth: p.retentionPeriodMonth || sustento.getMonth() + 1,
+        periodYear: p.retentionPeriodYear || sustento.getFullYear(),
         sustentoLabel: `${p.serie || ''} · ${fmtDate(p.fechaEmision)}`,
       });
     } catch (e) { toast.error(e.response?.data?.message || 'No se pudo preparar la emisión'); }
@@ -799,7 +843,7 @@ export default function PurchaseInvoices() {
         <div className="flex gap-2">
           {hasRole('admin') && <button onClick={wipeAll} title="Borrar todas las compras de esta sucursal (reinicio)" className="px-4 py-2 bg-rose-600 text-white rounded-lg flex items-center gap-2"><HiOutlineXMark /> Reiniciar compras</button>}
           <button onClick={() => { setImportMode('xml'); setShowImport(true); }} className="px-4 py-2 bg-amber-500 text-white rounded-lg flex items-center gap-2"><HiOutlineArrowDownTray /> Importar SRI</button>
-          <button onClick={() => { setForm({ ...EMPTY, items: [makeItem('GASTO')] }); setActiveSections(['GASTO']); setRowMenuUid(null); setAuthorizeId(null); setEditId(null); setShowAdvanced(false); setRetVoucher(null); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
+          <button onClick={() => { setForm({ ...EMPTY, fechaEmision: today(), items: [makeItem('GASTO')] }); setActiveSections(['GASTO']); setRowMenuUid(null); setAuthorizeId(null); setEditId(null); setShowAdvanced(false); setRetVoucher(null); setLoadedFechaEmision(''); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
         </div>
       </div>
 
@@ -920,7 +964,18 @@ export default function PurchaseInvoices() {
                   <option value="FACTURA">Factura</option><option value="NOTA_VENTA">Nota de venta</option><option value="LIQUIDACION">Liquidación</option><option value="NOTA_DEBITO_REC">Nota débito</option><option value="NOTA_CREDITO_REC">Nota crédito</option>
                 </select>
               </Field>
-              <Field label="Fecha de emisión" required className="col-span-1 md:col-span-2"><input type="date" required value={form.fechaEmision} onChange={(e) => setForm((f) => ({ ...f, fechaEmision: e.target.value, fechaVencimiento: f.creditDays ? addDays(e.target.value, f.creditDays) : f.fechaVencimiento }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+              {/* Fecha de emisión: AUTOMÁTICA (hoy) y sin fechas atrasadas. `min` bloquea el
+                  calendario y el backend vuelve a validarlo (es la regla de verdad). */}
+              <Field label="Fecha de emisión" required className="col-span-1 md:col-span-2" hint="Automática: no se admiten fechas anteriores a hoy.">
+                <input
+                  type="date" required
+                  value={form.fechaEmision}
+                  min={minDocDate}
+                  onChange={(e) => setForm((f) => ({ ...f, fechaEmision: e.target.value, fechaVencimiento: f.creditDays ? addDays(e.target.value, f.creditDays) : f.fechaVencimiento }))}
+                  className={`w-full border rounded-xl px-3 py-2.5 text-sm ${pastEmision ? 'border-rose-300 bg-rose-50' : 'border-slate-200'}`}
+                />
+                {pastEmision && <p className="text-[11px] text-rose-600 mt-1">Fecha anterior a hoy: el sistema no registra comprobantes atrasados.</p>}
+              </Field>
               <Field label="Días de crédito"><NumericInput value={form.creditDays} onChange={(e) => setForm((f) => ({ ...f, creditDays: +e.target.value, fechaVencimiento: +e.target.value > 0 ? addDays(f.fechaEmision, +e.target.value) : '' }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-right" /></Field>
               <Field label="Vencimiento"><input type="date" value={form.fechaVencimiento || ''} onChange={(e) => setForm({ ...form, fechaVencimiento: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
               <Field label="Centro de costo (factura)" className="col-span-2 md:col-span-2">
@@ -1160,6 +1215,52 @@ export default function PurchaseInvoices() {
                 <span className="text-[11px] text-slate-400">Automáticas: se calculan del código elegido en cada línea.</span>
               </div>
               <div className="p-3 space-y-2">
+                {/* ENCABEZADO DE LA RETENCIÓN AÚN NO EMITIDA (equivalente a la pestaña «Retención»
+                    de Contífico): emisión, documento, tipo de emisión, establecimiento/punto y
+                    P. Fiscal. Todo es automático salvo el PERIODO FISCAL, que el contador elige
+                    (regla de los 5 días: del mes de la factura sustento al mes de emisión). */}
+                {!retVoucher && (
+                  <div className="rounded-lg border border-slate-200 bg-slate-50/70 px-3 py-2.5 grid grid-cols-2 sm:grid-cols-4 gap-x-4 gap-y-2.5 text-sm">
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide text-slate-500">Emisión</div>
+                      <div className="text-slate-700">{fmtDate(today())} <span className="text-[10px] text-slate-400">(automática)</span></div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide text-slate-500">Documento</div>
+                      <div className="font-mono text-slate-500">
+                        {retConfig?.configured
+                          ? `${retConfig.defaultEstab || '001'}-${retConfig.defaultPtoEmi || '001'}-` : ''}
+                        <span className="italic font-sans text-[11px]">secuencial automático</span>
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] uppercase tracking-wide text-slate-500">Tipo de emisión</div>
+                      <div className="text-slate-700">{retConfig?.configured ? 'Electrónica' : 'Sin configurar'}</div>
+                    </div>
+                    <div>
+                      <label className="block text-[10px] uppercase tracking-wide text-slate-500 mb-0.5">P. Fiscal</label>
+                      <select
+                        value={retPeriodValue}
+                        onChange={(e) => {
+                          const [y, m] = e.target.value.split('-');
+                          setForm((f) => ({ ...f, retentionPeriodYear: Number(y), retentionPeriodMonth: Number(m) }));
+                        }}
+                        className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm bg-white"
+                      >
+                        {retPeriodOptions.map((o) => (
+                          <option key={`${o.year}-${o.month}`} value={`${o.year}-${String(o.month).padStart(2, '0')}`}>
+                            {MONTHS[o.month]} {o.year}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <p className="col-span-2 sm:col-span-4 text-[11px] text-slate-400 -mt-0.5">
+                      El número y la autorización se generan al emitir el comprobante electrónico
+                      («Emitir retención» en el listado). El <b>periodo fiscal</b> arranca en el mes de la factura
+                      sustento y puede moverse hasta el mes de emisión (regla de los 5 días).
+                    </p>
+                  </div>
+                )}
                 {/* ENCABEZADO del comprobante emitido (antes de los porcentajes): número, autorización
                     o estado, fecha de emisión y periodo fiscal — como en el sistema anterior. */}
                 {retVoucher && (
@@ -1188,23 +1289,26 @@ export default function PurchaseInvoices() {
                 )}
                 {retSummary.length > 0 && (
                 <div className="overflow-x-auto">
+                  {/* Mismas columnas que el sistema anterior (Contífico): concepto, tipo de
+                      impuesto, código SRI, base, porcentaje y valor. */}
                   <table className="w-full text-sm">
                     <thead className="text-[11px] uppercase text-slate-400"><tr className="text-left">
-                      <th className="py-1 pr-2">Código</th><th className="py-1 px-2">Concepto</th>
+                      <th className="py-1 pr-2">Retención</th><th className="py-1 px-2">Tipo</th><th className="py-1 px-2">Cod. SRI</th>
                       <th className="py-1 px-2 text-right">Base</th><th className="py-1 px-2 text-right">%</th><th className="py-1 px-2 text-right">Valor</th>
                     </tr></thead>
                     <tbody>
                       {retSummary.map((r, i) => (
                         <tr key={`${r.type}-${r.code}-${i}`} className="border-t border-slate-100">
-                          <td className="py-1.5 pr-2 font-mono">{r.type} {r.code}</td>
-                          <td className="py-1.5 px-2 text-slate-600">{r.description || '—'}</td>
+                          <td className="py-1.5 pr-2 text-slate-700">{r.description || '—'}</td>
+                          <td className="py-1.5 px-2 text-slate-500">{r.type === 'IVA' ? 'IVA' : 'Imp. a la Renta'}</td>
+                          <td className="py-1.5 px-2 font-mono">{r.code}</td>
                           <td className="py-1.5 px-2 text-right font-mono">{fmt(r.base)}</td>
                           <td className="py-1.5 px-2 text-right font-mono">{r.rate}%</td>
                           <td className="py-1.5 px-2 text-right font-mono">{fmt(r.amount)}</td>
                         </tr>
                       ))}
                     </tbody>
-                    <tfoot><tr className="border-t border-slate-200 font-semibold"><td colSpan={4} className="py-1.5 px-2 text-right">Total retenido</td><td className="py-1.5 px-2 text-right font-mono">{fmt(totals.retTotal)}</td></tr></tfoot>
+                    <tfoot><tr className="border-t border-slate-200 font-semibold"><td colSpan={5} className="py-1.5 px-2 text-right">Total retenido</td><td className="py-1.5 px-2 text-right font-mono">{fmt(totals.retTotal)}</td></tr></tfoot>
                   </table>
                 </div>
                 )}
@@ -1339,9 +1443,17 @@ export default function PurchaseInvoices() {
         <div className="flex justify-end gap-2 mt-3"><button onClick={() => setShowImport(false)} disabled={importing} className="px-4 py-2 bg-slate-200 rounded-xl disabled:opacity-50">Cancelar</button><button onClick={submitImport} disabled={importing} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 disabled:opacity-60">{importing ? 'Importando…' : 'Importar'}</button></div>
       </Modal>
 
-      {/* Editor del asiento contable (debe/haber) de la compra */}
+      {/* Asientos de la compra: SOLO LECTURA y por documento origen (gasto/inventario/activo,
+          retención y sus reversas). Un asiento contabilizado no se edita: se reversa. */}
       {journalInv && (
-        <JournalEntryEditor isOpen={!!journalInv} onClose={() => setJournalInv(null)} entryId={journalInv.journalEntry?._id || journalInv.journalEntry} postUrl={`/purchase-invoices/${journalInv._id}/journal`} title={`Asiento de compra ${journalInv.serie || ''}`} onSaved={load} />
+        <JournalEntryViewModal
+          isOpen={!!journalInv}
+          onClose={() => setJournalInv(null)}
+          source={{ model: 'PurchaseInvoice', ref: journalInv._id }}
+          title={`Asientos de la compra ${journalInv.serie || ''}`}
+          emptyHint="Al contabilizar la compra se genera su asiento (gasto/inventario/activo, IVA y retenciones contra cuentas por pagar). Aquí se listan todos los asientos del documento."
+          hideOriginLink
+        />
       )}
 
       {/* Emisión del comprobante de retención: serie (estab/ptoEmi) y periodo fiscal (regla 5 días) */}

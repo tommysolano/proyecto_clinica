@@ -4,13 +4,21 @@ const { startDb, stopDb, resetDb, seedClinic, mockReq, runController } = require
 const purchaseCtrl = require('../controllers/purchaseInvoiceController');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
 
+// Los importadores rechazan comprobantes con fecha anterior a hoy (utils/fiscalDocumentDate),
+// así que el fichero de prueba se fecha HOY en vez de con una fecha fija del calendario.
+const F_HOY = (() => {
+  const d = new Date();
+  const p2 = (x) => String(x).padStart(2, '0');
+  return `${p2(d.getDate())}/${p2(d.getMonth() + 1)}/${d.getFullYear()}`;
+})();
+
 const HEADER = 'RUC_EMISOR\tRAZON_SOCIAL_EMISOR\tTIPO_COMPROBANTE\tSERIE_COMPROBANTE\tCLAVE_ACCESO\tFECHA_AUTORIZACION\tFECHA_EMISION\tIDENTIFICACION_RECEPTOR\tVALOR_SIN_IMPUESTOS\tIVA\tIMPORTE_TOTAL\tNUMERO_DOCUMENTO_MODIFICADO';
 
 test('importa TODAS las facturas del TXT (sin tope de 100) y el total las refleja', async (t) => {
   await startDb();
   t.after(stopDb);
   await resetDb();
-  const { clinicId, userId } = await seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await seedClinic();
 
   const N = 150;
   const lines = [HEADER];
@@ -18,7 +26,7 @@ test('importa TODAS las facturas del TXT (sin tope de 100) y el total las reflej
     const ruc = String(1790000000000 + i); // 13 dígitos, único por proveedor
     const sec = String(i).padStart(9, '0');
     const clave = `0106202601179000000${sec}0012001001${sec}1`; // clave de acceso única
-    lines.push(`${ruc}\tPROVEEDOR ${i} SA\tFactura\t001-001-${sec}\t${clave}\t01/06/2026 10:00:00\t01/06/2026\t0993404160001\t100\t15\t115\t`);
+    lines.push(`${ruc}\tPROVEEDOR ${i} SA\tFactura\t001-001-${sec}\t${clave}\t${F_HOY} 10:00:00\t${F_HOY}\t0993404160001\t100\t15\t115\t`);
   }
 
   const res = await runController(purchaseCtrl.importTxt, mockReq(clinicId, userId, { content: lines.join('\n') }));

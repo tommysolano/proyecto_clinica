@@ -24,8 +24,16 @@ test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
 test.beforeEach(async () => { await H.resetDb(); });
 
+// Los importadores rechazan comprobantes con fecha anterior a hoy
+// (utils/fiscalDocumentDate), así que los ficheros de prueba se fechan HOY.
+const FECHA_HOY = (() => {
+  const d = H.docDate();
+  const p2 = (x) => String(x).padStart(2, '0');
+  return `${p2(d.getDate())}/${p2(d.getMonth() + 1)}/${d.getFullYear()}`;
+})();
+
 async function setup() {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic({ date: H.docDate() });
   const gasto = await ChartOfAccount.findOne({ clinic: clinicId, code: '6.1.99' });
   const assetAcc = await ChartOfAccount.create({ clinic: clinicId, code: '1.2.05.99', name: 'Equipos (test)', type: 'ACTIVO', nature: 'DEBITO', allowsMovement: true });
   const depAcc = await ChartOfAccount.create({ clinic: clinicId, code: '5.2.99', name: 'Gasto depreciación (test)', type: 'GASTO', nature: 'DEBITO', allowsMovement: true });
@@ -50,7 +58,7 @@ const afLine = (catId, val = 1000) => ({ description: 'Ecógrafo', lineType: 'AC
 test('compra solo gasto: contabiliza y cuadra', async () => {
   const { clinicId, userId, gasto } = await setup();
   const sup = await H.makeSupplier(clinicId);
-  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: new Date('2026-06-05'), items: [gastoLine(gasto._id, 100)] }));
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: H.docDate(), items: [gastoLine(gasto._id, 100)] }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
   assert.equal(await H.accountBalanceByCode(clinicId, '6.1.99'), 100);
   assert.equal(await H.accountBalanceByCode(clinicId, '2.1.01.01'), -100);
@@ -62,7 +70,7 @@ test('compra solo inventario: usa cuenta de inventario (sin cuenta manual) y sub
   const { clinicId, userId, invCat } = await setup();
   const sup = await H.makeSupplier(clinicId);
   const prod = await makeInvProduct(clinicId, invCat);
-  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: new Date('2026-06-05'), items: [invLine(prod._id, 10, 5)] }));
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: H.docDate(), items: [invLine(prod._id, 10, 5)] }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
   assert.equal(await H.accountBalanceByCode(clinicId, '1.1.04.01'), 50, 'inventario debitado');
   assert.equal(await H.accountBalanceByCode(clinicId, '2.1.01.01'), -50);
@@ -75,7 +83,7 @@ test('compra solo inventario: usa cuenta de inventario (sin cuenta manual) y sub
 test('compra solo activo fijo: usa cuenta de la categoría y crea el activo', async () => {
   const { clinicId, userId, afCat, assetAcc } = await setup();
   const sup = await H.makeSupplier(clinicId);
-  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: new Date('2026-06-05'), items: [afLine(afCat._id, 1000)] }));
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: H.docDate(), items: [afLine(afCat._id, 1000)] }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
   assert.equal(await H.accountBalanceByCode(clinicId, assetAcc.code), 1000, 'activo fijo debitado desde la categoría');
   assert.equal(await H.accountBalanceByCode(clinicId, '2.1.01.01'), -1000);
@@ -91,7 +99,7 @@ test('compra MIXTA: gasto + inventario + activo fijo cuadra y los totales son co
   const sup = await H.makeSupplier(clinicId);
   const prod = await makeInvProduct(clinicId, invCat);
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [gastoLine(gasto._id, 100), invLine(prod._id, 10, 5), afLine(afCat._id, 1000)],
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
@@ -113,7 +121,7 @@ test('cuenta recurrente del proveedor SOLO se aplica a gasto (no a inventario ni
   const sup = await Supplier.create({ clinic: clinicId, ruc: '0990004196001', razonSocial: 'Prov', defaultExpenseAccount: gasto._id });
   const prod = await makeInvProduct(clinicId, invCat);
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [
       { description: 'Transporte', lineType: 'GASTO', quantity: 1, unitPrice: 100, ivaRate: 0, subtotal: 100 }, // sin cuenta → toma la del proveedor
       invLine(prod._id, 10, 5),
@@ -141,7 +149,7 @@ test('importación TXT no aplica la cuenta de gasto del proveedor (queda por cla
   await Supplier.create({ clinic: clinicId, ruc: '0990004196001', razonSocial: 'CORP', defaultExpenseAccount: gasto._id });
   const TXT = [
     'RUC_EMISOR\tRAZON_SOCIAL_EMISOR\tTIPO_COMPROBANTE\tSERIE_COMPROBANTE\tCLAVE_ACCESO\tFECHA_AUTORIZACION\tFECHA_EMISION\tIDENTIFICACION_RECEPTOR\tVALOR_SIN_IMPUESTOS\tIVA\tIMPORTE_TOTAL\tNUMERO_DOCUMENTO_MODIFICADO',
-    '0990004196001\tCORP\tFactura\t002-201-000118601\t0106202601099000419600120022010001186010011860110\t01/06/2026 10:03:32\t01/06/2026\t0993404160001\t100\t15\t115\t',
+    `0990004196001\tCORP\tFactura\t002-201-000118601\t0106202601099000419600120022010001186010011860110\t${FECHA_HOY} 10:03:32\t${FECHA_HOY}\t0993404160001\t100\t15\t115\t`,
   ].join('\n');
   const imp = await H.runController(purchase.importTxt, H.mockReq(clinicId, userId, { content: TXT }));
   assert.equal(imp.statusCode, 200);
@@ -155,7 +163,7 @@ test('importación TXT no aplica la cuenta de gasto del proveedor (queda por cla
 test('importación XML deja la factura POR_AUTORIZAR sin cuenta asignada', async () => {
   const { clinicId, userId, gasto } = await setup();
   await Supplier.create({ clinic: clinicId, ruc: '1790283380001', razonSocial: 'DINERS', defaultExpenseAccount: gasto._id });
-  const XML = `<?xml version="1.0" encoding="UTF-8"?><factura><infoTributaria><ruc>1790283380001</ruc><razonSocial>DINERS</razonSocial><estab>001</estab><ptoEmi>014</ptoEmi><secuencial>000000123</secuencial><claveAcceso>XYZ123</claveAcceso></infoTributaria><infoFactura><fechaEmision>05/06/2026</fechaEmision><totalSinImpuestos>50.00</totalSinImpuestos><importeTotal>50.00</importeTotal></infoFactura><detalles><detalle><descripcion>Servicio</descripcion><cantidad>1</cantidad><precioUnitario>50</precioUnitario><descuento>0</descuento><precioTotalSinImpuesto>50</precioTotalSinImpuesto></detalle></detalles></factura>`;
+  const XML = `<?xml version="1.0" encoding="UTF-8"?><factura><infoTributaria><ruc>1790283380001</ruc><razonSocial>DINERS</razonSocial><estab>001</estab><ptoEmi>014</ptoEmi><secuencial>000000123</secuencial><claveAcceso>XYZ123</claveAcceso></infoTributaria><infoFactura><fechaEmision>${FECHA_HOY}</fechaEmision><totalSinImpuestos>50.00</totalSinImpuestos><importeTotal>50.00</importeTotal></infoFactura><detalles><detalle><descripcion>Servicio</descripcion><cantidad>1</cantidad><precioUnitario>50</precioUnitario><descuento>0</descuento><precioTotalSinImpuesto>50</precioTotalSinImpuesto></detalle></detalles></factura>`;
   const imp = await H.runController(purchase.importXml, H.mockReq(clinicId, userId, { xmls: [XML] }));
   assert.equal(imp.statusCode, 200, JSON.stringify(imp.payload));
   assert.equal(imp.payload.created, 1, JSON.stringify(imp.payload));
@@ -172,13 +180,13 @@ test('edición de compra ANTIGUA (item con producto sin lineType) sigue funciona
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0 });
   // Inserta una factura "antigua": item con producto pero SIN lineType, ya REGISTRADA, sin asiento.
   const legacy = await PurchaseInvoice.create({
-    clinic: clinicId, supplier: sup._id, fechaEmision: new Date('2026-06-05'), serie: '001-001-000000999',
+    clinic: clinicId, supplier: sup._id, fechaEmision: H.docDate(), serie: '001-001-000000999',
     items: [{ description: 'Insumo viejo', product: prod._id, quantity: 5, unitPrice: 4, subtotal: 20, ivaRate: 0 }],
     subtotal: 20, total: 20, balance: 20, status: 'REGISTRADA',
   });
   // Editar: cambiar cantidad. classify infiere INVENTARIO por el producto y no exige cuenta.
   const upd = await H.runController(purchase.update, H.mockReq(clinicId, userId, {
-    fechaEmision: new Date('2026-06-05'),
+    fechaEmision: H.docDate(),
     items: [{ description: 'Insumo viejo', product: prod._id, quantity: 8, unitPrice: 4, subtotal: 32, ivaRate: 0 }],
   }, { params: { id: String(legacy._id) } }));
   assert.equal(upd.statusCode, 200, JSON.stringify(upd.payload));
@@ -195,7 +203,7 @@ test('compra NUEVA de inventario con categoría SIN cuenta de inventario debe fa
   const sup = await H.makeSupplier(clinicId);
   const catNoAcc = await InventoryCategory.create({ clinic: clinicId, code: 'INV-SINCTA', name: 'Sin cuenta', kind: 'INVENTARIO' });
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: catNoAcc._id });
-  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: new Date('2026-06-05'), items: [invLine(prod._id, 10, 5)] }));
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: H.docDate(), items: [invLine(prod._id, 10, 5)] }));
   assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
   assert.match(r.payload.message, /cuenta de inventario/i);
   // No debe haber contabilizado ni movido stock.
@@ -207,7 +215,7 @@ test('compra NUEVA de inventario cuyo producto NO tiene categoría debe fallar',
   const { clinicId, userId } = await setup();
   const sup = await H.makeSupplier(clinicId);
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: null }); // sin inventoryCategory
-  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: new Date('2026-06-05'), items: [invLine(prod._id, 10, 5)] }));
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: H.docDate(), items: [invLine(prod._id, 10, 5)] }));
   assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
   assert.match(r.payload.message, /categoría contable/i);
   assert.equal(await H.accountBalanceByCode(clinicId, '1.1.04.01'), 0);
@@ -217,7 +225,7 @@ test('compra NUEVA de activo fijo con categoría SIN cuenta de activo debe falla
   const { clinicId, userId } = await setup();
   const sup = await H.makeSupplier(clinicId);
   const afNoAcc = await InventoryCategory.create({ clinic: clinicId, code: 'AF-SINCTA', name: 'AF sin cuenta', kind: 'ACTIVO_FIJO' });
-  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: new Date('2026-06-05'), items: [afLine(afNoAcc._id, 1000)] }));
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: H.docDate(), items: [afLine(afNoAcc._id, 1000)] }));
   assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
   assert.match(r.payload.message, /cuenta de activo/i);
   assert.equal(await FixedAsset.countDocuments({ clinic: clinicId }), 0, 'no debe crear el activo');
@@ -227,7 +235,7 @@ test('compra NUEVA de activo fijo SIN categoría debe fallar', async () => {
   const { clinicId, userId } = await setup();
   const sup = await H.makeSupplier(clinicId);
   const item = { description: 'Ecógrafo', lineType: 'ACTIVO_FIJO', quantity: 1, unitPrice: 1000, ivaRate: 0, subtotal: 1000, fixedAsset: { name: 'Ecógrafo' } };
-  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: new Date('2026-06-05'), items: [item] }));
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: H.docDate(), items: [item] }));
   assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
   assert.match(r.payload.message, /categoría de activo fijo/i);
   assert.equal(await FixedAsset.countDocuments({ clinic: clinicId }), 0);
@@ -239,7 +247,7 @@ test('gasto con product colgado pero lineType GASTO NO se convierte en inventari
   const prod = await makeInvProduct(clinicId, invCat, { stock: 3 });
   // Línea marcada explícitamente GASTO pero arrastrando un product: debe respetarse GASTO.
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'),
+    supplier: sup._id, fechaEmision: H.docDate(),
     items: [{ description: 'Servicio con product colgado', lineType: 'GASTO', quantity: 1, unitPrice: 100, ivaRate: 0, subtotal: 100, account: gasto._id, product: prod._id }],
   }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
@@ -258,14 +266,14 @@ test('editar una compra LEGACY con producto SIN categoría ahora se BLOQUEA (est
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: null }); // sin categoría (legacy)
   // Factura antigua ya REGISTRADA (strictAccounts=false), con la cuenta legacy en la línea.
   const legacy = await PurchaseInvoice.create({
-    clinic: clinicId, supplier: sup._id, fechaEmision: new Date('2026-06-05'), serie: '001-001-000000777',
+    clinic: clinicId, supplier: sup._id, fechaEmision: H.docDate(), serie: '001-001-000000777',
     strictAccounts: false,
     items: [{ description: 'Insumo legacy', product: prod._id, account: legacyAcc._id, quantity: 5, unitPrice: 4, subtotal: 20, ivaRate: 0 }],
     subtotal: 20, total: 20, balance: 20, status: 'REGISTRADA',
   });
   // Editar ahora exige categoría (Tarea 1.2): sin ella, bloquea con un mensaje que guía a configurarla.
   const upd = await H.runController(purchase.update, H.mockReq(clinicId, userId, {
-    fechaEmision: new Date('2026-06-05'),
+    fechaEmision: H.docDate(),
     items: [{ description: 'Insumo legacy', lineType: 'INVENTARIO', product: prod._id, quantity: 5, unitPrice: 4, subtotal: 20, ivaRate: 0 }],
   }, { params: { id: String(legacy._id) } }));
   assert.equal(upd.statusCode, 400, JSON.stringify(upd.payload));
@@ -279,13 +287,13 @@ test('editar compra NUEVA de inventario tras perder la cuenta de la categoría d
   const { clinicId, userId, invCat } = await setup();
   const sup = await H.makeSupplier(clinicId);
   const prod = await makeInvProduct(clinicId, invCat);
-  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: new Date('2026-06-05'), items: [invLine(prod._id, 10, 5)] }));
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: H.docDate(), items: [invLine(prod._id, 10, 5)] }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
   assert.equal((await PurchaseInvoice.findById(r.payload._id)).strictAccounts, true, 'la compra nueva nace estricta');
   // La categoría pierde su cuenta de inventario.
   await InventoryCategory.updateOne({ _id: invCat._id }, { $unset: { assetAccount: 1 } });
   const upd = await H.runController(purchase.update, H.mockReq(clinicId, userId, {
-    fechaEmision: new Date('2026-06-05'),
+    fechaEmision: H.docDate(),
     items: [{ description: 'Insumo', lineType: 'INVENTARIO', product: prod._id, quantity: 12, unitPrice: 5, ivaRate: 0, subtotal: 60 }],
   }, { params: { id: String(r.payload._id) } }));
   assert.equal(upd.statusCode, 400, JSON.stringify(upd.payload));
@@ -295,11 +303,11 @@ test('editar compra NUEVA de inventario tras perder la cuenta de la categoría d
 test('editar compra NUEVA de activo fijo tras perder la cuenta de la categoría debe fallar', async () => {
   const { clinicId, userId, afCat } = await setup();
   const sup = await H.makeSupplier(clinicId);
-  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: new Date('2026-06-05'), items: [afLine(afCat._id, 1000)] }));
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: H.docDate(), items: [afLine(afCat._id, 1000)] }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
   await InventoryCategory.updateOne({ _id: afCat._id }, { $unset: { assetAccount: 1 } });
   const upd = await H.runController(purchase.update, H.mockReq(clinicId, userId, {
-    fechaEmision: new Date('2026-06-05'),
+    fechaEmision: H.docDate(),
     items: [afLine(afCat._id, 1200)],
   }, { params: { id: String(r.payload._id) } }));
   assert.equal(upd.statusCode, 400, JSON.stringify(upd.payload));
@@ -310,10 +318,10 @@ test('editar compra NUEVA de inventario con categoría válida sigue funcionando
   const { clinicId, userId, invCat } = await setup();
   const sup = await H.makeSupplier(clinicId);
   const prod = await makeInvProduct(clinicId, invCat);
-  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: new Date('2026-06-05'), items: [invLine(prod._id, 10, 5)] }));
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, fechaEmision: H.docDate(), items: [invLine(prod._id, 10, 5)] }));
   assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
   const upd = await H.runController(purchase.update, H.mockReq(clinicId, userId, {
-    fechaEmision: new Date('2026-06-05'),
+    fechaEmision: H.docDate(),
     items: [{ description: 'Insumo', lineType: 'INVENTARIO', product: prod._id, quantity: 12, unitPrice: 5, ivaRate: 0, subtotal: 60 }],
   }, { params: { id: String(r.payload._id) } }));
   assert.equal(upd.statusCode, 200, JSON.stringify(upd.payload));
@@ -329,7 +337,7 @@ test('authorize sigue siendo ESTRICTO: inventario sin categoría no se puede aut
   const prod = await H.makeProduct(clinicId, { category: 'insumo', stock: 0, inventoryCategory: null });
   // Factura POR_AUTORIZAR con una línea de inventario cuyo producto no tiene categoría.
   const inv = await PurchaseInvoice.create({
-    clinic: clinicId, supplier: sup._id, fechaEmision: new Date('2026-06-05'), serie: '001-001-000000555',
+    clinic: clinicId, supplier: sup._id, fechaEmision: H.docDate(), serie: '001-001-000000555',
     items: [{ description: 'Insumo', lineType: 'INVENTARIO', product: prod._id, quantity: 10, unitPrice: 5, subtotal: 50, ivaRate: 0 }],
     subtotal: 50, total: 50, balance: 50, status: 'POR_AUTORIZAR',
   });

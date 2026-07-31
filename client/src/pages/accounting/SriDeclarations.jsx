@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { Link } from 'react-router-dom';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import {
@@ -720,6 +721,27 @@ export default function SriDeclarations() {
                   Base declarada = ingresos gravados. La base imponible neta de aporte personal IESS
                   (${fmt(decl.snapshot.dependencia.baseImponibleNeta)}) se muestra por si el instructivo vigente la exige.
                 </p>
+              </div>
+            )}
+
+            {/* El 103 declara la retención laboral MES A MES; el detalle anual por empleado que
+                lo respalda es el RDEP, que sale de estas mismas nóminas. */}
+            {formType === '103' && (
+              <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4 flex flex-wrap items-center justify-between gap-3 print:hidden">
+                <div>
+                  <h3 className="font-semibold text-slate-800 text-sm">Anexo RDEP {decl.year}</h3>
+                  <p className="text-xs text-slate-500 mt-0.5">
+                    El anexo ANUAL de retenciones en relación de dependencia que acompaña al 103.
+                    Se calcula de las mismas nóminas cerradas; ahí se capturan los gastos personales
+                    de cada empleado y se descarga en Excel/XML.
+                  </p>
+                </div>
+                <Link
+                  to={`/accounting/sri-annexes?year=${decl.year}`}
+                  className="px-3 py-1.5 bg-emerald-600 text-white rounded-lg text-sm flex items-center gap-1 shrink-0 no-underline"
+                >
+                  <HiOutlineClipboardDocumentList className="w-4 h-4" /> Abrir RDEP
+                </Link>
               </div>
             )}
           </div>

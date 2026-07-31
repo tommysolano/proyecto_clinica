@@ -244,7 +244,7 @@ test('11-14) compra con vencimiento explícito: pago parcial reduce y pago total
   })));
 
   const pi = ok(await run(purchases.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: dia(-1), fechaVencimiento: vence, serie: '001-001-000000801',
+    supplier: sup._id, fechaEmision: dia(0), fechaVencimiento: vence, serie: '001-001-000000801',
     items: [{ description: 'Gasto', lineType: 'GASTO', account: gasto._id, quantity: 1, unitPrice: 300, ivaRate: 0, subtotal: 300 }],
   })));
 
@@ -277,7 +277,7 @@ test('12) sin fecha explícita, el vencimiento sale de los días de crédito del
   const { clinicId, userId } = await H.seedClinic({ date: dia(-5) });
   const sup = await H.makeSupplier(clinicId, { creditDays: 30 });
   const gasto = await ChartOfAccount.findOne({ clinic: clinicId, code: '6.1.99' });
-  const emision = dia(-1);
+  const emision = dia(0); // HOY: no se registran comprobantes atrasados
 
   const pi = ok(await run(purchases.create, H.mockReq(clinicId, userId, {
     supplier: sup._id, fechaEmision: emision, serie: '001-001-000000802',

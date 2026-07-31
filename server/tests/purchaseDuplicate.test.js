@@ -22,19 +22,19 @@ const gastoLine = (acc, val = 100) => ({ description: 'Gasto', lineType: 'GASTO'
 async function createRegistrada(clinicId, userId, sup, { serie, claveAcceso, estab, ptoEmi, secuencial } = {}) {
   const gasto = await ChartOfAccount.findOne({ clinic: clinicId, code: '6.1.99' });
   return H.runController(purchase.create, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: new Date('2026-06-05'), serie, claveAcceso, estab, ptoEmi, secuencial,
+    supplier: sup._id, fechaEmision: H.docDate(), serie, claveAcceso, estab, ptoEmi, secuencial,
     items: [gastoLine(gasto._id, 100)],
   }));
 }
 
 // ── Helper directo ────────────────────────────────────────────────────────────
 test('helper: detecta duplicado por clave; excluye ANULADA; sin falsos positivos', async () => {
-  const { clinicId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId } = await H.seedClinic({ date: H.docDate() });
   const sup = await H.makeSupplier(clinicId);
   const otro = await H.makeSupplier(clinicId);
   await PurchaseInvoice.create({
     clinic: clinicId, supplier: sup._id, serie: '001-001-000000900', claveAcceso: 'CLAVEACCESO0000000000000000000000000000000001',
-    estab: '001', ptoEmi: '001', secuencial: '000000900', fechaEmision: new Date('2026-06-05'),
+    estab: '001', ptoEmi: '001', secuencial: '000000900', fechaEmision: H.docDate(),
     items: [{ description: 'x', subtotal: 100, quantity: 1, unitPrice: 100, ivaRate: 0 }], subtotal: 100, total: 100, balance: 100, status: 'REGISTRADA',
   });
   const find = (args) => purchase._findDuplicatePurchaseInvoice({ clinicId, ...args });
@@ -52,11 +52,11 @@ test('helper: detecta duplicado por clave; excluye ANULADA; sin falsos positivos
 
 // ── Import (POR_AUTORIZAR) + create manual → retorna la existente ──────────────
 test('1) XML importado (POR_AUTORIZAR) + create manual del mismo comprobante: retorna la existente', async () => {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic({ date: H.docDate() });
   const sup = await H.makeSupplier(clinicId);
   const imported = await PurchaseInvoice.create({
     clinic: clinicId, supplier: sup._id, serie: '001-001-000000123', claveAcceso: 'CLV123',
-    fechaEmision: new Date('2026-06-05'), status: 'POR_AUTORIZAR', importedFromXml: true,
+    fechaEmision: H.docDate(), status: 'POR_AUTORIZAR', importedFromXml: true,
     items: [{ description: 'importado', subtotal: 100, quantity: 1, unitPrice: 100, ivaRate: 0 }], subtotal: 100, total: 100, balance: 100,
   });
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, { supplier: sup._id, serie: '001-001-000000123' }));
@@ -68,7 +68,7 @@ test('1) XML importado (POR_AUTORIZAR) + create manual del mismo comprobante: re
 
 // ── create manual REGISTRADA + intento duplicado → 409, sin asiento nuevo ──────
 test('2) create manual y luego duplicado por proveedor+serie: 409 sin asiento nuevo', async () => {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic({ date: H.docDate() });
   const sup = await H.makeSupplier(clinicId);
   const first = await createRegistrada(clinicId, userId, sup, { serie: '001-001-000000200' });
   assert.equal(first.statusCode, 201, JSON.stringify(first.payload));
@@ -84,7 +84,7 @@ test('2) create manual y luego duplicado por proveedor+serie: 409 sin asiento nu
 
 // ── Duplicado por clave de acceso con serie distinta → 409 ────────────────────
 test('3) duplicado por clave de acceso (serie distinta): 409', async () => {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic({ date: H.docDate() });
   const sup = await H.makeSupplier(clinicId);
   const first = await createRegistrada(clinicId, userId, sup, { serie: '001-001-000000300', claveAcceso: 'CLAVEUNICA300' });
   assert.equal(first.statusCode, 201, JSON.stringify(first.payload));
@@ -94,7 +94,7 @@ test('3) duplicado por clave de acceso (serie distinta): 409', async () => {
 
 // ── Autorizar un POR_AUTORIZAR cuyo comprobante ya está REGISTRADO → 409 ───────
 test('4) no se puede autorizar un POR_AUTORIZAR duplicado de uno ya registrado', async () => {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic({ date: H.docDate() });
   const sup = await H.makeSupplier(clinicId);
   const gasto = await ChartOfAccount.findOne({ clinic: clinicId, code: '6.1.99' });
   const CLAVE = '0605202601099999999900110010010000004001234567814'; // 49 chars (clave realista)
@@ -103,7 +103,7 @@ test('4) no se puede autorizar un POR_AUTORIZAR duplicado de uno ya registrado',
   // Un POR_AUTORIZAR con la MISMA clave de acceso pero serie distinta (p.ej. importado aparte).
   const pending = await PurchaseInvoice.create({
     clinic: clinicId, supplier: sup._id, serie: '001-001-000000401', claveAcceso: CLAVE,
-    fechaEmision: new Date('2026-06-05'), status: 'POR_AUTORIZAR',
+    fechaEmision: H.docDate(), status: 'POR_AUTORIZAR',
     items: [{ description: 'g', subtotal: 100, quantity: 1, unitPrice: 100, ivaRate: 0, account: gasto._id, lineType: 'GASTO' }], subtotal: 100, total: 100, balance: 100,
   });
   const r = await H.runController(purchase.authorize, H.mockReq(clinicId, userId, {}, { params: { id: String(pending._id) } }));
@@ -113,7 +113,7 @@ test('4) no se puede autorizar un POR_AUTORIZAR duplicado de uno ya registrado',
 
 // ── ANULADA permite registrar de nuevo (misma clave, serie distinta) ──────────
 test('5) tras anular, se permite registrar un nuevo comprobante (misma clave)', async () => {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic({ date: H.docDate() });
   const sup = await H.makeSupplier(clinicId);
   const first = await createRegistrada(clinicId, userId, sup, { serie: '001-001-000000500', claveAcceso: 'CLV500' });
   assert.equal(first.statusCode, 201);

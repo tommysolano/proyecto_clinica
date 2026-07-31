@@ -106,9 +106,14 @@ exports.emitFromPurchase = async (req, res) => {
       return res.status(400).json({ message: `La serie ${estab}-${ptoEmi} no está configurada. Agréguela en Facturación electrónica → Establecimientos y puntos de emisión.` });
     }
 
-    // TAREA 3 — periodo fiscal: por defecto el de la FACTURA SUSTENTO; editable y validado.
+    // Periodo fiscal: manda lo que envíe la emisión; si no viene, el que se eligió en el
+    // formulario de la COMPRA (pestaña «Retención», como en Contífico) y, en último término,
+    // el mes de la factura sustento. Editable y validado en los tres casos.
     const fechaEmision = new Date();
-    const periodo = resolveRetentionPeriodo(req.body, inv.fechaEmision, fechaEmision);
+    const periodoBody = (req.body?.periodMonth || req.body?.periodYear || req.body?.periodoFiscal)
+      ? req.body
+      : { periodMonth: inv.retentionPeriodMonth || undefined, periodYear: inv.retentionPeriodYear || undefined };
+    const periodo = resolveRetentionPeriodo(periodoBody, inv.fechaEmision, fechaEmision);
     if (periodo.error) return res.status(400).json({ message: periodo.error });
 
     const secuencial = await config.constructor.reserveRetentionSeries(req.clinicId, estab, ptoEmi);

@@ -47,7 +47,7 @@ const idOf = (v) => String(v && typeof v === 'object' ? (v._id ?? v) : (v ?? '')
  * `otra` es un centro válido pero distinto: es el que dispara la confirmación.
  */
 async function setup() {
-  const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
+  const { clinicId, userId } = await H.seedClinic({ date: H.docDate() });
   const ccQuiro = await CostCenter.create({ clinic: clinicId, code: 'CC-QX', name: 'Quirófano' });
   const ccEstetica = await CostCenter.create({ clinic: clinicId, code: 'CC-ES', name: 'Estética' });
   const ccInactivo = await CostCenter.create({ clinic: clinicId, code: 'CC-OFF', name: 'Cerrado', active: false });
@@ -64,12 +64,12 @@ const invLine = (productId, warehouseId, { qty = 10, unit = 5, costCenter = null
 });
 
 const crearCompra = (clinicId, userId, sup, items, extra = {}) => run(purchase.create, H.mockReq(clinicId, userId, {
-  supplier: sup._id, fechaEmision: new Date('2026-06-05'), serie: `001-001-${Math.floor(Math.random() * 1e9)}`,
+  supplier: sup._id, fechaEmision: H.docDate(), serie: `001-001-${Math.floor(Math.random() * 1e9)}`,
   items, ...extra,
 }));
 
 const crearVenta = (clinicId, userId, body) => run(sales.createSale, H.mockReq(clinicId, userId, {
-  date: new Date('2026-06-10'), paymentMethod: 'efectivo', ...body,
+  date: H.docDate(), paymentMethod: 'efectivo', ...body,
 }));
 
 /** Asiento de un documento (el único CONTABILIZADO que lo referencia). */
@@ -532,7 +532,7 @@ test('23) un COBRO posterior no reclasifica el centro de costo de la venta', asy
   });
   ok(await run(payments.create, H.mockReq(clinicId, userId, {
     type: 'COBRO', method: 'TRANSFERENCIA', partyModel: 'Patient', partyName: 'Cliente',
-    date: new Date('2026-06-15'), bankAccount: String(bank._id),
+    date: H.docDate(), bankAccount: String(bank._id),
     applications: [{ docModel: 'Sale', docRef: String(venta._id), amount: venta.balance }],
   })));
 
