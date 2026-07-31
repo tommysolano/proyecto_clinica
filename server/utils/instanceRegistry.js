@@ -83,12 +83,23 @@ function jobsEnabled() {
 // entre dos servidores y la conexión QR se estabiliza.
 const AM_PRIMARY = process.env.IS_PRIMARY === '1';
 
+// Hasta cuándo es NUESTRO el arriendo según la última renovación que SÍ escribió.
+// Se usa para no soltar el liderazgo por un error pasajero de la base.
+let leaseValidUntil = 0;
+
 /**
  * Intenta tomar (o renovar) el arriendo de los jobs. Atómico: el filtro acepta el
  * arriendo si YA es nuestro, si venció, o —si somos PRIMARIO— si lo tiene un
  * proceso NO primario (preempción). Si otro lo tiene vigente y no podemos
  * arrebatarlo, el upsert choca con el `_id` existente y Mongo devuelve E11000 —
  * que aquí significa exactamente "no soy el líder".
+ *
+ * OJO con los errores que NO son E11000 (timeout de Atlas, corte de red, pool
+ * saturado): antes se devolvía `false` y el proceso creía haber PERDIDO el
+ * liderazgo, lo que APAGABA las sesiones de WhatsApp QR (y el número quedaba
+ * caído hasta que alguien lo reconectaba a mano) por un simple hipo de la base.
+ * El arriendo sigue siendo nuestro hasta `expiresAt`, así que ante un error de
+ * base se CONSERVA el liderazgo hasta que venza de verdad.
  */
 async function acquireJobsLease() {
   const now = new Date();
@@ -101,11 +112,23 @@ async function acquireJobsLease() {
       { $set: { holder: INSTANCE_ID, host: HOST, pid: PID, primary: AM_PRIMARY, expiresAt, renewedAt: now } },
       { upsert: true, new: true }
     );
+    leaseValidUntil = expiresAt.getTime();
     return true;
   } catch (err) {
     // 11000 = otro proceso tiene el arriendo vigente (y no lo podemos arrebatar).
-    if (err?.code !== 11000) console.error('[instancias] error tomando el arriendo de jobs:', err.message);
-    return false;
+    if (err?.code === 11000) {
+      leaseValidUntil = 0;
+      return false;
+    }
+    const keep = leader && Date.now() < leaseValidUntil;
+    console.error(
+      '[instancias] no se pudo renovar el arriendo (%s). %s',
+      err.message,
+      keep
+        ? `Se CONSERVA el liderazgo hasta que venza (${Math.round((leaseValidUntil - Date.now()) / 1000)}s).`
+        : 'Sin arriendo vigente: este proceso no ejecutará jobs.'
+    );
+    return keep;
   }
 }
 

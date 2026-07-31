@@ -26,6 +26,20 @@
  * Por eso hay un chequeo de salud periódico (getState) y una reconciliación
  * al listar los números, que detectan la sesión muerta y corrigen el estado.
  *
+ * LA SESIÓN NO PUEDE QUEDARSE CAÍDA (jul-2026). El número QR es el canal por el
+ * que escriben los pacientes: que se caiga y espere a que alguien lo note es
+ * inaceptable. Tres reglas, que son la razón de casi todo el código de arriba:
+ *   1. NO se mata una sesión por un vistazo malo. `getState()` devuelve `null`
+ *      mientras WhatsApp Web se recarga a sí misma y pasa por OPENING/TIMEOUT en
+ *      cada bache de red; antes cualquiera de esas dos cosas la destruía. Solo se
+ *      cierra con veredicto de muerte (ver DEAD_STATES) o tras MAX_MISSES
+ *      vistazos seguidos sin respuesta.
+ *   2. Toda caída que no exija un QR nuevo se RECONECTA SOLA (10s → 5min, sin
+ *      rendirse), y un supervisor comprueba cada 45 s que todo número vinculado
+ *      tenga sesión viva — incluso si se perdió por un camino imprevisto.
+ *   3. Lo que sí necesita a una persona (desvinculado desde el teléfono) se avisa
+ *      por la campana del header y queda escrito en la cuenta (lastDisconnect*).
+ *
  * IMPORTANTE (hosting): whatsapp-web.js levanta un Chromium headless por número
  * (~300–500 MB) y requiere un proceso SIEMPRE activo. En Render gratis (RAM baja,
  * se duerme, FS efímero) será inestable; es plenamente usable en un VPS. Las libs
@@ -51,51 +65,300 @@ const syncRetries = new Map();
 // Sin progreso de sincronización durante este tiempo → se reinicia el cliente.
 const SYNC_STUCK_MS = 3 * 60 * 1000;
 
-// Cierra y limpia un cliente, persiste el estado final y lo emite a la UI.
-async function teardown(key, entry, { status = 'disconnected', error = '' } = {}) {
+/**
+ * ¿Qué dice `getState()` de la sesión?  (ver probeState)
+ *
+ * VIVOS: son EXACTAMENTE los estados que la propia whatsapp-web.js considera
+ * aceptables (Client.js → ACCEPTED_STATES). WhatsApp pasa por OPENING/TIMEOUT en
+ * cada bache de red y vuelve solo a CONNECTED; matar la sesión al primer vistazo
+ * que no diga CONNECTED era lo que tumbaba el número varias veces al día.
+ */
+const LIVE_STATES = new Set(['CONNECTED', 'OPENING', 'PAIRING', 'TIMEOUT']);
+// MUERTOS de verdad: WhatsApp cerró la sesión (la librería también emitiría
+// 'disconnected' con cualquiera de estos).
+const DEAD_STATES = new Set([
+  'UNPAIRED', 'UNPAIRED_IDLE', 'CONFLICT', 'DEPRECATED_VERSION',
+  'PROXYBLOCK', 'TOS_BLOCK', 'SMB_TOS_BLOCK',
+]);
+// Estados que EXIGEN escanear un QR nuevo: reconectar solo no sirve de nada.
+const NEEDS_QR_STATES = new Set(['UNPAIRED', 'UNPAIRED_IDLE']);
+
+// Vistazos SIN VEREDICTO seguidos que se toleran antes de dar la sesión por
+// muerta. `getState()` devuelve `null` mientras WhatsApp Web se recarga a sí
+// mismo (el Store todavía no está inyectado): esa ventana dura decenas de
+// segundos y el chequeo cae dentro cada dos por tres. Con 4 vistazos son ~3
+// minutos de silencio antes de tocar nada.
+const MAX_MISSES = 4;
+
+// ── Reconexión automática ───────────────────────────────────────────────────
+// Una sesión QR NO puede quedarse caída esperando a que un humano pulse
+// "Conectar": es el canal por el que escriben los pacientes. Toda caída que no
+// exija un QR nuevo (bache de red, WhatsApp Web recargándose, Chrome muerto por
+// falta de memoria, reinicio del server) se reintenta sola con espera creciente.
+const RECONNECT_DELAYS = [10000, 30000, 60000, 120000, 300000];
+const reconnectTimers = new Map(); // key → Timeout del próximo intento
+const reconnectTries = new Map(); // key → intentos consecutivos fallidos
+
+/** ¿Este proceso es el que debe levantar sesiones QR? (líder del clúster) */
+function amLeader() {
+  try {
+    return require('./instanceRegistry').isLeader();
+  } catch {
+    return false;
+  }
+}
+
+/** Cancela un reintento pendiente (conexión manual, desconexión a propósito). */
+function cancelReconnect(key) {
+  const t = reconnectTimers.get(key);
+  if (t) clearTimeout(t);
+  reconnectTimers.delete(key);
+  reconnectTries.delete(key);
+}
+
+/**
+ * Programa un intento de reconexión con espera creciente (10s → 5min) y lo
+ * repite indefinidamente hasta que la sesión vuelva. Solo el líder reconecta:
+ * dos procesos levantando la misma sesión se pelean y WhatsApp expulsa a los dos.
+ */
+function scheduleReconnect(key, reason = '') {
+  if (reconnectTimers.has(key) || clients.has(key)) return;
+  const tries = reconnectTries.get(key) || 0;
+  const delay = RECONNECT_DELAYS[Math.min(tries, RECONNECT_DELAYS.length - 1)];
+  reconnectTries.set(key, tries + 1);
+  console.warn(
+    '[whatsappQr] %s caído (%s): reintento automático nº%d en %ds',
+    key, reason || 'sin motivo', tries + 1, Math.round(delay / 1000)
+  );
+  // Tras agotar la escalera de esperas (~8 min) el número sigue sin volver: ya no
+  // es un bache, hace falta que alguien mire. Se avisa por la campana.
+  if (tries + 1 === RECONNECT_DELAYS.length) notifyQrDown(key, { needsQr: false, reason });
+  const timer = setTimeout(async () => {
+    reconnectTimers.delete(key);
+    try {
+      if (!amLeader() || clients.has(key)) return;
+      const acc = await WhatsappAccount.findById(key).catch(() => null);
+      // Cuenta borrada/apagada, o que nunca llegó a vincularse: nada que reconectar.
+      if (!acc || acc.connectionType !== 'qr' || !acc.enabled || !acc.connectedPhone) {
+        cancelReconnect(key);
+        return;
+      }
+      const r = await connect(key).catch((e) => ({ ok: false, error: e.message }));
+      // Si el arranque falló, el propio connect deja la cuenta en auth_failure;
+      // se vuelve a programar para no rendirse nunca.
+      if (!r || r.ok === false) scheduleReconnect(key, r?.error || 'el arranque falló');
+    } catch (e) {
+      scheduleReconnect(key, e.message);
+    }
+  }, delay);
+  timer.unref?.();
+  reconnectTimers.set(key, timer);
+}
+
+/**
+ * Avisa por la campana del header cuando un número QR se cae. Solo cuando hace
+ * falta una persona: o exige escanear el QR, o los reintentos automáticos ya
+ * llevan un rato sin conseguirlo. Se agrupa por hora para no llenar la bandeja.
+ */
+async function notifyQrDown(key, { needsQr = false, reason = '' } = {}) {
+  try {
+    const acc = await WhatsappAccount.findById(key).lean().catch(() => null);
+    if (!acc) return;
+    const clinicId = await require('./callCenterClinic').resolveCallCenterClinicId();
+    if (!clinicId) return;
+    const Notification = require('../models/Notification');
+    const since = new Date(Date.now() - 60 * 60 * 1000);
+    const already = await Notification.findOne({
+      clinic: clinicId,
+      type: 'whatsapp_qr_disconnected',
+      'meta.accountId': String(key),
+      createdAt: { $gte: since },
+    }).lean();
+    if (already) return;
+    const name = acc.label || acc.connectedPhone || 'Número QR';
+    await Notification.create({
+      clinic: clinicId,
+      type: 'whatsapp_qr_disconnected',
+      severity: 'error',
+      title: `WhatsApp "${name}" desconectado`,
+      body: needsQr
+        ? 'La sesión se cerró desde el teléfono: hay que entrar a Config. Call Center y escanear el QR otra vez.'
+        : `No se ha podido reconectar solo (${reason || 'motivo desconocido'}). Se sigue reintentando; si no vuelve, entra a Config. Call Center.`,
+      meta: { accountId: String(key), needsQr, reason },
+    });
+  } catch {
+    /* la alerta nunca puede romper la reconexión */
+  }
+}
+
+/**
+ * Cierra y limpia un cliente, persiste el estado final y lo emite a la UI.
+ * `reason` queda en el log y en la cuenta (para poder ver POR QUÉ se cayó), y
+ * salvo que la caída exija un QR nuevo se programa la reconexión automática.
+ */
+async function teardown(key, entry, {
+  status = 'disconnected', error = '', reason = '', needsQr = false, retry = true,
+} = {}) {
   if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
   if (entry.syncWatchdog) { clearTimeout(entry.syncWatchdog); entry.syncWatchdog = null; }
   // Si ya hay OTRO cliente para este número (el usuario reconectó), solo se
   // destruye este: persistir/emitir aquí pisaría el estado de la conexión nueva.
   const replaced = clients.has(key) && clients.get(key) !== entry;
   if (!replaced) clients.delete(key);
+  entry.closing = true; // el cierre es nuestro: que el vigía del navegador no reaccione
   try { await entry.client.destroy(); } catch { /* noop */ }
   if (replaced) return;
-  await setAccountStatus(key, { status });
+  console.warn('[whatsappQr] %s → %s (%s)', key, status, reason || error || 'sin motivo');
+  await setAccountStatus(key, {
+    status,
+    lastDisconnectAt: new Date(),
+    lastDisconnectReason: reason || error || '',
+    lastDisconnectNeedsQr: !!needsQr,
+  });
   await emitStatus(key, { status, ...(error ? { error } : {}) });
+  if (needsQr) {
+    cancelReconnect(key);
+    notifyQrDown(key, { needsQr: true, reason });
+    return;
+  }
+  if (retry) scheduleReconnect(key, reason || error || 'caída');
 }
 
 /**
- * Verifica que una sesión 'connected' siga viva de verdad (getState).
- * - 'CONNECTED' → sigue viva.
- * - timeout → sin veredicto: NO se mata (Chrome puede estar ocupado).
- * - cualquier otro estado o error → sesión muerta (p.ej. desvinculada desde el
- *   teléfono sin que llegara el evento): se cierra y se marca 'disconnected'.
+ * Pregunta a la sesión cómo está, con veredicto explícito:
+ *   'connected' → viva y conectada.
+ *   'transient' → viva pero reconectando sola (OPENING/PAIRING/TIMEOUT).
+ *   'busy'      → no contestó a tiempo (Chrome ocupado): sin veredicto.
+ *   'unknown'   → contestó `null` o reventó: típico MIENTRAS WhatsApp Web se
+ *                 recarga y aún no se ha re-inyectado el Store. NO es muerte.
+ *   'dead'      → WhatsApp cerró la sesión (ver DEAD_STATES).
+ *   'gone'      → el navegador ya no existe (lo mató el sistema por memoria…).
  */
-async function verifyConnected(key, entry, timeoutMs = 8000) {
+async function probeState(entry, timeoutMs = 8000) {
+  const client = entry.client;
+  const browser = client?.pupBrowser;
+  const browserDead = browser
+    ? (typeof browser.connected === 'boolean' ? !browser.connected : browser.isConnected?.() === false)
+    : false;
+  if (browserDead || client?.pupPage?.isClosed?.() === true) {
+    return { verdict: 'gone', state: '', detail: 'el navegador de la sesión ya no está vivo' };
+  }
   let state = null;
   try {
-    state = await withTimeout(entry.client.getState(), timeoutMs, '__timeout__');
+    state = await withTimeout(client.getState(), timeoutMs, '__timeout__');
   } catch (e) {
-    if (String(e.message) === '__timeout__') return 'connected';
-    state = null;
+    if (String(e.message) === '__timeout__') return { verdict: 'busy', state: '' };
+    return { verdict: 'unknown', state: '', detail: String(e.message || e).slice(0, 120) };
   }
-  if (state === 'CONNECTED') return 'connected';
+  if (state === 'CONNECTED') return { verdict: 'connected', state };
+  if (LIVE_STATES.has(state)) return { verdict: 'transient', state };
+  if (DEAD_STATES.has(state)) return { verdict: 'dead', state };
+  return { verdict: 'unknown', state: state || 'null' };
+}
+
+/**
+ * Verifica que una sesión 'connected' siga viva de verdad, con TOLERANCIA.
+ *
+ * Antes bastaba UN `getState()` que no dijera 'CONNECTED' para destruir la
+ * sesión — y `getState()` devuelve `null` durante toda la recarga que WhatsApp
+ * Web se hace a sí misma (por eso existe el parche de re-inyección), además de
+ * pasar por OPENING/TIMEOUT en cada bache de red. Resultado: el número se
+ * desconectaba varias veces al día y, como nada lo volvía a levantar, había que
+ * pulsar "Conectar" a mano. Ahora solo se cierra con veredicto de muerte o tras
+ * MAX_MISSES vistazos seguidos sin respuesta, y siempre se reintenta solo.
+ */
+async function verifyConnected(key, entry, timeoutMs = 8000) {
+  const probe = await probeState(entry, timeoutMs);
   if (clients.get(key) !== entry) return clients.get(key)?.status || 'disconnected';
+
+  if (probe.verdict === 'connected') { entry.misses = 0; return 'connected'; }
+  // Viva (reconectando sola) o Chrome ocupado: no se toca.
+  if (probe.verdict === 'transient' || probe.verdict === 'busy') {
+    entry.misses = 0;
+    if (probe.state) console.log('[whatsappQr] %s en estado %s: sigue viva, no se toca.', key, probe.state);
+    return entry.status;
+  }
+  if (probe.verdict === 'unknown') {
+    entry.misses = (entry.misses || 0) + 1;
+    if (entry.misses < MAX_MISSES) {
+      console.log(
+        '[whatsappQr] %s sin veredicto (%s) %d/%d: se espera (WhatsApp Web puede estar recargándose).',
+        key, probe.detail || probe.state || 'null', entry.misses, MAX_MISSES
+      );
+      return entry.status;
+    }
+  }
+  const needsQr = NEEDS_QR_STATES.has(probe.state);
   await teardown(key, entry, {
-    error: 'La sesión se cerró (desvinculada desde el teléfono o expirada).',
+    reason: probe.verdict === 'gone'
+      ? 'el navegador de la sesión murió'
+      : `getState=${probe.state || 'sin respuesta'}${probe.detail ? ` (${probe.detail})` : ''}`,
+    needsQr,
+    error: needsQr
+      ? 'La sesión se cerró (desvinculada desde el teléfono). Hay que escanear el QR otra vez.'
+      : 'La sesión se cerró; reconectando automáticamente…',
   });
   return 'disconnected';
 }
 
-// Chequeo de salud periódico de todas las sesiones. Dos redes de seguridad:
-//  - Sesión 'connected': verifica que siga viva (getState). Cubre "desvinculé
-//    desde el celular y no llegó ningún evento".
+/**
+ * Vigía del NAVEGADOR: si el Chromium de la sesión se muere (lo típico: el
+ * kernel lo mata por falta de memoria), whatsapp-web.js no emite nada y la
+ * sesión queda muerta en silencio. Aquí se detecta al instante y se reconecta.
+ */
+function watchBrowser(key, entry) {
+  const browser = entry.client?.pupBrowser;
+  if (!browser || entry.browserWatched || typeof browser.on !== 'function') return;
+  entry.browserWatched = true;
+  browser.on('disconnected', () => {
+    if (entry.closing || clients.get(key) !== entry) return; // cierre nuestro o sesión ya reemplazada
+    clients.delete(key);
+    console.error('[whatsappQr] %s: el navegador de la sesión MURIÓ solo (¿memoria del VPS?). Reconectando…', key);
+    setAccountStatus(key, {
+      status: 'disconnected',
+      lastDisconnectAt: new Date(),
+      lastDisconnectReason: 'el navegador de la sesión se cerró solo',
+      lastDisconnectNeedsQr: false,
+    }).catch(() => {});
+    emitStatus(key, {
+      status: 'disconnected',
+      error: 'El navegador de la sesión se cerró solo. Reconectando…',
+    }).catch(() => {});
+    scheduleReconnect(key, 'el navegador se cerró solo');
+  });
+}
+
+/**
+ * SUPERVISOR: cada vuelta comprueba que TODA cuenta QR habilitada y ya vinculada
+ * tenga una sesión viva; si no la tiene, programa la reconexión. Es la red final
+ * — cubre cualquier camino por el que una sesión se pierda sin pasar por
+ * `teardown` (excepciones, reinicios a medias, sesiones cerradas por una versión
+ * anterior del código). Solo corre en el líder.
+ */
+async function superviseSessions() {
+  if (!amLeader()) return;
+  const accounts = await WhatsappAccount.find({ connectionType: 'qr', enabled: true })
+    .select('_id sessionId connectedPhone lastDisconnectNeedsQr status')
+    .lean()
+    .catch(() => []);
+  for (const acc of accounts) {
+    const key = String(acc._id);
+    if (!acc.sessionId || !acc.connectedPhone) continue; // nunca se llegó a vincular
+    if (clients.has(key) || reconnectTimers.has(key)) continue;
+    // Desvinculado desde el teléfono: reconectar no sirve, hace falta un QR nuevo.
+    if (acc.lastDisconnectNeedsQr) continue;
+    scheduleReconnect(key, 'sin sesión viva (supervisor)');
+  }
+}
+
+// Chequeo de salud periódico de todas las sesiones. Tres redes de seguridad:
+//  - Sesión 'connected': verifica que siga viva, con tolerancia (verifyConnected).
 //  - Sesión con cliente pero estado NO 'connected' (pegada en 'syncing'/
 //    'connecting' porque whatsapp-web.js re-sincronizó sin re-emitir 'ready'):
 //    si getState dice CONNECTED, se CURA a 'connected'. Sin esto, un número que
 //    en realidad funciona (recibe mensajes, el teléfono envía) rechazaba todos
 //    los envíos del sistema con "QR no conectado".
+//  - Cuentas vinculadas SIN sesión viva → se reconectan solas (superviseSessions).
 let healthTimer = null;
 function ensureHealthTimer() {
   if (healthTimer) return;
@@ -105,16 +368,12 @@ function ensureHealthTimer() {
         // eslint-disable-next-line no-await-in-loop
         await verifyConnected(key, entry, 10000).catch(() => {});
       } else if (entry.client && ['syncing', 'connecting'].includes(entry.status)) {
-        let live = null;
-        try {
-          // eslint-disable-next-line no-await-in-loop
-          live = await withTimeout(entry.client.getState(), 8000, '__timeout__');
-        } catch {
-          live = null;
-        }
-        if (live === 'CONNECTED') healToConnected(key, entry);
+        // eslint-disable-next-line no-await-in-loop
+        const probe = await probeState(entry, 8000).catch(() => ({ verdict: 'unknown' }));
+        if (probe.verdict === 'connected') healToConnected(key, entry);
       }
     }
+    await superviseSessions().catch(() => {});
   }, 45000);
   healthTimer.unref?.();
 }
@@ -796,12 +1055,34 @@ async function resolveQrPhone(client, jid, msg = null) {
   return raw;
 }
 
+// Números cuyo arranque está EN CURSO (ver connect).
+const starting = new Set();
+
 /**
  * Inicia (o reutiliza) el cliente de un número QR. `userId` se usa para mandarle
  * el QR directamente a quien pulsó "Conectar".
  */
 async function connect(accountId, { userId } = {}) {
   const key = String(accountId);
+  // Dos arranques a la vez para el MISMO número (el botón "Conectar" mientras
+  // entra un reintento automático) levantarían dos Chromium sobre la misma
+  // carpeta de sesión: Chrome no admite dos procesos en el mismo perfil y la
+  // sesión guardada acaba corrupta. El segundo intento se descarta.
+  if (starting.has(key)) return { ok: true, status: 'connecting' };
+  starting.add(key);
+  try {
+    return await startClient(key, accountId, userId);
+  } finally {
+    starting.delete(key);
+  }
+}
+
+async function startClient(key, accountId, userId) {
+  // Un reintento pendiente ya no hace falta: o lo estamos ejecutando nosotros, o
+  // alguien pulsó "Conectar". Los intentos acumulados se conservan (los borra el
+  // 'ready', que es la única prueba de que la sesión volvió).
+  const pending = reconnectTimers.get(key);
+  if (pending) { clearTimeout(pending); reconnectTimers.delete(key); }
   const existing = clients.get(key);
   if (existing && existing.client) {
     if (existing.status === 'connected') {
@@ -864,7 +1145,25 @@ async function connect(accountId, { userId } = {}) {
       puppeteer: {
         headless: true,
         executablePath: resolveChromePath() || undefined,
-        args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+        // Banderas de ESTABILIDAD en un VPS pequeño. Las tres primeras son las de
+        // siempre (sandbox y /dev/shm); el resto le quitan a Chrome trabajo y
+        // memoria que aquí no sirven para nada, y —importante— le prohíben
+        // "dormir" la pestaña por estar en segundo plano: una pestaña dormida
+        // deja de renovar el socket de WhatsApp y la sesión se cae sola.
+        args: [
+          '--no-sandbox',
+          '--disable-setuid-sandbox',
+          '--disable-dev-shm-usage',
+          '--disable-gpu',
+          '--disable-extensions',
+          '--disable-background-timer-throttling',
+          '--disable-backgrounding-occluded-windows',
+          '--disable-renderer-backgrounding',
+          '--disable-features=site-per-process,TranslateUI',
+          '--no-first-run',
+          '--no-default-browser-check',
+          '--mute-audio',
+        ],
       },
     });
   } catch (e) {
@@ -886,6 +1185,7 @@ async function connect(accountId, { userId } = {}) {
     const cur = clients.get(key);
     if (!cur || cur.client !== client || cur.gotQr || cur.status !== 'connecting') return;
     clients.delete(key);
+    entry.closing = true;
     try { await client.destroy(); } catch { /* noop */ }
     const fresh = await WhatsappAccount.findById(accountId).catch(() => null);
     if (fresh && !fresh.connectedPhone) await wipeLocalSession(sessionId);
@@ -894,6 +1194,9 @@ async function connect(accountId, { userId } = {}) {
       status: 'auth_failure',
       error: 'No se pudo generar el QR en 90 segundos. Vuelve a pulsar "Conectar".',
     }, userId);
+    // Un número YA vinculado que no arranca casi siempre es Chrome atascado, no
+    // una sesión inválida: se sigue reintentando solo (con espera creciente).
+    if (fresh && fresh.connectedPhone) scheduleReconnect(key, 'el arranque no llegó a conectar en 90s');
   }, 90000);
 
   client.on('qr', async (qr) => {
@@ -911,6 +1214,16 @@ async function connect(accountId, { userId } = {}) {
     const payload = { status: 'qr_pending', qr: dataUrl };
     emitToCallCenter('whatsapp:qr', { accountId: key, ...payload });
     if (userId) emitToUser(userId, 'whatsapp:qr', { accountId: key, ...payload });
+    // Un número YA vinculado que vuelve a pedir QR = la sesión guardada dejó de
+    // servir: nadie lo va a reconectar solo, así que hay que avisar (antes esto
+    // era mudo y el número se quedaba pidiendo un QR que nadie miraba).
+    if (!userId) {
+      const acc = await WhatsappAccount.findById(accountId).lean().catch(() => null);
+      if (acc?.connectedPhone) {
+        await setAccountStatus(accountId, { lastDisconnectNeedsQr: true });
+        notifyQrDown(key, { needsQr: true, reason: 'la sesión guardada dejó de servir' });
+      }
+    }
   });
 
   // Watchdog de SINCRONIZACIÓN: tras escanear el QR (o al reconectar con la
@@ -926,6 +1239,7 @@ async function connect(accountId, { userId } = {}) {
       const cur = clients.get(key);
       if (!cur || cur.client !== client || cur.status !== 'syncing') return;
       clients.delete(key);
+      entry.closing = true;
       try { await client.destroy(); } catch { /* noop */ }
       const retries = syncRetries.get(key) || 0;
       if (retries < 1) {
@@ -936,11 +1250,17 @@ async function connect(accountId, { userId } = {}) {
         return;
       }
       syncRetries.delete(key);
-      await setAccountStatus(accountId, { status: 'disconnected' });
+      await setAccountStatus(accountId, {
+        status: 'disconnected',
+        lastDisconnectAt: new Date(),
+        lastDisconnectReason: 'la sincronización no terminó',
+      });
       await emitStatus(key, {
         status: 'disconnected',
-        error: 'La sincronización no terminó (WhatsApp no confirmó la sesión). Pulsa "Conectar" para reintentar.',
+        error: 'La sincronización no terminó (WhatsApp no confirmó la sesión). Reconectando automáticamente…',
       }, userId);
+      // Ya no se abandona: se sigue intentando solo con espera creciente.
+      scheduleReconnect(key, 'la sincronización no terminó');
     }, SYNC_STUCK_MS);
     entry.syncWatchdog.unref?.();
   };
@@ -949,14 +1269,20 @@ async function connect(accountId, { userId } = {}) {
     entry.status = 'connected';
     entry.lastQr = '';
     entry.percent = null;
+    entry.misses = 0;
     if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
     if (entry.syncWatchdog) { clearTimeout(entry.syncWatchdog); entry.syncWatchdog = null; }
     syncRetries.delete(key);
+    // La sesión volvió: se borra la cuenta de reintentos (y el motivo de la
+    // última caída) para que la próxima empiece otra vez por los 10 segundos.
+    cancelReconnect(key);
+    watchBrowser(key, entry);
     const connectedPhone = (client.info?.wid?.user || '').toString();
     await setAccountStatus(accountId, {
       status: 'connected',
       connectedPhone,
       lastConnectedAt: new Date(),
+      lastDisconnectNeedsQr: false,
     });
     await emitStatus(key, { status: 'connected', connectedPhone }, userId);
   });
@@ -980,27 +1306,47 @@ async function connect(accountId, { userId } = {}) {
     await emitStatus(key, { status: 'syncing', percent: entry.percent }, userId);
   });
 
-  client.on('auth_failure', async () => {
+  // Credenciales guardadas rechazadas: no hay reconexión posible sin un QR nuevo.
+  client.on('auth_failure', async (message) => {
     entry.status = 'auth_failure';
     if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
     if (entry.syncWatchdog) { clearTimeout(entry.syncWatchdog); entry.syncWatchdog = null; }
-    await setAccountStatus(accountId, { status: 'auth_failure' });
+    cancelReconnect(key);
+    console.error('[whatsappQr] %s: WhatsApp rechazó la sesión guardada (%s). Hace falta escanear el QR.', key, message || 'sin detalle');
+    await setAccountStatus(accountId, {
+      status: 'auth_failure',
+      lastDisconnectAt: new Date(),
+      lastDisconnectReason: `auth_failure: ${message || 'sesión rechazada'}`,
+      lastDisconnectNeedsQr: true,
+    });
     await emitStatus(key, { status: 'auth_failure' }, userId);
+    notifyQrDown(key, { needsQr: true, reason: 'WhatsApp rechazó la sesión guardada' });
   });
 
+  // La librería emite 'disconnected' con el ESTADO que provocó la caída (o
+  // 'LOGOUT'). Solo un logout/desvinculación exige un QR nuevo; lo demás
+  // (CONFLICT, versión vieja, un tropiezo de la página) se reconecta solo.
   client.on('disconnected', async (reason) => {
+    const r = String(reason || '').toUpperCase();
+    const needsQr = r === 'LOGOUT' || NEEDS_QR_STATES.has(r);
     await teardown(key, entry, {
-      error: String(reason || '').toUpperCase() === 'LOGOUT'
-        ? 'La sesión se cerró desde el teléfono (dispositivo desvinculado).'
-        : '',
+      reason: `evento disconnected: ${r || 'sin motivo'}`,
+      needsQr,
+      error: needsQr
+        ? 'La sesión se cerró desde el teléfono (dispositivo desvinculado). Escanea el QR otra vez.'
+        : 'La sesión se cortó; reconectando automáticamente…',
     });
   });
 
   // Desvinculación detectada por cambio de estado (a veces 'disconnected' no llega).
   client.on('change_state', async (state) => {
-    if (state === 'UNPAIRED' || state === 'UNPAIRED_IDLE') {
+    if (NEEDS_QR_STATES.has(state)) {
       if (clients.get(key) !== entry) return;
-      await teardown(key, entry, { error: 'El teléfono desvinculó este dispositivo.' });
+      await teardown(key, entry, {
+        reason: `change_state: ${state}`,
+        needsQr: true,
+        error: 'El teléfono desvinculó este dispositivo. Escanea el QR otra vez.',
+      });
     }
   });
 
@@ -1153,37 +1499,62 @@ async function connect(accountId, { userId } = {}) {
     } catch { /* noop */ }
   });
 
-  client.initialize().catch(async (e) => {
-    const noChrome = /Could not find Chrome|Failed to launch/i.test(e.message || '');
-    const short = noChrome
-      ? 'Chromium no disponible en este entorno: los números QR no se conectarán aquí. Usa Cloud API, o un servidor con Chrome (VPS). Puedes fijar PUPPETEER_EXECUTABLE_PATH.'
-      : (e.message || '').split('\n')[0];
-    console.error('[whatsapp-qr initialize]', short);
-    if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
-    clients.delete(key);
-    try { await client.destroy(); } catch { /* noop */ }
-    const fresh = await WhatsappAccount.findById(accountId).catch(() => null);
-    if (fresh && !fresh.connectedPhone) await wipeLocalSession(sessionId);
-    await setAccountStatus(accountId, { status: 'auth_failure' });
-    await emitStatus(key, { status: 'auth_failure', error: short }, userId);
-  });
+  client
+    .initialize()
+    // Vigilar el navegador en cuanto exista: si el Chromium muere (falta de
+    // memoria en el VPS), la sesión se reconecta sin esperar al chequeo de salud.
+    .then(() => watchBrowser(key, entry))
+    .catch(async (e) => {
+      const noChrome = /Could not find Chrome|Failed to launch/i.test(e.message || '');
+      const short = noChrome
+        ? 'Chromium no disponible en este entorno: los números QR no se conectarán aquí. Usa Cloud API, o un servidor con Chrome (VPS). Puedes fijar PUPPETEER_EXECUTABLE_PATH.'
+        : (e.message || '').split('\n')[0];
+      console.error('[whatsapp-qr initialize]', short);
+      if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
+      clients.delete(key);
+      entry.closing = true;
+      try { await client.destroy(); } catch { /* noop */ }
+      const fresh = await WhatsappAccount.findById(accountId).catch(() => null);
+      if (fresh && !fresh.connectedPhone) await wipeLocalSession(sessionId);
+      await setAccountStatus(accountId, {
+        status: 'auth_failure',
+        lastDisconnectAt: new Date(),
+        lastDisconnectReason: short,
+      });
+      await emitStatus(key, { status: 'auth_failure', error: short }, userId);
+      // Arrancar Chrome puede fallar por algo pasajero (el VPS sin memoria en ese
+      // instante). Si el número ya estaba vinculado, se reintenta solo.
+      if (fresh && fresh.connectedPhone) scheduleReconnect(key, short);
+    });
 
   return { ok: true, status: 'connecting' };
 }
 
-/** Cierra la sesión de un número (logout) y limpia su estado. */
+/**
+ * Cierra la sesión de un número (logout) y limpia su estado. Es la desconexión
+ * DELIBERADA (botón "Desconectar" / borrar el número): se cancela la reconexión
+ * automática y se marca que hará falta un QR nuevo — el logout borra la sesión
+ * guardada, así que el supervisor no debe intentar levantarla otra vez.
+ */
 async function disconnect(accountId) {
   const key = String(accountId);
+  cancelReconnect(key);
   const entry = clients.get(key);
   if (entry && entry.client) {
     if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
     if (entry.syncWatchdog) { clearTimeout(entry.syncWatchdog); entry.syncWatchdog = null; }
+    entry.closing = true;
     try { await entry.client.logout(); } catch { /* noop */ }
     try { await entry.client.destroy(); } catch { /* noop */ }
   }
   clients.delete(key);
   syncRetries.delete(key);
-  await setAccountStatus(accountId, { status: 'disconnected' });
+  await setAccountStatus(accountId, {
+    status: 'disconnected',
+    lastDisconnectAt: new Date(),
+    lastDisconnectReason: 'desconectado a mano desde la app',
+    lastDisconnectNeedsQr: true,
+  });
   await emitStatus(key, { status: 'disconnected' });
   return { ok: true };
 }
@@ -1253,6 +1624,9 @@ function healToConnected(key, entry) {
   if (!entry || entry.status === 'connected') return;
   entry.status = 'connected';
   entry.percent = null;
+  entry.misses = 0;
+  cancelReconnect(key); // la sesión está viva: no hay nada que reintentar
+  watchBrowser(key, entry);
   if (entry.syncWatchdog) { clearTimeout(entry.syncWatchdog); entry.syncWatchdog = null; }
   if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
   const connectedPhone = (entry.client?.info?.wid?.user || '').toString();
@@ -1280,15 +1654,11 @@ async function acquireSendableEntry(key) {
   let entry = clients.get(key);
   if (entry && entry.status === 'connected') return entry;
   if (entry && entry.client) {
-    let live = null;
-    try {
-      live = await withTimeout(entry.client.getState(), 6000, '__timeout__');
-    } catch (e) {
-      // timeout = Chrome ocupado (no muerto): asumimos viva y dejamos que el envío,
-      // con su propio timeout, decida. Otro error = sesión no consultable → null.
-      live = String(e.message) === '__timeout__' ? 'CONNECTED' : null;
-    }
-    if (live === 'CONNECTED') {
+    // timeout = Chrome ocupado (no muerto): se asume viva y el envío, con su
+    // propio timeout, decide. 'transient' (OPENING/TIMEOUT) = está volviendo
+    // sola: se espera abajo en vez de fallar con "el número no está conectado".
+    const probe = await probeState(entry, 6000).catch(() => ({ verdict: 'unknown' }));
+    if (probe.verdict === 'connected' || probe.verdict === 'busy') {
       healToConnected(key, entry);
       return entry;
     }
@@ -1782,18 +2152,18 @@ async function reconcileAccount(doc) {
       doc.status = 'disconnected';
       await WhatsappAccount.updateOne({ _id: doc._id }, { status: 'disconnected' }).catch(() => {});
     }
+    // Número vinculado y habilitado pero sin sesión viva: se pone en marcha la
+    // reconexión automática (abrir la pantalla nunca puede dejarlo caído).
+    if (doc.enabled && doc.connectedPhone && !doc.lastDisconnectNeedsQr) {
+      scheduleReconnect(key, 'sin sesión viva (al listar los números)');
+    }
     return doc;
   }
   if (entry.status === 'connected') {
     doc.status = await verifyConnected(key, entry, 2500).catch(() => entry.status);
   } else if (entry.client && ['syncing', 'connecting'].includes(entry.status)) {
-    let live = null;
-    try {
-      live = await withTimeout(entry.client.getState(), 2500, '__timeout__');
-    } catch {
-      live = null;
-    }
-    if (live === 'CONNECTED') healToConnected(key, entry);
+    const probe = await probeState(entry, 2500).catch(() => ({ verdict: 'unknown' }));
+    if (probe.verdict === 'connected') healToConnected(key, entry);
     doc.status = entry.status;
   } else {
     doc.status = entry.status;
@@ -1804,12 +2174,21 @@ async function reconcileAccount(doc) {
 /** Reconecta al arrancar el server los números QR habilitados con sesión guardada. */
 async function initEnabledOnBoot() {
   try {
+    ensureHealthTimer(); // el supervisor debe correr aunque hoy no haya sesiones
     const accounts = await WhatsappAccount.find({ connectionType: 'qr', enabled: true });
     for (const acc of accounts) {
       // Solo cuentas que COMPLETARON una vinculación (connectedPhone se guarda en
       // 'ready'). Tener solo sessionId significa que hubo un intento fallido: si
       // se conecta al boot, queda un cliente zombi mostrando QRs que nadie ve.
       if (!acc.sessionId || !acc.connectedPhone) continue;
+      // Desvinculado desde el teléfono: sin QR nuevo no hay nada que reconectar
+      // (arrancarlo solo dejaría un cliente pidiendo un QR que nadie mira).
+      if (acc.lastDisconnectNeedsQr) {
+        console.warn('[whatsapp-qr boot] "%s" quedó desvinculado: hay que escanear el QR.', acc.label || acc._id);
+        // eslint-disable-next-line no-await-in-loop
+        await notifyQrDown(String(acc._id), { needsQr: true, reason: 'el número sigue desvinculado tras reiniciar' });
+        continue;
+      }
       // eslint-disable-next-line no-await-in-loop
       await connect(acc._id).catch(() => {});
     }
@@ -1829,10 +2208,16 @@ async function initEnabledOnBoot() {
 async function shutdownAll() {
   const entries = [...clients.values()];
   clients.clear();
+  // Cierre nuestro: ni los vigías del navegador ni los reintentos deben saltar.
+  for (const key of Array.from(reconnectTimers.keys())) {
+    clearTimeout(reconnectTimers.get(key));
+    reconnectTimers.delete(key);
+  }
   await Promise.allSettled(
     entries.map((e) => {
       if (e.watchdog) clearTimeout(e.watchdog);
       if (e.syncWatchdog) clearTimeout(e.syncWatchdog);
+      e.closing = true;
       return e.client.destroy().catch(() => {});
     })
   );
@@ -1852,7 +2237,9 @@ module.exports = {
   shutdownAll,
   // Solo para pruebas: acceso al mapa de sesiones y a la recuperación de estado.
   __test: {
-    clients, acquireSendableEntry, healToConnected, extractQrMedia, describeQrNonMedia,
+    clients, reconnectTimers, reconnectTries, probeState, verifyConnected, teardown,
+    scheduleReconnect, cancelReconnect, superviseSessions, MAX_MISSES,
+    acquireSendableEntry, healToConnected, extractQrMedia, describeQrNonMedia,
     findRecentlySentMedia, watchOutgoingMedia, qrMessageId, qrMessageHash, serializeMsgKey,
     downloadAndDecryptWaMedia, phoneFromMsgData,
   },

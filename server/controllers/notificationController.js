@@ -24,6 +24,10 @@ const TYPE_ROLES = {
   template_status_changed: MARKETING_ROLES,
   template_check_failed: MARKETING_ROLES,
   whatsapp_quality_changed: MARKETING_ROLES,
+  // Un número QR caído deja a la clínica sin recibir ni responder mensajes: hasta
+  // ahora solo se notaba al entrar a mirar. Va a la campana para enterarse en el
+  // momento, y apunta a la pantalla donde se reconecta.
+  whatsapp_qr_disconnected: MARKETING_ROLES,
 };
 
 function visibleTypes(req) {

@@ -1587,10 +1587,18 @@ function AccountCard({ acc, onSetDefault, onToggleEnabled, onEdit, onDelete, onC
   const quality = !isQr ? QUALITY_META[acc.qualityRating] : null;
   // Detalle humano de la conexión QR: desde cuándo está vinculado, o cuándo se
   // vio por última vez (ayuda a notar que se desconectó desde el teléfono).
+  // Una caída que NO exige QR nuevo la resuelve el propio servidor (reintenta
+  // solo cada pocos segundos): decirle al usuario "escanea el QR" en ese caso lo
+  // mandaba a hacer un trabajo que no hacía falta.
+  const seReconectaSolo = status === 'disconnected' && acc.connectedPhone && !acc.lastDisconnectNeedsQr;
   const qrDetail = !isQr
     ? ''
     : status === 'connected' && acc.lastConnectedAt
     ? `Vinculado desde ${fmtDateTime(acc.lastConnectedAt)}`
+    : seReconectaSolo
+    ? `Caído${acc.lastDisconnectAt ? ` desde ${fmtDateTime(acc.lastDisconnectAt)}` : ''} · el servidor lo está reconectando solo${
+        acc.lastDisconnectReason ? ` (${acc.lastDisconnectReason})` : ''
+      }`
     : status === 'disconnected' && acc.lastConnectedAt
     ? `Última conexión: ${fmtDateTime(acc.lastConnectedAt)} · pulsa "Conectar" y escanea el QR`
     : status === 'disconnected'

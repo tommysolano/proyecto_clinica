@@ -44,6 +44,14 @@ const whatsappAccountSchema = new mongoose.Schema(
     sessionId: { type: String, trim: true, default: '' }, // clave del store de sesión (RemoteAuth)
     lastConnectedAt: { type: Date, default: null },
     lastQrAt: { type: Date, default: null },
+    // Rastro de la ÚLTIMA caída: sin esto, "se desconectó otra vez" era una caja
+    // negra (no quedaba en ningún sitio por qué se cayó ni cuándo).
+    lastDisconnectAt: { type: Date, default: null },
+    lastDisconnectReason: { type: String, trim: true, default: '' },
+    // `true` solo si hace falta escanear un QR NUEVO (logout o desvinculación
+    // desde el teléfono). Con `false`, el servidor reconecta la sesión él solo;
+    // con `true` no lo intenta, porque sin QR es imposible.
+    lastDisconnectNeedsQr: { type: Boolean, default: false },
 
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },

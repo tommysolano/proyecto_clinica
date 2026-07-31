@@ -992,14 +992,23 @@ exports.whatsappDiagnostics = async (req, res) => {
           // QR: la verdad es la sesión VIVA en memoria, no solo el estado guardado.
           const snap = qrManager.getLiveSnapshot(a._id);
           const liveStatus = snap?.status || a.status;
-          if (liveStatus === 'connected') detail = 'Sesión de WhatsApp Web conectada.';
+          // Rastro de la última caída: sin esto, "se volvió a desconectar" no
+          // dejaba ninguna pista de POR QUÉ (ni de cuándo).
+          const caida = a.lastDisconnectAt
+            ? ` Última caída: ${new Date(a.lastDisconnectAt).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' })}` +
+              `${a.lastDisconnectReason ? ` — ${a.lastDisconnectReason}.` : '.'}`
+            : '';
+          if (liveStatus === 'connected') detail = `Sesión de WhatsApp Web conectada.${caida}`;
           else if (['connecting', 'syncing', 'qr_pending'].includes(liveStatus)) {
             health = 'warn';
             detail =
-              'La sesión se está sincronizando o espera el escaneo del QR. Mientras tanto, los envíos por este número pueden fallar con "QR no conectado".';
+              'La sesión se está sincronizando o espera el escaneo del QR. Mientras tanto, los envíos por este número pueden fallar con "QR no conectado".' +
+              caida;
           } else {
             health = 'error';
-            detail = 'Sesión de WhatsApp Web desconectada: pulsa "Conectar" y escanea el QR.';
+            detail = a.lastDisconnectNeedsQr
+              ? `Sesión cerrada desde el teléfono: hay que pulsar "Conectar" y escanear el QR.${caida}`
+              : `Sesión de WhatsApp Web caída; el servidor la está reconectando solo.${caida}`;
           }
         }
         if (!a.enabled) {

@@ -18,6 +18,7 @@ const TYPE_LINK = {
   template_status_changed: '/message-templates',
   template_check_failed: '/message-templates',
   whatsapp_quality_changed: '/call-center-config',
+  whatsapp_qr_disconnected: '/call-center-config',
 };
 
 const SEVERITY_ICON = {
