@@ -127,19 +127,51 @@ if ! nginx -t; then
 fi
 
 systemctl reload nginx
+# `reload` es ASÍNCRONO: los workers viejos siguen atendiendo las conexiones que
+# ya tenían y la config nueva solo vale para las nuevas. Sin esta pausa, la
+# comprobación de abajo puede caer en un worker viejo y dar un falso negativo
+# (fue justo lo que despistó en el intento del 30-jul-2026).
+sleep 2
+
 echo
-echo "==> Listo. Comprobación real (debe salir Content-Encoding: gzip y Cache-Control):"
+echo "==> Listo. Comprobación real:"
 echo
-ASSET="$(ls -1 /var/www/clinica/client/dist/assets/*.js 2>/dev/null | head -1 | xargs -r basename || true)"
+# El asset a medir se saca del index.html, NO con `ls | head -1`: eso devolvía el
+# primero por orden alfabético (un fichero de 10 KB cualquiera) en vez del bundle
+# principal, y la comprobación no demostraba nada.
+DIST="/var/www/clinica/client/dist"
+ASSET="$(grep -oE 'assets/index-[^\"]+\.js' "$DIST/index.html" 2>/dev/null | head -1 || true)"
 if [ -n "$ASSET" ]; then
-  URL="https://app.shiluvecuador.com/assets/$ASSET"
+  URL="https://app.shiluvecuador.com/$ASSET"
+  echo "  Fichero: $ASSET"
   curl -sS -o /dev/null -D - --compressed "$URL" \
-    | grep -iE 'HTTP/|content-encoding|content-length|cache-control' || true
+    | grep -iE 'HTTP/|content-encoding|content-length|cache-control' | sed 's/^/    /' || true
+  EN_DISCO="$(stat -c%s "$DIST/$ASSET" 2>/dev/null || echo 0)"
+  SIN_GZIP="$(curl -sS -o /dev/null -w '%{size_download}' -H 'Accept-Encoding: identity' "$URL")"
+  CON_GZIP="$(curl -sS -o /dev/null -w '%{size_download}' --compressed "$URL")"
   echo
-  echo "    Tamaño en disco : $(stat -c%s "/var/www/clinica/client/dist/assets/$ASSET") bytes"
-  echo "    Transferido     : $(curl -sS -o /dev/null -w '%{size_download}' --compressed "$URL") bytes"
+  echo "    En disco          : $EN_DISCO bytes"
+  echo "    Pidiendo identity : $SIN_GZIP bytes"
+  echo "    Pidiendo gzip     : $CON_GZIP bytes"
+  if [ "$CON_GZIP" -lt "$SIN_GZIP" ]; then
+    echo "    ✅ La compresión FUNCIONA."
+  else
+    echo "    ❌ NO se está comprimiendo. Revisa gzip_types en $NGINX_CONF."
+  fi
 else
-  echo "    (no encuentro client/dist/assets: ¿falta compilar el frontend?)"
+  echo "    (no encuentro $DIST/index.html: ¿falta compilar el frontend?)"
 fi
+
+# HTTP/2: si el curl del sistema no lo soporta dirá 1.1 aunque el servidor sí lo
+# haga, así que se comprueba TAMBIÉN en la config, que es la fuente de verdad.
+echo
+echo "  HTTP/2:"
+if grep -qE '^[[:space:]]*listen[[:space:]]+[^;]*ssl[^;]*http2' "${SITIO:-/dev/null}" 2>/dev/null; then
+  echo "    ✅ activado en la config ($SITIO)"
+else
+  echo "    ⚠️  no aparece en la config"
+fi
+echo "    negociado por curl: $(curl -sS -o /dev/null -w '%{http_version}' --http2 https://app.shiluvecuador.com/api/health 2>/dev/null || echo '? (curl sin soporte http2)')"
+
 echo
 echo "Copias de seguridad en $BACKUP_DIR"
