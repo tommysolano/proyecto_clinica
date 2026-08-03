@@ -73,7 +73,35 @@ const productSchema = new mongoose.Schema(
     availableInClinics: [
       { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic' },
     ],
+    /**
+     * COSTO del producto. Ya NO se captura al dar de alta: el costo real lo fija la COMPRA
+     * (capas FIFO del kardex → `averageCost`). Un costo tecleado a mano se quedaba obsoleto en
+     * cuanto llegaba la primera factura y no se usaba para nada contable. Se conserva el campo
+     * por los productos históricos y por los importadores que aún lo traen.
+     * @deprecated usar `averageCost` (derivado del kardex).
+     */
     purchasePrice: { type: Number, default: 0, min: 0 },
+    /**
+     * LISTA DE PRECIOS de venta. Un mismo producto se cobra distinto según el canal (público,
+     * corporativo, promoción, convenio…). `salePrice` sigue siendo el precio ACTIVO —lo que
+     * cobra por defecto cualquier venta— y aquí vive la lista completa para poder elegir otro
+     * en el momento de vender.
+     *
+     * Invariante que mantiene el controlador: exactamente UN precio con `active: true`, y
+     * `salePrice` siempre igual a ese. Así ninguna venta, factura o reporte antiguo cambia de
+     * comportamiento: todos siguen leyendo `salePrice`.
+     */
+    salePrices: {
+      type: [
+        {
+          name: { type: String, default: 'General', trim: true },
+          price: { type: Number, required: true, min: 0 },
+          active: { type: Boolean, default: false },
+          _id: false,
+        },
+      ],
+      default: [],
+    },
     salePrice: {
       type: Number,
       required: [true, 'El precio de venta es requerido'],
@@ -101,7 +129,8 @@ const productSchema = new mongoose.Schema(
     taxCodeSri: { type: String, default: '4' },
     taxCategory: {
       type: String,
-      enum: ['IVA_15', 'IVA_12', 'IVA_0', 'EXENTO', 'NO_OBJETO', 'ICE'],
+      // IVA_12 se conserva SOLO por los productos dados de alta antes de la derogación.
+      enum: ['IVA_15', 'IVA_5', 'IVA_12', 'IVA_0', 'EXENTO', 'NO_OBJETO', 'ICE'],
       default: 'IVA_15',
     },
     priceIncludesVat: { type: Boolean, default: true },

@@ -12,6 +12,8 @@ import AccountSelect from '../../components/AccountSelect';
 import ProductFormModal from '../../components/ProductFormModal';
 import { useAuth } from '../../context/AuthContext';
 import useDocDeepLink from '../../hooks/useDocDeepLink';
+import { newIdempotencyKey, withIdempotencyKey, intentKey } from '../../utils/idempotency';
+import { vatRateOptions } from '../../constants/vatRates';
 
 const PAGE_SIZE = 100;
 // Cuentas elegibles como destino de una línea de compra: gasto, costo, inventario o activo.
@@ -59,6 +61,33 @@ const makeItem = (lineType) => ({
 });
 // Subtotal (base) de una línea.
 const lineBase = (it) => +(((it.quantity || 0) * (it.unitPrice || 0)) - (it.discount || 0)).toFixed(2);
+
+/**
+ * Estado de PAGO de una factura de compra (abonado / saldo / etiqueta).
+ *
+ * Antes la lista solo mostraba REGISTRADA o PAGADA: una factura de $300 con un abono de $50 se
+ * veía idéntica a una intacta. Aquí se deriva lo que falta:
+ *
+ *     neto a pagar = total − retenciones     (la retención no se le paga al proveedor)
+ *     abonado      = neto − saldo
+ *
+ * `balance` es el saldo que mantiene el backend en cada pago. Un abono parcial ⇒ "ABONADA".
+ */
+const payStatus = (p) => {
+  const neto = +(Number(p.total || 0) - Number(p.retentionTotal || 0)).toFixed(2);
+  const saldo = +Number(p.balance ?? neto).toFixed(2);
+  const abonado = +Math.max(0, neto - saldo).toFixed(2);
+  const parcial = p.status === 'REGISTRADA' && abonado > 0.005 && saldo > 0.005;
+  const label = p.status === 'POR_AUTORIZAR' ? 'POR CONTABILIZAR' : parcial ? 'ABONADA' : p.status;
+  const badgeClass = p.status === 'POR_AUTORIZAR' ? 'bg-amber-100 text-amber-700'
+    : p.status === 'ANULADA' ? 'bg-rose-100 text-rose-700'
+    : p.status === 'PAGADA' ? 'bg-sky-100 text-sky-700'
+    : parcial ? 'bg-indigo-100 text-indigo-700'
+    : 'bg-emerald-100 text-emerald-700';
+  return { neto, saldo, abonado, parcial, label, badgeClass };
+};
+
+const PAY_METHOD_LABEL = { EFECTIVO: 'Efectivo', TRANSFERENCIA: 'Transferencia', CHEQUE: 'Cheque', TARJETA: 'Tarjeta', DEPOSITO: 'Depósito', OTRO: 'Otro' };
 
 // Vencimiento = fecha de emisión + días de crédito (YYYY-MM-DD).
 const addDays = (dateStr, days) => {
@@ -115,13 +144,14 @@ export default function PurchaseInvoices() {
   const [journalInv, setJournalInv] = useState(null); // factura cuyos asientos se consultan (solo lectura)
   const [payInv, setPayInv] = useState(null); // factura a pagar
   const [payForm, setPayForm] = useState({ method: 'TRANSFERENCIA', bankAccount: '', voucherNumber: '', checkNumber: '', amount: 0, date: today() });
+  const [paying, setPaying] = useState(false);   // envío en curso: bloquea el doble registro
+  const [payIntent, setPayIntent] = useState(''); // clave base de idempotencia de la intención abierta
+  const [abonosInv, setAbonosInv] = useState(null); // factura cuyos abonos se consultan
+  const [abonos, setAbonos] = useState({ loading: false, rows: [] });
   const [formError, setFormError] = useState(''); // error visible DENTRO del modal (no solo toast)
   const [retModal, setRetModal] = useState(null); // { purchase, series, estab, ptoEmi, periodMonth, periodYear }
   const [retEmitting, setRetEmitting] = useState(false);
   const [retVoucher, setRetVoucher] = useState(null); // comprobante de retención emitido (encabezado) de la compra abierta
-  // Fecha de emisión que traía el comprobante al abrirlo (para no exigirle "hoy" a un
-  // documento histórico que solo se está editando: el backend solo bloquea MOVERLA atrás).
-  const [loadedFechaEmision, setLoadedFechaEmision] = useState('');
   // Configuración de emisión electrónica de retenciones (series/establecimientos). Se usa
   // tanto en el encabezado de retención del formulario como en el modal de emisión.
   const [retConfig, setRetConfig] = useState(null);
@@ -295,7 +325,9 @@ export default function PurchaseInvoices() {
         ...it, product: productId || '',
         inventoryCategory: prod?.inventoryCategory?._id || prod?.inventoryCategory || '',
         description: it.description || prod?.name || '',
-        unitPrice: it.unitPrice || prod?.purchasePrice || 0,
+        // Sugerencia de costo: el promedio del kardex (lo que de verdad costó la última vez).
+        // `purchasePrice` queda como respaldo para los productos antiguos que aún lo tienen.
+        unitPrice: it.unitPrice || prod?.averageCost || prod?.purchasePrice || 0,
         warehouse: productId ? it.warehouse : '',
       } : it)),
     }));
@@ -446,11 +478,12 @@ export default function PurchaseInvoices() {
     );
   };
 
-  // ── Fecha del comprobante: automática (hoy) y sin fechas atrasadas.
-  // Un documento que YA existía con fecha anterior conserva esa fecha como mínimo permitido:
-  // se puede corregir el resto de la factura sin tener que moverle la fecha.
-  const minDocDate = loadedFechaEmision && loadedFechaEmision < today() ? loadedFechaEmision : today();
-  const pastEmision = !!form.fechaEmision && form.fechaEmision < minDocDate;
+  // ── Fecha del comprobante de COMPRA: es la que trae la factura del PROVEEDOR, así que sí
+  // admite fechas pasadas (llegan días o semanas después). No se bloquea el calendario; lo
+  // que decide es el período fiscal: un mes cerrado lo rechaza el backend con su mensaje.
+  // Solo se AVISA cuando la fecha es de un mes anterior, para que no pase inadvertido.
+  const emisionMesAnterior = !!form.fechaEmision && form.fechaEmision.slice(0, 7) < today().slice(0, 7);
+  const emisionFutura = !!form.fechaEmision && form.fechaEmision > today();
 
   // ── Periodo fiscal de la retención (regla de los 5 días): no puede ser anterior al mes de
   // la factura sustento ni posterior al mes de emisión (hoy). Se ofrecen solo los válidos.
@@ -468,20 +501,23 @@ export default function PurchaseInvoices() {
     ? `${form.retentionPeriodYear}-${String(form.retentionPeriodMonth).padStart(2, '0')}`
     : (retPeriodOptions[0] ? `${retPeriodOptions[0].year}-${String(retPeriodOptions[0].month).padStart(2, '0')}` : '');
 
+  // Espejo del `calcTotals` del backend (que es la fuente de verdad): mismas tarifas y mismos
+  // buckets. Cualquier tarifa positiva distinta de 0/5 cuenta como base gravada.
   const totals = (() => {
-    let s0 = 0, s12 = 0, s15 = 0, sNo = 0, sEx = 0, iva = 0, discount = 0;
+    let s0 = 0, s5 = 0, s12 = 0, s15 = 0, sNo = 0, sEx = 0, iva = 0, discount = 0;
     for (const it of form.items) {
       const base = lineBase(it);
       discount += it.discount || 0;
       if (it.ivaRate === 0) s0 += base;
+      else if (it.ivaRate === 5) { s5 += base; iva += base * 0.05; }
       else if (it.ivaRate === 12) { s12 += base; iva += base * 0.12; }
-      else if (it.ivaRate === 15) { s15 += base; iva += base * 0.15; }
       else if (it.ivaRate === -1) sNo += base;
       else if (it.ivaRate === -2) sEx += base;
+      else if (it.ivaRate > 0) { s15 += base; iva += base * (it.ivaRate / 100); }
     }
-    const subtotal = s0 + s12 + s15 + sNo + sEx;
+    const subtotal = s0 + s5 + s12 + s15 + sNo + sEx;
     const retTotal = +(retSummary.reduce((s, r) => s + (+r.amount || 0), 0)).toFixed(2);
-    return { s0, s12, s15, sNo, sEx, subtotal, subtotalConIva: s12 + s15, iva: +iva.toFixed(2), discount, total: +(subtotal + iva).toFixed(2), retTotal, balance: +(subtotal + iva - retTotal).toFixed(2) };
+    return { s0, s5, s12, s15, sNo, sEx, subtotal, subtotalConIva: s5 + s12 + s15, iva: +iva.toFixed(2), discount, total: +(subtotal + iva).toFixed(2), retTotal, balance: +(subtotal + iva - retTotal).toFixed(2) };
   })();
 
   // Error de validación/contabilización: visible DENTRO del modal (banner) además del toast.
@@ -533,7 +569,7 @@ export default function PurchaseInvoices() {
     return api.post('/purchase-invoices', payload);
   };
 
-  const closeForm = () => { setShow(false); setForm({ ...EMPTY, fechaEmision: today() }); setAuthorizeId(null); setEditId(null); setFormError(''); setSriMismatch(null); setCcMismatch(null); setRetVoucher(null); setLoadedFechaEmision(''); };
+  const closeForm = () => { setShow(false); setForm({ ...EMPTY, fechaEmision: today() }); setAuthorizeId(null); setEditId(null); setFormError(''); setSriMismatch(null); setCcMismatch(null); setRetVoucher(null); };
 
   const submit = async (e) => {
     e.preventDefault();
@@ -542,9 +578,7 @@ export default function PurchaseInvoices() {
     // El N° de comprobante ahora es un solo campo (001-001-000000123): exige el secuencial
     // salvo que la factura ya traiga una serie (documentos importados/editados).
     if (!form.serie && !(form.secuencial || '').trim()) return fail('Ingresa el N° de comprobante (formato 001-001-000000123)');
-    // Fecha automática sin retroceso: se avisa aquí para no gastar un viaje al servidor
-    // (que vuelve a validarlo: la regla de verdad vive en el backend).
-    if (pastEmision) return fail('La fecha de emisión no puede ser anterior a hoy. Corrige la fecha del comprobante.');
+    if (!form.fechaEmision) return fail('Ingresa la fecha de emisión del comprobante');
     // Ignora líneas placeholder totalmente vacías (p.ej. la línea inicial de una sección
     // recién activada que no se llegó a usar) para no bloquear el guardado.
     const cleanItems = form.items.filter(lineHasData);
@@ -616,7 +650,6 @@ export default function PurchaseInvoices() {
       // Encabezado del comprobante de retención emitido (si lo hay): se muestra en la sección
       // de retenciones ANTES de los porcentajes.
       setRetVoucher(d.retentionVoucher && typeof d.retentionVoucher === 'object' ? d.retentionVoucher : null);
-      setLoadedFechaEmision(d.fechaEmision ? String(d.fechaEmision).slice(0, 10) : '');
       setForm({
         ...EMPTY, ...d,
         supplier: d.supplier?._id || d.supplier || '',
@@ -736,18 +769,38 @@ export default function PurchaseInvoices() {
     }
   };
 
+  // Abonos de una factura: se piden al backend (fuente única: los pagos aplicados).
+  const openAbonos = async (p) => {
+    setAbonosInv(p);
+    setAbonos({ loading: true, rows: [] });
+    try {
+      const r = await api.get(`/purchase-invoices/${p._id}/payments`);
+      setAbonos({ loading: false, ...r.data });
+    } catch (e) {
+      setAbonos({ loading: false, rows: [] });
+      toast.error(e.response?.data?.message || 'No se pudieron cargar los abonos');
+    }
+  };
+
   const openPay = (p) => {
     setPayInv(p);
+    // Clave base de ESTA intención de pago: se genera al abrir el modal para que un doble
+    // clic o un reintento de red hagan replay del mismo pago en vez de registrar dos.
+    setPayIntent(newIdempotencyKey());
     setPayForm({ method: 'TRANSFERENCIA', bankAccount: '', voucherNumber: '', checkNumber: '', amount: +(p.balance ?? p.total ?? 0).toFixed(2), date: today() });
   };
 
   const submitPay = async () => {
+    if (paying) return;                 // el botón ya está deshabilitado; esto cubre Enter/doble evento
     const p = payInv;
     const amount = +payForm.amount;
     if (!(amount > 0)) return toast.error('Monto inválido');
     if (payForm.method !== 'EFECTIVO' && !payForm.bankAccount) return toast.error('Selecciona la cuenta bancaria');
     if (payForm.method === 'TRANSFERENCIA' && !payForm.voucherNumber) return toast.error('Ingresa el N° de comprobante de la transferencia');
     if (payForm.method === 'CHEQUE' && !payForm.checkNumber) return toast.error('Ingresa el N° de cheque');
+    const saldo = +Number(p.balance ?? p.total ?? 0).toFixed(2);
+    if (amount > saldo + 0.01) return toast.error(`El abono ($${fmt(amount)}) excede el saldo de la factura ($${fmt(saldo)})`);
+    setPaying(true);
     try {
       await api.post('/payments', {
         type: 'PAGO', date: payForm.date,
@@ -757,10 +810,11 @@ export default function PurchaseInvoices() {
         voucherNumber: payForm.method === 'TRANSFERENCIA' ? payForm.voucherNumber : undefined,
         checkNumber: payForm.method === 'CHEQUE' ? payForm.checkNumber : undefined,
         applications: [{ docModel: 'PurchaseInvoice', docRef: p._id, amount }],
-      });
+      }, withIdempotencyKey(intentKey(payIntent, [p._id, payForm.method, payForm.bankAccount, payForm.date, amount])));
       toast.success('Pago registrado');
       setPayInv(null); load();
     } catch (e) { toast.error(e.response?.data?.message || 'Error al registrar el pago'); }
+    finally { setPaying(false); }
   };
 
   const submitImport = async () => {
@@ -843,7 +897,7 @@ export default function PurchaseInvoices() {
         <div className="flex gap-2">
           {hasRole('admin') && <button onClick={wipeAll} title="Borrar todas las compras de esta sucursal (reinicio)" className="px-4 py-2 bg-rose-600 text-white rounded-lg flex items-center gap-2"><HiOutlineXMark /> Reiniciar compras</button>}
           <button onClick={() => { setImportMode('xml'); setShowImport(true); }} className="px-4 py-2 bg-amber-500 text-white rounded-lg flex items-center gap-2"><HiOutlineArrowDownTray /> Importar SRI</button>
-          <button onClick={() => { setForm({ ...EMPTY, fechaEmision: today(), items: [makeItem('GASTO')] }); setActiveSections(['GASTO']); setRowMenuUid(null); setAuthorizeId(null); setEditId(null); setShowAdvanced(false); setRetVoucher(null); setLoadedFechaEmision(''); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
+          <button onClick={() => { setForm({ ...EMPTY, fechaEmision: today(), items: [makeItem('GASTO')] }); setActiveSections(['GASTO']); setRowMenuUid(null); setAuthorizeId(null); setEditId(null); setShowAdvanced(false); setRetVoucher(null); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
         </div>
       </div>
 
@@ -875,10 +929,13 @@ export default function PurchaseInvoices() {
             <th className="px-3 py-2 text-left">Tipo</th><th className="px-3 py-2 text-left">Proveedor</th>
             <th className="px-3 py-2 text-right">Subtotal</th><th className="px-3 py-2 text-right">IVA</th>
             <th className="px-3 py-2 text-right">Total</th><th className="px-3 py-2 text-right">Retenc.</th>
+            <th className="px-3 py-2 text-right">Abonado</th><th className="px-3 py-2 text-right">Saldo</th>
             <th className="px-3 py-2 text-center">Estado</th><th></th>
           </tr></thead>
           <tbody>
-            {list.map((p) => (
+            {list.map((p) => {
+              const st = payStatus(p);
+              return (
               <tr key={p._id} className={`border-t ${p.status === 'ANULADA' ? 'text-slate-400 line-through' : ''}`}>
                 <td className="px-3 py-2 font-mono text-xs">{p.serie}</td>
                 <td className="px-3 py-2">{fmtDate(p.fechaEmision)}</td>
@@ -888,14 +945,23 @@ export default function PurchaseInvoices() {
                 <td className="px-3 py-2 text-right font-mono">{fmt(p.iva)}</td>
                 <td className="px-3 py-2 text-right font-mono font-semibold">{fmt(p.total)}</td>
                 <td className="px-3 py-2 text-right font-mono">{fmt(p.retentionTotal)}</td>
+                {/* Abonado y saldo: lo que faltaba para ver de un vistazo un pago PARCIAL.
+                    El abonado se deriva del neto a pagar (total − retención) menos el saldo. */}
+                <td className="px-3 py-2 text-right font-mono">
+                  {st.abonado > 0
+                    ? <button onClick={() => openAbonos(p)} className="text-sky-700 hover:underline font-medium" title="Ver los abonos realizados">{fmt(st.abonado)}</button>
+                    : <span className="text-slate-300">—</span>}
+                </td>
+                <td className={`px-3 py-2 text-right font-mono font-semibold ${st.saldo > 0.005 ? 'text-amber-700' : 'text-emerald-700'}`}>{fmt(st.saldo)}</td>
                 <td className="px-3 py-2 text-center text-xs">
-                  <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${p.status === 'POR_AUTORIZAR' ? 'bg-amber-100 text-amber-700' : p.status === 'REGISTRADA' ? 'bg-emerald-100 text-emerald-700' : p.status === 'PAGADA' ? 'bg-sky-100 text-sky-700' : 'bg-rose-100 text-rose-700'}`}>{p.status === 'POR_AUTORIZAR' ? 'POR CONTABILIZAR' : p.status}{p.importedFromXml ? ' · XML' : ''}</span>
+                  <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${st.badgeClass}`}>{st.label}{p.importedFromXml ? ' · XML' : ''}</span>
                 </td>
                 <td className="px-3 py-2 text-right">
                   <div className="flex items-center justify-end gap-2">
                     {p.status === 'POR_AUTORIZAR' && <button onClick={() => openAuthorize(p)} className="text-emerald-600 text-xs font-medium hover:underline">Verificar / Contabilizar</button>}
                     {p.status === 'REGISTRADA' && <button onClick={() => openEdit(p)} className="text-slate-600 text-xs font-medium hover:underline">Editar</button>}
-                    {p.status === 'REGISTRADA' && p.balance > 0 && <button onClick={() => openPay(p)} className="text-sky-600 text-xs font-medium hover:underline">Pagar</button>}
+                    {p.status === 'REGISTRADA' && p.balance > 0 && <button onClick={() => openPay(p)} className="text-sky-600 text-xs font-medium hover:underline">{st.abonado > 0 ? 'Abonar' : 'Pagar'}</button>}
+                    {(p.status === 'REGISTRADA' || p.status === 'PAGADA') && st.abonado > 0 && <button onClick={() => openAbonos(p)} className="text-indigo-600 text-xs font-medium hover:underline">Abonos</button>}
                     {(p.status === 'REGISTRADA' || p.status === 'PAGADA') && p.journalEntry && <button onClick={() => setJournalInv(p)} className="text-slate-600 text-xs font-medium hover:underline">Asiento</button>}
                     {p.status !== 'ANULADA' && p.retentionTotal > 0 && !p.retentionVoucher && (
                       <button onClick={() => emitRetention(p)} className="text-indigo-600 text-xs font-medium hover:underline">Emitir retención</button>
@@ -905,7 +971,8 @@ export default function PurchaseInvoices() {
                   </div>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
         <div className="flex items-center justify-between gap-3 px-3 py-2.5 border-t border-slate-100 text-sm text-slate-600">
@@ -964,17 +1031,18 @@ export default function PurchaseInvoices() {
                   <option value="FACTURA">Factura</option><option value="NOTA_VENTA">Nota de venta</option><option value="LIQUIDACION">Liquidación</option><option value="NOTA_DEBITO_REC">Nota débito</option><option value="NOTA_CREDITO_REC">Nota crédito</option>
                 </select>
               </Field>
-              {/* Fecha de emisión: AUTOMÁTICA (hoy) y sin fechas atrasadas. `min` bloquea el
-                  calendario y el backend vuelve a validarlo (es la regla de verdad). */}
-              <Field label="Fecha de emisión" required className="col-span-1 md:col-span-2" hint="Automática: no se admiten fechas anteriores a hoy.">
+              {/* Fecha de emisión: la del comprobante del PROVEEDOR. Admite fechas pasadas
+                  (una compra se registra cuando llega la factura). El límite real es el
+                  período fiscal, que valida el backend. */}
+              <Field label="Fecha de emisión" required className="col-span-1 md:col-span-2" hint="La que consta en la factura del proveedor (puede ser de días o meses anteriores).">
                 <input
                   type="date" required
                   value={form.fechaEmision}
-                  min={minDocDate}
                   onChange={(e) => setForm((f) => ({ ...f, fechaEmision: e.target.value, fechaVencimiento: f.creditDays ? addDays(e.target.value, f.creditDays) : f.fechaVencimiento }))}
-                  className={`w-full border rounded-xl px-3 py-2.5 text-sm ${pastEmision ? 'border-rose-300 bg-rose-50' : 'border-slate-200'}`}
+                  className={`w-full border rounded-xl px-3 py-2.5 text-sm ${emisionFutura ? 'border-amber-300 bg-amber-50' : 'border-slate-200'}`}
                 />
-                {pastEmision && <p className="text-[11px] text-rose-600 mt-1">Fecha anterior a hoy: el sistema no registra comprobantes atrasados.</p>}
+                {emisionMesAnterior && <p className="text-[11px] text-amber-700 mt-1">Comprobante de un mes anterior: entrará en el IVA y el ATS de <b>ese</b> mes. Si el período ya está cerrado, el sistema lo rechazará.</p>}
+                {emisionFutura && <p className="text-[11px] text-amber-700 mt-1">La fecha es posterior a hoy. Verifica que sea la del comprobante.</p>}
               </Field>
               <Field label="Días de crédito"><NumericInput value={form.creditDays} onChange={(e) => setForm((f) => ({ ...f, creditDays: +e.target.value, fechaVencimiento: +e.target.value > 0 ? addDays(f.fechaEmision, +e.target.value) : '' }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-right" /></Field>
               <Field label="Vencimiento"><input type="date" value={form.fechaVencimiento || ''} onChange={(e) => setForm({ ...form, fechaVencimiento: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
@@ -1036,12 +1104,14 @@ export default function PurchaseInvoices() {
                         <tr key={it._uid} className="border-t border-slate-100 align-top">
                           <td className="py-1.5 pr-2 min-w-[200px]">
                             <div className="flex items-center gap-1.5">
-                              <div className="flex-1 min-w-0"><SearchableSelect options={products} value={it.product} onChange={(v) => onPickProduct(it._uid, v)} getLabel={(p) => p.name} getSearchText={(p) => `${p.name} ${p.code || ''}`} renderOption={(p) => (<span className="block">{p.name}{p.code ? <span className="block text-[11px] text-slate-400 font-mono">{p.code}</span> : null}</span>)} placeholder="Selecciona producto…" searchPlaceholder="Buscar producto…" allowClear size="sm" menuMinWidth={340} wrapOptions /></div>
+                              {/* menuMinWidth generoso: la celda es estrecha y el panel heredaba
+                                  su ancho, así que los nombres largos salían cortados. */}
+                              <div className="flex-1 min-w-0"><SearchableSelect options={products} value={it.product} onChange={(v) => onPickProduct(it._uid, v)} getLabel={(p) => p.name} getSearchText={(p) => `${p.name} ${p.code || ''}`} renderOption={(p) => (<span className="block">{p.name}{p.code ? <span className="block text-[11px] text-slate-400 font-mono">{p.code}</span> : null}</span>)} placeholder="Selecciona producto…" searchPlaceholder="Buscar producto…" allowClear size="sm" menuMinWidth={460} wrapOptions /></div>
                               <button type="button" onClick={() => setNewProductItemUid(it._uid)} title="Crear producto nuevo" className="shrink-0 p-1.5 rounded-lg border border-emerald-200 text-emerald-700 hover:bg-emerald-50 bg-white"><HiOutlinePlus className="w-4 h-4" /></button>
                             </div>
                             {missing && <div className="text-[11px] text-rose-600 flex items-center gap-1 mt-1"><HiOutlineExclamationTriangle className="w-3.5 h-3.5" /> {cat ? 'La categoría del producto no tiene cuenta de inventario' : 'El producto no tiene categoría contable'}</div>}
                           </td>
-                          <td className="py-1.5 px-2 min-w-[110px]"><SearchableSelect options={[{ _id: '', name: 'General' }, ...warehouses]} value={it.warehouse} onChange={(v) => onPickWarehouse(it._uid, v)} getLabel={(w) => w.name} placeholder="General" searchPlaceholder="Buscar bodega…" size="sm" /></td>
+                          <td className="py-1.5 px-2 min-w-[140px]"><SearchableSelect options={[{ _id: '', name: 'General' }, ...warehouses]} value={it.warehouse} onChange={(v) => onPickWarehouse(it._uid, v)} getLabel={(w) => w.name} getSearchText={(w) => `${w.name} ${w.code || ''}`} renderOption={(w) => (<span className="block">{w.name}{w.code ? <span className="block text-[11px] text-slate-400 font-mono">{w.code}</span> : null}</span>)} placeholder="General" searchPlaceholder="Buscar bodega…" size="sm" menuMinWidth={320} wrapOptions /></td>
                           <td className="py-1.5 px-2 w-20"><NumericInput step="0.01" value={it.quantity} onChange={(e) => setItem(it._uid, { quantity: +e.target.value })} className={`${inputCls} text-right`} /></td>
                           <td className="py-1.5 px-2 w-24"><NumericInput step="0.01" value={it.unitPrice} onChange={(e) => setItem(it._uid, { unitPrice: +e.target.value })} className={`${inputCls} text-right`} /></td>
                           <td className="py-1.5 px-2 w-20"><NumericInput step="0.01" value={it.discount} onChange={(e) => setItem(it._uid, { discount: +e.target.value })} className={`${inputCls} text-right`} /></td>
@@ -1504,7 +1574,25 @@ export default function PurchaseInvoices() {
       <Modal isOpen={!!payInv} onClose={() => setPayInv(null)} title={`Pagar compra ${payInv?.serie || ''}`} size="md">
         {payInv && (
           <div className="space-y-3">
-            <div className="bg-slate-50 rounded-lg px-3 py-2 text-sm flex justify-between"><span>{payInv.supplier?.razonSocial}</span><span>Saldo: <b>${fmt(payInv.balance ?? payInv.total)}</b></span></div>
+            {/* Desglose completo: qué se debía, qué se ha abonado y qué queda. Sin esto no se
+                distingue un pago total de uno parcial al momento de registrarlo. */}
+            {(() => {
+              const st = payStatus(payInv);
+              return (
+                <div className="bg-slate-50 rounded-lg px-3 py-2 text-sm space-y-1">
+                  <div className="font-medium text-slate-700">{payInv.supplier?.razonSocial}</div>
+                  <div className="flex justify-between text-xs text-slate-600"><span>Total factura</span><span className="font-mono">${fmt(payInv.total)}</span></div>
+                  {Number(payInv.retentionTotal) > 0 && (
+                    <div className="flex justify-between text-xs text-slate-600"><span>(−) Retenciones</span><span className="font-mono">${fmt(payInv.retentionTotal)}</span></div>
+                  )}
+                  <div className="flex justify-between text-xs text-slate-600 border-t border-slate-200 pt-1"><span>Neto a pagar</span><span className="font-mono">${fmt(st.neto)}</span></div>
+                  {st.abonado > 0 && (
+                    <div className="flex justify-between text-xs text-indigo-700"><span>(−) Abonado ya</span><span className="font-mono">${fmt(st.abonado)}</span></div>
+                  )}
+                  <div className="flex justify-between text-sm font-semibold text-slate-800 border-t border-slate-200 pt-1"><span>Saldo pendiente</span><span className="font-mono">${fmt(st.saldo)}</span></div>
+                </div>
+              );
+            })()}
             <div className="grid grid-cols-2 gap-3">
               <Field label="Método">
                 <select value={payForm.method} onChange={(e) => setPayForm({ ...payForm, method: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option value="TRANSFERENCIA">Transferencia</option><option value="CHEQUE">Cheque</option><option value="EFECTIVO">Efectivo</option></select>
@@ -1519,9 +1607,95 @@ export default function PurchaseInvoices() {
               {payForm.method === 'CHEQUE' && (
                 <Field label="N° de cheque" required className="col-span-2"><input value={payForm.checkNumber} onChange={(e) => setPayForm({ ...payForm, checkNumber: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" placeholder="N° de cheque" /></Field>
               )}
-              <Field label="Monto a pagar" required className="col-span-2"><NumericInput step="0.01" value={payForm.amount} onChange={(e) => setPayForm({ ...payForm, amount: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-right" /></Field>
+              <Field label="Monto a pagar" required className="col-span-2">
+                <NumericInput step="0.01" value={payForm.amount} onChange={(e) => setPayForm({ ...payForm, amount: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-right" />
+                {/* Atajos: el abono parcial es lo habitual, así que el saldo total es un clic. */}
+                <div className="flex items-center gap-2 mt-1.5">
+                  <button type="button" onClick={() => setPayForm((f) => ({ ...f, amount: payStatus(payInv).saldo }))} className="text-[11px] px-2 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">Saldo total (${fmt(payStatus(payInv).saldo)})</button>
+                  <button type="button" onClick={() => setPayForm((f) => ({ ...f, amount: +(payStatus(payInv).saldo / 2).toFixed(2) }))} className="text-[11px] px-2 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50">Mitad</button>
+                  {+payForm.amount > 0 && +payForm.amount < payStatus(payInv).saldo - 0.005 && (
+                    <span className="text-[11px] text-indigo-700">Abono parcial · quedarán ${fmt(payStatus(payInv).saldo - +payForm.amount)}</span>
+                  )}
+                </div>
+              </Field>
             </div>
-            <div className="flex justify-end gap-2"><button onClick={() => setPayInv(null)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button onClick={submitPay} className="px-4 py-2 bg-sky-600 text-white rounded-xl shadow-sm shadow-sky-600/20">Registrar pago</button></div>
+            <div className="flex justify-end gap-2"><button onClick={() => setPayInv(null)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button onClick={submitPay} disabled={paying} className="px-4 py-2 bg-sky-600 text-white rounded-xl shadow-sm shadow-sky-600/20 disabled:opacity-60 disabled:cursor-not-allowed">{paying ? 'Registrando…' : 'Registrar pago'}</button></div>
+          </div>
+        )}
+      </Modal>
+
+      {/* Abonos de la factura: cada pago aplicado, con su saldo. Los ANULADOS también se
+          muestran (tachados): explican por qué el saldo volvió a subir. */}
+      <Modal isOpen={!!abonosInv} onClose={() => setAbonosInv(null)} title={`Abonos de la compra ${abonosInv?.serie || ''}`} size="lg">
+        {abonosInv && (
+          <div className="space-y-3">
+            <div className="bg-slate-50 rounded-xl px-3 py-2.5 text-sm">
+              <div className="font-medium text-slate-700 mb-1.5">{abonosInv.supplier?.razonSocial}</div>
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                {[
+                  ['Total factura', abonos.invoice?.total ?? abonosInv.total, 'text-slate-800'],
+                  ['Retenciones', abonos.invoice?.retentionTotal ?? abonosInv.retentionTotal, 'text-slate-600'],
+                  ['Abonado', abonos.abonado, 'text-indigo-700'],
+                  ['Saldo pendiente', abonos.saldo, (abonos.saldo || 0) > 0.005 ? 'text-amber-700' : 'text-emerald-700'],
+                ].map(([label, value, cls]) => (
+                  <div key={label} className="bg-white border border-slate-200 rounded-lg px-2.5 py-1.5">
+                    <div className="text-[11px] uppercase text-slate-400">{label}</div>
+                    <div className={`font-mono font-semibold ${cls}`}>${fmt(value)}</div>
+                  </div>
+                ))}
+              </div>
+              {abonos.netoAPagar != null && (
+                <p className="text-[11px] text-slate-500 mt-1.5">Neto a pagar al proveedor (total − retenciones): <b className="font-mono">${fmt(abonos.netoAPagar)}</b></p>
+              )}
+            </div>
+
+            {abonos.loading ? (
+              <p className="text-sm text-slate-400 py-4 text-center">Cargando abonos…</p>
+            ) : (
+              <div className="border border-slate-200 rounded-xl overflow-hidden">
+                <table className="tbl text-sm">
+                  <thead className="bg-emerald-50 text-xs uppercase"><tr>
+                    <th className="px-3 py-2 text-left">N° pago</th>
+                    <th className="px-3 py-2 text-left">Fecha</th>
+                    <th className="px-3 py-2 text-left">Método</th>
+                    <th className="px-3 py-2 text-left">Banco / comprobante</th>
+                    <th className="px-3 py-2 text-left">Registró</th>
+                    <th className="px-3 py-2 text-right">Abono</th>
+                  </tr></thead>
+                  <tbody>
+                    {(abonos.rows || []).map((r) => (
+                      <tr key={r._id} className={`border-t ${r.status === 'ANULADO' ? 'text-slate-400 line-through' : ''}`}>
+                        <td className="px-3 py-2 font-mono text-xs">{r.number}</td>
+                        <td className="px-3 py-2">{fmtDate(r.date)}</td>
+                        <td className="px-3 py-2 text-xs">{PAY_METHOD_LABEL[r.method] || r.method}</td>
+                        <td className="px-3 py-2 text-xs text-slate-600">
+                          {r.bankAccount ? `${r.bankAccount.name}${r.bankAccount.bank ? ` · ${r.bankAccount.bank}` : ''}` : '—'}
+                          {(r.reference || r.checkNumber) && <span className="block text-[11px] text-slate-400 font-mono">{r.checkNumber ? `Cheque ${r.checkNumber}` : r.reference}</span>}
+                        </td>
+                        <td className="px-3 py-2 text-xs text-slate-500">{r.createdBy || '—'}</td>
+                        <td className="px-3 py-2 text-right font-mono font-semibold">${fmt(r.amount)}</td>
+                      </tr>
+                    ))}
+                    {!(abonos.rows || []).length && (
+                      <tr><td colSpan={6} className="px-3 py-6 text-center text-slate-400 text-sm">Esta factura todavía no tiene abonos registrados.</td></tr>
+                    )}
+                  </tbody>
+                  {(abonos.rows || []).some((r) => r.status !== 'ANULADO') && (
+                    <tfoot className="bg-slate-100 font-bold"><tr>
+                      <td colSpan={5} className="px-3 py-2 text-right">TOTAL ABONADO</td>
+                      <td className="px-3 py-2 text-right font-mono">${fmt(abonos.abonado)}</td>
+                    </tr></tfoot>
+                  )}
+                </table>
+              </div>
+            )}
+
+            <div className="flex justify-end gap-2">
+              {abonosInv.status === 'REGISTRADA' && (abonos.saldo || 0) > 0.005 && (
+                <button onClick={() => { const inv = abonosInv; setAbonosInv(null); openPay(inv); }} className="px-4 py-2 bg-sky-600 text-white rounded-xl shadow-sm shadow-sky-600/20">Registrar otro abono</button>
+              )}
+              <button onClick={() => setAbonosInv(null)} className="px-4 py-2 bg-slate-200 rounded-xl">Cerrar</button>
+            </div>
           </div>
         )}
       </Modal>
@@ -1595,10 +1769,16 @@ function SectionCard({ title, icon: Icon, children, onAdd, addLabel, count }) {
 const EmptyHint = ({ children }) => <p className="text-xs text-slate-400 italic">{children}</p>;
 // Agrupa filas relacionadas (línea + su distribución) sin romper el <tbody>.
 const RowGroup = ({ children }) => <>{children}</>;
+/**
+ * Tarifa de la línea. Las vigentes salen de `constants/vatRates` (0 / 5 / 15); aquí se añaden
+ * los dos valores que NO son tarifas sino condiciones del bien: no objeto (−1) y exento (−2).
+ */
 function IvaSelect({ value, onChange }) {
   return (
     <select value={value} onChange={(e) => onChange(+e.target.value)} className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm bg-white">
-      <option value={0}>0%</option><option value={12}>12%</option><option value={15}>15%</option><option value={-1}>No obj</option><option value={-2}>Exento</option>
+      {vatRateOptions(value).map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
+      <option value={-1}>No objeto</option>
+      <option value={-2}>Exento</option>
     </select>
   );
 }

@@ -173,7 +173,9 @@ async function compute104({ clinicId, range, editable = {} }) {
   };
   const retIvaDocs = [];
   for (const p of compras) {
-    const headerGravada = r2((Number(p.subtotal12) || 0) + (Number(p.subtotal15) || 0));
+    // Base gravada de cabecera = TODAS las tarifas positivas (5 %, 12 % histórico, 15 %).
+    // Omitir `subtotal5` dejaba la base del 5 % fuera del 104 y el casillero 540 en cero.
+    const headerGravada = r2((Number(p.subtotal5) || 0) + (Number(p.subtotal12) || 0) + (Number(p.subtotal15) || 0));
     const base0 = Number(p.subtotal0) || 0;
     const noObjeto = Number(p.subtotalNoObjeto) || 0;
     const exento = Number(p.subtotalExento) || 0;

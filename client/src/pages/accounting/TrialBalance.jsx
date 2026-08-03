@@ -3,6 +3,7 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlineScale } from 'react-icons/hi2';
 import { fmt, startOfMonth, today } from './_utils';
+import ExcelButton from '../../components/ExcelButton';
 
 export default function TrialBalance() {
   const [startDate, setStart] = useState(startOfMonth());
@@ -25,6 +26,11 @@ export default function TrialBalance() {
         <div><label className="text-xs text-slate-500">Desde</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
         <div><label className="text-xs text-slate-500">Hasta</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
         <button type="button" onClick={load} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg cursor-pointer">Consultar</button>
+        <ExcelButton
+          url="/journal-entries/trial-balance.xlsx"
+          params={{ startDate, endDate }}
+          filename={`balance_comprobacion_${startDate}_${endDate}.xlsx`}
+        />
       </div>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
         <table className="tbl">

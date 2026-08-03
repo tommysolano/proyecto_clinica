@@ -502,17 +502,19 @@ test('FLUJO 19 — Cierre anual genera asiento de resultados (clinicId string, c
   const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-03-15') });
   const cid = String(clinicId); // producción: req.clinicId llega como string del JWT
   const serv = await H.makeProduct(clinicId, { category: 'servicio', salePrice: 100, unlimited: true, taxCategory: 'IVA_0' });
-  // Ingreso 300 (3 ventas de contado) en el año
+  // Ingreso 300 (3 ventas de contado) en el año. Las ventas van con fecha de HOY: una venta no
+  // se registra con fecha pasada (ver fiscalDocumentDate.integration.test.js).
+  const hoy = H.docDate(0);
   for (let i = 0; i < 3; i++) {
     await H.runController(sale.createSale, H.mockReq(cid, userId, {
-      items: [{ product: serv._id, quantity: 1, unitPrice: 100 }], paymentMethod: 'efectivo', date: new Date('2026-04-10'),
+      items: [{ product: serv._id, quantity: 1, unitPrice: 100 }], paymentMethod: 'efectivo', date: hoy,
     }));
   }
   // Gasto 120 vía movimiento de caja
   await H.runController(cash.open, H.mockReq(cid, userId, { openingBalance: 0 }));
-  await H.runController(cash.addMovement, H.mockReq(cid, userId, { type: 'GASTO', amount: 120, description: 'Renta', date: new Date('2026-04-11') }));
+  await H.runController(cash.addMovement, H.mockReq(cid, userId, { type: 'GASTO', amount: 120, description: 'Renta', date: hoy }));
 
-  const r = await H.runController(fiscal.closeYear, H.mockReq(cid, userId, { year: 2026 }));
+  const r = await H.runController(fiscal.closeYear, H.mockReq(cid, userId, { year: hoy.getFullYear() }));
   assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
   // Utilidad = 300 ingresos - 120 gasto = 180
   assert.equal(r.payload.utilidad, 180, 'utilidad del ejercicio incorrecta: ' + JSON.stringify(r.payload));

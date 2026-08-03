@@ -15,7 +15,8 @@ const saleItemSchema = new mongoose.Schema({
   taxCodeSri: { type: String, default: '4' },
   taxCategory: {
     type: String,
-    enum: ['IVA_15', 'IVA_12', 'IVA_0', 'EXENTO', 'NO_OBJETO', 'ICE'],
+    // IVA_12 se conserva SOLO por las ventas anteriores a la derogación de esa tarifa.
+    enum: ['IVA_15', 'IVA_5', 'IVA_12', 'IVA_0', 'EXENTO', 'NO_OBJETO', 'ICE'],
     default: 'IVA_15',
   },
   priceIncludesVat: { type: Boolean, default: true },

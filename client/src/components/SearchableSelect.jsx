@@ -17,7 +17,9 @@ const norm = (s) => String(s ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toL
  *  - placeholder, searchPlaceholder, disabled, allowClear, required, className, size('sm'|'md')
  *  - renderOption: (opt) => node  (opcional, para opciones enriquecidas)
  *  - menuMinWidth: ancho mínimo del panel en px (útil dentro de celdas de tabla angostas;
- *    el panel nunca es más angosto que esto ni se sale de la ventana). Default 0 = ancho del trigger.
+ *    el panel nunca es más angosto que esto ni se sale de la ventana). Por defecto 240: dentro
+ *    de una celda estrecha (bodega, producto…) el panel heredaba el ancho del trigger y las
+ *    opciones salían cortadas e ilegibles. Nunca encoge un trigger ancho: solo pone un suelo.
  *  - wrapOptions: si true, las opciones largas se muestran en varias líneas (no se truncan).
  */
 export default function SearchableSelect({
@@ -35,7 +37,7 @@ export default function SearchableSelect({
   className = '',
   renderOption,
   size = 'md',
-  menuMinWidth = 0,
+  menuMinWidth = 240,
   wrapOptions = false,
 }) {
   const [open, setOpen] = useState(false);

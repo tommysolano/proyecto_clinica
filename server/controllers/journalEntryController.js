@@ -6,6 +6,7 @@ const { createEntry, reverseEntry, applyToBalances, nextEntryNumber, assertPerio
 const { getAccountAndDescendants } = require('../utils/accountHierarchy');
 const { startOfDay, endOfDay } = require('../utils/dates');
 const { asObjectId } = require('../utils/objectId');
+const { newWorkbook, addSheet, sendWorkbook, captureJson, excelHandler, periodLabel } = require('../utils/excelReport');
 
 /**
  * Resumen bancario para el Libro Mayor: si alguna de las cuentas consultadas
@@ -375,3 +376,173 @@ exports.trialBalance = async (req, res) => {
     res.status(500).json({ message: e.message });
   }
 };
+
+// ─────────────────────────── Exportaciones a Excel ───────────────────────────
+// Cada una reutiliza el controlador JSON de su pantalla (`captureJson`): el archivo dice
+// exactamente lo mismo que se está viendo, y no hay una segunda consulta que mantener.
+
+/** LIBRO MAYOR en Excel: movimientos de la cuenta con saldo corrido, más el resumen bancario. */
+exports.ledgerExcel = excelHandler(async (req, res) => {
+  const data = await captureJson(exports.ledger, req);
+  const wb = newWorkbook();
+  const cuenta = `${data.account?.code || ''} - ${data.account?.name || ''}`.trim();
+
+  addSheet(wb, {
+    title: 'Libro Mayor',
+    meta: [
+      ['Reporte', 'Libro Mayor'],
+      ['Cuenta', cuenta],
+      ['Naturaleza', data.account?.nature || ''],
+      ['Período', periodLabel(req.query)],
+      ['Saldo inicial', data.opening],
+      ['Total débito', data.debit],
+      ['Total crédito', data.credit],
+      ['Movimiento neto', data.movement],
+      ['Saldo final', data.closing],
+      ...(data.isParent ? [['Cuenta agrupadora', `Incluye ${data.includedAccounts?.length || 0} cuentas: ${(data.includedAccounts || []).map((a) => a.code).join(', ')}`]] : []),
+    ],
+    columns: [
+      { header: 'Fecha', key: 'date', width: 12, date: true },
+      { header: 'Asiento', key: 'number', width: 14 },
+      { header: 'Cuenta', key: 'accountCode', width: 14 },
+      { header: 'Nombre de cuenta', key: 'accountName', width: 30 },
+      { header: 'Descripción', key: 'description', width: 46 },
+      { header: 'Origen', key: 'source', width: 16 },
+      { header: 'Débito', key: 'debit', width: 14, money: true },
+      { header: 'Crédito', key: 'credit', width: 14, money: true },
+      { header: 'Saldo', key: 'saldo', width: 14, money: true },
+    ],
+    rows: data.rows || [],
+    totals: { debit: data.debit, credit: data.credit, saldo: data.closing },
+    notes: ['Solo se incluyen asientos CONTABILIZADOS. El saldo corrido sigue la naturaleza de la cuenta consultada.'],
+  });
+
+  if (data.bankSummary?.accounts?.length) {
+    addSheet(wb, {
+      title: 'Resumen bancario',
+      meta: [['Período', periodLabel(req.query)]],
+      columns: [
+        { header: 'Cuenta bancaria', key: 'name', width: 28 },
+        { header: 'Banco', key: 'bank', width: 20 },
+        { header: 'N° cuenta', key: 'accountNumber', width: 20 },
+        { header: 'Saldo inicial', key: 'opening', width: 16, money: true },
+        { header: 'Entradas', key: 'inflow', width: 16, money: true },
+        { header: 'Salidas', key: 'outflow', width: 16, money: true },
+        { header: 'Saldo final', key: 'closing', width: 16, money: true },
+      ],
+      rows: data.bankSummary.accounts,
+      totals: data.bankSummary.totals,
+      totalsLabel: 'CONSOLIDADO',
+    });
+  }
+
+  const slug = String(data.account?.code || 'cuenta').replace(/[^\w.-]+/g, '_');
+  await sendWorkbook(res, wb, `mayor_${slug}_${Date.now()}.xlsx`);
+});
+
+/** BALANCE DE COMPROBACIÓN en Excel. */
+exports.trialBalanceExcel = excelHandler(async (req, res) => {
+  const data = await captureJson(exports.trialBalance, req);
+  const wb = newWorkbook();
+  addSheet(wb, {
+    title: 'Balance de comprobación',
+    meta: [
+      ['Reporte', 'Balance de comprobación'],
+      ['Período', periodLabel(req.query)],
+    ],
+    columns: [
+      { header: 'Código', key: 'code', width: 16 },
+      { header: 'Cuenta', key: 'name', width: 44 },
+      { header: 'Tipo', key: 'type', width: 14 },
+      { header: 'Naturaleza', key: 'nature', width: 12 },
+      { header: 'Débito', key: 'debit', width: 16, money: true },
+      { header: 'Crédito', key: 'credit', width: 16, money: true },
+      { header: 'Saldo', key: 'saldo', width: 16, money: true },
+    ],
+    rows: data.rows || [],
+    totals: { debit: data.totals?.debit, credit: data.totals?.credit },
+    notes: ['Solo cuentas de movimiento con asientos CONTABILIZADOS en el período.'],
+  });
+  await sendWorkbook(res, wb, `balance_comprobacion_${Date.now()}.xlsx`);
+});
+
+/**
+ * LIBRO DIARIO en Excel: una fila por LÍNEA de asiento (no por asiento), que es como lo pide
+ * un contador para cuadrar. Se exporta el rango completo del filtro, sin la paginación de la
+ * pantalla: un Excel de "página 1 de 40" no sirve para nada.
+ */
+exports.journalExcel = excelHandler(async (req, res) => {
+  const { startDate, endDate, account, costCenter, source, status, q } = req.query;
+  const filter = { clinic: req.clinicId };
+  if (startDate || endDate) {
+    filter.date = {};
+    if (startDate) filter.date.$gte = startOfDay(startDate);
+    if (endDate) filter.date.$lte = endOfDay(endDate);
+  }
+  if (source) filter.source = source;
+  if (status) filter.status = status;
+  if (account) filter['lines.account'] = account;
+  if (costCenter) filter['lines.costCenter'] = costCenter;
+  if (q) filter.$or = [{ number: new RegExp(q, 'i') }, { description: new RegExp(q, 'i') }];
+
+  const entries = await JournalEntry.find(filter)
+    .populate('createdBy', 'name')
+    .sort({ date: 1, number: 1 })
+    .lean();
+
+  const accountIds = new Set();
+  for (const e of entries) for (const l of e.lines || []) if (l.account) accountIds.add(String(l.account));
+  const accounts = await ChartOfAccount.find({ _id: { $in: [...accountIds] } }).select('code name').lean();
+  const accById = new Map(accounts.map((a) => [String(a._id), a]));
+
+  const rows = [];
+  let debit = 0;
+  let credit = 0;
+  for (const e of entries) {
+    for (const l of e.lines || []) {
+      const a = accById.get(String(l.account));
+      debit += Number(l.debit) || 0;
+      credit += Number(l.credit) || 0;
+      rows.push({
+        date: e.date,
+        number: e.number,
+        status: e.status,
+        source: e.source || '',
+        entryDescription: e.description || '',
+        accountCode: a?.code || '',
+        accountName: a?.name || '',
+        lineDescription: l.description || '',
+        debit: Number(l.debit) || 0,
+        credit: Number(l.credit) || 0,
+        createdBy: e.createdBy?.name || '',
+      });
+    }
+  }
+
+  const wb = newWorkbook();
+  addSheet(wb, {
+    title: 'Libro Diario',
+    meta: [
+      ['Reporte', 'Libro Diario'],
+      ['Período', periodLabel(req.query)],
+      ['Asientos', entries.length],
+      ['Líneas', rows.length],
+    ],
+    columns: [
+      { header: 'Fecha', key: 'date', width: 12, date: true },
+      { header: 'Asiento', key: 'number', width: 14 },
+      { header: 'Estado', key: 'status', width: 15 },
+      { header: 'Origen', key: 'source', width: 16 },
+      { header: 'Descripción del asiento', key: 'entryDescription', width: 40 },
+      { header: 'Código', key: 'accountCode', width: 14 },
+      { header: 'Cuenta', key: 'accountName', width: 32 },
+      { header: 'Detalle de la línea', key: 'lineDescription', width: 34 },
+      { header: 'Débito', key: 'debit', width: 14, money: true },
+      { header: 'Crédito', key: 'credit', width: 14, money: true },
+      { header: 'Registró', key: 'createdBy', width: 20 },
+    ],
+    rows,
+    totals: { debit: +debit.toFixed(2), credit: +credit.toFixed(2) },
+  });
+  await sendWorkbook(res, wb, `libro_diario_${Date.now()}.xlsx`);
+});

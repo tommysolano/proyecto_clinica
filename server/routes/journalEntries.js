@@ -6,6 +6,10 @@ router.use(auth, requireClinic);
 router.get('/', requireRole('admin', 'contabilidad'), c.list);
 router.get('/ledger', requireRole('admin', 'contabilidad'), c.ledger);
 router.get('/trial-balance', requireRole('admin', 'contabilidad'), c.trialBalance);
+// Exportaciones a Excel (antes de '/:id' para que no las capture la ruta con parámetro).
+router.get('/ledger.xlsx', requireRole('admin', 'contabilidad'), c.ledgerExcel);
+router.get('/trial-balance.xlsx', requireRole('admin', 'contabilidad'), c.trialBalanceExcel);
+router.get('/export.xlsx', requireRole('admin', 'contabilidad'), c.journalExcel);
 router.get('/by-source', requireRole('admin', 'contabilidad'), c.bySource);
 router.get('/:id/pdf', requireRole('admin', 'contabilidad'), c.pdf);
 router.get('/:id', requireRole('admin', 'contabilidad'), c.get);

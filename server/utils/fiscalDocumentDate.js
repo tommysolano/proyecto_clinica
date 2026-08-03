@@ -1,11 +1,18 @@
 /**
- * FECHA DE LOS DOCUMENTOS FISCALES (compras, ventas/facturas y retenciones).
+ * FECHA DE LOS DOCUMENTOS FISCALES QUE EMITIMOS NOSOTROS (ventas / facturas).
  *
- * Regla de negocio pedida por la administración: la fecha de un comprobante es AUTOMÁTICA
- * (hoy) y el sistema NO admite registrar un documento con fecha ANTERIOR a hoy —tampoco
- * importándolo—. Se centraliza aquí para que todas las vías (formulario, importador TXT/XML
- * del SRI, emisión de retención) apliquen exactamente la misma comprobación, igual que
- * `appointmentDate.js` hace con las citas.
+ * Regla de negocio pedida por la administración: la fecha de un comprobante PROPIO es
+ * AUTOMÁTICA (hoy) y el sistema NO admite emitirlo con fecha ANTERIOR a hoy. Se centraliza
+ * aquí para que todas las vías apliquen la misma comprobación, igual que `appointmentDate.js`
+ * hace con las citas.
+ *
+ * ── DÓNDE **NO** APLICA: LAS COMPRAS ────────────────────────────────────────────────────
+ * Una factura de compra la emite el PROVEEDOR y llega días o semanas después: su fecha de
+ * emisión es un dato del comprobante recibido, no del día en que se digita. Obligarla a "hoy"
+ * impedía registrar las facturas del mes pasado y hacía que el importador del SRI rechazara
+ * meses anteriores —justo para lo que sirve—. En compras, lo que protege el pasado es el
+ * PERÍODO FISCAL (`assertPeriodOpen`): un mes cerrado no admite movimientos, que es el
+ * control contable correcto.
  *
  * Zona horaria: todo el sistema corre en America/Guayaquil (index.js fuerza process.env.TZ),
  * así que "hoy" es el día calendario ecuatoriano.
@@ -13,7 +20,6 @@
  * MATIZ IMPORTANTE (no es una excepción a la regla, es lo que hace la regla aplicable):
  * al EDITAR un documento ya guardado solo se comprueba la fecha si CAMBIA. Un comprobante
  * histórico que ya existe conserva su fecha; lo que se prohíbe es *fijar* una fecha pasada.
- * Sin esto, corregir el proveedor de una compra del mes pasado sería imposible.
  */
 
 const { parseLocalDate, startOfToday } = require('./appointmentDate');

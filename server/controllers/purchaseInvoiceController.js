@@ -16,7 +16,6 @@ const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOp
 const { getAccount } = require('../utils/accountMap');
 const { openPayable, voidPayable } = require('../utils/subledger');
 const { invoiceDate } = require('../utils/dates');
-const { assertNotPastDocumentDate } = require('../utils/fiscalDocumentDate');
 const kardex = require('../utils/kardex');
 const { parsePurchaseInvoiceXml } = require('../utils/sriXmlParser');
 const { computeRetention, groupLineRetentions, lineRetentionList } = require('../utils/retentionCalculator');
@@ -131,23 +130,31 @@ async function openPayableForInvoice(inv, sup, req, session) {
 }
 
 function calcTotals(invoice) {
-  let s0 = 0, s12 = 0, s15 = 0, sNo = 0, sEx = 0, iva = 0;
+  let s0 = 0, s5 = 0, s12 = 0, s15 = 0, sNo = 0, sEx = 0, iva = 0;
   for (const it of invoice.items || []) {
     const base = (it.quantity || 1) * (it.unitPrice || 0) - (it.discount || 0);
     it.subtotal = base;
     if (it.ivaRate === 0) s0 += base;
+    else if (it.ivaRate === 5) { s5 += base; it.ivaAmount = base * 0.05; iva += it.ivaAmount; }
     else if (it.ivaRate === 12) { s12 += base; it.ivaAmount = base * 0.12; iva += it.ivaAmount; }
     else if (it.ivaRate === 15) { s15 += base; it.ivaAmount = base * 0.15; iva += it.ivaAmount; }
     else if (it.ivaRate === -1) sNo += base;
     else if (it.ivaRate === -2) sEx += base;
-    else { it.ivaAmount = base * (it.ivaRate / 100); iva += it.ivaAmount; }
+    else {
+      // Cualquier otra tarifa positiva (8 %, 13 %, 14 %… histórica o nueva). Antes su base
+      // caía en ningún bucket y quedaba FUERA del subtotal: el total salía mal.
+      it.ivaAmount = base * (it.ivaRate / 100);
+      iva += it.ivaAmount;
+      s15 += base;   // se informa como base gravada (el desglose por tarifa lo da la línea)
+    }
   }
   invoice.subtotal0 = s0;
+  invoice.subtotal5 = s5;
   invoice.subtotal12 = s12;
   invoice.subtotal15 = s15;
   invoice.subtotalNoObjeto = sNo;
   invoice.subtotalExento = sEx;
-  invoice.subtotal = s0 + s12 + s15 + sNo + sEx;
+  invoice.subtotal = s0 + s5 + s12 + s15 + sNo + sEx;
   invoice.iva = +iva.toFixed(2);
   const retTotal = (invoice.retentions || []).reduce((s, r) => s + (r.amount || 0), 0);
   invoice.retentionTotal = +retTotal.toFixed(2);
@@ -583,8 +590,11 @@ exports.create = async (req, res) => {
         // Ancla al mediodía local: una fecha del día 1 enviada como medianoche UTC no debe caer
         // en el mes anterior (Ecuador UTC−5) y desaparecer del 103/104.
         if (data.fechaEmision) data.fechaEmision = invoiceDate(data.fechaEmision);
-        // La fecha del comprobante es automática (hoy) y no admite fechas atrasadas.
-        assertNotPastDocumentDate(data.fechaEmision, { label: 'la factura de compra' });
+        // Una COMPRA sí admite fecha pasada: la factura la emite el PROVEEDOR y llega días o
+        // semanas después, así que su fecha de emisión es un dato del comprobante, no del día
+        // en que se digita. Lo que sigue protegiendo el pasado es el PERÍODO FISCAL: si el mes
+        // ya está cerrado, `assertPeriodOpen` la rechaza. (La restricción de "nunca antes de
+        // hoy" sigue vigente en VENTAS, donde el comprobante lo emitimos nosotros.)
         calcTotals(data);
         await assertPeriodOpen(req.clinicId, data.fechaEmision || new Date(), { session });
         const sup = await Supplier.findOne({ _id: data.supplier, clinic: req.clinicId }).session(session);
@@ -812,9 +822,9 @@ exports.update = async (req, res) => {
         await assertPeriodOpen(req.clinicId, inv.fechaEmision, { session });
         const nextDate = req.body.fechaEmision ? invoiceDate(req.body.fechaEmision) : inv.fechaEmision;
         await assertPeriodOpen(req.clinicId, nextDate, { session });
-        // No se puede MOVER la fecha hacia atrás. Conservar la fecha que ya tenía el documento
-        // sí es válido (si no, una compra histórica no se podría ni corregir).
-        assertNotPastDocumentDate(nextDate, { label: 'la factura de compra', current: inv.fechaEmision });
+        // La fecha de una compra puede corregirse hacia atrás (es la del comprobante del
+        // proveedor). El control es el período fiscal, ya comprobado arriba sobre la fecha
+        // anterior y sobre la nueva.
         if (inv.journalEntry) {
           await reverseEntry({
             clinicId: req.clinicId,
@@ -958,11 +968,13 @@ function parseSriDate(s) {
   return isNaN(d) ? null : d;
 }
 
-// Aproxima la tarifa de IVA a la más cercana del catálogo (0/12/15) a partir de iva/base.
+// Aproxima la tarifa de IVA a la más cercana del catálogo del SRI a partir de iva/base.
+// El 5 % entra al catálogo (tarifa vigente): sin él, una compra al 5 % se importaba como 12 %.
+const SRI_VAT_RATES = [5, 12, 14, 15];
 function snapIvaRate(iva, base) {
   if (!(iva > 0) || !(base > 0)) return 0;
   const pct = (iva / base) * 100;
-  return [12, 15].reduce((a, b) => (Math.abs(b - pct) < Math.abs(a - pct) ? b : a));
+  return SRI_VAT_RATES.reduce((a, b) => (Math.abs(b - pct) < Math.abs(a - pct) ? b : a));
 }
 
 // Mapea el tipo de comprobante del SRI a nuestro docType.
@@ -1112,12 +1124,9 @@ exports.importTxt = async (req, res) => {
       if (seenInFile.has(fileKey)) { skipped++; continue; }
       seenInFile.add(fileKey);
       if ((r.claveAcceso && existingClaves.has(r.claveAcceso)) || (r.serie && existingSerieKeys.has(serieKey))) { skipped++; continue; }
-      // Regla de fechas: ningún comprobante puede quedar registrado con fecha anterior a hoy,
-      // tampoco importado. La fila se RECHAZA (no se le inventa otra fecha: eso falsearía el
-      // 103/104, que suman por la fecha del comprobante).
-      try {
-        assertNotPastDocumentDate(r.fechaEmision, { label: `el comprobante ${r.serie || ''}`.trim() });
-      } catch (dateErr) { errors.push({ line: r.line, error: dateErr.message }); continue; }
+      // La fecha del comprobante se respeta TAL CUAL viene del SRI (nunca se reescribe): el
+      // importador debe poder cargar meses anteriores, que es justamente para lo que sirve.
+      // Un mes ya cerrado lo sigue bloqueando el período fiscal al contabilizar.
       docs.push({
         clinic: req.clinicId, supplier: sup._id,
         docType: r.docType,
@@ -1133,8 +1142,10 @@ exports.importTxt = async (req, res) => {
         }],
         // Conserva los montos EXACTOS del SRI (no se recalculan al importar).
         subtotal0: r.ivaRate === 0 ? r.subtotal : 0,
+        subtotal5: r.ivaRate === 5 ? r.subtotal : 0,
         subtotal12: r.ivaRate === 12 ? r.subtotal : 0,
-        subtotal15: r.ivaRate === 15 ? r.subtotal : 0,
+        // Cualquier otra tarifa gravada (15 %, 14 %…) entra aquí como base gravada.
+        subtotal15: (r.ivaRate !== 0 && r.ivaRate !== 5 && r.ivaRate !== 12) ? r.subtotal : 0,
         subtotal: r.subtotal, iva: r.iva, total: r.total, balance: r.total,
         // Snapshot inmutable para comparar contra lo que edite el usuario al contabilizar.
         sriTotals: { subtotal: r.subtotal, iva: r.iva, total: r.total },
@@ -1240,6 +1251,79 @@ exports.wipeAll = async (req, res) => {
  * Borra UNA factura de compra (y sus artefactos). Útil para eliminar un comprobante
  * individual mal importado sin tener que reiniciar todas las compras.
  */
+/**
+ * ABONOS de una factura de compra: los pagos (totales o parciales) aplicados a ella.
+ *
+ * Fuente única: los `Payment` (type PAGO) que la aplican. No se deriva del saldo, porque el
+ * contador necesita ver CADA abono con su fecha, método, banco y comprobante —y también los
+ * anulados, que explican por qué el saldo volvió a subir—.
+ *
+ * Aritmética (la misma que usa la CxP):
+ *     neto a pagar = total − retenciones      (la retención no se paga al proveedor)
+ *     abonado      = suma de los abonos vigentes
+ *     saldo        = neto − abonado           (`balance` del documento)
+ */
+exports.payments = async (req, res) => {
+  try {
+    const inv = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId })
+      .populate('supplier', 'razonSocial ruc')
+      .select('serie total retentionTotal balance status fechaEmision supplier paid');
+    if (!inv) return res.status(404).json({ message: 'No encontrada' });
+
+    const Payment = require('../models/Payment');
+    // Registra el esquema de User: sin esto, `populate('createdBy')` revienta con
+    // "Schema hasn't been registered" si este módulo se carga aislado (tests, scripts).
+    require('../models/User');
+    const pagos = await Payment.find({
+      clinic: req.clinicId,
+      type: 'PAGO',
+      'applications.docModel': 'PurchaseInvoice',
+      'applications.docRef': inv._id,
+    })
+      .populate('bankAccount', 'name bank accountNumber')
+      .populate('createdBy', 'name')
+      .sort({ date: 1, createdAt: 1 })
+      .lean();
+
+    const rows = pagos.map((p) => {
+      const monto = (p.applications || [])
+        .filter((a) => a.docModel === 'PurchaseInvoice' && String(a.docRef) === String(inv._id))
+        .reduce((s, a) => s + Number(a.amount || 0), 0);
+      return {
+        _id: p._id,
+        number: p.number,
+        date: p.date,
+        method: p.method,
+        bankAccount: p.bankAccount || null,
+        reference: p.reference || '',
+        checkNumber: p.checkNumber || '',
+        description: p.description || '',
+        status: p.status,
+        journalEntry: p.journalEntry || null,
+        createdBy: p.createdBy?.name || '',
+        amount: +monto.toFixed(2),
+      };
+    });
+
+    const vigentes = rows.filter((r) => r.status !== 'ANULADO');
+    const netoAPagar = +(Number(inv.total || 0) - Number(inv.retentionTotal || 0)).toFixed(2);
+    const abonado = +vigentes.reduce((s, r) => s + r.amount, 0).toFixed(2);
+
+    res.json({
+      invoice: {
+        _id: inv._id, serie: inv.serie, fechaEmision: inv.fechaEmision, status: inv.status,
+        supplier: inv.supplier, total: +Number(inv.total || 0).toFixed(2),
+        retentionTotal: +Number(inv.retentionTotal || 0).toFixed(2),
+      },
+      netoAPagar,
+      abonado,
+      saldo: +Number(inv.balance || 0).toFixed(2),
+      count: vigentes.length,
+      rows,
+    });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
 exports.remove = async (req, res) => {
   try {
     const inv = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId }).select('_id items serie');
@@ -1276,9 +1360,9 @@ exports.importXml = async (req, res) => {
           autorizacion: p.autorizacion, estab: p.estab, ptoEmi: p.ptoEmi, secuencial: p.secuencial,
         });
         if (dup) { skipped++; continue; }
-        // Misma regla de fechas que el importador TXT: un comprobante con fecha anterior a
-        // hoy se rechaza (nunca se le reescribe la fecha).
-        assertNotPastDocumentDate(p.fechaEmision, { label: `el comprobante ${p.serie || ''}`.trim() });
+        // Igual que el importador TXT: se conserva la fecha de emisión del XML del SRI, aunque
+        // sea de un mes anterior. Reescribirla falsearía el 103/104 y el ATS, que suman por la
+        // fecha del comprobante.
         const data = {
           clinic: req.clinicId, supplier: sup._id, docType: 'FACTURA',
           estab: p.estab, ptoEmi: p.ptoEmi, secuencial: p.secuencial, serie: p.serie,
@@ -1335,12 +1419,10 @@ exports.authorize = async (req, res) => {
           if (Array.isArray(rest.items)) {
             await classifyAndValidateItems(rest.items, { clinicId: req.clinicId, supplier: supForItems, session });
           }
-          const prevDate = inv.fechaEmision;
           Object.assign(inv, rest);
           if (inv.fechaEmision) inv.fechaEmision = invoiceDate(inv.fechaEmision);
-          // Al contabilizar no se puede mover la fecha hacia atrás; conservar la que ya traía
-          // el comprobante importado sí (el rechazo por fecha ocurrió al importarlo).
-          assertNotPastDocumentDate(inv.fechaEmision, { label: 'la factura de compra', current: prevDate });
+          // Al contabilizar se conserva la fecha del comprobante del proveedor (puede ser de un
+          // mes anterior). El período fiscal, comprobado justo abajo, es el que decide.
           calcTotals(inv);
         }
         await assertPeriodOpen(req.clinicId, inv.fechaEmision, { session });

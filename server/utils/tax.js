@@ -16,16 +16,24 @@ function inferTaxCategory(product = {}) {
 
 function categoryRate(category, productRate, defaultVatRate = 15) {
   if (['IVA_0', 'EXENTO', 'NO_OBJETO'].includes(category)) return 0;
-  if (category === 'IVA_12') return 12;
+  if (category === 'IVA_5') return 5;     // tarifa vigente para sectores específicos
+  if (category === 'IVA_12') return 12;   // derogada; solo documentos históricos
   if (category === 'IVA_15') return normalizeRate(productRate || defaultVatRate || 15);
   return normalizeRate(productRate || 0);
 }
 
+/**
+ * Código de tarifa de IVA del SRI (tabla 16 de la ficha técnica):
+ *   0 → 0 %, 2 → 12 %, 3 → 14 %, 4 → 15 %, 5 → 5 %, 6 → no objeto, 7 → exento, 10 → 13 %.
+ * El 5 % faltaba: una venta al 5 % se firmaba con código 0 y el SRI la liquidaba como exenta.
+ */
 function sriVatCode(category, rate, explicitCode) {
   if (explicitCode) return String(explicitCode);
   if (category === 'NO_OBJETO') return '6';
   if (category === 'EXENTO') return '7';
+  if (rate === 5) return '5';
   if (rate === 12) return '2';
+  if (rate === 13) return '10';
   if (rate === 14) return '3';
   if (rate === 15) return '4';
   return '0';

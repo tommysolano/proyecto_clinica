@@ -11,7 +11,61 @@ const { openReceivable, applyToReceivable, voidReceivable } = require('../utils/
 const kardex = require('../utils/kardex');
 const { createResolver, auditarDiferencias } = require('../services/costCenterPolicy');
 const { calculateSaleLine, summarizeSaleTaxes } = require('../utils/tax');
+const { assertNotPastDocumentDate } = require('../utils/fiscalDocumentDate');
 const { emitToClinic } = require('../realtime');
+
+/**
+ * Precio unitario de una línea de venta.
+ *
+ * Un producto puede tener VARIOS precios de venta (`salePrices[]`: público, corporativo,
+ * promoción…) de los cuales uno está activo y es el que refleja `salePrice`. El cajero puede
+ * elegir otro al vender, indicando `priceName` (preferido) o `unitPrice`.
+ *
+ * El precio se VALIDA contra la lista del producto. Si se aceptara cualquier `unitPrice` que
+ * llegue en el body, cualquiera con acceso al navegador podría facturar al precio que quisiera:
+ * la lista de precios dejaría de ser una política y pasaría a ser una sugerencia.
+ *
+ * Productos sin lista (los anteriores a esta función) siguen funcionando: su único precio
+ * válido es `salePrice`.
+ */
+function resolveUnitPrice(product, item) {
+  const lista = Array.isArray(product.salePrices) && product.salePrices.length
+    ? product.salePrices
+    : [{ name: 'General', price: Number(product.salePrice) || 0, active: true }];
+
+  // 1) Por nombre de precio: es lo que manda la UI y no depende de redondeos.
+  if (item.priceName) {
+    const elegido = lista.find((p) => String(p.name) === String(item.priceName));
+    if (!elegido) {
+      throw Object.assign(
+        new Error(`El precio "${item.priceName}" no existe en la lista de "${product.name}"`),
+        { status: 400 }
+      );
+    }
+    return Number(elegido.price);
+  }
+
+  // 2) Por importe: se admite solo si coincide con alguno de la lista.
+  if (item.unitPrice !== undefined && item.unitPrice !== null && item.unitPrice !== '') {
+    const pedido = +Number(item.unitPrice).toFixed(2);
+    if (!Number.isFinite(pedido)) {
+      throw Object.assign(new Error(`Precio inválido para "${product.name}"`), { status: 400 });
+    }
+    const existe = lista.some((p) => Math.abs(+Number(p.price).toFixed(2) - pedido) < 0.005);
+    if (!existe) {
+      const opciones = lista.map((p) => `${p.name} $${Number(p.price).toFixed(2)}`).join(', ');
+      throw Object.assign(
+        new Error(`El precio $${pedido.toFixed(2)} no está en la lista de "${product.name}". Precios disponibles: ${opciones}`),
+        { status: 400 }
+      );
+    }
+    return pedido;
+  }
+
+  // 3) Sin indicación: el precio activo.
+  return Number(product.salePrice) || 0;
+}
+exports._resolveUnitPrice = resolveUnitPrice;
 
 exports.getSales = async (req, res) => {
   try {
@@ -121,6 +175,11 @@ exports.createSale = async (req, res) => {
       const saleWarnings = [];
       const txSaleId = await runInTransaction(async (session) => {
         const saleDate = req.body.date ? new Date(req.body.date) : new Date();
+        // Una VENTA no se registra con fecha pasada: el comprobante lo emitimos nosotros y su
+        // factura electrónica se emite hoy (el SRI rechaza una emisión atrasada). Registrar la
+        // venta ayer y facturarla hoy dejaría la venta y su factura en meses distintos.
+        // La regla contraria rige en COMPRAS: allí la fecha es la del comprobante del proveedor.
+        assertNotPastDocumentDate(saleDate, { label: 'la venta' });
         await assertPeriodOpen(req.clinicId, saleDate, { session });
 
         const txProductIds = [...new Set(items.map((i) => String(i.product)))];
@@ -195,10 +254,15 @@ exports.createSale = async (req, res) => {
 
         const txSaleItems = items.map((item) => {
           const product = txProductMap.get(String(item.product));
+          // PRECIO DE LA LÍNEA: por defecto el activo del producto (`salePrice`). El cajero
+          // puede escoger OTRO de la lista de precios del producto, pero solo uno de ESA lista:
+          // aceptar cualquier `unitPrice` del cliente permitiría facturar a un precio inventado
+          // desde el navegador. Un precio que no está en la lista se rechaza.
+          const unitPrice = resolveUnitPrice(product, item);
           const tax = calculateSaleLine({
             product,
             quantity: item.quantity,
-            unitPrice: item.unitPrice,
+            unitPrice,
             discount: item.discount || 0,
             priceIncludesVat: item.priceIncludesVat,
           });
@@ -243,10 +307,12 @@ exports.createSale = async (req, res) => {
               amount: txTotals.total,
               bankAccount: req.body.bankAccount || null,
               creditCard: req.body.creditCard || null,
+              cardType: req.body.cardType || '',
               cardPos: req.body.cardPos || '',
               cardLote: req.body.cardLote || '',
               cardVoucher: req.body.cardVoucher || '',
             }];
+        const CARD_TYPES = new Set(['DEBITO', 'CREDITO', 'CORRIENTE']);
         const txPayments = rawPayments
           .map((p) => ({
             method: p.method,
@@ -255,6 +321,9 @@ exports.createSale = async (req, res) => {
             bankAccount: p.method === 'transferencia' ? (p.bankAccount || null) : null,
             reference: String(p.reference || '').trim(),
             creditCard: p.method === 'tarjeta' ? (p.creditCard || null) : null,
+            // Tipo elegido por el cajero (débito/crédito). Solo se acepta un valor del catálogo.
+            cardType: p.method === 'tarjeta' && CARD_TYPES.has(String(p.cardType || '').toUpperCase())
+              ? String(p.cardType).toUpperCase() : '',
             cardPos: p.method === 'tarjeta' ? (p.cardPos || '') : '',
             cardLote: p.method === 'tarjeta' ? String(p.cardLote || '').trim() : '',
             cardVoucher: p.method === 'tarjeta' ? String(p.cardVoucher || '').trim() : '',
@@ -264,16 +333,23 @@ exports.createSale = async (req, res) => {
         // SNAPSHOT del tipo de tarjeta (débito/crédito) en el momento de la venta: si mañana se
         // reconfigura la tarjeta, el reporte histórico NO puede cambiar. Sin esto, el reporte no
         // podía separar débito de crédito sin mentir sobre el pasado.
+        //
+        // MANDA LO QUE ELIGIÓ EL CAJERO. Un mismo adquirente (p. ej. Datafast) procesa débito y
+        // crédito con el mismo registro de tarjeta: derivar el tipo solo de `accountType` metía
+        // todas las ventas en la misma columna del reporte. La configuración de la tarjeta queda
+        // como respaldo cuando no se eligió tipo (ventas de clientes antiguos).
         const cardIds = [...new Set(txPayments.filter((p) => p.creditCard).map((p) => String(p.creditCard)))];
+        const byId = new Map();
         if (cardIds.length) {
           const cards = await CreditCard.find({ _id: { $in: cardIds }, clinic: req.clinicId }).session(session);
-          const byId = new Map(cards.map((c) => [String(c._id), c]));
-          for (const p of txPayments) {
-            const card = p.creditCard ? byId.get(String(p.creditCard)) : null;
-            if (!card) continue;
-            p.cardTypeSnapshot = card.accountType || '';
-            p.cardBrandSnapshot = card.brand || '';
-          }
+          for (const c of cards) byId.set(String(c._id), c);
+        }
+        for (const p of txPayments) {
+          if (p.method !== 'tarjeta') continue;
+          const card = p.creditCard ? byId.get(String(p.creditCard)) : null;
+          p.cardTypeSnapshot = p.cardType || card?.accountType || '';
+          p.cardBrandSnapshot = card?.brand || '';
+          delete p.cardType;   // no se persiste aparte: el snapshot es la única fuente
         }
         if (!txPayments.length) throw Object.assign(new Error('Debe indicar al menos un método de pago'), { status: 400 });
         for (const p of txPayments) {

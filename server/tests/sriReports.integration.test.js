@@ -347,8 +347,12 @@ test('12) ats-preview (visual) toma compras/ventas del rango anual', async () =>
   const r = await H.runController(reports.atsPreview, H.mockReq(clinicId, userId, {}, { query: { periodType: 'ANNUAL', year: 2026 } }));
   assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
   assert.equal(r.payload.compras.length, 1);
-  assert.equal(r.payload.compras[0].retIva, 22.5);
-  assert.equal(r.payload.compras[0].retRenta, 10);
+  // Campos con el nombre del ATS: `_retIva`/`_retRenta` son los auxiliares de pantalla.
+  assert.equal(r.payload.compras[0]._retIva, 22.5);
+  assert.equal(r.payload.compras[0]._retRenta, 10);
+  assert.equal(r.payload.compras[0].valRetServ100, 22.5, 'la retención de IVA va al tramo del ATS');
+  assert.equal(r.payload.compras[0].air.length, 1, 'la retención en la fuente va en <air>');
+  assert.equal(r.payload.compras[0].air[0].codRetAir, '312');
   assert.equal(r.payload.ventas.length, 1);
   assert.equal(r.payload.totals.ventasBase, 100);
   assert.equal(r.payload.totals.comprasRetRenta, 10);
@@ -376,9 +380,15 @@ test('13) XML 104/103/ATS mensual generan XML válido', async () => {
   assert.match(String(f103.payload), /<form103>/);
   assert.match(String(f103.payload), /<codigo>312<\/codigo>/);
 
-  const ats = await H.runController(reports.ats, H.mockReq(clinicId, userId, {}, q));
-  assert.equal(ats.statusCode, 200);
+  // El ATS avisa de los datos que el SRI rechazaría; estos comprobantes de prueba no traen
+  // autorización, así que se pide `force` para comprobar solo la GENERACIÓN del XML.
+  const ats = await H.runController(reports.ats, H.mockReq(clinicId, userId, {}, {
+    query: { ...q.query, force: 'true' },
+  }));
+  assert.equal(ats.statusCode, 200, JSON.stringify(ats.payload));
   assert.match(String(ats.payload), /<iva>/);
+  assert.match(String(ats.payload), /<codigoOperativo>IVA<\/codigoOperativo>/);
+  assert.match(ats.headers['Content-Disposition'], /AT062026\.xml/, 'nombre oficial ATmmaaaa.xml');
 });
 
 // ── 13b) legacy: year/month sin periodType sigue siendo mensual ────────────────
@@ -405,7 +415,7 @@ test('14) XML 104/103/ATS bloquean período no mensual con mensaje claro', async
 
   const ats = await H.runController(reports.ats, H.mockReq(clinicId, userId, {}, annual));
   assert.equal(ats.statusCode, 400);
-  assert.match(ats.payload.message, /reporte visual/);
+  assert.match(ats.payload.message, /MES/i, 'el ATS se declara por mes');
 });
 
 // ── purchase-sales list (VC): rango + etiqueta ────────────────────────────────
@@ -578,8 +588,8 @@ test('F104 XML: factura mixta emite baseTarifa0 y baseGravada separadas', async 
 test('ATS XML: factura mixta pone base 0% en baseImponible y gravada en baseImpGrav', async () => {
   const { clinicId, userId } = await H.seedClinic({ date: new Date('2026-06-01') });
   await makeInvoice(clinicId, { fechaEmision: '10/06/2026', base: 300, iva: 30, taxBreakdown: { base0: 100, baseGravada: 200, iva: 30 } });
-  const r = await H.runController(reports.ats, H.mockReq(clinicId, userId, {}, monthQ));
-  assert.equal(r.statusCode, 200);
+  const r = await H.runController(reports.ats, H.mockReq(clinicId, userId, {}, { query: { ...monthQ.query, force: 'true' } }));
+  assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
   const s = String(r.payload);
   const dv = s.match(/<detalleVentas>[\s\S]*?<\/detalleVentas>/)[0];
   assert.match(dv, /<baseImponible>100\.00<\/baseImponible>/, '0% va en baseImponible');
@@ -593,8 +603,9 @@ test('ATS visual: factura mixta separa base0 y baseGrav en ventas y totales', as
   await makeInvoice(clinicId, { fechaEmision: '10/06/2026', base: 300, iva: 30, ident: '0102030405', taxBreakdown: { base0: 100, baseGravada: 200, iva: 30 } });
   const r = await H.runController(reports.atsPreview, H.mockReq(clinicId, userId, {}, monthQ));
   assert.equal(r.statusCode, 200);
-  assert.equal(r.payload.ventas[0].base0, 100);
-  assert.equal(r.payload.ventas[0].baseGrav, 200);
+  // Nombres del ATS: `baseImponible` es la base 0% y `baseImpGrav` la gravada.
+  assert.equal(r.payload.ventas[0].baseImponible, 100);
+  assert.equal(r.payload.ventas[0].baseImpGrav, 200);
   assert.equal(r.payload.totals.ventasBase0, 100);
   assert.equal(r.payload.totals.ventasBaseGrav, 200);
   assert.equal(r.payload.totals.ventasBase, 300, 'base total sigue disponible');

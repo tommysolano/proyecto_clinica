@@ -11,6 +11,8 @@ const types = PRODUCT_TYPES;
 
 const emptyProduct = {
   code: '', name: '', description: '', category: 'insumo', categoria: '', inventoryCategory: '',
+  // `salePrices` es la lista; `salePrice` (el activo) lo deriva el backend de ella.
+  salePrices: [{ name: 'General', price: '', active: true }],
   purchasePrice: '', salePrice: '', stock: '', minStock: '5', unit: 'unidad', taxRate: '15',
   maxAppointmentsPerDay: '0',
   excludeFromFirstVisit: false,
@@ -32,6 +34,11 @@ function mapProductToForm(p) {
     category: p.category, categoria: p.categoria || '',
     inventoryCategory: p.inventoryCategory?._id || p.inventoryCategory || '',
     purchasePrice: String(p.purchasePrice),
+    // Productos anteriores a la lista de precios: se sintetiza una entrada con su precio único,
+    // para que el formulario tenga siempre algo que mostrar y editar.
+    salePrices: (p.salePrices || []).length
+      ? p.salePrices.map((s) => ({ name: s.name || 'General', price: String(s.price ?? ''), active: !!s.active }))
+      : [{ name: 'General', price: String(p.salePrice ?? ''), active: true }],
     salePrice: String(p.salePrice), stock: String(p.stock),
     minStock: String(p.minStock), unit: p.unit, taxRate: String(p.taxRate),
     maxAppointmentsPerDay: String(p.maxAppointmentsPerDay ?? 0),
@@ -181,14 +188,27 @@ export default function ProductFormModal({
       // también para SERVICIOS (categoría de clase SERVICIO, que aporta la cuenta de ingreso).
       // Los programas y demás ilimitados no llevan categoría.
       const inventoryCategory = (!unlimited || isService) ? (productForm.inventoryCategory || null) : null;
+      // Lista de precios: solo filas con importe válido. El backend normaliza (un único activo)
+      // y deja `salePrice` sincronizado con él, que es lo que lee el resto del sistema.
+      const salePrices = (productForm.salePrices || [])
+        .map((s) => ({ name: String(s.name || '').trim() || 'General', price: parseFloat(s.price), active: !!s.active }))
+        .filter((s) => Number.isFinite(s.price) && s.price >= 0);
+      if (!salePrices.length) {
+        toast.error('Ingresa al menos un precio de venta.');
+        return; // el finally restablece saving
+      }
+      if (!salePrices.some((s) => s.active)) salePrices[0].active = true;
+      const activo = salePrices.find((s) => s.active);
       const data = {
         ...productForm,
         inventoryCategory,
         categoria: unlimited ? '' : (productForm.categoria || ''),
         // Código vacío → el backend lo genera automáticamente.
         code: autoCode ? '' : (productForm.code || '').trim(),
-        purchasePrice: isService ? 0 : parseFloat(productForm.purchasePrice) || 0,
-        salePrice: parseFloat(productForm.salePrice),
+        // El costo NO se digita: lo fija la compra (kardex). Se conserva el valor previo.
+        purchasePrice: isService ? 0 : (parseFloat(productForm.purchasePrice) || 0),
+        salePrices,
+        salePrice: activo.price,
         stock: isService ? 0 : parseInt(productForm.stock) || 0,
         minStock: isService ? 0 : parseInt(productForm.minStock) || 5,
         unit: isService ? 'servicio' : productForm.unit,
@@ -370,16 +390,21 @@ export default function ProductFormModal({
             <label className="block text-sm font-medium text-slate-700 mb-1.5">Descripción</label>
             <input value={productForm.description} onChange={(e) => setProductForm({...productForm, description: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
           </div>
-          {productForm.category !== 'servicio' && (
-            <div>
-              <label className="block text-sm font-medium text-slate-700 mb-1.5">Precio compra</label>
-              <NumericInput step="0.01" value={productForm.purchasePrice} onChange={(e) => setProductForm({...productForm, purchasePrice: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
+          {/* PRECIO DE COMPRA: ya no se captura. El costo real lo fija la factura de compra
+              (capas FIFO del kardex); tecleado a mano quedaba obsoleto y no se usaba para nada
+              contable. En edición se muestra el costo promedio, solo informativo. */}
+          <div className="sm:col-span-2">
+            <SalePriceList
+              rows={productForm.salePrices}
+              onChange={(rows) => setProductForm({ ...productForm, salePrices: rows })}
+            />
+          </div>
+          {editingId && productForm.category !== 'servicio' && (
+            <div className="sm:col-span-2 text-[11px] text-slate-500 bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5">
+              Costo promedio actual (calculado por el kardex desde las compras):{' '}
+              <b className="font-mono text-slate-700">${Number(editingProduct?.averageCost || 0).toFixed(2)}</b>. El costo no se digita: lo fija la factura de compra.
             </div>
           )}
-          <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">Precio venta *</label>
-            <NumericInput step="0.01" value={productForm.salePrice} onChange={(e) => setProductForm({...productForm, salePrice: e.target.value})} required className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
-          </div>
           {productForm.category !== 'servicio' && (
             <>
               <div>
@@ -642,6 +667,79 @@ export default function ProductFormModal({
         </div>
       </form>
     </Modal>
+  );
+}
+
+/**
+ * LISTA DE PRECIOS DE VENTA. Un mismo producto se cobra distinto según el canal (público,
+ * corporativo, promoción, convenio…). El precio marcado con el check es el ACTIVO: el que se
+ * propone por defecto al vender; en el modal de venta se puede escoger otro de esta lista.
+ *
+ * El check se comporta como un radio (solo uno activo): es la invariante que mantiene el
+ * backend, así que la UI no debe permitir un estado que el servidor va a corregir por su
+ * cuenta —el usuario vería un precio distinto al que guardó—.
+ */
+function SalePriceList({ rows, onChange }) {
+  const list = rows?.length ? rows : [{ name: 'General', price: '', active: true }];
+  const set = (idx, patch) => onChange(list.map((r, i) => (i === idx ? { ...r, ...patch } : r)));
+  const setActive = (idx) => onChange(list.map((r, i) => ({ ...r, active: i === idx })));
+  const add = () => onChange([...list, { name: '', price: '', active: false }]);
+  const remove = (idx) => {
+    const next = list.filter((_, i) => i !== idx);
+    if (!next.length) return onChange([{ name: 'General', price: '', active: true }]);
+    // Si se borró el activo, el primero pasa a serlo (nunca queda la lista sin precio activo).
+    if (!next.some((r) => r.active)) next[0] = { ...next[0], active: true };
+    onChange(next);
+  };
+
+  return (
+    <div className="border border-emerald-200 bg-emerald-50/50 rounded-xl p-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="text-sm font-semibold text-slate-800">Precios de venta *</p>
+          <p className="text-[11px] text-slate-500">Marca con el check cuál es el precio activo (el que se cobra por defecto). Al vender se puede escoger otro de esta lista.</p>
+        </div>
+        <button type="button" onClick={add} className="text-xs px-2.5 py-1.5 bg-emerald-600 text-white rounded-lg border-none cursor-pointer shrink-0">+ Agregar precio</button>
+      </div>
+      <div className="space-y-1.5">
+        {list.map((row, idx) => (
+          <div key={idx} className="flex items-center gap-2 bg-white rounded-lg border border-slate-200 px-2 py-1.5">
+            <input
+              type="radio"
+              name="activeSalePrice"
+              checked={!!row.active}
+              onChange={() => setActive(idx)}
+              title="Precio activo (el que se cobra por defecto)"
+              className="w-4 h-4 accent-emerald-600 cursor-pointer shrink-0"
+            />
+            <input
+              value={row.name}
+              onChange={(e) => set(idx, { name: e.target.value })}
+              placeholder="Nombre (Ej: General, Corporativo, Promoción)"
+              className="flex-1 min-w-0 px-2 py-1.5 border border-slate-200 rounded text-sm bg-white"
+            />
+            <div className="flex items-center gap-1 shrink-0">
+              <span className="text-slate-400 text-sm">$</span>
+              <NumericInput
+                step="0.01" min="0"
+                value={row.price}
+                onChange={(e) => set(idx, { price: e.target.value })}
+                required={idx === 0}
+                className="w-28 px-2 py-1.5 border border-slate-200 rounded text-sm text-right bg-white"
+              />
+            </div>
+            {row.active && <span className="text-[10px] uppercase font-semibold text-emerald-700 shrink-0">Activo</span>}
+            <button
+              type="button"
+              onClick={() => remove(idx)}
+              disabled={list.length === 1}
+              title={list.length === 1 ? 'Debe existir al menos un precio' : 'Quitar precio'}
+              className="text-rose-600 disabled:text-slate-300 disabled:cursor-not-allowed bg-transparent border-none cursor-pointer p-1 shrink-0"
+            ><HiOutlineTrash className="w-4 h-4" /></button>
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 

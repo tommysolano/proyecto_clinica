@@ -1,20 +1,27 @@
 /**
- * FECHA AUTOMÁTICA SIN RETROCESO en los comprobantes fiscales.
+ * FECHA DE LOS COMPROBANTES FISCALES.
  *
- * Regla pedida por la administración: la fecha de emisión es automática (hoy) y el sistema
- * NO registra un comprobante con fecha anterior a hoy — tampoco importándolo desde el SRI.
- * Se comprueba en las tres vías: registro manual, edición e importación.
+ * La regla NO es la misma en los dos sentidos, y esa asimetría es justo lo que se comprueba:
  *
- * El único matiz (y es lo que hace la regla usable): editar un documento que YA existía con
- * fecha anterior no la exige de nuevo; lo que se prohíbe es FIJAR una fecha pasada.
+ *   · VENTAS  → el comprobante lo emitimos NOSOTROS, y su factura electrónica se emite hoy
+ *               (el SRI rechaza una emisión atrasada). Fecha anterior a hoy ⇒ 400.
+ *   · COMPRAS → la factura la emite el PROVEEDOR y llega días o semanas después. Su fecha es
+ *               un dato del comprobante recibido, no del día en que se digita: se acepta tal
+ *               cual, incluso de meses anteriores. Lo que protege el pasado es el PERÍODO
+ *               FISCAL (un mes cerrado no admite movimientos).
+ *
+ * Antes ambas seguían la regla de ventas: no se podían registrar las facturas del mes pasado
+ * y el importador del SRI rechazaba meses anteriores, que es justo para lo que sirve.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const H = require('./_integrationHelpers');
 
 const purchase = require('../controllers/purchaseInvoiceController');
+const sale = require('../controllers/saleController');
 const ChartOfAccount = require('../models/ChartOfAccount');
 const PurchaseInvoice = require('../models/PurchaseInvoice');
+const Sale = require('../models/Sale');
 const { isPastDocumentDate, assertNotPastDocumentDate } = require('../utils/fiscalDocumentDate');
 
 test.before(async () => { await H.startDb(); });
@@ -38,27 +45,58 @@ test('utilidad: ayer es fecha pasada, hoy no; y una fecha que no cambia no se vu
   assert.equal(isPastDocumentDate(H.docDate(0)), false);
   assert.equal(isPastDocumentDate(H.docDate(1)), false);
 
-  assert.throws(() => assertNotPastDocumentDate(H.docDate(-1), { label: 'la compra' }), /anterior a hoy/);
+  assert.throws(() => assertNotPastDocumentDate(H.docDate(-1), { label: 'la venta' }), /anterior a hoy/);
   // Misma fecha que ya tenía el documento ⇒ no se valida (permite corregir un histórico).
-  assert.doesNotThrow(() => assertNotPastDocumentDate(H.docDate(-5), { label: 'la compra', current: H.docDate(-5) }));
+  assert.doesNotThrow(() => assertNotPastDocumentDate(H.docDate(-5), { label: 'la venta', current: H.docDate(-5) }));
   // Una fecha vacía no se valida aquí (la obligatoriedad la exige el esquema).
-  assert.doesNotThrow(() => assertNotPastDocumentDate(null, { label: 'la compra' }));
+  assert.doesNotThrow(() => assertNotPastDocumentDate(null, { label: 'la venta' }));
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-test('registrar una compra con fecha de AYER se rechaza con 400 explicando la regla', async () => {
+// ───────────────────────────── VENTAS: sin retroceso ─────────────────────────
+test('VENTA con fecha de AYER se rechaza con 400 explicando la regla', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const serv = await H.makeProduct(clinicId, { category: 'servicio', salePrice: 100, unlimited: true, taxCategory: 'IVA_0' });
+  const r = await H.runController(sale.createSale, H.mockReq(clinicId, userId, {
+    items: [{ product: serv._id, quantity: 1 }], paymentMethod: 'efectivo', date: H.docDate(-1),
+  }));
+  assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
+  assert.match(r.payload.message, /anterior a hoy/i);
+  assert.equal(await Sale.countDocuments({ clinic: clinicId }), 0, 'no se guardó nada');
+});
+
+test('VENTA con fecha de HOY se acepta', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const serv = await H.makeProduct(clinicId, { category: 'servicio', salePrice: 100, unlimited: true, taxCategory: 'IVA_0' });
+  const r = await H.runController(sale.createSale, H.mockReq(clinicId, userId, {
+    items: [{ product: serv._id, quantity: 1 }], paymentMethod: 'efectivo', date: H.docDate(0),
+  }));
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+});
+
+// ───────────────────── COMPRAS: la fecha es la del proveedor ─────────────────
+test('COMPRA con fecha de AYER se acepta: es la fecha del comprobante del proveedor', async () => {
   const { clinicId, userId, gasto, sup } = await setup();
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
     supplier: sup._id, fechaEmision: H.docDate(-1), serie: '001-001-000000801',
     items: [gastoLine(gasto._id, 100)],
   }));
-  assert.equal(r.statusCode, 400, JSON.stringify(r.payload));
-  assert.match(r.payload.message, /anterior a hoy/i);
-  assert.equal(await PurchaseInvoice.countDocuments({ clinic: clinicId }), 0, 'no se guardó nada');
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  const guardada = await PurchaseInvoice.findOne({ clinic: clinicId, serie: '001-001-000000801' });
+  assert.ok(guardada, 'la compra se guardó');
+  // Y conserva la fecha REAL del comprobante: reescribirla falsearía el 103/104 y el ATS.
+  assert.equal(isPastDocumentDate(guardada.fechaEmision), true, 'no se le reescribió la fecha a hoy');
 });
 
-// ─────────────────────────────────────────────────────────────────────────────
-test('registrar una compra con fecha de HOY se acepta', async () => {
+test('COMPRA de un mes anterior se acepta (el caso que bloqueaba registrar las facturas del mes pasado)', async () => {
+  const { clinicId, userId, gasto, sup } = await setup();
+  const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
+    supplier: sup._id, fechaEmision: H.docDate(-45), serie: '001-001-000000804',
+    items: [gastoLine(gasto._id, 250)],
+  }));
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+});
+
+test('COMPRA con fecha de HOY se acepta', async () => {
   const { clinicId, userId, gasto, sup } = await setup();
   const r = await H.runController(purchase.create, H.mockReq(clinicId, userId, {
     supplier: sup._id, fechaEmision: H.docDate(0), serie: '001-001-000000802',
@@ -68,7 +106,7 @@ test('registrar una compra con fecha de HOY se acepta', async () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-test('editar una compra HISTÓRICA conserva su fecha, pero no se la puede mover más atrás', async () => {
+test('editar una compra HISTÓRICA permite corregir su fecha hacia atrás', async () => {
   const { clinicId, userId, gasto, sup } = await setup();
   // Documento histórico creado por fuera del controlador (como los que ya existen en la base).
   const inv = await PurchaseInvoice.create({
@@ -77,39 +115,40 @@ test('editar una compra HISTÓRICA conserva su fecha, pero no se la puede mover 
     items: [gastoLine(gasto._id, 100)], subtotal: 100, total: 100, balance: 100,
   });
 
-  // Editar SIN tocar la fecha: permitido (si no, un histórico sería incorregible).
+  // Editar SIN tocar la fecha.
   const ok = await H.runController(purchase.update, H.mockReq(clinicId, userId, {
     supplier: sup._id, fechaEmision: inv.fechaEmision, notes: 'corrección de glosa',
     items: [gastoLine(gasto._id, 100)],
   }, { params: { id: String(inv._id) } }));
   assert.equal(ok.statusCode, 200, JSON.stringify(ok.payload));
 
-  // Moverla AÚN más atrás: rechazado.
-  const bad = await H.runController(purchase.update, H.mockReq(clinicId, userId, {
-    supplier: sup._id, fechaEmision: H.docDate(-60),
+  // Corregirla a otra fecha pasada (se digitó mal el día del comprobante): permitido.
+  const movida = await H.runController(purchase.update, H.mockReq(clinicId, userId, {
+    supplier: sup._id, fechaEmision: H.docDate(-31),
     items: [gastoLine(gasto._id, 100)],
   }, { params: { id: String(inv._id) } }));
-  assert.equal(bad.statusCode, 400, JSON.stringify(bad.payload));
-  assert.match(bad.payload.message, /anterior a hoy/i);
+  assert.equal(movida.statusCode, 200, JSON.stringify(movida.payload));
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
-test('importador TXT del SRI: rechaza las filas atrasadas SIN reescribirles la fecha', async () => {
+test('importador TXT del SRI: importa también los comprobantes de meses anteriores, con su fecha real', async () => {
   const { clinicId, userId } = await setup();
   const d = (x) => `${String(x.getDate()).padStart(2, '0')}/${String(x.getMonth() + 1).padStart(2, '0')}/${x.getFullYear()}`;
   // Formato del reporte de compras del SRI (mismas columnas que usa parseSriReport).
   const header = 'COMPROBANTE\tSERIE_COMPROBANTE\tRUC_EMISOR\tRAZON_SOCIAL_EMISOR\tCLAVE_ACCESO\tFECHA_EMISION\tFECHA_AUTORIZACION\tTIPO_EMISION\tIDENTIFICACION_RECEPTOR\tVALOR_SIN_IMPUESTOS\tIVA\tIMPORTE_TOTAL';
   const row = (serie, fecha) => `Factura\t${serie}\t0912345678001\tPROVEEDOR X\t\t${d(fecha)}\t${d(fecha)}\tNORMAL\t0999999999001\t100.00\t15.00\t115.00`;
-  const text = [header, row('001-001-000000901', H.docDate(-40)), row('001-001-000000902', H.docDate(0))].join('\n');
+  const atrasado = H.docDate(-40);
+  const text = [header, row('001-001-000000901', atrasado), row('001-001-000000902', H.docDate(0))].join('\n');
 
   const r = await H.runController(purchase.importTxt, H.mockReq(clinicId, userId, { text }));
   assert.equal(r.statusCode, 200, JSON.stringify(r.payload));
-  assert.equal(r.payload.created, 1, 'solo entra el comprobante de hoy');
-  assert.equal(r.payload.errors.length, 1, 'el atrasado se reporta como error, no se importa');
-  assert.match(r.payload.errors[0].error, /anterior a hoy/i);
+  assert.equal(r.payload.created, 2, 'entran los dos comprobantes, también el de hace 40 días');
+  assert.equal(r.payload.errors.length, 0, JSON.stringify(r.payload.errors));
 
-  // Y el que sí entró conserva su fecha REAL (nunca se le inventa otra).
-  const guardadas = await PurchaseInvoice.find({ clinic: clinicId });
-  assert.equal(guardadas.length, 1);
-  assert.equal(isPastDocumentDate(guardadas[0].fechaEmision), false);
+  // Cada uno conserva su fecha REAL: es la que suman el 103/104 y el ATS.
+  const guardadas = await PurchaseInvoice.find({ clinic: clinicId }).sort({ fechaEmision: 1 });
+  assert.equal(guardadas.length, 2);
+  assert.equal(isPastDocumentDate(guardadas[0].fechaEmision), true, 'el atrasado mantiene su fecha');
+  assert.equal(guardadas[0].fechaEmision.getMonth(), atrasado.getMonth());
+  assert.equal(isPastDocumentDate(guardadas[1].fechaEmision), false);
 });

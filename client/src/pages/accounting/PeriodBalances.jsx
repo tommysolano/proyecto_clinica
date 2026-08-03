@@ -5,6 +5,7 @@ import { HiOutlineTableCells, HiOutlineArrowPath } from 'react-icons/hi2';
 import Field from '../../components/Field';
 import { fmt } from './_utils';
 import NumericInput from '../../components/NumericInput';
+import ExcelButton from '../../components/ExcelButton';
 
 const MESES = ['Ene', 'Feb', 'Mar', 'Abr', 'May', 'Jun', 'Jul', 'Ago', 'Sep', 'Oct', 'Nov', 'Dic'];
 
@@ -40,6 +41,12 @@ export default function PeriodBalances() {
           </select></Field>
           <Field label="Año"><NumericInput value={year} onChange={(e) => setYear(+e.target.value)} className="w-24 border border-slate-200 rounded-xl px-3.5 py-2 text-sm" /></Field>
           <button onClick={recompute} className="px-3 py-2 bg-slate-700 text-white rounded-lg text-sm flex items-center gap-1 h-[38px]" title="Reconstruir saldos desde los asientos"><HiOutlineArrowPath /> Recalcular</button>
+          <ExcelButton
+            url="/accounting-reports/period-balances.xlsx"
+            params={{ year, month }}
+            filename={`saldos_periodo_${year}_${String(month).padStart(2, '0')}.xlsx`}
+            className="h-[38px] py-0"
+          />
         </div>
       </div>
 

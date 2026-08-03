@@ -39,11 +39,13 @@ async function resetDb() {
 /**
  * Fecha de un comprobante en los tests.
  *
- * Los comprobantes ya NO admiten fechas anteriores a hoy (utils/fiscalDocumentDate: la fecha
- * de emisión es automática y el sistema rechaza registrar atrasado), así que un
+ * Una VENTA no admite fecha anterior a hoy (utils/fiscalDocumentDate), así que un
  * `new Date('2026-06-05')` incrustado en un test deja de funcionar en cuanto pasa esa fecha.
  * Se usa esta fábrica: `docDate()` = hoy y `docDate(n)` = hoy + n días, que sirve para dar
  * ORDEN a varios documentos (p. ej. capas FIFO) sin depender del calendario.
+ *
+ * En COMPRAS la fecha pasada SÍ es válida (es la del comprobante del proveedor): ahí
+ * `docDate(-30)` es un caso legítimo, no un truco para esquivar la validación.
  */
 function docDate(offsetDays = 0) {
   const d = new Date();
@@ -96,7 +98,12 @@ async function makeProduct(clinicId, overrides = {}) {
     code,
     name: overrides.name || 'Producto',
     category,
-    salePrice: overrides.salePrice ?? 100,
+    // `price` es un alias de `salePrice` que ya usaban varios tests creyendo que funcionaba:
+    // se ignoraba en silencio y el producto quedaba a 100, así que esos tests se apoyaban en
+    // mandar `unitPrice` en la venta para corregirlo. Ahora que el precio de venta se VALIDA
+    // contra la lista del producto (ver saleController#resolveUnitPrice), ese atajo ya no
+    // cuela: el alias hace que el producto tenga de verdad el precio que el test declara.
+    salePrice: overrides.salePrice ?? overrides.price ?? 100,
     purchasePrice: overrides.purchasePrice ?? 0,
     stock: overrides.stock ?? 0,
     averageCost: overrides.averageCost ?? 0,

@@ -7,6 +7,7 @@ import { HiOutlinePlus, HiOutlineArrowUturnLeft, HiOutlineEye, HiOutlineXMark, H
 import { fmt, fmtDate, today, startOfMonth, endOfMonth } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import AccountSelect from '../../components/AccountSelect';
+import ExcelButton from '../../components/ExcelButton';
 import useDocDeepLink from '../../hooks/useDocDeepLink';
 
 const EMPTY = { date: today(), description: '', source: 'MANUAL', lines: [{ account: '', debit: 0, credit: 0, description: '' }, { account: '', debit: 0, credit: 0, description: '' }] };
@@ -88,6 +89,14 @@ export default function JournalEntries() {
         </div>
         <input aria-label="Buscar asiento" value={filters.q} onChange={(e) => setFilters({ ...filters, q: e.target.value })} placeholder="Buscar por número o descripción…" className="flex-1 px-3 py-2 border border-slate-200 rounded-lg" />
         <button onClick={load} className="px-4 py-2 bg-slate-700 text-white rounded-lg">Filtrar</button>
+        {/* El Excel exporta el RANGO COMPLETO del filtro, una fila por línea de asiento (que
+            es como se cuadra), no solo la página que se está viendo. */}
+        <ExcelButton
+          url="/journal-entries/export.xlsx"
+          params={filters}
+          filename={`libro_diario_${filters.startDate}_${filters.endDate}.xlsx`}
+          title="Descargar el libro diario del rango filtrado (todas las líneas)"
+        />
       </div>
 
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">

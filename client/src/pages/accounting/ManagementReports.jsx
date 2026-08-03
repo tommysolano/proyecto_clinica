@@ -1,27 +1,33 @@
 import { useState } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
-import { HiOutlineChartBar, HiOutlineArrowDownTray } from 'react-icons/hi2';
+import { HiOutlineChartBar } from 'react-icons/hi2';
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { fmt, fmtDate, startOfMonth, today } from './_utils';
+import ExcelButton from '../../components/ExcelButton';
 
 const CHART_COLORS = ['#10b981', '#0ea5e9', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
 const METHOD_LABELS = { efectivo: 'Efectivo', tarjeta: 'Tarjeta', transferencia: 'Transferencia' };
 
+/**
+ * Pestañas del módulo. `xlsx` es el endpoint de descarga en Excel (todas lo tienen: el
+ * contador pidió poder bajar cualquier reporte) y `file` el nombre sugerido del archivo.
+ * El Excel sale del MISMO endpoint que la pantalla, así que no pueden discrepar.
+ */
 const TABS = [
-  { key: 'GENERAL', label: 'General', url: '/accounting-reports/general' },
-  { key: 'INDICADORES', label: 'Indicadores / Punto equilibrio', url: '/accounting-reports/indicators' },
-  { key: 'PERIODO', label: 'Ventas por período', url: '/accounting-reports/sales/by-period' },
-  { key: 'PRODUCTO', label: 'Ventas por producto', url: '/accounting-reports/sales/by-product' },
-  { key: 'VENDEDOR', label: 'Ventas por vendedor', url: '/accounting-reports/sales/by-seller' },
-  { key: 'CAJERO', label: 'Ventas por cajero', url: '/accounting-reports/sales/by-cashier' },
-  { key: 'COSTO', label: 'Costo de venta', url: '/accounting-reports/sales/cost' },
-  { key: 'COSTO_CAT', label: 'Costo por categoría', url: '/accounting-reports/sales/cost-by-category' },
-  { key: 'AR', label: 'Cuentas por cobrar', url: '/accounting-reports/ar-aging' },
-  { key: 'AP', label: 'Cuentas por pagar', url: '/accounting-reports/ap-aging' },
-  { key: 'ANT', label: 'Anticipos', url: '/accounting-reports/advances' },
-  { key: 'NODED', label: 'Gastos no deducibles', url: '/accounting-reports/non-deductible' },
-  { key: 'INV', label: 'Inventario valorizado', url: '/accounting-reports/inventory' },
+  { key: 'GENERAL', label: 'General', url: '/accounting-reports/general', xlsx: '/accounting-reports/general.xlsx', file: 'reporte_general' },
+  { key: 'INDICADORES', label: 'Indicadores / Punto equilibrio', url: '/accounting-reports/indicators', xlsx: '/accounting-reports/indicators.xlsx', file: 'indicadores' },
+  { key: 'PERIODO', label: 'Ventas por período', url: '/accounting-reports/sales/by-period', xlsx: '/accounting-reports/sales/by-period.xlsx', file: 'ventas_por_periodo' },
+  { key: 'PRODUCTO', label: 'Ventas por producto', url: '/accounting-reports/sales/by-product', xlsx: '/accounting-reports/sales/by-product.xlsx', file: 'ventas_por_producto' },
+  { key: 'VENDEDOR', label: 'Ventas por vendedor', url: '/accounting-reports/sales/by-seller', xlsx: '/accounting-reports/sales/by-seller.xlsx', file: 'ventas_por_vendedor' },
+  { key: 'CAJERO', label: 'Ventas por cajero', url: '/accounting-reports/sales/by-cashier', xlsx: '/accounting-reports/sales/by-cashier.xlsx', file: 'ventas_por_cajero' },
+  { key: 'COSTO', label: 'Costo de venta', url: '/accounting-reports/sales/cost', xlsx: '/accounting-reports/sales/cost.xlsx', file: 'costo_venta' },
+  { key: 'COSTO_CAT', label: 'Costo por categoría', url: '/accounting-reports/sales/cost-by-category', xlsx: '/accounting-reports/sales/cost-by-category.xlsx', file: 'costo_por_categoria' },
+  { key: 'AR', label: 'Cuentas por cobrar', url: '/accounting-reports/ar-aging', xlsx: '/accounting-reports/ar-aging.xlsx', file: 'cartera_cobrar' },
+  { key: 'AP', label: 'Cuentas por pagar', url: '/accounting-reports/ap-aging', xlsx: '/accounting-reports/ap-aging.xlsx', file: 'cartera_pagar' },
+  { key: 'ANT', label: 'Anticipos', url: '/accounting-reports/advances', xlsx: '/accounting-reports/advances.xlsx', file: 'anticipos' },
+  { key: 'NODED', label: 'Gastos no deducibles', url: '/accounting-reports/non-deductible', xlsx: '/accounting-reports/non-deductible.xlsx', file: 'gastos_no_deducibles' },
+  { key: 'INV', label: 'Inventario valorizado', url: '/accounting-reports/inventory', xlsx: '/accounting-reports/inventory.xlsx', file: 'inventario_valorizado' },
 ];
 
 const AGING_LABELS = { POR_VENCER: 'Por vencer', VENCIDO_30: '1-30', VENCIDO_60: '31-60', VENCIDO_90: '61-90', VENCIDO_120: '91-120', VENCIDO_MAS_120: '> 120' };
@@ -42,13 +48,6 @@ export default function ManagementReports() {
       const r = await api.get(current.url, { params });
       setData(r.data);
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
-  };
-
-  const downloadXlsx = async (url, name) => {
-    try {
-      const res = await api.get(url, { params: { startDate, endDate }, responseType: 'blob' });
-      const u = URL.createObjectURL(res.data); const a = document.createElement('a'); a.href = u; a.download = name; a.click(); URL.revokeObjectURL(u);
-    } catch { toast.error('Error al exportar'); }
   };
 
   const renderTable = () => {
@@ -253,8 +252,12 @@ export default function ManagementReports() {
           </div>
         )}
         <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Generar</button>
-        {tab === 'AR' && <button onClick={() => downloadXlsx('/accounting-reports/ar-aging.xlsx', 'cartera_cobrar.xlsx')} className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2"><HiOutlineArrowDownTray /> Excel</button>}
-        {tab === 'AP' && <button onClick={() => downloadXlsx('/accounting-reports/ap-aging.xlsx', 'cartera_pagar.xlsx')} className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2"><HiOutlineArrowDownTray /> Excel</button>}
+        {/* Excel en TODAS las pestañas, con los mismos filtros que la pantalla. */}
+        <ExcelButton
+          url={current.xlsx}
+          params={{ startDate, endDate, ...(tab === 'PERIODO' ? { granularity } : {}) }}
+          filename={`${current.file}_${startDate}_${endDate}.xlsx`}
+        />
       </div>
       {data && <div className="bg-white rounded-xl p-4 shadow-sm overflow-auto">{renderTable()}</div>}
     </div>

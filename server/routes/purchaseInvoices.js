@@ -6,6 +6,8 @@ router.use(auth, requireClinic);
 router.get('/', requireRole('admin', 'contabilidad'), c.list);
 router.get('/recurring-accounts', requireRole('admin', 'contabilidad'), c.recurringAccounts);
 router.get('/:id', requireRole('admin', 'contabilidad'), c.get);
+// Abonos (pagos totales/parciales) aplicados a la factura, con su saldo.
+router.get('/:id/payments', requireRole('admin', 'contabilidad'), c.payments);
 router.post('/', requireRole('admin', 'contabilidad'), c.create);
 router.put('/:id', requireRole('admin', 'contabilidad'), c.update);
 router.post('/:id/void', requireRole('admin', 'contabilidad'), c.void);

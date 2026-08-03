@@ -12,6 +12,7 @@ import {
   HiOutlineInformationCircle,
 } from 'react-icons/hi2';
 import { fmt, fmtDate, startOfMonth, today, downloadBlob } from './_utils';
+import ExcelButton from '../../components/ExcelButton';
 
 const REPORT_TABS = [
   ['PYG', 'Estado Resultados'],
@@ -122,6 +123,13 @@ export default function FinancialReports() {
         <div><label className="text-xs text-slate-500 block">Desde</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
         <div><label className="text-xs text-slate-500 block">Hasta</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
         <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Generar</button>
+        {/* Excel del estado financiero: mismo endpoint y mismos filtros que la pantalla.
+            El Balance General se corta a una FECHA; el Estado de Resultados va por rango. */}
+        <ExcelButton
+          url={tab === 'BG' ? '/accounting-reports/balance-sheet.xlsx' : '/accounting-reports/income-statement.xlsx'}
+          params={tab === 'BG' ? { date: endDate } : { startDate, endDate }}
+          filename={tab === 'BG' ? `balance_general_${endDate}.xlsx` : `estado_resultados_${startDate}_${endDate}.xlsx`}
+        />
         {(tab === 'BG' || tab === 'PYG') && (
           <button
             onClick={downloadSupercias}

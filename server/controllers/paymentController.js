@@ -178,6 +178,42 @@ exports.create = async (req, res) => {
           // Se permite pagar aunque el saldo del banco quede en negativo (sin bloqueo).
         }
 
+        // RED DE SEGURIDAD contra el pago duplicado (independiente de la clave de idempotencia).
+        //
+        // El caso real: el modal de "Pagar" enviaba el POST sin clave y sin bloquear el botón, así
+        // que un doble clic registraba DOS pagos idénticos —dos asientos, dos movimientos bancarios—
+        // y el mismo abono aparecía dos veces en Pagos y en la conciliación. La clave de idempotencia
+        // ya lo evita desde la UI; esto cubre cualquier otro cliente (integración, script, reintento).
+        //
+        // Solo se rechaza el duplicado INMEDIATO: dos abonos iguales al mismo documento son legítimos
+        // (dos abonos de $50 el mismo día), pero no dentro de la misma ventana de segundos. Por eso la
+        // ventana es corta y el mensaje explica cómo forzarlo si de verdad son dos pagos distintos.
+        if (!idempotencyKey && apps.length) {
+          const VENTANA_MS = 60 * 1000;
+          const gemelo = await Payment.findOne({
+            clinic: req.clinicId,
+            type,
+            method,
+            total,
+            status: 'REGISTRADO',
+            createdAt: { $gte: new Date(Date.now() - VENTANA_MS) },
+            applications: {
+              $all: apps.map((a) => ({ $elemMatch: { docModel: a.docModel, docRef: a.docRef, amount: a.amount } })),
+              $size: apps.length,
+            },
+          }).session(session);
+          if (gemelo) {
+            throw Object.assign(
+              new Error(
+                `Ya se registró hace instantes un ${type === 'COBRO' ? 'cobro' : 'pago'} idéntico (${gemelo.number}) `
+                + `por $${total.toFixed(2)} sobre los mismos documentos. No se registró de nuevo para no duplicarlo. `
+                + 'Si de verdad son dos operaciones distintas, espere un minuto y vuelva a registrarla.'
+              ),
+              { status: 409, code: 'DUPLICATE_PAYMENT' }
+            );
+          }
+        }
+
         const number = await nextNumber(req.clinicId, type);
         const [payment] = await Payment.create([{
           clinic: req.clinicId,

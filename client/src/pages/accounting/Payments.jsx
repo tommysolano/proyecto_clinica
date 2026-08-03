@@ -8,6 +8,7 @@ import { HiOutlinePlus, HiOutlineCurrencyDollar, HiOutlineXMark, HiOutlineEye, H
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import useDocDeepLink from '../../hooks/useDocDeepLink';
+import { newIdempotencyKey, withIdempotencyKey, intentKey } from '../../utils/idempotency';
 
 export default function Payments() {
   const navigate = useNavigate();
@@ -20,6 +21,8 @@ export default function Payments() {
   const [purchases, setPurchases] = useState([]);
   const [invoices, setInvoices] = useState([]);
   const [form, setForm] = useState({ type: 'PAGO', date: today(), partyModel: 'Supplier', party: '', method: 'TRANSFERENCIA', bankAccount: '', applications: [], advanceAmount: 0, notes: '', voucherNumber: '', voucherUrl: '' });
+  const [busy, setBusy] = useState(false);   // envío en curso: evita registrar el pago dos veces
+  const [intent, setIntent] = useState('');  // clave base de idempotencia de la intención abierta
 
   // Pago masivo a proveedores
   const [showBulk, setShowBulk] = useState(false);
@@ -41,6 +44,8 @@ export default function Payments() {
 
   const openNew = (t) => {
     setForm({ type: t, date: today(), partyModel: t === 'PAGO' ? 'Supplier' : 'Patient', party: '', method: 'TRANSFERENCIA', bankAccount: '', applications: [], advanceAmount: 0, notes: '', voucherNumber: '', voucherUrl: '' });
+    // Clave base de esta intención: un doble clic reintenta el MISMO pago (replay), no crea otro.
+    setIntent(newIdempotencyKey());
     setShow(true);
   };
 
@@ -67,11 +72,20 @@ export default function Payments() {
 
   const submit = async (e) => {
     e.preventDefault();
+    if (busy) return;
+    setBusy(true);
     try {
-      await api.post('/payments', form);
+      // La clave se deriva de la intención: estable mientras no cambie nada (reintento ⇒ replay),
+      // distinta en cuanto cambie importe/banco/fecha/documentos (es otra operación).
+      const huella = [
+        form.type, form.method, form.bankAccount, form.date, form.party, form.advanceAmount,
+        ...form.applications.map((a) => `${a.docModel}#${a.docRef}#${a.amount}`).sort(),
+      ];
+      await api.post('/payments', form, withIdempotencyKey(intentKey(intent, huella)));
       toast.success('Registrado');
       setShow(false); load();
     } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
+    finally { setBusy(false); }
   };
 
   const voidPay = async (p) => {
@@ -266,7 +280,7 @@ export default function Payments() {
             <span className="ml-auto font-semibold">Total: ${fmt(totalApplied)}</span>
           </div>
           <Field label="Notas"><input placeholder="Observaciones / cheque #" value={form.notes} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-          <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Registrar</button></div>
+          <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button disabled={busy} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 disabled:opacity-60 disabled:cursor-not-allowed">{busy ? 'Registrando…' : 'Registrar'}</button></div>
         </form>
       </Modal>
 

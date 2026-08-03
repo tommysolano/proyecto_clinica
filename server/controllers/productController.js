@@ -194,6 +194,57 @@ const syncStockFromClinics = (body) => {
   }
 };
 
+/**
+ * LISTA DE PRECIOS ⇄ PRECIO ACTIVO. Normaliza `salePrices[]` y deja `salePrice` sincronizado
+ * con el precio marcado como activo.
+ *
+ * Por qué se sincroniza en vez de sustituir: TODO el sistema (ventas, cotizaciones, facturas,
+ * reportes, importadores) lee `salePrice`. Si la lista fuera la única fuente, cada uno de esos
+ * puntos tendría que aprender a resolver el precio activo y bastaría con olvidar uno para
+ * facturar a un precio que no es. Aquí `salePrice` es siempre el activo, por construcción.
+ *
+ * Reglas:
+ *   · lista vacía ⇒ se sintetiza una entrada «General» con el `salePrice` recibido (o el que
+ *     ya tenía el producto), para que un alta sencilla siga funcionando igual que antes;
+ *   · exactamente UN activo: si vienen varios o ninguno, gana el primero marcado, y si no hay
+ *     ninguno marcado, la primera entrada;
+ *   · se descartan filas sin precio numérico y se deduplican nombres vacíos.
+ *
+ * @param {object} body   payload de la petición (se muta)
+ * @param {object} [prev] producto existente (en edición), para conservar su precio si no llega
+ */
+const syncSalePrices = (body, prev = null) => {
+  const tieneLista = Array.isArray(body.salePrices);
+  const enviaPrecio = body.salePrice !== undefined && body.salePrice !== null && body.salePrice !== '';
+
+  // Ni lista ni precio: no se toca nada (edición parcial de otros campos).
+  if (!tieneLista && !enviaPrecio) return;
+
+  let lista = (tieneLista ? body.salePrices : [])
+    .map((p) => ({
+      name: String(p?.name ?? '').trim() || 'General',
+      price: Number(p?.price),
+      active: !!p?.active,
+    }))
+    .filter((p) => Number.isFinite(p.price) && p.price >= 0);
+
+  if (!lista.length) {
+    const base = enviaPrecio ? Number(body.salePrice) : Number(prev?.salePrice ?? 0);
+    if (!Number.isFinite(base)) {
+      throw Object.assign(new Error('El precio de venta es requerido'), { status: 400 });
+    }
+    lista = [{ name: 'General', price: base, active: true }];
+  }
+
+  // Exactamente un activo (el primero marcado; si ninguno, el primero de la lista).
+  const idxActivo = Math.max(0, lista.findIndex((p) => p.active));
+  lista = lista.map((p, i) => ({ ...p, active: i === idxActivo }));
+
+  body.salePrices = lista;
+  body.salePrice = lista[idxActivo].price;
+};
+exports._syncSalePrices = syncSalePrices;
+
 exports.createProduct = async (req, res) => {
   try {
     let code = String(req.body.code || '').trim();
@@ -209,6 +260,7 @@ exports.createProduct = async (req, res) => {
     }
 
     syncStockFromClinics(req.body);
+    syncSalePrices(req.body);
     // Valida/resuelve la categoría contable de inventario (obligatoria para insumos).
     await applyInventoryCategory(req.clinicId, req.body, { enforce: true });
     const product = await Product.create({ ...req.body, clinic: req.clinicId, code });
@@ -234,6 +286,7 @@ exports.updateProduct = async (req, res) => {
     const existing = await Product.findOne({ _id: req.params.id });
     if (!existing) return res.status(404).json({ message: 'Producto no encontrado' });
     syncStockFromClinics(req.body);
+    syncSalePrices(req.body, existing);
     // Valida/resuelve la categoría contable si se envía; NO bloquea la edición de
     // productos legacy sin categoría (enforce:false) para no romper flujos existentes.
     await applyInventoryCategory(req.clinicId, req.body, { enforce: false, existing });

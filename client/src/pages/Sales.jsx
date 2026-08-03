@@ -23,6 +23,9 @@ import {
   HiOutlineBanknotes,
   HiOutlineArrowDownTray,
   HiOutlineCalculator,
+  HiOutlineUser,
+  HiOutlineShoppingCart,
+  HiOutlineBuildingStorefront,
 } from 'react-icons/hi2';
 import JournalEntryViewModal from '../components/JournalEntryViewModal';
 
@@ -34,6 +37,47 @@ const paymentMethods = {
 };
 // Etiqueta legible de un método (incluye 'mixto' para el detalle).
 const methodLabel = (m) => paymentMethods[m] || (m === 'mixto' ? 'Pago mixto' : m || '—');
+
+/**
+ * TIPO DE TARJETA. Contablemente no es lo mismo: el débito entra casi de inmediato y el
+ * crédito queda "por liquidar" con su comisión y su retención. El reporte de ventas ya separa
+ * `tarjeta_debito` de `tarjeta_credito` a partir del snapshot que guarda la venta, pero hasta
+ * ahora ese dato solo se podía deducir de la configuración de la tarjeta: si un mismo
+ * adquirente (Datafast) procesaba ambas, todo se reportaba igual. Aquí se elige explícitamente.
+ */
+const CARD_TYPES = [
+  { value: 'CREDITO', label: 'Crédito' },
+  { value: 'DEBITO', label: 'Débito' },
+];
+
+/** Sección del modal de venta: agrupa campos afines con su título. */
+function FormSection({ title, subtitle, icon: Icon, children, className = '' }) {
+  return (
+    <section className={`border border-slate-200 rounded-xl overflow-hidden ${className}`}>
+      <header className="bg-slate-50 px-3 py-2 border-b border-slate-200">
+        <h3 className="text-sm font-semibold text-slate-700 flex items-center gap-1.5">
+          {Icon && <Icon className="w-4 h-4 text-emerald-600" />}{title}
+        </h3>
+        {subtitle && <p className="text-[11px] text-slate-500 mt-0.5">{subtitle}</p>}
+      </header>
+      <div className="p-3">{children}</div>
+    </section>
+  );
+}
+
+/**
+ * Lista de precios de un producto, normalizada. Los productos anteriores a la lista solo
+ * tienen `salePrice`: se sintetiza una entrada para que la UI sea la misma en ambos casos.
+ */
+const priceListOf = (product) => (
+  Array.isArray(product?.salePrices) && product.salePrices.length
+    ? product.salePrices.map((p) => ({ name: p.name || 'General', price: Number(p.price) || 0, active: !!p.active }))
+    : [{ name: 'General', price: Number(product?.salePrice) || 0, active: true }]
+);
+const activePriceOf = (product) => {
+  const list = priceListOf(product);
+  return list.find((p) => p.active) || list[0];
+};
 
 export default function Sales() {
   const { hasRole } = useAuth();
@@ -71,6 +115,7 @@ export default function Sales() {
     paymentMethod: 'efectivo',
     bankAccount: '',
     creditCard: '',
+    cardType: '',      // DEBITO | CREDITO (elegido por el cajero, no deducido de la tarjeta)
     cardPos: '',
     cardLote: '',
     cardVoucher: '',
@@ -240,6 +285,19 @@ export default function Sales() {
     setForm((f) => ({ ...f, warehouse: warehouseId, costCenter: f.costCenter || propuesto || '' }));
   };
 
+  /**
+   * Tarjetas ofrecidas para un tipo (débito/crédito). Se filtra por `accountType` cuando la
+   * configuración lo distingue; si ninguna tarjeta coincide (p. ej. un único registro
+   * "Datafast" que procesa las dos), se muestran todas: el tipo que manda es el que eligió
+   * el cajero, y esconder las tarjetas dejaría la venta sin poder registrarse.
+   */
+  const cardsOfType = (type) => {
+    if (!type) return payOptions.cards;
+    const match = payOptions.cards.filter((c) => !c.accountType || c.accountType === type);
+    return match.length ? match : payOptions.cards;
+  };
+  const cardOptions = cardsOfType(form.cardType);
+
   const nombreCentro = (id) => {
     const c = costCenters.find((x) => String(x._id) === String(id));
     return c ? `${c.code} - ${c.name}` : '';
@@ -269,6 +327,12 @@ export default function Sales() {
       return toast.error(`Stock insuficiente. Disponible: ${product.stock}`);
     }
 
+    // Precio: el ACTIVO del producto por defecto; si en el buscador se eligió otro de la lista,
+    // ese. Se guarda el NOMBRE del precio además del importe: es lo que valida el backend
+    // (dos precios pueden coincidir en importe y el nombre no depende de redondeos).
+    const lista = priceListOf(product);
+    const elegido = lista.find((p) => p.name === currentItem.priceName) || activePriceOf(product);
+
     setForm((f) => ({
       ...f,
       items: [
@@ -279,7 +343,9 @@ export default function Sales() {
           category: product.category,
           unlimited: product.unlimited === true,
           quantity: qty,
-          unitPrice: product.salePrice,
+          unitPrice: elegido.price,
+          priceName: elegido.name,
+          priceList: lista,
           taxRate: product.taxRate,
           stock: product.stock,
           discount: 0,
@@ -287,7 +353,7 @@ export default function Sales() {
         },
       ],
     }));
-    setCurrentItem({ product: '', quantity: 1 });
+    setCurrentItem({ product: '', quantity: 1, priceName: '' });
   };
 
   const removeItem = (idx) => {
@@ -382,6 +448,7 @@ export default function Sales() {
             amount: Number(p.amount) || 0,
             bankAccount: p.method === 'transferencia' ? p.bankAccount || null : null,
             creditCard: p.method === 'tarjeta' ? p.creditCard || null : null,
+            cardType: p.method === 'tarjeta' ? p.cardType || '' : '',
             cardPos: p.method === 'tarjeta' ? p.cardPos || '' : '',
             cardLote: p.method === 'tarjeta' ? p.cardLote || '' : '',
             cardVoucher: p.method === 'tarjeta' ? p.cardVoucher || '' : '',
@@ -400,6 +467,7 @@ export default function Sales() {
         paymentPayload = {
           bankAccount: form.paymentMethod === 'transferencia' ? form.bankAccount || null : null,
           creditCard: form.paymentMethod === 'tarjeta' ? form.creditCard || null : null,
+          cardType: form.paymentMethod === 'tarjeta' ? form.cardType || '' : '',
           cardPos: form.paymentMethod === 'tarjeta' ? form.cardPos || '' : '',
           cardLote: form.paymentMethod === 'tarjeta' ? form.cardLote || '' : '',
           cardVoucher: form.paymentMethod === 'tarjeta' ? form.cardVoucher || '' : '',
@@ -427,6 +495,10 @@ export default function Sales() {
         items: form.items.map((i) => ({
           product: i.product,
           quantity: i.quantity,
+          // Precio elegido de la lista del producto. El backend lo valida contra esa lista
+          // (`priceName` manda; el importe es solo respaldo para clientes antiguos).
+          priceName: i.priceName || undefined,
+          unitPrice: i.unitPrice,
           discount: Number(i.discount) || 0,
           treatment: i.treatment || null,
         })),
@@ -752,7 +824,13 @@ export default function Sales() {
       </div>
 
       <Modal isOpen={modalOpen} onClose={() => setModalOpen(false)} title="Nueva Venta" size="xl">
+        {/* El modal está ordenado por SECCIONES, en el orden en que se cobra: quién es el
+            cliente → de dónde sale la mercadería → qué se lleva → cómo paga. El aviso de
+            consumidor final va arriba del todo porque condiciona la factura entera. */}
         <form onSubmit={handleSubmit} className="space-y-4">
+          <ConsumidorFinalAlert cedula={form.clientCedula} />
+
+          <FormSection title="Datos del cliente" icon={HiOutlineUser}>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="sm:col-span-3 relative">
               <label className="lbl">Buscar paciente registrado (opcional)</label>
@@ -857,221 +935,14 @@ export default function Sales() {
                 className="input"
               />
             </div>
-            {!splitMode && (
-            <div>
-              <label className="lbl">Método de pago</label>
-              <select
-                value={form.paymentMethod}
-                onChange={(e) => setForm({ ...form, paymentMethod: e.target.value, bankAccount: '', creditCard: '', cardPos: '', cardLote: '', cardVoucher: '' })}
+            <div className="sm:col-span-3">
+              <label className="lbl">Dirección cliente</label>
+              <input
+                value={form.clientAddress}
+                onChange={(e) => setForm({ ...form, clientAddress: e.target.value })}
                 className="input"
-              >
-                {Object.entries(paymentMethods).map(([k, v]) => (
-                  <option key={k} value={k}>
-                    {v}
-                  </option>
-                ))}
-              </select>
-              <button type="button" onClick={enableSplit} className="mt-1 text-xs text-emerald-700 hover:underline bg-transparent border-none cursor-pointer p-0">Dividir en varios métodos</button>
+              />
             </div>
-            )}
-            {!splitMode && form.paymentMethod === 'transferencia' && (
-              <div>
-                <label className="lbl">Cuenta bancaria de destino</label>
-                <select
-                  value={form.bankAccount || ''}
-                  onChange={(e) => setForm({ ...form, bankAccount: e.target.value })}
-                  className="input"
-                >
-                  <option value="">{payOptions.accounts.length ? 'Seleccionar cuenta…' : 'No hay cuentas configuradas'}</option>
-                  {payOptions.accounts.map((a) => (
-                    <option key={a._id} value={a._id}>{a.name} — {a.bank} ({a.accountNumber})</option>
-                  ))}
-                </select>
-              </div>
-            )}
-            {!splitMode && form.paymentMethod === 'tarjeta' && (
-              <>
-                <div>
-                  <label className="lbl">Tarjeta / Adquirente</label>
-                  <select
-                    value={form.creditCard || ''}
-                    onChange={(e) => setForm({ ...form, creditCard: e.target.value, cardPos: '' })}
-                    className="input"
-                  >
-                    <option value="">{payOptions.cards.length ? 'Seleccionar tarjeta…' : 'No hay tarjetas configuradas'}</option>
-                    {payOptions.cards.map((c) => (
-                      <option key={c._id} value={c._id}>{c.name} ({c.brand}{c.acquirer ? ` · ${c.acquirer}` : ''})</option>
-                    ))}
-                  </select>
-                </div>
-                {(() => {
-                  const card = payOptions.cards.find((c) => c._id === form.creditCard);
-                  if (!card || !card.pos?.length) return null;
-                  return (
-                    <div>
-                      <label className="lbl">POS / Terminal</label>
-                      <select
-                        value={form.cardPos || ''}
-                        onChange={(e) => setForm({ ...form, cardPos: e.target.value })}
-                        className="input"
-                      >
-                        <option value="">Seleccionar POS…</option>
-                        {card.pos.map((p) => (
-                          <option key={p.code} value={p.code}>{p.name || p.code}{p.terminal ? ` · ${p.terminal}` : ''}</option>
-                        ))}
-                      </select>
-                    </div>
-                  );
-                })()}
-                <div>
-                  <label className="lbl">N° de lote</label>
-                  <input
-                    value={form.cardLote || ''}
-                    onChange={(e) => setForm({ ...form, cardLote: e.target.value })}
-                    placeholder="Del voucher POS (para la liquidación)"
-                    className="input"
-                  />
-                </div>
-                <div>
-                  <label className="lbl">N° de voucher</label>
-                  <input
-                    value={form.cardVoucher || ''}
-                    onChange={(e) => setForm({ ...form, cardVoucher: e.target.value })}
-                    placeholder="Opcional"
-                    className="input"
-                  />
-                </div>
-              </>
-            )}
-            {!splitMode && form.paymentMethod === 'credito' && (
-              <div>
-                <label className="lbl">Vence (crédito)</label>
-                <input type="date" value={form.dueDate || ''} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="input" />
-              </div>
-            )}
-            {splitMode && (
-              <div className="sm:col-span-3 rounded-xl border border-slate-200 p-3 space-y-2 bg-slate-50/40">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-semibold text-slate-700">Pago dividido (varios métodos)</span>
-                  <button type="button" onClick={() => { setSplitMode(false); setSplitPayments([]); }} className="text-xs text-slate-500 hover:text-slate-700 bg-transparent border-none cursor-pointer">Volver a un solo método</button>
-                </div>
-                {splitPayments.map((p, i) => (
-                  <div key={i} className="flex flex-wrap items-end gap-2 bg-white rounded-lg border border-slate-100 p-2">
-                    <div className="w-36">
-                      <label className="lbl">Método</label>
-                      <select value={p.method} onChange={(e) => setSplitRow(i, { method: e.target.value, bankAccount: '', creditCard: '', cardPos: '', cardLote: '', cardVoucher: '' })} className="input">
-                        {Object.entries(paymentMethods).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
-                      </select>
-                    </div>
-                    <div className="w-28">
-                      <label className="lbl">Monto</label>
-                      <NumericInput step="0.01" value={p.amount} onChange={(e) => setSplitRow(i, { amount: e.target.value })} className="input" />
-                    </div>
-                    {p.method === 'transferencia' && (
-                      <div className="flex-1 min-w-[180px]">
-                        <label className="lbl">Cuenta bancaria</label>
-                        <select value={p.bankAccount || ''} onChange={(e) => setSplitRow(i, { bankAccount: e.target.value })} className="input">
-                          <option value="">{payOptions.accounts.length ? 'Seleccionar cuenta…' : 'No hay cuentas'}</option>
-                          {payOptions.accounts.map((a) => <option key={a._id} value={a._id}>{a.name} — {a.bank}</option>)}
-                        </select>
-                      </div>
-                    )}
-                    {p.method === 'tarjeta' && (
-                      <>
-                        <div className="flex-1 min-w-[150px]">
-                          <label className="lbl">Tarjeta</label>
-                          <select value={p.creditCard || ''} onChange={(e) => setSplitRow(i, { creditCard: e.target.value })} className="input">
-                            <option value="">{payOptions.cards.length ? 'Seleccionar…' : 'No hay tarjetas'}</option>
-                            {payOptions.cards.map((c) => <option key={c._id} value={c._id}>{c.name} ({c.brand})</option>)}
-                          </select>
-                        </div>
-                        <div className="w-24">
-                          <label className="lbl">N° lote</label>
-                          <input value={p.cardLote || ''} onChange={(e) => setSplitRow(i, { cardLote: e.target.value })} className="input" />
-                        </div>
-                      </>
-                    )}
-                    <button type="button" onClick={() => removeSplitRow(i)} className="text-rose-500 hover:text-rose-600 pb-2 bg-transparent border-none cursor-pointer" title="Quitar método"><HiOutlineTrash className="w-4 h-4" /></button>
-                  </div>
-                ))}
-                <div className="flex items-center justify-between flex-wrap gap-2">
-                  <button type="button" onClick={addSplitRow} className="text-emerald-600 text-sm flex items-center gap-1 bg-transparent border-none cursor-pointer"><HiOutlinePlus className="w-4 h-4" /> Agregar método</button>
-                  <div className="text-sm text-slate-600">
-                    Pagado: <b className="font-mono">${splitPaid.toFixed(2)}</b> / Total: <b className="font-mono">${total.toFixed(2)}</b>
-                    {Math.abs(splitRemaining) > 0.01
-                      ? <span className={`ml-2 font-semibold ${splitRemaining > 0 ? 'text-amber-600' : 'text-rose-600'}`}>{splitRemaining > 0 ? `Falta $${splitRemaining.toFixed(2)}` : `Sobra $${(-splitRemaining).toFixed(2)}`}</span>
-                      : <span className="ml-2 text-emerald-600 font-semibold">✓ Cuadra</span>}
-                  </div>
-                </div>
-                {splitPayments.some((p) => p.method === 'credito') && (
-                  <div className="w-48">
-                    <label className="lbl">Vence (parte a crédito)</label>
-                    <input type="date" value={form.dueDate || ''} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="input" />
-                  </div>
-                )}
-              </div>
-            )}
-            <div>
-              <label className="lbl">Recomendado por (comisión)</label>
-              <select
-                value={form.recommendedBy || ''}
-                onChange={(e) => setForm({ ...form, recommendedBy: e.target.value })}
-                className="input"
-              >
-                <option value="">— Nadie / No aplica —</option>
-                {staff.map((u) => (
-                  <option key={u._id} value={u._id}>{u.name}</option>
-                ))}
-              </select>
-            </div>
-          </div>
-
-          {/* Bodega y centro de costo. La bodega decide de qué capas FIFO sale la mercadería
-              (y por tanto el costo de venta) y PROPONE el centro. Una venta de solo servicios
-              no necesita bodega: entonces no hay centro de bodega que proponer. */}
-          {warehouses.length > 0 && (
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div>
-                <label className="lbl">Bodega (de dónde sale la mercadería)</label>
-                <select value={form.warehouse || ''} onChange={(e) => onPickWarehouse(e.target.value)} className="input">
-                  <option value="">— Sin bodega (stock general) —</option>
-                  {warehouses.map((w) => (
-                    <option key={w._id} value={w._id}>{w.name}</option>
-                  ))}
-                </select>
-              </div>
-              <div>
-                <label className="lbl">Centro de costo</label>
-                <select value={form.costCenter || ''} onChange={(e) => setForm({ ...form, costCenter: e.target.value })} className="input">
-                  <option value="">— Sin centro —</option>
-                  {costCenters.map((c) => (
-                    <option key={c._id} value={c._id}>{c.code} - {c.name}</option>
-                  ))}
-                </select>
-                {form.warehouse && centroEsperado && !centroDistinto && form.costCenter && (
-                  <p className="text-xs text-slate-500 mt-1">Propuesto por la bodega. Puedes cambiarlo.</p>
-                )}
-              </div>
-              {centroDistinto && (
-                <div className="sm:col-span-2 bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800">
-                  <b>Centro distinto al de la bodega.</b> La bodega{' '}
-                  <b>{warehouses.find((w) => String(w._id) === String(form.warehouse))?.name}</b> espera{' '}
-                  <b>{nombreCentro(centroEsperado) || '(sin centro)'}</b> y la venta se registrará con{' '}
-                  <b>{nombreCentro(form.costCenter)}</b>. Al guardar se te pedirá confirmarlo y quedará auditado.
-                </div>
-              )}
-            </div>
-          )}
-          <ConsumidorFinalAlert cedula={form.clientCedula} />
-          <div>
-            <label className="lbl">Dirección cliente</label>
-            <input
-              value={form.clientAddress}
-              onChange={(e) => setForm({ ...form, clientAddress: e.target.value })}
-              className="input"
-            />
-          </div>
-          <div className="grid grid-cols-2 gap-2">
             <div>
               <label className="lbl">Ciudad</label>
               <select
@@ -1131,13 +1002,70 @@ export default function Sales() {
                 />
               )}
             </div>
+            <div>
+              <label className="lbl">Recomendado por (comisión)</label>
+              <select
+                value={form.recommendedBy || ''}
+                onChange={(e) => setForm({ ...form, recommendedBy: e.target.value })}
+                className="input"
+              >
+                <option value="">— Nadie / No aplica —</option>
+                {staff.map((u) => (
+                  <option key={u._id} value={u._id}>{u.name}</option>
+                ))}
+              </select>
+            </div>
           </div>
+          </FormSection>
 
+          {/* Bodega y centro de costo. La bodega decide de qué capas FIFO sale la mercadería
+              (y por tanto el costo de venta) y PROPONE el centro. Una venta de solo servicios
+              no necesita bodega: entonces no hay centro de bodega que proponer. */}
+          {warehouses.length > 0 && (
+            <FormSection
+              title="Bodega y centro de costo"
+              subtitle="La bodega decide de qué existencias sale la mercadería (y con ello el costo de venta) y propone el centro."
+              icon={HiOutlineBuildingStorefront}
+            >
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div>
+                  <label className="lbl">Bodega (de dónde sale la mercadería)</label>
+                  <select value={form.warehouse || ''} onChange={(e) => onPickWarehouse(e.target.value)} className="input">
+                    <option value="">— Sin bodega (stock general) —</option>
+                    {warehouses.map((w) => (
+                      <option key={w._id} value={w._id}>{w.name}</option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="lbl">Centro de costo</label>
+                  <select value={form.costCenter || ''} onChange={(e) => setForm({ ...form, costCenter: e.target.value })} className="input">
+                    <option value="">— Sin centro —</option>
+                    {costCenters.map((c) => (
+                      <option key={c._id} value={c._id}>{c.code} - {c.name}</option>
+                    ))}
+                  </select>
+                  {form.warehouse && centroEsperado && !centroDistinto && form.costCenter && (
+                    <p className="text-xs text-slate-500 mt-1">Propuesto por la bodega. Puedes cambiarlo.</p>
+                  )}
+                </div>
+                {centroDistinto && (
+                  <div className="sm:col-span-2 bg-amber-50 border border-amber-200 rounded-xl p-3 text-sm text-amber-800">
+                    <b>Centro distinto al de la bodega.</b> La bodega{' '}
+                    <b>{warehouses.find((w) => String(w._id) === String(form.warehouse))?.name}</b> espera{' '}
+                    <b>{nombreCentro(centroEsperado) || '(sin centro)'}</b> y la venta se registrará con{' '}
+                    <b>{nombreCentro(form.costCenter)}</b>. Al guardar se te pedirá confirmarlo y quedará auditado.
+                  </div>
+                )}
+              </div>
+            </FormSection>
+          )}
+
+          <FormSection title="Producto / servicio" icon={HiOutlineShoppingCart}>
           {/* Agregar productos: el buscador manda (es lo que hay que leer para elegir bien) y
               la cantidad ocupa un ancho fijo pequeño. Anchos con `basis/shrink-0` en vez de
               `flex-1` + `w-20` sueltos, para que el buscador no se colapse. */}
           <div className="bg-emerald-50/50 rounded-xl p-4">
-            <p className="text-sm font-medium text-emerald-700 mb-3">Agregar productos</p>
             <div className="flex flex-wrap sm:flex-nowrap items-end gap-2">
               <div className="basis-full sm:basis-auto sm:flex-1 min-w-0">
                 <label className="block text-[11px] font-semibold text-slate-500 mb-1">Producto o servicio</label>
@@ -1145,12 +1073,37 @@ export default function Sales() {
                   products={products}
                   value={currentItem.product}
                   onSelect={(p) =>
-                    setCurrentItem({ ...currentItem, product: p?._id || '' })
+                    // Al cambiar de producto se descarta el precio elegido: pertenecía al anterior.
+                    setCurrentItem({ ...currentItem, product: p?._id || '', priceName: '' })
                   }
                   placeholder="Buscar producto o servicio..."
                   filter={(p) => p.active !== false}
                 />
               </div>
+              {/* Lista de precios del producto elegido. Solo aparece si tiene más de uno: con un
+                  único precio el desplegable sería ruido. Por defecto viene marcado el activo. */}
+              {(() => {
+                const prod = products.find((p) => p._id === currentItem.product);
+                const lista = prod ? priceListOf(prod) : [];
+                if (lista.length < 2) return null;
+                const sel = currentItem.priceName || activePriceOf(prod).name;
+                return (
+                  <div className="basis-full sm:basis-auto sm:w-52 shrink-0">
+                    <label className="block text-[11px] font-semibold text-slate-500 mb-1">Precio</label>
+                    <select
+                      value={sel}
+                      onChange={(e) => setCurrentItem({ ...currentItem, priceName: e.target.value })}
+                      className="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white outline-none"
+                    >
+                      {lista.map((p) => (
+                        <option key={p.name} value={p.name}>
+                          {p.name} — ${Number(p.price).toFixed(2)}{p.active ? ' (activo)' : ''}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                );
+              })()}
               <div className="w-24 shrink-0">
                 <label className="block text-[11px] font-semibold text-slate-500 mb-1">Cantidad</label>
                 <NumericInput
@@ -1192,7 +1145,31 @@ export default function Sales() {
                   {form.items.map((item, idx) => (
                     <tr key={idx} className="border-b border-slate-100">
                       <td className="py-2 text-slate-800">{item.productName}</td>
-                      <td className="py-2 text-right">${item.unitPrice.toFixed(2)}</td>
+                      {/* El precio también se puede cambiar DESPUÉS de agregar la línea: es
+                          habitual darse cuenta al final de que va a precio corporativo. Solo
+                          se ofrecen los precios de la lista del producto (el backend los valida). */}
+                      <td className="py-2 text-right">
+                        {(item.priceList || []).length > 1 ? (
+                          <select
+                            value={item.priceName || ''}
+                            onChange={(e) => {
+                              const elegido = item.priceList.find((p) => p.name === e.target.value);
+                              if (!elegido) return;
+                              const items = [...form.items];
+                              items[idx] = { ...items[idx], priceName: elegido.name, unitPrice: elegido.price };
+                              setForm({ ...form, items });
+                            }}
+                            title="Precio de la lista del producto"
+                            className="px-2 py-1 border border-slate-300 rounded text-sm bg-white outline-none text-right"
+                          >
+                            {item.priceList.map((p) => (
+                              <option key={p.name} value={p.name}>{p.name} — ${Number(p.price).toFixed(2)}</option>
+                            ))}
+                          </select>
+                        ) : (
+                          <>${item.unitPrice.toFixed(2)}</>
+                        )}
+                      </td>
                       <td className="py-2 text-center">
                         <NumericInput
                           min="1"
@@ -1271,6 +1248,185 @@ export default function Sales() {
               </div>
             </div>
           )}
+          </FormSection>
+
+          {/* ── Método(s) de pago y todas sus subopciones ────────────────────────────── */}
+          <FormSection title="Método de pago" icon={HiOutlineBanknotes}>
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+              {!splitMode && (
+                <div>
+                  <label className="lbl">Forma de pago</label>
+                  <select
+                    value={form.paymentMethod}
+                    onChange={(e) => setForm({ ...form, paymentMethod: e.target.value, bankAccount: '', creditCard: '', cardType: '', cardPos: '', cardLote: '', cardVoucher: '' })}
+                    className="input"
+                  >
+                    {Object.entries(paymentMethods).map(([k, v]) => (
+                      <option key={k} value={k}>{v}</option>
+                    ))}
+                  </select>
+                  <button type="button" onClick={enableSplit} className="mt-1 text-xs text-emerald-700 hover:underline bg-transparent border-none cursor-pointer p-0">Dividir en varios métodos</button>
+                </div>
+              )}
+              {!splitMode && form.paymentMethod === 'transferencia' && (
+                <div className="sm:col-span-2">
+                  <label className="lbl">Cuenta bancaria de destino</label>
+                  <select
+                    value={form.bankAccount || ''}
+                    onChange={(e) => setForm({ ...form, bankAccount: e.target.value })}
+                    className="input"
+                  >
+                    <option value="">{payOptions.accounts.length ? 'Seleccionar cuenta…' : 'No hay cuentas configuradas'}</option>
+                    {payOptions.accounts.map((a) => (
+                      <option key={a._id} value={a._id}>{a.name} — {a.bank} ({a.accountNumber})</option>
+                    ))}
+                  </select>
+                </div>
+              )}
+              {!splitMode && form.paymentMethod === 'tarjeta' && (
+                <>
+                  {/* Débito o crédito: contablemente NO es lo mismo (el crédito queda por
+                      liquidar, con comisión y retención) y el reporte los separa en columnas. */}
+                  <div>
+                    <label className="lbl">Tipo de tarjeta</label>
+                    <select
+                      value={form.cardType || ''}
+                      onChange={(e) => setForm({ ...form, cardType: e.target.value, creditCard: '', cardPos: '' })}
+                      className="input"
+                    >
+                      <option value="">Seleccionar tipo…</option>
+                      {CARD_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="lbl">Tarjeta / Adquirente</label>
+                    <select
+                      value={form.creditCard || ''}
+                      onChange={(e) => setForm({ ...form, creditCard: e.target.value, cardPos: '' })}
+                      className="input"
+                    >
+                      <option value="">{cardOptions.length ? 'Seleccionar tarjeta…' : 'No hay tarjetas configuradas'}</option>
+                      {cardOptions.map((c) => (
+                        <option key={c._id} value={c._id}>{c.name} ({c.brand}{c.acquirer ? ` · ${c.acquirer}` : ''})</option>
+                      ))}
+                    </select>
+                  </div>
+                  {(() => {
+                    const card = payOptions.cards.find((c) => c._id === form.creditCard);
+                    if (!card || !card.pos?.length) return null;
+                    return (
+                      <div>
+                        <label className="lbl">POS / Terminal</label>
+                        <select
+                          value={form.cardPos || ''}
+                          onChange={(e) => setForm({ ...form, cardPos: e.target.value })}
+                          className="input"
+                        >
+                          <option value="">Seleccionar POS…</option>
+                          {card.pos.map((p) => (
+                            <option key={p.code} value={p.code}>{p.name || p.code}{p.terminal ? ` · ${p.terminal}` : ''}</option>
+                          ))}
+                        </select>
+                      </div>
+                    );
+                  })()}
+                  <div>
+                    <label className="lbl">N° de lote</label>
+                    <input
+                      value={form.cardLote || ''}
+                      onChange={(e) => setForm({ ...form, cardLote: e.target.value })}
+                      placeholder="Del voucher POS (para la liquidación)"
+                      className="input"
+                    />
+                  </div>
+                  <div>
+                    <label className="lbl">N° de voucher</label>
+                    <input
+                      value={form.cardVoucher || ''}
+                      onChange={(e) => setForm({ ...form, cardVoucher: e.target.value })}
+                      placeholder="Opcional"
+                      className="input"
+                    />
+                  </div>
+                </>
+              )}
+              {!splitMode && form.paymentMethod === 'credito' && (
+                <div>
+                  <label className="lbl">Vence (crédito)</label>
+                  <input type="date" value={form.dueDate || ''} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="input" />
+                </div>
+              )}
+              {splitMode && (
+                <div className="sm:col-span-3 rounded-xl border border-slate-200 p-3 space-y-2 bg-slate-50/40">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-semibold text-slate-700">Pago dividido (varios métodos)</span>
+                    <button type="button" onClick={() => { setSplitMode(false); setSplitPayments([]); }} className="text-xs text-slate-500 hover:text-slate-700 bg-transparent border-none cursor-pointer">Volver a un solo método</button>
+                  </div>
+                  {splitPayments.map((p, i) => (
+                    <div key={i} className="flex flex-wrap items-end gap-2 bg-white rounded-lg border border-slate-100 p-2">
+                      <div className="w-36">
+                        <label className="lbl">Método</label>
+                        <select value={p.method} onChange={(e) => setSplitRow(i, { method: e.target.value, bankAccount: '', creditCard: '', cardType: '', cardPos: '', cardLote: '', cardVoucher: '' })} className="input">
+                          {Object.entries(paymentMethods).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                        </select>
+                      </div>
+                      <div className="w-28">
+                        <label className="lbl">Monto</label>
+                        <NumericInput step="0.01" value={p.amount} onChange={(e) => setSplitRow(i, { amount: e.target.value })} className="input" />
+                      </div>
+                      {p.method === 'transferencia' && (
+                        <div className="flex-1 min-w-[180px]">
+                          <label className="lbl">Cuenta bancaria</label>
+                          <select value={p.bankAccount || ''} onChange={(e) => setSplitRow(i, { bankAccount: e.target.value })} className="input">
+                            <option value="">{payOptions.accounts.length ? 'Seleccionar cuenta…' : 'No hay cuentas'}</option>
+                            {payOptions.accounts.map((a) => <option key={a._id} value={a._id}>{a.name} — {a.bank}</option>)}
+                          </select>
+                        </div>
+                      )}
+                      {p.method === 'tarjeta' && (
+                        <>
+                          <div className="w-28">
+                            <label className="lbl">Tipo</label>
+                            <select value={p.cardType || ''} onChange={(e) => setSplitRow(i, { cardType: e.target.value, creditCard: '' })} className="input">
+                              <option value="">Tipo…</option>
+                              {CARD_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                            </select>
+                          </div>
+                          <div className="flex-1 min-w-[150px]">
+                            <label className="lbl">Tarjeta</label>
+                            <select value={p.creditCard || ''} onChange={(e) => setSplitRow(i, { creditCard: e.target.value })} className="input">
+                              <option value="">{cardsOfType(p.cardType).length ? 'Seleccionar…' : 'No hay tarjetas'}</option>
+                              {cardsOfType(p.cardType).map((c) => <option key={c._id} value={c._id}>{c.name} ({c.brand})</option>)}
+                            </select>
+                          </div>
+                          <div className="w-24">
+                            <label className="lbl">N° lote</label>
+                            <input value={p.cardLote || ''} onChange={(e) => setSplitRow(i, { cardLote: e.target.value })} className="input" />
+                          </div>
+                        </>
+                      )}
+                      <button type="button" onClick={() => removeSplitRow(i)} className="text-rose-500 hover:text-rose-600 pb-2 bg-transparent border-none cursor-pointer" title="Quitar método"><HiOutlineTrash className="w-4 h-4" /></button>
+                    </div>
+                  ))}
+                  <div className="flex items-center justify-between flex-wrap gap-2">
+                    <button type="button" onClick={addSplitRow} className="text-emerald-600 text-sm flex items-center gap-1 bg-transparent border-none cursor-pointer"><HiOutlinePlus className="w-4 h-4" /> Agregar método</button>
+                    <div className="text-sm text-slate-600">
+                      Pagado: <b className="font-mono">${splitPaid.toFixed(2)}</b> / Total: <b className="font-mono">${total.toFixed(2)}</b>
+                      {Math.abs(splitRemaining) > 0.01
+                        ? <span className={`ml-2 font-semibold ${splitRemaining > 0 ? 'text-amber-600' : 'text-rose-600'}`}>{splitRemaining > 0 ? `Falta $${splitRemaining.toFixed(2)}` : `Sobra $${(-splitRemaining).toFixed(2)}`}</span>
+                        : <span className="ml-2 text-emerald-600 font-semibold">✓ Cuadra</span>}
+                    </div>
+                  </div>
+                  {splitPayments.some((p) => p.method === 'credito') && (
+                    <div className="w-48">
+                      <label className="lbl">Vence (parte a crédito)</label>
+                      <input type="date" value={form.dueDate || ''} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="input" />
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </FormSection>
 
           <div className="flex justify-end gap-3 pt-2">
             <button

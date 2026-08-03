@@ -130,8 +130,10 @@ exports.emitFromPurchase = async (req, res) => {
 
     // Impuestos del documento soporte (la compra): IVA.
     const impuestosDoc = [];
-    if (inv.iva > 0 || inv.subtotal15 > 0 || inv.subtotal12 > 0) {
-      const base = +(Number(inv.subtotal15 || 0) + Number(inv.subtotal12 || 0)).toFixed(2) || +Number(inv.subtotal || 0).toFixed(2);
+    // Base de la retención de IVA = TODA la base gravada (incluye la tarifa del 5 %).
+    const baseGravadaInv = +(Number(inv.subtotal5 || 0) + Number(inv.subtotal12 || 0) + Number(inv.subtotal15 || 0)).toFixed(2);
+    if (inv.iva > 0 || baseGravadaInv > 0) {
+      const base = baseGravadaInv || +Number(inv.subtotal || 0).toFixed(2);
       impuestosDoc.push({
         codImpuestoDocSustento: '2',
         codigoPorcentaje: Number(inv.subtotal15) > 0 ? '4' : '2',

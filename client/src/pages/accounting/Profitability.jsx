@@ -2,6 +2,7 @@ import { useEffect, useState, useCallback } from 'react';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import { fmt, startOfMonth, endOfMonth } from './_utils';
+import ExcelButton from '../../components/ExcelButton';
 
 export default function Profitability() {
   const [rows, setRows] = useState([]);
@@ -22,6 +23,11 @@ export default function Profitability() {
       <div className="flex gap-2 items-end">
         <div><label className="text-xs text-slate-500">Desde</label><input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="block border border-slate-200 rounded-xl px-3 py-2" /></div>
         <div><label className="text-xs text-slate-500">Hasta</label><input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="block border border-slate-200 rounded-xl px-3 py-2" /></div>
+        <ExcelButton
+          url="/accounting-reports/profitability/by-doctor.xlsx"
+          params={{ from, to }}
+          filename={`rentabilidad_medico_${from}_${to}.xlsx`}
+        />
       </div>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
         <table className="tbl">

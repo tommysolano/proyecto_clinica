@@ -25,7 +25,9 @@ exports.paymentOptions = async (req, res) => {
         .select('name bank accountNumber accountType')
         .sort({ name: 1 }),
       CreditCard.find({ clinic: req.clinicId, active: true })
-        .select('name brand acquirer pos')
+        // `accountType` lo necesita el punto de cobro para ofrecer las tarjetas del tipo
+        // elegido (débito / crédito), que contablemente se tratan distinto.
+        .select('name brand acquirer accountType pos')
         .sort({ name: 1 }),
     ]);
     const cardsOut = cards.map((c) => ({
@@ -33,6 +35,7 @@ exports.paymentOptions = async (req, res) => {
       name: c.name,
       brand: c.brand,
       acquirer: c.acquirer,
+      accountType: c.accountType || '',
       pos: (c.pos || []).filter((p) => p.active !== false).map((p) => ({ code: p.code, name: p.name, terminal: p.terminal })),
     }));
     res.json({ accounts, cards: cardsOut });

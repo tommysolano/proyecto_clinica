@@ -146,7 +146,11 @@ const purchaseInvoiceSchema = new mongoose.Schema(
     autorizacion: { type: String, default: '' },
     items: { type: [purchaseItemSchema], default: [] },
     subtotal0: { type: Number, default: 0 },
-    subtotal12: { type: Number, default: 0 },
+    // Tarifa 5%: vigente en Ecuador para sectores específicos (p. ej. construcción). Antes no
+    // existía bucket para ella y una línea al 5% quedaba FUERA del subtotal: el total de la
+    // factura salía mal y su base no aparecía en el 104 ni en el ATS.
+    subtotal5: { type: Number, default: 0 },
+    subtotal12: { type: Number, default: 0 },   // histórico (tarifa derogada); se conserva para reportes de años anteriores
     subtotal15: { type: Number, default: 0 },
     subtotalNoObjeto: { type: Number, default: 0 },
     subtotalExento: { type: Number, default: 0 },
@@ -206,6 +210,20 @@ const purchaseInvoiceSchema = new mongoose.Schema(
   },
   { timestamps: true, toJSON: { virtuals: true }, toObject: { virtuals: true } }
 );
+
+/**
+ * Base GRAVADA con IVA de la compra: la suma de todas las tarifas mayores que cero.
+ * Fuente única para el 104 (casillero de adquisiciones gravadas), el ATS (`baseImpGrav`) y la
+ * base de la retención de IVA. Antes cada sitio sumaba `subtotal12 + subtotal15` a mano y al
+ * aparecer la tarifa del 5% habría quedado fuera en todos ellos.
+ */
+purchaseInvoiceSchema.virtual('baseGravada').get(function () {
+  return +((Number(this.subtotal5) || 0) + (Number(this.subtotal12) || 0) + (Number(this.subtotal15) || 0)).toFixed(2);
+});
+
+/** Igual que el virtual, pero sobre un objeto plano (`.lean()`, agregaciones, importadores). */
+purchaseInvoiceSchema.statics.baseGravadaOf = (p) =>
+  +((Number(p?.subtotal5) || 0) + (Number(p?.subtotal12) || 0) + (Number(p?.subtotal15) || 0)).toFixed(2);
 
 // Resumen de retenciones derivado de la cabecera (misma fuente que se contabiliza),
 // con la forma que consume el frontend: { type, code, description, rate, base, amount, account }.

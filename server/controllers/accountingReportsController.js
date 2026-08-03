@@ -19,6 +19,8 @@ const { effectivePaymentDate } = require('../utils/paymentSchedule');
 const { resolveReceivableEconomicObligations } = require('../services/receivableObligations');
 const ExcelJS = require('exceljs');
 const mongoose = require('mongoose');
+const XL = require('../utils/excelReport');
+const { buildAts, atsXml, atsFileName } = require('../utils/sriForms/ats');
 
 /**
  * Ventas fiscalmente en el período: facturas AUTORIZADAS cuya fecha FISCAL
@@ -941,13 +943,19 @@ exports.advancesControl = async (req, res) => {
 
 exports.inventoryReport = async (req, res) => {
   const products = await Product.find({ clinic: req.clinicId, active: true });
-  const rows = products.map((p) => ({
-    code: p.code, name: p.name, category: p.category,
-    stock: p.stock || 0, purchasePrice: p.purchasePrice || 0,
-    salePrice: p.salePrice || 0,
-    valueAtCost: (p.stock || 0) * (p.purchasePrice || 0),
-    valueAtSale: (p.stock || 0) * (p.salePrice || 0),
-  }));
+  const rows = products.map((p) => {
+    // Costo unitario REAL: el promedio que calcula el kardex desde las compras. El antiguo
+    // `purchasePrice` era un dato tecleado a mano que ya no se captura; se conserva como
+    // respaldo solo para los productos que nunca han tenido movimiento de compra.
+    const unitCost = Number(p.averageCost) || Number(p.purchasePrice) || 0;
+    return {
+      code: p.code, name: p.name, category: p.category,
+      stock: p.stock || 0, purchasePrice: unitCost,
+      salePrice: p.salePrice || 0,
+      valueAtCost: (p.stock || 0) * unitCost,
+      valueAtSale: (p.stock || 0) * (p.salePrice || 0),
+    };
+  });
   const totals = rows.reduce((acc, r) => ({
     valueAtCost: acc.valueAtCost + r.valueAtCost,
     valueAtSale: acc.valueAtSale + r.valueAtSale,
@@ -1022,9 +1030,10 @@ exports.generalReport = async (req, res) => {
     ]);
 
     // Inventario valorizado
-    const products = await Product.find({ clinic: req.clinicId, active: true }).select('stock purchasePrice salePrice');
+    const products = await Product.find({ clinic: req.clinicId, active: true }).select('stock averageCost purchasePrice salePrice');
+    // Costo unitario del kardex (`averageCost`); `purchasePrice` solo como respaldo histórico.
     const inventory = products.reduce((acc, p) => ({
-      valueAtCost: acc.valueAtCost + (p.stock || 0) * (p.purchasePrice || 0),
+      valueAtCost: acc.valueAtCost + (p.stock || 0) * (Number(p.averageCost) || Number(p.purchasePrice) || 0),
       valueAtSale: acc.valueAtSale + (p.stock || 0) * (p.salePrice || 0),
       units: acc.units + (p.stock || 0),
     }), { valueAtCost: 0, valueAtSale: 0, units: 0 });
@@ -1889,188 +1898,791 @@ exports.retentionsReceived = async (req, res) => {
 };
 
 /**
- * ATS visual (JSON) por rango: compras y ventas del período, con desglose de
- * retenciones, para revisar/conciliar antes de generar el XML del ATS (mensual).
- * Acepta cualquier período (mensual, semestral, anual, personalizado).
+ * ATS — Anexo Transaccional Simplificado.
+ *
+ * Toda la lógica (mapeo de códigos del SRI, agrupaciones, orden del XSD) vive en
+ * `utils/sriForms/ats.js`. Aquí solo quedan los tres endpoints, que salen del MISMO
+ * `buildAts()`: la pantalla, el Excel y el XML no pueden discrepar entre sí.
+ */
+const ATS_MODELS = () => ({
+  Invoice,
+  PurchaseInvoice,
+  Clinic: require('../models/Clinic'),
+  RetentionVoucher: require('../models/RetentionVoucher'),
+  InvoicingConfig: require('../models/InvoicingConfig'),
+});
+
+/** Datos del ATS del período pedido (uso interno de los tres endpoints). */
+async function atsData(req) {
+  const range = resolveReportRange(req.query);
+  const data = await buildAts({ clinicId: req.clinicId, range, models: ATS_MODELS() });
+  data.monthlyXmlAvailable = isMonthlyRange(range);
+  data.salesPending = await countPendingSalesInRange(req.clinicId, range.start, range.end);
+  return data;
+}
+
+/**
+ * ATS visual (JSON): el detalle completo del anexo para revisarlo ANTES de generar el XML,
+ * con los avisos de lo que el SRI rechazaría. Acepta cualquier período; el XML, solo mensual.
  */
 exports.atsPreview = async (req, res) => {
   try {
-    const range = resolveReportRange(req.query);
-    const ventasDocs = await fetchSalesInRange(req.clinicId, range.start, range.end);
-    const comprasDocs = await PurchaseInvoice.find(purchasesInRangeQuery(req.clinicId, range.start, range.end))
-      .populate('supplier', 'ruc razonSocial tipoIdentificacion');
-
-    const compras = comprasDocs.map((c) => {
-      const retIva = (c.retentions || []).filter((r) => r.type === 'IVA').reduce((s, r) => s + (r.amount || 0), 0);
-      const retRenta = (c.retentions || []).filter((r) => r.type === 'RENTA').reduce((s, r) => s + (r.amount || 0), 0);
-      return {
-        fecha: c.fechaEmision,
-        serie: c.serie || [c.estab, c.ptoEmi, c.secuencial].filter(Boolean).join('-'),
-        proveedor: c.supplier?.razonSocial || '',
-        ruc: c.supplier?.ruc || '',
-        baseNoObjeto: +(c.subtotalNoObjeto || 0).toFixed(2),
-        base0: +(c.subtotal0 || 0).toFixed(2),
-        baseGrav: +((c.subtotal12 || 0) + (c.subtotal15 || 0)).toFixed(2),
-        iva: +(c.iva || 0).toFixed(2),
-        retIva: +retIva.toFixed(2),
-        retRenta: +retRenta.toFixed(2),
-        total: +(c.total || 0).toFixed(2),
-      };
-    });
-
-    const byClient = {};
-    for (const v of ventasDocs) {
-      const tb = invoiceTaxBreakdown(v);
-      const k = v.identificacionComprador || '9999999999999';
-      if (!byClient[k]) byClient[k] = { idCliente: k, razonSocial: v.razonSocialComprador || 'CONSUMIDOR FINAL', numComprobantes: 0, base: 0, base0: 0, baseGrav: 0, iva: 0, total: 0 };
-      byClient[k].numComprobantes += 1;
-      byClient[k].base += tb.baseTotal;
-      byClient[k].base0 += tb.base0;
-      byClient[k].baseGrav += tb.baseGravada;
-      byClient[k].iva += tb.iva;
-      byClient[k].total += v.importeTotal || 0;
-    }
-    const ventas = Object.values(byClient).map((v) => ({
-      ...v, base: +v.base.toFixed(2), base0: +v.base0.toFixed(2), baseGrav: +v.baseGrav.toFixed(2), iva: +v.iva.toFixed(2), total: +v.total.toFixed(2),
-    }));
-
-    const totals = {
-      comprasBase: +compras.reduce((s, c) => s + c.base0 + c.baseGrav + c.baseNoObjeto, 0).toFixed(2),
-      comprasIva: +compras.reduce((s, c) => s + c.iva, 0).toFixed(2),
-      comprasRetIva: +compras.reduce((s, c) => s + c.retIva, 0).toFixed(2),
-      comprasRetRenta: +compras.reduce((s, c) => s + c.retRenta, 0).toFixed(2),
-      comprasTotal: +compras.reduce((s, c) => s + c.total, 0).toFixed(2),
-      ventasBase: +ventas.reduce((s, v) => s + v.base, 0).toFixed(2),
-      ventasBase0: +ventas.reduce((s, v) => s + v.base0, 0).toFixed(2),
-      ventasBaseGrav: +ventas.reduce((s, v) => s + v.baseGrav, 0).toFixed(2),
-      ventasIva: +ventas.reduce((s, v) => s + v.iva, 0).toFixed(2),
-      ventasTotal: +ventas.reduce((s, v) => s + v.total, 0).toFixed(2),
-    };
-
-    const salesPending = await countPendingSalesInRange(req.clinicId, range.start, range.end);
-    res.json({ period: periodMeta(range), monthlyXmlAvailable: isMonthlyRange(range), compras, ventas, totals, salesPending });
+    res.json(await atsData(req));
   } catch (e) { res.status(e.status || 500).json({ message: e.message }); }
 };
 
 /**
- * ATS - Anexo Transaccional Simplificado.
- * Genera un XML SIMPLIFICADO (estructura básica inspirada en la v2.0.0 del SRI). No está
- * validado contra el esquema vigente: revísalo antes de presentarlo. El ATS se declara por
- * MES, así que se bloquea cualquier período no mensual.
+ * ATS en XML, con la estructura y el ORDEN del esquema oficial (ats.xsd). El ATS se declara
+ * por MES, así que se bloquea cualquier período que no lo sea.
+ *
+ * Si faltan datos que el SRI exige (RUC del proveedor, autorización, secuencial, comprobante
+ * de retención…) se responde 409 con la lista: es preferible decirlo aquí que dejar que el
+ * portal del SRI lo rechace sin explicar cuál documento está mal. `?force=true` genera el
+ * archivo de todos modos, para poder revisarlo.
  */
 exports.ats = async (req, res) => {
   try {
     const range = resolveReportRange(req.query);
     if (!isMonthlyRange(range)) {
-      return res.status(400).json({ message: 'El ATS XML debe generarse por mes; para rangos use el reporte visual.' });
+      return res.status(400).json({ message: 'El ATS se declara por MES. Cambie el período a "Mensual" para generar el XML.' });
     }
-    const y = range.year;
-    const m = range.month;
-    const start = range.start;
-    const end = range.end;
-    const Clinic = require('../models/Clinic');
-    const clinic = await Clinic.findById(req.clinicId);
-    const ventas = await fetchSalesInRange(req.clinicId, start, end);
-    const compras = await PurchaseInvoice.find({ clinic: req.clinicId, status: { $ne: 'ANULADA' }, fechaEmision: { $gte: start, $lte: end } }).populate('supplier');
-
-    const esc = (s) => String(s || '').replace(/[<>&"']/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;', "'": '&apos;' }[c]));
-    let xml = '<?xml version="1.0" encoding="UTF-8"?>\n<iva>\n';
-    xml += `  <TipoIDInformante>R</TipoIDInformante>\n`;
-    xml += `  <IdInformante>${esc(clinic?.ruc)}</IdInformante>\n`;
-    xml += `  <razonSocial>${esc(clinic?.razonSocial || clinic?.name)}</razonSocial>\n`;
-    xml += `  <Anio>${y}</Anio>\n  <Mes>${String(m).padStart(2, '0')}</Mes>\n`;
-
-    // Compras
-    xml += '  <compras>\n';
-    for (const c of compras) {
-      xml += '    <detalleCompras>\n';
-      xml += `      <codSustento>01</codSustento>\n`;
-      xml += `      <tpIdProv>${c.supplier?.tipoIdentificacion === 'CEDULA' ? '02' : '01'}</tpIdProv>\n`;
-      xml += `      <idProv>${esc(c.supplier?.ruc)}</idProv>\n`;
-      xml += `      <tipoComprobante>${c.docType === 'NOTA_CREDITO_REC' ? '04' : '01'}</tipoComprobante>\n`;
-      xml += `      <fechaRegistro>${c.fechaEmision.toISOString().slice(0, 10).split('-').reverse().join('/')}</fechaRegistro>\n`;
-      xml += `      <establecimiento>${esc(c.estab || '001')}</establecimiento>\n`;
-      xml += `      <puntoEmision>${esc(c.ptoEmi || '001')}</puntoEmision>\n`;
-      xml += `      <secuencial>${esc(c.secuencial || '')}</secuencial>\n`;
-      xml += `      <autorizacion>${esc(c.autorizacion || '')}</autorizacion>\n`;
-      xml += `      <fechaEmision>${c.fechaEmision.toISOString().slice(0, 10).split('-').reverse().join('/')}</fechaEmision>\n`;
-      xml += `      <baseNoGraIva>${(c.subtotalNoObjeto || 0).toFixed(2)}</baseNoGraIva>\n`;
-      xml += `      <baseImponible>${(c.subtotal0 || 0).toFixed(2)}</baseImponible>\n`;
-      xml += `      <baseImpGrav>${((c.subtotal12 || 0) + (c.subtotal15 || 0)).toFixed(2)}</baseImpGrav>\n`;
-      xml += `      <montoIva>${(c.iva || 0).toFixed(2)}</montoIva>\n`;
-      const retIvaC = (c.retentions || []).filter((r) => r.type === 'IVA').reduce((s, r) => s + (r.amount || 0), 0);
-      const retRentaC = (c.retentions || []).filter((r) => r.type === 'RENTA');
-      const retRentaTotal = retRentaC.reduce((s, r) => s + (r.amount || 0), 0);
-      xml += `      <valRetBien10>0.00</valRetBien10>\n`;
-      xml += `      <valRetServ20>0.00</valRetServ20>\n`;
-      xml += `      <valorRetBienes>0.00</valorRetBienes>\n`;
-      xml += `      <valRetServ50>0.00</valRetServ50>\n`;
-      xml += `      <valorRetServicios>0.00</valorRetServicios>\n`;
-      xml += `      <valRetServ100>${retIvaC.toFixed(2)}</valRetServ100>\n`;
-      xml += `      <totbasesImpReembolso>0.00</totbasesImpReembolso>\n`;
-      xml += `      <pagoLocExt>01</pagoLocExt>\n`;
-      xml += `      <parteRel>NO</parteRel>\n`;
-      // Detalle de retenciones en la fuente (renta)
-      if (retRentaC.length) {
-        xml += '      <air>\n';
-        for (const r of retRentaC) {
-          xml += '        <detalleAir>\n';
-          xml += `          <codRetAir>${esc(r.code || '')}</codRetAir>\n`;
-          xml += `          <baseImpAir>${(r.baseAmount || 0).toFixed(2)}</baseImpAir>\n`;
-          xml += `          <porcentajeAir>${(r.percentage || 0).toFixed(2)}</porcentajeAir>\n`;
-          xml += `          <valRetAir>${(r.amount || 0).toFixed(2)}</valRetAir>\n`;
-          xml += '        </detalleAir>\n';
-        }
-        xml += '      </air>\n';
-      }
-      // Formas de pago (cuando el total supera el umbral SRI se reporta)
-      xml += '      <formasDePago>\n';
-      xml += `        <formaPago>${esc(c.paymentMethodSri || '01')}</formaPago>\n`;
-      xml += '      </formasDePago>\n';
-      xml += `      <valorRetIva>${retIvaC.toFixed(2)}</valorRetIva>\n`;
-      xml += `      <valorRetRenta>${retRentaTotal.toFixed(2)}</valorRetRenta>\n`;
-      xml += `      <total>${(c.total || 0).toFixed(2)}</total>\n`;
-      xml += '    </detalleCompras>\n';
+    const data = await buildAts({ clinicId: req.clinicId, range, models: ATS_MODELS() });
+    if (data.errores.length && req.query.force !== 'true') {
+      return res.status(409).json({
+        message: 'El ATS tiene datos que el SRI rechazaría. Corrija estos documentos y vuelva a generarlo.',
+        errores: data.errores,
+        code: 'ATS_INCOMPLETO',
+      });
     }
-    xml += '  </compras>\n';
-
-    // Ventas (agrupadas por cliente). Se separa base 0% (baseImponible) de la base
-    // gravada (baseImpGrav) usando el desglose por tarifa de cada factura; antes
-    // TODA la base iba a baseImpGrav aunque hubiera ventas 0% (servicios médicos).
-    const byClient = {};
-    for (const v of ventas) {
-      const tb = invoiceTaxBreakdown(v);
-      const k = v.identificacionComprador || '9999999999999';
-      if (!byClient[k]) byClient[k] = { ...v, base0: 0, baseGrav: 0, iva: 0, total: 0, count: 0 };
-      byClient[k].base0 += tb.base0 + tb.baseExento + tb.baseNoObjeto;
-      byClient[k].baseGrav += tb.baseGravada;
-      byClient[k].iva += tb.iva;
-      byClient[k].total += v.importeTotal || 0;
-      byClient[k].count += 1;
-    }
-    xml += '  <ventas>\n';
-    for (const v of Object.values(byClient)) {
-      xml += '    <detalleVentas>\n';
-      xml += `      <tpIdCliente>${v.tipoIdentificacionComprador === '04' ? '01' : '02'}</tpIdCliente>\n`;
-      xml += `      <idCliente>${esc(v.identificacionComprador)}</idCliente>\n`;
-      xml += `      <tipoComprobante>18</tipoComprobante>\n`;
-      xml += `      <numeroComprobantes>${v.count}</numeroComprobantes>\n`;
-      xml += `      <baseImponible>${v.base0.toFixed(2)}</baseImponible>\n`;
-      xml += `      <baseImpGrav>${v.baseGrav.toFixed(2)}</baseImpGrav>\n`;
-      xml += `      <montoIva>${v.iva.toFixed(2)}</montoIva>\n`;
-      xml += `      <valorRetIva>0.00</valorRetIva>\n`;
-      xml += `      <valorRetRenta>0.00</valorRetRenta>\n`;
-      xml += '      <formasDePago>\n';
-      xml += '        <formaPago>01</formaPago>\n';
-      xml += '      </formasDePago>\n';
-      xml += '    </detalleVentas>\n';
-    }
-    xml += '  </ventas>\n';
-    xml += '</iva>\n';
+    const xml = atsXml(data);
     res.setHeader('Content-Type', 'application/xml');
-    res.setHeader('Content-Disposition', `attachment; filename="ATS-${y}-${String(m).padStart(2, '0')}.xml"`);
+    res.setHeader('Content-Disposition', `attachment; filename="${atsFileName(range.year, range.month)}"`);
     res.send(xml);
   } catch (e) {
-    res.status(500).json({ message: e.message });
+    res.status(e.status || 500).json({ message: e.message });
   }
 };
+
+/** ATS en Excel: una hoja por bloque del anexo (compras, ventas, establecimientos, anulados). */
+exports.atsExcel = XL.excelHandler(async (req, res) => {
+  const d = await atsData(req);
+  const wb = XL.newWorkbook();
+  const meta = [
+    ['Reporte', 'ATS — Anexo Transaccional Simplificado'],
+    ['Período', d.period?.label || ''],
+    ['Informante', `${d.informante?.ruc || ''} — ${d.informante?.razonSocial || ''}`],
+    ['Total ventas', d.informante?.totalVentas],
+  ];
+
+  XL.addSheet(wb, {
+    title: 'Compras',
+    meta,
+    columns: [
+      { header: 'Fecha emisión', key: 'fechaEmision', width: 14 },
+      { header: 'Comprobante', key: '_serie', width: 20 },
+      { header: 'Tipo', key: 'tipoComprobante', width: 8 },
+      { header: 'Sustento', key: 'codSustento', width: 10 },
+      { header: 'Tipo ID', key: 'tpIdProv', width: 8 },
+      { header: 'RUC / Cédula', key: 'idProv', width: 16 },
+      { header: 'Proveedor', key: '_proveedor', width: 34 },
+      { header: 'Autorización', key: 'autorizacion', width: 26 },
+      { header: 'Base no grava IVA', key: 'baseNoGraIva', width: 16, money: true },
+      { header: 'Base 0%', key: 'baseImponible', width: 14, money: true },
+      { header: 'Base gravada', key: 'baseImpGrav', width: 16, money: true },
+      { header: 'Base exenta', key: 'baseImpExe', width: 14, money: true },
+      { header: 'ICE', key: 'montoIce', width: 12, money: true },
+      { header: 'IVA', key: 'montoIva', width: 14, money: true },
+      { header: 'Ret. IVA', key: '_retIva', width: 14, money: true },
+      { header: 'Ret. Renta', key: '_retRenta', width: 14, money: true },
+      { header: 'N° retención', key: '_retencionNumero', width: 20 },
+      { header: 'Total', key: '_total', width: 16, money: true },
+    ],
+    rows: d.compras || [],
+    totals: {
+      baseImponible: d.totals?.comprasBase0,
+      baseImpGrav: d.totals?.comprasBaseGrav,
+      montoIva: d.totals?.comprasIva,
+      _retIva: d.totals?.comprasRetIva,
+      _retRenta: d.totals?.comprasRetRenta,
+      _total: d.totals?.comprasTotal,
+    },
+    notes: ['Códigos del SRI — Sustento: tabla 5. Tipo comprobante: tabla 4. Tipo ID proveedor: 01 RUC, 02 cédula, 03 pasaporte.'],
+  });
+
+  XL.addSheet(wb, {
+    title: 'Ventas',
+    meta,
+    columns: [
+      { header: 'Tipo ID', key: 'tpIdCliente', width: 8 },
+      { header: 'Identificación', key: 'idCliente', width: 18 },
+      { header: 'Cliente', key: 'denoCli', width: 36 },
+      { header: 'Tipo comprobante', key: 'tipoComprobante', width: 16 },
+      { header: 'Emisión', key: 'tipoEmision', width: 10 },
+      { header: 'N° comprobantes', key: 'numeroComprobantes', width: 16, number: true },
+      { header: 'Base no grava IVA', key: 'baseNoGraIva', width: 16, money: true },
+      { header: 'Base 0%', key: 'baseImponible', width: 14, money: true },
+      { header: 'Base gravada', key: 'baseImpGrav', width: 16, money: true },
+      { header: 'IVA', key: 'montoIva', width: 14, money: true },
+      { header: 'Ret. IVA', key: 'valorRetIva', width: 14, money: true },
+      { header: 'Ret. Renta', key: 'valorRetRenta', width: 14, money: true },
+      { header: 'Total', key: '_total', width: 16, money: true },
+    ],
+    rows: d.ventas || [],
+    totals: {
+      numeroComprobantes: d.totals?.ventasCount,
+      baseImponible: d.totals?.ventasBase0,
+      baseImpGrav: d.totals?.ventasBaseGrav,
+      montoIva: d.totals?.ventasIva,
+      _total: d.totals?.ventasTotal,
+    },
+    notes: [
+      'Ventas agrupadas por cliente y tipo de comprobante, como las exige el ATS.',
+      'Solo se incluyen facturas electrónicas AUTORIZADAS.',
+      d.salesPending > 0 ? `⚠ Hay ${d.salesPending} venta(s) registrada(s) SIN autorizar en el período: no entran en el anexo.` : '',
+    ].filter(Boolean),
+  });
+
+  XL.addSheet(wb, {
+    title: 'Ventas por establecimiento',
+    meta,
+    columns: [
+      { header: 'Establecimiento', key: 'codEstab', width: 18 },
+      { header: 'Ventas', key: 'ventasEstab', width: 18, money: true },
+      { header: 'IVA compensación', key: 'ivaComp', width: 18, money: true },
+    ],
+    rows: d.ventasEstablecimiento || [],
+  });
+
+  XL.addSheet(wb, {
+    title: 'Anulados',
+    meta,
+    columns: [
+      { header: 'Fecha', key: '_fecha', width: 14 },
+      { header: 'Tipo comprobante', key: 'tipoComprobante', width: 16 },
+      { header: 'Establecimiento', key: 'establecimiento', width: 16 },
+      { header: 'Punto emisión', key: 'puntoEmision', width: 14 },
+      { header: 'Secuencial desde', key: 'secuencialInicio', width: 18 },
+      { header: 'Secuencial hasta', key: 'secuencialFin', width: 18 },
+      { header: 'Autorización', key: 'autorizacion', width: 26 },
+    ],
+    rows: d.anulados || [],
+    notes: ['Comprobantes anulados del período. Se declara uno por fila (inicio = fin) para no agrupar rangos con huecos.'],
+  });
+
+  if (d.errores?.length) {
+    XL.addSheet(wb, {
+      title: 'Errores por corregir',
+      meta,
+      columns: [{ header: 'Problema detectado', key: 'error', width: 110 }],
+      rows: d.errores.map((error) => ({ error })),
+      notes: ['El SRI rechazaría el anexo con estos datos faltantes. Corrija los documentos y vuelva a generarlo.'],
+    });
+  }
+
+  await XL.sendWorkbook(res, wb, `ATS_${d.period?.year || ''}_${String(d.period?.month || '').padStart(2, '0')}.xlsx`);
+});
+
+// ═══════════════════════ EXPORTACIONES A EXCEL ═══════════════════════════════
+//
+// Pedido del contador: TODO reporte o consulta se debe poder bajar en Excel. Cada exportación
+// reutiliza el controlador JSON de su pantalla (`XL.captureJson`), de modo que el archivo y la
+// pantalla no puedan discrepar nunca: hay una sola consulta y una sola aritmética.
+
+/** Aplana el árbol de cuentas de los estados financieros a filas con nivel de sangría. */
+function flattenAccountTree(nodes, level = 0, out = []) {
+  for (const n of nodes || []) {
+    out.push({
+      code: n.code || '',
+      name: `${'    '.repeat(level)}${n.name || ''}`,
+      balance: n.balance ?? n.total ?? 0,
+      level,
+    });
+    if (n.children?.length) flattenAccountTree(n.children, level + 1, out);
+  }
+  return out;
+}
+
+const ACCOUNT_TREE_COLUMNS = [
+  { header: 'Código', key: 'code', width: 16 },
+  { header: 'Cuenta', key: 'name', width: 52 },
+  { header: 'Saldo', key: 'balance', width: 18, money: true },
+];
+
+/** ESTADO DE RESULTADOS en Excel (jerárquico + cascada tributaria). */
+exports.incomeStatementExcel = XL.excelHandler(async (req, res) => {
+  const d = await XL.captureJson(exports.incomeStatement, req);
+  const wb = XL.newWorkbook();
+  const meta = [['Reporte', 'Estado de Resultados'], ['Período', XL.periodLabel(req.query)]];
+
+  XL.addSheet(wb, {
+    title: 'Estado de Resultados',
+    meta,
+    columns: ACCOUNT_TREE_COLUMNS,
+    rows: flattenAccountTree(d.tree),
+    notes: ['Cuentas jerárquicas: los grupos muestran el subtotal de sus cuentas hijas.'],
+  });
+
+  XL.addKeyValueSheet(wb, {
+    title: 'Resumen',
+    meta,
+    sections: [
+      {
+        title: 'RESULTADO DEL EJERCICIO',
+        rows: [
+          ['Ingresos', d.totalIngresos],
+          ['(−) Costos', d.totalCostos],
+          ['(=) Utilidad bruta', d.utilidadBruta],
+          ['(−) Gastos', d.totalGastos],
+        ],
+        total: ['(=) Utilidad operacional', d.utilidadOperacional],
+      },
+      {
+        title: 'CASCADA TRIBUTARIA (estimada)',
+        rows: [
+          ['Utilidad antes de participación', d.utilidadAntesParticipacion],
+          [`(−) Participación trabajadores (${((d.profitSharingRate || 0) * 100).toFixed(0)}%)`, d.participacionTrabajadores],
+          ['(=) Utilidad antes de impuesto a la renta', d.utilidadAntesImpuesto],
+          [`(−) Impuesto a la renta (${((d.incomeTaxRate || 0) * 100).toFixed(0)}%)`, d.impuestoRenta],
+        ],
+        total: ['(=) UTILIDAD NETA', d.utilidadNeta],
+      },
+    ],
+    notes: ['La cascada tributaria es una ESTIMACIÓN con las tasas configuradas; no sustituye la declaración.'],
+  });
+
+  await XL.sendWorkbook(res, wb, `estado_resultados_${Date.now()}.xlsx`);
+});
+
+/** BALANCE GENERAL en Excel (activo / pasivo / patrimonio + comprobación del cuadre). */
+exports.balanceSheetExcel = XL.excelHandler(async (req, res) => {
+  const d = await XL.captureJson(exports.balanceSheet, req);
+  const wb = XL.newWorkbook();
+  const meta = [['Reporte', 'Balance General'], ['Corte', req.query.date ? XL.xlsDate(req.query.date) : 'A la fecha']];
+
+  for (const [title, nodes, total] of [
+    ['Activos', d.tree?.activos, d.totalActivos],
+    ['Pasivos', d.tree?.pasivos, d.totalPasivos],
+    ['Patrimonio', d.tree?.patrimonio, d.totalPatrimonio],
+  ]) {
+    XL.addSheet(wb, {
+      title,
+      meta,
+      columns: ACCOUNT_TREE_COLUMNS,
+      rows: flattenAccountTree(nodes),
+      totals: { balance: total },
+      totalsLabel: `TOTAL ${title.toUpperCase()}`,
+    });
+  }
+
+  XL.addKeyValueSheet(wb, {
+    title: 'Cuadre',
+    meta,
+    sections: [{
+      title: 'ECUACIÓN CONTABLE',
+      rows: [
+        ['Total activos', d.totalActivos],
+        ['Total pasivos', d.totalPasivos],
+        ['Utilidad del ejercicio', d.utilidadEjercicio],
+        ['Total patrimonio (incluye utilidad)', d.totalPatrimonio],
+        ['Pasivo + Patrimonio', d.totalPasivoPatrimonio],
+      ],
+      total: ['DESCUADRE (debe ser 0)', d.descuadre],
+    }],
+    notes: [Math.abs(Number(d.descuadre) || 0) > 0.005
+      ? '⚠ El balance NO cuadra. Revise el Libro Mayor de las cuentas afectadas antes de presentar este reporte.'
+      : 'El balance cuadra: Activo = Pasivo + Patrimonio.'],
+  });
+
+  await XL.sendWorkbook(res, wb, `balance_general_${Date.now()}.xlsx`);
+});
+
+/** SALDOS POR PERÍODO en Excel (apertura, movimiento y cierre por cuenta). */
+exports.periodBalancesExcel = XL.excelHandler(async (req, res) => {
+  const d = await XL.captureJson(exports.periodBalances, req);
+  const rows = (d.rows || []).map((r) => ({
+    code: r.account?.code || '', name: r.account?.name || '', type: r.account?.type || '',
+    nature: r.account?.nature || '', opening: r.opening, debit: r.debit, credit: r.credit, closing: r.closing,
+  }));
+  const wb = XL.newWorkbook();
+  XL.addSheet(wb, {
+    title: 'Saldos por período',
+    meta: [['Reporte', 'Saldos por período'], ['Año', d.year], ['Mes', d.month || 'Todo el año']],
+    columns: [
+      { header: 'Código', key: 'code', width: 16 },
+      { header: 'Cuenta', key: 'name', width: 44 },
+      { header: 'Tipo', key: 'type', width: 14 },
+      { header: 'Naturaleza', key: 'nature', width: 12 },
+      { header: 'Saldo inicial', key: 'opening', width: 16, money: true },
+      { header: 'Débito', key: 'debit', width: 16, money: true },
+      { header: 'Crédito', key: 'credit', width: 16, money: true },
+      { header: 'Saldo final', key: 'closing', width: 16, money: true },
+    ],
+    rows,
+    totals: {
+      debit: +rows.reduce((s, r) => s + (r.debit || 0), 0).toFixed(2),
+      credit: +rows.reduce((s, r) => s + (r.credit || 0), 0).toFixed(2),
+    },
+  });
+  await XL.sendWorkbook(res, wb, `saldos_periodo_${d.year || ''}${d.month ? `_${d.month}` : ''}.xlsx`);
+});
+
+/** INDICADORES FINANCIEROS en Excel (ratios + punto de equilibrio). */
+exports.indicatorsExcel = XL.excelHandler(async (req, res) => {
+  const d = await XL.captureJson(exports.financialIndicators, req);
+  const r = d.ratios || {};
+  const pe = d.puntoEquilibrio || {};
+  const wb = XL.newWorkbook();
+  XL.addKeyValueSheet(wb, {
+    title: 'Indicadores',
+    meta: [['Reporte', 'Indicadores financieros'], ['Período', XL.periodLabel(req.query)]],
+    sections: [
+      { title: 'BALANCE', rows: Object.entries(d.balance || {}).map(([k, v]) => [k, v]) },
+      { title: 'RESULTADOS', rows: Object.entries(d.resultados || {}).map(([k, v]) => [k, v]) },
+      {
+        title: 'RAZONES FINANCIERAS',
+        rows: [
+          ['Razón corriente (activo cte. / pasivo cte.)', r.razonCorriente],
+          ['Prueba ácida', r.pruebaAcida],
+          ['Capital de trabajo', r.capitalTrabajo],
+          ['Endeudamiento (pasivo / activo)', r.endeudamiento],
+          ['Apalancamiento (pasivo / patrimonio)', r.apalancamiento],
+          ['Margen neto', r.margenNeto],
+          ['ROA (utilidad / activo)', r.roa],
+          ['ROE (utilidad / patrimonio)', r.roe],
+        ],
+      },
+      {
+        title: 'PUNTO DE EQUILIBRIO',
+        rows: [
+          ['Índice de contribución', pe.contributionRatio],
+          ['Ventas de equilibrio', pe.ventasEquilibrio],
+          ['Ventas actuales', pe.ventasActuales],
+          ['Margen de seguridad (%)', pe.margenSeguridad],
+        ],
+      },
+    ],
+    notes: ['Las razones son índices (no montos): interprételas como proporción, no como dólares.'],
+  });
+  await XL.sendWorkbook(res, wb, `indicadores_${Date.now()}.xlsx`);
+});
+
+/** GASTOS NO DEDUCIBLES en Excel. */
+exports.nonDeductibleExcel = XL.excelHandler(async (req, res) => {
+  const d = await XL.captureJson(exports.nonDeductibleExpenses, req);
+  const rows = (d.rows || []).map((r) => ({ code: r.account?.code || '', name: r.account?.name || '', amount: r.amount }));
+  const wb = XL.newWorkbook();
+  XL.addSheet(wb, {
+    title: 'Gastos no deducibles',
+    meta: [['Reporte', 'Gastos no deducibles'], ['Período', XL.periodLabel(req.query)]],
+    columns: [
+      { header: 'Código', key: 'code', width: 16 },
+      { header: 'Cuenta', key: 'name', width: 50 },
+      { header: 'Monto', key: 'amount', width: 18, money: true },
+    ],
+    rows,
+    totals: { amount: d.total },
+    notes: ['Cuentas 6.3.x — gastos que NO son deducibles del impuesto a la renta.'],
+  });
+  await XL.sendWorkbook(res, wb, `gastos_no_deducibles_${Date.now()}.xlsx`);
+});
+
+/** CONTROL DE ANTICIPOS en Excel. */
+exports.advancesExcel = XL.excelHandler(async (req, res) => {
+  const rows = await XL.captureJson(exports.advancesControl, req);
+  const wb = XL.newWorkbook();
+  XL.addSheet(wb, {
+    title: 'Anticipos',
+    meta: [['Reporte', 'Control de anticipos']],
+    columns: [
+      { header: 'Código', key: 'code', width: 16 },
+      { header: 'Cuenta', key: 'name', width: 44 },
+      { header: 'Débito', key: 'debit', width: 16, money: true },
+      { header: 'Crédito', key: 'credit', width: 16, money: true },
+      { header: 'Saldo', key: 'saldo', width: 16, money: true },
+    ],
+    rows: Array.isArray(rows) ? rows : [],
+  });
+  await XL.sendWorkbook(res, wb, `anticipos_${Date.now()}.xlsx`);
+});
+
+/** INVENTARIO VALORIZADO en Excel. */
+exports.inventoryExcel = XL.excelHandler(async (req, res) => {
+  const d = await XL.captureJson(exports.inventoryReport, req);
+  const wb = XL.newWorkbook();
+  XL.addSheet(wb, {
+    title: 'Inventario valorizado',
+    meta: [['Reporte', 'Inventario valorizado'], ['Unidades totales', d.totals?.units]],
+    columns: [
+      { header: 'Código', key: 'code', width: 16 },
+      { header: 'Producto', key: 'name', width: 44 },
+      { header: 'Tipo', key: 'category', width: 14 },
+      { header: 'Stock', key: 'stock', width: 12, number: true },
+      { header: 'Costo unitario', key: 'purchasePrice', width: 16, money: true },
+      { header: 'Precio venta', key: 'salePrice', width: 16, money: true },
+      { header: 'Valor al costo', key: 'valueAtCost', width: 18, money: true },
+      { header: 'Valor a precio de venta', key: 'valueAtSale', width: 20, money: true },
+    ],
+    rows: d.rows || [],
+    totals: { valueAtCost: d.totals?.valueAtCost, valueAtSale: d.totals?.valueAtSale, stock: d.totals?.units },
+    notes: ['El costo unitario es el promedio del kardex (calculado desde las compras), no un precio digitado.'],
+  });
+  await XL.sendWorkbook(res, wb, `inventario_valorizado_${Date.now()}.xlsx`);
+});
+
+/** RENTABILIDAD POR MÉDICO / centro de costo en Excel. */
+exports.profitabilityExcel = XL.excelHandler(async (req, res) => {
+  const d = await XL.captureJson(exports.profitabilityByDoctor, req);
+  const rows = d.rows || [];
+  const wb = XL.newWorkbook();
+  XL.addSheet(wb, {
+    title: 'Rentabilidad',
+    meta: [['Reporte', 'Rentabilidad por médico'], ['Período', XL.periodLabel({ startDate: req.query.from, endDate: req.query.to })]],
+    columns: [
+      { header: 'Médico', key: 'doctorName', width: 34 },
+      { header: 'Ingresos', key: 'ingreso', width: 18, money: true },
+      { header: 'Costos', key: 'costo', width: 18, money: true },
+      { header: 'Gastos', key: 'gasto', width: 18, money: true },
+      { header: 'Margen', key: 'margen', width: 18, money: true },
+    ],
+    rows,
+    totals: {
+      ingreso: +rows.reduce((s, r) => s + (r.ingreso || 0), 0).toFixed(2),
+      costo: +rows.reduce((s, r) => s + (r.costo || 0), 0).toFixed(2),
+      gasto: +rows.reduce((s, r) => s + (r.gasto || 0), 0).toFixed(2),
+      margen: +rows.reduce((s, r) => s + (r.margen || 0), 0).toFixed(2),
+    },
+  });
+  await XL.sendWorkbook(res, wb, `rentabilidad_medico_${Date.now()}.xlsx`);
+});
+
+/** MOVIMIENTOS DE UNA CUENTA (consulta de cuenta) en Excel. */
+exports.accountFlowExcel = XL.excelHandler(async (req, res) => {
+  const d = await XL.captureJson(exports.accountFlow, req);
+  const wb = XL.newWorkbook();
+  const meta = [
+    ['Reporte', 'Movimientos de la cuenta'],
+    ['Cuenta', `${d.account?.code || ''} - ${d.account?.name || ''}`.trim()],
+    ['Período', XL.periodLabel(req.query)],
+  ];
+  XL.addSheet(wb, {
+    title: 'Movimientos',
+    meta,
+    columns: [
+      { header: 'Fecha', key: 'date', width: 12, date: true },
+      { header: 'Asiento', key: 'number', width: 14 },
+      { header: 'Descripción', key: 'description', width: 48 },
+      { header: 'Origen', key: 'source', width: 16 },
+      { header: 'Débito', key: 'debit', width: 14, money: true },
+      { header: 'Crédito', key: 'credit', width: 14, money: true },
+      { header: 'Saldo', key: 'saldo', width: 14, money: true },
+    ],
+    rows: d.ledger || [],
+  });
+  if (d.counterpartSummary?.length) {
+    XL.addSheet(wb, {
+      title: 'Contrapartidas',
+      meta,
+      columns: [
+        { header: 'Código', key: 'code', width: 16 },
+        { header: 'Cuenta', key: 'name', width: 44 },
+        { header: 'Débito', key: 'debit', width: 16, money: true },
+        { header: 'Crédito', key: 'credit', width: 16, money: true },
+      ],
+      rows: d.counterpartSummary,
+    });
+  }
+  await XL.sendWorkbook(res, wb, `cuenta_${String(d.account?.code || '').replace(/[^\w.-]+/g, '_')}.xlsx`);
+});
+
+/** REPORTE GENERAL (consolidado de gestión) en Excel. */
+exports.generalReportExcel = XL.excelHandler(async (req, res) => {
+  const d = await XL.captureJson(exports.generalReport, req);
+  const wb = XL.newWorkbook();
+  const meta = [['Reporte', 'General consolidado'], ['Período', XL.periodLabel(req.query)]];
+
+  XL.addKeyValueSheet(wb, {
+    title: 'Resumen',
+    meta,
+    sections: [
+      {
+        title: 'VENTAS',
+        rows: [
+          ['Ventas (total)', d.sales?.total],
+          ['N° de ventas', d.sales?.count],
+          ['Ventas anuladas (total)', d.voided?.total],
+          ['N° de ventas anuladas', d.voided?.count],
+          ['Costo de ventas', d.cost],
+          ['Utilidad bruta', d.grossProfit],
+          ['Margen (%)', d.margin],
+        ],
+      },
+      { title: 'COBROS', rows: Object.entries(d.collections || {}).map(([k, v]) => [k, v]) },
+      {
+        title: 'COMPRAS Y CUENTAS POR PAGAR',
+        rows: [
+          ['Compras (total)', d.purchases?.total],
+          ['N° de compras', d.purchases?.count],
+          ['Cuentas por pagar (saldo)', d.accountsPayable?.total],
+          ['N° de facturas por pagar', d.accountsPayable?.count],
+        ],
+      },
+      {
+        title: 'INVENTARIO',
+        rows: [
+          ['Unidades', d.inventory?.units],
+          ['Valor al costo', d.inventory?.valueAtCost],
+          ['Valor a precio de venta', d.inventory?.valueAtSale],
+        ],
+      },
+    ],
+  });
+
+  if (d.byPeriod?.length) {
+    XL.addSheet(wb, {
+      title: 'Ventas por período',
+      meta,
+      columns: [
+        { header: 'Período', key: 'period', width: 18 },
+        { header: 'N° ventas', key: 'count', width: 14, number: true },
+        { header: 'Total', key: 'total', width: 18, money: true },
+      ],
+      rows: d.byPeriod,
+      totals: { total: +d.byPeriod.reduce((s, p) => s + (p.total || 0), 0).toFixed(2) },
+    });
+  }
+  if (d.topProducts?.length) {
+    XL.addSheet(wb, {
+      title: 'Productos más vendidos',
+      meta,
+      columns: [
+        { header: 'Producto', key: 'name', width: 44 },
+        { header: 'Cantidad', key: 'qty', width: 14, number: true },
+        { header: 'Total', key: 'total', width: 18, money: true },
+      ],
+      rows: d.topProducts,
+    });
+  }
+  await XL.sendWorkbook(res, wb, `reporte_general_${Date.now()}.xlsx`);
+});
+
+// ─────────────────────────── Reportes SRI en Excel ───────────────────────────
+
+/** FORMULARIO 104 (IVA) — preliquidación en Excel. */
+exports.form104Excel = XL.excelHandler(async (req, res) => {
+  const d = await XL.captureJson(exports.form104, req);
+  const wb = XL.newWorkbook();
+  XL.addKeyValueSheet(wb, {
+    title: 'Formulario 104',
+    meta: [['Reporte', 'Formulario 104 — IVA (preliquidación)'], ['Período', d.periodo || d.period?.label || '']],
+    sections: [
+      {
+        title: 'VENTAS',
+        rows: [
+          ['Base tarifa 0%', d.ventas?.base0],
+          ['Base gravada', d.ventas?.baseGravada],
+          ['Base imponible total', d.ventas?.base],
+          ['IVA generado', d.ventas?.iva],
+        ],
+      },
+      {
+        title: 'COMPRAS',
+        rows: [
+          ['Base imponible', d.compras?.base],
+          ['IVA', d.compras?.iva],
+          ['IVA con crédito tributario', d.compras?.ivaCredito],
+          ['IVA sin crédito (al gasto)', d.compras?.ivaNoCredito],
+          ['Retención de IVA que nos hicieron', d.compras?.retIVA],
+        ],
+        total: ['IVA POR PAGAR (estimado)', d.ivaPorPagar],
+      },
+    ],
+    notes: [
+      d.nota || '',
+      'Preliquidación de SOLO LECTURA. La declaración formal se hace en Declaraciones SRI.',
+    ].filter(Boolean),
+  });
+  await XL.sendWorkbook(res, wb, `form104_${Date.now()}.xlsx`);
+});
+
+/** FORMULARIO 103 (retenciones en la fuente) — preliquidación en Excel. */
+exports.form103Excel = XL.excelHandler(async (req, res) => {
+  const d = await XL.captureJson(exports.form103, req);
+  const wb = XL.newWorkbook();
+  XL.addSheet(wb, {
+    title: 'Formulario 103',
+    meta: [['Reporte', 'Formulario 103 — Retenciones en la fuente'], ['Período', d.periodo || d.period?.label || '']],
+    columns: [
+      { header: 'Código', key: 'code', width: 14 },
+      { header: 'Descripción', key: 'description', width: 52 },
+      { header: 'Base', key: 'base', width: 18, money: true },
+      { header: 'Valor retenido', key: 'amount', width: 18, money: true },
+    ],
+    rows: d.rows || [],
+    totals: { amount: d.total },
+  });
+  await XL.sendWorkbook(res, wb, `form103_${Date.now()}.xlsx`);
+});
+
+/** RETENCIONES RECIBIDAS (las que nos efectúan terceros) en Excel. */
+exports.retentionsReceivedExcel = XL.excelHandler(async (req, res) => {
+  const d = await XL.captureJson(exports.retentionsReceived, req);
+  const wb = XL.newWorkbook();
+  XL.addSheet(wb, {
+    title: 'Retenciones recibidas',
+    meta: [['Reporte', 'Retenciones que nos efectuaron'], ['Período', d.periodo || '']],
+    columns: [
+      { header: 'Tipo', key: 'type', width: 14 },
+      { header: 'Código SRI', key: 'sriCode', width: 14 },
+      { header: 'N° comprobantes', key: 'count', width: 18, number: true },
+      { header: 'Base', key: 'base', width: 18, money: true },
+      { header: 'Valor', key: 'value', width: 18, money: true },
+    ],
+    rows: d.rows || [],
+    totals: { value: d.total },
+  });
+  await XL.sendWorkbook(res, wb, `retenciones_recibidas_${Date.now()}.xlsx`);
+});
+
+/** RDEP (relación de dependencia) en Excel. */
+exports.rdepExcel = XL.excelHandler(async (req, res) => {
+  const d = await XL.captureJson(exports.rdep, req);
+  const wb = XL.newWorkbook();
+  XL.addSheet(wb, {
+    title: 'RDEP',
+    meta: [
+      ['Reporte', 'RDEP — Retenciones en relación de dependencia'],
+      ['Año', d.year],
+      ['Empleados', d.totals?.empleados],
+      ['Roles incluidos', d.payrolls?.included],
+    ],
+    columns: [
+      { header: 'Tipo id.', key: 'tipoIdentificacion', width: 12 },
+      { header: 'Identificación', key: 'identificacion', width: 16 },
+      { header: 'Nombre', key: 'nombre', width: 34 },
+      { header: 'Meses trabajados', key: 'mesesTrabajados', width: 16, number: true },
+      { header: 'Sueldo base', key: 'sueldoBase', width: 16, money: true },
+      { header: 'Ingresos gravados', key: 'ingresosGravados', width: 18, money: true },
+      { header: 'Ingresos no gravados', key: 'ingresosNoGravados', width: 18, money: true },
+      { header: 'Décimo tercero', key: 'decimoTercero', width: 16, money: true },
+      { header: 'Décimo cuarto', key: 'decimoCuarto', width: 16, money: true },
+      { header: 'Fondos de reserva', key: 'fondosReserva', width: 16, money: true },
+      { header: 'Vacaciones', key: 'vacaciones', width: 14, money: true },
+      { header: 'IESS personal', key: 'aporteIessPersonal', width: 16, money: true },
+      { header: 'IESS patronal', key: 'aporteIessPatronal', width: 16, money: true },
+      { header: 'Base imponible', key: 'baseImponible', width: 16, money: true },
+      { header: 'IR retenido', key: 'impuestoRenta', width: 16, money: true },
+      { header: 'Otros descuentos', key: 'otrosDescuentos', width: 16, money: true },
+      { header: 'Neto pagado', key: 'netoPagado', width: 16, money: true },
+    ],
+    rows: d.empleados || [],
+    totals: d.totals || {},
+    notes: [d.nota, ...(d.warnings || []).map((w) => `⚠ ${w.message}`)].filter(Boolean),
+  });
+  await XL.sendWorkbook(res, wb, `rdep_${d.year || ''}.xlsx`);
+});
+
+/**
+ * SUB-REPORTES DE VENTAS en Excel (por período, producto, vendedor, cajero, costo y costo
+ * por categoría). Comparten un endpoint porque comparten forma: la única diferencia son las
+ * columnas, así que declararlas en una tabla evita seis controladores casi idénticos.
+ */
+const SALES_SUBREPORTS = {
+  'by-period': {
+    handler: () => exports.salesByPeriod,
+    title: 'Ventas por período',
+    columns: [
+      { header: 'Período', key: '_id', width: 18 },
+      { header: 'N° ventas', key: 'count', width: 14, number: true },
+      { header: 'Subtotal', key: 'subtotal', width: 16, money: true },
+      { header: 'IVA', key: 'tax', width: 16, money: true },
+      { header: 'Total', key: 'total', width: 18, money: true },
+    ],
+  },
+  'by-product': {
+    handler: () => exports.salesByProduct,
+    title: 'Ventas por producto',
+    map: (r) => ({ name: r._id?.name || '—', code: r._id?.code || '', qty: r.qty, subtotal: r.subtotal }),
+    columns: [
+      { header: 'Código', key: 'code', width: 16 },
+      { header: 'Producto', key: 'name', width: 44 },
+      { header: 'Cantidad', key: 'qty', width: 14, number: true },
+      { header: 'Total', key: 'subtotal', width: 18, money: true },
+    ],
+  },
+  'by-seller': {
+    handler: () => exports.salesBySeller,
+    title: 'Ventas por vendedor',
+    map: (r) => ({ name: r._id?.name || 'Sin asignar', count: r.count, total: r.total }),
+    columns: [
+      { header: 'Vendedor', key: 'name', width: 34 },
+      { header: 'N° ventas', key: 'count', width: 14, number: true },
+      { header: 'Total', key: 'total', width: 18, money: true },
+    ],
+  },
+  'by-cashier': {
+    handler: () => exports.salesByCashier,
+    title: 'Ventas por cajero',
+    map: (r) => ({ name: r._id?.name || 'Sin asignar', count: r.count, total: r.total }),
+    columns: [
+      { header: 'Cajero', key: 'name', width: 34 },
+      { header: 'N° ventas', key: 'count', width: 14, number: true },
+      { header: 'Total', key: 'total', width: 18, money: true },
+    ],
+  },
+  'cost-by-category': {
+    handler: () => exports.costOfSalesByCategory,
+    title: 'Costo por categoría',
+    columns: [
+      { header: 'Categoría', key: 'category', width: 30 },
+      { header: 'Cantidad', key: 'qty', width: 14, number: true },
+      { header: 'Ingresos', key: 'revenue', width: 18, money: true },
+      { header: 'Costo', key: 'cost', width: 18, money: true },
+      { header: 'Utilidad bruta', key: 'grossProfit', width: 18, money: true },
+      { header: 'Margen %', key: 'margin', width: 12, number: true },
+    ],
+  },
+};
+
+exports.salesSubreportExcel = XL.excelHandler(async (req, res) => {
+  const key = String(req.params.report || '');
+  // El costo de venta es un resumen de 3 cifras, no una tabla: tiene su propio formato.
+  if (key === 'cost') {
+    const d = await XL.captureJson(exports.costOfSales, req);
+    const wb = XL.newWorkbook();
+    XL.addKeyValueSheet(wb, {
+      title: 'Costo de venta',
+      meta: [['Reporte', 'Costo de venta'], ['Período', XL.periodLabel(req.query)]],
+      sections: [{
+        title: 'RESULTADO',
+        rows: [['Ventas', d.totalSales], ['Costo de venta', d.totalCost]],
+        total: ['Utilidad bruta', d.grossProfit],
+      }],
+    });
+    return XL.sendWorkbook(res, wb, `costo_venta_${Date.now()}.xlsx`);
+  }
+
+  const spec = SALES_SUBREPORTS[key];
+  if (!spec) return res.status(404).json({ message: 'Reporte no encontrado' });
+
+  const payload = await XL.captureJson(spec.handler(), req);
+  const raw = Array.isArray(payload) ? payload : (payload.rows || []);
+  const rows = spec.map ? raw.map(spec.map) : raw;
+
+  // Totales de las columnas monetarias y numéricas: es lo primero que mira un contador.
+  const totals = {};
+  for (const c of spec.columns) {
+    if (!c.money && !c.number) continue;
+    if (c.key === 'margin') continue;   // un porcentaje no se suma
+    totals[c.key] = +rows.reduce((s, r) => s + (Number(r[c.key]) || 0), 0).toFixed(2);
+  }
+
+  const wb = XL.newWorkbook();
+  XL.addSheet(wb, {
+    title: spec.title,
+    meta: [['Reporte', spec.title], ['Período', XL.periodLabel(req.query)]],
+    columns: spec.columns,
+    rows,
+    totals,
+  });
+  await XL.sendWorkbook(res, wb, `${key.replace(/-/g, '_')}_${Date.now()}.xlsx`);
+});

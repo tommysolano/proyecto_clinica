@@ -31,14 +31,14 @@ const r2 = (n) => +(Number(n) || 0).toFixed(2);
 
 /**
  * Base sin impuestos (magnitud positiva) de la cabecera de una compra. Usa el `subtotal` de
- * cabecera; si por alguna vía quedó en 0, lo DERIVA del desglose (subtotal0 + 12% + 15% + no
+ * cabecera; si por alguna vía quedó en 0, lo DERIVA del desglose (0% + 5% + 12% + 15% + no
  * objeto + exento), para que el 332 no se quede corto por un header sin poblar.
  */
 function headerBase(p) {
   const s = Number(p.subtotal) || 0;
   if (s > 0) return s;
-  return (Number(p.subtotal0) || 0) + (Number(p.subtotal12) || 0) + (Number(p.subtotal15) || 0)
-    + (Number(p.subtotalNoObjeto) || 0) + (Number(p.subtotalExento) || 0);
+  return (Number(p.subtotal0) || 0) + (Number(p.subtotal5) || 0) + (Number(p.subtotal12) || 0)
+    + (Number(p.subtotal15) || 0) + (Number(p.subtotalNoObjeto) || 0) + (Number(p.subtotalExento) || 0);
 }
 
 /**

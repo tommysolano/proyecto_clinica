@@ -38,6 +38,8 @@ export default function SriReports() {
   const [startDate, setStartDate] = useState(iso(new Date(new Date().getFullYear(), 0, 1)));
   const [endDate, setEndDate] = useState(iso(new Date()));
   const [data, setData] = useState(null);
+  // Datos que el SRI rechazaría en el ATS (los devuelve el backend con 409).
+  const [atsErrors, setAtsErrors] = useState(null);
 
   const URLS = { F104: '/accounting-reports/sri/form-104', F103: '/accounting-reports/sri/form-103', ATS: '/accounting-reports/sri/ats-preview', VC: '/accounting-reports/sri/purchases-sales', RDEP: '/accounting-reports/sri/rdep', RET: '/accounting-reports/sri/retentions-received' };
 
@@ -86,15 +88,62 @@ export default function SriReports() {
     } catch (e) { toast.error(e.response?.data?.message || 'Error al descargar XML'); }
   };
 
-  // ATS en XML: SOLO mensual (estructura simplificada, no validada contra el esquema
-  // vigente del SRI). El reporte visual sí acepta rangos.
-  const downloadAtsXml = async () => {
-    if (!isMonthly) { toast.error('El ATS XML se genera por mes. Cambie el período a "Mensual".'); return; }
+  /**
+   * ATS en XML (ATmmaaaa.xml). Solo mensual: así se declara el anexo.
+   *
+   * Si faltan datos que el SRI exige, el backend responde 409 con la lista concreta: se
+   * muestran para que el contador corrija los documentos, con la opción de descargarlo
+   * igualmente para revisarlo. Es preferible eso a que el portal del SRI lo rechace sin
+   * decir qué documento está mal.
+   */
+  const downloadAtsXml = async (force = false) => {
+    if (!isMonthly) { toast.error('El ATS se declara por mes. Cambie el período a "Mensual".'); return; }
     try {
-      const r = await api.get('/accounting-reports/sri/ats', { params: { periodType: 'MONTHLY', year, month }, responseType: 'blob' });
-      downloadBlob(r.data, `ATS_${suffix()}.xml`);
+      const r = await api.get('/accounting-reports/sri/ats', {
+        params: { periodType: 'MONTHLY', year, month, ...(force ? { force: 'true' } : {}) },
+        responseType: 'blob',
+      });
+      downloadBlob(r.data, `AT${String(month).padStart(2, '0')}${year}.xml`);
       toast.success('ATS descargado');
-    } catch (e) { toast.error(e.response?.data?.message || 'Error al descargar ATS'); }
+      setAtsErrors(null);
+    } catch (e) {
+      // Con responseType blob, el cuerpo del error también llega como Blob: hay que leerlo.
+      let payload = e.response?.data;
+      if (payload instanceof Blob) {
+        try { payload = JSON.parse(await payload.text()); } catch { payload = null; }
+      }
+      if (payload?.code === 'ATS_INCOMPLETO') {
+        setAtsErrors(payload.errores || []);
+        toast.error('El ATS tiene datos incompletos. Revise la lista.');
+        return;
+      }
+      toast.error(payload?.message || 'Error al descargar el ATS');
+    }
+  };
+
+  const downloadAtsExcel = async () => {
+    try {
+      const r = await api.get('/accounting-reports/sri/ats-preview.xlsx', { params: buildParams(), responseType: 'blob' });
+      downloadBlob(r.data, `ATS_${suffix()}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    } catch { toast.error('Error al exportar el ATS a Excel'); }
+  };
+
+  /** Excel de la pestaña activa: sale del MISMO endpoint que la pantalla. */
+  const EXCEL_URLS = {
+    F104: '/accounting-reports/sri/form-104.xlsx',
+    F103: '/accounting-reports/sri/form-103.xlsx',
+    ATS: '/accounting-reports/sri/ats-preview.xlsx',
+    VC: '/accounting-reports/sri/purchases-sales.xlsx',
+    RDEP: '/accounting-reports/sri/rdep.xlsx',
+    RET: '/accounting-reports/sri/retentions-received.xlsx',
+  };
+  const EXCEL_NAMES = { F104: 'form104', F103: 'form103', ATS: 'ATS', VC: 'compras_ventas', RDEP: 'RDEP', RET: 'retenciones_recibidas' };
+  const downloadExcel = async () => {
+    try {
+      const params = isRdep ? { year } : buildParams();
+      const r = await api.get(EXCEL_URLS[tab], { params, responseType: 'blob' });
+      downloadBlob(r.data, `${EXCEL_NAMES[tab]}_${suffix()}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    } catch (e) { toast.error(e.response?.data?.message || 'Error al exportar a Excel'); }
   };
 
   const label = data?.period?.label;
@@ -141,23 +190,34 @@ export default function SriReports() {
         )}
 
         {tab === 'ATS' && (
-          <button onClick={downloadAtsXml} disabled={!isMonthly} title={isMonthly ? '' : 'El ATS XML se genera por mes'} className={`px-4 py-2 rounded-lg flex items-center gap-1 ${isMonthly ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}>
+          <button onClick={() => downloadAtsXml(false)} disabled={!isMonthly} title={isMonthly ? 'Genera el archivo ATmmaaaa.xml para el portal del SRI' : 'El ATS se declara por mes'} className={`px-4 py-2 rounded-lg flex items-center gap-1 ${isMonthly ? 'bg-indigo-600 text-white' : 'bg-slate-200 text-slate-400 cursor-not-allowed'}`}>
             <HiOutlineDocumentArrowDown className="w-4 h-4" /> Descargar XML (ATS)
           </button>
         )}
 
-        {tab === 'VC' && (
-          <button
-            onClick={async () => {
-              try { const r = await api.get('/accounting-reports/sri/purchases-sales.xlsx', { params: buildParams(), responseType: 'blob' }); downloadBlob(r.data, `compras_ventas_${suffix()}.xlsx`, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'); }
-              catch { toast.error('Error al exportar'); }
-            }}
-            className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-1"
-          >
-            <HiOutlineDocumentArrowDown className="w-4 h-4" /> Excel
-          </button>
-        )}
+        {/* Excel disponible en TODAS las pestañas: el contador pidió poder bajar cualquier
+            reporte. Sale del mismo endpoint que la pantalla, así que siempre coinciden. */}
+        <button onClick={downloadExcel} className="px-4 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-1" title="Descargar este reporte en Excel">
+          <HiOutlineDocumentArrowDown className="w-4 h-4" /> Excel
+        </button>
       </div>
+
+      {/* Datos que harían rebotar el ATS en el portal del SRI. */}
+      {atsErrors && (
+        <div className="rounded-xl border border-amber-300 bg-amber-50 px-4 py-3 text-sm text-amber-900 space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <b>El ATS tiene {atsErrors.length} dato(s) que el SRI rechazaría</b>
+            <button onClick={() => setAtsErrors(null)} className="text-xs text-amber-700 hover:underline">Cerrar</button>
+          </div>
+          <ul className="list-disc ml-5 space-y-0.5 max-h-56 overflow-y-auto">
+            {atsErrors.map((e, i) => <li key={i}>{e}</li>)}
+          </ul>
+          <div className="flex gap-2 pt-1">
+            <button onClick={() => downloadAtsXml(true)} className="px-3 py-1.5 bg-amber-600 text-white rounded-lg text-xs">Descargar de todas formas (para revisar)</button>
+            <button onClick={downloadAtsExcel} className="px-3 py-1.5 bg-slate-700 text-white rounded-lg text-xs">Ver el detalle en Excel</button>
+          </div>
+        </div>
+      )}
 
       {(tab === 'F103' || tab === 'F104') && (
         <p className="text-xs text-sky-800 bg-sky-50 border border-sky-200 rounded-lg px-3 py-2">
@@ -308,73 +368,124 @@ function Form104({ data }) {
   );
 }
 
-// ATS visual (compras + ventas del período). El XML del ATS se genera por mes.
+/**
+ * ATS visual: el detalle COMPLETO del anexo (informante, compras, ventas agrupadas, ventas
+ * por establecimiento y anulados) para revisarlo antes de generar el XML. Es lo mismo que
+ * lleva el archivo, con los códigos del SRI a la vista para poder cotejarlos.
+ */
 function AtsPreview({ data }) {
   const compras = data?.compras || [];
   const ventas = data?.ventas || [];
+  const anulados = data?.anulados || [];
+  const establecimientos = data?.ventasEstablecimiento || [];
   const t = data?.totals || {};
   const pending = data?.salesPending || 0;
+  const inf = data?.informante || {};
+  const errores = data?.errores || [];
+
   return (
     <>
-      <Section title={`ATS — Compras (${compras.length})`} subtitle="Detalle de compras del período con retenciones (base para el ATS).">
+      <Section title="Informante" subtitle="Cabecera del anexo (nodo <iva> del XML).">
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-2 text-sm">
+          {[
+            ['RUC', inf.ruc], ['Razón social', inf.razonSocial],
+            ['Período', `${inf.mes}/${inf.anio}`], ['Establecimiento', inf.numEstabRuc],
+            ['Total ventas', `$${fmt(inf.totalVentas)}`], ['Código operativo', inf.codigoOperativo],
+            ['Compras', t.comprasCount], ['Ventas (comprobantes)', t.ventasCount],
+          ].map(([label, value]) => (
+            <div key={label} className="border border-slate-200 rounded-lg px-3 py-2 bg-slate-50">
+              <div className="text-[11px] uppercase text-slate-500">{label}</div>
+              <div className="font-semibold text-slate-800 truncate" title={String(value ?? '')}>{value ?? '—'}</div>
+            </div>
+          ))}
+        </div>
+        {errores.length > 0 && (
+          <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-900">
+            <b>{errores.length} dato(s) que el SRI rechazaría:</b>
+            <ul className="list-disc ml-5 mt-1 space-y-0.5 max-h-40 overflow-y-auto">
+              {errores.map((e, i) => <li key={i}>{e}</li>)}
+            </ul>
+          </div>
+        )}
+      </Section>
+
+      <Section title={`Compras (${compras.length})`} subtitle="Una fila por comprobante recibido, con su sustento, retenciones y el comprobante de retención emitido.">
         <table className="tbl text-xs">
           <thead className="bg-emerald-50 uppercase"><tr>
             <th className="px-2 py-1 text-left">Fecha</th><th className="px-2 py-1 text-left">Comprobante</th>
-            <th className="px-2 py-1 text-left">Proveedor</th><th className="px-2 py-1 text-left">RUC</th>
+            <th className="px-2 py-1 text-center" title="Código de sustento (tabla 5 del SRI)">Sust.</th>
+            <th className="px-2 py-1 text-center" title="Tipo de identificación: 01 RUC, 02 cédula, 03 pasaporte">Tipo ID</th>
+            <th className="px-2 py-1 text-left">Proveedor</th><th className="px-2 py-1 text-left">Identificación</th>
             <th className="px-2 py-1 text-right">Base gravada</th><th className="px-2 py-1 text-right">Base 0%</th>
             <th className="px-2 py-1 text-right">IVA</th><th className="px-2 py-1 text-right">Ret. IVA</th>
-            <th className="px-2 py-1 text-right">Ret. Renta</th><th className="px-2 py-1 text-right">Total</th>
+            <th className="px-2 py-1 text-right">Ret. Renta</th><th className="px-2 py-1 text-left">N° retención</th>
+            <th className="px-2 py-1 text-right">Total</th>
           </tr></thead>
           <tbody>
             {compras.map((c, i) => (
               <tr key={i} className="border-t">
-                <td className="px-2 py-1">{fmtDate(c.fecha)}</td>
-                <td className="px-2 py-1 font-mono">{c.serie || '—'}</td>
-                <td className="px-2 py-1">{c.proveedor || '—'}</td>
-                <td className="px-2 py-1 font-mono">{c.ruc || '—'}</td>
-                <td className="px-2 py-1 text-right font-mono">{fmt(c.baseGrav)}</td>
-                <td className="px-2 py-1 text-right font-mono">{fmt(c.base0)}</td>
-                <td className="px-2 py-1 text-right font-mono">{fmt(c.iva)}</td>
-                <td className="px-2 py-1 text-right font-mono">{fmt(c.retIva)}</td>
-                <td className="px-2 py-1 text-right font-mono">{fmt(c.retRenta)}</td>
-                <td className="px-2 py-1 text-right font-mono">{fmt(c.total)}</td>
+                <td className="px-2 py-1 whitespace-nowrap">{c.fechaEmision}</td>
+                <td className="px-2 py-1 font-mono">{c._serie || '—'}</td>
+                <td className="px-2 py-1 text-center font-mono">{c.codSustento}</td>
+                <td className="px-2 py-1 text-center font-mono">{c.tpIdProv}</td>
+                <td className="px-2 py-1">{c._proveedor || '—'}</td>
+                <td className="px-2 py-1 font-mono">{c.idProv || <span className="text-rose-600">falta</span>}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(c.baseImpGrav)}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(c.baseImponible)}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(c.montoIva)}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(c._retIva)}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(c._retRenta)}</td>
+                <td className="px-2 py-1 font-mono text-[11px]">{c._retencionNumero || (c._retRenta > 0 ? <span className="text-rose-600">sin emitir</span> : '—')}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(c._total)}</td>
               </tr>
             ))}
-            {compras.length === 0 && <tr><td colSpan={10} className="px-2 py-4 text-center text-slate-400">Sin compras en el período.</td></tr>}
+            {compras.length === 0 && <tr><td colSpan={13} className="px-2 py-4 text-center text-slate-400">Sin compras en el período.</td></tr>}
           </tbody>
           {compras.length > 0 && <tfoot className="bg-slate-100 font-bold"><tr>
             <td colSpan={6} className="px-2 py-1 text-right">TOTALES</td>
+            <td className="px-2 py-1 text-right font-mono">{fmt(t.comprasBaseGrav)}</td>
+            <td className="px-2 py-1 text-right font-mono">{fmt(t.comprasBase0)}</td>
             <td className="px-2 py-1 text-right font-mono">{fmt(t.comprasIva)}</td>
             <td className="px-2 py-1 text-right font-mono">{fmt(t.comprasRetIva)}</td>
             <td className="px-2 py-1 text-right font-mono">{fmt(t.comprasRetRenta)}</td>
+            <td></td>
             <td className="px-2 py-1 text-right font-mono">{fmt(t.comprasTotal)}</td>
           </tr></tfoot>}
         </table>
       </Section>
-      <Section title={`ATS — Ventas (${ventas.length})`} subtitle="Ventas agrupadas por cliente (comprobantes autorizados). Base separada por tarifa 0% y 15%.">
+
+      <Section title={`Ventas (${ventas.length} grupo(s) · ${t.ventasCount || 0} comprobantes)`} subtitle="Agrupadas por cliente y tipo de comprobante, como las exige el ATS.">
         <SalesAuthNote pending={pending} />
         <table className="tbl text-xs">
           <thead className="bg-emerald-50 uppercase"><tr>
+            <th className="px-2 py-1 text-center" title="04 RUC · 05 cédula · 06 pasaporte · 07 consumidor final">Tipo ID</th>
             <th className="px-2 py-1 text-left">Identificación</th><th className="px-2 py-1 text-left">Cliente</th>
-            <th className="px-2 py-1 text-right"># Comprob.</th><th className="px-2 py-1 text-right">Base 0%</th>
-            <th className="px-2 py-1 text-right">Base 15%</th><th className="px-2 py-1 text-right">IVA</th><th className="px-2 py-1 text-right">Total</th>
+            <th className="px-2 py-1 text-center">Comprob.</th><th className="px-2 py-1 text-right"># Comprob.</th>
+            <th className="px-2 py-1 text-right">No grava IVA</th><th className="px-2 py-1 text-right">Base 0%</th>
+            <th className="px-2 py-1 text-right">Base gravada</th><th className="px-2 py-1 text-right">IVA</th>
+            <th className="px-2 py-1 text-right">Total</th>
           </tr></thead>
           <tbody>
             {ventas.map((v, i) => (
               <tr key={i} className="border-t">
+                <td className="px-2 py-1 text-center font-mono">{v.tpIdCliente}</td>
                 <td className="px-2 py-1 font-mono">{v.idCliente}</td>
-                <td className="px-2 py-1">{v.razonSocial}</td>
-                <td className="px-2 py-1 text-right font-mono">{v.numComprobantes}</td>
-                <td className="px-2 py-1 text-right font-mono">{fmt(v.base0)}</td>
-                <td className="px-2 py-1 text-right font-mono">{fmt(v.baseGrav)}</td>
-                <td className="px-2 py-1 text-right font-mono">{fmt(v.iva)}</td>
-                <td className="px-2 py-1 text-right font-mono">{fmt(v.total)}</td>
+                <td className="px-2 py-1">{v.denoCli}</td>
+                <td className="px-2 py-1 text-center font-mono">{v.tipoComprobante}</td>
+                <td className="px-2 py-1 text-right font-mono">{v.numeroComprobantes}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(v.baseNoGraIva)}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(v.baseImponible)}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(v.baseImpGrav)}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(v.montoIva)}</td>
+                <td className="px-2 py-1 text-right font-mono">{fmt(v._total)}</td>
               </tr>
             ))}
-            {ventas.length === 0 && <tr><td colSpan={7} className="px-2 py-4 text-center text-slate-400">{pending > 0 ? `No hay ventas autorizadas; hay ${pending} sin autorizar que no se reportan.` : 'No hay ventas autorizadas en este período.'}</td></tr>}
+            {ventas.length === 0 && <tr><td colSpan={10} className="px-2 py-4 text-center text-slate-400">{pending > 0 ? `No hay ventas autorizadas; hay ${pending} sin autorizar que no se reportan.` : 'No hay ventas autorizadas en este período.'}</td></tr>}
           </tbody>
           {ventas.length > 0 && <tfoot className="bg-slate-100 font-bold"><tr>
-            <td colSpan={3} className="px-2 py-1 text-right">TOTALES</td>
+            <td colSpan={4} className="px-2 py-1 text-right">TOTALES</td>
+            <td className="px-2 py-1 text-right font-mono">{t.ventasCount}</td>
+            <td></td>
             <td className="px-2 py-1 text-right font-mono">{fmt(t.ventasBase0)}</td>
             <td className="px-2 py-1 text-right font-mono">{fmt(t.ventasBaseGrav)}</td>
             <td className="px-2 py-1 text-right font-mono">{fmt(t.ventasIva)}</td>
@@ -382,6 +493,45 @@ function AtsPreview({ data }) {
           </tr></tfoot>}
         </table>
       </Section>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <Section title="Ventas por establecimiento" subtitle="Total facturado por cada establecimiento del RUC.">
+          <table className="tbl text-xs">
+            <thead className="bg-emerald-50 uppercase"><tr>
+              <th className="px-2 py-1 text-left">Establecimiento</th>
+              <th className="px-2 py-1 text-right">Ventas</th>
+            </tr></thead>
+            <tbody>
+              {establecimientos.map((e, i) => (
+                <tr key={i} className="border-t">
+                  <td className="px-2 py-1 font-mono">{e.codEstab}</td>
+                  <td className="px-2 py-1 text-right font-mono">{fmt(e.ventasEstab)}</td>
+                </tr>
+              ))}
+              {establecimientos.length === 0 && <tr><td colSpan={2} className="px-2 py-4 text-center text-slate-400">Sin datos.</td></tr>}
+            </tbody>
+          </table>
+        </Section>
+
+        <Section title={`Comprobantes anulados (${anulados.length})`} subtitle="Se declaran uno por fila para no agrupar rangos con huecos.">
+          <table className="tbl text-xs">
+            <thead className="bg-emerald-50 uppercase"><tr>
+              <th className="px-2 py-1 text-left">Fecha</th><th className="px-2 py-1 text-left">Comprobante</th>
+              <th className="px-2 py-1 text-left">Autorización</th>
+            </tr></thead>
+            <tbody>
+              {anulados.map((a, i) => (
+                <tr key={i} className="border-t">
+                  <td className="px-2 py-1">{a._fecha}</td>
+                  <td className="px-2 py-1 font-mono">{a.establecimiento}-{a.puntoEmision}-{a.secuencialInicio}</td>
+                  <td className="px-2 py-1 font-mono text-[11px] truncate max-w-[220px]" title={a.autorizacion}>{a.autorizacion || '—'}</td>
+                </tr>
+              ))}
+              {anulados.length === 0 && <tr><td colSpan={3} className="px-2 py-4 text-center text-slate-400">Sin comprobantes anulados en el período.</td></tr>}
+            </tbody>
+          </table>
+        </Section>
+      </div>
     </>
   );
 }
