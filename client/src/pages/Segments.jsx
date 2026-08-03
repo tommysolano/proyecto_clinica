@@ -105,10 +105,10 @@ export default function Segments() {
   };
 
   const remove = async (id) => {
-    if (!window.confirm('¿Eliminar este segmento?')) return;
+    if (!window.confirm('¿Eliminar este segmento? Podrás restaurarlo desde la papelera de reciclaje.')) return;
     try {
       await api.delete(`/segments/${id}`);
-      toast.success('Eliminado');
+      toast.success('Movido a la papelera de reciclaje');
       load();
     } catch (e) {
       toast.error(e.response?.data?.message || 'Error al eliminar');

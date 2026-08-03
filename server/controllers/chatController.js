@@ -813,6 +813,7 @@ exports.toggleBlocked = async (req, res) => {
 // =================== Saved Replies ===================
 
 const SavedReply = require('../models/SavedReply');
+const { moveToTrash } = require('../utils/trashBin');
 
 // ─────────── Carpetas de mensajes guardados (anidadas, tipo Windows) ───────────
 // Rutas con '/' ("CITA/Recordatorios"). El registro persiste una carpeta aunque
@@ -1263,9 +1264,11 @@ exports.testSavedReply = async (req, res) => {
 
 exports.deleteSavedReply = async (req, res) => {
   try {
-    const r = await SavedReply.findOneAndDelete({ _id: req.params.id, clinic: req.clinicId });
+    const r = await SavedReply.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!r) return res.status(404).json({ message: 'No encontrado' });
-    res.json({ message: 'Eliminado' });
+    await moveToTrash({ entityType: 'SavedReply', doc: r, clinic: req.clinicId, user: req.user });
+    await r.deleteOne();
+    res.json({ message: 'Movido a la papelera de reciclaje' });
   } catch (err) {
     res.status(500).json({ message: 'Error', error: err.message });
   }

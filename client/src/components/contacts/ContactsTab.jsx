@@ -476,10 +476,10 @@ function ContactModal({ contact, onClose, onSaved }) {
   };
 
   const remove = async () => {
-    if (!window.confirm('¿Borrar este contacto? No se puede deshacer.')) return;
+    if (!window.confirm('¿Borrar este contacto? Podrás restaurarlo desde la papelera de reciclaje.')) return;
     try {
       await api.delete(`/contacts/${contact._id}`);
-      toast.success('Contacto eliminado');
+      toast.success('Movido a la papelera de reciclaje');
       onSaved();
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al borrar');

@@ -1,5 +1,6 @@
 const MessageTemplate = require('../models/MessageTemplate');
 const ChatGalleryImage = require('../models/ChatGalleryImage');
+const { moveToTrash } = require('../utils/trashBin');
 
 // v20.0 quedó fuera de soporte a mediados de 2026: alinear con whatsappCloud.js.
 const API_VERSION = process.env.WHATSAPP_API_VERSION || 'v23.0';
@@ -143,9 +144,11 @@ exports.update = async (req, res) => {
 
 exports.remove = async (req, res) => {
   try {
-    const tpl = await MessageTemplate.findOneAndDelete({ _id: req.params.id, clinic: req.clinicId });
+    const tpl = await MessageTemplate.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!tpl) return res.status(404).json({ message: 'Plantilla no encontrada' });
-    res.json({ message: 'Plantilla eliminada' });
+    await moveToTrash({ entityType: 'MessageTemplate', doc: tpl, clinic: req.clinicId, user: req.user });
+    await tpl.deleteOne();
+    res.json({ message: 'Plantilla movida a la papelera de reciclaje' });
   } catch (err) {
     res.status(500).json({ message: 'Error', error: err.message });
   }

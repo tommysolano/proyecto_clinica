@@ -1,5 +1,6 @@
 const Segment = require('../models/Segment');
 const { resolveSegment } = require('../utils/segmentResolver');
+const { moveToTrash } = require('../utils/trashBin');
 
 exports.list = async (req, res) => {
   try {
@@ -61,9 +62,11 @@ exports.update = async (req, res) => {
 
 exports.remove = async (req, res) => {
   try {
-    const seg = await Segment.findOneAndDelete({ _id: req.params.id, clinic: req.clinicId });
+    const seg = await Segment.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!seg) return res.status(404).json({ message: 'Segmento no encontrado' });
-    res.json({ message: 'Segmento eliminado' });
+    await moveToTrash({ entityType: 'Segment', doc: seg, clinic: req.clinicId, user: req.user });
+    await seg.deleteOne();
+    res.json({ message: 'Segmento movido a la papelera de reciclaje' });
   } catch (err) {
     res.status(500).json({ message: 'Error', error: err.message });
   }

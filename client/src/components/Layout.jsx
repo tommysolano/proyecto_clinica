@@ -149,6 +149,7 @@ const MENU_GROUPS = [
       { path: '/whatsapp-spend', label: 'Gasto de WhatsApp', roles: ['admin', 'marketing'] },
       { path: '/saved-replies', label: 'Mensajes Guardados', roles: ['admin', 'call_center', 'marketing'] },
       { path: '/workflows', label: 'Automatizaciones', roles: ['admin', 'marketing', 'call_center'] },
+      { path: '/recycle-bin', label: 'Papelera de reciclaje', roles: ['admin', 'marketing'] },
       { path: '/attribution', label: 'Atribución / ROI', roles: ['admin', 'marketing'] },
       { path: '/reputation', label: 'Reputación', roles: ['admin', 'marketing'] },
       { path: '/booking-config', label: 'Auto-agendamiento', roles: ['admin', 'marketing'] },

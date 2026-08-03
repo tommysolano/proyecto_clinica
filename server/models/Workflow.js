@@ -47,10 +47,10 @@ const workflowStepSchema = new mongoose.Schema(
     },
     // send_message
     body: { type: String, default: '' },
-    // send_message: adjunto opcional (imagen/video) que viaja con el texto.
+    // send_message: adjunto opcional (imagen/video/audio) que viaja con el texto.
     // url pública autoalojada (/api/public/media/:id) o externa.
     mediaUrl: { type: String, trim: true, default: '' },
-    mediaType: { type: String, enum: ['', 'image', 'video', 'document'], default: '' },
+    mediaType: { type: String, enum: ['', 'image', 'video', 'document', 'audio'], default: '' },
     mediaName: { type: String, trim: true, default: '' },
     // send_template
     templateName: { type: String, trim: true, default: '' },

@@ -149,10 +149,10 @@ export default function Workflows() {
   };
 
   const remove = async (id) => {
-    if (!window.confirm('¿Eliminar este workflow? Se cancelan sus inscripciones activas.')) return;
+    if (!window.confirm('¿Eliminar este workflow? Se cancelan sus inscripciones activas. Podrás restaurarlo desde la papelera de reciclaje.')) return;
     try {
       await api.delete(`/workflows/${id}`);
-      toast.success('Eliminado');
+      toast.success('Movido a la papelera de reciclaje');
       load();
     } catch (e) {
       toast.error(e.response?.data?.message || 'Error');

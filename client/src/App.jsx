@@ -58,6 +58,7 @@ const Segments = lazy(() => import('./pages/Segments'));
 const Campaigns = lazy(() => import('./pages/Campaigns'));
 const Workflows = lazy(() => import('./pages/Workflows'));
 const WorkflowEditor = lazy(() => import('./pages/WorkflowEditor'));
+const RecycleBin = lazy(() => import('./pages/RecycleBin'));
 const Attribution = lazy(() => import('./pages/Attribution'));
 const Reputation = lazy(() => import('./pages/Reputation'));
 const Tasks = lazy(() => import('./pages/Tasks'));
@@ -377,6 +378,14 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'marketing', 'call_center']}>
                       <WorkflowEditor />
+                    </RoleRoute>
+                  }
+                />
+                <Route
+                  path="/recycle-bin"
+                  element={
+                    <RoleRoute roles={['admin', 'marketing']}>
+                      <RecycleBin />
                     </RoleRoute>
                   }
                 />

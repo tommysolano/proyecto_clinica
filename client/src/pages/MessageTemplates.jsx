@@ -236,10 +236,10 @@ export default function MessageTemplates() {
   };
 
   const remove = async (id) => {
-    if (!window.confirm('¿Eliminar esta plantilla?')) return;
+    if (!window.confirm('¿Eliminar esta plantilla? Podrás restaurarla desde la papelera de reciclaje.')) return;
     try {
       await api.delete(`/message-templates/${id}`);
-      toast.success('Eliminada');
+      toast.success('Movida a la papelera de reciclaje');
       load();
     } catch (e) {
       toast.error(e.response?.data?.message || 'Error al eliminar');

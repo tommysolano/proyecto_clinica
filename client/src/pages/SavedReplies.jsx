@@ -149,11 +149,11 @@ export default function SavedReplies() {
   };
 
   const remove = async (r) => {
-    if (!window.confirm(`¿Eliminar el mensaje guardado "${r.title || `/${r.shortcut}`}"?`)) return;
+    if (!window.confirm(`¿Eliminar el mensaje guardado "${r.title || `/${r.shortcut}`}"? Podrás restaurarlo desde la papelera de reciclaje.`)) return;
     try {
       await api.delete(`/chats/saved-replies/${r._id}`);
       setList((prev) => prev.filter((x) => x._id !== r._id));
-      toast.success('Eliminado');
+      toast.success('Movido a la papelera de reciclaje');
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al eliminar');
     }

@@ -145,6 +145,7 @@ app.use('/api/message-templates', require('./routes/messageTemplates'));
 app.use('/api/segments', require('./routes/segments'));
 app.use('/api/campaigns', require('./routes/campaigns'));
 app.use('/api/workflows', require('./routes/workflows'));
+app.use('/api/trash', require('./routes/trash'));
 app.use('/api/agent-tasks', require('./routes/agentTasks'));
 app.use('/api/reviews', require('./routes/reviews'));
 app.use('/api/booking-config', require('./routes/bookingConfig'));
@@ -299,6 +300,11 @@ connectDB().then(() => {
     };
     setTimeout(only(() => { syncRecentSpend().catch(() => {}); }), 60 * 1000);
     setInterval(only(() => { syncRecentSpend().catch(() => {}); }), 6 * 60 * 60 * 1000);
+    // Job: purga definitiva de la papelera de reciclaje del CRM/Marketing (lo
+    // que lleva más de 30 días sin restaurarse). Cada 6h es de sobra para una
+    // ventana de retención de días.
+    const { purgeExpiredTrash } = require('./utils/trashBin');
+    setInterval(only(() => { purgeExpiredTrash().catch(() => {}); }), 6 * 60 * 60 * 1000);
   }
 }).catch((err) => {
   console.error('No se pudo conectar a MongoDB, abortando:', err.message);

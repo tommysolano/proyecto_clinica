@@ -3,6 +3,7 @@ import toast from 'react-hot-toast';
 import api from '../api/axios';
 import NumericInput from './NumericInput';
 import WhatsappTextArea, { MESSAGE_VARIABLES } from './WhatsappTextArea';
+import TemplateWhatsappPreview from './WhatsappPreview';
 import ReactFlow, {
   Background,
   Controls,
@@ -48,7 +49,7 @@ import {
 // Tipos de paso disponibles en el lienzo (sin 'trigger', que es el nodo inicial).
 export const STEP_DEFS = {
   send_message: 'Enviar mensaje',
-  send_media: 'Enviar imagen / video',
+  send_media: 'Enviar imagen / video / audio',
   send_template: 'Enviar plantilla',
   send_email: 'Enviar email',
   wait: 'Esperar (tiempo)',
@@ -288,7 +289,7 @@ function summarize(n) {
   const d = n.data || {};
   switch (n.type) {
     case 'send_message': return `${d.mediaUrl ? '📎 ' : ''}${d.body || ''}`;
-    case 'send_media': return d.mediaUrl ? `📎 ${d.mediaName || (d.mediaType === 'video' ? 'Video' : 'Imagen')}` : 'Sin archivo';
+    case 'send_media': return d.mediaUrl ? `📎 ${d.mediaName || (d.mediaType === 'video' ? 'Video' : d.mediaType === 'audio' ? 'Audio' : 'Imagen')}` : 'Sin archivo';
     case 'send_template': return d.templateName;
     case 'send_email': return d.emailSubject || d.body;
     case 'wait': return formatWaitSummary(d);
@@ -1408,6 +1409,19 @@ const SAMPLE_VARS = {
   sede: 'Sucursal Norte',
 };
 
+// Datos de ejemplo con el mismo nombrado que usan las plantillas de Meta
+// (ver VARIABLE_CATALOG en pages/MessageTemplates.jsx: nombre/apellido/servicio/
+// fecha/hora/doctor/sede), para previsualizar el paso "Enviar plantilla".
+const TEMPLATE_SAMPLE_VARS = {
+  nombre: 'María',
+  apellido: 'Pérez',
+  servicio: 'Limpieza facial',
+  fecha: 'lunes 20 de julio',
+  hora: '14:30',
+  doctor: 'Dra. Salazar',
+  sede: 'Sede Norte',
+};
+
 // Convierte el texto al HTML que "pinta" WhatsApp: *negrita*, _cursiva_,
 // ~tachado~, saltos de línea, y las variables con su valor de ejemplo resaltado.
 function waPreviewHtml(text) {
@@ -1424,7 +1438,7 @@ function waPreviewHtml(text) {
 }
 
 /** Burbuja verde estilo WhatsApp con el adjunto (si hay) y el texto renderizado. */
-function WhatsappPreview({ body = '', mediaUrl = '', mediaType = '' }) {
+function MessageBubblePreview({ body = '', mediaUrl = '', mediaType = '' }) {
   if (!String(body).trim() && !mediaUrl) return null;
   return (
     <div className="rounded-xl p-3" style={{ background: '#e5ddd5' }}>
@@ -1433,6 +1447,10 @@ function WhatsappPreview({ body = '', mediaUrl = '', mediaType = '' }) {
         {mediaUrl && (
           mediaType === 'video' ? (
             <div className="h-28 bg-slate-800 flex items-center justify-center text-3xl">🎬</div>
+          ) : mediaType === 'audio' ? (
+            <div className="px-2.5 pt-2">
+              <audio controls src={mediaUrl} className="w-full h-9" />
+            </div>
           ) : (
             <img src={mediaUrl} alt="" className="w-full max-h-40 object-cover" />
           )
@@ -1462,9 +1480,11 @@ function NodeAttachment({ d, set }) {
     if (!file) return;
     const isImage = file.type.startsWith('image/');
     const isVideo = file.type.startsWith('video/');
-    if (!isImage && !isVideo) return toast.error('Solo imágenes o videos');
+    const isAudio = file.type.startsWith('audio/');
+    if (!isImage && !isVideo && !isAudio) return toast.error('Solo imágenes, videos o audios');
     if (isImage && file.size > 6 * 1024 * 1024) return toast.error('Imagen: máximo 6MB');
     if (isVideo && file.size > 32 * 1024 * 1024) return toast.error('Video: máximo 32MB');
+    if (isAudio && file.size > 15 * 1024 * 1024) return toast.error('Audio: máximo 15MB');
     const reader = new FileReader();
     reader.onload = async (ev) => {
       try {
@@ -1487,12 +1507,18 @@ function NodeAttachment({ d, set }) {
     <div className="flex items-center gap-2 border border-slate-200 rounded-lg p-2 bg-slate-50">
       {d.mediaType === 'image' ? (
         <img src={d.mediaUrl} alt="" className="w-12 h-12 rounded-lg object-cover shrink-0" />
+      ) : d.mediaType === 'audio' ? (
+        <span className="w-12 h-12 rounded-lg bg-slate-200 flex items-center justify-center text-xl shrink-0">🎤</span>
       ) : (
         <span className="w-12 h-12 rounded-lg bg-slate-200 flex items-center justify-center text-xl shrink-0">🎬</span>
       )}
       <div className="min-w-0 flex-1">
         <p className="text-xs font-medium text-slate-700 truncate">{d.mediaName || 'Adjunto'}</p>
-        <p className="text-[10px] text-slate-400">{d.mediaType === 'image' ? 'Imagen' : 'Video'} — se envía junto al mensaje</p>
+        {d.mediaType === 'audio' ? (
+          <audio controls src={d.mediaUrl} className="w-full h-8 mt-1" />
+        ) : (
+          <p className="text-[10px] text-slate-400">{d.mediaType === 'image' ? 'Imagen' : 'Video'} — se envía junto al mensaje</p>
+        )}
       </div>
       <button
         type="button"
@@ -1506,14 +1532,14 @@ function NodeAttachment({ d, set }) {
   );
   return (
     <div>
-      <input ref={fileRef} type="file" accept="image/*,video/*" className="hidden" onChange={(e) => { upload(e.target.files?.[0]); e.target.value = ''; }} />
+      <input ref={fileRef} type="file" accept="image/*,video/*,audio/*" className="hidden" onChange={(e) => { upload(e.target.files?.[0]); e.target.value = ''; }} />
       <button
         type="button"
         disabled={uploading}
         onClick={() => fileRef.current?.click()}
         className="w-full border border-dashed border-slate-300 rounded-lg px-2 py-2 text-xs text-slate-500 bg-white hover:border-emerald-400 hover:text-emerald-700 cursor-pointer disabled:opacity-60"
       >
-        {uploading ? 'Subiendo…' : '📎 Adjuntar imagen o video (opcional)'}
+        {uploading ? 'Subiendo…' : '📎 Adjuntar imagen, video o audio (opcional)'}
       </button>
     </div>
   );
@@ -1637,7 +1663,7 @@ function NodeConfig({ node, onChange, onRemoveRoute, templates, agents, clinics 
     <div className="grid gap-2">
       <WhatsappTextArea value={d.body || ''} onChange={(body) => set({ body })} rows={6} placeholder="Mensaje (usa el menú de variables)" variables={MESSAGE_VARIABLES} />
       <NodeAttachment d={d} set={set} />
-      <WhatsappPreview body={d.body} mediaUrl={d.mediaUrl} mediaType={d.mediaType} />
+      <MessageBubblePreview body={d.body} mediaUrl={d.mediaUrl} mediaType={d.mediaType} />
       <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
         WhatsApp solo permite texto libre (y adjuntos) si el paciente te escribió en las últimas 24h.
         Fuera de esa ventana usa el paso <b>Enviar plantilla</b> (plantilla aprobada por Meta).
@@ -1646,21 +1672,37 @@ function NodeConfig({ node, onChange, onRemoveRoute, templates, agents, clinics 
   );
   if (t === 'send_media') return (
     <div className="grid gap-2">
-      <p className="text-xs text-slate-500">Envía SOLO una imagen o video, sin texto.</p>
+      <p className="text-xs text-slate-500">Envía SOLO una imagen, video o audio, sin texto.</p>
       <NodeAttachment d={d} set={set} />
-      <WhatsappPreview mediaUrl={d.mediaUrl} mediaType={d.mediaType} />
+      <MessageBubblePreview mediaUrl={d.mediaUrl} mediaType={d.mediaType} />
       <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
         Igual que el texto libre, WhatsApp solo lo entrega si el paciente te escribió en las
         últimas 24h; fuera de esa ventana usa <b>Enviar plantilla</b> con cabecera multimedia.
       </p>
     </div>
   );
-  if (t === 'send_template') return (
-    <select value={d.templateName || ''} onChange={(e) => set({ templateName: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
-      <option value="">Selecciona plantilla…</option>
-      {templates.map((tp) => <option key={tp._id} value={tp.name}>{tp.name}</option>)}
-    </select>
-  );
+  if (t === 'send_template') {
+    const selectedTemplate = templates.find((tp) => tp.name === d.templateName);
+    return (
+      <div className="grid gap-2">
+        <select value={d.templateName || ''} onChange={(e) => set({ templateName: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+          <option value="">Selecciona plantilla…</option>
+          {templates.map((tp) => <option key={tp._id} value={tp.name}>{tp.name}</option>)}
+        </select>
+        {selectedTemplate ? (
+          <>
+            <TemplateWhatsappPreview template={selectedTemplate} sampleVars={TEMPLATE_SAMPLE_VARS} />
+            <p className="text-[11px] text-slate-400">
+              Así se ve aproximadamente en WhatsApp, con datos de ejemplo en las variables (al
+              enviarse se usan los datos reales del paciente/cita).
+            </p>
+          </>
+        ) : (
+          <p className="text-[11px] text-slate-400">Elige una plantilla para ver cómo se verá.</p>
+        )}
+      </div>
+    );
+  }
   if (t === 'send_email') return (
     <div className="grid gap-2">
       <input value={d.emailSubject || ''} onChange={(e) => set({ emailSubject: e.target.value })} placeholder="Asunto" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />

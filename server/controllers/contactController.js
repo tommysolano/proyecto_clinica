@@ -10,6 +10,7 @@ const Contact = require('../models/Contact');
 const ContactGroup = require('../models/ContactGroup');
 const { normalizePhone } = require('../utils/phoneNormalize');
 const { buildContactMatch, buildGroupMatch } = require('../utils/contactAudience');
+const { moveToTrash } = require('../utils/trashBin');
 
 const PAGE_SIZE = 50;
 
@@ -115,9 +116,11 @@ exports.update = async (req, res) => {
 
 exports.remove = async (req, res) => {
   try {
-    const c = await Contact.findOneAndDelete({ _id: req.params.id, clinic: req.clinicId });
+    const c = await Contact.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!c) return res.status(404).json({ message: 'Contacto no encontrado' });
-    res.json({ message: 'Contacto eliminado' });
+    await moveToTrash({ entityType: 'Contact', doc: c, clinic: req.clinicId, user: req.user });
+    await c.deleteOne();
+    res.json({ message: 'Contacto movido a la papelera de reciclaje' });
   } catch (err) {
     res.status(500).json({ message: 'Error', error: err.message });
   }

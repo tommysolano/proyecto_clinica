@@ -2,6 +2,7 @@ const Workflow = require('../models/Workflow');
 const WorkflowEnrollment = require('../models/WorkflowEnrollment');
 const WorkflowFolder = require('../models/WorkflowFolder');
 const { makeFolderCrud, normFolderPath } = require('../utils/folderCrud');
+const { moveToTrash } = require('../utils/trashBin');
 
 /**
  * Normaliza el payload de un workflow antes de guardarlo. Los selects del
@@ -121,14 +122,16 @@ exports.update = async (req, res) => {
 
 exports.remove = async (req, res) => {
   try {
-    const wf = await Workflow.findOneAndDelete({ _id: req.params.id, clinic: req.clinicId });
+    const wf = await Workflow.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!wf) return res.status(404).json({ message: 'Workflow no encontrado' });
+    await moveToTrash({ entityType: 'Workflow', doc: wf, clinic: req.clinicId, user: req.user });
+    await wf.deleteOne();
     // Cancela inscripciones vivas del workflow eliminado.
     await WorkflowEnrollment.updateMany(
       { workflow: req.params.id, status: { $in: ['active', 'waiting'] } },
       { status: 'cancelled' }
     );
-    res.json({ message: 'Workflow eliminado' });
+    res.json({ message: 'Workflow movido a la papelera de reciclaje' });
   } catch (err) {
     res.status(500).json({ message: 'Error', error: err.message });
   }
