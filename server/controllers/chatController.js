@@ -85,8 +85,17 @@ const SEND_SKIP_REASONS = {
   no_whatsapp_consent: 'Este paciente no tiene consentimiento de WhatsApp.',
   out_of_window: 'La ventana de 24h está cerrada. Usa una plantilla aprobada.',
   invalid_recipient: 'Destinatario inválido.',
-  provider_unavailable: 'No hay un número de WhatsApp conectado para enviar. Revisa la conexión en Configuración del Call Center.',
 };
+const SKIP_CHANNEL_NAMES = { whatsapp: 'un número de WhatsApp', messenger: 'Messenger', instagram: 'Instagram' };
+// `provider_unavailable` lo devuelve messaging.send para CUALQUIER canal (sin
+// gateway/token configurado): el texto se arma según el canal real del chat, no
+// queda fijo en "WhatsApp" para un fallo de Messenger/Instagram.
+function skipMessage(reason, channel = 'whatsapp') {
+  if (reason === 'provider_unavailable') {
+    return `No hay ${SKIP_CHANNEL_NAMES[channel] || channel} conectado para enviar. Revisa la conexión en Configuración del Call Center.`;
+  }
+  return SEND_SKIP_REASONS[reason] || 'El mensaje fue omitido.';
+}
 
 // =================== Conversaciones ===================
 
@@ -230,6 +239,17 @@ exports.getConversation = async (req, res) => {
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
     const out = decorateConversation(conv.toObject(), await resolveDefaultConnectionType());
     out.detectedEmail = await findEmailInConversation(conv._id);
+    // Otros chats (whatsapp/messenger/instagram) del MISMO contacto: alimenta la
+    // pestaña de canal del compositor, para responder por cualquiera de ellos sin
+    // salir de esta pantalla. Solo existe una vez que el chat está vinculado a un
+    // paciente (ver registerPatientFromChat / findPatientForIncoming).
+    const patientId = conv.patient?._id || conv.patient;
+    out.linkedConversations = patientId
+      ? await Conversation.find({ clinic: req.clinicId, patient: patientId, _id: { $ne: conv._id } })
+          .select('channel phone lastMessageAt lastMessagePreview unreadCount')
+          .sort({ lastMessageAt: -1 })
+          .lean()
+      : [];
     res.json(out);
   } catch (err) {
     res.status(500).json({ message: 'Error al obtener conversación', error: err.message });
@@ -1699,7 +1719,7 @@ exports.sendGalleryImage = async (req, res) => {
 
     if (result.skipped) {
       return res.status(409).json({
-        message: SEND_SKIP_REASONS[result.reason] || 'El mensaje fue omitido.',
+        message: skipMessage(result.reason, conv.channel || 'whatsapp'),
         code: result.reason,
       });
     }
@@ -2062,7 +2082,7 @@ exports.sendMessage = async (req, res) => {
 
     if (result.skipped) {
       return res.status(409).json({
-        message: SEND_SKIP_REASONS[result.reason] || 'El mensaje fue omitido.',
+        message: skipMessage(result.reason, conv.channel || 'whatsapp'),
         code: result.reason,
       });
     }
@@ -3418,7 +3438,20 @@ exports.registerPatientFromChat = async (req, res) => {
       return res.status(400).json({ message: 'El género es obligatorio' });
     }
 
-    const phone = conv.phone || req.body.phone || '';
+    // `conv.phone` SOLO es un teléfono real en WhatsApp: en Messenger/Instagram es
+    // el identificador interno del contacto (PSID/IGSID) — Meta no comparte el
+    // teléfono real ahí. Para poder vincular este chat con el WhatsApp del mismo
+    // contacto (y que las respuestas futuras se reconozcan solas por teléfono,
+    // ver findPatientForIncoming/ingestExternalMessage), el agente tiene que
+    // escribirlo a mano en ese caso.
+    const isWhatsapp = (conv.channel || 'whatsapp') === 'whatsapp';
+    const enteredPhone = String(req.body.phone || '').replace(/[^\d]/g, '');
+    const phone = isWhatsapp ? (conv.phone || enteredPhone) : enteredPhone;
+    if (!isWhatsapp && !phone) {
+      return res.status(400).json({
+        message: `Este chat es de ${conv.channel === 'instagram' ? 'Instagram' : 'Messenger'}: escribe el teléfono real del contacto para poder vincularlo con su WhatsApp.`,
+      });
+    }
     let patient = null;
     if (cedula) patient = await Patient.findOne({ cedula });
     if (!patient && phone) {
@@ -3451,6 +3484,16 @@ exports.registerPatientFromChat = async (req, res) => {
       await patient.save();
     }
     await conv.save();
+    // Vincula EN EL ACTO cualquier otro chat (whatsapp/messenger/instagram) que ya
+    // tenga este mismo teléfono y aún no esté vinculado a nadie: así el agente ve
+    // el hilo completo (pestañas de canal) sin esperar al PRÓXIMO mensaje entrante
+    // por ese otro canal.
+    if (phone) {
+      await Conversation.updateMany(
+        { clinic: req.clinicId, phone: { $regex: phone.slice(-9) + '$' }, patient: null, _id: { $ne: conv._id } },
+        { $set: { patient: patient._id } }
+      );
+    }
     emitToClinic(req.clinicId, 'patient:created', { id: patient._id });
     emitToCallCenter('chat:updated', { id: conv._id });
     res.status(201).json({ patient, conversation: conv });
@@ -3707,7 +3750,7 @@ exports.createQuotationFromChat = async (req, res) => {
       pdfUrl,
       message: result.message || null,
       deliveryStatus: result.deliveryStatus || (result.skipped ? 'skipped' : 'failed'),
-      sendError: result.ok ? null : (result.errorMessage || SEND_SKIP_REASONS[result.reason] || 'No se pudo enviar el enlace por WhatsApp.'),
+      sendError: result.ok ? null : (result.errorMessage || skipMessage(result.reason, conv.channel || 'whatsapp')),
       conversation: conv,
     });
   } catch (err) {

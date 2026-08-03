@@ -25,10 +25,18 @@ const LINEAR_ACTION_TYPES = new Set([
 ]);
 
 // Motivos por los que messaging.send salta/falla un envío, en lenguaje del usuario.
+// `provider_unavailable` e `invalid_recipient` los devuelve messaging.send para
+// CUALQUIER canal (whatsapp/messenger/instagram/email): su texto se arma según el
+// canal real del paso (ver sendFailureInfo), no queda fijo en "WhatsApp".
+const CHANNEL_LABELS = { whatsapp: 'WhatsApp', messenger: 'Messenger', instagram: 'Instagram', email: 'email' };
+// Canales donde el paso "Enviar plantilla" tiene sentido. Meta no tiene HSM fuera
+// de WhatsApp, pero SÍ deja mandar el TEXTO de la plantilla como mensaje normal
+// por Messenger/Instagram (igual que ya hacían los números QR de WhatsApp, que
+// tampoco admiten HSM) — ver `messaging.send`/`sendToProvider`. TikTok no es de
+// Meta y aún no tiene envío implementado: queda fuera.
+const TEMPLATE_CHANNELS = new Set(['whatsapp', 'messenger', 'instagram']);
 const SEND_FAIL_REASONS = {
   out_of_window: 'WhatsApp: fuera de la ventana de 24h (el paciente no ha escrito recientemente). Usa el paso "Enviar plantilla" con una plantilla aprobada.',
-  provider_unavailable: 'Canal no disponible: no hay número de WhatsApp conectado/configurado.',
-  invalid_recipient: 'El contacto no tiene un teléfono/destino válido ni una conversación previa de WhatsApp.',
   opt_out: 'El paciente pidió no recibir mensajes (opt-out).',
   no_whatsapp_consent: 'El paciente tiene desactivado el consentimiento de WhatsApp (ficha del paciente → Marketing).',
   no_email_consent: 'El paciente no aceptó recibir emails.',
@@ -53,10 +61,18 @@ function pushLog(enrollment, entry) {
 const fmtLogDate = (d) =>
   d.toLocaleString('es-EC', { timeZone: 'America/Guayaquil', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
 
-/** Interpreta el resultado de messaging.send: null = éxito, string = motivo del fallo. */
-function sendFailureInfo(result) {
+/**
+ * Interpreta el resultado de messaging.send: null = éxito, string = motivo del
+ * fallo. `channel` (whatsapp/messenger/instagram/email) arma el texto de los
+ * motivos que aplican a cualquier canal (provider_unavailable, invalid_recipient)
+ * para no decir "WhatsApp" cuando el paso en realidad falló por Messenger/Instagram.
+ */
+function sendFailureInfo(result, channel = 'whatsapp') {
   if (!result || result.ok) return null;
   const reason = result.reason || result.errorCode || 'error';
+  const label = CHANNEL_LABELS[channel] || channel;
+  if (reason === 'provider_unavailable') return `Canal no disponible: ${channel === 'whatsapp' ? 'no hay número de WhatsApp' : `${label} no está`} conectado/configurado.`;
+  if (reason === 'invalid_recipient') return `El contacto no tiene un destino válido en ${label}, o el mensaje llegó vacío.`;
   return SEND_FAIL_REASONS[reason] || result.errorMessage || `No se pudo enviar (${reason}).`;
 }
 
@@ -438,31 +454,35 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
   switch (step.type) {
     case 'send_message': {
       // Se envía a la CONVERSACIÓN existente del paciente (imprescindible con
-      // números ocultos/LID, donde el teléfono de la ficha no sirve de destino);
-      // si no hay ninguna, messaging la crea a partir del teléfono.
+      // números ocultos/LID, donde el teléfono de la ficha no sirve de destino;
+      // y con Messenger/Instagram, donde el "teléfono" es en realidad un PSID/
+      // IGSID); si no hay ninguna, messaging la crea a partir del teléfono (whatsapp).
+      const conversation = await loadConv();
       const r = await messaging.send({
         clinicId,
-        channel: 'whatsapp',
-        conversation: await loadConv(),
+        channel: conversation?.channel || 'whatsapp',
+        conversation,
         to: phone,
         patient,
         body: await renderText(step.body, patient, ctx),
-        // Adjunto opcional del nodo (imagen/video): Cloud lo manda por link,
-        // QR lee los bytes del storage propio. Misma ventana de 24h que el texto.
+        // Adjunto opcional del nodo (imagen/video/audio/documento): Cloud/Messenger/
+        // Instagram lo mandan por link, QR lee los bytes del storage propio. Misma
+        // ventana de 24h que el texto (whatsapp) o de mensajería estándar (Meta).
         mediaUrl: step.mediaUrl || null,
         mediaType: step.mediaType || null,
         isAutoReply: true,
         whatsappAccount,
       });
-      return sendFailureInfo(r);
+      return sendFailureInfo(r, conversation?.channel || 'whatsapp');
     }
     case 'send_media': {
-      // Solo imagen o video, sin texto (nodo "Enviar imagen / video").
+      // Solo imagen/video/audio/documento, sin texto (nodo "Enviar imagen / video / audio").
       if (!step.mediaUrl) return 'El nodo no tiene imagen o video adjunto: edítalo y sube el archivo.';
+      const conversation = await loadConv();
       const r = await messaging.send({
         clinicId,
-        channel: 'whatsapp',
-        conversation: await loadConv(),
+        channel: conversation?.channel || 'whatsapp',
+        conversation,
         to: phone,
         patient,
         body: '',
@@ -471,15 +491,25 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
         isAutoReply: true,
         whatsappAccount,
       });
-      return sendFailureInfo(r);
+      return sendFailureInfo(r, conversation?.channel || 'whatsapp');
     }
     case 'send_template': {
+      // Meta no tiene plantillas HSM fuera de WhatsApp, pero SÍ se puede mandar el
+      // TEXTO de la plantilla como mensaje normal por Messenger/Instagram (ver
+      // messaging.send). TikTok (no es de Meta) y otros canales sin envío
+      // implementado fallan claro en vez de intentarlo por WhatsApp (que mandaría
+      // a un PSID/IGSID/open_id como si fuera un teléfono).
+      const conversation = await loadConv();
+      const stepChannel = conversation?.channel || 'whatsapp';
+      if (!TEMPLATE_CHANNELS.has(stepChannel)) {
+        return `Este chat es de ${CHANNEL_LABELS[stepChannel] || stepChannel}: las plantillas no están disponibles ahí todavía. Usa el paso "Enviar mensaje" en su lugar.`;
+      }
       // Sin vars posicionales: messaging rellena cada variable por su NOMBRE
       // (paciente + datos reales de la cita vía appointmentId del contexto).
       const r = await messaging.send({
         clinicId,
-        channel: 'whatsapp',
-        conversation: await loadConv(),
+        channel: stepChannel,
+        conversation,
         to: phone,
         patient,
         template: { name: step.templateName, language: step.templateLanguage || 'es' },
@@ -488,13 +518,13 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
         whatsappAccount,
         contactId,
       });
-      return sendFailureInfo(r);
+      return sendFailureInfo(r, stepChannel);
     }
     case 'send_email': {
       const to = patient?.email;
       if (!to) return 'El paciente no tiene email registrado.';
       const r = await messaging.send({ clinicId, channel: 'email', to, patient, subject: await renderText(step.emailSubject || 'Mensaje de tu clínica', patient, ctx), body: await renderText(step.body, patient, ctx) });
-      return sendFailureInfo(r);
+      return sendFailureInfo(r, 'email');
     }
     case 'assign_agent': {
       const conversation = await loadConv();
@@ -542,13 +572,15 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
       }
       break;
     case 'request_review': {
+      const conversation = await loadConv();
+      const stepChannel = conversation?.channel || 'whatsapp';
       const token = ReviewRequest.newToken();
-      await ReviewRequest.create({ clinic: clinicId, patient: patient?._id || null, appointment: ctx.appointmentId || null, conversation: convRef.current?._id || null, token, channel: 'whatsapp' });
+      await ReviewRequest.create({ clinic: clinicId, patient: patient?._id || null, appointment: ctx.appointmentId || null, conversation: conversation?._id || null, token, channel: stepChannel });
       const base = process.env.PUBLIC_API_URL || '';
       const link = base ? `${base}/api/public/review/${token}` : '';
       const text = await renderText(step.body || '¡Hola {{nombre}}! ¿Cómo fue tu experiencia con nosotros? Califícanos aquí:', patient, ctx);
-      const r = await messaging.send({ clinicId, channel: 'whatsapp', conversation: await loadConv(), to: phone, patient, body: link ? `${text}\n${link}` : text, isAutoReply: true });
-      return sendFailureInfo(r);
+      const r = await messaging.send({ clinicId, channel: stepChannel, conversation, to: phone, patient, body: link ? `${text}\n${link}` : text, isAutoReply: true });
+      return sendFailureInfo(r, stepChannel);
     }
     case 'ai_reply': {
       const conversation = await loadConv();
@@ -557,7 +589,7 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
       const r = await suggestReply({ clinicId, conversationId: conversation._id });
       if (r.ok && r.suggestion) {
         const sent = await messaging.send({ clinicId, channel: conversation.channel || 'whatsapp', to: phone, patient, conversation, body: r.suggestion, isAutoReply: true });
-        return sendFailureInfo(sent);
+        return sendFailureInfo(sent, conversation.channel || 'whatsapp');
       }
       return 'La IA no generó una sugerencia.';
     }
@@ -845,7 +877,20 @@ async function executeEnrollment(enrollment) {
     : null;
   const ctx = enrollment.context || {};
   const phone = ctx.phone || patient?.whatsapp || patient?.phone || '';
-  let conversation = await loadConversationForPatient(enrollment.clinic, phone, patient?._id);
+  // Si el flujo nació de un chat (mensaje/etiqueta/cambio de etapa), la inscripción
+  // YA sabe de qué conversación exacta vino (enrollForChatMessage/enrollForOpportunityStage
+  // guardan `enrollment.conversation`) — y por tanto de qué CANAL (whatsapp/messenger/
+  // instagram). Usar esa en vez de re-adivinarla por teléfono: loadConversationForPatient
+  // fuerza `channel: 'whatsapp'` cuando hay paciente, así que un paciente que además
+  // tiene chat de WhatsApp guardado perdía su conversación de Messenger/Instagram y la
+  // automatización terminaba respondiendo por el canal equivocado (o fallando: el
+  // "teléfono" real ahí es un PSID/IGSID, no un número de WhatsApp).
+  let conversation = enrollment.conversation
+    ? await Conversation.findOne({ _id: enrollment.conversation, clinic: enrollment.clinic })
+    : null;
+  if (!conversation) {
+    conversation = await loadConversationForPatient(enrollment.clinic, phone, patient?._id);
+  }
 
   // Estamos ejecutando activamente: ya no esperamos respuesta (se reactivará si
   // un próximo paso wait_reply vuelve a pausar).
@@ -875,7 +920,7 @@ async function executeEnrollment(enrollment) {
       // eslint-disable-next-line no-await-in-loop
       const r = await messaging.send({
         clinicId: enrollment.clinic,
-        channel: 'whatsapp',
+        channel: conversation?.channel || 'whatsapp',
         conversation,
         to: phone,
         patient,
@@ -886,7 +931,7 @@ async function executeEnrollment(enrollment) {
         isAutoReply: true,
         whatsappAccount: ctx.whatsappAccountId || null,
       });
-      const fail = sendFailureInfo(r);
+      const fail = sendFailureInfo(r, conversation?.channel || 'whatsapp');
       if (fail && scheduleSendRetry(enrollment, fail, { stepIndex: i })) {
         enrollment.stepIndex = i; // reintentar este mismo paso
         // eslint-disable-next-line no-await-in-loop
@@ -903,7 +948,7 @@ async function executeEnrollment(enrollment) {
         // eslint-disable-next-line no-await-in-loop
         const r = await messaging.send({
           clinicId: enrollment.clinic,
-          channel: 'whatsapp',
+          channel: conversation?.channel || 'whatsapp',
           conversation,
           to: phone,
           patient,
@@ -913,7 +958,7 @@ async function executeEnrollment(enrollment) {
           isAutoReply: true,
           whatsappAccount: ctx.whatsappAccountId || null,
         });
-        const fail = sendFailureInfo(r);
+        const fail = sendFailureInfo(r, conversation?.channel || 'whatsapp');
         if (fail && scheduleSendRetry(enrollment, fail, { stepIndex: i })) {
           enrollment.stepIndex = i;
           // eslint-disable-next-line no-await-in-loop
@@ -925,28 +970,42 @@ async function executeEnrollment(enrollment) {
       }
       i++;
     } else if (step.type === 'send_template') {
-      // eslint-disable-next-line no-await-in-loop
-      const r = await messaging.send({
-        clinicId: enrollment.clinic,
-        channel: 'whatsapp',
-        conversation,
-        to: phone,
-        patient,
-        template: { name: step.templateName, language: step.templateLanguage || 'es' },
-        appointmentId: ctx.appointmentId || null,
-        isAutoReply: true,
-        whatsappAccount: ctx.whatsappAccountId || null,
-        contactId: ctx.contactId || null,
-      });
-      const fail = sendFailureInfo(r);
-      if (fail && scheduleSendRetry(enrollment, fail, { stepIndex: i })) {
-        enrollment.stepIndex = i;
+      // Meta no tiene plantillas HSM fuera de WhatsApp, pero SÍ se puede mandar el
+      // TEXTO de la plantilla como mensaje normal por Messenger/Instagram. Otros
+      // canales (TikTok, no es de Meta; email; etc.) fallan claro en vez de
+      // intentarlo por WhatsApp (mandaría a un PSID/IGSID/open_id como teléfono).
+      const stepChannel = conversation?.channel || 'whatsapp';
+      if (!TEMPLATE_CHANNELS.has(stepChannel)) {
+        pushLog(enrollment, {
+          stepIndex: i,
+          type: step.type,
+          ok: false,
+          info: `Este chat es de ${CHANNEL_LABELS[stepChannel] || stepChannel}: las plantillas no están disponibles ahí todavía. Usa el paso "Enviar mensaje" en su lugar.`,
+        });
+      } else {
         // eslint-disable-next-line no-await-in-loop
-        await enrollment.save();
-        return;
+        const r = await messaging.send({
+          clinicId: enrollment.clinic,
+          channel: stepChannel,
+          conversation,
+          to: phone,
+          patient,
+          template: { name: step.templateName, language: step.templateLanguage || 'es' },
+          appointmentId: ctx.appointmentId || null,
+          isAutoReply: true,
+          whatsappAccount: ctx.whatsappAccountId || null,
+          contactId: ctx.contactId || null,
+        });
+        const fail = sendFailureInfo(r, stepChannel);
+        if (fail && scheduleSendRetry(enrollment, fail, { stepIndex: i })) {
+          enrollment.stepIndex = i;
+          // eslint-disable-next-line no-await-in-loop
+          await enrollment.save();
+          return;
+        }
+        clearSendRetries(enrollment);
+        pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail || '' });
       }
-      clearSendRetries(enrollment);
-      pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail || '' });
       i++;
     } else if (step.type === 'send_email') {
       const to = patient?.email;
@@ -962,7 +1021,7 @@ async function executeEnrollment(enrollment) {
           // eslint-disable-next-line no-await-in-loop
           body: await renderText(step.body, patient, ctx),
         });
-        const fail = sendFailureInfo(r);
+        const fail = sendFailureInfo(r, 'email');
         pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail || '' });
       } else {
         pushLog(enrollment, { stepIndex: i, type: step.type, ok: false, info: 'El paciente no tiene email registrado.' });
@@ -1040,6 +1099,7 @@ async function executeEnrollment(enrollment) {
       }
       i++;
     } else if (step.type === 'request_review') {
+      const reviewChannel = conversation?.channel || 'whatsapp';
       const token = ReviewRequest.newToken();
       // eslint-disable-next-line no-await-in-loop
       await ReviewRequest.create({
@@ -1048,7 +1108,7 @@ async function executeEnrollment(enrollment) {
         appointment: ctx.appointmentId || null,
         conversation: conversation?._id || null,
         token,
-        channel: 'whatsapp',
+        channel: reviewChannel,
       });
       const base = process.env.PUBLIC_API_URL || '';
       const link = base ? `${base}/api/public/review/${token}` : '';
@@ -1061,7 +1121,7 @@ async function executeEnrollment(enrollment) {
       // eslint-disable-next-line no-await-in-loop
       await messaging.send({
         clinicId: enrollment.clinic,
-        channel: 'whatsapp',
+        channel: reviewChannel,
         conversation,
         to: phone,
         patient,

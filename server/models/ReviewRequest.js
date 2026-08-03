@@ -14,7 +14,7 @@ const reviewRequestSchema = new mongoose.Schema(
     appointment: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment', default: null },
     conversation: { type: mongoose.Schema.Types.ObjectId, ref: 'Conversation', default: null },
     token: { type: String, required: true, unique: true, index: true },
-    channel: { type: String, enum: ['whatsapp', 'email'], default: 'whatsapp' },
+    channel: { type: String, enum: ['whatsapp', 'email', 'messenger', 'instagram'], default: 'whatsapp' },
     status: {
       type: String,
       enum: ['sent', 'clicked', 'rated', 'redirected'],

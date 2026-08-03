@@ -547,16 +547,54 @@ async function sendToProvider({ clinicId, channel, conv, body, templateInfo, acc
     if (!channelConfig?.enabled || !pageAccessToken) {
       return { ok: false, errorCode: 'provider_unavailable', error: `${channel} no configurado` };
     }
+    // "Plantilla" fuera de WhatsApp = solo su TEXTO ya resuelto (Meta no tiene HSM
+    // para Messenger/Instagram, así que no hay nada que "aprobar"): `body` ya llega
+    // renderizado desde `send()` (mismo `preview` que arma el mensaje del chat). La
+    // cabecera multimedia de la plantilla (si tiene) se manda como adjunto real,
+    // igual que ya hacían los números QR de WhatsApp con `templateInfo.headerMedia`.
+    const hm = templateInfo?.headerMedia;
+    const effectiveMediaUrl = mediaUrl || hm?.url || null;
+    const effectiveMediaType = mediaUrl ? mediaType : hm?.type;
+    if (!effectiveMediaUrl && !body) {
+      return { ok: false, errorCode: 'invalid_recipient', error: 'Mensaje vacío' };
+    }
     const url = `https://graph.facebook.com/${process.env.WHATSAPP_API_VERSION || 'v23.0'}/me/messages?access_token=${pageAccessToken}`;
-    return postMetaMessage({
-      accessToken: pageAccessToken,
-      url,
-      payload: {
-        recipient: { id: conv.externalUserId || conv.phone },
-        message: { text: body || '' },
-        ...(channel === 'messenger' ? { messaging_type: 'RESPONSE' } : {}),
-      },
-    });
+    const recipient = { id: conv.externalUserId || conv.phone };
+    const extra = channel === 'messenger' ? { messaging_type: 'RESPONSE' } : {};
+    // El Send API de Meta admite texto O adjunto por mensaje, NUNCA los dos a la
+    // vez (a diferencia de WhatsApp, que sí manda imagen+pie en un solo envío).
+    // Con adjunto Y texto, se manda el adjunto primero y el texto como una
+    // segunda burbuja — así se ve un mensaje "con imagen y nota" como en la app.
+    const ATTACHMENT_TYPE = { image: 'image', video: 'video', audio: 'audio', document: 'file' };
+    let mediaResult = null;
+    if (effectiveMediaUrl) {
+      mediaResult = await postMetaMessage({
+        accessToken: pageAccessToken,
+        url,
+        payload: {
+          recipient,
+          message: { attachment: { type: ATTACHMENT_TYPE[effectiveMediaType] || 'file', payload: { url: effectiveMediaUrl } } },
+          ...extra,
+        },
+      });
+      if (!mediaResult.ok) {
+        return { ...mediaResult, error: mediaResult.error || 'El adjunto fue rechazado' };
+      }
+    }
+    if (body) {
+      const textResult = await postMetaMessage({
+        accessToken: pageAccessToken,
+        url,
+        payload: { recipient, message: { text: body }, ...extra },
+      });
+      if (!textResult.ok) {
+        return effectiveMediaUrl
+          ? { ...textResult, error: `El adjunto se envió, pero el texto no: ${textResult.error}` }
+          : textResult;
+      }
+      return textResult;
+    }
+    return mediaResult;
   }
 
   if (channel === 'web') return { ok: true, data: {} };
@@ -755,7 +793,11 @@ async function send({
   }
 
   let templateInfo = normalizeTemplate(template, vars);
-  if (templateInfo && normalizedChannel === 'whatsapp') {
+  // Las plantillas viven en el catálogo de WhatsApp (única fuente: aprobación de
+  // Meta), pero su TEXTO se reutiliza para Messenger/Instagram — ahí no hay
+  // plantillas HSM ni aprobación: se manda como mensaje normal (ver sendToProvider,
+  // igual que ya hacían los números QR de WhatsApp, que tampoco admiten HSM).
+  if (templateInfo && ['whatsapp', 'messenger', 'instagram'].includes(normalizedChannel)) {
     // Plantilla enviada SIN cita explícita (a mano desde el chat, campañas):
     // usar la PRÓXIMA cita del paciente para que {{servicio}}/{{fecha}}/{{hora}}
     // lleven datos reales y no el ejemplo documentado.

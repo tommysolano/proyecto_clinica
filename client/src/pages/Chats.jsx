@@ -150,6 +150,23 @@ function DateDivider({ date }) {
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+// Qué puede enviar de verdad cada canal (lo que el backend sabe entregar de
+// verdad — ver server/utils/messaging.js#sendToProvider). Oculta en el
+// compositor lo que el canal no soporta, en vez de dejar botones que "parecen"
+// funcionar y en realidad no llegan al contacto.
+const MEDIA_CHANNELS = ['whatsapp', 'messenger', 'instagram'];
+// Meta no tiene plantillas HSM fuera de WhatsApp, pero el TEXTO de la plantilla
+// sí se puede mandar como mensaje normal por Messenger/Instagram (ver
+// server/utils/messaging.js#sendToProvider). TikTok no es de Meta: sin envío.
+const TEMPLATE_CHANNELS = ['whatsapp', 'messenger', 'instagram'];
+const CHANNEL_TAB_LABELS = { whatsapp: 'WhatsApp', messenger: 'Messenger', instagram: 'Instagram', tiktok: 'TikTok', sms: 'SMS', web: 'Web' };
+function channelSendsMedia(conv) {
+  return MEDIA_CHANNELS.includes(conv?.channel || 'whatsapp');
+}
+function channelSendsTemplates(conv) {
+  return TEMPLATE_CHANNELS.includes(conv?.channel || 'whatsapp');
+}
+
 // El número de este chat es QR (WhatsApp Web). `effectiveConnectionType` lo
 // resuelve el backend: el del número asignado, o el del número por defecto si el
 // chat no tiene uno. Los chats viejos sin número asignado ya no se tratan por
@@ -793,6 +810,9 @@ export default function Chats() {
       featuredBy: detail.featuredBy,
       // Correo que el contacto escribió en el chat: solo viene en el detalle.
       detectedEmail: detail.detectedEmail,
+      // Otros chats del MISMO contacto (whatsapp/messenger/instagram): alimenta
+      // las pestañas de canal del compositor. Solo viene en el detalle.
+      linkedConversations: detail.linkedConversations,
     };
   }, [liveActiveConv, openConvSnap, activeDetail, activeId]);
 
@@ -820,6 +840,8 @@ export default function Chats() {
   }, [conversations, sortOrder]);
   const activeWindowClosed = isWhatsappWindowClosed(activeConv);
   const activeOptedOut = isOptedOut(activeConv);
+  const activeSendsMedia = channelSendsMedia(activeConv);
+  const activeSendsTemplates = channelSendsTemplates(activeConv);
   // El compositor de texto está inhabilitado cuando no se puede escribir libre:
   // contacto bloqueado, ventana de 24h cerrada, opt-out, plantilla seleccionada
   // o una nota de voz preparada (que se envía sola).
@@ -1435,6 +1457,7 @@ export default function Chats() {
                   onToggleSearch={() => setChatSearchOpen((v) => !v)}
                   searchActive={chatSearchOpen}
                 />
+                <ChannelTabs conv={activeConv} onSelect={selectConversation} />
                 {/* Buscador dentro de la conversación (estilo WhatsApp) */}
                 {chatSearchOpen && (
                   <div className="border-b border-slate-100 px-3 py-2 flex items-center gap-2 bg-white">
@@ -1722,7 +1745,9 @@ export default function Chats() {
                         <div className="flex border-b border-slate-100 bg-white shrink-0">
                           {[
                             ['auto', '⚡ Automatizaciones'],
-                            ['templates', '📄 Plantillas'],
+                            // Las plantillas son un concepto de WhatsApp (HSM aprobadas por
+                            // Meta): no existe equivalente para Messenger/Instagram/TikTok.
+                            ...(activeSendsTemplates ? [['templates', '📄 Plantillas']] : []),
                             ['saved', '/ Guardados'],
                           ].map(([k, label]) => (
                             <button
@@ -1999,14 +2024,16 @@ export default function Chats() {
                         </>
                       ) : (
                         <>
-                          <button
-                            type="button"
-                            onClick={() => setGalleryOpen(true)}
-                            title="Galería de imágenes"
-                            className="p-2 bg-white border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 hover:border-emerald-300 cursor-pointer flex items-center"
-                          >
-                            <HiOutlinePhoto className="w-5 h-5" />
-                          </button>
+                          {activeSendsMedia && (
+                            <button
+                              type="button"
+                              onClick={() => setGalleryOpen(true)}
+                              title="Galería de imágenes"
+                              className="p-2 bg-white border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 hover:border-emerald-300 cursor-pointer flex items-center"
+                            >
+                              <HiOutlinePhoto className="w-5 h-5" />
+                            </button>
+                          )}
                           <input
                             ref={filePickRef}
                             type="file"
@@ -2014,18 +2041,20 @@ export default function Chats() {
                             onChange={handleFilePick}
                             accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.csv,.txt,.zip,.rar,image/*,video/*,audio/*"
                           />
-                          <button
-                            type="button"
-                            onClick={() => filePickRef.current?.click()}
-                            disabled={
-                              !!activeConv?.blocked || activeWindowClosed || activeOptedOut ||
-                              !!templateDraft.name || attachingMedia || !!attachmentDraft
-                            }
-                            title="Adjuntar archivo (PDF, Word, Excel, imagen…)"
-                            className="p-2 bg-white border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 hover:border-emerald-300 disabled:opacity-50 cursor-pointer flex items-center"
-                          >
-                            <HiOutlinePaperClip className="w-5 h-5" />
-                          </button>
+                          {activeSendsMedia && (
+                            <button
+                              type="button"
+                              onClick={() => filePickRef.current?.click()}
+                              disabled={
+                                !!activeConv?.blocked || activeWindowClosed || activeOptedOut ||
+                                !!templateDraft.name || attachingMedia || !!attachmentDraft
+                              }
+                              title="Adjuntar archivo (PDF, Word, Excel, imagen…)"
+                              className="p-2 bg-white border border-slate-200 rounded-xl text-slate-600 hover:bg-slate-50 hover:border-emerald-300 disabled:opacity-50 cursor-pointer flex items-center"
+                            >
+                              <HiOutlinePaperClip className="w-5 h-5" />
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={() => {
@@ -2038,18 +2067,20 @@ export default function Chats() {
                           >
                             <HiOutlinePlus className="w-5 h-5" />
                           </button>
-                          <button
-                            type="button"
-                            onClick={startRecording}
-                            disabled={
-                              !!activeConv?.blocked || activeWindowClosed || activeOptedOut ||
-                              !!templateDraft.name || attachingMedia || !!attachmentDraft
-                            }
-                            title="Grabar una nota de voz"
-                            className="p-2 bg-white border border-slate-200 text-slate-600 rounded-xl hover:border-emerald-400 hover:text-emerald-600 disabled:opacity-50 cursor-pointer flex items-center"
-                          >
-                            <HiOutlineMicrophone className="w-5 h-5" />
-                          </button>
+                          {activeSendsMedia && (
+                            <button
+                              type="button"
+                              onClick={startRecording}
+                              disabled={
+                                !!activeConv?.blocked || activeWindowClosed || activeOptedOut ||
+                                !!templateDraft.name || attachingMedia || !!attachmentDraft
+                              }
+                              title="Grabar una nota de voz"
+                              className="p-2 bg-white border border-slate-200 text-slate-600 rounded-xl hover:border-emerald-400 hover:text-emerald-600 disabled:opacity-50 cursor-pointer flex items-center"
+                            >
+                              <HiOutlineMicrophone className="w-5 h-5" />
+                            </button>
+                          )}
                           <button
                             type="button"
                             onClick={suggestReply}
@@ -2770,6 +2801,51 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpport
           <HeaderActionsMenu actions={actions} />
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Pestañas de canal (whatsapp/messenger/instagram) cuando el contacto tiene MÁS
+ * DE UN chat vinculado al mismo paciente (ver `registerPatientFromChat` y
+ * `getConversation#linkedConversations`). Cambiar de pestaña abre ESE OTRO chat
+ * (`selectConversation`): cada canal sigue siendo su propia conversación —solo
+ * se deja saltar entre ellas sin buscar en la bandeja— así el agente responde
+ * por el medio que ya tiene registrado sin perder el contexto del contacto.
+ */
+function ChannelTabs({ conv, onSelect }) {
+  const linked = conv?.linkedConversations;
+  if (!linked || !linked.length) return null;
+  const tabs = [
+    { _id: conv._id, channel: conv.channel || 'whatsapp', unreadCount: conv.unreadCount || 0 },
+    ...linked,
+  ];
+  return (
+    <div className="flex items-center gap-1.5 px-3 py-1.5 border-b border-slate-100 bg-slate-50 overflow-x-auto">
+      <span className="text-[11px] text-slate-400 shrink-0">Responder por:</span>
+      {tabs.map((t) => {
+        const isActive = String(t._id) === String(conv._id);
+        return (
+          <button
+            key={t._id}
+            type="button"
+            onClick={() => !isActive && onSelect(t._id)}
+            title={isActive ? undefined : `Cambiar a este chat de ${CHANNEL_TAB_LABELS[t.channel] || t.channel}`}
+            className={`text-xs font-medium px-2.5 py-1 rounded-full border shrink-0 cursor-pointer ${
+              isActive
+                ? 'bg-emerald-600 text-white border-emerald-600'
+                : 'bg-white text-slate-600 border-slate-200 hover:bg-slate-100'
+            }`}
+          >
+            {CHANNEL_TAB_LABELS[t.channel] || t.channel}
+            {t.unreadCount > 0 && (
+              <span className={`ml-1.5 ${isActive ? 'text-emerald-100' : 'text-emerald-600'}`}>
+                {t.unreadCount}
+              </span>
+            )}
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -4120,11 +4196,17 @@ function TasksSection({ conv, agents = [], meId }) {
 
 function RegisterPatientModal({ conv, onClose, onRegistered }) {
   const guessName = (conv.contactName || '').trim().split(/\s+/);
+  // `conv.phone` solo es un teléfono real en WhatsApp: en Messenger/Instagram es
+  // el identificador interno del contacto (PSID/IGSID), no algo que se pueda
+  // marcar. Ahí el agente tiene que escribir el teléfono real (si el contacto lo
+  // dio) para vincular este chat con su WhatsApp — ver registerPatientFromChat.
+  const isWhatsapp = (conv.channel || 'whatsapp') === 'whatsapp';
   const [form, setForm] = useState({
     firstName: guessName[0] || '',
     lastName: guessName.slice(1).join(' ') || '',
     cedula: '',
     gender: '',
+    phone: '',
   });
   const [saving, setSaving] = useState(false);
 
@@ -4142,6 +4224,9 @@ function RegisterPatientModal({ conv, onClose, onRegistered }) {
   const submit = async () => {
     if (!form.firstName || !form.lastName) return toast.error('Nombres y apellidos requeridos');
     if (!form.gender) return toast.error('El género es obligatorio');
+    if (!isWhatsapp && !form.phone.trim()) {
+      return toast.error(`Este chat es de ${CHANNEL_TAB_LABELS[conv.channel] || conv.channel}: escribe el teléfono real del contacto.`);
+    }
     setSaving(true);
     try {
       const r = await api.post(`/chats/${conv._id}/register-patient`, form);
@@ -4180,7 +4265,26 @@ function RegisterPatientModal({ conv, onClose, onRegistered }) {
             </select>
           </div>
         </div>
-        <p className="text-xs text-slate-500">Teléfono: {conv.phone}</p>
+        {isWhatsapp ? (
+          <p className="text-xs text-slate-500">Teléfono: {conv.phone}</p>
+        ) : (
+          <div>
+            <label className="text-xs font-semibold text-slate-600 block mb-1">
+              Teléfono / WhatsApp real del contacto *
+            </label>
+            <input
+              value={form.phone}
+              onChange={(e) => setForm({ ...form, phone: e.target.value })}
+              placeholder="Ej: 0991234567"
+              className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
+            />
+            <p className="text-[11px] text-slate-400 mt-1">
+              Este chat es de {CHANNEL_TAB_LABELS[conv.channel] || conv.channel}: Meta no comparte el teléfono real
+              del contacto ahí. Si lo escribes aquí, el sistema reconocerá solo su próximo mensaje de WhatsApp como
+              la misma persona (y podrás responderle por cualquiera de los dos canales desde este chat).
+            </p>
+          </div>
+        )}
         <div className="flex justify-end gap-2">
           <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-200 text-slate-700">Cancelar</button>
           <button onClick={submit} disabled={saving} className="px-4 py-2 rounded-lg bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-60 border-none cursor-pointer">
