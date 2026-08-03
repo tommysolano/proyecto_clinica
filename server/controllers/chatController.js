@@ -3133,14 +3133,17 @@ exports.webhookMessengerReceive = async (req, res) => {
     const { clinicId } = req.params;
     const signature = await validateMetaWebhookRequest(req, clinicId, 'messenger');
     if (!signature.ok) {
+      console.error('[messenger webhook] firma invalida:', signature.reason);
       return res.status(403).json({ message: 'Firma invalida', code: signature.reason });
     }
     const entries = Array.isArray(req.body.entry) ? req.body.entry : [];
+    let processed = 0;
     for (const entry of entries) {
       for (const event of entry.messaging || []) {
         const senderId = event.sender?.id;
         if (!senderId) continue;
         if (event.message?.text) {
+          processed++;
           // eslint-disable-next-line no-await-in-loop
           await ingestExternalMessage({
             clinicId,
@@ -3152,6 +3155,7 @@ exports.webhookMessengerReceive = async (req, res) => {
         }
       }
     }
+    console.log('[messenger webhook] entries:', entries.length, 'mensajes procesados:', processed);
     res.status(200).json({ ok: true });
   } catch (err) {
     console.error('[messenger webhook]', err);
@@ -3164,14 +3168,17 @@ exports.webhookInstagramReceive = async (req, res) => {
     const { clinicId } = req.params;
     const signature = await validateMetaWebhookRequest(req, clinicId, 'instagram');
     if (!signature.ok) {
+      console.error('[instagram webhook] firma invalida:', signature.reason);
       return res.status(403).json({ message: 'Firma invalida', code: signature.reason });
     }
     const entries = Array.isArray(req.body.entry) ? req.body.entry : [];
+    let processed = 0;
     for (const entry of entries) {
       for (const event of entry.messaging || []) {
         const senderId = event.sender?.id;
         if (!senderId) continue;
         if (event.message?.text) {
+          processed++;
           // eslint-disable-next-line no-await-in-loop
           await ingestExternalMessage({
             clinicId,
@@ -3183,6 +3190,7 @@ exports.webhookInstagramReceive = async (req, res) => {
         }
       }
     }
+    console.log('[instagram webhook] entries:', entries.length, 'mensajes procesados:', processed);
     res.status(200).json({ ok: true });
   } catch (err) {
     console.error('[instagram webhook]', err);
