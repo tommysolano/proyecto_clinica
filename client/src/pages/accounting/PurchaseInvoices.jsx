@@ -3,11 +3,12 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
-import { HiOutlinePlus, HiOutlineDocumentText, HiOutlineArrowDownTray, HiOutlineXMark, HiOutlineTrash, HiOutlineExclamationTriangle, HiOutlineCube, HiOutlineBanknotes, HiOutlineBuildingOffice2, HiOutlineCheck, HiOutlineEllipsisVertical } from 'react-icons/hi2';
+import { HiOutlinePlus, HiOutlineDocumentText, HiOutlineArrowDownTray, HiOutlineXMark, HiOutlineTrash, HiOutlineExclamationTriangle, HiOutlineCube, HiOutlineBanknotes, HiOutlineBuildingOffice2, HiOutlineCheck, HiOutlineEllipsisVertical, HiOutlinePencilSquare, HiOutlineListBullet, HiOutlineBookOpen, HiOutlineReceiptPercent, HiOutlineNoSymbol, HiOutlineArrowPath } from 'react-icons/hi2';
 import { fmt, fmtDate, today, RET_ESTADO_LABEL, retVoucherNumber } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import JournalEntryViewModal from '../../components/JournalEntryViewModal';
 import SearchableSelect from '../../components/SearchableSelect';
+import RowMenu from '../../components/RowMenu';
 import AccountSelect from '../../components/AccountSelect';
 import ProductFormModal from '../../components/ProductFormModal';
 import { useAuth } from '../../context/AuthContext';
@@ -88,6 +89,13 @@ const payStatus = (p) => {
 };
 
 const PAY_METHOD_LABEL = { EFECTIVO: 'Efectivo', TRANSFERENCIA: 'Transferencia', CHEQUE: 'Cheque', TARJETA: 'Tarjeta', DEPOSITO: 'Depósito', OTRO: 'Otro' };
+
+// El tipo de comprobante va como subtítulo de la serie (no como columna propia):
+// en el 95 % de las filas dice «FACTURA» y solo gastaba ancho.
+const DOC_TYPE_LABEL = {
+  FACTURA: 'Factura', NOTA_VENTA: 'Nota de venta', LIQUIDACION: 'Liquidación de compra',
+  NOTA_DEBITO_REC: 'Nota de débito', NOTA_CREDITO_REC: 'Nota de crédito',
+};
 
 // Vencimiento = fecha de emisión + días de crédito (YYYY-MM-DD).
 const addDays = (dateStr, days) => {
@@ -894,10 +902,14 @@ export default function PurchaseInvoices() {
         <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineDocumentText className="text-emerald-600" /> Compras
           {pendingTotal > 0 && <span className="text-xs font-medium px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full">{pendingTotal} por contabilizar</span>}
         </h1>
-        <div className="flex gap-2">
-          {hasRole('admin') && <button onClick={wipeAll} title="Borrar todas las compras de esta sucursal (reinicio)" className="px-4 py-2 bg-rose-600 text-white rounded-lg flex items-center gap-2"><HiOutlineXMark /> Reiniciar compras</button>}
-          <button onClick={() => { setImportMode('xml'); setShowImport(true); }} className="px-4 py-2 bg-amber-500 text-white rounded-lg flex items-center gap-2"><HiOutlineArrowDownTray /> Importar SRI</button>
+        <div className="flex items-center gap-2">
+          <button onClick={() => { setImportMode('xml'); setShowImport(true); }} className="px-4 py-2 border border-amber-300 bg-amber-50 text-amber-700 rounded-xl font-medium hover:bg-amber-100 flex items-center gap-2"><HiOutlineArrowDownTray /> Importar SRI</button>
           <button onClick={() => { setForm({ ...EMPTY, fechaEmision: today(), items: [makeItem('GASTO')] }); setActiveSections(['GASTO']); setRowMenuUid(null); setAuthorizeId(null); setEditId(null); setShowAdvanced(false); setRetVoucher(null); setShow(true); }} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2"><HiOutlinePlus /> Nueva</button>
+          {/* «Reiniciar compras» borra TODO el módulo: era el botón más llamativo
+              de la página, en rojo y pegado a «Nueva». Pasa al menú. */}
+          <RowMenu title="Más opciones" items={[
+            { key: 'wipe', label: 'Reiniciar compras', icon: HiOutlineArrowPath, danger: true, hidden: !hasRole('admin'), onClick: wipeAll, hint: 'Borra todas las compras de esta sucursal' },
+          ]} />
         </div>
       </div>
 
@@ -922,59 +934,89 @@ export default function PurchaseInvoices() {
           </optgroup>
         </select>
       </div>
+      {/* `overflow-x-auto` (y no `overflow-hidden`): con muchas columnas la tabla
+          recortaba las últimas acciones en vez de dejar desplazarse. */}
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
-        <table className="tbl">
+       <div className="overflow-x-auto">
+        <table className="tbl min-w-[1080px]">
           <thead className="bg-emerald-50 text-xs uppercase"><tr>
-            <th className="px-3 py-2 text-left">Serie</th><th className="px-3 py-2 text-left">Fecha</th>
-            <th className="px-3 py-2 text-left">Tipo</th><th className="px-3 py-2 text-left">Proveedor</th>
+            <th className="px-3 py-2 text-left">Comprobante</th><th className="px-3 py-2 text-left">Fecha</th>
+            <th className="px-3 py-2 text-left">Proveedor</th>
             <th className="px-3 py-2 text-right">Subtotal</th><th className="px-3 py-2 text-right">IVA</th>
             <th className="px-3 py-2 text-right">Total</th><th className="px-3 py-2 text-right">Retenc.</th>
             <th className="px-3 py-2 text-right">Abonado</th><th className="px-3 py-2 text-right">Saldo</th>
-            <th className="px-3 py-2 text-center">Estado</th><th></th>
+            <th className="px-3 py-2 text-center">Estado</th>
+            <th className="px-3 py-2 text-right w-[150px]">Acciones</th>
           </tr></thead>
           <tbody>
             {list.map((p) => {
               const st = payStatus(p);
+              const anulada = p.status === 'ANULADA';
+              const pagable = p.status === 'REGISTRADA' && p.balance > 0;
               return (
-              <tr key={p._id} className={`border-t ${p.status === 'ANULADA' ? 'text-slate-400 line-through' : ''}`}>
-                <td className="px-3 py-2 font-mono text-xs">{p.serie}</td>
-                <td className="px-3 py-2">{fmtDate(p.fechaEmision)}</td>
-                <td className="px-3 py-2 text-xs">{p.docType}</td>
-                <td className="px-3 py-2">{p.supplier?.razonSocial}</td>
-                <td className="px-3 py-2 text-right font-mono">{fmt(p.subtotal)}</td>
-                <td className="px-3 py-2 text-right font-mono">{fmt(p.iva)}</td>
-                <td className="px-3 py-2 text-right font-mono font-semibold">{fmt(p.total)}</td>
-                <td className="px-3 py-2 text-right font-mono">{fmt(p.retentionTotal)}</td>
+              <tr key={p._id} className={`border-t ${anulada ? 'text-slate-400' : ''}`}>
+                {/* Serie + tipo en una sola celda, sin partir el número en 3 líneas. */}
+                <td className="px-3 py-2 whitespace-nowrap">
+                  <div className={`font-mono text-xs ${anulada ? 'line-through' : 'text-slate-700'}`}>{p.serie}</div>
+                  <div className="text-[10px] text-slate-400">{DOC_TYPE_LABEL[p.docType] || p.docType}{p.importedFromXml ? ' · XML' : ''}</div>
+                </td>
+                <td className="px-3 py-2 whitespace-nowrap">{fmtDate(p.fechaEmision)}</td>
+                {/* El nombre del proveedor se corta a una línea (completo en el tooltip):
+                    antes ocupaba cuatro y estiraba toda la fila. */}
+                <td className="px-3 py-2">
+                  {/* El ancho va en el div, no en el <td>: en una tabla de ancho
+                      automático el navegador ignora el max-width de la celda. */}
+                  <div className="max-w-[230px] truncate" title={p.supplier?.razonSocial}>{p.supplier?.razonSocial}</div>
+                  {p.supplier?.ruc && <div className="text-[10px] text-slate-400 font-mono">{p.supplier.ruc}</div>}
+                </td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums whitespace-nowrap">{fmt(p.subtotal)}</td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums whitespace-nowrap">{fmt(p.iva)}</td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums font-semibold whitespace-nowrap">{fmt(p.total)}</td>
+                <td className="px-3 py-2 text-right font-mono tabular-nums whitespace-nowrap">{fmt(p.retentionTotal)}</td>
                 {/* Abonado y saldo: lo que faltaba para ver de un vistazo un pago PARCIAL.
                     El abonado se deriva del neto a pagar (total − retención) menos el saldo. */}
-                <td className="px-3 py-2 text-right font-mono">
+                <td className="px-3 py-2 text-right font-mono tabular-nums whitespace-nowrap">
                   {st.abonado > 0
                     ? <button onClick={() => openAbonos(p)} className="text-sky-700 hover:underline font-medium" title="Ver los abonos realizados">{fmt(st.abonado)}</button>
                     : <span className="text-slate-300">—</span>}
                 </td>
-                <td className={`px-3 py-2 text-right font-mono font-semibold ${st.saldo > 0.005 ? 'text-amber-700' : 'text-emerald-700'}`}>{fmt(st.saldo)}</td>
-                <td className="px-3 py-2 text-center text-xs">
-                  <span className={`px-2 py-0.5 rounded-full text-[11px] font-medium ${st.badgeClass}`}>{st.label}{p.importedFromXml ? ' · XML' : ''}</span>
+                <td className={`px-3 py-2 text-right font-mono tabular-nums font-semibold whitespace-nowrap ${anulada ? '' : st.saldo > 0.005 ? 'text-amber-700' : 'text-emerald-700'}`}>{fmt(st.saldo)}</td>
+                <td className="px-3 py-2 text-center">
+                  <span className={`inline-block px-2 py-0.5 rounded-full text-[11px] font-medium whitespace-nowrap ${st.badgeClass}`}>{st.label}</span>
                 </td>
-                <td className="px-3 py-2 text-right">
-                  <div className="flex items-center justify-end gap-2">
-                    {p.status === 'POR_AUTORIZAR' && <button onClick={() => openAuthorize(p)} className="text-emerald-600 text-xs font-medium hover:underline">Verificar / Contabilizar</button>}
-                    {p.status === 'REGISTRADA' && <button onClick={() => openEdit(p)} className="text-slate-600 text-xs font-medium hover:underline">Editar</button>}
-                    {p.status === 'REGISTRADA' && p.balance > 0 && <button onClick={() => openPay(p)} className="text-sky-600 text-xs font-medium hover:underline">{st.abonado > 0 ? 'Abonar' : 'Pagar'}</button>}
-                    {(p.status === 'REGISTRADA' || p.status === 'PAGADA') && st.abonado > 0 && <button onClick={() => openAbonos(p)} className="text-indigo-600 text-xs font-medium hover:underline">Abonos</button>}
-                    {(p.status === 'REGISTRADA' || p.status === 'PAGADA') && p.journalEntry && <button onClick={() => setJournalInv(p)} className="text-slate-600 text-xs font-medium hover:underline">Asiento</button>}
-                    {p.status !== 'ANULADA' && p.retentionTotal > 0 && !p.retentionVoucher && (
-                      <button onClick={() => emitRetention(p)} className="text-indigo-600 text-xs font-medium hover:underline">Emitir retención</button>
+                {/* Acción principal a la vista; el resto en el menú «⋯». Antes eran
+                    hasta 7 botones en línea y los últimos se salían de la tabla. */}
+                <td className="px-3 py-2">
+                  <div className="flex items-center justify-end gap-1">
+                    {p.status === 'POR_AUTORIZAR' && (
+                      <button onClick={() => openAuthorize(p)} className="px-2.5 py-1 rounded-lg bg-emerald-600 text-white text-xs font-medium hover:bg-emerald-700 whitespace-nowrap">Contabilizar</button>
                     )}
-                    {p.status === 'REGISTRADA' && <button onClick={() => voidIt(p)} className="text-amber-600" title="Anular (reversa el asiento, conserva el registro)"><HiOutlineXMark className="w-4 h-4" /></button>}
-                    <button onClick={() => removeOne(p)} className="text-rose-600" title="Eliminar factura"><HiOutlineTrash className="w-4 h-4" /></button>
+                    {pagable && (
+                      <button onClick={() => openPay(p)} className="px-2.5 py-1 rounded-lg bg-sky-600 text-white text-xs font-medium hover:bg-sky-700 whitespace-nowrap">{st.abonado > 0 ? 'Abonar' : 'Pagar'}</button>
+                    )}
+                    <RowMenu items={[
+                      { key: 'edit', label: 'Editar', icon: HiOutlinePencilSquare, hidden: p.status !== 'REGISTRADA', onClick: () => openEdit(p) },
+                      { key: 'abonos', label: 'Ver abonos', icon: HiOutlineListBullet, hidden: !((p.status === 'REGISTRADA' || p.status === 'PAGADA') && st.abonado > 0), onClick: () => openAbonos(p) },
+                      { key: 'asiento', label: 'Ver asiento contable', icon: HiOutlineBookOpen, hidden: !((p.status === 'REGISTRADA' || p.status === 'PAGADA') && p.journalEntry), onClick: () => setJournalInv(p) },
+                      { key: 'ret', label: 'Emitir retención', icon: HiOutlineReceiptPercent, hidden: !(!anulada && p.retentionTotal > 0 && !p.retentionVoucher), onClick: () => emitRetention(p) },
+                      { key: 'void', label: 'Anular', icon: HiOutlineNoSymbol, hidden: p.status !== 'REGISTRADA', onClick: () => voidIt(p), hint: 'Reversa el asiento y conserva el registro' },
+                      { key: 'del', label: 'Eliminar', icon: HiOutlineTrash, danger: true, onClick: () => removeOne(p) },
+                    ]} />
                   </div>
                 </td>
               </tr>
               );
             })}
+            {!list.length && (
+              <tr><td colSpan={11} className="px-3 py-12 text-center text-slate-400 text-sm">
+                {search || statusFilter ? 'Ninguna compra coincide con la búsqueda.' : 'Todavía no hay compras registradas.'}
+              </td></tr>
+            )}
           </tbody>
         </table>
+       </div>
+        {/* El pie queda FUERA del scroll horizontal: si no, el contador y la
+            paginación se iban de la vista al desplazar la tabla. */}
         <div className="flex items-center justify-between gap-3 px-3 py-2.5 border-t border-slate-100 text-sm text-slate-600">
           <span>{total} factura(s){total > PAGE_SIZE ? ` · mostrando ${(page - 1) * PAGE_SIZE + 1}–${Math.min(page * PAGE_SIZE, total)}` : ''}</span>
           {total > PAGE_SIZE && (
