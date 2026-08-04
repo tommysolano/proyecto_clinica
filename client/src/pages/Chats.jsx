@@ -2916,6 +2916,20 @@ function fmtAudioTime(s) {
   return `${m}:${String(sec).padStart(2, '0')}`;
 }
 
+// Velocidades de reproducción, en el mismo orden que WhatsApp (se van rotando
+// con un toque). La elegida se recuerda para las siguientes notas de voz.
+const AUDIO_SPEEDS = [1, 1.5, 2];
+const AUDIO_SPEED_KEY = 'chat.audioSpeed';
+
+function readSavedAudioSpeed() {
+  try {
+    const v = Number(localStorage.getItem(AUDIO_SPEED_KEY));
+    return AUDIO_SPEEDS.includes(v) ? v : 1;
+  } catch {
+    return 1;
+  }
+}
+
 // Reproductor de nota de voz estilo WhatsApp: botón play/pausa, barra de progreso
 // y duración. Reemplaza al <audio controls> nativo (que se veía pobre).
 function AudioPlayer({ src, isOut }) {
@@ -2923,16 +2937,31 @@ function AudioPlayer({ src, isOut }) {
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [rate, setRate] = useState(readSavedAudioSpeed);
   // El navegador no pudo decodificar el audio (Safari/iOS no reproduce ogg/opus,
   // que es el formato de TODAS las notas de voz de WhatsApp). En vez de un botón
   // de play que no hace nada, se ofrece descargarlo.
   const [failed, setFailed] = useState(false);
+
+  // El navegador reinicia playbackRate al cargar la fuente, así que se vuelve a
+  // aplicar en cada cambio de velocidad y al tener metadata (ver onLoadedMeta).
+  useEffect(() => {
+    const a = audioRef.current;
+    if (a) a.playbackRate = rate;
+  }, [rate]);
+
+  const cycleRate = () => {
+    const next = AUDIO_SPEEDS[(AUDIO_SPEEDS.indexOf(rate) + 1) % AUDIO_SPEEDS.length];
+    setRate(next);
+    try { localStorage.setItem(AUDIO_SPEED_KEY, String(next)); } catch { /* noop */ }
+  };
 
   // Las notas de voz de MediaRecorder/OGG a veces reportan duration=Infinity hasta
   // que se busca al final; se fuerza UNA vez para conocer la duración real.
   const onLoadedMeta = () => {
     const a = audioRef.current;
     if (!a) return;
+    a.playbackRate = rate;
     if (a.duration === Infinity || Number.isNaN(a.duration)) {
       const onSeeked = () => {
         a.removeEventListener('seeked', onSeeked);
@@ -2951,8 +2980,10 @@ function AudioPlayer({ src, isOut }) {
     if (!a) return;
     // `play()` puede rechazar (formato no soportado, o audio aún sin cargar): se
     // avisa en vez de dejar el botón muerto y en silencio.
-    if (a.paused) a.play().catch(() => setFailed(true));
-    else a.pause();
+    if (a.paused) {
+      a.playbackRate = rate;
+      a.play().catch(() => setFailed(true));
+    } else a.pause();
   };
 
   const seek = (e) => {
@@ -3020,7 +3051,22 @@ function AudioPlayer({ src, isOut }) {
           {fmtAudioTime(shown)}
         </div>
       </div>
-      <span className="text-lg shrink-0" aria-hidden>🎤</span>
+      {/* Como en WhatsApp: la píldora de velocidad aparece al empezar a escuchar
+          (o si ya se dejó fijada otra velocidad); si no, solo el ícono de micrófono. */}
+      {playing || current > 0 || rate !== 1 ? (
+        <button
+          type="button"
+          onClick={cycleRate}
+          title={`Velocidad ${rate}x · toca para cambiar`}
+          className={`shrink-0 h-6 px-1.5 rounded-full text-[11px] font-bold tabular-nums border-none cursor-pointer ${
+            isOut ? 'bg-white/25 hover:bg-white/40 text-white' : 'bg-slate-200 hover:bg-slate-300 text-slate-600'
+          }`}
+        >
+          {rate}x
+        </button>
+      ) : (
+        <span className="text-lg shrink-0" aria-hidden>🎤</span>
+      )}
     </div>
   );
 }
