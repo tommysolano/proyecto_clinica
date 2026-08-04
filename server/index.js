@@ -164,6 +164,7 @@ app.use('/api/journal-entries', require('./routes/journalEntries'));
 app.use('/api/banks', require('./routes/banks'));
 app.use('/api/suppliers', require('./routes/suppliers'));
 app.use('/api/payments', require('./routes/payments'));
+app.use('/api/cash-deposits', require('./routes/cashDeposits'));
 app.use('/api/subledger', require('./routes/subledger'));
 app.use('/api/purchase-invoices', require('./routes/purchaseInvoices'));
 app.use('/api/retention-rules', require('./routes/retentionRules'));

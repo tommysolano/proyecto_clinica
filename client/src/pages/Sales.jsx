@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import api from '../api/axios';
 import Modal from '../components/Modal';
 import { downloadFile } from '../utils/download';
@@ -28,6 +28,7 @@ import {
   HiOutlineBuildingStorefront,
 } from 'react-icons/hi2';
 import JournalEntryViewModal from '../components/JournalEntryViewModal';
+import { newIdempotencyKey, withIdempotencyKey, intentKey } from '../utils/idempotency';
 
 const paymentMethods = {
   efectivo: 'Efectivo',
@@ -49,6 +50,42 @@ const CARD_TYPES = [
   { value: 'CREDITO', label: 'Crédito' },
   { value: 'DEBITO', label: 'Débito' },
 ];
+
+/**
+ * DIFERIDO de tarjeta de crédito. No cambia el asiento de la venta (se debita el bruto igual),
+ * pero sí la comisión que cobra el adquirente: sin el diferido, la liquidación de tarjeta no
+ * cuadra contra el recap del POS. Solo aplica a tarjeta de CRÉDITO.
+ */
+const DEFERRED_TYPES = [
+  { value: 'CORRIENTE', label: 'Corriente (sin diferir)' },
+  { value: 'SIN_INTERES', label: 'Diferido SIN intereses' },
+  { value: 'CON_INTERES', label: 'Diferido CON intereses' },
+];
+const DEFERRED_MONTHS = [3, 6, 9, 12, 18, 24];
+
+/**
+ * PLAZOS DE CRÉDITO. La contadora trabaja con plazos ("a 30 días"), no con fechas: el
+ * calendario obligaba a contar los días a mano y a equivocarse. El vencimiento lo calcula el
+ * backend desde el plazo; queda 'CUSTOM' para el caso raro que necesite una fecha exacta.
+ */
+const CREDIT_TERMS = [
+  { value: 0, label: 'Contado (0 días)' },
+  { value: 5, label: '5 días' },
+  { value: 8, label: '8 días' },
+  { value: 15, label: '15 días' },
+  { value: 30, label: '30 días' },
+  { value: 45, label: '45 días' },
+  { value: 60, label: '60 días' },
+  { value: 90, label: '90 días' },
+];
+
+/** Fecha de vencimiento previsualizada en el modal (el backend la recalcula igual). */
+const vencimientoDesdePlazo = (dias) => {
+  const d = new Date();
+  d.setHours(12, 0, 0, 0);
+  d.setDate(d.getDate() + (parseInt(dias, 10) || 0));
+  return d.toLocaleDateString('es-EC');
+};
 
 /** Sección del modal de venta: agrupa campos afines con su título. */
 function FormSection({ title, subtitle, icon: Icon, children, className = '' }) {
@@ -119,6 +156,10 @@ export default function Sales() {
     cardPos: '',
     cardLote: '',
     cardVoucher: '',
+    cardDeferredType: 'CORRIENTE',  // solo tarjeta de crédito
+    cardDeferredMonths: 0,
+    creditTerm: 30,    // plazo en días de la parte a crédito ('CUSTOM' = fecha exacta)
+    dueDate: '',
     recommendedBy: '',
     notes: '',
     // Bodega de la que sale la mercadería y centro de costo con el que se registra la venta.
@@ -131,6 +172,11 @@ export default function Sales() {
   const [costCenters, setCostCenters] = useState([]);
   // { warehouse, esperado, elegido } cuando el backend rechaza por centro distinto (409).
   const [ccMismatch, setCcMismatch] = useState(null);
+  // Cobro de la CxC de una venta (se registra como documento de Cobro, ver openCollect).
+  const [collectItem, setCollectItem] = useState(null);
+  const [collectForm, setCollectForm] = useState({ date: '', amount: 0, method: 'EFECTIVO', bankAccount: '', reference: '' });
+  const [collectBusy, setCollectBusy] = useState(false);
+  const [collectIntent, setCollectIntent] = useState('');
   const [currentItem, setCurrentItem] = useState({ product: '', quantity: 1 });
   // Pago dividido: el cliente paga con varios métodos (p.ej. mitad efectivo + mitad
   // tarjeta) o deja una parte a crédito. Cuando está activo, `splitPayments` es la
@@ -138,6 +184,12 @@ export default function Sales() {
   const [splitMode, setSplitMode] = useState(false);
   const [splitPayments, setSplitPayments] = useState([]);
   const [patientSearch, setPatientSearch] = useState('');
+  // Personas registradas en Personas con el rol CLIENTE. El buscador de la venta solo miraba
+  // los PACIENTES: quien registraba un cliente por allí no lo encontraba nunca al facturar,
+  // ni por nombre ni por cédula. Se consultan al servidor mientras se escribe.
+  const [clientResults, setClientResults] = useState([]);
+  const [pickedFromList, setPickedFromList] = useState(false); // ya se eligió: cierra el desplegable
+  const clientDebounceRef = useRef(null);
   const [guayaquilZones, setGuayaquilZones] = useState([]);
   // Medios de pago (cuentas bancarias / tarjetas) y personal para recomendación
   const [payOptions, setPayOptions] = useState({ accounts: [], cards: [] });
@@ -257,9 +309,14 @@ export default function Sales() {
       paymentMethod: 'efectivo',
       bankAccount: '',
       creditCard: '',
+      cardType: '',
       cardPos: '',
       cardLote: '',
       cardVoucher: '',
+      cardDeferredType: 'CORRIENTE',
+      cardDeferredMonths: 0,
+      creditTerm: 30,
+      dueDate: '',
       recommendedBy: '',
       notes: '',
       warehouse: '',
@@ -268,6 +325,8 @@ export default function Sales() {
     });
     setCurrentItem({ product: '', quantity: 1 });
     setPatientSearch('');
+    setClientResults([]);
+    setPickedFromList(false);
     setSplitMode(false);
     setSplitPayments([]);
     setCcMismatch(null);
@@ -384,15 +443,52 @@ export default function Sales() {
   const splitRemaining = +(total - splitPaid).toFixed(2);
   const enableSplit = () => {
     // Al activar, arranca con lo que haya en el método simple + el restante sugerido.
-    setSplitPayments([{ method: form.paymentMethod || 'efectivo', amount: +total.toFixed(2), bankAccount: form.bankAccount || '', creditCard: form.creditCard || '', cardPos: form.cardPos || '', cardLote: form.cardLote || '', cardVoucher: form.cardVoucher || '' }]);
+    setSplitPayments([{ method: form.paymentMethod || 'efectivo', amount: +total.toFixed(2), bankAccount: form.bankAccount || '', creditCard: form.creditCard || '', cardPos: form.cardPos || '', cardLote: form.cardLote || '', cardVoucher: form.cardVoucher || '', cardDeferredType: form.cardDeferredType || 'CORRIENTE', cardDeferredMonths: form.cardDeferredMonths || 0 }]);
     setSplitMode(true);
   };
-  const addSplitRow = () => setSplitPayments((rows) => [...rows, { method: 'efectivo', amount: splitRemaining > 0 ? +splitRemaining.toFixed(2) : 0, bankAccount: '', creditCard: '', cardPos: '', cardLote: '', cardVoucher: '' }]);
+  const addSplitRow = () => setSplitPayments((rows) => [...rows, { method: 'efectivo', amount: splitRemaining > 0 ? +splitRemaining.toFixed(2) : 0, bankAccount: '', creditCard: '', cardPos: '', cardLote: '', cardVoucher: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 }]);
   const setSplitRow = (i, patch) => setSplitPayments((rows) => rows.map((r, x) => (x === i ? { ...r, ...patch } : r)));
   const removeSplitRow = (i) => setSplitPayments((rows) => rows.filter((_, x) => x !== i));
 
+  /**
+   * Escribe en el buscador de cliente: filtra los pacientes ya cargados y, en paralelo, pregunta
+   * al servidor por las PERSONAS con rol CLIENTE (que no son pacientes y viven en otra colección).
+   */
+  const onClientSearch = (texto) => {
+    setPatientSearch(texto);
+    setPickedFromList(false);
+    if (form.patient) setForm((f) => ({ ...f, patient: '' }));
+    if (clientDebounceRef.current) clearTimeout(clientDebounceRef.current);
+    const q = texto.trim();
+    if (q.length < 2) { setClientResults([]); return; }
+    clientDebounceRef.current = setTimeout(async () => {
+      try {
+        const r = await api.get('/suppliers/clients', { params: { q, limit: 10 } });
+        setClientResults(r.data || []);
+      } catch { setClientResults([]); }
+    }, 250);
+  };
+
+  /** Factura a una persona del maestro de Personas (rol CLIENTE): no es un paciente, no lleva ficha. */
+  const handleClientSelect = (cli) => {
+    const nombre = cli.razonSocial || cli.nombreComercial || '';
+    setForm((f) => ({
+      ...f,
+      patient: '',
+      clientName: nombre,
+      clientCedula: cli.ruc || '',
+      clientEmail: cli.email || '',
+      clientPhone: cli.phone || '',
+      clientAddress: cli.address || '',
+    }));
+    setPatientSearch(`${nombre} - ${cli.ruc || ''}`);
+    setPickedFromList(true);
+    setTreatments([]);
+  };
+
   const handlePatientSelect = (patientId) => {
     const patient = patients.find((p) => p._id === patientId);
+    setPickedFromList(!!patientId);
     if (patient) {
       setForm((f) => ({
         ...f,
@@ -424,9 +520,25 @@ export default function Sales() {
     }
   };
 
+  /**
+   * Plazo de la parte a crédito. Se manda `creditDays` (el plazo elegido) y el backend calcula
+   * el vencimiento anclado al mediodía local; solo con "Otra fecha…" se manda la fecha.
+   */
+  const plazoPayload = () => (form.creditTerm === 'CUSTOM'
+    ? { dueDate: form.dueDate || null, creditDays: null }
+    : { creditDays: form.creditTerm ?? 30, dueDate: null });
+
   const handleSubmit = async (e) => {
     e.preventDefault();
     if (form.items.length === 0) return toast.error('Agrega al menos un producto');
+    // Sin identificación no hay venta: la factura y el ATS la exigen. Consumidor Final vale.
+    if (!String(form.clientCedula || '').trim()) {
+      return toast.error('Falta la cédula / RUC / pasaporte del cliente. Si no lo identificas, usa Consumidor Final (9999999999999).');
+    }
+    if (form.creditTerm === 'CUSTOM' && !form.dueDate
+      && (form.paymentMethod === 'credito' || (splitMode && splitPayments.some((p) => p.method === 'credito')))) {
+      return toast.error('Elige la fecha de vencimiento del crédito');
+    }
     setSaving(true);
     try {
       // Datos de pago: modo dividido (varios métodos) o método simple.
@@ -452,8 +564,10 @@ export default function Sales() {
             cardPos: p.method === 'tarjeta' ? p.cardPos || '' : '',
             cardLote: p.method === 'tarjeta' ? p.cardLote || '' : '',
             cardVoucher: p.method === 'tarjeta' ? p.cardVoucher || '' : '',
+            cardDeferredType: p.method === 'tarjeta' && p.cardType === 'CREDITO' ? p.cardDeferredType || 'CORRIENTE' : 'CORRIENTE',
+            cardDeferredMonths: p.method === 'tarjeta' && p.cardType === 'CREDITO' && p.cardDeferredType && p.cardDeferredType !== 'CORRIENTE' ? p.cardDeferredMonths || 0 : 0,
           })),
-          dueDate: form.dueDate || null,
+          ...plazoPayload(),
         };
       } else {
         if (form.paymentMethod === 'transferencia' && payOptions.accounts.length && !form.bankAccount) {
@@ -471,6 +585,9 @@ export default function Sales() {
           cardPos: form.paymentMethod === 'tarjeta' ? form.cardPos || '' : '',
           cardLote: form.paymentMethod === 'tarjeta' ? form.cardLote || '' : '',
           cardVoucher: form.paymentMethod === 'tarjeta' ? form.cardVoucher || '' : '',
+          cardDeferredType: form.paymentMethod === 'tarjeta' && form.cardType === 'CREDITO' ? form.cardDeferredType || 'CORRIENTE' : 'CORRIENTE',
+          cardDeferredMonths: form.paymentMethod === 'tarjeta' && form.cardType === 'CREDITO' && form.cardDeferredType && form.cardDeferredType !== 'CORRIENTE' ? form.cardDeferredMonths || 0 : 0,
+          ...plazoPayload(),
         };
       }
       await enviarVenta(paymentPayload, {});
@@ -583,16 +700,54 @@ export default function Sales() {
   // Deep-link desde el Libro Mayor (?doc=<id>): abre el detalle de la venta.
   useDocDeepLink((id) => openDetail(id));
 
-  const collectSale = async (s) => {
-    const input = window.prompt(`Saldo pendiente: $${(s.balance || 0).toFixed(2)}\nMonto a cobrar (efectivo):`, (s.balance || 0).toFixed(2));
-    if (input == null) return;
-    const amount = parseFloat(input);
-    if (!amount || amount <= 0) return toast.error('Monto inválido');
+  /**
+   * COBRO DE LA CxC. Se registra como un COBRO normal (documento CB-####) en vez del atajo
+   * anterior: aquel solo dejaba el asiento, así que el cobro no aparecía en la pantalla de
+   * Cobros, no se podía anular desde ahí y no tenía comprobante. Es el mismo asiento y la
+   * misma cartera; lo que cambia es que ahora queda el documento.
+   */
+  const openCollect = (s) => {
+    setCollectItem(s);
+    setCollectForm({
+      date: new Date().toISOString().slice(0, 10),
+      amount: +(Number(s.balance) || 0).toFixed(2),
+      method: 'EFECTIVO',
+      bankAccount: '',
+      reference: '',
+    });
+    setCollectIntent(newIdempotencyKey());
+  };
+
+  const submitCollect = async (e) => {
+    e.preventDefault();
+    if (collectBusy || !collectItem) return;
+    const amount = Number(collectForm.amount) || 0;
+    if (amount <= 0) return toast.error('Monto inválido');
+    if (amount > Number(collectItem.balance || 0) + 0.01) return toast.error(`El monto excede el saldo ($${Number(collectItem.balance || 0).toFixed(2)})`);
+    if (!['EFECTIVO', 'TARJETA'].includes(collectForm.method) && !collectForm.bankAccount) return toast.error('Selecciona la cuenta bancaria');
+    setCollectBusy(true);
     try {
-      const r = await api.post(`/sales/${s._id}/collect`, { amount, paymentMethod: 'efectivo' });
-      toast.success(r.data.paid ? 'Cobro completado (saldado)' : `Cobro registrado. Saldo: $${r.data.balance.toFixed(2)}`);
+      const payload = {
+        type: 'COBRO',
+        date: collectForm.date,
+        partyModel: 'Patient',
+        partyRef: collectItem.patient?._id || collectItem.patient || null,
+        partyName: collectItem.clientName || '',
+        partyId: collectItem.clientCedula || '',
+        method: collectForm.method,
+        bankAccount: ['EFECTIVO', 'TARJETA'].includes(collectForm.method) ? null : collectForm.bankAccount,
+        reference: collectForm.reference,
+        applications: [{ docModel: 'Sale', docRef: collectItem._id, amount }],
+        advanceAmount: 0,
+        description: `Cobro venta ${collectItem.saleNumber || ''}`.trim(),
+      };
+      const huella = [payload.method, payload.bankAccount, payload.date, collectItem._id, amount];
+      await api.post('/payments', payload, withIdempotencyKey(intentKey(collectIntent, huella)));
+      toast.success('Cobro registrado');
+      setCollectItem(null);
       fetchSales();
-    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+    } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
+    finally { setCollectBusy(false); }
   };
 
   return (
@@ -789,7 +944,7 @@ export default function Sales() {
                       )}
                       {s.status === 'completada' && s.balance > 0.01 && (
                         <button
-                          onClick={() => collectSale(s)}
+                          onClick={() => openCollect(s)}
                           className="p-1.5 rounded-lg hover:bg-emerald-50 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer"
                           title="Registrar cobro"
                         >
@@ -833,33 +988,27 @@ export default function Sales() {
           <FormSection title="Datos del cliente" icon={HiOutlineUser}>
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
             <div className="sm:col-span-3 relative">
-              <label className="lbl">Buscar paciente registrado (opcional)</label>
+              <label className="lbl">Buscar cliente registrado (opcional)</label>
               <input
                 type="text"
                 value={patientSearch}
-                onChange={(e) => {
-                  setPatientSearch(e.target.value);
-                  if (form.patient) {
-                    setForm((f) => ({ ...f, patient: '' }));
-                  }
-                }}
-                placeholder="Escribe nombre o cédula..."
+                onChange={(e) => onClientSearch(e.target.value)}
+                placeholder="Escribe nombre, cédula o RUC..."
                 className="input"
               />
-              {patientSearch && !form.patient && (
-                <div className="absolute z-10 left-0 right-0 mt-1 max-h-56 overflow-y-auto bg-white border border-emerald-100 rounded-xl shadow-lg">
-                  {patients
-                    .filter((p) => {
-                      const q = patientSearch.toLowerCase();
-                      return (
-                        p.firstName?.toLowerCase().includes(q) ||
-                        p.lastName?.toLowerCase().includes(q) ||
-                        p.cedula?.includes(q) ||
-                        p.phone?.includes(q)
-                      );
-                    })
-                    .slice(0, 20)
-                    .map((p) => (
+              {/* Busca en los DOS maestros: pacientes de la clínica y personas registradas como
+                  CLIENTE en Personas (proveedores/clientes). Antes solo miraba pacientes. */}
+              {patientSearch && !pickedFromList && (() => {
+                const q = patientSearch.toLowerCase();
+                const pac = patients.filter((p) => (
+                  p.firstName?.toLowerCase().includes(q) ||
+                  p.lastName?.toLowerCase().includes(q) ||
+                  p.cedula?.includes(q) ||
+                  p.phone?.includes(q)
+                )).slice(0, 15);
+                return (
+                  <div className="absolute z-10 left-0 right-0 mt-1 max-h-56 overflow-y-auto bg-white border border-emerald-100 rounded-xl shadow-lg">
+                    {pac.map((p) => (
                       <button
                         type="button"
                         key={p._id}
@@ -873,25 +1022,35 @@ export default function Sales() {
                         {p.phone && (
                           <span className="text-slate-400 ml-2">• {p.phone}</span>
                         )}
+                        <span className="ml-2 text-[10px] uppercase text-emerald-600">Paciente</span>
                       </button>
                     ))}
-                  {patients.filter((p) => {
-                    const q = patientSearch.toLowerCase();
-                    return (
-                      p.firstName?.toLowerCase().includes(q) ||
-                      p.lastName?.toLowerCase().includes(q) ||
-                      p.cedula?.includes(q) ||
-                      p.phone?.includes(q)
-                    );
-                  }).length === 0 && (
-                    <p className="px-4 py-2 text-xs text-slate-400">Sin coincidencias</p>
-                  )}
-                </div>
-              )}
-              {form.patient && (
+                    {clientResults.map((c) => (
+                      <button
+                        type="button"
+                        key={c._id}
+                        onClick={() => handleClientSelect(c)}
+                        className="w-full text-left px-4 py-2 text-sm hover:bg-sky-50 cursor-pointer bg-white border-none border-b border-emerald-50"
+                      >
+                        <span className="font-medium text-slate-800">{c.razonSocial || c.nombreComercial}</span>
+                        <span className="text-slate-400 ml-2">{c.ruc}</span>
+                        <span className="ml-2 text-[10px] uppercase text-sky-600">Cliente</span>
+                      </button>
+                    ))}
+                    {!pac.length && !clientResults.length && (
+                      <p className="px-4 py-2 text-xs text-slate-400">
+                        Sin coincidencias. Se buscó entre los pacientes y entre las personas registradas como cliente.
+                      </p>
+                    )}
+                  </div>
+                );
+              })()}
+              {/* También tras elegir una PERSONA (que no deja `patient`): sin esto no había
+                  forma de volver a Consumidor Final salvo reabrir el modal. */}
+              {(form.patient || pickedFromList) && (
                 <button
                   type="button"
-                  onClick={() => handlePatientSelect('')}
+                  onClick={() => { setClientResults([]); handlePatientSelect(''); }}
                   className="absolute right-3 top-9 text-xs text-emerald-600 hover:text-emerald-800 bg-transparent border-none cursor-pointer"
                 >
                   Limpiar
@@ -907,11 +1066,15 @@ export default function Sales() {
               />
             </div>
             <div>
-              <label className="lbl">Cédula / RUC / Pasaporte</label>
+              <label className="lbl">Cédula / RUC / Pasaporte <span className="text-rose-500">*</span></label>
+              {/* Obligatoria: sin identificación la venta no se puede facturar ni declarar (ATS).
+                  Si no se identifica al comprador, va Consumidor Final (9999999999999). */}
               <input
                 value={form.clientCedula}
                 onChange={(e) => setForm({ ...form, clientCedula: e.target.value })}
                 className="input"
+                required
+                minLength={5}
                 maxLength={20}
                 placeholder="Cédula, RUC o pasaporte"
               />
@@ -1258,7 +1421,7 @@ export default function Sales() {
                   <label className="lbl">Forma de pago</label>
                   <select
                     value={form.paymentMethod}
-                    onChange={(e) => setForm({ ...form, paymentMethod: e.target.value, bankAccount: '', creditCard: '', cardType: '', cardPos: '', cardLote: '', cardVoucher: '' })}
+                    onChange={(e) => setForm({ ...form, paymentMethod: e.target.value, bankAccount: '', creditCard: '', cardType: '', cardPos: '', cardLote: '', cardVoucher: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 })}
                     className="input"
                   >
                     {Object.entries(paymentMethods).map(([k, v]) => (
@@ -1291,7 +1454,7 @@ export default function Sales() {
                     <label className="lbl">Tipo de tarjeta</label>
                     <select
                       value={form.cardType || ''}
-                      onChange={(e) => setForm({ ...form, cardType: e.target.value, creditCard: '', cardPos: '' })}
+                      onChange={(e) => setForm({ ...form, cardType: e.target.value, creditCard: '', cardPos: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 })}
                       className="input"
                     >
                       <option value="">Seleccionar tipo…</option>
@@ -1348,13 +1511,53 @@ export default function Sales() {
                       className="input"
                     />
                   </div>
+                  {form.cardType === 'CREDITO' && (
+                    <>
+                      <div>
+                        <label className="lbl">Diferido</label>
+                        <select
+                          value={form.cardDeferredType || 'CORRIENTE'}
+                          onChange={(e) => setForm({ ...form, cardDeferredType: e.target.value, cardDeferredMonths: e.target.value === 'CORRIENTE' ? 0 : (form.cardDeferredMonths || 3) })}
+                          className="input"
+                        >
+                          {DEFERRED_TYPES.map((d) => <option key={d.value} value={d.value}>{d.label}</option>)}
+                        </select>
+                      </div>
+                      {form.cardDeferredType && form.cardDeferredType !== 'CORRIENTE' && (
+                        <div>
+                          <label className="lbl">Meses</label>
+                          <select value={form.cardDeferredMonths || 3} onChange={(e) => setForm({ ...form, cardDeferredMonths: +e.target.value })} className="input">
+                            {DEFERRED_MONTHS.map((m) => <option key={m} value={m}>{m} meses</option>)}
+                          </select>
+                        </div>
+                      )}
+                    </>
+                  )}
                 </>
               )}
               {!splitMode && form.paymentMethod === 'credito' && (
-                <div>
-                  <label className="lbl">Vence (crédito)</label>
-                  <input type="date" value={form.dueDate || ''} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="input" />
-                </div>
+                <>
+                  <div>
+                    <label className="lbl">Plazo de crédito</label>
+                    <select
+                      value={form.creditTerm ?? 30}
+                      onChange={(e) => setForm({ ...form, creditTerm: e.target.value === 'CUSTOM' ? 'CUSTOM' : +e.target.value, dueDate: '' })}
+                      className="input"
+                    >
+                      {CREDIT_TERMS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                      <option value="CUSTOM">Otra fecha…</option>
+                    </select>
+                    {form.creditTerm !== 'CUSTOM' && (
+                      <p className="text-[11px] text-slate-500 mt-1">Vence el {vencimientoDesdePlazo(form.creditTerm ?? 30)}</p>
+                    )}
+                  </div>
+                  {form.creditTerm === 'CUSTOM' && (
+                    <div>
+                      <label className="lbl">Vence (fecha exacta)</label>
+                      <input type="date" value={form.dueDate || ''} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="input" />
+                    </div>
+                  )}
+                </>
               )}
               {splitMode && (
                 <div className="sm:col-span-3 rounded-xl border border-slate-200 p-3 space-y-2 bg-slate-50/40">
@@ -1366,7 +1569,7 @@ export default function Sales() {
                     <div key={i} className="flex flex-wrap items-end gap-2 bg-white rounded-lg border border-slate-100 p-2">
                       <div className="w-36">
                         <label className="lbl">Método</label>
-                        <select value={p.method} onChange={(e) => setSplitRow(i, { method: e.target.value, bankAccount: '', creditCard: '', cardType: '', cardPos: '', cardLote: '', cardVoucher: '' })} className="input">
+                        <select value={p.method} onChange={(e) => setSplitRow(i, { method: e.target.value, bankAccount: '', creditCard: '', cardType: '', cardPos: '', cardLote: '', cardVoucher: '', cardDeferredType: 'CORRIENTE', cardDeferredMonths: 0 })} className="input">
                           {Object.entries(paymentMethods).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
                         </select>
                       </div>
@@ -1403,6 +1606,28 @@ export default function Sales() {
                             <label className="lbl">N° lote</label>
                             <input value={p.cardLote || ''} onChange={(e) => setSplitRow(i, { cardLote: e.target.value })} className="input" />
                           </div>
+                          {p.cardType === 'CREDITO' && (
+                            <>
+                              <div className="w-40">
+                                <label className="lbl">Diferido</label>
+                                <select
+                                  value={p.cardDeferredType || 'CORRIENTE'}
+                                  onChange={(e) => setSplitRow(i, { cardDeferredType: e.target.value, cardDeferredMonths: e.target.value === 'CORRIENTE' ? 0 : (p.cardDeferredMonths || 3) })}
+                                  className="input"
+                                >
+                                  {DEFERRED_TYPES.map((d) => <option key={d.value} value={d.value}>{d.label}</option>)}
+                                </select>
+                              </div>
+                              {p.cardDeferredType && p.cardDeferredType !== 'CORRIENTE' && (
+                                <div className="w-24">
+                                  <label className="lbl">Meses</label>
+                                  <select value={p.cardDeferredMonths || 3} onChange={(e) => setSplitRow(i, { cardDeferredMonths: +e.target.value })} className="input">
+                                    {DEFERRED_MONTHS.map((m) => <option key={m} value={m}>{m}</option>)}
+                                  </select>
+                                </div>
+                              )}
+                            </>
+                          )}
                         </>
                       )}
                       <button type="button" onClick={() => removeSplitRow(i)} className="text-rose-500 hover:text-rose-600 pb-2 bg-transparent border-none cursor-pointer" title="Quitar método"><HiOutlineTrash className="w-4 h-4" /></button>
@@ -1418,9 +1643,26 @@ export default function Sales() {
                     </div>
                   </div>
                   {splitPayments.some((p) => p.method === 'credito') && (
-                    <div className="w-48">
-                      <label className="lbl">Vence (parte a crédito)</label>
-                      <input type="date" value={form.dueDate || ''} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="input" />
+                    <div className="flex flex-wrap items-end gap-2">
+                      <div className="w-48">
+                        <label className="lbl">Plazo (parte a crédito)</label>
+                        <select
+                          value={form.creditTerm ?? 30}
+                          onChange={(e) => setForm({ ...form, creditTerm: e.target.value === 'CUSTOM' ? 'CUSTOM' : +e.target.value, dueDate: '' })}
+                          className="input"
+                        >
+                          {CREDIT_TERMS.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                          <option value="CUSTOM">Otra fecha…</option>
+                        </select>
+                      </div>
+                      {form.creditTerm === 'CUSTOM' ? (
+                        <div className="w-48">
+                          <label className="lbl">Vence</label>
+                          <input type="date" value={form.dueDate || ''} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="input" />
+                        </div>
+                      ) : (
+                        <p className="text-[11px] text-slate-500 pb-2">Vence el {vencimientoDesdePlazo(form.creditTerm ?? 30)}</p>
+                      )}
                     </div>
                   )}
                 </div>
@@ -1641,6 +1883,58 @@ export default function Sales() {
           hideOriginLink
         />
       )}
+
+      {/* Cobro de la parte a crédito: genera un documento de Cobro (visible en Pagos / Cobros). */}
+      <Modal isOpen={!!collectItem} onClose={() => setCollectItem(null)} title={`Cobrar venta ${collectItem?.saleNumber || ''}`} size="md">
+        {collectItem && (
+          <form onSubmit={submitCollect} className="space-y-3">
+            <div className="bg-slate-50 rounded-lg p-3 text-sm space-y-1">
+              <div className="flex justify-between"><span className="text-slate-500">Cliente:</span><b>{collectItem.clientName}</b></div>
+              <div className="flex justify-between"><span className="text-slate-500">Total de la venta:</span><b className="font-mono">${Number(collectItem.total || 0).toFixed(2)}</b></div>
+              <div className="flex justify-between"><span className="text-slate-500">Saldo pendiente:</span><b className="font-mono text-amber-600">${Number(collectItem.balance || 0).toFixed(2)}</b></div>
+              {collectItem.dueDate && <div className="flex justify-between"><span className="text-slate-500">Vence:</span><b>{fmtDateTime(collectItem.dueDate).slice(0, 10)}</b></div>}
+            </div>
+            <div className="grid grid-cols-2 gap-3">
+              <div>
+                <label className="lbl">Fecha</label>
+                <input type="date" required value={collectForm.date} onChange={(e) => setCollectForm({ ...collectForm, date: e.target.value })} className="input" />
+              </div>
+              <div>
+                <label className="lbl">Monto a cobrar</label>
+                <NumericInput step="0.01" required value={collectForm.amount} onChange={(e) => setCollectForm({ ...collectForm, amount: e.target.value })} className="input" />
+              </div>
+              <div>
+                <label className="lbl">Forma de cobro</label>
+                <select value={collectForm.method} onChange={(e) => setCollectForm({ ...collectForm, method: e.target.value, bankAccount: '' })} className="input">
+                  <option value="EFECTIVO">Efectivo</option>
+                  <option value="TRANSFERENCIA">Transferencia</option>
+                  <option value="DEPOSITO">Depósito</option>
+                  <option value="TARJETA">Tarjeta</option>
+                  <option value="CHEQUE">Cheque</option>
+                </select>
+              </div>
+              {!['EFECTIVO', 'TARJETA'].includes(collectForm.method) && (
+                <div>
+                  <label className="lbl">Cuenta bancaria</label>
+                  <select required value={collectForm.bankAccount} onChange={(e) => setCollectForm({ ...collectForm, bankAccount: e.target.value })} className="input">
+                    <option value="">{payOptions.accounts.length ? 'Seleccionar…' : 'No hay cuentas'}</option>
+                    {payOptions.accounts.map((a) => <option key={a._id} value={a._id}>{a.name} — {a.bank}</option>)}
+                  </select>
+                </div>
+              )}
+              <div className="col-span-2">
+                <label className="lbl">Comprobante / referencia</label>
+                <input value={collectForm.reference} onChange={(e) => setCollectForm({ ...collectForm, reference: e.target.value })} placeholder="N° de transferencia, papeleta, cheque…" className="input" />
+              </div>
+            </div>
+            <p className="text-[11px] text-slate-500">Se registra un documento de cobro que puedes ver y anular en Contabilidad → Bancos → Pagos / Cobros.</p>
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setCollectItem(null)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button>
+              <button disabled={collectBusy} className="px-4 py-2 bg-emerald-600 text-white rounded-xl disabled:opacity-50">{collectBusy ? 'Registrando…' : 'Registrar cobro'}</button>
+            </div>
+          </form>
+        )}
+      </Modal>
     </div>
   );
 }

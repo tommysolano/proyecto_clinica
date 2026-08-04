@@ -29,6 +29,18 @@ const bankTransactionSchema = new mongoose.Schema(
     voucherUrl: { type: String, default: '' },
     voucherNumber: { type: String, default: '' },
     checkNumber: { type: String, default: null },
+    /**
+     * PERSONA del movimiento (nombre o razón social): a quién se le pagó o de quién se cobró.
+     * Es una copia, no una referencia: el banco quiere saber a nombre de quién salió el dinero
+     * ese día, aunque después se corrija la ficha del proveedor. El contador busca por aquí.
+     * Vacío en los movimientos que no tienen contraparte (una comisión bancaria, un ajuste).
+     */
+    partyName: { type: String, default: '', trim: true },
+    /**
+     * Centro de costo del movimiento (sucursal / área a la que se carga). Se copia al asiento.
+     * Los movimientos anteriores a este campo no lo tienen: filtrar por centro no los devuelve.
+     */
+    costCenter: { type: mongoose.Schema.Types.ObjectId, ref: 'CostCenter', default: null, index: true },
     voided: { type: Boolean, default: false },
     voidReason: { type: String, default: '' },
     voidedAt: { type: Date, default: null },

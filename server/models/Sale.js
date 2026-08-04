@@ -63,6 +63,15 @@ const salePaymentSchema = new mongoose.Schema(
     cardPos: { type: String, default: '' },
     cardLote: { type: String, default: '', trim: true },
     cardVoucher: { type: String, default: '', trim: true },
+    /**
+     * DIFERIDO de tarjeta de crédito (Datafast/Medianet): corriente, diferido sin intereses o
+     * diferido con intereses, y a cuántos meses. Es INFORMATIVO para la contabilidad —el asiento
+     * de la venta debita el bruto igual— pero determina la comisión que cobra el adquirente, así
+     * que sin este dato la liquidación de tarjeta no se puede cuadrar contra el recap.
+     * Solo aplica a tarjeta de CRÉDITO: en débito queda 'CORRIENTE'.
+     */
+    cardDeferredType: { type: String, enum: ['CORRIENTE', 'SIN_INTERES', 'CON_INTERES'], default: 'CORRIENTE' },
+    cardDeferredMonths: { type: Number, default: 0, min: 0, max: 48 },
   },
   { _id: false }
 );
@@ -127,7 +136,18 @@ const saleSchema = new mongoose.Schema(
     cardVoucher: { type: String, default: '', trim: true },
     // Liquidación de tarjeta que ya incluyó esta venta (evita liquidarla dos veces).
     cardSettlement: { type: mongoose.Schema.Types.ObjectId, ref: 'CardSettlement', default: null },
-    // Ventas a crédito (CxC): vencimiento y saldo pendiente de cobro.
+    // Depósito bancario que ya se llevó el EFECTIVO de esta venta (evita depositarlo dos veces).
+    // Antes esto se marcaba cambiando `paymentMethod` a 'transferencia', lo que falseaba la forma
+    // de pago de la venta para siempre (y con ella el desglose del Excel y los reportes).
+    cashDeposit: { type: mongoose.Schema.Types.ObjectId, ref: 'CashDeposit', default: null },
+    // Diferido de la primera tarjeta de crédito de la venta (espejo de `payments[]`, igual que
+    // cardLote/cardVoucher): lo consultan la liquidación de tarjeta y el Excel de ventas.
+    cardDeferredType: { type: String, enum: ['CORRIENTE', 'SIN_INTERES', 'CON_INTERES'], default: 'CORRIENTE' },
+    cardDeferredMonths: { type: Number, default: 0 },
+    // Ventas a crédito (CxC): PLAZO pactado en días, vencimiento y saldo pendiente de cobro.
+    // El plazo es lo que elige el cajero (5, 15, 30…); `dueDate` se calcula desde él. Se guardan
+    // los dos porque la cartera y el SRI razonan con la fecha, y el reporte con el plazo.
+    creditDays: { type: Number, default: null },
     dueDate: { type: Date, default: null },
     balance: { type: Number, default: 0 },
     paid: { type: Boolean, default: true },

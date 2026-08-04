@@ -80,6 +80,8 @@ const JournalEntries = lazy(() => import('./pages/accounting/JournalEntries'));
 const Ledger = lazy(() => import('./pages/accounting/Ledger'));
 const TrialBalance = lazy(() => import('./pages/accounting/TrialBalance'));
 const BankAccounts = lazy(() => import('./pages/accounting/BankAccounts'));
+const BankMovements = lazy(() => import('./pages/accounting/BankMovements'));
+const CashDeposits = lazy(() => import('./pages/accounting/CashDeposits'));
 const CashBox = lazy(() => import('./pages/accounting/CashBox'));
 const Reconciliations = lazy(() => import('./pages/accounting/Reconciliations'));
 const Suppliers = lazy(() => import('./pages/accounting/Suppliers'));
@@ -499,7 +501,9 @@ function AppRoutes() {
                   ['trial-balance', TrialBalance],
                   ['period-balances', PeriodBalances],
                   ['banks', BankAccounts],
+                  ['bank-movements', BankMovements],
                   ['cash', CashBox],
+                  ['cash-deposits', CashDeposits],
                   ['cash-closing', CashClosing],
                   ['reconciliations', Reconciliations],
                   ['suppliers', Suppliers],

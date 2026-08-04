@@ -16,6 +16,13 @@ function parseAsOf(req) {
 }
 
 /**
+ * Busca el nombre TAL CUAL se escribió: sin escapar, un cliente con paréntesis, punto o '+'
+ * en el nombre cambiaba lo que se buscaba (o rompía la expresión). Lo usa también el modal de
+ * cobro, que busca la cartera de Consumidor Final por nombre porque no tiene paciente.
+ */
+const escaparRegex = (v) => String(v).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
  * Filtro de la vista por DOCUMENTOS (misma para /subledger y el Excel):
  * status (sin ANULADO por defecto), contraparte (ref exacta o nombre) y rango de emisión.
  */
@@ -24,7 +31,7 @@ function buildListFilter(req) {
   if (req.query.status) filter.status = req.query.status;
   else filter.status = { $ne: 'ANULADO' };
   if (req.query.partyRef) filter['party.ref'] = req.query.partyRef;
-  if (req.query.q) filter['party.name'] = { $regex: String(req.query.q).trim(), $options: 'i' };
+  if (req.query.q) filter['party.name'] = { $regex: escaparRegex(req.query.q), $options: 'i' };
   if (req.query.from || req.query.to) {
     filter.issueDate = {};
     if (req.query.from) filter.issueDate.$gte = new Date(req.query.from);
@@ -37,7 +44,7 @@ function buildListFilter(req) {
 function buildAgingFilter(req) {
   const filter = { clinic: req.clinicId, status: { $in: ['ABIERTO', 'PARCIAL'] } };
   if (req.query.partyRef) filter['party.ref'] = req.query.partyRef;
-  if (req.query.q) filter['party.name'] = { $regex: String(req.query.q).trim(), $options: 'i' };
+  if (req.query.q) filter['party.name'] = { $regex: escaparRegex(req.query.q), $options: 'i' };
   return filter;
 }
 

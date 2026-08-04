@@ -96,6 +96,8 @@ const MENU_GROUPS = [
   {
     key: 'bancos', label: 'Bancos', icon: HiOutlineBuildingLibrary, items: [
       { path: '/accounting/banks', label: 'Cuentas Bancarias', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/bank-movements', label: 'Movimientos', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/cash-deposits', label: 'Depósitos', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/reconciliations', label: 'Conciliaciones', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/checks', label: 'Cheques', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/payments', label: 'Pagos / Cobros', roles: ['admin', 'contabilidad'] },

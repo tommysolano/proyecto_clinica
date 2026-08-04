@@ -1,18 +1,21 @@
 import { useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
-import { HiOutlineDocumentText, HiOutlinePlus, HiOutlineNoSymbol } from 'react-icons/hi2';
+import { HiOutlineDocumentText, HiOutlinePlus, HiOutlineNoSymbol, HiOutlineArrowTopRightOnSquare } from 'react-icons/hi2';
 import { fmt, fmtDate } from './_utils';
 import NumericInput from '../../components/NumericInput';
 
 const STATUS_COLOR = { DISPONIBLE: 'bg-emerald-100 text-emerald-700', GIRADO: 'bg-amber-100 text-amber-700', COBRADO: 'bg-blue-100 text-blue-700', ANULADO: 'bg-rose-100 text-rose-700' };
 
 export default function Checks() {
+  const navigate = useNavigate();
   const [accounts, setAccounts] = useState([]);
   const [account, setAccount] = useState('');
   const [status, setStatus] = useState('');
+  const [q, setQ] = useState('');
   const [list, setList] = useState([]);
   const [show, setShow] = useState(false);
   const [range, setRange] = useState({ from: '', to: '' });
@@ -20,10 +23,16 @@ export default function Checks() {
   useEffect(() => { api.get('/banks/accounts').then((r) => { setAccounts(r.data || []); if (r.data?.[0]) setAccount(r.data[0]._id); }).catch(() => {}); }, []);
   const load = async () => {
     if (!account) return;
-    try { const r = await api.get('/banks/checks', { params: { bankAccount: account, status: status || undefined } }); setList(r.data || []); }
-    catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+    try {
+      const r = await api.get('/banks/checks', { params: { bankAccount: account, status: status || undefined, q: q.trim() || undefined } });
+      setList(r.data || []);
+    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
-  useEffect(() => { load(); /* eslint-disable-next-line */ }, [account, status]);
+  useEffect(() => { load(); /* eslint-disable-next-line */ }, [account, status, q]);
+
+  const resumen = ['DISPONIBLE', 'GIRADO', 'COBRADO', 'ANULADO']
+    .map((s) => ({ s, n: list.filter((c) => c.status === s).length }))
+    .filter((x) => x.n > 0);
 
   const generate = async () => {
     try { const r = await api.post('/banks/checks/generate', { bankAccount: account, from: range.from, to: range.to }); toast.success(`${r.data.created} cheques creados`); setShow(false); setRange({ from: '', to: '' }); load(); }
@@ -48,10 +57,20 @@ export default function Checks() {
         <Field label="Estado"><select value={status} onChange={(e) => setStatus(e.target.value)} className="px-3 py-2 border border-slate-200 rounded-lg">
           <option value="">Todos</option><option value="DISPONIBLE">Disponibles</option><option value="GIRADO">Girados</option><option value="COBRADO">Cobrados</option><option value="ANULADO">Anulados</option>
         </select></Field>
+        <Field label="Buscar"><input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Beneficiario o Nº de cheque" className="px-3 py-2 border border-slate-200 rounded-lg w-56" /></Field>
+        <div className="flex gap-2 ml-auto text-xs">
+          {resumen.map((x) => (
+            <span key={x.s} className={`px-2 py-1 rounded-full font-semibold ${STATUS_COLOR[x.s]}`}>{x.n} {x.s.toLowerCase()}</span>
+          ))}
+        </div>
       </div>
-      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">
+      <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-x-auto">
         <table className="tbl">
-          <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Nº Cheque</th><th className="px-3 py-2 text-center">Estado</th><th className="px-3 py-2 text-left">Beneficiario</th><th className="px-3 py-2 text-right">Monto</th><th className="px-3 py-2 text-left">Fecha</th><th></th></tr></thead>
+          <thead className="bg-emerald-50 text-xs uppercase"><tr>
+            <th className="px-3 py-2 text-left">Nº Cheque</th><th className="px-3 py-2 text-center">Estado</th>
+            <th className="px-3 py-2 text-left">Beneficiario</th><th className="px-3 py-2 text-right">Monto</th>
+            <th className="px-3 py-2 text-left">Fecha</th><th className="px-3 py-2 text-left">Se usó en</th><th></th>
+          </tr></thead>
           <tbody>
             {list.map((chk) => (
               <tr key={chk._id} className="border-t">
@@ -60,13 +79,31 @@ export default function Checks() {
                 <td className="px-3 py-2">{chk.beneficiary || '—'}</td>
                 <td className="px-3 py-2 text-right font-mono">{chk.amount ? fmt(chk.amount) : '—'}</td>
                 <td className="px-3 py-2">{chk.date ? fmtDate(chk.date) : '—'}</td>
+                {/* En qué documento se usó: sin esto, un cheque girado era un número sin historia. */}
+                <td className="px-3 py-2 text-xs">
+                  {chk.payment ? (
+                    <button
+                      onClick={() => navigate(`/accounting/payments?doc=${chk.payment._id}`)}
+                      className="text-emerald-700 hover:underline bg-transparent border-none cursor-pointer p-0 flex items-center gap-1"
+                      title="Ver el pago"
+                    >
+                      <HiOutlineArrowTopRightOnSquare className="w-3.5 h-3.5" /> Pago {chk.payment.number}
+                    </button>
+                  ) : chk.transaction ? (
+                    <span className="text-slate-500">Movimiento bancario · {chk.transaction.description || fmtDate(chk.transaction.date)}</span>
+                  ) : chk.status === 'DISPONIBLE' ? <span className="text-slate-400">Sin usar</span> : <span className="text-slate-400">—</span>}
+                </td>
                 <td className="px-3 py-2 text-right">{chk.status === 'DISPONIBLE' && <button onClick={() => voidCheck(chk)} className="text-rose-600" title="Anular"><HiOutlineNoSymbol className="w-4 h-4" /></button>}</td>
               </tr>
             ))}
-            {list.length === 0 && <tr><td colSpan={6} className="px-3 py-8 text-center text-slate-400">Sin cheques. Genera una chequera.</td></tr>}
+            {list.length === 0 && <tr><td colSpan={7} className="px-3 py-8 text-center text-slate-400">Sin cheques. Genera una chequera.</td></tr>}
           </tbody>
         </table>
       </div>
+      <p className="text-xs text-slate-500">
+        Un cheque solo se puede usar si está <b>registrado en esta chequera</b> y disponible: al pagar con
+        un número que no existe (o ya usado), el sistema lo rechaza indicando el rango registrado.
+      </p>
       <Modal isOpen={show} onClose={() => setShow(false)} title="Generar chequera">
         <div className="space-y-3">
           <p className="text-sm text-slate-500">Crea un rango de cheques disponibles para la cuenta seleccionada.</p>

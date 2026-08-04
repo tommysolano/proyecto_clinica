@@ -4,7 +4,7 @@ import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import Field from '../../components/Field';
 import NumericInput from '../../components/NumericInput';
-import { HiOutlinePlus, HiOutlineScale, HiOutlineCheck, HiOutlineArrowDownTray, HiOutlineCheckCircle } from 'react-icons/hi2';
+import { HiOutlinePlus, HiOutlineScale, HiOutlineCheck, HiOutlineArrowDownTray, HiOutlineCheckCircle, HiOutlineTrash } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 
 const EMPTY = { bankAccount: '', cutDate: today(), statementBalance: '', description: '' };
@@ -116,6 +116,22 @@ export default function Reconciliations() {
     finally { setBusy(false); }
   };
 
+  /**
+   * Elimina una conciliación PENDIENTE. Una abierta con la cuenta o el corte equivocados era
+   * imposible de quitar y quedaba estorbando en la lista para siempre. La cerrada no se toca:
+   * es la evidencia de que el saldo cuadró.
+   */
+  const eliminar = async (c, e) => {
+    e.stopPropagation();
+    if (!confirm(`¿Eliminar la conciliación pendiente de ${c.bankAccount?.name || 'esta cuenta'} al ${fmtDate(c.cutDate || c.periodEnd)}?\n\nNo afecta a ningún asiento: aún no ha conciliado nada.`)) return;
+    try {
+      await api.delete(`/banks/reconciliations/${c._id}`);
+      if (selected?._id === c._id) setSelected(null);
+      load();
+      toast.success('Conciliación eliminada');
+    } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
+  };
+
   const statusBadge = (s) => s === 'CONCILIADO'
     ? <span className="px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded-full text-[11px] font-semibold">Conciliado</span>
     : <span className="px-2 py-0.5 bg-amber-100 text-amber-700 rounded-full text-[11px] font-semibold">Pendiente</span>;
@@ -134,14 +150,21 @@ export default function Reconciliations() {
         {/* Lista */}
         <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden h-fit">
           <table className="tbl">
-            <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Banco</th><th className="px-3 py-2 text-left">Corte</th><th className="px-3 py-2 text-center">Estado</th></tr></thead>
+            <thead className="bg-emerald-50 text-xs uppercase"><tr><th className="px-3 py-2 text-left">Banco</th><th className="px-3 py-2 text-left">Corte</th><th className="px-3 py-2 text-center">Estado</th><th></th></tr></thead>
             <tbody>
-              {list.length === 0 && <tr><td colSpan={3} className="px-3 py-6 text-center text-slate-500 text-sm">Sin conciliaciones.</td></tr>}
+              {list.length === 0 && <tr><td colSpan={4} className="px-3 py-6 text-center text-slate-500 text-sm">Sin conciliaciones.</td></tr>}
               {list.map((c) => (
                 <tr key={c._id} className={`border-t cursor-pointer hover:bg-slate-50 ${selected?._id === c._id ? 'bg-emerald-50/60' : ''}`} onClick={() => openDetail(c)}>
                   <td className="px-3 py-2 text-xs">{c.bankAccount?.name}</td>
                   <td className="px-3 py-2 text-xs">{fmtDate(c.cutDate || c.periodEnd)}</td>
                   <td className="px-3 py-2 text-center">{statusBadge(c.status)}</td>
+                  <td className="px-3 py-2 text-right">
+                    {c.status !== 'CONCILIADO' && (
+                      <button onClick={(e) => eliminar(c, e)} className="text-rose-500 hover:text-rose-700" title="Eliminar esta conciliación pendiente">
+                        <HiOutlineTrash className="w-4 h-4" />
+                      </button>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

@@ -6,7 +6,10 @@ const Supplier = require('../models/Supplier');
 const { resolvePurchaseDueDate } = require('../utils/purchaseDueDate');
 const BankAccount = require('../models/BankAccount');
 const BankTransaction = require('../models/BankTransaction');
+const BankCheck = require('../models/BankCheck');
 const Sale = require('../models/Sale');
+const { girarCheque, liberarCheque } = require('../services/bankChecks');
+const { newWorkbook, addSheet, sendWorkbook, excelHandler, periodLabel } = require('../utils/excelReport');
 const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { openReceivable, applyToReceivable, unapplyFromReceivable, openPayable, applyToPayable, unapplyFromPayable } = require('../utils/subledger');
@@ -30,25 +33,116 @@ async function nextNumber(clinicId, type, session = null) {
   return `${prefix}${year}-${String(n).padStart(6, '0')}`;
 }
 
-exports.list = async (req, res) => {
-  const { type, startDate, endDate, partyRef, status, page = 1, limit = 20 } = req.query;
+const escaparRegex = (v) => String(v).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Filtro del listado de cobros/pagos. Lo comparten la pantalla y el Excel.
+ *
+ * `q` busca por PERSONA (nombre o razón social), número del documento, referencia o cheque:
+ * el pedido concreto era "ver los pagos del 1 al 30 de julio hechos a Juan", que necesita el
+ * rango de fechas y el tercero a la vez.
+ */
+function buildPaymentFilter(req) {
+  const { type, startDate, endDate, partyRef, status, q, method, bankAccount } = req.query;
   const filter = { clinic: req.clinicId };
   if (type) filter.type = type;
   if (partyRef) filter.partyRef = partyRef;
   if (status) filter.status = status;
+  if (method) filter.method = method;
+  if (bankAccount) filter.bankAccount = bankAccount;
+  if (q && q.trim()) {
+    const rx = new RegExp(escaparRegex(q), 'i');
+    filter.$or = [{ partyName: rx }, { partyId: rx }, { number: rx }, { reference: rx }, { checkNumber: rx }];
+  }
   if (startDate || endDate) {
     filter.date = {};
     if (startDate) filter.date.$gte = new Date(startDate);
-    if (endDate) filter.date.$lte = new Date(endDate);
+    // Hasta el FIN del día: con la medianoche se perdían los cobros del propio día de corte.
+    if (endDate) filter.date.$lte = new Date(`${String(endDate).slice(0, 10)}T23:59:59.999`);
   }
+  return filter;
+}
+
+exports.list = async (req, res) => {
+  const { page = 1, limit = 20 } = req.query;
+  const filter = buildPaymentFilter(req);
+  const lim = Math.min(parseInt(limit, 10) || 20, 500);
+  const pag = Math.max(parseInt(page, 10) || 1, 1);
   const total = await Payment.countDocuments(filter);
   const items = await Payment.find(filter)
     .populate('createdBy', 'name')
     .populate('bankAccount', 'name bank')
+    // El estado de la pantalla distingue conciliado de registrado: sale del movimiento bancario.
+    .populate('bankTransaction', 'reconciled voided')
     .sort({ date: -1, createdAt: -1 })
-    .skip((page - 1) * limit).limit(parseInt(limit));
-  res.json({ items, total, pages: Math.ceil(total / limit), currentPage: parseInt(page) });
+    .skip((pag - 1) * lim).limit(lim);
+  res.json({ items, total, pages: Math.ceil(total / lim), currentPage: pag });
 };
+
+/** Excel de cobros/pagos con los mismos filtros de la pantalla (el rango entero, sin paginar). */
+exports.paymentsExcel = excelHandler(async (req, res) => {
+  const filter = buildPaymentFilter(req);
+  const items = await Payment.find(filter)
+    .populate('bankAccount', 'name bank')
+    .populate('bankTransaction', 'reconciled')
+    .populate('createdBy', 'name')
+    .sort({ date: 1, createdAt: 1 })
+    .limit(10000)
+    .lean();
+
+  const esCobro = req.query.type === 'COBRO';
+  const rows = items.map((p) => ({
+    number: p.number,
+    date: p.date,
+    party: p.partyName || '',
+    partyId: p.partyId || '',
+    method: p.method,
+    bank: p.bankAccount?.name || '',
+    check: p.checkNumber || '',
+    reference: p.reference || '',
+    docs: (p.applications || []).map((a) => a.docNumber).filter(Boolean).join(', '),
+    applied: p.status === 'ANULADO' ? 0 : Number(p.appliedAmount || 0),
+    advance: p.status === 'ANULADO' ? 0 : Number(p.advanceAmount || 0),
+    total: p.status === 'ANULADO' ? 0 : Number(p.total || 0),
+    status: p.status === 'ANULADO' ? 'ANULADO' : (p.bankTransaction?.reconciled ? 'CONCILIADO' : 'REGISTRADO'),
+    user: p.createdBy?.name || '',
+  }));
+
+  const wb = newWorkbook();
+  addSheet(wb, {
+    title: esCobro ? 'Cobros' : 'Pagos',
+    meta: [
+      ['Reporte', esCobro ? 'Cobros recibidos' : 'Pagos realizados'],
+      ['Período', periodLabel(req.query)],
+      ['Persona', req.query.q || 'Todas'],
+      ['Documentos', rows.length],
+    ],
+    columns: [
+      { header: 'Número', key: 'number', width: 16 },
+      { header: 'Fecha', key: 'date', width: 12, date: true },
+      { header: esCobro ? 'Cliente' : 'Proveedor', key: 'party', width: 32 },
+      { header: 'Cédula / RUC', key: 'partyId', width: 16 },
+      { header: 'Forma', key: 'method', width: 15 },
+      { header: 'Banco', key: 'bank', width: 22 },
+      { header: 'N° cheque', key: 'check', width: 12 },
+      { header: 'Referencia', key: 'reference', width: 18 },
+      { header: 'Documentos aplicados', key: 'docs', width: 26 },
+      { header: 'Aplicado', key: 'applied', width: 14, money: true },
+      { header: 'Anticipo', key: 'advance', width: 14, money: true },
+      { header: 'Valor', key: 'total', width: 14, money: true },
+      { header: 'Estado', key: 'status', width: 14 },
+      { header: 'Registró', key: 'user', width: 20 },
+    ],
+    rows,
+    totals: {
+      applied: +rows.reduce((s, r) => s + r.applied, 0).toFixed(2),
+      advance: +rows.reduce((s, r) => s + r.advance, 0).toFixed(2),
+      total: +rows.reduce((s, r) => s + r.total, 0).toFixed(2),
+    },
+    notes: ['Los documentos anulados van con valor 0: se conservan como traza y no suman al total.'],
+  });
+  await sendWorkbook(res, wb, `${esCobro ? 'cobros' : 'pagos'}_${Date.now()}.xlsx`);
+});
 
 exports.get = async (req, res) => {
   const p = await Payment.findOne({ _id: req.params.id, clinic: req.clinicId })
@@ -288,12 +382,28 @@ exports.create = async (req, res) => {
         });
 
         let bankTx = null;
+        let chequeGirado = null;   // número del cheque que hay que marcar como GIRADO
         if (bank) {
           let txType = type === 'COBRO' ? 'COBRO' : 'PAGO';
           if (method === 'CHEQUE' && type === 'PAGO') {
             txType = 'CHEQUE_EMITIDO';
-            if (!checkNumber) {
-              bank.nextCheckNumber++;
+            // El número tiene que EXISTIR en la chequera y estar disponible. Antes no se
+            // validaba nada: se podía pagar con el cheque 60 teniendo registrada la chequera
+            // hasta el 50, y el cheque usado seguía figurando como disponible.
+            if (checkNumber) {
+              chequeGirado = checkNumber;
+            } else {
+              const libre = await BankCheck.findOne({
+                clinic: req.clinicId, bankAccount: bank._id, status: 'DISPONIBLE',
+              }).sort({ number: 1 }).session(session);
+              if (!libre) {
+                throw Object.assign(new Error(
+                  'No quedan cheques disponibles en la chequera de esta cuenta. '
+                  + 'Genera el siguiente rango en Bancos → Cheques.'
+                ), { status: 400 });
+              }
+              chequeGirado = String(libre.number);
+              bank.nextCheckNumber = libre.number + 1;
               await bank.save({ session });
             }
           }
@@ -308,16 +418,34 @@ exports.create = async (req, res) => {
             reference,
             voucherUrl: voucherUrl || '',
             voucherNumber: voucherNumber || '',
-            checkNumber,
+            checkNumber: chequeGirado || checkNumber,
+            // La PERSONA viaja al libro de bancos: es como el contador busca un movimiento
+            // ("los pagos a Juan de julio"), y sin copiarla había que abrir cada documento.
+            partyName: partyName || '',
             journalEntry: entry._id,
             sourceModel: 'Payment',
             sourceRef: payment._id,
             createdBy: req.user._id,
           }], { session });
+
+          if (chequeGirado) {
+            await girarCheque({
+              clinicId: req.clinicId,
+              bankId: bank._id,
+              number: chequeGirado,
+              beneficiary: partyName || description || '',
+              amount: total,
+              date: txDate,
+              transactionId: bankTx._id,
+              paymentId: payment._id,
+              session,
+            });
+          }
         }
 
         payment.journalEntry = entry._id;
         payment.bankTransaction = bankTx?._id || null;
+        if (chequeGirado) payment.checkNumber = chequeGirado;
         await payment.save({ session });
 
         for (let i = 0; i < apps.length; i++) {
@@ -568,26 +696,51 @@ exports.createBulk = async (req, res) => {
         });
 
         let bankTx = null;
+        let chequeGirado = null;
         if (bank) {
+          // Un pago masivo con cheque gira UN cheque por proveedor (es un papel por beneficiario).
+          if (method === 'CHEQUE') {
+            const libre = await BankCheck.findOne({
+              clinic: req.clinicId, bankAccount: bank._id, status: 'DISPONIBLE',
+            }).sort({ number: 1 }).session(session);
+            if (!libre) {
+              throw Object.assign(new Error(
+                `No quedan cheques disponibles para pagar a ${sup.name}. Genera el siguiente rango en Bancos → Cheques.`
+              ), { status: 400 });
+            }
+            chequeGirado = String(libre.number);
+            bank.nextCheckNumber = libre.number + 1;
+            await bank.save({ session });
+          }
           [bankTx] = await BankTransaction.create([{
             clinic: req.clinicId,
             bankAccount: bank._id,
             date: txDate,
-            type: 'PAGO',
+            type: chequeGirado ? 'CHEQUE_EMITIDO' : 'PAGO',
             amount: total,
             direction: -1,
             description: `Pago masivo ${number} - ${sup.name}`,
             reference,
             voucherNumber: voucherNumber || '',
+            checkNumber: chequeGirado,
+            partyName: sup.name || '',
             journalEntry: entry._id,
             sourceModel: 'Payment',
             sourceRef: payment._id,
             createdBy: req.user._id,
           }], { session });
+          if (chequeGirado) {
+            await girarCheque({
+              clinicId: req.clinicId, bankId: bank._id, number: chequeGirado,
+              beneficiary: sup.name || '', amount: total, date: txDate,
+              transactionId: bankTx._id, paymentId: payment._id, session,
+            });
+          }
         }
 
         payment.journalEntry = entry._id;
         payment.bankTransaction = bankTx?._id || null;
+        if (chequeGirado) payment.checkNumber = chequeGirado;
         await payment.save({ session });
 
         for (const x of sup.list) {
@@ -661,6 +814,10 @@ exports.void = async (req, res) => {
               { $inc: { bookBalance: -(Number(tx.amount || 0) * Number(tx.direction || 0)) } },
               { session }
             );
+            // El cheque de un pago anulado vuelve a la chequera: el papel no se usó.
+            if (tx.type === 'CHEQUE_EMITIDO' && tx.checkNumber) {
+              await liberarCheque({ clinicId: req.clinicId, bankId: tx.bankAccount, number: tx.checkNumber, session });
+            }
           }
         }
 

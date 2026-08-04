@@ -12,6 +12,7 @@ const kardex = require('../utils/kardex');
 const { createResolver, auditarDiferencias } = require('../services/costCenterPolicy');
 const { calculateSaleLine, summarizeSaleTaxes } = require('../utils/tax');
 const { assertNotPastDocumentDate } = require('../utils/fiscalDocumentDate');
+const { invoiceDate } = require('../utils/dates');
 const { emitToClinic } = require('../realtime');
 
 /**
@@ -147,6 +148,30 @@ exports.createSale = async (req, res) => {
 
     if (!Array.isArray(items) || items.length === 0) {
       return res.status(400).json({ message: 'Debe agregar al menos un ítem' });
+    }
+
+    // IDENTIFICACIÓN OBLIGATORIA del comprador. Ninguna venta puede quedar sin cédula, RUC o
+    // pasaporte: el ATS y el anexo de ventas del SRI la exigen, y sin ella no hay a quién
+    // cobrarle si la venta queda a crédito.
+    //
+    // El caso real era el cajero BORRANDO el campo (que viene con Consumidor Final por
+    // defecto): mongoose no aplica el valor por defecto a una cadena vacía, así que la venta
+    // se guardaba con la identificación en blanco. Un campo vacío o con basura se rechaza;
+    // si no viene el campo en absoluto, se factura a Consumidor Final, que es una
+    // identificación válida (9999999999999) y no una venta sin identificar.
+    const CONSUMIDOR_FINAL = '9999999999999';
+    const cedulaVenta = clientCedula === undefined || clientCedula === null
+      ? CONSUMIDOR_FINAL
+      : String(clientCedula).trim();
+    if (!cedulaVenta) {
+      return res.status(400).json({
+        message: 'Falta la cédula, RUC o pasaporte del cliente. Si no lo identifica, use Consumidor Final (9999999999999).',
+      });
+    }
+    if (cedulaVenta.length < 5) {
+      return res.status(400).json({
+        message: `«${cedulaVenta}» no es una cédula, RUC ni pasaporte válido. Use Consumidor Final (9999999999999) si no identifica al comprador.`,
+      });
     }
 
     // Si el cliente reenvía la misma operación, devolvemos la venta ya creada.
@@ -311,8 +336,11 @@ exports.createSale = async (req, res) => {
               cardPos: req.body.cardPos || '',
               cardLote: req.body.cardLote || '',
               cardVoucher: req.body.cardVoucher || '',
+              cardDeferredType: req.body.cardDeferredType || 'CORRIENTE',
+              cardDeferredMonths: req.body.cardDeferredMonths || 0,
             }];
         const CARD_TYPES = new Set(['DEBITO', 'CREDITO', 'CORRIENTE']);
+        const DEFERRED_TYPES = new Set(['CORRIENTE', 'SIN_INTERES', 'CON_INTERES']);
         const txPayments = rawPayments
           .map((p) => ({
             method: p.method,
@@ -327,6 +355,11 @@ exports.createSale = async (req, res) => {
             cardPos: p.method === 'tarjeta' ? (p.cardPos || '') : '',
             cardLote: p.method === 'tarjeta' ? String(p.cardLote || '').trim() : '',
             cardVoucher: p.method === 'tarjeta' ? String(p.cardVoucher || '').trim() : '',
+            // Diferido: solo tiene sentido en tarjeta de CRÉDITO. En débito o en cualquier otro
+            // método se normaliza a corriente para que el reporte no muestre un diferido falso.
+            cardDeferredType: p.method === 'tarjeta' && DEFERRED_TYPES.has(String(p.cardDeferredType || '').toUpperCase())
+              ? String(p.cardDeferredType).toUpperCase() : 'CORRIENTE',
+            cardDeferredMonths: p.method === 'tarjeta' ? Math.max(0, Math.min(48, parseInt(p.cardDeferredMonths, 10) || 0)) : 0,
           }))
           .filter((p) => p.amount > 0);
 
@@ -350,6 +383,9 @@ exports.createSale = async (req, res) => {
           p.cardTypeSnapshot = p.cardType || card?.accountType || '';
           p.cardBrandSnapshot = card?.brand || '';
           delete p.cardType;   // no se persiste aparte: el snapshot es la única fuente
+          // El diferido es exclusivo del CRÉDITO: una tarjeta de débito no difiere.
+          if (p.cardTypeSnapshot === 'DEBITO') { p.cardDeferredType = 'CORRIENTE'; p.cardDeferredMonths = 0; }
+          if (p.cardDeferredType === 'CORRIENTE') p.cardDeferredMonths = 0;
         }
         if (!txPayments.length) throw Object.assign(new Error('Debe indicar al menos un método de pago'), { status: 400 });
         for (const p of txPayments) {
@@ -360,6 +396,31 @@ exports.createSale = async (req, res) => {
           throw Object.assign(new Error(`Los pagos ($${paidSum.toFixed(2)}) no cuadran con el total de la venta ($${txTotals.total.toFixed(2)})`), { status: 400 });
         }
         const creditoAmount = +txPayments.filter((p) => p.method === 'credito').reduce((s, p) => s + p.amount, 0).toFixed(2);
+
+        /**
+         * PLAZO DE CRÉDITO. El cajero elige los días (5, 15, 30…) y de ahí sale el vencimiento;
+         * si en cambio manda una fecha concreta, esa manda y los días se deducen de ella.
+         *
+         * La fecha se ancla al MEDIODÍA local (utils/dates.invoiceDate): con `new Date('YYYY-MM-DD')`
+         * quedaba a medianoche UTC, que en Ecuador es el día ANTERIOR a las 19:00, y la cartera
+         * mostraba la factura vencida un día antes de tiempo.
+         */
+        let txCreditDays = null;
+        let txDueDate = null;
+        if (creditoAmount > 0) {
+          const diasPedidos = req.body.creditDays === '' || req.body.creditDays === null || req.body.creditDays === undefined
+            ? null : parseInt(req.body.creditDays, 10);
+          if (Number.isFinite(diasPedidos) && diasPedidos >= 0) {
+            txCreditDays = diasPedidos;
+            const base = invoiceDate(saleDate);
+            base.setDate(base.getDate() + diasPedidos);
+            txDueDate = base;
+          } else if (req.body.dueDate) {
+            txDueDate = invoiceDate(req.body.dueDate);
+            const desde = invoiceDate(saleDate);
+            txCreditDays = Math.max(0, Math.round((txDueDate - desde) / 86400000));
+          }
+        }
         const distinctMethods = [...new Set(txPayments.map((p) => p.method))];
         const resolvedMethod = distinctMethods.length === 1 ? distinctMethods[0] : 'mixto';
         // Datos de banco/tarjeta a nivel cabecera (compat + liquidaciones de tarjeta):
@@ -384,7 +445,7 @@ exports.createSale = async (req, res) => {
           costCenter: cc.costCenter || null,
           patient: patient || undefined,
           clientName,
-          clientCedula,
+          clientCedula: cedulaVenta,
           clientEmail,
           clientPhone,
           clientAddress,
@@ -399,7 +460,8 @@ exports.createSale = async (req, res) => {
           total: txTotals.total,
           paymentMethod: resolvedMethod,
           payments: txPayments,
-          dueDate: creditoAmount > 0 ? (req.body.dueDate ? new Date(req.body.dueDate) : null) : null,
+          creditDays: creditoAmount > 0 ? txCreditDays : null,
+          dueDate: creditoAmount > 0 ? txDueDate : null,
           balance: creditoAmount,
           paid: creditoAmount <= 0.01,
           notes,
@@ -416,6 +478,8 @@ exports.createSale = async (req, res) => {
           cardPos: firstCard.cardPos || '',
           cardLote: firstCard.cardLote || '',
           cardVoucher: firstCard.cardVoucher || '',
+          cardDeferredType: firstCard.cardDeferredType || 'CORRIENTE',
+          cardDeferredMonths: firstCard.cardDeferredMonths || 0,
           appointment: req.body.appointment || undefined,
           idempotencyKey,
           createdAt: saleDate,
@@ -674,6 +738,39 @@ exports.createSale = async (req, res) => {
           txSale.costJournalEntry = costEntry._id;
         }
         await txSale.save({ session });
+
+        // ── El dinero que entra por BANCO también entra al LIBRO DE BANCOS ──────────────
+        // Una venta cobrada por transferencia debitaba la cuenta contable del banco en el
+        // asiento, pero no dejaba ningún BankTransaction. Consecuencia: ese ingreso no existía
+        // para el libro del banco —no aparecía en Movimientos, no se podía conciliar (la
+        // conciliación solo mostraba pagos) y el `bookBalance` de la cuenta quedaba por debajo
+        // de su propia cuenta contable. Cada venta por transferencia agrandaba la diferencia.
+        {
+          const BankTransaction = require('../models/BankTransaction');
+          const BankAccount = require('../models/BankAccount');
+          for (const p of txPayments) {
+            if (p.method !== 'transferencia' || !p.bankAccount) continue;
+            const banco = await BankAccount.findOne({ _id: p.bankAccount, clinic: req.clinicId }).session(session);
+            if (!banco) continue;
+            await BankTransaction.create([{
+              clinic: req.clinicId,
+              bankAccount: banco._id,
+              date: saleDate,
+              type: 'COBRO',
+              amount: p.amount,
+              direction: 1,
+              description: `Venta ${txSale.saleNumber}`,
+              reference: p.reference || txSale.saleNumber,
+              partyName: txSale.clientName || '',
+              costCenter: txCostCenter || null,
+              journalEntry: txEntry._id,
+              sourceModel: 'Sale',
+              sourceRef: txSale._id,
+              createdBy: req.user._id,
+            }], { session });
+          }
+        }
+
         // El movimiento de inventario apunta al asiento de COSTO (donde vive la salida de
         // inventario); si la venta no movió inventario, al asiento de la venta.
         await InventoryMovement.updateMany(
@@ -878,11 +975,26 @@ async function reverseSaleTx(session, { clinicId, saleId, userId, reversalDate, 
       session,
     });
   }
-  await BankTransaction.updateMany(
-    { clinic: clinicId, sourceModel: 'Sale', sourceRef: sale._id, voided: false },
-    { $set: { voided: true, voidedAt: reversalDate, voidedBy: userId } },
-    { session }
-  );
+  // Movimientos bancarios de la venta (el cobro por transferencia del mostrador y los abonos
+  // posteriores de la CxC): se anulan y se DESCUENTA su efecto del saldo de la cuenta. Con un
+  // `updateMany` masivo no se descontaba —el gancho que mantiene `bookBalance` solo corre al
+  // crear—, así que anular una venta cobrada por banco dejaba el saldo del banco inflado.
+  const BankAccount = require('../models/BankAccount');
+  const bancarios = await BankTransaction.find({
+    clinic: clinicId, sourceModel: 'Sale', sourceRef: sale._id, voided: false,
+  }).session(session);
+  for (const bt of bancarios) {
+    bt.voided = true;
+    bt.voidedAt = reversalDate;
+    bt.voidedBy = userId;
+    bt.voidReason = `Anulacion venta ${sale.saleNumber}`;
+    await bt.save({ session });
+    await BankAccount.updateOne(
+      { _id: bt.bankAccount },
+      { $inc: { bookBalance: -(Number(bt.amount || 0) * Number(bt.direction || 0)) } },
+      { session }
+    );
+  }
 
   // Revertir el progreso de tratamiento que esta venta marcó como cumplido.
   for (const item of sale.items) {

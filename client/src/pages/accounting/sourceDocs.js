@@ -18,7 +18,7 @@ export const SOURCE_ROUTES = {
   // Sin deep-link (solo etiqueta): el asiento se ve en el modal.
   CashFlowManualItem: { label: 'Partida manual del flujo de caja' },
   BankTransaction: { label: 'Movimiento bancario' },
-  CashDeposit: { label: 'Depósito de efectivo' },
+  CashDeposit: { path: '/accounting/cash-deposits', label: 'Depósito de efectivo', deep: true },
   Reconciliation: { label: 'Conciliación' },
   CashClosing: { label: 'Cierre de caja' },
   CashMovement: { label: 'Movimiento de caja' },

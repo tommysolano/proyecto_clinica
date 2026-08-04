@@ -5,8 +5,11 @@ const BankCheck = require('../models/BankCheck');
 const CreditCard = require('../models/CreditCard');
 const Sale = require('../models/Sale');
 const ChartOfAccount = require('../models/ChartOfAccount');
+const Payment = require('../models/Payment');
 const { createEntry, findAccount, runInTransaction, assertPeriodOpen, reverseEntry } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
+const { girarCheque, liberarCheque } = require('../services/bankChecks');
+const { newWorkbook, addSheet, sendWorkbook, excelHandler, periodLabel } = require('../utils/excelReport');
 const ExcelJS = require('exceljs');
 const multer = require('multer');
 
@@ -139,22 +142,28 @@ async function postBankJournal({
 }
 
 // ---------- Movimientos genéricos ----------
-exports.createMovement = async (req, res) => {
-  try {
-    const { bankAccount, type, amount, date, description, reference,
-            counterAccountCode, checkNumber, counterpartAccount,
-            voucherUrl, voucherNumber } = req.body;
+
+/**
+ * Registra un movimiento bancario MANUAL con su asiento, dentro de una transacción ya abierta.
+ * Se extrajo de `createMovement` para poder reutilizarlo al CORREGIR un movimiento
+ * (`updateMovement` = anular el anterior + registrar este), sin duplicar las reglas de
+ * comprobante obligatorio, contrapartida por tipo, transferencias y cheques.
+ */
+async function registrarMovimiento(clinicId, userId, body, session) {
+  const { bankAccount, type, amount, date, description, reference,
+          counterAccountCode, checkNumber, counterpartAccount,
+          voucherUrl, voucherNumber, partyName, costCenter } = body;
+  {
     {
-      const result = await runInTransaction(async (session) => {
         if (!bankAccount || !type || !amount) {
           throw Object.assign(new Error('bankAccount, type y amount requeridos'), { status: 400 });
         }
         const txAmount = +Number(amount).toFixed(2);
         if (txAmount <= 0) throw Object.assign(new Error('Monto invalido'), { status: 400 });
         const txDate = date ? new Date(date) : new Date();
-        await assertPeriodOpen(req.clinicId, txDate, { session });
+        await assertPeriodOpen(clinicId, txDate, { session });
 
-        const bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId }).session(session);
+        const bank = await BankAccount.findOne({ _id: bankAccount, clinic: clinicId }).session(session);
         if (!bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 404 });
 
         const inflow = ['DEPOSITO', 'TRANSFERENCIA_IN', 'INTERES', 'COBRO'].includes(type);
@@ -176,7 +185,7 @@ exports.createMovement = async (req, res) => {
         };
         let defaultCounter = counterAccountCode || null;
         if (!defaultCounter && counterRoleByType[type]) {
-          defaultCounter = (await getAccount(req.clinicId, counterRoleByType[type], { session })).code;
+          defaultCounter = (await getAccount(clinicId, counterRoleByType[type], { session })).code;
         }
 
         let counterpartTx = null;
@@ -185,14 +194,14 @@ exports.createMovement = async (req, res) => {
 
         if (type === 'TRANSFERENCIA_OUT' || type === 'TRANSFERENCIA_IN') {
           if (!counterpartAccount) throw Object.assign(new Error('counterpartAccount requerido para transferencia'), { status: 400 });
-          const other = await BankAccount.findOne({ _id: counterpartAccount, clinic: req.clinicId }).session(session);
+          const other = await BankAccount.findOne({ _id: counterpartAccount, clinic: clinicId }).session(session);
           if (!other) throw Object.assign(new Error('Cuenta contraparte no encontrada'), { status: 404 });
           const out = direction < 0 ? bank : other;
           const inn = direction > 0 ? bank : other;
           // Se permite la transferencia aunque el saldo origen quede en negativo (sin bloqueo).
 
           const [mainTx] = await BankTransaction.create([{
-            clinic: req.clinicId,
+            clinic: clinicId,
             bankAccount: bank._id,
             date: txDate,
             type,
@@ -202,11 +211,13 @@ exports.createMovement = async (req, res) => {
             reference,
             voucherUrl: voucherUrl || '',
             voucherNumber: voucherNumber || '',
+            partyName: partyName || '',
+            costCenter: costCenter || null,
             counterpartAccount: other._id,
-            createdBy: req.user._id,
+            createdBy: userId,
           }], { session });
           [counterpartTx] = await BankTransaction.create([{
-            clinic: req.clinicId,
+            clinic: clinicId,
             bankAccount: other._id,
             date: txDate,
             type: direction > 0 ? 'TRANSFERENCIA_OUT' : 'TRANSFERENCIA_IN',
@@ -216,18 +227,21 @@ exports.createMovement = async (req, res) => {
             reference,
             voucherUrl: voucherUrl || '',
             voucherNumber: voucherNumber || '',
+            partyName: partyName || '',
+            costCenter: costCenter || null,
             counterpartAccount: bank._id,
-            createdBy: req.user._id,
+            createdBy: userId,
           }], { session });
           entry = await createEntry({
-            clinicId: req.clinicId,
+            clinicId: clinicId,
             date: txDate,
             description: description || 'Transferencia bancaria',
             source: 'BANCO',
             sourceModel: 'BankTransaction',
             sourceRef: mainTx._id,
             sourceAction: 'TRANSFER',
-            userId: req.user._id,
+            userId: userId,
+            costCenter: costCenter || null,
             session,
             lines: [
               { account: inn.chartAccount, debit: txAmount, credit: 0, description },
@@ -244,13 +258,26 @@ exports.createMovement = async (req, res) => {
         // Se permite el egreso aunque el saldo del banco quede en negativo (sin bloqueo).
 
         if (type === 'CHEQUE_EMITIDO') {
-          realCheckNumber = checkNumber || String(bank.nextCheckNumber);
+          // Sin número explícito se toma el PRIMERO DISPONIBLE de la chequera, no un contador
+          // suelto: el contador podía adelantarse a la chequera y girar un cheque inexistente.
+          if (!checkNumber) {
+            const libre = await BankCheck.findOne({
+              clinic: clinicId, bankAccount: bank._id, status: 'DISPONIBLE',
+            }).sort({ number: 1 }).session(session);
+            if (!libre) {
+              throw Object.assign(new Error(
+                'No quedan cheques disponibles en la chequera de esta cuenta. '
+                + 'Genera el siguiente rango en Bancos → Cheques.'
+              ), { status: 400 });
+            }
+            realCheckNumber = String(libre.number);
+          }
           bank.nextCheckNumber = (parseInt(realCheckNumber, 10) || bank.nextCheckNumber) + 1;
           await bank.save({ session });
         }
 
         const [tx] = await BankTransaction.create([{
-          clinic: req.clinicId,
+          clinic: clinicId,
           bankAccount: bank._id,
           date: txDate,
           type,
@@ -261,12 +288,14 @@ exports.createMovement = async (req, res) => {
           checkNumber: realCheckNumber,
           voucherUrl: voucherUrl || '',
           voucherNumber: voucherNumber || '',
-          createdBy: req.user._id,
+          partyName: partyName || '',
+          costCenter: costCenter || null,
+          createdBy: userId,
         }], { session });
 
         entry = await postBankJournal({
-          clinicId: req.clinicId,
-          userId: req.user._id,
+          clinicId: clinicId,
+          userId: userId,
           date: txDate,
           description: description || type,
           bank,
@@ -276,46 +305,293 @@ exports.createMovement = async (req, res) => {
           sourceModel: 'BankTransaction',
           sourceRef: tx._id,
           sourceAction: 'POST',
+          costCenter: costCenter || null,
           session,
         });
         tx.journalEntry = entry._id;
         await tx.save({ session });
 
         if (type === 'CHEQUE_EMITIDO' && realCheckNumber) {
-          await BankCheck.findOneAndUpdate(
-            { clinic: req.clinicId, bankAccount: bank._id, number: parseInt(realCheckNumber, 10) },
-            { status: 'GIRADO', beneficiary: description || '', amount: txAmount, date: txDate, transaction: tx._id },
-            { session }
-          );
+          await girarCheque({
+            clinicId,
+            bankId: bank._id,
+            number: realCheckNumber,
+            beneficiary: partyName || description || '',
+            amount: txAmount,
+            date: txDate,
+            transactionId: tx._id,
+            session,
+          });
         }
         return { transaction: tx, journalEntry: entry, counterpartTx: null };
-      });
-      return res.status(201).json(result);
     }
+  }
+}
+
+exports.createMovement = async (req, res) => {
+  try {
+    const result = await runInTransaction((session) => registrarMovimiento(req.clinicId, req.user._id, req.body, session));
+    return res.status(201).json(result);
   } catch (e) {
     res.status(e.status || 400).json({ message: e.message });
   }
 };
 
-exports.listMovements = async (req, res) => {
-  const { bankAccount, startDate, endDate, type, reconciled, page = 1, limit = 50 } = req.query;
+/**
+ * CORRIGE un movimiento manual: anula el anterior (reversando su asiento) y registra uno nuevo
+ * con los datos corregidos. No se edita el asiento —son inmutables—: queda la traza completa
+ * (movimiento equivocado anulado + reverso + movimiento correcto), que es lo que exige la
+ * auditoría. Solo aplica a movimientos MANUALES no conciliados; ver `assertMovimientoManual`.
+ */
+exports.updateMovement = async (req, res) => {
+  try {
+    const result = await runInTransaction(async (session) => {
+      const tx = await BankTransaction.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+      if (!tx) throw Object.assign(new Error('No encontrado'), { status: 404 });
+      if (tx.voided) throw Object.assign(new Error('El movimiento está anulado: no se puede corregir'), { status: 400 });
+      if (tx.reconciled) throw Object.assign(new Error('El movimiento ya está conciliado: no se puede corregir'), { status: 400 });
+      assertMovimientoManual(tx, 'corregir');
+      if (['TRANSFERENCIA_IN', 'TRANSFERENCIA_OUT'].includes(tx.type)) {
+        throw Object.assign(new Error('Una transferencia mueve dos cuentas: anúlala y vuelve a registrarla.'), { status: 400 });
+      }
+
+      const fechaReverso = new Date();
+      await assertPeriodOpen(req.clinicId, fechaReverso, { session });
+      if (tx.journalEntry) {
+        await reverseEntry({
+          clinicId: req.clinicId,
+          entryId: tx.journalEntry,
+          userId: req.user._id,
+          reason: 'Correccion de movimiento bancario',
+          date: fechaReverso,
+          session,
+        });
+      }
+      tx.voided = true;
+      tx.voidedAt = fechaReverso;
+      tx.voidedBy = req.user._id;
+      tx.voidReason = 'Corregido (reemplazado por un movimiento nuevo)';
+      await tx.save({ session });
+      await BankAccount.updateOne(
+        { _id: tx.bankAccount },
+        { $inc: { bookBalance: -(Number(tx.amount || 0) * Number(tx.direction || 0)) } },
+        { session }
+      );
+      // Se libera el cheque ANTES de registrar el corregido: si no, corregir el monto de un
+      // cheque conservando su número chocaría contra su propio giro («ya fue usado»).
+      if (tx.type === 'CHEQUE_EMITIDO' && tx.checkNumber) {
+        await liberarCheque({ clinicId: req.clinicId, bankId: tx.bankAccount, number: tx.checkNumber, session });
+      }
+
+      // Lo no enviado se conserva del movimiento original: corregir el monto no debe borrar
+      // la referencia ni el comprobante.
+      const nuevo = {
+        bankAccount: req.body.bankAccount || tx.bankAccount,
+        type: req.body.type || tx.type,
+        amount: req.body.amount !== undefined ? req.body.amount : tx.amount,
+        date: req.body.date || tx.date,
+        description: req.body.description !== undefined ? req.body.description : tx.description,
+        reference: req.body.reference !== undefined ? req.body.reference : tx.reference,
+        counterAccountCode: req.body.counterAccountCode || undefined,
+        checkNumber: req.body.checkNumber !== undefined ? req.body.checkNumber : tx.checkNumber,
+        voucherUrl: req.body.voucherUrl !== undefined ? req.body.voucherUrl : tx.voucherUrl,
+        voucherNumber: req.body.voucherNumber !== undefined ? req.body.voucherNumber : tx.voucherNumber,
+        partyName: req.body.partyName !== undefined ? req.body.partyName : tx.partyName,
+        costCenter: req.body.costCenter !== undefined ? (req.body.costCenter || null) : tx.costCenter,
+      };
+      const creado = await registrarMovimiento(req.clinicId, req.user._id, nuevo, session);
+      return { ...creado, replacedId: tx._id };
+    });
+    return res.json(result);
+  } catch (e) {
+    res.status(e.status || 400).json({ message: e.message });
+  }
+};
+
+const escaparRegex = (v) => String(v).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
+ * Filtro de la lista de movimientos. Lo comparten la pantalla y el Excel para que no puedan
+ * decir cosas distintas.
+ *
+ * La búsqueda libre (`q`) cubre lo que el contador tiene en la mano cuando busca un movimiento:
+ * número de comprobante/papeleta, número de cheque, referencia, descripción y PERSONA. Los
+ * movimientos que nacieron de un cobro/pago llevan la persona copiada (`partyName`), pero los
+ * anteriores a ese campo no: por eso, además, se resuelven los cobros/pagos cuyo tercero
+ * coincide y se buscan sus movimientos por `sourceRef`.
+ */
+async function buildMovementFilter(req) {
+  const { bankAccount, startDate, endDate, type, reconciled, q, costCenter, status } = req.query;
   const filter = { clinic: req.clinicId };
   if (bankAccount) filter.bankAccount = bankAccount;
   if (type) filter.type = type;
+  if (costCenter) filter.costCenter = costCenter;
   if (reconciled !== undefined) filter.reconciled = reconciled === 'true';
+  if (status === 'ANULADO') filter.voided = true;
+  else if (status === 'VIGENTE') filter.voided = false;
+  if (q && q.trim()) {
+    const rx = new RegExp(escaparRegex(q), 'i');
+    const or = [
+      { description: rx }, { reference: rx }, { voucherNumber: rx },
+      { checkNumber: rx }, { partyName: rx },
+    ];
+    const pagos = await Payment.find({ clinic: req.clinicId, partyName: rx }).select('_id').limit(500);
+    if (pagos.length) or.push({ sourceModel: 'Payment', sourceRef: { $in: pagos.map((p) => p._id) } });
+    filter.$or = or;
+  }
   if (startDate || endDate) {
     filter.date = {};
     if (startDate) filter.date.$gte = new Date(startDate);
-    if (endDate) filter.date.$lte = new Date(endDate);
+    // Hasta el FIN del día: con la medianoche se perdían los movimientos del propio día de corte.
+    if (endDate) filter.date.$lte = new Date(`${String(endDate).slice(0, 10)}T23:59:59.999`);
   }
+  return filter;
+}
+
+/**
+ * Completa la PERSONA de los movimientos que no la llevan copiada (los anteriores al campo
+ * `partyName`), leyéndola del cobro/pago o de la venta que los originó. Es una sola consulta
+ * por página, no una por fila.
+ */
+async function resolverPersonas(items) {
+  const pendientes = items.filter((m) => !m.partyName && m.sourceRef && ['Payment', 'Sale'].includes(m.sourceModel));
+  if (!pendientes.length) return items;
+  const ids = { Payment: [], Sale: [] };
+  for (const m of pendientes) ids[m.sourceModel].push(m.sourceRef);
+  const [pagos, ventas] = await Promise.all([
+    ids.Payment.length ? Payment.find({ _id: { $in: ids.Payment } }).select('partyName').lean() : [],
+    ids.Sale.length ? Sale.find({ _id: { $in: ids.Sale } }).select('clientName').lean() : [],
+  ]);
+  const nombre = new Map([
+    ...pagos.map((p) => [String(p._id), p.partyName || '']),
+    ...ventas.map((s) => [String(s._id), s.clientName || '']),
+  ]);
+  for (const m of items) {
+    if (!m.partyName && m.sourceRef) m.partyName = nombre.get(String(m.sourceRef)) || '';
+  }
+  return items;
+}
+
+exports.listMovements = async (req, res) => {
+  const { page = 1, limit = 50 } = req.query;
+  const filter = await buildMovementFilter(req);
+  const lim = Math.min(parseInt(limit, 10) || 50, 200);
+  const pag = Math.max(parseInt(page, 10) || 1, 1);
   const total = await BankTransaction.countDocuments(filter);
   const items = await BankTransaction.find(filter)
     .populate('bankAccount', 'name bank accountNumber')
     .populate('createdBy', 'name')
+    .populate('voidedBy', 'name')
+    .populate('costCenter', 'code name')
     .sort({ date: -1, createdAt: -1 })
-    .skip((page - 1) * limit).limit(parseInt(limit));
-  res.json({ items, total, pages: Math.ceil(total / limit), currentPage: parseInt(page) });
+    .skip((pag - 1) * lim).limit(lim)
+    .lean();
+  await resolverPersonas(items);
+  res.json({ items, total, pages: Math.ceil(total / lim), currentPage: pag });
 };
+
+/**
+ * Excel de los movimientos bancarios con los MISMOS filtros de la pantalla (sin paginar: el
+ * contador descarga el rango completo, no la página que está viendo).
+ */
+exports.movementsExcel = excelHandler(async (req, res) => {
+  const filter = await buildMovementFilter(req);
+  const items = await BankTransaction.find(filter)
+    .populate('bankAccount', 'name bank accountNumber')
+    .populate('costCenter', 'code name')
+    .sort({ date: 1, createdAt: 1 })
+    .limit(10000)
+    .lean();
+  await resolverPersonas(items);
+
+  const rows = items.map((m) => ({
+    date: m.date,
+    bank: m.bankAccount?.name || '',
+    type: m.type,
+    party: m.partyName || '',
+    description: m.description || '',
+    voucher: m.voucherNumber || '',
+    check: m.checkNumber || '',
+    reference: m.reference || '',
+    costCenter: m.costCenter ? `${m.costCenter.code || ''} ${m.costCenter.name || ''}`.trim() : '',
+    origin: m.sourceModel ? m.sourceModel : 'Manual',
+    inflow: m.voided ? 0 : (m.direction > 0 ? m.amount : 0),
+    outflow: m.voided ? 0 : (m.direction < 0 ? m.amount : 0),
+    status: m.voided ? 'ANULADO' : (m.reconciled ? 'CONCILIADO' : 'REGISTRADO'),
+  }));
+  const totals = {
+    inflow: +rows.reduce((s, r) => s + r.inflow, 0).toFixed(2),
+    outflow: +rows.reduce((s, r) => s + r.outflow, 0).toFixed(2),
+  };
+
+  const wb = newWorkbook();
+  addSheet(wb, {
+    title: 'Movimientos bancarios',
+    meta: [
+      ['Reporte', 'Movimientos bancarios'],
+      ['Período', periodLabel(req.query)],
+      ['Filtros', [
+        req.query.bankAccount ? 'una cuenta' : 'todas las cuentas',
+        req.query.type || null,
+        req.query.q ? `búsqueda: ${req.query.q}` : null,
+      ].filter(Boolean).join(' · ')],
+      ['Movimientos', rows.length],
+    ],
+    columns: [
+      { header: 'Fecha', key: 'date', width: 12, date: true },
+      { header: 'Cuenta bancaria', key: 'bank', width: 24 },
+      { header: 'Tipo', key: 'type', width: 18 },
+      { header: 'Persona', key: 'party', width: 30 },
+      { header: 'Descripción', key: 'description', width: 38 },
+      { header: 'N° comprobante', key: 'voucher', width: 16 },
+      { header: 'N° cheque', key: 'check', width: 12 },
+      { header: 'Referencia', key: 'reference', width: 18 },
+      { header: 'Centro de costo', key: 'costCenter', width: 22 },
+      { header: 'Origen', key: 'origin', width: 16 },
+      { header: 'Entrada', key: 'inflow', width: 14, money: true },
+      { header: 'Salida', key: 'outflow', width: 14, money: true },
+      { header: 'Estado', key: 'status', width: 14 },
+    ],
+    rows,
+    totals,
+    notes: ['Los movimientos anulados aparecen con importe 0: se conservan como traza, no suman.'],
+  });
+  await sendWorkbook(res, wb, `movimientos_bancarios_${Date.now()}.xlsx`);
+});
+
+/**
+ * Nombre legible del documento que originó un movimiento, para explicar por qué no se puede
+ * tocar desde Bancos. La clave es `sourceModel` (null = movimiento manual de bancos).
+ */
+const ORIGEN_LABEL = {
+  Payment: 'un cobro/pago',
+  Sale: 'una venta',
+  CardSettlement: 'una liquidación de tarjeta',
+  CreditCardBatch: 'un lote de tarjetas',
+  Payroll: 'una nómina',
+  SriDeclaration: 'una declaración del SRI',
+  CashMovement: 'un cierre de caja',
+  CashDeposit: 'un depósito de caja',
+  CashFlowManualItem: 'una partida de flujo de caja',
+};
+
+/**
+ * Un movimiento solo se puede EDITAR o ANULAR desde Bancos si nació aquí.
+ *
+ * Los movimientos que espejan otro documento COMPARTEN su asiento contable: anularlos desde
+ * Bancos reversaría el asiento completo del cobro / la nómina / la liquidación y dejaría el
+ * documento origen marcado como contabilizado, con la contabilidad descuadrada y en silencio.
+ * Esos se corrigen desde su propio documento.
+ */
+function assertMovimientoManual(tx, verbo) {
+  if (tx.sourceModel) {
+    const que = ORIGEN_LABEL[tx.sourceModel] || `un documento de ${tx.sourceModel}`;
+    throw Object.assign(
+      new Error(`Este movimiento lo generó ${que}: no se puede ${verbo} desde Bancos. Corrígelo o anúlalo en su documento de origen.`),
+      { status: 400 }
+    );
+  }
+}
 
 exports.voidMovement = async (req, res) => {
   try {
@@ -325,6 +601,7 @@ exports.voidMovement = async (req, res) => {
         if (!tx) throw Object.assign(new Error('No encontrado'), { status: 404 });
         if (tx.voided) throw Object.assign(new Error('Ya anulado'), { status: 400 });
         if (tx.reconciled) throw Object.assign(new Error('Conciliado, no se puede anular'), { status: 400 });
+        assertMovimientoManual(tx, 'anular');
         const reversalDate = req.body.date ? new Date(req.body.date) : new Date();
         await assertPeriodOpen(req.clinicId, reversalDate, { session });
 
@@ -364,6 +641,11 @@ exports.voidMovement = async (req, res) => {
             { $inc: { bookBalance: -(Number(item.amount || 0) * Number(item.direction || 0)) } },
             { session }
           );
+          // El cheque de un movimiento anulado vuelve a estar disponible: si no, se perdería
+          // un número de la chequera por cada error de digitación.
+          if (item.type === 'CHEQUE_EMITIDO' && item.checkNumber) {
+            await liberarCheque({ clinicId: req.clinicId, bankId: item.bankAccount, number: item.checkNumber, session });
+          }
         }
         return { message: 'Anulado', voidedCount: toVoid.length };
       });
@@ -372,95 +654,33 @@ exports.voidMovement = async (req, res) => {
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 
-// ---------- Convertir ventas en efectivo a depósito en cuenta bancaria ----------
+// ---------- Depósitos de efectivo (compatibilidad) ----------
+//
+// El depósito de efectivo vive ahora en su propio módulo (`cashDepositController`): es un
+// documento con número, papeleta, detalle de qué facturas lo componen y anulación. Estos dos
+// endpoints se conservan porque la pantalla de Caja los usaba, pero solo REENVÍAN al módulo:
+// la lógica no puede estar en dos sitios o volverían a divergir.
+//
+// La versión anterior, además de no dejar documento, marcaba las ventas depositadas cambiándoles
+// `paymentMethod` a 'transferencia' y pisándoles las notas: la venta quedaba mintiendo sobre cómo
+// se cobró. Ahora se marcan con `cashDeposit` y conservan su forma de pago real.
+const cashDeposits = require('./cashDepositController');
 
-// Lista las ventas en efectivo pendientes de depósito (caja) y el total acumulado.
-exports.getCashPending = async (req, res) => {
-  try {
-    const filter = {
-      clinic: req.clinicId,
-      paymentMethod: 'efectivo',
-      status: 'completada',
-    };
-    if (req.query.startDate && req.query.endDate) {
-      filter.createdAt = {
-        $gte: new Date(req.query.startDate),
-        $lte: new Date(req.query.endDate),
-      };
-    }
-    const sales = await Sale.find(filter)
-      .populate('patient', 'firstName lastName cedula')
-      .populate('createdBy', 'name')
-      .sort({ createdAt: -1 });
-    const total = sales.reduce((s, v) => s + (v.total || 0), 0);
-    res.json({ sales, total, count: sales.length });
-  } catch (e) {
-    res.status(500).json({ message: e.message });
-  }
-};
+exports.getCashPending = cashDeposits.pending;
 
 exports.cashToTransfer = async (req, res) => {
-  try {
-    const { saleIds, bankAccount, voucher, date, description } = req.body;
-    {
-      const result = await runInTransaction(async (session) => {
-        if (!Array.isArray(saleIds) || !saleIds.length) throw Object.assign(new Error('saleIds requerido'), { status: 400 });
-        if (!bankAccount || !voucher) throw Object.assign(new Error('bankAccount y voucher requeridos'), { status: 400 });
-        const txDate = date ? new Date(date) : new Date();
-        await assertPeriodOpen(req.clinicId, txDate, { session });
-        const bank = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId }).session(session);
-        if (!bank) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 404 });
-        const sales = await Sale.find({
-          _id: { $in: saleIds },
-          clinic: req.clinicId,
-          paymentMethod: 'efectivo',
-          status: 'completada',
-        }).session(session);
-        if (!sales.length) throw Object.assign(new Error('No hay ventas en efectivo validas'), { status: 400 });
-        const total = +sales.reduce((s, v) => s + (Number(v.total) || 0), 0).toFixed(2);
-        const [tx] = await BankTransaction.create([{
-          clinic: req.clinicId,
-          bankAccount: bank._id,
-          date: txDate,
-          type: 'DEPOSITO',
-          amount: total,
-          direction: 1,
-          description: description || 'Deposito ventas efectivo',
-          reference: voucher,
-          voucherNumber: voucher,
-          sourceModel: 'CashDeposit',
-          createdBy: req.user._id,
-        }], { session });
-        const cajaAcc = await getAccount(req.clinicId, 'caja', { session });
-        const entry = await postBankJournal({
-          clinicId: req.clinicId,
-          userId: req.user._id,
-          date: txDate,
-          description: description || `Deposito ventas efectivo - papeleta ${voucher}`,
-          bank,
-          counterAccountCode: cajaAcc.code,
-          amount: total,
-          direction: 1,
-          sourceModel: 'BankTransaction',
-          sourceRef: tx._id,
-          sourceAction: 'CASH_DEPOSIT',
-          session,
-        });
-        tx.journalEntry = entry._id;
-        tx.sourceRef = tx._id;
-        await tx.save({ session });
-        await Sale.updateMany(
-          { _id: { $in: sales.map((s) => s._id) }, clinic: req.clinicId },
-          { $set: { paymentMethod: 'transferencia', notes: `Depositado en ${bank.name} - papeleta ${voucher}` } },
-          { session }
-        );
-        return { transaction: tx, journalEntry: entry, total, salesCount: sales.length };
-      });
-      return res.json(result);
-    }
-  } catch (e) {
-    res.status(e.status || 400).json({ message: e.message });
+  const { saleIds, bankAccount, voucher, voucherNumber, date, description } = req.body || {};
+  if (!Array.isArray(saleIds) || !saleIds.length) {
+    return res.status(400).json({ message: 'saleIds requerido' });
   }
+  req.body = {
+    bankAccount,
+    voucherNumber: voucherNumber || voucher,
+    date,
+    description,
+    items: saleIds.map((id) => ({ docModel: 'Sale', docRef: id })),
+  };
+  return cashDeposits.create(req, res);
 };
 
 // ---------- Conciliación bancaria ----------
@@ -780,6 +1000,35 @@ exports.listReconciliations = async (req, res) => {
   res.json(items);
 };
 
+/**
+ * Elimina una conciliación PENDIENTE (en borrador). Una conciliación en borrador es papel de
+ * trabajo: no ha marcado nada como conciliado ni ha tocado un asiento, así que una abierta por
+ * error —con la cuenta o el corte equivocados— se puede tirar sin dejar rastro contable.
+ *
+ * Una conciliación CERRADA no se elimina: marcó movimientos como conciliados y es la evidencia
+ * de que el saldo del banco cuadró a esa fecha.
+ */
+exports.deleteReconciliation = async (req, res) => {
+  try {
+    const rec = await Reconciliation.findOne({ _id: req.params.id, clinic: req.clinicId });
+    if (!rec) return res.status(404).json({ message: 'No encontrada' });
+    if (rec.status === 'CONCILIADO') {
+      return res.status(400).json({
+        message: 'Esta conciliación ya está cerrada: no se elimina. Es la evidencia de que el saldo cuadró a esa fecha.',
+      });
+    }
+    // Red de seguridad: si por cualquier vía quedaron movimientos apuntando a este borrador
+    // (p. ej. creados desde el extracto), se sueltan antes de borrarlo para no dejarlos
+    // marcados como conciliados contra una conciliación que ya no existe.
+    await BankTransaction.updateMany(
+      { clinic: req.clinicId, reconciliation: rec._id },
+      { $set: { reconciled: false, reconciliation: null } }
+    );
+    await rec.deleteOne();
+    res.json({ message: 'Conciliación eliminada' });
+  } catch (e) { res.status(400).json({ message: e.message }); }
+};
+
 // ---------- Importación de estado de cuenta bancario + matching ----------
 // ----- Parseo de estado de cuenta (CSV / Excel) -----
 
@@ -1060,11 +1309,25 @@ exports.recomputeBankBalances = async (req, res) => {
 };
 
 // ---------- Chequera / secuencias de cheques ----------
+/**
+ * Chequera de una cuenta. Devuelve, además del estado, EN QUÉ se usó cada cheque girado
+ * (el pago o el movimiento bancario), que es lo que la pantalla necesita para responder
+ * "¿a quién le di este cheque?" sin salir de aquí.
+ */
 exports.listChecks = async (req, res) => {
   const filter = { clinic: req.clinicId };
   if (req.query.bankAccount) filter.bankAccount = req.query.bankAccount;
   if (req.query.status) filter.status = req.query.status;
-  const items = await BankCheck.find(filter).sort({ number: 1 });
+  if (req.query.q && req.query.q.trim()) {
+    const rx = new RegExp(escaparRegex(req.query.q), 'i');
+    const n = parseInt(req.query.q, 10);
+    filter.$or = Number.isFinite(n) ? [{ beneficiary: rx }, { number: n }] : [{ beneficiary: rx }];
+  }
+  const items = await BankCheck.find(filter)
+    .populate('payment', 'number type date total partyName status')
+    .populate('transaction', 'date description amount voided')
+    .sort({ number: 1 })
+    .limit(2000);
   res.json(items);
 };
 

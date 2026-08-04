@@ -285,7 +285,12 @@ exports.updateProduct = async (req, res) => {
     // Catálogo compartido: editable desde cualquier sucursal.
     const existing = await Product.findOne({ _id: req.params.id });
     if (!existing) return res.status(404).json({ message: 'Producto no encontrado' });
-    syncStockFromClinics(req.body);
+    // EL STOCK NO SE EDITA DESDE LA FICHA DEL PRODUCTO. Lo fijan las compras, las ventas, los
+    // movimientos de inventario y las tomas físicas: un PUT de la ficha pisaba ese saldo (y con
+    // él el kardex) sin dejar ni asiento ni movimiento que lo explicara. Para ajustarlo hay que
+    // usar «Movimiento» en Inventario o una toma física, que sí dejan rastro.
+    delete req.body.stock;
+    delete req.body.stockByClinic;
     syncSalePrices(req.body, existing);
     // Valida/resuelve la categoría contable si se envía; NO bloquea la edición de
     // productos legacy sin categoría (enforce:false) para no romper flujos existentes.

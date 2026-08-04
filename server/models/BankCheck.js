@@ -14,6 +14,9 @@ const bankCheckSchema = new mongoose.Schema(
     amount: { type: Number, default: 0 },
     date: { type: Date, default: null },
     transaction: { type: mongoose.Schema.Types.ObjectId, ref: 'BankTransaction', default: null },
+    // Pago que giró el cheque (cuando salió de Pagos y no de un movimiento manual de Bancos):
+    // es el enlace que permite ver EN QUÉ se usó el cheque desde la pantalla de Cheques.
+    payment: { type: mongoose.Schema.Types.ObjectId, ref: 'Payment', default: null },
     voidReason: { type: String, default: '' },
   },
   { timestamps: true }

@@ -6,6 +6,9 @@ const Patient = require('../models/Patient');
 const Product = require('../models/Product');
 const InventoryMovement = require('../models/InventoryMovement');
 const Treatment = require('../models/Treatment');
+// Fuente ÚNICA del desglose por forma de pago (distingue tarjeta débito/crédito por el
+// snapshot de la venta y nunca adivina el tipo en las ventas antiguas).
+const { normalizeSalePayments } = require('../services/salePayments');
 
 /**
  * Reporte de atenciones por proveedor (doctor/enfermero) en un rango de fechas.
@@ -153,6 +156,9 @@ exports.exportSales = async (req, res) => {
 
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet('Ventas');
+    // El método de pago va DESGLOSADO en una columna por forma, con el importe de cada una:
+    // «mixto» o «tarjeta» a secas no le sirven al contador para cuadrar caja, banco ni CxC.
+    // Las columnas suman exactamente el total de la venta (el backend valida el reparto).
     ws.columns = [
       { header: 'N° Venta', key: 'saleNumber', width: 14 },
       { header: 'Fecha', key: 'date', width: 20 },
@@ -163,14 +169,56 @@ exports.exportSales = async (req, res) => {
       { header: 'Subtotal', key: 'subtotal', width: 12 },
       { header: 'IVA', key: 'tax', width: 10 },
       { header: 'Total', key: 'total', width: 12 },
-      { header: 'Método pago', key: 'method', width: 14 },
+      { header: 'Forma de pago', key: 'method', width: 14 },
+      { header: 'Efectivo', key: 'efectivo', width: 12 },
+      { header: 'Transferencia', key: 'transferencia', width: 14 },
+      { header: 'Tarjeta crédito', key: 'tarjetaCredito', width: 15 },
+      { header: 'Tarjeta débito', key: 'tarjetaDebito', width: 14 },
+      { header: 'Tarjeta (sin tipo)', key: 'tarjetaSinTipo', width: 16 },
+      { header: 'Crédito (CxC)', key: 'credito', width: 13 },
+      { header: 'Otros', key: 'otros', width: 10 },
+      { header: 'Días crédito', key: 'creditDays', width: 12 },
+      { header: 'Vence', key: 'dueDate', width: 12 },
+      { header: 'Saldo pendiente', key: 'balance', width: 15 },
+      { header: 'Diferido tarjeta', key: 'diferido', width: 18 },
       { header: 'Estado', key: 'status', width: 12 },
       { header: 'Factura', key: 'invoice', width: 22 },
       { header: 'Estado SRI', key: 'sri', width: 14 },
       { header: 'Registrado por', key: 'createdBy', width: 24 },
     ];
 
+    // Reparto por forma de pago del RECIBO de la venta (no incluye cobros posteriores de la
+    // CxC: esos son otro documento y se ven en Cobros).
+    const COLUMNA = {
+      efectivo: 'efectivo',
+      transferencia: 'transferencia',
+      deposito: 'transferencia',
+      tarjeta_credito: 'tarjetaCredito',
+      tarjeta_debito: 'tarjetaDebito',
+      tarjeta_sin_tipo: 'tarjetaSinTipo',
+      credito: 'credito',
+    };
+    const DIFERIDO_LABEL = {
+      CORRIENTE: 'Corriente',
+      SIN_INTERES: 'Diferido sin intereses',
+      CON_INTERES: 'Diferido con intereses',
+    };
+
     sales.forEach((s) => {
+      const { rows } = normalizeSalePayments(s);
+      const porColumna = {};
+      for (const row of rows) {
+        const key = COLUMNA[row.method] || 'otros';
+        porColumna[key] = +((porColumna[key] || 0) + Number(row.amount || 0)).toFixed(2);
+      }
+      // Días de crédito: el plazo pactado si se guardó; si no, la distancia entre la venta y
+      // el vencimiento (las ventas antiguas solo tienen la fecha).
+      let dias = null;
+      if (Number(s.creditDays) > 0) dias = Number(s.creditDays);
+      else if (s.dueDate && s.createdAt) {
+        dias = Math.max(0, Math.round((new Date(s.dueDate) - new Date(s.createdAt)) / 86400000));
+      }
+      const conDiferido = (s.payments || []).find((p) => p.cardDeferredType && p.cardDeferredType !== 'CORRIENTE');
       ws.addRow({
         saleNumber: s.saleNumber,
         date: new Date(s.createdAt).toLocaleString('es-EC'),
@@ -182,6 +230,19 @@ exports.exportSales = async (req, res) => {
         tax: Number(s.taxAmount || 0),
         total: Number(s.total || 0),
         method: s.paymentMethod,
+        efectivo: porColumna.efectivo || 0,
+        transferencia: porColumna.transferencia || 0,
+        tarjetaCredito: porColumna.tarjetaCredito || 0,
+        tarjetaDebito: porColumna.tarjetaDebito || 0,
+        tarjetaSinTipo: porColumna.tarjetaSinTipo || 0,
+        credito: porColumna.credito || 0,
+        otros: porColumna.otros || 0,
+        creditDays: dias === null ? '' : dias,
+        dueDate: s.dueDate ? new Date(s.dueDate).toLocaleDateString('es-EC') : '',
+        balance: Number(s.balance || 0),
+        diferido: conDiferido
+          ? `${DIFERIDO_LABEL[conDiferido.cardDeferredType] || conDiferido.cardDeferredType}${conDiferido.cardDeferredMonths ? ` · ${conDiferido.cardDeferredMonths} meses` : ''}`
+          : '',
         status: s.status,
         invoice: s.invoice
           ? `${s.invoice.estab}-${s.invoice.ptoEmi}-${s.invoice.secuencial}`
@@ -190,7 +251,7 @@ exports.exportSales = async (req, res) => {
         createdBy: s.createdBy?.name || '—',
       });
     });
-    ['subtotal', 'tax', 'total'].forEach((k) => {
+    ['subtotal', 'tax', 'total', 'efectivo', 'transferencia', 'tarjetaCredito', 'tarjetaDebito', 'tarjetaSinTipo', 'credito', 'otros', 'balance'].forEach((k) => {
       ws.getColumn(k).numFmt = '"$"#,##0.00';
     });
     styleHeader(ws);

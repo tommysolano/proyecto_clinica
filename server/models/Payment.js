@@ -47,6 +47,8 @@ const paymentSchema = new mongoose.Schema(
     status: { type: String, enum: ['REGISTRADO', 'ANULADO'], default: 'REGISTRADO' },
     journalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
     bankTransaction: { type: mongoose.Schema.Types.ObjectId, ref: 'BankTransaction', default: null },
+    // Depósito que se llevó al banco el efectivo de este cobro (solo cobros EN EFECTIVO).
+    cashDeposit: { type: mongoose.Schema.Types.ObjectId, ref: 'CashDeposit', default: null },
     // Clave de idempotencia (opcional): la envía el cliente por body o header
     // `Idempotency-Key`. Evita que un doble clic / reintento de red registre el mismo
     // cobro o pago dos veces. Ver el índice único parcial de abajo.

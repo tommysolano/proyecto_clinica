@@ -409,7 +409,24 @@ export default function ProductFormModal({
             <>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1.5">Stock actual</label>
-                <NumericInput value={productForm.stock} onChange={(e) => setProductForm({...productForm, stock: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
+                {editingId ? (
+                  // En edición el stock es SOLO LECTURA: lo fijan las compras, las ventas, los
+                  // movimientos de inventario y las tomas físicas. Digitarlo aquí pisaba el
+                  // kardex sin dejar rastro de por qué cambió.
+                  <>
+                    <div className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-100 text-slate-600 font-mono">
+                      {Number(productForm.stock || 0)}
+                    </div>
+                    <p className="text-[11px] text-slate-500 mt-1">
+                      No se edita aquí. Para ajustarlo usa <b>Movimiento</b> en Inventario o una <b>toma física</b>: así queda registrado el motivo.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <NumericInput value={productForm.stock} onChange={(e) => setProductForm({...productForm, stock: e.target.value})} className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50" />
+                    <p className="text-[11px] text-slate-500 mt-1">Saldo inicial. Después solo cambia por compras, ventas, movimientos o tomas físicas.</p>
+                  </>
+                )}
               </div>
               <div>
                 <label className="block text-sm font-medium text-slate-700 mb-1.5">Stock mínimo</label>
@@ -594,7 +611,9 @@ export default function ProductFormModal({
             <div className="sm:col-span-2 bg-indigo-50 border border-indigo-200 rounded-xl p-3">
               <p className="text-sm font-semibold text-indigo-800 mb-1">Stock por clínica</p>
               <p className="text-xs text-slate-500 mb-2">
-                El inventario general es la suma del stock de todas las clínicas.
+                {editingId
+                  ? 'Solo lectura: el stock de cada sucursal lo mueven las compras, las ventas, los traslados y las tomas físicas.'
+                  : 'Saldo inicial por sucursal. El inventario general es la suma del stock de todas las clínicas.'}
               </p>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {clinicsList.map((c) => {
@@ -602,20 +621,26 @@ export default function ProductFormModal({
                   return (
                     <div key={c._id} className="flex items-center gap-2">
                       <span className="text-sm text-slate-700 flex-1 truncate">{c.nombreComercial || c.name}</span>
-                      <NumericInput
-                        min="0"
-                        value={row?.stock ?? ''}
-                        placeholder="0"
-                        onChange={(e) => {
-                          const arr = [...(productForm.stockByClinic || [])];
-                          const idx = arr.findIndex((s) => s.clinic === c._id);
-                          const val = e.target.value;
-                          if (idx >= 0) arr[idx] = { ...arr[idx], stock: val };
-                          else arr.push({ clinic: c._id, stock: val });
-                          setProductForm({ ...productForm, stockByClinic: arr });
-                        }}
-                        className="w-24 px-2 py-1.5 border border-slate-200 rounded text-sm bg-white"
-                      />
+                      {editingId ? (
+                        <span className="w-24 px-2 py-1.5 border border-slate-200 rounded text-sm bg-slate-100 text-slate-600 font-mono text-right">
+                          {Number(row?.stock || 0)}
+                        </span>
+                      ) : (
+                        <NumericInput
+                          min="0"
+                          value={row?.stock ?? ''}
+                          placeholder="0"
+                          onChange={(e) => {
+                            const arr = [...(productForm.stockByClinic || [])];
+                            const idx = arr.findIndex((s) => s.clinic === c._id);
+                            const val = e.target.value;
+                            if (idx >= 0) arr[idx] = { ...arr[idx], stock: val };
+                            else arr.push({ clinic: c._id, stock: val });
+                            setProductForm({ ...productForm, stockByClinic: arr });
+                          }}
+                          className="w-24 px-2 py-1.5 border border-slate-200 rounded text-sm bg-white"
+                        />
+                      )}
                     </div>
                   );
                 })}

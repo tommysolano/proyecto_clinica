@@ -235,8 +235,12 @@ exports.importProductsExcel = async (req, res) => {
       const updateOps = [];
       for (const p of products) {
         if (existingCodes.has(p.code)) {
-          // $set SOLO de los campos editables: preserva stock por clínica, cuentas contables, etc.
-          updateOps.push({ updateOne: { filter: { clinic: req.clinicId, code: p.code }, update: { $set: p } } });
+          // $set SOLO de los campos editables. El STOCK se excluye a propósito: en un producto
+          // que ya existe lo manda el kardex (compras, ventas, movimientos, tomas físicas), y
+          // una recarga del Excel lo pisaba en silencio. En los productos NUEVOS sí entra como
+          // saldo inicial (rama de abajo).
+          const { stock, stockByClinic, ...editables } = p;
+          updateOps.push({ updateOne: { filter: { clinic: req.clinicId, code: p.code }, update: { $set: editables } } });
         } else {
           toInsert.push({ ...p, clinic: req.clinicId });
         }

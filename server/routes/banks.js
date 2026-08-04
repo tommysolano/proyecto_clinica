@@ -18,7 +18,11 @@ router.get('/accounts/:id/ledger', requireRole('admin', 'contabilidad'), c.bankL
 
 // Movimientos
 router.get('/transactions', requireRole('admin', 'contabilidad'), c.listMovements);
+// Excel del listado con los MISMOS filtros de la pantalla (va antes de las rutas con :id).
+router.get('/transactions/export.xlsx', requireRole('admin', 'contabilidad'), c.movementsExcel);
 router.post('/transactions', requireRole('admin', 'contabilidad'), c.createMovement);
+// Corregir un movimiento MANUAL: anula el anterior y registra el corregido (los asientos no se editan).
+router.put('/transactions/:id', requireRole('admin', 'contabilidad'), c.updateMovement);
 router.post('/transactions/:id/void', requireRole('admin', 'contabilidad'), c.voidMovement);
 router.post('/cash-to-transfer', requireRole('admin', 'contabilidad'), c.cashToTransfer);
 router.get('/cash-pending', requireRole('admin', 'contabilidad'), c.getCashPending);
@@ -29,6 +33,8 @@ router.get('/reconciliations/:id', requireRole('admin', 'contabilidad'), c.getRe
 router.post('/reconciliations', requireRole('admin', 'contabilidad'), c.startReconciliation);
 router.put('/reconciliations/:id', requireRole('admin', 'contabilidad'), c.updateReconciliation);
 router.post('/reconciliations/:id/close', requireRole('admin', 'contabilidad'), c.closeReconciliation);
+// Solo se elimina una conciliación PENDIENTE (borrador): la cerrada es evidencia.
+router.delete('/reconciliations/:id', requireRole('admin', 'contabilidad'), c.deleteReconciliation);
 // Importar el extracto bancario (CSV/Excel) dentro de una conciliación
 router.post('/reconciliations/:id/import', requireRole('admin', 'contabilidad'), c.reconcileImport);
 router.post('/reconciliations/:id/create-movements', requireRole('admin', 'contabilidad'), c.reconcileCreateMovements);

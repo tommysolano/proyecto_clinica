@@ -30,10 +30,12 @@ export default function CashBox() {
     setLoading(true);
     try {
       const [r1, r2] = await Promise.all([
-        api.get('/banks/cash-pending'),
+        // Mismo origen que la pantalla de Depósitos: ventas y cobros en efectivo aún no
+        // depositados (una venta mixta entra solo por su parte en efectivo).
+        api.get('/cash-deposits/pending'),
         api.get('/banks/accounts', { params: { active: true } }),
       ]);
-      setPending(r1.data?.sales || []);
+      setPending(r1.data?.items || []);
       setTotal(Number(r1.data?.total || 0));
       setBankAccounts(r2.data || []);
     } catch (e) {
@@ -44,6 +46,9 @@ export default function CashBox() {
   };
 
   useEffect(() => { load(); }, []);
+
+  // La clave es documento+id: en la lista conviven ventas y cobros de cartera.
+  const keyOf = (i) => `${i.docModel}:${i.docRef}`;
 
   const toggle = (id) => {
     setSelected((prev) => {
@@ -56,13 +61,13 @@ export default function CashBox() {
 
   const toggleAll = () => {
     if (selected.size === pending.length) setSelected(new Set());
-    else setSelected(new Set(pending.map((s) => s._id)));
+    else setSelected(new Set(pending.map(keyOf)));
   };
 
   const selectedTotal = useMemo(() => {
     return pending
-      .filter((s) => selected.has(s._id))
-      .reduce((acc, s) => acc + Number(s.total || 0), 0);
+      .filter((s) => selected.has(keyOf(s)))
+      .reduce((acc, s) => acc + Number(s.amount || 0), 0);
   }, [pending, selected]);
 
   const openDeposit = () => {
@@ -85,10 +90,10 @@ export default function CashBox() {
     if (!form.voucher.trim()) return toast.error('Ingresa el número de comprobante');
     setSubmitting(true);
     try {
-      const res = await api.post('/banks/cash-to-transfer', {
-        saleIds: Array.from(selected),
+      const res = await api.post('/cash-deposits', {
+        items: pending.filter((i) => selected.has(keyOf(i))).map((i) => ({ docModel: i.docModel, docRef: i.docRef })),
         bankAccount: form.bankAccount,
-        voucher: form.voucher.trim(),
+        voucherNumber: form.voucher.trim(),
         date: form.date,
         description: form.description,
       });
@@ -103,9 +108,6 @@ export default function CashBox() {
     }
   };
 
-  const fullName = (p) =>
-    p ? `${p.firstName || ''} ${p.lastName || ''}`.trim() || p.cedula || '—' : '—';
-
   return (
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -114,7 +116,8 @@ export default function CashBox() {
             <HiOutlineCurrencyDollar className="w-7 h-7 text-emerald-600" /> Caja
           </h1>
           <p className="text-sm text-slate-500">
-            Ventas cobradas en efectivo pendientes de depósito bancario.
+            Ventas y cobros en efectivo pendientes de depósito bancario. El historial de depósitos
+            hechos está en <b>Bancos → Depósitos</b>.
           </p>
         </div>
         <button
@@ -157,10 +160,10 @@ export default function CashBox() {
                 />
               </th>
               <th className="text-left px-3 py-2.5 font-semibold">Fecha</th>
-              <th className="text-left px-3 py-2.5 font-semibold">N° venta</th>
+              <th className="text-left px-3 py-2.5 font-semibold">Documento</th>
               <th className="text-left px-3 py-2.5 font-semibold">Cliente</th>
-              <th className="text-left px-3 py-2.5 font-semibold">Cajero</th>
-              <th className="text-right px-3 py-2.5 font-semibold">Total</th>
+              <th className="text-left px-3 py-2.5 font-semibold">Origen</th>
+              <th className="text-right px-3 py-2.5 font-semibold">Efectivo</th>
             </tr>
           </thead>
           <tbody>
@@ -172,21 +175,21 @@ export default function CashBox() {
             )}
             {pending.map((s) => (
               <tr
-                key={s._id}
-                className={`border-t border-slate-100 hover:bg-slate-50 ${selected.has(s._id) ? 'bg-emerald-50/50' : ''}`}
+                key={keyOf(s)}
+                className={`border-t border-slate-100 hover:bg-slate-50 ${selected.has(keyOf(s)) ? 'bg-emerald-50/50' : ''}`}
               >
                 <td className="px-3 py-2 text-center">
                   <input
                     type="checkbox"
-                    checked={selected.has(s._id)}
-                    onChange={() => toggle(s._id)}
+                    checked={selected.has(keyOf(s))}
+                    onChange={() => toggle(keyOf(s))}
                   />
                 </td>
-                <td className="px-3 py-2 text-slate-600 whitespace-nowrap">{fmtDate(s.createdAt)}</td>
-                <td className="px-3 py-2 text-slate-700 font-mono">{s.saleNumber || s._id?.slice(-6)}</td>
-                <td className="px-3 py-2 text-slate-800">{fullName(s.patient) || s.clientName || '—'}</td>
-                <td className="px-3 py-2 text-slate-600">{s.createdBy?.name || '—'}</td>
-                <td className="px-3 py-2 text-right text-slate-800 font-medium">{fmt(s.total)}</td>
+                <td className="px-3 py-2 text-slate-600 whitespace-nowrap">{fmtDate(s.docDate)}</td>
+                <td className="px-3 py-2 text-slate-700 font-mono">{s.number || '—'}</td>
+                <td className="px-3 py-2 text-slate-800">{s.party || '—'}</td>
+                <td className="px-3 py-2 text-slate-600">{s.docModel === 'Sale' ? 'Venta' : 'Cobro'}{s.mixta ? ' (mixta)' : ''}</td>
+                <td className="px-3 py-2 text-right text-slate-800 font-medium">{fmt(s.amount)}</td>
               </tr>
             ))}
           </tbody>
