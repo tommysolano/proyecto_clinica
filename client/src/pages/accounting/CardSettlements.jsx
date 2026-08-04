@@ -7,6 +7,7 @@ import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import SearchableSelect from '../../components/SearchableSelect';
 import AccountSelect from '../../components/AccountSelect';
+import { newIdempotencyKey, withIdempotencyKey } from '../../utils/idempotency';
 
 // Las retenciones se derivan de las bases digitadas en las transacciones: una fila RENTA (si hay
 // base ret IR) y/o una fila IVA (si hay base ret IVA). El código SRI se escoge del catálogo de
@@ -14,15 +15,18 @@ import AccountSelect from '../../components/AccountSelect';
 const RET_TYPES = ['RENTA', 'IVA'];
 const RET_LABEL = { RENTA: 'Retención en la fuente (renta)', IVA: 'Retención de IVA' };
 
-const EMPTY_TXN = { date: today(), recap: '', account: '', costCenter: '', deposit: 0, commission: 0, iva: 0, baseRetIr: 0, baseRetIva: 0 };
+const EMPTY_TXN = { date: today(), recap: '', account: '', costCenter: '', deposit: 0, commission: 0, iva: 0, baseConIva: 0, baseSinIva: 0, baseRetIr: 0, baseRetIva: 0 };
 const EMPTY_RET_META = () => ({ RENTA: emptyMeta(), IVA: emptyMeta() });
 const emptyMeta = () => ({ issueDate: today(), retentionNumber: '', authorization: '', sriCode: '', percentage: 0 });
 const EMPTY = {
-  issueDate: today(), docType: 'LIQUIDACION', supplier: '', bankAccount: '', docNumber: '', commissionToSettle: 0,
+  issueDate: today(), docType: 'LIQUIDACION', supplier: '', bankAccount: '', docNumber: '',
   receivableAccount: '', commissionAccount: '', ivaAccount: '', retIvaAccount: '', retIrAccount: '',
   transactions: [{ ...EMPTY_TXN }], sourceSales: [], notes: '',
 };
-const EMPTY_PICKER = { lote: '', from: today(), to: today(), includeSettled: false };
+// El rango de fechas arranca VACÍO a propósito: antes venía con la fecha de hoy y, al buscar
+// por N° de lote, ese rango se seguía enviando y descartaba las ventas de días anteriores
+// (justo el caso normal: el lote del POS se cierra un día y se liquida al siguiente).
+const EMPTY_PICKER = { lote: '', from: '', to: '', includeSettled: false };
 
 const round = (n) => +(Number(n) || 0).toFixed(2);
 
@@ -43,6 +47,14 @@ export default function CardSettlements() {
   const [pickerResults, setPickerResults] = useState([]);
   const [picked, setPicked] = useState({});
   const [searching, setSearching] = useState(false);
+  const [pickerHint, setPickerHint] = useState('');   // por qué la búsqueda salió vacía
+  // Guardas contra el doble clic: el botón se bloquea mientras se envía y la petición lleva
+  // una clave de idempotencia, así que un segundo envío devuelve la MISMA liquidación.
+  const [saving, setSaving] = useState(false);
+  const [idemKey, setIdemKey] = useState(newIdempotencyKey());
+  const [accreditItem, setAccreditItem] = useState(null); // liquidación a acreditar
+  const [accreditDate, setAccreditDate] = useState(today());
+  const [accrediting, setAccrediting] = useState(false);
 
   const load = async () => {
     try { const r = await api.get('/card-settlements'); setList(r.data || []); }
@@ -93,20 +105,36 @@ export default function CardSettlements() {
 
   // Totales derivados (espejo del backend): a pagar = depósito - comisión - iva; neto resta ambas retenciones.
   const totals = useMemo(() => {
-    let deposit = 0, commission = 0, iva = 0, toPay = 0;
+    let deposit = 0, commission = 0, iva = 0, toPay = 0, baseConIva = 0, baseSinIva = 0;
     (form.transactions || []).forEach((t) => {
       const d = +t.deposit || 0, c = +t.commission || 0, i = +t.iva || 0;
       deposit += d; commission += c; iva += i; toPay += round(d - c - i);
+      baseConIva += +t.baseConIva || 0; baseSinIva += +t.baseSinIva || 0;
     });
     const retIr = retentionRows.filter((r) => r.type === 'RENTA').reduce((s, r) => s + r.value, 0);
     const retIva = retentionRows.filter((r) => r.type === 'IVA').reduce((s, r) => s + r.value, 0);
-    return { deposit: round(deposit), commission: round(commission), iva: round(iva), retIva: round(retIva), retIr: round(retIr), toPay: round(toPay), net: round(toPay - retIr - retIva) };
+    return {
+      deposit: round(deposit), commission: round(commission), iva: round(iva),
+      baseConIva: round(baseConIva), baseSinIva: round(baseSinIva),
+      retIva: round(retIva), retIr: round(retIr), toPay: round(toPay), net: round(toPay - retIr - retIva),
+    };
   }, [form.transactions, retentionRows]);
+
+  // Aviso (no bloqueo) por transacción: base gravada + base 0% no puede pasar del depósito,
+  // porque la diferencia contra lo acreditado es el IVA que pagó el cliente.
+  const basesDescuadradas = useMemo(() => (form.transactions || []).some((t) => {
+    const bases = round((+t.baseConIva || 0) + (+t.baseSinIva || 0));
+    return bases > 0 && bases > round(+t.deposit || 0) + 0.01;
+  }), [form.transactions]);
 
   const setRetMetaField = (type, patch) => setRetMeta((m) => ({ ...m, [type]: { ...m[type], ...patch } }));
 
-  const resetPicker = () => { setPicker(EMPTY_PICKER); setPickerResults([]); setPicked({}); };
-  const openNew = () => { setEditId(null); setForm(EMPTY); setRetMeta(EMPTY_RET_META()); resetPicker(); setShow(true); };
+  const resetPicker = () => { setPicker(EMPTY_PICKER); setPickerResults([]); setPicked({}); setPickerHint(''); };
+  const openNew = () => {
+    setEditId(null); setForm(EMPTY); setRetMeta(EMPTY_RET_META()); resetPicker();
+    setIdemKey(newIdempotencyKey()); // clave nueva: es otra liquidación
+    setShow(true);
+  };
   const openEdit = async (id) => {
     try {
       const r = await api.get(`/card-settlements/${id}`);
@@ -119,7 +147,8 @@ export default function CardSettlements() {
         receivableAccount: d.receivableAccount || '', commissionAccount: d.commissionAccount || '',
         ivaAccount: d.ivaAccount || '', retIvaAccount: d.retIvaAccount || '', retIrAccount: d.retIrAccount || '',
         transactions: (d.transactions || []).map((t) => ({
-          ...t, date: t.date ? t.date.slice(0, 10) : '', account: t.account?._id || t.account || '', costCenter: t.costCenter?._id || t.costCenter || '',
+          ...EMPTY_TXN, ...t,
+          date: t.date ? t.date.slice(0, 10) : '', account: t.account?._id || t.account || '', costCenter: t.costCenter?._id || t.costCenter || '',
         })),
         sourceSales: d.sourceSales || [],
       });
@@ -144,6 +173,7 @@ export default function CardSettlements() {
   const searchSales = async () => {
     if (!picker.lote.trim() && !picker.from && !picker.to) return toast.error('Ingresa el N° de lote o un rango de fechas');
     setSearching(true);
+    setPickerHint('');
     try {
       const params = {};
       if (picker.lote.trim()) params.lote = picker.lote.trim();
@@ -156,9 +186,31 @@ export default function CardSettlements() {
       setPickerResults(results);
       const pick = {}; results.forEach((s) => { pick[s._id] = true; });
       setPicked(pick);
-      if (!results.length) toast('Sin facturas con tarjeta para esos filtros', { icon: 'ℹ️' });
+      if (!results.length) await explicarBusquedaVacia(params);
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
     finally { setSearching(false); }
+  };
+
+  /**
+   * Cuando la búsqueda sale vacía se repite SIN filtros de fecha y con las ya liquidadas para
+   * poder decir POR QUÉ no salió nada: antes solo aparecía "sin facturas" y el contador no
+   * podía distinguir entre "ese lote no existe" y "está fuera del rango / ya está liquidado".
+   */
+  const explicarBusquedaVacia = async (params) => {
+    if (!params.lote) {
+      setPickerHint('No hay ventas con tarjeta en ese rango de fechas.');
+      return toast('Sin facturas con tarjeta para esos filtros', { icon: 'ℹ️' });
+    }
+    try {
+      const r = await api.get('/card-settlements/card-sales', { params: { lote: params.lote, includeSettled: true } });
+      const todas = r.data || [];
+      if (!todas.length) {
+        setPickerHint(`No existe ninguna venta con tarjeta del lote ${params.lote} en esta sucursal. Revisa el N° de lote del voucher, o que al cobrar se haya digitado el lote.`);
+      } else {
+        setPickerHint(`Hay ${todas.length} venta(s) del lote ${params.lote}, pero quedaron fuera: o están fuera del rango de fechas, o ya están vinculadas a otra liquidación. Quita las fechas y marca «Incluir ya liquidadas» para verlas.`);
+      }
+    } catch { setPickerHint('Sin facturas con tarjeta para esos filtros.'); }
+    toast('Sin facturas con tarjeta para esos filtros', { icon: 'ℹ️' });
   };
 
   const pickedList = pickerResults.filter((s) => picked[s._id]);
@@ -172,7 +224,11 @@ export default function CardSettlements() {
       sale: s._id, saleNumber: s.saleNumber, date: s.createdAt,
       lote: s.cardLote || '', voucher: s.cardVoucher || '', amount: round(+s.total || 0),
     }));
-    const txn = { ...EMPTY_TXN, date: picker.to || picker.from || today(), recap: picker.lote || '', deposit: pickedTotal };
+    // Bases propuestas desde las facturas cargadas: gravada = base con IVA de las ventas;
+    // 0% = tarifa 0 + exentas + no objeto. La contadora las puede corregir a mano.
+    const baseConIva = round(pickedList.reduce((a, s) => a + (+s.taxableSubtotal || 0), 0));
+    const baseSinIva = round(pickedList.reduce((a, s) => a + (+s.subtotal0 || 0) + (+s.subtotalExento || 0) + (+s.subtotalNoObjeto || 0), 0));
+    const txn = { ...EMPTY_TXN, date: picker.to || picker.from || today(), recap: picker.lote || '', deposit: pickedTotal, baseConIva, baseSinIva };
     setForm((f) => {
       // Descarta la fila vacía inicial (sin depósito ni #recap)
       const base = (f.transactions || []).filter((t) => (+t.deposit || 0) !== 0 || (t.recap || '').trim());
@@ -192,24 +248,38 @@ export default function CardSettlements() {
 
   const submit = async (e) => {
     e.preventDefault();
+    if (saving) return; // doble clic: la primera petición ya va en camino
     if (!form.transactions.length) return toast.error('Agrega al menos una transacción');
     // Misma validación que el backend: ninguna retención sin código SRI (fuente de error humano).
     const sinCodigo = retentionRows.find((r) => !String(r.sriCode || '').trim());
     if (sinCodigo) return toast.error(`Escoge el código SRI de la ${RET_LABEL[sinCodigo.type].toLowerCase()} (base $${fmt(sinCodigo.base)}).`);
+    setSaving(true);
     try {
       const payload = { ...form, retentions: retentionRows };
       ['receivableAccount', 'commissionAccount', 'ivaAccount', 'retIvaAccount', 'retIrAccount', 'supplier', 'bankAccount'].forEach((k) => { if (!payload[k]) payload[k] = null; });
       payload.transactions = payload.transactions.map((t) => ({ ...t, account: t.account || null, costCenter: t.costCenter || null }));
       if (editId) { await api.put(`/card-settlements/${editId}`, payload); toast.success('Liquidación actualizada'); }
-      else { await api.post('/card-settlements', payload); toast.success('Liquidación creada'); }
-      setShow(false); setForm(EMPTY); setRetMeta(EMPTY_RET_META()); setEditId(null); load();
+      else {
+        // La clave de idempotencia es de ESTA liquidación: si la petición se repite (doble clic
+        // o reintento tras un timeout) el servidor devuelve la que ya creó, no una segunda.
+        await api.post('/card-settlements', payload, withIdempotencyKey(idemKey));
+        toast.success('Liquidación creada');
+      }
+      setShow(false); setForm(EMPTY); setRetMeta(EMPTY_RET_META()); setEditId(null); setIdemKey(newIdempotencyKey()); load();
     } catch (err) { toast.error(err.response?.data?.message || 'Error'); }
+    finally { setSaving(false); }
   };
 
-  const accredit = async (s) => {
-    if (!confirm('¿Acreditar/contabilizar la liquidación? Se registrará el depósito en banco, comisión, IVA y retenciones.')) return;
-    try { await api.post(`/card-settlements/${s._id}/accredit`); toast.success('Liquidación acreditada'); load(); }
-    catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+  const openAccredit = (s) => { setAccreditItem(s); setAccreditDate((s.issueDate || '').slice(0, 10) || today()); };
+  const accredit = async () => {
+    if (accrediting || !accreditItem) return;
+    setAccrediting(true);
+    try {
+      await api.post(`/card-settlements/${accreditItem._id}/accredit`, { accreditedAt: accreditDate });
+      toast.success('Liquidación acreditada');
+      setAccreditItem(null); load();
+    } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+    finally { setAccrediting(false); }
   };
   const cancel = async (s) => {
     if (!confirm('¿Anular la liquidación? Se reversará el asiento contable.')) return;
@@ -260,7 +330,7 @@ export default function CardSettlements() {
                     <button onClick={() => setViewItem(s)} className="text-slate-500 hover:text-slate-700" title="Ver"><HiOutlineEye className="w-5 h-5" /></button>
                     {s.status === 'BORRADOR' && <>
                       <button onClick={() => openEdit(s._id)} className="text-sky-600" title="Editar"><HiOutlinePencilSquare className="w-5 h-5" /></button>
-                      <button onClick={() => accredit(s)} className="text-emerald-600" title="Acreditar"><HiOutlineCheckCircle className="w-5 h-5" /></button>
+                      <button onClick={() => openAccredit(s)} className="text-emerald-600" title="Acreditar"><HiOutlineCheckCircle className="w-5 h-5" /></button>
                       <button onClick={() => remove(s)} className="text-rose-500" title="Eliminar"><HiOutlineTrash className="w-5 h-5" /></button>
                     </>}
                     {s.status === 'CONTABILIZADO' && <button onClick={() => cancel(s)} className="text-rose-600" title="Anular"><HiOutlineXCircle className="w-5 h-5" /></button>}
@@ -308,9 +378,6 @@ export default function CardSettlements() {
             <label className="text-xs text-slate-500">Número de documento
               <input value={form.docNumber} onChange={(e) => setForm({ ...form, docNumber: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
             </label>
-            <label className="text-xs text-slate-500">Comisión por liquidar ($)
-              <NumericInput step="0.01" value={form.commissionToSettle} onChange={(e) => setForm({ ...form, commissionToSettle: +e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-right" />
-            </label>
           </div>
 
           {/* Cargar facturas por lote / fecha */}
@@ -318,16 +385,16 @@ export default function CardSettlements() {
             <div className="flex items-center gap-2">
               <HiOutlineMagnifyingGlass className="text-emerald-600" />
               <p className="font-semibold text-sm text-slate-700">Cargar facturas por lote</p>
-              <span className="text-xs text-slate-500">Digita el lote y/o la fecha; selecciona las facturas y se cargan como depósito.</span>
+              <span className="text-xs text-slate-500">Busca solo por lote (deja las fechas vacías) o acota por rango; las facturas seleccionadas se cargan como depósito.</span>
             </div>
             <div className="grid grid-cols-2 md:grid-cols-5 gap-2 items-end">
               <label className="text-xs text-slate-500">N° de lote
-                <input value={picker.lote} onChange={(e) => setPicker({ ...picker, lote: e.target.value })} placeholder="Ej. 0457" className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                <input value={picker.lote} onChange={(e) => setPicker({ ...picker, lote: e.target.value })} placeholder="Ej. 0457" title="Los ceros a la izquierda no importan: 457 y 0457 encuentran lo mismo" className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
               </label>
-              <label className="text-xs text-slate-500">Desde
+              <label className="text-xs text-slate-500">Desde (opcional)
                 <input type="date" value={picker.from} onChange={(e) => setPicker({ ...picker, from: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
               </label>
-              <label className="text-xs text-slate-500">Hasta
+              <label className="text-xs text-slate-500">Hasta (opcional)
                 <input type="date" value={picker.to} onChange={(e) => setPicker({ ...picker, to: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
               </label>
               <label className="text-xs text-slate-500 flex items-center gap-1.5 pb-2">
@@ -338,6 +405,10 @@ export default function CardSettlements() {
                 <HiOutlineMagnifyingGlass /> {searching ? 'Buscando…' : 'Buscar'}
               </button>
             </div>
+
+            {!!pickerHint && !pickerResults.length && (
+              <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">{pickerHint}</p>
+            )}
 
             {pickerResults.length > 0 && (
               <div className="bg-white rounded-lg border overflow-x-auto">
@@ -397,16 +468,20 @@ export default function CardSettlements() {
           <div className="border rounded-lg p-3">
             <div className="flex justify-between items-center mb-2"><p className="font-semibold text-sm">Transacciones</p><button type="button" onClick={addTxn} className="text-emerald-600 text-sm flex items-center gap-1"><HiOutlinePlus /> Transacción</button></div>
             <div className="overflow-x-auto">
-              <table className="tbl text-xs min-w-[900px]">
+              <table className="tbl text-xs min-w-[1160px]">
                 <thead><tr className="text-slate-500 text-left">
                   <th className="px-1 py-1">Fecha</th><th className="px-1 py-1">#Recap</th><th className="px-1 py-1">Cuenta</th><th className="px-1 py-1">Centro de costo</th>
-                  <th className="px-1 py-1 text-right">Depósito</th><th className="px-1 py-1 text-right">Comisión</th><th className="px-1 py-1 text-right">IVA</th>
+                  <th className="px-1 py-1 text-right">Depósito</th>
+                  <th className="px-1 py-1 text-right">Base con IVA</th><th className="px-1 py-1 text-right">Base sin IVA</th>
+                  <th className="px-1 py-1 text-right">Comisión</th><th className="px-1 py-1 text-right">IVA</th>
                   <th className="px-1 py-1 text-right">Base retención renta</th><th className="px-1 py-1 text-right">Base retención IVA</th>
                   <th className="px-1 py-1 text-right">A pagar</th><th></th>
                 </tr></thead>
                 <tbody>
                   {form.transactions.map((t, i) => {
                     const toPay = round((+t.deposit || 0) - (+t.commission || 0) - (+t.iva || 0));
+                    const basesFila = round((+t.baseConIva || 0) + (+t.baseSinIva || 0));
+                    const basesMal = basesFila > 0 && basesFila > round(+t.deposit || 0) + 0.01;
                     return (
                       <tr key={i}>
                         <td className="px-0.5 py-0.5"><input type="date" value={t.date} onChange={(e) => setTxn(i, { date: e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-32" /></td>
@@ -414,6 +489,8 @@ export default function CardSettlements() {
                         <td className="px-0.5 py-0.5 min-w-[160px]"><AccountSelect accounts={accounts} value={t.account || ''} onChange={(v) => setTxn(i, { account: v })} placeholder="—" allowClear size="sm" /></td>
                         <td className="px-0.5 py-0.5"><select value={t.costCenter || ''} onChange={(e) => setTxn(i, { costCenter: e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-36"><option value="">—</option>{costCenters.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}</select></td>
                         <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.deposit} onChange={(e) => setTxn(i, { deposit: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-24 text-right" /></td>
+                        <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.baseConIva} onChange={(e) => setTxn(i, { baseConIva: +e.target.value })} className={`border rounded px-1 py-1 w-24 text-right ${basesMal ? 'border-rose-300 bg-rose-50' : 'border-slate-200'}`} title="Parte del depósito que viene de ventas GRAVADAS con IVA (sin incluir el IVA)" /></td>
+                        <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.baseSinIva} onChange={(e) => setTxn(i, { baseSinIva: +e.target.value })} className={`border rounded px-1 py-1 w-24 text-right ${basesMal ? 'border-rose-300 bg-rose-50' : 'border-slate-200'}`} title="Parte del depósito que viene de ventas con tarifa 0% / exentas" /></td>
                         <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.commission} onChange={(e) => setTxn(i, { commission: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-24 text-right" /></td>
                         <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.iva} onChange={(e) => setTxn(i, { iva: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-20 text-right" /></td>
                         <td className="px-0.5 py-0.5"><NumericInput step="0.01" value={t.baseRetIr} onChange={(e) => setTxn(i, { baseRetIr: +e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-28 text-right" title="Base para la retención en la fuente (renta)" /></td>
@@ -427,6 +504,8 @@ export default function CardSettlements() {
                 <tfoot><tr className="font-semibold border-t">
                   <td colSpan={4} className="px-1 py-1 text-right">Totales:</td>
                   <td className="px-1 py-1 text-right font-mono">{fmt(totals.deposit)}</td>
+                  <td className="px-1 py-1 text-right font-mono">{fmt(totals.baseConIva)}</td>
+                  <td className="px-1 py-1 text-right font-mono">{fmt(totals.baseSinIva)}</td>
                   <td className="px-1 py-1 text-right font-mono">{fmt(totals.commission)}</td>
                   <td className="px-1 py-1 text-right font-mono">{fmt(totals.iva)}</td>
                   <td className="px-1 py-1 text-right font-mono">{fmt(baseByType.RENTA)}</td>
@@ -435,6 +514,9 @@ export default function CardSettlements() {
                 </tr></tfoot>
               </table>
             </div>
+            {basesDescuadradas && (
+              <p className="text-xs text-rose-600 mt-2">La base con IVA más la base sin IVA no pueden superar el depósito de la transacción (la diferencia contra lo acreditado es el IVA que pagó el cliente).</p>
+            )}
           </div>
 
           {/* Retenciones (se generan solas desde las bases de las transacciones) */}
@@ -488,6 +570,8 @@ export default function CardSettlements() {
           {/* Resumen */}
           <div className="flex flex-wrap justify-end gap-4 text-sm bg-slate-50 rounded-lg p-3">
             <span>Depósito: <b className="font-mono">${fmt(totals.deposit)}</b></span>
+            <span>Base con IVA: <b className="font-mono">${fmt(totals.baseConIva)}</b></span>
+            <span>Base sin IVA: <b className="font-mono">${fmt(totals.baseSinIva)}</b></span>
             <span>Comisión: <b className="font-mono text-rose-600">${fmt(totals.commission)}</b></span>
             <span>IVA: <b className="font-mono">${fmt(totals.iva)}</b></span>
             <span>Ret. IVA: <b className="font-mono">${fmt(totals.retIva)}</b></span>
@@ -497,9 +581,38 @@ export default function CardSettlements() {
 
           <div className="flex justify-end gap-2">
             <button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button>
-            <button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">{editId ? 'Guardar' : 'Crear liquidación'}</button>
+            <button disabled={saving} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 disabled:opacity-50">
+              {saving ? 'Guardando…' : (editId ? 'Guardar' : 'Crear liquidación')}
+            </button>
           </div>
         </form>
+      </Modal>
+
+      {/* Modal acreditar: la FECHA que se elija aquí es la del movimiento bancario, y por tanto
+          la que decide en qué conciliación (hasta qué corte) aparece el depósito. */}
+      <Modal isOpen={!!accreditItem} onClose={() => setAccreditItem(null)} title={`Acreditar ${accreditItem?.code || ''}`} size="sm">
+        {accreditItem && (
+          <div className="space-y-3 text-sm">
+            <p className="text-slate-600">Se registrará el depósito en el banco, la comisión, el IVA y las retenciones, y se generará el asiento.</p>
+            <div className="bg-slate-50 rounded-lg p-3 space-y-1">
+              <div className="flex justify-between"><span className="text-slate-500">Banco:</span><b>{accreditItem.bankAccount?.name || '— sin banco —'}</b></div>
+              <div className="flex justify-between"><span className="text-slate-500">Neto a acreditar:</span>
+                <b className="font-mono text-emerald-700">${fmt(accreditItem.totalDeposit - accreditItem.totalCommission - accreditItem.totalIva - accreditItem.totalRetIr - accreditItem.totalRetIva)}</b>
+              </div>
+            </div>
+            <label className="text-xs text-slate-500 block">Fecha de acreditación en el banco
+              <input type="date" value={accreditDate} onChange={(e) => setAccreditDate(e.target.value)} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+              <span className="block mt-1 text-[11px] text-slate-400">Es la fecha con la que el movimiento entra al banco y a la conciliación.</span>
+            </label>
+            {!accreditItem.bankAccount && <p className="text-xs text-rose-600">Esta liquidación no tiene banco: edítala y selecciona el banco de acreditación.</p>}
+            <div className="flex justify-end gap-2">
+              <button type="button" onClick={() => setAccreditItem(null)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button>
+              <button type="button" onClick={accredit} disabled={accrediting || !accreditItem.bankAccount} className="px-4 py-2 bg-emerald-600 text-white rounded-xl disabled:opacity-50">
+                {accrediting ? 'Acreditando…' : 'Acreditar'}
+              </button>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* Modal ver */}
@@ -518,6 +631,7 @@ export default function CardSettlements() {
               <table className="tbl text-xs">
                 <thead className="bg-slate-50"><tr>
                   <th className="px-2 py-1 text-left">Fecha</th><th className="px-2 py-1 text-left">#Recap</th><th className="px-2 py-1 text-right">Depósito</th>
+                  <th className="px-2 py-1 text-right">Base con IVA</th><th className="px-2 py-1 text-right">Base sin IVA</th>
                   <th className="px-2 py-1 text-right">Comisión</th><th className="px-2 py-1 text-right">IVA</th>
                   <th className="px-2 py-1 text-right">Base ret. renta</th><th className="px-2 py-1 text-right">Base ret. IVA</th><th className="px-2 py-1 text-right">A pagar</th>
                 </tr></thead>
@@ -525,7 +639,9 @@ export default function CardSettlements() {
                   {(viewItem.transactions || []).map((t, i) => (
                     <tr key={i} className="border-t">
                       <td className="px-2 py-1">{fmtDate(t.date)}</td><td className="px-2 py-1">{t.recap}</td>
-                      <td className="px-2 py-1 text-right font-mono">{fmt(t.deposit)}</td><td className="px-2 py-1 text-right font-mono">{fmt(t.commission)}</td>
+                      <td className="px-2 py-1 text-right font-mono">{fmt(t.deposit)}</td>
+                      <td className="px-2 py-1 text-right font-mono">{fmt(t.baseConIva)}</td><td className="px-2 py-1 text-right font-mono">{fmt(t.baseSinIva)}</td>
+                      <td className="px-2 py-1 text-right font-mono">{fmt(t.commission)}</td>
                       <td className="px-2 py-1 text-right font-mono">{fmt(t.iva)}</td>
                       <td className="px-2 py-1 text-right font-mono">{fmt(t.baseRetIr)}</td><td className="px-2 py-1 text-right font-mono">{fmt(t.baseRetIva)}</td>
                       <td className="px-2 py-1 text-right font-mono font-semibold">{fmt(t.toPay)}</td>

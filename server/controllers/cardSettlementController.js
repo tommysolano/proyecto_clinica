@@ -2,32 +2,55 @@ const CardSettlement = require('../models/CardSettlement');
 const BankAccount = require('../models/BankAccount');
 const BankTransaction = require('../models/BankTransaction');
 const ChartOfAccount = require('../models/ChartOfAccount');
+const Counter = require('../models/Counter');
 const RetentionRule = require('../models/RetentionRule');
 const Sale = require('../models/Sale');
 const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
+const { readIdempotencyKey, fingerprint, assertSameFingerprint, normalize: N } = require('../utils/idempotency');
 
 const round = (n) => +(Number(n) || 0).toFixed(2);
 const escapeRegex = (s) => String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 const RET_TYPES = ['RENTA', 'IVA'];
 
 /**
+ * Expresión con la que se busca un N° de lote del POS.
+ *
+ * El voucher imprime el lote con ceros a la izquierda ("0457") y el cajero lo digita como
+ * puede ("457"): una coincidencia exacta anclada dejaba la búsqueda VACÍA por un cero. Por eso:
+ *   · si el lote es numérico se ignoran los ceros de la izquierda en AMBOS lados;
+ *   · si no lo es (lotes con letras) se busca por contenido, sin distinguir mayúsculas.
+ */
+function loteRegex(lote) {
+  const raw = String(lote).trim();
+  if (/^\d+$/.test(raw)) {
+    const sinCeros = raw.replace(/^0+/, '') || '0';
+    return new RegExp(`^0*${escapeRegex(sinCeros)}$`);
+  }
+  return new RegExp(escapeRegex(raw), 'i');
+}
+
+/**
  * Busca ventas pagadas con tarjeta para cargarlas en una liquidación.
  * Filtra por N° de lote y/o rango de fechas (y opcionalmente POS / tarjeta).
  * Por defecto excluye las ventas ya incluidas en otra liquidación no anulada
  * para evitar liquidar dos veces la misma factura.
+ *
+ * El lote se busca TANTO en la cabecera de la venta como en cada renglón de pago: con pago
+ * dividido (dos tarjetas en una misma venta) solo el lote del PRIMER renglón sube a la
+ * cabecera, y buscar únicamente ahí escondía la venta del segundo lote.
  */
 exports.searchCardSales = async (req, res) => {
   try {
-    const { lote, from, to, cardPos, creditCard, includeSettled } = req.query;
+    const { lote, from, to, cardPos, creditCard, includeSettled, forBatch } = req.query;
     // Incluye ventas pagadas con tarjeta, sea pago único (paymentMethod) o dividido
     // (un renglón de `payments` con method 'tarjeta').
-    const filter = {
-      clinic: req.clinicId,
-      status: 'completada',
-      $or: [{ paymentMethod: 'tarjeta' }, { 'payments.method': 'tarjeta' }],
-    };
-    if (lote && lote.trim()) filter.cardLote = new RegExp(`^${escapeRegex(lote.trim())}$`, 'i');
+    const and = [{ $or: [{ paymentMethod: 'tarjeta' }, { 'payments.method': 'tarjeta' }] }];
+    const filter = { clinic: req.clinicId, status: 'completada' };
+    if (lote && lote.trim()) {
+      const rx = loteRegex(lote);
+      and.push({ $or: [{ cardLote: rx }, { 'payments.cardLote': rx }] });
+    }
     if (cardPos) filter.cardPos = cardPos;
     if (creditCard) filter.creditCard = creditCard;
     if (from || to) {
@@ -36,17 +59,54 @@ exports.searchCardSales = async (req, res) => {
       if (to) filter.createdAt.$lte = new Date(`${to}T23:59:59.999`);
     }
     if (!includeSettled || includeSettled === 'false') {
+      // Un cobro solo puede estar en UN lote y en UNA liquidación: si ya está en cualquiera de
+      // los dos (mientras no se anule) no se vuelve a ofrecer, para no contarlo dos veces.
       const used = await CardSettlement.distinct('sourceSales.sale', { clinic: req.clinicId, status: { $ne: 'ANULADO' } });
-      if (used.length) filter._id = { $nin: used };
+      const excluded = [...used];
+      if (forBatch === 'true' || forBatch === true) {
+        const CreditCardBatch = require('../models/CreditCardBatch');
+        const enLote = await CreditCardBatch.distinct('vouchers.sale', { clinic: req.clinicId, status: { $ne: 'ANULADO' } });
+        excluded.push(...enLote.filter(Boolean));
+      }
+      if (excluded.length) filter._id = { $nin: excluded };
     }
+    filter.$and = and;
     const sales = await Sale.find(filter)
-      .select('saleNumber clientName total createdAt cardLote cardVoucher cardPos creditCard invoice')
+      // Se devuelve el desglose de impuestos para poder proponer las bases (gravada / 0%) de
+      // la transacción sin que la contadora las vuelva a sumar a mano.
+      .select('saleNumber clientName total createdAt cardLote cardVoucher cardPos creditCard invoice payments taxableSubtotal subtotal0 subtotalExento subtotalNoObjeto taxAmount')
       .populate('creditCard', 'name brand')
       .sort({ createdAt: 1 })
       .limit(500);
     res.json(sales);
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
+
+/**
+ * Código secuencial ATÓMICO de la liquidación. Antes se usaba `countDocuments() + 1`, que con
+ * dos peticiones a la vez daba el MISMO código a las dos (y tras eliminar un borrador volvía a
+ * emitir un código ya usado). El contador se siembra desde la última liquidación del año para
+ * no reiniciar la numeración en las clínicas que ya tienen liquidaciones.
+ */
+async function nextSettlementCode(clinicId, session) {
+  const year = new Date().getFullYear();
+  const key = `card-settlement-${year}`;
+  const prefix = `LIQ-${year}-`;
+  const existing = await Counter.findOne({ clinic: clinicId, key }).session(session || null);
+  if (!existing) {
+    const last = await CardSettlement.findOne({ clinic: clinicId, code: new RegExp(`^${prefix}`) })
+      .sort({ code: -1 }).select('code').session(session || null);
+    const start = last ? (parseInt(String(last.code).match(/(\d+)$/)?.[1] || '0', 10) || 0) : 0;
+    try { await Counter.create([{ clinic: clinicId, key, seq: start }], { session: session || undefined }); }
+    catch (e) { if (e.code !== 11000) throw e; }
+  }
+  const updated = await Counter.findOneAndUpdate(
+    { clinic: clinicId, key },
+    { $inc: { seq: 1 } },
+    { new: true, upsert: true, session: session || undefined }
+  );
+  return `${prefix}${String(updated.seq).padStart(5, '0')}`;
+}
 
 /** Catálogo de reglas ACTIVAS de la clínica, indexado por `TIPO|codigo` (la más reciente gana). */
 async function loadRetentionRules(clinicId, session) {
@@ -72,6 +132,7 @@ async function loadRetentionRules(clinicId, session) {
  */
 async function recomputeSettlement(doc, clinicId, session) {
   let totalDeposit = 0, totalCommission = 0, totalIva = 0, totalToPay = 0;
+  let totalBaseConIva = 0, totalBaseSinIva = 0;
   const baseByType = { RENTA: 0, IVA: 0 };
   (doc.transactions || []).forEach((t) => {
     const deposit = Number(t.deposit) || 0;
@@ -82,6 +143,8 @@ async function recomputeSettlement(doc, clinicId, session) {
     totalCommission += commission;
     totalIva += iva;
     totalToPay += t.toPay;
+    totalBaseConIva += Number(t.baseConIva) || 0;
+    totalBaseSinIva += Number(t.baseSinIva) || 0;
     baseByType.RENTA += Number(t.baseRetIr) || 0;
     baseByType.IVA += Number(t.baseRetIva) || 0;
   });
@@ -119,6 +182,8 @@ async function recomputeSettlement(doc, clinicId, session) {
   const rentaRow = rows.find((r) => r.type === 'RENTA');
   const ivaRow = rows.find((r) => r.type === 'IVA');
   doc.totalDeposit = round(totalDeposit);
+  doc.totalBaseConIva = round(totalBaseConIva);
+  doc.totalBaseSinIva = round(totalBaseSinIva);
   doc.totalCommission = round(totalCommission);
   doc.totalIva = round(totalIva);
   doc.totalRetIr = round(rentaRow?.value || 0);
@@ -140,6 +205,24 @@ function retentionProblems(doc) {
       problemas.push(`El código ${r.sriCode} no corresponde a una regla de retención de ${etiqueta} activa: no se pudo determinar el porcentaje.`);
     }
   }
+  return problemas;
+}
+
+/**
+ * Coherencia del desglose del depósito: la base gravada más la base 0% no pueden superar lo
+ * acreditado (la diferencia con el depósito es el IVA que pagó el cliente). Se avisa por
+ * transacción para que la contadora sepa cuál cuadrar, y solo cuando ambas están digitadas.
+ */
+function baseProblems(doc) {
+  const problemas = [];
+  (doc.transactions || []).forEach((t, i) => {
+    const bases = round((Number(t.baseConIva) || 0) + (Number(t.baseSinIva) || 0));
+    const deposit = round(Number(t.deposit) || 0);
+    if (bases > 0 && bases > deposit + 0.01) {
+      const etiqueta = t.recap ? `#${t.recap}` : `${i + 1}`;
+      problemas.push(`En la transacción ${etiqueta} la base con IVA + la base sin IVA ($${bases}) supera el depósito ($${deposit}).`);
+    }
+  });
   return problemas;
 }
 
@@ -172,17 +255,65 @@ exports.get = async (req, res) => {
   res.json(s);
 };
 
+/**
+ * Crea la liquidación. IDEMPOTENTE por `Idempotency-Key`: el doble clic (o el reintento de red
+ * tras un timeout) devuelve la liquidación ya creada en vez de registrar una segunda con las
+ * mismas transacciones. Misma clave con OTRO contenido → 409, nunca se pisan datos.
+ */
 exports.create = async (req, res) => {
+  const idemKey = readIdempotencyKey(req);
+  const b = req.body || {};
+  const idemFingerprint = fingerprint({
+    op: 'cardSettlement.create',
+    issueDate: N.date(b.issueDate),
+    docType: b.docType || null,
+    docNumber: b.docNumber || null,
+    supplier: N.id(b.supplier),
+    bankAccount: N.id(b.bankAccount),
+    transactions: (b.transactions || []).map((t) => ({
+      recap: t.recap || null,
+      date: N.date(t.date),
+      deposit: N.num(t.deposit),
+      commission: N.num(t.commission),
+      iva: N.num(t.iva),
+      baseConIva: N.num(t.baseConIva),
+      baseSinIva: N.num(t.baseSinIva),
+      baseRetIr: N.num(t.baseRetIr),
+      baseRetIva: N.num(t.baseRetIva),
+    })),
+  });
   try {
-    const count = await CardSettlement.countDocuments({ clinic: req.clinicId });
-    const code = `LIQ-${new Date().getFullYear()}-${String(count + 1).padStart(5, '0')}`;
-    const s = new CardSettlement({ ...req.body, clinic: req.clinicId, code, createdBy: req.user._id });
+    if (idemKey) {
+      const previa = await CardSettlement.findOne({ clinic: req.clinicId, idempotencyKey: idemKey });
+      if (previa) {
+        assertSameFingerprint(previa.idempotencyFingerprint, idemFingerprint, 'liquidación de tarjeta');
+        return res.json({ ...previa.toObject(), idempotentReplay: true });
+      }
+    }
+    const code = await nextSettlementCode(req.clinicId);
+    const s = new CardSettlement({
+      ...req.body, clinic: req.clinicId, code, createdBy: req.user._id,
+      idempotencyKey: idemKey,
+      idempotencyFingerprint: idemKey ? idemFingerprint : null,
+    });
     await recomputeSettlement(s, req.clinicId);
-    const problemas = retentionProblems(s);
+    const problemas = [...baseProblems(s), ...retentionProblems(s)];
     if (problemas.length) return res.status(400).json({ message: problemas.join(' ') });
     await s.save();
     res.status(201).json(s);
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) {
+    // Carrera real: dos peticiones simultáneas con la misma clave. La que pierde el índice
+    // único devuelve la que ganó, en vez de un error que el usuario leería como "no se guardó".
+    if (e.code === 11000 && idemKey) {
+      const previa = await CardSettlement.findOne({ clinic: req.clinicId, idempotencyKey: idemKey });
+      if (previa) {
+        try { assertSameFingerprint(previa.idempotencyFingerprint, idemFingerprint, 'liquidación de tarjeta'); }
+        catch (c) { return res.status(409).json({ message: c.message }); }
+        return res.json({ ...previa.toObject(), idempotentReplay: true });
+      }
+    }
+    res.status(e.status || 400).json({ message: e.message });
+  }
 };
 
 exports.update = async (req, res) => {
@@ -190,10 +321,10 @@ exports.update = async (req, res) => {
     const s = await CardSettlement.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!s) return res.status(404).json({ message: 'No encontrada' });
     if (s.status !== 'BORRADOR') return res.status(400).json({ message: 'Solo se editan liquidaciones en BORRADOR' });
-    const { code, status, journalEntry, bankTransaction, clinic, ...rest } = req.body;
+    const { code, status, journalEntry, bankTransaction, clinic, idempotencyKey, idempotencyFingerprint, ...rest } = req.body;
     Object.assign(s, rest);
     await recomputeSettlement(s, req.clinicId);
-    const problemas = retentionProblems(s);
+    const problemas = [...baseProblems(s), ...retentionProblems(s)];
     if (problemas.length) return res.status(400).json({ message: problemas.join(' ') });
     await s.save();
     res.json(s);

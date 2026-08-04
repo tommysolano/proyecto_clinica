@@ -14,6 +14,13 @@ const settlementTxnSchema = new mongoose.Schema(
     deposit: { type: Number, default: 0 },     // deposito (bruto acreditado)
     commission: { type: Number, default: 0 },  // comisión
     iva: { type: Number, default: 0 },         // iva (sobre la comisión)
+    // DESGLOSE del depósito que reporta el adquirente: qué parte viene de ventas GRAVADAS
+    // con IVA y qué parte de ventas con tarifa 0% / exentas. Es informativo (el asiento se
+    // arma con depósito/comisión/IVA), pero es lo que la contadora cuadra contra el recap y
+    // lo que sustenta las bases de retención. Su suma NO incluye el IVA de las ventas, así
+    // que `baseConIva + baseSinIva <= deposit` (la diferencia es el IVA cobrado al cliente).
+    baseConIva: { type: Number, default: 0 },  // base gravada con IVA
+    baseSinIva: { type: Number, default: 0 },  // base tarifa 0% / exenta
     // BASES de retención (lo ÚNICO que digita el contador por transacción). Las filas de la
     // sección "Retenciones" —tipo, base, % y valor— se derivan solas de estas bases (ver
     // controller). Los antiguos campos redundantes `baseIr` y `retIva` se eliminaron: las
@@ -60,7 +67,6 @@ const cardSettlementSchema = new mongoose.Schema(
     supplier: { type: mongoose.Schema.Types.ObjectId, ref: 'Supplier', default: null }, // proveedor (adquirente)
     bankAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'BankAccount', default: null }, // banco
     docNumber: { type: String, default: '' },           // numero de documento
-    commissionToSettle: { type: Number, default: 0 },   // comisión por liquidar
 
     transactions: { type: [settlementTxnSchema], default: [] },
     retentions: { type: [settlementRetentionSchema], default: [] },
@@ -93,6 +99,8 @@ const cardSettlementSchema = new mongoose.Schema(
 
     // Totales calculados
     totalDeposit: { type: Number, default: 0 },
+    totalBaseConIva: { type: Number, default: 0 },
+    totalBaseSinIva: { type: Number, default: 0 },
     totalCommission: { type: Number, default: 0 },
     totalIva: { type: Number, default: 0 },
     totalRetIva: { type: Number, default: 0 },
@@ -104,11 +112,21 @@ const cardSettlementSchema = new mongoose.Schema(
     journalEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'JournalEntry', default: null },
     bankTransaction: { type: mongoose.Schema.Types.ObjectId, ref: 'BankTransaction', default: null },
     notes: { type: String, default: '' },
+    // Clave de idempotencia (opcional): la envía el cliente por header `Idempotency-Key`.
+    // Evita que un doble clic o un reintento de red registren DOS liquidaciones idénticas.
+    // Mismo contrato que los pagos (ver server/utils/idempotency.js).
+    idempotencyKey: { type: String, trim: true, default: null },
+    idempotencyFingerprint: { type: String, default: null },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   },
   { timestamps: true }
 );
 
 cardSettlementSchema.index({ clinic: 1, code: 1 }, { unique: true });
+// Único por clínica SOLO cuando hay clave: las liquidaciones antiguas (sin clave) no colisionan.
+cardSettlementSchema.index(
+  { clinic: 1, idempotencyKey: 1 },
+  { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } }
+);
 
 module.exports = mongoose.model('CardSettlement', cardSettlementSchema);

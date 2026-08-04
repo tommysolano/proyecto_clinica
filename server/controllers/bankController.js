@@ -476,6 +476,44 @@ async function bookBalanceAt(clinicId, bank, cutDate, session) {
   return +(((bank.initialBalance || 0) + (agg[0]?.total || 0))).toFixed(2);
 }
 
+/**
+ * Recarga en la conciliación los movimientos del libro pendientes hasta su fecha de corte y
+ * recalcula el saldo contable, CONSERVANDO los "marcados" que ya tenía.
+ *
+ * Se usa al abrir el detalle y al guardar: una conciliación en BORRADOR es un documento de
+ * trabajo y tiene que mostrar el libro tal como está HOY. Antes solo se recargaba al mover la
+ * fecha de corte, así que todo lo contabilizado después de abrirla —una acreditación de
+ * liquidación de tarjetas, por ejemplo— quedaba invisible en esa conciliación para siempre.
+ *
+ * @returns {boolean} true si cambió algo (hay que guardar)
+ */
+async function syncReconciliationItems(rec, clinicId, cutDate) {
+  const bank = await BankAccount.findOne({ _id: rec.bankAccount, clinic: clinicId });
+  if (!bank) throw Object.assign(new Error('Cuenta no encontrada'), { status: 404 });
+  const cut = cutDate ? new Date(cutDate) : rec.cutDate;
+  const txs = await BankTransaction.find({
+    clinic: clinicId, bankAccount: bank._id, voided: false,
+    date: { $lte: cut },
+    // Pendientes de conciliar MÁS los que esta misma conciliación ya creó desde el extracto
+    // (comisiones, intereses…), que nacen con `reconciled: true`: si no, la recarga los
+    // expulsaría de la conciliación que los generó.
+    $or: [{ reconciled: false }, { reconciliation: rec._id }],
+  }).sort({ date: 1 });
+  const prevFlags = new Map((rec.items || []).map((it) => [String(it.transaction?._id || it.transaction), it]));
+  const antes = [...prevFlags.keys()].join(',');
+  rec.items = txs.map((t) => {
+    const prev = prevFlags.get(String(t._id));
+    return { transaction: t._id, matched: prev ? !!prev.matched : false, statementRef: prev?.statementRef || '' };
+  });
+  rec.cutDate = cut;
+  rec.periodEnd = cut;
+  const saldo = await bookBalanceAt(clinicId, bank, cut);
+  const cambio = antes !== txs.map((t) => String(t._id)).join(',') || rec.bookBalance !== saldo;
+  rec.bookBalance = saldo;
+  rec.difference = +(rec.statementBalance - rec.bookBalance).toFixed(2);
+  return cambio;
+}
+
 /** Devuelve la conciliación con sus movimientos del libro y líneas del extracto poblados. */
 async function populatedReconciliation(id) {
   return Reconciliation.findById(id)
@@ -514,13 +552,21 @@ exports.startReconciliation = async (req, res) => {
   } catch (e) { res.status(400).json({ message: e.message }); }
 };
 
-/** Detalle de una conciliación (con movimientos y extracto poblados). */
+/**
+ * Detalle de una conciliación (con movimientos y extracto poblados). Si está en BORRADOR se
+ * ponen al día sus movimientos del libro: lo que se contabilizó después de abrirla también
+ * tiene que verse (ver `syncReconciliationItems`). Una conciliación CERRADA no se toca.
+ */
 exports.getReconciliation = async (req, res) => {
   try {
-    const rec = await populatedReconciliation(req.params.id);
-    if (!rec || String(rec.clinic) !== String(req.clinicId)) return res.status(404).json({ message: 'No encontrada' });
-    res.json(rec);
-  } catch (e) { res.status(400).json({ message: e.message }); }
+    const raw = await Reconciliation.findById(req.params.id);
+    if (!raw || String(raw.clinic) !== String(req.clinicId)) return res.status(404).json({ message: 'No encontrada' });
+    if (raw.status === 'BORRADOR') {
+      const cambio = await syncReconciliationItems(raw, req.clinicId);
+      if (cambio) await raw.save();
+    }
+    res.json(await populatedReconciliation(raw._id));
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
 
 exports.updateReconciliation = async (req, res) => {
@@ -529,26 +575,9 @@ exports.updateReconciliation = async (req, res) => {
     if (!rec) return res.status(404).json({ message: 'No encontrada' });
     if (rec.status === 'CONCILIADO') return res.status(400).json({ message: 'Ya cerrada' });
 
-    // El contador puede mover la fecha de corte: se recargan los movimientos del libro
-    // pendientes hasta el nuevo corte y se recalcula el saldo contable.
-    if (req.body.cutDate) {
-      const bank = await BankAccount.findOne({ _id: rec.bankAccount, clinic: req.clinicId });
-      if (!bank) return res.status(404).json({ message: 'Cuenta no encontrada' });
-      const cut = new Date(req.body.cutDate);
-      const txs = await BankTransaction.find({
-        clinic: req.clinicId, bankAccount: bank._id, voided: false, reconciled: false,
-        date: { $lte: cut },
-      }).sort({ date: 1 });
-      // Conserva los flags de match ya marcados para movimientos que sigan en rango.
-      const prevFlags = new Map(rec.items.map((it) => [String(it.transaction), it]));
-      rec.items = txs.map((t) => {
-        const prev = prevFlags.get(String(t._id));
-        return { transaction: t._id, matched: prev ? !!prev.matched : false, statementRef: prev?.statementRef || '' };
-      });
-      rec.cutDate = cut;
-      rec.periodEnd = cut;
-      rec.bookBalance = await bookBalanceAt(req.clinicId, bank, cut);
-    }
+    // Los movimientos del libro se recargan SIEMPRE (no solo al mover la fecha de corte),
+    // conservando los que ya estaban marcados. Ver `syncReconciliationItems`.
+    await syncReconciliationItems(rec, req.clinicId, req.body.cutDate);
 
     // Solo persistimos los flags de match (no se reescriben las transacciones).
     if (Array.isArray(req.body.items)) {
@@ -564,7 +593,7 @@ exports.updateReconciliation = async (req, res) => {
     rec.difference = +(rec.statementBalance - rec.bookBalance).toFixed(2);
     await rec.save();
     res.json(await populatedReconciliation(rec._id));
-  } catch (e) { res.status(400).json({ message: e.message }); }
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
 
 /**
