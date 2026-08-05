@@ -230,6 +230,15 @@ const REPLY_VALUES = [
   { value: 'no', label: 'No (canceló)' },
   { value: 'other', label: 'Otra' },
 ];
+// Patient.source es un enum cerrado: se elige, no se escribe.
+const SOURCES = [
+  { value: 'anuncio', label: 'Anuncio' },
+  { value: 'referido', label: 'Referido' },
+  { value: 'recepcion', label: 'Recepción' },
+  { value: 'organico', label: 'Orgánico' },
+];
+// De qué lista de etiquetas EN USO se alimenta cada campo (GET /workflows/tags).
+const TAG_FIELD_SOURCE = { tag: 'patient', chatTag: 'chat', opportunityTag: 'opportunity' };
 
 // ─────────── Condiciones (varias por rama, varias ramas por nodo) ───────────
 const newCondId = () => `c${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
@@ -285,6 +294,7 @@ function describeCondition(c = {}, { clinics = [] } = {}) {
     }
     if (c.field === 'stage') return STAGE_LABELS[v] || v;
     if (c.field === 'lastReply') return REPLY_VALUES.find((r) => r.value === v)?.label || v;
+    if (c.field === 'source') return SOURCES.find((s) => s.value === v)?.label || v;
     return v;
   };
   const vals = (c.values?.length ? c.values : String(c.value || '').split(',').map((v) => v.trim()).filter(Boolean)).map(one);
@@ -824,12 +834,17 @@ const defaultTrigger = () => ({ type: 'appointment_created', audience: 'all', se
 export default function WorkflowGraphEditor({
   nodes = [], edges = [], onChange,
   templates = [], agents = [], products = [], clinics = [], audiences = [], audiencesNotice = '',
+  // Etiquetas en uso { patient, chat, opportunity } para los desplegables del nodo Condición.
+  tagOptions = {},
 }) {
   const [selectedId, setSelectedId] = useState(null);
   const [selectedTrigger, setSelectedTrigger] = useState(null); // { nodeId, idx }
   const [adding, setAdding] = useState(null); // { mode:'append', sourceId, sourceHandle } | { mode:'insert', edgeId }
   // Portapapeles de un paso copiado ({ type, data }); se pega desde el selector "+".
+  // El estado solo sirve para mostrar/ocultar el botón de pegar; el CONTENIDO se
+  // lee del ref (ver pasteAt) para que nunca se pegue una copia obsoleta.
   const [clipboard, setClipboard] = useState(null);
+  const clipboardRef = useRef(null);
   // Posición del nodo al empezar a arrastrar, para no reordenar por un roce mínimo.
   const dragStartRef = useRef(null);
 
@@ -970,8 +985,12 @@ export default function WorkflowGraphEditor({
         splitRouteName[`${e.source}:${e.sourceHandle}`]
         || (e.sourceHandle === 'yes' ? 'Sí' : e.sourceHandle === 'no' ? 'No' : undefined),
     })),
+    // `modelNodes` va en las dependencias aunque no se use aquí directamente:
+    // onInsert/onPasteInsert acaban llamando a insertStep, que reconstruye el
+    // grafo a partir de los nodos de ESTE render. Sin esta dependencia, insertar
+    // un paso sobre una línea después de editar otro nodo revertía esa edición.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [edges, deleteEdge, hasClipboard, splitRouteName]
+    [edges, modelNodes, deleteEdge, hasClipboard, splitRouteName]
   );
 
   // ── Conexión manual con el mouse (arrastrar desde un punto a otro nodo) ──
@@ -1095,7 +1114,16 @@ export default function WorkflowGraphEditor({
   const handlePickStep = (type) => insertStep(type, null, adding);
   // Pegar el paso copiado DIRECTAMENTE (sin abrir el selector), estilo Daplox:
   // el icono de pegar aparece junto a cada "+" cuando hay algo copiado.
-  const pasteAt = (context) => { if (clipboard) insertStep(clipboard.type, clipboard.data, context); };
+  //
+  // Se lee del REF, no del estado: los handlers de pegar viven dentro de memos
+  // cuyas dependencias no incluyen el contenido del portapapeles (solo si hay
+  // algo o no). Al copiar un SEGUNDO paso el memo no se recalculaba y seguía
+  // pegando el contenido del PRIMERO — justo el síntoma de "pego y sale el texto
+  // del nodo original". El ref siempre tiene lo último copiado.
+  const pasteAt = (context) => {
+    const cb = clipboardRef.current;
+    if (cb) insertStep(cb.type, cb.data, context);
+  };
 
   const updateNodeData = (id, patch) => {
     const next = modelNodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...patch } } : n));
@@ -1145,7 +1173,11 @@ export default function WorkflowGraphEditor({
   const copyNode = (id) => {
     const src = modelNodes.find((n) => n.id === id);
     if (!src || src.type === 'trigger') return;
-    setClipboard({ type: src.type, data: JSON.parse(JSON.stringify(src.data || {})) });
+    // Copia PROFUNDA del estado actual del paso: si luego se edita el original (o
+    // la copia pegada), lo copiado no cambia… y lo que se pega es siempre esto.
+    const payload = { type: src.type, data: JSON.parse(JSON.stringify(src.data || {})) };
+    clipboardRef.current = payload;
+    setClipboard(payload);
     toast.success('Paso copiado. Pega con el icono 📋 que aparece junto a cualquier "+".');
   };
 
@@ -1271,6 +1303,10 @@ export default function WorkflowGraphEditor({
             onDelete={() => deleteNode(selectedNode.id)}
           >
             <NodeConfig
+              // key por nodo: al saltar de un paso a otro el formulario se
+              // reconstruye (si no, los estados internos de los campos —p.ej.
+              // "escribir otra etiqueta"— se arrastran del paso anterior).
+              key={selectedNode.id}
               node={selectedNode}
               onChange={(patch) => updateNodeData(selectedNode.id, patch)}
               onRemoveRoute={(routeId) => removeSplitRoute(selectedNode.id, routeId)}
@@ -1280,6 +1316,7 @@ export default function WorkflowGraphEditor({
               clinics={clinics}
               audiences={audiences}
               audiencesNotice={audiencesNotice}
+              tagOptions={tagOptions}
             />
           </Drawer>
         )}
@@ -1716,18 +1753,107 @@ function NodeAttachment({ d, set }) {
 
 // ─────────── Formulario de configuración por tipo de nodo ───────────
 // ─────────── Editor de condiciones ───────────
-// Una fila = una condición (campo · operador · valor). Con el operador "es alguno
-// de" el valor pasa a ser una selección múltiple (etapas, sucursales, respuestas).
-function ConditionRow({ cond, onChange, onRemove, canRemove, clinics = [] }) {
+const CONDITION_INPUT_CLS = 'w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm';
+const OTHER_OPTION = '__other__';
+
+// Valor ÚNICO elegido de una lista. Las etiquetas admiten además una que aún no
+// esté en uso ("Otra…"): el desplegable evita erratas, pero no encierra al usuario.
+function ChoiceValue({ value = '', options = [], allowCustom = false, onChange, placeholder = 'Selecciona…' }) {
+  const inList = options.some((o) => o.value === value);
+  const [free, setFree] = useState(allowCustom && !!value && !inList);
+  if (allowCustom && (free || options.length === 0)) {
+    return (
+      <div className="flex items-center gap-1">
+        <input value={value} onChange={(e) => onChange(e.target.value)} placeholder="etiqueta" className={CONDITION_INPUT_CLS} />
+        {options.length > 0 && (
+          <button
+            type="button"
+            title="Elegir de la lista"
+            onClick={() => { setFree(false); onChange(''); }}
+            className="shrink-0 px-2 py-1.5 text-[11px] text-slate-500 bg-white border border-slate-200 rounded-lg cursor-pointer hover:border-emerald-400"
+          >
+            Lista
+          </button>
+        )}
+      </div>
+    );
+  }
+  return (
+    <select
+      value={inList ? value : ''}
+      onChange={(e) => { if (e.target.value === OTHER_OPTION) { setFree(true); onChange(''); } else onChange(e.target.value); }}
+      className={CONDITION_INPUT_CLS}
+    >
+      <option value="">{placeholder}</option>
+      {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+      {allowCustom && <option value={OTHER_OPTION}>Otra (escribir)…</option>}
+    </select>
+  );
+}
+
+// Valor MÚLTIPLE ("es alguno de"): chips que se marcan con un clic. Con etiquetas
+// se puede añadir una que no esté en la lista.
+function MultiValue({ picked = [], options = [], allowCustom = false, onToggle }) {
+  const [draft, setDraft] = useState('');
+  const all = [...options, ...picked.filter((p) => !options.some((o) => o.value === p)).map((p) => ({ value: p, label: p }))];
+  const add = () => {
+    const v = draft.trim();
+    if (!v) return;
+    if (!picked.includes(v)) onToggle(v);
+    setDraft('');
+  };
+  return (
+    <div className="grid gap-1">
+      {all.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {all.map((o) => (
+            <button
+              key={o.value}
+              type="button"
+              onClick={() => onToggle(o.value)}
+              className={`px-2 py-1 rounded-lg text-[11px] border cursor-pointer ${picked.includes(o.value) ? 'bg-emerald-500 border-emerald-500 text-white' : 'bg-white border-slate-200 text-slate-600 hover:border-emerald-400'}`}
+            >
+              {o.label}
+            </button>
+          ))}
+        </div>
+      )}
+      {allowCustom && (
+        <input
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ',') { e.preventDefault(); add(); } }}
+          onBlur={add}
+          placeholder="otra etiqueta + Enter"
+          className={`${CONDITION_INPUT_CLS} text-xs`}
+        />
+      )}
+    </div>
+  );
+}
+
+// Una fila = una condición (campo · operador · valor). El valor SIEMPRE se elige
+// de un desplegable cuando el campo tiene valores conocidos (etapas, etiquetas en
+// uso, sucursales, fuentes): escribirlo a mano se presta a erratas que hacen que
+// la condición no se cumpla nunca.
+function ConditionRow({ cond, onChange, onRemove, canRemove, clinics = [], tagOptions = {} }) {
   const ops = opsFor(cond.field);
   const multi = cond.op === 'in' || cond.op === 'nin';
+  const tagList = TAG_FIELD_SOURCE[cond.field] ? (tagOptions[TAG_FIELD_SOURCE[cond.field]] || []) : null;
   const options = cond.field === 'stage'
     ? STAGES.map((s) => ({ value: s, label: STAGE_LABELS[s] || s }))
     : cond.field === 'lastReply'
       ? REPLY_VALUES
-      : cond.field === 'clinic'
-        ? clinics.map((c) => ({ value: String(c._id), label: c.nombreComercial || c.name }))
-        : null;
+      : cond.field === 'source'
+        ? SOURCES
+        : cond.field === 'clinic'
+          ? clinics.map((c) => ({ value: String(c._id), label: c.nombreComercial || c.name }))
+          : tagList
+            ? tagList.map((t) => ({ value: t, label: t }))
+            : null;
+  // Solo las etiquetas admiten un valor fuera de la lista (una etiqueta nueva que
+  // todavía no usa nadie); etapas/sucursales/fuentes son cerradas.
+  const allowCustom = !!tagList;
   // Al cambiar de campo se limpia el valor y se ajusta el operador si el actual
   // no aplica (p.ej. "es mayor que" solo existe en campos numéricos).
   const changeField = (field) => {
@@ -1739,7 +1865,7 @@ function ConditionRow({ cond, onChange, onRemove, canRemove, clinics = [] }) {
     const next = picked.includes(v) ? picked.filter((x) => x !== v) : [...picked, v];
     onChange({ values: next, value: '' });
   };
-  const inputCls = 'w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm';
+  const inputCls = CONDITION_INPUT_CLS;
   return (
     <div className="rounded-lg border border-slate-200 bg-white p-2 grid gap-1.5">
       <div className="flex items-start gap-1.5">
@@ -1761,35 +1887,33 @@ function ConditionRow({ cond, onChange, onRemove, canRemove, clinics = [] }) {
       </select>
       {cond.op !== 'exists' && cond.field !== 'hasPatient' && (
         options
-          ? (multi ? (
-            <div className="flex flex-wrap gap-1">
-              {options.map((o) => (
-                <button
-                  key={o.value}
-                  type="button"
-                  onClick={() => toggle(o.value)}
-                  className={`px-2 py-1 rounded-lg text-[11px] border cursor-pointer ${picked.includes(o.value) ? 'bg-emerald-500 border-emerald-500 text-white' : 'bg-white border-slate-200 text-slate-600 hover:border-emerald-400'}`}
-                >
-                  {o.label}
-                </button>
-              ))}
-            </div>
-          ) : (
-            <select value={cond.value || ''} onChange={(e) => onChange({ value: e.target.value, values: [] })} className={inputCls}>
-              <option value="">Selecciona…</option>
-              {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-            </select>
-          ))
+          ? (multi
+            // key por campo: al cambiar de campo el editor del valor se reinicia
+            // (si no, arrastra el modo "escribir otra" o el texto a medias).
+            ? <MultiValue key={cond.field} picked={picked} options={options} allowCustom={allowCustom} onToggle={toggle} />
+            : (
+              <ChoiceValue
+                key={cond.field}
+                value={cond.value || ''}
+                options={options}
+                allowCustom={allowCustom}
+                onChange={(v) => onChange({ value: v, values: [] })}
+                placeholder={allowCustom ? 'Selecciona etiqueta…' : 'Selecciona…'}
+              />
+            ))
           : NUMBER_FIELDS.includes(cond.field)
             ? <NumericInput value={Number(cond.value) || 0} onChange={(e) => onChange({ value: String(e.target.value), values: [] })} className={inputCls} />
             : (
               <input
                 value={cond.value || ''}
                 onChange={(e) => onChange({ value: e.target.value, values: [] })}
-                placeholder={multi ? 'vip, premium (separa con comas)' : 'valor'}
+                placeholder={multi ? 'valor1, valor2 (separa con comas)' : 'valor'}
                 className={inputCls}
               />
             )
+      )}
+      {allowCustom && options.length === 0 && (
+        <p className="text-[11px] text-slate-400">Todavía no hay etiquetas de este tipo en el sistema: escribe la que vas a usar.</p>
       )}
     </div>
   );
@@ -1797,7 +1921,7 @@ function ConditionRow({ cond, onChange, onRemove, canRemove, clinics = [] }) {
 
 // Grupo de condiciones de una rama. El conector entre filas (Y / O) decide si
 // deben cumplirse TODAS (condiciones conectadas) o basta CUALQUIERA (independientes).
-function ConditionGroup({ group, onChange, clinics = [] }) {
+function ConditionGroup({ group, onChange, clinics = [], tagOptions = {} }) {
   const conditions = group.conditions || [];
   const any = group.match === 'any';
   const patch = (id, p) => onChange({ conditions: conditions.map((c) => (c.id === id ? { ...c, ...p } : c)) });
@@ -1818,6 +1942,7 @@ function ConditionGroup({ group, onChange, clinics = [] }) {
           <ConditionRow
             cond={c}
             clinics={clinics}
+            tagOptions={tagOptions}
             canRemove={conditions.length > 1}
             onChange={(p) => patch(c.id, p)}
             onRemove={() => onChange({ conditions: conditions.filter((x) => x.id !== c.id) })}
@@ -1842,7 +1967,7 @@ function ConditionGroup({ group, onChange, clinics = [] }) {
   );
 }
 
-function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, agents, clinics = [], audiences = [], audiencesNotice = '' }) {
+function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, agents, clinics = [], audiences = [], audiencesNotice = '', tagOptions = {} }) {
   const d = node.data || {};
   const set = (patch) => onChange(patch);
   const t = node.type;
@@ -2088,7 +2213,7 @@ function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, 
     const g = branchesOfData(d)[0];
     return (
       <div className="grid gap-2">
-        <ConditionGroup group={g} clinics={clinics} onChange={(p) => set(p)} />
+        <ConditionGroup group={g} clinics={clinics} tagOptions={tagOptions} onChange={(p) => set(p)} />
         <p className="text-[11px] text-slate-400">
           El flujo <b>termina</b> para ese contacto en cuanto se cumple lo de arriba. Si no se cumple, continúa por
           la salida de abajo.
@@ -2129,7 +2254,7 @@ function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, 
                 </button>
               )}
             </div>
-            <ConditionGroup group={b} clinics={clinics} onChange={(p) => patchBranch(b.id, p)} />
+            <ConditionGroup group={b} clinics={clinics} tagOptions={tagOptions} onChange={(p) => patchBranch(b.id, p)} />
           </div>
         ))}
         <button
@@ -2147,9 +2272,32 @@ function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, 
       </div>
     );
   }
-  if (t === 'add_tag' || t === 'remove_tag') return (
-    <input value={d.tag || ''} onChange={(e) => set({ tag: e.target.value })} placeholder="etiqueta" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-  );
+  // Añadir/Quitar etiqueta: campo libre (aquí es donde nacen las etiquetas nuevas)
+  // PERO con la lista de las que ya existen, para no crear "vip" y "VIP".
+  if (t === 'add_tag' || t === 'remove_tag') {
+    const known = [...new Set([...(tagOptions.patient || []), ...(tagOptions.chat || [])])];
+    return (
+      <div className="grid gap-1">
+        <input
+          value={d.tag || ''}
+          onChange={(e) => set({ tag: e.target.value })}
+          list={known.length ? 'wf-known-tags' : undefined}
+          placeholder="etiqueta"
+          className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+        />
+        {known.length > 0 && (
+          <datalist id="wf-known-tags">
+            {known.map((tg) => <option key={tg} value={tg} />)}
+          </datalist>
+        )}
+        <p className="text-[11px] text-slate-400">
+          {t === 'remove_tag'
+            ? 'Debe coincidir EXACTA con la etiqueta puesta antes; elige una de la lista si ya existe.'
+            : 'Se aplica al paciente y al chat. Escribe una nueva o elige una de las que ya usas.'}
+        </p>
+      </div>
+    );
+  }
   if (t === 'move_stage') return (
     <div className="grid gap-2">
       <select value={d.stage || 'contactado'} onChange={(e) => set({ stage: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">

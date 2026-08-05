@@ -28,6 +28,9 @@ export default function WorkflowEditor() {
   const [clinics, setClinics] = useState([]);
   const [audiences, setAudiences] = useState([]);
   const [audiencesNotice, setAudiencesNotice] = useState('');
+  // Etiquetas EN USO (paciente / chat / oportunidad) para los desplegables del
+  // nodo Condición: escribirlas a mano se presta a erratas que nunca casan.
+  const [tagOptions, setTagOptions] = useState({ patient: [], chat: [], opportunity: [] });
   const [folderNames, setFolderNames] = useState([]);
   const [saving, setSaving] = useState(false);
 
@@ -42,7 +45,7 @@ export default function WorkflowEditor() {
     let active = true;
     const load = async () => {
       try {
-        const [tpls, ags, fld, list, prods, clins, auds] = await Promise.all([
+        const [tpls, ags, fld, list, prods, clins, auds, tags] = await Promise.all([
           api.get('/message-templates?channel=whatsapp').catch(() => ({ data: [] })),
           api.get('/call-center/agents').catch(() => ({ data: [] })),
           api.get('/workflows/folders').catch(() => ({ data: [] })),
@@ -50,8 +53,14 @@ export default function WorkflowEditor() {
           api.get('/products').catch(() => ({ data: [] })),
           api.get('/clinics').catch(() => ({ data: [] })),
           api.get('/workflows/meta/custom-audiences').catch((e) => ({ data: { ok: false, error: e?.response?.data?.error || 'error', audiences: [] } })),
+          api.get('/workflows/tags').catch(() => ({ data: { patient: [], chat: [], opportunity: [] } })),
         ]);
         if (!active) return;
+        setTagOptions({
+          patient: tags.data?.patient || [],
+          chat: tags.data?.chat || [],
+          opportunity: tags.data?.opportunity || [],
+        });
         setTemplates((tpls.data || []).filter((t) => t.status === 'approved'));
         setAgents(ags.data || []);
         setProducts(Array.isArray(prods.data) ? prods.data : prods.data?.items || []);
@@ -181,13 +190,14 @@ export default function WorkflowEditor() {
         <WorkflowGraphEditor
           nodes={wf.nodes || []}
           edges={wf.edges || []}
-          onChange={({ nodes, edges }) => setWf({ ...wf, nodes, edges })}
+          onChange={({ nodes, edges }) => setWf((prev) => ({ ...prev, nodes, edges }))}
           templates={templates}
           agents={agents}
           products={products}
           clinics={clinics}
           audiences={audiences}
           audiencesNotice={audiencesNotice}
+          tagOptions={tagOptions}
         />
       </main>
     </div>,

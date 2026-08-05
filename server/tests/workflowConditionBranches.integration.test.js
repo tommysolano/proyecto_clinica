@@ -164,6 +164,28 @@ test('condiciones conectadas (Y) y independientes (O) dentro de una rama', async
   assert.ok((await tagsAfter(oUna)).includes('cumple'), 'O: basta con una');
 });
 
+test('GET /workflows/tags devuelve las etiquetas EN USO por familia (para los desplegables)', async () => {
+  const workflowCtrl = require('../controllers/workflowController');
+  const mongoose = require('mongoose');
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const userId = new mongoose.Types.ObjectId();
+
+  await Patient.create({ clinic: clinic._id, firstName: 'Ana', lastName: 'V', phone: '0991234567', tags: ['vip', 'ortodoncia'] });
+  await Conversation.create({
+    clinic: clinic._id,
+    phone: '593991234567',
+    channel: 'whatsapp',
+    tags: ['seguimiento'],
+    opportunities: [{ isOpportunity: true, stage: 'agendado', tags: ['botox', 'promo-mayo'] }],
+  });
+
+  const res = await H.runController(workflowCtrl.listTags, H.mockReq(clinic._id, userId, {}, { role: 'admin' }));
+  assert.equal(res.statusCode, 200);
+  assert.deepEqual(res.payload.patient, ['ortodoncia', 'vip']); // ordenadas alfabéticamente
+  assert.deepEqual(res.payload.chat, ['seguimiento']);
+  assert.deepEqual(res.payload.opportunity, ['botox', 'promo-mayo']);
+});
+
 test('un nodo condición ANTIGUO (field/op/value, salidas sí/no) sigue funcionando', async () => {
   const clinic = await Clinic.create({ name: 'Principal' });
   const patient = await Patient.create({ clinic: clinic._id, firstName: 'Sara', lastName: 'P', phone: '0991112223', tags: ['vip'] });

@@ -279,6 +279,43 @@ exports.activity = async (req, res) => {
 };
 
 /**
+ * GET /workflows/tags — etiquetas EN USO en el sistema, agrupadas por dónde
+ * viven, para que el nodo Condición ofrezca un DESPLEGABLE en vez de pedirlas
+ * escritas a mano (una etiqueta mal escrita hace que la condición nunca se
+ * cumpla). Se devuelven las tres familias que sabe leer el motor:
+ *  - patient      → Patient.tags (más las de los contactos del CRM: mismo vocabulario)
+ *  - chat         → Conversation.tags
+ *  - opportunity  → tags de las oportunidades del chat (canónicas + espejo legacy)
+ * Los pacientes NO se filtran por sucursal: el CRM es global (un flujo puede
+ * inscribir a un paciente de cualquier sede).
+ */
+exports.listTags = async (req, res) => {
+  try {
+    const Patient = require('../models/Patient');
+    const Conversation = require('../models/Conversation');
+    const Contact = require('../models/Contact');
+    const clean = (...lists) => [
+      ...new Set(lists.flat().map((t) => String(t || '').trim()).filter(Boolean)),
+    ].sort((a, b) => a.localeCompare(b, 'es'));
+    const byClinic = { clinic: req.clinicId };
+    const [patientTags, contactTags, chatTags, oppTags, oppTagsLegacy] = await Promise.all([
+      Patient.distinct('tags'),
+      Contact.distinct('tags', byClinic).catch(() => []),
+      Conversation.distinct('tags', byClinic),
+      Conversation.distinct('opportunities.tags', byClinic),
+      Conversation.distinct('opportunity.tags', byClinic),
+    ]);
+    res.json({
+      patient: clean(patientTags, contactTags),
+      chat: clean(chatTags),
+      opportunity: clean(oppTags, oppTagsLegacy),
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al listar etiquetas', error: err.message, patient: [], chat: [], opportunity: [] });
+  }
+};
+
+/**
  * Lista los Públicos Personalizados definidos en Meta/Facebook (Marketing API),
  * para que el nodo "Añadir/Quitar de público" ofrezca un selector en vez de
  * pedir el ID a mano. Devuelve { ok, audiences:[{id,name,count}], reason? }.
