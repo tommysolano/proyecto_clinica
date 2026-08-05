@@ -114,7 +114,7 @@ const MENU_GROUPS = [
     key: 'rrhh', label: 'Recursos Humanos', icon: HiOutlineUserGroup, items: [
       { path: '/accounting/employees', label: 'Empleados', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/payroll', label: 'Nómina', roles: ['admin', 'contabilidad'] },
-      { path: '/accounting/loans', label: 'Préstamos', roles: ['admin', 'contabilidad'] },
+      { path: '/accounting/loans', label: 'Préstamos y descuentos', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/deductions', label: 'Deducciones / Consumo', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/decimos', label: 'Plantillas Décimos', roles: ['admin', 'contabilidad'] },
       { path: '/accounting/payroll-config', label: 'Configuración', roles: ['admin', 'contabilidad'] },

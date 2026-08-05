@@ -231,13 +231,26 @@ function EmployeeDetail({ item, concepts, editable, onSave, onClose }) {
         <div className="mt-2">
           {draft.deductions.map((d, i) => (
             <div key={i} className="flex items-center gap-2 text-sm py-1 border-t border-rose-50">
-              <span className="flex-1">{d.name || d.code}</span>
+              <span className="flex-1">
+                {d.name || d.code}
+                {/* Los que vienen de un préstamo se marcan: el contador ve de dónde sale la
+                    cuota y que quitarla aquí no la cobra este mes. */}
+                {d.sourceModel === 'EmployeeLoan' && (
+                  <span className="ml-2 text-[10px] uppercase px-1.5 py-0.5 rounded bg-amber-100 text-amber-700" title="Cuota de un préstamo/descuento registrado. Si la quitas, no se descuenta en este rol.">préstamo</span>
+                )}
+              </span>
               {editable
                 ? <NumericInput step="0.01" min="0" value={d.amount} onChange={(ev) => set({ deductions: draft.deductions.map((x, idx) => idx === i ? { ...x, amount: +ev.target.value } : x) })} className="w-24 border border-slate-200 rounded px-2 py-1 text-right" />
                 : <span className="font-mono w-24 text-right">{fmt(d.amount)}</span>}
               {editable && <button onClick={() => removeDeduction(i)} className="text-rose-500" title="Quitar"><HiOutlineTrash className="w-4 h-4" /></button>}
             </div>
           ))}
+          {!draft.deductions.length && (
+            <p className="text-xs text-slate-400 py-1 border-t border-rose-50">
+              Sin descuentos. Las cuotas de préstamos y descuentos registrados en <b>Préstamos y descuentos</b> aparecen
+              aquí al generar el rol del mes.
+            </p>
+          )}
           {editable && (
             <div className="flex flex-wrap items-end gap-2 mt-2 bg-rose-50/40 rounded-lg p-2">
               <div className="flex-1 min-w-40">

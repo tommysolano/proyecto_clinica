@@ -402,8 +402,12 @@ async function buildPayrollEntryLines(payroll, { clinicId, session } = {}) {
     for (const d of it.deductions || []) {
       const amt = Number(d.amount) || 0;
       if (amt <= 0) continue;
+      // Una línea que viene de un documento con asiento propio (préstamo, anticipo, multa…)
+      // trae su CUENTA: se acredita esa misma, la que se debitó al otorgarlo. Solo cuando no
+      // la trae se resuelve por el concepto, como los rubros que se agregan a mano.
+      let acc = d.account ? await accById(clinicId, d.account, session) : null;
       const field = DEDUCTION_FIELD_BY_CODE[codeOf(d)] || 'descuento';
-      const acc = await gAcc(field);
+      if (!acc) acc = await gAcc(field);
       if (!acc) {
         const err = new Error(`El descuento «${d.name || d.code || 'descuento'}» (${RUBRO_LABELS[field] || field}) no tiene cuenta configurada en las cuentas generales.`);
         err.status = 400; throw err;

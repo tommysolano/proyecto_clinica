@@ -20,8 +20,12 @@ router.post('/employees/:id/fondos-mode', requireRole('admin', 'contabilidad'), 
 router.delete('/employees/:id', requireRole('admin'), c.deleteEmployee);
 
 router.get('/loans', requireRole('admin', 'contabilidad'), c.listLoans);
+// Catálogo de tipos con la cuenta que propone la configuración (va antes de '/loans/:id').
+router.get('/loans/types', requireRole('admin', 'contabilidad'), c.loanTypes);
 router.post('/loans', requireRole('admin', 'contabilidad'), c.createLoan);
 router.put('/loans/:id', requireRole('admin', 'contabilidad'), c.updateLoan);
+// Un préstamo NO se edita una vez contabilizado: se anula (reversa su asiento) y se rehace.
+router.post('/loans/:id/void', requireRole('admin', 'contabilidad'), c.voidLoan);
 
 router.get('/config', requireRole('admin', 'contabilidad'), c.getConfig);
 router.put('/config', requireRole('admin', 'contabilidad'), c.updateConfig);

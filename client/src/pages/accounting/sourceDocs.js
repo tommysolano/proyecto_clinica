@@ -13,6 +13,7 @@ export const SOURCE_ROUTES = {
   PurchaseInvoice: { path: '/accounting/purchases', label: 'Factura de compra', deep: true },
   FixedAsset: { path: '/accounting/assets', label: 'Activo fijo (depreciación)', deep: true },
   Payroll: { path: '/accounting/payroll', label: 'Nómina', deep: true },
+  EmployeeLoan: { path: '/accounting/loans', label: 'Préstamo / descuento a empleado' },
   Payment: { path: '/accounting/payments', label: 'Pago / Cobro', deep: true },
   SriDeclaration: { path: '/accounting/sri-declarations', label: 'Declaración SRI', deep: true },
   // Sin deep-link (solo etiqueta): el asiento se ve en el modal.

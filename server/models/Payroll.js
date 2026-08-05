@@ -1,7 +1,7 @@
 const mongoose = require('mongoose');
 
 // Rubro flexible del rol (ingreso/egreso agregado por el usuario). La cuenta NO
-// se captura aquí: se resuelve desde el PayrollConcept al cerrar. Guarda snapshot
+// se captura a mano: se resuelve desde el PayrollConcept al cerrar. Guarda snapshot
 // de código/nombre/monto para auditoría.
 const payrollLineSchema = new mongoose.Schema(
   {
@@ -9,6 +9,18 @@ const payrollLineSchema = new mongoose.Schema(
     code: { type: String, default: '' },
     name: { type: String, default: '' },
     amount: { type: Number, default: 0 },
+    /**
+     * Cuenta EXACTA contra la que se recupera este rubro. Solo la traen las líneas que nacen
+     * de un documento con su propio asiento —hoy, los préstamos y descuentos al empleado—:
+     * el rol tiene que acreditar la MISMA cuenta que se debitó al otorgarlo, o el par no
+     * cierra (un quirografario acreditaba la cuenta de préstamos de la empresa). Vacía en los
+     * rubros que el usuario agrega a mano: esos siguen resolviendo por concepto.
+     */
+    account: { type: mongoose.Schema.Types.ObjectId, ref: 'ChartOfAccount', default: null },
+    // Documento que originó la línea (para marcar su cuota al cerrar el rol).
+    sourceModel: { type: String, default: '' },
+    sourceRef: { type: mongoose.Schema.Types.ObjectId, default: null },
+    installmentNumber: { type: Number, default: null },
   },
   { _id: false }
 );

@@ -16,7 +16,12 @@ const ChartOfAccount = require('../models/ChartOfAccount');
 const { createEntry, findAccount, reverseEntry, runInTransaction, assertPeriodOpen, ensureAccountByCode } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const { openPayable, applyToPayable, voidPayable } = require('../utils/subledger');
+const BankCheck = require('../models/BankCheck');
 const { recomputeItem, buildPayrollEntryLines, resolveConfigAccounts } = require('../utils/payrollPosting');
+const { girarCheque, liberarCheque } = require('../services/bankChecks');
+const {
+  LOAN_TYPES, DISBURSEMENT_METHODS, DISBURSEMENT_LABELS, loanType, loanTypeDef,
+} = require('../services/employeeLoanTypes');
 const { DEPT_TYPES, POSTING_DEFAULT_CODES, DEPT_NAME_HINTS } = PayrollConfig;
 const { DEFAULT_IR_RANGES_2024, getActiveIncomeTaxTable } = require('../utils/payrollTax');
 const { payrollWithholdingForPeriod } = require('../utils/payrollWithholding');
@@ -494,39 +499,317 @@ exports.deleteEmployee = async (req, res) => {
   res.json({ message: 'Inactivado', employee: e });
 };
 
-// ----- Préstamos -----
+// ----- Préstamos y descuentos al empleado -----
 exports.listLoans = async (req, res) => {
   const filter = { clinic: req.clinicId };
   if (req.query.employee) filter.employee = req.query.employee;
   if (req.query.status) filter.status = req.query.status;
-  const items = await EmployeeLoan.find(filter).populate('employee', 'code firstName lastName').sort({ createdAt: -1 });
+  if (req.query.type) filter.type = req.query.type;
+  const items = await EmployeeLoan.find(filter)
+    .populate('employee', 'code firstName lastName')
+    .populate('receivableAccount counterAccount', 'code name')
+    .populate('bankAccount', 'name bank')
+    .sort({ createdAt: -1 });
   res.json(items);
 };
 
-exports.createLoan = async (req, res) => {
+/** Catálogo de tipos con su cuenta propuesta (lo pinta el formulario). */
+exports.loanTypes = async (req, res) => {
   try {
-    const { employee, principal, installmentsCount, interestRate = 0, grantDate, type, description } = req.body;
-    const cuota = +(principal / installmentsCount).toFixed(2);
-    const installments = [];
-    const start = grantDate ? new Date(grantDate) : new Date();
-    for (let i = 1; i <= installmentsCount; i++) {
-      const d = new Date(start); d.setMonth(d.getMonth() + i);
-      installments.push({ number: i, dueDate: d, amount: cuota, paid: false });
+    const cfg = await PayrollConfig.findOne({ clinic: req.clinicId });
+    const salida = [];
+    for (const [key, def] of Object.entries(LOAN_TYPES)) {
+      const acc = await resolveLoanAccount(req.clinicId, cfg, def.accountField);
+      salida.push({
+        type: key,
+        label: def.label,
+        disburses: def.disburses,
+        account: acc ? { _id: acc._id, code: acc.code, name: acc.name } : null,
+        accountField: def.accountField,
+      });
     }
-    const loan = await EmployeeLoan.create({
-      clinic: req.clinicId, employee, principal, installmentsCount, installmentAmount: cuota,
-      interestRate, grantDate: grantDate || new Date(), type, description,
-      installments, balance: principal, createdBy: req.user._id,
-    });
-    res.status(201).json(loan);
-  } catch (e) { res.status(400).json({ message: e.message }); }
+    res.json({ types: salida, methods: DISBURSEMENT_LABELS });
+  } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
+/**
+ * Cuenta configurada para un rubro global de nómina, con el código por defecto como respaldo
+ * (misma resolución que usa el cierre del rol: la cuenta del préstamo y la que el rol acredita
+ * al recuperarlo tienen que ser la misma).
+ */
+async function resolveLoanAccount(clinicId, cfg, field, session) {
+  const id = cfg?.accounts?.global?.[field];
+  if (id) {
+    const acc = await ChartOfAccount.findOne({ _id: id, clinic: clinicId }).session(session || null);
+    if (acc) return acc;
+  }
+  const code = POSTING_DEFAULT_CODES.global[field];
+  if (!code) return null;
+  return ChartOfAccount.findOne({ clinic: clinicId, code }).session(session || null);
+}
+
+/**
+ * Registra un préstamo/descuento al empleado CON SU ASIENTO.
+ *
+ * Asiento: DEBE la cuenta por cobrar del tipo (quirografario, hipotecario, empresa, anticipo,
+ * multa…) y HABER el origen del dinero: la cuenta bancaria (transferencia o cheque), caja,
+ * caja chica, o la contrapartida que indique el contador cuando no sale dinero.
+ *
+ * Cuando el origen es un banco se registra además el movimiento bancario, para que el
+ * desembolso aparezca en Bancos → Movimientos y se pueda conciliar; con cheque se gira contra
+ * la chequera (el número tiene que existir y estar disponible).
+ *
+ * body: { employee, type, principal, installmentsCount, grantDate, description,
+ *         disbursementMethod, bankAccount?, checkNumber?, reference?,
+ *         receivableAccount?, counterAccount? }
+ */
+exports.createLoan = async (req, res) => {
+  try {
+    const loanId = await runInTransaction(async (session) => {
+      const {
+        employee, installmentsCount, interestRate = 0, grantDate, description,
+        disbursementMethod, bankAccount, checkNumber, reference,
+      } = req.body;
+      const tipo = loanType(req.body.type);
+      const def = loanTypeDef(tipo);
+      const principal = r2(req.body.principal);
+      const cuotas = parseInt(installmentsCount, 10) || 0;
+
+      if (!employee) throw Object.assign(new Error('Selecciona el empleado'), { status: 400 });
+      if (!(principal > 0)) throw Object.assign(new Error('El monto debe ser mayor que cero'), { status: 400 });
+      if (cuotas < 1) throw Object.assign(new Error('El número de cuotas debe ser al menos 1'), { status: 400 });
+
+      const emp = await Employee.findOne({ _id: employee, clinic: req.clinicId }).session(session);
+      if (!emp) throw Object.assign(new Error('Empleado no encontrado'), { status: 404 });
+
+      const fecha = grantDate ? new Date(grantDate) : new Date();
+      await assertPeriodOpen(req.clinicId, fecha, { session });
+
+      // ── Cuentas del asiento ──────────────────────────────────────────────────────────
+      const cfg = await PayrollConfig.findOne({ clinic: req.clinicId }).session(session);
+      let debe = null;
+      if (req.body.receivableAccount) {
+        debe = await ChartOfAccount.findOne({ _id: req.body.receivableAccount, clinic: req.clinicId }).session(session);
+      }
+      if (!debe) debe = await resolveLoanAccount(req.clinicId, cfg, def.accountField, session);
+      if (!debe) {
+        throw Object.assign(new Error(
+          `No hay cuenta configurada para «${def.label}». Configúrala en Nómina → Configuración → Cuentas Contables `
+          + `(rubro ${def.accountField}) o elígela en el formulario.`
+        ), { status: 400 });
+      }
+
+      const metodo = DISBURSEMENT_METHODS.includes(disbursementMethod)
+        ? disbursementMethod
+        : (def.disburses ? 'TRANSFERENCIA' : 'SIN_DESEMBOLSO');
+
+      let haber = null;
+      let banco = null;
+      if (metodo === 'TRANSFERENCIA' || metodo === 'CHEQUE') {
+        if (!bankAccount) throw Object.assign(new Error('Selecciona la cuenta bancaria desde la que sale el dinero'), { status: 400 });
+        banco = await BankAccount.findOne({ _id: bankAccount, clinic: req.clinicId }).session(session);
+        if (!banco) throw Object.assign(new Error('Cuenta bancaria no encontrada'), { status: 404 });
+        if (!banco.chartAccount) throw Object.assign(new Error('La cuenta bancaria no tiene cuenta contable asociada'), { status: 400 });
+        haber = await ChartOfAccount.findById(banco.chartAccount).session(session);
+      } else if (metodo === 'EFECTIVO') {
+        haber = await getAccount(req.clinicId, 'caja', { session });
+      } else if (metodo === 'CAJA_CHICA') {
+        haber = await getAccount(req.clinicId, 'cajaChica', { session });
+      } else {
+        if (!req.body.counterAccount) {
+          throw Object.assign(new Error(
+            'Sin desembolso hay que indicar la contrapartida del asiento: la cuenta contra la que se registra '
+            + `«${def.label}» (por ejemplo, la recuperación de gasto o el ingreso por la multa).`
+          ), { status: 400 });
+        }
+        haber = await ChartOfAccount.findOne({ _id: req.body.counterAccount, clinic: req.clinicId }).session(session);
+        if (!haber) throw Object.assign(new Error('Cuenta de contrapartida no encontrada'), { status: 404 });
+      }
+
+      // ── Cuotas ───────────────────────────────────────────────────────────────────────
+      const cuota = r2(principal / cuotas);
+      const installments = [];
+      let acumulado = 0;
+      for (let i = 1; i <= cuotas; i += 1) {
+        const d = new Date(fecha); d.setMonth(d.getMonth() + i);
+        // La última cuota absorbe el redondeo: si no, la suma de cuotas no daba el capital.
+        const monto = i === cuotas ? r2(principal - acumulado) : cuota;
+        acumulado = r2(acumulado + monto);
+        installments.push({ number: i, dueDate: d, amount: monto, paid: false });
+      }
+
+      const [loan] = await EmployeeLoan.create([{
+        clinic: req.clinicId,
+        employee,
+        type: tipo,
+        principal,
+        installmentsCount: cuotas,
+        installmentAmount: cuota,
+        interestRate,
+        grantDate: fecha,
+        description,
+        installments,
+        balance: principal,
+        receivableAccount: debe._id,
+        counterAccount: metodo === 'SIN_DESEMBOLSO' ? haber._id : null,
+        disbursementMethod: metodo,
+        bankAccount: banco?._id || null,
+        reference: reference || '',
+        createdBy: req.user._id,
+      }], { session });
+
+      const glosa = `${def.label} — ${emp.firstName} ${emp.lastName}`;
+      const entry = await createEntry({
+        clinicId: req.clinicId,
+        date: fecha,
+        description: description ? `${glosa} (${description})` : glosa,
+        source: 'NOMINA',
+        sourceModel: 'EmployeeLoan',
+        sourceRef: loan._id,
+        sourceAction: 'GRANT',
+        lines: [
+          { account: debe._id, debit: principal, credit: 0, description: glosa },
+          { account: haber._id, debit: 0, credit: principal, description: glosa },
+        ],
+        userId: req.user._id,
+        session,
+      });
+      loan.journalEntry = entry._id;
+
+      if (banco) {
+        let numeroCheque = checkNumber || null;
+        if (metodo === 'CHEQUE' && !numeroCheque) {
+          const libre = await BankCheck.findOne({
+            clinic: req.clinicId, bankAccount: banco._id, status: 'DISPONIBLE',
+          }).sort({ number: 1 }).session(session);
+          if (!libre) {
+            throw Object.assign(new Error(
+              'No quedan cheques disponibles en la chequera de esta cuenta. Genera el siguiente rango en Bancos → Cheques.'
+            ), { status: 400 });
+          }
+          numeroCheque = String(libre.number);
+        }
+        const [tx] = await BankTransaction.create([{
+          clinic: req.clinicId,
+          bankAccount: banco._id,
+          date: fecha,
+          type: metodo === 'CHEQUE' ? 'CHEQUE_EMITIDO' : 'PAGO',
+          amount: principal,
+          direction: -1,
+          description: glosa,
+          reference: reference || '',
+          checkNumber: numeroCheque,
+          partyName: `${emp.firstName} ${emp.lastName}`,
+          costCenter: emp.costCenter || null,
+          journalEntry: entry._id,
+          sourceModel: 'EmployeeLoan',
+          sourceRef: loan._id,
+          createdBy: req.user._id,
+        }], { session });
+        loan.bankTransaction = tx._id;
+        loan.checkNumber = numeroCheque || '';
+        if (metodo === 'CHEQUE') {
+          await girarCheque({
+            clinicId: req.clinicId, bankId: banco._id, number: numeroCheque,
+            beneficiary: `${emp.firstName} ${emp.lastName}`, amount: principal, date: fecha,
+            transactionId: tx._id, session,
+          });
+        }
+      }
+
+      await loan.save({ session });
+      return loan._id;
+    });
+
+    const loan = await EmployeeLoan.findById(loanId)
+      .populate('employee', 'code firstName lastName')
+      .populate('receivableAccount counterAccount', 'code name');
+    return res.status(201).json(loan);
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+};
+
+/**
+ * Anula un préstamo/descuento: reversa su asiento, anula el movimiento bancario (devolviendo
+ * el saldo del banco y el cheque a la chequera) y lo saca de los descuentos del rol.
+ * No se puede anular si ya se descontó alguna cuota en un rol.
+ */
+exports.voidLoan = async (req, res) => {
+  try {
+    const result = await runInTransaction(async (session) => {
+      const loan = await EmployeeLoan.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
+      if (!loan) throw Object.assign(new Error('No encontrado'), { status: 404 });
+      if (loan.status === 'ANULADO') throw Object.assign(new Error('Ya está anulado'), { status: 400 });
+      const cobrada = (loan.installments || []).find((i) => i.paid);
+      if (cobrada) {
+        throw Object.assign(new Error(
+          `No se puede anular: la cuota ${cobrada.number} ya se descontó en el rol ${cobrada.paidIn || ''}. `
+          + 'Reabre ese rol primero.'
+        ), { status: 400 });
+      }
+
+      const fecha = req.body?.date ? new Date(req.body.date) : new Date();
+      await assertPeriodOpen(req.clinicId, fecha, { session });
+
+      if (loan.bankTransaction) {
+        const tx = await BankTransaction.findById(loan.bankTransaction).session(session);
+        if (tx && tx.reconciled) {
+          throw Object.assign(new Error('El desembolso ya está conciliado con el banco: reabre la conciliación antes de anularlo.'), { status: 400 });
+        }
+        if (tx && !tx.voided) {
+          tx.voided = true;
+          tx.voidedAt = fecha;
+          tx.voidedBy = req.user._id;
+          tx.voidReason = req.body?.reason || 'Anulación de préstamo';
+          await tx.save({ session });
+          await BankAccount.updateOne(
+            { _id: tx.bankAccount },
+            { $inc: { bookBalance: -(Number(tx.amount || 0) * Number(tx.direction || 0)) } },
+            { session }
+          );
+          if (tx.type === 'CHEQUE_EMITIDO' && tx.checkNumber) {
+            await liberarCheque({ clinicId: req.clinicId, bankId: tx.bankAccount, number: tx.checkNumber, session });
+          }
+        }
+      }
+      if (loan.journalEntry) {
+        await reverseEntry({
+          clinicId: req.clinicId,
+          entryId: loan.journalEntry,
+          userId: req.user._id,
+          reason: `Anulación préstamo ${loan.code || ''}`.trim(),
+          date: fecha,
+          session,
+        });
+      }
+      loan.status = 'ANULADO';
+      loan.voidReason = req.body?.reason || '';
+      loan.balance = 0;
+      await loan.save({ session });
+      return { message: 'Préstamo anulado' };
+    });
+    res.json(result);
+  } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
+};
+
+/**
+ * Solo retoca los datos DESCRIPTIVOS. El monto, el tipo, las cuentas o el origen del dinero ya
+ * están contabilizados: cambiarlos dejaría el asiento diciendo una cosa y el préstamo otra.
+ * Para corregir eso se anula (que reversa el asiento) y se vuelve a registrar.
+ */
 exports.updateLoan = async (req, res) => {
   try {
     const l = await EmployeeLoan.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!l) return res.status(404).json({ message: 'No encontrado' });
-    Object.assign(l, req.body); await l.save(); res.json(l);
+    if (req.body.description !== undefined) l.description = req.body.description;
+    if (req.body.reference !== undefined) l.reference = req.body.reference;
+    const contable = ['principal', 'type', 'installmentsCount', 'receivableAccount', 'counterAccount', 'bankAccount', 'disbursementMethod', 'grantDate'];
+    if (l.journalEntry && contable.some((k) => req.body[k] !== undefined)) {
+      return res.status(400).json({
+        message: 'El préstamo ya está contabilizado: el monto, el tipo, las cuentas y el origen del dinero no se editan. Anúlalo y regístralo de nuevo.',
+      });
+    }
+    await l.save();
+    res.json(l);
   } catch (err) { res.status(400).json({ message: err.message }); }
 };
 
@@ -632,6 +915,10 @@ exports.generatePayroll = async (req, res) => {
     const taxTable = await getActiveIncomeTaxTable(req.clinicId, y);
     const conceptMap = await loadConceptFlags(req.clinicId);
     const ctx = { rates: R, taxTable, conceptMap, sbu: R.SBU_2024 };
+    // Conceptos por código: cada préstamo entra al rol con el concepto de su tipo.
+    const conceptByCode = new Map(
+      (await PayrollConcept.find({ clinic: req.clinicId }).select('code name')).map((c) => [c.code, c])
+    );
 
     // Anticipos ya pagados en la quincena de este mes (para descontarlos en el cierre).
     const anticipoByEmp = new Map();
@@ -680,10 +967,33 @@ exports.generatePayroll = async (req, res) => {
         .filter((f) => f.activo !== false && (Number(f.monto) || 0) > 0)
         .map((f) => ({ concepto: f.concepto, monto: r2(f.monto), aportaIess: !!f.aportaIess, concept: f.concept || null, account: f.account || null }));
 
-      // Préstamos vigentes (cuota pendiente del período).
+      // ── Préstamos y descuentos vigentes: una LÍNEA por cada uno ──────────────────────
+      //
+      // Antes se sumaban todos en un único número (`prestamoEmpresa`), con dos consecuencias:
+      // en la pantalla del rol el préstamo no se veía (era un importe suelto sin nombre, que
+      // además se perdía si el rol se había generado antes de crear el préstamo), y en el
+      // asiento TODOS los tipos acreditaban la cuenta de préstamos de la empresa —un
+      // quirografario recuperaba contra la cuenta equivocada—.
+      //
+      // Ahora cada préstamo entra como un descuento con nombre, concepto y CUENTA propia (la
+      // misma que se debitó al otorgarlo), y con la referencia a su cuota para poder marcarla.
       const loans = await EmployeeLoan.find({ clinic: req.clinicId, employee: emp._id, status: 'ACTIVO' });
-      let prestamoEmpresa = 0;
-      for (const l of loans) { const pend = l.installments.find((i) => !i.paid); if (pend) prestamoEmpresa += pend.amount; }
+      const loanLines = [];
+      for (const l of loans) {
+        const pend = (l.installments || []).find((i) => !i.paid);
+        if (!pend || !(pend.amount > 0)) continue;
+        const def = loanTypeDef(l.type);
+        loanLines.push({
+          concept: conceptByCode.get(def.conceptCode)?._id || null,
+          code: def.conceptCode,
+          name: `${def.label} — cuota ${pend.number}/${l.installmentsCount}`,
+          amount: r2(pend.amount),
+          account: l.receivableAccount || null,
+          sourceModel: 'EmployeeLoan',
+          sourceRef: l._id,
+          installmentNumber: pend.number,
+        });
+      }
 
       // Deducciones pendientes del empleado (consumo, multas, anticipos, etc.).
       const deductions = await EmployeeDeduction.find({ clinic: req.clinicId, employee: emp._id, status: 'PENDIENTE' });
@@ -704,9 +1014,9 @@ exports.generatePayroll = async (req, res) => {
         fondosReservaFactor,
         fixedIncomes,
         anticipoQuincena: anticipoByEmp.get(String(emp._id)) || 0,
-        prestamoEmpresa: +prestamoEmpresa.toFixed(2),
+        prestamoEmpresa: 0,   // los préstamos entran como líneas de descuento (ver arriba)
         multas: +multas.toFixed(2), anticipos: +anticipos.toFixed(2), otherDeductions: +otherDeductions.toFixed(2),
-        earnings: [], deductions: [],
+        earnings: [], deductions: loanLines,
       };
       // MOTOR ÚNICO: sueldo ganado, décimos/fondos, IESS (sobre lo ganado), IR, provisiones y totales.
       recomputeItem(item, { ...ctx, employee: emp });
@@ -858,27 +1168,27 @@ exports.closePayroll = async (req, res) => {
         );
       }
 
-      // Marcar cuotas de préstamos cubiertas por el descuento del período.
+      // Marcar la cuota EXACTA que descontó cada línea de préstamo del rol. Cada línea sabe de
+      // qué préstamo y de qué número de cuota salió, así que ya no hay que repartir un importe
+      // agregado entre los préstamos del empleado adivinando cuál pagó qué.
       for (const it of p.items) {
-        if (it.prestamoEmpresa > 0) {
-          const loans = await EmployeeLoan.find({ clinic: req.clinicId, employee: it.employee, status: 'ACTIVO' }).session(session);
-          let remaining = it.prestamoEmpresa;
-          for (const loan of loans) {
-            for (const inst of loan.installments) {
-              if (inst.paid || remaining <= 0) continue;
-              if (inst.amount <= remaining + 0.01) {
-                inst.paid = true;
-                inst.paidIn = p.period;
-                inst.paidAt = new Date();
-                loan.paidAmount = +(loan.paidAmount + inst.amount).toFixed(2);
-                loan.balance = +(loan.principal - loan.paidAmount).toFixed(2);
-                remaining -= inst.amount;
-              }
-            }
-            if (loan.balance <= 0.01) loan.status = 'CANCELADO';
-            await loan.save({ session });
-            if (remaining <= 0) break;
-          }
+        for (const d of it.deductions || []) {
+          if (d.sourceModel !== 'EmployeeLoan' || !d.sourceRef) continue;
+          const monto = Number(d.amount) || 0;
+          if (monto <= 0) continue;
+          const loan = await EmployeeLoan.findOne({ _id: d.sourceRef, clinic: req.clinicId }).session(session);
+          if (!loan || loan.status === 'ANULADO') continue;
+          const inst = (loan.installments || []).find((x) => x.number === d.installmentNumber && !x.paid)
+            || (loan.installments || []).find((x) => !x.paid);
+          if (!inst) continue;
+          inst.paid = true;
+          inst.paidIn = p.period;
+          inst.paidAt = new Date();
+          // Si el contador ajustó el importe de la línea, manda lo realmente descontado.
+          loan.paidAmount = r2(loan.paidAmount + monto);
+          loan.balance = Math.max(0, r2(loan.principal - loan.paidAmount));
+          if (loan.balance <= 0.01) { loan.balance = 0; loan.status = 'CANCELADO'; }
+          await loan.save({ session });
         }
       }
 
@@ -911,6 +1221,38 @@ exports.closePayroll = async (req, res) => {
  * Reversa el asiento de cierre y anula la obligación. Se bloquea si ya hubo pagos:
  * primero habría que revertirlos (evita dejar la cartera y el mayor incoherentes).
  */
+/**
+ * Deshace lo que el CIERRE marcó como cobrado al empleado: las cuotas de préstamo que descontó
+ * este rol vuelven a estar pendientes y las deducciones aplicadas vuelven a PENDIENTE.
+ *
+ * Sin esto, reabrir un rol dejaba la cuota marcada como pagada: al volver a cerrarlo se
+ * descontaba la cuota SIGUIENTE y el empleado terminaba pagando dos veces el mismo mes.
+ */
+async function liberarCobrosDelRol(p, clinicId, session) {
+  for (const it of p.items || []) {
+    for (const d of it.deductions || []) {
+      if (d.sourceModel !== 'EmployeeLoan' || !d.sourceRef) continue;
+      const loan = await EmployeeLoan.findOne({ _id: d.sourceRef, clinic: clinicId }).session(session);
+      if (!loan) continue;
+      const inst = (loan.installments || []).find((x) => x.paid && x.paidIn === p.period && x.number === d.installmentNumber)
+        || (loan.installments || []).find((x) => x.paid && x.paidIn === p.period);
+      if (!inst) continue;
+      inst.paid = false;
+      inst.paidIn = '';
+      inst.paidAt = null;
+      loan.paidAmount = Math.max(0, r2(loan.paidAmount - (Number(d.amount) || 0)));
+      loan.balance = Math.max(0, r2(loan.principal - loan.paidAmount));
+      if (loan.status === 'CANCELADO' && loan.balance > 0.01) loan.status = 'ACTIVO';
+      await loan.save({ session });
+    }
+  }
+  await EmployeeDeduction.updateMany(
+    { clinic: clinicId, status: 'APLICADO', appliedIn: p.period },
+    { $set: { status: 'PENDIENTE', appliedIn: '', appliedAt: null } },
+    { session }
+  );
+}
+
 exports.reopenPayroll = async (req, res) => {
   try {
     const payrollId = await runInTransaction(async (session) => {
@@ -934,6 +1276,7 @@ exports.reopenPayroll = async (req, res) => {
         });
       }
       await voidPayable({ clinicId: req.clinicId, sourceModel: 'Payroll', sourceRef: p._id }, { session });
+      await liberarCobrosDelRol(p, req.clinicId, session);
 
       p.status = 'BORRADOR';
       p.journalEntry = null;
@@ -970,6 +1313,8 @@ exports.voidPayroll = async (req, res) => {
         });
       }
       await voidPayable({ clinicId: req.clinicId, sourceModel: 'Payroll', sourceRef: p._id }, { session });
+      // Un rol anulado no cobró nada: las cuotas y deducciones vuelven a estar pendientes.
+      await liberarCobrosDelRol(p, req.clinicId, session);
       p.status = 'ANULADO';
       await p.save({ session });
       return p._id;
