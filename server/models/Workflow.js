@@ -23,6 +23,7 @@ const CONDITION_FIELDS = [
   'tag',
   'chatTag',
   'stage',
+  'opportunityName',
   'opportunityTag',
   'opportunityValue',
   'source',
@@ -74,7 +75,8 @@ const workflowStepSchema = new mongoose.Schema(
         'condition',
         'add_tag',
         'remove_tag',
-        'move_stage',
+        'move_stage', // legacy: solo cambia la etapa. Lo sustituye create_opportunity.
+        'create_opportunity',
         'set_appointment_status',
         'assign_agent',
         'create_task',
@@ -139,12 +141,23 @@ const workflowStepSchema = new mongoose.Schema(
     onFailGoTo: { type: Number, default: null }, // índice de paso; null = terminar
     // add_tag / remove_tag
     tag: { type: String, trim: true, default: '' },
-    // move_stage
+    // move_stage / create_opportunity: etapa del embudo.
     stage: {
       type: String,
       enum: ['nuevo', 'contactado', 'interesado', 'agendado', 'ganado', 'perdido', ''],
       default: '',
     },
+    // create_opportunity: la oportunidad COMPLETA (nombre, servicios del
+    // inventario, valor automático o manual, etiquetas y notas).
+    opportunityName: { type: String, trim: true, default: '' }, // admite variables {{nombre}}
+    opportunityProducts: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
+    opportunityValueMode: { type: String, enum: ['auto', 'manual', ''], default: 'auto' },
+    opportunityValue: { type: Number, default: 0, min: 0 },
+    opportunityTags: { type: [String], default: [] },
+    opportunityNotes: { type: String, default: '' },
+    // Qué hacer si el chat YA tiene oportunidad: 'update' actualiza la principal,
+    // 'new' añade otra (dos intereses distintos en el mismo chat).
+    ifExists: { type: String, enum: ['update', 'new', ''], default: 'update' },
     // meta_capi: evento estándar de conversión de Meta + valor opcional (Purchase).
     metaEventName: { type: String, trim: true, default: 'Lead' },
     metaValue: { type: Number, default: 0 },

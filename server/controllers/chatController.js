@@ -654,6 +654,39 @@ const sumInterestedValue = async (clinicId, items) => {
 };
 
 /**
+ * Valor esperado de una oportunidad según su modo:
+ *  - 'manual' → el importe que escribió el usuario (no se recalcula nunca).
+ *  - 'auto'   → suma de los servicios de interés (precio del inventario).
+ */
+const resolveOpportunityValue = async (clinicId, { valueMode, expectedValue, interestedIn }) => {
+  if (valueMode === 'manual') return Math.max(0, Number(expectedValue) || 0);
+  return sumInterestedValue(clinicId, interestedIn);
+};
+
+/**
+ * Nombre por defecto de una oportunidad cuando el usuario no escribe ninguno:
+ * "<servicios> — <contacto>" (p.ej. "Botox, Láser — Ana Vera"). Sin servicios,
+ * "Oportunidad — <contacto>". Así el embudo no se llena de "Oportunidad #1".
+ */
+const defaultOpportunityName = (conv, opp = {}) => {
+  const servicios = (opp.interestedIn || []).map((i) => i.name).filter(Boolean).join(', ');
+  const contacto = `${conv?.patient?.firstName || ''} ${conv?.patient?.lastName || ''}`.trim()
+    || conv?.contactName
+    || conv?.phone
+    || '';
+  return [servicios || 'Oportunidad', contacto].filter(Boolean).join(' — ').slice(0, 120);
+};
+
+// El nombre por defecto usa el nombre del PACIENTE cuando el chat lo tiene
+// vinculado (el documento llega sin poblar desde findOne).
+const withPatientName = async (conv) => {
+  if (conv.patient && !conv.patient.firstName) {
+    await conv.populate('patient', 'firstName lastName');
+  }
+  return conv;
+};
+
+/**
  * Mantiene el espejo legacy `conv.opportunity` en sync con el array
  * `conv.opportunities`. El panel lateral, los listados y el embudo leen
  * `conv.opportunity`; sin esta sincronización las ediciones del array no se
@@ -716,7 +749,8 @@ async function createInternalEvent({ clinicId, conv, eventType, body, sentBy, se
 // Texto legible del chip de "oportunidad creada" para el hilo.
 function opportunityEventBody(opp) {
   const productos = (opp.interestedIn || []).map((i) => i.name).filter(Boolean).join(', ');
-  const partes = [`Oportunidad creada${productos ? `: ${productos}` : ''}`];
+  const titulo = opp.name || productos;
+  const partes = [`Oportunidad creada${titulo ? `: ${titulo}` : ''}`];
   if (opp.expectedValue) partes.push(`$${Number(opp.expectedValue).toFixed(2)}`);
   partes.push(`etapa ${opp.stage}`);
   return partes.join(' · ');
@@ -730,17 +764,25 @@ exports.addOpportunity = async (req, res) => {
       return res.status(403).json({ message: 'No autorizado' });
     }
     const interestedIn = await enrichInterested(req.clinicId, req.body.interestedIn || []);
-    // El valor esperado se calcula desde el inventario; ignoramos cualquier precio que envíe el cliente.
-    const expectedValue = await sumInterestedValue(req.clinicId, interestedIn);
+    // Valor esperado: desde el inventario ('auto', por defecto) o el importe que
+    // escribió el usuario ('manual', p.ej. un paquete o un presupuesto cerrado).
+    const valueMode = req.body.valueMode === 'manual' ? 'manual' : 'auto';
+    const expectedValue = await resolveOpportunityValue(req.clinicId, {
+      valueMode,
+      expectedValue: req.body.expectedValue,
+      interestedIn,
+    });
     const opp = {
       isOpportunity: true,
       stage: req.body.stage || 'nuevo',
       interestedIn,
+      valueMode,
       expectedValue,
       notes: req.body.notes || '',
       tags: Array.isArray(req.body.tags) ? req.body.tags.filter(Boolean) : [],
       createdAt: new Date(),
     };
+    opp.name = String(req.body.name || '').trim() || defaultOpportunityName(await withPatientName(conv), opp);
     conv.opportunities = [...(conv.opportunities || []), opp];
     // Mantener compat: opportunity principal = última creada.
     syncPrimaryOpportunity(conv);
@@ -776,7 +818,19 @@ exports.updateOpportunityAt = async (req, res) => {
     const prevStage = current.stage;
     if (Array.isArray(req.body.interestedIn)) {
       current.interestedIn = await enrichInterested(req.clinicId, req.body.interestedIn);
+    }
+    if (req.body.valueMode) current.valueMode = req.body.valueMode === 'manual' ? 'manual' : 'auto';
+    // El valor se recalcula desde el inventario en modo 'auto'; en 'manual' manda
+    // el importe escrito (y no se toca aunque cambien los servicios).
+    if ((current.valueMode || 'auto') === 'manual') {
+      if (req.body.expectedValue !== undefined) {
+        current.expectedValue = Math.max(0, Number(req.body.expectedValue) || 0);
+      }
+    } else if (Array.isArray(req.body.interestedIn) || req.body.valueMode) {
       current.expectedValue = await sumInterestedValue(req.clinicId, current.interestedIn);
+    }
+    if (req.body.name !== undefined) {
+      current.name = String(req.body.name).trim() || defaultOpportunityName(await withPatientName(conv), current);
     }
     if (req.body.stage) current.stage = req.body.stage;
     if (req.body.notes !== undefined) current.notes = req.body.notes;
@@ -1747,7 +1801,7 @@ exports.listAllOpportunities = async (req, res) => {
     ];
     query.$or = orFilters;
     const list = await Conversation.find(query)
-      .populate('patient', 'firstName lastName cedula phone whatsapp marketing')
+      .populate('patient', 'firstName lastName cedula phone whatsapp email marketing')
       .sort({ lastMessageAt: -1 })
       .limit(500);
 
@@ -1762,9 +1816,10 @@ exports.listAllOpportunities = async (req, res) => {
     const rows = [];
     for (const c of list) {
       const opps = [];
-      if (Array.isArray(c.opportunities) && c.opportunities.length) opps.push(...c.opportunities);
+      const fromArray = Array.isArray(c.opportunities) && c.opportunities.length;
+      if (fromArray) opps.push(...c.opportunities);
       else if (c.opportunity?.isOpportunity) opps.push(c.opportunity);
-      for (const op of opps) {
+      for (const [oppIdx, op] of opps.entries()) {
         const created = op.createdAt ? new Date(op.createdAt) : null;
         if (from && created && created < new Date(from)) continue;
         if (to && created && created > new Date(`${to}T23:59:59`)) continue;
@@ -1781,11 +1836,18 @@ exports.listAllOpportunities = async (req, res) => {
         }
         rows.push({
           conversationId: c._id,
+          // Posición dentro de `opportunities[]` (la que usan PUT/DELETE
+          // /chats/:id/opportunities/:idx). -1 = viene del espejo legacy.
+          index: fromArray ? oppIdx : -1,
           phone: c.phone,
           contactName: c.contactName,
+          email: c.patient?.email || '',
           patient: c.patient,
+          name: op.name || '',
           stage: op.stage,
           notes: op.notes,
+          tags: op.tags || [],
+          valueMode: op.valueMode || 'auto',
           expectedValue: op.expectedValue,
           interestedIn: op.interestedIn,
           createdAt: op.createdAt,

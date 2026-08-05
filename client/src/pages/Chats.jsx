@@ -3709,10 +3709,15 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
                     const m = STAGES.find((s) => s.value === o.stage) || STAGES[0];
                     return (
                       <div key={idx} className="border border-slate-100 rounded-lg p-2 space-y-1 text-sm">
+                        {o.name && (
+                          <div className="text-xs font-semibold text-slate-700 truncate" title={o.name}>{o.name}</div>
+                        )}
                         <div className="flex items-center justify-between gap-2">
                           <span className={`inline-block text-[11px] px-2 py-0.5 rounded ${m.color}`}>{m.label}</span>
                           {o.expectedValue > 0 && (
-                            <span className="text-[11px] text-slate-500">${o.expectedValue}</span>
+                            <span className="text-[11px] text-slate-500" title={o.valueMode === 'manual' ? 'Valor manual' : 'Valor desde inventario'}>
+                              ${Number(o.expectedValue).toFixed(2)}{o.valueMode === 'manual' ? ' ✎' : ''}
+                            </span>
                           )}
                         </div>
                         {(o.attribution?.adId || o.attribution?.campaign) && (
@@ -4342,6 +4347,13 @@ function RegisterPatientModal({ conv, onClose, onRegistered }) {
   );
 }
 
+// Oportunidad en blanco (la del botón "+ Agregar otra"). El nombre lo pone el
+// servidor si se deja vacío ("<servicios> — <contacto>").
+const blankOpportunity = () => ({
+  name: '', stage: 'nuevo', notes: '', lostReason: '', tags: [],
+  valueMode: 'auto', expectedValue: 0, interested: [],
+});
+
 function OpportunityModal({ conv, services, onClose, onSaved }) {
   // Soporta MÚLTIPLES oportunidades por chat. Para compatibilidad, si solo existe
   // la oportunidad legacy `opportunity`, la convertimos al array en pantalla.
@@ -4351,15 +4363,18 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
       : (conv.opportunity?.isOpportunity ? [conv.opportunity] : []);
     return list.map((op) => ({
       _existingIdx: list === conv.opportunities ? list.indexOf(op) : -1,
+      name: op.name || '',
       stage: op.stage || 'nuevo',
       notes: op.notes || '',
       lostReason: op.lostReason || '',
       tags: op.tags || [],
+      valueMode: op.valueMode === 'manual' ? 'manual' : 'auto',
+      expectedValue: Number(op.expectedValue || 0),
       attribution: op.attribution || null, // solo lectura: anuncio de origen
       interested: (op.interestedIn || []).map((s) => s.product?._id || s.product || '').filter(Boolean),
     }));
   }, [conv]);
-  const [items, setItems] = useState(initial.length > 0 ? initial : [{ stage: 'nuevo', notes: '', lostReason: '', tags: [], interested: [] }]);
+  const [items, setItems] = useState(initial.length > 0 ? initial : [blankOpportunity()]);
   const [saving, setSaving] = useState(false);
 
   // Calcular valor esperado desde inventario (precio del producto).
@@ -4370,6 +4385,15 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
         const s = services.find((x) => x._id === id);
         return sum + (s ? Number(s.salePrice || 0) : 0);
       }, 0);
+  // Lo que se verá en el embudo: el manual manda; el automático sale del inventario.
+  const shownValue = (it) => (it.valueMode === 'manual' ? Number(it.expectedValue || 0) : valueOf(it.interested));
+  // Contacto al que pertenecen estas oportunidades (sale del chat, no se duplica).
+  const contact = {
+    name: conv.patient ? `${conv.patient.firstName || ''} ${conv.patient.lastName || ''}`.trim() : (conv.contactName || ''),
+    phone: conv.phone || '',
+    email: conv.patient?.email || '',
+    isPatient: !!conv.patient,
+  };
 
   const submit = async () => {
     setSaving(true);
@@ -4378,10 +4402,13 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
       for (let i = 0; i < items.length; i++) {
         const it = items[i];
         const payload = {
+          name: it.name || '',
           stage: it.stage,
           notes: it.notes,
           lostReason: it.stage === 'perdido' ? it.lostReason : '',
           tags: it.tags || [],
+          valueMode: it.valueMode === 'manual' ? 'manual' : 'auto',
+          expectedValue: it.valueMode === 'manual' ? Number(it.expectedValue || 0) : undefined,
           interestedIn: it.interested.filter(Boolean).map((id) => {
             const s = services.find((x) => x._id === id);
             return { product: id, name: s?.name };
@@ -4423,11 +4450,23 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
   return (
     <ModalShell title="Oportunidades" onClose={onClose} size="lg">
       <div className="space-y-4 text-sm">
+        {/* Contacto al que pertenecen: la oportunidad SIEMPRE cuelga de este chat. */}
+        <div className="border border-slate-200 rounded-xl p-3 bg-slate-50/70">
+          <div className="text-xs font-bold text-slate-500 uppercase tracking-wide mb-1">Contacto</div>
+          <div className="font-medium text-slate-800">{contact.name || 'Sin nombre'}</div>
+          <div className="text-xs text-slate-500 flex flex-wrap gap-x-3">
+            {contact.phone && <span>📞 {contact.phone}</span>}
+            {contact.email && <span>✉️ {contact.email}</span>}
+            <span className={contact.isPatient ? 'text-emerald-700' : 'text-amber-700'}>
+              {contact.isPatient ? '✓ Paciente vinculado' : 'Sin paciente vinculado'}
+            </span>
+          </div>
+        </div>
         {items.map((it, idx) => (
           <div key={idx} className="border border-emerald-200 rounded-xl p-3 bg-emerald-50/40 space-y-3">
             <div className="flex items-center justify-between gap-2">
               <span className="text-xs font-bold text-emerald-700 flex items-center gap-2 min-w-0">
-                Oportunidad #{idx + 1}
+                {it.name?.trim() || `Oportunidad #${idx + 1}`}
                 {(it.attribution?.adId || it.attribution?.campaign) && (
                   <span
                     title={it.attribution.adId ? `ID del anuncio (source_id de Meta): ${it.attribution.adId}` : ''}
@@ -4445,6 +4484,16 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
               >
                 Quitar
               </button>
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-600 block mb-1">Nombre de la oportunidad</label>
+              <input
+                value={it.name}
+                onChange={(e) => setItems((prev) => prev.map((x, i) => i === idx ? { ...x, name: e.target.value } : x))}
+                placeholder="Ej. Botox — primera sesión"
+                className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-white"
+              />
+              <p className="text-[11px] text-slate-400 mt-1">Si lo dejas vacío se nombra sola con los servicios y el contacto.</p>
             </div>
             <div>
               <label className="text-xs font-semibold text-slate-600 block mb-1">Etapa</label>
@@ -4471,9 +4520,42 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
                 onAdd={(pid) => setItems((prev) => prev.map((x, i) => i === idx ? { ...x, interested: x.interested.includes(pid) ? x.interested : [...x.interested, pid] } : x))}
                 onRemove={(pid) => setItems((prev) => prev.map((x, i) => i === idx ? { ...x, interested: x.interested.filter((y) => y !== pid) } : x))}
               />
-              <div className="text-[11px] text-emerald-700 mt-1">
-                Valor esperado (desde inventario): <b>${valueOf(it.interested).toFixed(2)}</b>
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-slate-600 block mb-1">Valor esperado</label>
+              <div className="flex flex-wrap items-center gap-2">
+                <select
+                  value={it.valueMode}
+                  onChange={(e) => setItems((prev) => prev.map((x, i) => i === idx
+                    ? { ...x, valueMode: e.target.value, expectedValue: e.target.value === 'manual' && !x.expectedValue ? valueOf(x.interested) : x.expectedValue }
+                    : x))}
+                  className="border border-slate-200 rounded-xl px-3 py-2 text-sm bg-white"
+                >
+                  <option value="auto">Automático (desde inventario)</option>
+                  <option value="manual">Manual</option>
+                </select>
+                {it.valueMode === 'manual' ? (
+                  <div className="flex items-center gap-1">
+                    <span className="text-slate-500">$</span>
+                    <input
+                      type="number"
+                      min="0"
+                      step="0.01"
+                      value={it.expectedValue}
+                      onChange={(e) => setItems((prev) => prev.map((x, i) => i === idx ? { ...x, expectedValue: e.target.value } : x))}
+                      className="w-32 border border-slate-200 rounded-xl px-3 py-2 text-sm bg-white"
+                    />
+                  </div>
+                ) : (
+                  <span className="text-[11px] text-emerald-700">
+                    Suma de los servicios: <b>${valueOf(it.interested).toFixed(2)}</b>
+                  </span>
+                )}
               </div>
+              <p className="text-[11px] text-slate-400 mt-1">
+                En “manual” el importe no cambia aunque cambies los servicios (paquetes, descuentos, presupuestos).
+                Valor en el embudo: <b className="text-emerald-700">${Number(shownValue(it) || 0).toFixed(2)}</b>
+              </p>
             </div>
             <div>
               <label className="text-xs font-semibold text-slate-600 block mb-1">Etiquetas</label>
@@ -4505,7 +4587,7 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
         ))}
         <button
           type="button"
-          onClick={() => setItems((prev) => [...prev, { stage: 'nuevo', notes: '', lostReason: '', tags: [], interested: [] }])}
+          onClick={() => setItems((prev) => [...prev, blankOpportunity()])}
           className="w-full text-xs py-2 rounded-lg border border-dashed border-emerald-300 text-emerald-700 bg-emerald-50/40 hover:bg-emerald-100 cursor-pointer"
         >
           + Agregar otra oportunidad

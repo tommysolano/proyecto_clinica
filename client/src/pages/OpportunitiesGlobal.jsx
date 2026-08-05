@@ -76,11 +76,14 @@ export default function OpportunitiesGlobal() {
   // Texto de una fila en el que busca el buscador. El teléfono va aparte porque
   // se compara por dígitos (0988535561 encuentra al 593988535561).
   const rowText = (o) => [
+    o.name || '',
     o.patient ? `${o.patient.firstName || ''} ${o.patient.lastName || ''}` : '',
     o.contactName || '',
+    o.email || '',
     o.stage || '',
     o.notes || '',
     o.adCampaign || '',
+    (o.tags || []).join(' '),
     (o.interestedIn || []).map((s) => s.name).join(' '),
   ].join(' ').toLowerCase();
 
@@ -323,6 +326,7 @@ export default function OpportunitiesGlobal() {
                 />
               </th>
               <th className="text-left px-3 py-2">Fecha</th>
+              <th className="text-left px-3 py-2">Oportunidad</th>
               <th className="text-left px-3 py-2">Contacto / Paciente</th>
               <th className="text-left px-3 py-2">Etapa</th>
               <th className="text-left px-3 py-2">Servicios interés</th>
@@ -332,11 +336,11 @@ export default function OpportunitiesGlobal() {
           </thead>
           <tbody>
             {loading && (
-              <tr><td colSpan={7} className="text-center py-6 text-slate-400">Cargando...</td></tr>
+              <tr><td colSpan={8} className="text-center py-6 text-slate-400">Cargando...</td></tr>
             )}
             {!loading && visible.length === 0 && (
               <tr>
-                <td colSpan={7} className="text-center py-6 text-slate-400">
+                <td colSpan={8} className="text-center py-6 text-slate-400">
                   {list.length === 0 ? 'Sin oportunidades.' : 'Ninguna oportunidad coincide con la búsqueda.'}
                 </td>
               </tr>
@@ -356,10 +360,17 @@ export default function OpportunitiesGlobal() {
                 </td>
                 <td className="px-3 py-2 text-slate-600 whitespace-nowrap">{fmtDate(o.createdAt)}</td>
                 <td className="px-3 py-2">
+                  <div className="font-medium text-slate-800">{o.name || '—'}</div>
+                  {(o.tags || []).length > 0 && (
+                    <div className="text-[10px] text-emerald-700">{o.tags.join(' · ')}</div>
+                  )}
+                </td>
+                <td className="px-3 py-2">
                   <div className="font-medium text-slate-800">
                     {o.patient ? `${o.patient.firstName} ${o.patient.lastName}` : (o.contactName || '—')}
                   </div>
                   <div className="text-xs text-slate-400">{o.phone}</div>
+                  {o.email && <div className="text-xs text-slate-400">{o.email}</div>}
                   {(o.adCampaign || o.adId) && (
                     <div className="text-[10px] text-violet-700 mt-0.5">📣 {o.adCampaign || `Anuncio ${o.adId}`}</div>
                   )}
@@ -372,8 +383,9 @@ export default function OpportunitiesGlobal() {
                 <td className="px-3 py-2 text-xs text-slate-700">
                   {(o.interestedIn || []).map((s) => s.name).filter(Boolean).join(', ') || '—'}
                 </td>
-                <td className="px-3 py-2 text-right text-emerald-700 font-semibold">
+                <td className="px-3 py-2 text-right text-emerald-700 font-semibold" title={o.valueMode === 'manual' ? 'Valor manual' : 'Valor calculado desde el inventario'}>
                   ${Number(o.expectedValue || 0).toFixed(2)}
+                  {o.valueMode === 'manual' && <span className="text-slate-400 font-normal"> ✎</span>}
                 </td>
                 <td className="px-3 py-2 text-xs text-slate-500 italic">{o.notes || ''}</td>
               </tr>

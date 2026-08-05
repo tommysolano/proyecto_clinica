@@ -266,7 +266,9 @@ const STEP_MAP = {
   'ESPERA CITA': 'wait_until', 'ESPERAR CITA': 'wait_until', RECORDATORIO: 'wait_until', 'ANTES DE LA CITA': 'wait_until',
   ETIQUETA: 'add_tag', 'AGREGAR ETIQUETA': 'add_tag', 'ANADIR ETIQUETA': 'add_tag',
   'QUITAR ETIQUETA': 'remove_tag', 'REMOVER ETIQUETA': 'remove_tag',
-  ETAPA: 'move_stage', 'MOVER ETAPA': 'move_stage',
+  // "etapa" del Excel = crear/actualizar la oportunidad en esa etapa (el paso
+  // create_opportunity sustituyó a move_stage y hace lo mismo, pero completo).
+  ETAPA: 'create_opportunity', 'MOVER ETAPA': 'create_opportunity', OPORTUNIDAD: 'create_opportunity',
 };
 
 const STAGE_MAP = { NUEVO: 'nuevo', CONTACTADO: 'contactado', INTERESADO: 'interesado', AGENDADO: 'agendado', GANADO: 'ganado', PERDIDO: 'perdido' };
@@ -307,10 +309,10 @@ function buildStep(stepTypeRaw, contentRaw, languageRaw, rowNo, errors) {
     if (!text) { errors.push(`Fila ${rowNo}: falta la etiqueta (columna contenido).`); return null; }
     return { type: t, tag: text };
   }
-  if (t === 'move_stage') {
+  if (t === 'create_opportunity') {
     const stage = STAGE_MAP[norm(text)];
     if (!stage) { errors.push(`Fila ${rowNo}: etapa desconocida "${text}". Usa: nuevo, contactado, interesado, agendado, ganado, perdido.`); return null; }
-    return { type: 'move_stage', stage };
+    return { type: 'create_opportunity', stage, ifExists: 'update' };
   }
   return null;
 }

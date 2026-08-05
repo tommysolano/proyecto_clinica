@@ -59,7 +59,8 @@ export const STEP_DEFS = {
   split: 'Dividir (bifurcación)',
   add_tag: 'Añadir etiqueta',
   remove_tag: 'Quitar etiqueta',
-  move_stage: 'Etapa de oportunidad',
+  create_opportunity: 'Crear oportunidad',
+  move_stage: 'Etapa de oportunidad (antiguo)',
   set_appointment_status: 'Cambiar estado de cita',
   assign_agent: 'Asignar agente',
   create_task: 'Crear tarea',
@@ -77,7 +78,10 @@ const STEP_GROUPS = [
   { title: 'Comunicación', icon: HiOutlineChatBubbleLeftRight, types: ['send_message', 'send_media', 'send_template', 'send_email', 'ai_reply', 'request_review'] },
   { title: 'Esperas', icon: HiOutlineClock, types: ['wait', 'wait_until', 'wait_reply'] },
   { title: 'Lógica', icon: HiOutlineArrowsRightLeft, types: ['condition', 'split', 'goal'] },
-  { title: 'Contacto / CRM', icon: HiOutlineTag, types: ['add_tag', 'remove_tag', 'move_stage', 'assign_agent', 'set_appointment_status'] },
+  // 'move_stage' ya no se ofrece: lo cubre 'create_opportunity' (que además crea
+  // la oportunidad con nombre, servicios, valor…). Los flujos que ya lo usan
+  // siguen funcionando y se pueden seguir editando desde su nodo.
+  { title: 'Contacto / CRM', icon: HiOutlineTag, types: ['add_tag', 'remove_tag', 'create_opportunity', 'assign_agent', 'set_appointment_status'] },
   { title: 'Marketing (Meta / Facebook)', icon: HiOutlineMegaphone, types: ['meta_capi', 'fb_audience_add', 'fb_audience_remove'] },
   { title: 'Otros', icon: HiOutlineCog6Tooth, types: ['create_task', 'webhook'] },
 ];
@@ -99,6 +103,7 @@ const STEP_ICONS = {
   add_tag: { icon: HiOutlineTag, cls: 'bg-teal-100 text-teal-600' },
   remove_tag: { icon: HiOutlineTag, cls: 'bg-slate-100 text-slate-500' },
   move_stage: { icon: HiOutlineFunnel, cls: 'bg-cyan-100 text-cyan-600' },
+  create_opportunity: { icon: HiOutlineFunnel, cls: 'bg-cyan-100 text-cyan-600' },
   set_appointment_status: { icon: HiOutlineCalendarDays, cls: 'bg-emerald-100 text-emerald-600' },
   assign_agent: { icon: HiOutlineUserPlus, cls: 'bg-blue-100 text-blue-600' },
   create_task: { icon: HiOutlineClipboardDocumentList, cls: 'bg-orange-100 text-orange-600' },
@@ -189,6 +194,7 @@ function formatWaitSummary(d = {}) {
 }
 const FIELDS = [
   { value: 'stage', label: 'Etapa de la oportunidad' },
+  { value: 'opportunityName', label: 'Nombre de la oportunidad' },
   { value: 'opportunityTag', label: 'Etiqueta de la oportunidad' },
   { value: 'opportunityValue', label: 'Valor esperado de la oportunidad' },
   { value: 'tag', label: 'Etiqueta del paciente' },
@@ -311,6 +317,10 @@ export const newNodeData = (type) => ({
   waitMinutes: 60, waitValue: 60, waitUnit: 'minutes', waitEvent: 'appointment_date', offsetMinutes: -1440, timeoutMinutes: 720,
   waitMode: 'clock', daysBefore: 1, atTime: '18:00',
   appointmentStatus: 'confirmada', field: 'tag', op: 'eq', value: '', tag: '', stage: 'contactado',
+  // Crear oportunidad: nombre con variables, servicios del inventario, valor
+  // automático (suma de esos servicios) o manual, etiquetas y notas.
+  opportunityName: '', opportunityProducts: [], opportunityValueMode: 'auto', opportunityValue: 0,
+  opportunityTags: [], opportunityNotes: '', ifExists: 'update',
   assignMode: 'roundrobin', assignUser: null, taskTitle: '', taskDueOffsetMinutes: 1440,
   webhookUrl: '', webhookMethod: 'POST',
   metaEventName: 'Lead', metaValue: 0, metaCurrency: 'USD', audienceId: '', audienceName: '',
@@ -410,6 +420,14 @@ function summarize(n, ctx = {}) {
       : `${Math.abs((d.offsetMinutes || 0) / 60)}h ${(d.offsetMinutes || 0) < 0 ? 'antes' : 'después'}`;
     case 'add_tag': case 'remove_tag': return d.tag;
     case 'move_stage': return STAGE_LABELS[d.stage] || d.stage;
+    case 'create_opportunity': {
+      const nombre = (d.opportunityName || '').trim();
+      const etapa = STAGE_LABELS[d.stage] || d.stage || 'nuevo';
+      const valor = d.opportunityValueMode === 'manual'
+        ? `$${Number(d.opportunityValue) || 0}`
+        : (d.opportunityProducts || []).length ? 'valor por servicios' : '';
+      return [nombre || 'Sin nombre', etapa, valor].filter(Boolean).join(' · ');
+    }
     case 'goal': return describeBranch(branchesOfData(d)[0], ctx);
     case 'condition': {
       const bs = branchesOfData(d);
@@ -1314,6 +1332,7 @@ export default function WorkflowGraphEditor({
               templates={templates}
               agents={agents}
               clinics={clinics}
+              products={products}
               audiences={audiences}
               audiencesNotice={audiencesNotice}
               tagOptions={tagOptions}
@@ -1967,7 +1986,7 @@ function ConditionGroup({ group, onChange, clinics = [], tagOptions = {} }) {
   );
 }
 
-function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, agents, clinics = [], audiences = [], audiencesNotice = '', tagOptions = {} }) {
+function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, agents, clinics = [], products = [], audiences = [], audiencesNotice = '', tagOptions = {} }) {
   const d = node.data || {};
   const set = (patch) => onChange(patch);
   const t = node.type;
@@ -2304,11 +2323,124 @@ function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, 
         {STAGES.map((s) => <option key={s} value={s}>{STAGE_LABELS[s] || s}</option>)}
       </select>
       <p className="text-[11px] text-slate-400">
-        Mueve la oportunidad del chat a esta etapa del embudo. Si el chat <b>aún no tiene
-        oportunidad</b>, se crea una en esta etapa (visible en el chat y en el Kanban de Oportunidades).
+        Paso <b>antiguo</b>: solo mueve la oportunidad del chat a esta etapa (si no hay ninguna, la crea vacía).
+        Para crear la oportunidad con nombre, servicios y valor usa el paso <b>Crear oportunidad</b>.
       </p>
     </div>
   );
+  // Crear oportunidad: la oportunidad COMPLETA (lo que antes había que rellenar a
+  // mano en el chat). El contacto es el del chat que disparó el flujo.
+  if (t === 'create_opportunity') {
+    const catalog = products.filter((p) => ['servicio', 'programa', 'insumo'].includes(p.category));
+    const picked = d.opportunityProducts || [];
+    const manual = d.opportunityValueMode === 'manual';
+    const autoValue = picked.reduce((s, id) => {
+      const p = catalog.find((x) => String(x._id) === String(id));
+      return s + Number(p?.salePrice || 0);
+    }, 0);
+    const togglePr = (id) => set({
+      opportunityProducts: picked.some((x) => String(x) === String(id))
+        ? picked.filter((x) => String(x) !== String(id))
+        : [...picked, id],
+    });
+    const oppTags = d.opportunityTags || [];
+    return (
+      <div className="grid gap-3">
+        <div>
+          <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Nombre de la oportunidad</label>
+          <WhatsappTextArea
+            value={d.opportunityName || ''}
+            onChange={(opportunityName) => set({ opportunityName })}
+            rows={2}
+            placeholder="Ej. Botox — {{nombre}}"
+            variables={MESSAGE_VARIABLES}
+          />
+          <p className="text-[11px] text-slate-400 mt-1">
+            Es lo que identifica la oportunidad en el embudo. Admite variables. Si lo dejas vacío se nombra sola
+            con los servicios y el contacto.
+          </p>
+        </div>
+        <div>
+          <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Etapa</label>
+          <select value={d.stage || 'nuevo'} onChange={(e) => set({ stage: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+            {STAGES.map((s) => <option key={s} value={s}>{STAGE_LABELS[s] || s}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Servicios de interés (inventario)</label>
+          {catalog.length === 0 ? (
+            <p className="text-[11px] text-slate-400">No hay servicios en el inventario.</p>
+          ) : (
+            <div className="max-h-40 overflow-y-auto border border-slate-200 rounded-lg p-1.5 flex flex-wrap gap-1">
+              {catalog.map((p) => (
+                <button
+                  key={p._id}
+                  type="button"
+                  onClick={() => togglePr(p._id)}
+                  className={`px-2 py-1 rounded-lg text-[11px] border cursor-pointer ${picked.some((x) => String(x) === String(p._id)) ? 'bg-emerald-500 border-emerald-500 text-white' : 'bg-white border-slate-200 text-slate-600 hover:border-emerald-400'}`}
+                >
+                  {p.name} {Number(p.salePrice) > 0 ? `· $${Number(p.salePrice).toFixed(2)}` : ''}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+        <div>
+          <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Valor esperado</label>
+          <select
+            value={manual ? 'manual' : 'auto'}
+            onChange={(e) => set({ opportunityValueMode: e.target.value })}
+            className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+          >
+            <option value="auto">Automático (suma de los servicios elegidos)</option>
+            <option value="manual">Manual (importe fijo)</option>
+          </select>
+          {manual ? (
+            <div className="flex items-center gap-1 mt-1">
+              <span className="text-sm text-slate-500">$</span>
+              <NumericInput
+                value={Number(d.opportunityValue) || 0}
+                onChange={(e) => set({ opportunityValue: Number(e.target.value) })}
+                className="w-32 border border-slate-200 rounded-lg px-2 py-1.5 text-sm"
+              />
+            </div>
+          ) : (
+            <p className="text-[11px] text-emerald-700 mt-1">Valor con los servicios elegidos: <b>${autoValue.toFixed(2)}</b></p>
+          )}
+        </div>
+        <div>
+          <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Etiquetas de la oportunidad</label>
+          <MultiValue
+            picked={oppTags}
+            options={(tagOptions.opportunity || []).map((tg) => ({ value: tg, label: tg }))}
+            allowCustom
+            onToggle={(v) => set({ opportunityTags: oppTags.includes(v) ? oppTags.filter((x) => x !== v) : [...oppTags, v] })}
+          />
+        </div>
+        <div>
+          <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Notas</label>
+          <WhatsappTextArea
+            value={d.opportunityNotes || ''}
+            onChange={(opportunityNotes) => set({ opportunityNotes })}
+            rows={2}
+            placeholder="Notas internas (admite variables)"
+            variables={MESSAGE_VARIABLES}
+          />
+        </div>
+        <div>
+          <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Si el chat ya tiene una oportunidad</label>
+          <select value={d.ifExists || 'update'} onChange={(e) => set({ ifExists: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+            <option value="update">Actualizar la existente (recomendado)</option>
+            <option value="new">Crear otra oportunidad más</option>
+          </select>
+        </div>
+        <p className="text-[11px] text-slate-400">
+          La oportunidad se crea sobre el <b>chat del contacto</b> que disparó el flujo (sus datos —nombre,
+          teléfono, paciente vinculado— salen de ahí) y aparece en el chat y en Oportunidades.
+        </p>
+      </div>
+    );
+  }
   if (t === 'set_appointment_status') return (
     <select value={d.appointmentStatus || 'confirmada'} onChange={(e) => set({ appointmentStatus: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
       <option value="confirmada">Marcar CONFIRMADA</option>

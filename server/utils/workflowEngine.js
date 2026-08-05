@@ -5,6 +5,7 @@ const Patient = require('../models/Patient');
 const Conversation = require('../models/Conversation');
 const Appointment = require('../models/Appointment');
 const AgentTask = require('../models/AgentTask');
+const Product = require('../models/Product');
 const User = require('../models/User');
 const ReviewRequest = require('../models/ReviewRequest');
 const messaging = require('./messaging');
@@ -370,6 +371,90 @@ async function applyOpportunityStage(conversation, stage) {
 }
 
 /**
+ * Crea (o actualiza) la oportunidad de un chat CON TODOS SUS DATOS: nombre,
+ * etapa, servicios de interés del inventario, valor (automático desde esos
+ * servicios o manual), etiquetas y notas. Lo usa el paso `create_opportunity`.
+ *
+ * `data.ifExists`:
+ *  - 'update' (defecto) → si el chat ya tiene oportunidad, actualiza la principal
+ *    (solo los campos configurados); si no tiene, la crea.
+ *  - 'new' → añade SIEMPRE una oportunidad más (p.ej. un interés distinto).
+ *
+ * Como `applyOpportunityStage`, NO emite el evento de dominio del disparador
+ * 'opportunity_stage' (evita cascadas workflow → workflow).
+ * Devuelve null si todo fue bien, o el motivo del fallo para el registro.
+ */
+async function applyOpportunity(conversation, data = {}, { clinicId, patient, ctx } = {}) {
+  if (!conversation) return 'El flujo no tiene un chat asociado: la oportunidad se crea sobre la conversación del contacto';
+  // Servicios de interés (catálogo): nombre + precio salen del inventario.
+  const ids = (Array.isArray(data.opportunityProducts) ? data.opportunityProducts : []).filter(Boolean);
+  let interestedIn = [];
+  let autoValue = 0;
+  if (ids.length) {
+    const products = await Product.find({ _id: { $in: ids } }).select('name salePrice');
+    interestedIn = products.map((p) => ({ product: p._id, name: p.name }));
+    autoValue = products.reduce((s, p) => s + Number(p.salePrice || 0), 0);
+  }
+  const valueMode = data.opportunityValueMode === 'manual' ? 'manual' : 'auto';
+  const expectedValue = valueMode === 'manual' ? Math.max(0, Number(data.opportunityValue) || 0) : autoValue;
+  const stage = data.stage || 'nuevo';
+  const tags = (Array.isArray(data.opportunityTags) ? data.opportunityTags : []).filter(Boolean);
+  const notes = await renderText(data.opportunityNotes || '', patient, ctx);
+  // El nombre admite variables ({{nombre}}, {{servicio}}…) como los mensajes.
+  const rendered = (await renderText(data.opportunityName || '', patient, ctx)).trim();
+  const contacto = `${patient?.firstName || ''} ${patient?.lastName || ''}`.trim()
+    || conversation.contactName || conversation.phone || '';
+  const name = rendered
+    || [interestedIn.map((i) => i.name).join(', ') || 'Oportunidad', contacto].filter(Boolean).join(' — ').slice(0, 120);
+
+  const list = Array.isArray(conversation.opportunities) ? conversation.opportunities : [];
+  const reuse = data.ifExists !== 'new' && list.length > 0;
+  if (reuse) {
+    const primary = list[list.length - 1];
+    primary.isOpportunity = true;
+    primary.stage = stage;
+    primary.name = name;
+    if (ids.length) {
+      primary.interestedIn = interestedIn;
+      if (valueMode === 'auto') primary.expectedValue = autoValue;
+    }
+    if (valueMode === 'manual') { primary.valueMode = 'manual'; primary.expectedValue = expectedValue; }
+    else if (ids.length) primary.valueMode = 'auto';
+    if (tags.length) primary.tags = [...new Set([...(primary.tags || []), ...tags])];
+    if (notes) primary.notes = notes;
+    if (stage === 'ganado' && !primary.convertedAt) primary.convertedAt = new Date();
+  } else {
+    conversation.opportunities = [
+      ...list,
+      {
+        isOpportunity: true,
+        name,
+        stage,
+        interestedIn,
+        valueMode,
+        expectedValue,
+        tags,
+        notes,
+        createdAt: new Date(),
+        ...(stage === 'ganado' ? { convertedAt: new Date() } : {}),
+      },
+    ];
+  }
+  conversation.markModified('opportunities');
+  // Espejo legacy = última del array (misma regla que el chatController).
+  const primary = conversation.opportunities[conversation.opportunities.length - 1];
+  conversation.opportunity = primary?.toObject ? primary.toObject() : { ...primary };
+  conversation.markModified('opportunity');
+  await conversation.save();
+  try {
+    emitToCallCenter('chat:opportunity', { conversationId: conversation._id });
+  } catch {
+    /* realtime opcional */
+  }
+  return null;
+}
+
+/**
  * Oportunidad "principal" de un chat: la ÚLTIMA de `opportunities[]` (fuente
  * canónica, misma regla que el chatController/applyOpportunityStage) con
  * respaldo en el espejo legacy `opportunity`.
@@ -455,6 +540,8 @@ function evaluateSingleCondition(cond = {}, { patient, conversation, context } =
       return matchScalar(opp?.stage || context?.stage || '', cond);
     case 'opportunityValue':
       return matchNumber(opp?.expectedValue, cond);
+    case 'opportunityName':
+      return matchScalar(opp?.name || '', cond);
     case 'source':
       return matchScalar(patient?.source || '', cond);
     case 'lastReply': {
@@ -726,6 +813,11 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
     case 'move_stage':
       if (step.stage) await applyOpportunityStage(await loadConv(), step.stage);
       break;
+    case 'create_opportunity':
+      // Crea la oportunidad COMPLETA (nombre, etapa, servicios, valor, etiquetas,
+      // notas) sobre el chat del contacto. Sustituye a `move_stage`, que solo
+      // sabía mover la etapa.
+      return applyOpportunity(await loadConv(), step, { clinicId, patient, ctx });
     case 'meta_capi': {
       // Reporta un evento de conversión a Meta (Conversions API) con los datos
       // del paciente. Optimiza las campañas por resultados reales del CRM.
@@ -1346,6 +1438,12 @@ async function executeEnrollment(enrollment) {
       if (!conversation) conversation = await loadConversationForPatient(enrollment.clinic, phone, patient?._id);
       // eslint-disable-next-line no-await-in-loop
       if (conversation) await applyOpportunityStage(conversation, step.stage);
+      i++;
+    } else if (step.type === 'create_opportunity') {
+      if (!conversation) conversation = await loadConversationForPatient(enrollment.clinic, phone, patient?._id);
+      // eslint-disable-next-line no-await-in-loop
+      const fail = await applyOpportunity(conversation, step, { clinicId: enrollment.clinic, patient, ctx });
+      pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail || '' });
       i++;
     } else {
       i++; // paso desconocido → saltar
@@ -1994,6 +2092,7 @@ module.exports = {
   branchesOf,
   matchBranch,
   applyOpportunityStage,
+  applyOpportunity,
   keywordMatchesTrigger,
   getTriggers,
   triggersOfNode,

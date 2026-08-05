@@ -18,6 +18,11 @@ const mongoose = require('mongoose');
 const opportunitySchema = new mongoose.Schema(
   {
     isOpportunity: { type: Boolean, default: false },
+    // Nombre de la oportunidad ("Botox — Ana Vera"). Es lo que la identifica en el
+    // embudo y en los listados; sin él solo se distinguían por "Oportunidad #1,
+    // #2…". Si se guarda vacío, el servidor le pone uno por defecto a partir de
+    // los servicios de interés y del contacto (defaultOpportunityName).
+    name: { type: String, trim: true, default: '' },
     stage: {
       type: String,
       enum: ['nuevo', 'contactado', 'interesado', 'agendado', 'ganado', 'perdido'],
@@ -29,6 +34,11 @@ const opportunitySchema = new mongoose.Schema(
         name: String,
       },
     ],
+    // De dónde sale `expectedValue`:
+    //  - 'auto'   → suma del precio de venta de los servicios de interés (inventario).
+    //  - 'manual' → importe escrito a mano (presupuestos, paquetes, descuentos…),
+    //               que el servidor NO recalcula aunque cambien los servicios.
+    valueMode: { type: String, enum: ['auto', 'manual'], default: 'auto' },
     expectedValue: { type: Number, default: 0, min: 0 },
     notes: { type: String, trim: true },
     // Etiquetas propias de la oportunidad (independientes de las del contacto/paciente).
