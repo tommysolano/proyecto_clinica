@@ -188,24 +188,113 @@ function formatWaitSummary(d = {}) {
   return `${value} ${label}`;
 }
 const FIELDS = [
+  { value: 'stage', label: 'Etapa de la oportunidad' },
+  { value: 'opportunityTag', label: 'Etiqueta de la oportunidad' },
+  { value: 'opportunityValue', label: 'Valor esperado de la oportunidad' },
   { value: 'tag', label: 'Etiqueta del paciente' },
-  { value: 'stage', label: 'Etapa de oportunidad' },
+  { value: 'chatTag', label: 'Etiqueta del chat' },
   { value: 'source', label: 'Fuente del paciente' },
   { value: 'lastReply', label: 'Última respuesta del paciente' },
   { value: 'hasPatient', label: 'Tiene paciente vinculado' },
   { value: 'clinic', label: 'Sucursal de la cita / evento' },
 ];
-const OPS = [
-  { value: 'eq', label: 'es igual a' },
-  { value: 'neq', label: 'es distinto de' },
-  { value: 'contains', label: 'contiene' },
-  { value: 'exists', label: 'existe' },
-];
+const FIELD_LABELS = Object.fromEntries(FIELDS.map((f) => [f.value, f.label]));
+const OP_LABELS = {
+  eq: 'es igual a',
+  neq: 'es distinto de',
+  contains: 'contiene',
+  exists: 'existe',
+  in: 'es alguno de',
+  nin: 'no es ninguno de',
+  gt: 'es mayor que',
+  lt: 'es menor que',
+};
+// Campos que guardan una LISTA (etiquetas) y campos NUMÉRICOS: cambian los
+// operadores disponibles y el editor del valor.
+const LIST_FIELDS = ['tag', 'chatTag', 'opportunityTag'];
+const NUMBER_FIELDS = ['opportunityValue'];
+
+const opsFor = (field) => {
+  if (field === 'hasPatient') {
+    return [{ value: 'eq', label: 'sí, tiene paciente' }, { value: 'neq', label: 'no tiene paciente' }];
+  }
+  const keys = NUMBER_FIELDS.includes(field)
+    ? ['eq', 'neq', 'gt', 'lt', 'exists']
+    : LIST_FIELDS.includes(field)
+      ? ['eq', 'neq', 'in', 'nin', 'exists']
+      : ['eq', 'neq', 'in', 'nin', 'contains', 'exists'];
+  return keys.map((k) => ({ value: k, label: OP_LABELS[k] }));
+};
 const REPLY_VALUES = [
   { value: 'yes', label: 'Sí (confirmó)' },
   { value: 'no', label: 'No (canceló)' },
   { value: 'other', label: 'Otra' },
 ];
+
+// ─────────── Condiciones (varias por rama, varias ramas por nodo) ───────────
+const newCondId = () => `c${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
+const newBranchId = () => `b${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
+// Condición nueva: por defecto sobre la ETAPA de la oportunidad (el caso más
+// habitual en el embudo); el usuario cambia el campo si necesita otro.
+const newCondition = () => ({ id: newCondId(), field: 'stage', op: 'eq', value: '', values: [] });
+
+// Condiciones de un grupo/rama. Acepta el formato legacy (una sola condición
+// guardada como field/op/value en el propio nodo).
+function conditionsOfData(g = {}) {
+  const list = Array.isArray(g.conditions) ? g.conditions.filter((c) => c && c.field) : [];
+  if (list.length) {
+    return list.map((c, i) => ({
+      id: c.id || `c${i}`,
+      field: c.field,
+      op: c.op || 'eq',
+      value: c.value || '',
+      values: Array.isArray(c.values) ? c.values : [],
+    }));
+  }
+  return [{ id: 'c0', field: g.field || 'tag', op: g.op || 'eq', value: g.value || '', values: Array.isArray(g.values) ? g.values : [] }];
+}
+
+// Ramas de un nodo Condición. La primera conserva el handle 'yes' (y la salida
+// "si no" el handle 'no') para no romper las conexiones ya dibujadas.
+function branchesOfData(d = {}) {
+  const arr = Array.isArray(d.branches) ? d.branches.filter((b) => b && b.id) : [];
+  if (arr.length) {
+    return arr.map((b, i) => ({
+      id: b.id,
+      name: b.name || (i === 0 ? 'Sí' : `Rama ${i + 1}`),
+      match: b.match || 'all',
+      conditions: conditionsOfData(b),
+    }));
+  }
+  return [{ id: 'yes', name: 'Sí', match: d.match || 'all', conditions: conditionsOfData(d) }];
+}
+
+// Salidas de un nodo Condición en orden: una por rama + la de "si no".
+const conditionHandles = (d = {}) => [...branchesOfData(d).map((b) => b.id), 'no'];
+
+// Texto corto de una condición para la tarjeta del nodo.
+function describeCondition(c = {}, { clinics = [] } = {}) {
+  const field = FIELD_LABELS[c.field] || c.field || '—';
+  if (c.field === 'hasPatient') return c.op === 'neq' ? 'sin paciente vinculado' : 'con paciente vinculado';
+  const op = OP_LABELS[c.op] || c.op || '';
+  if (c.op === 'exists') return `${field} ${op}`;
+  const one = (v) => {
+    if (c.field === 'clinic') {
+      const cl = clinics.find((x) => String(x._id) === String(v));
+      return cl?.nombreComercial || cl?.name || v;
+    }
+    if (c.field === 'stage') return STAGE_LABELS[v] || v;
+    if (c.field === 'lastReply') return REPLY_VALUES.find((r) => r.value === v)?.label || v;
+    return v;
+  };
+  const vals = (c.values?.length ? c.values : String(c.value || '').split(',').map((v) => v.trim()).filter(Boolean)).map(one);
+  return `${field} ${op} ${vals.join(' / ') || '—'}`;
+}
+
+function describeBranch(b = {}, ctx) {
+  const txt = b.conditions.map((c) => describeCondition(c, ctx)).join(b.match === 'any' ? ' O ' : ' Y ');
+  return txt || 'sin condiciones';
+}
 
 export const newNodeData = (type) => ({
   body: '', templateName: '', templateLanguage: 'es', emailSubject: '',
@@ -220,6 +309,13 @@ export const newNodeData = (type) => ({
   ...(type === 'split'
     ? { distribution: 'random', routes: [{ id: 'ra', name: 'Ruta A', percent: 50 }, { id: 'rb', name: 'Ruta B', percent: 50 }] }
     : {}),
+  // Condición: una rama ('yes') con UNA condición. Se pueden añadir más
+  // condiciones (Y / O) y más ramas (cada una con su propia salida).
+  ...(type === 'condition'
+    ? { branches: [{ id: 'yes', name: 'Sí', match: 'all', conditions: [newCondition()] }] }
+    : {}),
+  // Objetivo: una sola lista de condiciones (no ramifica: si se cumple, termina).
+  ...(type === 'goal' ? { match: 'all', conditions: [newCondition()] } : {}),
 });
 
 // Genera un id de ruta único y estable dentro de un split (handle de la salida).
@@ -250,9 +346,15 @@ function autoLayout(nodes, edges) {
   const childrenOf = {};
   edges.forEach((e) => { (childrenOf[e.source] ||= []).push(e); });
   const order = { yes: 0, no: 1, default: 2 };
-  Object.values(childrenOf).forEach((arr) =>
-    arr.sort((a, b) => (order[a.sourceHandle] ?? 2) - (order[b.sourceHandle] ?? 2))
-  );
+  // Orden REAL de las salidas de los nodos con varias ramas (Condición) o rutas
+  // (Dividir): así las ramas se dibujan de izquierda a derecha como en la tarjeta.
+  const rank = {};
+  nodes.forEach((n) => {
+    if (n.type === 'split') (n.data?.routes || []).forEach((r, i) => { rank[`${n.id}:${r.id}`] = i; });
+    if (n.type === 'condition') conditionHandles(n.data).forEach((h, i) => { rank[`${n.id}:${h}`] = i; });
+  });
+  const rankOf = (e) => rank[`${e.source}:${e.sourceHandle}`] ?? order[e.sourceHandle] ?? 2;
+  Object.values(childrenOf).forEach((arr) => arr.sort((a, b) => rankOf(a) - rankOf(b)));
 
   const pos = {};
   const visited = new Set();
@@ -285,7 +387,7 @@ function autoLayout(nodes, edges) {
   return nodes.map((n) => ({ ...n, position: pos[n.id] || n.position || { x: 0, y: 0 } }));
 }
 
-function summarize(n) {
+function summarize(n, ctx = {}) {
   const d = n.data || {};
   switch (n.type) {
     case 'send_message': return `${d.mediaUrl ? '📎 ' : ''}${d.body || ''}`;
@@ -298,7 +400,13 @@ function summarize(n) {
       : `${Math.abs((d.offsetMinutes || 0) / 60)}h ${(d.offsetMinutes || 0) < 0 ? 'antes' : 'después'}`;
     case 'add_tag': case 'remove_tag': return d.tag;
     case 'move_stage': return STAGE_LABELS[d.stage] || d.stage;
-    case 'condition': case 'goal': return `${d.field} ${d.op} ${d.value || ''}`;
+    case 'goal': return describeBranch(branchesOfData(d)[0], ctx);
+    case 'condition': {
+      const bs = branchesOfData(d);
+      return bs.length > 1
+        ? bs.map((b) => `${b.name}: ${describeBranch(b, ctx)}`).join(' · ')
+        : describeBranch(bs[0], ctx);
+    }
     case 'split': return d.distribution === 'clinic'
       ? `Por sucursal · ${(d.routes || []).map((r) => (r.isFallback ? 'Otras' : r.name || '—')).join(' / ')}`
       : `Aleatorio · ${(d.routes || []).map((r) => `${r.name} ${Number(r.percent) || 0}%`).join(' / ')}`;
@@ -455,28 +563,55 @@ function ActionNode({ data, selected }) {
   );
 }
 
+// Nodo Condición / Objetivo. La Condición puede tener VARIAS ramas (if /
+// else-if): una salida por rama, evaluadas en orden, más la salida "SI NO" para
+// cuando ninguna se cumple. El Objetivo mantiene sus dos salidas SÍ / NO.
 function BranchNode({ data, selected }) {
+  const isCond = data._type === 'condition';
+  const outs = isCond
+    ? [
+      ...(data._branches || []).map((b) => ({ id: b.id, label: (b.name || 'Sí').toUpperCase(), color: '#10b981', cls: 'text-emerald-600' })),
+      { id: 'no', label: 'SI NO', color: '#f43f5e', cls: 'text-rose-600' },
+    ]
+    : [
+      { id: 'yes', label: 'SÍ', color: '#10b981', cls: 'text-emerald-600' },
+      { id: 'no', label: 'NO', color: '#f43f5e', cls: 'text-rose-600' },
+    ];
+  const n = outs.length;
+  const used = new Set(data._usedHandles || []);
   return (
     <div className="relative group">
       <NodeActions data={data} />
-      <div className={`rounded-xl border bg-amber-50 px-3 py-2.5 text-xs shadow-sm min-w-[210px] ${selected ? 'border-amber-500 ring-2 ring-amber-200' : 'border-amber-300'}`}>
+      <div
+        style={{ minWidth: Math.max(210, n * 86) }}
+        className={`rounded-xl border bg-amber-50 px-3 py-2.5 text-xs shadow-sm ${selected ? 'border-amber-500 ring-2 ring-amber-200' : 'border-amber-300'}`}
+      >
         <Handle type="target" position={Position.Top} style={{ background: '#94a3b8' }} />
         <div className="flex items-center gap-2">
           <StepIcon type={data._type} />
           <div className="min-w-0">
             <div className="font-semibold text-amber-700">{STEP_DEFS[data._type] || data._type}</div>
-            {data._summary && <div className="text-[10px] text-amber-600/80 mt-0.5 truncate max-w-[165px]">{data._summary}</div>}
+            {data._summary && <div className="text-[10px] text-amber-600/80 mt-0.5 truncate max-w-[165px]" title={data._summary}>{data._summary}</div>}
           </div>
         </div>
-        <div className="flex justify-between text-[9px] font-bold mt-1.5">
-          <span className="text-emerald-600">SÍ</span>
-          <span className="text-rose-600">NO</span>
+        <div className="flex mt-1.5">
+          {outs.map((o) => (
+            <div key={o.id} className={`flex-1 min-w-0 text-center text-[9px] font-bold truncate px-0.5 ${o.cls}`} title={o.label}>{o.label}</div>
+          ))}
         </div>
-        <Handle id="yes" type="source" position={Position.Bottom} style={{ left: '25%', background: '#10b981' }} />
-        <Handle id="no" type="source" position={Position.Bottom} style={{ left: '75%', background: '#f43f5e' }} />
+        {outs.map((o, i) => (
+          <Handle
+            key={o.id}
+            id={o.id}
+            type="source"
+            position={Position.Bottom}
+            style={{ left: `${((i + 0.5) / n) * 100}%`, background: o.color }}
+          />
+        ))}
       </div>
-      {!data._hasYesOut && <AddRow data={data} handle="yes" left="25%" />}
-      {!data._hasNoOut && <AddRow data={data} handle="no" left="75%" />}
+      {outs.map((o, i) => (
+        !used.has(o.id) && <AddRow key={o.id} data={data} handle={o.id} left={`${((i + 0.5) / n) * 100}%`} />
+      ))}
     </div>
   );
 }
@@ -539,7 +674,7 @@ function PlusEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
           style={{ position: 'absolute', transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`, pointerEvents: 'all' }}
           className="nodrag nopan flex items-center gap-1"
         >
-          {label && <span className={`text-[9px] font-bold px-1 rounded ${label === 'Sí' ? 'text-emerald-600' : 'text-rose-600'}`}>{label}</span>}
+          {label && <span className={`text-[9px] font-bold px-1 rounded max-w-[90px] truncate ${data.labelCls || (label === 'Sí' ? 'text-emerald-600' : 'text-rose-600')}`} title={label}>{label}</span>}
           <AddButton onClick={() => data.onInsert(id)} />
           {data.hasClipboard && <PasteButton onClick={() => data.onPasteInsert(id)} />}
           {selected && (
@@ -559,13 +694,19 @@ function PlusEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
 }
 const edgeTypes = { plus: PlusEdge };
 
-function toFlowNode(n) {
+function toFlowNode(n, ctx = {}) {
   const rfType = n.type === 'trigger' ? 'trigger' : isSplit(n.type) ? 'split' : isBranch(n.type) ? 'branch' : 'action';
   return {
     id: n.id,
     type: rfType,
     position: n.position || { x: 0, y: 0 },
-    data: { ...n.data, _type: n.type, _summary: summarize(n) },
+    data: {
+      ...n.data,
+      _type: n.type,
+      _summary: summarize(n, ctx),
+      // Ramas ya normalizadas (nodo Condición): una salida por rama + "si no".
+      _branches: n.type === 'condition' ? branchesOfData(n.data).map((b) => ({ id: b.id, name: b.name })) : undefined,
+    },
   };
 }
 
@@ -710,7 +851,7 @@ export default function WorkflowGraphEditor({
 
   const flowNodes = useMemo(
     () => modelNodes.map((n) => {
-      const fn = toFlowNode(n);
+      const fn = toFlowNode(n, { clinics });
       const used = outHandles[n.id] || new Set();
       const isTrig = n.type === 'trigger';
       return {
@@ -720,9 +861,7 @@ export default function WorkflowGraphEditor({
           _triggers: isTrig ? (n.data?.triggers || []).map((t) => ({ label: TRIGGERS.find((x) => x.value === t.type)?.label || 'Disparador' })) : undefined,
           _flowCount: isTrig ? triggerNodeCount : undefined,
           _hasDefaultOut: used.has('default'),
-          _hasYesOut: used.has('yes'),
-          _hasNoOut: used.has('no'),
-          _usedHandles: [...used], // para el nodo Dividir: qué rutas ya están conectadas
+          _usedHandles: [...used], // Dividir / Condición: qué salidas ya están conectadas
 
           onAppend: (handle) => setAdding({ mode: 'append', sourceId: n.id, sourceHandle: handle }),
           onSelectTrigger: (i) => { setSelectedTrigger({ nodeId: n.id, idx: i }); setSelectedId(null); },
@@ -740,7 +879,7 @@ export default function WorkflowGraphEditor({
       };
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [modelNodes, outHandles, triggerNodeCount, hasClipboard]
+    [modelNodes, outHandles, triggerNodeCount, hasClipboard, clinics]
   );
 
   // Estado interno de react-flow para que arrastrar sea FLUIDO (sin parpadeo):
@@ -800,11 +939,17 @@ export default function WorkflowGraphEditor({
     onChange?.({ nodes: modelNodes, edges: edges.filter((e) => e.id !== edgeId) });
   }, [modelNodes, edges, onChange]);
 
-  // Nombre de ruta por (nodo split, handle) para etiquetar sus aristas.
+  // Nombre de la salida por (nodo, handle) para etiquetar sus aristas: rutas del
+  // nodo Dividir y ramas del nodo Condición (incluida la salida "si no").
   const splitRouteName = useMemo(() => {
     const m = {};
     modelNodes.forEach((n) => {
       if (n.type === 'split') (n.data?.routes || []).forEach((r) => { m[`${n.id}:${r.id}`] = r.name; });
+      if (n.type === 'condition') {
+        const bs = branchesOfData(n.data);
+        bs.forEach((b) => { m[`${n.id}:${b.id}`] = b.name; });
+        m[`${n.id}:no`] = bs.length > 1 ? 'Si no' : 'No';
+      }
     });
     return m;
   }, [modelNodes]);
@@ -818,11 +963,12 @@ export default function WorkflowGraphEditor({
         onDeleteEdge: deleteEdge,
         hasClipboard,
         onPasteInsert: (edgeId) => pasteAt({ mode: 'insert', edgeId }),
+        // La salida "no" (si no) se pinta en rojo; el resto de ramas en verde.
+        labelCls: e.sourceHandle === 'no' ? 'text-rose-600' : 'text-emerald-600',
       },
       label:
-        e.sourceHandle === 'yes' ? 'Sí'
-          : e.sourceHandle === 'no' ? 'No'
-            : splitRouteName[`${e.source}:${e.sourceHandle}`] || undefined,
+        splitRouteName[`${e.source}:${e.sourceHandle}`]
+        || (e.sourceHandle === 'yes' ? 'Sí' : e.sourceHandle === 'no' ? 'No' : undefined),
     })),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [edges, deleteEdge, hasClipboard, splitRouteName]
@@ -912,11 +1058,13 @@ export default function WorkflowGraphEditor({
       const src = modelNodes.find((n) => n.id === context.sourceId);
       const base = src?.position || { x: 0, y: 0 };
       let dx = context.sourceHandle === 'yes' ? -GAP_X / 2 : context.sourceHandle === 'no' ? GAP_X / 2 : 0;
-      // Dividir: cada ruta baja bajo su columna (repartidas a la izquierda/derecha).
-      if (src?.type === 'split') {
-        const routes = src.data?.routes || [];
-        const idx = routes.findIndex((r) => r.id === context.sourceHandle);
-        if (idx >= 0 && routes.length > 1) dx = (idx - (routes.length - 1) / 2) * GAP_X;
+      // Dividir / Condición: cada salida baja bajo su columna (repartidas a lo ancho).
+      const outs = src?.type === 'split'
+        ? (src.data?.routes || []).map((r) => r.id)
+        : src?.type === 'condition' ? conditionHandles(src.data) : null;
+      if (outs) {
+        const idx = outs.indexOf(context.sourceHandle);
+        if (idx >= 0 && outs.length > 1) dx = (idx - (outs.length - 1) / 2) * GAP_X;
       }
       newModelNode.position = { x: base.x + dx, y: base.y + GAP_Y };
       const newEdge = { id: `e-${context.sourceId}-${id}`, source: context.sourceId, target: id, sourceHandle: context.sourceHandle || 'default' };
@@ -952,6 +1100,17 @@ export default function WorkflowGraphEditor({
   const updateNodeData = (id, patch) => {
     const next = modelNodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...patch } } : n));
     onChange?.({ nodes: next, edges });
+  };
+
+  // Quitar una rama de un nodo Condición: la saca de los datos y borra la arista
+  // que salía de esa rama (si no, quedaría una conexión huérfana).
+  const removeConditionBranch = (nodeId, branchId) => {
+    const node = modelNodes.find((n) => n.id === nodeId);
+    const branches = branchesOfData(node?.data).filter((b) => b.id !== branchId);
+    if (branches.length < 1) return; // una condición necesita al menos una rama
+    const nextNodes = modelNodes.map((n) => (n.id === nodeId ? { ...n, data: { ...n.data, branches } } : n));
+    const nextEdges = edges.filter((e) => !(e.source === nodeId && e.sourceHandle === branchId));
+    onChange?.({ nodes: nextNodes, edges: nextEdges });
   };
 
   // Quitar una ruta de un nodo Dividir: además de sacarla de los datos, elimina la
@@ -1111,7 +1270,17 @@ export default function WorkflowGraphEditor({
             onClose={() => setSelectedId(null)}
             onDelete={() => deleteNode(selectedNode.id)}
           >
-            <NodeConfig node={selectedNode} onChange={(patch) => updateNodeData(selectedNode.id, patch)} onRemoveRoute={(routeId) => removeSplitRoute(selectedNode.id, routeId)} templates={templates} agents={agents} clinics={clinics} audiences={audiences} audiencesNotice={audiencesNotice} />
+            <NodeConfig
+              node={selectedNode}
+              onChange={(patch) => updateNodeData(selectedNode.id, patch)}
+              onRemoveRoute={(routeId) => removeSplitRoute(selectedNode.id, routeId)}
+              onRemoveBranch={(branchId) => removeConditionBranch(selectedNode.id, branchId)}
+              templates={templates}
+              agents={agents}
+              clinics={clinics}
+              audiences={audiences}
+              audiencesNotice={audiencesNotice}
+            />
           </Drawer>
         )}
 
@@ -1546,7 +1715,134 @@ function NodeAttachment({ d, set }) {
 }
 
 // ─────────── Formulario de configuración por tipo de nodo ───────────
-function NodeConfig({ node, onChange, onRemoveRoute, templates, agents, clinics = [], audiences = [], audiencesNotice = '' }) {
+// ─────────── Editor de condiciones ───────────
+// Una fila = una condición (campo · operador · valor). Con el operador "es alguno
+// de" el valor pasa a ser una selección múltiple (etapas, sucursales, respuestas).
+function ConditionRow({ cond, onChange, onRemove, canRemove, clinics = [] }) {
+  const ops = opsFor(cond.field);
+  const multi = cond.op === 'in' || cond.op === 'nin';
+  const options = cond.field === 'stage'
+    ? STAGES.map((s) => ({ value: s, label: STAGE_LABELS[s] || s }))
+    : cond.field === 'lastReply'
+      ? REPLY_VALUES
+      : cond.field === 'clinic'
+        ? clinics.map((c) => ({ value: String(c._id), label: c.nombreComercial || c.name }))
+        : null;
+  // Al cambiar de campo se limpia el valor y se ajusta el operador si el actual
+  // no aplica (p.ej. "es mayor que" solo existe en campos numéricos).
+  const changeField = (field) => {
+    const allowed = opsFor(field).map((o) => o.value);
+    onChange({ field, op: allowed.includes(cond.op) ? cond.op : allowed[0], value: '', values: [] });
+  };
+  const picked = cond.values?.length ? cond.values : (cond.value ? [cond.value] : []);
+  const toggle = (v) => {
+    const next = picked.includes(v) ? picked.filter((x) => x !== v) : [...picked, v];
+    onChange({ values: next, value: '' });
+  };
+  const inputCls = 'w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm';
+  return (
+    <div className="rounded-lg border border-slate-200 bg-white p-2 grid gap-1.5">
+      <div className="flex items-start gap-1.5">
+        <select value={cond.field || 'tag'} onChange={(e) => changeField(e.target.value)} className={`${inputCls} flex-1 min-w-0`}>
+          {FIELDS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
+        </select>
+        {canRemove && (
+          <button type="button" title="Quitar esta condición" onClick={onRemove} className="p-1.5 text-slate-300 hover:text-rose-600 bg-transparent border-none cursor-pointer">
+            <HiOutlineTrash className="w-4 h-4" />
+          </button>
+        )}
+      </div>
+      <select
+        value={cond.op || 'eq'}
+        onChange={(e) => onChange(e.target.value === 'exists' ? { op: 'exists', value: '', values: [] } : { op: e.target.value })}
+        className={inputCls}
+      >
+        {ops.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+      {cond.op !== 'exists' && cond.field !== 'hasPatient' && (
+        options
+          ? (multi ? (
+            <div className="flex flex-wrap gap-1">
+              {options.map((o) => (
+                <button
+                  key={o.value}
+                  type="button"
+                  onClick={() => toggle(o.value)}
+                  className={`px-2 py-1 rounded-lg text-[11px] border cursor-pointer ${picked.includes(o.value) ? 'bg-emerald-500 border-emerald-500 text-white' : 'bg-white border-slate-200 text-slate-600 hover:border-emerald-400'}`}
+                >
+                  {o.label}
+                </button>
+              ))}
+            </div>
+          ) : (
+            <select value={cond.value || ''} onChange={(e) => onChange({ value: e.target.value, values: [] })} className={inputCls}>
+              <option value="">Selecciona…</option>
+              {options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+          ))
+          : NUMBER_FIELDS.includes(cond.field)
+            ? <NumericInput value={Number(cond.value) || 0} onChange={(e) => onChange({ value: String(e.target.value), values: [] })} className={inputCls} />
+            : (
+              <input
+                value={cond.value || ''}
+                onChange={(e) => onChange({ value: e.target.value, values: [] })}
+                placeholder={multi ? 'vip, premium (separa con comas)' : 'valor'}
+                className={inputCls}
+              />
+            )
+      )}
+    </div>
+  );
+}
+
+// Grupo de condiciones de una rama. El conector entre filas (Y / O) decide si
+// deben cumplirse TODAS (condiciones conectadas) o basta CUALQUIERA (independientes).
+function ConditionGroup({ group, onChange, clinics = [] }) {
+  const conditions = group.conditions || [];
+  const any = group.match === 'any';
+  const patch = (id, p) => onChange({ conditions: conditions.map((c) => (c.id === id ? { ...c, ...p } : c)) });
+  return (
+    <div className="grid gap-1.5">
+      {conditions.map((c, i) => (
+        <div key={c.id} className="grid gap-1.5">
+          {i > 0 && (
+            <button
+              type="button"
+              onClick={() => onChange({ match: any ? 'all' : 'any' })}
+              title={any ? 'Basta con que se cumpla UNA (clic para exigir todas)' : 'Deben cumplirse TODAS (clic para exigir solo una)'}
+              className={`justify-self-center px-2 py-0.5 rounded-full text-[10px] font-bold border cursor-pointer ${any ? 'bg-violet-100 border-violet-300 text-violet-700' : 'bg-emerald-100 border-emerald-300 text-emerald-700'}`}
+            >
+              {any ? 'O' : 'Y'}
+            </button>
+          )}
+          <ConditionRow
+            cond={c}
+            clinics={clinics}
+            canRemove={conditions.length > 1}
+            onChange={(p) => patch(c.id, p)}
+            onRemove={() => onChange({ conditions: conditions.filter((x) => x.id !== c.id) })}
+          />
+        </div>
+      ))}
+      <button
+        type="button"
+        onClick={() => onChange({ conditions: [...conditions, newCondition()] })}
+        className="justify-self-start text-[11px] font-semibold text-emerald-600 bg-transparent border-none cursor-pointer flex items-center gap-1 hover:text-emerald-700"
+      >
+        <HiOutlinePlus className="w-3.5 h-3.5" /> Añadir condición
+      </button>
+      {conditions.length > 1 && (
+        <p className="text-[11px] text-slate-400">
+          {any
+            ? 'Basta con que se cumpla UNA de las condiciones (independientes).'
+            : 'Deben cumplirse TODAS las condiciones (conectadas).'} Pulsa el conector para cambiarlo.
+        </p>
+      )}
+    </div>
+  );
+}
+
+function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, agents, clinics = [], audiences = [], audiencesNotice = '' }) {
   const d = node.data || {};
   const set = (patch) => onChange(patch);
   const t = node.type;
@@ -1787,41 +2083,70 @@ function NodeConfig({ node, onChange, onRemoveRoute, templates, agents, clinics 
       <span>h</span>
     </div>
   );
-  if (t === 'condition' || t === 'goal') return (
-    <div className="grid gap-2">
-      <select value={d.field || 'tag'} onChange={(e) => set({ field: e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
-        {FIELDS.map((f) => <option key={f.value} value={f.value}>{f.label}</option>)}
-      </select>
-      <select value={d.op || 'eq'} onChange={(e) => set({ op: e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
-        {OPS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-      </select>
-      {d.op !== 'exists' && d.field === 'lastReply' && (
-        <select value={d.value || ''} onChange={(e) => set({ value: e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
-          {REPLY_VALUES.map((r) => <option key={r.value} value={r.value}>{r.label}</option>)}
-        </select>
-      )}
-      {d.op !== 'exists' && d.field === 'clinic' && (
-        <select value={d.value || ''} onChange={(e) => set({ value: e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
-          <option value="">Selecciona sucursal…</option>
-          {clinics.map((c) => <option key={c._id} value={c._id}>{c.nombreComercial || c.name}</option>)}
-        </select>
-      )}
-      {d.op !== 'exists' && d.field === 'stage' && (
-        <select value={d.value || ''} onChange={(e) => set({ value: e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
-          <option value="">Selecciona etapa…</option>
-          {STAGES.map((s) => <option key={s} value={s}>{STAGE_LABELS[s] || s}</option>)}
-        </select>
-      )}
-      {d.op !== 'exists' && !['hasPatient', 'lastReply', 'clinic', 'stage'].includes(d.field) && (
-        <input value={d.value || ''} onChange={(e) => set({ value: e.target.value })} placeholder="valor" className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
-      )}
-      <p className="text-[11px] text-slate-400">
-        La salida <b className="text-emerald-600">Sí</b> (punto verde, izquierda) se sigue cuando la condición se
-        cumple; la salida <b className="text-rose-600">No</b> (punto rojo, derecha) cuando no. Usa los botones “+”
-        bajo cada salida, o arrastra desde el punto hasta un nodo existente para conectarlo.
-      </p>
-    </div>
-  );
+  // Objetivo: una sola lista de condiciones (no ramifica; si se cumple, termina).
+  if (t === 'goal') {
+    const g = branchesOfData(d)[0];
+    return (
+      <div className="grid gap-2">
+        <ConditionGroup group={g} clinics={clinics} onChange={(p) => set(p)} />
+        <p className="text-[11px] text-slate-400">
+          El flujo <b>termina</b> para ese contacto en cuanto se cumple lo de arriba. Si no se cumple, continúa por
+          la salida de abajo.
+        </p>
+      </div>
+    );
+  }
+  // Condición: varias ramas (si / si no) y varias condiciones por rama.
+  if (t === 'condition') {
+    const branches = branchesOfData(d);
+    const patchBranch = (id, p) => set({ branches: branches.map((b) => (b.id === id ? { ...b, ...p } : b)) });
+    const addBranch = () => set({
+      branches: [...branches, { id: newBranchId(), name: `Rama ${branches.length + 1}`, match: 'all', conditions: [newCondition()] }],
+    });
+    return (
+      <div className="grid gap-3">
+        {branches.map((b, i) => (
+          <div key={b.id} className="rounded-xl border border-amber-200 bg-amber-50/60 p-2.5 grid gap-2">
+            <div className="flex items-center gap-1.5">
+              <span className="text-[10px] font-bold text-amber-700 uppercase tracking-wide shrink-0">
+                {i === 0 ? 'Si' : 'Si no, si'}
+              </span>
+              <input
+                value={b.name}
+                onChange={(e) => patchBranch(b.id, { name: e.target.value })}
+                placeholder={`Rama ${i + 1}`}
+                title="Nombre de esta salida (se ve en el diagrama)"
+                className="flex-1 min-w-0 border border-slate-200 rounded-lg px-2 py-1 text-xs"
+              />
+              {branches.length > 1 && (
+                <button
+                  type="button"
+                  title="Quitar esta rama (y su conexión)"
+                  onClick={() => onRemoveBranch?.(b.id)}
+                  className="p-1.5 text-slate-300 hover:text-rose-600 bg-transparent border-none cursor-pointer"
+                >
+                  <HiOutlineTrash className="w-4 h-4" />
+                </button>
+              )}
+            </div>
+            <ConditionGroup group={b} clinics={clinics} onChange={(p) => patchBranch(b.id, p)} />
+          </div>
+        ))}
+        <button
+          type="button"
+          onClick={addBranch}
+          className="justify-self-start px-2.5 py-1.5 rounded-lg border border-dashed border-amber-300 bg-white text-[11px] font-semibold text-amber-700 hover:border-amber-500 cursor-pointer flex items-center gap-1"
+        >
+          <HiOutlinePlus className="w-3.5 h-3.5" /> Añadir rama
+        </button>
+        <p className="text-[11px] text-slate-400">
+          Las ramas se evalúan <b>en orden</b>: gana la primera que se cumple y el contacto sigue por su salida
+          (punto verde). Si no se cumple ninguna, sale por <b className="text-rose-600">{branches.length > 1 ? 'Si no' : 'No'}</b> (punto rojo,
+          a la derecha). Usa los botones “+” bajo cada salida, o arrastra desde el punto hasta un nodo existente.
+        </p>
+      </div>
+    );
+  }
   if (t === 'add_tag' || t === 'remove_tag') return (
     <input value={d.tag || ''} onChange={(e) => set({ tag: e.target.value })} placeholder="etiqueta" className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm" />
   );

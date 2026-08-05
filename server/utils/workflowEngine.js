@@ -370,43 +370,157 @@ async function applyOpportunityStage(conversation, stage) {
 }
 
 /**
- * Evalúa un predicado de condition/goal contra el paciente y la conversación.
- * PURO y testeable.
+ * Oportunidad "principal" de un chat: la ÚLTIMA de `opportunities[]` (fuente
+ * canónica, misma regla que el chatController/applyOpportunityStage) con
+ * respaldo en el espejo legacy `opportunity`.
  */
-function evaluateCondition(step, { patient, conversation, context } = {}) {
-  const tags = patient?.tags || [];
-  const stage = conversation?.opportunity?.stage || '';
-  const source = patient?.source || '';
-  const lastReply = context?.lastReply || '';
-  const eventClinic = String(context?.eventClinicId || '');
-  const value = step.value;
+function primaryOpportunity(conversation) {
+  const list = Array.isArray(conversation?.opportunities) ? conversation.opportunities : [];
+  return list.length ? list[list.length - 1] : conversation?.opportunity || null;
+}
 
-  switch (step.field) {
+/**
+ * Valores de una condición para los operadores de lista ('in' / 'nin').
+ * Acepta `values: []` (lo que guarda el editor) o `value` con comas.
+ */
+function conditionValues(cond = {}) {
+  if (Array.isArray(cond.values) && cond.values.length) {
+    return cond.values.map((v) => String(v).trim()).filter(Boolean);
+  }
+  return String(cond.value ?? '')
+    .split(',')
+    .map((v) => v.trim())
+    .filter(Boolean);
+}
+
+// Compara un valor SUELTO del contexto (etapa, fuente, sucursal…) con la condición.
+function matchScalar(actual, cond) {
+  const a = String(actual ?? '');
+  const v = String(cond.value ?? '');
+  switch (cond.op) {
+    case 'exists': return !!a;
+    case 'neq': return a !== v;
+    case 'contains': return !!v && a.toLowerCase().includes(v.toLowerCase());
+    case 'in': return conditionValues(cond).includes(a);
+    case 'nin': return !conditionValues(cond).includes(a);
+    default: return a === v; // eq
+  }
+}
+
+// Compara una LISTA del contexto (etiquetas del paciente / del chat / de la oportunidad).
+function matchList(list, cond) {
+  const arr = (Array.isArray(list) ? list : []).map((x) => String(x));
+  const v = String(cond.value ?? '');
+  switch (cond.op) {
+    case 'exists': return arr.length > 0;
+    case 'neq': return !arr.includes(v);
+    case 'in': return conditionValues(cond).some((x) => arr.includes(x));
+    case 'nin': return !conditionValues(cond).some((x) => arr.includes(x));
+    default: return arr.includes(v); // eq / contains
+  }
+}
+
+// Compara un NÚMERO del contexto (valor esperado de la oportunidad).
+function matchNumber(actual, cond) {
+  const n = Number(actual) || 0;
+  const v = Number(cond.value) || 0;
+  switch (cond.op) {
+    case 'exists': return n > 0;
+    case 'neq': return n !== v;
+    case 'gt': return n > v;
+    case 'lt': return n < v;
+    default: return n === v; // eq
+  }
+}
+
+/**
+ * Evalúa UNA condición suelta ({ field, op, value }) contra el paciente, la
+ * conversación y el contexto de la inscripción. PURO y testeable.
+ */
+function evaluateSingleCondition(cond = {}, { patient, conversation, context } = {}) {
+  const opp = primaryOpportunity(conversation);
+  switch (cond.field) {
     case 'clinic':
       // Sucursal donde ocurrió el evento que inscribió el flujo (cita/venta).
-      if (step.op === 'exists') return !!eventClinic;
-      if (step.op === 'neq') return eventClinic !== String(value || '');
-      return eventClinic === String(value || '');
+      return matchScalar(String(context?.eventClinicId || ''), cond);
     case 'tag':
-      if (step.op === 'exists') return tags.length > 0;
-      if (step.op === 'neq') return !tags.includes(value);
-      return tags.includes(value); // eq / contains
+      return matchList(patient?.tags, cond);
+    case 'chatTag':
+      return matchList(conversation?.tags, cond);
+    case 'opportunityTag':
+      return matchList(opp?.tags, cond);
     case 'stage':
-      if (step.op === 'exists') return !!stage;
-      if (step.op === 'neq') return stage !== value;
-      return stage === value;
+      // Etapa del embudo: la de la oportunidad principal del chat y, si el flujo
+      // se inscribió por el disparador 'opportunity_stage', la del propio evento.
+      return matchScalar(opp?.stage || context?.stage || '', cond);
+    case 'opportunityValue':
+      return matchNumber(opp?.expectedValue, cond);
     case 'source':
-      if (step.op === 'neq') return source !== value;
-      return source === value;
-    case 'lastReply':
-      if (step.op === 'exists') return !!lastReply && lastReply !== 'other';
-      if (step.op === 'neq') return lastReply !== value;
-      return lastReply === value; // eq → 'yes' | 'no' | 'other'
+      return matchScalar(patient?.source || '', cond);
+    case 'lastReply': {
+      const lastReply = context?.lastReply || '';
+      if (cond.op === 'exists') return !!lastReply && lastReply !== 'other';
+      return matchScalar(lastReply, cond); // eq → 'yes' | 'no' | 'other'
+    }
     case 'hasPatient':
-      return !!patient;
+      return cond.op === 'neq' ? !patient : !!patient;
     default:
       return true;
   }
+}
+
+/**
+ * Condiciones de un grupo (rama). Acepta el formato NUEVO (`conditions[]`) y el
+ * legacy de una sola condición (`field`/`op`/`value` en el propio paso).
+ */
+function conditionsOf(group = {}) {
+  const list = Array.isArray(group.conditions) ? group.conditions.filter((c) => c && c.field) : [];
+  if (list.length) return list;
+  return group.field ? [{ field: group.field, op: group.op, value: group.value, values: group.values }] : [];
+}
+
+/**
+ * ¿Se cumple un grupo de condiciones? `match`: 'any' = basta UNA (O / condiciones
+ * independientes), cualquier otro valor = TODAS (Y / condiciones conectadas).
+ * Un grupo SIN condiciones se cumple siempre (igual que el paso vacío de antes).
+ */
+function evaluateConditionGroup(group = {}, scope = {}) {
+  const list = conditionsOf(group);
+  if (!list.length) return true;
+  return group.match === 'any'
+    ? list.some((c) => evaluateSingleCondition(c, scope))
+    : list.every((c) => evaluateSingleCondition(c, scope));
+}
+
+/**
+ * Ramas de un paso `condition`. Formato nuevo: `branches[]`, cada una con su
+ * propio conjunto de condiciones y su salida (sourceHandle = branch.id). Sin
+ * `branches` se comporta como el nodo clásico de una rama (handle 'yes').
+ */
+function branchesOf(step = {}) {
+  const arr = Array.isArray(step.branches) ? step.branches.filter((b) => b && b.id) : [];
+  if (arr.length) return arr;
+  return [{ id: 'yes', name: 'Sí', match: step.match, conditions: conditionsOf(step) }];
+}
+
+/**
+ * Primera rama que se cumple (se evalúan EN ORDEN, como un if/else-if). Devuelve
+ * { id, name } o null si no se cumple ninguna → salida 'no' ("si no").
+ */
+function matchBranch(step, scope = {}) {
+  for (const b of branchesOf(step)) {
+    if (evaluateConditionGroup(b, scope)) return { id: b.id || 'yes', name: b.name || 'Sí' };
+  }
+  return null;
+}
+
+/**
+ * Evalúa el predicado de condition/goal (sí/no). Usa la PRIMERA rama: sirve para
+ * `goal` y para el runner lineal legacy, que solo tienen dos salidas.
+ * PURO y testeable.
+ */
+function evaluateCondition(step, scope = {}) {
+  return evaluateConditionGroup(branchesOf(step)[0], scope);
 }
 
 async function loadConversationForPatient(clinicId, phone, patientId) {
@@ -794,9 +908,12 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
       await enrollment.save();
       return;
     } else if (type === 'condition') {
-      const pass = evaluateCondition(data, { patient, conversation: convRef.current, context: ctx });
-      pushLog(enrollment, { nodeId: currentId, type, info: pass ? 'Rama Sí' : 'Rama No' });
-      currentId = nextNodeId(workflow, currentId, pass ? 'yes' : 'no');
+      // Se evalúan las ramas EN ORDEN (if / else-if): la primera que se cumple
+      // manda. Si ninguna se cumple, sale por 'no' ("si no"). Cada rama puede
+      // llevar VARIAS condiciones combinadas con Y (todas) u O (cualquiera).
+      const hit = matchBranch(data, { patient, conversation: convRef.current, context: ctx });
+      pushLog(enrollment, { nodeId: currentId, type, info: hit ? `Rama ${hit.name}` : 'Rama No (si no)' });
+      currentId = nextNodeId(workflow, currentId, hit ? hit.id : 'no');
     } else if (type === 'split') {
       // Bifurcación: reparte el contacto por una de las rutas (cada ruta es una
       // salida con su propio sourceHandle = route.id). Dos modos:
@@ -1872,6 +1989,10 @@ module.exports = {
   classifyReply,
   computeWaitUntil,
   evaluateCondition,
+  evaluateSingleCondition,
+  evaluateConditionGroup,
+  branchesOf,
+  matchBranch,
   applyOpportunityStage,
   keywordMatchesTrigger,
   getTriggers,

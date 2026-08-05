@@ -15,6 +15,51 @@ const mongoose = require('mongoose');
  *  - move_stage     : mueve la oportunidad de la conversación
  *  - goal           : termina la inscripción si se cumple el predicado
  */
+// Campos y operadores de una condición (compartidos por el paso legacy, las
+// condiciones sueltas y las ramas). 'clinic' = sucursal del evento que inscribió
+// el flujo; 'chatTag' = etiquetas del chat; 'opportunityTag'/'opportunityValue' =
+// etiquetas y valor esperado de la oportunidad principal del chat.
+const CONDITION_FIELDS = [
+  'tag',
+  'chatTag',
+  'stage',
+  'opportunityTag',
+  'opportunityValue',
+  'source',
+  'hasPatient',
+  'lastReply',
+  'clinic',
+  '',
+];
+// 'in'/'nin' = "es alguno de" / "no es ninguno de" (usan `values[]`);
+// 'gt'/'lt' = mayor/menor (solo campos numéricos).
+const CONDITION_OPS = ['eq', 'neq', 'contains', 'exists', 'in', 'nin', 'gt', 'lt', ''];
+
+// Una condición suelta. Varias forman un grupo (rama) que se combina con Y u O.
+const conditionSchema = new mongoose.Schema(
+  {
+    id: { type: String, default: '' }, // estable para la UI (React keys)
+    field: { type: String, enum: CONDITION_FIELDS, default: '' },
+    op: { type: String, enum: CONDITION_OPS, default: 'eq' },
+    value: { type: String, default: '' },
+    values: { type: [String], default: [] }, // para 'in' / 'nin'
+  },
+  { _id: false }
+);
+
+// Rama de un paso `condition`: su propio conjunto de condiciones y su salida
+// (sourceHandle = branch.id). Se evalúan EN ORDEN (if / else-if); si ninguna se
+// cumple, el flujo sale por el handle 'no' ("si no").
+const conditionBranchSchema = new mongoose.Schema(
+  {
+    id: { type: String, required: true },
+    name: { type: String, trim: true, default: '' },
+    match: { type: String, enum: ['all', 'any', ''], default: 'all' },
+    conditions: { type: [conditionSchema], default: [] },
+  },
+  { _id: false }
+);
+
 const workflowStepSchema = new mongoose.Schema(
   {
     type: {
@@ -80,10 +125,17 @@ const workflowStepSchema = new mongoose.Schema(
     timeoutMinutes: { type: Number, default: 720, min: 1 },
     // set_appointment_status: actualiza la cita del contexto
     appointmentStatus: { type: String, enum: ['confirmada', 'cancelada', ''], default: '' },
-    // condition / goal ('clinic' = sucursal del evento que inscribió el flujo)
-    field: { type: String, enum: ['tag', 'stage', 'source', 'hasPatient', 'lastReply', 'clinic', ''], default: '' },
-    op: { type: String, enum: ['eq', 'neq', 'contains', 'exists', ''], default: 'eq' },
+    // condition / goal — condición ÚNICA (legacy: sigue funcionando tal cual).
+    field: { type: String, enum: CONDITION_FIELDS, default: '' },
+    op: { type: String, enum: CONDITION_OPS, default: 'eq' },
     value: { type: String, default: '' },
+    values: { type: [String], default: [] },
+    // condition / goal — VARIAS condiciones combinadas: 'all' = todas (Y,
+    // condiciones conectadas), 'any' = cualquiera (O, independientes).
+    match: { type: String, enum: ['all', 'any', ''], default: 'all' },
+    conditions: { type: [conditionSchema], default: [] },
+    // condition — varias ramas con su propia salida (if / else-if / si no).
+    branches: { type: [conditionBranchSchema], default: [] },
     onFailGoTo: { type: Number, default: null }, // índice de paso; null = terminar
     // add_tag / remove_tag
     tag: { type: String, trim: true, default: '' },
@@ -233,5 +285,7 @@ const workflowSchema = new mongoose.Schema(
 );
 
 workflowSchema.statics.TRIGGER_TYPES = TRIGGER_TYPES;
+workflowSchema.statics.CONDITION_FIELDS = CONDITION_FIELDS;
+workflowSchema.statics.CONDITION_OPS = CONDITION_OPS;
 
 module.exports = mongoose.model('Workflow', workflowSchema);

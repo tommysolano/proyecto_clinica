@@ -1,6 +1,9 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { computeWaitUntil, evaluateCondition, personalize, renderText, classifyReply, findStartNode, nextNodeId, triggerMatchesEvent } = require('../utils/workflowEngine');
+const {
+  computeWaitUntil, evaluateCondition, evaluateSingleCondition, evaluateConditionGroup, branchesOf, matchBranch,
+  personalize, renderText, classifyReply, findStartNode, nextNodeId, triggerMatchesEvent,
+} = require('../utils/workflowEngine');
 
 test('computeWaitUntil applies a negative offset (e.g. 24h before the appointment)', () => {
   const ctx = { appointmentDate: '2026-06-20T15:00:00Z' };
@@ -114,6 +117,92 @@ test('evaluateCondition reads lastReply from context', () => {
   assert.equal(evaluateCondition({ field: 'lastReply', op: 'eq', value: 'no' }, { context: { lastReply: 'yes' } }), false);
   assert.equal(evaluateCondition({ field: 'lastReply', op: 'exists' }, { context: { lastReply: 'other' } }), false);
   assert.equal(evaluateCondition({ field: 'lastReply', op: 'exists' }, { context: { lastReply: 'no' } }), true);
+});
+
+// ─────────── Varias condiciones por rama (Y / O) y varias ramas ───────────
+
+test('varias condiciones CONECTADAS (Y): deben cumplirse todas', () => {
+  const scope = { patient: { tags: ['vip'] }, conversation: { opportunities: [{ stage: 'agendado' }] } };
+  const step = {
+    match: 'all',
+    conditions: [
+      { field: 'stage', op: 'eq', value: 'agendado' },
+      { field: 'tag', op: 'eq', value: 'vip' },
+    ],
+  };
+  assert.equal(evaluateCondition(step, scope), true);
+  // Basta con que falle una para que la rama no se cumpla.
+  step.conditions[1].value = 'otra';
+  assert.equal(evaluateCondition(step, scope), false);
+});
+
+test('varias condiciones INDEPENDIENTES (O): basta con una', () => {
+  const scope = { patient: { tags: [] }, conversation: { opportunities: [{ stage: 'ganado' }] } };
+  const step = {
+    match: 'any',
+    conditions: [
+      { field: 'stage', op: 'eq', value: 'ganado' },
+      { field: 'tag', op: 'eq', value: 'vip' },
+    ],
+  };
+  assert.equal(evaluateCondition(step, scope), true);
+  step.conditions[0].value = 'perdido';
+  assert.equal(evaluateCondition(step, scope), false);
+});
+
+test('condición sin `conditions` sigue leyendo el formato legacy field/op/value', () => {
+  const scope = { patient: { tags: ['vip'] } };
+  assert.equal(evaluateCondition({ field: 'tag', op: 'eq', value: 'vip' }, scope), true);
+  assert.equal(evaluateCondition({ conditions: [] , field: 'tag', op: 'eq', value: 'x' }, scope), false);
+  // Un paso sin condiciones se cumple siempre (igual que antes con field vacío).
+  assert.equal(evaluateConditionGroup({ conditions: [] }, scope), true);
+});
+
+test('operadores "es alguno de" / "no es ninguno de" (etapas del embudo)', () => {
+  const scope = { conversation: { opportunities: [{ stage: 'interesado' }] } };
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'in', values: ['interesado', 'agendado'] }, scope), true);
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'in', values: ['ganado'] }, scope), false);
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'nin', values: ['ganado', 'perdido'] }, scope), true);
+  // Sin `values`, acepta la lista separada por comas.
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'in', value: 'ganado, interesado' }, scope), true);
+});
+
+test('la etapa sale de opportunities[] (canónico), del espejo legacy o del contexto', () => {
+  const c = { field: 'stage', op: 'eq', value: 'ganado' };
+  // Canónico: la ÚLTIMA del array manda sobre el espejo legacy.
+  assert.equal(evaluateSingleCondition(c, { conversation: { opportunity: { stage: 'nuevo' }, opportunities: [{ stage: 'contactado' }, { stage: 'ganado' }] } }), true);
+  assert.equal(evaluateSingleCondition(c, { conversation: { opportunity: { stage: 'ganado' } } }), true);
+  // Sin conversación cargada, la etapa del evento que inscribió el flujo.
+  assert.equal(evaluateSingleCondition(c, { context: { stage: 'ganado' } }), true);
+});
+
+test('condiciones de etiquetas del chat, de la oportunidad y valor esperado', () => {
+  const conversation = { tags: ['seguimiento'], opportunities: [{ stage: 'agendado', tags: ['botox'], expectedValue: 800 }] };
+  assert.equal(evaluateSingleCondition({ field: 'chatTag', op: 'eq', value: 'seguimiento' }, { conversation }), true);
+  assert.equal(evaluateSingleCondition({ field: 'opportunityTag', op: 'in', values: ['botox', 'laser'] }, { conversation }), true);
+  assert.equal(evaluateSingleCondition({ field: 'opportunityValue', op: 'gt', value: '500' }, { conversation }), true);
+  assert.equal(evaluateSingleCondition({ field: 'opportunityValue', op: 'lt', value: '500' }, { conversation }), false);
+});
+
+test('matchBranch devuelve la PRIMERA rama que se cumple (if / else-if)', () => {
+  const step = {
+    branches: [
+      { id: 'yes', name: 'Ganado', match: 'all', conditions: [{ field: 'stage', op: 'eq', value: 'ganado' }] },
+      { id: 'b2', name: 'Agendado', match: 'all', conditions: [{ field: 'stage', op: 'eq', value: 'agendado' }] },
+    ],
+  };
+  assert.equal(matchBranch(step, { conversation: { opportunities: [{ stage: 'agendado' }] } }).id, 'b2');
+  assert.equal(matchBranch(step, { conversation: { opportunities: [{ stage: 'ganado' }] } }).id, 'yes');
+  // Ninguna se cumple → null (el motor sale por la rama 'no').
+  assert.equal(matchBranch(step, { conversation: { opportunities: [{ stage: 'perdido' }] } }), null);
+});
+
+test('un nodo sin `branches` se comporta como la condición clásica (handle yes)', () => {
+  const legacy = { field: 'tag', op: 'eq', value: 'vip' };
+  assert.equal(branchesOf(legacy).length, 1);
+  assert.equal(branchesOf(legacy)[0].id, 'yes');
+  assert.equal(matchBranch(legacy, { patient: { tags: ['vip'] } }).id, 'yes');
+  assert.equal(matchBranch(legacy, { patient: { tags: [] } }), null);
 });
 
 // ─────────── Grafo (nodes/edges) ───────────
