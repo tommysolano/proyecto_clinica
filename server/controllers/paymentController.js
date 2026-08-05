@@ -17,6 +17,7 @@ const { canonicalReceivableTarget, legacyUnapplyTarget } = require('../services/
 const {
   readIdempotencyKey, fingerprint, assertSameFingerprint, normalize: N, conflict,
 } = require('../utils/idempotency');
+const { sendError } = require('../utils/apiError');
 
 async function nextNumber(clinicId, type, session = null) {
   const prefix = type === 'COBRO' ? 'CB-' : 'PG-';
@@ -588,7 +589,11 @@ exports.create = async (req, res) => {
         return res.status(200).json({ ...existing.toObject(), idempotentReplay: true });
       }
     }
-    res.status(e.status || 400).json({ message: e.message });
+    // Un error SIN `status` no es culpa del usuario: es un fallo interno. Se devolvía como 400
+    // con el texto crudo de Mongo (a veces vacío ⇒ la pantalla mostraba solo «Error») y no se
+    // registraba en ninguna parte, así que el log del servidor tampoco tenía la causa.
+    // `sendError` traduce lo conocido (clave duplicada, validación, cast) y deja el stack en el log.
+    return sendError(res, e);
   }
 };
 
@@ -776,7 +781,7 @@ exports.createBulk = async (req, res) => {
 
     return res.status(201).json({ ...result, count: result.created.length });
   } catch (e) {
-    res.status(e.status || 400).json({ message: e.message });
+    return sendError(res, e);   // igual que en `create`: los fallos internos se logean, no se disfrazan de 400
   }
 };
 

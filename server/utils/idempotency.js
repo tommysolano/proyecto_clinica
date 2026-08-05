@@ -33,9 +33,21 @@ function readIdempotencyKey(req) {
   const raw = fromHeader || req?.body?.idempotencyKey || '';
   const key = String(raw).trim();
   if (!key) return null;
-  if (key.length > 200) {
-    throw Object.assign(new Error('La clave de idempotencia es demasiado larga (máx. 200).'), { status: 400 });
-  }
+  /**
+   * Una clave larga NO es un error del usuario: es solo una clave. Antes se lanzaba aquí un 400,
+   * y como los nueve controladores que usan esta función la llaman ANTES de su `try` —y Express 4
+   * no captura el rechazo de un handler `async`— la petición se quedaba SIN RESPUESTA para
+   * siempre: el navegador giraba hasta que se cortaba la conexión y la pantalla decía «Error»
+   * sin más detalle.
+   *
+   * Caso real: pagar DOS facturas de compra a la vez. La clave que arma el cliente lleva un
+   * segmento por documento aplicado, así que con dos superaba los 200 caracteres (206) y el
+   * pago se quedaba colgado; con una sola factura entraba por debajo del límite y funcionaba.
+   *
+   * Se deriva una clave corta y ESTABLE en su lugar: la misma clave larga produce siempre la
+   * misma corta, de modo que el replay y el 409 por huella distinta siguen comportándose igual.
+   */
+  if (key.length > 200) return `h:${crypto.createHash('sha256').update(key).digest('hex')}`;
   return key;
 }
 

@@ -36,5 +36,28 @@ export function intentKey(base, parts = []) {
     .map((p) => (p === null || p === undefined ? '' : String(p)))
     .join('|')
     .replace(/[^\w.@:$-]+/g, '_');
-  return `${base}:${suffix}`;
+  return `${base}:${hash(suffix)}`;
+}
+
+/**
+ * Huella corta de la intención. Se RESUME en lugar de concatenar porque el texto crudo crecía
+ * con cada documento aplicado (unos 45 caracteres por factura) y con dos facturas la clave
+ * pasaba de 200: el servidor la rechazaba y la petición se quedaba sin respuesta. Un resumen
+ * mantiene la propiedad que importa —igual contenido ⇒ igual clave, contenido distinto ⇒ clave
+ * distinta— con longitud fija.
+ *
+ * FNV-1a de 32 bits en dos pasadas con semillas distintas (64 bits efectivos): más que
+ * suficiente para distinguir las pocas variaciones de un mismo formulario, y el `base` aleatorio
+ * ya garantiza que dos intenciones diferentes nunca compartan clave.
+ */
+function hash(text) {
+  const fnv = (seed) => {
+    let h = seed;
+    for (let i = 0; i < text.length; i += 1) {
+      h ^= text.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    return h.toString(16).padStart(8, '0');
+  };
+  return fnv(0x811c9dc5) + fnv(0x9e3779b9);
 }
