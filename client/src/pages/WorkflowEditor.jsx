@@ -137,7 +137,7 @@ export default function WorkflowEditor() {
       .filter((t) => t?.type);
     if (triggers.length === 0) return toast.error('Cada flujo necesita al menos un disparador');
     if (wf.sendWindow?.mode === 'specific' && !(wf.sendWindow.days || []).length) {
-      return toast.error('La ventana de envío no tiene ningún día marcado: elige días o ponla en “A cualquier hora”');
+      return toast.error('El horario de silencio no tiene ningún día marcado: elige días o ponlo en “Sin silencio”');
     }
     setSaving(true);
     const payload = {
@@ -194,7 +194,7 @@ export default function WorkflowEditor() {
         <datalist id="wf-folders">{folderNames.map((f) => <option key={f} value={f} />)}</datalist>
         <button
           onClick={() => setWindowOpen(true)}
-          title="Horario en el que esta automatización puede enviar mensajes"
+          title="Horario en el que esta automatización NO debe enviar mensajes"
           className={`px-3 py-1.5 rounded-lg text-sm shrink-0 cursor-pointer flex items-center gap-1.5 border ${
             wf.sendWindow?.mode === 'specific'
               ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
@@ -203,7 +203,7 @@ export default function WorkflowEditor() {
         >
           <HiOutlineSun className="w-4 h-4" />
           <span className="hidden lg:inline">
-            {wf.sendWindow?.mode === 'specific' ? describeWindow(wf.sendWindow) : 'Ventana horaria'}
+            {wf.sendWindow?.mode === 'specific' ? describeWindow(wf.sendWindow) : 'Horario de silencio'}
           </span>
         </button>
         <label className="flex items-center gap-2 text-sm text-slate-600 shrink-0 cursor-pointer select-none">
@@ -232,17 +232,18 @@ export default function WorkflowEditor() {
         />
       </main>
 
-      {/* Ventana de envío de TODO el workflow (estilo "Time Window" de GoHighLevel) */}
-      <Modal isOpen={windowOpen} onClose={() => setWindowOpen(false)} title="Ventana horaria de envío" size="md">
+      {/* Horario de SILENCIO de TODO el workflow */}
+      <Modal isOpen={windowOpen} onClose={() => setWindowOpen(false)} title="Horario de silencio" size="md">
         <div className="grid gap-4">
           <p className="text-sm text-slate-500">
-            Limita el horario en el que esta automatización manda mensajes (WhatsApp, plantillas, email,
-            reseñas). Los pasos que no envían nada —etiquetas, tareas, oportunidades— se ejecutan siempre.
+            Define las horas en las que esta automatización <b>no debe molestar</b> (WhatsApp, plantillas,
+            email, reseñas). Los pasos que no envían nada —etiquetas, tareas, oportunidades— se ejecutan
+            siempre.
           </p>
           <div className="grid gap-2">
             {[
-              { value: 'any', title: 'A cualquier hora', desc: 'Sin restricción: la automatización trabaja las 24 horas, todos los días.' },
-              { value: 'specific', title: 'Solo en un horario', desc: 'Fuera de la franja el contacto espera: el mensaje sale en la próxima apertura, nunca se pierde.' },
+              { value: 'any', title: 'Sin silencio', desc: 'La automatización puede enviar a cualquier hora, todos los días.' },
+              { value: 'specific', title: 'No enviar en un horario', desc: 'Dentro de la franja se calla. Quien entre en ella no se pierde: recibe su mensaje en cuanto el silencio termina.' },
             ].map((opt) => (
               <label
                 key={opt.value}

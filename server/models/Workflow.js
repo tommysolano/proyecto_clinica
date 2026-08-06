@@ -126,9 +126,10 @@ const workflowStepSchema = new mongoose.Schema(
     atTime: { type: String, trim: true, default: '' },
     // wait_reply: pausa hasta que el paciente responda (o venza el timeout)
     timeoutMinutes: { type: Number, default: 720, min: 1 },
-    // window ("Ventana horaria"): días (0=domingo … 6=sábado) y franja HH:MM en
-    // los que el flujo puede continuar. Fuera de la franja el contacto espera a
-    // la próxima apertura (nunca se descarta). Ver utils/sendWindow.js.
+    // window ("Ventana horaria"): días (0=domingo … 6=sábado) y franja HH:MM de
+    // SILENCIO — las horas en las que el flujo NO molesta. Dentro de la franja el
+    // contacto espera a que TERMINE (nunca se descarta); fuera, el flujo sigue.
+    // Ojo: hasta ago-2026 el rango significaba lo contrario. Ver utils/sendWindow.js.
     windowDays: { type: [Number], default: [1, 2, 3, 4, 5] },
     windowFrom: { type: String, trim: true, default: '09:00' },
     windowTo: { type: String, trim: true, default: '18:00' },
@@ -280,12 +281,15 @@ const triggerSchema = new mongoose.Schema(
 );
 
 /**
- * VENTANA DE ENVÍO del workflow (estilo "Time Window" de GoHighLevel): días y
- * franja horaria en los que la automatización puede MANDAR mensajes. Un contacto
- * que llega fuera de la franja no se pierde: espera a la próxima apertura.
- *  - mode 'any' (defecto) → sin restricción, el flujo trabaja 24/7 como siempre.
- *  - mode 'specific'      → solo dentro de `days` + `from`–`to` (hora de Ecuador).
+ * HORARIO DE SILENCIO del workflow: días y franja en los que la automatización
+ * NO debe mandar mensajes. Un contacto que llega dentro del silencio no se
+ * pierde: espera a que la franja termine.
+ *  - mode 'any' (defecto) → sin silencio, el flujo trabaja 24/7 como siempre.
+ *  - mode 'specific'      → se calla dentro de `days` + `from`–`to` (hora de Ecuador).
  * `days`: 0=domingo … 6=sábado. Si `from` > `to` la franja cruza la medianoche.
+ *
+ * OJO: hasta ago-2026 el rango era el horario PERMITIDO. Se invirtió porque nadie
+ * lo entendía así — ver el encabezado de utils/sendWindow.js.
  */
 const sendWindowSchema = new mongoose.Schema(
   {

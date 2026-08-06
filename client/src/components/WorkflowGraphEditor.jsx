@@ -2565,9 +2565,10 @@ function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, 
         })}
       />
       <p className="text-[11px] text-slate-400">
-        Todo lo que venga <b>después</b> de este paso solo se ejecuta dentro de la franja. Si el contacto
-        llega fuera de horario <b>no se pierde</b>: se queda aquí esperando y continúa en la próxima apertura
-        (p. ej. quien entra un sábado a las 23:00 sigue el lunes a las 09:00). Hora de Ecuador.
+        La franja de arriba es la de <b>silencio</b>: mientras dure, todo lo que venga <b>después</b> de este
+        paso se queda esperando aquí. El contacto <b>no se pierde</b>: continúa en cuanto el silencio termina
+        (p. ej. con 23:00–06:20, quien entra a las 02:00 sigue a las 06:20). Fuera de esa franja el flujo pasa
+        de largo. Hora de Ecuador.
       </p>
     </div>
   );

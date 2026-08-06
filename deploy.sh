@@ -41,6 +41,13 @@ if ! ( cd "$APP_DIR/server" && node scripts/wipeSalesOnce.js --commit ); then
   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/wipeSalesOnce.js --commit'"
 fi
 
+# Vigente: reencolar las inscripciones que quedaron programadas para dispararse en pleno
+# horario de silencio (ago-2026, al invertir el significado de las ventanas horarias).
+if ! ( cd "$APP_DIR/server" && node scripts/rescheduleQuietWindowsOnce.js --commit ); then
+  echo "ADVERTENCIA: el reencolado de ventanas fallo. Revisa el log y reintenta a mano:"
+  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/rescheduleQuietWindowsOnce.js --commit'"
+fi
+
 echo "==> 5/5 Reiniciando el backend con PM2 (bajo el usuario 'clinica')"
 # IMPORTANTE: el backend corre bajo el pm2 del usuario `clinica` (God Daemon en
 # /home/clinica/.pm2), NO bajo el de root. GitHub Actions ejecuta este deploy

@@ -1,16 +1,24 @@
 /**
- * VENTANAS HORARIAS de las automatizaciones (estilo GoHighLevel "Time Window" /
- * Daplox "ventanas"): franjas de días + horas en las que el flujo puede ENVIAR.
+ * VENTANAS HORARIAS de las automatizaciones: franjas de días + horas en las que
+ * el flujo NO debe molestar al contacto.
  *
- * Un contacto que llega fuera de la ventana NO se descarta ni se envía tarde: la
- * inscripción queda `waiting` hasta la PRÓXIMA apertura de la ventana (así un
- * lead que escribe a las 23:00 recibe su mensaje a las 08:00 del día siguiente).
+ * OJO — EL SIGNIFICADO ES "SILENCIO", NO "PERMITIDO" (ago-2026). Antes el rango
+ * era el horario en el que la automatización PODÍA enviar (estilo "Time Window"
+ * de GoHighLevel). En la práctica nadie lo entendía así: las 15 ventanas
+ * configuradas en producción decían `23:00–06:20`, o sea "no molestar de noche"…
+ * y el sistema hacía justo lo contrario, reteniendo los mensajes todo el día para
+ * soltarlos a las 23:00. Se enviaron 2.061 mensajes de madrugada en 5 días. Ahora
+ * el rango es lo que la gente lee que es: **la franja en la que se calla**.
  *
- * Dos niveles, como en GoHighLevel:
- *  - Ventana del WORKFLOW (`workflow.sendWindow`): aplica a todos los pasos de
+ * Un contacto que llega dentro del silencio NO se descarta ni se envía tarde: la
+ * inscripción espera al FINAL de la franja (así un lead que escribe a las 02:00
+ * recibe su mensaje a las 06:20, cuando el silencio termina).
+ *
+ * Dos niveles:
+ *  - Ventana del WORKFLOW (`workflow.sendWindow`): calla todos los pasos de
  *    ENVÍO del flujo (mensaje/plantilla/media/email/reseña/IA).
- *  - Nodo "Ventana horaria" (`type: 'window'`): retiene el flujo en ese punto
- *    hasta que la franja esté abierta, sea cual sea el paso siguiente.
+ *  - Nodo "Ventana horaria" (`type: 'window'`): retiene el flujo entero en ese
+ *    punto mientras dure el silencio, envíe o no el paso siguiente.
  *
  * Todo se calcula en HORA LOCAL del proceso, que index.js fija en
  * America/Guayaquil (ver zona-horaria del proyecto). Funciones PURAS y testeables.
@@ -18,9 +26,9 @@
 
 const MINUTES_PER_DAY = 1440;
 const DAY_MS = 24 * 60 * 60 * 1000;
-// Cuántos días adelante se busca una apertura antes de rendirse. 8 basta para
-// cualquier configuración (peor caso: un único día de la semana habilitado).
-const MAX_LOOKAHEAD_DAYS = 8;
+// Tramos de silencio encadenados que se saltan como mucho al buscar el próximo
+// hueco. Con silencios diarios, 16 saltos cubren más de una semana.
+const MAX_SLOT_HOPS = 16;
 
 const DAY_NAMES = ['domingo', 'lunes', 'martes', 'miércoles', 'jueves', 'viernes', 'sábado'];
 
@@ -49,8 +57,8 @@ function normalizeDays(days) {
 }
 
 /**
- * ¿La ventana está ACTIVA (restringe algo)? Una ventana en modo 'any', sin días
- * o con horas inválidas no restringe nada: el flujo trabaja 24/7 como siempre.
+ * ¿La ventana está ACTIVA (calla algo)? Una ventana en modo 'any', sin días o
+ * con horas inválidas no calla nada: el flujo trabaja 24/7 como siempre.
  */
 function isWindowActive(win) {
   if (!win || win.mode !== 'specific') return false;
@@ -59,8 +67,8 @@ function isWindowActive(win) {
 }
 
 /**
- * Duración de la franja en minutos. `from === to` = día completo (1440); si
- * `from > to` la franja CRUZA la medianoche (p.ej. 20:00→06:00) y el día
+ * Duración del silencio en minutos. `from === to` = día completo (1440); si
+ * `from > to` la franja CRUZA la medianoche (p.ej. 23:00→06:20) y el día
  * seleccionado es el del INICIO.
  */
 function windowDurationMinutes(fromMin, toMin) {
@@ -76,8 +84,8 @@ function startOfLocalDay(date) {
 }
 
 /**
- * Apertura de la franja del día `dayStart` (Date a las 00:00) o null si ese día
- * de la semana no está habilitado. Devuelve { start, end } (end exclusivo).
+ * Tramo de silencio que arranca el día `dayStart` (Date a las 00:00), o null si
+ * ese día de la semana no está marcado. Devuelve { start, end } (end exclusivo).
  */
 function slotForDay(win, dayStart, fromMin, duration) {
   const days = normalizeDays(win.days);
@@ -88,45 +96,61 @@ function slotForDay(win, dayStart, fromMin, duration) {
 }
 
 /**
- * ¿`date` cae DENTRO de la ventana? Una ventana inactiva devuelve true (no
- * restringe). Contempla las franjas que cruzan la medianoche mirando también la
- * franja que arrancó el día anterior.
+ * Tramo de silencio que CONTIENE a `date`, o null si en ese instante se puede
+ * enviar. Mira también el tramo que arrancó ayer, por las franjas que cruzan la
+ * medianoche (un silencio 23:00→06:20 del lunes sigue vivo el martes a las 03:00).
  */
-function isInsideWindow(win, date = new Date()) {
-  if (!isWindowActive(win)) return true;
+function quietSlotAt(win, date) {
+  if (!isWindowActive(win)) return null;
   const fromMin = parseHHMM(win.from);
   const duration = windowDurationMinutes(fromMin, parseHHMM(win.to));
   const t = date.getTime();
   const today = startOfLocalDay(date);
   for (let i = -1; i <= 0; i += 1) {
     const slot = slotForDay(win, new Date(today.getTime() + i * DAY_MS), fromMin, duration);
-    if (slot && t >= slot.start.getTime() && t < slot.end.getTime()) return true;
-  }
-  return false;
-}
-
-/**
- * Momento en el que el flujo puede continuar:
- *  - `from` si YA está dentro de la ventana (o la ventana no restringe),
- *  - la PRÓXIMA apertura si está fuera,
- *  - null si la ventana es imposible de abrir (no debería pasar: isWindowActive
- *    ya exige al menos un día).
- * PURA: no toca el reloj salvo por el `from` que se le pasa.
- */
-function nextWindowOpening(win, from = new Date()) {
-  if (!isWindowActive(win)) return from;
-  if (isInsideWindow(win, from)) return from;
-  const fromMin = parseHHMM(win.from);
-  const duration = windowDurationMinutes(fromMin, parseHHMM(win.to));
-  const today = startOfLocalDay(from);
-  for (let i = 0; i <= MAX_LOOKAHEAD_DAYS; i += 1) {
-    const slot = slotForDay(win, new Date(today.getTime() + i * DAY_MS), fromMin, duration);
-    if (slot && slot.start.getTime() > from.getTime()) return slot.start;
+    if (slot && t >= slot.start.getTime() && t < slot.end.getTime()) return slot;
   }
   return null;
 }
 
-/** Texto de la ventana para el registro de ejecución ("lun a vie, 08:00–18:00"). */
+/**
+ * ¿`date` cae dentro del SILENCIO? Una ventana inactiva devuelve false (no calla
+ * nada). Fin de franja EXCLUSIVO: a las 06:20 de un silencio 23:00–06:20 ya se
+ * puede enviar.
+ */
+function isQuietTime(win, date = new Date()) {
+  return quietSlotAt(win, date) !== null;
+}
+
+/**
+ * Momento en el que el flujo puede ENVIAR:
+ *  - `from` si en ese instante no hay silencio (o la ventana no calla nada),
+ *  - el FINAL del silencio si está dentro (saltando tramos encadenados, p.ej.
+ *    un silencio diario que empalma con el del día siguiente),
+ *  - `null` si el silencio es permanente (los 7 días, 24 h): no hay hueco
+ *    posible. Quien llame debe decidir qué hacer; nunca dejar preso al contacto.
+ * PURA: no toca el reloj salvo por el `from` que se le pasa.
+ */
+function nextAllowedTime(win, from = new Date()) {
+  if (!isWindowActive(win)) return from;
+  let t = new Date(from);
+  for (let i = 0; i <= MAX_SLOT_HOPS; i += 1) {
+    const slot = quietSlotAt(win, t);
+    if (!slot) return t;
+    t = new Date(slot.end.getTime());
+  }
+  return null;
+}
+
+/** ¿El silencio cubre TODO (7 días, 24 h)? Configuración imposible de cumplir. */
+function isAlwaysQuiet(win) {
+  if (!isWindowActive(win)) return false;
+  const fromMin = parseHHMM(win.from);
+  return normalizeDays(win.days).length === 7
+    && windowDurationMinutes(fromMin, parseHHMM(win.to)) === MINUTES_PER_DAY;
+}
+
+/** Texto de la ventana para el registro ("todos los días de 23:00 a 06:20"). */
 function describeWindow(win) {
   if (!isWindowActive(win)) return 'sin restricción';
   const days = normalizeDays(win.days);
@@ -140,7 +164,8 @@ module.exports = {
   formatHHMM,
   normalizeDays,
   isWindowActive,
-  isInsideWindow,
-  nextWindowOpening,
+  isQuietTime,
+  nextAllowedTime,
+  isAlwaysQuiet,
   describeWindow,
 };

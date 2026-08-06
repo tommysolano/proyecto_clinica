@@ -11,7 +11,7 @@ const ReviewRequest = require('../models/ReviewRequest');
 const messaging = require('./messaging');
 const { emitToClinic, emitToUser, emitToCallCenter } = require('../realtime');
 const { DOMAIN_EVENTS, onDomainEvent } = require('./events');
-const { isWindowActive, nextWindowOpening, describeWindow } = require('./sendWindow');
+const { isWindowActive, nextAllowedTime, isAlwaysQuiet, describeWindow } = require('./sendWindow');
 
 const MAX_STEP_TRANSITIONS = 100; // guarda contra bucles por onFailGoTo mal formado
 const MAX_LOG_ENTRIES = 60; // tope del registro de ejecución por inscripción
@@ -36,24 +36,33 @@ const SENDING_TYPES = new Set([
 
 /**
  * Ventana horaria de un nodo 'window' del diagrama (su configuración vive en
- * node.data). Siempre en modo 'specific': el nodo existe justamente para
- * restringir.
+ * node.data). Siempre en modo 'specific': el nodo existe justamente para callar
+ * el flujo en esa franja.
  */
 function windowOfNode(data = {}) {
   return { mode: 'specific', days: data.windowDays, from: data.windowFrom, to: data.windowTo };
 }
 
 /**
- * ¿Hay que RETENER este paso por la ventana de envío del workflow? Devuelve la
- * fecha de la próxima apertura, o null si puede ejecutarse ya (sin ventana, o
- * dentro de ella, o paso que no envía nada).
+ * ¿Hay que RETENER este paso porque estamos en la franja de silencio del
+ * workflow? Devuelve la fecha en la que el silencio termina, o null si puede
+ * ejecutarse ya (sin ventana, fuera del silencio, o paso que no envía nada).
  */
 function sendWindowHold(workflow, type, at = new Date()) {
   if (!SENDING_TYPES.has(type)) return null;
   const win = workflow?.sendWindow;
   if (!isWindowActive(win)) return null;
-  const opening = nextWindowOpening(win, at);
-  return opening && opening.getTime() > at.getTime() ? opening : null;
+  const libre = nextAllowedTime(win, at);
+  if (!libre) {
+    // Silencio de 24 h los 7 días: no hay hueco al que esperar. Retener sería
+    // dejar al contacto preso para siempre, así que se avisa y se deja pasar.
+    console.warn(
+      '[workflow] la ventana de "%s" calla las 24 h de los 7 días: se ignora (revisa su configuración)',
+      workflow?.name || workflow?._id
+    );
+    return null;
+  }
+  return libre.getTime() > at.getTime() ? libre : null;
 }
 
 // Motivos por los que messaging.send salta/falla un envío, en lenguaje del usuario.
@@ -1023,31 +1032,40 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
       });
       currentId = nxt;
     } else if (type === 'window') {
-      // Ventana horaria: si la franja está abierta el flujo sigue de inmediato;
-      // si está cerrada, el contacto espera a la PRÓXIMA apertura (no se pierde).
+      // Ventana horaria: la franja configurada es la de SILENCIO. Dentro de ella
+      // el contacto espera a que TERMINE (no se pierde); fuera, el flujo sigue.
       const win = windowOfNode(data);
       const nxt = nextNodeId(workflow, currentId);
-      const opening = isWindowActive(win) ? nextWindowOpening(win, new Date()) : null;
-      if (opening && opening.getTime() > Date.now()) {
+      const libre = isWindowActive(win) ? nextAllowedTime(win, new Date()) : null;
+      if (isWindowActive(win) && !libre) {
+        // Silencio de 24 h los 7 días: esperar sería no continuar jamás.
         pushLog(enrollment, {
           nodeId: currentId,
           type,
-          info: `Fuera de la ventana (${describeWindow(win)}): continúa el ${fmtLogDate(opening)}`,
+          info: `La ventana calla las 24 h de los 7 días (${describeWindow(win)}): se ignora y el flujo continúa`,
+        });
+        currentId = nxt;
+      } else if (libre && libre.getTime() > Date.now()) {
+        pushLog(enrollment, {
+          nodeId: currentId,
+          type,
+          info: `En horario de silencio (${describeWindow(win)}): continúa el ${fmtLogDate(libre)}`,
         });
         enrollment.currentNodeId = nxt;
-        enrollment.nextRunAt = opening;
+        enrollment.nextRunAt = libre;
         enrollment.status = 'waiting';
         await enrollment.save();
         return;
+      } else {
+        pushLog(enrollment, {
+          nodeId: currentId,
+          type,
+          info: isWindowActive(win)
+            ? `Fuera del horario de silencio (${describeWindow(win)}): continúa`
+            : 'Ventana sin días u horas válidas: no restringe nada y el flujo continúa',
+        });
+        currentId = nxt;
       }
-      pushLog(enrollment, {
-        nodeId: currentId,
-        type,
-        info: isWindowActive(win)
-          ? `Dentro de la ventana (${describeWindow(win)}): continúa`
-          : 'Ventana sin días u horas válidas: no restringe nada y el flujo continúa',
-      });
-      currentId = nxt;
     } else if (type === 'wait_reply') {
       enrollment.currentNodeId = nextNodeId(workflow, currentId);
       enrollment.nextRunAt = new Date(Date.now() + Number(data.timeoutMinutes || 720) * 60000);
@@ -1102,7 +1120,7 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
         pushLog(enrollment, {
           nodeId: currentId,
           type,
-          info: `Fuera de la ventana de envío (${describeWindow(workflow.sendWindow)}): se enviará el ${fmtLogDate(hold)}`,
+          info: `En horario de silencio (${describeWindow(workflow.sendWindow)}): se enviará el ${fmtLogDate(hold)}`,
         });
         enrollment.currentNodeId = currentId; // se re-ejecuta ESTE paso al abrir
         enrollment.nextRunAt = hold;
