@@ -39,6 +39,16 @@
  *      tenga sesión viva — incluso si se perdió por un camino imprevisto.
  *   3. Lo que sí necesita a una persona (desvinculado desde el teléfono) se avisa
  *      por la campana del header y queda escrito en la cuenta (lastDisconnect*).
+ *   4. SESIÓN ZOMBI (ago-2026): `getState()` NO prueba que el sistema esté
+ *      recibiendo. WhatsApp Web se recarga sola y whatsapp-web.js re-engancha sus
+ *      listeners solo si detecta que `window.WWebJS` desapareció (Client.js:311);
+ *      cuando no lo detecta, emite 'ready' igualmente y deja la sesión con el
+ *      socket CONNECTED, los envíos funcionando… y NINGÚN mensaje entrante
+ *      llegando a la app. Pasó en producción: el número quedó "conectado" casi 6
+ *      horas sin ingresar un solo mensaje. Por eso el chequeo de salud ya no
+ *      pregunta solo cómo está el socket, sino si la INGESTA está viva
+ *      (verifyIngest): compara lo que WhatsApp Web tiene en memoria con lo último
+ *      que guardamos, recupera lo que se perdió y reinicia la sesión si hace falta.
  *
  * IMPORTANTE (hosting): whatsapp-web.js levanta un Chromium headless por número
  * (~300–500 MB) y requiere un proceso SIEMPRE activo. En Render gratis (RAM baja,
@@ -89,6 +99,30 @@ const NEEDS_QR_STATES = new Set(['UNPAIRED', 'UNPAIRED_IDLE']);
 // segundos y el chequeo cae dentro cada dos por tres. Con 4 vistazos son ~3
 // minutos de silencio antes de tocar nada.
 const MAX_MISSES = 4;
+
+// ── Ingesta viva (detección de sesión ZOMBI) ────────────────────────────────
+// Tipos de mensaje que SÍ ingresamos. Vive aquí arriba porque lo usan tanto el
+// listener de mensajes como la sonda de ingesta: ambas tienen que mirar
+// EXACTAMENTE los mismos mensajes o la comparación daría falsos positivos.
+const CONTENT_TYPES = ['chat', 'image', 'video', 'audio', 'ptt', 'document', 'sticker', 'location', 'vcard', 'multi_vcard'];
+
+// Desfase que se tolera entre el mensaje entrante más nuevo que WhatsApp Web
+// tiene en memoria y el último que llegamos a guardar. Cubre el tiempo normal de
+// ingesta (descargar la media de un mensaje puede tardar hasta 45 s).
+const INGEST_LAG_MS = 3 * 60 * 1000;
+// Huecos SEGUIDOS (uno por vuelta del chequeo, 45 s) con la sesión estructuralmente
+// sana antes de reiniciarla. El primero se resuelve recuperando los mensajes; si
+// el siguiente vuelve a aparecer es que los eventos no están llegando.
+const MAX_INGEST_GAPS = 2;
+// Ninguna sesión se reinicia por la ingesta más de una vez cada 10 min: si la
+// sonda se equivocara, el número no puede entrar en un bucle de reinicios.
+const INGEST_REPAIR_COOLDOWN_MS = 10 * 60 * 1000;
+// Cuánto hacia atrás se rescatan mensajes perdidos al reconectar. Más allá de un
+// día, WhatsApp Web ya no tiene el mensaje en memoria y el chat estaría frío.
+const RECOVER_LOOKBACK_MS = 24 * 60 * 60 * 1000;
+// Tope de mensajes por pasada de rescate (protege la memoria del proceso). Se
+// rescatan los MÁS NUEVOS y se avisa en el log si se dejó algo fuera.
+const RECOVER_MAX = 1000;
 
 // ── Reconexión automática ───────────────────────────────────────────────────
 // Una sesión QR NO puede quedarse caída esperando a que un humano pulse
@@ -272,13 +306,18 @@ async function verifyConnected(key, entry, timeoutMs = 8000) {
   if (clients.get(key) !== entry) return clients.get(key)?.status || 'disconnected';
 
   if (probe.verdict === 'connected') { entry.misses = 0; return 'connected'; }
-  // Viva (reconectando sola) o Chrome ocupado: no se toca.
-  if (probe.verdict === 'transient' || probe.verdict === 'busy') {
+  // Viva y reconectando sola (OPENING/PAIRING/TIMEOUT): es un veredicto REAL de
+  // vida, así que borra los vistazos fallidos.
+  if (probe.verdict === 'transient') {
     entry.misses = 0;
     if (probe.state) console.log('[whatsappQr] %s en estado %s: sigue viva, no se toca.', key, probe.state);
     return entry.status;
   }
-  if (probe.verdict === 'unknown') {
+  // 'busy' (getState no contestó a tiempo) NO es prueba de vida: es silencio. Se
+  // toleraba borrando el contador, y eso dejaba una sesión con Chrome atascado
+  // en 'connected' PARA SIEMPRE — nunca acumulaba vistazos y nunca se cerraba.
+  // Ahora cuenta igual que un vistazo sin veredicto: se aguanta MAX_MISSES.
+  if (probe.verdict === 'unknown' || probe.verdict === 'busy') {
     entry.misses = (entry.misses || 0) + 1;
     if (entry.misses < MAX_MISSES) {
       console.log(
@@ -351,8 +390,11 @@ async function superviseSessions() {
   }
 }
 
-// Chequeo de salud periódico de todas las sesiones. Tres redes de seguridad:
+// Chequeo de salud periódico de todas las sesiones. Cuatro redes de seguridad:
 //  - Sesión 'connected': verifica que siga viva, con tolerancia (verifyConnected).
+//  - Sesión 'connected' Y viva: verifica además que esté RECIBIENDO (verifyIngest).
+//    Que el socket esté CONNECTED no prueba nada: la sesión puede quedar zombi
+//    (envía pero no recibe) y sin esto se queda así hasta que alguien lo note.
 //  - Sesión con cliente pero estado NO 'connected' (pegada en 'syncing'/
 //    'connecting' porque whatsapp-web.js re-sincronizó sin re-emitir 'ready'):
 //    si getState dice CONNECTED, se CURA a 'connected'. Sin esto, un número que
@@ -366,7 +408,15 @@ function ensureHealthTimer() {
     for (const [key, entry] of Array.from(clients.entries())) {
       if (entry.status === 'connected') {
         // eslint-disable-next-line no-await-in-loop
-        await verifyConnected(key, entry, 10000).catch(() => {});
+        const vivo = await verifyConnected(key, entry, 10000).catch(() => null);
+        // Solo tiene sentido preguntar por la ingesta si la sesión sigue en pie:
+        // si verifyConnected la cerró, ya está en manos de la reconexión.
+        if (vivo === 'connected' && clients.get(key) === entry) {
+          // eslint-disable-next-line no-await-in-loop
+          await verifyIngest(key, entry).catch((e) =>
+            console.warn('[whatsapp-qr ingesta] %s: el chequeo falló (%s)', key, e.message)
+          );
+        }
       } else if (entry.client && ['syncing', 'connecting'].includes(entry.status)) {
         // eslint-disable-next-line no-await-in-loop
         const probe = await probeState(entry, 8000).catch(() => ({ verdict: 'unknown' }));
@@ -1055,6 +1105,428 @@ async function resolveQrPhone(client, jid, msg = null) {
   return raw;
 }
 
+/**
+ * Ingresa UN mensaje entrante del número QR (mismo pipeline que el webhook de
+ * Cloud API). Está a nivel de módulo, y no dentro del listener, porque el rescate
+ * de mensajes perdidos (recoverMissedInbound) tiene que pasar por EXACTAMENTE el
+ * mismo camino: si un mensaje se reingresa por otra vía acaba duplicado o con
+ * campos distintos.
+ *
+ * Filtra los tipos con contenido real de un humano; el resto (e2e_notification al
+ * renegociar cifrado, notification_template, ciphertext, llamadas…) NO debe crear
+ * conversaciones: al vincular una sesión nueva, WhatsApp renegocia claves con
+ * muchos contactos y llegaba un "mensaje" vacío por cada uno (chats fantasma
+ * "Sin mensajes" con el LID como nombre).
+ *
+ * @returns {boolean} true si el mensaje llegó a la ingesta (aunque fuera duplicado).
+ */
+async function ingestIncomingQrMessage(msg, client, accountId) {
+  if (msg.fromMe || msg.isStatus) return false;
+  const from = typeof msg.from === 'string' ? msg.from : widToString(msg.from);
+  // Solo chats directos: personas (@c.us) o contactos con número oculto (@lid).
+  // Fuera grupos (@g.us), canales (@newsletter) y listas (@broadcast).
+  if (!/@(c\.us|lid)$/.test(from)) return false;
+  if (!CONTENT_TYPES.includes(msg.type)) return false;
+
+  // ¿Ya lo tenemos? La ingesta también deduplica, pero AHÍ dentro ya sería tarde:
+  // antes de llegar habríamos vuelto a descargar el archivo del mensaje (hasta 45 s
+  // por mensaje). En un rescate de cientos de mensajes eso sería inviable.
+  const yaGuardado = qrMessageId(msg);
+  if (yaGuardado) {
+    const Message = require('../models/Message');
+    const dup = await Message.findOne({ externalId: yaGuardado, direction: 'in' })
+      .select('_id').lean().catch(() => null);
+    if (dup) return false;
+  }
+
+  // Número real: si el contacto tiene número oculto (@lid) lo resolvemos a su
+  // teléfono verdadero (si no, se mostraría el identificador largo del LID).
+  const phone = await resolveQrPhone(client, from, msg);
+  if (!phone) return false;
+
+  const media = await extractQrMedia(msg, client);
+  // Ubicación / tarjeta de contacto: no traen texto ni media, pero SÍ son un
+  // mensaje real del paciente; se describen en vez de descartarse (y en el
+  // vcard se muestra el nombre, no el volcado crudo del contacto).
+  const described = describeQrNonMedia(msg);
+  const bodyText = described || String(msg.body || '').trim();
+  if (!bodyText && !media) return false; // nada que mostrar
+
+  const account2 = await WhatsappAccount.findById(accountId);
+  const clinicId = await require('./callCenterClinic').resolveCallCenterClinicId();
+  if (!clinicId) {
+    // Sin clínica ancla el mensaje se PIERDE. Antes era un `return` mudo: el
+    // número parecía sano y los mensajes se evaporaban sin dejar rastro.
+    console.error('[whatsapp-qr] mensaje DESCARTADO: no hay clínica de call center resuelta (from=%s)', from);
+    return false;
+  }
+
+  // Cita: si el contacto respondió a un mensaje, whatsapp-web.js expone el
+  // wamid citado en _data.quotedStanzaID (o hasQuotedMsg + getQuotedMessage).
+  let contextId = '';
+  if (msg.hasQuotedMsg) {
+    try {
+      const q = await msg.getQuotedMessage();
+      contextId = qrMessageId(q) || msg._data?.quotedStanzaID || '';
+    } catch {
+      contextId = msg._data?.quotedStanzaID || '';
+    }
+  }
+
+  // Clave del mensaje: imprescindible para citarlo Y para volver a pedirle su
+  // archivo a WhatsApp. En chats LID (número oculto) la librería no expone
+  // `id._serialized`, así que se RECONSTRUYE (ver qrMessageId); antes se
+  // guardaba solo el hash suelto y cualquier búsqueda por id fallaba con
+  // "Invalid serialized message id specified".
+  const serializedId = qrMessageId(msg);
+  if (!serializedId) {
+    console.warn(
+      '[whatsapp-qr] mensaje entrante SIN wamid (no se podrá citar). type=%s from=%s id=%j',
+      msg.type, from, msg.id
+    );
+  }
+
+  // Anuncio click-to-WhatsApp (solo lo trae el 1er mensaje tras tocar el anuncio).
+  const referral = extractQrReferral(msg);
+  if (referral) {
+    console.log('[ctwa_ad][qr] mensaje desde anuncio — source_id=%s url=%s de %s',
+      referral.adId || '(vacío)', referral.sourceUrl || '(sin url)', from);
+  } else if (msg._data && typeof msg._data === 'object') {
+    // Sin mapear: si hay SEÑALES de anuncio (clave sospechosa arriba o dentro de
+    // contextInfo) deja las claves reales en el log para ajustar el mapeo con
+    // datos de producción (no se vuelca el cuerpo del mensaje, solo nombres).
+    const adRe = /ctwa|ad_?reply|externalad|source_?url/i;
+    const ci = msg._data.contextInfo;
+    const ciObj = ci && typeof ci === 'object' ? ci : null;
+    const topAdish = Object.keys(msg._data).some((k) => adRe.test(k));
+    const ciAdish = ciObj && Object.keys(ciObj).some((k) => adRe.test(k));
+    if (topAdish || ciAdish) {
+      console.log('[ctwa_ad][qr] posible anuncio NO mapeado — _data:[%s] contextInfo:[%s]',
+        Object.keys(msg._data).join(','), ciObj ? Object.keys(ciObj).join(',') : '—');
+    }
+  }
+
+  const { ingestExternalMessage } = require('../controllers/chatController');
+  await ingestExternalMessage({
+    clinicId,
+    channel: 'whatsapp',
+    account: account2,
+    phone,
+    // JID completo (…@c.us / …@lid): imprescindible para RESPONDER a
+    // contactos con número oculto (a un LID no se le puede escribir @c.us).
+    externalUserId: from,
+    body: bodyText,
+    media,
+    contactName: msg._data?.notifyName || '',
+    externalId: serializedId,
+    contextId,
+    referral,
+  });
+  // Marca de INGESTA VIVA: es la referencia contra la que el chequeo de salud
+  // compara lo que WhatsApp Web tiene en memoria. Se usa la hora del PROPIO
+  // mensaje (no `now`) para que ambas magnitudes sean comparables. `$max` evita
+  // que un mensaje viejo rescatado haga retroceder la marca.
+  const t = Number(msg.timestamp) > 0 ? new Date(Number(msg.timestamp) * 1000) : new Date();
+  await WhatsappAccount.updateOne({ _id: accountId }, { $max: { lastInboundAt: t } }).catch(() => {});
+  return true;
+}
+
+// ── Sesión ZOMBI: la ingesta puede morir con el socket CONNECTED ─────────────
+
+/**
+ * Pregunta DENTRO de la página si la ingesta está viva y qué mensajes entrantes
+ * tiene WhatsApp Web que nosotros no hemos guardado.
+ *
+ * Dos señales independientes:
+ *  - ESTRUCTURAL: `window.WWebJS` inyectado, la función expuesta
+ *    `onAddMessageEvent` presente y el evento 'add' de la colección Msg todavía
+ *    enganchado. Si algo de esto falta, la sesión NO puede recibir: es certeza,
+ *    no sospecha.
+ *  - DE HECHO: el mensaje entrante más nuevo que la página tiene en memoria. Si
+ *    es más nuevo que el último que guardamos, los mensajes están llegando al
+ *    navegador y muriendo antes de la app.
+ *
+ * Los filtros (fromMe, JID directo, tipo con contenido) son LOS MISMOS que aplica
+ * ingestIncomingQrMessage: si divergen, la comparación daría falsos positivos con
+ * mensajes que descartamos a propósito.
+ */
+async function probeIngest(entry, desdeMs = 0, timeoutMs = 12000) {
+  const client = entry.client;
+  if (!client?.pupPage || client.pupPage.isClosed?.() === true) {
+    return { ok: false, sinRespuesta: true, detalle: 'la página de la sesión no está disponible' };
+  }
+  try {
+    const r = await withTimeout(
+      client.pupPage.evaluate((tipos, desdeSeg) => {
+        const out = {
+          wwebjs: false, expuesta: false, enganchado: null,
+          ultimoEntranteSeg: 0, pendientes: 0, error: '',
+        };
+        try {
+          out.wwebjs = typeof window.WWebJS !== 'undefined';
+          out.expuesta = typeof window.onAddMessageEvent === 'function';
+          const { Msg } = window.require('WAWebCollections');
+          // ¿Sigue enganchado el listener 'add' de whatsapp-web.js? El registro de
+          // eventos cambia de forma entre versiones de WhatsApp Web, así que se
+          // prueban las conocidas; si ninguna se puede leer queda `null`
+          // (= "no se sabe") y NUNCA se da la sesión por muerta por esto.
+          const reg = Msg && (Msg._events || Msg._callbacks || Msg.__events);
+          if (reg && typeof reg === 'object') {
+            const add = reg.add;
+            out.enganchado = Array.isArray(add) ? add.length > 0 : !!add;
+          }
+          const models = typeof Msg.getModelsArray === 'function'
+            ? Msg.getModelsArray()
+            : (Msg.models || []);
+          for (const m of models) {
+            if (!m || !m.id || m.id.fromMe) continue;
+            if (m.isStatusV3 || m.isStatus) continue;
+            if (tipos.indexOf(m.type) === -1) continue;
+            const rem = m.id.remote;
+            const jid = !rem ? ''
+              : typeof rem === 'string' ? rem
+                : rem._serialized ? String(rem._serialized)
+                  : rem.user && rem.server ? rem.user + '@' + rem.server : '';
+            if (!/@(c\.us|lid)$/.test(jid)) continue;
+            const t = Number(m.t) || 0;
+            if (t > out.ultimoEntranteSeg) out.ultimoEntranteSeg = t;
+            if (desdeSeg && t > desdeSeg) out.pendientes += 1;
+          }
+        } catch (e) {
+          out.error = String((e && e.message) || e).slice(0, 140);
+        }
+        return out;
+      }, CONTENT_TYPES, Math.floor(desdeMs / 1000)),
+      timeoutMs,
+      '__timeout__'
+    );
+    if (r.error) return { ok: false, sinRespuesta: true, detalle: r.error };
+    return { ok: true, ...r, ultimoEntranteMs: (r.ultimoEntranteSeg || 0) * 1000 };
+  } catch (e) {
+    // Chrome ocupado o la página recargándose: SIN veredicto, no se toca nada.
+    return { ok: false, sinRespuesta: true, detalle: String(e.message || e).slice(0, 140) };
+  }
+}
+
+/**
+ * Rescata los mensajes entrantes que WhatsApp Web tiene en memoria y nosotros no
+ * llegamos a guardar, y los mete por el pipeline normal.
+ *
+ * Es lo que convierte el incidente en algo REVERSIBLE: mientras la sesión estuvo
+ * zombi, los mensajes sí llegaron al navegador (por eso el paciente los ve como
+ * entregados) — solo se perdió el puente hacia la app. La ingesta deduplica por
+ * `externalId`, así que rescatar de más nunca duplica un chat.
+ *
+ * @returns {number} mensajes rescatados que la ingesta aceptó.
+ */
+async function recoverMissedInbound(client, accountId, desdeMs) {
+  if (!client?.pupPage || !desdeMs) return 0;
+  let hallado = { total: 0, modelos: [] };
+  try {
+    hallado = await withTimeout(
+      client.pupPage.evaluate((tipos, desdeSeg, tope) => {
+        if (typeof window.WWebJS === 'undefined') return { total: 0, modelos: [] };
+        const { Msg } = window.require('WAWebCollections');
+        const models = typeof Msg.getModelsArray === 'function'
+          ? Msg.getModelsArray()
+          : (Msg.models || []);
+        const sel = [];
+        for (const m of models) {
+          if (!m || !m.id || m.id.fromMe) continue;
+          if (m.isStatusV3 || m.isStatus) continue;
+          if (tipos.indexOf(m.type) === -1) continue;
+          const rem = m.id.remote;
+          const jid = !rem ? ''
+            : typeof rem === 'string' ? rem
+              : rem._serialized ? String(rem._serialized)
+                : rem.user && rem.server ? rem.user + '@' + rem.server : '';
+          if (!/@(c\.us|lid)$/.test(jid)) continue;
+          if ((Number(m.t) || 0) <= desdeSeg) continue;
+          sel.push(m);
+        }
+        sel.sort((a, b) => (Number(a.t) || 0) - (Number(b.t) || 0));
+        return { total: sel.length, modelos: sel.slice(-tope).map((m) => window.WWebJS.getMessageModel(m)) };
+      }, CONTENT_TYPES, Math.floor(desdeMs / 1000), RECOVER_MAX),
+      30000,
+      'timeout leyendo los mensajes perdidos'
+    );
+  } catch (e) {
+    console.warn('[whatsapp-qr rescate] no se pudieron leer los mensajes de la página: %s', e.message);
+    return 0;
+  }
+  const modelos = hallado?.modelos || [];
+  if (!modelos.length) return 0;
+  if ((hallado.total || 0) > modelos.length) {
+    // Nada de topes silenciosos: si se dejaron mensajes fuera, tiene que constar.
+    console.warn('[whatsapp-qr rescate] la sesión tenía %d mensajes sin guardar; se rescatan los %d más nuevos.',
+      hallado.total, modelos.length);
+  }
+
+  // Descarte en BLOQUE de los que ya están guardados. Preguntar uno a uno también
+  // funciona (ingestIncomingQrMessage lo hace), pero con la base en Atlas cada ida
+  // y vuelta cuesta ~100 ms: en un rescate de cientos de mensajes eso son minutos.
+  // Una sola consulta deja la lista en los que de verdad faltan.
+  const conId = modelos.map((m) => ({ modelo: m, id: serializeMsgKey(m?.id) }));
+  const ids = conId.map((x) => x.id).filter(Boolean);
+  let guardados = new Set();
+  if (ids.length) {
+    const Message = require('../models/Message');
+    const filas = await Message.find({ externalId: { $in: ids }, direction: 'in' })
+      .select('externalId').lean().catch(() => []);
+    guardados = new Set(filas.map((f) => f.externalId));
+  }
+  const faltan = conId.filter((x) => !x.id || !guardados.has(x.id));
+  if (!faltan.length) return 0;
+
+  // Los modelos crudos se envuelven en la MISMA clase Message que usa la
+  // librería al emitir el evento: así el mensaje rescatado recorre el pipeline
+  // con downloadMedia(), getQuotedMessage() y todo lo demás igual que el normal.
+  const { Message: LibMessage } = require('whatsapp-web.js');
+  let n = 0;
+  for (const { modelo } of faltan) {
+    try {
+      // eslint-disable-next-line no-await-in-loop
+      if (await ingestIncomingQrMessage(new LibMessage(client, modelo), client, accountId)) n += 1;
+    } catch (e) {
+      console.warn('[whatsapp-qr rescate] un mensaje no se pudo reingresar: %s', e.message);
+    }
+  }
+  console.log('[whatsapp-qr rescate] %d de %d que faltaban (%d en la sesión) recuperados desde %s',
+    n, faltan.length, modelos.length, new Date(desdeMs).toISOString());
+  return n;
+}
+
+/**
+ * Comprueba que la sesión esté RECIBIENDO, no solo conectada, y actúa.
+ *
+ * El caso real (ago-2026): el número figuró 'connected' casi 6 horas —`getState()`
+ * decía CONNECTED y los envíos salían— sin ingresar un solo mensaje entrante,
+ * porque whatsapp-web.js perdió sus listeners al recargarse WhatsApp Web y no los
+ * volvió a enganchar. Nada lo detectaba: el chequeo de salud solo miraba el socket.
+ *
+ * Escalada:
+ *   1. Sin veredicto (Chrome ocupado, página recargándose) → no se toca nada.
+ *   2. Rota ESTRUCTURALMENTE (sin WWebJS / sin función expuesta / sin listener) →
+ *      es certeza: se rescatan los mensajes perdidos y se reinicia la sesión.
+ *   3. Solo hay HUECO (llegan al navegador y no a la app) → se rescatan y se
+ *      cuenta; si el hueco reaparece MAX_INGEST_GAPS veces seguidas, se reinicia.
+ * Reiniciar deja el estado en 'disconnected' (honesto) y la reconexión automática
+ * la levanta en ~10 s.
+ */
+async function verifyIngest(key, entry) {
+  const acc = await WhatsappAccount.findById(key).select('lastInboundAt').lean().catch(() => null);
+  if (!acc) return;
+  const dbLast = acc.lastInboundAt ? new Date(acc.lastInboundAt).getTime() : 0;
+  const probe = await probeIngest(entry, dbLast);
+  if (clients.get(key) !== entry) return; // la sesión ya fue reemplazada
+
+  if (!probe.ok) {
+    // Igual que con getState: la falta de respuesta NO es muerte.
+    console.log('[whatsapp-qr ingesta] %s sin veredicto (%s): no se toca.', key, probe.detalle || '');
+    return;
+  }
+
+  // Primera vuelta de una cuenta sin marca de recepción: o nunca recibió nada, o
+  // es la primera vez que corre esta versión. No se puede comparar con nada, así
+  // que se fija la referencia y se compara a partir de la próxima vuelta. Sin
+  // esto, un `lastInboundAt` vacío parecería un hueco de años y reiniciaría la
+  // sesión. Lo que se hubiera perdido lo recupera scheduleRecoveryAfterReady, que
+  // ya está barriendo el último día con la ventana congelada antes de esto.
+  if (!dbLast) {
+    await WhatsappAccount.updateOne(
+      { _id: key },
+      { $max: { lastInboundAt: new Date(probe.ultimoEntranteMs || Date.now()) } }
+    ).catch(() => {});
+    entry.ingestGaps = 0;
+    return;
+  }
+
+  const rota = probe.wwebjs === false || probe.expuesta === false || probe.enganchado === false;
+  const hueco = probe.pendientes > 0 && probe.ultimoEntranteMs - dbLast > INGEST_LAG_MS;
+
+  if (!rota && !hueco) {
+    entry.ingestGaps = 0;
+    return;
+  }
+
+  const motivo = rota
+    ? `la sesión perdió el enganche de mensajes (WWebJS=${probe.wwebjs} expuesta=${probe.expuesta} listener=${probe.enganchado})`
+    : `WhatsApp Web tiene ${probe.pendientes} mensajes que el sistema no guardó (${Math.round((probe.ultimoEntranteMs - dbLast) / 60000)} min de retraso)`;
+  console.error('[whatsapp-qr ingesta] %s: %s', key, motivo);
+
+  // Se rescata SIEMPRE primero: los mensajes están ahí y reiniciar la sesión no
+  // los volvería a entregar.
+  const rescatados = await recoverMissedInbound(entry.client, key, dbLast).catch(() => 0);
+
+  entry.ingestGaps = (entry.ingestGaps || 0) + 1;
+  const debeReiniciar = rota || entry.ingestGaps >= MAX_INGEST_GAPS;
+  if (!debeReiniciar) {
+    console.warn('[whatsapp-qr ingesta] %s: hueco %d/%d, se rescataron %d mensajes y se vuelve a mirar.',
+      key, entry.ingestGaps, MAX_INGEST_GAPS, rescatados);
+    return;
+  }
+
+  // Freno de mano: una sonda equivocada no puede meter al número en un bucle de
+  // reinicios (cada reinicio deja el canal caído ~30-60 s).
+  const ahora = Date.now();
+  if (entry.lastIngestRepairAt && ahora - entry.lastIngestRepairAt < INGEST_REPAIR_COOLDOWN_MS) {
+    console.warn('[whatsapp-qr ingesta] %s: reinicio omitido (hace menos de %d min del anterior).',
+      key, Math.round(INGEST_REPAIR_COOLDOWN_MS / 60000));
+    return;
+  }
+  entry.lastIngestRepairAt = ahora;
+  entry.ingestGaps = 0;
+
+  notifyQrDown(key, { needsQr: false, reason: motivo });
+  await teardown(key, entry, {
+    reason: `ingesta muerta — ${motivo}${rescatados ? ` (${rescatados} mensajes rescatados)` : ''}`,
+    needsQr: false,
+    error: 'El número figuraba conectado pero había dejado de recibir mensajes. Reconectando automáticamente…',
+  });
+}
+
+// Cuándo se intenta el rescate tras conectar. Son VARIAS pasadas porque WhatsApp
+// Web trae el historial poco a poco: a los 30 s la colección Msg todavía está a
+// medias y un solo intento dejaría fuera casi todo lo de un apagón largo.
+const RECOVER_AFTER_READY_MS = [30000, 3 * 60 * 1000, 10 * 60 * 1000];
+
+/**
+ * Tras un 'ready', reingresa los mensajes entrantes que se perdieron mientras la
+ * sesión no estuvo operativa (caída, reiniciada por un deploy o zombi).
+ *
+ * La ventana se calcula UNA vez, ANTES de reingresar nada: si se recalculara en
+ * cada pasada, el primer mensaje rescatado adelantaría `lastInboundAt` y los más
+ * viejos —que WhatsApp Web todavía estaba cargando— quedarían fuera para siempre.
+ * No se retrocede más de RECOVER_LOOKBACK_MS: más atrás la sesión ya no tiene el
+ * mensaje en memoria.
+ */
+function scheduleRecoveryAfterReady(key, accountId, entry) {
+  const arranque = setTimeout(async () => {
+    try {
+      if (clients.get(key) !== entry) return;
+      const acc = await WhatsappAccount.findById(key).select('lastInboundAt').lean().catch(() => null);
+      if (!acc) return;
+      const dbLast = acc.lastInboundAt ? new Date(acc.lastInboundAt).getTime() : 0;
+      // Sin referencia (cuenta nueva, o primera vez con este campo) se barre el
+      // día entero: es lo que recupera el apagón que nadie llegó a registrar.
+      const desde = Math.max(dbLast || 0, Date.now() - RECOVER_LOOKBACK_MS);
+      let transcurrido = 0;
+      for (const marca of RECOVER_AFTER_READY_MS) {
+        // eslint-disable-next-line no-await-in-loop
+        await sleep(marca - transcurrido);
+        transcurrido = marca;
+        if (clients.get(key) !== entry || entry.status !== 'connected') return;
+        // eslint-disable-next-line no-await-in-loop
+        const n = await recoverMissedInbound(entry.client, accountId, desde);
+        if (n) console.log('[whatsapp-qr] %s: %d mensajes recuperados tras reconectar.', key, n);
+      }
+    } catch (e) {
+      console.warn('[whatsapp-qr rescate] tras conectar falló: %s', e.message);
+    }
+  }, 0);
+  arranque.unref?.();
+}
+
 // Números cuyo arranque está EN CURSO (ver connect).
 const starting = new Set();
 
@@ -1285,6 +1757,10 @@ async function startClient(key, accountId, userId) {
       lastDisconnectNeedsQr: false,
     });
     await emitStatus(key, { status: 'connected', connectedPhone }, userId);
+    // Todo lo que entró mientras la sesión estuvo caída (o zombi) sigue en el
+    // teléfono del contacto y WhatsApp Web lo trae al sincronizar: se reingresa
+    // en vez de darlo por perdido. Ver scheduleRecoveryAfterReady.
+    scheduleRecoveryAfterReady(key, accountId, entry);
   });
 
   // QR escaneado: WhatsApp sincroniza la sesión hasta 'ready'. Antes esta fase
@@ -1351,101 +1827,12 @@ async function startClient(key, accountId, userId) {
   });
 
   // Mensaje entrante → mismo pipeline de ingesta que el webhook Cloud API.
-  // Tipos con contenido real de un humano; el resto (e2e_notification al
-  // renegociar cifrado, notification_template, ciphertext, llamadas, etc.)
-  // NO debe crear conversaciones: al vincular una sesión nueva, WhatsApp
-  // renegocia claves con muchos contactos y llegaba un "mensaje" vacío por
-  // cada uno (chats fantasma "Sin mensajes" con el LID como nombre).
-  const CONTENT_TYPES = ['chat', 'image', 'video', 'audio', 'ptt', 'document', 'sticker', 'location', 'vcard', 'multi_vcard'];
-  client.on('message', async (msg) => {
-    try {
-      if (msg.fromMe || msg.isStatus) return;
-      const from = typeof msg.from === 'string' ? msg.from : '';
-      // Solo chats directos: personas (@c.us) o contactos con número oculto (@lid).
-      // Fuera grupos (@g.us), canales (@newsletter) y listas (@broadcast).
-      if (!/@(c\.us|lid)$/.test(from)) return;
-      if (!CONTENT_TYPES.includes(msg.type)) return;
-      // Número real: si el contacto tiene número oculto (@lid) lo resolvemos a su
-      // teléfono verdadero (si no, se mostraría el identificador largo del LID).
-      const phone = await resolveQrPhone(client, from, msg);
-      if (!phone) return;
-
-      const media = await extractQrMedia(msg, client);
-      // Ubicación / tarjeta de contacto: no traen texto ni media, pero SÍ son un
-      // mensaje real del paciente; se describen en vez de descartarse (y en el
-      // vcard se muestra el nombre, no el volcado crudo del contacto).
-      const described = describeQrNonMedia(msg);
-      const bodyText = described || String(msg.body || '').trim();
-      if (!bodyText && !media) return; // nada que mostrar
-
-      const account2 = await WhatsappAccount.findById(accountId);
-      const clinicId = await require('./callCenterClinic').resolveCallCenterClinicId();
-      if (!clinicId) return;
-
-      // Cita: si el contacto respondió a un mensaje, whatsapp-web.js expone el
-      // wamid citado en _data.quotedStanzaID (o hasQuotedMsg + getQuotedMessage).
-      let contextId = '';
-      if (msg.hasQuotedMsg) {
-        try {
-          const q = await msg.getQuotedMessage();
-          contextId = qrMessageId(q) || msg._data?.quotedStanzaID || '';
-        } catch {
-          contextId = msg._data?.quotedStanzaID || '';
-        }
-      }
-
-      // Clave del mensaje: imprescindible para citarlo Y para volver a pedirle su
-      // archivo a WhatsApp. En chats LID (número oculto) la librería no expone
-      // `id._serialized`, así que se RECONSTRUYE (ver qrMessageId); antes se
-      // guardaba solo el hash suelto y cualquier búsqueda por id fallaba con
-      // "Invalid serialized message id specified".
-      const serializedId = qrMessageId(msg);
-      if (!serializedId) {
-        console.warn(
-          '[whatsapp-qr] mensaje entrante SIN wamid (no se podrá citar). type=%s from=%s id=%j',
-          msg.type, from, msg.id
-        );
-      }
-
-      // Anuncio click-to-WhatsApp (solo lo trae el 1er mensaje tras tocar el anuncio).
-      const referral = extractQrReferral(msg);
-      if (referral) {
-        console.log('[ctwa_ad][qr] mensaje desde anuncio — source_id=%s url=%s de %s',
-          referral.adId || '(vacío)', referral.sourceUrl || '(sin url)', from);
-      } else if (msg._data && typeof msg._data === 'object') {
-        // Sin mapear: si hay SEÑALES de anuncio (clave sospechosa arriba o dentro de
-        // contextInfo) deja las claves reales en el log para ajustar el mapeo con
-        // datos de producción (no se vuelca el cuerpo del mensaje, solo nombres).
-        const adRe = /ctwa|ad_?reply|externalad|source_?url/i;
-        const ci = msg._data.contextInfo;
-        const ciObj = ci && typeof ci === 'object' ? ci : null;
-        const topAdish = Object.keys(msg._data).some((k) => adRe.test(k));
-        const ciAdish = ciObj && Object.keys(ciObj).some((k) => adRe.test(k));
-        if (topAdish || ciAdish) {
-          console.log('[ctwa_ad][qr] posible anuncio NO mapeado — _data:[%s] contextInfo:[%s]',
-            Object.keys(msg._data).join(','), ciObj ? Object.keys(ciObj).join(',') : '—');
-        }
-      }
-
-      const { ingestExternalMessage } = require('../controllers/chatController');
-      await ingestExternalMessage({
-        clinicId,
-        channel: 'whatsapp',
-        account: account2,
-        phone,
-        // JID completo (…@c.us / …@lid): imprescindible para RESPONDER a
-        // contactos con número oculto (a un LID no se le puede escribir @c.us).
-        externalUserId: from,
-        body: bodyText,
-        media,
-        contactName: msg._data?.notifyName || '',
-        externalId: serializedId,
-        contextId,
-        referral,
-      });
-    } catch (e) {
-      console.error('[whatsapp-qr message]', e.message);
-    }
+  // El cuerpo vive en ingestIncomingQrMessage (nivel de módulo) porque el rescate
+  // de mensajes perdidos tiene que pasar por EXACTAMENTE el mismo camino.
+  client.on('message', (msg) => {
+    ingestIncomingQrMessage(msg, client, accountId).catch((e) =>
+      console.error('[whatsapp-qr message]', e.message)
+    );
   });
 
   // Mensaje SALIENTE creado (incluye los que el agente escribe desde el teléfono,
@@ -2242,5 +2629,7 @@ module.exports = {
     acquireSendableEntry, healToConnected, extractQrMedia, describeQrNonMedia,
     findRecentlySentMedia, watchOutgoingMedia, qrMessageId, qrMessageHash, serializeMsgKey,
     downloadAndDecryptWaMedia, phoneFromMsgData,
+    probeIngest, verifyIngest, recoverMissedInbound, ingestIncomingQrMessage,
+    INGEST_LAG_MS, MAX_INGEST_GAPS, INGEST_REPAIR_COOLDOWN_MS, CONTENT_TYPES,
   },
 };

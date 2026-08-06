@@ -1593,8 +1593,18 @@ function AccountCard({ acc, onSetDefault, onToggleEnabled, onEdit, onDelete, onC
   const seReconectaSolo = status === 'disconnected' && acc.connectedPhone && !acc.lastDisconnectNeedsQr;
   const qrDetail = !isQr
     ? ''
-    : status === 'connected' && acc.lastConnectedAt
-    ? `Vinculado desde ${fmtDateTime(acc.lastConnectedAt)}`
+    : status === 'connected'
+    ? // "Conectado" NO quiere decir "recibiendo": una sesión puede quedar zombi
+      // (envía pero no le entra nada). La hora del último mensaje recibido es lo
+      // único que deja verlo de un vistazo.
+      [
+        acc.lastConnectedAt ? `Vinculado desde ${fmtDateTime(acc.lastConnectedAt)}` : '',
+        acc.lastInboundAt
+          ? `último mensaje recibido ${fmtDateTime(acc.lastInboundAt)}`
+          : 'aún no ha recibido ningún mensaje',
+      ]
+        .filter(Boolean)
+        .join(' · ')
     : seReconectaSolo
     ? `Caído${acc.lastDisconnectAt ? ` desde ${fmtDateTime(acc.lastDisconnectAt)}` : ''} · el servidor lo está reconectando solo${
         acc.lastDisconnectReason ? ` (${acc.lastDisconnectReason})` : ''

@@ -998,7 +998,14 @@ exports.whatsappDiagnostics = async (req, res) => {
             ? ` Última caída: ${new Date(a.lastDisconnectAt).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' })}` +
               `${a.lastDisconnectReason ? ` — ${a.lastDisconnectReason}.` : '.'}`
             : '';
-          if (liveStatus === 'connected') detail = `Sesión de WhatsApp Web conectada.${caida}`;
+          // Última RECEPCIÓN: "conectado" no significa "recibiendo". Una sesión
+          // zombi (envía pero no recibe) se delata aquí — es el único dato que
+          // permite verlo de un vistazo sin abrir los chats.
+          const recibido = a.lastInboundAt
+            ? ` Último mensaje recibido: ${new Date(a.lastInboundAt).toLocaleString('es-EC', { timeZone: 'America/Guayaquil' })}` +
+              ` (hace ${Math.round((Date.now() - new Date(a.lastInboundAt)) / 60000)} min).`
+            : ' Aún no ha recibido ningún mensaje.';
+          if (liveStatus === 'connected') detail = `Sesión de WhatsApp Web conectada.${recibido}${caida}`;
           else if (['connecting', 'syncing', 'qr_pending'].includes(liveStatus)) {
             health = 'warn';
             detail =

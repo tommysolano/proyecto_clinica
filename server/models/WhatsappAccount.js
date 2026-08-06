@@ -44,6 +44,12 @@ const whatsappAccountSchema = new mongoose.Schema(
     sessionId: { type: String, trim: true, default: '' }, // clave del store de sesión (RemoteAuth)
     lastConnectedAt: { type: Date, default: null },
     lastQrAt: { type: Date, default: null },
+    // Fecha del ÚLTIMO mensaje ENTRANTE que este número llegó a guardar. No es un
+    // dato cosmético: es la referencia con la que el chequeo de salud compara lo
+    // que WhatsApp Web tiene en memoria para detectar una sesión ZOMBI (figura
+    // conectada, `getState()` dice CONNECTED y los envíos salen, pero los mensajes
+    // entrantes ya no llegan al sistema). Ver whatsappQrManager.verifyIngest.
+    lastInboundAt: { type: Date, default: null },
     // Rastro de la ÚLTIMA caída: sin esto, "se desconectó otra vez" era una caja
     // negra (no quedaba en ningún sitio por qué se cayó ni cuándo).
     lastDisconnectAt: { type: Date, default: null },

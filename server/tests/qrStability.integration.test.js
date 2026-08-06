@@ -99,6 +99,27 @@ test('OPENING/TIMEOUT (la sesión está volviendo sola) NO cierra nada', async (
   assert.equal(entry.destroyed, false, 'no se destruyó el navegador');
 });
 
+test('getState que NUNCA contesta (Chrome atascado) no deja la sesión "conectada" para siempre', async () => {
+  // Antes, un getState que agotaba el tiempo se contaba como prueba de vida y
+  // BORRABA el contador de vistazos fallidos: una sesión con el navegador
+  // atascado no acumulaba nunca los MAX_MISSES y se quedaba 'connected' de por
+  // vida, sin recibir nada y sin que nada la levantara.
+  const acc = await newAccount();
+  const key = String(acc._id);
+  const entry = fakeEntry('CONNECTED');
+  entry.client.getState = () => new Promise(() => {}); // no contesta jamás
+  clients.set(key, entry);
+
+  for (let i = 1; i < MAX_MISSES; i++) {
+    // eslint-disable-next-line no-await-in-loop
+    await verifyConnected(key, entry, 30);
+    assert.ok(clients.has(key), `vistazo ${i}: el silencio todavía se tolera`);
+  }
+  const status = await verifyConnected(key, entry, 30);
+  assert.equal(status, 'disconnected', 'el silencio persistente sí cierra la sesión');
+  assert.ok(reconnectTimers.has(key), 'y se reconecta sola');
+});
+
 test('getState=null (WhatsApp Web recargándose) se tolera hasta MAX_MISSES', async () => {
   const acc = await newAccount();
   const key = String(acc._id);
