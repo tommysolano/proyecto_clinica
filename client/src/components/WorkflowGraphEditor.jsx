@@ -13,6 +13,7 @@ import ReactFlow, {
   ReactFlowProvider,
   BaseEdge,
   EdgeLabelRenderer,
+  SelectionMode,
   getBezierPath,
   useNodesState,
 } from 'reactflow';
@@ -44,7 +45,12 @@ import {
   HiOutlineSquare2Stack,
   HiOutlineClipboard,
   HiOutlineShare,
+  HiOutlineSun,
+  HiOutlineRectangleGroup,
+  HiOutlineSquares2X2,
 } from 'react-icons/hi2';
+import WorkflowWindowPicker from './WorkflowWindowPicker';
+import { describeWindow } from '../utils/windowSchedule';
 
 // Tipos de paso disponibles en el lienzo (sin 'trigger', que es el nodo inicial).
 export const STEP_DEFS = {
@@ -55,6 +61,7 @@ export const STEP_DEFS = {
   wait: 'Esperar (tiempo)',
   wait_until: 'Esperar hasta la cita / hora fija',
   wait_reply: 'Esperar respuesta',
+  window: 'Ventana horaria',
   condition: 'Condición (sí/no)',
   split: 'Dividir (bifurcación)',
   add_tag: 'Añadir etiqueta',
@@ -76,7 +83,7 @@ export const STEP_DEFS = {
 // Agrupación de pasos para el selector (estilo GoHighLevel).
 const STEP_GROUPS = [
   { title: 'Comunicación', icon: HiOutlineChatBubbleLeftRight, types: ['send_message', 'send_media', 'send_template', 'send_email', 'ai_reply', 'request_review'] },
-  { title: 'Esperas', icon: HiOutlineClock, types: ['wait', 'wait_until', 'wait_reply'] },
+  { title: 'Esperas', icon: HiOutlineClock, types: ['wait', 'wait_until', 'wait_reply', 'window'] },
   { title: 'Lógica', icon: HiOutlineArrowsRightLeft, types: ['condition', 'split', 'goal'] },
   // 'move_stage' ya no se ofrece: lo cubre 'create_opportunity' (que además crea
   // la oportunidad con nombre, servicios, valor…). Los flujos que ya lo usan
@@ -97,6 +104,7 @@ const STEP_ICONS = {
   wait: { icon: HiOutlineClock, cls: 'bg-indigo-100 text-indigo-600' },
   wait_until: { icon: HiOutlineCalendarDays, cls: 'bg-indigo-100 text-indigo-600' },
   wait_reply: { icon: HiOutlineChatBubbleLeftRight, cls: 'bg-indigo-100 text-indigo-600' },
+  window: { icon: HiOutlineSun, cls: 'bg-indigo-100 text-indigo-600' },
   condition: { icon: HiOutlineArrowsRightLeft, cls: 'bg-amber-100 text-amber-600' },
   split: { icon: HiOutlineShare, cls: 'bg-fuchsia-100 text-fuchsia-600' },
   goal: { icon: HiOutlineFlag, cls: 'bg-rose-100 text-rose-600' },
@@ -316,6 +324,8 @@ export const newNodeData = (type) => ({
   body: '', templateName: '', templateLanguage: 'es', emailSubject: '',
   waitMinutes: 60, waitValue: 60, waitUnit: 'minutes', waitEvent: 'appointment_date', offsetMinutes: -1440, timeoutMinutes: 720,
   waitMode: 'clock', daysBefore: 1, atTime: '18:00',
+  // Ventana horaria: por defecto laborable de lunes a viernes, 09:00–18:00.
+  windowDays: [1, 2, 3, 4, 5], windowFrom: '09:00', windowTo: '18:00',
   appointmentStatus: 'confirmada', field: 'tag', op: 'eq', value: '', tag: '', stage: 'contactado',
   // Crear oportunidad: nombre con variables, servicios del inventario, valor
   // automático (suma de esos servicios) o manual, etiquetas y notas.
@@ -340,6 +350,35 @@ export const newNodeData = (type) => ({
 
 // Genera un id de ruta único y estable dentro de un split (handle de la salida).
 const newRouteId = () => `r${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
+
+// Id de nodo único. `n${Date.now()}` a secas colisiona al crear VARIOS nodos de
+// golpe (pegar o duplicar una rama entera ocurre dentro del mismo milisegundo):
+// dos nodos con el mismo id rompen el grafo. El contador lo evita.
+let nodeIdSeq = 0;
+const newNodeId = () => `n${Date.now().toString(36)}${(nodeIdSeq++).toString(36)}`;
+
+// ─────────── Portapapeles de pasos (varios nodos + sus conexiones) ───────────
+// Se guarda también en localStorage para poder copiar una rama —o el flujo
+// entero— en UNA automatización y pegarla en OTRA.
+const CLIPBOARD_KEY = 'wf.clipboard';
+
+function readStoredClipboard() {
+  try {
+    const raw = localStorage.getItem(CLIPBOARD_KEY);
+    const cb = raw ? JSON.parse(raw) : null;
+    return cb && Array.isArray(cb.nodes) && cb.nodes.length ? cb : null;
+  } catch {
+    return null; // localStorage lleno/bloqueado: sin portapapeles persistente
+  }
+}
+
+function writeStoredClipboard(cb) {
+  try {
+    localStorage.setItem(CLIPBOARD_KEY, JSON.stringify(cb));
+  } catch {
+    /* el portapapeles en memoria sigue funcionando */
+  }
+}
 
 const isBranch = (t) => t === 'condition' || t === 'goal';
 const isSplit = (t) => t === 'split';
@@ -415,6 +454,7 @@ function summarize(n, ctx = {}) {
     case 'send_template': return d.templateName;
     case 'send_email': return d.emailSubject || d.body;
     case 'wait': return formatWaitSummary(d);
+    case 'window': return describeWindow({ days: d.windowDays, from: d.windowFrom, to: d.windowTo });
     case 'wait_until': return d.waitMode === 'clock'
       ? `${d.daysBefore === 0 ? 'el día de la cita' : d.daysBefore === 1 ? '1 día antes' : `${d.daysBefore} días antes`} a las ${d.atTime || '—'}`
       : `${Math.abs((d.offsetMinutes || 0) / 60)}h ${(d.offsetMinutes || 0) < 0 ? 'antes' : 'después'}`;
@@ -460,17 +500,22 @@ function AddButton({ onClick, style, className = '' }) {
   );
 }
 
-// Botón "pegar aquí" (estilo Daplox): aparece junto al "+" cuando hay un paso
-// copiado. Un clic pega el paso copiado en ese punto, sin abrir el selector.
-function PasteButton({ onClick }) {
+// Botón "pegar aquí" (estilo Daplox): aparece junto al "+" cuando hay algo
+// copiado. Un clic pega lo copiado (un paso o una rama entera) en ese punto.
+function PasteButton({ onClick, count = 1 }) {
   return (
     <button
       type="button"
       onClick={(e) => { e.stopPropagation(); onClick(); }}
-      className="nodrag nopan flex items-center justify-center w-6 h-6 rounded-full bg-white border-2 border-violet-400 text-violet-600 shadow-sm hover:bg-violet-500 hover:text-white hover:border-violet-500 cursor-pointer transition-colors"
-      title="Pegar el paso copiado aquí"
+      className="nodrag nopan relative flex items-center justify-center w-6 h-6 rounded-full bg-white border-2 border-violet-400 text-violet-600 shadow-sm hover:bg-violet-500 hover:text-white hover:border-violet-500 cursor-pointer transition-colors"
+      title={count > 1 ? `Pegar aquí los ${count} pasos copiados` : 'Pegar el paso copiado aquí'}
     >
       <HiOutlineClipboard className="w-3.5 h-3.5" />
+      {count > 1 && (
+        <span className="absolute -top-1.5 -right-1.5 min-w-[14px] h-[14px] px-0.5 rounded-full bg-violet-600 text-white text-[9px] font-bold leading-[14px] text-center">
+          {count}
+        </span>
+      )}
     </button>
   );
 }
@@ -484,7 +529,7 @@ function AddRow({ data, handle, left = '50%' }) {
       className="nodrag nopan flex items-center gap-1"
     >
       <AddButton onClick={() => data.onAppend(handle)} />
-      {data._hasClipboard && <PasteButton onClick={() => data.onPasteAppend(handle)} />}
+      {data._clipboardCount > 0 && <PasteButton count={data._clipboardCount} onClick={() => data.onPasteAppend(handle)} />}
     </div>
   );
 }
@@ -497,6 +542,9 @@ function NodeActions({ data }) {
     <div className="nodrag nopan absolute -top-3 right-1 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity bg-white border border-slate-200 rounded-lg shadow-sm px-0.5 py-0.5 z-10">
       <button type="button" title="Copiar paso" onClick={(e) => { e.stopPropagation(); data.onCopy(); }} className="p-1 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer">
         <HiOutlineSquare2Stack className="w-3.5 h-3.5" />
+      </button>
+      <button type="button" title="Copiar esta rama (este paso y todo lo que sigue)" onClick={(e) => { e.stopPropagation(); data.onCopyBranch(); }} className="p-1 text-slate-400 hover:text-violet-600 bg-transparent border-none cursor-pointer">
+        <HiOutlineRectangleGroup className="w-3.5 h-3.5" />
       </button>
       <button type="button" title="Duplicar paso" onClick={(e) => { e.stopPropagation(); data.onDuplicate(); }} className="p-1 text-slate-400 hover:text-emerald-600 bg-transparent border-none cursor-pointer">
         <HiOutlineDocumentDuplicate className="w-3.5 h-3.5" />
@@ -704,7 +752,7 @@ function PlusEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
         >
           {label && <span className={`text-[9px] font-bold px-1 rounded max-w-[90px] truncate ${data.labelCls || (label === 'Sí' ? 'text-emerald-600' : 'text-rose-600')}`} title={label}>{label}</span>}
           <AddButton onClick={() => data.onInsert(id)} />
-          {data.hasClipboard && <PasteButton onClick={() => data.onPasteInsert(id)} />}
+          {data.clipboardCount > 0 && <PasteButton count={data.clipboardCount} onClick={() => data.onPasteInsert(id)} />}
           {selected && (
             <button
               type="button"
@@ -858,11 +906,21 @@ export default function WorkflowGraphEditor({
   const [selectedId, setSelectedId] = useState(null);
   const [selectedTrigger, setSelectedTrigger] = useState(null); // { nodeId, idx }
   const [adding, setAdding] = useState(null); // { mode:'append', sourceId, sourceHandle } | { mode:'insert', edgeId }
-  // Portapapeles de un paso copiado ({ type, data }); se pega desde el selector "+".
-  // El estado solo sirve para mostrar/ocultar el botón de pegar; el CONTENIDO se
-  // lee del ref (ver pasteAt) para que nunca se pegue una copia obsoleta.
-  const [clipboard, setClipboard] = useState(null);
+  // Portapapeles: uno o VARIOS pasos con las conexiones que haya entre ellos
+  // ({ nodes:[{id,type,data,position}], edges:[...] }). Se pega desde cualquier
+  // "+" del diagrama o con Ctrl+V. El estado solo sirve para pintar el botón de
+  // pegar; el CONTENIDO se lee del ref para que nunca se pegue una copia
+  // obsoleta (los memos no dependen del contenido, solo de cuántos pasos hay).
+  // Se rellena desde localStorage al montar: así se puede copiar una rama en una
+  // automatización y pegarla en otra.
+  const [clipboard, setClipboard] = useState(() => readStoredClipboard());
   const clipboardRef = useRef(null);
+  if (clipboardRef.current === null && clipboard) clipboardRef.current = clipboard;
+  // Selección múltiple del lienzo (Ctrl/⌘+clic, o Shift+arrastre para encuadrar).
+  const [selectedIds, setSelectedIds] = useState([]);
+  // Nodos a dejar seleccionados en cuanto el modelo vuelva de `onChange` (lo que
+  // se acaba de pegar/duplicar), para que el usuario lo vea y pueda moverlo junto.
+  const pendingSelectRef = useRef(null);
   // Posición del nodo al empezar a arrastrar, para no reordenar por un roce mínimo.
   const dragStartRef = useRef(null);
 
@@ -873,7 +931,7 @@ export default function WorkflowGraphEditor({
   }, [nodes]);
 
   const triggerNodeCount = useMemo(() => modelNodes.filter((n) => n.type === 'trigger').length, [modelNodes]);
-  const hasClipboard = !!clipboard;
+  const clipboardCount = clipboard?.nodes?.length || 0;
 
   // Conjunto de handles ocupados por nodo, para saber qué salidas están libres.
   const outHandles = useMemo(() => {
@@ -902,17 +960,18 @@ export default function WorkflowGraphEditor({
           onRemoveTrigger: (i) => removeTrigger(n.id, i),
           onDeleteFlow: () => deleteFlow(n.id),
           // Acciones rápidas del paso (barra al pasar el cursor). No en el disparador.
-          onCopy: isTrig ? undefined : () => copyNode(n.id),
+          onCopy: isTrig ? undefined : () => copyNodes([n.id]),
+          onCopyBranch: isTrig ? undefined : () => copyBranch(n.id),
           onDuplicate: isTrig ? undefined : () => duplicateNode(n.id),
           onDelete: isTrig ? undefined : () => deleteNode(n.id),
-          // Pegar el paso copiado directo bajo este nodo (icono junto al "+").
-          _hasClipboard: hasClipboard,
+          // Pegar lo copiado directo bajo este nodo (icono junto al "+").
+          _clipboardCount: clipboardCount,
           onPasteAppend: (handle) => pasteAt({ mode: 'append', sourceId: n.id, sourceHandle: handle }),
         },
       };
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [modelNodes, outHandles, triggerNodeCount, hasClipboard, clinics]
+    [modelNodes, outHandles, triggerNodeCount, clipboardCount, clinics]
   );
 
   // Estado interno de react-flow para que arrastrar sea FLUIDO (sin parpadeo):
@@ -927,26 +986,41 @@ export default function WorkflowGraphEditor({
   useEffect(() => {
     setRfNodes((prev) => {
       const prevById = new Map(prev.map((n) => [n.id, n]));
+      // Tras pegar/duplicar: deja seleccionado SOLO lo recién creado.
+      const pick = pendingSelectRef.current;
+      pendingSelectRef.current = null;
       return flowNodes.map((fn) => {
         const old = prevById.get(fn.id);
-        return old ? { ...old, type: fn.type, position: fn.position, data: fn.data } : fn;
+        const merged = old ? { ...old, type: fn.type, position: fn.position, data: fn.data } : fn;
+        return pick ? { ...merged, selected: pick.has(fn.id) } : merged;
       });
     });
   }, [flowNodes, setRfNodes]);
+
+  // Selección del lienzo (Ctrl/⌘+clic o Shift+arrastre). Los disparadores no se
+  // copian ni se borran en bloque: se filtran aquí.
+  const onSelectionChange = useCallback(({ nodes: sel }) => {
+    setSelectedIds((sel || []).filter((n) => n.type !== 'trigger').map((n) => n.id));
+  }, []);
 
   const onNodeDragStart = useCallback((_evt, node) => {
     dragStartRef.current = { id: node.id, ...node.position };
   }, []);
 
+  // Guarda en el modelo las posiciones que react-flow tiene ahora mismo (también
+  // las de TODOS los nodos movidos a la vez en una selección múltiple).
+  const persistPositions = useCallback(() => {
+    const posById = new Map(rfNodes.map((n) => [n.id, n.position]));
+    const next = modelNodes.map((n) => (posById.has(n.id) ? { ...n, position: posById.get(n.id) } : n));
+    onChange?.({ nodes: next, edges });
+  }, [rfNodes, modelNodes, edges, onChange]);
+
   // Al soltar: si el paso se dejó ENCIMA de una conexión, se REORDENA (se inserta
   // ahí y se re-cablea). Si se soltó en vacío, solo se guarda su nueva posición.
   const onNodeDragStop = useCallback((_evt, node) => {
-    const persistPositions = () => {
-      const posById = new Map(rfNodes.map((n) => [n.id, n.position]));
-      const next = modelNodes.map((n) => (posById.has(n.id) ? { ...n, position: posById.get(n.id) } : n));
-      onChange?.({ nodes: next, edges });
-    };
-
+    // Con varios pasos seleccionados se están MOVIENDO todos: reordenar por la
+    // línea más cercana no tiene sentido (movería solo uno y rompería el bloque).
+    if (selectedIds.length > 1) { dragStartRef.current = null; persistPositions(); return; }
     const start = dragStartRef.current;
     dragStartRef.current = null;
     const moved = start && start.id === node.id
@@ -966,7 +1040,7 @@ export default function WorkflowGraphEditor({
       }
     }
     persistPositions();
-  }, [rfNodes, modelNodes, edges, onChange]);
+  }, [rfNodes, modelNodes, edges, onChange, selectedIds, persistPositions]);
 
   const deleteEdge = useCallback((edgeId) => {
     onChange?.({ nodes: modelNodes, edges: edges.filter((e) => e.id !== edgeId) });
@@ -994,7 +1068,7 @@ export default function WorkflowGraphEditor({
       data: {
         onInsert: (edgeId) => setAdding({ mode: 'insert', edgeId }),
         onDeleteEdge: deleteEdge,
-        hasClipboard,
+        clipboardCount,
         onPasteInsert: (edgeId) => pasteAt({ mode: 'insert', edgeId }),
         // La salida "no" (si no) se pinta en rojo; el resto de ramas en verde.
         labelCls: e.sourceHandle === 'no' ? 'text-rose-600' : 'text-emerald-600',
@@ -1008,7 +1082,7 @@ export default function WorkflowGraphEditor({
     // grafo a partir de los nodos de ESTE render. Sin esta dependencia, insertar
     // un paso sobre una línea después de editar otro nodo revertía esa edición.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [edges, modelNodes, deleteEdge, hasClipboard, splitRouteName]
+    [edges, modelNodes, deleteEdge, clipboardCount, splitRouteName]
   );
 
   // ── Conexión manual con el mouse (arrastrar desde un punto a otro nodo) ──
@@ -1083,13 +1157,12 @@ export default function WorkflowGraphEditor({
     setSelectedTrigger(null);
   };
 
-  // Inserta un nodo (nuevo o PEGADO) en un contexto dado ({mode:'append'|'insert'}).
-  // `presetData` = configuración a copiar (pegar); si no, valores por defecto.
-  const insertStep = (type, presetData, context) => {
+  // Inserta un nodo NUEVO en un contexto dado ({mode:'append'|'insert'}).
+  // (Pegar pasos copiados va por `pasteAt`, que sabe de varios nodos a la vez.)
+  const insertStep = (type, context) => {
     if (!context) return;
-    const id = `n${Date.now()}`;
-    const data = presetData ? JSON.parse(JSON.stringify(presetData)) : newNodeData(type);
-    const newModelNode = { id, type, position: { x: 0, y: 0 }, data };
+    const id = newNodeId();
+    const newModelNode = { id, type, position: { x: 0, y: 0 }, data: newNodeData(type) };
 
     if (context.mode === 'append') {
       const src = modelNodes.find((n) => n.id === context.sourceId);
@@ -1129,18 +1202,138 @@ export default function WorkflowGraphEditor({
   };
 
   // Al elegir un tipo en el selector "+": inserta en el contexto guardado en `adding`.
-  const handlePickStep = (type) => insertStep(type, null, adding);
-  // Pegar el paso copiado DIRECTAMENTE (sin abrir el selector), estilo Daplox:
-  // el icono de pegar aparece junto a cada "+" cuando hay algo copiado.
-  //
-  // Se lee del REF, no del estado: los handlers de pegar viven dentro de memos
-  // cuyas dependencias no incluyen el contenido del portapapeles (solo si hay
-  // algo o no). Al copiar un SEGUNDO paso el memo no se recalculaba y seguía
-  // pegando el contenido del PRIMERO — justo el síntoma de "pego y sale el texto
-  // del nodo original". El ref siempre tiene lo último copiado.
-  const pasteAt = (context) => {
+  const handlePickStep = (type) => insertStep(type, adding);
+
+  /**
+   * Pega lo copiado (UN paso o una rama entera con sus conexiones) en un punto:
+   *  - { mode:'append', sourceId, sourceHandle } → cuelga de esa salida
+   *  - { mode:'insert', edgeId }  → se mete DENTRO de esa conexión (y lo que
+   *    venía después se re-engancha al final de lo pegado)
+   *  - { mode:'loose' }  → Ctrl+V: bajo el paso seleccionado si su salida está
+   *    libre; si no, suelto a la derecha del diagrama (útil al pegar el flujo de
+   *    OTRA automatización, que llega sin dónde engancharse).
+   *
+   * El contenido se lee del REF, no del estado: los handlers de pegar viven en
+   * memos cuyas dependencias no incluyen el contenido del portapapeles (solo
+   * CUÁNTOS pasos hay). Al copiar un SEGUNDO paso el memo no se recalculaba y
+   * seguía pegando el PRIMERO. El ref siempre tiene lo último copiado.
+   */
+  const pasteAt = (rawContext) => {
     const cb = clipboardRef.current;
-    if (cb) insertStep(cb.type, cb.data, context);
+    if (!cb?.nodes?.length || !rawContext) return;
+
+    let context = rawContext;
+    if (context.mode === 'loose') {
+      const one = selectedIds.length === 1 ? modelNodes.find((n) => n.id === selectedIds[0]) : null;
+      const free = one && !isBranch(one.type) && !isSplit(one.type)
+        && !edges.some((e) => e.source === one.id && (e.sourceHandle || 'default') === 'default');
+      if (free) context = { mode: 'append', sourceId: one.id, sourceHandle: 'default' };
+    }
+
+    // Ids nuevos para todo lo pegado (los originales siguen vivos en el flujo).
+    const idMap = {};
+    cb.nodes.forEach((n) => { idMap[n.id] = newNodeId(); });
+
+    // Raíz de la copia: el paso al que nadie apunta DENTRO de la selección (el
+    // más alto si hay varios sueltos). Es el que se engancha al punto de pegado.
+    const innerTargets = new Set(cb.edges.map((e) => e.target));
+    const candidates = cb.nodes.filter((n) => !innerTargets.has(n.id));
+    const root = [...(candidates.length ? candidates : cb.nodes)]
+      .sort((a, b) => (a.position?.y || 0) - (b.position?.y || 0))[0];
+
+    // Cola: final de la cadena principal siguiendo las salidas "default". Es por
+    // donde se vuelve a enganchar el resto del flujo al pegar SOBRE una línea.
+    const defOut = {};
+    cb.edges.forEach((e) => { if ((e.sourceHandle || 'default') === 'default') defOut[e.source] = e.target; });
+    let tailId = root.id;
+    const walked = new Set([tailId]);
+    while (defOut[tailId] && !walked.has(defOut[tailId])) { tailId = defOut[tailId]; walked.add(tailId); }
+    const tailType = cb.nodes.find((n) => n.id === tailId)?.type;
+    const tailChainable = !isBranch(tailType) && !isSplit(tailType);
+
+    const xs = cb.nodes.map((n) => n.position?.x || 0);
+    const ys = cb.nodes.map((n) => n.position?.y || 0);
+    const copyHeight = Math.max(...ys) - Math.min(...ys) + GAP_Y;
+    const rootX = root.position?.x || 0;
+    const rootY = root.position?.y || 0;
+
+    // Clona nodos y aristas internas desplazados (dx, dy) respecto al original.
+    const build = (dx, dy) => ({
+      nodes: cb.nodes.map((n) => ({
+        id: idMap[n.id],
+        type: n.type,
+        position: { x: (n.position?.x || 0) + dx, y: (n.position?.y || 0) + dy },
+        data: JSON.parse(JSON.stringify(n.data || {})),
+      })),
+      edges: cb.edges.map((e) => ({
+        id: `e-${idMap[e.source]}-${idMap[e.target]}-${e.sourceHandle || 'default'}`,
+        source: idMap[e.source],
+        target: idMap[e.target],
+        sourceHandle: e.sourceHandle || 'default',
+      })),
+    });
+
+    const finish = (nextNodes, nextEdges, msg) => {
+      pendingSelectRef.current = new Set(Object.values(idMap));
+      onChange?.({ nodes: nextNodes, edges: nextEdges });
+      // Con un solo paso pegado se abre su configuración (como al añadirlo).
+      setSelectedId(cb.nodes.length === 1 ? idMap[root.id] : null);
+      setSelectedTrigger(null);
+      setAdding(null);
+      toast.success(msg || (cb.nodes.length === 1 ? 'Paso pegado' : `${cb.nodes.length} pasos pegados`));
+    };
+
+    if (context.mode === 'append') {
+      const src = modelNodes.find((n) => n.id === context.sourceId);
+      const base = src?.position || { x: 0, y: 0 };
+      // Cada salida de un Dividir / Condición baja por su propia columna.
+      let dx = 0;
+      const outs = src?.type === 'split'
+        ? (src.data?.routes || []).map((r) => r.id)
+        : src?.type === 'condition' ? conditionHandles(src.data) : null;
+      if (outs) {
+        const idx = outs.indexOf(context.sourceHandle);
+        if (idx >= 0 && outs.length > 1) dx = (idx - (outs.length - 1) / 2) * GAP_X;
+      }
+      const copy = build(base.x + dx - rootX, base.y + GAP_Y - rootY);
+      const nextEdges = setEdge([...edges, ...copy.edges], context.sourceId, idMap[root.id], context.sourceHandle || 'default');
+      finish([...modelNodes, ...copy.nodes], nextEdges);
+      return;
+    }
+
+    if (context.mode === 'insert') {
+      const target = edges.find((e) => e.id === context.edgeId);
+      if (!target) { setAdding(null); return; }
+      const dst = modelNodes.find((n) => n.id === target.target);
+      const src = modelNodes.find((n) => n.id === target.source);
+      const copy = build(
+        (dst?.position?.x ?? src?.position?.x ?? 0) - rootX,
+        (dst?.position?.y ?? ((src?.position?.y || 0) + GAP_Y)) - rootY
+      );
+      let nextEdges = [...edges.filter((e) => e.id !== context.edgeId), ...copy.edges];
+      nextEdges = setEdge(nextEdges, target.source, idMap[root.id], target.sourceHandle || 'default');
+      if (tailChainable) {
+        nextEdges = setEdge(nextEdges, idMap[tailId], target.target, 'default');
+      } else {
+        // Lo pegado acaba en una Condición/Dividir: no hay una salida "siguiente"
+        // evidente, así que el paso que venía después queda suelto a propósito.
+        toast('Lo pegado termina en Condición/Dividir: conecta a mano el paso que seguía.', { icon: '⚠️' });
+      }
+      // Empuja hacia abajo lo que venía después para hacer hueco a lo pegado.
+      const shift = descendantIdsInclusive(nextEdges, target.target);
+      const shifted = modelNodes.map((n) => (shift.has(n.id) ? { ...n, position: { x: n.position?.x || 0, y: (n.position?.y || 0) + copyHeight } } : n));
+      finish([...shifted, ...copy.nodes], nextEdges);
+      return;
+    }
+
+    // Suelto: a la derecha de todo el diagrama, sin conectar.
+    const maxX = Math.max(0, ...modelNodes.map((n) => n.position?.x || 0));
+    const copy = build(maxX + GAP_X * 1.4 - Math.min(...xs), -Math.min(...ys));
+    finish(
+      [...modelNodes, ...copy.nodes],
+      [...edges, ...copy.edges],
+      `${cb.nodes.length === 1 ? 'Paso pegado' : `${cb.nodes.length} pasos pegados`} a la derecha del diagrama, sin conectar: arrastra una conexión hasta el primero.`
+    );
   };
 
   const updateNodeData = (id, patch) => {
@@ -1186,18 +1379,49 @@ export default function WorkflowGraphEditor({
     setSelectedId(null);
   };
 
-  // Copia la configuración de un paso al portapapeles interno (para "Pegar" desde
-  // cualquier "+" del diagrama). No modifica el flujo.
-  const copyNode = (id) => {
-    const src = modelNodes.find((n) => n.id === id);
-    if (!src || src.type === 'trigger') return;
-    // Copia PROFUNDA del estado actual del paso: si luego se edita el original (o
-    // la copia pegada), lo copiado no cambia… y lo que se pega es siempre esto.
-    const payload = { type: src.type, data: JSON.parse(JSON.stringify(src.data || {})) };
+  // Copia uno o VARIOS pasos (con las conexiones que haya ENTRE ellos) al
+  // portapapeles. No modifica el flujo. Los disparadores nunca se copian.
+  // Ids de pasos REALES (existen y no son disparadores) de una selección.
+  const stepIds = (ids) => {
+    const byId = new Map(modelNodes.map((n) => [n.id, n]));
+    return new Set(ids.filter((id) => byId.get(id) && byId.get(id).type !== 'trigger'));
+  };
+
+  const copyNodes = (ids, label) => {
+    const set = stepIds(ids);
+    if (!set.size) return;
+    // Copia PROFUNDA del estado actual: si luego se edita el original (o la copia
+    // pegada), lo copiado no cambia… y lo que se pega es siempre esto.
+    const payload = {
+      nodes: modelNodes
+        .filter((n) => set.has(n.id))
+        .map((n) => ({ id: n.id, type: n.type, position: { ...(n.position || { x: 0, y: 0 }) }, data: JSON.parse(JSON.stringify(n.data || {})) })),
+      // Solo las aristas INTERNAS a la selección: la copia conserva su estructura
+      // (ramas, rutas del split…) sin arrastrar conexiones a pasos que no se copian.
+      edges: edges
+        .filter((e) => set.has(e.source) && set.has(e.target))
+        .map((e) => ({ source: e.source, target: e.target, sourceHandle: e.sourceHandle || 'default' })),
+    };
     clipboardRef.current = payload;
     setClipboard(payload);
-    toast.success('Paso copiado. Pega con el icono 📋 que aparece junto a cualquier "+".');
+    writeStoredClipboard(payload);
+    const n = payload.nodes.length;
+    toast.success(
+      `${label || (n === 1 ? 'Paso copiado' : `${n} pasos copiados`)}. Pega con el icono 📋 junto a cualquier “+” (o Ctrl+V).`
+    );
   };
+
+  // Copia un paso Y TODO lo que cuelga de él (la rama entera, con sus ramas
+  // internas). Es lo que permite duplicar medio flujo sin ir nodo por nodo.
+  const copyBranch = (id) => {
+    const ids = [...descendantIdsInclusive(edges, id)];
+    copyNodes(ids, ids.length === 1 ? 'Paso copiado' : `Rama copiada (${ids.length} pasos)`);
+  };
+
+  const selectAllNodes = () => {
+    setRfNodes((ns) => ns.map((n) => ({ ...n, selected: n.type !== 'trigger' })));
+  };
+  const clearSelection = () => setRfNodes((ns) => ns.map((n) => (n.selected ? { ...n, selected: false } : n)));
 
   // Duplica un paso: crea una copia con su misma configuración. Para pasos lineales
   // se inserta JUSTO DESPUÉS del original (listo para usar); las ramas (Sí/No) se
@@ -1205,7 +1429,7 @@ export default function WorkflowGraphEditor({
   const duplicateNode = (id) => {
     const src = modelNodes.find((n) => n.id === id);
     if (!src || src.type === 'trigger') return;
-    const newId = `n${Date.now()}`;
+    const newId = newNodeId();
     const clone = {
       id: newId,
       type: src.type,
@@ -1237,6 +1461,75 @@ export default function WorkflowGraphEditor({
     toast.success('Paso duplicado');
   };
 
+  /**
+   * Duplica VARIOS pasos a la vez conservando las conexiones entre ellos. La
+   * copia queda suelta al lado (dónde engancharla es decisión del usuario: con
+   * ramas de por medio no hay un único sitio "obvio").
+   */
+  const duplicateNodes = (ids) => {
+    const set = stepIds(ids);
+    if (!set.size) return;
+    if (set.size === 1) return duplicateNode([...set][0]);
+    const idMap = {};
+    [...set].forEach((id) => { idMap[id] = newNodeId(); });
+    const clones = modelNodes.filter((n) => set.has(n.id)).map((n) => ({
+      id: idMap[n.id],
+      type: n.type,
+      position: { x: (n.position?.x || 0) + GAP_X * 0.45, y: (n.position?.y || 0) + GAP_Y * 0.45 },
+      data: JSON.parse(JSON.stringify(n.data || {})),
+    }));
+    const cloneEdges = edges
+      .filter((e) => set.has(e.source) && set.has(e.target))
+      .map((e) => ({
+        id: `e-${idMap[e.source]}-${idMap[e.target]}-${e.sourceHandle || 'default'}`,
+        source: idMap[e.source],
+        target: idMap[e.target],
+        sourceHandle: e.sourceHandle || 'default',
+      }));
+    pendingSelectRef.current = new Set(Object.values(idMap));
+    onChange?.({ nodes: [...modelNodes, ...clones], edges: [...edges, ...cloneEdges] });
+    setSelectedId(null);
+    toast.success(`${clones.length} pasos duplicados (sin conectar: arrástralos a su sitio)`);
+  };
+
+  // Elimina varios pasos a la vez. Las conexiones que quedaban colgando se van
+  // con ellos (a diferencia del borrado de UN paso, aquí no hay una cadena
+  // única que reconstruir).
+  const deleteNodes = (ids) => {
+    const set = stepIds(ids);
+    if (!set.size) return;
+    if (set.size === 1) return deleteNode([...set][0]);
+    onChange?.({
+      nodes: modelNodes.filter((n) => !set.has(n.id)),
+      edges: edges.filter((e) => !set.has(e.source) && !set.has(e.target)),
+    });
+    setSelectedId(null);
+    toast.success(`${set.size} pasos eliminados`);
+  };
+
+  // ── Atajos de teclado (Ctrl/⌘ + C / V / D / A) ──
+  // Se guardan en un ref para que el listener (registrado una sola vez) llame
+  // siempre a la versión ACTUAL de cada acción y no a una copia con el grafo viejo.
+  const shortcutsRef = useRef({});
+  shortcutsRef.current = { selectedIds, copyNodes, pasteAt, duplicateNodes, selectAllNodes };
+  useEffect(() => {
+    const onKey = (e) => {
+      if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+      const el = e.target;
+      const tag = (el?.tagName || '').toLowerCase();
+      // Dentro de un campo del panel de configuración manda el navegador.
+      if (el?.isContentEditable || tag === 'input' || tag === 'textarea' || tag === 'select') return;
+      const s = shortcutsRef.current;
+      const key = e.key.toLowerCase();
+      if (key === 'c' && s.selectedIds.length) { e.preventDefault(); s.copyNodes(s.selectedIds); }
+      else if (key === 'v') { e.preventDefault(); s.pasteAt({ mode: 'loose' }); }
+      else if (key === 'd' && s.selectedIds.length) { e.preventDefault(); s.duplicateNodes(s.selectedIds); }
+      else if (key === 'a') { e.preventDefault(); s.selectAllNodes(); }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
   const tidy = () => onChange?.({ nodes: autoLayout(modelNodes, edges), edges });
 
   const selectedNode = modelNodes.find((n) => n.id === selectedId && n.type !== 'trigger');
@@ -1255,15 +1548,27 @@ export default function WorkflowGraphEditor({
           onNodesChange={onNodesChange}
           onNodeDragStart={onNodeDragStart}
           onNodeDragStop={onNodeDragStop}
+          onSelectionDragStop={persistPositions}
+          onSelectionChange={onSelectionChange}
           onConnect={onConnect}
           isValidConnection={isValidConnection}
           connectionRadius={38}
           nodeDragThreshold={6}
-          onNodeClick={(_, n) => { if (n.type === 'trigger') { setSelectedTrigger({ nodeId: n.id, idx: 0 }); setSelectedId(null); } else { setSelectedId(n.id); setSelectedTrigger(null); } }}
+          onNodeClick={(evt, n) => {
+            // Ctrl/⌘/Shift + clic = seleccionar varios: no abrir la configuración.
+            if (evt.ctrlKey || evt.metaKey || evt.shiftKey) return;
+            if (n.type === 'trigger') { setSelectedTrigger({ nodeId: n.id, idx: 0 }); setSelectedId(null); }
+            else { setSelectedId(n.id); setSelectedTrigger(null); }
+          }}
           onPaneClick={() => { setSelectedId(null); setSelectedTrigger(null); }}
           nodesDraggable
           nodesConnectable
           elementsSelectable
+          // Selección múltiple: Ctrl/⌘ + clic paso a paso, o Shift + arrastre para
+          // encuadrar un bloque entero (basta con rozar el nodo: modo parcial).
+          multiSelectionKeyCode={['Meta', 'Control']}
+          selectionKeyCode={['Shift']}
+          selectionMode={SelectionMode.Partial}
           deleteKeyCode={null}
           fitView
           fitViewOptions={{ padding: 0.3, maxZoom: 1 }}
@@ -1297,10 +1602,38 @@ export default function WorkflowGraphEditor({
           >
             Auto-organizar
           </button>
-          <span className="hidden md:inline-flex items-center px-3 py-1.5 bg-white/80 border border-slate-200 rounded-lg text-[11px] text-slate-400 shadow-sm select-none">
-            Arrastra un paso sobre una línea para reordenarlo · pasa el cursor sobre un paso para copiar/duplicar/eliminar · tras copiar, pega con el icono junto a un “+”
+          <button
+            type="button"
+            onClick={selectAllNodes}
+            className="px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-slate-600 shadow-sm hover:border-emerald-400 cursor-pointer flex items-center gap-1"
+            title="Selecciona todos los pasos (Ctrl+A) para copiar el flujo entero"
+          >
+            <HiOutlineSquares2X2 className="w-3.5 h-3.5" /> Seleccionar todo
+          </button>
+          <span className="hidden xl:inline-flex items-center px-3 py-1.5 bg-white/80 border border-slate-200 rounded-lg text-[11px] text-slate-400 shadow-sm select-none">
+            Shift + arrastrar (o Ctrl + clic) selecciona varios pasos · Ctrl+C copia, Ctrl+V pega, Ctrl+D duplica · el icono 🗂️ del paso copia la rama entera
           </span>
         </div>
+
+        {/* Barra de la selección múltiple: copiar / duplicar / eliminar en bloque */}
+        {selectedIds.length > 1 && (
+          <div className="absolute top-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1.5 bg-white border border-emerald-300 rounded-xl shadow-lg px-2.5 py-1.5">
+            <span className="text-xs font-semibold text-emerald-700 px-1">{selectedIds.length} pasos</span>
+            <span className="w-px h-4 bg-slate-200" />
+            <button type="button" onClick={() => copyNodes(selectedIds)} className="px-2 py-1 text-xs text-slate-600 hover:text-emerald-700 bg-transparent border-none cursor-pointer flex items-center gap-1">
+              <HiOutlineSquare2Stack className="w-4 h-4" /> Copiar
+            </button>
+            <button type="button" onClick={() => duplicateNodes(selectedIds)} className="px-2 py-1 text-xs text-slate-600 hover:text-emerald-700 bg-transparent border-none cursor-pointer flex items-center gap-1">
+              <HiOutlineDocumentDuplicate className="w-4 h-4" /> Duplicar
+            </button>
+            <button type="button" onClick={() => deleteNodes(selectedIds)} className="px-2 py-1 text-xs text-slate-600 hover:text-rose-600 bg-transparent border-none cursor-pointer flex items-center gap-1">
+              <HiOutlineTrash className="w-4 h-4" /> Eliminar
+            </button>
+            <button type="button" onClick={clearSelection} title="Quitar la selección" className="p-1 text-slate-400 hover:text-slate-700 bg-transparent border-none cursor-pointer">
+              <HiOutlineXMark className="w-4 h-4" />
+            </button>
+          </div>
+        )}
 
         {/* Drawer de configuración del disparador */}
         {selTrig && (
@@ -2217,6 +2550,24 @@ function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, 
         {d.waitMode === 'clock'
           ? 'Ej.: cita para mañana + "1 día antes a las 18:00" → el mensaje sale HOY a las 18:00, sin importar la hora de la cita. Si al agendar esa hora ya pasó, el paso continúa de inmediato.'
           : 'Relativo a la hora exacta de la cita (p. ej. 24 h antes).'}
+      </p>
+    </div>
+  );
+  // Ventana horaria: retiene el flujo en este punto hasta que la franja abre.
+  if (t === 'window') return (
+    <div className="grid gap-3">
+      <WorkflowWindowPicker
+        value={{ days: d.windowDays || [], from: d.windowFrom, to: d.windowTo }}
+        onChange={(patch) => set({
+          ...(patch.days !== undefined ? { windowDays: patch.days } : {}),
+          ...(patch.from !== undefined ? { windowFrom: patch.from } : {}),
+          ...(patch.to !== undefined ? { windowTo: patch.to } : {}),
+        })}
+      />
+      <p className="text-[11px] text-slate-400">
+        Todo lo que venga <b>después</b> de este paso solo se ejecuta dentro de la franja. Si el contacto
+        llega fuera de horario <b>no se pierde</b>: se queda aquí esperando y continúa en la próxima apertura
+        (p. ej. quien entra un sábado a las 23:00 sigue el lunes a las 09:00). Hora de Ecuador.
       </p>
     </div>
   );

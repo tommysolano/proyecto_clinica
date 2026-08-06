@@ -11,6 +11,7 @@ const ReviewRequest = require('../models/ReviewRequest');
 const messaging = require('./messaging');
 const { emitToClinic, emitToUser, emitToCallCenter } = require('../realtime');
 const { DOMAIN_EVENTS, onDomainEvent } = require('./events');
+const { isWindowActive, nextWindowOpening, describeWindow } = require('./sendWindow');
 
 const MAX_STEP_TRANSITIONS = 100; // guarda contra bucles por onFailGoTo mal formado
 const MAX_LOG_ENTRIES = 60; // tope del registro de ejecución por inscripción
@@ -24,6 +25,36 @@ const LINEAR_ACTION_TYPES = new Set([
   'add_tag', 'remove_tag', 'move_stage',
   'meta_capi', 'fb_audience_add', 'fb_audience_remove',
 ]);
+
+// Pasos que MANDAN algo al contacto. Son los únicos que respeta la ventana de
+// envío del workflow (`workflow.sendWindow`): etiquetar o crear una tarea a las
+// 3 a.m. no molesta a nadie, mandar un WhatsApp sí. El nodo 'window' del
+// diagrama, en cambio, retiene TODO lo que venga después de él.
+const SENDING_TYPES = new Set([
+  'send_message', 'send_media', 'send_template', 'send_email', 'request_review', 'ai_reply',
+]);
+
+/**
+ * Ventana horaria de un nodo 'window' del diagrama (su configuración vive en
+ * node.data). Siempre en modo 'specific': el nodo existe justamente para
+ * restringir.
+ */
+function windowOfNode(data = {}) {
+  return { mode: 'specific', days: data.windowDays, from: data.windowFrom, to: data.windowTo };
+}
+
+/**
+ * ¿Hay que RETENER este paso por la ventana de envío del workflow? Devuelve la
+ * fecha de la próxima apertura, o null si puede ejecutarse ya (sin ventana, o
+ * dentro de ella, o paso que no envía nada).
+ */
+function sendWindowHold(workflow, type, at = new Date()) {
+  if (!SENDING_TYPES.has(type)) return null;
+  const win = workflow?.sendWindow;
+  if (!isWindowActive(win)) return null;
+  const opening = nextWindowOpening(win, at);
+  return opening && opening.getTime() > at.getTime() ? opening : null;
+}
 
 // Motivos por los que messaging.send salta/falla un envío, en lenguaje del usuario.
 // `provider_unavailable` e `invalid_recipient` los devuelve messaging.send para
@@ -991,6 +1022,32 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
           : 'Este flujo se disparó SIN cita en el contexto (p. ej. trigger de chat/etiqueta): el paso no puede calcular la espera y continúa',
       });
       currentId = nxt;
+    } else if (type === 'window') {
+      // Ventana horaria: si la franja está abierta el flujo sigue de inmediato;
+      // si está cerrada, el contacto espera a la PRÓXIMA apertura (no se pierde).
+      const win = windowOfNode(data);
+      const nxt = nextNodeId(workflow, currentId);
+      const opening = isWindowActive(win) ? nextWindowOpening(win, new Date()) : null;
+      if (opening && opening.getTime() > Date.now()) {
+        pushLog(enrollment, {
+          nodeId: currentId,
+          type,
+          info: `Fuera de la ventana (${describeWindow(win)}): continúa el ${fmtLogDate(opening)}`,
+        });
+        enrollment.currentNodeId = nxt;
+        enrollment.nextRunAt = opening;
+        enrollment.status = 'waiting';
+        await enrollment.save();
+        return;
+      }
+      pushLog(enrollment, {
+        nodeId: currentId,
+        type,
+        info: isWindowActive(win)
+          ? `Dentro de la ventana (${describeWindow(win)}): continúa`
+          : 'Ventana sin días u horas válidas: no restringe nada y el flujo continúa',
+      });
+      currentId = nxt;
     } else if (type === 'wait_reply') {
       enrollment.currentNodeId = nextNodeId(workflow, currentId);
       enrollment.nextRunAt = new Date(Date.now() + Number(data.timeoutMinutes || 720) * 60000);
@@ -1037,6 +1094,22 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
       }
       currentId = nextNodeId(workflow, currentId);
     } else {
+      // VENTANA DE ENVÍO del workflow: si este paso manda algo y la franja está
+      // cerrada, el contacto se queda aquí hasta la próxima apertura (el paso NO
+      // se salta: se ejecuta entero cuando abre).
+      const hold = sendWindowHold(workflow, type, new Date());
+      if (hold) {
+        pushLog(enrollment, {
+          nodeId: currentId,
+          type,
+          info: `Fuera de la ventana de envío (${describeWindow(workflow.sendWindow)}): se enviará el ${fmtLogDate(hold)}`,
+        });
+        enrollment.currentNodeId = currentId; // se re-ejecuta ESTE paso al abrir
+        enrollment.nextRunAt = hold;
+        enrollment.status = 'waiting';
+        await enrollment.save();
+        return;
+      }
       // Un paso que falla NO aborta el flujo: se registra y se continúa. Así un
       // envío saltado (ventana 24h, sin teléfono) queda visible en el registro.
       try {
@@ -1124,6 +1197,23 @@ async function executeEnrollment(enrollment) {
   while (i < workflow.steps.length) {
     if (++transitions > MAX_STEP_TRANSITIONS) break;
     const step = workflow.steps[i];
+
+    // Ventana de envío del workflow (también en los flujos lineales antiguos):
+    // fuera de la franja el contacto espera aquí a la próxima apertura.
+    const hold = sendWindowHold(workflow, step.type, new Date());
+    if (hold) {
+      pushLog(enrollment, {
+        stepIndex: i,
+        type: step.type,
+        info: `Fuera de la ventana de envío (${describeWindow(workflow.sendWindow)}): se enviará el ${fmtLogDate(hold)}`,
+      });
+      enrollment.stepIndex = i;
+      enrollment.nextRunAt = hold;
+      enrollment.status = 'waiting';
+      // eslint-disable-next-line no-await-in-loop
+      await enrollment.save();
+      return;
+    }
 
     if (step.type === 'send_message') {
       // eslint-disable-next-line no-await-in-loop
@@ -2086,6 +2176,8 @@ function subscribeDomainEvents() {
 module.exports = {
   classifyReply,
   computeWaitUntil,
+  sendWindowHold,
+  windowOfNode,
   evaluateCondition,
   evaluateSingleCondition,
   evaluateConditionGroup,

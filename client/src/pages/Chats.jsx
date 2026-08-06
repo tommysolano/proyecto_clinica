@@ -45,6 +45,7 @@ import {
   HiOutlineUser,
   HiOutlineChartBar,
   HiOutlineBolt,
+  HiOutlineArrowDownTray,
 } from 'react-icons/hi2';
 import api from '../api/axios';
 import { useAuth } from '../context/AuthContext';
@@ -58,7 +59,7 @@ import useWhatsappCall from '../hooks/useWhatsappCall';
 import CallPanel from '../components/CallPanel';
 import ChatComposerToolbar from '../components/ChatComposerToolbar';
 import { renderWhatsappText } from '../utils/whatsappText';
-import { downloadFromUrl } from '../utils/download';
+import { downloadFromUrl, triggerBlobDownload } from '../utils/download';
 import { ENROLL_STATUS, STEP_LABELS } from '../utils/workflowLabels';
 
 // Etiquetas de los disparadores (para mostrar los flujos en el menú de
@@ -2932,7 +2933,7 @@ function readSavedAudioSpeed() {
 
 // Reproductor de nota de voz estilo WhatsApp: botón play/pausa, barra de progreso
 // y duración. Reemplaza al <audio controls> nativo (que se veía pobre).
-function AudioPlayer({ src, isOut }) {
+function AudioPlayer({ src, isOut, onDownload }) {
   const audioRef = useRef(null);
   const [playing, setPlaying] = useState(false);
   const [current, setCurrent] = useState(0);
@@ -3002,7 +3003,7 @@ function AudioPlayer({ src, isOut }) {
     return (
       <button
         type="button"
-        onClick={() => saveMediaFile(src, 'nota-de-voz.ogg')}
+        onClick={() => (onDownload ? onDownload() : saveMediaFile(src, 'nota-de-voz.ogg'))}
         className={`w-full text-left flex items-center gap-2 mb-1 rounded-lg px-2.5 py-2 border-none cursor-pointer ${
           isOut ? 'bg-emerald-600/40 hover:bg-emerald-600/60' : 'bg-slate-100 hover:bg-slate-200'
         }`}
@@ -3067,6 +3068,19 @@ function AudioPlayer({ src, isOut }) {
       ) : (
         <span className="text-lg shrink-0" aria-hidden>🎤</span>
       )}
+      {/* Guardar la nota de voz a disco (tanto las que llegan como las que enviamos). */}
+      {onDownload && (
+        <button
+          type="button"
+          onClick={onDownload}
+          title="Descargar audio"
+          className={`shrink-0 w-6 h-6 rounded-full flex items-center justify-center border-none cursor-pointer ${
+            isOut ? 'bg-white/25 hover:bg-white/40 text-white' : 'bg-slate-200 hover:bg-slate-300 text-slate-600'
+          }`}
+        >
+          <HiOutlineArrowDownTray className="w-3.5 h-3.5" />
+        </button>
+      )}
     </div>
   );
 }
@@ -3080,6 +3094,68 @@ async function saveMediaFile(url, filename) {
   } catch {
     toast.error('No se pudo descargar el archivo');
   }
+}
+
+// Extensión real según el tipo MIME que sirve el backend (WhatsApp manda las
+// fotos en jpeg, las notas de voz en ogg/opus, los videos en mp4…).
+const MIME_EXT = {
+  'image/jpeg': 'jpg', 'image/png': 'png', 'image/webp': 'webp', 'image/gif': 'gif',
+  'video/mp4': 'mp4', 'video/quicktime': 'mov', 'video/3gpp': '3gp', 'video/webm': 'webm',
+  'audio/ogg': 'ogg', 'audio/mpeg': 'mp3', 'audio/mp4': 'm4a', 'audio/aac': 'aac', 'audio/webm': 'webm',
+  'application/pdf': 'pdf',
+};
+const MEDIA_EXT_FALLBACK = { image: 'jpg', sticker: 'webp', video: 'mp4', audio: 'ogg', document: 'bin' };
+const MEDIA_NAME_BASE = { image: 'foto', sticker: 'sticker', video: 'video', audio: 'nota-de-voz', document: 'documento' };
+
+// "foto-2026-08-06-1425": nombre legible para la media que llega SIN nombre
+// (WhatsApp solo informa el nombre real de los documentos).
+function mediaBaseName(msg) {
+  const d = new Date(msg?.createdAt || Date.now());
+  const p = (n) => String(n).padStart(2, '0');
+  const stamp = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}`;
+  return `${MEDIA_NAME_BASE[msg?.mediaType] || 'archivo'}-${stamp}`;
+}
+
+/**
+ * Descarga a disco el adjunto de un mensaje (foto, video, sticker, nota de voz o
+ * documento), tanto de los que llegan como de los que enviamos nosotros.
+ *
+ * Va por Blob (no por `<a download href>`): el archivo se sirve desde
+ * /api/public/media/:id, que puede estar en OTRO dominio (PUBLIC_API_URL) y el
+ * atributo `download` se ignora entre dominios — el navegador abriría la foto en
+ * vez de guardarla. Del blob sale además el tipo MIME real, con el que se pone
+ * la extensión correcta cuando el mensaje no trae nombre de archivo.
+ */
+async function downloadChatMedia(msg) {
+  const url = msg?.mediaUrl;
+  if (!url) return;
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error('http');
+    const blob = await res.blob();
+    let name = String(msg.mediaName || '').trim().replace(/[\\/:*?"<>|]+/g, '_');
+    if (!/\.[a-z0-9]{2,5}$/i.test(name)) {
+      const ext = MIME_EXT[(blob.type || '').split(';')[0].trim()] || MEDIA_EXT_FALLBACK[msg.mediaType] || 'bin';
+      name = `${name || mediaBaseName(msg)}.${ext}`;
+    }
+    triggerBlobDownload(blob, name);
+  } catch {
+    toast.error('No se pudo descargar el archivo');
+  }
+}
+
+// Botón de descarga superpuesto a una foto / video / sticker del chat.
+function MediaDownloadButton({ msg, className = '' }) {
+  return (
+    <button
+      type="button"
+      title="Descargar"
+      onClick={(e) => { e.preventDefault(); e.stopPropagation(); downloadChatMedia(msg); }}
+      className={`absolute top-1.5 right-1.5 w-7 h-7 rounded-full flex items-center justify-center bg-black/45 hover:bg-black/75 text-white border-none cursor-pointer opacity-80 hover:opacity-100 transition-opacity ${className}`}
+    >
+      <HiOutlineArrowDownTray className="w-4 h-4" />
+    </button>
+  );
 }
 
 // Etiqueta de la media por tipo, para cuando no se puede mostrar el archivo.
@@ -3143,20 +3219,33 @@ function MessageMedia({ msg, isOut, onRetryMedia }) {
 
   // Sticker: pequeño y sin marco (como en WhatsApp), fondo transparente.
   if (isSticker) {
-    return <img src={url} alt="sticker" className="max-h-28 w-auto mb-1 block bg-transparent" />;
+    return (
+      <div className="relative inline-block mb-1">
+        <img src={url} alt="sticker" className="max-h-28 w-auto block bg-transparent" />
+        <MediaDownloadButton msg={msg} className="!w-6 !h-6" />
+      </div>
+    );
   }
   if (isImage) {
     return (
-      <a href={url} target="_blank" rel="noreferrer" className="block mb-1">
-        <img src={url} alt="adjunto" className="rounded-lg max-h-60 w-auto block" />
-      </a>
+      <div className="relative inline-block mb-1">
+        <a href={url} target="_blank" rel="noreferrer" className="block">
+          <img src={url} alt="adjunto" className="rounded-lg max-h-60 w-auto block" />
+        </a>
+        <MediaDownloadButton msg={msg} />
+      </div>
     );
   }
   if (isVideo) {
-    return <video controls src={url} className="rounded-lg max-h-60 w-auto mb-1 block max-w-full" />;
+    return (
+      <div className="relative inline-block mb-1 max-w-full">
+        <video controls src={url} className="rounded-lg max-h-60 w-auto block max-w-full" />
+        <MediaDownloadButton msg={msg} />
+      </div>
+    );
   }
   if (isAudio) {
-    return <AudioPlayer src={url} isOut={isOut} />;
+    return <AudioPlayer src={url} isOut={isOut} onDownload={() => downloadChatMedia(msg)} />;
   }
   // Documento: tarjeta con icono, nombre y tamaño (como WhatsApp), no un genérico
   // "Ver adjunto". El nombre real llega en `mediaName`. Al hacer clic se DESCARGA
@@ -3167,7 +3256,7 @@ function MessageMedia({ msg, isOut, onRetryMedia }) {
   return (
     <button
       type="button"
-      onClick={() => saveMediaFile(url, name)}
+      onClick={() => downloadChatMedia(msg)}
       className={`w-full text-left flex items-center gap-2 mb-1 rounded-lg px-2.5 py-2 border-none cursor-pointer ${
         isOut ? 'bg-emerald-600/40 hover:bg-emerald-600/60' : 'bg-slate-100 hover:bg-slate-200'
       }`}

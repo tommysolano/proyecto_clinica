@@ -85,6 +85,7 @@ const workflowStepSchema = new mongoose.Schema(
         'request_review',
         'goal',
         'send_media', // solo imagen/video, sin texto
+        'window', // retiene el flujo hasta que la franja horaria esté abierta
         // Marketing (Meta / Facebook):
         'meta_capi', // envía un evento de conversión a Meta (Conversions API)
         'fb_audience_add', // añade el contacto a un Público Personalizado
@@ -125,6 +126,12 @@ const workflowStepSchema = new mongoose.Schema(
     atTime: { type: String, trim: true, default: '' },
     // wait_reply: pausa hasta que el paciente responda (o venza el timeout)
     timeoutMinutes: { type: Number, default: 720, min: 1 },
+    // window ("Ventana horaria"): días (0=domingo … 6=sábado) y franja HH:MM en
+    // los que el flujo puede continuar. Fuera de la franja el contacto espera a
+    // la próxima apertura (nunca se descarta). Ver utils/sendWindow.js.
+    windowDays: { type: [Number], default: [1, 2, 3, 4, 5] },
+    windowFrom: { type: String, trim: true, default: '09:00' },
+    windowTo: { type: String, trim: true, default: '18:00' },
     // set_appointment_status: actualiza la cita del contexto
     appointmentStatus: { type: String, enum: ['confirmada', 'cancelada', ''], default: '' },
     // condition / goal — condición ÚNICA (legacy: sigue funcionando tal cual).
@@ -272,6 +279,24 @@ const triggerSchema = new mongoose.Schema(
   { _id: false }
 );
 
+/**
+ * VENTANA DE ENVÍO del workflow (estilo "Time Window" de GoHighLevel): días y
+ * franja horaria en los que la automatización puede MANDAR mensajes. Un contacto
+ * que llega fuera de la franja no se pierde: espera a la próxima apertura.
+ *  - mode 'any' (defecto) → sin restricción, el flujo trabaja 24/7 como siempre.
+ *  - mode 'specific'      → solo dentro de `days` + `from`–`to` (hora de Ecuador).
+ * `days`: 0=domingo … 6=sábado. Si `from` > `to` la franja cruza la medianoche.
+ */
+const sendWindowSchema = new mongoose.Schema(
+  {
+    mode: { type: String, enum: ['any', 'specific'], default: 'any' },
+    days: { type: [Number], default: [1, 2, 3, 4, 5] },
+    from: { type: String, trim: true, default: '09:00' },
+    to: { type: String, trim: true, default: '18:00' },
+  },
+  { _id: false }
+);
+
 const workflowSchema = new mongoose.Schema(
   {
     clinic: { type: mongoose.Schema.Types.ObjectId, ref: 'Clinic', required: true, index: true },
@@ -288,6 +313,10 @@ const workflowSchema = new mongoose.Schema(
     // Grafo visual con ramificaciones (editor react-flow).
     nodes: { type: [workflowNodeSchema], default: [] },
     edges: { type: [workflowEdgeSchema], default: [] },
+    // Ventana horaria de ENVÍO para todo el workflow (los pasos de mensajería
+    // esperan a la próxima apertura). El nodo 'window' hace lo mismo pero en un
+    // punto concreto del diagrama.
+    sendWindow: { type: sendWindowSchema, default: () => ({}) },
     stats: {
       enrolled: { type: Number, default: 0 },
       completed: { type: Number, default: 0 },

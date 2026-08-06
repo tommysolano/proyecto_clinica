@@ -3,10 +3,16 @@ import { createPortal } from 'react-dom';
 import { useNavigate, useParams } from 'react-router-dom';
 import api from '../api/axios';
 import toast from 'react-hot-toast';
-import { HiOutlineArrowLeft, HiOutlineBolt } from 'react-icons/hi2';
+import { HiOutlineArrowLeft, HiOutlineBolt, HiOutlineSun } from 'react-icons/hi2';
 import WorkflowGraphEditor, { stepsToGraph, TRIGGERS } from '../components/WorkflowGraphEditor';
+import WorkflowWindowPicker from '../components/WorkflowWindowPicker';
+import { describeWindow } from '../utils/windowSchedule';
+import Modal from '../components/Modal';
 
 const defaultTrigger = () => ({ type: 'appointment_created', audience: 'all', serviceFilter: null, keywords: [], matchType: 'contains', tagFilter: '' });
+// Ventana de envío por defecto: sin restricción (la automatización trabaja 24/7,
+// como siempre). Al activarla se propone el horario laboral típico.
+const blankWindow = () => ({ mode: 'any', days: [1, 2, 3, 4, 5], from: '09:00', to: '18:00' });
 const blank = () => ({
   name: '',
   folder: 'General',
@@ -14,6 +20,7 @@ const blank = () => ({
   steps: [],
   nodes: [],
   edges: [],
+  sendWindow: blankWindow(),
 });
 
 export default function WorkflowEditor() {
@@ -33,6 +40,7 @@ export default function WorkflowEditor() {
   const [tagOptions, setTagOptions] = useState({ patient: [], chat: [], opportunity: [] });
   const [folderNames, setFolderNames] = useState([]);
   const [saving, setSaving] = useState(false);
+  const [windowOpen, setWindowOpen] = useState(false);
 
   // Bloquea el scroll del fondo mientras el editor (portal a pantalla completa) está abierto.
   useEffect(() => {
@@ -101,7 +109,13 @@ export default function WorkflowEditor() {
               ? { ...n, data: { ...n.data, triggers: wfTriggers.map((t) => ({ ...t })) } }
               : n
           );
-          setWf({ ...data, steps: [], nodes: graph.nodes, edges: graph.edges });
+          setWf({
+            ...data,
+            steps: [],
+            nodes: graph.nodes,
+            edges: graph.edges,
+            sendWindow: { ...blankWindow(), ...(data.sendWindow || {}) },
+          });
         }
       } catch (e) {
         toast.error(e.response?.data?.message || 'Error al cargar');
@@ -122,6 +136,9 @@ export default function WorkflowEditor() {
       .flatMap((n) => n.data?.triggers || [])
       .filter((t) => t?.type);
     if (triggers.length === 0) return toast.error('Cada flujo necesita al menos un disparador');
+    if (wf.sendWindow?.mode === 'specific' && !(wf.sendWindow.days || []).length) {
+      return toast.error('La ventana de envío no tiene ningún día marcado: elige días o ponla en “A cualquier hora”');
+    }
     setSaving(true);
     const payload = {
       ...wf,
@@ -175,6 +192,20 @@ export default function WorkflowEditor() {
           className="w-36 border border-slate-200 rounded-lg px-3 py-1.5 text-sm shrink-0"
         />
         <datalist id="wf-folders">{folderNames.map((f) => <option key={f} value={f} />)}</datalist>
+        <button
+          onClick={() => setWindowOpen(true)}
+          title="Horario en el que esta automatización puede enviar mensajes"
+          className={`px-3 py-1.5 rounded-lg text-sm shrink-0 cursor-pointer flex items-center gap-1.5 border ${
+            wf.sendWindow?.mode === 'specific'
+              ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
+              : 'bg-white border-slate-200 text-slate-600'
+          }`}
+        >
+          <HiOutlineSun className="w-4 h-4" />
+          <span className="hidden lg:inline">
+            {wf.sendWindow?.mode === 'specific' ? describeWindow(wf.sendWindow) : 'Ventana horaria'}
+          </span>
+        </button>
         <label className="flex items-center gap-2 text-sm text-slate-600 shrink-0 cursor-pointer select-none">
           <input type="checkbox" checked={wf.active} onChange={(e) => setWf({ ...wf, active: e.target.checked })} />
           Activo
@@ -200,6 +231,61 @@ export default function WorkflowEditor() {
           tagOptions={tagOptions}
         />
       </main>
+
+      {/* Ventana de envío de TODO el workflow (estilo "Time Window" de GoHighLevel) */}
+      <Modal isOpen={windowOpen} onClose={() => setWindowOpen(false)} title="Ventana horaria de envío" size="md">
+        <div className="grid gap-4">
+          <p className="text-sm text-slate-500">
+            Limita el horario en el que esta automatización manda mensajes (WhatsApp, plantillas, email,
+            reseñas). Los pasos que no envían nada —etiquetas, tareas, oportunidades— se ejecutan siempre.
+          </p>
+          <div className="grid gap-2">
+            {[
+              { value: 'any', title: 'A cualquier hora', desc: 'Sin restricción: la automatización trabaja las 24 horas, todos los días.' },
+              { value: 'specific', title: 'Solo en un horario', desc: 'Fuera de la franja el contacto espera: el mensaje sale en la próxima apertura, nunca se pierde.' },
+            ].map((opt) => (
+              <label
+                key={opt.value}
+                className={`flex gap-2.5 items-start rounded-xl border px-3 py-2.5 cursor-pointer ${
+                  (wf.sendWindow?.mode || 'any') === opt.value ? 'border-emerald-400 bg-emerald-50/60' : 'border-slate-200'
+                }`}
+              >
+                <input
+                  type="radio"
+                  name="wf-window-mode"
+                  className="mt-1"
+                  checked={(wf.sendWindow?.mode || 'any') === opt.value}
+                  onChange={() => setWf({ ...wf, sendWindow: { ...blankWindow(), ...wf.sendWindow, mode: opt.value } })}
+                />
+                <span>
+                  <span className="block text-sm font-semibold text-slate-700">{opt.title}</span>
+                  <span className="block text-[11px] text-slate-500">{opt.desc}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+          {wf.sendWindow?.mode === 'specific' && (
+            <div className="border-t border-slate-100 pt-3">
+              <WorkflowWindowPicker
+                value={wf.sendWindow}
+                onChange={(patch) => setWf({ ...wf, sendWindow: { ...blankWindow(), ...wf.sendWindow, ...patch } })}
+              />
+              <p className="text-[11px] text-slate-400 mt-3">
+                Horario de Ecuador. Para restringir solo una parte del flujo (y no todo), usa el paso
+                <b> “Ventana horaria”</b> dentro del diagrama.
+              </p>
+            </div>
+          )}
+          <div className="flex justify-end">
+            <button
+              onClick={() => setWindowOpen(false)}
+              className="px-4 py-1.5 bg-emerald-600 text-white rounded-lg text-sm border-none cursor-pointer"
+            >
+              Listo
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>,
     document.body
   );
