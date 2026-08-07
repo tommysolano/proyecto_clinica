@@ -306,12 +306,30 @@ test('healToConnected NO marca la sesión como lista (solo vio el socket vivo)',
   // todavía estaba sincronizando.
   const entry = fakeEntry(sondaSana());
   entry.status = 'syncing';
-  entry.readyAt = null;
+  entry.readyAt = null; // pero SÍ está vinculada: client.info trae su número
 
   healToConnected('cuenta-x', entry);
 
   assert.equal(entry.status, 'connected', 'el estado sí se cura (los envíos deben salir)');
   assert.equal(entry.readyAt, null, 'pero NO se da por inyectada: eso solo lo dice el evento ready');
+});
+
+test('un número a MEDIO VINCULAR nunca se cura a "conectado" (la app mentía)', () => {
+  // Caso real (7-ago-2026, "Recepción 2"): el número aparecía CONECTADO en la app
+  // con `connectedPhone` vacío — nunca se llegó a vincular. Los mensajes de los
+  // pacientes llegaban al teléfono y jamás al sistema, porque no había sesión que
+  // los ingiriera. `getState()` responde CONNECTED mientras WhatsApp Web
+  // sincroniza, y con eso bastaba para dar el número por bueno.
+  const entry = fakeEntry(sondaSana());
+  entry.status = 'syncing';
+  entry.readyAt = null;
+  entry.client.info = undefined; // whatsapp-web.js aún no lo ha construido
+
+  healToConnected('cuenta-x', entry);
+
+  assert.equal(entry.status, 'syncing', 'sigue sincronizando: la app dice la verdad');
+  assert.ok(entry.syncWatchdog !== undefined,
+    'y el watchdog de sincronización sigue en pie para reintentar o reportar');
 });
 
 test('el freno de mano SOBREVIVE al reinicio de la sesión (el bucle real)', async () => {

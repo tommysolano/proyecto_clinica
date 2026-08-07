@@ -2060,10 +2060,27 @@ async function waitForConnected(key, timeoutMs = 45000) {
  */
 function healToConnected(key, entry) {
   if (!entry || entry.status === 'connected') return;
-  // OJO: aquí NO se toca `entry.readyAt`. Esto solo prueba que el SOCKET está
-  // vivo, que ocurre mucho antes de que whatsapp-web.js inyecte la página. Marcar
-  // "listo" aquí era lo que dejaba entrar al chequeo de ingesta en plena
-  // sincronización, que lo leía como avería y reiniciaba el número en bucle.
+  // ── Hace falta PRUEBA de que la sesión está VINCULADA, no solo de que el
+  // socket contesta. `getState()` responde CONNECTED mientras WhatsApp Web
+  // sincroniza un número recién escaneado, que todavía no es una sesión usable.
+  //
+  // whatsapp-web.js construye `client.info` (el wid del número) justo antes de
+  // emitir 'ready', así que su ausencia significa "aún no está vinculada".
+  // Sin esta guarda, un número a medio vincular pasaba a 'connected': la app
+  // decía CONECTADO, el equipo daba el número por bueno y los mensajes de los
+  // pacientes NUNCA entraban (no hay sesión que los ingiera). Peor: curar el
+  // estado desarma el watchdog de sincronización, que era justo quien tenía que
+  // reintentar o reportar el fallo — el número se quedaba mintiendo para siempre.
+  const connectedPhone = (entry.client?.info?.wid?.user || '').toString();
+  if (!connectedPhone && !entry.readyAt) {
+    console.warn(
+      '[whatsappQr] %s: getState dice CONNECTED pero la sesión aún no está vinculada (sin client.info): NO se cura a conectado.',
+      key
+    );
+    return;
+  }
+  // OJO: aquí NO se toca `entry.readyAt`. Estar vinculada no prueba que la página
+  // esté inyectada; de eso se encarga el chequeo de ingesta (ver verifyIngest).
   entry.status = 'connected';
   entry.percent = null;
   entry.misses = 0;
@@ -2071,7 +2088,6 @@ function healToConnected(key, entry) {
   watchBrowser(key, entry);
   if (entry.syncWatchdog) { clearTimeout(entry.syncWatchdog); entry.syncWatchdog = null; }
   if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
-  const connectedPhone = (entry.client?.info?.wid?.user || '').toString();
   setAccountStatus(key, {
     status: 'connected',
     ...(connectedPhone ? { connectedPhone, lastConnectedAt: new Date() } : {}),
