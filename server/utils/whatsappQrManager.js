@@ -117,6 +117,22 @@ const MAX_INGEST_GAPS = 2;
 // Ninguna sesión se reinicia por la ingesta más de una vez cada 10 min: si la
 // sonda se equivocara, el número no puede entrar en un bucle de reinicios.
 const INGEST_REPAIR_COOLDOWN_MS = 10 * 60 * 1000;
+// Gracia tras el 'ready' antes de juzgar la ingesta. La sonda lee cosas que
+// whatsapp-web.js inyecta en la página (window.WWebJS, la función expuesta
+// onAddMessageEvent, el listener de la colección Msg) y que solo existen DESPUÉS
+// de que la librería termine de inyectar. Preguntar antes es garantía de falso
+// positivo, no diagnóstico. Ver verifyIngest.
+const INGEST_GRACE_MS = 2 * 60 * 1000;
+
+// ── Memoria del chequeo de ingesta, FUERA de la entrada de sesión ────────────
+// Vivían en `entry` (`entry.lastIngestRepairAt`, `entry.ingestGaps`), y `entry` se
+// tira entero en cada teardown: el freno de mano se borraba justo en el instante
+// en que tenía que actuar, así que "no reiniciar más de una vez cada 10 min" no
+// frenaba NADA — el número podía reiniciarse cada 45 s indefinidamente, que es
+// exactamente el bucle que el freno existía para impedir. Van por número y
+// sobreviven al reinicio de la sesión (no al del proceso, que es lo correcto).
+const ingestRepairAt = new Map(); // key → ms del último reinicio por ingesta
+const ingestGaps = new Map(); // key → señales de avería SEGUIDAS
 // Cuánto hacia atrás se rescatan mensajes perdidos al reconectar. Más allá de un
 // día, WhatsApp Web ya no tiene el mensaje en memoria y el chat estaría frío.
 const RECOVER_LOOKBACK_MS = 24 * 60 * 60 * 1000;
@@ -1405,15 +1421,47 @@ async function recoverMissedInbound(client, accountId, desdeMs) {
  * volvió a enganchar. Nada lo detectaba: el chequeo de salud solo miraba el socket.
  *
  * Escalada:
+ *   0. La sesión todavía no ha emitido 'ready' (o lo hizo hace menos de
+ *      INGEST_GRACE_MS) → no se juzga: la página aún no está inyectada y la sonda
+ *      solo puede dar un falso positivo.
  *   1. Sin veredicto (Chrome ocupado, página recargándose) → no se toca nada.
- *   2. Rota ESTRUCTURALMENTE (sin WWebJS / sin función expuesta / sin listener) →
- *      es certeza: se rescatan los mensajes perdidos y se reinicia la sesión.
- *   3. Solo hay HUECO (llegan al navegador y no a la app) → se rescatan y se
- *      cuenta; si el hueco reaparece MAX_INGEST_GAPS veces seguidas, se reinicia.
+ *   2. Rota ESTRUCTURALMENTE (sin WWebJS / sin función expuesta / sin listener) o
+ *      con HUECO (mensajes que llegan al navegador y no a la app) → se rescata lo
+ *      perdido y se cuenta; solo si la señal se repite MAX_INGEST_GAPS vueltas
+ *      SEGUIDAS se reinicia la sesión.
+ *   3. Y aun así, nunca más de un reinicio cada INGEST_REPAIR_COOLDOWN_MS.
  * Reiniciar deja el estado en 'disconnected' (honesto) y la reconexión automática
  * la levanta en ~10 s.
  */
 async function verifyIngest(key, entry) {
+  // ── Puerta de entrada: solo se juzga una sesión ya INYECTADA ────────────────
+  // La sonda pregunta por window.WWebJS, la función expuesta onAddMessageEvent y
+  // el listener de la colección Msg. whatsapp-web.js crea las tres AL FINAL de su
+  // arranque (Client.js: inyecta LoadUtils → espera a que window.WWebJS exista →
+  // attachEventListeners → recién entonces emite 'ready'). Mientras el número
+  // sincroniza, lo NORMAL es `WWebJS=false expuesta=false`, y esta función lo leía
+  // como "ingesta muerta" y tiraba la sesión.
+  //
+  // Bastaba con que `healToConnected` marcara 'connected' una sesión que aún
+  // sincronizaba (solo mira el socket, que sí está vivo mucho antes) para que
+  // este chequeo entrara: se reiniciaba el número, volvía a sincronizar, y otra
+  // vez — y como no llegaba nunca a 'ready', el número NO SE PODÍA CONECTAR.
+  // Por eso la condición es el evento 'ready' de la librería, no el estado.
+  if (!entry.readyAt) {
+    // Una sesión curada a 'connected' por el socket nunca pasó por 'ready', y sin
+    // esto se quedaría sin vigilancia para siempre. Se le pregunta a la página: si
+    // resulta estar inyectada de verdad, se la adopta como lista y desde la
+    // próxima vuelta se vigila como a cualquier otra. Adoptar exige PRUEBA de que
+    // está inyectada, así que nunca puede convertirse en un falso positivo.
+    const arranque = await probeIngest(entry, 0);
+    if (arranque.ok && arranque.wwebjs === true && arranque.expuesta === true) {
+      entry.readyAt = Date.now();
+      console.log('[whatsapp-qr ingesta] %s: sesión ya inyectada sin evento ready; se adopta y se vigila.', key);
+    }
+    return;
+  }
+  if (Date.now() - entry.readyAt < INGEST_GRACE_MS) return;
+
   const acc = await WhatsappAccount.findById(key).select('lastInboundAt').lean().catch(() => null);
   if (!acc) return;
   const dbLast = acc.lastInboundAt ? new Date(acc.lastInboundAt).getTime() : 0;
@@ -1426,26 +1474,16 @@ async function verifyIngest(key, entry) {
     return;
   }
 
-  // Primera vuelta de una cuenta sin marca de recepción: o nunca recibió nada, o
-  // es la primera vez que corre esta versión. No se puede comparar con nada, así
-  // que se fija la referencia y se compara a partir de la próxima vuelta. Sin
-  // esto, un `lastInboundAt` vacío parecería un hueco de años y reiniciaría la
-  // sesión. Lo que se hubiera perdido lo recupera scheduleRecoveryAfterReady, que
-  // ya está barriendo el último día con la ventana congelada antes de esto.
-  if (!dbLast) {
-    await WhatsappAccount.updateOne(
-      { _id: key },
-      { $max: { lastInboundAt: new Date(probe.ultimoEntranteMs || Date.now()) } }
-    ).catch(() => {});
-    entry.ingestGaps = 0;
-    return;
-  }
-
   const rota = probe.wwebjs === false || probe.expuesta === false || probe.enganchado === false;
-  const hueco = probe.pendientes > 0 && probe.ultimoEntranteMs - dbLast > INGEST_LAG_MS;
+  // Sin marca de recepción no hay con qué comparar (número que aún no ha recibido
+  // nada nunca). No se inventa una: escribir aquí `lastInboundAt` con lo que haya
+  // en la memoria del navegador marcaba como "ya guardados" mensajes que jamás
+  // entraron, y de paso adelantaba la ventana de rescate, que es lo único que
+  // podía recuperarlos. La marca la escribe la ingesta con la hora del mensaje.
+  const hueco = dbLast > 0 && probe.pendientes > 0 && probe.ultimoEntranteMs - dbLast > INGEST_LAG_MS;
 
   if (!rota && !hueco) {
-    entry.ingestGaps = 0;
+    ingestGaps.delete(key);
     return;
   }
 
@@ -1456,26 +1494,33 @@ async function verifyIngest(key, entry) {
 
   // Se rescata SIEMPRE primero: los mensajes están ahí y reiniciar la sesión no
   // los volvería a entregar.
-  const rescatados = await recoverMissedInbound(entry.client, key, dbLast).catch(() => 0);
+  const rescatados = dbLast
+    ? await recoverMissedInbound(entry.client, key, dbLast).catch(() => 0)
+    : 0;
 
-  entry.ingestGaps = (entry.ingestGaps || 0) + 1;
-  const debeReiniciar = rota || entry.ingestGaps >= MAX_INGEST_GAPS;
-  if (!debeReiniciar) {
-    console.warn('[whatsapp-qr ingesta] %s: hueco %d/%d, se rescataron %d mensajes y se vuelve a mirar.',
-      key, entry.ingestGaps, MAX_INGEST_GAPS, rescatados);
+  // Dos vueltas SEGUIDAS (90 s) también para la avería estructural. WhatsApp Web
+  // se recarga solo cada tanto y en esa ventana la página aparece sin inyectar;
+  // la propia librería la re-engancha al siguiente app-state-sync. Confirmarlo
+  // una vez más cuesta 45 s y evita tirar una sesión que se estaba curando sola.
+  const seguidas = (ingestGaps.get(key) || 0) + 1;
+  ingestGaps.set(key, seguidas);
+  if (seguidas < MAX_INGEST_GAPS) {
+    console.warn('[whatsapp-qr ingesta] %s: aviso %d/%d, se rescataron %d mensajes y se vuelve a mirar.',
+      key, seguidas, MAX_INGEST_GAPS, rescatados);
     return;
   }
 
   // Freno de mano: una sonda equivocada no puede meter al número en un bucle de
   // reinicios (cada reinicio deja el canal caído ~30-60 s).
   const ahora = Date.now();
-  if (entry.lastIngestRepairAt && ahora - entry.lastIngestRepairAt < INGEST_REPAIR_COOLDOWN_MS) {
+  const ultimoArreglo = ingestRepairAt.get(key);
+  if (ultimoArreglo && ahora - ultimoArreglo < INGEST_REPAIR_COOLDOWN_MS) {
     console.warn('[whatsapp-qr ingesta] %s: reinicio omitido (hace menos de %d min del anterior).',
       key, Math.round(INGEST_REPAIR_COOLDOWN_MS / 60000));
     return;
   }
-  entry.lastIngestRepairAt = ahora;
-  entry.ingestGaps = 0;
+  ingestRepairAt.set(key, ahora);
+  ingestGaps.delete(key);
 
   notifyQrDown(key, { needsQr: false, reason: motivo });
   await teardown(key, entry, {
@@ -1742,6 +1787,12 @@ async function startClient(key, accountId, userId) {
     entry.lastQr = '';
     entry.percent = null;
     entry.misses = 0;
+    // Único momento en el que se puede afirmar que la página está INYECTADA:
+    // whatsapp-web.js emite 'ready' después de cargar window.WWebJS y enganchar
+    // los listeners de mensajes. El chequeo de ingesta se apoya en esta marca
+    // para no juzgar (y matar) una sesión que todavía estaba arrancando.
+    entry.readyAt = Date.now();
+    ingestGaps.delete(key);
     if (entry.watchdog) { clearTimeout(entry.watchdog); entry.watchdog = null; }
     if (entry.syncWatchdog) { clearTimeout(entry.syncWatchdog); entry.syncWatchdog = null; }
     syncRetries.delete(key);
@@ -2009,6 +2060,10 @@ async function waitForConnected(key, timeoutMs = 45000) {
  */
 function healToConnected(key, entry) {
   if (!entry || entry.status === 'connected') return;
+  // OJO: aquí NO se toca `entry.readyAt`. Esto solo prueba que el SOCKET está
+  // vivo, que ocurre mucho antes de que whatsapp-web.js inyecte la página. Marcar
+  // "listo" aquí era lo que dejaba entrar al chequeo de ingesta en plena
+  // sincronización, que lo leía como avería y reiniciaba el número en bucle.
   entry.status = 'connected';
   entry.percent = null;
   entry.misses = 0;
@@ -2630,6 +2685,7 @@ module.exports = {
     findRecentlySentMedia, watchOutgoingMedia, qrMessageId, qrMessageHash, serializeMsgKey,
     downloadAndDecryptWaMedia, phoneFromMsgData,
     probeIngest, verifyIngest, recoverMissedInbound, ingestIncomingQrMessage,
-    INGEST_LAG_MS, MAX_INGEST_GAPS, INGEST_REPAIR_COOLDOWN_MS, CONTENT_TYPES,
+    ingestRepairAt, ingestGaps,
+    INGEST_LAG_MS, MAX_INGEST_GAPS, INGEST_REPAIR_COOLDOWN_MS, INGEST_GRACE_MS, CONTENT_TYPES,
   },
 };
