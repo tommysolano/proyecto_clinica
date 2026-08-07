@@ -98,7 +98,12 @@ test('número FIJADO: manda ese, aunque el contacto nos hubiera escrito a otro',
   const gw = fakeGateway();
   try {
     const { api, qr } = await dosNumeros();
-    const conv = await Conversation.create({ clinic: clinicId, channel: 'whatsapp', phone: '593999111222' });
+    // `lastInboundAt` es lo que la ingesta escribe con cada entrante REAL, y es lo
+    // único que abre la ventana de 24h: sin él, forzar el número de la API (Cloud)
+    // dejaría el texto libre fuera de ventana, que es justo lo correcto.
+    const conv = await Conversation.create({
+      clinic: clinicId, channel: 'whatsapp', phone: '593999111222', lastInboundAt: new Date(),
+    });
     await Message.create({
       clinic: clinicId, conversation: conv._id, direction: 'in', body: 'Hola', whatsappAccount: qr._id,
     });

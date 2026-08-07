@@ -18,17 +18,17 @@ BRANCH="main"
 
 cd "$APP_DIR"
 
-echo "==> 1/5 Trayendo el ultimo codigo de origin/$BRANCH"
+echo "==> 1/6 Trayendo el ultimo codigo de origin/$BRANCH"
 git fetch --all --prune
 git reset --hard "origin/$BRANCH"
 
-echo "==> 2/5 Instalando dependencias (server + client)"
+echo "==> 2/6 Instalando dependencias (server + client)"
 npm run install-all
 
-echo "==> 3/5 Compilando el frontend (regenera client/dist)"
+echo "==> 3/6 Compilando el frontend (regenera client/dist)"
 npm --prefix client run build
 
-echo "==> 4/5 Tareas de UNA SOLA VEZ"
+echo "==> 4/6 Tareas de UNA SOLA VEZ"
 # Cada tarea lleva su marca en la base (coleccion `onetimetasks`), asi que se ejecuta
 # solo en el PRIMER despliegue que la trae: los siguientes push la encuentran DONE y no
 # hacen nada. Si falla, queda FAILED y el proximo despliegue la reintenta; el fallo NO
@@ -48,7 +48,7 @@ if ! ( cd "$APP_DIR/server" && node scripts/rescheduleQuietWindowsOnce.js --comm
   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/rescheduleQuietWindowsOnce.js --commit'"
 fi
 
-echo "==> 5/5 Reiniciando el backend con PM2 (bajo el usuario 'clinica')"
+echo "==> 5/6 Reiniciando el backend con PM2 (bajo el usuario 'clinica')"
 # IMPORTANTE: el backend corre bajo el pm2 del usuario `clinica` (God Daemon en
 # /home/clinica/.pm2), NO bajo el de root. GitHub Actions ejecuta este deploy
 # como root, así que un `pm2 restart` a secas apuntaba al pm2 de ROOT (vacío) →
@@ -69,6 +69,20 @@ if [ "$(id -un)" = "clinica" ]; then
   bash -lc "$PM2_CMD"
 else
   sudo -iu clinica bash -lc "$PM2_CMD"
+fi
+
+echo "==> 6/6 Tareas de UNA SOLA VEZ que exigen el codigo NUEVO ya corriendo"
+# Va DESPUES del reinicio a proposito: esta tarea borra un estado que el codigo VIEJO
+# fabricaba solo. Si corriera antes (en el paso 4), el backend viejo, todavia vivo,
+# podria volver a crear una ventana fantasma entre la limpieza y el reinicio, y la
+# marca de "una sola vez" ya no la volveria a barrer.
+#
+# Vigente: borrar las ventanas de 24h FANTASMA de los chats nacidos de un envio nuestro
+# (ago-2026). Sin esto, esos chats siguen diciendo "ventana abierta" y el texto libre que
+# escriba el agente lo rechaza Meta con el error 131047: el paciente nunca lo recibe.
+if ! ( cd "$APP_DIR/server" && node scripts/clearPhantomWhatsappWindowOnce.js --commit ); then
+  echo "ADVERTENCIA: la limpieza de ventanas fantasma fallo. Revisa el log y reintenta a mano:"
+  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/clearPhantomWhatsappWindowOnce.js --commit'"
 fi
 
 echo "==> Despliegue completado: $(date)"

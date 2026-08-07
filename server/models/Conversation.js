@@ -139,7 +139,12 @@ const conversationSchema = new mongoose.Schema(
     // Snapshot último mensaje
     lastMessageAt: { type: Date, default: Date.now, index: true },
     lastMessagePreview: { type: String, trim: true },
-    lastMessageDirection: { type: String, enum: ['in', 'out'], default: 'in' },
+    // Por defecto 'out': una conversación recién creada NO tiene ningún mensaje,
+    // así que "el último es del contacto" siempre sería mentira. Con el antiguo
+    // default 'in' un chat nacido de un envío nuestro parecía tener un entrante
+    // reciente → ventana de 24h fantasma y chats contados como "esperando
+    // respuesta". La ingesta de entrantes lo pone en 'in' cuando toca.
+    lastMessageDirection: { type: String, enum: ['in', 'out'], default: 'out' },
     unreadCount: { type: Number, default: 0 },
     // Tags libres para segmentar
     tags: { type: [String], default: [] },

@@ -60,14 +60,19 @@ test('describeWhatsappWindow: fuente única de verdad de la ventana para la UI',
   assert.equal(qr.applies, false);
   assert.equal(qr.open, true);
 
-  // Sin lastInboundAt pero último mensaje entrante (conversación vieja) → sale de él.
-  const legacy = messaging.describeWhatsappWindow(
-    { channel: 'whatsapp', lastMessageDirection: 'in', lastMessageAt: lastInboundAt },
+  // Sin ningún entrante REAL no hay ventana, diga lo que diga `lastMessageDirection`.
+  // Antes existía un respaldo "si el último mensaje fue entrante, la ventana sale de
+  // él" que abría ventanas FANTASMA en los chats recién creados por un envío nuestro
+  // (nacían con el default 'in' y `lastMessageAt` = ahora): la UI decía "puedes
+  // escribir 24 h" y Meta rechazaba el texto con el error 131047.
+  const sinEntrante = messaging.describeWhatsappWindow(
+    { channel: 'whatsapp', lastMessageDirection: 'in', lastMessageAt: now },
     'cloud_api',
     now
   );
-  assert.equal(legacy.open, true);
-  assert.equal(legacy.lastInboundAt.toISOString(), lastInboundAt.toISOString());
+  assert.equal(sinEntrante.open, false, 'sin entrante real la ventana NUNCA está abierta');
+  assert.equal(sinEntrante.expiresAt, null);
+  assert.equal(sinEntrante.lastInboundAt, null, 'no se inventa una fecha de entrante');
 });
 
 test('detects explicit opt-out keywords without matching normal appointment text', () => {

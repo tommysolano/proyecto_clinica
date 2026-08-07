@@ -22,19 +22,29 @@ function computeWhatsappWindowExpiresAt(lastIncomingAt = new Date()) {
   return new Date(base.getTime() + WHATSAPP_WINDOW_MS);
 }
 
+/**
+ * Hasta cuándo está abierta la ventana de 24h, o null si NUNCA se abrió.
+ *
+ * La ventana solo la abre un mensaje ENTRANTE de verdad. Se toma el máximo entre
+ * el campo cacheado y `lastInboundAt` por si uno quedó desfasado; así un mensaje
+ * saliente (agente que responde / cotización) nunca "cierra" una ventana viva.
+ *
+ * NO SE ADIVINA por `lastMessageDirection`: aquí había un respaldo "si el último
+ * mensaje fue entrante, la ventana sale de él" para conversaciones viejas sin
+ * `lastInboundAt`, y resultó ser un generador de ventanas FANTASMA. Una
+ * conversación recién creada por un envío NUESTRO (workflow a alguien que nunca
+ * escribió) nace con los valores por defecto del modelo, y con el viejo default
+ * `lastMessageDirection:'in'` + `lastMessageAt:ahora` parecía "el contacto acaba
+ * de escribir" → ventana abierta 24h que Meta rechazaba con el error 131047
+ * ("Re-engagement message"). En producción quedaron 76 chats así y los agentes
+ * escribían texto libre que NUNCA llegaba al paciente. El respaldo tampoco servía
+ * ya para nada: cero conversaciones reales dependían de él.
+ */
 function getWhatsappWindowExpiresAt(conv) {
   if (!conv) return null;
-  // Fuente de verdad = último ENTRANTE. Se toma el máximo entre el campo cacheado
-  // y `lastInboundAt` por si uno quedó desfasado; así un mensaje saliente (agente
-  // que responde / cotización) nunca "cierra" una ventana que sigue abierta.
   const candidates = [];
   if (conv.window24hExpiresAt) candidates.push(new Date(conv.window24hExpiresAt).getTime());
   if (conv.lastInboundAt) candidates.push(computeWhatsappWindowExpiresAt(conv.lastInboundAt).getTime());
-  // Compatibilidad con conversaciones viejas sin `lastInboundAt`: si el último
-  // mensaje fue entrante, la ventana sale de él.
-  if (!candidates.length && conv.lastMessageDirection === 'in' && conv.lastMessageAt) {
-    candidates.push(computeWhatsappWindowExpiresAt(conv.lastMessageAt).getTime());
-  }
   if (!candidates.length) return null;
   return new Date(Math.max(...candidates));
 }
@@ -66,11 +76,9 @@ function describeWhatsappWindow(conv, connectionType, now = new Date()) {
   const isWhatsapp = (conv?.channel || 'whatsapp') === 'whatsapp';
   const applies = isWhatsapp && connectionType !== 'qr';
   const expiresAt = isWhatsapp ? getWhatsappWindowExpiresAt(conv) : null;
-  const lastInboundAt = conv?.lastInboundAt
-    ? new Date(conv.lastInboundAt)
-    : conv?.lastMessageDirection === 'in' && conv?.lastMessageAt
-      ? new Date(conv.lastMessageAt)
-      : null;
+  // Solo un entrante REAL cuenta como "el contacto escribió" (ver
+  // getWhatsappWindowExpiresAt): sin él, la UI dice "todavía no te ha escrito".
+  const lastInboundAt = conv?.lastInboundAt ? new Date(conv.lastInboundAt) : null;
   const open = !applies || Boolean(expiresAt && expiresAt.getTime() > now.getTime());
   return {
     applies,
@@ -433,6 +441,10 @@ async function resolveConversation({ clinicId, conversation, channel, to, contac
     channel: channel || 'whatsapp',
     lastMessagePreview: '',
     lastMessageAt: new Date(),
+    // Este chat nace de un envío NUESTRO: el contacto no ha escrito nada. Se deja
+    // explícito para que nadie lo confunda con "el paciente acaba de escribir"
+    // (era el origen de la ventana de 24h fantasma).
+    lastMessageDirection: 'out',
   });
   return conv;
 }
@@ -857,11 +869,11 @@ async function send({
     templateInfo = await enrichTemplateHeader(clinicId, templateInfo, patientRef, aptId, contactRef);
   }
   if (normalizedChannel === 'whatsapp' && gateway.isCloud(account)) {
-    const computedWindow = getWhatsappWindowExpiresAt(conv);
-    if (!conv.window24hExpiresAt && computedWindow) {
-      conv.window24hExpiresAt = computedWindow;
-      await conv.save();
-    }
+    // Aquí se GUARDABA en `window24hExpiresAt` la ventana recién calculada. Eso
+    // era lo que hacía PERMANENTE la ventana fantasma: bastaba que el cálculo se
+    // equivocara una vez (chat recién nacido de un envío nuestro) para que la
+    // conversación arrastrara para siempre una ventana que Meta no reconoce. El
+    // campo lo escribe solo la ingesta de entrantes, que es quien la abre de verdad.
     if (!isWhatsappWindowOpen(conv) && !templateInfo) {
       return { ok: false, skipped: true, reason: 'out_of_window' };
     }

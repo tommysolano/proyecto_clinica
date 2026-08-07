@@ -40,7 +40,7 @@ test('crear oportunidad deja un evento interno en el hilo (no se envía al conta
   assert.equal(ev.direction, undefined, 'un evento no tiene dirección in/out');
   assert.ok(!ev.externalId, 'el evento nunca se mandó a WhatsApp (sin wamid)');
 
-  // La conversación NO se movió por el evento (lastMessageDirection sigue por defecto 'in').
+  // La conversación NO se movió por el evento: su snapshot de último mensaje sigue intacto.
   const fresh = await Conversation.findById(conv._id).lean();
   assert.ok(!fresh.lastMessagePreview || !/Oportunidad creada/.test(fresh.lastMessagePreview),
     'el evento no ensucia la vista previa de la lista');

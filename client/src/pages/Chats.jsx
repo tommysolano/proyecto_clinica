@@ -180,12 +180,12 @@ function getWindow24hExpiresAt(conv) {
   if (!conv || conv.channel !== 'whatsapp') return null;
   // Fuente de verdad = último ENTRANTE (sobrevive a los mensajes salientes). Se
   // toma el máximo de todo lo disponible para no cerrar una ventana viva.
+  // Espejo de `getWhatsappWindowExpiresAt` del servidor: NUNCA se deduce del
+  // último mensaje "entrante" por dirección — un chat recién creado por un envío
+  // nuestro parecería tener ventana abierta y Meta rechaza el texto libre (131047).
   const times = [];
   if (conv.window24hExpiresAt) times.push(new Date(conv.window24hExpiresAt).getTime());
   if (conv.lastInboundAt) times.push(new Date(conv.lastInboundAt).getTime() + DAY_MS);
-  if (!times.length && conv.lastMessageDirection === 'in' && conv.lastMessageAt) {
-    times.push(new Date(conv.lastMessageAt).getTime() + DAY_MS);
-  }
   return times.length ? new Date(Math.max(...times)) : null;
 }
 
@@ -204,6 +204,14 @@ function windowMsRemaining(conv) {
   return undefined; // sin dato del servidor: usar el respaldo local
 }
 
+// Códigos con los que Meta rechaza un TEXTO LIBRE por estar fuera de la ventana
+// de 24h (131047 en Cloud API; 470 es el equivalente antiguo). Reintentar el mismo
+// mensaje no puede funcionar: solo entra una plantilla aprobada.
+const OUT_OF_WINDOW_ERROR_CODES = new Set(['131047', '470']);
+function isOutOfWindowError(msg) {
+  return OUT_OF_WINDOW_ERROR_CODES.has(String(msg?.errorCode || ''));
+}
+
 function isWhatsappWindowClosed(conv) {
   if (!conv || conv.channel !== 'whatsapp') return false;
   const ms = windowMsRemaining(conv);
@@ -216,10 +224,9 @@ function isWhatsappWindowClosed(conv) {
 
 // Último mensaje ENTRANTE del contacto (fecha), para explicar la ventana.
 function lastInboundDate(conv) {
-  const raw =
-    conv?.window?.lastInboundAt ||
-    conv?.lastInboundAt ||
-    (conv?.lastMessageDirection === 'in' ? conv?.lastMessageAt : null);
+  // Solo un entrante REAL: si no lo hay, el aviso dice "todavía no te ha escrito"
+  // en vez de inventarse una fecha a partir del último mensaje.
+  const raw = conv?.window?.lastInboundAt || conv?.lastInboundAt || null;
   if (!raw) return null;
   const d = new Date(raw);
   return Number.isNaN(d.getTime()) ? null : d;
@@ -992,6 +999,11 @@ export default function Chats() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeId]);
 
+  // Abre el selector en la pestaña de plantillas. Lo usa la burbuja de un mensaje
+  // rechazado por ventana cerrada: ahí "Reintentar" no sirve y lo que hace falta
+  // es elegir una plantilla aprobada.
+  const openTemplatePicker = useCallback(() => setPickerTab('templates'), []);
+
   // Vuelve a pedirle a WhatsApp el archivo de un mensaje entrante cuyo adjunto no
   // se pudo descargar (el archivo sigue en WhatsApp: un fallo puntual de la sesión
   // no tiene por qué costar la foto o la nota de voz del paciente).
@@ -1552,6 +1564,7 @@ export default function Chats() {
                           onJumpTo={scrollToMessage}
                           onRetry={retrySend}
                           onRetryMedia={retryMedia}
+                          onUseTemplate={openTemplatePicker}
                         />
                       </Fragment>
                     );
@@ -3336,7 +3349,7 @@ const EVENT_ICON = { opportunity_created: '🎯' };
  * `onReply` recibe el mensaje como argumento en vez de ser una flecha nueva por
  * burbuja en cada render.
  */
-const MessageBubble = memo(function MessageBubble({ msg, onReply, onJumpTo, highlight, onRetry, onRetryMedia }) {
+const MessageBubble = memo(function MessageBubble({ msg, onReply, onJumpTo, highlight, onRetry, onRetryMedia, onUseTemplate }) {
   // Evento INTERNO del sistema (kind='event'): chip centrado, visible SOLO para el
   // equipo (nunca se envió al contacto). P.ej. "Oportunidad creada".
   if (msg.kind === 'event') {
@@ -3443,7 +3456,18 @@ const MessageBubble = memo(function MessageBubble({ msg, onReply, onJumpTo, high
               <HiOutlineExclamationTriangle className="w-3.5 h-3.5 shrink-0" /> No se envió — el contacto NO lo recibió
             </div>
             {msg.errorMessage && <div className="text-white/95 mt-0.5 break-words">{msg.errorMessage}</div>}
-            {onRetry && (
+            {/* Fuera de la ventana de 24h, reintentar el MISMO texto vuelve a
+                fallar siempre: lo único que WhatsApp deja pasar es una plantilla
+                aprobada. Se ofrece eso en lugar de un botón que no puede funcionar. */}
+            {isOutOfWindowError(msg) && onUseTemplate ? (
+              <button
+                type="button"
+                onClick={onUseTemplate}
+                className="mt-1.5 inline-flex items-center gap-1 bg-white text-rose-600 font-bold rounded-md px-2.5 py-1 text-[11px] border-none cursor-pointer hover:bg-rose-50"
+              >
+                <HiOutlineDocumentDuplicate className="w-3.5 h-3.5" /> Enviar plantilla
+              </button>
+            ) : onRetry ? (
               <button
                 type="button"
                 onClick={() => onRetry(msg)}
@@ -3451,7 +3475,7 @@ const MessageBubble = memo(function MessageBubble({ msg, onReply, onJumpTo, high
               >
                 <HiOutlineArrowPath className="w-3.5 h-3.5" /> Reintentar
               </button>
-            )}
+            ) : null}
           </div>
         )}
         <div className={`text-[10px] mt-1 flex items-center gap-1 ${failed ? 'text-rose-100' : isOut ? 'text-emerald-100' : 'text-slate-400'}`}>

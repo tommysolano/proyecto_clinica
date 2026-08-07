@@ -2461,6 +2461,37 @@ async function validateMetaWebhookRequest(req, clinicId, channel) {
   });
 }
 
+/**
+ * El error de Meta EN CASTELLANO y accionable.
+ *
+ * Meta manda `title` en inglés y telegráfico ("Re-engagement message"), que es lo
+ * que se pintaba en la burbuja roja: no dice ni qué pasó ni qué hacer. Para los
+ * códigos que de verdad salen en la clínica se escribe la explicación real; para
+ * el resto se prefiere `error_data.details` (la frase larga de Meta) al título.
+ */
+const META_ERROR_TEXTS = {
+  131047: 'Han pasado más de 24 h desde el último mensaje del contacto: fuera de esa ventana solo se puede enviar una plantilla aprobada.',
+  131026: 'El número no tiene WhatsApp o no puede recibir mensajes (revisa que esté bien escrito y con código de país).',
+  131049: 'Meta limitó los mensajes de marketing a este contacto por hoy para no saturarlo. Reintenta más tarde o usa una plantilla de otra categoría.',
+  131048: 'Se han enviado demasiados mensajes a este contacto en poco tiempo (límite de frecuencia de Meta).',
+  131042: 'Problema de facturación en la cuenta de WhatsApp Business: revisa el método de pago en Business Manager.',
+  131031: 'La cuenta de WhatsApp Business está bloqueada o restringida por Meta.',
+  131053: 'WhatsApp no pudo procesar el archivo adjunto (formato o tamaño no admitidos).',
+  130472: 'El contacto está en un experimento de Meta y no recibe mensajes de marketing.',
+  132000: 'El número de variables enviadas no coincide con el de la plantilla.',
+  132001: 'La plantilla no existe o no está aprobada en ese idioma.',
+  132005: 'El texto de la plantilla, ya con las variables, supera el límite permitido.',
+  133010: 'El número no está registrado en Cloud API: regístralo desde Configuración del Call Center.',
+};
+
+function metaErrorText(err) {
+  const code = Number(err.code || err.error_subcode);
+  return String(
+    META_ERROR_TEXTS[code] || err.error_data?.details || err.title || err.message || ''
+  ).slice(0, 300);
+}
+exports.metaErrorText = metaErrorText; // se prueba directo (el webhook exige firma)
+
 function normalizeMetaStatus(status) {
   const err = (status.errors || [])[0] || {};
   const p = status.pricing || {};
@@ -2469,7 +2500,7 @@ function normalizeMetaStatus(status) {
     status: status.status,
     timestamp: status.timestamp,
     errorCode: err.code || err.error_subcode,
-    errorMessage: err.title || err.message || err.error_data?.details || '',
+    errorMessage: metaErrorText(err),
     // Cómo COBRÓ Meta este mensaje (lo manda en el estado 'sent'/'delivered').
     // Se guarda tal cual para auditar el gasto por plantilla.
     pricing: p.category || p.type || p.pricing_model || p.billable !== undefined
