@@ -75,6 +75,46 @@ test('describeWhatsappWindow: fuente única de verdad de la ventana para la UI',
   assert.equal(sinEntrante.lastInboundAt, null, 'no se inventa una fecha de entrante');
 });
 
+test('la ventana de 24h es POR NÚMERO: la abre a quien le escribieron, no a todos', () => {
+  const now = new Date('2026-06-18T09:00:00Z');
+  const lastInboundAt = new Date('2026-06-17T10:00:00Z'); // hace 23 h: ventana viva
+  const recepcion = '6a61948be2e5e6500a484bc8'; // número al que escribió el contacto
+  const api = '6a5698a3b23cf314cab98a81'; // otro número nuestro
+  const conv = { channel: 'whatsapp', lastInboundAt, lastInboundAccount: recepcion };
+
+  // Por el número al que escribió: abierta, como toda la vida.
+  const mismo = messaging.describeWhatsappWindow(conv, 'cloud_api', now, recepcion);
+  assert.equal(mismo.open, true);
+  assert.equal(mismo.otherNumber, false);
+
+  // Por OTRO número: Meta no reconoce ninguna ventana ahí. Antes esto se
+  // enseñaba como "abierta, te quedan 8 h" y el texto libre se perdía con el
+  // error 131047 — el paciente no recibía nada.
+  const otro = messaging.describeWhatsappWindow(conv, 'cloud_api', now, api);
+  assert.equal(otro.open, false, 'escribir a otro número no abre ventana en este');
+  assert.equal(otro.expiresAt, null);
+  assert.equal(otro.otherNumber, true, 'y se dice POR QUÉ, que si no parece un fallo');
+  assert.equal(
+    otro.lastInboundAt.toISOString(),
+    lastInboundAt.toISOString(),
+    'el "escribió hace un rato" sigue siendo cierto: es la ventana la que no existe aquí'
+  );
+
+  // El envío usa la misma regla.
+  assert.equal(messaging.isWhatsappWindowOpen(conv, now, recepcion), true);
+  assert.equal(messaging.isWhatsappWindowOpen(conv, now, api), false);
+
+  // Chats antiguos, sin saber por dónde entró: no se puede afirmar que esté
+  // cerrada. "No lo sé" no puede volverse "cerrada" para media bandeja.
+  const antiguo = { channel: 'whatsapp', lastInboundAt };
+  assert.equal(messaging.describeWhatsappWindow(antiguo, 'cloud_api', now, api).open, true);
+
+  // Un `window24hExpiresAt` guardado tampoco resucita la ventana en otro número:
+  // es justo el campo que arrastraba ventanas fantasma.
+  const conCache = { ...conv, window24hExpiresAt: new Date('2026-06-18T10:00:00Z') };
+  assert.equal(messaging.describeWhatsappWindow(conCache, 'cloud_api', now, api).open, false);
+});
+
 test('detects explicit opt-out keywords without matching normal appointment text', () => {
   assert.equal(messaging.isOptOutText('BAJA'), true);
   assert.equal(messaging.isOptOutText('stop'), true);

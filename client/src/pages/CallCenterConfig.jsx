@@ -450,7 +450,9 @@ const HEALTH_DOT = { ok: 'bg-emerald-500', warn: 'bg-amber-500', error: 'bg-rose
  * envían los mensajes?": ¿hay más de un backend vivo (duplica envíos y crea
  * "fallidos" falsos)?, ¿los tokens se descifran?, ¿qué causas de fallo hubo hoy?
  */
-function HealthPanel({ health, loading, healing, onRefresh, onHeal }) {
+function HealthPanel({ health, loading, healing, onRefresh, onHeal, accounts = [] }) {
+  // A qué número traspasar los chats del número borrado. Por defecto el principal.
+  const [healTarget, setHealTarget] = useState('');
   const duplicated = health?.cluster?.duplicated;
   const instances = health?.cluster?.instances || [];
   const anyAccountBad = (health?.accounts || []).some((a) => a.health === 'error');
@@ -621,20 +623,41 @@ function HealthPanel({ health, loading, healing, onRefresh, onHeal }) {
             </div>
           )}
 
-          {/* Enlaces huérfanos */}
+          {/* Chats colgando de un número borrado. NO es cosmético: mientras estén
+              así se responden por el número POR DEFECTO, que puede ser otro
+              teléfono al que el contacto jamás escribió, y Meta rechaza el texto
+              libre con 131047 (el mensaje no le llega al paciente). */}
           {health.orphanLinks > 0 && (
-            <div className="flex items-center justify-between gap-2 flex-wrap border border-amber-200 bg-amber-50 rounded-xl px-3 py-2">
-              <div className="text-xs text-amber-800">
-                <b>{health.orphanLinks}</b> conversaciones enlazadas a un número ya borrado. Se responderán por el número
-                por defecto igualmente, pero conviene limpiarlas.
+            <div className="border border-red-200 bg-red-50 rounded-xl px-3 py-2 space-y-2">
+              <div className="text-xs text-red-800">
+                <b>{health.orphanLinks}</b> conversaciones enlazadas a un número <b>ya borrado</b>. Mientras sigan así, sus
+                respuestas salen por el número por defecto — uno al que esos contactos no han escrito — y WhatsApp las
+                rechaza por “ventana de 24h cerrada”. Elige a qué número pasan (normalmente el mismo teléfono
+                reconectado).
               </div>
-              <button
-                onClick={onHeal}
-                disabled={healing}
-                className="px-3 py-1.5 bg-amber-600 text-white rounded-lg text-xs cursor-pointer border-none disabled:opacity-50"
-              >
-                {healing ? 'Reparando…' : 'Reparar enlaces'}
-              </button>
+              <div className="flex items-center gap-2 flex-wrap">
+                <select
+                  value={healTarget}
+                  onChange={(e) => setHealTarget(e.target.value)}
+                  className="px-2 py-1.5 border border-slate-200 rounded-lg text-xs bg-white cursor-pointer"
+                >
+                  <option value="">Elige el número que se los queda…</option>
+                  {accounts
+                    .filter((a) => a.enabled)
+                    .map((a) => (
+                      <option key={a._id} value={a._id}>
+                        Pasar a: {a.label} · {a.displayPhone || a.connectedPhone || (a.connectionType === 'qr' ? 'QR' : 'Cloud API')}
+                      </option>
+                    ))}
+                </select>
+                <button
+                  onClick={() => onHeal(healTarget)}
+                  disabled={healing || !healTarget}
+                  className="px-3 py-1.5 bg-red-600 text-white rounded-lg text-xs cursor-pointer border-none disabled:opacity-50"
+                >
+                  {healing ? 'Reparando…' : 'Traspasar conversaciones'}
+                </button>
+              </div>
             </div>
           )}
 
@@ -659,6 +682,7 @@ function WhatsappNumbersManager() {
   const [editModal, setEditModal] = useState(null);
   const [qrModal, setQrModal] = useState(null); // { accountId, label, qr, status, percent, error }
   const [diagModal, setDiagModal] = useState(null); // { label, loading, ok, checks }
+  const [deleteModal, setDeleteModal] = useState(null); // { acc, replacementId, deleting }
   // Diagnóstico de SALUD del canal (backends vivos, tokens, fallidos, enlaces).
   const [health, setHealth] = useState(null);
   const [healthLoading, setHealthLoading] = useState(false);
@@ -677,11 +701,11 @@ function WhatsappNumbersManager() {
     }
   };
 
-  const healLinks = async () => {
+  const healLinks = async (accountId = null) => {
     setHealing(true);
     try {
-      const r = await api.post('/call-center-config/whatsapp/diagnostics/heal');
-      toast.success(`Enlaces reparados: ${r.data.healed}`);
+      const r = await api.post('/call-center-config/whatsapp/diagnostics/heal', { accountId });
+      toast.success(`${r.data.healed} chats y ${r.data.messages} mensajes pasados a "${r.data.movedTo}"`);
       loadHealth();
     } catch (err) {
       toast.error(err.response?.data?.message || 'No se pudieron reparar los enlaces');
@@ -986,13 +1010,29 @@ function WhatsappNumbersManager() {
     }
   };
 
-  const removeAccount = async (acc) => {
-    if (!window.confirm(`¿Eliminar el número "${acc.label}"?`)) return;
+  // Borrar un número deja sus conversaciones sin dueño, y eso NO es inocuo: pasan
+  // a responderse por el número por defecto, al que esos contactos nunca han
+  // escrito, y WhatsApp rechaza el texto libre (131047). Por eso el borrado pasa
+  // por un paso en el que se elige quién se queda los chats.
+  const removeAccount = (acc) => setDeleteModal({ acc, replacementId: '' });
+
+  const confirmRemoveAccount = async () => {
+    const { acc, replacementId } = deleteModal;
+    setDeleteModal((m) => ({ ...m, deleting: true }));
     try {
-      await api.delete(`/call-center-config/whatsapp/accounts/${acc._id}`);
+      const r = await api.delete(`/call-center-config/whatsapp/accounts/${acc._id}`, {
+        data: replacementId ? { replacementId } : {},
+      });
       setAccounts((l) => l.filter((x) => x._id !== acc._id));
-      toast.success('Número eliminado');
+      setDeleteModal(null);
+      toast.success(
+        r.data?.movedTo
+          ? `Número eliminado · ${r.data.conversations} chats pasados a "${r.data.movedTo}"`
+          : 'Número eliminado'
+      );
+      loadHealth();
     } catch (err) {
+      setDeleteModal((m) => ({ ...m, deleting: false }));
       toast.error(err.response?.data?.message || 'Error');
     }
   };
@@ -1256,6 +1296,7 @@ function WhatsappNumbersManager() {
         healing={healing}
         onRefresh={loadHealth}
         onHeal={healLinks}
+        accounts={accounts}
       />
 
       {/* Lista de números */}
@@ -1371,6 +1412,58 @@ function WhatsappNumbersManager() {
             onSubmit={saveEdit}
             submitLabel="Guardar"
           />
+        )}
+      </Modal>
+
+      {/* Modal: eliminar número. Lo importante no es el "¿seguro?", es decidir
+          quién hereda los chats: sin destino se responden por el número por
+          defecto y WhatsApp los rechaza por ventana de 24h. */}
+      <Modal isOpen={!!deleteModal} onClose={() => setDeleteModal(null)} title="Eliminar número" size="sm">
+        {deleteModal && (
+          <div className="space-y-3">
+            <p className="text-sm text-slate-700">
+              Vas a eliminar <b>{deleteModal.acc.label}</b>
+              {deleteModal.acc.displayPhone ? ` (${deleteModal.acc.displayPhone})` : ''}.
+            </p>
+            <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+              Sus conversaciones tienen que quedarse con algún número. Si lo que hiciste fue reconectar el mismo teléfono
+              como un número nuevo, elígelo aquí: los chats y su historial pasan a él y las respuestas siguen saliendo
+              por el teléfono que el paciente conoce. Si no eliges ninguno, esos chats quedan marcados como huérfanos y
+              solo podrán recibir plantillas hasta que los traspases desde el diagnóstico.
+            </div>
+            <label className="block text-xs font-medium text-slate-600">
+              Traspasar las conversaciones a
+              <select
+                value={deleteModal.replacementId}
+                onChange={(e) => setDeleteModal((m) => ({ ...m, replacementId: e.target.value }))}
+                className="mt-1 w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white cursor-pointer"
+              >
+                <option value="">Ninguno — decidirlo después (quedarán huérfanas)</option>
+                {accounts
+                  .filter((a) => a._id !== deleteModal.acc._id && a.enabled)
+                  .map((a) => (
+                    <option key={a._id} value={a._id}>
+                      {a.label} · {a.displayPhone || a.connectedPhone || (a.connectionType === 'qr' ? 'QR' : 'Cloud API')}
+                    </option>
+                  ))}
+              </select>
+            </label>
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                onClick={() => setDeleteModal(null)}
+                className="px-3 py-2 text-sm border border-slate-200 rounded-lg bg-white cursor-pointer"
+              >
+                Cancelar
+              </button>
+              <button
+                onClick={confirmRemoveAccount}
+                disabled={deleteModal.deleting}
+                className="px-3 py-2 text-sm bg-red-600 text-white rounded-lg cursor-pointer border-none disabled:opacity-50"
+              >
+                {deleteModal.deleting ? 'Eliminando…' : 'Eliminar número'}
+              </button>
+            </div>
+          </div>
         )}
       </Modal>
 

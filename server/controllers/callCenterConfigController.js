@@ -337,18 +337,72 @@ exports.updateWhatsappAccount = async (req, res) => {
   }
 };
 
+/** Traspasa los chats, su ventana de 24h y su historial de un número a otro. */
+async function reassignConversations(fromId, toId) {
+  const Conversation = require('../models/Conversation');
+  const Message = require('../models/Message');
+  const [convs, inbound, msgs] = await Promise.all([
+    Conversation.updateMany({ whatsappAccount: fromId }, { $set: { whatsappAccount: toId } }),
+    Conversation.updateMany({ lastInboundAccount: fromId }, { $set: { lastInboundAccount: toId } }),
+    Message.updateMany({ whatsappAccount: fromId }, { $set: { whatsappAccount: toId } }),
+  ]);
+  return {
+    conversations: convs.modifiedCount ?? convs.nModified ?? 0,
+    windows: inbound.modifiedCount ?? inbound.nModified ?? 0,
+    messages: msgs.modifiedCount ?? msgs.nModified ?? 0,
+  };
+}
+
+/**
+ * DELETE /whatsapp/accounts/:id — borra un número y, con él, decide qué pasa con
+ * sus conversaciones.
+ *
+ * ANTES el borrado era un `deleteOne()` a secas y los chats se quedaban apuntando
+ * a un id inexistente. Al responder, la resolución del número caía hasta el final
+ * (el número POR DEFECTO) y el mensaje salía por otro número — uno al que ese
+ * paciente nunca había escrito, así que Meta lo rechazaba con 131047 y el
+ * paciente no recibía nada. El 07-ago-2026 se borró así el número QR: 4.585 chats
+ * huérfanos y 156 mensajes perdidos al día siguiente.
+ *
+ * `replacementId` (body o query) es el número que se queda con esos chats —
+ * normalmente el mismo teléfono reconectado.
+ *
+ * SIN destino los enlaces se dejan TAL CUAL, apuntando al número borrado. Suena
+ * a dejar basura, pero es lo seguro: mientras el chat recuerde que su último
+ * entrante llegó por un número que ya no está, la ventana de 24h se da por
+ * CERRADA y el agente ve que necesita una plantilla, en vez de escribir texto
+ * libre que se pierde. Borrar ese rastro (poner null) sería volver a prometer
+ * una ventana que Meta no reconoce. El diagnóstico los cuenta y ofrece
+ * traspasarlos cuando se sepa a qué número.
+ */
 exports.deleteWhatsappAccount = async (req, res) => {
   try {
     const doc = await WhatsappAccount.findById(req.params.id);
     if (!doc) return res.status(404).json({ message: 'Número no encontrado' });
+
+    const replacementId = req.body?.replacementId || req.query?.replacementId || null;
+    let replacement = null;
+    if (replacementId) {
+      if (String(replacementId) === String(doc._id)) {
+        return res.status(400).json({ message: 'El número de destino no puede ser el que se borra' });
+      }
+      replacement = await WhatsappAccount.findById(replacementId);
+      if (!replacement) return res.status(400).json({ message: 'El número de destino no existe' });
+    }
+
     if (doc.connectionType === 'qr') await qrManager.disconnect(doc._id).catch(() => {});
+    const Conversation = require('../models/Conversation');
+    const moved = replacement
+      ? await reassignConversations(doc._id, replacement._id)
+      : { conversations: 0, windows: 0, messages: 0 };
+    const orphaned = replacement ? 0 : await Conversation.countDocuments({ whatsappAccount: doc._id });
     const wasDefault = doc.isDefault;
     await doc.deleteOne();
     if (wasDefault) {
       const next = await WhatsappAccount.findOne().sort({ createdAt: 1 });
       if (next) { next.isDefault = true; await next.save(); }
     }
-    res.json({ ok: true });
+    res.json({ ok: true, movedTo: replacement ? replacement.label : null, orphaned, ...moved });
   } catch (err) {
     res.status(500).json({ message: 'Error al eliminar número', error: err.message });
   }
@@ -1113,12 +1167,20 @@ exports.whatsappDiagnostics = async (req, res) => {
       };
     });
 
-    // 4) Conversaciones enlazadas a un número que ya no existe.
+    // 4) Conversaciones enlazadas a un número que ya no existe. Cuenta también las
+    // que solo tienen ahí la ventana de 24h (`lastInboundAccount`): son las que se
+    // quedan sin poder mandar texto libre hasta que se diga quién hereda el chat.
     const ids = new Set(accounts.map((a) => String(a._id)));
-    const linked = await Conversation.find({ whatsappAccount: { $ne: null } })
-      .select('whatsappAccount')
+    const linked = await Conversation.find({
+      $or: [{ whatsappAccount: { $ne: null } }, { lastInboundAccount: { $ne: null } }],
+    })
+      .select('whatsappAccount lastInboundAccount')
       .lean();
-    const orphanLinks = linked.filter((c) => !ids.has(String(c.whatsappAccount))).length;
+    const orphanLinks = linked.filter(
+      (c) =>
+        (c.whatsappAccount && !ids.has(String(c.whatsappAccount))) ||
+        (c.lastInboundAccount && !ids.has(String(c.lastInboundAccount)))
+    ).length;
 
     res.json({
       cluster,
@@ -1138,22 +1200,45 @@ exports.whatsappDiagnostics = async (req, res) => {
 };
 
 /**
- * POST /whatsapp/diagnostics/heal — auto-cura: desenlaza las conversaciones que
- * apuntan a un número BORRADO (poniendo `whatsappAccount = null`). Al responder,
- * `resolveAccountForConversation` volverá a elegir el número por el que entró el
- * contacto, o el número por defecto — en vez de gastar un query resolviendo un id
- * muerto en cada envío.
+ * POST /whatsapp/diagnostics/heal — traspasa a `accountId` las conversaciones
+ * que apuntan a un número BORRADO (lo normal: el mismo teléfono que se volvió a
+ * conectar y quedó guardado como un número nuevo).
+ *
+ * EL DESTINO ES OBLIGATORIO. Antes esto solo sabía poner `whatsappAccount = null`
+ * y se vendía como "limpiar", pero no arreglaba nada: un chat sin número enlazado
+ * cae al número POR DEFECTO, que puede ser otro teléfono al que el contacto nunca
+ * escribió — exactamente lo que dejó 4.585 chats respondiéndose por el número de
+ * la API y a Meta rechazándolos con 131047. Un chat tiene que quedarse con el
+ * número por el que de verdad se le va a responder.
  */
 exports.healWhatsappLinks = async (req, res) => {
   try {
     const Conversation = require('../models/Conversation');
+    const Message = require('../models/Message');
     const accounts = await WhatsappAccount.find().select('_id').lean();
     const ids = accounts.map((a) => a._id);
-    const r = await Conversation.updateMany(
-      { whatsappAccount: { $ne: null, $nin: ids } },
-      { $set: { whatsappAccount: null } }
-    );
-    res.json({ ok: true, healed: r.modifiedCount ?? r.nModified ?? 0 });
+
+    const targetId = req.body?.accountId || null;
+    if (!targetId) {
+      return res.status(400).json({ message: 'Elige a qué número pasan esas conversaciones' });
+    }
+    const target = await WhatsappAccount.findOne({ _id: targetId, enabled: true });
+    if (!target) return res.status(400).json({ message: 'Número de destino no válido o deshabilitado' });
+
+    const muerto = { $ne: null, $nin: ids };
+    const [convs, inbound, msgs] = await Promise.all([
+      Conversation.updateMany({ whatsappAccount: muerto }, { $set: { whatsappAccount: target._id } }),
+      Conversation.updateMany({ lastInboundAccount: muerto }, { $set: { lastInboundAccount: target._id } }),
+      Message.updateMany({ whatsappAccount: muerto }, { $set: { whatsappAccount: target._id } }),
+    ]);
+
+    res.json({
+      ok: true,
+      healed: convs.modifiedCount ?? convs.nModified ?? 0,
+      windows: inbound.modifiedCount ?? inbound.nModified ?? 0,
+      messages: msgs.modifiedCount ?? msgs.nModified ?? 0,
+      movedTo: target.label,
+    });
   } catch (err) {
     res.status(500).json({ message: 'Error al reparar enlaces', error: err.message });
   }

@@ -2301,6 +2301,30 @@ async function sendResolvingQuote(entry, chatId, content, quotedMessageId, opts 
 }
 
 /** Envía texto por la sesión QR. Devuelve un shape compatible con messaging. */
+/**
+ * El error de un envío por QR, en castellano y diciendo qué hacer.
+ *
+ * Los fallos de whatsapp-web.js llegan como errores crudos de Puppeteer
+ * ("Protocol error (Runtime.callFunctionOn): Promise was collected", "Target
+ * closed", "Session closed"…) y se pintaban tal cual en la burbuja roja del
+ * chat: el agente no puede saber si el mensaje salió o no, ni si reintentar.
+ * Todos esos significan lo mismo: la pestaña de WhatsApp Web se recargó o se
+ * cayó EN MITAD del envío.
+ *
+ * Y sí, hay que decir que puede haber salido: no se puede confirmar, y un
+ * "reintenta" a secas es como se mandan mensajes duplicados a un paciente.
+ */
+function qrSendErrorText(err) {
+  const raw = String(err?.message || err || '');
+  if (/Protocol error|Promise was collected|Target closed|Session closed|detached Frame|Execution context/i.test(raw)) {
+    return (
+      'La sesión de WhatsApp Web se recargó en mitad del envío, así que no se pudo confirmar. ' +
+      'Mira el chat en el teléfono antes de reintentar: puede que el mensaje sí haya salido.'
+    );
+  }
+  return raw;
+}
+
 async function sendText(account, to, body, quotedMessageId, quoteBody) {
   const key = String(account._id);
   const entry = await acquireSendableEntry(key);
@@ -2321,7 +2345,7 @@ async function sendText(account, to, body, quotedMessageId, quoteBody) {
       ...(quotedMessageId || quoteBody ? { quote } : {}),
     };
   } catch (e) {
-    return { ok: false, errorCode: 'qr_send_error', error: e.message };
+    return { ok: false, errorCode: 'qr_send_error', error: qrSendErrorText(e) };
   }
 }
 
@@ -2506,7 +2530,7 @@ async function sendMedia(account, to, url, caption, type = 'image', quotedMessag
       ...(quotedMessageId || quoteBody ? { quote } : {}),
     };
   } catch (e) {
-    return { ok: false, errorCode: 'qr_send_error', error: e.message };
+    return { ok: false, errorCode: 'qr_send_error', error: qrSendErrorText(e) };
   }
 }
 

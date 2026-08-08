@@ -53,6 +53,15 @@ async function resolveAccountForConversation(conv) {
     const acc = await getAccountById(conv.whatsappAccount);
     if (acc && acc.enabled) return acc;
   }
+  // Número por el que entró el ÚLTIMO mensaje, ya anotado en la conversación: es
+  // lo mismo que busca el rodeo por `Message` de abajo, pero sin consulta.
+  if (conv && conv.lastInboundAccount) {
+    const acc = await getAccountById(conv.lastInboundAccount);
+    if (acc && acc.enabled) {
+      if (typeof conv.whatsappAccount !== 'undefined') conv.whatsappAccount = acc._id;
+      return acc;
+    }
+  }
   if (conv && conv._id) {
     try {
       const Message = require('../models/Message');

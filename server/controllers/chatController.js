@@ -164,7 +164,7 @@ exports.listConversations = async (req, res) => {
       .select(
         '_id clinic channel phone contactName patient assignedTo assignedToName ' +
           'status isFeatured featuredNote blocked window24hExpiresAt lastInboundAt ' +
-          'lastMessageAt lastMessagePreview lastMessageDirection unreadCount tags ' +
+          'lastInboundAccount lastMessageAt lastMessagePreview lastMessageDirection unreadCount tags ' +
           'whatsappAccount createdAt opportunity.isOpportunity opportunity.stage'
       )
       .populate('assignedTo', 'name email')
@@ -173,11 +173,11 @@ exports.listConversations = async (req, res) => {
       .limit(300)
       .lean();
 
-    // Tipo de conexión EFECTIVO por chat: el de su número, o el del número por
-    // defecto si no tiene uno asignado. El front lo usa para saber si aplica la
-    // ventana de 24h (los números QR no la tienen). Un solo query extra.
-    const defaultType = await resolveDefaultConnectionType();
-    const out = conversations.map((c) => decorateConversation(c, defaultType));
+    // Número EFECTIVO de salida por chat (y con él la ventana de 24h). Se resuelve
+    // en memoria contra la lista de números conectados: un solo query extra para
+    // los 300 chats, en vez de uno por conversación.
+    const accounts = await loadSendingAccounts();
+    const out = conversations.map((c) => decorateConversation(c, accounts));
 
     res.json(out);
   } catch (err) {
@@ -185,29 +185,64 @@ exports.listConversations = async (req, res) => {
   }
 };
 
-// Tipo de conexión del número por defecto (cloud_api | qr). Se usa para los chats
-// sin número asignado: así el front sabe si aplicarles la ventana de 24h.
-async function resolveDefaultConnectionType() {
+/**
+ * Los números conectados, en memoria, para resolver el de salida de MUCHAS
+ * conversaciones sin una consulta por chat (la bandeja pinta 300 de golpe).
+ * Mismo orden de preferencia que `getDefaultAccount`: el principal primero.
+ */
+async function loadSendingAccounts() {
   try {
-    const def = await require('../utils/whatsappGateway').getDefaultAccount();
-    return def?.connectionType || 'cloud_api';
+    const WhatsappAccount = require('../models/WhatsappAccount');
+    const accounts = await WhatsappAccount.find({ enabled: true })
+      .select('_id label connectionType displayPhone connectedPhone isDefault')
+      .sort({ isDefault: -1, createdAt: 1 })
+      .lean();
+    return { byId: new Map(accounts.map((a) => [String(a._id), a])), fallback: accounts[0] || null };
   } catch {
-    return 'cloud_api';
+    return { byId: new Map(), fallback: null };
   }
 }
 
 /**
+ * Número por el que SALDRÍA la respuesta de esta conversación. Es el espejo en
+ * memoria de `whatsappGateway.resolveAccountForConversation`: enlazado → número
+ * del último entrante → número por defecto. Tiene que dar lo mismo que el envío,
+ * porque de él dependen la ventana de 24h y el aviso que ve el agente.
+ */
+function resolveSendingAccount(conv, accounts) {
+  const linkedId = conv?.whatsappAccount?._id || conv?.whatsappAccount;
+  const linked = linkedId && accounts.byId.get(String(linkedId));
+  if (linked) return linked;
+  const inboundId = conv?.lastInboundAccount?._id || conv?.lastInboundAccount;
+  const inbound = inboundId && accounts.byId.get(String(inboundId));
+  if (inbound) return inbound;
+  return accounts.fallback;
+}
+
+/**
  * Añade a una conversación ya serializada los datos DERIVADOS que necesita la UI:
- *   - `effectiveConnectionType`: el del número enlazado o, si no tiene (o el
- *     enlace apunta a un número BORRADO — `populate` devuelve null), el del
- *     número por defecto, que es justo al que caería el envío real.
+ *   - `effectiveConnectionType`: el del número por el que de verdad saldría el
+ *     mensaje (enlazado, el del último entrante, o el número por defecto). Ojo:
+ *     un enlace a un número BORRADO devuelve null al poblar, y antes eso se leía
+ *     como "el tipo del número por defecto" sin más — que casualmente acertaba el
+ *     tipo pero NO el número, que es lo que decide la ventana.
  *   - `window`: estado de la ventana de 24h calculado en el servidor (ver
  *     `messaging.describeWhatsappWindow`). El navegador ya no la recalcula: una
  *     sola regla, imposible que las dos vistas discrepen.
+ *   - `sendingAccount`: qué número es ese, para poder decirlo en el chat.
  */
-function decorateConversation(o, defaultType) {
-  o.effectiveConnectionType = o.whatsappAccount?.connectionType || defaultType;
-  o.window = messaging.describeWhatsappWindow(o, o.effectiveConnectionType);
+function decorateConversation(o, accounts) {
+  const account = resolveSendingAccount(o, accounts);
+  o.effectiveConnectionType = account?.connectionType || 'cloud_api';
+  o.window = messaging.describeWhatsappWindow(o, o.effectiveConnectionType, new Date(), account?._id || null);
+  o.sendingAccount = account
+    ? {
+        _id: account._id,
+        label: account.label,
+        connectionType: account.connectionType,
+        displayPhone: account.displayPhone || account.connectedPhone || '',
+      }
+    : null;
   return o;
 }
 
@@ -237,7 +272,7 @@ exports.getConversation = async (req, res) => {
       .populate('opportunity.interestedIn.product', 'name salePrice')
       .populate('opportunities.interestedIn.product', 'name salePrice');
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
-    const out = decorateConversation(conv.toObject(), await resolveDefaultConnectionType());
+    const out = decorateConversation(conv.toObject(), await loadSendingAccounts());
     out.detectedEmail = await findEmailInConversation(conv._id);
     // Otros chats (whatsapp/messenger/instagram) del MISMO contacto: alimenta la
     // pestaña de canal del compositor, para responder por cualquiera de ellos sin
@@ -2408,6 +2443,9 @@ exports.simulateIncoming = async (req, res) => {
     conv.lastMessagePreview = body.slice(0, 140);
     conv.lastMessageDirection = 'in';
     conv.lastInboundAt = msg.createdAt;
+    // Entrante SIMULADO: se atribuye al número enlazado del chat, que es por el
+    // que saldría la respuesta. Así la ventana simulada también es coherente.
+    conv.lastInboundAccount = conv.whatsappAccount || null;
     conv.window24hExpiresAt = messaging.computeWhatsappWindowExpiresAt(msg.createdAt);
     conv.unreadCount = (conv.unreadCount || 0) + 1;
     if (conv.status === 'closed') conv.status = 'open';
@@ -2997,6 +3035,10 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   conv.lastMessagePreview = (finalBody || mediaPreviewText(mediaType, mediaName)).slice(0, 140);
   conv.lastMessageDirection = 'in';
   conv.lastInboundAt = msg.createdAt;
+  // POR QUÉ NÚMERO entró: la ventana de 24h solo vale para ese número (Meta la
+  // lleva por pareja número-contacto), así que sin esto no se puede saber si el
+  // texto libre va a salir o lo va a rechazar.
+  conv.lastInboundAccount = account?._id || null;
   conv.window24hExpiresAt = messaging.computeWhatsappWindowExpiresAt(msg.createdAt);
   conv.unreadCount = (conv.unreadCount || 0) + 1;
   if (conv.status === 'closed') conv.status = 'open';

@@ -22,8 +22,35 @@ function computeWhatsappWindowExpiresAt(lastIncomingAt = new Date()) {
   return new Date(base.getTime() + WHATSAPP_WINDOW_MS);
 }
 
+function sameId(a, b) {
+  if (!a || !b) return false;
+  return String(a._id || a) === String(b._id || b);
+}
+
 /**
- * Hasta cuándo está abierta la ventana de 24h, o null si NUNCA se abrió.
+ * ¿El último entrante llegó por un número DISTINTO al que va a enviar?
+ *
+ * La ventana de 24h de Meta es de la pareja (NÚMERO DE LA CLÍNICA, contacto): que
+ * el paciente le escriba al WhatsApp de recepción no abre ninguna ventana en el
+ * número de la API. Mientras la ventana se calculó solo con `lastInboundAt` —sin
+ * mirar POR DÓNDE entró— el CRM decía "abierta, te quedan 8 h" y Meta rechazaba
+ * el texto con 131047. Pasó en 156 mensajes en un solo día (08-ago-2026), cuando
+ * el número QR se borró y se volvió a crear: los 4.585 chats que colgaban de él
+ * pasaron a responderse por el número por defecto (Cloud API), al que esos
+ * pacientes no le habían escrito jamás.
+ *
+ * Solo se afirma la discrepancia cuando SE SABE por dónde entró (`lastInboundAccount`).
+ * En los chats antiguos, sin ese dato, se mantiene el comportamiento de siempre:
+ * "no lo sé" no puede convertirse en "cerrada" para media bandeja.
+ */
+function inboundCameFromAnotherNumber(conv, sendingAccountId) {
+  if (!sendingAccountId || !conv?.lastInboundAccount) return false;
+  return !sameId(conv.lastInboundAccount, sendingAccountId);
+}
+
+/**
+ * Hasta cuándo está abierta la ventana de 24h PARA EL NÚMERO QUE VA A ENVIAR, o
+ * null si nunca se abrió (o si la abrió otro número: ver arriba).
  *
  * La ventana solo la abre un mensaje ENTRANTE de verdad. Se toma el máximo entre
  * el campo cacheado y `lastInboundAt` por si uno quedó desfasado; así un mensaje
@@ -40,8 +67,9 @@ function computeWhatsappWindowExpiresAt(lastIncomingAt = new Date()) {
  * escribían texto libre que NUNCA llegaba al paciente. El respaldo tampoco servía
  * ya para nada: cero conversaciones reales dependían de él.
  */
-function getWhatsappWindowExpiresAt(conv) {
+function getWhatsappWindowExpiresAt(conv, sendingAccountId = null) {
   if (!conv) return null;
+  if (inboundCameFromAnotherNumber(conv, sendingAccountId)) return null;
   const candidates = [];
   if (conv.window24hExpiresAt) candidates.push(new Date(conv.window24hExpiresAt).getTime());
   if (conv.lastInboundAt) candidates.push(computeWhatsappWindowExpiresAt(conv.lastInboundAt).getTime());
@@ -49,8 +77,8 @@ function getWhatsappWindowExpiresAt(conv) {
   return new Date(Math.max(...candidates));
 }
 
-function isWhatsappWindowOpen(conv, now = new Date()) {
-  const expiresAt = getWhatsappWindowExpiresAt(conv);
+function isWhatsappWindowOpen(conv, now = new Date(), sendingAccountId = null) {
+  const expiresAt = getWhatsappWindowExpiresAt(conv, sendingAccountId);
   return Boolean(expiresAt && expiresAt.getTime() > now.getTime());
 }
 
@@ -64,18 +92,21 @@ function isWhatsappWindowOpen(conv, now = new Date()) {
  * tipo de conexión distinto al que de verdad usa el envío para que el compositor
  * se bloqueara con la ventana abierta (o al revés). Ahora la regla vive SOLO aquí.
  *
- * `connectionType` es el del número por el que REALMENTE saldría el mensaje. Los
- * números QR (WhatsApp Web) no tienen ventana: `applies:false` → siempre abierta.
+ * `connectionType` y `sendingAccountId` son los del número por el que REALMENTE
+ * saldría el mensaje (los resuelve quien llama, con la misma regla que el envío).
+ * Los números QR (WhatsApp Web) no tienen ventana: `applies:false` → siempre abierta.
  *
  * Devuelve también `lastInboundAt` para que la UI pueda decir CUÁNDO escribió el
  * contacto por última vez, en vez de un "cerrada" sin contexto (el motivo #1 de
  * "la ventana no se está cumpliendo": el último entrante era de hace días, pero
- * en el hilo solo se veía la hora y parecía de anoche).
+ * en el hilo solo se veía la hora y parecía de anoche); y `otherNumber` cuando lo
+ * que la cerró es que el contacto escribió a OTRO de nuestros números, que sin
+ * explicación parece directamente un fallo del sistema.
  */
-function describeWhatsappWindow(conv, connectionType, now = new Date()) {
+function describeWhatsappWindow(conv, connectionType, now = new Date(), sendingAccountId = null) {
   const isWhatsapp = (conv?.channel || 'whatsapp') === 'whatsapp';
   const applies = isWhatsapp && connectionType !== 'qr';
-  const expiresAt = isWhatsapp ? getWhatsappWindowExpiresAt(conv) : null;
+  const expiresAt = isWhatsapp ? getWhatsappWindowExpiresAt(conv, sendingAccountId) : null;
   // Solo un entrante REAL cuenta como "el contacto escribió" (ver
   // getWhatsappWindowExpiresAt): sin él, la UI dice "todavía no te ha escrito".
   const lastInboundAt = conv?.lastInboundAt ? new Date(conv.lastInboundAt) : null;
@@ -85,6 +116,9 @@ function describeWhatsappWindow(conv, connectionType, now = new Date()) {
     open,
     expiresAt: expiresAt || null,
     lastInboundAt,
+    // La ventana existe, pero en OTRO número: el contacto escribió a uno y el
+    // envío sale por otro. Sirve para explicarlo en el chat.
+    otherNumber: applies && isWhatsapp && inboundCameFromAnotherNumber(conv, sendingAccountId),
     // Milisegundos que quedan de ventana (0 si está cerrada o no aplica).
     msRemaining: applies && expiresAt ? Math.max(0, expiresAt.getTime() - now.getTime()) : 0,
   };
@@ -874,7 +908,10 @@ async function send({
     // equivocara una vez (chat recién nacido de un envío nuestro) para que la
     // conversación arrastrara para siempre una ventana que Meta no reconoce. El
     // campo lo escribe solo la ingesta de entrantes, que es quien la abre de verdad.
-    if (!isWhatsappWindowOpen(conv) && !templateInfo) {
+    // La ventana se mide contra el número por el que SALE este mensaje: si el
+    // contacto escribió a otro de nuestros números, aquí no hay ventana ninguna
+    // (Meta la lleva por pareja número-contacto) y el texto libre se perdería.
+    if (!isWhatsappWindowOpen(conv, new Date(), account._id) && !templateInfo) {
       return { ok: false, skipped: true, reason: 'out_of_window' };
     }
   }
@@ -908,6 +945,10 @@ async function send({
       mediaName: mediaName || '',
       mediaSize: Number(mediaSize) || 0,
       templateName: templateInfo?.name || '',
+      // Por qué número SALIÓ. Sin esto, "¿por qué Meta dice que la ventana está
+      // cerrada?" no se podía contestar mirando la base: los 44.720 salientes que
+      // había no decían por dónde habían ido.
+      whatsappAccount: account?._id || null,
       ...(clientId ? { clientId } : {}),
       ...(replyTo ? { replyTo } : {}),
       deliveryStatus: 'queued',

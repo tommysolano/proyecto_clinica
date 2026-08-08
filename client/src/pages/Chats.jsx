@@ -1586,6 +1586,22 @@ export default function Chats() {
                     <div className="mb-2 text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
                       Ventana de 24h cerrada. Solo puedes enviar una <b>plantilla aprobada</b> — pulsa “Plantilla”.
                       {(() => {
+                        // La ventana de 24h es de la pareja (nuestro número, contacto):
+                        // que el paciente escribiera a OTRO de nuestros números no abre
+                        // ninguna ventana en el número por el que va a salir esto. Sin
+                        // decirlo, el aviso parece un error del sistema — el contacto
+                        // escribió hace un rato y aun así "cerrada".
+                        if (activeConv?.window?.otherNumber) {
+                          const last = lastInboundDate(activeConv);
+                          const num = activeConv?.sendingAccount;
+                          return (
+                            <div className="mt-0.5 text-amber-700">
+                              El contacto escribió {last ? <>el <b>{formatDateTimeEc(last)}</b> </> : ''}a <b>otro</b> de
+                              tus números, así que por {num?.label ? <b>{num.label}</b> : 'este número'}
+                              {num?.displayPhone ? ` (${num.displayPhone})` : ''} no hay ventana abierta.
+                            </div>
+                          );
+                        }
                         // El CUÁNDO es la clave: sin la fecha, un chat cuyo último
                         // entrante fue hace dos semanas parece de anoche (en el hilo
                         // solo se ve la hora) y la ventana cerrada parece un error.

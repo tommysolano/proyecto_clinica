@@ -114,6 +114,12 @@ const conversationSchema = new mongoose.Schema(
     // pero la ventana sigue viva 24h desde este momento). Antes, sin este campo,
     // un chat contestado hace minutos aparecía como "ventana cerrada".
     lastInboundAt: { type: Date, default: null },
+    // Número (global) por el que llegó ese último entrante. La ventana de 24h de
+    // Meta es de la pareja (nuestro número, contacto): que el paciente escriba al
+    // WhatsApp de recepción NO abre ventana en el número de la API. Sin este dato
+    // la ventana se calculaba a ciegas y el CRM decía "abierta" mientras Meta
+    // rechazaba el texto con 131047 (ver `inboundCameFromAnotherNumber`).
+    lastInboundAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'WhatsappAccount', default: null },
     attribution: {
       adId: { type: String, trim: true, default: '' },
       campaign: { type: String, trim: true, default: '' },
