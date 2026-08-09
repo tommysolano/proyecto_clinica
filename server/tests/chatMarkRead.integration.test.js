@@ -49,6 +49,47 @@ test('un agente no asignado SI puede marcar como visto una asignacion normal com
   assert.equal(unreadMsgs, 0);
 });
 
+test('un chat leído se puede marcar como no leído y luego volver a leído', async () => {
+  const clinicId = new mongoose.Types.ObjectId();
+  const owner = new mongoose.Types.ObjectId();
+  const conv = await seedAssignedConversation(clinicId, owner);
+  const latest = await Message.create({
+    clinic: clinicId,
+    conversation: conv._id,
+    direction: 'in',
+    body: 'Mensaje más reciente',
+    isRead: false,
+    createdAt: new Date(Date.now() + 1000),
+  });
+
+  // Contrato anterior, sin body: sigue marcando como leído.
+  await H.runController(
+    chat.markConversationRead,
+    H.mockReq(clinicId, owner, {}, { role: 'call_center', params: { id: String(conv._id) } })
+  );
+
+  const unreadRes = await H.runController(
+    chat.markConversationRead,
+    H.mockReq(clinicId, owner, { read: false }, { role: 'call_center', params: { id: String(conv._id) } })
+  );
+  assert.equal(unreadRes.statusCode, 200);
+  assert.equal(unreadRes.payload.read, false);
+  assert.equal(unreadRes.payload.unreadCount, 1);
+  assert.equal((await Conversation.findById(conv._id).lean()).unreadCount, 1);
+
+  const unreadMessages = await Message.find({ conversation: conv._id, direction: 'in', isRead: false }).lean();
+  assert.equal(unreadMessages.length, 1, 'solo el último entrante representa el recordatorio');
+  assert.equal(String(unreadMessages[0]._id), String(latest._id));
+
+  const readAgain = await H.runController(
+    chat.markConversationRead,
+    H.mockReq(clinicId, owner, { read: true }, { role: 'call_center', params: { id: String(conv._id) } })
+  );
+  assert.equal(readAgain.payload.read, true);
+  assert.equal(readAgain.payload.unreadCount, 0);
+  assert.equal(await Message.countDocuments({ conversation: conv._id, direction: 'in', isRead: false }), 0);
+});
+
 test('un agente ajeno no puede marcar como visto un chat restringido por workflow', async () => {
   const clinicId = new mongoose.Types.ObjectId();
   const owner = new mongoose.Types.ObjectId();

@@ -36,7 +36,9 @@ import {
   HiOutlineBarsArrowUp,
   HiOutlinePhoto,
   HiOutlineEllipsisHorizontal,
+  HiOutlineEnvelope,
   HiOutlineEnvelopeOpen,
+  HiOutlineEye,
   HiOutlineUserPlus,
   HiOutlineUsers,
   HiOutlinePlay,
@@ -1282,7 +1284,7 @@ export default function Chats() {
     }
   };
 
-  // OJO: `toggleFeatured`, `markRead` y `selectConversation` van envueltos en
+  // OJO: `toggleFeatured`, `toggleRead` y `selectConversation` van envueltos en
   // useCallback porque se pasan como props a ConversationRow, que está memoizado
   // (ver React.memo abajo). Si se recrearan en cada render, la memoización no
   // serviría de nada: las 300 filas verían props "nuevas" y se repintarían igual.
@@ -1357,22 +1359,34 @@ export default function Chats() {
   };
   const closeChatSearch = () => { setChatSearchOpen(false); setChatSearch(''); setChatMatchIdx(0); };
 
-  // Marca el chat como leído SIN responder: quita la notificación de no leído.
-  const markRead = useCallback(async (conv) => {
+  // Alterna leído/no leído SIN responder. La acción permanece disponible en
+  // ambos estados; al volverlo no leído el servidor crea un pendiente de 1.
+  const toggleRead = useCallback(async (conv) => {
+    const markAsRead = Number(conv?.unreadCount || 0) > 0;
     try {
-      await api.post(`/chats/${conv._id}/read`);
-      setConversations((prev) => prev.map((c) => (c._id === conv._id ? { ...c, unreadCount: 0 } : c)));
-      // Si el chat marcado es el ABIERTO, refresca su snapshot (para que quede
-      // abierto con el badge de no-leído ya en 0 aunque salga de la lista filtrada).
-      setOpenConvSnap((prev) => (prev && prev._id === conv._id ? { ...prev, unreadCount: 0 } : prev));
-      // Si estamos en el filtro "No leídos", el chat ya no pertenece ahí.
-      if (view === 'inbox' && filter === 'unread') {
-        setConversations((prev) => prev.filter((c) => c._id !== conv._id));
-      }
+      const { data } = await api.post(`/chats/${conv._id}/read`, { read: markAsRead });
+      const unreadCount = Number(data?.unreadCount ?? (markAsRead ? 0 : 1));
+      const updated = { ...conv, unreadCount };
+      setConversations((prev) => {
+        let found = false;
+        let next = prev.map((c) => {
+          if (c._id !== conv._id) return c;
+          found = true;
+          return { ...c, unreadCount };
+        });
+        if (view === 'inbox' && filter === 'unread') {
+          if (markAsRead) next = next.filter((c) => c._id !== conv._id);
+          else if (!found) next = [updated, ...next];
+        }
+        return next;
+      });
+      // Mantener actualizado el chat abierto aunque haya salido/entrado en el
+      // filtro "No leídos".
+      setOpenConvSnap((prev) => (prev && prev._id === conv._id ? { ...prev, unreadCount } : prev));
       loadUnreadCounts();
-      toast.success('Marcado como leído');
+      toast.success(markAsRead ? 'Marcado como leído' : 'Marcado como no leído');
     } catch (err) {
-      toast.error(err.response?.data?.message || 'No se pudo marcar como leído');
+      toast.error(err.response?.data?.message || 'No se pudo cambiar el estado de lectura');
     }
   }, [view, filter]);
 
@@ -1537,7 +1551,7 @@ export default function Chats() {
                     active={c._id === activeId}
                     onSelect={selectConversation}
                     onToggleFeatured={toggleFeatured}
-                    onMarkRead={markRead}
+                    onToggleRead={toggleRead}
                   />
                 ))
               )}
@@ -1560,7 +1574,7 @@ export default function Chats() {
                   onOpenOpportunity={() => setOpportunityModal(true)}
                   onCreateAppointment={() => setAppointmentModal(true)}
                   onCreateQuotation={() => setQuotationModal(true)}
-                  onMarkRead={() => markRead(activeConv)}
+                  onToggleRead={() => toggleRead(activeConv)}
                   onEnableCalling={enableCalling}
                   isAdmin={isAdmin}
                   meId={user?._id}
@@ -2672,7 +2686,7 @@ function NewChatModal({ onClose, onCreate }) {
  * ser flechas nuevas en cada render (`onClick={() => toggleFeatured(c)}`), que
  * habrían invalidado la memoización en cada render igualmente.
  */
-const ConversationRow = memo(function ConversationRow({ conv, active, onSelect, onToggleFeatured, onMarkRead }) {
+const ConversationRow = memo(function ConversationRow({ conv, active, onSelect, onToggleFeatured, onToggleRead }) {
   const meta = conv.opportunity?.isOpportunity ? stageMeta(conv.opportunity.stage) : null;
   const select = () => onSelect?.(conv._id);
   return (
@@ -2708,20 +2722,32 @@ const ConversationRow = memo(function ConversationRow({ conv, active, onSelect, 
               {conv.lastMessageDirection === 'out' && <span className="text-slate-400">Tú: </span>}
               {conv.lastMessagePreview || <em className="text-slate-300">Sin mensajes</em>}
             </span>
-            {conv.unreadCount > 0 && (
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onMarkRead?.(conv);
-                }}
-                title="Marcar como leído"
-                className="bg-emerald-600 text-white text-[10px] rounded-full px-1.5 min-w-[18px] text-center border-none cursor-pointer hover:bg-emerald-700 flex items-center gap-0.5 group/unread"
-              >
+            <button
+              onClick={(e) => {
+                e.stopPropagation();
+                onToggleRead?.(conv);
+              }}
+              title={conv.unreadCount > 0 ? 'Marcar como leído' : 'Marcar como no leído'}
+              aria-label={conv.unreadCount > 0 ? 'Marcar como leído' : 'Marcar como no leído'}
+              className={`text-[10px] rounded-full px-1.5 min-w-[18px] min-h-[18px] text-center cursor-pointer flex items-center justify-center gap-0.5 group/unread ${
+                conv.unreadCount > 0
+                  ? 'bg-emerald-600 text-white border border-emerald-600 hover:bg-emerald-700'
+                  : 'bg-white text-slate-500 border border-slate-300 hover:bg-slate-100 hover:text-slate-700'
+              }`}
+            >
+              {conv.unreadCount > 0 ? (
+                <>
                 <HiOutlineEnvelopeOpen className="w-3 h-3 hidden group-hover/unread:inline" />
                 <span className="group-hover/unread:hidden">{conv.unreadCount}</span>
                 <span className="hidden group-hover/unread:inline">Leído</span>
-              </button>
-            )}
+                </>
+              ) : (
+                <>
+                  <HiOutlineEnvelope className="w-3 h-3" />
+                  <span className="hidden group-hover/unread:inline">No leído</span>
+                </>
+              )}
+            </button>
           </div>
           <div className="flex items-center gap-1 mt-1">
             {meta && (
@@ -2795,7 +2821,7 @@ function HeaderActionsMenu({ actions }) {
   );
 }
 
-function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpportunity, onCreateAppointment, onCreateQuotation, onMarkRead, onEnableCalling, isAdmin, meId, calling, onCall, onBack, onToggleInfo, onToggleSearch, searchActive }) {
+function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpportunity, onCreateAppointment, onCreateQuotation, onToggleRead, onEnableCalling, isAdmin, meId, calling, onCall, onBack, onToggleInfo, onToggleSearch, searchActive }) {
   const canTake = !conv.assignedTo || String(conv.assignedTo._id || conv.assignedTo) !== String(meId);
   // "Esperando respuesta" cuando el último mensaje es entrante (del paciente).
   const waitingReply = conv.lastMessageDirection === 'in';
@@ -2818,7 +2844,12 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpport
     },
     conv.patient && { key: 'appt', label: 'Crear cita', icon: HiOutlineCalendarDays, iconClass: 'text-indigo-600', onClick: onCreateAppointment },
     { key: 'quote', label: 'Cotización', icon: HiOutlineDocumentDuplicate, iconClass: 'text-amber-600', onClick: onCreateQuotation },
-    conv.unreadCount > 0 && { key: 'read', label: 'Marcar como leído', icon: HiOutlineEnvelopeOpen, onClick: onMarkRead },
+    {
+      key: 'read',
+      label: conv.unreadCount > 0 ? 'Marcar como leído' : 'Marcar como no leído',
+      icon: conv.unreadCount > 0 ? HiOutlineEnvelopeOpen : HiOutlineEnvelope,
+      onClick: onToggleRead,
+    },
     canEnableCalls && { key: 'enablecall', label: 'Habilitar llamadas', icon: HiOutlinePhone, iconClass: 'text-emerald-600', onClick: onEnableCalling },
   ].filter(Boolean);
 
@@ -3300,6 +3331,10 @@ const MEDIA_LABEL = {
 
 function MessageMedia({ msg, isOut, onRetryMedia }) {
   const [retrying, setRetrying] = useState(false);
+  // Las fotos que envía el contacto empiezan protegidas. El estado vive por
+  // burbuja (MessageBubble usa msg._id como key), así revelar una no descubre las
+  // demás ni afecta fotos de otros chats.
+  const [imageRevealed, setImageRevealed] = useState(false);
   const url = msg.mediaUrl;
   const type = msg.mediaType || '';
   if (!url) {
@@ -3358,12 +3393,35 @@ function MessageMedia({ msg, isOut, onRetryMedia }) {
     );
   }
   if (isImage) {
+    const protectedImage = !isOut && !imageRevealed;
     return (
-      <div className="relative inline-block mb-1">
-        <a href={url} target="_blank" rel="noreferrer" className="block">
-          <img src={url} alt="adjunto" className="rounded-lg max-h-60 w-auto block" />
-        </a>
-        <MediaDownloadButton msg={msg} />
+      <div className="relative inline-block mb-1 overflow-hidden rounded-lg bg-slate-200">
+        {protectedImage ? (
+          <div className="relative">
+            <img
+              src={url}
+              alt="Imagen recibida oculta"
+              className="rounded-lg max-h-60 w-auto block blur-xl scale-110 select-none pointer-events-none"
+            />
+            <div className="absolute inset-0 flex items-center justify-center bg-slate-900/30 p-3">
+              <button
+                type="button"
+                onClick={() => setImageRevealed(true)}
+                aria-label="Ver imagen recibida"
+                className="inline-flex items-center gap-1.5 rounded-full border border-white/40 bg-slate-950/80 px-3 py-1.5 text-xs font-semibold text-white shadow-lg cursor-pointer hover:bg-slate-950 focus:outline-none focus:ring-2 focus:ring-white/80"
+              >
+                <HiOutlineEye className="w-4 h-4" /> Ver imagen
+              </button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <a href={url} target="_blank" rel="noreferrer" className="block">
+              <img src={url} alt="adjunto" className="rounded-lg max-h-60 w-auto block" />
+            </a>
+            <MediaDownloadButton msg={msg} />
+          </>
+        )}
       </div>
     );
   }
@@ -3475,7 +3533,7 @@ function TypingIndicator({ agents = [] }) {
       : `${names[0]} y ${names.length - 1} asesores más están escribiendo`;
 
   return (
-    <div className="px-4 py-1.5 bg-slate-50 border-t border-slate-100" aria-live="polite">
+    <div className="px-4 py-1.5 bg-slate-50 border-t border-slate-100 flex justify-end" aria-live="polite">
       <div className="inline-flex items-center gap-2 rounded-full bg-white border border-emerald-200 shadow-sm px-3 py-1.5 text-xs text-emerald-700">
         <span className="font-medium">{label}</span>
         <span className="inline-flex items-end gap-0.5 h-3" aria-hidden="true">

@@ -356,10 +356,10 @@ async function findEmailInConversation(conversationId) {
 }
 
 /**
- * Marca una conversación como leída: pone el contador de no leídos en 0 y marca
- * los entrantes como leídos, SIN necesidad de responder. Es un estado interno del
- * CRM (nunca se manda "visto" a WhatsApp), para poder quitar la notificación de un
- * chat que ya se atendió por otra vía.
+ * Cambia el estado leído/no leído de una conversación, SIN necesidad de responder.
+ * Es un estado interno del CRM (nunca se manda "visto" a WhatsApp):
+ *   - read=true (default compatible): contador 0 y todos los entrantes leídos.
+ *   - read=false: contador mínimo 1 y solo el último entrante vuelve a no leído.
  */
 /**
  * Contadores para los badges de la cabecera de la bandeja:
@@ -399,16 +399,34 @@ exports.markConversationRead = async (req, res) => {
     if (!canReplyConversation(req, conv)) {
       return res.status(403).json({ message: 'No tienes acceso a la bandeja de chats' });
     }
-    conv.unreadCount = 0;
-    await conv.save();
-    await Message.updateMany(
-      { conversation: conv._id, direction: 'in', isRead: false },
-      { isRead: true }
-    );
-    emitToCallCenter('chat:updated', { id: conv._id });
-    res.json({ ok: true, unreadCount: 0 });
+    // Omitir `read` mantiene el contrato anterior del endpoint: marcar leído.
+    const read = req.body?.read !== false;
+    if (read) {
+      conv.unreadCount = 0;
+      await Promise.all([
+        conv.save(),
+        Message.updateMany(
+          { conversation: conv._id, direction: 'in', isRead: false },
+          { isRead: true }
+        ),
+      ]);
+    } else {
+      // "Marcar como no leído" crea UN pendiente, como WhatsApp. No revierte
+      // todo el historial: solo el último entrante representa el recordatorio.
+      conv.unreadCount = Math.max(1, Number(conv.unreadCount) || 0);
+      await Promise.all([
+        conv.save(),
+        Message.findOneAndUpdate(
+          { conversation: conv._id, direction: 'in' },
+          { isRead: false },
+          { sort: { createdAt: -1 } }
+        ),
+      ]);
+    }
+    emitToCallCenter('chat:updated', { id: conv._id, unreadCount: conv.unreadCount });
+    res.json({ ok: true, read, unreadCount: conv.unreadCount });
   } catch (err) {
-    res.status(500).json({ message: 'Error al marcar como leído', error: err.message });
+    res.status(500).json({ message: 'Error al cambiar el estado de lectura', error: err.message });
   }
 };
 
