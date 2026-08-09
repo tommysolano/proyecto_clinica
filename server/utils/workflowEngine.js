@@ -9,6 +9,8 @@ const Product = require('../models/Product');
 const User = require('../models/User');
 const ReviewRequest = require('../models/ReviewRequest');
 const messaging = require('./messaging');
+// Etapas del embudo: fuente ÚNICA de lectura/escritura (ver utils/opportunities.js).
+const opportunities = require('./opportunities');
 const { emitToClinic, emitToUser, emitToCallCenter } = require('../realtime');
 const { DOMAIN_EVENTS, onDomainEvent } = require('./events');
 const { isWindowActive, nextAllowedTime, isAlwaysQuiet, describeWindow } = require('./sendWindow');
@@ -388,20 +390,7 @@ async function applyTag(patient, conversation, tag, { remove = false } = {}) {
  */
 async function applyOpportunityStage(conversation, stage) {
   if (!conversation || !stage) return;
-  const list = Array.isArray(conversation.opportunities) ? conversation.opportunities : [];
-  if (list.length === 0) {
-    conversation.opportunities = [{ isOpportunity: true, stage, createdAt: new Date() }];
-  } else {
-    const primary = list[list.length - 1];
-    primary.isOpportunity = true;
-    primary.stage = stage;
-    if (stage === 'ganado' && !primary.convertedAt) primary.convertedAt = new Date();
-  }
-  conversation.markModified('opportunities');
-  // Espejo legacy = última del array (misma regla que el chatController).
-  const primary = conversation.opportunities[conversation.opportunities.length - 1];
-  conversation.opportunity = primary?.toObject ? primary.toObject() : { ...primary };
-  conversation.markModified('opportunity');
+  opportunities.applyStage(conversation, stage);
   await conversation.save();
   try {
     emitToCallCenter('chat:opportunity', { conversationId: conversation._id });
@@ -447,7 +436,10 @@ async function applyOpportunity(conversation, data = {}, { clinicId, patient, ct
   const name = rendered
     || [interestedIn.map((i) => i.name).join(', ') || 'Oportunidad', contacto].filter(Boolean).join(' — ').slice(0, 120);
 
-  const list = Array.isArray(conversation.opportunities) ? conversation.opportunities : [];
+  // Un chat antiguo con la oportunidad SOLO en el espejo legacy se sube primero
+  // al array: si no, "actualizar la existente" creaba una segunda y la del espejo
+  // desaparecía al recalcularlo.
+  const list = opportunities.ensureArray(conversation);
   const reuse = data.ifExists !== 'new' && list.length > 0;
   if (reuse) {
     const primary = list[list.length - 1];
@@ -481,10 +473,8 @@ async function applyOpportunity(conversation, data = {}, { clinicId, patient, ct
     ];
   }
   conversation.markModified('opportunities');
-  // Espejo legacy = última del array (misma regla que el chatController).
-  const primary = conversation.opportunities[conversation.opportunities.length - 1];
-  conversation.opportunity = primary?.toObject ? primary.toObject() : { ...primary };
-  conversation.markModified('opportunity');
+  // Espejo legacy = última del array (regla única en utils/opportunities.js).
+  opportunities.syncPrimaryOpportunity(conversation);
   await conversation.save();
   try {
     emitToCallCenter('chat:opportunity', { conversationId: conversation._id });
@@ -499,10 +489,7 @@ async function applyOpportunity(conversation, data = {}, { clinicId, patient, ct
  * canónica, misma regla que el chatController/applyOpportunityStage) con
  * respaldo en el espejo legacy `opportunity`.
  */
-function primaryOpportunity(conversation) {
-  const list = Array.isArray(conversation?.opportunities) ? conversation.opportunities : [];
-  return list.length ? list[list.length - 1] : conversation?.opportunity || null;
-}
+const primaryOpportunity = opportunities.primaryOpportunity;
 
 /**
  * Valores de una condición para los operadores de lista ('in' / 'nin').
@@ -530,6 +517,18 @@ function matchScalar(actual, cond) {
     case 'nin': return !conditionValues(cond).includes(a);
     default: return a === v; // eq
   }
+}
+
+/**
+ * Compara un valor del contexto que puede tener VARIOS candidatos (las etapas de
+ * todas las oportunidades del chat). Con operadores positivos basta con que UNO
+ * coincida; con los negativos ('distinto de', 'no está en') se exige que
+ * NINGUNO coincida, que es lo que la gente entiende por "no está en agendado".
+ */
+function matchScalarAny(values, cond) {
+  const list = Array.isArray(values) && values.length ? values : [''];
+  const negative = cond.op === 'neq' || cond.op === 'nin';
+  return negative ? list.every((v) => matchScalar(v, cond)) : list.some((v) => matchScalar(v, cond));
 }
 
 // Compara una LISTA del contexto (etiquetas del paciente / del chat / de la oportunidad).
@@ -563,7 +562,11 @@ function matchNumber(actual, cond) {
  * conversación y el contexto de la inscripción. PURO y testeable.
  */
 function evaluateSingleCondition(cond = {}, { patient, conversation, context } = {}) {
-  const opp = primaryOpportunity(conversation);
+  // La oportunidad "de la que va" el flujo: si la inscripción nació de un cambio
+  // de etapa, la que está EN ESA etapa; si no, la principal. Antes era siempre la
+  // última del array, así que en un chat con varias oportunidades las condiciones
+  // se evaluaban contra una que no tenía nada que ver con el evento.
+  const opp = opportunities.relevantOpportunity(conversation, context);
   switch (cond.field) {
     case 'clinic':
       // Sucursal donde ocurrió el evento que inscribió el flujo (cita/venta).
@@ -575,9 +578,13 @@ function evaluateSingleCondition(cond = {}, { patient, conversation, context } =
     case 'opportunityTag':
       return matchList(opp?.tags, cond);
     case 'stage':
-      // Etapa del embudo: la de la oportunidad principal del chat y, si el flujo
-      // se inscribió por el disparador 'opportunity_stage', la del propio evento.
-      return matchScalar(opp?.stage || context?.stage || '', cond);
+      // Etapa del embudo. Se comparan las etapas de TODAS las oportunidades del
+      // chat (más la del evento que inscribió el flujo). Antes se miraba solo la
+      // ÚLTIMA del array, con la del evento como mero respaldo: en un chat con
+      // varias oportunidades —o cuando la etapa se había movido en otra— la
+      // condición "etapa = agendado" daba falso y el flujo moría ahí, aunque el
+      // chat SÍ estuviera en esa etapa. Era el "las etapas no funcionan".
+      return matchScalarAny(opportunities.stageCandidates(conversation, context), cond);
     case 'opportunityValue':
       return matchNumber(opp?.expectedValue, cond);
     case 'opportunityName':

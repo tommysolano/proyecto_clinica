@@ -57,10 +57,12 @@ async function resolveWabaId(override) {
       (await WhatsappAccount.findOne({
         connectionType: 'cloud_api',
         isDefault: true,
+        archivedAt: null,
         businessAccountId: { $nin: ['', null] },
       })) ||
       (await WhatsappAccount.findOne({
         connectionType: 'cloud_api',
+        archivedAt: null,
         businessAccountId: { $nin: ['', null] },
       }));
     return acc?.businessAccountId || '';

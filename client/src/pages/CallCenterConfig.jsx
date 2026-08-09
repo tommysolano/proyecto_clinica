@@ -1028,7 +1028,9 @@ function WhatsappNumbersManager() {
       toast.success(
         r.data?.movedTo
           ? `Número eliminado · ${r.data.conversations} chats pasados a "${r.data.movedTo}"`
-          : 'Número eliminado'
+          : r.data?.orphaned
+            ? `Número eliminado · sus ${r.data.orphaned} chats vuelven solos si reconectas este teléfono`
+            : 'Número eliminado'
       );
       loadHealth();
     } catch (err) {
@@ -1425,11 +1427,15 @@ function WhatsappNumbersManager() {
               Vas a eliminar <b>{deleteModal.acc.label}</b>
               {deleteModal.acc.displayPhone ? ` (${deleteModal.acc.displayPhone})` : ''}.
             </p>
+            <div className="text-xs text-emerald-800 bg-emerald-50 border border-emerald-200 rounded-lg px-3 py-2">
+              Sus conversaciones <b>no se pierden</b>: el número queda guardado con todo su historial. Si más adelante
+              vuelves a conectar <b>este mismo teléfono</b> —aunque sea creándolo de nuevo— los chats, el historial y la
+              ventana de 24 h vuelven a él solos.
+            </div>
             <div className="text-xs text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-              Sus conversaciones tienen que quedarse con algún número. Si lo que hiciste fue reconectar el mismo teléfono
-              como un número nuevo, elígelo aquí: los chats y su historial pasan a él y las respuestas siguen saliendo
-              por el teléfono que el paciente conoce. Si no eliges ninguno, esos chats quedan marcados como huérfanos y
-              solo podrán recibir plantillas hasta que los traspases desde el diagnóstico.
+              Elige un destino solo si el teléfono <b>no va a volver</b> y quieres que otro número se quede desde ya con
+              sus chats. Mientras no vuelva ni se traspase, esas conversaciones solo podrán recibir plantillas (su
+              ventana de 24 h es de un número que no está en línea).
             </div>
             <label className="block text-xs font-medium text-slate-600">
               Traspasar las conversaciones a
@@ -1438,7 +1444,7 @@ function WhatsappNumbersManager() {
                 onChange={(e) => setDeleteModal((m) => ({ ...m, replacementId: e.target.value }))}
                 className="mt-1 w-full px-3 py-2 border border-slate-200 rounded-lg text-sm bg-white cursor-pointer"
               >
-                <option value="">Ninguno — decidirlo después (quedarán huérfanas)</option>
+                <option value="">Ninguno — el número volverá (recuperará sus chats solo)</option>
                 {accounts
                   .filter((a) => a._id !== deleteModal.acc._id && a.enabled)
                   .map((a) => (

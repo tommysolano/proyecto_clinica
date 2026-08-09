@@ -23,6 +23,20 @@ const whatsappAccountSchema = new mongoose.Schema(
     displayPhone: { type: String, trim: true, default: '' }, // E.164 visible (ingresado por el usuario)
     connectedPhone: { type: String, trim: true, default: '' }, // el que reporta WhatsApp al vincular por QR
 
+    // ── Identidad ESTABLE del número (ver utils/whatsappIdentity.js) ──
+    // La identidad de un número es SU TELÉFONO, no el `_id` de este documento:
+    // borrar el número y volver a crearlo dejaba 4.585 chats apuntando a un id
+    // inexistente, respondiéndose por el número por defecto (Meta 131047).
+    phoneKey: { type: String, trim: true, default: '', index: true }, // solo dígitos
+    previousPhoneKeys: { type: [String], default: [] }, // teléfonos anteriores de esta conexión
+    // Ids de documentos ANTERIORES de este MISMO número (borrado y vuelto a
+    // crear) cuyo historial absorbió esta cuenta. La resolución del número de
+    // salida y la ventana de 24h los tratan como si fueran este mismo id.
+    previousIds: { type: [mongoose.Schema.Types.ObjectId], default: [], index: true },
+    // Borrado LÓGICO. Un número borrado se archiva en vez de desaparecer: así
+    // ningún chat queda apuntando a la nada mientras se reconecta el número.
+    archivedAt: { type: Date, default: null, index: true },
+
     // ── Cloud API (Meta) ──
     phoneNumberId: { type: String, trim: true, default: '' }, // PHONE_NUMBER_ID (clave para enrutar webhooks)
     businessAccountId: { type: String, trim: true, default: '' }, // WABA ID

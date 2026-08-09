@@ -33,9 +33,17 @@ function argValue(name) {
   return a ? a.split('=')[1] : null;
 }
 
-/** Números enlazados en conversaciones que ya no existen en la colección. */
+/**
+ * Números enlazados en conversaciones que ya no están en uso.
+ *
+ * Un id cuenta como VIVO si es el de un número activo o uno de los `previousIds`
+ * que ese número absorbió (mismo teléfono reconectado): esos se resuelven solos
+ * y no hay nada que remapear a mano. Un número ARCHIVADO sí sale marcado: su
+ * teléfono no ha vuelto todavía.
+ */
 async function listarHuerfanos() {
-  const vivos = new Set((await WhatsappAccount.find().select('_id').lean()).map((a) => String(a._id)));
+  const activos = await WhatsappAccount.find({ archivedAt: null }).select('_id previousIds').lean();
+  const vivos = new Set(activos.flatMap((a) => [String(a._id), ...(a.previousIds || []).map(String)]));
   const grupos = await Conversation.aggregate([
     { $match: { whatsappAccount: { $ne: null } } },
     { $group: { _id: '$whatsappAccount', chats: { $sum: 1 }, ultimo: { $max: '$lastMessageAt' } } },
@@ -45,12 +53,15 @@ async function listarHuerfanos() {
   for (const g of grupos) {
     const vivo = vivos.has(String(g._id));
     console.log(
-      `  ${g._id} → ${g.chats} chats · último mensaje ${g.ultimo ? new Date(g.ultimo).toISOString() : '-'} · ${vivo ? 'VIVO' : '*** BORRADO ***'}`
+      `  ${g._id} → ${g.chats} chats · último mensaje ${g.ultimo ? new Date(g.ultimo).toISOString() : '-'} · ${vivo ? 'VIVO' : '*** SIN NÚMERO EN LÍNEA ***'}`
     );
   }
   console.log('\nNúmeros existentes (destinos posibles):');
-  for (const a of await WhatsappAccount.find().select('label connectionType displayPhone connectedPhone enabled').lean()) {
-    console.log(`  ${a._id} · ${a.label} · ${a.connectionType} · ${a.displayPhone || a.connectedPhone || '-'} · enabled=${a.enabled}`);
+  for (const a of await WhatsappAccount.find().select('label connectionType displayPhone connectedPhone enabled archivedAt phoneKey').lean()) {
+    console.log(
+      `  ${a._id} · ${a.label} · ${a.connectionType} · ${a.displayPhone || a.connectedPhone || '-'} · ` +
+      `tel=${a.phoneKey || '-'} · enabled=${a.enabled}${a.archivedAt ? ' · ARCHIVADO' : ''}`
+    );
   }
 }
 

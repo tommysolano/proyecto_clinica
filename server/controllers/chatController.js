@@ -9,6 +9,9 @@ const Quotation = require('../models/Quotation');
 const { emitToClinic, emitToUser, emitToCallCenter } = require('../realtime');
 const messaging = require('../utils/messaging');
 const chatMedia = require('../utils/chatMedia');
+// Etapas del embudo: fuente ÚNICA de lectura y escritura (array canónico +
+// espejo legacy). Ver utils/opportunities.js.
+const opportunities = require('../utils/opportunities');
 const { verifyMetaSignature } = require('../utils/metaWebhook');
 const { phoneSearchRegex } = require('../utils/phoneNormalize');
 
@@ -109,8 +112,13 @@ exports.listConversations = async (req, res) => {
     // Los destacados viven en su propia pestaña: se excluyen del listado "Todos"
     // para que no anclen chats viejos sobre los de actividad reciente.
     if (excludeFeatured === 'true') filter.isFeatured = { $ne: true };
-    if (opportunity === 'true') filter['opportunity.isOpportunity'] = true;
-    if (stage) filter['opportunity.stage'] = stage;
+    // Oportunidad / etapa: se mira el ARRAY y el espejo legacy. Filtrando solo por
+    // el espejo, un chat con varias oportunidades solo aparecía en la etapa de la
+    // ÚLTIMA. Va en `$and` para no pelearse con el `$or` de la búsqueda libre.
+    const and = [];
+    if (opportunity === 'true') and.push(opportunities.hasOpportunityFilter());
+    if (stage) and.push(opportunities.stageFilter(stage));
+    if (and.length) filter.$and = and;
     if (assigned === 'me') filter.assignedTo = req.user._id;
     if (assigned === 'unassigned') filter.assignedTo = null;
     if (agent && mongoose.isValidObjectId(agent)) filter.assignedTo = agent;
@@ -193,11 +201,21 @@ exports.listConversations = async (req, res) => {
 async function loadSendingAccounts() {
   try {
     const WhatsappAccount = require('../models/WhatsappAccount');
-    const accounts = await WhatsappAccount.find({ enabled: true })
-      .select('_id label connectionType displayPhone connectedPhone isDefault')
+    const accounts = await WhatsappAccount.find({ enabled: true, archivedAt: null })
+      .select('_id label connectionType displayPhone connectedPhone isDefault previousIds')
       .sort({ isDefault: -1, createdAt: 1 })
       .lean();
-    return { byId: new Map(accounts.map((a) => [String(a._id), a])), fallback: accounts[0] || null };
+    // El mapa indexa también los ids ANTERIORES de cada número (se borró y se
+    // volvió a conectar el mismo teléfono): un chat que recuerde uno de esos
+    // sigue resolviendo a SU número, no al número por defecto.
+    const byId = new Map();
+    for (const a of accounts) {
+      byId.set(String(a._id), a);
+      for (const prev of a.previousIds || []) {
+        if (!byId.has(String(prev))) byId.set(String(prev), a);
+      }
+    }
+    return { byId, fallback: accounts[0] || null };
   } catch {
     return { byId: new Map(), fallback: null };
   }
@@ -234,7 +252,9 @@ function resolveSendingAccount(conv, accounts) {
 function decorateConversation(o, accounts) {
   const account = resolveSendingAccount(o, accounts);
   o.effectiveConnectionType = account?.connectionType || 'cloud_api';
-  o.window = messaging.describeWhatsappWindow(o, o.effectiveConnectionType, new Date(), account?._id || null);
+  // La cuenta ENTERA (no su id): lleva `previousIds` y con ellos la ventana
+  // reconoce como suyos los chats del mismo número antes de reconectarlo.
+  o.window = messaging.describeWhatsappWindow(o, o.effectiveConnectionType, new Date(), account || null);
   o.sendingAccount = account
     ? {
         _id: account._id,
@@ -616,6 +636,15 @@ exports.toggleFeatured = async (req, res) => {
   }
 };
 
+/**
+ * POST /chats/:id/opportunity — endpoint LEGACY de "la oportunidad del chat".
+ *
+ * Escribe sobre la oportunidad PRINCIPAL del array (creándola si el chat no
+ * tenía ninguna) y deriva de ahí el espejo. Antes tocaba solo `conv.opportunity`:
+ * el cambio no llegaba ni al embudo ni a las condiciones de los flujos, y en
+ * cuanto alguien editaba las oportunidades desde el modal, `syncPrimaryOpportunity`
+ * lo sobrescribía desde el array y lo escrito aquí desaparecía.
+ */
 exports.setOpportunity = async (req, res) => {
   try {
     const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
@@ -623,7 +652,11 @@ exports.setOpportunity = async (req, res) => {
     if (!canMutateConversation(req, conv)) {
       return res.status(403).json({ message: 'No puedes crear oportunidad en esta conversación' });
     }
-    const op = conv.opportunity || {};
+    opportunities.ensureArray(conv);
+    if (!conv.opportunities.length) {
+      conv.opportunities = [{ isOpportunity: true, stage: 'nuevo', createdAt: new Date() }];
+    }
+    const op = conv.opportunities[conv.opportunities.length - 1];
     const prevStage = op.isOpportunity ? op.stage : null;
     op.isOpportunity = true;
     if (req.body.stage) op.stage = req.body.stage;
@@ -639,7 +672,8 @@ exports.setOpportunity = async (req, res) => {
     if (req.body.lostReason !== undefined) op.lostReason = req.body.lostReason;
     if (req.body.stage === 'ganado' && !op.convertedAt) op.convertedAt = new Date();
     if (!op.createdAt) op.createdAt = new Date();
-    conv.opportunity = op;
+    conv.markModified('opportunities');
+    opportunities.syncPrimaryOpportunity(conv);
     await conv.save();
     if (req.body.stage && req.body.stage !== prevStage) notifyOpportunityStage(conv, req.body.stage);
     res.json(conv);
@@ -655,7 +689,11 @@ exports.removeOpportunity = async (req, res) => {
     if (!canMutateConversation(req, conv)) {
       return res.status(403).json({ message: 'No puedes modificar esta conversación' });
     }
-    conv.opportunity = { isOpportunity: false, stage: 'nuevo' };
+    // Se vacía el array TAMBIÉN: limpiar solo el espejo dejaba las oportunidades
+    // vivas en el embudo y en las condiciones de los flujos ("la borré y sigue ahí").
+    conv.opportunities = [];
+    conv.markModified('opportunities');
+    opportunities.syncPrimaryOpportunity(conv);
     await conv.save();
     res.json(conv);
   } catch (err) {
@@ -726,18 +764,9 @@ const withPatientName = async (conv) => {
  * `conv.opportunities`. El panel lateral, los listados y el embudo leen
  * `conv.opportunity`; sin esta sincronización las ediciones del array no se
  * reflejan en la UI ("se edita y no se guarda"). La oportunidad principal es la
- * más reciente (última del array).
+ * más reciente (última del array). Regla ÚNICA en utils/opportunities.js.
  */
-const syncPrimaryOpportunity = (conv) => {
-  const list = Array.isArray(conv.opportunities) ? conv.opportunities : [];
-  if (list.length === 0) {
-    conv.opportunity = { isOpportunity: false, stage: 'nuevo' };
-  } else {
-    const primary = list[list.length - 1];
-    conv.opportunity = primary?.toObject ? primary.toObject() : { ...primary };
-  }
-  conv.markModified('opportunity');
-};
+const syncPrimaryOpportunity = opportunities.syncPrimaryOpportunity;
 
 /**
  * Emite el evento de dominio "la oportunidad entró a la etapa X" para disparar
@@ -1464,23 +1493,14 @@ async function fireAutoMessages({ conv, clinicId, isNewConversation, incomingTex
         isAutoReply: true,
       });
 
-      // Acción: crear oportunidad automáticamente (una sola vez por mensaje entrante).
-      if (rule.createOpportunity && !createdOpportunity && !conv.opportunity?.isOpportunity) {
-        conv.opportunity = {
-          ...(conv.opportunity?.toObject ? conv.opportunity.toObject() : conv.opportunity || {}),
-          isOpportunity: true,
-          stage: rule.opportunityStage || 'nuevo',
+      // Acción: crear oportunidad automáticamente (una sola vez por mensaje
+      // entrante) y SOLO si el chat no tiene ya alguna. La guardia miraba el
+      // espejo legacy, así que en un chat con oportunidades solo en el array
+      // creaba otra en cada mensaje entrante.
+      if (rule.createOpportunity && !createdOpportunity && !opportunities.opportunitiesOf(conv).length) {
+        opportunities.applyStage(conv, rule.opportunityStage || 'nuevo', {
           notes: `Creada automáticamente por flujo "${rule.name}"`,
-          createdAt: new Date(),
-        };
-        if (Array.isArray(conv.opportunities)) {
-          conv.opportunities.push({
-            isOpportunity: true,
-            stage: rule.opportunityStage || 'nuevo',
-            notes: `Flujo: ${rule.name}`,
-            createdAt: new Date(),
-          });
-        }
+        });
         createdOpportunity = true;
       }
     }
@@ -1524,21 +1544,15 @@ async function sendFlowMessage(conv, clinicId, body) {
   });
 }
 
+/**
+ * Paso "oportunidad" de un MessageFlow: mueve la oportunidad del chat a la etapa
+ * del paso, o la crea si no hay ninguna. Antes AÑADÍA una oportunidad nueva al
+ * array en cada ejecución (un chat que pasara tres veces por el flujo acababa con
+ * tres oportunidades duplicadas) y no tocaba el espejo, así que el embudo seguía
+ * mostrando la etapa anterior.
+ */
 async function applyFlowOpportunity(conv, stage) {
-  if (!conv.opportunity?.isOpportunity) {
-    conv.opportunity = {
-      ...(conv.opportunity?.toObject ? conv.opportunity.toObject() : conv.opportunity || {}),
-      isOpportunity: true,
-      stage: stage || 'nuevo',
-      notes: 'Creada automáticamente por flujo',
-      createdAt: new Date(),
-    };
-  } else if (stage) {
-    conv.opportunity.stage = stage;
-  }
-  if (Array.isArray(conv.opportunities)) {
-    conv.opportunities.push({ isOpportunity: true, stage: stage || 'nuevo', createdAt: new Date() });
-  }
+  opportunities.applyStage(conv, stage || 'nuevo', { notes: 'Creada automáticamente por flujo' });
   await conv.save();
   emitToCallCenter('chat:opportunity', { conversationId: conv._id });
 }
@@ -3409,14 +3423,22 @@ exports.getStats = async (req, res) => {
     // sobre los chats que ENTRARON en el periodo.
     const match = { clinic: clinicOid, ...(range ? { createdAt: range } : {}) };
 
-    const [byStatus, opportunities, featuredCount, byAgent] = await Promise.all([
+    // `funnel`, no `opportunities`: ese nombre es el del módulo de etapas.
+    const [byStatus, funnel, featuredCount, byAgent] = await Promise.all([
       Conversation.aggregate([
         { $match: match },
         { $group: { _id: '$status', count: { $sum: 1 } } },
       ]),
+      // Embudo: UNA FILA POR OPORTUNIDAD, no por conversación. Agrupaba por el
+      // espejo legacy `opportunity.stage`, que solo refleja la ÚLTIMA del chat:
+      // un chat con tres oportunidades en tres etapas contaba como una sola, y el
+      // número de "agendados" no cuadraba con la página de Oportunidades (que sí
+      // cuenta por el array). Misma regla de aplanado en utils/opportunities.js.
       Conversation.aggregate([
-        { $match: { ...match, 'opportunity.isOpportunity': true } },
-        { $group: { _id: '$opportunity.stage', count: { $sum: 1 }, value: { $sum: '$opportunity.expectedValue' } } },
+        { $match: match },
+        { $addFields: { _opps: opportunities.AGG_FLATTEN } },
+        { $unwind: '$_opps' },
+        { $group: { _id: '$_opps.stage', count: { $sum: 1 }, value: { $sum: '$_opps.expectedValue' } } },
       ]),
       Conversation.countDocuments({ ...match, isFeatured: true }),
       // Ojo: NO se filtra por assignedTo. Los chats SIN ASIGNAR salen agrupados en
@@ -3541,7 +3563,7 @@ exports.getStats = async (req, res) => {
 
     res.json({
       byStatus,
-      opportunities,
+      opportunities: funnel,
       featuredCount,
       byAgent: rows,
       responseTimes,
@@ -3767,17 +3789,17 @@ exports.createAppointmentFromChat = async (req, res) => {
       });
     }
 
-    // Link primera cita a la oportunidad
-    const prevStage = conv.opportunity?.isOpportunity ? conv.opportunity.stage : null;
-    conv.opportunity = conv.opportunity || {};
-    conv.opportunity.isOpportunity = true;
-    conv.opportunity.stage = 'agendado';
-    conv.opportunity.appointment = created[0]?._id;
-    conv.opportunity.convertedAt = new Date();
+    // Link primera cita a la oportunidad. Se escribe en el ARRAY (fuente única):
+    // antes esto tocaba solo el espejo legacy y pasaban dos cosas —el embudo y la
+    // página de Oportunidades seguían mostrando la etapa vieja, y la siguiente
+    // edición manual borraba el "agendado" y el enlace a la cita al recalcular el
+    // espejo desde el array. Ver utils/opportunities.js.
+    const { changed } = opportunities.applyStage(conv, 'agendado', { appointment: created[0]?._id });
     await conv.save();
     emitToCallCenter('chat:updated', { id: conv._id });
+    emitToCallCenter('chat:opportunity', { conversationId: conv._id });
     // Agendar desde el chat mueve la oportunidad a "agendado" → dispara workflows.
-    if (prevStage !== 'agendado') notifyOpportunityStage(conv, 'agendado');
+    if (changed) notifyOpportunityStage(conv, 'agendado');
 
     res.status(201).json({
       appointment: created[0],

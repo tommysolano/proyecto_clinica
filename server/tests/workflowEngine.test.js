@@ -55,7 +55,10 @@ test('evaluateCondition checks tags', () => {
 });
 
 test('evaluateCondition checks opportunity stage and source', () => {
-  const conversation = { opportunity: { stage: 'agendado' } };
+  // El espejo legacy solo cuenta como oportunidad si dice serlo: `isOpportunity`
+  // en false es justo lo que escribe "quitar oportunidad" (misma regla que el
+  // embudo y el listado global). Ver utils/opportunities.js.
+  const conversation = { opportunity: { isOpportunity: true, stage: 'agendado' } };
   assert.equal(evaluateCondition({ field: 'stage', op: 'eq', value: 'agendado' }, { conversation }), true);
   assert.equal(evaluateCondition({ field: 'stage', op: 'neq', value: 'ganado' }, { conversation }), true);
   assert.equal(evaluateCondition({ field: 'source', op: 'eq', value: 'anuncio' }, { patient: { source: 'anuncio' } }), true);
@@ -169,11 +172,50 @@ test('operadores "es alguno de" / "no es ninguno de" (etapas del embudo)', () =>
 
 test('la etapa sale de opportunities[] (canónico), del espejo legacy o del contexto', () => {
   const c = { field: 'stage', op: 'eq', value: 'ganado' };
-  // Canónico: la ÚLTIMA del array manda sobre el espejo legacy.
-  assert.equal(evaluateSingleCondition(c, { conversation: { opportunity: { stage: 'nuevo' }, opportunities: [{ stage: 'contactado' }, { stage: 'ganado' }] } }), true);
-  assert.equal(evaluateSingleCondition(c, { conversation: { opportunity: { stage: 'ganado' } } }), true);
+  // Canónico: el array manda sobre el espejo legacy.
+  assert.equal(evaluateSingleCondition(c, { conversation: { opportunity: { isOpportunity: true, stage: 'nuevo' }, opportunities: [{ stage: 'contactado' }, { stage: 'ganado' }] } }), true);
+  assert.equal(evaluateSingleCondition(c, { conversation: { opportunity: { isOpportunity: true, stage: 'ganado' } } }), true);
   // Sin conversación cargada, la etapa del evento que inscribió el flujo.
   assert.equal(evaluateSingleCondition(c, { context: { stage: 'ganado' } }), true);
+  // Un espejo "sin oportunidad" no aporta etapa (es lo que deja "quitar oportunidad").
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'exists' }, { conversation: { opportunity: { isOpportunity: false, stage: 'nuevo' } } }), false);
+});
+
+test('la etapa se cumple si CUALQUIERA de las oportunidades del chat está en ella', () => {
+  // El caso que reportaron: el chat tiene dos oportunidades, el agente mueve la
+  // PRIMERA a "agendado" y el flujo pregunta por esa etapa. Antes se miraba solo
+  // la ÚLTIMA del array ('nuevo') y la condición nunca se cumplía.
+  const conversation = { opportunities: [{ stage: 'agendado' }, { stage: 'nuevo' }] };
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'eq', value: 'agendado' }, { conversation }), true);
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'in', values: ['agendado'] }, { conversation }), true);
+  // Los operadores NEGATIVOS exigen que NINGUNA esté en esa etapa.
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'neq', value: 'agendado' }, { conversation }), false);
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'neq', value: 'perdido' }, { conversation }), true);
+  assert.equal(evaluateSingleCondition({ field: 'stage', op: 'nin', values: ['agendado', 'ganado'] }, { conversation }), false);
+  // Y la etapa del EVENTO que inscribió el flujo también cuenta, aunque el chat
+  // todavía no la tenga guardada.
+  assert.equal(
+    evaluateSingleCondition({ field: 'stage', op: 'eq', value: 'ganado' }, { conversation, context: { stage: 'ganado' } }),
+    true
+  );
+});
+
+test('las condiciones de la oportunidad miran la del EVENTO, no siempre la última', () => {
+  // Chat con dos oportunidades; la inscripción vino del cambio de etapa de la
+  // PRIMERA. Las condiciones de etiqueta/valor deben ir sobre esa, no sobre la
+  // última del array (que no tiene nada que ver con el evento).
+  const conversation = {
+    opportunities: [
+      { stage: 'agendado', tags: ['botox'], expectedValue: 900, name: 'Botox — Ana' },
+      { stage: 'nuevo', tags: ['laser'], expectedValue: 100, name: 'Láser — Ana' },
+    ],
+  };
+  const scope = { conversation, context: { stage: 'agendado' } };
+  assert.equal(evaluateSingleCondition({ field: 'opportunityTag', op: 'eq', value: 'botox' }, scope), true);
+  assert.equal(evaluateSingleCondition({ field: 'opportunityValue', op: 'gt', value: '500' }, scope), true);
+  assert.equal(evaluateSingleCondition({ field: 'opportunityName', op: 'contains', value: 'Botox' }, scope), true);
+  // Sin contexto de etapa se sigue usando la principal (la última).
+  assert.equal(evaluateSingleCondition({ field: 'opportunityValue', op: 'gt', value: '500' }, { conversation }), false);
 });
 
 test('condiciones de etiquetas del chat, de la oportunidad y valor esperado', () => {

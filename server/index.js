@@ -216,6 +216,11 @@ connectDB().then(() => {
   // backends corriendo a la vez contra la misma base (uno sin SECRETS_KEY / sin
   // la sesión de WhatsApp Web). Un proceso con JOBS_DISABLED=1 (dev contra prod)
   // late igual — para ser VISIBLE en el diagnóstico — pero nunca toma el arriendo.
+  // Identidad de los números de WhatsApp: rellena `phoneKey` en los que venían de
+  // antes (la identidad de un número es su TELÉFONO, no el id de su documento).
+  // Idempotente y de un par de documentos: puede correrlo cualquier instancia.
+  require('./utils/whatsappIdentity').backfillPhoneKeys().catch(() => {});
+
   const registry = require('./utils/instanceRegistry');
   // Al GANAR el liderazgo: cablear los jobs (una sola vez) + arrancar las sesiones
   // QR. Al PERDERLO: APAGAR las sesiones QR para que el nuevo líder pueda tomarlas
@@ -262,6 +267,9 @@ connectDB().then(() => {
     workflowEngine.subscribeDomainEvents();
     // Meta Conversions API (CAPI): reporta Lead/Schedule/Purchase a Meta si está configurada.
     require('./utils/metaConversions').subscribeDomainEvents();
+    // Agendar una cita mueve la oportunidad del chat a "agendado", venga la cita
+    // del chat, del calendario o de la reserva online (antes solo desde el chat).
+    require('./utils/opportunityAutoStage').subscribeDomainEvents();
     // Cada 20s (antes 60s): así las esperas de menos de un minuto del paso "Esperar
     // (tiempo)" — p. ej. 15/30 segundos entre dos mensajes — se retoman con una
     // resolución razonable en vez de esperar siempre al minuto.

@@ -37,7 +37,7 @@ async function raiseQualityAlert(clinicId, { severity, title, body, meta }) {
 async function findAccountByDisplayPhone(displayPhone) {
   const digits = String(displayPhone || '').replace(/[^\d]/g, '');
   if (!digits) return null;
-  const accounts = await WhatsappAccount.find({ connectionType: 'cloud_api' });
+  const accounts = await WhatsappAccount.find({ connectionType: 'cloud_api', archivedAt: null });
   return (
     accounts.find((a) => String(a.displayPhone || '').replace(/[^\d]/g, '') === digits) ||
     accounts.find((a) => String(a.connectedPhone || '').replace(/[^\d]/g, '') === digits) ||

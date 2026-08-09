@@ -22,8 +22,8 @@ const DEFAULT_API_VERSION = process.env.WHATSAPP_API_VERSION || 'v23.0';
 /** Número por defecto para campañas/workflows (el marcado isDefault, o el más antiguo activo). */
 async function getDefaultAccount() {
   return (
-    (await WhatsappAccount.findOne({ enabled: true, isDefault: true })) ||
-    (await WhatsappAccount.findOne({ enabled: true }).sort({ createdAt: 1 }))
+    (await WhatsappAccount.findOne({ enabled: true, isDefault: true, archivedAt: null })) ||
+    (await WhatsappAccount.findOne({ enabled: true, archivedAt: null }).sort({ createdAt: 1 }))
   );
 }
 
@@ -32,9 +32,22 @@ async function getAccountById(id) {
   return WhatsappAccount.findById(id);
 }
 
+/**
+ * El número que hoy ES ese id: el propio documento o, si se borró y el mismo
+ * teléfono se volvió a conectar en otro, el que heredó su historial. Esto es lo
+ * que impide que un chat de un número reconectado acabe respondiéndose por el
+ * número por defecto (ver utils/whatsappIdentity.js).
+ */
+async function getUsableAccount(id) {
+  if (!id) return null;
+  const acc = await WhatsappAccount.findById(id);
+  if (acc && acc.enabled && !acc.archivedAt) return acc;
+  return require('./whatsappIdentity').findSuccessorAccount(id);
+}
+
 /** Números conectados, el principal primero. */
 async function listEnabledAccounts() {
-  return WhatsappAccount.find({ enabled: true }).sort({ isDefault: -1, createdAt: 1 });
+  return WhatsappAccount.find({ enabled: true, archivedAt: null }).sort({ isDefault: -1, createdAt: 1 });
 }
 
 /**
@@ -50,14 +63,20 @@ async function listEnabledAccounts() {
  */
 async function resolveAccountForConversation(conv) {
   if (conv && conv.whatsappAccount) {
-    const acc = await getAccountById(conv.whatsappAccount);
-    if (acc && acc.enabled) return acc;
+    // `getUsableAccount` (y no `getAccountById`) para que un chat enlazado a un
+    // número que se borró y se volvió a conectar siga saliendo por SU número.
+    const acc = await getUsableAccount(conv.whatsappAccount);
+    if (acc) {
+      // Auto-cura: si respondió el SUCESOR, el chat se re-enlaza al id vivo.
+      if (typeof conv.whatsappAccount !== 'undefined') conv.whatsappAccount = acc._id;
+      return acc;
+    }
   }
   // Número por el que entró el ÚLTIMO mensaje, ya anotado en la conversación: es
   // lo mismo que busca el rodeo por `Message` de abajo, pero sin consulta.
   if (conv && conv.lastInboundAccount) {
-    const acc = await getAccountById(conv.lastInboundAccount);
-    if (acc && acc.enabled) {
+    const acc = await getUsableAccount(conv.lastInboundAccount);
+    if (acc) {
       if (typeof conv.whatsappAccount !== 'undefined') conv.whatsappAccount = acc._id;
       return acc;
     }
@@ -74,8 +93,8 @@ async function resolveAccountForConversation(conv) {
         .select('whatsappAccount')
         .lean();
       if (lastIn?.whatsappAccount) {
-        const acc = await getAccountById(lastIn.whatsappAccount);
-        if (acc && acc.enabled) {
+        const acc = await getUsableAccount(lastIn.whatsappAccount);
+        if (acc) {
           // Auto-cura: enlaza la conversación al número por el que entró el contacto.
           if (typeof conv.whatsappAccount !== 'undefined') conv.whatsappAccount = acc._id;
           return acc;
@@ -91,7 +110,11 @@ async function resolveAccountForConversation(conv) {
 /** Busca la cuenta Cloud API destino de un webhook por su phone_number_id. */
 async function getCloudAccountByPhoneNumberId(phoneNumberId) {
   if (!phoneNumberId) return null;
-  return WhatsappAccount.findOne({ connectionType: 'cloud_api', phoneNumberId: String(phoneNumberId) });
+  return WhatsappAccount.findOne({
+    connectionType: 'cloud_api',
+    phoneNumberId: String(phoneNumberId),
+    archivedAt: null,
+  });
 }
 
 /**
@@ -102,7 +125,7 @@ async function getCloudAccountByPhoneNumberId(phoneNumberId) {
  * pueda reportar exactamente qué campo falta.
  */
 async function getDefaultCloudAccount() {
-  const clouds = await WhatsappAccount.find({ connectionType: 'cloud_api', enabled: true }).sort({
+  const clouds = await WhatsappAccount.find({ connectionType: 'cloud_api', enabled: true, archivedAt: null }).sort({
     isDefault: -1,
     createdAt: 1,
   });
@@ -193,6 +216,7 @@ module.exports = {
   DEFAULT_API_VERSION,
   getDefaultAccount,
   getAccountById,
+  getUsableAccount,
   listEnabledAccounts,
   resolveAccountForConversation,
   getCloudAccountByPhoneNumberId,

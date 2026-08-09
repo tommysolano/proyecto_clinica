@@ -1807,6 +1807,15 @@ async function startClient(key, accountId, userId) {
       lastConnectedAt: new Date(),
       lastDisconnectNeedsQr: false,
     });
+    // La identidad de un número es SU TELÉFONO, no el id de este documento. Aquí
+    // —único momento en que WhatsApp confirma por qué número quedó vinculada la
+    // sesión— se fija esa identidad y, si el número se había borrado y vuelto a
+    // crear, se recupera TODO su historial (chats, ventana de 24h y mensajes).
+    // Sin esto, reconectar creando un número nuevo dejaba los chats colgando de
+    // un id muerto y las respuestas salían por el número por defecto.
+    await require('./whatsappIdentity')
+      .rememberLinkedPhone(accountId, connectedPhone)
+      .catch((e) => console.error('[whatsappQr] identidad del número:', e.message));
     await emitStatus(key, { status: 'connected', connectedPhone }, userId);
     // Todo lo que entró mientras la sesión estuvo caída (o zombi) sigue en el
     // teléfono del contacto y WhatsApp Web lo trae al sincronizar: se reingresa
@@ -2092,6 +2101,12 @@ function healToConnected(key, entry) {
     status: 'connected',
     ...(connectedPhone ? { connectedPhone, lastConnectedAt: new Date() } : {}),
   }).catch(() => {});
+  // Igual que en 'ready': la identidad del número es su teléfono. Este camino
+  // (sesión que se cura sola sin volver a emitir 'ready') también tiene que
+  // anclarla, o un número reconectado por aquí no recuperaría su historial.
+  if (connectedPhone) {
+    require('./whatsappIdentity').rememberLinkedPhone(key, connectedPhone).catch(() => {});
+  }
   emitStatus(key, { status: 'connected', ...(connectedPhone ? { connectedPhone } : {}) }).catch(() => {});
   console.log(`[whatsappQr] estado curado a 'connected' para ${key} (la sesión estaba viva; getState=CONNECTED).`);
 }

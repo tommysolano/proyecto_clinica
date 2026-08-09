@@ -22,9 +22,23 @@ function computeWhatsappWindowExpiresAt(lastIncomingAt = new Date()) {
   return new Date(base.getTime() + WHATSAPP_WINDOW_MS);
 }
 
+/**
+ * ¿Los dos identificadores señalan al MISMO número? Además del id, se aceptan
+ * los documentos ANTERIORES que ese número absorbió (`previousIds`): cuando un
+ * teléfono se borra y se vuelve a conectar nace un documento nuevo, pero sigue
+ * siendo el mismo número. Sin esto, un chat que todavía recuerda el id viejo se
+ * leería como "el contacto escribió a otro de nuestros números" y perdería una
+ * ventana de 24h que de verdad está abierta. Ver utils/whatsappIdentity.js.
+ */
 function sameId(a, b) {
   if (!a || !b) return false;
-  return String(a._id || a) === String(b._id || b);
+  const idA = String(a._id || a);
+  const idB = String(b._id || b);
+  if (idA === idB) return true;
+  return (
+    (b?.previousIds || []).some((id) => String(id) === idA) ||
+    (a?.previousIds || []).some((id) => String(id) === idB)
+  );
 }
 
 /**
@@ -42,10 +56,13 @@ function sameId(a, b) {
  * Solo se afirma la discrepancia cuando SE SABE por dónde entró (`lastInboundAccount`).
  * En los chats antiguos, sin ese dato, se mantiene el comportamiento de siempre:
  * "no lo sé" no puede convertirse en "cerrada" para media bandeja.
+ *
+ * `sendingAccount` admite un id o —mejor— el DOCUMENTO de la cuenta: con él se
+ * comparan también sus `previousIds` (el mismo teléfono antes de reconectarlo).
  */
-function inboundCameFromAnotherNumber(conv, sendingAccountId) {
-  if (!sendingAccountId || !conv?.lastInboundAccount) return false;
-  return !sameId(conv.lastInboundAccount, sendingAccountId);
+function inboundCameFromAnotherNumber(conv, sendingAccount) {
+  if (!sendingAccount || !conv?.lastInboundAccount) return false;
+  return !sameId(conv.lastInboundAccount, sendingAccount);
 }
 
 /**
@@ -67,9 +84,9 @@ function inboundCameFromAnotherNumber(conv, sendingAccountId) {
  * escribían texto libre que NUNCA llegaba al paciente. El respaldo tampoco servía
  * ya para nada: cero conversaciones reales dependían de él.
  */
-function getWhatsappWindowExpiresAt(conv, sendingAccountId = null) {
+function getWhatsappWindowExpiresAt(conv, sendingAccount = null) {
   if (!conv) return null;
-  if (inboundCameFromAnotherNumber(conv, sendingAccountId)) return null;
+  if (inboundCameFromAnotherNumber(conv, sendingAccount)) return null;
   const candidates = [];
   if (conv.window24hExpiresAt) candidates.push(new Date(conv.window24hExpiresAt).getTime());
   if (conv.lastInboundAt) candidates.push(computeWhatsappWindowExpiresAt(conv.lastInboundAt).getTime());
@@ -77,8 +94,8 @@ function getWhatsappWindowExpiresAt(conv, sendingAccountId = null) {
   return new Date(Math.max(...candidates));
 }
 
-function isWhatsappWindowOpen(conv, now = new Date(), sendingAccountId = null) {
-  const expiresAt = getWhatsappWindowExpiresAt(conv, sendingAccountId);
+function isWhatsappWindowOpen(conv, now = new Date(), sendingAccount = null) {
+  const expiresAt = getWhatsappWindowExpiresAt(conv, sendingAccount);
   return Boolean(expiresAt && expiresAt.getTime() > now.getTime());
 }
 
@@ -92,7 +109,7 @@ function isWhatsappWindowOpen(conv, now = new Date(), sendingAccountId = null) {
  * tipo de conexión distinto al que de verdad usa el envío para que el compositor
  * se bloqueara con la ventana abierta (o al revés). Ahora la regla vive SOLO aquí.
  *
- * `connectionType` y `sendingAccountId` son los del número por el que REALMENTE
+ * `connectionType` y `sendingAccount` son los del número por el que REALMENTE
  * saldría el mensaje (los resuelve quien llama, con la misma regla que el envío).
  * Los números QR (WhatsApp Web) no tienen ventana: `applies:false` → siempre abierta.
  *
@@ -103,10 +120,10 @@ function isWhatsappWindowOpen(conv, now = new Date(), sendingAccountId = null) {
  * que la cerró es que el contacto escribió a OTRO de nuestros números, que sin
  * explicación parece directamente un fallo del sistema.
  */
-function describeWhatsappWindow(conv, connectionType, now = new Date(), sendingAccountId = null) {
+function describeWhatsappWindow(conv, connectionType, now = new Date(), sendingAccount = null) {
   const isWhatsapp = (conv?.channel || 'whatsapp') === 'whatsapp';
   const applies = isWhatsapp && connectionType !== 'qr';
-  const expiresAt = isWhatsapp ? getWhatsappWindowExpiresAt(conv, sendingAccountId) : null;
+  const expiresAt = isWhatsapp ? getWhatsappWindowExpiresAt(conv, sendingAccount) : null;
   // Solo un entrante REAL cuenta como "el contacto escribió" (ver
   // getWhatsappWindowExpiresAt): sin él, la UI dice "todavía no te ha escrito".
   const lastInboundAt = conv?.lastInboundAt ? new Date(conv.lastInboundAt) : null;
@@ -118,7 +135,7 @@ function describeWhatsappWindow(conv, connectionType, now = new Date(), sendingA
     lastInboundAt,
     // La ventana existe, pero en OTRO número: el contacto escribió a uno y el
     // envío sale por otro. Sirve para explicarlo en el chat.
-    otherNumber: applies && isWhatsapp && inboundCameFromAnotherNumber(conv, sendingAccountId),
+    otherNumber: applies && isWhatsapp && inboundCameFromAnotherNumber(conv, sendingAccount),
     // Milisegundos que quedan de ventana (0 si está cerrada o no aplica).
     msRemaining: applies && expiresAt ? Math.max(0, expiresAt.getTime() - now.getTime()) : 0,
   };
@@ -911,7 +928,10 @@ async function send({
     // La ventana se mide contra el número por el que SALE este mensaje: si el
     // contacto escribió a otro de nuestros números, aquí no hay ventana ninguna
     // (Meta la lleva por pareja número-contacto) y el texto libre se perdería.
-    if (!isWhatsappWindowOpen(conv, new Date(), account._id) && !templateInfo) {
+    // Se pasa la CUENTA entera (no solo su id): trae `previousIds`, los documentos
+    // anteriores de este mismo teléfono, y sin ellos un chat del número que se
+    // reconectó parecería tener la ventana en otro número. Ver `sameId`.
+    if (!isWhatsappWindowOpen(conv, new Date(), account) && !templateInfo) {
       return { ok: false, skipped: true, reason: 'out_of_window' };
     }
   }
