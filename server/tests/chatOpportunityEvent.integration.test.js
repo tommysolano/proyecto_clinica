@@ -46,6 +46,28 @@ test('crear oportunidad deja un evento interno en el hilo (no se envía al conta
     'el evento no ensucia la vista previa de la lista');
 });
 
+test('cambiar manualmente la etapa deja un evento con etapa anterior, nueva y actor', async () => {
+  const clinicId = new mongoose.Types.ObjectId();
+  const userId = new mongoose.Types.ObjectId();
+  const conv = await Conversation.create({
+    clinic: clinicId,
+    phone: '593999111333',
+    channel: 'whatsapp',
+    opportunities: [{ isOpportunity: true, name: 'Botox', stage: 'interesado' }],
+  });
+  const req = H.mockReq(clinicId, userId, { stage: 'agendado' }, {
+    role: 'call_center', params: { id: String(conv._id), idx: '0' },
+  });
+  req.user.name = 'Laura';
+  const result = await H.runController(chat.updateOpportunityAt, req);
+  assert.equal(result.statusCode, 200);
+
+  const event = await Message.findOne({ conversation: conv._id, eventType: 'opportunity_stage_changed' }).lean();
+  assert.ok(event);
+  assert.match(event.body, /Interesado.*Agendado/);
+  assert.equal(event.sentByName, 'Laura');
+});
+
 test('contadores de no leídos: mine vs all', async () => {
   const clinicId = new mongoose.Types.ObjectId();
   const me = new mongoose.Types.ObjectId();
@@ -58,7 +80,8 @@ test('contadores de no leídos: mine vs all', async () => {
 
   const res = await H.runController(chat.unreadCounts, H.mockReq(clinicId, me, {}, { role: 'call_center' }));
   assert.equal(res.statusCode, 200);
-  // all = chats con unreadCount>0 = 111, 222, 444 = 3. mine = solo 111 = 1.
-  assert.equal(res.payload.all, 3);
+  // El chat 222 pertenece a otro asesor y no entra en sus badges. `all` para un
+  // call center significa "todos los que puede atender": el propio + los libres.
+  assert.equal(res.payload.all, 2);
   assert.equal(res.payload.mine, 1);
 });

@@ -21,6 +21,7 @@ router.delete('/folders', requireRole(...ROLES), ctrl.deleteFolder); // ?path=Ci
 router.get('/', requireRole(...ROLES), ctrl.list);
 // Públicos Personalizados de Meta (selector del nodo de Facebook).
 router.get('/meta/custom-audiences', requireRole(...ROLES), ctrl.listMetaCustomAudiences);
+router.get('/meta/ads', requireRole(...ROLES), ctrl.listMetaAds);
 // Etiquetas en uso (paciente / chat / oportunidad) para los desplegables del
 // nodo Condición. Antes de '/:id' para que no la capture esa ruta.
 router.get('/tags', requireRole(...ROLES), ctrl.listTags);

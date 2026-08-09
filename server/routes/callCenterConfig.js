@@ -9,6 +9,8 @@ router.use(auth, requireClinic, requireRole(...ALLOWED));
 
 router.get('/', ctrl.get);
 router.get('/webhook-urls', ctrl.getWebhookUrls);
+router.get('/agents', ctrl.listAgentSchedules);
+router.put('/agents/:id/schedule', ctrl.updateAgentSchedule);
 router.put('/', ctrl.update);
 router.put('/reputation', ctrl.updateReputation);
 router.post('/ai/test', ctrl.testAi);

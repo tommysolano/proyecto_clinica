@@ -6,7 +6,7 @@ const User = require('../models/User');
 const Appointment = require('../models/Appointment');
 const Product = require('../models/Product');
 const Quotation = require('../models/Quotation');
-const { emitToClinic, emitToUser, emitToCallCenter } = require('../realtime');
+const { emitToClinic, emitToUser, emitToCallCenter, emitChatAssignment } = require('../realtime');
 const messaging = require('../utils/messaging');
 const chatMedia = require('../utils/chatMedia');
 // Etapas del embudo: fuente ÚNICA de lectura y escritura (array canónico +
@@ -14,6 +14,7 @@ const chatMedia = require('../utils/chatMedia');
 const opportunities = require('../utils/opportunities');
 const { verifyMetaSignature } = require('../utils/metaWebhook');
 const { phoneSearchRegex } = require('../utils/phoneNormalize');
+const { workingMsBetween, isWorkingAt } = require('../utils/agentSchedule');
 
 /**
  * Normaliza un número de teléfono a sólo dígitos (sin +, ni espacios).
@@ -27,48 +28,61 @@ function normalizePhone(raw) {
 
 /**
  * Filtro de visibilidad para conversaciones según rol.
- * - admin / marketing: ven todas las conversaciones de la clínica (marketing supervisa al call center).
- * - call_center: ve todas, pero podrá actuar (responder, marcar destacado, etc.)
- *   sólo en aquellas que tenga asignadas o aún sin asignar (se enforcing en endpoints de mutación).
+ * - admin / marketing: ven todas las conversaciones (supervisión).
+ * - call_center: ve chats libres y los asignados a él; los de otro asesor son privados.
  */
 function buildVisibilityFilter(req) {
-  // Por requerimiento, el call center "puede ver todas las citas (chats)" pero solo
-  // editar lo que él creó/atiende. Para listado devolvemos todo en su clínica.
-  return { clinic: req.clinicId };
+  const filter = { clinic: req.clinicId };
+  if (req.role === 'call_center' && !req.user?.isSuperAdmin) {
+    filter.$and = [{ $or: [{ assignedTo: null }, { assignedTo: req.user._id }] }];
+  }
+  return filter;
 }
 
 /**
- * ¿Puede este usuario ADMINISTRAR esta conversación (editar, destacar, crear/
- * modificar/eliminar oportunidades, bloquear, reasignar…)? El call center comparte
- * UNA sola bandeja: cualquier agente del CRM puede hacer TODAS las acciones sobre
- * CUALQUIER chat, esté asignado a quien esté.
- *
- * La asignación (assignedTo) NO es un candado: su única función es que el chat
- * también aparezca en "mis chats asignados" del agente. Antes un chat tomado por
- * un compañero bloqueaba al resto (crear oportunidad, editar, borrar…) con 403,
- * lo que entorpecía el trabajo del equipo. Ahora administrar es de toda la bandeja,
- * igual que responder (canReplyConversation). Solo se excluye a roles ajenos al
- * CRM (p. ej. doctor).
+ * Fuente única del candado: supervisores siempre; asesores solo si está libre o
+ * asignado a ellos. La misma regla se usa para leer, responder y administrar.
  */
+function canAccessConversation(req, conv) {
+  if (req.user?.isSuperAdmin) return true;
+  if (['admin', 'marketing'].includes(req.role)) return true;
+  if (req.role !== 'call_center') return false;
+  if (!conv?.assignedTo) return true;
+  return String(conv.assignedTo?._id || conv.assignedTo) === String(req.user?._id || '');
+}
+
 function canMutateConversation(req, conv) {
-  if (req.user?.isSuperAdmin) return true;
-  return ['admin', 'marketing', 'call_center'].includes(req.role);
+  return canAccessConversation(req, conv);
 }
 
-/**
- * ¿Puede este usuario RESPONDER (enviar mensajes) en esta conversación? El call
- * center comparte UNA sola bandeja: cualquier agente puede contestar cualquier
- * chat, esté asignado a quien esté (la asignación es un indicador de "quién lo
- * atiende", no un candado).
- */
 function canReplyConversation(req, conv) {
-  if (req.user?.isSuperAdmin) return true;
-  return ['admin', 'marketing', 'call_center'].includes(req.role);
+  return canAccessConversation(req, conv);
 }
 
 // Expuestos para pruebas unitarias del modelo de permisos del chat.
+exports.canAccessConversation = canAccessConversation;
 exports.canMutateConversation = canMutateConversation;
 exports.canReplyConversation = canReplyConversation;
+
+// Candado transversal de todas las rutas /chats/:id. Impide abrir por URL o API
+// el chat privado de otro asesor aunque el cliente no lo muestre en su lista.
+exports.requireConversationAccess = async (req, res, next) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) {
+      return res.status(404).json({ message: 'Conversación no encontrada' });
+    }
+    const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId })
+      .select('_id assignedTo');
+    if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
+    if (!canAccessConversation(req, conv)) {
+      return res.status(403).json({ message: 'Este chat está asignado a otro asesor' });
+    }
+    req.chatConversation = conv;
+    return next();
+  } catch (err) {
+    return res.status(500).json({ message: 'Error al validar acceso al chat', error: err.message });
+  }
+};
 
 // Clasifica un tipo MIME en la categoría de media de WhatsApp. Todo lo que no sea
 // imagen/video/audio (PDF, Word, Excel, ZIP…) se envía como DOCUMENTO adjunto.
@@ -115,10 +129,10 @@ exports.listConversations = async (req, res) => {
     // Oportunidad / etapa: se mira el ARRAY y el espejo legacy. Filtrando solo por
     // el espejo, un chat con varias oportunidades solo aparecía en la etapa de la
     // ÚLTIMA. Va en `$and` para no pelearse con el `$or` de la búsqueda libre.
-    const and = [];
+    const and = [...(filter.$and || [])];
+    delete filter.$and;
     if (opportunity === 'true') and.push(opportunities.hasOpportunityFilter());
     if (stage) and.push(opportunities.stageFilter(stage));
-    if (and.length) filter.$and = and;
     if (assigned === 'me') filter.assignedTo = req.user._id;
     if (assigned === 'unassigned') filter.assignedTo = null;
     if (agent && mongoose.isValidObjectId(agent)) filter.assignedTo = agent;
@@ -130,12 +144,15 @@ exports.listConversations = async (req, res) => {
       // 593988535561 y el agente escribe 0988535561, 098 853 5561 o +593…, sin
       // tener que adivinar el formato (ver utils/phoneNormalize.phoneSearchRegex).
       const phoneRegex = phoneSearchRegex(q);
-      filter.$or = [
-        { contactName: regex },
-        { phone: phoneRegex || regex },
-        { lastMessagePreview: regex },
-      ];
+      and.push({
+        $or: [
+          { contactName: regex },
+          { phone: phoneRegex || regex },
+          { lastMessagePreview: regex },
+        ],
+      });
     }
+    if (and.length) filter.$and = and;
 
     // LISTA LIGERA. Medido en el servidor de producción el 25-jul-2026: traer las
     // 300 conversaciones enteras tardaba 5.3 s, y proyectando solo lo necesario
@@ -283,7 +300,7 @@ async function populateConversation(conv) {
 
 exports.getConversation = async (req, res) => {
   try {
-    const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId })
+    const conv = await Conversation.findOne({ _id: req.params.id, ...buildVisibilityFilter(req) })
       .populate('patient', 'firstName lastName cedula phone whatsapp email marketing tags')
       .populate('assignedTo', 'name email')
       .populate('featuredBy', 'name')
@@ -300,7 +317,9 @@ exports.getConversation = async (req, res) => {
     // paciente (ver registerPatientFromChat / findPatientForIncoming).
     const patientId = conv.patient?._id || conv.patient;
     out.linkedConversations = patientId
-      ? await Conversation.find({ clinic: req.clinicId, patient: patientId, _id: { $ne: conv._id } })
+      ? await Conversation.find({
+          ...buildVisibilityFilter(req), patient: patientId, _id: { $ne: conv._id },
+        })
           .select('channel phone lastMessageAt lastMessagePreview unreadCount')
           .sort({ lastMessageAt: -1 })
           .lean()
@@ -356,11 +375,12 @@ async function findEmailInConversation(conversationId) {
  */
 exports.unreadCounts = async (req, res) => {
   try {
-    const base = { clinic: req.clinicId, unreadCount: { $gt: 0 } };
+    const visible = buildVisibilityFilter(req);
+    const base = { ...visible, unreadCount: { $gt: 0 } };
     const [all, mine, featured] = await Promise.all([
       Conversation.countDocuments(base),
       Conversation.countDocuments({ ...base, assignedTo: req.user._id }),
-      Conversation.countDocuments({ clinic: req.clinicId, isFeatured: true }),
+      Conversation.countDocuments({ ...visible, isFeatured: true }),
     ]);
     res.json({ all, mine, featured });
   } catch (err) {
@@ -373,9 +393,8 @@ exports.markConversationRead = async (req, res) => {
     const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
     // Marcar como visto es una acción de BANDEJA (baja el pendiente), no una acción
-    // administrativa: cualquier agente con acceso al chat puede hacerlo, esté el
-    // chat asignado a quien esté — igual que responder. Antes exigía ser el agente
-    // asignado (canMutateConversation) y a los demás les rebotaba con 403.
+    // administrativa: cualquier agente que conserve acceso al chat puede hacerlo.
+    // El middleware ya excluyó al call center cuando pertenece a otro asesor.
     if (!canReplyConversation(req, conv)) {
       return res.status(403).json({ message: 'No tienes acceso a la bandeja de chats' });
     }
@@ -405,6 +424,9 @@ exports.createConversation = async (req, res) => {
     // Detectar duplicado
     let conv = await Conversation.findOne({ clinic: req.clinicId, phone });
     if (conv) {
+      if (!canAccessConversation(req, conv)) {
+        return res.status(403).json({ message: 'Ese contacto ya tiene un chat asignado a otro asesor' });
+      }
       return res.status(200).json(conv);
     }
 
@@ -489,7 +511,9 @@ exports.assignConversation = async (req, res) => {
       return res.status(403).json({ message: 'Solo supervisor/admin pueden reasignar' });
     }
     if (!isSelfTake) {
-      const user = await User.findById(target).select('name');
+      const user = await User.findOne({
+        _id: target, active: true, 'clinics.role': 'call_center',
+      }).select('name');
       if (!user) return res.status(404).json({ message: 'Agente no encontrado' });
       conv.assignedToName = user.name;
     } else {
@@ -498,6 +522,12 @@ exports.assignConversation = async (req, res) => {
     conv.assignedTo = target;
     conv.assignedAt = new Date();
     await conv.save();
+    emitChatAssignment({
+      conversationId: conv._id,
+      assignedTo: conv.assignedTo,
+      assignedToName: conv.assignedToName,
+    });
+    emitToUser(conv.assignedTo, 'chat:assigned', { conversationId: conv._id });
     res.json(conv);
   } catch (err) {
     res.status(500).json({ message: 'Error al asignar conversación', error: err.message });
@@ -582,16 +612,22 @@ async function pickRoundRobinAgent(clinicId) {
   const agents = await User.find({
     active: true,
     'clinics.role': 'call_center',
-  }).select('_id name');
+  }).select('_id name callCenterSchedule');
   if (!agents.length) return null;
+
+  // El reparto automático está ligado a los horarios configurados: un asesor con
+  // horario activo solo participa mientras está en turno. Los asesores sin horario
+  // configurado conservan el comportamiento histórico 24/7.
+  const available = agents.filter((agent) => isWorkingAt(agent.callCenterSchedule, new Date()));
+  if (!available.length) return null;
 
   const counts = await Conversation.aggregate([
     { $match: { clinic: new mongoose.Types.ObjectId(clinicId), status: 'open', assignedTo: { $ne: null } } },
     { $group: { _id: '$assignedTo', count: { $sum: 1 } } },
   ]);
   const byAgent = new Map(counts.map((c) => [String(c._id), c.count]));
-  agents.sort((a, b) => (byAgent.get(String(a._id)) || 0) - (byAgent.get(String(b._id)) || 0));
-  return agents[0];
+  available.sort((a, b) => (byAgent.get(String(a._id)) || 0) - (byAgent.get(String(b._id)) || 0));
+  return available[0];
 }
 
 exports.autoAssign = async (req, res) => {
@@ -605,6 +641,9 @@ exports.autoAssign = async (req, res) => {
     conv.assignedAt = new Date();
     await conv.save();
     emitToUser(agent._id, 'chat:assigned', { conversationId: conv._id });
+    emitChatAssignment({
+      conversationId: conv._id, assignedTo: agent._id, assignedToName: agent.name,
+    });
     res.json(conv);
   } catch (err) {
     res.status(500).json({ message: 'Error al auto-asignar', error: err.message });
@@ -653,7 +692,8 @@ exports.setOpportunity = async (req, res) => {
       return res.status(403).json({ message: 'No puedes crear oportunidad en esta conversación' });
     }
     opportunities.ensureArray(conv);
-    if (!conv.opportunities.length) {
+    const nueva = !conv.opportunities.length;
+    if (nueva) {
       conv.opportunities = [{ isOpportunity: true, stage: 'nuevo', createdAt: new Date() }];
     }
     const op = conv.opportunities[conv.opportunities.length - 1];
@@ -675,6 +715,11 @@ exports.setOpportunity = async (req, res) => {
     conv.markModified('opportunities');
     opportunities.syncPrimaryOpportunity(conv);
     await conv.save();
+    if (nueva || (req.body.stage && req.body.stage !== prevStage)) {
+      await opportunities.announceOpportunity(conv, {
+        type: nueva ? 'created' : 'stage', prevStage, opportunity: op, actor: humanActor(req),
+      });
+    }
     if (req.body.stage && req.body.stage !== prevStage) notifyOpportunityStage(conv, req.body.stage);
     res.json(conv);
   } catch (err) {
@@ -790,35 +835,8 @@ const notifyOpportunityStage = (conv, stage) => {
   }
 };
 
-/**
- * Crea una marca INTERNA dentro del hilo (kind='event'): se muestra a los agentes
- * como un chip centrado y NUNCA se envía al contacto por WhatsApp. Se emite en vivo
- * para que aparezca en el chat de todo el equipo. No toca lastMessage* (no debe
- * mover la conversación en la lista ni cambiar la vista previa).
- */
-async function createInternalEvent({ clinicId, conv, eventType, body, sentBy, sentByName }) {
-  const msg = await Message.create({
-    clinic: clinicId,
-    conversation: conv._id,
-    kind: 'event',
-    eventType,
-    body,
-    sentBy: sentBy || null,
-    sentByName: sentByName || '',
-  });
-  emitToCallCenter('chat:message', { conversationId: conv._id, message: chatMedia.sanitizeMessageForSocket(msg) });
-  return msg;
-}
-
-// Texto legible del chip de "oportunidad creada" para el hilo.
-function opportunityEventBody(opp) {
-  const productos = (opp.interestedIn || []).map((i) => i.name).filter(Boolean).join(', ');
-  const titulo = opp.name || productos;
-  const partes = [`Oportunidad creada${titulo ? `: ${titulo}` : ''}`];
-  if (opp.expectedValue) partes.push(`$${Number(opp.expectedValue).toFixed(2)}`);
-  partes.push(`etapa ${opp.stage}`);
-  return partes.join(' · ');
-}
+// Quién hizo el cambio, para el chip del hilo (ver utils/opportunities.js).
+const humanActor = (req) => ({ userId: req.user._id, name: req.user.name });
 
 exports.addOpportunity = async (req, res) => {
   try {
@@ -852,14 +870,7 @@ exports.addOpportunity = async (req, res) => {
     syncPrimaryOpportunity(conv);
     await conv.save();
     // Marca interna en el hilo (visible solo para el equipo, no se envía al contacto).
-    await createInternalEvent({
-      clinicId: req.clinicId,
-      conv,
-      eventType: 'opportunity_created',
-      body: opportunityEventBody(opp),
-      sentBy: req.user._id,
-      sentByName: req.user.name,
-    }).catch(() => {});
+    await opportunities.announceOpportunity(conv, { type: 'created', opportunity: opp, actor: humanActor(req) });
     // Una oportunidad nueva entró a su etapa → dispara workflows 'opportunity_stage'.
     notifyOpportunityStage(conv, opp.stage);
     await populateConversation(conv);
@@ -905,8 +916,16 @@ exports.updateOpportunityAt = async (req, res) => {
     conv.markModified('opportunities');
     syncPrimaryOpportunity(conv);
     await conv.save();
-    // Solo si la etapa cambió de verdad → dispara workflows 'opportunity_stage'.
-    if (req.body.stage && req.body.stage !== prevStage) notifyOpportunityStage(conv, req.body.stage);
+    // Solo si la etapa cambió de verdad → aviso en el hilo + workflows 'opportunity_stage'.
+    // OJO: el modal guarda TODAS las oportunidades del chat en bucle (un PUT por
+    // fila), así que sin comparar con la etapa anterior cada "Guardar" escupiría un
+    // chip por oportunidad.
+    if (req.body.stage && req.body.stage !== prevStage) {
+      await opportunities.announceOpportunity(conv, {
+        type: 'stage', prevStage, opportunity: current, actor: humanActor(req),
+      });
+      notifyOpportunityStage(conv, req.body.stage);
+    }
     await populateConversation(conv);
     res.json(conv);
   } catch (err) {
@@ -1457,6 +1476,7 @@ async function fireAutoMessages({ conv, clinicId, isNewConversation, incomingTex
 
     let createdOpportunity = false;
     let keywordFired = false;
+    const avisos = []; // chips de oportunidad pendientes: se escriben tras el save
 
     for (const rule of rules) {
       if (!audienceMatches(rule)) continue;
@@ -1498,13 +1518,18 @@ async function fireAutoMessages({ conv, clinicId, isNewConversation, incomingTex
       // espejo legacy, así que en un chat con oportunidades solo en el array
       // creaba otra en cada mensaje entrante.
       if (rule.createOpportunity && !createdOpportunity && !opportunities.opportunitiesOf(conv).length) {
-        opportunities.applyStage(conv, rule.opportunityStage || 'nuevo', {
-          notes: `Creada automáticamente por flujo "${rule.name}"`,
+        avisos.push({
+          resultado: opportunities.applyStage(conv, rule.opportunityStage || 'nuevo', {
+            notes: `Creada automáticamente por flujo "${rule.name}"`,
+          }),
+          actor: opportunities.systemActor(`respuesta automática "${rule.name}"`),
         });
         createdOpportunity = true;
       }
     }
     await conv.save();
+    // El chip va DESPUÉS del guardado (ver announceOpportunity).
+    for (const a of avisos) await opportunities.announceStageResult(conv, a.resultado, a.actor);
   } catch (err) {
     console.error('[fireAutoMessages]', err);
   }
@@ -1551,10 +1576,11 @@ async function sendFlowMessage(conv, clinicId, body) {
  * tres oportunidades duplicadas) y no tocaba el espejo, así que el embudo seguía
  * mostrando la etapa anterior.
  */
-async function applyFlowOpportunity(conv, stage) {
-  opportunities.applyStage(conv, stage || 'nuevo', { notes: 'Creada automáticamente por flujo' });
+async function applyFlowOpportunity(conv, stage, flowName = '') {
+  const r = opportunities.applyStage(conv, stage || 'nuevo', { notes: 'Creada automáticamente por flujo' });
   await conv.save();
   emitToCallCenter('chat:opportunity', { conversationId: conv._id });
+  await opportunities.announceStageResult(conv, r, opportunities.systemActor(flowName ? `flujo "${flowName}"` : 'flujo'));
 }
 
 /**
@@ -1585,7 +1611,7 @@ async function executeFlowRun(run) {
       await sendFlowMessage(conv, run.clinic, step.body || '');
     } else if (step.type === 'opportunity') {
       // eslint-disable-next-line no-await-in-loop
-      await applyFlowOpportunity(conv, step.opportunityStage);
+      await applyFlowOpportunity(conv, step.opportunityStage, flow.name || '');
     }
   }
   run.stepIndex = flow.steps.length;
@@ -1831,6 +1857,9 @@ exports.sendGalleryImage = async (req, res) => {
       conv.assignedToName = req.user.name;
       conv.assignedAt = new Date();
       await conv.save();
+      emitChatAssignment({
+        conversationId: conv._id, assignedTo: req.user._id, assignedToName: req.user.name,
+      });
     }
     res.status(201).json(result.message);
   } catch (err) {
@@ -1843,12 +1872,12 @@ exports.sendGalleryImage = async (req, res) => {
 exports.listAllOpportunities = async (req, res) => {
   try {
     const { from, to, patient, service } = req.query;
-    const query = { clinic: req.clinicId };
+    const query = buildVisibilityFilter(req);
     const orFilters = [
       { 'opportunity.isOpportunity': true },
       { 'opportunities.0': { $exists: true } },
     ];
-    query.$or = orFilters;
+    query.$and = [...(query.$and || []), { $or: orFilters }];
     const list = await Conversation.find(query)
       .populate('patient', 'firstName lastName cedula phone whatsapp email marketing')
       .sort({ lastMessageAt: -1 })
@@ -1922,8 +1951,8 @@ exports.bulkWhatsappOpportunities = async (req, res) => {
       return res.status(400).json({ message: 'Mensaje vacío' });
     }
     const convs = await Conversation.find({
+      ...buildVisibilityFilter(req),
       _id: { $in: conversationIds },
-      clinic: req.clinicId,
       blocked: { $ne: true },
     }).populate('patient', 'firstName lastName phone whatsapp marketing');
     let sent = 0;
@@ -2133,8 +2162,8 @@ exports.sendMessage = async (req, res) => {
   try {
     const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
-    // Responder es de toda la bandeja compartida (no exige tener el chat asignado);
-    // así funciona igual que enviar una imagen. Ver canReplyConversation.
+    // Puede responder si está libre o asignado a él; supervisores siempre.
+    // Así funciona igual que enviar una imagen. Ver canReplyConversation.
     if (!canReplyConversation(req, conv)) {
       return res.status(403).json({ message: 'No puedes enviar mensajes en esta conversación' });
     }
@@ -2203,6 +2232,9 @@ exports.sendMessage = async (req, res) => {
       conv.assignedToName = req.user.name;
       conv.assignedAt = new Date();
       await conv.save();
+      emitChatAssignment({
+        conversationId: conv._id, assignedTo: req.user._id, assignedToName: req.user.name,
+      });
     }
 
     return res.status(201).json(result.message);
@@ -3483,16 +3515,10 @@ exports.getStats = async (req, res) => {
     // responder cuyo último mensaje es entrante y lleva más del umbral abierto).
     const SLA_MINUTES = Number(req.query.slaMinutes || 60);
     const slaCutoff = new Date(Date.now() - SLA_MINUTES * 60000);
-    const [responseTimes, unanswered, appointmentsByAgent] = await Promise.all([
-      Conversation.aggregate([
-        { $match: { ...match, firstResponseAt: { $ne: null } } },
-        { $project: { assignedTo: 1, respMs: { $subtract: ['$firstResponseAt', '$createdAt'] } } },
-        { $group: { _id: '$assignedTo', avgMs: { $avg: '$respMs' }, count: { $sum: 1 } } },
-        { $lookup: { from: 'users', localField: '_id', foreignField: '_id', as: 'user' } },
-        { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
-        { $project: { name: '$user.name', avgMinutes: { $round: [{ $divide: ['$avgMs', 60000] }, 1] }, count: 1 } },
-        { $sort: { avgMinutes: 1 } },
-      ]),
+    const [firstResponses, unanswered, appointmentsByAgent] = await Promise.all([
+      Conversation.find({ ...match, firstResponseAt: { $ne: null } })
+        .select('assignedTo firstResponseBy createdAt firstResponseAt')
+        .lean(),
       Conversation.countDocuments({
         ...match,
         status: 'open',
@@ -3528,6 +3554,37 @@ exports.getStats = async (req, res) => {
         },
       ]),
     ]);
+
+    // Promedio por el agente que REALMENTE dio la primera respuesta. En chats
+    // antiguos (sin firstResponseBy) se usa assignedTo como respaldo. Cuando el
+    // asesor tiene turno configurado se descuentan noches/días libres; si no,
+    // se conserva el cálculo histórico 24/7.
+    const responseUserIds = [...new Set(firstResponses
+      .map((c) => String(c.firstResponseBy || c.assignedTo || ''))
+      .filter(Boolean))];
+    const responseUsers = responseUserIds.length
+      ? await User.find({ _id: { $in: responseUserIds } }).select('name callCenterSchedule').lean()
+      : [];
+    const responseUserMap = new Map(responseUsers.map((u) => [String(u._id), u]));
+    const responseGroups = new Map();
+    for (const conv of firstResponses) {
+      const agentId = String(conv.firstResponseBy || conv.assignedTo || 'unassigned');
+      const agent = responseUserMap.get(agentId);
+      const elapsed = workingMsBetween(conv.createdAt, conv.firstResponseAt, agent?.callCenterSchedule);
+      const current = responseGroups.get(agentId) || {
+        _id: agentId === 'unassigned' ? null : agentId,
+        name: agent?.name || 'Sin asignar',
+        totalMs: 0,
+        count: 0,
+        scheduleApplied: agent?.callCenterSchedule?.enabled === true,
+      };
+      current.totalMs += elapsed;
+      current.count += 1;
+      responseGroups.set(agentId, current);
+    }
+    const responseTimes = [...responseGroups.values()]
+      .map(({ totalMs, ...row }) => ({ ...row, avgMinutes: Math.round((totalMs / row.count / 60000) * 10) / 10 }))
+      .sort((a, b) => a.avgMinutes - b.avgMinutes);
 
     // Las citas se cuelgan del agente en la tabla "Por agente". Un agente puede
     // haber creado citas sin tener chats asignados (tomó un chat de otro), así
@@ -3794,12 +3851,15 @@ exports.createAppointmentFromChat = async (req, res) => {
     // página de Oportunidades seguían mostrando la etapa vieja, y la siguiente
     // edición manual borraba el "agendado" y el enlace a la cita al recalcular el
     // espejo desde el array. Ver utils/opportunities.js.
-    const { changed } = opportunities.applyStage(conv, 'agendado', { appointment: created[0]?._id });
+    const movida = opportunities.applyStage(conv, 'agendado', { appointment: created[0]?._id });
     await conv.save();
     emitToCallCenter('chat:updated', { id: conv._id });
     emitToCallCenter('chat:opportunity', { conversationId: conv._id });
-    // Agendar desde el chat mueve la oportunidad a "agendado" → dispara workflows.
-    if (changed) notifyOpportunityStage(conv, 'agendado');
+    // Agendar desde el chat mueve la oportunidad a "agendado" → chip en el hilo +
+    // workflows. El chip sale UNA vez: el evento de cita también intenta mover la
+    // etapa (opportunityAutoStage) pero ahí ya está en 'agendado' y no anuncia nada.
+    await opportunities.announceStageResult(conv, movida, humanActor(req));
+    if (movida.changed) notifyOpportunityStage(conv, 'agendado');
 
     res.status(201).json({
       appointment: created[0],

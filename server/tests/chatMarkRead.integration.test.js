@@ -1,8 +1,7 @@
 /**
- * "Marcar como visto" es una acción de BANDEJA, no administrativa: cualquier
- * agente con acceso al chat puede bajarle el pendiente a una conversación, esté
- * asignada a quien esté. Antes exigía ser el agente asignado y rebotaba con 403 a
- * los demás — justo lo que reportaron los usuarios.
+ * "Marcar como visto" respeta el mismo candado que el resto del chat: el asesor
+ * responsable y los supervisores pueden hacerlo; otro call center no ve ni altera
+ * el pendiente de una conversación privada.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -31,7 +30,7 @@ async function seedAssignedConversation(clinicId, ownerId) {
   return conv;
 }
 
-test('un agente NO asignado puede marcar como visto un chat de otro', async () => {
+test('un agente NO asignado no puede marcar como visto el chat privado de otro', async () => {
   const clinicId = new mongoose.Types.ObjectId();
   const owner = new mongoose.Types.ObjectId();
   const otherAgent = new mongoose.Types.ObjectId();
@@ -42,13 +41,24 @@ test('un agente NO asignado puede marcar como visto un chat de otro', async () =
     H.mockReq(clinicId, otherAgent, {}, { role: 'call_center', params: { id: String(conv._id) } })
   );
 
-  assert.equal(res.statusCode, 200, 'debe permitirlo (bandeja compartida)');
-  assert.equal(res.payload.unreadCount, 0);
+  assert.equal(res.statusCode, 403);
 
   const fresh = await Conversation.findById(conv._id).lean();
-  assert.equal(fresh.unreadCount, 0, 'el pendiente quedó en 0');
+  assert.equal(fresh.unreadCount, 3, 'no debe alterar el pendiente ajeno');
   const unreadMsgs = await Message.countDocuments({ conversation: conv._id, direction: 'in', isRead: false });
-  assert.equal(unreadMsgs, 0, 'los entrantes quedaron marcados como leídos');
+  assert.equal(unreadMsgs, 1, 'no debe marcar mensajes ajenos como leídos');
+});
+
+test('el asesor asignado sí puede marcar su chat como visto', async () => {
+  const clinicId = new mongoose.Types.ObjectId();
+  const owner = new mongoose.Types.ObjectId();
+  const conv = await seedAssignedConversation(clinicId, owner);
+  const res = await H.runController(
+    chat.markConversationRead,
+    H.mockReq(clinicId, owner, {}, { role: 'call_center', params: { id: String(conv._id) } })
+  );
+  assert.equal(res.statusCode, 200);
+  assert.equal((await Conversation.findById(conv._id).lean()).unreadCount, 0);
 });
 
 test('marcar como visto sigue exigiendo tener acceso a la bandeja', async () => {

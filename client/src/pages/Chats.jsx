@@ -304,7 +304,7 @@ export default function Chats() {
   // Navegación en dos niveles (estilo Daplox):
   //  - `view` (riel izquierdo): 'inbox' (bandeja) | 'opportunities' | 'board'.
   //  - `scope` (riel izquierdo, solo bandeja): 'mine' = solo los asignados a mí,
-  //    'all' = todos los chats de todos (grupal). Se recuerda entre sesiones.
+  //    'all' = chats accesibles (libres + propios; supervisores ven todos).
   //  - `filter` (barra superior, solo bandeja): 'all' | 'unread' | 'featured'.
   const [view, setView] = useState('inbox');
   const [scope, setScope] = useState(() => localStorage.getItem('chats.scope') || 'all');
@@ -339,6 +339,10 @@ export default function Chats() {
   const [services, setServices] = useState([]);
   const [loading, setLoading] = useState(false);
   const [draft, setDraft] = useState('');
+  // Asesores que están escribiendo AHORA en el chat abierto. Cada entrada es una
+  // pestaña/socket; al pintar se de-duplican por usuario.
+  const [typingAgents, setTypingAgents] = useState([]);
+  const typingExpiryRef = useRef(new Map());
   // Envío en curso: bloquea el botón (ver sendMessage) y pinta "Enviando…".
   const [sending, setSending] = useState(false);
   const [suggesting, setSuggesting] = useState(false);
@@ -688,6 +692,39 @@ export default function Chats() {
     [view, scope, filter, debouncedSearch]
   );
 
+  // Una asignación convierte inmediatamente el chat en privado. Los asesores que
+  // lo tenían visible mientras estaba libre lo retiran de su lista y, si estaba
+  // abierto, cierran el hilo; marketing/admin mantienen la vista completa.
+  useSocketEvent(
+    'chat:assignment',
+    (payload) => {
+      const conversationId = String(payload?.conversationId || '');
+      if (!conversationId) return;
+      const me = String(user?.id || user?._id || '');
+      const assignedTo = String(payload?.assignedTo || '');
+      const isRestrictedAgent = !isAdmin && !isSupervisor;
+      if (isRestrictedAgent && assignedTo && assignedTo !== me) {
+        setConversations((prev) => prev.filter((conv) => String(conv._id) !== conversationId));
+        if (String(activeIdRef.current) === conversationId) {
+          msgReqRef.current += 1;
+          msgAbortRef.current?.abort();
+          setActiveId(null);
+          setMessages([]);
+          setTypingAgents([]);
+          setOpenConvSnap(null);
+          setActiveDetail(null);
+          toast('Este chat fue asignado a otro asesor');
+        }
+      } else {
+        // El asesor elegido y los supervisores reciben/actualizan el chat sin
+        // esperar al próximo mensaje o al sondeo de respaldo.
+        if (view !== 'board') refreshConversations();
+      }
+      loadUnreadCounts();
+    },
+    [isAdmin, isSupervisor, user?.id, user?._id, view, scope, filter, debouncedSearch]
+  );
+
   // Otro agente tocó la oportunidad del chat que tengo abierto: se relee el
   // detalle (paciente, oportunidades y sus productos), que la lista ya no trae.
   useSocketEvent(
@@ -702,7 +739,46 @@ export default function Chats() {
 
   // Estado del tiempo real (socket). Se muestra en la cabecera y gobierna el
   // respaldo por sondeo de abajo.
-  const { connected: realtimeConnected } = useSocket();
+  const { socket: realtimeSocket, connected: realtimeConnected } = useSocket();
+
+  // Indicador de escritura recibido de los otros asesores. El timeout es una red
+  // de seguridad: si se pierde el evento "dejó de escribir", desaparece solo.
+  useSocketEvent(
+    'chat:typing',
+    (payload) => {
+      if (!payload?.typingId || String(payload.conversationId) !== String(activeIdRef.current)) return;
+      const myId = String(user?.id || user?._id || '');
+      if (payload.userId && String(payload.userId) === myId) return;
+      const key = String(payload.typingId);
+      clearTimeout(typingExpiryRef.current.get(key));
+      typingExpiryRef.current.delete(key);
+      if (payload.isTyping === false) {
+        setTypingAgents((prev) => prev.filter((a) => a.typingId !== key));
+        return;
+      }
+      setTypingAgents((prev) => [
+        ...prev.filter((a) => a.typingId !== key),
+        { typingId: key, userId: String(payload.userId || ''), name: payload.name || 'Asesor' },
+      ]);
+      const timeout = setTimeout(() => {
+        setTypingAgents((prev) => prev.filter((a) => a.typingId !== key));
+        typingExpiryRef.current.delete(key);
+      }, 5500);
+      typingExpiryRef.current.set(key, timeout);
+    },
+    [user?.id, user?._id]
+  );
+
+  useEffect(() => {
+    setTypingAgents([]);
+    for (const timeout of typingExpiryRef.current.values()) clearTimeout(timeout);
+    typingExpiryRef.current.clear();
+  }, [activeId]);
+
+  useEffect(() => () => {
+    for (const timeout of typingExpiryRef.current.values()) clearTimeout(timeout);
+    typingExpiryRef.current.clear();
+  }, []);
 
   // Refresco al VOLVER a la pestaña o recuperar el foco: si mientras estabas en
   // otra pestaña se perdió algún evento en vivo, al volver ves todo al día sin
@@ -856,6 +932,26 @@ export default function Chats() {
   const composerDisabled =
     !!activeConv?.blocked || activeWindowClosed || activeOptedOut ||
     !!templateDraft.name || attachmentDraft?.type === 'audio';
+  // Mientras hay texto y foco, manda un latido cada 2,5 s. Al borrar, enviar,
+  // cambiar de chat o desenfocar se apaga inmediatamente.
+  const isActivelyTyping = !!(
+    realtimeConnected && realtimeSocket && activeId && composerFocused && draft.trim() && !composerDisabled
+  );
+  useEffect(() => {
+    if (!realtimeSocket || !activeId) return undefined;
+    const conversationId = String(activeId);
+    const emit = (isTyping) => realtimeSocket.emit('chat:typing', { conversationId, isTyping });
+    if (!isActivelyTyping) {
+      emit(false);
+      return undefined;
+    }
+    emit(true);
+    const heartbeat = setInterval(() => emit(true), 2500);
+    return () => {
+      clearInterval(heartbeat);
+      emit(false);
+    };
+  }, [realtimeSocket, realtimeConnected, activeId, isActivelyTyping]);
   // El cuadro se expande al enfocarlo o cuando ya hay algo escrito/adjunto (así no
   // se colapsa a media escritura ni al hacer clic en un botón de acción).
   const composerExpanded =
@@ -1570,6 +1666,7 @@ export default function Chats() {
                     );
                   })}
                 </div>
+                {typingAgents.length > 0 && <TypingIndicator agents={typingAgents} />}
                 <div className="border-t border-slate-100 p-2">
                   {activeConv?.blocked && (
                     <div className="mb-2 text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded px-2 py-1">
@@ -3355,8 +3452,46 @@ function highlightMatches(text, term, isOut) {
   return out;
 }
 
+function TypingIndicator({ agents = [] }) {
+  const unique = [];
+  const seen = new Set();
+  for (const agent of agents) {
+    const key = agent.userId || agent.typingId;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(agent);
+  }
+  if (!unique.length) return null;
+  const names = unique.map((a) => a.name || 'Asesor');
+  const label = names.length === 1
+    ? `${names[0]} está escribiendo`
+    : names.length === 2
+      ? `${names[0]} y ${names[1]} están escribiendo`
+      : `${names[0]} y ${names.length - 1} asesores más están escribiendo`;
+
+  return (
+    <div className="px-4 py-1.5 bg-slate-50 border-t border-slate-100" aria-live="polite">
+      <div className="inline-flex items-center gap-2 rounded-full bg-white border border-emerald-200 shadow-sm px-3 py-1.5 text-xs text-emerald-700">
+        <span className="font-medium">{label}</span>
+        <span className="inline-flex items-end gap-0.5 h-3" aria-hidden="true">
+          {[0, 1, 2].map((i) => (
+            <span
+              key={i}
+              className="w-1.5 h-1.5 rounded-full bg-emerald-500 animate-bounce"
+              style={{ animationDelay: `${i * 140}ms` }}
+            />
+          ))}
+        </span>
+      </div>
+    </div>
+  );
+}
+
 // Icono del chip según el tipo de evento interno.
-const EVENT_ICON = { opportunity_created: '🎯' };
+const EVENT_ICON = {
+  opportunity_created: '🎯',
+  opportunity_stage_changed: '🔀',
+};
 
 /**
  * Burbuja de mensaje. MEMOIZADA por el mismo motivo que ConversationRow: el hilo
@@ -4899,7 +5034,14 @@ function SupervisorBoard({ stats, reload, agents = [], range, onRangeChange }) {
             <tbody>
               {responseTimes.map((r) => (
                 <tr key={r._id || r.name} className="border-t border-slate-100">
-                  <td className="px-3 py-2 font-medium">{r.name || 'Sin asignar'}</td>
+                  <td className="px-3 py-2 font-medium">
+                    {r.name || 'Sin asignar'}
+                    {r.scheduleApplied && (
+                      <span className="ml-2 text-[10px] font-normal px-1.5 py-0.5 rounded-full bg-indigo-50 text-indigo-700">
+                        horario aplicado
+                      </span>
+                    )}
+                  </td>
                   <td className="px-3 py-2 text-right">
                     <span className={`font-semibold ${r.avgMinutes <= sla.thresholdMinutes ? 'text-emerald-700' : 'text-rose-600'}`}>
                       {fmtMinutes(r.avgMinutes)}
@@ -4919,7 +5061,9 @@ function SupervisorBoard({ stats, reload, agents = [], range, onRangeChange }) {
           </table>
         </div>
         <p className="text-[11px] text-slate-400 mt-2">
-          Umbral de SLA: {sla.thresholdMinutes} min. En verde, agentes dentro del umbral.
+          Umbral de SLA: {sla.thresholdMinutes} min. En verde, agentes dentro del umbral. Cuando aparece
+          <b> horario aplicado</b>, las noches y días libres configurados en Config. Call Center no forman
+          parte del tiempo de respuesta.
         </p>
       </section>
 

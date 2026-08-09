@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 const Appointment = require('../models/Appointment');
 const User = require('../models/User');
 const CommissionRule = require('../models/CommissionRule');
+const { normalizeSchedule, isWorkingAt } = require('../utils/agentSchedule');
 
 // ¿La cita cae dentro del horario configurado en la regla?
 const inSchedule = (rule, appt) => {
@@ -277,8 +278,16 @@ exports.listAgents = async (req, res) => {
     const users = await User.find({
       active: true,
       'clinics.role': 'call_center',
-    }).select('name email');
-    res.json(users);
+    }).select('name email callCenterSchedule').lean();
+    const now = new Date();
+    res.json(users.map((user) => {
+      const schedule = normalizeSchedule(user.callCenterSchedule);
+      return {
+        ...user,
+        callCenterSchedule: schedule,
+        inShift: isWorkingAt(schedule, now),
+      };
+    }));
   } catch (err) {
     res.status(500).json({ message: 'Error al listar agentes', error: err.message });
   }

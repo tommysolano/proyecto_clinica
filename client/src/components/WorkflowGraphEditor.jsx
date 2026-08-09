@@ -80,6 +80,18 @@ export const STEP_DEFS = {
   fb_audience_remove: 'Quitar de público de Facebook',
 };
 
+const AGENT_DAY_NAMES = ['Dom', 'Lun', 'Mar', 'Mié', 'Jue', 'Vie', 'Sáb'];
+
+function agentScheduleLabel(agent) {
+  const schedule = agent?.callCenterSchedule;
+  if (!schedule?.enabled) return 'Disponible 24/7';
+  const days = (schedule.days || []).filter((day) => day.enabled);
+  if (!days.length) return 'Sin días laborables';
+  const names = days.map((day) => AGENT_DAY_NAMES[day.day]).filter(Boolean).join(', ');
+  const ranges = [...new Set(days.map((day) => `${day.start}–${day.end}`))];
+  return `${names} · ${ranges.join(', ')}`;
+}
+
 // Agrupación de pasos para el selector (estilo GoHighLevel).
 const STEP_GROUPS = [
   { title: 'Comunicación', icon: HiOutlineChatBubbleLeftRight, types: ['send_message', 'send_media', 'send_template', 'send_email', 'ai_reply', 'request_review'] },
@@ -900,6 +912,7 @@ const defaultTrigger = () => ({ type: 'appointment_created', audience: 'all', se
 export default function WorkflowGraphEditor({
   nodes = [], edges = [], onChange,
   templates = [], agents = [], products = [], clinics = [], audiences = [], audiencesNotice = '',
+  metaAds = [], metaAdsNotice = '',
   // Etiquetas en uso { patient, chat, opportunity } para los desplegables del nodo Condición.
   tagOptions = {},
 }) {
@@ -1642,7 +1655,14 @@ export default function WorkflowGraphEditor({
             onClose={() => setSelectedTrigger(null)}
             onDelete={selTrigCount > 1 ? () => removeTrigger(selectedTrigger.nodeId, selectedTrigger.idx) : null}
           >
-            <TriggerConfig trigger={selTrig} products={products} clinics={clinics} onChange={(full) => setTriggerAt(selectedTrigger.nodeId, selectedTrigger.idx, full)} />
+            <TriggerConfig
+              trigger={selTrig}
+              products={products}
+              clinics={clinics}
+              metaAds={metaAds}
+              metaAdsNotice={metaAdsNotice}
+              onChange={(full) => setTriggerAt(selectedTrigger.nodeId, selectedTrigger.idx, full)}
+            />
           </Drawer>
         )}
 
@@ -1745,7 +1765,7 @@ function StepPicker({ onPick, onClose }) {
 // Entrada de VARIOS IDs de anuncio (chips). Internamente se guarda como un único
 // string separado por comas en `trigger.adFilter` (el backend lo divide por coma),
 // para no romper compatibilidad con los flujos ya guardados.
-function AdIdsInput({ value = '', onChange }) {
+function AdIdsInput({ value = '', onChange, options = [] }) {
   const [draft, setDraft] = useState('');
   const ids = String(value || '')
     .split(',')
@@ -1769,6 +1789,22 @@ function AdIdsInput({ value = '', onChange }) {
 
   return (
     <div>
+      {options.length > 0 && (
+        <select
+          value=""
+          onChange={(e) => {
+            if (e.target.value) commit([...ids, e.target.value]);
+          }}
+          className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm mb-2 bg-white"
+        >
+          <option value="">Seleccionar desde mi cuenta de Meta…</option>
+          {options.map((ad) => (
+            <option key={ad.id} value={ad.id}>
+              {ad.name} · {ad.id}{ad.campaignName ? ` · ${ad.campaignName}` : ''}
+            </option>
+          ))}
+        </select>
+      )}
       {ids.length > 0 && (
         <div className="flex flex-wrap gap-1.5 mb-2">
           {ids.map((id, i) => (
@@ -1813,7 +1849,7 @@ function AdIdsInput({ value = '', onChange }) {
 }
 
 // ─────────── Configuración del disparador ───────────
-function TriggerConfig({ trigger = {}, onChange, products = [], clinics = [] }) {
+function TriggerConfig({ trigger = {}, onChange, products = [], clinics = [], metaAds = [], metaAdsNotice = '' }) {
   const set = (patch) => onChange?.({ ...trigger, ...patch });
   const isApptTrigger = trigger.type?.startsWith('appointment');
   const isChatTrigger = ['inbound_message', 'keyword', 'new_conversation', 'ctwa_ad'].includes(trigger.type);
@@ -1911,7 +1947,7 @@ function TriggerConfig({ trigger = {}, onChange, products = [], clinics = [] }) 
       )}
       {trigger.type === 'ctwa_ad' && (
         <div className="text-sm">
-          <span className="text-slate-600 block mb-1">Título del anuncio contiene (recomendado)</span>
+          <span className="text-slate-600 block mb-1">Respaldo: el título contiene (opcional)</span>
           <input
             value={trigger.adTextFilter || ''}
             onChange={(e) => set({ adTextFilter: e.target.value })}
@@ -1919,17 +1955,23 @@ function TriggerConfig({ trigger = {}, onChange, products = [], clinics = [] }) 
             className="w-full border border-slate-200 rounded-lg px-2 py-2 text-sm"
           />
           <span className="text-[11px] text-slate-400 block mt-1 mb-3">
-            Dispara si el <b>título del anuncio</b> contiene este texto. Es lo más estable: a
-            diferencia del ID, el título no cambia aunque edites o recrees el anuncio. Varios
-            separados por coma (dispara con cualquiera).
+            Coincidencia adicional por <b>título</b>, útil si varias versiones del anuncio conservan
+            el mismo nombre. Puedes escribir varios textos separados por coma.
           </span>
-          <span className="text-slate-600 block mb-1">IDs de anuncios (opcional, vacío = cualquiera)</span>
-          <AdIdsInput value={trigger.adFilter || ''} onChange={(v) => set({ adFilter: v })} />
-          <span className="text-[11px] text-amber-600 block mt-1">
-            ⚠️ Ojo: Meta <b>cambia el ID</b> del anuncio cada vez que lo editas, así que filtrar por
-            ID se rompe seguido. Copia el ID desde la tarjeta "📣 desde anuncio" del chat (no del
-            Administrador de Anuncios: no coinciden). Si dejas ambos filtros vacíos, dispara con
-            cualquier anuncio. Requiere número Cloud API (los QR no reciben el dato del anuncio).
+          <span className="text-slate-600 block mb-1">Anuncio de Meta (opcional, vacío = cualquiera)</span>
+          <AdIdsInput
+            value={trigger.adFilter || ''}
+            onChange={(v) => set({ adFilter: v })}
+            options={metaAds}
+          />
+          {metaAdsNotice && (
+            <span className="text-[11px] text-amber-600 block mt-1">{metaAdsNotice}</span>
+          )}
+          <span className="text-[11px] text-slate-500 block mt-1">
+            Guarda el <b>ID del Administrador de Anuncios una sola vez</b>. Con Marketing API el sistema
+            reconoce automáticamente el ID del anuncio y el de su publicación/creativo aunque Meta entregue
+            una variante distinta en WhatsApp. También puedes pegar el ID manualmente. Si ambos filtros quedan
+            vacíos, dispara con cualquier anuncio.
           </span>
         </div>
       )}
@@ -2319,10 +2361,11 @@ function ConditionGroup({ group, onChange, clinics = [], tagOptions = {} }) {
   );
 }
 
-function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, agents, clinics = [], products = [], audiences = [], audiencesNotice = '', tagOptions = {} }) {
+function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, agents = [], clinics = [], products = [], audiences = [], audiencesNotice = '', tagOptions = {} }) {
   const d = node.data || {};
   const set = (patch) => onChange(patch);
   const t = node.type;
+  const selectedAgent = agents.find((agent) => String(agent._id) === String(d.assignUser || ''));
 
   if (t === 'split') {
     const routes = d.routes || [];
@@ -2806,17 +2849,39 @@ function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, 
     </select>
   );
   if (t === 'assign_agent') return (
-    <div className="grid gap-2">
-      <select value={d.assignMode || 'roundrobin'} onChange={(e) => set({ assignMode: e.target.value })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
-        <option value="roundrobin">Round-robin</option>
-        <option value="user">Agente específico</option>
-      </select>
-      {d.assignMode === 'user' && (
-        <select value={d.assignUser || ''} onChange={(e) => set({ assignUser: e.target.value || null })} className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
-          <option value="">Selecciona…</option>
-          {agents.map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
+    <div className="grid gap-3">
+      <div>
+        <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Tipo de asignación</label>
+        <select value={d.assignMode || 'roundrobin'} onChange={(e) => set({ assignMode: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+          <option value="roundrobin">Automática: asesor en turno con menos chats</option>
+          <option value="user">Asesor específico</option>
         </select>
+      </div>
+      {(d.assignMode || 'roundrobin') === 'user' && (
+        <div>
+          <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Asesor responsable</label>
+          <select value={d.assignUser || ''} onChange={(e) => set({ assignUser: e.target.value || null })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+            <option value="">Selecciona…</option>
+            {agents.map((a) => (
+              <option key={a._id} value={a._id}>
+                {a.name} · {!a.callCenterSchedule?.enabled ? '24/7' : (a.inShift ? 'EN TURNO' : 'FUERA DE TURNO')}
+              </option>
+            ))}
+          </select>
+          {selectedAgent && (
+            <div className={`mt-2 rounded-lg border px-3 py-2 text-xs ${selectedAgent.inShift ? 'border-emerald-200 bg-emerald-50 text-emerald-800' : 'border-amber-200 bg-amber-50 text-amber-800'}`}>
+              <div className="font-semibold">{selectedAgent.inShift ? 'En turno ahora' : 'Fuera de turno ahora'}</div>
+              <div className="mt-0.5">{agentScheduleLabel(selectedAgent)}</div>
+            </div>
+          )}
+        </div>
       )}
+      <p className="text-[11px] text-slate-500 leading-relaxed">
+        Al asignarse, el chat queda visible solo para ese asesor, marketing y administradores.
+        {(d.assignMode || 'roundrobin') === 'roundrobin'
+          ? ' El reparto automático considera únicamente asesores que estén en su horario de trabajo.'
+          : ' Si está fuera de turno, el chat permanece privado en su cola para el siguiente horario.'}
+      </p>
     </div>
   );
   if (t === 'create_task') return (

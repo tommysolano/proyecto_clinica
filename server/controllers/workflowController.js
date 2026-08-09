@@ -328,3 +328,13 @@ exports.listMetaCustomAudiences = async (req, res) => {
     res.status(500).json({ ok: false, error: err.message, audiences: [] });
   }
 };
+
+/** Anuncios visibles para el token de Marketing API (selector del disparador). */
+exports.listMetaAds = async (req, res) => {
+  try {
+    const { listAds } = require('../utils/metaAds');
+    res.json(await listAds());
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message, ads: [] });
+  }
+};

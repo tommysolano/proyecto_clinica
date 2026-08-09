@@ -145,4 +145,11 @@ function removeFromAudience({ audienceId, patient }) {
   return callAudienceUsers({ method: 'DELETE', audienceId, patient });
 }
 
-module.exports = { getMarketingConfig, buildAudienceData, addToAudience, removeFromAudience, listAudiences };
+module.exports = {
+  getMarketingConfig,
+  resolveAdAccountIds,
+  buildAudienceData,
+  addToAudience,
+  removeFromAudience,
+  listAudiences,
+};

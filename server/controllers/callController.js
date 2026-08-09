@@ -20,7 +20,7 @@ const Call = require('../models/Call');
 const Conversation = require('../models/Conversation');
 const gateway = require('../utils/whatsappGateway');
 const calls = require('../utils/whatsappCalls');
-const { emitToCallCenter } = require('../realtime');
+const { emitToCallCenter, emitChatAssignment } = require('../realtime');
 
 // Una entrante que nadie contesta no puede quedarse "sonando" para siempre en
 // la UI: si Meta no manda 'terminate' se marca perdida por tiempo.
@@ -57,6 +57,12 @@ function callPayload(call) {
     durationSec: call.durationSec,
     errorMessage: call.errorMessage,
   };
+}
+
+async function canAccessCall(req, call) {
+  const conv = await Conversation.findById(call?.conversation).select('_id assignedTo');
+  if (!conv) return false;
+  return require('./chatController').canAccessConversation(req, conv);
 }
 
 /** ¿Se pueden hacer llamadas en el número de este chat? (para pintar el botón) */
@@ -169,6 +175,9 @@ exports.acceptCall = async (req, res) => {
   try {
     const call = await Call.findOne({ callId: req.params.callId, clinic: req.clinicId });
     if (!call) return res.status(404).json({ message: 'Llamada no encontrada' });
+    if (!(await canAccessCall(req, call))) {
+      return res.status(403).json({ message: 'Este chat está asignado a otro asesor' });
+    }
     if (call.status !== 'ringing') {
       return res.status(409).json({ message: 'Esa llamada ya no está sonando.' });
     }
@@ -198,6 +207,9 @@ exports.acceptCall = async (req, res) => {
       conv.assignedToName = req.user.name;
       conv.assignedAt = new Date();
       await conv.save();
+      emitChatAssignment({
+        conversationId: conv._id, assignedTo: req.user._id, assignedToName: req.user.name,
+      });
     }
     emitToCallCenter('call:status', callPayload(call));
     res.json(callPayload(call));
@@ -210,6 +222,9 @@ exports.rejectCall = async (req, res) => {
   try {
     const call = await Call.findOne({ callId: req.params.callId, clinic: req.clinicId });
     if (!call) return res.status(404).json({ message: 'Llamada no encontrada' });
+    if (!(await canAccessCall(req, call))) {
+      return res.status(403).json({ message: 'Este chat está asignado a otro asesor' });
+    }
     // Solo se rechaza lo que aún suena: si otro agente ya contestó, el panel
     // rezagado de un tercero no puede tumbarle la llamada.
     if (call.status !== 'ringing') {
@@ -230,6 +245,9 @@ exports.terminateCall = async (req, res) => {
   try {
     const call = await Call.findOne({ callId: req.params.callId, clinic: req.clinicId });
     if (!call) return res.status(404).json({ message: 'Llamada no encontrada' });
+    if (!(await canAccessCall(req, call))) {
+      return res.status(403).json({ message: 'Este chat está asignado a otro asesor' });
+    }
     const conv = await Conversation.findById(call.conversation);
     const resolved = await resolveCallingAccount(conv);
     if (resolved.ok) await calls.terminateCall(resolved.creds, call.callId);

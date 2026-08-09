@@ -134,7 +134,10 @@ test('si WhatsApp descartó la cita, el mensaje queda marcado failed:<motivo>', 
   try {
     const req = H.mockReq(clinicId, userId, { body: 'hola', replyTo: String(incoming._id) }, { params: { id: String(conv._id) } });
     req.user.name = 'Agente';
-    await H.runController(chat.sendMessage, req);
+    const sent = await H.runController(chat.sendMessage, req);
+    // La entrega es en segundo plano: no restaures el stub ni leas quoteResult
+    // hasta que el gateway haya terminado de guardar el resultado de la cita.
+    await H.waitForStatus(sent.payload._id, 'sent');
   } finally {
     qrManager.sendText = orig;
   }

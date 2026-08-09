@@ -10,6 +10,25 @@ const userClinicSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const callCenterWorkDaySchema = new mongoose.Schema(
+  {
+    day: { type: Number, min: 0, max: 6, required: true }, // 0=domingo
+    enabled: { type: Boolean, default: false },
+    start: { type: String, match: /^([01]\d|2[0-3]):[0-5]\d$/, default: '09:00' },
+    end: { type: String, match: /^([01]\d|2[0-3]):[0-5]\d$/, default: '18:00' },
+  },
+  { _id: false }
+);
+
+const callCenterScheduleSchema = new mongoose.Schema(
+  {
+    enabled: { type: Boolean, default: false },
+    timezone: { type: String, default: 'America/Guayaquil' },
+    days: { type: [callCenterWorkDaySchema], default: [] },
+  },
+  { _id: false }
+);
+
 const userSchema = new mongoose.Schema(
   {
     name: { type: String, required: [true, 'El nombre es requerido'], trim: true },
@@ -34,6 +53,9 @@ const userSchema = new mongoose.Schema(
     cedula: { type: String, trim: true },
     // Firma digital del doctor (data URL base64 — imagen). Aparece en las recetas.
     signatureImage: { type: String, default: '' },
+    // Turnos del asesor. Si está activo, Supervisión descuenta del tiempo de
+    // primera respuesta las horas en las que esa persona no debía estar trabajando.
+    callCenterSchedule: { type: callCenterScheduleSchema, default: () => ({}) },
     active: { type: Boolean, default: true },
   },
   { timestamps: true }

@@ -1,16 +1,6 @@
 /**
- * Permisos del chat compartido del call center.
- *
- * Bug auditado: un agente veía el chat de un compañero (asignado a otro) y al
- * intentar ENVIAR texto recibía "No puedes enviar mensajes en esta conversación",
- * mientras que el dueño (admin) sí podía. No era un problema de "computadora":
- * enviar texto exigía tener el chat asignado (pero enviar imágenes no). Ahora
- * responder es de toda la bandeja.
- *
- * Evolución: administrar (crear/modificar/eliminar oportunidades, editar, destacar,
- * bloquear) TAMPOCO depende de la asignación. La asignación solo hace que el chat
- * aparezca en "mis chats asignados"; cualquier agente del CRM puede hacer todas las
- * acciones sobre cualquier chat. Solo los roles ajenos al CRM (doctor) quedan fuera.
+ * Permisos privados del chat asignado. Los chats libres pertenecen a la bandeja
+ * compartida; al asignarlos, solo el responsable y los supervisores conservan acceso.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -26,10 +16,10 @@ const doctor = { user: { _id: 'doc' }, role: 'doctor' };
 const chatDeJaime = { assignedTo: 'jaime' };
 const chatSinAsignar = { assignedTo: null };
 
-test('canReplyConversation: cualquier agente del call center responde cualquier chat (bandeja compartida)', () => {
-  // El caso del bug: Ana respondiendo el chat asignado a Jaime.
-  assert.equal(chatCtrl.canReplyConversation(ana, chatDeJaime), true);
+test('canReplyConversation: un asesor solo responde chats libres o asignados a él', () => {
+  assert.equal(chatCtrl.canReplyConversation(ana, chatDeJaime), false);
   assert.equal(chatCtrl.canReplyConversation(jaime, chatDeJaime), true);
+  assert.equal(chatCtrl.canReplyConversation(ana, chatSinAsignar), true);
   assert.equal(chatCtrl.canReplyConversation(admin, chatDeJaime), true);
   assert.equal(chatCtrl.canReplyConversation(marketing, chatDeJaime), true);
   assert.equal(chatCtrl.canReplyConversation(superadmin, chatDeJaime), true);
@@ -37,10 +27,8 @@ test('canReplyConversation: cualquier agente del call center responde cualquier 
   assert.equal(chatCtrl.canReplyConversation(doctor, chatDeJaime), false);
 });
 
-test('canMutateConversation: administrar es de toda la bandeja (la asignación NO es candado)', () => {
-  // Ana SÍ puede administrar el chat de Jaime (crear/editar/borrar oportunidad, etc.),
-  // aunque esté asignado a él: la asignación solo controla en qué lista aparece.
-  assert.equal(chatCtrl.canMutateConversation(ana, chatDeJaime), true);
+test('canMutateConversation: la asignación también protege las acciones del chat', () => {
+  assert.equal(chatCtrl.canMutateConversation(ana, chatDeJaime), false);
   assert.equal(chatCtrl.canMutateConversation(jaime, chatDeJaime), true);
   assert.equal(chatCtrl.canMutateConversation(ana, chatSinAsignar), true);
   // Admin, marketing y super-admin siempre.

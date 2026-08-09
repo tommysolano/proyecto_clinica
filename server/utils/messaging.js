@@ -1021,7 +1021,10 @@ async function send({
     if (account && !conv.whatsappAccount) conv.whatsappAccount = account._id;
     if (sentBy) {
       conv.lastAgentReplyAt = new Date();
-      if (!conv.firstResponseAt) conv.firstResponseAt = conv.lastAgentReplyAt;
+      if (!conv.firstResponseAt) {
+        conv.firstResponseAt = conv.lastAgentReplyAt;
+        conv.firstResponseBy = sentBy;
+      }
       // El "no leído" se limpia SOLO cuando un agente responde (no al abrir el
       // chat). Los envíos automáticos/workflows no traen `sentBy`, así que no
       // borran el pendiente: el chat sigue marcado hasta que alguien conteste.

@@ -31,7 +31,7 @@ router.use(require('../middleware/callCenterScope'));
 const CALL_CENTER_ROLES = ['admin', 'call_center', 'marketing'];
 
 // IMPORTANTE: rutas específicas ANTES de las paramétricas (/:id/...)
-router.get('/stats', requireRole(...CALL_CENTER_ROLES), ctrl.getStats);
+router.get('/stats', requireRole('admin', 'marketing'), ctrl.getStats);
 
 // Mensajes guardados (canned/saved replies)
 router.get('/saved-replies', requireRole(...CALL_CENTER_ROLES), ctrl.listSavedReplies);
@@ -57,9 +57,6 @@ router.post('/calls/:callId/terminate', requireRole(...CALL_CENTER_ROLES), callC
 
 // Automatizaciones (workflows) desde el chat: listar activas y disparar a mano.
 router.get('/workflows-list', requireRole(...CALL_CENTER_ROLES), ctrl.listWorkflowsForChat);
-router.post('/:id/run-workflow', requireRole(...CALL_CENTER_ROLES), ctrl.runWorkflowManually);
-// Automatizaciones que YA se activaron en este chat (panel del contacto).
-router.get('/:id/automations', requireRole(...CALL_CENTER_ROLES), ctrl.listChatAutomations);
 
 // Mensajes automáticos (legacy)
 router.get('/auto-messages', requireRole(...CALL_CENTER_ROLES), ctrl.listAutoMessages);
@@ -97,7 +94,15 @@ router.get('/unread-counts', requireRole(...CALL_CENTER_ROLES), ctrl.unreadCount
 
 router.get('/', requireRole(...CALL_CENTER_ROLES), ctrl.listConversations);
 router.post('/', requireRole(...CALL_CENTER_ROLES), ctrl.createConversation);
-router.post('/simulate', requireRole(...CALL_CENTER_ROLES), ctrl.simulateIncoming);
+router.post('/simulate', requireRole('admin', 'marketing'), ctrl.simulateIncoming);
+
+// Desde aquí todas las rutas operan sobre una conversación concreta. El middleware
+// aplica el candado de asignación antes de leer mensajes, llamadas o datos del chat.
+router.use('/:id', ctrl.requireConversationAccess);
+
+router.post('/:id/run-workflow', requireRole(...CALL_CENTER_ROLES), ctrl.runWorkflowManually);
+// Automatizaciones que YA se activaron en este chat (panel del contacto).
+router.get('/:id/automations', requireRole(...CALL_CENTER_ROLES), ctrl.listChatAutomations);
 
 router.get('/:id', requireRole(...CALL_CENTER_ROLES), ctrl.getConversation);
 router.put('/:id', requireRole(...CALL_CENTER_ROLES), ctrl.updateConversation);

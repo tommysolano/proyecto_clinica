@@ -138,6 +138,9 @@ const conversationSchema = new mongoose.Schema(
       default: [],
     },
     firstResponseAt: { type: Date, default: null },
+    // Usuario que dio la PRIMERA respuesta real. `assignedTo` puede cambiar luego;
+    // guardar este actor evita atribuir la métrica al último reasignado.
+    firstResponseBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     lastAgentReplyAt: { type: Date, default: null },
     // Oportunidad principal (compatibilidad). El array `opportunities` permite tener varias por chat.
     opportunity: { type: opportunitySchema, default: () => ({}) },
@@ -161,5 +164,8 @@ const conversationSchema = new mongoose.Schema(
 
 conversationSchema.index({ clinic: 1, phone: 1 }, { unique: true });
 conversationSchema.index({ clinic: 1, lastMessageAt: -1 });
+// Bandeja privada por asesor: evita escanear todos los chats para resolver
+// "libres + asignados a mí" y mantener el orden por actividad.
+conversationSchema.index({ clinic: 1, assignedTo: 1, lastMessageAt: -1 });
 
 module.exports = mongoose.model('Conversation', conversationSchema);

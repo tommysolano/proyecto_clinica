@@ -22,6 +22,17 @@
  */
 const STAGES = ['nuevo', 'contactado', 'interesado', 'agendado', 'ganado', 'perdido'];
 
+/** Nombre de la etapa tal y como se lee en el chat (el chip lo pinta así). */
+const STAGE_LABELS = {
+  nuevo: 'Nuevo',
+  contactado: 'Contactado',
+  interesado: 'Interesado',
+  agendado: 'Agendado',
+  ganado: 'Ganado',
+  perdido: 'Perdido',
+};
+const stageLabel = (stage) => STAGE_LABELS[String(stage || '').trim()] || String(stage || '').trim() || '—';
+
 const isValidStage = (stage) => STAGES.includes(String(stage || '').trim());
 
 const plain = (opp) => (opp?.toObject ? opp.toObject() : { ...(opp || {}) });
@@ -123,13 +134,15 @@ function ensureArray(conv) {
  */
 function applyStage(conv, stage, { appointment = null, notes = '', name = '', create = true } = {}) {
   const target = String(stage || '').trim();
-  if (!conv || !target) return { changed: false, prevStage: null, opportunity: null };
+  if (!conv || !target) return { changed: false, created: false, prevStage: null, opportunity: null };
   const list = ensureArray(conv);
 
   let opp;
+  let created = false;
   let prevStage = null;
   if (!list.length) {
-    if (!create) return { changed: false, prevStage: null, opportunity: null };
+    if (!create) return { changed: false, created: false, prevStage: null, opportunity: null };
+    created = true;
     conv.opportunities = [
       ...list,
       { isOpportunity: true, stage: target, createdAt: new Date(), ...(name ? { name } : {}), ...(notes ? { notes } : {}) },
@@ -146,8 +159,114 @@ function applyStage(conv, stage, { appointment = null, notes = '', name = '', cr
   if (target === 'ganado' && !opp.convertedAt) opp.convertedAt = new Date();
   conv.markModified?.('opportunities');
   syncPrimaryOpportunity(conv);
-  return { changed: prevStage !== target, prevStage, opportunity: opp };
+  // `created` va aparte de `prevStage`: una oportunidad existente SIN etapa también
+  // devuelve prevStage null, así que de ahí no se puede deducir si es alta o
+  // movimiento — y el aviso del chat dice cosas distintas en cada caso.
+  return { changed: prevStage !== target, created, prevStage, opportunity: opp };
 }
+
+/**
+ * ══ AVISO EN EL CHAT ══
+ *
+ * Cada vez que una oportunidad NACE o CAMBIA DE ETAPA se deja un chip dentro del
+ * hilo (kind:'event'), visible solo para el equipo y que NUNCA sale hacia el
+ * contacto. Vive aquí, en el escritor único, porque hasta ago-2026 el aviso lo
+ * creaba a mano el controlador del chat y solo existía en UN camino (crear la
+ * oportunidad desde el panel lateral): mover la etapa desde el modal, agendar una
+ * cita, o que la moviera una automatización pasaba en silencio, y el agente que
+ * abría el chat no tenía forma de saber que el embudo se había movido ni quién lo
+ * movió.
+ *
+ * Reglas:
+ *  - Se llama SIEMPRE DESPUÉS de `conv.save()`. Si el guardado falla, no puede
+ *    quedar un chip mintiendo en el hilo.
+ *  - NO toca `lastMessageAt`/`lastMessagePreview`: el chip no reordena la bandeja
+ *    ni pisa la vista previa del último mensaje real.
+ *  - Nunca lanza: un fallo escribiendo el aviso no puede tumbar el guardado ni la
+ *    ejecución de una automatización.
+ */
+const OPPORTUNITY_EVENTS = { created: 'opportunity_created', stage: 'opportunity_stage_changed' };
+
+/** Texto del chip de alta ("Oportunidad creada: Botox · $120.00 · etapa nuevo"). */
+function opportunityEventBody(opp = {}) {
+  const productos = (opp.interestedIn || []).map((i) => i.name).filter(Boolean).join(', ');
+  const titulo = opp.name || productos;
+  const partes = [`Oportunidad creada${titulo ? `: ${titulo}` : ''}`];
+  if (opp.expectedValue) partes.push(`$${Number(opp.expectedValue).toFixed(2)}`);
+  partes.push(`etapa ${opp.stage}`);
+  return partes.join(' · ');
+}
+
+/** Texto del chip de cambio de etapa ("Oportunidad «Botox»: Interesado → Agendado"). */
+function stageChangeBody(opp = {}, prevStage, stage) {
+  const titulo = opp.name || (opp.interestedIn || []).map((i) => i.name).filter(Boolean).join(', ');
+  const quien = titulo ? `Oportunidad «${titulo}»` : 'La oportunidad';
+  return prevStage
+    ? `${quien}: ${stageLabel(prevStage)} → ${stageLabel(stage)}`
+    : `${quien} pasó a ${stageLabel(stage)}`;
+}
+
+/**
+ * Escribe el chip en el hilo y lo emite en vivo. `actor` dice QUIÉN lo hizo:
+ *   - persona → { userId, name }
+ *   - sistema → { automatic: true, name: 'Automatización "Bienvenida"' }
+ * Los `require` van dentro a propósito: este módulo lo usan tests unitarios con
+ * conversaciones de mentira (objetos planos), y cargar el modelo y el tiempo real
+ * en la cabecera crearía además un ciclo con chatController/workflowEngine.
+ */
+async function announceOpportunity(conv, { type = 'stage', prevStage = null, opportunity = null, actor = null } = {}) {
+  try {
+    if (!conv?._id || !conv?.clinic) return null; // conversación de mentira (tests puros)
+    const eventType = OPPORTUNITY_EVENTS[type];
+    if (!eventType) return null;
+    const opp = opportunity || primaryOpportunity(conv) || {};
+    const body = type === 'created'
+      ? opportunityEventBody(opp)
+      : stageChangeBody(opp, prevStage, opp.stage);
+    const Message = require('../models/Message');
+    const msg = await Message.create({
+      clinic: conv.clinic, // la del CHAT: en los flujos, `clinicId` es la clínica ancla del call center
+      conversation: conv._id,
+      kind: 'event',
+      eventType,
+      body,
+      sentBy: actor?.userId || null,
+      sentByName: actor?.name || '',
+      isAutoReply: !!actor?.automatic,
+    });
+    try {
+      require('../realtime').emitToCallCenter('chat:message', {
+        conversationId: conv._id,
+        message: require('./chatMedia').sanitizeMessageForSocket(msg),
+      });
+    } catch {
+      /* tiempo real opcional */
+    }
+    return msg;
+  } catch (err) {
+    console.error('[opportunities] no se pudo dejar el aviso en el chat:', err.message);
+    return null;
+  }
+}
+
+/**
+ * Azúcar para los que ya llaman a `applyStage`: anuncia SOLO si la etapa cambió
+ * de verdad. Es lo que evita el aviso doble cuando la misma acción pasa por varias
+ * capas (agendar desde el chat mueve la etapa y además emite el evento de cita,
+ * que vuelve a intentar moverla).
+ */
+async function announceStageResult(conv, result, actor = null) {
+  if (!result?.changed) return null;
+  return announceOpportunity(conv, {
+    type: result.created ? 'created' : 'stage',
+    prevStage: result.prevStage,
+    opportunity: result.opportunity,
+    actor,
+  });
+}
+
+/** Actor "automático" con el nombre del flujo/regla que provocó el cambio. */
+const systemActor = (origen) => ({ automatic: true, name: origen ? `Automático · ${origen}` : 'Automático' });
 
 /**
  * Aplanado de las oportunidades de un chat para agregaciones de MongoDB: el
@@ -179,6 +298,13 @@ function hasOpportunityFilter() {
 module.exports = {
   AGG_FLATTEN,
   STAGES,
+  STAGE_LABELS,
+  stageLabel,
+  announceOpportunity,
+  announceStageResult,
+  opportunityEventBody,
+  stageChangeBody,
+  systemActor,
   applyStage,
   ensureArray,
   hasOpportunityFilter,

@@ -47,9 +47,14 @@ async function markScheduled(payload = {}) {
   if (CLOSED.has(String(primary.stage || ''))) return { moved: false };
   if (String(primary.stage || '') === 'agendado') return { moved: false };
 
-  const { changed } = opportunities.applyStage(conv, 'agendado', { appointment: appointmentId || null });
-  if (!changed) return { moved: false };
+  const result = opportunities.applyStage(conv, 'agendado', { appointment: appointmentId || null });
+  if (!result.changed) return { moved: false };
   await conv.save();
+  await opportunities.announceStageResult(
+    conv,
+    result,
+    opportunities.systemActor('cita agendada')
+  );
 
   try {
     require('../realtime').emitToCallCenter('chat:opportunity', { conversationId: conv._id });

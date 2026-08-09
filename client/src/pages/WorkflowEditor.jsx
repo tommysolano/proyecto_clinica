@@ -35,6 +35,8 @@ export default function WorkflowEditor() {
   const [clinics, setClinics] = useState([]);
   const [audiences, setAudiences] = useState([]);
   const [audiencesNotice, setAudiencesNotice] = useState('');
+  const [metaAds, setMetaAds] = useState([]);
+  const [metaAdsNotice, setMetaAdsNotice] = useState('');
   // Etiquetas EN USO (paciente / chat / oportunidad) para los desplegables del
   // nodo Condición: escribirlas a mano se presta a erratas que nunca casan.
   const [tagOptions, setTagOptions] = useState({ patient: [], chat: [], opportunity: [] });
@@ -53,7 +55,7 @@ export default function WorkflowEditor() {
     let active = true;
     const load = async () => {
       try {
-        const [tpls, ags, fld, list, prods, clins, auds, tags] = await Promise.all([
+        const [tpls, ags, fld, list, prods, clins, auds, ads, tags] = await Promise.all([
           api.get('/message-templates?channel=whatsapp').catch(() => ({ data: [] })),
           api.get('/call-center/agents').catch(() => ({ data: [] })),
           api.get('/workflows/folders').catch(() => ({ data: [] })),
@@ -61,6 +63,7 @@ export default function WorkflowEditor() {
           api.get('/products').catch(() => ({ data: [] })),
           api.get('/clinics').catch(() => ({ data: [] })),
           api.get('/workflows/meta/custom-audiences').catch((e) => ({ data: { ok: false, error: e?.response?.data?.error || 'error', audiences: [] } })),
+          api.get('/workflows/meta/ads').catch((e) => ({ data: { ok: false, error: e?.response?.data?.error || 'error', ads: [] } })),
           api.get('/workflows/tags').catch(() => ({ data: { patient: [], chat: [], opportunity: [] } })),
         ]);
         if (!active) return;
@@ -83,6 +86,17 @@ export default function WorkflowEditor() {
               : ad.reason === 'no_ad_accounts'
                 ? 'El token no tiene cuentas publicitarias con acceso.'
                 : `No se pudieron cargar los públicos de Meta${ad.error ? `: ${ad.error}` : ''}.`
+        );
+        const adCatalog = ads.data || {};
+        setMetaAds(adCatalog.ads || []);
+        setMetaAdsNotice(
+          adCatalog.ok
+            ? ((adCatalog.ads || []).length ? '' : 'Meta no devolvió anuncios para la cuenta configurada.')
+            : adCatalog.reason === 'marketing_api_not_configured'
+              ? 'Conecta Marketing API en Config. Call Center → Sistema e integraciones → WhatsApp para seleccionar el anuncio y mantener su ID estable.'
+              : adCatalog.reason === 'no_ad_accounts'
+                ? 'El token de Marketing API no tiene cuentas publicitarias con acceso.'
+                : `No se pudieron cargar los anuncios de Meta${adCatalog.error ? `: ${adCatalog.error}` : ''}.`
         );
         const names = new Set((fld.data || []).map((f) => f.name));
         (list.data || []).forEach((w) => names.add(w.folder || 'General'));
@@ -130,6 +144,9 @@ export default function WorkflowEditor() {
     if (!wf.name.trim()) return toast.error('Ponle un nombre al workflow');
     const actionNodes = (wf.nodes || []).filter((n) => n.type !== 'trigger');
     if (actionNodes.length === 0) return toast.error('Agrega al menos un paso al diagrama');
+    if (actionNodes.some((n) => n.type === 'assign_agent' && n.data?.assignMode === 'user' && !n.data?.assignUser)) {
+      return toast.error('Selecciona el asesor específico en cada paso “Asignar agente”');
+    }
     // Unión de disparadores de todos los flujos (para el filtro/índice del motor).
     const triggers = (wf.nodes || [])
       .filter((n) => n.type === 'trigger')
@@ -228,6 +245,8 @@ export default function WorkflowEditor() {
           clinics={clinics}
           audiences={audiences}
           audiencesNotice={audiencesNotice}
+          metaAds={metaAds}
+          metaAdsNotice={metaAdsNotice}
           tagOptions={tagOptions}
         />
       </main>

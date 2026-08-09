@@ -217,7 +217,7 @@ test('10) una obligación VENCIDA y reprogramada al futuro sigue marcada como ve
   assert.equal(fila.vencida, true, 'sigue legalmente vencida');
   assert.equal(fila.reprogramada, true);
   assert.ok(fila.diasVencidos >= 10);
-  assert.equal(fila.day, key(dia(7)), 'pero se proyecta en la fecha acordada');
+  assert.equal(fila.day, key(habil(dia(7))), 'pero se proyecta en la fecha acordada (o el siguiente día hábil)');
   assert.ok(data.alertas.some((a) => a.tipo === 'OBLIGACIONES_VENCIDAS'));
 
   // Y la reprogramación quedó auditada con motivo, valor anterior y usuario.

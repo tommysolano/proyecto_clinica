@@ -20,6 +20,7 @@ const H = require('./_integrationHelpers');
 const Conversation = require('../models/Conversation');
 const Patient = require('../models/Patient');
 const Appointment = require('../models/Appointment');
+const Message = require('../models/Message');
 const chatController = require('../controllers/chatController');
 const opportunities = require('../utils/opportunities');
 const { markScheduled } = require('../utils/opportunityAutoStage');
@@ -126,6 +127,9 @@ test('una cita creada desde el calendario mueve la oportunidad del chat a "agend
   const despues = await Conversation.findById(conv._id).lean();
   assert.equal(despues.opportunities[0].stage, 'agendado');
   assert.equal(String(despues.opportunities[0].appointment), String(cita._id));
+  const event = await Message.findOne({ conversation: conv._id, eventType: 'opportunity_stage_changed' }).lean();
+  assert.ok(event, 'el movimiento automático también debe verse dentro del chat');
+  assert.match(event.sentByName, /Automático.*cita agendada/);
 
   const { payload } = await H.runController(chatController.getStats, H.mockReq(clinicId, userId));
   assert.equal(stageCount(payload, 'agendado'), 1, 'y el embudo ya lo cuenta');

@@ -1,9 +1,11 @@
 const CallCenterConfig = require('../models/CallCenterConfig');
 const WhatsappAccount = require('../models/WhatsappAccount');
 const CallCenterWhatsappConfig = require('../models/CallCenterWhatsappConfig');
+const User = require('../models/User');
 const qrManager = require('../utils/whatsappQrManager');
 const whatsappIdentity = require('../utils/whatsappIdentity');
 const { encryptSecret, decryptSecret } = require('../utils/secretCrypto');
+const { TIME_RE, normalizeSchedule, isWorkingAt } = require('../utils/agentSchedule');
 
 /**
  * Devuelve la configuración de la clínica enmascarando tokens/secrets.
@@ -12,6 +14,53 @@ const { encryptSecret, decryptSecret } = require('../utils/secretCrypto');
 const SENSITIVE_KEYS = ['accessToken', 'verifyToken', 'appSecret', 'pageAccessToken', 'apiKey'];
 // Secrets reales que se cifran en reposo (verifyToken es solo handshake → no se cifra).
 const ENCRYPT_KEYS = ['accessToken', 'appSecret', 'pageAccessToken', 'apiKey'];
+
+/**
+ * Asesores del call center compartido y sus turnos. Es global igual que la
+ * bandeja: no se filtra por la sucursal activa.
+ */
+exports.listAgentSchedules = async (req, res) => {
+  try {
+    const users = await User.find({ active: true, 'clinics.role': 'call_center' })
+      .select('name email callCenterSchedule')
+      .sort({ name: 1 })
+      .lean();
+    res.json(users.map((user) => {
+      const callCenterSchedule = normalizeSchedule(user.callCenterSchedule);
+      return { ...user, callCenterSchedule, inShift: isWorkingAt(callCenterSchedule) };
+    }));
+  } catch (err) {
+    res.status(500).json({ message: 'Error al listar horarios de asesores', error: err.message });
+  }
+};
+
+exports.updateAgentSchedule = async (req, res) => {
+  try {
+    const raw = req.body?.callCenterSchedule || req.body?.schedule;
+    if (!raw || !Array.isArray(raw.days)) {
+      return res.status(400).json({ message: 'Horario inválido' });
+    }
+    const invalidTime = raw.days.some((day) => !TIME_RE.test(String(day?.start || '')) || !TIME_RE.test(String(day?.end || '')));
+    if (invalidTime) return res.status(400).json({ message: 'Las horas deben tener formato HH:MM' });
+    const callCenterSchedule = normalizeSchedule(raw);
+    if (callCenterSchedule.enabled && !callCenterSchedule.days.some((day) => day.enabled)) {
+      return res.status(400).json({ message: 'Activa al menos un día de trabajo' });
+    }
+    const user = await User.findOneAndUpdate(
+      { _id: req.params.id, active: true, 'clinics.role': 'call_center' },
+      { $set: { callCenterSchedule } },
+      { new: true, runValidators: true }
+    ).select('name email callCenterSchedule');
+    if (!user) return res.status(404).json({ message: 'Asesor call center no encontrado' });
+    res.json({
+      ...user.toObject(),
+      callCenterSchedule: normalizeSchedule(user.callCenterSchedule),
+      inShift: isWorkingAt(user.callCenterSchedule),
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al guardar el horario', error: err.message });
+  }
+};
 
 // Enmascara: descifra primero para mostrar los últimos 4 reales.
 const maskSecret = (val) => {

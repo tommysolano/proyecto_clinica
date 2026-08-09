@@ -25,6 +25,7 @@ const Clinic = require('../models/Clinic');
 const Patient = require('../models/Patient');
 const Workflow = require('../models/Workflow');
 const WorkflowEnrollment = require('../models/WorkflowEnrollment');
+const Message = require('../models/Message');
 
 test.before(async () => {
   await H.startDb();
@@ -325,6 +326,105 @@ test('Trigger "mensaje desde anuncio" (ctwa_ad) por TÍTULO del anuncio (sobrevi
   assert.equal(r2.enrolled, 0, 'un anuncio de otro tema no debía disparar el flujo');
 });
 
+test('Trigger Ads: el ID del Ads Manager se guarda una vez y reconoce el source_id de su publicación', async () => {
+  const Conversation = require('../models/Conversation');
+  const CallCenterWhatsappConfig = require('../models/CallCenterWhatsappConfig');
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const configuredId = '120211234567890123';
+  const wf = await ctwaWorkflow(clinic._id, configuredId);
+  await CallCenterWhatsappConfig.create({
+    singleton: 'main',
+    marketingApi: { enabled: true, accessToken: 'test-token', adAccountId: 'act_1' },
+  });
+
+  const originalFetch = global.fetch;
+  global.fetch = async (url) => {
+    assert.match(String(url), new RegExp(configuredId));
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({
+        id: configuredId,
+        creative: { effective_object_story_id: '9988776655_4433221100' },
+      }),
+    };
+  };
+  try {
+    const conv = await Conversation.create({ clinic: clinic._id, phone: '593990000012', channel: 'whatsapp' });
+    const result = await workflowEngine.enrollForChatMessage({
+      clinicId: clinic._id,
+      conversation: conv,
+      patient: null,
+      phone: conv.phone,
+      text: 'Hola desde el anuncio',
+      isNew: true,
+      // WhatsApp entregó el postId, no el ID que se pegó desde Ads Manager.
+      referral: { adId: '4433221100' },
+    });
+    assert.equal(result.enrolled, 1);
+    assert.ok(await WorkflowEnrollment.findOne({ workflow: wf._id, conversation: conv._id }));
+  } finally {
+    global.fetch = originalFetch;
+  }
+});
+
+test('Paso "Asignar agente": el workflow asigna el chat al call center específico', async () => {
+  const Conversation = require('../models/Conversation');
+  const User = require('../models/User');
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const agent = await User.create({
+    name: 'Laura Call Center',
+    email: 'laura-workflow@example.com',
+    password: 'secreto1',
+    clinics: [{ clinic: clinic._id, role: 'call_center' }],
+    // Incluso fuera de turno una asignación explícita se conserva en su cola.
+    callCenterSchedule: {
+      enabled: true,
+      days: Array.from({ length: 7 }, (_, day) => ({ day, enabled: false, start: '09:00', end: '18:00' })),
+    },
+  });
+  const trigger = { type: 'new_conversation', audience: 'all' };
+  const wf = await Workflow.create({
+    clinic: clinic._id,
+    name: 'Asignación privada Laura',
+    active: true,
+    triggers: [trigger],
+    trigger,
+    steps: [],
+    nodes: [
+      { id: 'trigger', type: 'trigger', position: { x: 0, y: 0 }, data: { triggers: [trigger] } },
+      {
+        id: 'assign', type: 'assign_agent', position: { x: 0, y: 130 },
+        data: { assignMode: 'user', assignUser: agent._id },
+      },
+    ],
+    edges: [{ id: 'e1', source: 'trigger', target: 'assign', sourceHandle: 'default' }],
+  });
+  const conv = await Conversation.create({
+    clinic: clinic._id, phone: '593990000099', channel: 'whatsapp',
+  });
+
+  const result = await workflowEngine.enrollForChatMessage({
+    clinicId: clinic._id,
+    conversation: conv,
+    patient: null,
+    phone: conv.phone,
+    text: 'Hola',
+    isNew: true,
+  });
+  assert.equal(result.enrolled, 1);
+
+  const assigned = await waitFor(async () => {
+    const current = await Conversation.findById(conv._id);
+    return String(current?.assignedTo || '') === String(agent._id) ? current : null;
+  });
+  assert.ok(assigned, 'el workflow no asignó la conversación al asesor elegido');
+  assert.equal(assigned.assignedToName, 'Laura Call Center');
+  const enrollment = await WorkflowEnrollment.findOne({ workflow: wf._id, conversation: conv._id });
+  assert.equal(enrollment?.status, 'done');
+  assert.equal((enrollment?.log || []).find((entry) => entry.type === 'assign_agent')?.ok, true);
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Paso "Etapa de oportunidad" (move_stage): debe operar sobre el modelo canónico
 // `conv.opportunities[]` (el que leen el modal de Oportunidades del chat y el
@@ -364,6 +464,9 @@ test('Paso "Etapa de oportunidad" (grafo): crea la oportunidad en opportunities[
   // Espejo legacy en sync (lo leen el panel lateral, los listados y el embudo).
   assert.equal(after.opportunity.stage, 'interesado');
   assert.equal(after.opportunity.isOpportunity, true);
+  const event = await Message.findOne({ conversation: conv._id, eventType: 'opportunity_created' }).lean();
+  assert.ok(event, 'la oportunidad creada por workflow debe anunciarse en el chat');
+  assert.match(event.sentByName, /Automático.*Etapa auto/);
 });
 
 test('applyOpportunityStage: si ya hay oportunidad CAMBIA la etapa de la principal (sin duplicar) y marca convertedAt en "ganado"', async () => {
@@ -383,6 +486,8 @@ test('applyOpportunityStage: si ya hay oportunidad CAMBIA la etapa de la princip
   // Espejo legacy sincronizado con la principal.
   assert.equal(after.opportunity.stage, 'ganado');
   assert.equal(after.opportunity.isOpportunity, true);
+  const event = await Message.findOne({ conversation: conv._id, eventType: 'opportunity_stage_changed' }).lean();
+  assert.ok(event, 'el cambio de etapa automático debe anunciarse en el chat');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

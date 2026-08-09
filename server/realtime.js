@@ -70,6 +70,70 @@ function init(httpServer) {
     if (user.isSuperAdmin || ['admin', 'marketing', 'call_center'].includes(role)) {
       socket.join('callcenter');
     }
+    if (user.isSuperAdmin || ['admin', 'marketing'].includes(role)) {
+      socket.join('callcenter-supervisors');
+    } else if (role === 'call_center') {
+      socket.join('callcenter-agents');
+    }
+
+    /**
+     * Presencia efímera de escritura en el chat compartido. No se guarda en BD:
+     * el servidor toma la identidad del JWT (nunca del payload) y retransmite a
+     * los demás asesores. `typingId` distingue dos pestañas del mismo usuario;
+     * cerrar una no apaga por error el indicador de la otra.
+    */
+    const canUseSharedChat = user.isSuperAdmin || ['admin', 'marketing', 'call_center'].includes(role);
+    const validConversationId = (value) => /^[a-f\d]{24}$/i.test(String(value || ''));
+    const loadTypingConversation = async (conversationId) => {
+      if (!validConversationId(conversationId)) return null;
+      const Conversation = require('./models/Conversation');
+      const conv = await Conversation.findById(conversationId).select('_id assignedTo').lean();
+      if (!conv) return null;
+      const assignedTo = String(conv.assignedTo || '');
+      if (role === 'call_center' && assignedTo && assignedTo !== String(user._id)) return null;
+      socket.data.typingConversation = conv;
+      return conv;
+    };
+    const broadcastTyping = async (conversationId, isTyping, knownConversation = null) => {
+      if (!canUseSharedChat || !validConversationId(conversationId)) return;
+      const conv = knownConversation || await loadTypingConversation(conversationId);
+      if (!conv) return;
+      let target = socket.to('callcenter-supervisors');
+      target = conv.assignedTo
+        ? target.to(`user:${conv.assignedTo}`)
+        : target.to('callcenter-agents');
+      target.emit('chat:typing', {
+        conversationId: String(conversationId),
+        isTyping: !!isTyping,
+        typingId: `${user._id}:${socket.id}`,
+        userId: String(user._id),
+        name: String(user.name || user.email || 'Asesor').slice(0, 80),
+        at: new Date().toISOString(),
+      });
+    };
+
+    socket.on('chat:typing', async (payload = {}) => {
+      if (!canUseSharedChat) return;
+      const conversationId = String(payload.conversationId || '');
+      if (!validConversationId(conversationId)) return;
+
+      // Una pestaña solo puede estar escribiendo en un chat a la vez. Si cambia
+      // de conversación, apaga primero la señal anterior.
+      const previous = socket.data.typingConversationId;
+      if (previous && previous !== conversationId) await broadcastTyping(previous, false);
+      if (payload.isTyping === false) {
+        if (!previous || previous === conversationId) {
+          await broadcastTyping(conversationId, false);
+          socket.data.typingConversationId = null;
+          socket.data.typingConversation = null;
+        }
+        return;
+      }
+      const conv = await loadTypingConversation(conversationId);
+      if (!conv) return;
+      socket.data.typingConversationId = conversationId;
+      await broadcastTyping(conversationId, true, conv);
+    });
 
     socket.on('switch-clinic', (newClinicId) => {
       // El cliente cambió de clínica activa
@@ -79,7 +143,11 @@ function init(httpServer) {
     });
 
     socket.on('disconnect', () => {
-      /* noop */
+      // Evita dejar los tres puntos prendidos hasta que venza el timeout del
+      // cliente cuando el asesor cierra la pestaña o pierde la conexión.
+      if (socket.data.typingConversationId) {
+        broadcastTyping(socket.data.typingConversationId, false).catch(() => {});
+      }
     });
   });
 
@@ -141,7 +209,44 @@ function emitToRole(clinicId, role, event, payload) {
  */
 function emitToCallCenter(event, payload) {
   if (!io) return;
-  io.to('callcenter').emit(event, payload);
+  const isPrivateChatEvent = /^(chat|call):/.test(String(event || ''));
+  const conversationId = payload?.conversationId || payload?.id || null;
+  if (!isPrivateChatEvent || !conversationId) {
+    io.to('callcenter').emit(event, payload);
+    return;
+  }
+
+  // Los eventos con contenido del chat siguen el mismo candado que la API. La
+  // consulta se hace aquí para cubrir todos los emisores existentes (Cloud, QR,
+  // workflows, llamadas y cambios de oportunidad) sin dejar una vía lateral.
+  const Conversation = require('./models/Conversation');
+  Conversation.findById(conversationId).select('assignedTo').lean()
+    .then((conv) => {
+      if (!io || !conv) return;
+      let target = io.to('callcenter-supervisors');
+      target = conv.assignedTo
+        ? target.to(`user:${conv.assignedTo}`)
+        : target.to('callcenter-agents');
+      target.emit(event, payload);
+    })
+    .catch((err) => console.error('[realtime] no se pudo resolver acceso al chat:', err.message));
 }
 
-module.exports = { init, getIO, getRealtimeStats, emitToClinic, emitToUser, emitToRole, emitToCallCenter };
+/**
+ * Aviso mínimo de reasignación. Se envía a todos los asesores para que quienes
+ * tenían el chat libre/abierto lo retiren inmediatamente de pantalla; no incluye
+ * nombre, teléfono ni mensajes del contacto.
+ */
+function emitChatAssignment({ conversationId, assignedTo, assignedToName = '' }) {
+  if (!io || !conversationId) return;
+  io.to('callcenter').emit('chat:assignment', {
+    conversationId: String(conversationId),
+    assignedTo: assignedTo ? String(assignedTo) : null,
+    assignedToName: String(assignedToName || '').slice(0, 80),
+  });
+}
+
+module.exports = {
+  init, getIO, getRealtimeStats, emitToClinic, emitToUser, emitToRole,
+  emitToCallCenter, emitChatAssignment,
+};

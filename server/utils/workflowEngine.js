@@ -11,7 +11,8 @@ const ReviewRequest = require('../models/ReviewRequest');
 const messaging = require('./messaging');
 // Etapas del embudo: fuente ÚNICA de lectura/escritura (ver utils/opportunities.js).
 const opportunities = require('./opportunities');
-const { emitToClinic, emitToUser, emitToCallCenter } = require('../realtime');
+const { emitToClinic, emitToUser, emitToCallCenter, emitChatAssignment } = require('../realtime');
+const { isWorkingAt } = require('./agentSchedule');
 const { DOMAIN_EVENTS, onDomainEvent } = require('./events');
 const {
   isWindowActive, isQuietTime, nextAllowedTime, nextAllowedTimeAll, isAlwaysQuiet, describeWindow,
@@ -272,17 +273,29 @@ function clearSendRetries(enrollment) {
 async function pickRoundRobinAgent(clinicId) {
   const agents = await User.find({
     active: true,
-    'clinics.clinic': clinicId,
     'clinics.role': 'call_center',
-  }).select('_id name');
+  }).select('_id name callCenterSchedule');
   if (!agents.length) return null;
+  // El call center es global. Para reparto automático solo participan los
+  // asesores que están en su turno configurado; sin horario explícito = 24/7.
+  const available = agents.filter((agent) => isWorkingAt(agent.callCenterSchedule, new Date()));
+  if (!available.length) return null;
   const counts = await Conversation.aggregate([
     { $match: { clinic: new mongoose.Types.ObjectId(clinicId), status: 'open', assignedTo: { $ne: null } } },
     { $group: { _id: '$assignedTo', count: { $sum: 1 } } },
   ]);
   const byAgent = new Map(counts.map((c) => [String(c._id), c.count]));
-  agents.sort((a, b) => (byAgent.get(String(a._id)) || 0) - (byAgent.get(String(b._id)) || 0));
-  return agents[0];
+  available.sort((a, b) => (byAgent.get(String(a._id)) || 0) - (byAgent.get(String(b._id)) || 0));
+  return available[0];
+}
+
+async function findAssignableAgent(userId) {
+  if (!userId || !mongoose.isValidObjectId(userId)) return null;
+  return User.findOne({
+    _id: userId,
+    active: true,
+    'clinics.role': 'call_center',
+  }).select('_id name callCenterSchedule');
 }
 
 /**
@@ -484,10 +497,15 @@ async function applyTag(patient, conversation, tag, { remove = false } = {}) {
  * entradas en `opportunities[]`, y una edición manual posterior lo borraba
  * (syncPrimaryOpportunity resetea el legacy si el array está vacío).
  */
-async function applyOpportunityStage(conversation, stage) {
+async function applyOpportunityStage(conversation, stage, automationName = '') {
   if (!conversation || !stage) return;
-  opportunities.applyStage(conversation, stage);
+  const result = opportunities.applyStage(conversation, stage);
   await conversation.save();
+  await opportunities.announceStageResult(
+    conversation,
+    result,
+    opportunities.systemActor(automationName ? `automatización "${automationName}"` : 'automatización')
+  );
   try {
     emitToCallCenter('chat:opportunity', { conversationId: conversation._id });
   } catch {
@@ -509,7 +527,7 @@ async function applyOpportunityStage(conversation, stage) {
  * 'opportunity_stage' (evita cascadas workflow → workflow).
  * Devuelve null si todo fue bien, o el motivo del fallo para el registro.
  */
-async function applyOpportunity(conversation, data = {}, { clinicId, patient, ctx } = {}) {
+async function applyOpportunity(conversation, data = {}, { clinicId, patient, ctx, automationName = '' } = {}) {
   if (!conversation) return 'El flujo no tiene un chat asociado: la oportunidad se crea sobre la conversación del contacto';
   // Servicios de interés (catálogo): nombre + precio salen del inventario.
   const ids = (Array.isArray(data.opportunityProducts) ? data.opportunityProducts : []).filter(Boolean);
@@ -537,8 +555,11 @@ async function applyOpportunity(conversation, data = {}, { clinicId, patient, ct
   // desaparecía al recalcularlo.
   const list = opportunities.ensureArray(conversation);
   const reuse = data.ifExists !== 'new' && list.length > 0;
+  const prevStage = reuse ? String(list[list.length - 1]?.stage || '') : null;
+  let changedOpportunity;
   if (reuse) {
     const primary = list[list.length - 1];
+    changedOpportunity = primary;
     primary.isOpportunity = true;
     primary.stage = stage;
     primary.name = name;
@@ -567,11 +588,24 @@ async function applyOpportunity(conversation, data = {}, { clinicId, patient, ct
         ...(stage === 'ganado' ? { convertedAt: new Date() } : {}),
       },
     ];
+    changedOpportunity = conversation.opportunities[conversation.opportunities.length - 1];
   }
   conversation.markModified('opportunities');
   // Espejo legacy = última del array (regla única en utils/opportunities.js).
   opportunities.syncPrimaryOpportunity(conversation);
   await conversation.save();
+  const actor = opportunities.systemActor(
+    automationName ? `automatización "${automationName}"` : 'automatización'
+  );
+  if (!reuse) {
+    await opportunities.announceOpportunity(conversation, {
+      type: 'created', opportunity: changedOpportunity, actor,
+    });
+  } else if (prevStage !== String(stage)) {
+    await opportunities.announceOpportunity(conversation, {
+      type: 'stage', prevStage, opportunity: changedOpportunity, actor,
+    });
+  }
   try {
     emitToCallCenter('chat:opportunity', { conversationId: conversation._id });
   } catch {
@@ -781,7 +815,7 @@ async function loadConversationForPatient(clinicId, phone, patientId) {
  * Devuelve null si todo salió bien, o un string con el motivo del fallo (para
  * el registro de ejecución). Los errores inesperados se propagan (throw).
  */
-async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
+async function performAction(step, { clinicId, patient, phone, ctx, convRef, automationName = '' }) {
   const loadConv = async () => {
     if (!convRef.current) convRef.current = await loadConversationForPatient(clinicId, phone, patient?._id);
     return convRef.current;
@@ -872,18 +906,23 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
     }
     case 'assign_agent': {
       const conversation = await loadConv();
-      if (conversation) {
-        let agent = null;
-        if (step.assignMode === 'user' && step.assignUser) agent = await User.findById(step.assignUser).select('_id name');
-        else agent = await pickRoundRobinAgent(clinicId);
-        if (agent) {
-          conversation.assignedTo = agent._id;
-          conversation.assignedToName = agent.name;
-          conversation.assignedAt = new Date();
-          await conversation.save();
-          emitToUser(agent._id, 'chat:assigned', { conversationId: conversation._id });
-        }
+      if (!conversation) return 'No existe un chat que se pueda asignar.';
+      let agent = null;
+      if (step.assignMode === 'user') agent = await findAssignableAgent(step.assignUser);
+      else agent = await pickRoundRobinAgent(clinicId);
+      if (!agent) {
+        return step.assignMode === 'user'
+          ? 'El asesor seleccionado no existe, está inactivo o ya no tiene rol call center.'
+          : 'No hay asesores de call center en turno para el reparto automático.';
       }
+      conversation.assignedTo = agent._id;
+      conversation.assignedToName = agent.name;
+      conversation.assignedAt = new Date();
+      await conversation.save();
+      emitToUser(agent._id, 'chat:assigned', { conversationId: conversation._id });
+      emitChatAssignment({
+        conversationId: conversation._id, assignedTo: agent._id, assignedToName: agent.name,
+      });
       break;
     }
     case 'create_task': {
@@ -954,13 +993,13 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
       if (step.tag) await applyTag(patient, await loadConv(), step.tag, { remove: true });
       break;
     case 'move_stage':
-      if (step.stage) await applyOpportunityStage(await loadConv(), step.stage);
+      if (step.stage) await applyOpportunityStage(await loadConv(), step.stage, automationName);
       break;
     case 'create_opportunity':
       // Crea la oportunidad COMPLETA (nombre, etapa, servicios, valor, etiquetas,
       // notas) sobre el chat del contacto. Sustituye a `move_stage`, que solo
       // sabía mover la etapa.
-      return applyOpportunity(await loadConv(), step, { clinicId, patient, ctx });
+      return applyOpportunity(await loadConv(), step, { clinicId, patient, ctx, automationName });
     case 'meta_capi': {
       // Reporta un evento de conversión a Meta (Conversions API) con los datos
       // del paciente. Optimiza las campañas por resultados reales del CRM.
@@ -1244,7 +1283,10 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
       // envío saltado (ventana 24h, sin teléfono) queda visible en el registro.
       try {
         // eslint-disable-next-line no-await-in-loop
-        const raw = await performAction({ ...data, type }, { clinicId: enrollment.clinic, patient, phone, ctx, convRef });
+        const raw = await performAction(
+          { ...data, type },
+          { clinicId: enrollment.clinic, patient, phone, ctx, convRef, automationName: workflow.name || '' }
+        );
         // Los pasos que no envían devuelven un texto pelado; los de envío, { info, code }.
         const fail = typeof raw === 'string' ? { info: raw, code: '' } : raw;
         // Canal caído (QR desconectado, sesión recargada a mitad del envío):
@@ -1463,9 +1505,9 @@ async function executeEnrollment(enrollment) {
       if (!conversation) conversation = await loadConversationForPatient(enrollment.clinic, phone);
       if (conversation) {
         let agent = null;
-        if (step.assignMode === 'user' && step.assignUser) {
+        if (step.assignMode === 'user') {
           // eslint-disable-next-line no-await-in-loop
-          agent = await User.findById(step.assignUser).select('_id name');
+          agent = await findAssignableAgent(step.assignUser);
         } else {
           // eslint-disable-next-line no-await-in-loop
           agent = await pickRoundRobinAgent(enrollment.clinic);
@@ -1477,6 +1519,9 @@ async function executeEnrollment(enrollment) {
           // eslint-disable-next-line no-await-in-loop
           await conversation.save();
           emitToUser(agent._id, 'chat:assigned', { conversationId: conversation._id });
+          emitChatAssignment({
+            conversationId: conversation._id, assignedTo: agent._id, assignedToName: agent.name,
+          });
         }
       }
       i++;
@@ -1660,12 +1705,14 @@ async function executeEnrollment(enrollment) {
     } else if (step.type === 'move_stage' && step.stage) {
       if (!conversation) conversation = await loadConversationForPatient(enrollment.clinic, phone, patient?._id);
       // eslint-disable-next-line no-await-in-loop
-      if (conversation) await applyOpportunityStage(conversation, step.stage);
+      if (conversation) await applyOpportunityStage(conversation, step.stage, workflow.name || '');
       i++;
     } else if (step.type === 'create_opportunity') {
       if (!conversation) conversation = await loadConversationForPatient(enrollment.clinic, phone, patient?._id);
       // eslint-disable-next-line no-await-in-loop
-      const fail = await applyOpportunity(conversation, step, { clinicId: enrollment.clinic, patient, ctx });
+      const fail = await applyOpportunity(conversation, step, {
+        clinicId: enrollment.clinic, patient, ctx, automationName: workflow.name || '',
+      });
       pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail?.info || '' });
       i++;
     } else {
@@ -1858,6 +1905,24 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
   // es el fallback (headline||body) que guarda el webhook.
   const msgAdText = String(referral?.headline || referral?.campaign || '').toLowerCase();
 
+  // El ID configurado es el del Administrador de Anuncios. Meta puede mandar en
+  // el referral el ID del anuncio O el de su publicación efectiva; Marketing API
+  // resuelve ambos como aliases para que el ID se configure una sola vez.
+  const configuredAdIds = [...new Set(workflows
+    .flatMap((wf) => getAllChatTriggers(wf))
+    .filter((tr) => tr?.type === 'ctwa_ad')
+    .flatMap((tr) => String(tr.adFilter || '').split(','))
+    .map((id) => id.trim())
+    .filter(Boolean))];
+  let configuredAdAliases = new Map(configuredAdIds.map((id) => [id, new Set([id])]));
+  if (msgAdId && configuredAdIds.some((id) => id !== msgAdId)) {
+    try {
+      configuredAdAliases = await require('./metaAds').resolveAdAliases(configuredAdIds);
+    } catch {
+      /* matching exacto disponible como respaldo */
+    }
+  }
+
   const matchesChat = (tr) => {
     if (!tr || !types.includes(tr.type)) return false;
     if (tr.type === 'new_conversation' && !isNew) return false;
@@ -1875,7 +1940,7 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
       // Si hay algún filtro, el mensaje debe casar por ID O por texto del título.
       // Si no hay ninguno → cualquier anuncio dispara.
       if (wantedIds.length || wantedText.length) {
-        const idOk = wantedIds.includes(msgAdId);
+        const idOk = wantedIds.some((id) => configuredAdAliases.get(id)?.has(msgAdId));
         const textOk = wantedText.some((t) => msgAdText.includes(t));
         if (!idOk && !textOk) return false;
       }
@@ -1978,7 +2043,7 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
       eventType: traceType,
       detail:
         traceType === 'ctwa_ad'
-          ? `El mensaje llegó desde el anuncio ${msgAdId} (título: "${msgAdText || '—'}"), pero no coincidió con el/los ID(s) ni con el/los texto(s) del disparador (o la audiencia no encajó). Tip: el ID del anuncio cambia al editarlo en Meta; filtra por texto del título o deja los filtros vacíos.`
+          ? `El mensaje llegó desde el anuncio ${msgAdId} (título: "${msgAdText || '—'}"), pero no coincidió con el/los anuncios ni con el/los texto(s) del disparador (o la audiencia no encajó). Si configuraste el ID del Administrador de Anuncios, verifica la conexión de Marketing API para que el sistema resuelva automáticamente sus aliases.`
           : 'El mensaje llegó pero el disparador de chat no coincidió (audiencia o palabra clave).',
     });
   }
