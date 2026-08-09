@@ -2570,6 +2570,12 @@ function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, 
         (p. ej. con 23:00–06:20, quien entra a las 02:00 sigue a las 06:20). Fuera de esa franja el flujo pasa
         de largo. Hora de Ecuador.
       </p>
+      <p className="text-[11px] text-slate-500 bg-amber-50 border border-amber-200 rounded-lg px-2.5 py-2">
+        La franja sigue vigente para <b>todos los envíos posteriores</b> de esta rama, también los que caen
+        después de un paso <b>“Esperar”</b>: una espera de 5 h que aterrice de madrugada no envía, aguarda al
+        final del silencio. Solo afecta a <b>esta rama</b>: para callar la automatización entera usa
+        <b> “Horario de silencio”</b> en la barra de arriba.
+      </p>
     </div>
   );
   if (t === 'wait_reply') return (

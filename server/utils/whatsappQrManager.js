@@ -2315,7 +2315,6 @@ async function sendResolvingQuote(entry, chatId, content, quotedMessageId, opts 
   return { sent, quote };
 }
 
-/** Envía texto por la sesión QR. Devuelve un shape compatible con messaging. */
 /**
  * El error de un envío por QR, en castellano y diciendo qué hacer.
  *
@@ -2326,47 +2325,168 @@ async function sendResolvingQuote(entry, chatId, content, quotedMessageId, opts 
  * Todos esos significan lo mismo: la pestaña de WhatsApp Web se recargó o se
  * cayó EN MITAD del envío.
  *
- * Y sí, hay que decir que puede haber salido: no se puede confirmar, y un
- * "reintenta" a secas es como se mandan mensajes duplicados a un paciente.
+ * Se dice claramente que no se pudo comprobar (puede haber salido), pero YA NO es
+ * el final del camino: el sistema reintenta solo y, antes de reenviar, mira el
+ * chat para no duplicarle el mensaje al paciente (ver pendingSends).
  */
 function qrSendErrorText(err) {
   const raw = String(err?.message || err || '');
-  if (/Protocol error|Promise was collected|Target closed|Session closed|detached Frame|Execution context/i.test(raw)) {
+  if (isSessionGlitch(raw)) {
     return (
-      'La sesión de WhatsApp Web se recargó en mitad del envío, así que no se pudo confirmar. ' +
-      'Mira el chat en el teléfono antes de reintentar: puede que el mensaje sí haya salido.'
+      'La sesión de WhatsApp Web se recargó en mitad del envío y no se pudo comprobar si salió. ' +
+      'El sistema lo reintenta solo dentro de unos minutos y, antes de reenviarlo, revisa el chat para no duplicarlo.'
     );
   }
   return raw;
 }
 
+/**
+ * ¿El error es "la sesión tropezó" (recarga de WhatsApp Web, navegador ocupado,
+ * tiempo agotado) y no un rechazo real de WhatsApp? Solo estos merecen reintento:
+ * un destino inválido reintentado 36 veces es ruido, una sesión recargada NO puede
+ * costarle a un contacto su mensaje.
+ */
+function isSessionGlitch(err) {
+  const raw = String(err?.message || err || '');
+  return /Protocol error|Promise was collected|Target closed|Session closed|detached Frame|Execution context|Tiempo agotado|Navigation|net::|ECONNRESET/i.test(raw);
+}
+
+/**
+ * Envíos por QR que quedaron SIN CONFIRMAR: la pestaña se recargó a mitad y ni el
+ * evento de la sesión ni el chat pudieron decir si el mensaje llegó a salir.
+ *
+ * Se apuntan para que el SIGUIENTE intento del mismo contenido al mismo chat mire
+ * primero el chat en vez de mandarlo otra vez. Es lo que permite reintentar sin
+ * miedo (el reintento automático del workflow y el botón "Reintentar" del chat):
+ * si aquel mensaje sí salió, este no se envía y se devuelve el que ya está.
+ */
+const pendingSends = new Map(); // clave → { startedAt }
+const PENDING_TTL_MS = 4 * 60 * 60 * 1000; // cubre las ~3 h de reintentos del workflow
+const PENDING_MAX = 500;
+
+/** Huella del contenido: identifica "el mismo mensaje" sin guardar textos enteros. */
+const sendFingerprint = (what) => `${String(what || '').length}:${String(what || '').slice(0, 120)}`;
+const pendingKey = (key, chatId, huella) => `${key}|${chatId}|${huella}`;
+
+function rememberPending(key, chatId, huella, startedAt) {
+  if (pendingSends.size >= PENDING_MAX) pendingSends.delete(pendingSends.keys().next().value);
+  pendingSends.set(pendingKey(key, chatId, huella), { startedAt });
+}
+
+/** Devuelve (y borra) el envío sin confirmar de este contenido, si sigue vigente. */
+function takePending(key, chatId, huella) {
+  const k = pendingKey(key, chatId, huella);
+  const p = pendingSends.get(k);
+  if (!p) return null;
+  pendingSends.delete(k);
+  return Date.now() - p.startedAt > PENDING_TTL_MS ? null : p;
+}
+
+/** Dos textos son "el mismo mensaje" para WhatsApp (espacios de los bordes aparte). */
+const sameText = (a, b) => String(a || '').trim() === String(b || '').trim();
+
+/** Envía texto por la sesión QR. Devuelve un shape compatible con messaging. */
 async function sendText(account, to, body, quotedMessageId, quoteBody) {
   const key = String(account._id);
   const entry = await acquireSendableEntry(key);
   if (!entry) {
     return { ok: false, errorCode: 'qr_not_connected', error: 'El número QR no está conectado' };
   }
+  const text = String(body || '').slice(0, 4096);
+  const huella = sendFingerprint(text);
+  const esteTexto = (m) => !m.hasMedia && sameText(m.body, text);
   try {
     const r = await resolveChatId(entry, to);
     if (!r.ok) return r;
-    const { sent, quote } = await withTimeout(
-      sendResolvingQuote(entry, r.chatId, String(body || '').slice(0, 4096), quotedMessageId, {}, quoteBody),
-      50000,
-      'Tiempo agotado enviando el mensaje (la sesión puede estar inestable)'
-    );
-    return {
-      ok: true,
-      data: { messages: [{ id: qrMessageId(sent) }] },
-      ...(quotedMessageId || quoteBody ? { quote } : {}),
-    };
+    const chatId = r.chatId;
+
+    // ¿Este mismo texto se quedó sin confirmar en un intento anterior? Antes de
+    // repetirlo hay que mirar el chat: si aquel salió, reenviarlo sería duplicarlo.
+    const pendiente = takePending(key, chatId, huella);
+    if (pendiente) {
+      const previo = await findRecentlySent(entry, chatId, pendiente.startedAt, {
+        matches: esteTexto, waits: [0], limit: 30,
+      });
+      if (previo.id) {
+        console.warn('[wa-qr sendText] el intento anterior SÍ había salido (wamid=%s): no se reenvía', previo.id);
+        return { ok: true, data: { messages: [{ id: previo.id }] } };
+      }
+      if (!previo.checked) {
+        // Ni siquiera se pudo leer el chat: enviar a ciegas podría duplicarle el
+        // mensaje al contacto. Se espera al siguiente reintento, con el apunte intacto.
+        rememberPending(key, chatId, huella, pendiente.startedAt);
+        return {
+          ok: false,
+          errorCode: 'qr_send_unconfirmed',
+          error: 'No se pudo leer el chat para comprobar si el intento anterior salió; se espera al próximo reintento antes de reenviarlo (para no duplicarlo).',
+        };
+      }
+    }
+
+    const startedAt = Date.now();
+    // Se escucha ANTES de enviar: si la sesión se recarga a mitad, su propio evento
+    // es la prueba más fiable de que el mensaje salió (ver watchOutgoing).
+    const watcher = watchOutgoing(entry, chatId, esteTexto);
+    try {
+      const { sent, quote } = await withTimeout(
+        sendResolvingQuote(entry, chatId, text, quotedMessageId, {}, quoteBody),
+        50000,
+        'Tiempo agotado enviando el mensaje (la sesión puede estar inestable)'
+      );
+      watcher.stop();
+      return {
+        ok: true,
+        data: { messages: [{ id: qrMessageId(sent) }] },
+        ...(quotedMessageId || quoteBody ? { quote } : {}),
+      };
+    } catch (e) {
+      // El envío "falló", pero WhatsApp puede haberlo mandado igual: se comprueba
+      // antes de dar ningún veredicto.
+      const conf = await confirmAfterFailure(entry, watcher, chatId, startedAt, esteTexto);
+      watcher.stop();
+      if (conf.wamid) {
+        console.warn('[wa-qr sendText] %s — pero el mensaje SÍ salió (wamid=%s)', e.message, conf.wamid);
+        return { ok: true, data: { messages: [{ id: conf.wamid }] } };
+      }
+      if (conf.checked) {
+        // Se leyó el chat y el mensaje no está: NO salió. Reintentar es seguro.
+        return {
+          ok: false,
+          errorCode: 'qr_send_failed',
+          error: 'La sesión de WhatsApp Web se recargó en mitad del envío y el mensaje NO salió (se comprobó en el chat). Se reintenta solo.',
+        };
+      }
+      if (!isSessionGlitch(e)) {
+        return { ok: false, errorCode: 'qr_send_error', error: qrSendErrorText(e) };
+      }
+      rememberPending(key, chatId, huella, startedAt);
+      return { ok: false, errorCode: 'qr_send_unconfirmed', error: qrSendErrorText(e) };
+    }
   } catch (e) {
     return { ok: false, errorCode: 'qr_send_error', error: qrSendErrorText(e) };
   }
 }
 
 /**
- * ¿Salió de verdad el adjunto? Busca en el propio chat un mensaje NUESTRO con
- * media creado desde que empezó el envío y devuelve su wamid.
+ * El envío lanzó: ¿salió igual? Primero lo que anunció la propia sesión (fiable y
+ * gratis) y, si calla, el chat. Devuelve `{ wamid, checked }` — `checked` dice si
+ * se llegó a LEER el chat: sin eso, "no lo encuentro" no prueba nada.
+ */
+async function confirmAfterFailure(entry, watcher, chatId, startedAtMs, matches) {
+  await sleep(1500);
+  const anunciado = watcher.id();
+  if (anunciado) return { wamid: anunciado, checked: true };
+  const { id, checked } = await findRecentlySent(entry, chatId, startedAtMs, { matches, waits: [0, 2500] });
+  return { wamid: id, checked };
+}
+
+/**
+ * ¿Salió de verdad? Busca en el propio chat un mensaje NUESTRO que encaje con
+ * `matches` y sea posterior al inicio del envío. Devuelve `{ id, checked }`.
+ *
+ * `checked` es la pieza clave: dice si se llegó a LEER el chat. Sin eso, "no lo
+ * encuentro" no significa "no salió" (la sesión podía estar caída), y de esa
+ * diferencia depende si se puede reenviar sin arriesgar un duplicado.
  *
  * whatsapp-web.js devuelve `undefined` cuando su colección interna todavía no
  * tiene el mensaje al terminar `sendMessage`, aunque ya lo haya encolado para
@@ -2374,43 +2494,51 @@ async function sendText(account, to, body, quotedMessageId, quoteBody) {
  * video salía al contacto pero el sistema lo marcaba FALLIDO, y reintentarlo lo
  * enviaba DOS veces.
  */
-async function findRecentlySentMedia(entry, chatId, startedAtMs) {
+async function findRecentlySent(entry, chatId, startedAtMs, { matches, waits = [1500, 3000], limit = 8 } = {}) {
   // Margen por el desfase de reloj entre el servidor y WhatsApp Web.
   const sinceSec = Math.floor(startedAtMs / 1000) - 30;
-  for (const wait of [1500, 3000]) {
-    await sleep(wait);
+  let checked = false;
+  for (const wait of waits) {
+    // eslint-disable-next-line no-await-in-loop
+    if (wait) await sleep(wait);
     try {
       // eslint-disable-next-line no-await-in-loop
       const chat = await withTimeout(entry.client.getChatById(chatId), 15000, 'timeout abriendo el chat');
       // eslint-disable-next-line no-await-in-loop
-      const msgs = await withTimeout(chat.fetchMessages({ limit: 8 }), 20000, 'timeout leyendo el chat');
-      const mine = (msgs || []).filter((m) => m.fromMe && m.hasMedia && Number(m.timestamp || 0) >= sinceSec);
-      const last = mine[mine.length - 1];
-      const id = qrMessageId(last);
-      if (id) return id;
+      const msgs = await withTimeout(chat.fetchMessages({ limit }), 20000, 'timeout leyendo el chat');
+      checked = true;
+      const mine = (msgs || []).filter((m) => m.fromMe && Number(m.timestamp || 0) >= sinceSec && matches(m));
+      const id = qrMessageId(mine[mine.length - 1]);
+      if (id) return { id, checked };
     } catch (e) {
-      console.warn('[wa-qr sendMedia] no se pudo verificar el envío en el chat: %s', e.message);
+      console.warn('[wa-qr] no se pudo verificar el envío en el chat: %s', e.message);
     }
   }
-  return '';
+  return { id: '', checked };
+}
+
+/** Igual, para adjuntos (compatibilidad: devuelve solo el wamid). */
+async function findRecentlySentMedia(entry, chatId, startedAtMs) {
+  const { id } = await findRecentlySent(entry, chatId, startedAtMs, { matches: (m) => !!m.hasMedia });
+  return id;
 }
 
 /**
  * Escucha el evento `message_create` de la sesión mientras dura un envío y se
- * queda con el mensaje NUESTRO con adjunto que WhatsApp acaba de crear en ese
- * chat. Devuelve `{ id(), stop() }`.
+ * queda con el mensaje NUESTRO que encaje con `matches` en ese chat. Devuelve
+ * `{ id(), stop() }`.
  *
- * Es la confirmación MÁS fiable de que el adjunto salió: no busca nada por id ni
+ * Es la confirmación MÁS fiable de que el mensaje salió: no busca nada por id ni
  * abre el chat (en los chats de número oculto, @lid, esas búsquedas fallan), sino
  * que escucha lo que la propia sesión anuncia. Sin esto, un envío que sí llegaba
  * al contacto se marcaba "no se envió" y al reintentarlo se mandaba dos veces.
  */
-function watchOutgoingMedia(entry, chatId) {
+function watchOutgoing(entry, chatId, matches) {
   let found = '';
   const target = String(chatId || '');
   const onCreate = (m) => {
     try {
-      if (found || !m?.fromMe || !m.hasMedia) return;
+      if (found || !m?.fromMe || !matches(m)) return;
       const to = typeof m.to === 'string' ? m.to : widToString(m.to);
       if (to && target && to !== target) return;
       found = qrMessageId(m);
@@ -2425,6 +2553,11 @@ function watchOutgoingMedia(entry, chatId) {
       try { entry.client.off('message_create', onCreate); } catch { /* noop */ }
     },
   };
+}
+
+/** Vigilante para adjuntos (el envío de media no lleva texto con el que comparar). */
+function watchOutgoingMedia(entry, chatId) {
+  return watchOutgoing(entry, chatId, (m) => !!m.hasMedia);
 }
 
 /**
@@ -2446,9 +2579,31 @@ async function sendMedia(account, to, url, caption, type = 'image', quotedMessag
   const isDoc = type === 'document';
   const isVideo = type === 'video';
   const what = isVoice ? 'la nota de voz' : isDoc ? 'el archivo' : isVideo ? 'el video' : 'la imagen';
+  // Huella del adjunto (mismo archivo al mismo chat): sirve para no duplicarlo si
+  // un intento anterior quedó sin confirmar. Ver pendingSends.
+  const huella = sendFingerprint(`media:${type}:${url}`);
+  const esteAdjunto = (msg) => !!msg.hasMedia;
   try {
     const r = await resolveChatId(entry, to);
     if (!r.ok) return r;
+    const pendiente = takePending(key, r.chatId, huella);
+    if (pendiente) {
+      const previo = await findRecentlySent(entry, r.chatId, pendiente.startedAt, {
+        matches: esteAdjunto, waits: [0], limit: 30,
+      });
+      if (previo.id) {
+        console.warn('[wa-qr sendMedia] el intento anterior SÍ había salido (wamid=%s): no se reenvía', previo.id);
+        return { ok: true, data: { messages: [{ id: previo.id }] } };
+      }
+      if (!previo.checked) {
+        rememberPending(key, r.chatId, huella, pendiente.startedAt);
+        return {
+          ok: false,
+          errorCode: 'qr_send_unconfirmed',
+          error: `No se pudo leer el chat para comprobar si ${what} del intento anterior salió; se espera al próximo reintento antes de reenviarlo (para no duplicarlo).`,
+        };
+      }
+    }
     // Bytes del adjunto: la URL autoalojada (/api/public/media/:id) se lee
     // directo de Mongo; una URL externa se descarga.
     let mime = isVoice ? 'audio/ogg' : 'image/jpeg';
@@ -2505,18 +2660,29 @@ async function sendMedia(account, to, url, caption, type = 'image', quotedMessag
         `Tiempo agotado enviando ${what} (${Math.round(bytes / 1048576)} MB): la sesión puede estar inestable o la conexión es lenta`
       ));
     } catch (e) {
-      // Aunque el envío "falle" por tiempo, WhatsApp puede haberlo mandado igual:
-      // si la sesión anunció el mensaje, se da por enviado (y no se duplica).
-      await sleep(1500);
-      const late = watcher.id();
+      // Aunque el envío "falle" (por tiempo o porque la pestaña se recargó),
+      // WhatsApp puede haberlo mandado igual: se comprueba antes de dar veredicto.
+      const conf = await confirmAfterFailure(entry, watcher, r.chatId, startedAt, esteAdjunto);
       watcher.stop();
-      if (!late) throw e;
-      console.warn('[wa-qr sendMedia] %s — pero la sesión SÍ creó el mensaje (wamid=%s)', e.message, late);
-      return {
-        ok: true,
-        data: { messages: [{ id: late }] },
-        ...(quotedMessageId || quoteBody ? { quote: { applied: false, how: '', reason: 'timeout', wamid: '' } } : {}),
-      };
+      if (conf.wamid) {
+        console.warn('[wa-qr sendMedia] %s — pero la sesión SÍ creó el mensaje (wamid=%s)', e.message, conf.wamid);
+        return {
+          ok: true,
+          data: { messages: [{ id: conf.wamid }] },
+          ...(quotedMessageId || quoteBody ? { quote: { applied: false, how: '', reason: 'timeout', wamid: '' } } : {}),
+        };
+      }
+      if (conf.checked) {
+        // Se leyó el chat y el adjunto no está: NO salió. Reintentar es seguro.
+        return {
+          ok: false,
+          errorCode: 'qr_send_failed',
+          error: `${what.charAt(0).toUpperCase()}${what.slice(1)} no salió (se comprobó en el chat): la sesión de WhatsApp Web se cayó a mitad del envío. Se reintenta solo.`,
+        };
+      }
+      if (!isSessionGlitch(e)) throw e;
+      rememberPending(key, r.chatId, huella, startedAt);
+      return { ok: false, errorCode: 'qr_send_unconfirmed', error: qrSendErrorText(e) };
     }
     let wamid = qrMessageId(sent);
     if (!wamid) {
@@ -2526,13 +2692,19 @@ async function sendMedia(account, to, url, caption, type = 'image', quotedMessag
       // marcaba en rojo (y "Reintentar" lo enviaba DOS veces).
       console.warn('[wa-qr sendMedia] la sesión no devolvió wamid; verificando… chat=%s', r.chatId);
       await sleep(1500);
-      wamid = watcher.id() || (await findRecentlySentMedia(entry, r.chatId, startedAt));
+      const conf = watcher.id()
+        ? { id: watcher.id(), checked: true }
+        : await findRecentlySent(entry, r.chatId, startedAt, { matches: esteAdjunto });
+      wamid = conf.id;
       if (!wamid) {
         watcher.stop();
+        // Si NO se pudo leer el chat, el adjunto pudo salir: se apunta para que el
+        // reintento lo compruebe antes de mandarlo otra vez.
+        if (!conf.checked) rememberPending(key, r.chatId, huella, startedAt);
         return {
           ok: false,
-          errorCode: 'qr_media_unconfirmed',
-          error: `WhatsApp no confirmó el envío de ${what} (la sesión puede estar inestable). Reintenta.`,
+          errorCode: conf.checked ? 'qr_send_failed' : 'qr_media_unconfirmed',
+          error: `WhatsApp no confirmó el envío de ${what} (la sesión puede estar inestable). Se reintenta solo.`,
         };
       }
       console.log('[wa-qr sendMedia] confirmado por verificación wamid=%s', wamid);
@@ -2738,6 +2910,8 @@ module.exports = {
     scheduleReconnect, cancelReconnect, superviseSessions, MAX_MISSES,
     acquireSendableEntry, healToConnected, extractQrMedia, describeQrNonMedia,
     findRecentlySentMedia, watchOutgoingMedia, qrMessageId, qrMessageHash, serializeMsgKey,
+    findRecentlySent, watchOutgoing, confirmAfterFailure, isSessionGlitch,
+    pendingSends, rememberPending, takePending, sendFingerprint, sameText,
     downloadAndDecryptWaMedia, phoneFromMsgData,
     probeIngest, verifyIngest, recoverMissedInbound, ingestIncomingQrMessage,
     ingestRepairAt, ingestGaps,

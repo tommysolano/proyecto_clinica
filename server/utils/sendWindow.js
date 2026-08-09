@@ -142,6 +142,35 @@ function nextAllowedTime(win, from = new Date()) {
   return null;
 }
 
+/**
+ * Igual que `nextAllowedTime` pero con VARIAS ventanas a la vez: la del workflow
+ * más las de los nodos "Ventana horaria" por los que el contacto ya pasó. Devuelve
+ * el primer instante en el que NINGUNA de ellas calla.
+ *
+ * POR QUÉ: un nodo "Ventana horaria" seguido de "Esperar 5 horas" mandaba el
+ * mensaje a las 03:00 — el nodo solo miraba el reloj al pasar por él, y la espera
+ * posterior aterrizaba de lleno en el silencio. La ventana del nodo tiene que
+ * seguir vigente para TODO lo que venga después (que es lo que dice su propia
+ * ficha), no solo en el punto del diagrama donde está dibujada.
+ *
+ * Las ventanas imposibles (24 h los 7 días) se IGNORAN aquí: respetarlas sería no
+ * enviar jamás. Quien llame debe avisar de esa mala configuración.
+ */
+function nextAllowedTimeAll(windows, from = new Date()) {
+  const wins = (Array.isArray(windows) ? windows : [windows])
+    .filter((w) => isWindowActive(w) && !isAlwaysQuiet(w));
+  if (!wins.length) return from;
+  let t = new Date(from);
+  // Cada vuelta salta al final del silencio más largo que cubra `t`; con varias
+  // ventanas encadenadas hacen falta más saltos que con una sola.
+  for (let i = 0; i <= MAX_SLOT_HOPS * wins.length; i += 1) {
+    const ends = wins.map((w) => quietSlotAt(w, t)).filter(Boolean).map((s) => s.end.getTime());
+    if (!ends.length) return t;
+    t = new Date(Math.max(...ends));
+  }
+  return null;
+}
+
 /** ¿El silencio cubre TODO (7 días, 24 h)? Configuración imposible de cumplir. */
 function isAlwaysQuiet(win) {
   if (!isWindowActive(win)) return false;
@@ -166,6 +195,7 @@ module.exports = {
   isWindowActive,
   isQuietTime,
   nextAllowedTime,
+  nextAllowedTimeAll,
   isAlwaysQuiet,
   describeWindow,
 };

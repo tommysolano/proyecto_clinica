@@ -13,7 +13,9 @@ const messaging = require('./messaging');
 const opportunities = require('./opportunities');
 const { emitToClinic, emitToUser, emitToCallCenter } = require('../realtime');
 const { DOMAIN_EVENTS, onDomainEvent } = require('./events');
-const { isWindowActive, nextAllowedTime, isAlwaysQuiet, describeWindow } = require('./sendWindow');
+const {
+  isWindowActive, isQuietTime, nextAllowedTime, nextAllowedTimeAll, isAlwaysQuiet, describeWindow,
+} = require('./sendWindow');
 
 const MAX_STEP_TRANSITIONS = 100; // guarda contra bucles por onFailGoTo mal formado
 const MAX_LOG_ENTRIES = 60; // tope del registro de ejecución por inscripción
@@ -28,10 +30,9 @@ const LINEAR_ACTION_TYPES = new Set([
   'meta_capi', 'fb_audience_add', 'fb_audience_remove',
 ]);
 
-// Pasos que MANDAN algo al contacto. Son los únicos que respeta la ventana de
-// envío del workflow (`workflow.sendWindow`): etiquetar o crear una tarea a las
-// 3 a.m. no molesta a nadie, mandar un WhatsApp sí. El nodo 'window' del
-// diagrama, en cambio, retiene TODO lo que venga después de él.
+// Pasos que MANDAN algo al contacto. Son los únicos que respetan las ventanas de
+// silencio: etiquetar o crear una tarea a las 3 a.m. no molesta a nadie, mandar un
+// WhatsApp sí.
 const SENDING_TYPES = new Set([
   'send_message', 'send_media', 'send_template', 'send_email', 'request_review', 'ai_reply',
 ]);
@@ -45,25 +46,97 @@ function windowOfNode(data = {}) {
   return { mode: 'specific', days: data.windowDays, from: data.windowFrom, to: data.windowTo };
 }
 
+/** Clave para no guardar dos veces la misma ventana en el contexto. */
+const windowKey = (w) => `${(w.days || []).join(',')}|${w.from}|${w.to}`;
+
 /**
- * ¿Hay que RETENER este paso porque estamos en la franja de silencio del
- * workflow? Devuelve la fecha en la que el silencio termina, o null si puede
- * ejecutarse ya (sin ventana, fuera del silencio, o paso que no envía nada).
+ * Apunta en el contexto de la inscripción la ventana de un nodo "Ventana horaria"
+ * por el que el contacto ACABA de pasar, para que siga callando los envíos que
+ * vengan después (ver `sendWindowHold`). Devuelve true si el contexto cambió.
+ *
+ * CASO REAL (ago-2026): un flujo con "Ventana horaria 23:02–06:20" seguida de
+ * "Esperar 5 horas" y "Enviar mensaje" mandaba el WhatsApp a las 03:08. El nodo
+ * miraba el reloj solo al pasar por él (a las 22:08 no había silencio) y la espera
+ * posterior aterrizaba dentro de la franja. La ficha del nodo promete justo lo
+ * contrario: "todo lo que venga después de este paso se queda esperando aquí".
  */
-function sendWindowHold(workflow, type, at = new Date()) {
-  if (!SENDING_TYPES.has(type)) return null;
-  const win = workflow?.sendWindow;
-  if (!isWindowActive(win)) return null;
-  const libre = nextAllowedTime(win, at);
-  if (!libre) {
+function rememberQuietWindow(ctx, win) {
+  if (!ctx || !isWindowActive(win) || isAlwaysQuiet(win)) return false;
+  const list = Array.isArray(ctx.quietWindows) ? ctx.quietWindows : [];
+  if (list.some((w) => windowKey(w) === windowKey(win))) return false;
+  ctx.quietWindows = [...list, { mode: 'specific', days: win.days, from: win.from, to: win.to }];
+  return true;
+}
+
+/**
+ * Ventanas de los nodos "Ventana horaria" que están ANTES de `nodeId` en el
+ * diagrama (recorriendo las aristas hacia atrás). Es el mismo silencio que
+ * `rememberQuietWindow` apunta al pasar, pero leído del propio dibujo: así también
+ * quedan cubiertos los contactos que YA estaban a mitad de flujo cuando se corrigió
+ * esto, y los que llegan a un punto donde confluyen varias ramas.
+ */
+function windowsUpstreamOf(workflow, nodeId) {
+  if (!nodeId || !(workflow?.nodes || []).length) return [];
+  const edges = workflow.edges || [];
+  const vistos = new Set([nodeId]);
+  const pendientes = [nodeId];
+  const wins = [];
+  while (pendientes.length) {
+    const actual = pendientes.pop();
+    for (const e of edges) {
+      if (e.target !== actual || vistos.has(e.source)) continue;
+      vistos.add(e.source);
+      pendientes.push(e.source);
+      const node = getNode(workflow, e.source);
+      if (node?.type === 'window') wins.push(windowOfNode(node.data || {}));
+    }
+  }
+  return wins;
+}
+
+/** Ventanas que callan los envíos de esta inscripción, ya activas y cumplibles. */
+function quietWindowsFor(workflow, ctx, nodeId = null) {
+  const wins = [
+    workflow?.sendWindow,
+    ...(Array.isArray(ctx?.quietWindows) ? ctx.quietWindows : []),
+    ...windowsUpstreamOf(workflow, nodeId),
+  ]
+    .filter((w) => isWindowActive(w))
+    .filter((w, i, all) => all.findIndex((x) => windowKey(x) === windowKey(w)) === i);
+  const usables = wins.filter((w) => !isAlwaysQuiet(w));
+  if (usables.length < wins.length) {
     // Silencio de 24 h los 7 días: no hay hueco al que esperar. Retener sería
     // dejar al contacto preso para siempre, así que se avisa y se deja pasar.
     console.warn(
-      '[workflow] la ventana de "%s" calla las 24 h de los 7 días: se ignora (revisa su configuración)',
+      '[workflow] una ventana de "%s" calla las 24 h de los 7 días: se ignora (revisa su configuración)',
       workflow?.name || workflow?._id
     );
-    return null;
   }
+  return usables;
+}
+
+/** Texto para el registro: qué ventana(s) están callando en este momento. */
+function describeQuiet(wins, at = new Date()) {
+  const callando = wins.filter((w) => isQuietTime(w, at));
+  return (callando.length ? callando : wins).map(describeWindow).join(' y ');
+}
+
+/**
+ * ¿Hay que RETENER este paso porque estamos en franja de silencio? Devuelve la
+ * fecha en la que el silencio termina, o null si puede ejecutarse ya (sin ventana,
+ * fuera del silencio, o paso que no envía nada).
+ *
+ * Cuenta la ventana del workflow (`workflow.sendWindow`, la del botón "Horario de
+ * silencio") Y las de los nodos "Ventana horaria" que quedan por encima de este
+ * paso: las que la inscripción trae apuntadas (ctx.quietWindows) y las que están
+ * antes en el diagrama (windowsUpstreamOf).
+ */
+function sendWindowHold(workflow, type, at = new Date(), ctx = null, nodeId = null) {
+  if (!SENDING_TYPES.has(type)) return null;
+  const wins = quietWindowsFor(workflow, ctx, nodeId);
+  if (!wins.length) return null;
+  const libre = nextAllowedTimeAll(wins, at);
+  if (!libre) return null;
   return libre.getTime() > at.getTime() ? libre : null;
 }
 
@@ -87,6 +160,9 @@ const SEND_FAIL_REASONS = {
   template_header_missing: 'La plantilla requiere una imagen/archivo de cabecera que no está guardado.',
   qr_not_connected: 'El número QR por el que saldría este mensaje está desconectado: reconéctalo en Configuración del Call Center.',
   qr_invalid_number: 'El teléfono del paciente no está en WhatsApp.',
+  qr_send_failed: 'La sesión de WhatsApp Web se recargó en mitad del envío y el mensaje NO salió (se comprobó en el chat).',
+  qr_send_unconfirmed: 'La sesión de WhatsApp Web se recargó en mitad del envío y no se pudo comprobar si salió.',
+  qr_media_unconfirmed: 'WhatsApp no confirmó el envío del archivo (la sesión estaba inestable).',
   token_undecryptable: 'El token de WhatsApp no se pudo descifrar en el servidor que procesó el envío (falta o cambió SECRETS_KEY — p.ej. un servidor de desarrollo local conectado a la base de producción, que no tiene esa clave). Se reintenta: el servidor de producción (con la clave) lo enviará.',
 };
 
@@ -119,6 +195,18 @@ function sendFailureInfo(result, channel = 'whatsapp') {
   return SEND_FAIL_REASONS[reason] || result.errorMessage || `No se pudo enviar (${reason}).`;
 }
 
+/**
+ * Fallo de un envío: `{ info, code }` — el texto para el registro y el CÓDIGO del
+ * proveedor, que es lo que decide si se reintenta (ver RETRYABLE_SEND_CODES). Antes
+ * se decidía comparando el texto, y cualquier motivo nuevo (o un texto con el
+ * número de origen pegado detrás) se quedaba sin reintento en silencio.
+ */
+function sendFail(result, channel = 'whatsapp') {
+  const info = sendFailureInfo(result, channel);
+  if (!info) return null;
+  return { info, code: String(result?.reason || result?.errorCode || '') };
+}
+
 // Fallos TRANSITORIOS: se REINTENTA en vez de quemar el turno del contacto.
 //  - qr_not_connected: el número QR caído (reconectar lo cura). Caso real: una
 //    importación inscribió sus contactos mientras la sesión QR se re-asentaba tras
@@ -127,23 +215,31 @@ function sendFailureInfo(result, channel = 'whatsapp') {
 //    token (falta/otra SECRETS_KEY — típico de un `npm run dev` local conectado a la
 //    base de prod). El servidor de producción (con la clave) SÍ puede: reintentar deja
 //    que él lo envíe en vez de perder el mensaje. En prod nunca dispara (descifra bien).
+//  - qr_send_failed / qr_send_unconfirmed / qr_media_unconfirmed: la pestaña de
+//    WhatsApp Web se recargó a mitad del envío. Caso real (ago-2026): el flujo daba
+//    el mensaje por fallido, SEGUÍA con el paso siguiente y ese mensaje se perdía
+//    para siempre. No hay riesgo de duplicado: antes de reenviar, el gateway QR
+//    comprueba en el propio chat si aquel mensaje llegó a salir.
 // OJO: provider_unavailable ("no hay número configurado") NO va aquí — es ausencia de
 // configuración, no un tropiezo: debe fallar claro y al instante.
-const RETRYABLE_SEND_FAILS = new Set([
-  SEND_FAIL_REASONS.qr_not_connected,
-  SEND_FAIL_REASONS.token_undecryptable,
+const RETRYABLE_SEND_CODES = new Set([
+  'qr_not_connected',
+  'token_undecryptable',
+  'qr_send_failed',
+  'qr_send_unconfirmed',
+  'qr_media_unconfirmed',
 ]);
 const SEND_RETRY_MS = 5 * 60 * 1000; // reintento cada 5 min…
 const SEND_RETRY_MAX = 36; // …hasta ~3 horas; después, fallo definitivo y el flujo sigue
 
 /**
- * Si `fail` es un fallo transitorio del canal y quedan reintentos, pausa la
- * inscripción para reintentar ESTE MISMO paso (waiting + nextRunAt) y devuelve
- * true. El caller debe fijar currentNodeId/stepIndex al paso actual, guardar y
- * salir. `at` = { nodeId } (grafo) o { stepIndex } (lineal), para el registro.
+ * Si `fail` (`{ info, code }`) es un fallo transitorio del canal y quedan
+ * reintentos, pausa la inscripción para reintentar ESTE MISMO paso (waiting +
+ * nextRunAt) y devuelve true. El caller debe fijar currentNodeId/stepIndex al paso
+ * actual, guardar y salir. `at` = { nodeId } (grafo) o { stepIndex } (lineal).
  */
 function scheduleSendRetry(enrollment, fail, at) {
-  if (!fail || !RETRYABLE_SEND_FAILS.has(fail)) return false;
+  if (!fail || !RETRYABLE_SEND_CODES.has(fail.code)) return false;
   const ctx = enrollment.context || {};
   const tries = Number(ctx.sendRetries || 0) + 1;
   if (tries > SEND_RETRY_MAX) return false; // agotado: que el caller lo registre como definitivo
@@ -154,7 +250,7 @@ function scheduleSendRetry(enrollment, fail, at) {
     ...at,
     type: 'retry',
     ok: false,
-    info: `${fail} Se reintenta en 5 min (intento ${tries}/${SEND_RETRY_MAX}); el turno del contacto no se pierde.`,
+    info: `${fail.info} Se reintenta en 5 min (intento ${tries}/${SEND_RETRY_MAX}); el turno del contacto no se pierde.`,
   });
   enrollment.status = 'waiting';
   enrollment.nextRunAt = new Date(Date.now() + SEND_RETRY_MS);
@@ -721,7 +817,7 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
         isAutoReply: true,
         whatsappAccount,
       });
-      return sendFailureInfo(r, conversation?.channel || 'whatsapp');
+      return sendFail(r, conversation?.channel || 'whatsapp');
     }
     case 'send_media': {
       // Solo imagen/video/audio/documento, sin texto (nodo "Enviar imagen / video / audio").
@@ -739,7 +835,7 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
         isAutoReply: true,
         whatsappAccount,
       });
-      return sendFailureInfo(r, conversation?.channel || 'whatsapp');
+      return sendFail(r, conversation?.channel || 'whatsapp');
     }
     case 'send_template': {
       // Meta no tiene plantillas HSM fuera de WhatsApp, pero SÍ se puede mandar el
@@ -766,13 +862,13 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
         whatsappAccount,
         contactId,
       });
-      return sendFailureInfo(r, stepChannel);
+      return sendFail(r, stepChannel);
     }
     case 'send_email': {
       const to = patient?.email;
       if (!to) return 'El paciente no tiene email registrado.';
       const r = await messaging.send({ clinicId, channel: 'email', to, patient, subject: await renderText(step.emailSubject || 'Mensaje de tu clínica', patient, ctx), body: await renderText(step.body, patient, ctx) });
-      return sendFailureInfo(r, 'email');
+      return sendFail(r, 'email');
     }
     case 'assign_agent': {
       const conversation = await loadConv();
@@ -828,7 +924,7 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
       const link = base ? `${base}/api/public/review/${token}` : '';
       const text = await renderText(step.body || '¡Hola {{nombre}}! ¿Cómo fue tu experiencia con nosotros? Califícanos aquí:', patient, ctx);
       const r = await messaging.send({ clinicId, channel: stepChannel, conversation, to: phone, patient, body: link ? `${text}\n${link}` : text, isAutoReply: true });
-      return sendFailureInfo(r, stepChannel);
+      return sendFail(r, stepChannel);
     }
     case 'ai_reply': {
       const conversation = await loadConv();
@@ -837,7 +933,7 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef }) {
       const r = await suggestReply({ clinicId, conversationId: conversation._id });
       if (r.ok && r.suggestion) {
         const sent = await messaging.send({ clinicId, channel: conversation.channel || 'whatsapp', to: phone, patient, conversation, body: r.suggestion, isAutoReply: true });
-        return sendFailureInfo(sent, conversation.channel || 'whatsapp');
+        return sendFail(sent, conversation.channel || 'whatsapp');
       }
       return 'La IA no generó una sugerencia.';
     }
@@ -1041,8 +1137,15 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
     } else if (type === 'window') {
       // Ventana horaria: la franja configurada es la de SILENCIO. Dentro de ella
       // el contacto espera a que TERMINE (no se pierde); fuera, el flujo sigue.
+      // La ventana además QUEDA VIGENTE para todos los envíos posteriores del
+      // flujo (ver rememberQuietWindow): si no, un "Esperar 5 horas" detrás del
+      // nodo aterrizaba de lleno en el silencio y el mensaje salía igual.
       const win = windowOfNode(data);
       const nxt = nextNodeId(workflow, currentId);
+      if (rememberQuietWindow(ctx, win)) {
+        enrollment.context = ctx;
+        enrollment.markModified('context');
+      }
       const libre = isWindowActive(win) ? nextAllowedTime(win, new Date()) : null;
       if (isWindowActive(win) && !libre) {
         // Silencio de 24 h los 7 días: esperar sería no continuar jamás.
@@ -1119,15 +1222,17 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
       }
       currentId = nextNodeId(workflow, currentId);
     } else {
-      // VENTANA DE ENVÍO del workflow: si este paso manda algo y la franja está
-      // cerrada, el contacto se queda aquí hasta la próxima apertura (el paso NO
-      // se salta: se ejecuta entero cuando abre).
-      const hold = sendWindowHold(workflow, type, new Date());
+      // VENTANAS DE SILENCIO (la del workflow y las de los nodos "Ventana horaria"
+      // ya recorridos): si este paso manda algo y hay silencio, el contacto se
+      // queda aquí hasta que termine (el paso NO se salta: se ejecuta entero
+      // cuando abre). Es lo que impide que un "Esperar" posterior a la ventana
+      // acabe soltando el WhatsApp de madrugada.
+      const hold = sendWindowHold(workflow, type, new Date(), ctx, currentId);
       if (hold) {
         pushLog(enrollment, {
           nodeId: currentId,
           type,
-          info: `En horario de silencio (${describeWindow(workflow.sendWindow)}): se enviará el ${fmtLogDate(hold)}`,
+          info: `En horario de silencio (${describeQuiet(quietWindowsFor(workflow, ctx, currentId))}): se enviará el ${fmtLogDate(hold)}`,
         });
         enrollment.currentNodeId = currentId; // se re-ejecuta ESTE paso al abrir
         enrollment.nextRunAt = hold;
@@ -1139,8 +1244,11 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
       // envío saltado (ventana 24h, sin teléfono) queda visible en el registro.
       try {
         // eslint-disable-next-line no-await-in-loop
-        const fail = await performAction({ ...data, type }, { clinicId: enrollment.clinic, patient, phone, ctx, convRef });
-        // Canal caído (QR desconectado): reintentar ESTE nodo, no quemar el turno.
+        const raw = await performAction({ ...data, type }, { clinicId: enrollment.clinic, patient, phone, ctx, convRef });
+        // Los pasos que no envían devuelven un texto pelado; los de envío, { info, code }.
+        const fail = typeof raw === 'string' ? { info: raw, code: '' } : raw;
+        // Canal caído (QR desconectado, sesión recargada a mitad del envío):
+        // reintentar ESTE nodo, no quemar el turno del contacto.
         if (fail && scheduleSendRetry(enrollment, fail, { nodeId: currentId })) {
           enrollment.currentNodeId = currentId;
           // eslint-disable-next-line no-await-in-loop
@@ -1148,7 +1256,7 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
           return;
         }
         clearSendRetries(enrollment);
-        pushLog(enrollment, { nodeId: currentId, type, ok: !fail, info: fail || '' });
+        pushLog(enrollment, { nodeId: currentId, type, ok: !fail, info: fail?.info || '' });
       } catch (err) {
         pushLog(enrollment, { nodeId: currentId, type, ok: false, info: `Error: ${err.message}` });
         console.error('[workflowEngine] action error', enrollment._id, type, err.message);
@@ -1223,14 +1331,14 @@ async function executeEnrollment(enrollment) {
     if (++transitions > MAX_STEP_TRANSITIONS) break;
     const step = workflow.steps[i];
 
-    // Ventana de envío del workflow (también en los flujos lineales antiguos):
-    // fuera de la franja el contacto espera aquí a la próxima apertura.
-    const hold = sendWindowHold(workflow, step.type, new Date());
+    // Ventanas de silencio (también en los flujos lineales antiguos): dentro de la
+    // franja el contacto espera aquí a que termine.
+    const hold = sendWindowHold(workflow, step.type, new Date(), ctx);
     if (hold) {
       pushLog(enrollment, {
         stepIndex: i,
         type: step.type,
-        info: `Fuera de la ventana de envío (${describeWindow(workflow.sendWindow)}): se enviará el ${fmtLogDate(hold)}`,
+        info: `En horario de silencio (${describeQuiet(quietWindowsFor(workflow, ctx))}): se enviará el ${fmtLogDate(hold)}`,
       });
       enrollment.stepIndex = i;
       enrollment.nextRunAt = hold;
@@ -1255,7 +1363,7 @@ async function executeEnrollment(enrollment) {
         isAutoReply: true,
         whatsappAccount: ctx.whatsappAccountId || null,
       });
-      const fail = sendFailureInfo(r, conversation?.channel || 'whatsapp');
+      const fail = sendFail(r, conversation?.channel || 'whatsapp');
       if (fail && scheduleSendRetry(enrollment, fail, { stepIndex: i })) {
         enrollment.stepIndex = i; // reintentar este mismo paso
         // eslint-disable-next-line no-await-in-loop
@@ -1263,7 +1371,7 @@ async function executeEnrollment(enrollment) {
         return;
       }
       clearSendRetries(enrollment);
-      pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail || '' });
+      pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail?.info || '' });
       i++;
     } else if (step.type === 'send_media') {
       if (!step.mediaUrl) {
@@ -1282,7 +1390,7 @@ async function executeEnrollment(enrollment) {
           isAutoReply: true,
           whatsappAccount: ctx.whatsappAccountId || null,
         });
-        const fail = sendFailureInfo(r, conversation?.channel || 'whatsapp');
+        const fail = sendFail(r, conversation?.channel || 'whatsapp');
         if (fail && scheduleSendRetry(enrollment, fail, { stepIndex: i })) {
           enrollment.stepIndex = i;
           // eslint-disable-next-line no-await-in-loop
@@ -1290,7 +1398,7 @@ async function executeEnrollment(enrollment) {
           return;
         }
         clearSendRetries(enrollment);
-        pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail || '' });
+        pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail?.info || '' });
       }
       i++;
     } else if (step.type === 'send_template') {
@@ -1320,7 +1428,7 @@ async function executeEnrollment(enrollment) {
           whatsappAccount: ctx.whatsappAccountId || null,
           contactId: ctx.contactId || null,
         });
-        const fail = sendFailureInfo(r, stepChannel);
+        const fail = sendFail(r, stepChannel);
         if (fail && scheduleSendRetry(enrollment, fail, { stepIndex: i })) {
           enrollment.stepIndex = i;
           // eslint-disable-next-line no-await-in-loop
@@ -1328,7 +1436,7 @@ async function executeEnrollment(enrollment) {
           return;
         }
         clearSendRetries(enrollment);
-        pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail || '' });
+        pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail?.info || '' });
       }
       i++;
     } else if (step.type === 'send_email') {
@@ -1345,8 +1453,8 @@ async function executeEnrollment(enrollment) {
           // eslint-disable-next-line no-await-in-loop
           body: await renderText(step.body, patient, ctx),
         });
-        const fail = sendFailureInfo(r, 'email');
-        pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail || '' });
+        const fail = sendFail(r, 'email');
+        pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail?.info || '' });
       } else {
         pushLog(enrollment, { stepIndex: i, type: step.type, ok: false, info: 'El paciente no tiene email registrado.' });
       }
@@ -1558,7 +1666,7 @@ async function executeEnrollment(enrollment) {
       if (!conversation) conversation = await loadConversationForPatient(enrollment.clinic, phone, patient?._id);
       // eslint-disable-next-line no-await-in-loop
       const fail = await applyOpportunity(conversation, step, { clinicId: enrollment.clinic, patient, ctx });
-      pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail || '' });
+      pushLog(enrollment, { stepIndex: i, type: step.type, ok: !fail, info: fail?.info || '' });
       i++;
     } else {
       i++; // paso desconocido → saltar

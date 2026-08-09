@@ -12,7 +12,8 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  isWindowActive, isQuietTime, nextAllowedTime, isAlwaysQuiet, describeWindow, normalizeDays,
+  isWindowActive, isQuietTime, nextAllowedTime, nextAllowedTimeAll, isAlwaysQuiet, describeWindow,
+  normalizeDays,
 } = require('../utils/sendWindow');
 const { sendWindowHold, windowOfNode } = require('../utils/workflowEngine');
 
@@ -122,6 +123,48 @@ test('un workflow sin ventana configurada nunca retiene', () => {
 test('una ventana imposible (24 h los 7 días) no deja preso al contacto', () => {
   const wf = { name: 'mal configurado', sendWindow: { mode: 'specific', days: [0, 1, 2, 3, 4, 5, 6], from: '08:00', to: '08:00' } };
   assert.equal(sendWindowHold(wf, 'send_message', at(2026, 8, 5, 10)), null, 'se deja pasar en vez de esperar para siempre');
+});
+
+// ───────── varias ventanas a la vez (workflow + nodos ya recorridos) ─────────
+
+test('nextAllowedTimeAll respeta la MÁS restrictiva de varias ventanas', () => {
+  // Noche (23:00–06:20) + oficina (L-V 09:00–18:00): a las 03:00 del miércoles la
+  // noche calla hasta las 06:20; ahí ya no hay silencio (la oficina empieza a las 9).
+  assert.deepEqual(nextAllowedTimeAll([NOCHE, OFICINA], at(2026, 8, 5, 3)), at(2026, 8, 5, 6, 20));
+  // A las 17:00 calla la oficina hasta las 18:00, y la noche aún no empieza.
+  assert.deepEqual(nextAllowedTimeAll([NOCHE, OFICINA], at(2026, 8, 5, 17)), at(2026, 8, 5, 18));
+  // A las 20:00 no calla ninguna: se envía ya.
+  assert.deepEqual(nextAllowedTimeAll([NOCHE, OFICINA], at(2026, 8, 5, 20)), at(2026, 8, 5, 20));
+});
+
+test('nextAllowedTimeAll: sin ventanas activas devuelve el mismo instante', () => {
+  const ahora = at(2026, 8, 5, 3);
+  assert.deepEqual(nextAllowedTimeAll([], ahora), ahora);
+  assert.deepEqual(nextAllowedTimeAll([{ mode: 'any' }], ahora), ahora);
+});
+
+test('la ventana de un nodo ya recorrido sigue callando los envíos posteriores', () => {
+  // EL BUG DE AGO-2026: nodo "Ventana horaria 23:02–06:20" → "Esperar 5 h" →
+  // "Enviar mensaje". Se pasaba por la ventana a las 22:08 (sin silencio) y el
+  // mensaje salía a las 03:08. Ahora la ventana del nodo viaja en el contexto.
+  const ctx = { quietWindows: [{ mode: 'specific', days: [0, 1, 2, 3, 4, 5, 6], from: '23:02', to: '06:20' }] };
+  const wf = {}; // el workflow NO tiene horario de silencio propio
+  assert.deepEqual(sendWindowHold(wf, 'send_message', at(2026, 8, 6, 3, 8), ctx), at(2026, 8, 6, 6, 20));
+  assert.equal(sendWindowHold(wf, 'send_message', at(2026, 8, 6, 10), ctx), null, 'de día sí envía');
+  assert.equal(sendWindowHold(wf, 'add_tag', at(2026, 8, 6, 3, 8), ctx), null, 'etiquetar no molesta');
+});
+
+test('se suman la ventana del workflow y la del nodo recorrido', () => {
+  const wf = { sendWindow: OFICINA };
+  const ctx = { quietWindows: [NOCHE] };
+  assert.deepEqual(sendWindowHold(wf, 'send_message', at(2026, 8, 5, 10), ctx), at(2026, 8, 5, 18), 'calla la del workflow');
+  assert.deepEqual(sendWindowHold(wf, 'send_message', at(2026, 8, 5, 2), ctx), at(2026, 8, 5, 6, 20), 'calla la del nodo');
+  assert.equal(sendWindowHold(wf, 'send_message', at(2026, 8, 5, 20), ctx), null, 'a las 20:00 no calla ninguna');
+});
+
+test('una ventana de nodo imposible no bloquea los envíos', () => {
+  const ctx = { quietWindows: [{ mode: 'specific', days: [0, 1, 2, 3, 4, 5, 6], from: '08:00', to: '08:00' }] };
+  assert.equal(sendWindowHold({}, 'send_message', at(2026, 8, 5, 10), ctx), null);
 });
 
 test('windowOfNode arma la ventana del nodo del diagrama', () => {
