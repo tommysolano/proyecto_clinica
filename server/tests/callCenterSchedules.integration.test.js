@@ -45,6 +45,55 @@ test('marketing puede listar y guardar horarios de todos los asesores del call c
   assert.equal(saved.payload.callCenterSchedule.days.filter((d) => d.enabled).length, 5);
 });
 
+test('marketing puede guardar varias franjas por dia y se rechazan franjas superpuestas', async () => {
+  const clinic = new mongoose.Types.ObjectId();
+  const marketing = new mongoose.Types.ObjectId();
+  const agent = await User.create({
+    name: 'Asesor partido', email: 'asesor-partido@example.com', password: 'secret123',
+    clinics: [{ clinic, role: 'call_center' }],
+  });
+  const splitMonday = [{
+    day: 1,
+    enabled: true,
+    intervals: [
+      { start: '08:00', end: '12:00' },
+      { start: '16:00', end: '21:00' },
+    ],
+  }];
+
+  const saved = await H.runController(
+    configController.updateAgentSchedule,
+    H.mockReq(clinic, marketing, {
+      callCenterSchedule: { enabled: true, days: splitMonday },
+    }, { role: 'marketing', params: { id: String(agent._id) } })
+  );
+  assert.equal(saved.statusCode, 200, JSON.stringify(saved.payload));
+  assert.deepEqual(saved.payload.callCenterSchedule.days[1].intervals, splitMonday[0].intervals);
+
+  const listed = await H.runController(
+    configController.listAgentSchedules,
+    H.mockReq(clinic, marketing, {}, { role: 'marketing' })
+  );
+  const reloaded = listed.payload.find((item) => String(item._id) === String(agent._id));
+  assert.deepEqual(reloaded.callCenterSchedule.days[1].intervals, splitMonday[0].intervals);
+
+  const rejected = await H.runController(
+    configController.updateAgentSchedule,
+    H.mockReq(clinic, marketing, {
+      callCenterSchedule: {
+        enabled: true,
+        days: [{
+          day: 1,
+          enabled: true,
+          intervals: [{ start: '08:00', end: '12:00' }, { start: '11:00', end: '14:00' }],
+        }],
+      },
+    }, { role: 'marketing', params: { id: String(agent._id) } })
+  );
+  assert.equal(rejected.statusCode, 400);
+  assert.match(rejected.payload.message, /superponerse/);
+});
+
 test('supervisión atribuye la primera respuesta al actor real y descuenta tiempo fuera de turno', async () => {
   const clinic = new mongoose.Types.ObjectId();
   const viewer = new mongoose.Types.ObjectId();

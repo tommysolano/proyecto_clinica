@@ -1,6 +1,6 @@
 /**
- * Permisos privados del chat asignado. Los chats libres pertenecen a la bandeja
- * compartida; al asignarlos, solo el responsable y los supervisores conservan acceso.
+ * La asignacion operativa sigue compartida. Solo el candado independiente que
+ * crea un workflow para un asesor especifico restringe el chat.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -14,11 +14,14 @@ const ana = { user: { _id: 'ana' }, role: 'call_center' };
 const doctor = { user: { _id: 'doc' }, role: 'doctor' };
 
 const chatDeJaime = { assignedTo: 'jaime' };
+const chatPrivadoDeJaime = { assignedTo: 'jaime', workflowRestrictedTo: 'jaime' };
 const chatSinAsignar = { assignedTo: null };
 
-test('canReplyConversation: un asesor solo responde chats libres o asignados a él', () => {
-  assert.equal(chatCtrl.canReplyConversation(ana, chatDeJaime), false);
+test('canReplyConversation: la asignacion normal es compartida y la de workflow especifico es privada', () => {
+  assert.equal(chatCtrl.canReplyConversation(ana, chatDeJaime), true);
   assert.equal(chatCtrl.canReplyConversation(jaime, chatDeJaime), true);
+  assert.equal(chatCtrl.canReplyConversation(ana, chatPrivadoDeJaime), false);
+  assert.equal(chatCtrl.canReplyConversation(jaime, chatPrivadoDeJaime), true);
   assert.equal(chatCtrl.canReplyConversation(ana, chatSinAsignar), true);
   assert.equal(chatCtrl.canReplyConversation(admin, chatDeJaime), true);
   assert.equal(chatCtrl.canReplyConversation(marketing, chatDeJaime), true);
@@ -27,9 +30,11 @@ test('canReplyConversation: un asesor solo responde chats libres o asignados a �
   assert.equal(chatCtrl.canReplyConversation(doctor, chatDeJaime), false);
 });
 
-test('canMutateConversation: la asignación también protege las acciones del chat', () => {
-  assert.equal(chatCtrl.canMutateConversation(ana, chatDeJaime), false);
+test('canMutateConversation: solo la restriccion del workflow protege las acciones', () => {
+  assert.equal(chatCtrl.canMutateConversation(ana, chatDeJaime), true);
   assert.equal(chatCtrl.canMutateConversation(jaime, chatDeJaime), true);
+  assert.equal(chatCtrl.canMutateConversation(ana, chatPrivadoDeJaime), false);
+  assert.equal(chatCtrl.canMutateConversation(jaime, chatPrivadoDeJaime), true);
   assert.equal(chatCtrl.canMutateConversation(ana, chatSinAsignar), true);
   // Admin, marketing y super-admin siempre.
   assert.equal(chatCtrl.canMutateConversation(admin, chatDeJaime), true);

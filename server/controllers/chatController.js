@@ -29,26 +29,27 @@ function normalizePhone(raw) {
 /**
  * Filtro de visibilidad para conversaciones según rol.
  * - admin / marketing: ven todas las conversaciones (supervisión).
- * - call_center: ve chats libres y los asignados a él; los de otro asesor son privados.
+ * - call_center: ve toda la bandeja salvo chats restringidos por un workflow a
+ *   otro asesor. La asignacion normal (`assignedTo`) nunca limita visibilidad.
  */
 function buildVisibilityFilter(req) {
   const filter = { clinic: req.clinicId };
   if (req.role === 'call_center' && !req.user?.isSuperAdmin) {
-    filter.$and = [{ $or: [{ assignedTo: null }, { assignedTo: req.user._id }] }];
+    filter.$and = [{ $or: [{ workflowRestrictedTo: null }, { workflowRestrictedTo: req.user._id }] }];
   }
   return filter;
 }
 
 /**
- * Fuente única del candado: supervisores siempre; asesores solo si está libre o
- * asignado a ellos. La misma regla se usa para leer, responder y administrar.
+ * Fuente única del candado exclusivo creado por workflows. La asignación normal
+ * sigue siendo informativa y todos los asesores pueden leer/responder el chat.
  */
 function canAccessConversation(req, conv) {
   if (req.user?.isSuperAdmin) return true;
   if (['admin', 'marketing'].includes(req.role)) return true;
   if (req.role !== 'call_center') return false;
-  if (!conv?.assignedTo) return true;
-  return String(conv.assignedTo?._id || conv.assignedTo) === String(req.user?._id || '');
+  if (!conv?.workflowRestrictedTo) return true;
+  return String(conv.workflowRestrictedTo?._id || conv.workflowRestrictedTo) === String(req.user?._id || '');
 }
 
 function canMutateConversation(req, conv) {
@@ -65,17 +66,17 @@ exports.canMutateConversation = canMutateConversation;
 exports.canReplyConversation = canReplyConversation;
 
 // Candado transversal de todas las rutas /chats/:id. Impide abrir por URL o API
-// el chat privado de otro asesor aunque el cliente no lo muestre en su lista.
+// el chat reservado por un workflow a otro asesor.
 exports.requireConversationAccess = async (req, res, next) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) {
       return res.status(404).json({ message: 'Conversación no encontrada' });
     }
     const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId })
-      .select('_id assignedTo');
+      .select('_id workflowRestrictedTo');
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
     if (!canAccessConversation(req, conv)) {
-      return res.status(403).json({ message: 'Este chat está asignado a otro asesor' });
+      return res.status(403).json({ message: 'Este chat está reservado para otro asesor mediante un workflow' });
     }
     req.chatConversation = conv;
     return next();
@@ -187,7 +188,7 @@ exports.listConversations = async (req, res) => {
     // El detalle es GET /chats/:id (~350 ms), y solo se pide al abrir un chat.
     const conversations = await Conversation.find(filter)
       .select(
-        '_id clinic channel phone contactName patient assignedTo assignedToName ' +
+        '_id clinic channel phone contactName patient assignedTo assignedToName workflowRestrictedTo ' +
           'status isFeatured featuredNote blocked window24hExpiresAt lastInboundAt ' +
           'lastInboundAccount lastMessageAt lastMessagePreview lastMessageDirection unreadCount tags ' +
           'whatsappAccount createdAt opportunity.isOpportunity opportunity.stage'
@@ -425,7 +426,7 @@ exports.createConversation = async (req, res) => {
     let conv = await Conversation.findOne({ clinic: req.clinicId, phone });
     if (conv) {
       if (!canAccessConversation(req, conv)) {
-        return res.status(403).json({ message: 'Ese contacto ya tiene un chat asignado a otro asesor' });
+        return res.status(403).json({ message: 'Ese contacto tiene un chat reservado para otro asesor mediante un workflow' });
       }
       return res.status(200).json(conv);
     }
@@ -521,11 +522,17 @@ exports.assignConversation = async (req, res) => {
     }
     conv.assignedTo = target;
     conv.assignedAt = new Date();
+    // Una asignacion hecha desde la bandeja pertenece al sistema compartido
+    // tradicional. Si un supervisor reemplaza una restriccion de workflow, la
+    // convierte deliberadamente otra vez en una asignacion visible para todos.
+    conv.workflowRestrictedTo = null;
+    conv.workflowRestrictedAt = null;
     await conv.save();
     emitChatAssignment({
       conversationId: conv._id,
       assignedTo: conv.assignedTo,
       assignedToName: conv.assignedToName,
+      restrictedTo: null,
     });
     emitToUser(conv.assignedTo, 'chat:assigned', { conversationId: conv._id });
     res.json(conv);
@@ -639,10 +646,12 @@ exports.autoAssign = async (req, res) => {
     conv.assignedTo = agent._id;
     conv.assignedToName = agent.name;
     conv.assignedAt = new Date();
+    conv.workflowRestrictedTo = null;
+    conv.workflowRestrictedAt = null;
     await conv.save();
     emitToUser(agent._id, 'chat:assigned', { conversationId: conv._id });
     emitChatAssignment({
-      conversationId: conv._id, assignedTo: agent._id, assignedToName: agent.name,
+      conversationId: conv._id, assignedTo: agent._id, assignedToName: agent.name, restrictedTo: null,
     });
     res.json(conv);
   } catch (err) {

@@ -918,10 +918,17 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef, aut
       conversation.assignedTo = agent._id;
       conversation.assignedToName = agent.name;
       conversation.assignedAt = new Date();
+      // Solo la elección explícita de un asesor desde el workflow crea una cola
+      // privada. El round-robin mantiene la asignación operativa compartida.
+      conversation.workflowRestrictedTo = step.assignMode === 'user' ? agent._id : null;
+      conversation.workflowRestrictedAt = step.assignMode === 'user' ? new Date() : null;
       await conversation.save();
       emitToUser(agent._id, 'chat:assigned', { conversationId: conversation._id });
       emitChatAssignment({
-        conversationId: conversation._id, assignedTo: agent._id, assignedToName: agent.name,
+        conversationId: conversation._id,
+        assignedTo: agent._id,
+        assignedToName: agent.name,
+        restrictedTo: conversation.workflowRestrictedTo,
       });
       break;
     }
@@ -1516,11 +1523,16 @@ async function executeEnrollment(enrollment) {
           conversation.assignedTo = agent._id;
           conversation.assignedToName = agent.name;
           conversation.assignedAt = new Date();
+          conversation.workflowRestrictedTo = step.assignMode === 'user' ? agent._id : null;
+          conversation.workflowRestrictedAt = step.assignMode === 'user' ? new Date() : null;
           // eslint-disable-next-line no-await-in-loop
           await conversation.save();
           emitToUser(agent._id, 'chat:assigned', { conversationId: conversation._id });
           emitChatAssignment({
-            conversationId: conversation._id, assignedTo: agent._id, assignedToName: agent.name,
+            conversationId: conversation._id,
+            assignedTo: agent._id,
+            assignedToName: agent.name,
+            restrictedTo: conversation.workflowRestrictedTo,
           });
         }
       }

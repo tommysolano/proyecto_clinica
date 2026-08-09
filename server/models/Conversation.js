@@ -92,6 +92,11 @@ const conversationSchema = new mongoose.Schema(
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     assignedToName: { type: String, trim: true },
     assignedAt: { type: Date },
+    // Candado independiente de la asignacion operativa. Solo se establece cuando
+    // un workflow elige explicitamente un asesor; assignedTo por si solo NO hace
+    // privado el chat y conserva el comportamiento historico de la bandeja.
+    workflowRestrictedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    workflowRestrictedAt: { type: Date, default: null },
     // Estado
     status: {
       type: String,
@@ -167,5 +172,6 @@ conversationSchema.index({ clinic: 1, lastMessageAt: -1 });
 // Bandeja privada por asesor: evita escanear todos los chats para resolver
 // "libres + asignados a mí" y mantener el orden por actividad.
 conversationSchema.index({ clinic: 1, assignedTo: 1, lastMessageAt: -1 });
+conversationSchema.index({ clinic: 1, workflowRestrictedTo: 1, lastMessageAt: -1 });
 
 module.exports = mongoose.model('Conversation', conversationSchema);

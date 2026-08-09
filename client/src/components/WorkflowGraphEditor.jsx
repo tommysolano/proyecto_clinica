@@ -88,7 +88,12 @@ function agentScheduleLabel(agent) {
   const days = (schedule.days || []).filter((day) => day.enabled);
   if (!days.length) return 'Sin días laborables';
   const names = days.map((day) => AGENT_DAY_NAMES[day.day]).filter(Boolean).join(', ');
-  const ranges = [...new Set(days.map((day) => `${day.start}–${day.end}`))];
+  const ranges = [...new Set(days.flatMap((day) => {
+    const intervals = Array.isArray(day.intervals) && day.intervals.length
+      ? day.intervals
+      : [{ start: day.start, end: day.end }];
+    return intervals.map((interval) => `${interval.start}–${interval.end}`);
+  }))];
   return `${names} · ${ranges.join(', ')}`;
 }
 
@@ -490,7 +495,7 @@ function summarize(n, ctx = {}) {
     case 'split': return d.distribution === 'clinic'
       ? `Por sucursal · ${(d.routes || []).map((r) => (r.isFallback ? 'Otras' : r.name || '—')).join(' / ')}`
       : `Aleatorio · ${(d.routes || []).map((r) => `${r.name} ${Number(r.percent) || 0}%`).join(' / ')}`;
-    case 'assign_agent': return d.assignMode === 'user' ? 'Agente fijo' : 'Round-robin';
+    case 'assign_agent': return d.assignMode === 'user' ? 'Agente fijo · exclusivo' : 'Round-robin · compartido';
     case 'meta_capi': return `Evento ${d.metaEventName || 'Lead'}${Number(d.metaValue) > 0 ? ` · ${d.metaValue} ${d.metaCurrency || 'USD'}` : ''}`;
     case 'fb_audience_add': case 'fb_audience_remove': return d.audienceName || d.audienceId || 'Sin público';
     default: return '';
@@ -2853,8 +2858,8 @@ function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, 
       <div>
         <label className="block text-[11px] font-semibold text-slate-500 uppercase tracking-wide mb-1">Tipo de asignación</label>
         <select value={d.assignMode || 'roundrobin'} onChange={(e) => set({ assignMode: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
-          <option value="roundrobin">Automática: asesor en turno con menos chats</option>
-          <option value="user">Asesor específico</option>
+          <option value="roundrobin">Automática compartida: asesor en turno con menos chats</option>
+          <option value="user">Asesor específico: chat exclusivo</option>
         </select>
       </div>
       {(d.assignMode || 'roundrobin') === 'user' && (
@@ -2877,10 +2882,9 @@ function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, 
         </div>
       )}
       <p className="text-[11px] text-slate-500 leading-relaxed">
-        Al asignarse, el chat queda visible solo para ese asesor, marketing y administradores.
         {(d.assignMode || 'roundrobin') === 'roundrobin'
-          ? ' El reparto automático considera únicamente asesores que estén en su horario de trabajo.'
-          : ' Si está fuera de turno, el chat permanece privado en su cola para el siguiente horario.'}
+          ? 'El reparto automático considera únicamente asesores que estén en su horario de trabajo. Esta asignación sigue visible para todo el equipo de call center.'
+          : 'Esta asignación es exclusiva: el chat queda visible solo para el asesor seleccionado, marketing y administradores. Si está fuera de turno, permanece privado en su cola para el siguiente horario.'}
       </p>
     </div>
   );

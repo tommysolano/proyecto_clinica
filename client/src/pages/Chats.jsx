@@ -304,7 +304,7 @@ export default function Chats() {
   // Navegación en dos niveles (estilo Daplox):
   //  - `view` (riel izquierdo): 'inbox' (bandeja) | 'opportunities' | 'board'.
   //  - `scope` (riel izquierdo, solo bandeja): 'mine' = solo los asignados a mí,
-  //    'all' = chats accesibles (libres + propios; supervisores ven todos).
+  //    'all' = bandeja compartida salvo reservas exclusivas de workflow ajenas.
   //  - `filter` (barra superior, solo bandeja): 'all' | 'unread' | 'featured'.
   const [view, setView] = useState('inbox');
   const [scope, setScope] = useState(() => localStorage.getItem('chats.scope') || 'all');
@@ -692,18 +692,18 @@ export default function Chats() {
     [view, scope, filter, debouncedSearch]
   );
 
-  // Una asignación convierte inmediatamente el chat en privado. Los asesores que
-  // lo tenían visible mientras estaba libre lo retiran de su lista y, si estaba
-  // abierto, cierran el hilo; marketing/admin mantienen la vista completa.
+  // La asignación normal sigue compartida. Solo una restricción explícita creada
+  // por un workflow retira el chat a los demás asesores; marketing/admin siempre
+  // conservan la vista completa.
   useSocketEvent(
     'chat:assignment',
     (payload) => {
       const conversationId = String(payload?.conversationId || '');
       if (!conversationId) return;
       const me = String(user?.id || user?._id || '');
-      const assignedTo = String(payload?.assignedTo || '');
+      const restrictedTo = String(payload?.restrictedTo || '');
       const isRestrictedAgent = !isAdmin && !isSupervisor;
-      if (isRestrictedAgent && assignedTo && assignedTo !== me) {
+      if (isRestrictedAgent && restrictedTo && restrictedTo !== me) {
         setConversations((prev) => prev.filter((conv) => String(conv._id) !== conversationId));
         if (String(activeIdRef.current) === conversationId) {
           msgReqRef.current += 1;
@@ -713,7 +713,7 @@ export default function Chats() {
           setTypingAgents([]);
           setOpenConvSnap(null);
           setActiveDetail(null);
-          toast('Este chat fue asignado a otro asesor');
+          toast('Este chat quedó reservado para otro asesor mediante un workflow');
         }
       } else {
         // El asesor elegido y los supervisores reciben/actualizan el chat sin

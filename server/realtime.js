@@ -87,10 +87,10 @@ function init(httpServer) {
     const loadTypingConversation = async (conversationId) => {
       if (!validConversationId(conversationId)) return null;
       const Conversation = require('./models/Conversation');
-      const conv = await Conversation.findById(conversationId).select('_id assignedTo').lean();
+      const conv = await Conversation.findById(conversationId).select('_id workflowRestrictedTo').lean();
       if (!conv) return null;
-      const assignedTo = String(conv.assignedTo || '');
-      if (role === 'call_center' && assignedTo && assignedTo !== String(user._id)) return null;
+      const restrictedTo = String(conv.workflowRestrictedTo || '');
+      if (role === 'call_center' && restrictedTo && restrictedTo !== String(user._id)) return null;
       socket.data.typingConversation = conv;
       return conv;
     };
@@ -99,8 +99,8 @@ function init(httpServer) {
       const conv = knownConversation || await loadTypingConversation(conversationId);
       if (!conv) return;
       let target = socket.to('callcenter-supervisors');
-      target = conv.assignedTo
-        ? target.to(`user:${conv.assignedTo}`)
+      target = conv.workflowRestrictedTo
+        ? target.to(`user:${conv.workflowRestrictedTo}`)
         : target.to('callcenter-agents');
       target.emit('chat:typing', {
         conversationId: String(conversationId),
@@ -216,16 +216,17 @@ function emitToCallCenter(event, payload) {
     return;
   }
 
-  // Los eventos con contenido del chat siguen el mismo candado que la API. La
+  // Los eventos con contenido del chat siguen el mismo candado de workflow que
+  // la API. `assignedTo` no restringe: la bandeja normal continua compartida. La
   // consulta se hace aquí para cubrir todos los emisores existentes (Cloud, QR,
   // workflows, llamadas y cambios de oportunidad) sin dejar una vía lateral.
   const Conversation = require('./models/Conversation');
-  Conversation.findById(conversationId).select('assignedTo').lean()
+  Conversation.findById(conversationId).select('workflowRestrictedTo').lean()
     .then((conv) => {
       if (!io || !conv) return;
       let target = io.to('callcenter-supervisors');
-      target = conv.assignedTo
-        ? target.to(`user:${conv.assignedTo}`)
+      target = conv.workflowRestrictedTo
+        ? target.to(`user:${conv.workflowRestrictedTo}`)
         : target.to('callcenter-agents');
       target.emit(event, payload);
     })
@@ -233,16 +234,16 @@ function emitToCallCenter(event, payload) {
 }
 
 /**
- * Aviso mínimo de reasignación. Se envía a todos los asesores para que quienes
- * tenían el chat libre/abierto lo retiren inmediatamente de pantalla; no incluye
- * nombre, teléfono ni mensajes del contacto.
+ * Aviso mínimo de asignación/privacidad. Solo `restrictedTo` ordena retirar un
+ * chat; assignedTo conserva la asignación compartida tradicional.
  */
-function emitChatAssignment({ conversationId, assignedTo, assignedToName = '' }) {
+function emitChatAssignment({ conversationId, assignedTo, assignedToName = '', restrictedTo = null }) {
   if (!io || !conversationId) return;
   io.to('callcenter').emit('chat:assignment', {
     conversationId: String(conversationId),
     assignedTo: assignedTo ? String(assignedTo) : null,
     assignedToName: String(assignedToName || '').slice(0, 80),
+    restrictedTo: restrictedTo ? String(restrictedTo) : null,
   });
 }
 

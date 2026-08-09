@@ -40,8 +40,41 @@ exports.updateAgentSchedule = async (req, res) => {
     if (!raw || !Array.isArray(raw.days)) {
       return res.status(400).json({ message: 'Horario inválido' });
     }
-    const invalidTime = raw.days.some((day) => !TIME_RE.test(String(day?.start || '')) || !TIME_RE.test(String(day?.end || '')));
-    if (invalidTime) return res.status(400).json({ message: 'Las horas deben tener formato HH:MM' });
+    const seenDays = new Set();
+    for (const day of raw.days) {
+      const dayNumber = Number(day?.day);
+      if (!Number.isInteger(dayNumber) || dayNumber < 0 || dayNumber > 6 || seenDays.has(dayNumber)) {
+        return res.status(400).json({ message: 'Los dias del horario son invalidos o estan repetidos' });
+      }
+      seenDays.add(dayNumber);
+      const intervals = Array.isArray(day?.intervals) && day.intervals.length
+        ? day.intervals
+        : (day?.start !== undefined || day?.end !== undefined ? [{ start: day.start, end: day.end }] : []);
+      if (intervals.length > 12) {
+        return res.status(400).json({ message: 'Cada dia admite un maximo de 12 franjas' });
+      }
+      if (day?.enabled === true && !intervals.length) {
+        return res.status(400).json({ message: 'Cada dia activo debe tener al menos una franja' });
+      }
+      if (intervals.some((interval) => (
+        !TIME_RE.test(String(interval?.start || ''))
+        || !TIME_RE.test(String(interval?.end || ''))
+        || interval.start === interval.end
+      ))) {
+        return res.status(400).json({ message: 'Cada franja debe tener horas distintas en formato HH:MM' });
+      }
+      const ranges = intervals.map((interval) => {
+        const [startHour, startMinute] = interval.start.split(':').map(Number);
+        const [endHour, endMinute] = interval.end.split(':').map(Number);
+        const start = startHour * 60 + startMinute;
+        let end = endHour * 60 + endMinute;
+        if (end <= start) end += 1440;
+        return [start, end];
+      }).sort((a, b) => a[0] - b[0]);
+      if (ranges.some((range, index) => index > 0 && range[0] < ranges[index - 1][1])) {
+        return res.status(400).json({ message: 'Las franjas de un mismo dia no pueden superponerse' });
+      }
+    }
     const callCenterSchedule = normalizeSchedule(raw);
     if (callCenterSchedule.enabled && !callCenterSchedule.days.some((day) => day.enabled)) {
       return res.status(400).json({ message: 'Activa al menos un día de trabajo' });

@@ -13,6 +13,7 @@ const DEFAULT_DAYS = Array.from({ length: 7 }, (_, day) => ({
   enabled: day >= 1 && day <= 5,
   start: '09:00',
   end: '18:00',
+  intervals: [{ start: '09:00', end: '18:00' }],
 }));
 
 function cleanTime(value, fallback) {
@@ -29,11 +30,25 @@ function normalizeSchedule(raw = {}) {
     timezone: 'America/Guayaquil',
     days: DEFAULT_DAYS.map((fallback) => {
       const item = byDay.get(fallback.day) || {};
+      // Compatibilidad: los horarios guardados antes de admitir varias franjas
+      // solo tienen start/end. Al leerlos se convierten en la primera franja.
+      const suppliedIntervals = Array.isArray(item.intervals) ? item.intervals : [];
+      const intervalSource = suppliedIntervals.length
+        ? suppliedIntervals
+        : [{ start: item.start, end: item.end }];
+      const intervals = intervalSource.slice(0, 12).map((interval) => ({
+        start: cleanTime(interval?.start, fallback.start),
+        end: cleanTime(interval?.end, fallback.end),
+      }));
+      const first = intervals[0] || fallback.intervals[0];
       return {
         day: fallback.day,
         enabled: item.enabled === undefined ? fallback.enabled : item.enabled === true,
-        start: cleanTime(item.start, fallback.start),
-        end: cleanTime(item.end, fallback.end),
+        // Estos dos campos permiten que clientes antiguos sigan mostrando la
+        // primera franja mientras migran al arreglo intervals.
+        start: first.start,
+        end: first.end,
+        intervals,
       };
     }),
   };
@@ -71,7 +86,7 @@ function workingMsBetween(from, to, rawSchedule) {
   // la madrugada del martes.
   let cursor = Date.UTC(localStart.getUTCFullYear(), localStart.getUTCMonth(), localStart.getUTCDate()) - 86400000;
   const lastDay = Date.UTC(localEnd.getUTCFullYear(), localEnd.getUTCMonth(), localEnd.getUTCDate());
-  let total = 0;
+  const overlaps = [];
 
   // Tope defensivo de 20 años para datos corruptos; un tiempo de primera
   // respuesta normal recorre horas o días.
@@ -79,17 +94,39 @@ function workingMsBetween(from, to, rawSchedule) {
     const dayDate = new Date(cursor);
     const slot = schedule.days.find((d) => d.day === dayDate.getUTCDay());
     if (!slot?.enabled) continue;
-    let slotStart = ecLocalToUtcMs(
-      dayDate.getUTCFullYear(), dayDate.getUTCMonth(), dayDate.getUTCDate(), slot.start
-    );
-    let slotEnd = ecLocalToUtcMs(
-      dayDate.getUTCFullYear(), dayDate.getUTCMonth(), dayDate.getUTCDate(), slot.end
-    );
-    if (slotEnd <= slotStart) slotEnd += 86400000; // turno nocturno
-    const overlapStart = Math.max(startMs, slotStart);
-    const overlapEnd = Math.min(endMs, slotEnd);
-    if (overlapEnd > overlapStart) total += overlapEnd - overlapStart;
+    for (const interval of slot.intervals) {
+      let slotStart = ecLocalToUtcMs(
+        dayDate.getUTCFullYear(), dayDate.getUTCMonth(), dayDate.getUTCDate(), interval.start
+      );
+      let slotEnd = ecLocalToUtcMs(
+        dayDate.getUTCFullYear(), dayDate.getUTCMonth(), dayDate.getUTCDate(), interval.end
+      );
+      if (slotEnd <= slotStart) slotEnd += 86400000; // turno nocturno
+      const overlapStart = Math.max(startMs, slotStart);
+      const overlapEnd = Math.min(endMs, slotEnd);
+      if (overlapEnd > overlapStart) overlaps.push([overlapStart, overlapEnd]);
+    }
   }
+
+  // Unimos solapamientos para que una configuracion duplicada o un turno
+  // nocturno que alcance la franja del dia siguiente no cuente minutos dos veces.
+  overlaps.sort((a, b) => a[0] - b[0]);
+  let total = 0;
+  let mergedStart = null;
+  let mergedEnd = null;
+  for (const [rangeStart, rangeEnd] of overlaps) {
+    if (mergedStart === null) {
+      mergedStart = rangeStart;
+      mergedEnd = rangeEnd;
+    } else if (rangeStart <= mergedEnd) {
+      mergedEnd = Math.max(mergedEnd, rangeEnd);
+    } else {
+      total += mergedEnd - mergedStart;
+      mergedStart = rangeStart;
+      mergedEnd = rangeEnd;
+    }
+  }
+  if (mergedStart !== null) total += mergedEnd - mergedStart;
   return total;
 }
 

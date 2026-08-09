@@ -60,7 +60,7 @@ function callPayload(call) {
 }
 
 async function canAccessCall(req, call) {
-  const conv = await Conversation.findById(call?.conversation).select('_id assignedTo');
+  const conv = await Conversation.findById(call?.conversation).select('_id workflowRestrictedTo');
   if (!conv) return false;
   return require('./chatController').canAccessConversation(req, conv);
 }
@@ -176,7 +176,7 @@ exports.acceptCall = async (req, res) => {
     const call = await Call.findOne({ callId: req.params.callId, clinic: req.clinicId });
     if (!call) return res.status(404).json({ message: 'Llamada no encontrada' });
     if (!(await canAccessCall(req, call))) {
-      return res.status(403).json({ message: 'Este chat está asignado a otro asesor' });
+      return res.status(403).json({ message: 'Este chat está reservado para otro asesor mediante un workflow' });
     }
     if (call.status !== 'ringing') {
       return res.status(409).json({ message: 'Esa llamada ya no está sonando.' });
@@ -223,7 +223,7 @@ exports.rejectCall = async (req, res) => {
     const call = await Call.findOne({ callId: req.params.callId, clinic: req.clinicId });
     if (!call) return res.status(404).json({ message: 'Llamada no encontrada' });
     if (!(await canAccessCall(req, call))) {
-      return res.status(403).json({ message: 'Este chat está asignado a otro asesor' });
+      return res.status(403).json({ message: 'Este chat está reservado para otro asesor mediante un workflow' });
     }
     // Solo se rechaza lo que aún suena: si otro agente ya contestó, el panel
     // rezagado de un tercero no puede tumbarle la llamada.
@@ -246,7 +246,7 @@ exports.terminateCall = async (req, res) => {
     const call = await Call.findOne({ callId: req.params.callId, clinic: req.clinicId });
     if (!call) return res.status(404).json({ message: 'Llamada no encontrada' });
     if (!(await canAccessCall(req, call))) {
-      return res.status(403).json({ message: 'Este chat está asignado a otro asesor' });
+      return res.status(403).json({ message: 'Este chat está reservado para otro asesor mediante un workflow' });
     }
     const conv = await Conversation.findById(call.conversation);
     const resolved = await resolveCallingAccount(conv);

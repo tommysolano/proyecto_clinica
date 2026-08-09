@@ -10,12 +10,23 @@ const userClinicSchema = new mongoose.Schema(
   { _id: false }
 );
 
+const callCenterWorkIntervalSchema = new mongoose.Schema(
+  {
+    start: { type: String, match: /^([01]\d|2[0-3]):[0-5]\d$/, required: true },
+    end: { type: String, match: /^([01]\d|2[0-3]):[0-5]\d$/, required: true },
+  },
+  { _id: false }
+);
+
 const callCenterWorkDaySchema = new mongoose.Schema(
   {
     day: { type: Number, min: 0, max: 6, required: true }, // 0=domingo
     enabled: { type: Boolean, default: false },
+    // start/end se conservan para leer instalaciones que ya tenian un unico
+    // turno. Las nuevas configuraciones usan intervals y pueden dividir el dia.
     start: { type: String, match: /^([01]\d|2[0-3]):[0-5]\d$/, default: '09:00' },
     end: { type: String, match: /^([01]\d|2[0-3]):[0-5]\d$/, default: '18:00' },
+    intervals: { type: [callCenterWorkIntervalSchema], default: [] },
   },
   { _id: false }
 );

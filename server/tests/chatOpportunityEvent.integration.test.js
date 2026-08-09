@@ -77,11 +77,15 @@ test('contadores de no leídos: mine vs all', async () => {
   await Conversation.create({ clinic: clinicId, phone: '222', channel: 'whatsapp', unreadCount: 1, assignedTo: other });
   await Conversation.create({ clinic: clinicId, phone: '333', channel: 'whatsapp', unreadCount: 0, assignedTo: me });
   await Conversation.create({ clinic: clinicId, phone: '444', channel: 'whatsapp', unreadCount: 5 }); // sin asignar
+  await Conversation.create({
+    clinic: clinicId, phone: '555', channel: 'whatsapp', unreadCount: 4,
+    assignedTo: other, workflowRestrictedTo: other,
+  });
 
   const res = await H.runController(chat.unreadCounts, H.mockReq(clinicId, me, {}, { role: 'call_center' }));
   assert.equal(res.statusCode, 200);
-  // El chat 222 pertenece a otro asesor y no entra en sus badges. `all` para un
-  // call center significa "todos los que puede atender": el propio + los libres.
-  assert.equal(res.payload.all, 2);
+  // La asignacion normal del chat 222 sigue compartida. Solo el 555, restringido
+  // por workflow a otro asesor, queda fuera del contador de esta persona.
+  assert.equal(res.payload.all, 3);
   assert.equal(res.payload.mine, 1);
 });

@@ -1738,6 +1738,7 @@ const defaultAgentDays = () => AGENT_DAY_LABELS.map((_, day) => ({
   enabled: day >= 1 && day <= 5,
   start: '09:00',
   end: '18:00',
+  intervals: [{ start: '09:00', end: '18:00' }],
 }));
 
 function normalizeAgentSchedule(value = {}) {
@@ -1745,7 +1746,20 @@ function normalizeAgentSchedule(value = {}) {
   return {
     enabled: value.enabled === true,
     timezone: 'America/Guayaquil',
-    days: defaultAgentDays().map((fallback) => ({ ...fallback, ...(byDay.get(fallback.day) || {}), day: fallback.day })),
+    days: defaultAgentDays().map((fallback) => {
+      const saved = byDay.get(fallback.day) || {};
+      const intervals = Array.isArray(saved.intervals) && saved.intervals.length
+        ? saved.intervals.map((interval) => ({ start: interval.start, end: interval.end }))
+        : [{ start: saved.start || fallback.start, end: saved.end || fallback.end }];
+      return {
+        ...fallback,
+        ...saved,
+        day: fallback.day,
+        start: intervals[0].start,
+        end: intervals[0].end,
+        intervals,
+      };
+    }),
   };
 }
 
@@ -1783,6 +1797,33 @@ function AgentSchedules() {
     days: schedule.days.map((day) => day.day === dayNumber ? { ...day, ...patch } : day),
   }));
 
+  const updateInterval = (agentId, dayNumber, intervalIndex, patch) => updateSchedule(agentId, (schedule) => ({
+    ...schedule,
+    days: schedule.days.map((day) => {
+      if (day.day !== dayNumber) return day;
+      const intervals = day.intervals.map((interval, index) => (
+        index === intervalIndex ? { ...interval, ...patch } : interval
+      ));
+      return { ...day, intervals, start: intervals[0].start, end: intervals[0].end };
+    }),
+  }));
+
+  const addInterval = (agentId, dayNumber) => updateSchedule(agentId, (schedule) => ({
+    ...schedule,
+    days: schedule.days.map((day) => day.day === dayNumber
+      ? { ...day, intervals: [...day.intervals, { start: '16:00', end: '21:00' }] }
+      : day),
+  }));
+
+  const removeInterval = (agentId, dayNumber, intervalIndex) => updateSchedule(agentId, (schedule) => ({
+    ...schedule,
+    days: schedule.days.map((day) => {
+      if (day.day !== dayNumber || day.intervals.length <= 1) return day;
+      const intervals = day.intervals.filter((_, index) => index !== intervalIndex);
+      return { ...day, intervals, start: intervals[0].start, end: intervals[0].end };
+    }),
+  }));
+
   const saveAgent = async (agent) => {
     setSavingId(String(agent._id));
     try {
@@ -1816,6 +1857,7 @@ function AgentSchedules() {
           <p className="text-xs text-indigo-700 mt-0.5">
             Al activar el horario de un asesor, el panel <b>Tiempo de primera respuesta por agente</b>
             descuenta noches y días libres. Los asesores sin horario configurado se siguen midiendo 24/7.
+            Puedes agregar varias franjas en un mismo día, por ejemplo 08:00–12:00 y 16:00–21:00.
             Todas las horas corresponden a Ecuador (America/Guayaquil).
           </p>
         </div>
@@ -1860,17 +1902,17 @@ function AgentSchedules() {
             </div>
 
             <div className="p-4 grid gap-2">
-              <div className="grid grid-cols-[minmax(110px,1fr)_auto_auto] sm:grid-cols-[minmax(130px,1fr)_130px_130px] gap-2 px-3 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
-                <span>Día</span><span>Inicio</span><span>Fin</span>
+              <div className="grid grid-cols-[minmax(110px,1fr)_minmax(260px,2fr)] gap-3 px-3 text-[10px] font-semibold uppercase tracking-wide text-slate-400">
+                <span>Día</span><span>Franjas de trabajo</span>
               </div>
               {schedule.days.map((day) => (
                 <div
                   key={day.day}
-                  className={`grid grid-cols-[minmax(110px,1fr)_auto_auto] sm:grid-cols-[minmax(130px,1fr)_130px_130px] items-center gap-2 rounded-lg px-3 py-2 ${
+                  className={`grid grid-cols-1 sm:grid-cols-[minmax(130px,1fr)_minmax(300px,2fr)] items-start gap-2 sm:gap-3 rounded-lg px-3 py-3 ${
                     day.enabled && schedule.enabled ? 'bg-violet-50/60' : 'bg-slate-50'
                   }`}
                 >
-                  <label className="inline-flex items-center gap-2 text-sm text-slate-700 cursor-pointer">
+                  <label className="inline-flex items-center gap-2 text-sm text-slate-700 cursor-pointer min-h-9">
                     <input
                       type="checkbox"
                       checked={day.enabled}
@@ -1882,22 +1924,52 @@ function AgentSchedules() {
                       {AGENT_DAY_LABELS[day.day]}
                     </span>
                   </label>
-                  <input
-                    type="time"
-                    value={day.start}
-                    disabled={!schedule.enabled || !day.enabled}
-                    onChange={(e) => updateDay(agent._id, day.day, { start: e.target.value })}
-                    aria-label={`Inicio ${AGENT_DAY_LABELS[day.day]}`}
-                    className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm disabled:text-slate-300 disabled:bg-white"
-                  />
-                  <input
-                    type="time"
-                    value={day.end}
-                    disabled={!schedule.enabled || !day.enabled}
-                    onChange={(e) => updateDay(agent._id, day.day, { end: e.target.value })}
-                    aria-label={`Fin ${AGENT_DAY_LABELS[day.day]}`}
-                    className="border border-slate-200 rounded-lg px-2 py-1.5 text-sm disabled:text-slate-300 disabled:bg-white"
-                  />
+                  <div className="grid gap-2">
+                    {day.intervals.map((interval, intervalIndex) => (
+                      <div key={intervalIndex} className="flex items-center gap-2 flex-wrap sm:flex-nowrap">
+                        <label className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                          <span>Inicio</span>
+                          <input
+                            type="time"
+                            value={interval.start}
+                            disabled={!schedule.enabled || !day.enabled}
+                            onChange={(e) => updateInterval(agent._id, day.day, intervalIndex, { start: e.target.value })}
+                            aria-label={`Inicio ${AGENT_DAY_LABELS[day.day]} franja ${intervalIndex + 1}`}
+                            className="w-[118px] border border-slate-200 rounded-lg px-2 py-1.5 text-sm text-slate-700 disabled:text-slate-300 disabled:bg-white"
+                          />
+                        </label>
+                        <label className="flex items-center gap-1.5 text-[11px] text-slate-500">
+                          <span>Fin</span>
+                          <input
+                            type="time"
+                            value={interval.end}
+                            disabled={!schedule.enabled || !day.enabled}
+                            onChange={(e) => updateInterval(agent._id, day.day, intervalIndex, { end: e.target.value })}
+                            aria-label={`Fin ${AGENT_DAY_LABELS[day.day]} franja ${intervalIndex + 1}`}
+                            className="w-[118px] border border-slate-200 rounded-lg px-2 py-1.5 text-sm text-slate-700 disabled:text-slate-300 disabled:bg-white"
+                          />
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => removeInterval(agent._id, day.day, intervalIndex)}
+                          disabled={!schedule.enabled || !day.enabled || day.intervals.length <= 1}
+                          title={day.intervals.length <= 1 ? 'Debe existir al menos una franja' : 'Eliminar franja'}
+                          aria-label={`Eliminar franja ${intervalIndex + 1} de ${AGENT_DAY_LABELS[day.day]}`}
+                          className="w-8 h-8 inline-flex items-center justify-center rounded-lg border border-slate-200 bg-white text-slate-500 hover:text-red-600 hover:border-red-200 cursor-pointer disabled:opacity-30 disabled:cursor-not-allowed"
+                        >
+                          <HiOutlineTrash className="w-4 h-4" />
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => addInterval(agent._id, day.day)}
+                      disabled={!schedule.enabled || !day.enabled || day.intervals.length >= 12}
+                      className="w-fit inline-flex items-center gap-1.5 text-xs font-medium text-violet-700 bg-transparent border-none p-0 cursor-pointer disabled:text-slate-300 disabled:cursor-not-allowed"
+                    >
+                      <HiOutlinePlus className="w-4 h-4" /> Agregar franja
+                    </button>
+                  </div>
                 </div>
               ))}
             </div>

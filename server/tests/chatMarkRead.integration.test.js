@@ -1,7 +1,6 @@
 /**
- * "Marcar como visto" respeta el mismo candado que el resto del chat: el asesor
- * responsable y los supervisores pueden hacerlo; otro call center no ve ni altera
- * el pendiente de una conversación privada.
+ * "Marcar como visto" respeta el candado exclusivo de workflow, pero una
+ * asignacion operativa normal continua siendo compartida.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -16,13 +15,14 @@ test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
 test.beforeEach(async () => { await H.resetDb(); });
 
-async function seedAssignedConversation(clinicId, ownerId) {
+async function seedAssignedConversation(clinicId, ownerId, restricted = false) {
   const conv = await Conversation.create({
     clinic: clinicId,
     phone: '593999000111',
     channel: 'whatsapp',
     assignedTo: ownerId, // asignada a OTRO agente
     assignedToName: 'Dueña del chat',
+    workflowRestrictedTo: restricted ? ownerId : null,
     unreadCount: 3,
     lastMessageDirection: 'in',
   });
@@ -30,7 +30,7 @@ async function seedAssignedConversation(clinicId, ownerId) {
   return conv;
 }
 
-test('un agente NO asignado no puede marcar como visto el chat privado de otro', async () => {
+test('un agente no asignado SI puede marcar como visto una asignacion normal compartida', async () => {
   const clinicId = new mongoose.Types.ObjectId();
   const owner = new mongoose.Types.ObjectId();
   const otherAgent = new mongoose.Types.ObjectId();
@@ -41,12 +41,24 @@ test('un agente NO asignado no puede marcar como visto el chat privado de otro',
     H.mockReq(clinicId, otherAgent, {}, { role: 'call_center', params: { id: String(conv._id) } })
   );
 
-  assert.equal(res.statusCode, 403);
+  assert.equal(res.statusCode, 200);
 
   const fresh = await Conversation.findById(conv._id).lean();
-  assert.equal(fresh.unreadCount, 3, 'no debe alterar el pendiente ajeno');
+  assert.equal(fresh.unreadCount, 0);
   const unreadMsgs = await Message.countDocuments({ conversation: conv._id, direction: 'in', isRead: false });
-  assert.equal(unreadMsgs, 1, 'no debe marcar mensajes ajenos como leídos');
+  assert.equal(unreadMsgs, 0);
+});
+
+test('un agente ajeno no puede marcar como visto un chat restringido por workflow', async () => {
+  const clinicId = new mongoose.Types.ObjectId();
+  const owner = new mongoose.Types.ObjectId();
+  const conv = await seedAssignedConversation(clinicId, owner, true);
+  const res = await H.runController(
+    chat.markConversationRead,
+    H.mockReq(clinicId, new mongoose.Types.ObjectId(), {}, { role: 'call_center', params: { id: String(conv._id) } })
+  );
+  assert.equal(res.statusCode, 403);
+  assert.equal((await Conversation.findById(conv._id).lean()).unreadCount, 3);
 });
 
 test('el asesor asignado sí puede marcar su chat como visto', async () => {
