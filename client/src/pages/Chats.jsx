@@ -208,8 +208,13 @@ function windowMsRemaining(conv) {
 // de 24h (131047 en Cloud API; 470 es el equivalente antiguo). Reintentar el mismo
 // mensaje no puede funcionar: solo entra una plantilla aprobada.
 const OUT_OF_WINDOW_ERROR_CODES = new Set(['131047', '470']);
+const QR_UNCONFIRMED_ERROR_CODES = new Set(['qr_send_unconfirmed', 'qr_media_unconfirmed']);
 function isOutOfWindowError(msg) {
   return OUT_OF_WINDOW_ERROR_CODES.has(String(msg?.errorCode || ''));
+}
+
+function isQrUnconfirmedError(msg) {
+  return QR_UNCONFIRMED_ERROR_CODES.has(String(msg?.errorCode || ''));
 }
 
 function isWhatsappWindowClosed(conv) {
@@ -3518,6 +3523,10 @@ const MessageBubble = memo(function MessageBubble({ msg, onReply, onJumpTo, high
   // Un saliente FALLIDO se muestra en ROJO (no verde) con un aviso claro y botón
   // "Reintentar": es peligroso que un mensaje que nunca salió parezca enviado.
   const failed = isOut && msg.deliveryStatus === 'failed';
+  // En un timeout QR el proveedor no confirmó el resultado: NO se puede afirmar
+  // que el contacto no lo recibió. Se distingue visualmente y el botón ejecutará
+  // primero la comprobación antiduplicado del servidor.
+  const unconfirmed = failed && isQrUnconfirmedError(msg);
   // Con el buscador abierto se resalta el término; si no, formato WhatsApp normal.
   const bodyContent = highlight && highlight.trim()
     ? highlightMatches(msg.body, highlight, isOut)
@@ -3537,8 +3546,10 @@ const MessageBubble = memo(function MessageBubble({ msg, onReply, onJumpTo, high
       <div
         id={`msg-${msg._id}`}
         className={`max-w-[85%] @3xl:max-w-[70%] rounded-lg px-3 py-2 text-sm shadow-sm transition-shadow ${
-          failed
-            ? 'bg-rose-500 text-white ring-2 ring-rose-300'
+          unconfirmed
+            ? 'bg-amber-500 text-white ring-2 ring-amber-300'
+            : failed
+              ? 'bg-rose-500 text-white ring-2 ring-rose-300'
             : isOut
               ? 'bg-emerald-500 text-white'
               : 'bg-white border border-slate-200 text-slate-800'
@@ -3604,7 +3615,10 @@ const MessageBubble = memo(function MessageBubble({ msg, onReply, onJumpTo, high
         {failed && (
           <div className="mt-1.5 rounded-md bg-white/20 px-2 py-1.5 text-[11px] leading-snug">
             <div className="flex items-center gap-1 font-bold">
-              <HiOutlineExclamationTriangle className="w-3.5 h-3.5 shrink-0" /> No se envió — el contacto NO lo recibió
+              <HiOutlineExclamationTriangle className="w-3.5 h-3.5 shrink-0" />{' '}
+              {unconfirmed
+                ? 'Envío sin confirmar — podría haber llegado al contacto'
+                : 'No se envió — el contacto NO lo recibió'}
             </div>
             {msg.errorMessage && <div className="text-white/95 mt-0.5 break-words">{msg.errorMessage}</div>}
             {/* Fuera de la ventana de 24h, reintentar el MISMO texto vuelve a
@@ -3624,7 +3638,7 @@ const MessageBubble = memo(function MessageBubble({ msg, onReply, onJumpTo, high
                 onClick={() => onRetry(msg)}
                 className="mt-1.5 inline-flex items-center gap-1 bg-white text-rose-600 font-bold rounded-md px-2.5 py-1 text-[11px] border-none cursor-pointer hover:bg-rose-50"
               >
-                <HiOutlineArrowPath className="w-3.5 h-3.5" /> Reintentar
+                <HiOutlineArrowPath className="w-3.5 h-3.5" /> {unconfirmed ? 'Comprobar y reintentar' : 'Reintentar'}
               </button>
             ) : null}
           </div>

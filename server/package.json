@@ -4,7 +4,7 @@
   "description": "Backend API para sistema de gestión clínica multi-tenant con facturación electrónica SRI Ecuador",
   "main": "index.js",
   "scripts": {
-    "postinstall": "patch-package",
+    "postinstall": "patch-package --error-on-fail",
     "start": "node index.js",
     "dev": "nodemon index.js",
     "test": "node --test tests/*.test.js",

@@ -2112,6 +2112,92 @@ function healToConnected(key, entry) {
 }
 
 /**
+ * Comprueba que la pestaña no solo tenga el socket conectado, sino también las
+ * funciones que whatsapp-web.js inyecta para enviar. WhatsApp Web puede navegar
+ * internamente y conservar getState=CONNECTED mientras `window.WWebJS` desaparece;
+ * en ese estado la cuenta se ve verde, recibe de forma intermitente y los envíos
+ * revientan con "Cannot read properties of undefined (reading 'getChat')".
+ *
+ * Si el Store ya volvió, reinyectamos únicamente las utilidades y restauramos los
+ * listeners. Es más seguro que llamar `client.inject()` completo sobre una sesión
+ * autenticada (ese método también rehace todo el flujo de autenticación).
+ */
+async function ensurePageInjection(entry) {
+  const client = entry?.client;
+  const page = client?.pupPage;
+  // Clientes falsos de pruebas o adaptadores sin Puppeteer: no hay nada que
+  // comprobar aquí; la propia operación decidirá si son utilizables.
+  if (!page || typeof page.evaluate !== 'function') return true;
+
+  const ready = async () => {
+    try {
+      return await withTimeout(
+        page.evaluate(() => Boolean(
+          window.WWebJS
+          && typeof window.WWebJS.getChat === 'function'
+          && typeof window.WWebJS.sendMessage === 'function'
+        )),
+        5000,
+        'timeout comprobando la inyección de WhatsApp Web'
+      );
+    } catch {
+      return false;
+    }
+  };
+
+  if (await ready()) return true;
+  // Varios envíos simultáneos comparten UNA reinyección; de lo contrario cada
+  // asesor volvería a registrar los listeners sobre la misma pestaña.
+  if (entry.reinjection) return entry.reinjection;
+
+  const job = (async () => {
+    const waits = [0, 700, 1800];
+    for (const wait of waits) {
+      // eslint-disable-next-line no-await-in-loop
+      if (wait) await sleep(wait);
+      // La navegación pudo terminar mientras esperábamos.
+      // eslint-disable-next-line no-await-in-loop
+      if (await ready()) return true;
+      try {
+        // No ejecutar LoadUtils hasta que el runtime y el Store de WhatsApp estén
+        // otra vez disponibles en el nuevo contexto de la página.
+        // eslint-disable-next-line no-await-in-loop
+        const storeReady = await withTimeout(
+          page.evaluate(() => typeof window.require === 'function' && Boolean(window.Debug?.VERSION)),
+          5000,
+          'timeout esperando el Store de WhatsApp Web'
+        );
+        if (!storeReady) continue;
+        const { LoadUtils } = require('whatsapp-web.js/src/util/Injected/Utils');
+        // eslint-disable-next-line no-await-in-loop
+        await withTimeout(page.evaluate(LoadUtils), 12000, 'timeout reinyectando WhatsApp Web');
+        // Tras una navegación también se pierden los listeners del Store. Se
+        // restauran para que la cuenta siga recibiendo y confirmando salientes.
+        if (typeof client.attachEventListeners === 'function') {
+          // eslint-disable-next-line no-await-in-loop
+          await withTimeout(client.attachEventListeners(), 15000, 'timeout restaurando listeners de WhatsApp Web');
+        }
+        // eslint-disable-next-line no-await-in-loop
+        if (await ready()) {
+          entry.readyAt = Date.now();
+          console.warn('[whatsappQr] inyección de WhatsApp Web restaurada antes de enviar.');
+          return true;
+        }
+      } catch (e) {
+        console.warn('[whatsappQr] no se pudo restaurar la inyección: %s', e.message || e);
+      }
+    }
+    return false;
+  })();
+  entry.reinjection = job;
+  try {
+    return await job;
+  } finally {
+    if (entry.reinjection === job) entry.reinjection = null;
+  }
+}
+
+/**
  * Devuelve una entrada LISTA PARA ENVIAR, o null si de verdad no hay sesión.
  *
  * POR QUÉ: el estado cacheado (`entry.status`) NO es fiable. whatsapp-web.js
@@ -2125,7 +2211,9 @@ function healToConnected(key, entry) {
  */
 async function acquireSendableEntry(key) {
   let entry = clients.get(key);
-  if (entry && entry.status === 'connected') return entry;
+  if (entry && entry.status === 'connected') {
+    return (await ensurePageInjection(entry)) ? entry : null;
+  }
   if (entry && entry.client) {
     // timeout = Chrome ocupado (no muerto): se asume viva y el envío, con su
     // propio timeout, decide. 'transient' (OPENING/TIMEOUT) = está volviendo
@@ -2133,7 +2221,7 @@ async function acquireSendableEntry(key) {
     const probe = await probeState(entry, 6000).catch(() => ({ verdict: 'unknown' }));
     if (probe.verdict === 'connected' || probe.verdict === 'busy') {
       healToConnected(key, entry);
-      return entry;
+      return (await ensurePageInjection(entry)) ? entry : null;
     }
   }
   // Sin veredicto de "conectado": si hay una sincronización en curso, espera a que
@@ -2348,7 +2436,7 @@ function qrSendErrorText(err) {
  */
 function isSessionGlitch(err) {
   const raw = String(err?.message || err || '');
-  return /Protocol error|Promise was collected|Target closed|Session closed|detached Frame|Execution context|Tiempo agotado|Navigation|net::|ECONNRESET/i.test(raw);
+  return /Protocol error|Promise was collected|Target closed|Session closed|detached Frame|Execution context|Tiempo agotado|Navigation|net::|ECONNRESET|reading ['"]getChat['"]|window\.WWebJS|WWebJS.*undefined/i.test(raw);
 }
 
 /**
@@ -2369,8 +2457,67 @@ const sendFingerprint = (what) => `${String(what || '').length}:${String(what ||
 const pendingKey = (key, chatId, huella) => `${key}|${chatId}|${huella}`;
 
 function rememberPending(key, chatId, huella, startedAt) {
-  if (pendingSends.size >= PENDING_MAX) pendingSends.delete(pendingSends.keys().next().value);
-  pendingSends.set(pendingKey(key, chatId, huella), { startedAt });
+  const mapKey = pendingKey(key, chatId, huella);
+  const previous = pendingSends.get(mapKey);
+  if (!previous && pendingSends.size >= PENDING_MAX) pendingSends.delete(pendingSends.keys().next().value);
+  // Conservar el PRIMER intento incierto. Es el inicio de la ventana que hay que
+  // inspeccionar; reemplazarlo por el octavo reintento podría ocultar que el
+  // video original sí salió y provocar un duplicado.
+  const firstStartedAt = previous
+    ? Math.min(Number(previous.startedAt) || Infinity, Number(startedAt) || Infinity)
+    : Number(startedAt);
+  pendingSends.set(mapKey, { startedAt: Number.isFinite(firstStartedAt) ? firstStartedAt : Date.now() });
+}
+
+/**
+ * Restaura tras un deploy los envíos QR cuyo resultado quedó incierto.
+ *
+ * `pendingSends` es deliberadamente liviano y vive en memoria, pero reiniciar el
+ * proceso no puede borrar la protección antiduplicado: los Message fallidos ya
+ * guardan cuenta, conversación, contenido y fecha del intento. Solo se reconstruyen
+ * los códigos que significan "pudo haber salido" y que siguen dentro del TTL.
+ */
+async function restorePendingSends() {
+  try {
+    const Message = require('../models/Message');
+    const uncertain = await Message.find({
+      direction: 'out',
+      deliveryStatus: 'failed',
+      errorCode: { $in: ['qr_send_unconfirmed', 'qr_media_unconfirmed'] },
+      whatsappAccount: { $ne: null },
+      createdAt: { $gte: new Date(Date.now() - PENDING_TTL_MS) },
+    })
+      .select('conversation whatsappAccount body mediaUrl mediaType createdAt')
+      .populate({ path: 'conversation', select: 'externalUserId phone' })
+      .sort({ createdAt: 1 })
+      .limit(PENDING_MAX)
+      .lean();
+
+    let restored = 0;
+    for (const message of uncertain) {
+      const conv = message.conversation;
+      const accountId = String(message.whatsappAccount || '');
+      // Para un destino solo numérico getNumberId puede resolver @c.us o @lid;
+      // no se inventa la clave. Los entrantes QR afectados ya guardan el JID real.
+      const chatId = String(conv?.externalUserId || '');
+      if (!accountId || !chatId.includes('@')) continue;
+      const fingerprintValue = message.mediaUrl
+        ? `media:${message.mediaType || 'image'}:${message.mediaUrl}`
+        : String(message.body || '').slice(0, 4096);
+      if (!fingerprintValue) continue;
+      rememberPending(accountId, chatId, sendFingerprint(fingerprintValue), new Date(message.createdAt).getTime());
+      restored += 1;
+    }
+    if (restored) {
+      console.log('[whatsappQr] %d envío(s) incierto(s) restaurados para comprobar antes de reintentar.', restored);
+    }
+    return restored;
+  } catch (e) {
+    // Fallar al reconstruir no impide levantar los números; queda visible en log
+    // y los nuevos intentos vuelven a registrar su protección normalmente.
+    console.warn('[whatsappQr] no se pudieron restaurar envíos inciertos: %s', e.message);
+    return 0;
+  }
 }
 
 /** Devuelve (y borra) el envío sin confirmar de este contenido, si sigue vigente. */
@@ -2502,10 +2649,14 @@ async function findRecentlySent(entry, chatId, startedAtMs, { matches, waits = [
     // eslint-disable-next-line no-await-in-loop
     if (wait) await sleep(wait);
     try {
+      // Leer modelos completos mediante getChatById() + fetchMessages() obliga a
+      // serializar el chat dos veces y falla para algunos @lid aunque el envío
+      // normal sí funcione. La ruta directa devuelve solo los cinco campos que
+      // necesitamos y conserva el JID real del Store.
       // eslint-disable-next-line no-await-in-loop
-      const chat = await withTimeout(entry.client.getChatById(chatId), 15000, 'timeout abriendo el chat');
-      // eslint-disable-next-line no-await-in-loop
-      const msgs = await withTimeout(chat.fetchMessages({ limit }), 20000, 'timeout leyendo el chat');
+      const read = await readRecentMessages(entry, chatId, limit);
+      if (!read.checked) throw new Error(read.error || 'el chat no está disponible');
+      const msgs = read.messages;
       checked = true;
       const mine = (msgs || []).filter((m) => m.fromMe && Number(m.timestamp || 0) >= sinceSec && matches(m));
       const id = qrMessageId(mine[mine.length - 1]);
@@ -2515,6 +2666,105 @@ async function findRecentlySent(entry, chatId, startedAtMs, { matches, waits = [
     }
   }
   return { id: '', checked };
+}
+
+/**
+ * Lee los mensajes recientes directamente del Store de WhatsApp Web.
+ *
+ * El helper público `client.getChatById()` construye un Chat serializado y luego
+ * `chat.fetchMessages()` vuelve a buscarlo por `id._serialized`. En contactos LID
+ * esa ida y vuelta puede perder la forma real del JID y terminar en getChat
+ * undefined. Aquí nunca sacamos el modelo del navegador: devolvemos solo datos
+ * primitivos, suficientes para confirmar el intento sin exponer el chat entero.
+ */
+async function readRecentMessages(entry, chatId, limit = 8) {
+  const page = entry?.client?.pupPage;
+  // Compatibilidad con adaptadores y pruebas sin Puppeteer.
+  if (!page || typeof page.evaluate !== 'function') {
+    try {
+      const chat = await withTimeout(entry.client.getChatById(chatId), 15000, 'timeout abriendo el chat');
+      if (!chat) return { checked: false, messages: [], error: 'chat no encontrado' };
+      const messages = await withTimeout(chat.fetchMessages({ limit }), 20000, 'timeout leyendo el chat');
+      return { checked: true, messages: messages || [], error: '' };
+    } catch (e) {
+      return { checked: false, messages: [], error: e.message || String(e) };
+    }
+  }
+
+  try {
+    const out = await withTimeout(
+      page.evaluate(async (targetId, max) => {
+        const widStr = (wid) => {
+          if (!wid) return '';
+          if (typeof wid === 'string') return wid;
+          if (wid._serialized) return String(wid._serialized);
+          if (wid.user && wid.server) return `${wid.user}@${wid.server}`;
+          const str = typeof wid.toString === 'function' ? wid.toString() : '';
+          return str && str !== '[object Object]' ? str : '';
+        };
+        const keyStr = (key) => {
+          if (!key) return '';
+          if (key._serialized) return String(key._serialized);
+          const remote = widStr(key.remote);
+          if (!remote || !key.id) return '';
+          const parts = [key.fromMe ? 'true' : 'false', remote, key.id];
+          const participant = widStr(key.participant);
+          if (participant) parts.push(participant);
+          return parts.join('_');
+        };
+
+        try {
+          if (typeof window.require !== 'function') {
+            return { checked: false, messages: [], error: 'Store de WhatsApp Web no inyectado' };
+          }
+          const Collections = window.require('WAWebCollections');
+          const wid = window.require('WAWebWidFactory').createWid(targetId);
+          let chat = Collections.Chat.get(wid) || Collections.Chat.get(targetId);
+          if (!chat) {
+            try {
+              chat = (await window.require('WAWebFindChatAction').findOrCreateLatestChat(wid))?.chat;
+            } catch { /* el chat puede estar solo en la colección local */ }
+          }
+          if (!chat || !chat.msgs) {
+            return { checked: false, messages: [], error: 'chat no encontrado en WhatsApp Web' };
+          }
+          let messages = chat.msgs.getModelsArray();
+          try {
+            const loader = window.require('WAWebChatLoadMessages');
+            while (messages.length < max) {
+              // eslint-disable-next-line no-await-in-loop
+              const older = await loader.loadEarlierMsgs({ chat });
+              if (!older || !older.length) break;
+              messages = chat.msgs.getModelsArray();
+            }
+          } catch { /* los mensajes en memoria siguen siendo una lectura válida */ }
+          messages.sort((a, b) => Number(a.t || 0) - Number(b.t || 0));
+          if (max > 0 && messages.length > max) messages = messages.slice(-max);
+          return {
+            checked: true,
+            error: '',
+            messages: messages.map((message) => ({
+              fromMe: Boolean(message.id?.fromMe),
+              timestamp: Number(message.t || message.timestamp || 0),
+              body: String((message.mediaObject ? message.caption : message.body) || message.caption || ''),
+              hasMedia: Boolean(message.directPath || message.mediaData?.directPath || message.mediaObject),
+              type: String(message.type || ''),
+              id: { _serialized: keyStr(message.id) },
+            })),
+          };
+        } catch (e) {
+          return { checked: false, messages: [], error: String(e?.message || e).slice(0, 180) };
+        }
+      }, chatId, Math.max(1, Number(limit) || 8)),
+      25000,
+      'timeout leyendo directamente el chat'
+    );
+    return out && typeof out === 'object'
+      ? out
+      : { checked: false, messages: [], error: 'respuesta vacía del Store de WhatsApp Web' };
+  } catch (e) {
+    return { checked: false, messages: [], error: e.message || String(e) };
+  }
 }
 
 /** Igual, para adjuntos (compatibilidad: devuelve solo el wamid). */
@@ -2844,6 +3094,7 @@ async function reconcileAccount(doc) {
 async function initEnabledOnBoot() {
   try {
     ensureHealthTimer(); // el supervisor debe correr aunque hoy no haya sesiones
+    await restorePendingSends();
     const accounts = await WhatsappAccount.find({ connectionType: 'qr', enabled: true });
     for (const acc of accounts) {
       // Solo cuentas que COMPLETARON una vinculación (connectedPhone se guarda en
@@ -2908,10 +3159,10 @@ module.exports = {
   __test: {
     clients, reconnectTimers, reconnectTries, probeState, verifyConnected, teardown,
     scheduleReconnect, cancelReconnect, superviseSessions, MAX_MISSES,
-    acquireSendableEntry, healToConnected, extractQrMedia, describeQrNonMedia,
+    acquireSendableEntry, healToConnected, ensurePageInjection, extractQrMedia, describeQrNonMedia,
     findRecentlySentMedia, watchOutgoingMedia, qrMessageId, qrMessageHash, serializeMsgKey,
-    findRecentlySent, watchOutgoing, confirmAfterFailure, isSessionGlitch,
-    pendingSends, rememberPending, takePending, sendFingerprint, sameText,
+    findRecentlySent, readRecentMessages, watchOutgoing, confirmAfterFailure, isSessionGlitch,
+    pendingSends, rememberPending, takePending, restorePendingSends, sendFingerprint, sameText,
     downloadAndDecryptWaMedia, phoneFromMsgData,
     probeIngest, verifyIngest, recoverMissedInbound, ingestIncomingQrMessage,
     ingestRepairAt, ingestGaps,

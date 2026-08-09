@@ -19,7 +19,8 @@ const assert = require('node:assert/strict');
 const qr = require('../utils/whatsappQrManager');
 
 const {
-  findRecentlySent, watchOutgoing, confirmAfterFailure, isSessionGlitch,
+  findRecentlySent, readRecentMessages, watchOutgoing, confirmAfterFailure, isSessionGlitch,
+  ensurePageInjection,
   pendingSends, rememberPending, takePending, sendFingerprint, sameText,
 } = qr.__test;
 
@@ -62,6 +63,83 @@ test('si el chat no se puede leer, NO se afirma que el mensaje no salió', async
   const r = await findRecentlySent(entry, '593999@c.us', Date.now(), { matches: () => true, waits: [0] });
   assert.equal(r.id, '');
   assert.equal(r.checked, false, 'sin lectura no hay veredicto: reenviar a ciegas duplicaría');
+});
+
+test('un chat @lid se lee directo del Store sin usar getChatById', async () => {
+  const now = Math.floor(Date.now() / 1000);
+  const models = [{
+    id: {
+      fromMe: true,
+      remote: { user: '2044123456789', server: 'lid' },
+      id: 'LID_OK',
+    },
+    t: now,
+    body: 'Mensaje para LID',
+    type: 'chat',
+  }];
+  const chat = { msgs: { getModelsArray: () => models } };
+  const pageWindow = {
+    require: (name) => {
+      if (name === 'WAWebCollections') return { Chat: { get: () => chat } };
+      if (name === 'WAWebWidFactory') return { createWid: (id) => id };
+      if (name === 'WAWebChatLoadMessages') return { loadEarlierMsgs: async () => [] };
+      if (name === 'WAWebFindChatAction') return { findOrCreateLatestChat: async () => ({ chat }) };
+      throw new Error(`módulo inesperado: ${name}`);
+    },
+  };
+  const pupPage = {
+    evaluate: async (fn, ...args) => {
+      const previous = global.window;
+      global.window = pageWindow;
+      try {
+        return await fn(...args);
+      } finally {
+        global.window = previous;
+      }
+    },
+  };
+  const entry = {
+    client: {
+      pupPage,
+      getChatById: async () => { throw new Error('getChatById NO debe ejecutarse'); },
+    },
+  };
+
+  const read = await readRecentMessages(entry, '2044123456789@lid', 8);
+  assert.equal(read.checked, true);
+  assert.equal(read.messages.length, 1);
+  assert.equal(read.messages[0].id._serialized, 'true_2044123456789@lid_LID_OK');
+
+  const found = await findRecentlySent(entry, '2044123456789@lid', Date.now(), {
+    matches: textoDe('Mensaje para LID'), waits: [0],
+  });
+  assert.equal(found.checked, true);
+  assert.equal(found.id, 'true_2044123456789@lid_LID_OK');
+});
+
+test('una sesión conectada recupera WWebJS antes de enviar', async () => {
+  let injected = false;
+  let listeners = 0;
+  const pupPage = {
+    evaluate: async (fn) => {
+      const source = String(fn);
+      if (source.includes('typeof window.WWebJS.getChat')) return injected;
+      if (source.includes("typeof window.require === 'function'")) return true;
+      // La tercera clase de evaluate es LoadUtils.
+      injected = true;
+      return undefined;
+    },
+  };
+  const entry = {
+    client: {
+      pupPage,
+      attachEventListeners: async () => { listeners += 1; },
+    },
+  };
+  assert.equal(await ensurePageInjection(entry), true);
+  assert.equal(injected, true);
+  assert.equal(listeners, 1);
+  assert.ok(entry.readyAt, 'la gracia de ingesta se reinicia tras restaurar listeners');
 });
 
 // ───────────────── confirmación por el evento de la sesión ─────────────────
@@ -121,6 +199,14 @@ test('un apunte viejo (más de 4 h) ya no frena el envío', () => {
   assert.equal(takePending('cuenta1', '593999@c.us', huella), null, 'caducó: se envía normal');
 });
 
+test('varios fallos del mismo envío conservan la fecha del PRIMER intento', () => {
+  const huella = sendFingerprint('video');
+  const first = Date.now() - 20 * 60 * 1000;
+  rememberPending('cuenta1', '2044@lid', huella, first);
+  rememberPending('cuenta1', '2044@lid', huella, Date.now());
+  assert.equal(takePending('cuenta1', '2044@lid', huella).startedAt, first);
+});
+
 // ─────────────────── qué errores merecen reintento ───────────────────
 
 test('los tropiezos de la sesión se distinguen de un rechazo real', () => {
@@ -128,5 +214,6 @@ test('los tropiezos de la sesión se distinguen de un rechazo real', () => {
   assert.equal(isSessionGlitch(new Error('Execution context was destroyed')), true);
   assert.equal(isSessionGlitch(new Error('Session closed')), true);
   assert.equal(isSessionGlitch(new Error('Tiempo agotado enviando el mensaje (la sesión puede estar inestable)')), true);
+  assert.equal(isSessionGlitch(new Error("Cannot read properties of undefined (reading 'getChat')")), true);
   assert.equal(isSessionGlitch(new Error('El número 0999 no está en WhatsApp')), false);
 });

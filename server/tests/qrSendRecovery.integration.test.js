@@ -15,14 +15,21 @@ const assert = require('node:assert/strict');
 const H = require('./_integrationHelpers');
 const qr = require('../utils/whatsappQrManager');
 const WhatsappAccount = require('../models/WhatsappAccount');
+const Conversation = require('../models/Conversation');
+const Message = require('../models/Message');
+const mongoose = require('mongoose');
 
-const { clients, acquireSendableEntry } = qr.__test;
+const {
+  clients, acquireSendableEntry, pendingSends, restorePendingSends,
+  takePending, sendFingerprint,
+} = qr.__test;
 
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
 test.beforeEach(async () => {
   await H.resetDb();
   clients.clear();
+  pendingSends.clear();
 });
 
 function fakeEntry(status, getStateResult) {
@@ -87,4 +94,35 @@ test('estado ya "connected" → devuelve sin consultar getState', async () => {
   const entry = await acquireSendableEntry(key);
   assert.ok(entry);
   assert.equal(getStateCalled, false, 'si ya está connected no hace falta preguntar');
+});
+
+test('tras reiniciar se restaura un video incierto para comprobarlo antes de reenviar', async () => {
+  const clinic = new mongoose.Types.ObjectId();
+  const acc = await WhatsappAccount.create({
+    label: 'QR', connectionType: 'qr', enabled: true, status: 'connected',
+    sessionId: 's4', connectedPhone: '593999999999',
+  });
+  const jid = '2044123456789@lid';
+  const mediaUrl = '/api/public/media/6a7908f28e8f8d127bfc261f';
+  const conv = await Conversation.create({
+    clinic, phone: '593955555555', contactName: 'Contacto', channel: 'whatsapp',
+    externalUserId: jid, whatsappAccount: acc._id,
+  });
+  const failed = await Message.create({
+    clinic,
+    conversation: conv._id,
+    direction: 'out',
+    body: 'Video',
+    mediaUrl,
+    mediaType: 'video',
+    whatsappAccount: acc._id,
+    deliveryStatus: 'failed',
+    errorCode: 'qr_send_unconfirmed',
+  });
+
+  assert.equal(await restorePendingSends(), 1);
+  const huella = sendFingerprint(`media:video:${mediaUrl}`);
+  const restored = takePending(String(acc._id), jid, huella);
+  assert.ok(restored);
+  assert.equal(restored.startedAt, failed.createdAt.getTime());
 });
