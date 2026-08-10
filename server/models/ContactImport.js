@@ -118,6 +118,9 @@ const contactImportSchema = new mongoose.Schema(
     enrollCancelled: { type: Number, default: 0 },
     // Aviso no fatal de la inscripción (p.ej. un flujo con dos disparadores).
     enrollWarning: { type: String, trim: true, default: '' },
+    // 0 = lote histórico que solo conserva contadores; 1 = cada fila tiene un
+    // resultado consultable en ContactImportRow (creada/actualizada/omitida/fallida).
+    rowDetailsVersion: { type: Number, default: 0 },
     // Cancelar lo que quedó pendiente de importaciones anteriores de estos flujos.
     // Sin esto, una campaña de prueba con goteo sigue soltando SU mensaje durante
     // horas y se mezcla con el envío bueno: el contacto recibe el texto viejo.

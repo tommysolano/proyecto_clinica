@@ -15,6 +15,11 @@ const doctor = { user: { _id: 'doc' }, role: 'doctor' };
 
 const chatDeJaime = { assignedTo: 'jaime' };
 const chatPrivadoDeJaime = { assignedTo: 'jaime', workflowRestrictedTo: 'jaime' };
+const chatDeJaimeFueraDeTurno = {
+  assignedTo: 'jaime',
+  workflowRestrictedTo: 'jaime',
+  workflowRestrictionActive: false,
+};
 const chatSinAsignar = { assignedTo: null };
 
 test('canReplyConversation: la asignacion normal es compartida y la de workflow especifico es privada', () => {
@@ -22,6 +27,8 @@ test('canReplyConversation: la asignacion normal es compartida y la de workflow 
   assert.equal(chatCtrl.canReplyConversation(jaime, chatDeJaime), true);
   assert.equal(chatCtrl.canReplyConversation(ana, chatPrivadoDeJaime), false);
   assert.equal(chatCtrl.canReplyConversation(jaime, chatPrivadoDeJaime), true);
+  assert.equal(chatCtrl.canReplyConversation(ana, chatDeJaimeFueraDeTurno), true);
+  assert.equal(chatCtrl.canReplyConversation(jaime, chatDeJaimeFueraDeTurno), false);
   assert.equal(chatCtrl.canReplyConversation(ana, chatSinAsignar), true);
   assert.equal(chatCtrl.canReplyConversation(admin, chatDeJaime), true);
   assert.equal(chatCtrl.canReplyConversation(marketing, chatDeJaime), true);
@@ -35,6 +42,8 @@ test('canMutateConversation: solo la restriccion del workflow protege las accion
   assert.equal(chatCtrl.canMutateConversation(jaime, chatDeJaime), true);
   assert.equal(chatCtrl.canMutateConversation(ana, chatPrivadoDeJaime), false);
   assert.equal(chatCtrl.canMutateConversation(jaime, chatPrivadoDeJaime), true);
+  assert.equal(chatCtrl.canMutateConversation(ana, chatDeJaimeFueraDeTurno), true);
+  assert.equal(chatCtrl.canMutateConversation(jaime, chatDeJaimeFueraDeTurno), false);
   assert.equal(chatCtrl.canMutateConversation(ana, chatSinAsignar), true);
   // Admin, marketing y super-admin siempre.
   assert.equal(chatCtrl.canMutateConversation(admin, chatDeJaime), true);

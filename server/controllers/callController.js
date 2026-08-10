@@ -60,7 +60,8 @@ function callPayload(call) {
 }
 
 async function canAccessCall(req, call) {
-  const conv = await Conversation.findById(call?.conversation).select('_id workflowRestrictedTo');
+  const conv = await Conversation.findById(call?.conversation)
+    .select('_id workflowRestrictedTo workflowRestrictionActive');
   if (!conv) return false;
   return require('./chatController').canAccessConversation(req, conv);
 }

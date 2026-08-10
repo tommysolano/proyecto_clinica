@@ -7,6 +7,7 @@ import { HiOutlineArrowLeft, HiOutlineBolt, HiOutlineSun } from 'react-icons/hi2
 import WorkflowGraphEditor, { stepsToGraph, TRIGGERS } from '../components/WorkflowGraphEditor';
 import WorkflowWindowPicker from '../components/WorkflowWindowPicker';
 import { describeWindow } from '../utils/windowSchedule';
+import { syncTemplateNodes } from '../utils/workflowTemplateButtons';
 import Modal from '../components/Modal';
 
 const defaultTrigger = () => ({ type: 'appointment_created', audience: 'all', serviceFilter: null, keywords: [], matchType: 'contains', tagFilter: '' });
@@ -142,7 +143,8 @@ export default function WorkflowEditor() {
 
   const save = async (close = true) => {
     if (!wf.name.trim()) return toast.error('Ponle un nombre al workflow');
-    const actionNodes = (wf.nodes || []).filter((n) => n.type !== 'trigger');
+    const syncedNodes = syncTemplateNodes(wf.nodes || [], templates);
+    const actionNodes = syncedNodes.filter((n) => n.type !== 'trigger');
     if (actionNodes.length === 0) return toast.error('Agrega al menos un paso al diagrama');
     if (actionNodes.some((n) => n.type === 'assign_agent' && n.data?.assignMode === 'user' && !n.data?.assignUser)) {
       return toast.error('Selecciona el asesor específico en cada paso “Asignar agente”');
@@ -164,7 +166,7 @@ export default function WorkflowEditor() {
       }
     }
     // Unión de disparadores de todos los flujos (para el filtro/índice del motor).
-    const triggers = (wf.nodes || [])
+    const triggers = syncedNodes
       .filter((n) => n.type === 'trigger')
       .flatMap((n) => n.data?.triggers || [])
       .filter((t) => t?.type);
@@ -178,15 +180,17 @@ export default function WorkflowEditor() {
       triggers,
       trigger: triggers[0],
       steps: [],
-      nodes: wf.nodes || [],
+      nodes: syncedNodes,
       edges: wf.edges || [],
     };
     try {
+      let savedId = wf._id;
       if (wf._id) await api.put(`/workflows/${wf._id}`, payload);
       else {
         const { data } = await api.post('/workflows', payload);
-        setWf((p) => ({ ...p, _id: data._id }));
+        savedId = data._id;
       }
+      setWf((p) => ({ ...p, _id: savedId, nodes: syncedNodes }));
       toast.success('Workflow guardado');
       if (close) navigate('/workflows');
     } catch (e) {

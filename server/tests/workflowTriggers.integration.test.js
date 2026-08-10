@@ -377,7 +377,7 @@ test('Paso "Asignar agente": el workflow asigna el chat al call center específi
     email: 'laura-workflow@example.com',
     password: 'secreto1',
     clinics: [{ clinic: clinic._id, role: 'call_center' }],
-    // Incluso fuera de turno una asignación explícita se conserva en su cola.
+    // Fuera de turno conserva la responsabilidad, pero abre temporalmente la cola.
     callCenterSchedule: {
       enabled: true,
       days: Array.from({ length: 7 }, (_, day) => ({ day, enabled: false, start: '09:00', end: '18:00' })),
@@ -421,6 +421,7 @@ test('Paso "Asignar agente": el workflow asigna el chat al call center específi
   assert.ok(assigned, 'el workflow no asignó la conversación al asesor elegido');
   assert.equal(assigned.assignedToName, 'Laura Call Center');
   assert.equal(String(assigned.workflowRestrictedTo), String(agent._id));
+  assert.equal(assigned.workflowRestrictionActive, false, 'fuera de turno debe quedar visible para los otros call center');
   const enrollment = await WorkflowEnrollment.findOne({ workflow: wf._id, conversation: conv._id });
   assert.equal(enrollment?.status, 'done');
   assert.equal((enrollment?.log || []).find((entry) => entry.type === 'assign_agent')?.ok, true);

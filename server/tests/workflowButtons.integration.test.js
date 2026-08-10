@@ -25,7 +25,7 @@ test.beforeEach(async () => {
   process.env.PUBLIC_API_URL = 'https://app.example.test';
 });
 
-async function seed(buttons) {
+async function seed(buttons, { nodeType = 'send_message' } = {}) {
   const clinic = await Clinic.create({ name: 'Principal' });
   const patient = await Patient.create({
     clinic: clinic._id,
@@ -40,7 +40,18 @@ async function seed(buttons) {
     triggers: [{ type: 'appointment_created', audience: 'all' }],
     nodes: [
       { id: 'trigger', type: 'trigger', position: { x: 0, y: 0 }, data: { triggers: [{ type: 'appointment_created' }] } },
-      { id: 'msg', type: 'send_message', position: { x: 0, y: 130 }, data: { body: 'Elige', buttons, buttonTimeoutMinutes: 60 } },
+      {
+        id: 'msg',
+        type: nodeType,
+        position: { x: 0, y: 130 },
+        data: {
+          body: 'Elige',
+          templateName: nodeType === 'send_template' ? 'confirmacion_cita' : '',
+          templateLanguage: 'es',
+          buttons,
+          buttonTimeoutMinutes: 60,
+        },
+      },
       { id: 'clicked', type: 'add_tag', position: { x: -100, y: 260 }, data: { tag: 'boton-pulsado' } },
       { id: 'fallback', type: 'add_tag', position: { x: 100, y: 260 }, data: { tag: 'sin-boton' } },
     ],
@@ -106,6 +117,40 @@ test('tiempo agotado: continúa por la salida Otra / tiempo', async () => {
   const patient = await Patient.findById(data.patient._id).lean();
   assert.ok(patient.tags.includes('sin-boton'));
   assert.ok(!patient.tags.includes('boton-pulsado'));
+});
+
+test('plantilla: una respuesta rápida aprobada espera y continúa por su salida', async () => {
+  const data = await seed(
+    [{ id: 'tpl_confirmar', type: 'quick_reply', text: 'Confirmar', url: '' }],
+    { nodeType: 'send_template' }
+  );
+  let sentPayload = null;
+  messaging.send = async (payload) => {
+    sentPayload = payload;
+    return { ok: true, deliveryStatus: 'sent' };
+  };
+
+  await engine.executeEnrollment(await WorkflowEnrollment.findById(data.enrollment._id));
+  let waiting = await WorkflowEnrollment.findById(data.enrollment._id);
+  assert.equal(waiting.status, 'waiting');
+  assert.equal(waiting.waitingForReply, true);
+  assert.equal(waiting.currentNodeId, 'fallback');
+  assert.equal(sentPayload.template.name, 'confirmacion_cita');
+  assert.equal(sentPayload.buttons, undefined, 'los botones ya forman parte de la plantilla aprobada en Meta');
+
+  const result = await engine.resumeOnReply({
+    clinicId: data.clinic._id,
+    patientId: data.patient._id,
+    phone: data.patient.phone,
+    text: 'Confirmar',
+    interactiveReply: { id: 'meta-template-payload', title: 'Confirmar', type: 'button_reply' },
+  });
+  assert.equal(result.resumed, 1);
+  waiting = await WorkflowEnrollment.findById(data.enrollment._id);
+  assert.equal(waiting.status, 'done');
+  const patient = await Patient.findById(data.patient._id).lean();
+  assert.ok(patient.tags.includes('boton-pulsado'));
+  assert.ok(!patient.tags.includes('sin-boton'));
 });
 
 test('botón de enlace: registra el clic, ejecuta su rama y devuelve el destino', async () => {

@@ -42,19 +42,28 @@ function sanitizeWorkflowPayload(body = {}) {
 function workflowButtonsError(body = {}) {
   const steps = [
     ...(Array.isArray(body.nodes)
-      ? body.nodes.filter((node) => node?.type === 'send_message').map((node) => node.data || {})
+      ? body.nodes
+        .filter((node) => ['send_message', 'send_template'].includes(node?.type))
+        .map((node) => ({ type: node.type, data: node.data || {} }))
       : []),
-    ...(Array.isArray(body.steps) ? body.steps.filter((step) => step?.type === 'send_message') : []),
+    ...(Array.isArray(body.steps)
+      ? body.steps
+        .filter((step) => ['send_message', 'send_template'].includes(step?.type))
+        .map((step) => ({ type: step.type, data: step }))
+      : []),
   ];
   for (const step of steps) {
-    const buttons = Array.isArray(step.buttons) ? step.buttons : [];
+    const buttons = Array.isArray(step.data.buttons) ? step.data.buttons : [];
     if (buttons.length > 3) return 'Cada mensaje admite un máximo de 3 botones.';
     const ids = buttons.map((button) => String(button?.id || '').trim());
     if (ids.some((id) => !id) || new Set(ids).size !== ids.length) return 'Los botones necesitan identificadores únicos.';
+    const maxTextLength = step.type === 'send_template' ? 25 : 20;
     for (const button of buttons) {
       if (!['quick_reply', 'url', 'phone'].includes(button.type)) return 'Hay un tipo de botón no permitido.';
       const text = String(button.text || '').trim();
-      if (!text || text.length > 20) return 'El texto de cada botón debe tener entre 1 y 20 caracteres.';
+      if (!text || text.length > maxTextLength) {
+        return `El texto de cada botón debe tener entre 1 y ${maxTextLength} caracteres.`;
+      }
       if (button.type === 'url' && !/^https?:\/\//i.test(String(button.url || '').trim())) {
         return 'Los botones de enlace necesitan una URL http:// o https:// válida.';
       }

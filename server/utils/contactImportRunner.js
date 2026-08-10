@@ -13,12 +13,55 @@ const fs = require('fs');
 const os = require('os');
 const Contact = require('../models/Contact');
 const ContactImport = require('../models/ContactImport');
+const ContactImportRow = require('../models/ContactImportRow');
 const { iterateRows } = require('./contactFileReader');
 const { mapRow } = require('./contactRowMapper');
 const { emitToCallCenter } = require('../realtime');
 
 const BATCH_SIZE = 500;      // filas por bulkWrite
 const MAX_STORED_ERRORS = 200; // muestra para la UI: 47k errores no caben en un doc
+
+function sourceValue(row, mapping, field) {
+  const mapped = (mapping || []).find((item) => item.field === field);
+  return mapped ? String(row?.[mapped.column] ?? '').trim() : '';
+}
+
+/** Datos identificativos aun cuando la fila no logró mapearse. */
+function sourceSnapshot(row, mapping) {
+  const firstName = sourceValue(row, mapping, 'firstName');
+  const lastName = sourceValue(row, mapping, 'lastName');
+  const displayName = sourceValue(row, mapping, 'displayName') || `${firstName} ${lastName}`.trim();
+  return {
+    phone: sourceValue(row, mapping, 'phone'),
+    email: sourceValue(row, mapping, 'email'),
+    firstName,
+    lastName,
+    displayName,
+  };
+}
+
+function resultDocument(batch, entry, outcome, reason = '', contactId = null) {
+  const c = entry?.contact || {};
+  return {
+    clinic: batch.clinic,
+    importBatch: batch._id,
+    row: Number(entry?.row) || 0,
+    outcome,
+    contact: contactId || null,
+    phone: String(c.phone || ''),
+    email: String(c.email || ''),
+    firstName: String(c.firstName || ''),
+    lastName: String(c.lastName || ''),
+    displayName: String(c.displayName || `${c.firstName || ''} ${c.lastName || ''}`.trim()),
+    value: String(entry?.value || c.phone || ''),
+    reason,
+  };
+}
+
+async function storeResultDocuments(documents) {
+  if (!documents.length) return;
+  await ContactImportRow.insertMany(documents, { ordered: false });
+}
 
 // ── Resolución de la SUCURSAL por fila (columna "Sucursal" del Excel) ──
 // El Excel trae el NOMBRE de la sede; se resuelve a la sucursal real para ubicar
@@ -394,26 +437,55 @@ function buildOps(rows, batch, existingByPhone = new Map()) {
  */
 async function flushBatch(rows, batch) {
   if (!rows.length) return { created: 0, updated: 0, skipped: 0 };
+  const entries = rows.map((entry) => (entry?.contact ? entry : { row: 0, contact: entry }));
 
   // Quién existe YA, mirando el teléfono en TODA la organización (no por sede):
   // es lo que evita el contacto gemelo en otra sucursal. Ver findExistingByPhone.
-  const existingByPhone = await findExistingByPhone(rows.map((r) => r.phone));
+  const existingByPhone = await findExistingByPhone(entries.map((entry) => entry.contact.phone));
 
   // Modo 'create' (solo crear): los que ya existen no se tocan.
-  let toWrite = rows;
-  let skipped = 0;
+  let toWrite = entries;
   if (batch.mode === 'create') {
-    toWrite = rows.filter((r) => !existingByPhone.has(r.phone));
-    skipped = rows.length - toWrite.length;
+    toWrite = entries.filter((entry) => !existingByPhone.has(entry.contact.phone));
+  } else if (batch.mode === 'update') {
+    toWrite = entries.filter((entry) => existingByPhone.has(entry.contact.phone));
   }
-  if (!toWrite.length) return { created: 0, updated: 0, skipped };
+  if (toWrite.length) {
+    await Contact.bulkWrite(buildOps(toWrite.map((entry) => entry.contact), batch, existingByPhone), { ordered: false });
+  }
 
-  const res = await Contact.bulkWrite(buildOps(toWrite, batch, existingByPhone), { ordered: false });
-  const created = res.upsertedCount || 0;
-  const matched = res.matchedCount || 0;
-  // En modo 'update' los que no existían no se escriben: cuentan como omitidos.
-  if (batch.mode === 'update') skipped += toWrite.length - matched;
-  return { created, updated: matched, skipped };
+  // Resuelve también los ids recién creados para que el detalle pueda enlazar
+  // con la ficha del contacto sin guardar documentos enormes en el lote.
+  const afterByPhone = await findExistingByPhone(entries.map((entry) => entry.contact.phone));
+  const documents = [];
+  let created = 0;
+  let updated = 0;
+  let skipped = 0;
+  for (const entry of entries) {
+    const existed = existingByPhone.has(entry.contact.phone);
+    let outcome;
+    let reason = '';
+    if (batch.mode === 'create' && existed) {
+      outcome = 'skipped';
+      reason = 'El contacto ya existía; el modo «Solo crear» no modifica contactos existentes.';
+      skipped++;
+    } else if (batch.mode === 'update' && !existed) {
+      outcome = 'skipped';
+      reason = 'El contacto no existía; el modo «Solo actualizar» no crea contactos nuevos.';
+      skipped++;
+    } else if (existed) {
+      outcome = 'updated';
+      reason = 'Se actualizó el contacto existente.';
+      updated++;
+    } else {
+      outcome = 'created';
+      reason = 'Se creó un contacto nuevo.';
+      created++;
+    }
+    documents.push(resultDocument(batch, entry, outcome, reason, afterByPhone.get(entry.contact.phone)?._id));
+  }
+  await storeResultDocuments(documents);
+  return { created, updated, skipped };
 }
 
 /**
@@ -454,8 +526,18 @@ async function runImport(batchId) {
     batch.skipped = 0;
     batch.failed = 0;
     batch.rowErrors = [];
+    batch.rowDetailsVersion = 1;
+    // Un lote rescatado tras un reinicio se procesa desde cero; su auditoría
+    // también, para que cada fila tenga exactamente un resultado.
+    await ContactImportRow.deleteMany({ importBatch: batch._id });
+    await batch.save();
 
     let pending = [];
+    let pendingDetails = [];
+    const flushDetails = async () => {
+      await storeResultDocuments(pendingDetails);
+      pendingDetails = [];
+    };
     const flush = async () => {
       const r = await flushBatch(pending, batch);
       batch.created += r.created;
@@ -480,6 +562,13 @@ async function runImport(batchId) {
       const mapped = mapRow(row, batch.mapping);
       if (!mapped.ok) {
         batch.failed++;
+        pendingDetails.push(resultDocument(
+          batch,
+          { row: rowNo, contact: sourceSnapshot(row, batch.mapping), value: mapped.value || '' },
+          'failed',
+          mapped.reason
+        ));
+        if (pendingDetails.length >= BATCH_SIZE) await flushDetails();
         if (batch.rowErrors.length < MAX_STORED_ERRORS) {
           batch.rowErrors.push({ row: rowNo, value: mapped.value || '', reason: mapped.reason });
         }
@@ -498,13 +587,21 @@ async function runImport(batchId) {
       if ('sendTime' in mapped.contact) delete mapped.contact.sendTime;
       if (seen.has(mapped.contact.phone)) {
         batch.skipped++; // repetido dentro del propio archivo
+        pendingDetails.push(resultDocument(
+          batch,
+          { row: rowNo, contact: mapped.contact },
+          'skipped',
+          `Teléfono repetido dentro del archivo; su primera aparición está en la fila ${seen.get(mapped.contact.phone).row}.`
+        ));
+        if (pendingDetails.length >= BATCH_SIZE) await flushDetails();
         return;
       }
-      seen.set(mapped.contact.phone, { clinic: String(mapped.contact.clinic || batch.clinic) });
-      pending.push(mapped.contact);
+      seen.set(mapped.contact.phone, { clinic: String(mapped.contact.clinic || batch.clinic), row: rowNo });
+      pending.push({ row: rowNo, contact: mapped.contact });
       if (pending.length >= BATCH_SIZE) await flush();
     });
     await flush();
+    await flushDetails();
 
     batch.status = 'done';
     batch.totalRows = batch.processedRows;

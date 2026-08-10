@@ -265,6 +265,14 @@ connectDB().then(() => {
     // Motor de workflows: suscribe a eventos de dominio + reanuda esperas vencidas.
     const workflowEngine = require('./utils/workflowEngine');
     workflowEngine.subscribeDomainEvents();
+    // El candado de una asignacion explicita de workflow solo vive durante el
+    // turno del asesor. Se calcula al tomar el liderazgo y cada 15 s para cruzar
+    // con rapidez incluso franjas partidas (08-12 y 16-21, por ejemplo).
+    const syncWorkflowQueues = () => require('./utils/workflowChatRestriction')
+      .syncWorkflowChatRestrictions()
+      .catch((err) => console.error('[workflowChatRestriction] sync:', err.message));
+    setTimeout(only(syncWorkflowQueues), 0);
+    setInterval(only(syncWorkflowQueues), 15 * 1000);
     // Meta Conversions API (CAPI): reporta Lead/Schedule/Purchase a Meta si está configurada.
     require('./utils/metaConversions').subscribeDomainEvents();
     // Agendar una cita mueve la oportunidad del chat a "agendado", venga la cita

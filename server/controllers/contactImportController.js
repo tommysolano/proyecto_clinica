@@ -17,6 +17,7 @@ const path = require('path');
 const multer = require('multer');
 const mongoose = require('mongoose');
 const ContactImport = require('../models/ContactImport');
+const ContactImportRow = require('../models/ContactImportRow');
 const ContactGroup = require('../models/ContactGroup');
 const Contact = require('../models/Contact');
 const { readHeaders, isSupported } = require('../utils/contactFileReader');
@@ -315,6 +316,125 @@ exports.get = async (req, res) => {
     res.json(batch);
   } catch (err) {
     res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
+function safeRegex(value) {
+  return String(value || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Detalle paginado de cada fila procesada. Permite responder quién fue omitido
+ * y por qué sin volver a abrir el Excel (el archivo se elimina al terminar).
+ */
+exports.rows = async (req, res) => {
+  try {
+    const batch = await ContactImport.findOne({ _id: req.params.id, clinic: req.clinicId })
+      .select('fileName status created updated skipped failed rowErrors rowDetailsVersion');
+    if (!batch) return res.status(404).json({ message: 'Importación no encontrada' });
+
+    const allowed = new Set(['created', 'updated', 'skipped', 'failed']);
+    const outcome = allowed.has(String(req.query.outcome || '')) ? String(req.query.outcome) : '';
+    const page = Math.max(1, Number.parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(100, Math.max(10, Number.parseInt(req.query.limit, 10) || 50));
+    const q = String(req.query.q || '').trim().slice(0, 100);
+    const summary = {
+      created: batch.created || 0,
+      updated: batch.updated || 0,
+      skipped: batch.skipped || 0,
+      failed: batch.failed || 0,
+    };
+
+    if (Number(batch.rowDetailsVersion || 0) >= 1) {
+      const match = { importBatch: batch._id, clinic: req.clinicId };
+      if (outcome) match.outcome = outcome;
+      if (q) {
+        const re = new RegExp(safeRegex(q), 'i');
+        match.$or = [
+          { phone: re }, { email: re }, { firstName: re }, { lastName: re },
+          { displayName: re }, { value: re }, { reason: re },
+        ];
+      }
+      const [total, items] = await Promise.all([
+        ContactImportRow.countDocuments(match),
+        ContactImportRow.find(match)
+          .sort({ row: 1 })
+          .skip((page - 1) * limit)
+          .limit(limit)
+          .lean(),
+      ]);
+      return res.json({
+        items,
+        total,
+        page,
+        pages: Math.max(1, Math.ceil(total / limit)),
+        limit,
+        summary,
+        detailAvailable: true,
+        legacy: false,
+      });
+    }
+
+    // Compatibilidad con lotes terminados antes de esta mejora. En ese momento
+    // no se guardaba el detalle de actualizados/omitidos y el archivo ya se borró,
+    // por lo que inventar nombres sería incorrecto. Sí podemos recuperar los
+    // contactos creados y la muestra de errores que ya existía.
+    if (outcome === 'created') {
+      const match = { importBatch: batch._id };
+      if (q) {
+        const re = new RegExp(safeRegex(q), 'i');
+        match.$or = [{ phone: re }, { email: re }, { firstName: re }, { lastName: re }, { displayName: re }];
+      }
+      const [total, contacts] = await Promise.all([
+        Contact.countDocuments(match),
+        Contact.find(match).sort({ createdAt: 1 }).skip((page - 1) * limit).limit(limit).lean(),
+      ]);
+      return res.json({
+        items: contacts.map((contact) => ({ ...contact, contact: contact._id, outcome: 'created', row: null })),
+        total,
+        page,
+        pages: Math.max(1, Math.ceil(total / limit)),
+        limit,
+        summary,
+        detailAvailable: total > 0 || summary.created === 0,
+        legacy: true,
+        message: 'Este lote es anterior al detalle por fila; se muestran los contactos creados que todavía existen.',
+      });
+    }
+
+    if (outcome === 'failed') {
+      const re = q ? new RegExp(safeRegex(q), 'i') : null;
+      const all = (batch.rowErrors || [])
+        .filter((item) => !re || re.test(`${item.row} ${item.value} ${item.reason}`))
+        .map((item) => ({ ...(item.toObject?.() || item), outcome: 'failed' }));
+      const start = (page - 1) * limit;
+      return res.json({
+        items: all.slice(start, start + limit),
+        total: all.length,
+        page,
+        pages: Math.max(1, Math.ceil(all.length / limit)),
+        limit,
+        summary,
+        detailAvailable: true,
+        legacy: true,
+        partial: Number(batch.failed || 0) > (batch.rowErrors || []).length,
+        message: 'Este lote es anterior al detalle por fila; los errores disponibles son la muestra que se conservaba.',
+      });
+    }
+
+    return res.json({
+      items: [],
+      total: outcome ? summary[outcome] || 0 : Object.values(summary).reduce((sum, value) => sum + value, 0),
+      page: 1,
+      pages: 1,
+      limit,
+      summary,
+      detailAvailable: false,
+      legacy: true,
+      message: 'Esta importación terminó antes de que el sistema guardara el detalle de cada fila. El contador es correcto, pero ya no es posible reconstruir quiénes fueron omitidos o actualizados porque el archivo original se eliminó al finalizar. Las nuevas importaciones sí guardarán este detalle.',
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'No se pudo cargar el detalle de la importación', error: err.message });
   }
 };
 

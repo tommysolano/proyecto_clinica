@@ -5,11 +5,13 @@ import {
   HiOutlineArrowDownTray,
   HiOutlineArrowUturnLeft,
   HiOutlineDocumentText,
+  HiOutlineEye,
 } from 'react-icons/hi2';
 import api from '../../api/axios';
 import ImportWizard from './ImportWizard';
 import { useSocketEvent } from '../../context/SocketContext';
 import { fmtDateTime } from '../../utils/date';
+import ImportDetailsModal from './ImportDetailsModal';
 
 const STATUS_META = {
   pending: { label: 'En cola', chip: 'bg-slate-100 text-slate-600' },
@@ -23,6 +25,7 @@ export default function ImportsTab({ groups, onGroupsChanged }) {
   const [list, setList] = useState([]);
   const [loading, setLoading] = useState(true);
   const [wizardOpen, setWizardOpen] = useState(false);
+  const [details, setDetails] = useState(null);
 
   const load = async () => {
     try {
@@ -115,6 +118,14 @@ export default function ImportsTab({ groups, onGroupsChanged }) {
                     </div>
                   </div>
                   <div className="flex gap-1 shrink-0">
+                    {!running && (
+                      <button
+                        onClick={() => setDetails({ batch: b, outcome: '' })}
+                        className="px-2.5 py-1 text-xs border border-slate-200 text-slate-600 rounded-lg bg-white hover:bg-slate-50 cursor-pointer flex items-center gap-1"
+                      >
+                        <HiOutlineEye className="w-3.5 h-3.5" /> Ver detalle
+                      </button>
+                    )}
                     {b.rowErrors?.length > 0 && (
                       <button
                         onClick={() => downloadErrors(b)}
@@ -149,10 +160,10 @@ export default function ImportsTab({ groups, onGroupsChanged }) {
 
                 {(b.status === 'done' || b.status === 'reverted') && (
                   <div className="flex gap-3 flex-wrap mt-2 text-xs">
-                    <Counter label="Creados" value={b.created} tone="text-emerald-700" />
-                    <Counter label="Actualizados" value={b.updated} tone="text-sky-700" />
-                    <Counter label="Omitidos" value={b.skipped} tone="text-slate-500" />
-                    <Counter label="Fallidos" value={b.failed} tone={b.failed ? 'text-rose-600' : 'text-slate-400'} />
+                    <Counter label="Creados" value={b.created} tone="text-emerald-700" onClick={() => setDetails({ batch: b, outcome: 'created' })} />
+                    <Counter label="Actualizados" value={b.updated} tone="text-sky-700" onClick={() => setDetails({ batch: b, outcome: 'updated' })} />
+                    <Counter label="Omitidos" value={b.skipped} tone="text-amber-700" onClick={() => setDetails({ batch: b, outcome: 'skipped' })} />
+                    <Counter label="Fallidos" value={b.failed} tone={b.failed ? 'text-rose-600' : 'text-slate-400'} onClick={() => setDetails({ batch: b, outcome: 'failed' })} />
                     {b.workflows?.length > 0 && (
                       <Counter label="En workflow" value={b.enrolled} tone="text-violet-700" />
                     )}
@@ -202,6 +213,15 @@ export default function ImportsTab({ groups, onGroupsChanged }) {
           onDone={() => { setWizardOpen(false); load(); onGroupsChanged?.(); }}
         />
       )}
+
+      {details && (
+        <ImportDetailsModal
+          key={`${details.batch._id}-${details.outcome}`}
+          batch={details.batch}
+          initialOutcome={details.outcome}
+          onClose={() => setDetails(null)}
+        />
+      )}
     </div>
   );
 }
@@ -213,10 +233,21 @@ function sendWhenText(b) {
   return 'de inmediato (con goteo)';
 }
 
-function Counter({ label, value, tone }) {
+function Counter({ label, value, tone, onClick }) {
+  const content = <>{label}: <b className={tone}>{(value || 0).toLocaleString('es-EC')}</b></>;
+  if (onClick && Number(value || 0) > 0) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        title={`Ver ${label.toLowerCase()}`}
+        className="text-slate-400 bg-transparent border-none p-0 cursor-pointer hover:underline underline-offset-2"
+      >
+        {content}
+      </button>
+    );
+  }
   return (
-    <span className="text-slate-400">
-      {label}: <b className={tone}>{(value || 0).toLocaleString('es-EC')}</b>
-    </span>
+    <span className="text-slate-400">{content}</span>
   );
 }

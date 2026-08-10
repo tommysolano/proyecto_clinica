@@ -14,6 +14,7 @@ const messaging = require('./messaging');
 const opportunities = require('./opportunities');
 const { emitToClinic, emitToUser, emitToCallCenter, emitChatAssignment } = require('../realtime');
 const { isWorkingAt } = require('./agentSchedule');
+const { applyAgentRestrictionState } = require('./workflowChatRestriction');
 const { DOMAIN_EVENTS, onDomainEvent } = require('./events');
 const {
   isWindowActive, isQuietTime, nextAllowedTime, nextAllowedTimeAll, isAlwaysQuiet, describeWindow,
@@ -275,7 +276,7 @@ async function pickRoundRobinAgent(clinicId) {
   const agents = await User.find({
     active: true,
     'clinics.role': 'call_center',
-  }).select('_id name callCenterSchedule');
+  }).select('_id name active clinics callCenterSchedule');
   if (!agents.length) return null;
   // El call center es global. Para reparto automático solo participan los
   // asesores que están en su turno configurado; sin horario explícito = 24/7.
@@ -296,7 +297,7 @@ async function findAssignableAgent(userId) {
     _id: userId,
     active: true,
     'clinics.role': 'call_center',
-  }).select('_id name callCenterSchedule');
+  }).select('_id name active clinics callCenterSchedule');
 }
 
 /**
@@ -920,17 +921,26 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef, aut
       conversation.assignedTo = agent._id;
       conversation.assignedToName = agent.name;
       conversation.assignedAt = new Date();
-      // Solo la elección explícita de un asesor desde el workflow crea una cola
-      // privada. El round-robin mantiene la asignación operativa compartida.
+      // Solo la elección explícita desde el workflow reserva la cola, y lo hace
+      // únicamente mientras el asesor está dentro de una de sus franjas.
+      // El round-robin mantiene la asignación operativa compartida.
       conversation.workflowRestrictedTo = step.assignMode === 'user' ? agent._id : null;
       conversation.workflowRestrictedAt = step.assignMode === 'user' ? new Date() : null;
+      conversation.workflowRestrictionActive = step.assignMode === 'user'
+        ? applyAgentRestrictionState(conversation, agent)
+        : false;
       await conversation.save();
-      emitToUser(agent._id, 'chat:assigned', { conversationId: conversation._id });
+      // Una asignación explícita fuera de turno no debe avisar al propietario:
+      // en ese momento el chat pertenece a la bandeja compartida de los demás.
+      if (step.assignMode !== 'user' || conversation.workflowRestrictionActive) {
+        emitToUser(agent._id, 'chat:assigned', { conversationId: conversation._id });
+      }
       emitChatAssignment({
         conversationId: conversation._id,
         assignedTo: agent._id,
         assignedToName: agent.name,
         restrictedTo: conversation.workflowRestrictedTo,
+        restrictionActive: conversation.workflowRestrictionActive,
       });
       break;
     }
@@ -1170,7 +1180,9 @@ async function prepareWorkflowButtons({ enrollment, nodeId, buttons, patient, ct
     prepared.push({
       id: String(button.id),
       type: button.type,
-      text: String(button.text).trim().slice(0, 20),
+      // Las respuestas rápidas de plantillas de Meta admiten hasta 25
+      // caracteres; los mensajes interactivos libres se validan a 20.
+      text: String(button.text).trim().slice(0, 25),
       url: rawDestination,
       destination,
       token,
@@ -1375,8 +1387,13 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
       // Un paso que falla NO aborta el flujo: se registra y se continúa. Así un
       // envío saltado (ventana 24h, sin teléfono) queda visible en el registro.
       try {
-        const workflowButtons = type === 'send_message'
-          ? await prepareWorkflowButtons({ enrollment, nodeId: currentId, buttons: data.buttons, patient, ctx })
+        const configuredWorkflowButtons = type === 'send_message'
+          ? data.buttons
+          : type === 'send_template'
+            ? (Array.isArray(data.buttons) ? data.buttons.filter((button) => button?.type === 'quick_reply') : [])
+            : [];
+        const workflowButtons = configuredWorkflowButtons?.length
+          ? await prepareWorkflowButtons({ enrollment, nodeId: currentId, buttons: configuredWorkflowButtons, patient, ctx })
           : [];
         // eslint-disable-next-line no-await-in-loop
         const raw = await performAction(
@@ -1409,7 +1426,8 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
         }
         pushLog(enrollment, { nodeId: currentId, type, ok: !fail, info: fail?.info || '' });
         if (!fail && workflowButtons.length) {
-          // Un mensaje con botones es una bifurcación: espera el clic/respuesta.
+          // Un mensaje con botones (o una plantilla con respuestas rápidas)
+          // es una bifurcación: espera el clic/respuesta.
           // `default` cubre otra respuesta y el vencimiento del tiempo.
           enrollment.currentNodeId = nextNodeIdExact(workflow, currentId, 'default');
           enrollment.nextRunAt = new Date(Date.now() + Number(data.buttonTimeoutMinutes || 1440) * 60000);
@@ -1418,7 +1436,7 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
           pushLog(enrollment, {
             nodeId: currentId,
             type,
-            info: `Mensaje enviado: esperando uno de ${workflowButtons.length} botones`,
+            info: `${type === 'send_template' ? 'Plantilla' : 'Mensaje'} enviado: esperando uno de ${workflowButtons.length} botones`,
           });
           // eslint-disable-next-line no-await-in-loop
           await enrollment.save();
@@ -1653,14 +1671,20 @@ async function executeEnrollment(enrollment) {
           conversation.assignedAt = new Date();
           conversation.workflowRestrictedTo = step.assignMode === 'user' ? agent._id : null;
           conversation.workflowRestrictedAt = step.assignMode === 'user' ? new Date() : null;
+          conversation.workflowRestrictionActive = step.assignMode === 'user'
+            ? applyAgentRestrictionState(conversation, agent)
+            : false;
           // eslint-disable-next-line no-await-in-loop
           await conversation.save();
-          emitToUser(agent._id, 'chat:assigned', { conversationId: conversation._id });
+          if (step.assignMode !== 'user' || conversation.workflowRestrictionActive) {
+            emitToUser(agent._id, 'chat:assigned', { conversationId: conversation._id });
+          }
           emitChatAssignment({
             conversationId: conversation._id,
             assignedTo: agent._id,
             assignedToName: agent.name,
             restrictedTo: conversation.workflowRestrictedTo,
+            restrictionActive: conversation.workflowRestrictionActive,
           });
         }
       }

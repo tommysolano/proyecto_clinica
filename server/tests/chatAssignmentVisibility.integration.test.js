@@ -5,6 +5,7 @@ const H = require('./_integrationHelpers');
 const chat = require('../controllers/chatController');
 const Conversation = require('../models/Conversation');
 const User = require('../models/User');
+const { syncWorkflowChatRestrictions } = require('../utils/workflowChatRestriction');
 
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
@@ -138,4 +139,82 @@ test('reasignar manualmente un chat restringido lo devuelve a la bandeja compart
   assert.equal(result.statusCode, 200, JSON.stringify(result.payload));
   assert.equal(String(result.payload.assignedTo), String(next._id));
   assert.equal(result.payload.workflowRestrictedTo, null);
+});
+
+test('la cola exclusiva se comparte fuera de turno y vuelve al asesor en su siguiente franja', async () => {
+  const clinicId = new H.mongoose.Types.ObjectId();
+  const owner = await User.create({
+    name: 'Turno partido', email: 'turno-partido@example.com', password: 'secreto1',
+    clinics: [{ clinic: clinicId, role: 'call_center' }],
+    callCenterSchedule: {
+      enabled: true,
+      days: Array.from({ length: 7 }, (_, day) => ({
+        day,
+        enabled: day === 1,
+        intervals: day === 1
+          ? [{ start: '08:00', end: '12:00' }, { start: '16:00', end: '21:00' }]
+          : [{ start: '09:00', end: '18:00' }],
+      })),
+    },
+  });
+  const backup = await User.create({
+    name: 'Respaldo', email: 'respaldo-turno@example.com', password: 'secreto1',
+    clinics: [{ clinic: clinicId, role: 'call_center' }],
+  });
+  const conv = await Conversation.create({
+    clinic: clinicId,
+    phone: '593555555557',
+    assignedTo: owner._id,
+    assignedToName: owner.name,
+    workflowRestrictedTo: owner._id,
+    workflowRestrictionActive: true,
+  });
+
+  // Lunes 13:30 de Ecuador: hueco entre 08-12 y 16-21.
+  let sync = await syncWorkflowChatRestrictions({
+    agentId: owner._id,
+    at: new Date('2026-08-10T18:30:00.000Z'),
+    emit: false,
+  });
+  assert.equal(sync.changed, 1);
+  let stored = await Conversation.findById(conv._id);
+  assert.equal(stored.workflowRestrictionActive, false);
+
+  let ownerList = await H.runController(
+    chat.listConversations,
+    H.mockReq(clinicId, owner._id, {}, { role: 'call_center' })
+  );
+  let backupList = await H.runController(
+    chat.listConversations,
+    H.mockReq(clinicId, backup._id, {}, { role: 'call_center' })
+  );
+  assert.equal(ownerList.payload.some((item) => String(item._id) === String(conv._id)), false);
+  assert.equal(backupList.payload.some((item) => String(item._id) === String(conv._id)), true);
+
+  // Mismo lunes 17:30 de Ecuador: segunda franja activa.
+  sync = await syncWorkflowChatRestrictions({
+    agentId: owner._id,
+    at: new Date('2026-08-10T22:30:00.000Z'),
+    emit: false,
+  });
+  assert.equal(sync.changed, 1);
+  stored = await Conversation.findById(conv._id);
+  assert.equal(stored.workflowRestrictionActive, true);
+
+  ownerList = await H.runController(
+    chat.listConversations,
+    H.mockReq(clinicId, owner._id, {}, { role: 'call_center' })
+  );
+  backupList = await H.runController(
+    chat.listConversations,
+    H.mockReq(clinicId, backup._id, {}, { role: 'call_center' })
+  );
+  assert.equal(ownerList.payload.some((item) => String(item._id) === String(conv._id)), true);
+  assert.equal(backupList.payload.some((item) => String(item._id) === String(conv._id)), false);
+
+  const marketingList = await H.runController(
+    chat.listConversations,
+    H.mockReq(clinicId, new H.mongoose.Types.ObjectId(), {}, { role: 'marketing' })
+  );
+  assert.equal(marketingList.payload.some((item) => String(item._id) === String(conv._id)), true);
 });

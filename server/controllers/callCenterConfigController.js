@@ -85,6 +85,17 @@ exports.updateAgentSchedule = async (req, res) => {
       { new: true, runValidators: true }
     ).select('name email callCenterSchedule');
     if (!user) return res.status(404).json({ message: 'Asesor call center no encontrado' });
+    // Aplicar el cambio a su cola exclusiva en esta misma respuesta. Sin esto,
+    // al editar el horario los chats podian tardar hasta el siguiente barrido en
+    // aparecer/desaparecer.
+    try {
+      await require('../utils/workflowChatRestriction').syncWorkflowChatRestrictions({
+        agentId: user._id,
+        at: new Date(),
+      });
+    } catch (syncError) {
+      console.error('[callCenterSchedule] no se pudo sincronizar la cola exclusiva:', syncError.message);
+    }
     res.json({
       ...user.toObject(),
       callCenterSchedule: normalizeSchedule(user.callCenterSchedule),

@@ -15,9 +15,11 @@ const H = require('./_integrationHelpers');
 
 const Contact = require('../models/Contact');
 const ContactImport = require('../models/ContactImport');
+const ContactImportRow = require('../models/ContactImportRow');
 const ContactGroup = require('../models/ContactGroup');
 const Patient = require('../models/Patient');
 const { runImport, revertImport } = require('../utils/contactImportRunner');
+const contactImportController = require('../controllers/contactImportController');
 
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
@@ -197,6 +199,8 @@ test('las filas malas no tumban la importación: se cuentan y se explican', asyn
   assert.equal(done.created, 2);
   assert.equal(done.failed, 2);
   assert.equal(await Contact.countDocuments({ clinic: clinicId }), 2);
+  assert.equal(await ContactImportRow.countDocuments({ importBatch: batch._id, outcome: 'created' }), 2);
+  assert.equal(await ContactImportRow.countDocuments({ importBatch: batch._id, outcome: 'failed' }), 2);
 
   const motivos = done.rowErrors.map((e) => e.reason).join(' | ');
   assert.match(motivos, /sin teléfono/);
@@ -218,6 +222,45 @@ test('un número repetido DENTRO del archivo se importa una sola vez', async () 
   const done = await ContactImport.findById(batch._id);
   assert.equal(done.created, 1);
   assert.equal(done.skipped, 1);
+  const omitted = await ContactImportRow.findOne({ importBatch: batch._id, outcome: 'skipped' }).lean();
+  assert.equal(omitted.row, 3);
+  assert.equal(omitted.phone, '593999111222');
+  assert.match(omitted.reason, /primera aparición.*fila 2/i);
+
+  const response = await H.runController(
+    contactImportController.rows,
+    H.mockReq(clinicId, userId, {}, {
+      params: { id: String(batch._id) },
+      query: { outcome: 'skipped', page: '1', limit: '50' },
+    })
+  );
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.detailAvailable, true);
+  assert.equal(response.payload.total, 1);
+  assert.equal(response.payload.items[0].displayName, 'Ligia otra vez');
+});
+
+test('un lote histórico explica cuando no puede reconstruir sus omitidos', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const batch = await ContactImport.create({
+    clinic: clinicId,
+    fileName: 'historico.csv',
+    status: 'done',
+    skipped: 10,
+    rowDetailsVersion: 0,
+    createdBy: userId,
+  });
+  const response = await H.runController(
+    contactImportController.rows,
+    H.mockReq(clinicId, userId, {}, {
+      params: { id: String(batch._id) },
+      query: { outcome: 'skipped' },
+    })
+  );
+  assert.equal(response.statusCode, 200);
+  assert.equal(response.payload.detailAvailable, false);
+  assert.equal(response.payload.total, 10);
+  assert.match(response.payload.message, /antes.*detalle|nuevas importaciones/i);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

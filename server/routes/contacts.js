@@ -20,8 +20,9 @@ router.get('/imports', requireRole(...CRM_ROLES), imp.list);
 router.post('/imports/analyze', requireRole(...SEND_ROLES), imp.uploadMiddleware, imp.analyze);
 router.post('/imports', requireRole(...SEND_ROLES), imp.create);
 router.get('/imports/pending-enrollments', requireRole(...CRM_ROLES), imp.pendingEnrollments);
-router.get('/imports/:id', requireRole(...CRM_ROLES), imp.get);
 router.get('/imports/:id/errors.csv', requireRole(...CRM_ROLES), imp.errorsCsv);
+router.get('/imports/:id/rows', requireRole(...CRM_ROLES), imp.rows);
+router.get('/imports/:id', requireRole(...CRM_ROLES), imp.get);
 router.post('/imports/:id/revert', requireRole('admin', 'marketing'), imp.revert);
 
 router.get('/stats', requireRole(...CRM_ROLES), imp.stats);

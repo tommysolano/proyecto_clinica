@@ -4,6 +4,7 @@ import api from '../api/axios';
 import NumericInput from './NumericInput';
 import WhatsappTextArea, { MESSAGE_VARIABLES } from './WhatsappTextArea';
 import TemplateWhatsappPreview from './WhatsappPreview';
+import { syncTemplateNodeData, syncTemplateNodes } from '../utils/workflowTemplateButtons';
 import ReactFlow, {
   Background,
   Controls,
@@ -194,7 +195,16 @@ const newMessageButtonId = () => `mb${Date.now().toString(36)}${Math.floor(Math.
 const messageButtonsOf = (data = {}) => (Array.isArray(data.buttons) ? data.buttons : [])
   .filter((button) => button?.id)
   .slice(0, 3);
-const messageHandles = (data = {}) => [...messageButtonsOf(data).map((button) => button.id), 'default'];
+const branchButtonsOf = (type, data = {}) => {
+  const buttons = messageButtonsOf(data);
+  // Los CTA de una plantilla aprobada (URL/teléfono) ejecutan directamente la
+  // acción configurada en Meta, pero Meta no envía un webhook de clic. Solo las
+  // respuestas rápidas pueden convertirse en ramas observables del workflow.
+  return type === 'send_template'
+    ? buttons.filter((button) => button.type === 'quick_reply')
+    : buttons;
+};
+const messageHandles = (type, data = {}) => [...branchButtonsOf(type, data).map((button) => button.id), 'default'];
 
 // Unidades del paso "Esperar (tiempo)". Se guarda `waitMinutes` (lo que lee el
 // motor, admite fracciones para los segundos) + `waitUnit`/`waitValue` para que
@@ -411,8 +421,12 @@ function writeStoredClipboard(cb) {
 
 const isBranch = (t) => t === 'condition' || t === 'goal';
 const isSplit = (t) => t === 'split';
-const isButtonMessage = (type, data) => type === 'send_message' && messageButtonsOf(data).length > 0;
-const isBranchingNode = (node) => !!node && (isBranch(node.type) || isSplit(node.type) || isButtonMessage(node.type, node.data));
+const isButtonMessage = (type, data) => ['send_message', 'send_template'].includes(type) && messageButtonsOf(data).length > 0;
+const isBranchingNode = (node) => !!node && (
+  isBranch(node.type)
+  || isSplit(node.type)
+  || branchButtonsOf(node.type, node.data).length > 0
+);
 
 // Convierte el modelo lineal `steps` a nodos/aristas (migración de workflows viejos).
 export function stepsToGraph(steps = [], triggerLabel = 'Disparador') {
@@ -442,7 +456,7 @@ function autoLayout(nodes, edges) {
   nodes.forEach((n) => {
     if (n.type === 'split') (n.data?.routes || []).forEach((r, i) => { rank[`${n.id}:${r.id}`] = i; });
     if (n.type === 'condition') conditionHandles(n.data).forEach((h, i) => { rank[`${n.id}:${h}`] = i; });
-    if (isButtonMessage(n.type, n.data)) messageHandles(n.data).forEach((h, i) => { rank[`${n.id}:${h}`] = i; });
+    if (isButtonMessage(n.type, n.data)) messageHandles(n.type, n.data).forEach((h, i) => { rank[`${n.id}:${h}`] = i; });
   });
   const rankOf = (e) => rank[`${e.source}:${e.sourceHandle}`] ?? order[e.sourceHandle] ?? 2;
   Object.values(childrenOf).forEach((arr) => arr.sort((a, b) => rankOf(a) - rankOf(b)));
@@ -483,7 +497,7 @@ function summarize(n, ctx = {}) {
   switch (n.type) {
     case 'send_message': return `${d.mediaUrl ? '📎 ' : ''}${d.body || ''}${messageButtonsOf(d).length ? ` · ${messageButtonsOf(d).length} botones` : ''}`;
     case 'send_media': return d.mediaUrl ? `📎 ${d.mediaName || (d.mediaType === 'video' ? 'Video' : d.mediaType === 'audio' ? 'Audio' : 'Imagen')}` : 'Sin archivo';
-    case 'send_template': return d.templateName;
+    case 'send_template': return `${d.templateName || ''}${messageButtonsOf(d).length ? ` · ${messageButtonsOf(d).length} botones` : ''}`;
     case 'send_email': return d.emailSubject || d.body;
     case 'wait': return formatWaitSummary(d);
     case 'window': return describeWindow({ days: d.windowDays, from: d.windowFrom, to: d.windowTo });
@@ -675,14 +689,20 @@ function ActionNode({ data, selected }) {
 // su propia salida y `default` cubre otra respuesta o el tiempo agotado.
 function MessageNode({ data, selected }) {
   const buttons = messageButtonsOf(data);
+  const branchButtons = branchButtonsOf(data._type, data);
   const outs = [
-    ...buttons.map((button) => ({
+    ...branchButtons.map((button) => ({
       id: button.id,
       label: button.text || 'BOTÓN',
       sub: MESSAGE_BUTTON_TYPES.find((type) => type.value === button.type)?.label || '',
       color: '#10b981',
     })),
-    { id: 'default', label: 'OTRA / TIEMPO', sub: 'Salida alternativa', color: '#f59e0b' },
+    {
+      id: 'default',
+      label: branchButtons.length ? 'OTRA / TIEMPO' : 'CONTINUAR',
+      sub: branchButtons.length ? 'Salida alternativa' : 'Después de enviar',
+      color: '#f59e0b',
+    },
   ];
   const used = new Set(data._usedHandles || []);
   const n = outs.length;
@@ -695,12 +715,26 @@ function MessageNode({ data, selected }) {
       >
         <Handle type="target" position={Position.Top} style={{ background: '#94a3b8' }} />
         <div className="flex items-center gap-2">
-          <StepIcon type="send_message" />
+          <StepIcon type={data._type} />
           <div className="min-w-0">
-            <div className="font-semibold text-emerald-700">Enviar mensaje con botones</div>
+            <div className="font-semibold text-emerald-700">
+              {data._type === 'send_template' ? 'Enviar plantilla con botones' : 'Enviar mensaje con botones'}
+            </div>
             {data._summary && <div className="text-[10px] text-emerald-600/80 mt-0.5 truncate max-w-[240px]">{data._summary}</div>}
           </div>
         </div>
+        {data._type === 'send_template' && (
+          <div className="grid gap-1 mt-2">
+            {buttons.map((button) => (
+              <div key={button.id} className="flex items-center justify-between gap-2 rounded-md bg-white/80 border border-emerald-100 px-2 py-1">
+                <span className="text-[9px] font-semibold text-emerald-700 truncate">{button.text || 'Botón'}</span>
+                <span className="text-[8px] text-slate-400 shrink-0">
+                  {button.type === 'quick_reply' ? 'crea salida' : 'acción de Meta'}
+                </span>
+              </div>
+            ))}
+          </div>
+        )}
         <div className="flex mt-2 border-t border-emerald-200/70 pt-1.5">
           {outs.map((out) => (
             <div key={out.id} className="flex-1 min-w-0 text-center px-1" title={`${out.label} · ${out.sub}`}>
@@ -1024,9 +1058,11 @@ export default function WorkflowGraphEditor({
 
   // Asegura que siempre exista al menos un nodo disparador (un flujo).
   const modelNodes = useMemo(() => {
-    if (nodes.some((n) => n.type === 'trigger')) return nodes;
-    return [{ id: 'trigger', type: 'trigger', position: { x: 0, y: 0 }, data: { triggers: [defaultTrigger()] } }, ...nodes];
-  }, [nodes]);
+    const withTrigger = nodes.some((n) => n.type === 'trigger')
+      ? nodes
+      : [{ id: 'trigger', type: 'trigger', position: { x: 0, y: 0 }, data: { triggers: [defaultTrigger()] } }, ...nodes];
+    return syncTemplateNodes(withTrigger, templates);
+  }, [nodes, templates]);
 
   const triggerNodeCount = useMemo(() => modelNodes.filter((n) => n.type === 'trigger').length, [modelNodes]);
   const clipboardCount = clipboard?.nodes?.length || 0;
@@ -1156,8 +1192,8 @@ export default function WorkflowGraphEditor({
         m[`${n.id}:no`] = bs.length > 1 ? 'Si no' : 'No';
       }
       if (isButtonMessage(n.type, n.data)) {
-        messageButtonsOf(n.data).forEach((button) => { m[`${n.id}:${button.id}`] = button.text || 'Botón'; });
-        m[`${n.id}:default`] = 'Otra / tiempo';
+        branchButtonsOf(n.type, n.data).forEach((button) => { m[`${n.id}:${button.id}`] = button.text || 'Botón'; });
+        m[`${n.id}:default`] = branchButtonsOf(n.type, n.data).length ? 'Otra / tiempo' : 'Continuar';
       }
     });
     return m;
@@ -1276,7 +1312,7 @@ export default function WorkflowGraphEditor({
         : src?.type === 'condition'
           ? conditionHandles(src.data)
           : isButtonMessage(src?.type, src?.data)
-            ? messageHandles(src.data)
+            ? messageHandles(src.type, src.data)
             : null;
       if (outs) {
         const idx = outs.indexOf(context.sourceHandle);
@@ -1400,7 +1436,7 @@ export default function WorkflowGraphEditor({
         : src?.type === 'condition'
           ? conditionHandles(src.data)
           : isButtonMessage(src?.type, src?.data)
-            ? messageHandles(src.data)
+            ? messageHandles(src.type, src.data)
             : null;
       if (outs) {
         const idx = outs.indexOf(context.sourceHandle);
@@ -1451,7 +1487,10 @@ export default function WorkflowGraphEditor({
     const next = modelNodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...patch } } : n));
     let nextEdges = edges;
     if (Array.isArray(patch.buttons)) {
-      const handles = new Set(patch.buttons.map((button) => button?.id).filter(Boolean));
+      const current = modelNodes.find((n) => n.id === id);
+      const handles = new Set(
+        branchButtonsOf(current?.type, { ...current?.data, ...patch }).map((button) => button.id)
+      );
       handles.add('default');
       nextEdges = edges.filter((edge) => edge.source !== id || handles.has(edge.sourceHandle || 'default'));
     }
@@ -1809,9 +1848,9 @@ export default function WorkflowGraphEditor({
 // Panel lateral derecho sobre el lienzo.
 function Drawer({ title, onClose, onDelete, children }) {
   return (
-    <div className="absolute top-0 right-0 h-full w-[360px] bg-white border-l border-slate-200 shadow-xl flex flex-col z-10">
-      <div className="flex items-center justify-between px-4 py-3 border-b border-slate-100">
-        <span className="text-sm font-bold text-slate-700">{title}</span>
+    <div className="absolute top-0 right-0 h-full w-[360px] max-w-full min-w-0 overflow-hidden bg-white border-l border-slate-200 shadow-xl flex flex-col z-10">
+      <div className="flex items-center justify-between gap-2 min-w-0 px-4 py-3 border-b border-slate-100">
+        <span className="min-w-0 truncate text-sm font-bold text-slate-700">{title}</span>
         <div className="flex items-center gap-1">
           {onDelete && (
             <button type="button" onClick={onDelete} title="Eliminar" className="p-1.5 text-rose-400 hover:text-rose-600 bg-transparent border-none cursor-pointer">
@@ -1823,7 +1862,7 @@ function Drawer({ title, onClose, onDelete, children }) {
           </button>
         </div>
       </div>
-      <div className="flex-1 overflow-y-auto p-4">{children}</div>
+      <div className="flex-1 min-w-0 max-w-full overflow-y-auto overflow-x-hidden p-4">{children}</div>
     </div>
   );
 }
@@ -2595,21 +2634,21 @@ function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, 
       buttons: buttons.map((button) => (button.id === id ? { ...button, ...patch } : button)),
     });
     return (
-      <div className="grid gap-2">
+      <div className="grid min-w-0 max-w-full gap-2 overflow-hidden">
         <WhatsappTextArea value={d.body || ''} onChange={(body) => set({ body })} rows={6} placeholder="Mensaje (usa el menú de variables)" variables={MESSAGE_VARIABLES} />
         <NodeAttachment d={d} set={set} />
 
-        <div className="border border-slate-200 rounded-xl p-3 bg-slate-50/70">
-          <div className="flex items-center justify-between gap-2 mb-2">
-            <div>
+        <div className="min-w-0 max-w-full overflow-hidden border border-slate-200 rounded-xl p-3 bg-slate-50/70">
+          <div className="flex items-start justify-between gap-2 mb-2">
+            <div className="min-w-0">
               <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">Botones y acciones</p>
-              <p className="text-[10px] text-slate-400">Máximo 3. Cada botón crea una salida en el diagrama.</p>
+              <p className="text-[10px] text-slate-400 break-words">Máximo 3. Cada botón crea una salida en el diagrama.</p>
             </div>
             {buttons.length < 3 && (
               <button
                 type="button"
                 onClick={() => set({ buttons: [...buttons, { id: newMessageButtonId(), type: 'quick_reply', text: '', url: '' }] })}
-                className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-white border border-emerald-200 rounded-lg px-2 py-1 cursor-pointer"
+                className="shrink-0 inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-white border border-emerald-200 rounded-lg px-2 py-1 cursor-pointer"
               >
                 <HiOutlinePlus className="w-3.5 h-3.5" /> Añadir
               </button>
@@ -2618,39 +2657,51 @@ function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, 
           {!buttons.length && <p className="text-xs text-slate-400">Sin botones: el mensaje continúa por una sola salida.</p>}
           <div className="grid gap-2">
             {buttons.map((button, index) => (
-              <div key={button.id} className="rounded-lg border border-slate-200 bg-white p-2 grid gap-1.5">
-                <div className="flex items-center gap-1.5">
-                  <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold flex items-center justify-center shrink-0">{index + 1}</span>
+              <div key={button.id} className="min-w-0 max-w-full rounded-lg border border-slate-200 bg-white p-2.5 grid gap-2 overflow-hidden">
+                <div className="flex items-center justify-between gap-2 min-w-0">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold flex items-center justify-center shrink-0">{index + 1}</span>
+                    <span className="truncate text-xs font-semibold text-slate-600">Botón {index + 1}</span>
+                  </div>
+                  <button
+                    type="button"
+                    title="Quitar botón y su conexión"
+                    onClick={() => set({ buttons: buttons.filter((item) => item.id !== button.id) })}
+                    className="shrink-0 p-1 text-slate-300 hover:text-rose-600 bg-transparent border-none cursor-pointer"
+                  >
+                    <HiOutlineTrash className="w-4 h-4" />
+                  </button>
+                </div>
+                <label className="grid min-w-0 gap-1 text-[10px] font-medium text-slate-500">
+                  Tipo de botón
                   <select
                     value={button.type || 'quick_reply'}
                     onChange={(event) => patchButton(button.id, { type: event.target.value, url: event.target.value === 'quick_reply' ? '' : button.url })}
-                    className="w-36 border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white"
+                    className="block w-full min-w-0 max-w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white"
                   >
                     {MESSAGE_BUTTON_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
                   </select>
+                </label>
+                <label className="grid min-w-0 gap-1 text-[10px] font-medium text-slate-500">
+                  Texto visible
                   <input
                     value={button.text || ''}
                     maxLength={20}
                     onChange={(event) => patchButton(button.id, { text: event.target.value })}
                     placeholder="Texto del botón"
-                    className="flex-1 min-w-0 border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
+                    className="block w-full min-w-0 max-w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
                   />
-                  <button
-                    type="button"
-                    title="Quitar botón y su conexión"
-                    onClick={() => set({ buttons: buttons.filter((item) => item.id !== button.id) })}
-                    className="p-1 text-slate-300 hover:text-rose-600 bg-transparent border-none cursor-pointer"
-                  >
-                    <HiOutlineTrash className="w-4 h-4" />
-                  </button>
-                </div>
+                </label>
                 {(button.type === 'url' || button.type === 'phone') && (
-                  <input
-                    value={button.url || ''}
-                    onChange={(event) => patchButton(button.id, { url: event.target.value })}
-                    placeholder={button.type === 'url' ? 'https://ejemplo.com' : '+593999999999'}
-                    className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
-                  />
+                  <label className="grid min-w-0 gap-1 text-[10px] font-medium text-slate-500">
+                    {button.type === 'url' ? 'Dirección del enlace' : 'Número de teléfono'}
+                    <input
+                      value={button.url || ''}
+                      onChange={(event) => patchButton(button.id, { url: event.target.value })}
+                      placeholder={button.type === 'url' ? 'https://ejemplo.com' : '+593999999999'}
+                      className="block w-full min-w-0 max-w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
+                    />
+                  </label>
                 )}
               </div>
             ))}
@@ -2667,7 +2718,7 @@ function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, 
                 />
                 <span>horas</span>
               </label>
-              <p className="text-[10px] text-slate-500">
+              <p className="text-[10px] text-slate-500 break-words">
                 Conecta cada salida a la acción que debe ocurrir al pulsarla. “Otra / tiempo” cubre una respuesta escrita o el vencimiento.
               </p>
             </div>
@@ -2696,14 +2747,75 @@ function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, 
   );
   if (t === 'send_template') {
     const selectedTemplate = templates.find((tp) => tp.name === d.templateName);
+    const buttons = messageButtonsOf(d);
+    const quickReplies = buttons.filter((button) => button.type === 'quick_reply');
+    const selectTemplate = (templateName) => {
+      const template = templates.find((item) => item.name === templateName);
+      set(syncTemplateNodeData({ ...d, templateName }, template, node.id));
+    };
     return (
-      <div className="grid gap-2">
-        <select value={d.templateName || ''} onChange={(e) => set({ templateName: e.target.value })} className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
+      <div className="grid min-w-0 max-w-full gap-2 overflow-hidden">
+        <select value={d.templateName || ''} onChange={(e) => selectTemplate(e.target.value)} className="block w-full min-w-0 max-w-full border border-slate-200 rounded-lg px-2 py-1.5 text-sm">
           <option value="">Selecciona plantilla…</option>
           {templates.map((tp) => <option key={tp._id} value={tp.name}>{tp.name}</option>)}
         </select>
         {selectedTemplate ? (
           <>
+            <div className="min-w-0 max-w-full overflow-hidden border border-slate-200 rounded-xl p-3 bg-slate-50/70">
+              <div className="min-w-0 mb-2">
+                <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">Botones y acciones de la plantilla</p>
+                <p className="text-[10px] text-slate-400 break-words">
+                  Se sincronizan desde la plantilla aprobada. Las respuestas rápidas crean salidas en el diagrama.
+                </p>
+              </div>
+              {!buttons.length && <p className="text-xs text-slate-400">Esta plantilla no tiene botones.</p>}
+              <div className="grid gap-2">
+                {buttons.map((button, index) => {
+                  const typeLabel = MESSAGE_BUTTON_TYPES.find((item) => item.value === button.type)?.label || 'Botón';
+                  return (
+                    <div key={button.id} className="min-w-0 max-w-full overflow-hidden rounded-lg border border-slate-200 bg-white p-2.5 grid gap-1.5">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold flex items-center justify-center shrink-0">{index + 1}</span>
+                        <span className="min-w-0 truncate text-xs font-semibold text-slate-700">{button.text}</span>
+                      </div>
+                      <div className="flex items-start justify-between gap-2 text-[10px]">
+                        <span className="text-slate-400">{typeLabel}</span>
+                        <span className={button.type === 'quick_reply' ? 'text-emerald-600 font-medium text-right' : 'text-slate-500 text-right'}>
+                          {button.type === 'quick_reply' ? 'Salida disponible en el diagrama' : 'Acción ejecutada por WhatsApp'}
+                        </span>
+                      </div>
+                      {(button.type === 'url' || button.type === 'phone') && (
+                        <p className="text-[10px] text-slate-500 break-all rounded-md bg-slate-50 px-2 py-1">
+                          {button.url || (button.type === 'url' ? 'Enlace definido en Meta' : 'Número definido en Meta')}
+                        </p>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              {quickReplies.length > 0 && (
+                <div className="mt-2 grid min-w-0 gap-1.5">
+                  <label className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+                    <span>Esperar la respuesta hasta</span>
+                    <NumericInput
+                      min="1"
+                      value={Math.max(1, Math.round(Number(d.buttonTimeoutMinutes || 1440) / 60))}
+                      onChange={(event) => set({ buttonTimeoutMinutes: Math.max(1, Number(event.target.value) || 1) * 60 })}
+                      className="w-16 border border-slate-200 rounded-lg px-2 py-1 text-xs"
+                    />
+                    <span>horas</span>
+                  </label>
+                  <p className="text-[10px] text-slate-500 break-words">
+                    Conecta cada respuesta rápida con su acción. “Otra / tiempo” cubre otra respuesta o el vencimiento.
+                  </p>
+                </div>
+              )}
+              {buttons.some((button) => button.type !== 'quick_reply') && (
+                <p className="text-[10px] text-amber-600 break-words mt-2">
+                  Los botones de enlace y llamada abren la acción aprobada por Meta. WhatsApp no informa ese clic al workflow, por eso no pueden crear una rama posterior.
+                </p>
+              )}
+            </div>
             <TemplateWhatsappPreview template={selectedTemplate} sampleVars={TEMPLATE_SAMPLE_VARS} />
             <p className="text-[11px] text-slate-400">
               Así se ve aproximadamente en WhatsApp, con datos de ejemplo en las variables (al
@@ -3076,7 +3188,7 @@ function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, 
       <p className="text-[11px] text-slate-500 leading-relaxed">
         {(d.assignMode || 'roundrobin') === 'roundrobin'
           ? 'El reparto automático considera únicamente asesores que estén en su horario de trabajo. Esta asignación sigue visible para todo el equipo de call center.'
-          : 'Esta asignación es exclusiva: el chat queda visible solo para el asesor seleccionado, marketing y administradores. Si está fuera de turno, permanece privado en su cola para el siguiente horario.'}
+          : 'Durante su turno el chat es exclusivo para el asesor seleccionado, marketing y administradores. Fuera de su horario pasa a los demás call center; al comenzar otra franja vuelve automáticamente a su cola exclusiva.'}
       </p>
     </div>
   );

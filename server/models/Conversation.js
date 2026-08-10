@@ -97,6 +97,13 @@ const conversationSchema = new mongoose.Schema(
     // privado el chat y conserva el comportamiento historico de la bandeja.
     workflowRestrictedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     workflowRestrictedAt: { type: Date, default: null },
+    // Estado EFECTIVO del candado anterior. El workflow conserva siempre a su
+    // asesor responsable en `workflowRestrictedTo`, pero el chat solo es privado
+    // mientras ese asesor esta dentro de su horario. Fuera de turno queda visible
+    // para los otros call center y vuelve a cerrarse al comenzar otra franja.
+    // `true` por defecto mantiene privados los documentos antiguos hasta que el
+    // sincronizador de horarios calcule su estado real al arrancar.
+    workflowRestrictionActive: { type: Boolean, default: true, index: true },
     // Estado
     status: {
       type: String,
@@ -172,6 +179,6 @@ conversationSchema.index({ clinic: 1, lastMessageAt: -1 });
 // Bandeja privada por asesor: evita escanear todos los chats para resolver
 // "libres + asignados a mí" y mantener el orden por actividad.
 conversationSchema.index({ clinic: 1, assignedTo: 1, lastMessageAt: -1 });
-conversationSchema.index({ clinic: 1, workflowRestrictedTo: 1, lastMessageAt: -1 });
+conversationSchema.index({ clinic: 1, workflowRestrictionActive: 1, workflowRestrictedTo: 1, lastMessageAt: -1 });
 
 module.exports = mongoose.model('Conversation', conversationSchema);

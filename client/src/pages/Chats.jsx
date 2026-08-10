@@ -709,8 +709,13 @@ export default function Chats() {
       if (!conversationId) return;
       const me = String(user?.id || user?._id || '');
       const restrictedTo = String(payload?.restrictedTo || '');
+      // Los eventos nuevos conservan el propietario del workflow aunque su
+      // candado quede temporalmente abierto fuera del turno.
+      const restrictionActive = !!restrictedTo && payload?.restrictionActive !== false;
       const isRestrictedAgent = !isAdmin && !isSupervisor;
-      if (isRestrictedAgent && restrictedTo && restrictedTo !== me) {
+      const hiddenByAnotherOwner = restrictionActive && restrictedTo !== me;
+      const hiddenBecauseMyShiftEnded = !restrictionActive && restrictedTo === me;
+      if (isRestrictedAgent && restrictedTo && (hiddenByAnotherOwner || hiddenBecauseMyShiftEnded)) {
         setConversations((prev) => prev.filter((conv) => String(conv._id) !== conversationId));
         if (String(activeIdRef.current) === conversationId) {
           msgReqRef.current += 1;
@@ -720,11 +725,13 @@ export default function Chats() {
           setTypingAgents([]);
           setOpenConvSnap(null);
           setActiveDetail(null);
-          toast('Este chat quedó reservado para otro asesor mediante un workflow');
+          toast(hiddenBecauseMyShiftEnded
+            ? 'Tu turno terminó: este chat queda disponible para los demás asesores'
+            : 'Este chat quedó reservado para otro asesor mediante un workflow');
         }
       } else {
-        // El asesor elegido y los supervisores reciben/actualizan el chat sin
-        // esperar al próximo mensaje o al sondeo de respaldo.
+        // El propietario al entrar en turno, los demás al salir y los
+        // supervisores siempre reciben/actualizan el chat sin esperar mensajes.
         if (view !== 'board') refreshConversations();
       }
       loadUnreadCounts();

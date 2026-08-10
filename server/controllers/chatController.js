@@ -15,6 +15,7 @@ const opportunities = require('../utils/opportunities');
 const { verifyMetaSignature } = require('../utils/metaWebhook');
 const { phoneSearchRegex } = require('../utils/phoneNormalize');
 const { workingMsBetween, isWorkingAt } = require('../utils/agentSchedule');
+const { restrictionIsActive } = require('../utils/workflowChatRestriction');
 
 /**
  * Normaliza un número de teléfono a sólo dígitos (sin +, ni espacios).
@@ -29,13 +30,31 @@ function normalizePhone(raw) {
 /**
  * Filtro de visibilidad para conversaciones según rol.
  * - admin / marketing: ven todas las conversaciones (supervisión).
- * - call_center: ve toda la bandeja salvo chats restringidos por un workflow a
- *   otro asesor. La asignacion normal (`assignedTo`) nunca limita visibilidad.
+ * - call_center: la asignacion normal (`assignedTo`) nunca limita visibilidad.
+ *   Un candado de workflow solo es exclusivo durante el turno del responsable;
+ *   fuera de ese turno lo ven los demas asesores y el responsable lo recupera al
+ *   entrar en su siguiente franja.
  */
 function buildVisibilityFilter(req) {
   const filter = { clinic: req.clinicId };
   if (req.role === 'call_center' && !req.user?.isSuperAdmin) {
-    filter.$and = [{ $or: [{ workflowRestrictedTo: null }, { workflowRestrictedTo: req.user._id }] }];
+    filter.$and = [{
+      $or: [
+        { workflowRestrictedTo: null },
+        // En turno: solo el propietario del candado.
+        {
+          workflowRestrictedTo: req.user._id,
+          workflowRestrictionActive: { $ne: false },
+        },
+        // Fuera de turno: todos MENOS el propietario, que lo recupera en su
+        // proxima franja. Esto evita que un asesor fuera de horario conserve su
+        // cola exclusiva mientras el resto intenta cubrirla.
+        {
+          workflowRestrictedTo: { $ne: req.user._id },
+          workflowRestrictionActive: false,
+        },
+      ],
+    }];
   }
   return filter;
 }
@@ -49,7 +68,9 @@ function canAccessConversation(req, conv) {
   if (['admin', 'marketing'].includes(req.role)) return true;
   if (req.role !== 'call_center') return false;
   if (!conv?.workflowRestrictedTo) return true;
-  return String(conv.workflowRestrictedTo?._id || conv.workflowRestrictedTo) === String(req.user?._id || '');
+  const isOwner = String(conv.workflowRestrictedTo?._id || conv.workflowRestrictedTo) === String(req.user?._id || '');
+  // Exclusivo dentro del turno; compartido con los otros agentes fuera de el.
+  return restrictionIsActive(conv) ? isOwner : !isOwner;
 }
 
 function canMutateConversation(req, conv) {
@@ -73,10 +94,15 @@ exports.requireConversationAccess = async (req, res, next) => {
       return res.status(404).json({ message: 'Conversación no encontrada' });
     }
     const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId })
-      .select('_id workflowRestrictedTo');
+      .select('_id workflowRestrictedTo workflowRestrictionActive');
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
     if (!canAccessConversation(req, conv)) {
-      return res.status(403).json({ message: 'Este chat está reservado para otro asesor mediante un workflow' });
+      const isOwner = String(conv.workflowRestrictedTo || '') === String(req.user?._id || '');
+      return res.status(403).json({
+        message: isOwner && !restrictionIsActive(conv)
+          ? 'Este chat queda en la bandeja compartida mientras estás fuera de tu horario'
+          : 'Este chat está reservado para otro asesor mediante un workflow',
+      });
     }
     req.chatConversation = conv;
     return next();
@@ -188,7 +214,7 @@ exports.listConversations = async (req, res) => {
     // El detalle es GET /chats/:id (~350 ms), y solo se pide al abrir un chat.
     const conversations = await Conversation.find(filter)
       .select(
-        '_id clinic channel phone contactName patient assignedTo assignedToName workflowRestrictedTo ' +
+        '_id clinic channel phone contactName patient assignedTo assignedToName workflowRestrictedTo workflowRestrictionActive ' +
           'status isFeatured featuredNote blocked window24hExpiresAt lastInboundAt ' +
           'lastInboundAccount lastMessageAt lastMessagePreview lastMessageDirection unreadCount tags ' +
           'whatsappAccount createdAt opportunity.isOpportunity opportunity.stage'
@@ -545,6 +571,7 @@ exports.assignConversation = async (req, res) => {
     // convierte deliberadamente otra vez en una asignacion visible para todos.
     conv.workflowRestrictedTo = null;
     conv.workflowRestrictedAt = null;
+    conv.workflowRestrictionActive = false;
     await conv.save();
     emitChatAssignment({
       conversationId: conv._id,
@@ -666,6 +693,7 @@ exports.autoAssign = async (req, res) => {
     conv.assignedAt = new Date();
     conv.workflowRestrictedTo = null;
     conv.workflowRestrictedAt = null;
+    conv.workflowRestrictionActive = false;
     await conv.save();
     emitToUser(agent._id, 'chat:assigned', { conversationId: conv._id });
     emitChatAssignment({

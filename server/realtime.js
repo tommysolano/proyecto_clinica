@@ -17,6 +17,7 @@
 const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
 const User = require('./models/User');
+const { ownerIdOf, restrictionIsActive } = require('./utils/workflowChatRestriction');
 
 let io = null;
 
@@ -87,10 +88,15 @@ function init(httpServer) {
     const loadTypingConversation = async (conversationId) => {
       if (!validConversationId(conversationId)) return null;
       const Conversation = require('./models/Conversation');
-      const conv = await Conversation.findById(conversationId).select('_id workflowRestrictedTo').lean();
+      const conv = await Conversation.findById(conversationId)
+        .select('_id workflowRestrictedTo workflowRestrictionActive')
+        .lean();
       if (!conv) return null;
-      const restrictedTo = String(conv.workflowRestrictedTo || '');
-      if (role === 'call_center' && restrictedTo && restrictedTo !== String(user._id)) return null;
+      const restrictedTo = String(ownerIdOf(conv) || '');
+      if (role === 'call_center' && restrictedTo) {
+        const isOwner = restrictedTo === String(user._id);
+        if ((restrictionIsActive(conv) && !isOwner) || (!restrictionIsActive(conv) && isOwner)) return null;
+      }
       socket.data.typingConversation = conv;
       return conv;
     };
@@ -98,10 +104,15 @@ function init(httpServer) {
       if (!canUseSharedChat || !validConversationId(conversationId)) return;
       const conv = knownConversation || await loadTypingConversation(conversationId);
       if (!conv) return;
+      const restrictedTo = String(ownerIdOf(conv) || '');
       let target = socket.to('callcenter-supervisors');
-      target = conv.workflowRestrictedTo
-        ? target.to(`user:${conv.workflowRestrictedTo}`)
-        : target.to('callcenter-agents');
+      if (!restrictedTo) {
+        target = target.to('callcenter-agents');
+      } else if (restrictionIsActive(conv)) {
+        target = target.to(`user:${restrictedTo}`);
+      } else {
+        target = target.to('callcenter-agents').except(`user:${restrictedTo}`);
+      }
       target.emit('chat:typing', {
         conversationId: String(conversationId),
         isTyping: !!isTyping,
@@ -221,29 +232,44 @@ function emitToCallCenter(event, payload) {
   // consulta se hace aquí para cubrir todos los emisores existentes (Cloud, QR,
   // workflows, llamadas y cambios de oportunidad) sin dejar una vía lateral.
   const Conversation = require('./models/Conversation');
-  Conversation.findById(conversationId).select('workflowRestrictedTo').lean()
+  Conversation.findById(conversationId)
+    .select('workflowRestrictedTo workflowRestrictionActive')
+    .lean()
     .then((conv) => {
       if (!io || !conv) return;
+      const restrictedTo = String(ownerIdOf(conv) || '');
       let target = io.to('callcenter-supervisors');
-      target = conv.workflowRestrictedTo
-        ? target.to(`user:${conv.workflowRestrictedTo}`)
-        : target.to('callcenter-agents');
+      if (!restrictedTo) {
+        target = target.to('callcenter-agents');
+      } else if (restrictionIsActive(conv)) {
+        target = target.to(`user:${restrictedTo}`);
+      } else {
+        target = target.to('callcenter-agents').except(`user:${restrictedTo}`);
+      }
       target.emit(event, payload);
     })
     .catch((err) => console.error('[realtime] no se pudo resolver acceso al chat:', err.message));
 }
 
 /**
- * Aviso mínimo de asignación/privacidad. Solo `restrictedTo` ordena retirar un
- * chat; assignedTo conserva la asignación compartida tradicional.
+ * Aviso mínimo de asignación/privacidad. `restrictedTo` identifica al asesor y
+ * `restrictionActive` indica si está en turno. `assignedTo` por sí solo conserva
+ * la asignación compartida tradicional.
  */
-function emitChatAssignment({ conversationId, assignedTo, assignedToName = '', restrictedTo = null }) {
+function emitChatAssignment({
+  conversationId,
+  assignedTo,
+  assignedToName = '',
+  restrictedTo = null,
+  restrictionActive = !!restrictedTo,
+}) {
   if (!io || !conversationId) return;
   io.to('callcenter').emit('chat:assignment', {
     conversationId: String(conversationId),
     assignedTo: assignedTo ? String(assignedTo) : null,
     assignedToName: String(assignedToName || '').slice(0, 80),
     restrictedTo: restrictedTo ? String(restrictedTo) : null,
+    restrictionActive: !!restrictedTo && restrictionActive !== false,
   });
 }
 
