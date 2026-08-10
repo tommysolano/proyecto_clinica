@@ -22,7 +22,9 @@ import {
   HiOutlineEye,
   HiOutlineUsers,
   HiOutlineArrowDownTray,
+  HiOutlineCloudArrowUp,
 } from 'react-icons/hi2';
+import BulkUploadModal from '../components/BulkUploadModal';
 
 const emptyForm = {
   cedula: '',
@@ -63,6 +65,7 @@ export default function Patients() {
   const debouncedSearch = useDebounce(search, 300);
   const [onlyNew, setOnlyNew] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
+  const [bulkOpen, setBulkOpen] = useState(false);
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
@@ -182,9 +185,13 @@ export default function Patients() {
     }
     setSaving(true);
     try {
+      // Los campos vacíos se envían como undefined: Mongoose no sabe convertir
+      // '' a ObjectId/número/enum y el guardado fallaba con un error opaco.
       const payload = {
         ...form,
         age: form.age === '' ? undefined : Number(form.age),
+        birthDate: form.birthDate || undefined,
+        referredById: form.referredById || undefined,
       };
       let createdId = editing;
       if (editing) {
@@ -273,6 +280,11 @@ export default function Patients() {
             >
               <HiOutlineArrowDownTray className="w-4 h-4" /> Excel
             </button>
+            {hasRole('admin') && (
+              <button onClick={() => setBulkOpen(true)} className="btn-secondary">
+                <HiOutlineCloudArrowUp className="w-4 h-4" /> Carga masiva
+              </button>
+            )}
             <button onClick={openNew} className="btn-primary">
               <HiOutlinePlus className="w-5 h-5" /> Nuevo Paciente
             </button>
@@ -738,6 +750,24 @@ export default function Patients() {
           </div>
         </form>
       </Modal>
+
+      <BulkUploadModal
+        open={bulkOpen}
+        onClose={() => setBulkOpen(false)}
+        title="Carga masiva de pacientes"
+        description="Sube pacientes con toda su historia: datos generales, ficha clínica (antecedentes) y seguimientos. La plantilla trae una hoja para cada cosa."
+        steps={[
+          'Hoja "Pacientes": datos generales. Obligatorio nombres, apellidos y género.',
+          'Hoja "FichaClinica": antecedentes patológicos personales y familiares.',
+          'Hoja "Seguimientos": una fila por consulta (signos vitales, examen físico, CIE-10, plan).',
+          'Las hojas se enlazan por la columna identificacion (o por nombres + apellidos).',
+          'Si la identificación ya existe, el paciente se actualiza. Los seguimientos SIEMPRE se agregan.',
+        ]}
+        templateUrl="/patients/import-template"
+        templateFilename="plantilla_pacientes_historia_clinica.xlsx"
+        uploadUrl="/patients/import"
+        onImported={fetchPatients}
+      />
 
       <style>{`
         .input {

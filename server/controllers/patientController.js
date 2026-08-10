@@ -170,6 +170,42 @@ exports.getPatientPurchases = async (req, res) => {
   }
 };
 
+/**
+ * Limpia el cuerpo antes de guardar: los formularios mandan '' en los campos
+ * vacíos y Mongoose no puede convertir '' a ObjectId ni a número (reventaba con
+ * un CastError que llegaba al usuario como "Error al crear paciente" a secas).
+ */
+const cleanPatientBody = (body) => {
+  const out = { ...body };
+  for (const k of ['referredById']) {
+    if (out[k] === '' || out[k] === null) out[k] = undefined;
+  }
+  for (const k of ['age']) {
+    if (out[k] === '' || out[k] === null) out[k] = undefined;
+  }
+  // El enum de género no acepta '': si viene vacío, mejor no enviar el campo.
+  if (out.gender === '') delete out.gender;
+  return out;
+};
+
+/** Traduce los errores de Mongoose a un mensaje que el usuario pueda accionar. */
+const describeSaveError = (error) => {
+  if (error?.name === 'ValidationError') {
+    const detail = Object.values(error.errors || {})
+      .map((e) => e.message)
+      .join(' · ');
+    return detail || error.message;
+  }
+  if (error?.name === 'CastError') {
+    return `El campo "${error.path}" tiene un valor no válido: "${error.value}"`;
+  }
+  if (error?.code === 11000) {
+    const field = Object.keys(error.keyPattern || {})[0] || 'dato';
+    return `Ya existe un paciente con ese ${field === 'cedula' ? 'número de identificación' : field}`;
+  }
+  return error?.message || 'Error desconocido';
+};
+
 exports.createPatient = async (req, res) => {
   try {
     const cedula = (req.body.cedula || '').trim();
@@ -181,7 +217,7 @@ exports.createPatient = async (req, res) => {
     }
 
     const patient = await Patient.create({
-      ...req.body,
+      ...cleanPatientBody(req.body),
       cedula,
       clinic: req.clinicId,
     });
@@ -197,13 +233,18 @@ exports.createPatient = async (req, res) => {
     }
     res.status(201).json(patient);
   } catch (error) {
-    res.status(500).json({ message: 'Error al crear paciente', error: error.message });
+    const detail = describeSaveError(error);
+    const isUserError = ['ValidationError', 'CastError'].includes(error?.name) || error?.code === 11000;
+    res.status(isUserError ? 400 : 500).json({
+      message: `No se pudo crear el paciente: ${detail}`,
+      error: error.message,
+    });
   }
 };
 
 exports.updatePatient = async (req, res) => {
   try {
-    const update = { ...req.body };
+    const update = cleanPatientBody(req.body);
     // El doctor NO puede editar cédula, dirección, teléfono, whatsapp ni email.
     if (req.role === 'doctor' || req.role === 'optica') {
       SENSITIVE_FIELDS_FOR_DOCTOR.forEach((f) => delete update[f]);
@@ -234,7 +275,12 @@ exports.updatePatient = async (req, res) => {
     emitToClinic(req.clinicId, 'patient:updated', { id: patient._id });
     res.json(sanitizeForRole(patient, req.role));
   } catch (error) {
-    res.status(500).json({ message: 'Error al actualizar paciente' });
+    const detail = describeSaveError(error);
+    const isUserError = ['ValidationError', 'CastError'].includes(error?.name) || error?.code === 11000;
+    res.status(isUserError ? 400 : 500).json({
+      message: `No se pudo actualizar el paciente: ${detail}`,
+      error: error.message,
+    });
   }
 };
 

@@ -329,6 +329,7 @@ function FichaTab({ patientId }) {
         patologicosPersonales: record.patologicosPersonales || [],
         patologicosFamiliares: record.patologicosFamiliares || [],
         datosRelevantes: record.datosRelevantes || '',
+        datosRelevantesFamiliares: record.datosRelevantesFamiliares || '',
       };
       const res = await api.put(`/clinical-records/${patientId}`, payload);
       setRecord(res.data);
@@ -410,12 +411,13 @@ function FichaTab({ patientId }) {
       <div className="space-y-3 pt-2 border-t border-slate-100">
         <div>
           <h3 className="font-semibold text-slate-800">Antecedentes patológicos personales</h3>
-          <p className="text-xs text-slate-400">Marque las presentes y describa. Datos clínico-quirúrgicos, obstétricos y alérgicos relevantes.</p>
+          <p className="text-xs text-slate-400">Marque las presentes y descríbalas en el campo de abajo. Datos clínico-quirúrgicos, obstétricos y alérgicos relevantes.</p>
         </div>
         <MspChecklist
           catalog={ANTECEDENTES_CATEGORIAS}
           value={record.patologicosPersonales}
           onChange={(v) => update('patologicosPersonales', v)}
+          showDetail={false}
         />
         <Field label="Datos relevantes (clínico-quirúrgicos, obstétricos, alérgicos)">
           <textarea
@@ -431,13 +433,22 @@ function FichaTab({ patientId }) {
       <div className="space-y-3 pt-2 border-t border-slate-100">
         <div>
           <h3 className="font-semibold text-slate-800">Antecedentes patológicos familiares</h3>
-          <p className="text-xs text-slate-400">Marque las presentes en familiares directos y describa.</p>
+          <p className="text-xs text-slate-400">Marque las presentes en familiares directos y descríbalas en el campo de abajo.</p>
         </div>
         <MspChecklist
           catalog={ANTECEDENTES_CATEGORIAS}
           value={record.patologicosFamiliares}
           onChange={(v) => update('patologicosFamiliares', v)}
+          showDetail={false}
         />
+        <Field label="Datos relevantes (clínico-quirúrgicos, obstétricos, alérgicos)">
+          <textarea
+            rows={2}
+            value={record.datosRelevantesFamiliares || ''}
+            onChange={(e) => update('datosRelevantesFamiliares', e.target.value)}
+            className="input resize-none"
+          />
+        </Field>
       </div>
 
       <div className="flex justify-end pt-3 border-t border-slate-100">
@@ -508,9 +519,54 @@ function MspChecklist({ catalog, value = [], onChange, cols = 'md:grid-cols-3 lg
                 className="input mt-2 text-xs py-1"
               />
             )}
+            {/* Sin recuadro por casilla: lo que ya se había descrito en fichas
+                antiguas se sigue viendo, en solo lectura. */}
+            {!showDetail && cur?.detail?.trim() && (
+              <p className="mt-1 text-[11px] text-slate-500 italic break-words">{cur.detail}</p>
+            )}
           </div>
         );
       })}
+    </div>
+  );
+}
+
+// Devuelve las casillas marcadas de un checklist MSP con su etiqueta legible.
+// `detail` solo lo traen seguimientos antiguos (antes había un recuadro por casilla).
+function markedItems(catalog, value) {
+  const byKey = Object.fromEntries((value || []).map((c) => [c.key, c]));
+  return catalog
+    .filter((cat) => byKey[cat.key]?.marked || String(byKey[cat.key]?.detail || '').trim())
+    .map((cat) => ({ key: cat.key, label: cat.label, detail: String(byKey[cat.key]?.detail || '').trim() }));
+}
+
+// Resumen de un checklist MSP en el historial: las casillas marcadas como
+// etiquetas, para que el doctor vea de un vistazo lo que registró en la consulta.
+// `groups` permite varias sublistas en un mismo bloque (regional / sistémico).
+function ChecksSummary({ title, groups = [], hallazgos, tone = 'amber' }) {
+  const hasChecks = groups.some((g) => g.items.length > 0);
+  if (!hasChecks && !hallazgos) return null;
+  const tones = {
+    amber: 'bg-amber-50 border-amber-200 text-amber-700',
+    violet: 'bg-violet-50 border-violet-200 text-violet-700',
+  };
+  return (
+    <div className={`mt-2 border rounded p-2 ${tones[tone]}`}>
+      <p className="text-[11px] font-semibold uppercase mb-1">{title}</p>
+      {groups.map((g) => g.items.length > 0 && (
+        <div key={g.label || 'unico'} className="mb-1 last:mb-0">
+          {g.label && <span className="text-[10px] uppercase opacity-70 mr-1">{g.label}:</span>}
+          <span className="inline-flex flex-wrap gap-1 align-middle">
+            {g.items.map((it) => (
+              <span key={it.key} className="text-[11px] bg-white/70 border border-slate-200 rounded px-1.5 py-0.5 text-slate-700">
+                {it.label}
+                {it.detail && <span className="text-slate-500">: {it.detail}</span>}
+              </span>
+            ))}
+          </span>
+        </div>
+      ))}
+      {hallazgos && <p className="text-xs text-slate-700 mt-1 whitespace-pre-wrap">{hallazgos}</p>}
     </div>
   );
 }
@@ -1656,8 +1712,12 @@ function SeguimientosTab({ patientId, appointmentId }) {
                   Object.values(fu.opticaRx.oi || {}).some((v) => String(v).trim()));
               const hasGinecoData = ginecoHasData(fu.ginecologia);
               const vs = fu.vitalSigns || {};
-              const hasVitals = ['temperature', 'bloodPressure', 'heartRate', 'respiratoryRate', 'oxygenSaturation', 'weight', 'height', 'glucose']
+              const hasVitals = ['hora', 'temperature', 'bloodPressure', 'heartRate', 'respiratoryRate', 'oxygenSaturation', 'weight', 'height', 'abdominalPerimeter', 'capillaryHemoglobin', 'glucose']
                 .some((k) => vs[k] != null && vs[k] !== '');
+              // Casillas marcadas de la revisión de sistemas y del examen físico.
+              const revItems = markedItems(REVISION_SISTEMAS, fu.revisionSistemas);
+              const regItems = markedItems(EXAMEN_REGIONAL, fu.examenFisico?.regional);
+              const sisItems = markedItems(EXAMEN_SISTEMICO, fu.examenFisico?.sistemico);
               return (
                 <tr key={fu._id} className="border-t border-slate-100 align-top">
                   <td className="px-4 py-2.5 text-slate-600 whitespace-nowrap">
@@ -1683,7 +1743,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                     )}
                     <div className="font-medium">{fu.descripcion || fu.motivoConsulta}</div>
                     {fu.enfermedadActual && (
-                      <div className="mt-1 text-xs text-slate-600">
+                      <div className="mt-1 text-xs text-slate-600 whitespace-pre-wrap">
                         <b>Enfermedad actual:</b> {fu.enfermedadActual}
                       </div>
                     )}
@@ -1693,16 +1753,21 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         <b>Estudio/síntomas:</b> {fu.estudioSintomas}
                       </div>
                     )}
-                    {fu.revisionSistemasHallazgos && (
-                      <div className="mt-1 text-xs text-slate-600">
-                        <b>Revisión de órganos y sistemas:</b> {fu.revisionSistemasHallazgos}
-                      </div>
-                    )}
-                    {fu.examenFisico?.hallazgos && (
-                      <div className="mt-1 text-xs text-slate-600">
-                        <b>Examen físico:</b> {fu.examenFisico.hallazgos}
-                      </div>
-                    )}
+                    <ChecksSummary
+                      title="Revisión de órganos y sistemas"
+                      groups={[{ label: '', items: revItems }]}
+                      hallazgos={fu.revisionSistemasHallazgos}
+                      tone="amber"
+                    />
+                    <ChecksSummary
+                      title="Examen físico"
+                      groups={[
+                        { label: 'Regional', items: regItems },
+                        { label: 'Sistémico', items: sisItems },
+                      ]}
+                      hallazgos={fu.examenFisico?.hallazgos}
+                      tone="violet"
+                    />
                     {Array.isArray(fu.diagnosticos) && fu.diagnosticos.length > 0 && (
                       <div className="mt-2 bg-rose-50 border border-rose-200 rounded p-2">
                         <p className="text-[11px] font-semibold text-rose-600 uppercase mb-1">Diagnósticos</p>
@@ -1754,6 +1819,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                     })()}
                     {hasVitals && (
                       <div className="mt-2 text-[11px] text-slate-600 bg-emerald-50 border border-emerald-100 rounded p-2 flex flex-wrap gap-x-3 gap-y-0.5">
+                        {vs.hora && <span>Hora: {vs.hora}</span>}
                         {vs.bloodPressure && <span>TA: {vs.bloodPressure}</span>}
                         {vs.heartRate && <span>FC: {vs.heartRate}lpm</span>}
                         {vs.respiratoryRate && <span>FR: {vs.respiratoryRate}rpm</span>}
@@ -1767,8 +1833,14 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         {vs.glucose && <span>Glu: {vs.glucose}mg/dL</span>}
                       </div>
                     )}
+                    {/* Legacy: receta como texto libre (antes de los ítems de inventario). */}
+                    {fu.receta && (
+                      <div className="mt-2 text-xs text-slate-600 whitespace-pre-wrap">
+                        <b>Receta:</b> {fu.receta}
+                      </div>
+                    )}
                     {fu.planTratamiento && (
-                      <div className="mt-2 text-xs text-slate-600">
+                      <div className="mt-2 text-xs text-slate-600 whitespace-pre-wrap">
                         <b>Plan de tratamiento:</b> {fu.planTratamiento}
                       </div>
                     )}

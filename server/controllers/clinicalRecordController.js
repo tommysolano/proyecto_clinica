@@ -8,6 +8,7 @@ const {
   EXAMEN_REGIONAL,
   EXAMEN_SISTEMICO,
 } = require('../constants/mspCatalogs');
+const { describeCie10 } = require('../utils/cie10Catalog');
 const { emitToClinic } = require('../realtime');
 const path = require('path');
 const fs = require('fs');
@@ -118,6 +119,7 @@ exports.updateByPatient = async (req, res) => {
       'patologicosPersonales',
       'patologicosFamiliares',
       'datosRelevantes',
+      'datosRelevantesFamiliares',
     ];
     const update = { updatedBy: req.user._id };
     for (const k of allowed) {
@@ -183,13 +185,17 @@ exports.addFollowUp = async (req, res) => {
       (Array.isArray(arr) ? arr : [])
         .filter((d) => d && (String(d.descripcion || '').trim() || String(d.cie || '').trim()))
         .slice(0, 6)
-        .map((d) => ({
-          descripcion: String(d.descripcion || '').trim(),
-          cie: String(d.cie || '').trim().toUpperCase(),
-          cieDescripcion: String(d.cieDescripcion || '').trim(),
-          presuntivo: !!d.presuntivo,
-          definitivo: !!d.definitivo,
-        }));
+        .map((d) => {
+          const cie = String(d.cie || '').trim().toUpperCase();
+          return {
+            descripcion: String(d.descripcion || '').trim(),
+            cie,
+            // Si el cliente no mandó el nombre del código, se toma del catálogo.
+            cieDescripcion: String(d.cieDescripcion || '').trim() || describeCie10(cie),
+            presuntivo: !!d.presuntivo,
+            definitivo: !!d.definitivo,
+          };
+        });
 
     // Saneador de los datos ginecológicos: solo persiste lo que llega con contenido.
     const sanitizeGineco = (g) => {
@@ -871,6 +877,7 @@ exports.printMspForm = async (req, res) => {
   <!-- D. ANTECEDENTES PATOLÓGICOS FAMILIARES -->
   <div class="bar">D. ANTECEDENTES PATOLÓGICOS FAMILIARES</div>
   ${renderChecks(ANTECEDENTES_CATEGORIAS, record.patologicosFamiliares)}
+  ${record.datosRelevantesFamiliares ? `<div class="det"><b>Relevantes:</b> ${esc(record.datosRelevantesFamiliares)}</div>` : ''}
 
   <!-- E. ENFERMEDAD O PROBLEMA ACTUAL -->
   <div class="bar">E. ENFERMEDAD O PROBLEMA ACTUAL <span class="note">Cronología · localización · características · intensidad · frecuencia · factores agravantes</span></div>

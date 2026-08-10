@@ -65,7 +65,7 @@ export default function BulkUploadModal({
       setResult(r.data);
       const errs = r.data?.errors?.length || 0;
       toast[errs ? 'error' : 'success'](
-        `${r.data.created || 0} creados${r.data.skipped ? `, ${r.data.skipped} omitidos` : ''}${errs ? `, ${errs} con error` : ''}`
+        `${r.data.created || 0} creados${r.data.updated ? `, ${r.data.updated} actualizados` : ''}${r.data.skipped ? `, ${r.data.skipped} omitidos` : ''}${errs ? `, ${errs} con error` : ''}`
       );
       setFile(null);
       onImported?.();
@@ -123,8 +123,11 @@ export default function BulkUploadModal({
             <p className="flex items-center gap-1.5 text-emerald-700 font-medium">
               <HiOutlineCheckCircle className="w-4 h-4" />
               {result.created || 0} creados
+              {result.updated ? ` · ${result.updated} actualizados` : ''}
+              {result.fichas ? ` · ${result.fichas} fichas` : ''}
+              {result.seguimientos ? ` · ${result.seguimientos} seguimientos` : ''}
               {result.skipped ? ` · ${result.skipped} omitidos` : ''}
-              {result.total ? ` · ${result.total} leídos` : ''}
+              {result.total ? ` · ${result.total} filas leídas` : ''}
             </p>
             {!!result.errors?.length && (
               <div className="text-rose-700">

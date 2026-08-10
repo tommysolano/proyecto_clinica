@@ -9,12 +9,18 @@ const {
   getPatientPurchases,
   bulkTag,
 } = require('../controllers/patientController');
+const patientImport = require('../controllers/patientImportController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
 router.use(auth, requireClinic);
 
 // Etiquetado masivo para segmentación de marketing.
 router.post('/bulk-tag', requireRole('admin', 'marketing'), bulkTag);
+
+// Carga masiva por Excel: datos generales + ficha clínica + seguimientos.
+// Va antes de '/:id' para que "import-template" no se lea como un id.
+router.get('/import-template', requireRole('admin'), patientImport.downloadTemplate);
+router.post('/import', requireRole('admin'), patientImport.uploadMiddleware, patientImport.importPatients);
 
 // Buscador de referidores (pacientes + personal) — usado al crear un paciente.
 router.get('/referral-options', requireRole('admin', 'cajero', 'call_center', 'marketing'), searchReferralCandidates);

@@ -216,8 +216,10 @@ const clinicalRecordSchema = new mongoose.Schema(
     patologicosPersonales: { type: [mspCheckSchema], default: [] },
     // D. Antecedentes patológicos familiares (10 categorías MSP).
     patologicosFamiliares: { type: [mspCheckSchema], default: [] },
-    // Encabezado de C: datos clínico-quirúrgicos, obstétricos y alérgicos relevantes.
+    // Pie de C: datos clínico-quirúrgicos, obstétricos y alérgicos relevantes.
     datosRelevantes: { type: String, trim: true, default: '' },
+    // Pie de D: lo mismo, descrito para los antecedentes familiares.
+    datosRelevantesFamiliares: { type: String, trim: true, default: '' },
     // Antecedentes libres (LEGACY — origen de migración a las listas estructuradas).
     antecedentesFamiliares: { type: String, trim: true, default: '' },
     antecedentesPatologicos: { type: String, trim: true, default: '' },

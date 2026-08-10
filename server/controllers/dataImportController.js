@@ -12,7 +12,6 @@
  * Tipos: plan-cuentas · categorias · empleados · proveedores · clientes · activos
  * (la plantilla de productos vive en /inventory-advanced/template/products).
  */
-const ExcelJS = require('exceljs');
 const multer = require('multer');
 const ChartOfAccount = require('../models/ChartOfAccount');
 const InventoryCategory = require('../models/InventoryCategory');
@@ -27,82 +26,17 @@ const { normalizeAssetConfig } = require('../utils/fixedAssetConfig');
 
 exports.uploadMiddleware = multer({ storage: multer.memoryStorage(), limits: { fileSize: 10 * 1024 * 1024 } }).single('file');
 
-// ─── Helpers compartidos ─────────────────────────────────────────────────────
+// ─── Helpers compartidos (viven en utils/excelImport.js) ─────────────────────
 
-const norm = (s) => String(s ?? '')
-  .trim().toUpperCase()
-  .normalize('NFD').replace(/[̀-ͯ]/g, '')
-  .replace(/[_-]+/g, ' ').replace(/\s+/g, ' ');
-
-const parseBool = (v, def = false) => {
-  const s = norm(v);
-  if (!s) return def;
-  return ['SI', 'S', 'TRUE', '1', 'X', 'YES'].includes(s);
-};
-
-const parseDate = (v) => {
-  if (!v && v !== 0) return null;
-  if (v instanceof Date) return v;
-  const s = String(v).trim();
-  // dd/mm/yyyy o dd-mm-yyyy
-  let m = s.match(/^(\d{1,2})[/-](\d{1,2})[/-](\d{4})$/);
-  if (m) return new Date(`${m[3]}-${m[2].padStart(2, '0')}-${m[1].padStart(2, '0')}T12:00:00`);
-  // yyyy-mm-dd
-  m = s.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
-  if (m) return new Date(`${m[1]}-${m[2].padStart(2, '0')}-${m[3].padStart(2, '0')}T12:00:00`);
-  const d = new Date(s);
-  return isNaN(d.getTime()) ? null : d;
-};
-
-const cellValue = (v) => {
-  if (v && typeof v === 'object' && 'result' in v) v = v.result; // fórmula
-  if (v && typeof v === 'object' && 'text' in v) v = v.text;     // rich text / link
-  if (v && typeof v === 'object' && 'hyperlink' in v) v = v.text || v.hyperlink;
-  return v;
-};
-
-async function loadWorkbook(buffer) {
-  const wb = new ExcelJS.Workbook();
-  try {
-    await wb.xlsx.load(buffer);
-  } catch {
-    const err = new Error('No se pudo leer el archivo Excel. Ábrelo en Excel/Google Sheets/LibreOffice, guárdalo de nuevo como .xlsx y vuelve a subirlo.');
-    err.status = 400;
-    throw err;
-  }
-  const ws = wb.worksheets[0];
-  if (!ws) { const err = new Error('El archivo no tiene hojas'); err.status = 400; throw err; }
-  return ws;
-}
-
-/** Mapea la fila 1 a claves usando alias normalizados. */
-function mapHeaders(ws, aliases) {
-  const lookup = new Map();
-  for (const [key, list] of Object.entries(aliases)) for (const a of list) lookup.set(norm(a), key);
-  const headerMap = {};
-  ws.getRow(1).eachCell((cell, col) => {
-    const key = lookup.get(norm(cellValue(cell.value)));
-    if (key) headerMap[col] = key;
-  });
-  return headerMap;
-}
-
-/** Convierte las filas (desde la 2) en objetos { key: valor } + n° de fila. */
-function rowsToObjects(ws, headerMap) {
-  const rows = [];
-  for (let r = 2; r <= ws.rowCount; r++) {
-    const row = ws.getRow(r);
-    const data = {};
-    let hasData = false;
-    Object.entries(headerMap).forEach(([col, key]) => {
-      const v = cellValue(row.getCell(parseInt(col)).value);
-      if (v !== null && v !== undefined && String(v).trim() !== '') hasData = true;
-      data[key] = v;
-    });
-    if (hasData) rows.push({ __row: r, ...data });
-  }
-  return rows;
-}
+const {
+  norm,
+  parseBool,
+  parseDate,
+  loadWorkbook,
+  mapHeaders,
+  rowsToObjects,
+  sendTemplate,
+} = require('../utils/excelImport');
 
 /** Índice código → cuenta del plan (para resolver columnas cuenta_*). */
 async function accountIndex(clinicId) {
@@ -121,28 +55,6 @@ function resolveAccount(accIdx, raw, label, errors, rowNo, { required = false, m
   if (!acc) { errors.push(`Fila ${rowNo}: ${label} "${code}" no existe en el plan de cuentas`); return undefined; }
   if (movement && acc.allowsMovement === false) { errors.push(`Fila ${rowNo}: ${label} "${code}" es agrupadora (no permite movimiento)`); return undefined; }
   return acc._id;
-}
-
-function templateWorkbook({ sheetName, columns, example, instructions }) {
-  const wb = new ExcelJS.Workbook();
-  const ws = wb.addWorksheet(sheetName);
-  ws.columns = columns;
-  ws.getRow(1).font = { bold: true };
-  ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFD1FAE5' } };
-  if (example) ws.addRow(example);
-  const help = wb.addWorksheet('Instrucciones');
-  help.getColumn(1).width = 130;
-  (instructions || []).forEach((line) => help.addRow([line]));
-  help.addRow(['No borre la fila de encabezados. Puede borrar la(s) fila(s) de ejemplo.']);
-  return wb;
-}
-
-async function sendTemplate(res, filename, wbDef) {
-  const wb = templateWorkbook(wbDef);
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
-  await wb.xlsx.write(res);
-  res.end();
 }
 
 // ─── PLAN DE CUENTAS ─────────────────────────────────────────────────────────
