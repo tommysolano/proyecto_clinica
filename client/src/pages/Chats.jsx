@@ -3670,6 +3670,21 @@ const MessageBubble = memo(function MessageBubble({ msg, onReply, onJumpTo, high
           </div>
         )}
         <div className="whitespace-pre-wrap break-words">{bodyContent}</div>
+        {Array.isArray(msg.buttons) && msg.buttons.length > 0 && (
+          <div className="mt-1.5 grid gap-1">
+            {msg.buttons.map((button, index) => (
+              <div
+                key={button.id || index}
+                className={`rounded-md border px-2 py-1 text-center text-[11px] font-semibold ${
+                  isOut ? 'border-white/35 bg-white/15 text-white' : 'border-sky-200 bg-sky-50 text-sky-700'
+                }`}
+              >
+                {button.type === 'url' ? '🔗 ' : button.type === 'phone' ? '📞 ' : '↩️ '}
+                {button.text || 'Botón'}
+              </div>
+            ))}
+          </div>
+        )}
         {failed && (
           <div className="mt-1.5 rounded-md bg-white/20 px-2 py-1.5 text-[11px] leading-snug">
             <div className="flex items-center gap-1 font-bold">

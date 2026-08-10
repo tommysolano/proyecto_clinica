@@ -2,6 +2,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const crypto = require('crypto');
 const messaging = require('../utils/messaging');
+const whatsappCloud = require('../utils/whatsappCloud');
 const { verifyMetaSignature } = require('../utils/metaWebhook');
 
 test('computes and checks the WhatsApp 24h window', () => {
@@ -167,4 +168,28 @@ test('verifies Meta X-Hub-Signature-256 HMAC', () => {
     verifyMetaSignature({ rawBody, signature: 'sha256=bad', appSecret }).ok,
     false
   );
+});
+
+test('WhatsApp Cloud envía respuestas rápidas como botones interactivos', async () => {
+  const originalFetch = global.fetch;
+  let payload = null;
+  global.fetch = async (_url, options) => {
+    payload = JSON.parse(options.body);
+    return { ok: true, json: async () => ({ messages: [{ id: 'wamid.button' }] }) };
+  };
+  try {
+    const result = await whatsappCloud.sendButtons(
+      { accessToken: 'token', phoneNumberId: 'phone-id', apiVersion: 'v23.0' },
+      '593999999999',
+      'Elige una opción',
+      [{ id: 'confirmar', providerId: 'wf:enrollment:confirmar', text: 'Confirmar' }]
+    );
+    assert.equal(result.ok, true);
+    assert.equal(payload.type, 'interactive');
+    assert.equal(payload.interactive.type, 'button');
+    assert.equal(payload.interactive.action.buttons[0].reply.id, 'wf:enrollment:confirmar');
+    assert.equal(payload.interactive.action.buttons[0].reply.title, 'Confirmar');
+  } finally {
+    global.fetch = originalFetch;
+  }
 });

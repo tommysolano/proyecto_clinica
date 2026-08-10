@@ -147,6 +147,22 @@ export default function WorkflowEditor() {
     if (actionNodes.some((n) => n.type === 'assign_agent' && n.data?.assignMode === 'user' && !n.data?.assignUser)) {
       return toast.error('Selecciona el asesor específico en cada paso “Asignar agente”');
     }
+    for (const node of actionNodes.filter((item) => item.type === 'send_message')) {
+      const buttons = Array.isArray(node.data?.buttons) ? node.data.buttons : [];
+      if (buttons.length > 3) return toast.error('Cada mensaje admite un máximo de 3 botones');
+      if (buttons.some((button) => !button.id || !String(button.text || '').trim())) {
+        return toast.error('Completa el texto de todos los botones del mensaje');
+      }
+      if (new Set(buttons.map((button) => button.id)).size !== buttons.length) {
+        return toast.error('Hay botones duplicados en un nodo de mensaje; elimínalos y créalos otra vez');
+      }
+      if (buttons.some((button) => button.type === 'url' && !/^https?:\/\//i.test(String(button.url || '').trim()))) {
+        return toast.error('Los botones de enlace necesitan una URL que empiece por http:// o https://');
+      }
+      if (buttons.some((button) => button.type === 'phone' && String(button.url || '').replace(/\D/g, '').length < 7)) {
+        return toast.error('Los botones de llamada necesitan un número con prefijo internacional');
+      }
+    }
     // Unión de disparadores de todos los flujos (para el filtro/índice del motor).
     const triggers = (wf.nodes || [])
       .filter((n) => n.type === 'trigger')

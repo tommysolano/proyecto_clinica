@@ -3123,7 +3123,7 @@ async function ingestExternalMessage({ clinicId, channel, externalUserId, body, 
   const workflowEngine = require('../utils/workflowEngine');
   // Reanuda workflows que esperaban respuesta del paciente (p.ej. confirmar cita).
   await workflowEngine
-    .resumeOnReply({ clinicId, patientId: conv.patient, phone: conv.phone, text: finalBody })
+    .resumeOnReply({ clinicId, patientId: conv.patient, phone: conv.phone, text: finalBody, interactiveReply })
     .catch(() => {});
   // Motor nuevo: disparadores de chat (inbound_message / keyword / new_conversation).
   await workflowEngine

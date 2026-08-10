@@ -178,6 +178,17 @@ async function sendText(account, to, body, contextMessageId, quoteBody) {
   return cloudTokenError(account) || wa.sendText(cloudCreds(account), to, body, contextMessageId);
 }
 
+async function sendButtons(account, to, body, buttons, contextMessageId, quoteBody) {
+  if (!account) return { ok: false, errorCode: 'provider_unavailable', error: 'Sin número de WhatsApp configurado' };
+  if (account.connectionType === 'qr') {
+    // WhatsApp Web ya no ofrece una API estable para botones interactivos. El
+    // caller entrega una versión textual equivalente para que la respuesta siga
+    // pudiendo asociarse por su título.
+    return require('./whatsappQrManager').sendText(account, to, body, contextMessageId, quoteBody);
+  }
+  return cloudTokenError(account) || wa.sendButtons(cloudCreds(account), to, body, buttons, contextMessageId);
+}
+
 /**
  * Envía media (imagen/video/documento/audio) con texto de pie. Por QR la sesión
  * descarga los bytes (de Mongo si es media propia, o de la URL) y los manda como
@@ -225,6 +236,7 @@ module.exports = {
   cloudTokenError,
   isCloud,
   sendText,
+  sendButtons,
   sendMedia,
   sendTemplate,
   downloadMedia,

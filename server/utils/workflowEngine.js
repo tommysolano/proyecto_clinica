@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const crypto = require('crypto');
 const Workflow = require('../models/Workflow');
 const WorkflowEnrollment = require('../models/WorkflowEnrollment');
 const Patient = require('../models/Patient');
@@ -815,7 +816,7 @@ async function loadConversationForPatient(clinicId, phone, patientId) {
  * Devuelve null si todo salió bien, o un string con el motivo del fallo (para
  * el registro de ejecución). Los errores inesperados se propagan (throw).
  */
-async function performAction(step, { clinicId, patient, phone, ctx, convRef, automationName = '' }) {
+async function performAction(step, { clinicId, patient, phone, ctx, convRef, automationName = '', workflowButtons = [] }) {
   const loadConv = async () => {
     if (!convRef.current) convRef.current = await loadConversationForPatient(clinicId, phone, patient?._id);
     return convRef.current;
@@ -848,6 +849,7 @@ async function performAction(step, { clinicId, patient, phone, ctx, convRef, aut
         // ventana de 24h que el texto (whatsapp) o de mensajería estándar (Meta).
         mediaUrl: step.mediaUrl || null,
         mediaType: step.mediaType || null,
+        buttons: workflowButtons,
         isAutoReply: true,
         whatsappAccount,
       });
@@ -1119,6 +1121,90 @@ function nextNodeId(workflow, nodeId, handle = 'default') {
   return edge ? edge.target : null;
 }
 
+/** Siguiente nodo por un handle EXACTO (un botón sin conectar termina su rama). */
+function nextNodeIdExact(workflow, nodeId, handle) {
+  const edge = (workflow.edges || []).find(
+    (candidate) => candidate.source === nodeId && (candidate.sourceHandle || 'default') === handle
+  );
+  return edge ? edge.target : null;
+}
+
+const publicApiBase = () => String(process.env.PUBLIC_API_URL || '')
+  .trim()
+  .replace(/\/+$/, '')
+  .replace(/\/api$/i, '');
+
+function safeButtonDestination(button = {}) {
+  const value = String(button.url || '').trim();
+  if (button.type === 'phone') {
+    const digits = value.replace(/[^\d+]/g, '').replace(/(?!^)\+/g, '');
+    return digits ? `tel:${digits}` : '';
+  }
+  return /^https?:\/\//i.test(value) ? value : '';
+}
+
+/**
+ * Prepara los botones de un nodo para el proveedor y guarda en el contexto la
+ * tabla id/token → salida del grafo. Los tokens se reutilizan si el envío se
+ * reintenta, evitando enlaces distintos para el mismo contacto.
+ */
+async function prepareWorkflowButtons({ enrollment, nodeId, buttons, patient, ctx }) {
+  const configured = (Array.isArray(buttons) ? buttons : [])
+    .filter((button) => button?.id && ['quick_reply', 'url', 'phone'].includes(button.type) && String(button.text || '').trim())
+    .slice(0, 3);
+  if (!configured.length) return [];
+
+  const previous = ctx.pendingWorkflowButtons?.nodeId === nodeId
+    ? ctx.pendingWorkflowButtons.buttons || []
+    : [];
+  const base = publicApiBase();
+  const prepared = [];
+  for (const button of configured) {
+    // eslint-disable-next-line no-await-in-loop
+    const rawDestination = button.type === 'quick_reply'
+      ? ''
+      : await renderText(button.url || '', patient, ctx);
+    const destination = safeButtonDestination({ ...button, url: rawDestination });
+    const old = previous.find((item) => item.id === button.id);
+    const token = button.type === 'quick_reply' ? '' : (old?.token || crypto.randomBytes(24).toString('hex'));
+    prepared.push({
+      id: String(button.id),
+      type: button.type,
+      text: String(button.text).trim().slice(0, 20),
+      url: rawDestination,
+      destination,
+      token,
+      providerId: `wf:${String(enrollment._id)}:${String(button.id)}`.slice(0, 256),
+      providerUrl: token && base ? `${base}/api/public/workflow-buttons/${token}` : destination,
+    });
+  }
+
+  ctx.pendingWorkflowButtons = {
+    nodeId,
+    buttons: prepared.map(({ id, type, text, destination, token, providerId }) => ({
+      id, type, text, destination, token, providerId,
+    })),
+  };
+  const priorLinks = Array.isArray(ctx.workflowButtonLinks) ? ctx.workflowButtonLinks : [];
+  const freshLinks = prepared
+    .filter((button) => button.token && button.destination)
+    .map((button) => ({
+      token: button.token,
+      type: button.type,
+      destination: button.destination,
+      nodeId,
+      buttonId: button.id,
+      text: button.text,
+    }));
+  ctx.workflowButtonLinks = [
+    ...priorLinks.filter((old) => !freshLinks.some((fresh) => fresh.token === old.token)),
+    ...freshLinks,
+  ].slice(-12);
+  enrollment.context = ctx;
+  enrollment.markModified('context');
+  return prepared;
+}
+
 /**
  * Ejecuta una inscripción de un workflow de GRAFO recorriendo aristas desde
  * `enrollment.currentNodeId` (o desde el nodo inicial). Las condiciones bifurcan
@@ -1289,10 +1375,21 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
       // Un paso que falla NO aborta el flujo: se registra y se continúa. Así un
       // envío saltado (ventana 24h, sin teléfono) queda visible en el registro.
       try {
+        const workflowButtons = type === 'send_message'
+          ? await prepareWorkflowButtons({ enrollment, nodeId: currentId, buttons: data.buttons, patient, ctx })
+          : [];
         // eslint-disable-next-line no-await-in-loop
         const raw = await performAction(
           { ...data, type },
-          { clinicId: enrollment.clinic, patient, phone, ctx, convRef, automationName: workflow.name || '' }
+          {
+            clinicId: enrollment.clinic,
+            patient,
+            phone,
+            ctx,
+            convRef,
+            automationName: workflow.name || '',
+            workflowButtons,
+          }
         );
         // Los pasos que no envían devuelven un texto pelado; los de envío, { info, code }.
         const fail = typeof raw === 'string' ? { info: raw, code: '' } : raw;
@@ -1305,7 +1402,28 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
           return;
         }
         clearSendRetries(enrollment);
+        if (fail && ctx.pendingWorkflowButtons?.nodeId === currentId) {
+          delete ctx.pendingWorkflowButtons;
+          enrollment.context = ctx;
+          enrollment.markModified('context');
+        }
         pushLog(enrollment, { nodeId: currentId, type, ok: !fail, info: fail?.info || '' });
+        if (!fail && workflowButtons.length) {
+          // Un mensaje con botones es una bifurcación: espera el clic/respuesta.
+          // `default` cubre otra respuesta y el vencimiento del tiempo.
+          enrollment.currentNodeId = nextNodeIdExact(workflow, currentId, 'default');
+          enrollment.nextRunAt = new Date(Date.now() + Number(data.buttonTimeoutMinutes || 1440) * 60000);
+          enrollment.status = 'waiting';
+          enrollment.waitingForReply = true;
+          pushLog(enrollment, {
+            nodeId: currentId,
+            type,
+            info: `Mensaje enviado: esperando uno de ${workflowButtons.length} botones`,
+          });
+          // eslint-disable-next-line no-await-in-loop
+          await enrollment.save();
+          return;
+        }
       } catch (err) {
         pushLog(enrollment, { nodeId: currentId, type, ok: false, info: `Error: ${err.message}` });
         console.error('[workflowEngine] action error', enrollment._id, type, err.message);
@@ -1354,6 +1472,15 @@ async function executeEnrollment(enrollment) {
     : null;
   if (!conversation) {
     conversation = await loadConversationForPatient(enrollment.clinic, phone, patient?._id);
+  }
+
+  // Si el scheduler despertó una espera de botones, se agotó el tiempo: la salida
+  // default ya está en currentNodeId. Un clic real elimina este marcador antes.
+  if (enrollment.waitingForReply && ctx.pendingWorkflowButtons) {
+    ctx.lastButtonOutcome = 'timeout';
+    delete ctx.pendingWorkflowButtons;
+    enrollment.context = ctx;
+    enrollment.markModified('context');
   }
 
   // Estamos ejecutando activamente: ya no esperamos respuesta (se reactivará si
@@ -1409,6 +1536,7 @@ async function executeEnrollment(enrollment) {
         body: await renderText(step.body, patient, ctx),
         mediaUrl: step.mediaUrl || null,
         mediaType: step.mediaType || null,
+        buttons: step.buttons || [],
         isAutoReply: true,
         whatsappAccount: ctx.whatsappAccountId || null,
       });
@@ -2247,7 +2375,7 @@ async function processDueEnrollments() {
  * los pasos `condition` posteriores puedan ramificar.
  * Lo invoca el ingest de mensajes entrantes (chatController).
  */
-async function resumeOnReply({ clinicId, patientId, phone, text }) {
+async function resumeOnReply({ clinicId, patientId, phone, text, interactiveReply = null }) {
   const q = { clinic: clinicId, status: 'waiting', waitingForReply: true };
   if (patientId) q.patient = patientId;
   else if (phone) q['context.phone'] = messaging.normalizePhone(phone);
@@ -2257,9 +2385,32 @@ async function resumeOnReply({ clinicId, patientId, phone, text }) {
   if (!enrollments.length) return { resumed: 0 };
 
   const reply = classifyReply(text);
+  let resumed = 0;
   for (const enrollment of enrollments) {
+    const ctx = enrollment.context || {};
+    const pending = ctx.pendingWorkflowButtons;
+    let clickedButton = null;
+    if (pending?.buttons?.length) {
+      const incomingId = String(interactiveReply?.id || '');
+      // Un payload Cloud identifica también la inscripción. No debe despertar
+      // otros workflows del mismo contacto que estén esperando a la vez.
+      if (incomingId.startsWith('wf:') && !incomingId.startsWith(`wf:${String(enrollment._id)}:`)) continue;
+      const incomingText = String(interactiveReply?.title || text || '').trim().toLowerCase();
+      clickedButton = pending.buttons.find((button) =>
+        (incomingId && (incomingId === button.providerId || incomingId === button.id))
+        || (incomingText && incomingText === String(button.text || '').trim().toLowerCase())
+      ) || null;
+      const workflow = await Workflow.findById(enrollment.workflow);
+      enrollment.currentNodeId = workflow
+        ? nextNodeIdExact(workflow, pending.nodeId, clickedButton?.id || 'default')
+        : null;
+      ctx.lastButtonId = clickedButton?.id || '';
+      ctx.lastButtonText = clickedButton?.text || String(text || '').slice(0, 200);
+      ctx.lastButtonOutcome = clickedButton ? 'reply' : 'other_reply';
+      delete ctx.pendingWorkflowButtons;
+    }
     enrollment.context = {
-      ...(enrollment.context || {}),
+      ...ctx,
       lastReply: reply,
       lastReplyText: String(text || '').slice(0, 200),
     };
@@ -2269,12 +2420,65 @@ async function resumeOnReply({ clinicId, patientId, phone, text }) {
     enrollment.nextRunAt = new Date();
     // eslint-disable-next-line no-await-in-loop
     await enrollment.save();
+    resumed += 1;
     // eslint-disable-next-line no-await-in-loop
     await executeEnrollment(enrollment).catch((err) =>
       console.error('[workflowEngine] resume error', enrollment._id, err.message)
     );
   }
-  return { resumed: enrollments.length };
+  return { resumed };
+}
+
+/**
+ * Registra un clic en un botón URL/llamar y continúa por la arista de ese
+ * botón. Devuelve siempre el destino permitido para que la ruta pública redirija.
+ */
+async function resumeOnButtonClick(token) {
+  const clean = String(token || '').trim();
+  if (!/^[a-f0-9]{48}$/i.test(clean)) return { found: false, destination: '' };
+  const enrollment = await WorkflowEnrollment.findOne({
+    'context.workflowButtonLinks.token': clean,
+  });
+  if (!enrollment) return { found: false, destination: '' };
+  const pending = enrollment.context?.pendingWorkflowButtons;
+  const link = enrollment.context?.workflowButtonLinks?.find((item) => item.token === clean);
+  const button = pending?.buttons?.find((item) => item.token === clean) || null;
+  const destination = safeButtonDestination({ type: link?.type, url: link?.destination });
+  if (!link || !destination) return { found: false, destination: '' };
+
+  let resumed = false;
+  if (button && enrollment.status === 'waiting' && enrollment.waitingForReply) {
+    const workflow = await Workflow.findById(enrollment.workflow);
+    const target = workflow ? nextNodeIdExact(workflow, pending.nodeId, button.id) : null;
+    const update = await WorkflowEnrollment.updateOne(
+      {
+        _id: enrollment._id,
+        status: 'waiting',
+        waitingForReply: true,
+        'context.pendingWorkflowButtons.buttons.token': clean,
+      },
+      {
+        $set: {
+          status: 'active',
+          waitingForReply: false,
+          currentNodeId: target,
+          nextRunAt: new Date(),
+          'context.lastButtonId': button.id,
+          'context.lastButtonText': button.text,
+          'context.lastButtonOutcome': 'click',
+        },
+        $unset: { 'context.pendingWorkflowButtons': 1 },
+      }
+    );
+    resumed = update.modifiedCount === 1;
+    if (resumed) {
+      const claimed = await WorkflowEnrollment.findById(enrollment._id);
+      await executeEnrollment(claimed).catch((err) =>
+        console.error('[workflowEngine] button click resume error', enrollment._id, err.message)
+      );
+    }
+  }
+  return { found: true, destination, resumed };
 }
 
 /**
@@ -2407,6 +2611,7 @@ module.exports = {
   executeGraphEnrollment,
   findStartNode,
   nextNodeId,
+  nextNodeIdExact,
   pickSplitRoute,
   pickClinicRoute,
   enrollForEvent,
@@ -2414,6 +2619,7 @@ module.exports = {
   enrollForOpportunityStage,
   processDueEnrollments,
   resumeOnReply,
+  resumeOnButtonClick,
   syncEnrollmentsForAppointment,
   cancelWaitingEnrollmentsForAppointment,
   subscribeDomainEvents,

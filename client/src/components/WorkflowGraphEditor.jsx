@@ -185,6 +185,17 @@ const STAGE_LABELS = {
   perdido: 'Perdido',
 };
 
+const MESSAGE_BUTTON_TYPES = [
+  { value: 'quick_reply', label: 'Respuesta rápida' },
+  { value: 'url', label: 'Enlace (URL)' },
+  { value: 'phone', label: 'Llamar' },
+];
+const newMessageButtonId = () => `mb${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
+const messageButtonsOf = (data = {}) => (Array.isArray(data.buttons) ? data.buttons : [])
+  .filter((button) => button?.id)
+  .slice(0, 3);
+const messageHandles = (data = {}) => [...messageButtonsOf(data).map((button) => button.id), 'default'];
+
 // Unidades del paso "Esperar (tiempo)". Se guarda `waitMinutes` (lo que lee el
 // motor, admite fracciones para los segundos) + `waitUnit`/`waitValue` para que
 // el editor reabra con la MISMA unidad que eligió el usuario.
@@ -338,8 +349,9 @@ function describeBranch(b = {}, ctx) {
 }
 
 export const newNodeData = (type) => ({
-  body: '', templateName: '', templateLanguage: 'es', emailSubject: '',
+  body: '', buttons: [], templateName: '', templateLanguage: 'es', emailSubject: '',
   waitMinutes: 60, waitValue: 60, waitUnit: 'minutes', waitEvent: 'appointment_date', offsetMinutes: -1440, timeoutMinutes: 720,
+  buttonTimeoutMinutes: 1440,
   waitMode: 'clock', daysBefore: 1, atTime: '18:00',
   // Ventana horaria: por defecto laborable de lunes a viernes, 09:00–18:00.
   windowDays: [1, 2, 3, 4, 5], windowFrom: '09:00', windowTo: '18:00',
@@ -399,6 +411,8 @@ function writeStoredClipboard(cb) {
 
 const isBranch = (t) => t === 'condition' || t === 'goal';
 const isSplit = (t) => t === 'split';
+const isButtonMessage = (type, data) => type === 'send_message' && messageButtonsOf(data).length > 0;
+const isBranchingNode = (node) => !!node && (isBranch(node.type) || isSplit(node.type) || isButtonMessage(node.type, node.data));
 
 // Convierte el modelo lineal `steps` a nodos/aristas (migración de workflows viejos).
 export function stepsToGraph(steps = [], triggerLabel = 'Disparador') {
@@ -428,6 +442,7 @@ function autoLayout(nodes, edges) {
   nodes.forEach((n) => {
     if (n.type === 'split') (n.data?.routes || []).forEach((r, i) => { rank[`${n.id}:${r.id}`] = i; });
     if (n.type === 'condition') conditionHandles(n.data).forEach((h, i) => { rank[`${n.id}:${h}`] = i; });
+    if (isButtonMessage(n.type, n.data)) messageHandles(n.data).forEach((h, i) => { rank[`${n.id}:${h}`] = i; });
   });
   const rankOf = (e) => rank[`${e.source}:${e.sourceHandle}`] ?? order[e.sourceHandle] ?? 2;
   Object.values(childrenOf).forEach((arr) => arr.sort((a, b) => rankOf(a) - rankOf(b)));
@@ -466,7 +481,7 @@ function autoLayout(nodes, edges) {
 function summarize(n, ctx = {}) {
   const d = n.data || {};
   switch (n.type) {
-    case 'send_message': return `${d.mediaUrl ? '📎 ' : ''}${d.body || ''}`;
+    case 'send_message': return `${d.mediaUrl ? '📎 ' : ''}${d.body || ''}${messageButtonsOf(d).length ? ` · ${messageButtonsOf(d).length} botones` : ''}`;
     case 'send_media': return d.mediaUrl ? `📎 ${d.mediaName || (d.mediaType === 'video' ? 'Video' : d.mediaType === 'audio' ? 'Audio' : 'Imagen')}` : 'Sin archivo';
     case 'send_template': return d.templateName;
     case 'send_email': return d.emailSubject || d.body;
@@ -656,6 +671,63 @@ function ActionNode({ data, selected }) {
   );
 }
 
+// Un mensaje con botones se comporta como una bifurcación: cada botón tiene
+// su propia salida y `default` cubre otra respuesta o el tiempo agotado.
+function MessageNode({ data, selected }) {
+  const buttons = messageButtonsOf(data);
+  const outs = [
+    ...buttons.map((button) => ({
+      id: button.id,
+      label: button.text || 'BOTÓN',
+      sub: MESSAGE_BUTTON_TYPES.find((type) => type.value === button.type)?.label || '',
+      color: '#10b981',
+    })),
+    { id: 'default', label: 'OTRA / TIEMPO', sub: 'Salida alternativa', color: '#f59e0b' },
+  ];
+  const used = new Set(data._usedHandles || []);
+  const n = outs.length;
+  return (
+    <div className="relative group">
+      <NodeActions data={data} />
+      <div
+        style={{ minWidth: Math.max(240, n * 105) }}
+        className={`rounded-xl border bg-emerald-50 px-3 py-2.5 text-xs shadow-sm ${selected ? 'border-emerald-500 ring-2 ring-emerald-200' : 'border-emerald-300'}`}
+      >
+        <Handle type="target" position={Position.Top} style={{ background: '#94a3b8' }} />
+        <div className="flex items-center gap-2">
+          <StepIcon type="send_message" />
+          <div className="min-w-0">
+            <div className="font-semibold text-emerald-700">Enviar mensaje con botones</div>
+            {data._summary && <div className="text-[10px] text-emerald-600/80 mt-0.5 truncate max-w-[240px]">{data._summary}</div>}
+          </div>
+        </div>
+        <div className="flex mt-2 border-t border-emerald-200/70 pt-1.5">
+          {outs.map((out) => (
+            <div key={out.id} className="flex-1 min-w-0 text-center px-1" title={`${out.label} · ${out.sub}`}>
+              <div className={`text-[9px] font-bold truncate ${out.id === 'default' ? 'text-amber-600' : 'text-emerald-700'}`}>{out.label}</div>
+              <div className="text-[8px] text-slate-400 truncate">{out.sub}</div>
+            </div>
+          ))}
+        </div>
+        {outs.map((out, index) => (
+          <Handle
+            key={out.id}
+            id={out.id}
+            type="source"
+            position={Position.Bottom}
+            style={{ left: `${((index + 0.5) / n) * 100}%`, background: out.color }}
+          />
+        ))}
+      </div>
+      {outs.map((out, index) => (
+        !used.has(out.id) && (
+          <AddRow key={out.id} data={data} handle={out.id} left={`${((index + 0.5) / n) * 100}%`} />
+        )
+      ))}
+    </div>
+  );
+}
+
 // Nodo Condición / Objetivo. La Condición puede tener VARIAS ramas (if /
 // else-if): una salida por rama, evaluadas en orden, más la salida "SI NO" para
 // cuando ninguna se cumple. El Objetivo mantiene sus dos salidas SÍ / NO.
@@ -754,7 +826,7 @@ function SplitNode({ data, selected }) {
   );
 }
 
-const nodeTypes = { trigger: TriggerNode, action: ActionNode, branch: BranchNode, split: SplitNode };
+const nodeTypes = { trigger: TriggerNode, action: ActionNode, message: MessageNode, branch: BranchNode, split: SplitNode };
 
 // ─────────── Arista con "+" para insertar y "×" para desconectar ───────────
 function PlusEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, label, selected }) {
@@ -788,7 +860,15 @@ function PlusEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
 const edgeTypes = { plus: PlusEdge };
 
 function toFlowNode(n, ctx = {}) {
-  const rfType = n.type === 'trigger' ? 'trigger' : isSplit(n.type) ? 'split' : isBranch(n.type) ? 'branch' : 'action';
+  const rfType = n.type === 'trigger'
+    ? 'trigger'
+    : isButtonMessage(n.type, n.data)
+      ? 'message'
+      : isSplit(n.type)
+        ? 'split'
+        : isBranch(n.type)
+          ? 'branch'
+          : 'action';
   return {
     id: n.id,
     type: rfType,
@@ -878,7 +958,7 @@ function graphHasCycle(edges) {
 function spliceNodeIntoEdge(dId, targetEdge, modelNodes, edges) {
   const dNode = modelNodes.find((n) => n.id === dId);
   if (!dNode || dNode.type === 'trigger') return null; // el disparador es la raíz
-  if (isBranch(dNode.type)) return null; // ramas: reordenar por arrastre es ambiguo
+  if (isBranchingNode(dNode)) return null; // ramas: reordenar por arrastre es ambiguo
   const A = targetEdge.source;
   const B = targetEdge.target;
   if (A === dId || B === dId) return null; // soltó sobre su propia conexión: nada
@@ -1075,6 +1155,10 @@ export default function WorkflowGraphEditor({
         bs.forEach((b) => { m[`${n.id}:${b.id}`] = b.name; });
         m[`${n.id}:no`] = bs.length > 1 ? 'Si no' : 'No';
       }
+      if (isButtonMessage(n.type, n.data)) {
+        messageButtonsOf(n.data).forEach((button) => { m[`${n.id}:${button.id}`] = button.text || 'Botón'; });
+        m[`${n.id}:default`] = 'Otra / tiempo';
+      }
     });
     return m;
   }, [modelNodes]);
@@ -1189,7 +1273,11 @@ export default function WorkflowGraphEditor({
       // Dividir / Condición: cada salida baja bajo su columna (repartidas a lo ancho).
       const outs = src?.type === 'split'
         ? (src.data?.routes || []).map((r) => r.id)
-        : src?.type === 'condition' ? conditionHandles(src.data) : null;
+        : src?.type === 'condition'
+          ? conditionHandles(src.data)
+          : isButtonMessage(src?.type, src?.data)
+            ? messageHandles(src.data)
+            : null;
       if (outs) {
         const idx = outs.indexOf(context.sourceHandle);
         if (idx >= 0 && outs.length > 1) dx = (idx - (outs.length - 1) / 2) * GAP_X;
@@ -1243,7 +1331,7 @@ export default function WorkflowGraphEditor({
     let context = rawContext;
     if (context.mode === 'loose') {
       const one = selectedIds.length === 1 ? modelNodes.find((n) => n.id === selectedIds[0]) : null;
-      const free = one && !isBranch(one.type) && !isSplit(one.type)
+      const free = one && !isBranchingNode(one)
         && !edges.some((e) => e.source === one.id && (e.sourceHandle || 'default') === 'default');
       if (free) context = { mode: 'append', sourceId: one.id, sourceHandle: 'default' };
     }
@@ -1267,7 +1355,8 @@ export default function WorkflowGraphEditor({
     const walked = new Set([tailId]);
     while (defOut[tailId] && !walked.has(defOut[tailId])) { tailId = defOut[tailId]; walked.add(tailId); }
     const tailType = cb.nodes.find((n) => n.id === tailId)?.type;
-    const tailChainable = !isBranch(tailType) && !isSplit(tailType);
+    const tailNode = cb.nodes.find((n) => n.id === tailId);
+    const tailChainable = !isBranchingNode(tailNode || { type: tailType, data: {} });
 
     const xs = cb.nodes.map((n) => n.position?.x || 0);
     const ys = cb.nodes.map((n) => n.position?.y || 0);
@@ -1308,7 +1397,11 @@ export default function WorkflowGraphEditor({
       let dx = 0;
       const outs = src?.type === 'split'
         ? (src.data?.routes || []).map((r) => r.id)
-        : src?.type === 'condition' ? conditionHandles(src.data) : null;
+        : src?.type === 'condition'
+          ? conditionHandles(src.data)
+          : isButtonMessage(src?.type, src?.data)
+            ? messageHandles(src.data)
+            : null;
       if (outs) {
         const idx = outs.indexOf(context.sourceHandle);
         if (idx >= 0 && outs.length > 1) dx = (idx - (outs.length - 1) / 2) * GAP_X;
@@ -1356,7 +1449,13 @@ export default function WorkflowGraphEditor({
 
   const updateNodeData = (id, patch) => {
     const next = modelNodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...patch } } : n));
-    onChange?.({ nodes: next, edges });
+    let nextEdges = edges;
+    if (Array.isArray(patch.buttons)) {
+      const handles = new Set(patch.buttons.map((button) => button?.id).filter(Boolean));
+      handles.add('default');
+      nextEdges = edges.filter((edge) => edge.source !== id || handles.has(edge.sourceHandle || 'default'));
+    }
+    onChange?.({ nodes: next, edges: nextEdges });
   };
 
   // Quitar una rama de un nodo Condición: la saca de los datos y borra la arista
@@ -1456,7 +1555,7 @@ export default function WorkflowGraphEditor({
     };
     // Las ramas (condición/objetivo) y el Dividir tienen varias salidas: se
     // duplican SUELTAS (el usuario decide dónde conectar cada rama).
-    const branchLike = isBranch(src.type) || isSplit(src.type);
+    const branchLike = isBranchingNode(src);
     const defEdge = branchLike
       ? null
       : edges.find((e) => e.source === id && (e.sourceHandle || 'default') === 'default');
@@ -2043,8 +2142,8 @@ function waPreviewHtml(text) {
 }
 
 /** Burbuja verde estilo WhatsApp con el adjunto (si hay) y el texto renderizado. */
-function MessageBubblePreview({ body = '', mediaUrl = '', mediaType = '' }) {
-  if (!String(body).trim() && !mediaUrl) return null;
+function MessageBubblePreview({ body = '', mediaUrl = '', mediaType = '', buttons = [] }) {
+  if (!String(body).trim() && !mediaUrl && !buttons.length) return null;
   return (
     <div className="rounded-xl p-3" style={{ background: '#e5ddd5' }}>
       <p className="text-[10px] font-semibold text-slate-500 mb-1.5 uppercase tracking-wide">Previsualización</p>
@@ -2069,6 +2168,16 @@ function MessageBubblePreview({ body = '', mediaUrl = '', mediaType = '' }) {
         )}
         <p className="text-[10px] text-slate-500 text-right px-2 pb-1">10:30 ✓✓</p>
       </div>
+      {buttons.length > 0 && (
+        <div className="ml-auto max-w-[85%] mt-1 grid gap-0.5">
+          {buttons.map((button) => (
+            <div key={button.id} className="bg-white rounded-lg shadow-sm text-[12px] text-sky-600 font-semibold py-1.5 text-center">
+              {button.type === 'url' ? '🔗 ' : button.type === 'phone' ? '📞 ' : '↩️ '}
+              {button.text || 'Botón'}
+            </div>
+          ))}
+        </div>
+      )}
       <p className="text-[10px] text-slate-500 mt-1.5">
         Las variables se muestran con datos de ejemplo; al enviarse llevan los del paciente y su cita.
       </p>
@@ -2480,17 +2589,100 @@ function NodeConfig({ node, onChange, onRemoveRoute, onRemoveBranch, templates, 
     );
   }
 
-  if (t === 'send_message') return (
-    <div className="grid gap-2">
-      <WhatsappTextArea value={d.body || ''} onChange={(body) => set({ body })} rows={6} placeholder="Mensaje (usa el menú de variables)" variables={MESSAGE_VARIABLES} />
-      <NodeAttachment d={d} set={set} />
-      <MessageBubblePreview body={d.body} mediaUrl={d.mediaUrl} mediaType={d.mediaType} />
-      <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
-        WhatsApp solo permite texto libre (y adjuntos) si el paciente te escribió en las últimas 24h.
-        Fuera de esa ventana usa el paso <b>Enviar plantilla</b> (plantilla aprobada por Meta).
-      </p>
-    </div>
-  );
+  if (t === 'send_message') {
+    const buttons = messageButtonsOf(d);
+    const patchButton = (id, patch) => set({
+      buttons: buttons.map((button) => (button.id === id ? { ...button, ...patch } : button)),
+    });
+    return (
+      <div className="grid gap-2">
+        <WhatsappTextArea value={d.body || ''} onChange={(body) => set({ body })} rows={6} placeholder="Mensaje (usa el menú de variables)" variables={MESSAGE_VARIABLES} />
+        <NodeAttachment d={d} set={set} />
+
+        <div className="border border-slate-200 rounded-xl p-3 bg-slate-50/70">
+          <div className="flex items-center justify-between gap-2 mb-2">
+            <div>
+              <p className="text-[11px] font-semibold text-slate-600 uppercase tracking-wide">Botones y acciones</p>
+              <p className="text-[10px] text-slate-400">Máximo 3. Cada botón crea una salida en el diagrama.</p>
+            </div>
+            {buttons.length < 3 && (
+              <button
+                type="button"
+                onClick={() => set({ buttons: [...buttons, { id: newMessageButtonId(), type: 'quick_reply', text: '', url: '' }] })}
+                className="inline-flex items-center gap-1 text-xs font-semibold text-emerald-700 bg-white border border-emerald-200 rounded-lg px-2 py-1 cursor-pointer"
+              >
+                <HiOutlinePlus className="w-3.5 h-3.5" /> Añadir
+              </button>
+            )}
+          </div>
+          {!buttons.length && <p className="text-xs text-slate-400">Sin botones: el mensaje continúa por una sola salida.</p>}
+          <div className="grid gap-2">
+            {buttons.map((button, index) => (
+              <div key={button.id} className="rounded-lg border border-slate-200 bg-white p-2 grid gap-1.5">
+                <div className="flex items-center gap-1.5">
+                  <span className="w-5 h-5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold flex items-center justify-center shrink-0">{index + 1}</span>
+                  <select
+                    value={button.type || 'quick_reply'}
+                    onChange={(event) => patchButton(button.id, { type: event.target.value, url: event.target.value === 'quick_reply' ? '' : button.url })}
+                    className="w-36 border border-slate-200 rounded-lg px-2 py-1.5 text-xs bg-white"
+                  >
+                    {MESSAGE_BUTTON_TYPES.map((type) => <option key={type.value} value={type.value}>{type.label}</option>)}
+                  </select>
+                  <input
+                    value={button.text || ''}
+                    maxLength={20}
+                    onChange={(event) => patchButton(button.id, { text: event.target.value })}
+                    placeholder="Texto del botón"
+                    className="flex-1 min-w-0 border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
+                  />
+                  <button
+                    type="button"
+                    title="Quitar botón y su conexión"
+                    onClick={() => set({ buttons: buttons.filter((item) => item.id !== button.id) })}
+                    className="p-1 text-slate-300 hover:text-rose-600 bg-transparent border-none cursor-pointer"
+                  >
+                    <HiOutlineTrash className="w-4 h-4" />
+                  </button>
+                </div>
+                {(button.type === 'url' || button.type === 'phone') && (
+                  <input
+                    value={button.url || ''}
+                    onChange={(event) => patchButton(button.id, { url: event.target.value })}
+                    placeholder={button.type === 'url' ? 'https://ejemplo.com' : '+593999999999'}
+                    className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
+                  />
+                )}
+              </div>
+            ))}
+          </div>
+          {buttons.length > 0 && (
+            <div className="mt-2 grid gap-1.5">
+              <label className="flex items-center gap-2 text-xs text-slate-600">
+                <span>Esperar el clic hasta</span>
+                <NumericInput
+                  min="1"
+                  value={Math.max(1, Math.round(Number(d.buttonTimeoutMinutes || 1440) / 60))}
+                  onChange={(event) => set({ buttonTimeoutMinutes: Math.max(1, Number(event.target.value) || 1) * 60 })}
+                  className="w-16 border border-slate-200 rounded-lg px-2 py-1 text-xs"
+                />
+                <span>horas</span>
+              </label>
+              <p className="text-[10px] text-slate-500">
+                Conecta cada salida a la acción que debe ocurrir al pulsarla. “Otra / tiempo” cubre una respuesta escrita o el vencimiento.
+              </p>
+            </div>
+          )}
+        </div>
+
+        <MessageBubblePreview body={d.body} mediaUrl={d.mediaUrl} mediaType={d.mediaType} buttons={buttons} />
+        <p className="text-[11px] text-amber-600 bg-amber-50 border border-amber-200 rounded-lg px-2 py-1.5">
+          WhatsApp solo permite texto libre (y adjuntos) si el paciente te escribió en las últimas 24h.
+          Fuera de esa ventana usa el paso <b>Enviar plantilla</b> (plantilla aprobada por Meta).
+          En conexiones QR, los botones se muestran como opciones o enlaces tocables porque WhatsApp Web no ofrece botones interactivos estables.
+        </p>
+      </div>
+    );
+  }
   if (t === 'send_media') return (
     <div className="grid gap-2">
       <p className="text-xs text-slate-500">Envía SOLO una imagen, video o audio, sin texto.</p>

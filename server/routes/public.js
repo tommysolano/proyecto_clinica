@@ -27,6 +27,32 @@ router.post('/review/:token', review.publicSubmit);
 router.get('/email/open/:trackingId', emailTracking.open);
 router.get('/email/click/:trackingId', emailTracking.click);
 
+// Botones CTA de workflows. El GET NO ejecuta la acción: WhatsApp y otros
+// servicios visitan enlaces para generar previews y eso parecería un clic real.
+// El navegador del usuario hace un POST al abrir la página y solo ahí se avanza.
+router.get('/workflow-buttons/:token', (req, res) => {
+  const token = String(req.params.token || '');
+  if (!/^[a-f0-9]{48}$/i.test(token)) {
+    return res.status(404).send(page('Enlace no disponible', 'Este botón no es válido.'));
+  }
+  res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
+  return res.type('html').send(`<!doctype html><html lang="es"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>Abriendo…</title></head><body style="font-family:sans-serif;max-width:480px;margin:60px auto;text-align:center;color:#222"><p>Abriendo…</p><form id="go" method="post" action="/api/public/workflow-buttons/${token}/click"><button type="submit">Continuar</button></form><script>document.getElementById('go').submit()</script></body></html>`);
+});
+
+router.post('/workflow-buttons/:token/click', async (req, res) => {
+  try {
+    res.set({ 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' });
+    const result = await require('../utils/workflowEngine').resumeOnButtonClick(req.params.token);
+    if (!result.found || !result.destination) {
+      return res.status(404).send(page('Enlace no disponible', 'Este botón ya no está disponible o el enlace no es válido.'));
+    }
+    return res.redirect(302, result.destination);
+  } catch (err) {
+    console.error('[workflow button] click error', err.message);
+    return res.status(500).send(page('No se pudo abrir', 'Inténtalo de nuevo en unos segundos.'));
+  }
+});
+
 const page = (title, msg) =>
   `<!doctype html><html lang="es"><head><meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/><title>${title}</title></head><body style="font-family:sans-serif;max-width:480px;margin:60px auto;text-align:center;color:#222"><h2>${title}</h2><p>${msg}</p></body></html>`;
 

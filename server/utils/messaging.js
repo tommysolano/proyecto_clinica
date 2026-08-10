@@ -547,7 +547,39 @@ async function renderTemplateText(templateInfo) {
   });
 }
 
-async function sendToProvider({ clinicId, channel, conv, body, templateInfo, account, mediaUrl, mediaType, contextMessageId, quoteBody }) {
+function normalizeMessageButtons(buttons = []) {
+  return (Array.isArray(buttons) ? buttons : [])
+    .filter((button) => button && ['quick_reply', 'url', 'phone'].includes(button.type) && String(button.text || '').trim())
+    .slice(0, 3)
+    .map((button, index) => ({
+      id: String(button.id || `button_${index + 1}`),
+      type: button.type,
+      text: String(button.text || '').trim().slice(0, 20),
+      url: String(button.url || '').trim(),
+      providerId: String(button.providerId || button.id || `button_${index + 1}`),
+      providerUrl: String(button.providerUrl || button.url || '').trim(),
+    }));
+}
+
+// Fallback universal para canales que no admiten los tres tipos de botón. Los
+// CTA quedan como enlaces tocables y las respuestas rápidas como opciones cuyo
+// texto reconoce `resumeOnReply`.
+function appendButtonFallback(body, buttons, { includeQuickReplies = false } = {}) {
+  const lines = [];
+  buttons.forEach((button, index) => {
+    if (button.type === 'quick_reply' && includeQuickReplies) {
+      lines.push(`${index + 1}. Responde: ${button.text}`);
+    } else if (button.type === 'url' && button.providerUrl) {
+      lines.push(`🔗 ${button.text}: ${button.providerUrl}`);
+    } else if (button.type === 'phone' && button.providerUrl) {
+      lines.push(`📞 ${button.text}: ${button.providerUrl}`);
+    }
+  });
+  return [String(body || '').trim(), lines.join('\n')].filter(Boolean).join('\n\n');
+}
+
+async function sendToProvider({ clinicId, channel, conv, body, templateInfo, account, mediaUrl, mediaType, buttons, contextMessageId, quoteBody }) {
+  const messageButtons = normalizeMessageButtons(buttons);
   if (channel === 'whatsapp') {
     if (!account) {
       return { ok: false, errorCode: 'provider_unavailable', error: 'Sin número de WhatsApp configurado' };
@@ -555,7 +587,8 @@ async function sendToProvider({ clinicId, channel, conv, body, templateInfo, acc
     // Un número QR (sesión WhatsApp Web) no admite plantillas: se envía texto libre
     // (renderizando la plantilla a texto si fuera necesario).
     if (account.connectionType === 'qr') {
-      const text = body || (templateInfo ? await renderTemplateText(templateInfo) : '');
+      const rawText = body || (templateInfo ? await renderTemplateText(templateInfo) : '');
+      const text = appendButtonFallback(rawText, messageButtons, { includeQuickReplies: true });
       // Contactos con "número oculto" (LID de WhatsApp): conv.phone son los dígitos
       // del LID, NO un teléfono; responder a <lid>@c.us cuelga para siempre. Se
       // responde al JID completo (…@lid / …@c.us) guardado en externalUserId.
@@ -591,14 +624,23 @@ async function sendToProvider({ clinicId, channel, conv, body, templateInfo, acc
         templateInfo.components
       );
     }
+    const quickReplies = messageButtons.filter((button) => button.type === 'quick_reply');
+    const bodyWithCtas = appendButtonFallback(body, messageButtons);
     // Adjunto suelto por Cloud API. La media (URL pública propia o data URL) la
     // sube el gateway a Meta y la envía por id; NUNCA se degrada a "solo texto"
     // en silencio (eso marcaba "enviado" un mensaje SIN su adjunto). Si el envío
     // de la media falla, el resultado es FALLIDO con motivo, no un texto vacío.
     if (mediaUrl) {
-      return gateway.sendMedia(account, conv.phone, mediaUrl, body || '', mediaType || 'image', contextMessageId);
+      const mediaResult = await gateway.sendMedia(account, conv.phone, mediaUrl, bodyWithCtas, mediaType || 'image', contextMessageId);
+      if (!mediaResult.ok || !quickReplies.length) return mediaResult;
+      // WhatsApp no permite adjunto + botones reply en el mismo objeto: el
+      // adjunto sale primero y las opciones inmediatamente después.
+      return gateway.sendButtons(account, conv.phone, 'Elige una opción:', quickReplies, null);
     }
-    return gateway.sendText(account, conv.phone, body || '', contextMessageId);
+    if (quickReplies.length) {
+      return gateway.sendButtons(account, conv.phone, bodyWithCtas || 'Elige una opción:', quickReplies, contextMessageId);
+    }
+    return gateway.sendText(account, conv.phone, bodyWithCtas || '', contextMessageId);
   }
 
   if (channel === 'messenger' || channel === 'instagram') {
@@ -618,7 +660,9 @@ async function sendToProvider({ clinicId, channel, conv, body, templateInfo, acc
     const hm = templateInfo?.headerMedia;
     const effectiveMediaUrl = mediaUrl || hm?.url || null;
     const effectiveMediaType = mediaUrl ? mediaType : hm?.type;
-    if (!effectiveMediaUrl && !body) {
+    const quickReplies = messageButtons.filter((button) => button.type === 'quick_reply');
+    const bodyWithCtas = appendButtonFallback(body, messageButtons);
+    if (!effectiveMediaUrl && !bodyWithCtas) {
       return { ok: false, errorCode: 'invalid_recipient', error: 'Mensaje vacío' };
     }
     const url = `https://graph.facebook.com/${process.env.WHATSAPP_API_VERSION || 'v23.0'}/me/messages?access_token=${pageAccessToken}`;
@@ -644,11 +688,26 @@ async function sendToProvider({ clinicId, channel, conv, body, templateInfo, acc
         return { ...mediaResult, error: mediaResult.error || 'El adjunto fue rechazado' };
       }
     }
-    if (body) {
+    if (bodyWithCtas) {
       const textResult = await postMetaMessage({
         accessToken: pageAccessToken,
         url,
-        payload: { recipient, message: { text: body }, ...extra },
+        payload: {
+          recipient,
+          message: {
+            text: bodyWithCtas,
+            ...(quickReplies.length
+              ? {
+                  quick_replies: quickReplies.map((button) => ({
+                    content_type: 'text',
+                    title: button.text,
+                    payload: button.providerId,
+                  })),
+                }
+              : {}),
+          },
+          ...extra,
+        },
       });
       if (!textResult.ok) {
         return effectiveMediaUrl
@@ -757,6 +816,9 @@ async function send({
   mediaType,
   mediaName,
   mediaSize,
+  // Botones configurados en un nodo de workflow. `providerId`/`providerUrl`
+  // son valores efímeros preparados por el motor para enrutar el clic.
+  buttons = [],
   sentBy,
   sentByName,
   isAutoReply = false,
@@ -937,6 +999,7 @@ async function send({
   }
 
   const textBody = String(body || '').trim();
+  const messageButtons = normalizeMessageButtons(buttons);
   // Para plantillas guardamos el TEXTO renderizado (cuerpo con las variables ya
   // sustituidas) para que en el chat se vea el contenido real que recibe el paciente
   // y no un `[Plantilla: nombre]`. El envío a Meta sigue usando templateInfo (nombre
@@ -964,6 +1027,7 @@ async function send({
       mediaType: mediaType || tplMedia?.type || null,
       mediaName: mediaName || '',
       mediaSize: Number(mediaSize) || 0,
+      buttons: messageButtons.map(({ id, type, text, url }) => ({ id, type, text, url })),
       templateName: templateInfo?.name || '',
       // Por qué número SALIÓ. Sin esto, "¿por qué Meta dice que la ventana está
       // cerrada?" no se podía contestar mirando la base: los 44.720 salientes que
@@ -1083,6 +1147,7 @@ async function send({
       account,
       mediaUrl,
       mediaType,
+      buttons: messageButtons,
       // Cita en WhatsApp: por Cloud API se usa el wamid; por QR, si no tenemos el
       // wamid guardado, se pasa el TEXTO del mensaje citado para localizarlo en
       // vivo dentro del chat y citarlo igual.

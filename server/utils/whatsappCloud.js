@@ -102,6 +102,38 @@ async function sendText(creds, to, body, contextMessageId) {
   });
 }
 
+/**
+ * Envía botones de respuesta interactivos dentro de la ventana de 24 h.
+ * WhatsApp Cloud admite como máximo tres botones `reply`; los CTA de enlace y
+ * teléfono se convierten antes en enlaces rastreables dentro del texto.
+ */
+async function sendButtons(creds, to, body, buttons = [], contextMessageId) {
+  const phone = normalizePhone(to);
+  if (!phone) return { ok: false, error: 'Teléfono inválido' };
+  const replies = (buttons || [])
+    .filter((button) => button?.text)
+    .slice(0, 3)
+    .map((button, index) => ({
+      type: 'reply',
+      reply: {
+        id: String(button.providerId || button.id || `button_${index + 1}`).slice(0, 256),
+        title: String(button.text).slice(0, 20),
+      },
+    }));
+  if (!replies.length) return sendText(creds, to, body, contextMessageId);
+  return postToMeta(creds, {
+    messaging_product: 'whatsapp',
+    to: phone,
+    type: 'interactive',
+    ...(contextMessageId ? { context: { message_id: contextMessageId } } : {}),
+    interactive: {
+      type: 'button',
+      body: { text: String(body || 'Elige una opción:').slice(0, 1024) },
+      action: { buttons: replies },
+    },
+  });
+}
+
 // Meta Cloud API acepta un set CERRADO de MIME para documentos (ver error #100
 // "Param file must be a file with one of the following types…"). Los formatos de
 // TEXTO fuera de ese set (CSV, TSV, JSON, XML, Markdown, logs…) se suben como
@@ -283,4 +315,4 @@ async function sendBulk(creds, recipients, builderFn) {
   return results;
 }
 
-module.exports = { DEFAULT_API_VERSION, isConfigured, sendText, sendMedia, uploadMedia, metaUploadMime, sendTemplate, sendBulk, downloadMedia };
+module.exports = { DEFAULT_API_VERSION, isConfigured, sendText, sendButtons, sendMedia, uploadMedia, metaUploadMime, sendTemplate, sendBulk, downloadMedia };

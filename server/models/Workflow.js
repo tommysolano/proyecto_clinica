@@ -61,6 +61,19 @@ const conditionBranchSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Botones de un nodo `send_message`. El `id` es estable y se usa también como
+// sourceHandle de la arista que representa la acción posterior al clic.
+const workflowButtonSchema = new mongoose.Schema(
+  {
+    id: { type: String, required: true, trim: true },
+    type: { type: String, enum: ['quick_reply', 'url', 'phone'], default: 'quick_reply' },
+    text: { type: String, trim: true, default: '' },
+    // URL para `url`; número (con prefijo internacional) para `phone`.
+    url: { type: String, trim: true, default: '' },
+  },
+  { _id: false }
+);
+
 const workflowStepSchema = new mongoose.Schema(
   {
     type: {
@@ -100,6 +113,9 @@ const workflowStepSchema = new mongoose.Schema(
     mediaUrl: { type: String, trim: true, default: '' },
     mediaType: { type: String, enum: ['', 'image', 'video', 'document', 'audio'], default: '' },
     mediaName: { type: String, trim: true, default: '' },
+    // send_message: hasta tres botones. En workflows lineales antiguos se
+    // conservan y se envían; las ramas por clic solo aplican al modelo de grafo.
+    buttons: { type: [workflowButtonSchema], default: [] },
     // send_template
     templateName: { type: String, trim: true, default: '' },
     templateLanguage: { type: String, trim: true, default: 'es' },

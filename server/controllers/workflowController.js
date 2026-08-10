@@ -39,6 +39,33 @@ function sanitizeWorkflowPayload(body = {}) {
   return out;
 }
 
+function workflowButtonsError(body = {}) {
+  const steps = [
+    ...(Array.isArray(body.nodes)
+      ? body.nodes.filter((node) => node?.type === 'send_message').map((node) => node.data || {})
+      : []),
+    ...(Array.isArray(body.steps) ? body.steps.filter((step) => step?.type === 'send_message') : []),
+  ];
+  for (const step of steps) {
+    const buttons = Array.isArray(step.buttons) ? step.buttons : [];
+    if (buttons.length > 3) return 'Cada mensaje admite un máximo de 3 botones.';
+    const ids = buttons.map((button) => String(button?.id || '').trim());
+    if (ids.some((id) => !id) || new Set(ids).size !== ids.length) return 'Los botones necesitan identificadores únicos.';
+    for (const button of buttons) {
+      if (!['quick_reply', 'url', 'phone'].includes(button.type)) return 'Hay un tipo de botón no permitido.';
+      const text = String(button.text || '').trim();
+      if (!text || text.length > 20) return 'El texto de cada botón debe tener entre 1 y 20 caracteres.';
+      if (button.type === 'url' && !/^https?:\/\//i.test(String(button.url || '').trim())) {
+        return 'Los botones de enlace necesitan una URL http:// o https:// válida.';
+      }
+      if (button.type === 'phone' && String(button.url || '').replace(/\D/g, '').length < 7) {
+        return 'Los botones de llamada necesitan un número con prefijo internacional.';
+      }
+    }
+  }
+  return '';
+}
+
 // ─────────── Carpetas (anidadas, tipo Windows) ───────────
 // Rutas con '/' ("Citas/Recordatorios"): carpetas dentro de carpetas. El registro
 // persiste la carpeta aunque esté vacía. Lógica compartida en utils/folderCrud.
@@ -87,6 +114,8 @@ exports.create = async (req, res) => {
     if (!req.body.name?.trim()) return res.status(400).json({ message: 'El nombre es requerido' });
     const hasTrigger = req.body.trigger?.type || (Array.isArray(req.body.triggers) && req.body.triggers.some((t) => t?.type));
     if (!hasTrigger) return res.status(400).json({ message: 'Falta al menos un disparador' });
+    const buttonError = workflowButtonsError(req.body);
+    if (buttonError) return res.status(400).json({ message: buttonError });
     const payload = sanitizeWorkflowPayload(req.body);
     const wf = await Workflow.create({
       ...payload,
@@ -102,6 +131,8 @@ exports.create = async (req, res) => {
 
 exports.update = async (req, res) => {
   try {
+    const buttonError = workflowButtonsError(req.body);
+    if (buttonError) return res.status(400).json({ message: buttonError });
     const update = sanitizeWorkflowPayload(req.body);
     delete update.clinic;
     delete update._id;

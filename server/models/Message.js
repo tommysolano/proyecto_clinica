@@ -62,6 +62,22 @@ const messageSchema = new mongoose.Schema(
       title: { type: String, trim: true, default: '' },
       type: { type: String, enum: ['button_reply', 'list_reply', ''], default: '' },
     },
+    // Snapshot de los botones enviados por un nodo de workflow. Permite que la
+    // bandeja muestre exactamente las opciones que recibió el contacto.
+    buttons: {
+      type: [
+        new mongoose.Schema(
+          {
+            id: { type: String, trim: true, default: '' },
+            type: { type: String, enum: ['quick_reply', 'url', 'phone'], default: 'quick_reply' },
+            text: { type: String, trim: true, default: '' },
+            url: { type: String, trim: true, default: '' },
+          },
+          { _id: false }
+        ),
+      ],
+      default: [],
+    },
     templateName: { type: String, trim: true, default: '' },
     // Facturación TAL COMO LA INFORMA META en el webhook de estado (`statuses[].pricing`).
     // No es un cálculo nuestro: es la categoría con la que Meta cobró ESTE mensaje
