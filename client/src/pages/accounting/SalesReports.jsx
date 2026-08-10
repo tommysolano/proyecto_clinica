@@ -6,6 +6,7 @@ import Field from '../../components/Field';
 import { HiOutlineChartBar, HiOutlineArrowDownTray, HiOutlinePlus, HiOutlineTag, HiOutlineTrash, HiOutlinePencilSquare } from 'react-icons/hi2';
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { fmt, startOfMonth, endOfMonth } from './_utils';
+import { downloadFile } from '../../utils/download';
 import SalesDetailReport from './_SalesDetailReport';
 
 const COLORS = ['#10b981', '#0ea5e9', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
@@ -75,12 +76,21 @@ export default function SalesReports() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { run(); }, []);
 
+  /**
+   * Excel DETALLADO: sale del mismo motor que la pantalla (`buildSalesReport`) y trae
+   * cuatro hojas — Ventas (una fila por documento), Detalle (una por línea), Pagos
+   * (una por cobro real, con el método, si la tarjeta fue de crédito o débito, la
+   * cuenta y la referencia: así un pago mixto se ve partido en sus componentes) y
+   * Resumen. Antes este botón apuntaba a `/sales-reports/excel`, la exportación
+   * vieja de dos hojas que no desglosaba los pagos.
+   */
   const downloadExcel = async () => {
     try {
-      const r = await api.get('/sales-reports/excel', { params: params(), responseType: 'blob' });
-      const u = URL.createObjectURL(r.data); const a = document.createElement('a');
-      a.href = u; a.download = 'reporte-ventas.xlsx'; a.click(); URL.revokeObjectURL(u);
-    } catch { toast.error('Error al exportar'); }
+      await downloadFile('/sales-reports/report.xlsx', {
+        params: params(),
+        filename: `reporte-ventas_${filters.startDate}_${filters.endDate}.xlsx`,
+      });
+    } catch (e) { toast.error(e.message || 'Error al exportar'); }
   };
 
   const toggleProduct = (id) => setFilters((f) => ({ ...f, products: f.products.includes(id) ? f.products.filter((x) => x !== id) : [...f.products, id] }));

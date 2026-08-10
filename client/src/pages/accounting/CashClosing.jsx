@@ -42,7 +42,10 @@ export default function CashClosing() {
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
   useEffect(() => { load(); }, []);
-  useEffect(() => { api.get('/banks').then((r) => setBanks(r.data || [])).catch(() => {}); }, []);
+  // OJO: la ruta es /banks/accounts. Con '/banks' (que no existe) la petición
+  // devolvía 404 y el desplegable de "Banco destino" salía SIEMPRE vacío, así que
+  // no se podía depositar el efectivo de la caja.
+  useEffect(() => { api.get('/banks/accounts').then((r) => setBanks(r.data || [])).catch(() => {}); }, []);
   useEffect(() => {
     api.get('/chart-of-accounts')
       .then((r) => setAccounts(r.data || []))

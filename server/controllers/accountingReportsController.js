@@ -19,6 +19,17 @@ const { effectivePaymentDate } = require('../utils/paymentSchedule');
 const { resolveReceivableEconomicObligations } = require('../services/receivableObligations');
 const ExcelJS = require('exceljs');
 const mongoose = require('mongoose');
+
+/**
+ * Clínica como ObjectId para los `$match` de las agregaciones.
+ *
+ * OJO — no es cosmético: `req.clinicId` llega del token como STRING. En `find()`
+ * Mongoose lo convierte solo (conoce el esquema), pero en `aggregate()` NO hay
+ * conversión: el pipeline compara un string contra un ObjectId, no casa NADA y el
+ * reporte sale vacío sin dar error. Así estaban "Ventas por producto", "Ventas por
+ * vendedor", "Ventas por cajero", "Gastos no deducibles" y "Anticipos".
+ */
+const oid = (v) => (v instanceof mongoose.Types.ObjectId ? v : new mongoose.Types.ObjectId(String(v)));
 const XL = require('../utils/excelReport');
 const { buildAts, atsXml, atsFileName } = require('../utils/sriForms/ats');
 
@@ -574,7 +585,7 @@ exports.accountFlow = async (req, res) => {
 exports.salesSummary = async (req, res) => {
   try {
     const { startDate, endDate } = req.query;
-    const match = { clinic: req.clinicId, status: 'completada' };
+    const match = { clinic: oid(req.clinicId), status: 'completada' };
     if (startDate || endDate) {
       match.createdAt = {};
       if (startDate) match.createdAt.$gte = new Date(startDate);
@@ -590,7 +601,7 @@ exports.salesSummary = async (req, res) => {
 
 exports.salesByProduct = async (req, res) => {
   const { startDate, endDate } = req.query;
-  const match = { clinic: req.clinicId, status: 'completada' };
+  const match = { clinic: oid(req.clinicId), status: 'completada' };
   if (startDate || endDate) {
     match.createdAt = {};
     if (startDate) match.createdAt.$gte = new Date(startDate);
@@ -607,7 +618,7 @@ exports.salesByProduct = async (req, res) => {
 
 exports.salesByCashier = async (req, res) => {
   const { startDate, endDate } = req.query;
-  const match = { clinic: req.clinicId, status: 'completada' };
+  const match = { clinic: oid(req.clinicId), status: 'completada' };
   if (startDate || endDate) {
     match.createdAt = {};
     if (startDate) match.createdAt.$gte = new Date(startDate);
@@ -628,7 +639,7 @@ exports.salesWeekly = async (req, res) => {
   const start = new Date(y, 0, 1);
   const end = new Date(y, 11, 31, 23, 59, 59);
   const rows = await Sale.aggregate([
-    { $match: { clinic: req.clinicId, status: 'completada', createdAt: { $gte: start, $lte: end } } },
+    { $match: { clinic: oid(req.clinicId), status: 'completada', createdAt: { $gte: start, $lte: end } } },
     { $group: { _id: { week: { $isoWeek: '$createdAt' }, year: { $isoWeekYear: '$createdAt' } }, count: { $sum: 1 }, total: { $sum: '$total' } } },
     { $sort: { '_id.year': 1, '_id.week': 1 } },
   ]);
@@ -660,7 +671,7 @@ exports.salesByPeriod = async (req, res) => {
 /** Ventas por vendedor (createdBy). */
 exports.salesBySeller = async (req, res) => {
   try {
-    const match = { clinic: req.clinicId, status: 'completada', ...dateMatch(req) };
+    const match = { clinic: oid(req.clinicId), status: 'completada', ...dateMatch(req) };
     const rows = await Sale.aggregate([
       { $match: match },
       { $group: { _id: '$createdBy', count: { $sum: 1 }, total: { $sum: '$total' } } },
@@ -674,7 +685,7 @@ exports.salesBySeller = async (req, res) => {
 /** Costo de venta por categoría de producto. */
 exports.costOfSalesByCategory = async (req, res) => {
   try {
-    const match = { clinic: req.clinicId, status: 'completada', ...dateMatch(req) };
+    const match = { clinic: oid(req.clinicId), status: 'completada', ...dateMatch(req) };
     const sales = await Sale.find(match).populate('items.product', 'purchasePrice category');
     const byCat = {};
     for (const s of sales) {
@@ -692,46 +703,137 @@ exports.costOfSalesByCategory = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
+/**
+ * COSTO DE VENTA — no basta con los tres totales: el gerente necesita ver QUÉ se
+ * vendió. Devuelve una fila por línea vendida con el producto, la cantidad, el
+ * precio de venta, el costo, la utilidad y LA FACTURA ASOCIADA (para poder abrirla).
+ *
+ * El costo unitario sale del promedio del kardex (`averageCost`), que es el costo
+ * real de las compras; `purchasePrice` solo queda de respaldo para productos que
+ * nunca tuvieron movimiento.
+ */
 exports.costOfSales = async (req, res) => {
-  const { startDate, endDate } = req.query;
-  const match = { clinic: req.clinicId, status: 'completada' };
-  if (startDate || endDate) {
-    match.createdAt = {};
-    if (startDate) match.createdAt.$gte = new Date(startDate);
-    if (endDate) match.createdAt.$lte = endOfDay(endDate);
-  }
-  const sales = await Sale.find(match).populate('items.product', 'purchasePrice');
-  let cost = 0;
-  for (const s of sales) {
-    for (const it of s.items) {
-      const pcost = it.product?.purchasePrice || 0;
-      cost += pcost * it.quantity;
+  try {
+    const { startDate, endDate } = req.query;
+    const match = { clinic: oid(req.clinicId), status: 'completada' };
+    if (startDate || endDate) {
+      match.createdAt = {};
+      if (startDate) match.createdAt.$gte = new Date(startDate);
+      if (endDate) match.createdAt.$lte = endOfDay(endDate);
     }
-  }
-  const totalSales = sales.reduce((s, v) => s + v.total, 0);
-  res.json({ totalSales, totalCost: cost, grossProfit: totalSales - cost });
+    const sales = await Sale.find(match)
+      .populate('items.product', 'purchasePrice averageCost code')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // Factura de cada venta: es lo que el usuario quiere poder abrir desde el reporte.
+    const facturas = await Invoice.find({ clinic: req.clinicId, sale: { $in: sales.map((s) => s._id) } })
+      .select('sale numero estado')
+      .lean();
+    const facturaPorVenta = new Map(facturas.map((f) => [String(f.sale), f]));
+
+    const rows = [];
+    let cost = 0;
+    for (const s of sales) {
+      const inv = facturaPorVenta.get(String(s._id));
+      for (const it of s.items || []) {
+        const unitCost = Number(it.product?.averageCost) || Number(it.product?.purchasePrice) || 0;
+        const lineCost = unitCost * (it.quantity || 0);
+        cost += lineCost;
+        rows.push({
+          saleId: s._id,
+          venta: s.saleNumber,
+          fecha: s.createdAt,
+          cliente: s.clientName || 'CONSUMIDOR FINAL',
+          invoiceId: inv?._id || null,
+          factura: inv?.numero || '',
+          producto: it.productName,
+          codigo: it.productCode || it.product?.code || '',
+          cantidad: it.quantity || 0,
+          precioVenta: it.unitPrice || 0,
+          ingreso: it.subtotal || 0,
+          costoUnitario: unitCost,
+          costo: +lineCost.toFixed(2),
+          utilidad: +((it.subtotal || 0) - lineCost).toFixed(2),
+        });
+      }
+    }
+    const totalSales = sales.reduce((s, v) => s + (v.total || 0), 0);
+    res.json({
+      totalSales,
+      totalCost: +cost.toFixed(2),
+      grossProfit: +(totalSales - cost).toFixed(2),
+      rows,
+    });
+  } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
 // ---------- Gestión ----------
+/**
+ * GASTOS NO DEDUCIBLES — una fila por movimiento, con su documento y proveedor,
+ * y además el resumen por cuenta. Antes solo devolvía el saldo de cada cuenta, que
+ * no sirve para justificar nada ante el SRI.
+ */
 exports.nonDeductibleExpenses = async (req, res) => {
-  const { startDate, endDate } = req.query;
-  const accs = await ChartOfAccount.find({ clinic: req.clinicId, code: /^6\.3\./ });
-  const ids = accs.map((a) => a._id);
-  const match = { clinic: req.clinicId, status: 'CONTABILIZADO', 'lines.account': { $in: ids } };
-  if (startDate || endDate) {
-    match.date = {};
-    if (startDate) match.date.$gte = startOfDay(startDate);
-    if (endDate) match.date.$lte = endOfDay(endDate);
-  }
-  const agg = await JournalEntry.aggregate([
-    { $match: match }, { $unwind: '$lines' },
-    { $match: { 'lines.account': { $in: ids } } },
-    { $group: { _id: '$lines.account', debit: { $sum: '$lines.debit' }, credit: { $sum: '$lines.credit' } } },
-  ]);
-  const map = new Map(accs.map((a) => [String(a._id), a]));
-  const rows = agg.map((r) => ({ account: map.get(String(r._id)), amount: r.debit - r.credit }));
-  const total = rows.reduce((s, r) => s + r.amount, 0);
-  res.json({ rows, total });
+  try {
+    const { startDate, endDate } = req.query;
+    const accs = await ChartOfAccount.find({
+      clinic: req.clinicId,
+      $or: [{ code: /^6\.3\./ }, { name: /no deducible/i }],
+    }).lean();
+    if (!accs.length) return res.json({ rows: [], byAccount: [], total: 0 });
+    const ids = accs.map((a) => a._id);
+    const porId = new Map(accs.map((a) => [String(a._id), a]));
+
+    const match = { clinic: req.clinicId, status: 'CONTABILIZADO', 'lines.account': { $in: ids } };
+    if (startDate || endDate) {
+      match.date = {};
+      if (startDate) match.date.$gte = startOfDay(startDate);
+      if (endDate) match.date.$lte = endOfDay(endDate);
+    }
+    const entries = await JournalEntry.find(match).sort({ date: -1, number: -1 }).lean();
+
+    // Proveedor / documento del gasto (la factura de compra es lo habitual).
+    const compraIds = entries.filter((e) => e.sourceModel === 'PurchaseInvoice').map((e) => e.sourceRef);
+    const compras = compraIds.length
+      ? await PurchaseInvoice.find({ _id: { $in: compraIds } }).select('supplierName numeroFactura').lean()
+      : [];
+    const porCompra = new Map(compras.map((c) => [String(c._id), c]));
+
+    const rows = [];
+    for (const e of entries) {
+      for (const l of e.lines || []) {
+        const acc = porId.get(String(l.account));
+        if (!acc) continue;
+        const monto = (l.debit || 0) - (l.credit || 0);
+        if (!monto) continue;
+        const compra = porCompra.get(String(e.sourceRef));
+        rows.push({
+          date: e.date,
+          asiento: e.number,
+          cuenta: { code: acc.code, name: acc.name },
+          concepto: l.description || e.description || '',
+          proveedor: compra?.supplierName || '',
+          documento: compra?.numeroFactura || '',
+          monto: +monto.toFixed(2),
+          sourceModel: e.sourceModel || null,
+          sourceRef: e.sourceRef || null,
+          entryId: e._id,
+        });
+      }
+    }
+    const byAccountMap = new Map();
+    for (const r of rows) {
+      const k = r.cuenta.code;
+      const prev = byAccountMap.get(k) || { code: r.cuenta.code, name: r.cuenta.name, amount: 0, count: 0 };
+      byAccountMap.set(k, { ...prev, amount: +(prev.amount + r.monto).toFixed(2), count: prev.count + 1 });
+    }
+    res.json({
+      rows,
+      byAccount: [...byAccountMap.values()].sort((a, b) => b.amount - a.amount),
+      total: +rows.reduce((s, r) => s + r.monto, 0).toFixed(2),
+    });
+  } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
 // Cartera por edad: separa documentos vencidos por rangos
@@ -761,7 +863,7 @@ exports.accountsReceivableAging = async (req, res) => {
     // Aplica a facturas de venta autorizadas con saldo pendiente (saldo = total - cobros aplicados)
     const invoices = await Invoice.find({ clinic: req.clinicId, estado: 'AUTORIZADO' });
     const paymentApps = await Payment.aggregate([
-      { $match: { clinic: req.clinicId, type: 'COBRO', status: 'REGISTRADO' } },
+      { $match: { clinic: oid(req.clinicId), type: 'COBRO', status: 'REGISTRADO' } },
       { $unwind: '$applications' },
       { $match: { 'applications.docModel': 'Invoice' } },
       { $group: { _id: '$applications.docRef', paid: { $sum: '$applications.amount' } } },
@@ -897,7 +999,7 @@ exports.accountsPayableAging = async (req, res) => {
     const today = new Date();
     const invoices = await PurchaseInvoice.find({ clinic: req.clinicId, status: 'REGISTRADA' });
     const paymentApps = await Payment.aggregate([
-      { $match: { clinic: req.clinicId, type: 'PAGO', status: 'REGISTRADO' } },
+      { $match: { clinic: oid(req.clinicId), type: 'PAGO', status: 'REGISTRADO' } },
       { $unwind: '$applications' },
       { $match: { 'applications.docModel': 'PurchaseInvoice' } },
       { $group: { _id: '$applications.docRef', paid: { $sum: '$applications.amount' } } },
@@ -923,22 +1025,92 @@ exports.accountsPayableAging = async (req, res) => {
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
+/**
+ * ANTICIPOS — uno por uno, no el saldo agregado de la cuenta.
+ *
+ * Cada fila es un movimiento contra una cuenta de anticipos: a quién (persona),
+ * con qué documento, en qué fecha, por cuánto, y si es de un CLIENTE (lo que nos
+ * anticiparon) o a un PROVEEDOR (lo que anticipamos). Se puede abrir el documento
+ * origen desde la pantalla.
+ *
+ * La persona no está en el asiento: se resuelve del documento que lo generó
+ * (movimiento bancario, cobro/pago, factura de compra o venta) en una sola consulta
+ * por modelo, no una por fila.
+ */
 exports.advancesControl = async (req, res) => {
-  // Saldo de cuentas Anticipos a proveedores y Anticipos de clientes
-  const codes = ['1.1.02.03', '2.1.01.03'];
-  const accs = await ChartOfAccount.find({ clinic: req.clinicId, code: { $in: codes } });
-  const ids = accs.map((a) => a._id);
-  const agg = await JournalEntry.aggregate([
-    { $match: { clinic: req.clinicId, status: 'CONTABILIZADO', 'lines.account': { $in: ids } } },
-    { $unwind: '$lines' },
-    { $match: { 'lines.account': { $in: ids } } },
-    { $group: { _id: '$lines.account', debit: { $sum: '$lines.debit' }, credit: { $sum: '$lines.credit' } } },
-  ]);
-  const rows = agg.map((r) => {
-    const acc = accs.find((a) => String(a._id) === String(r._id));
-    return { code: acc.code, name: acc.name, debit: r.debit, credit: r.credit, saldo: acc.nature === 'DEBITO' ? r.debit - r.credit : r.credit - r.debit };
-  });
-  res.json(rows);
+  try {
+    const { startDate, endDate } = req.query;
+    // Las cuentas se buscan por CÓDIGO y también por nombre: un plan personalizado
+    // puede tenerlas en otro código, y el reporte no debe quedarse mudo por eso.
+    const accs = await ChartOfAccount.find({
+      clinic: req.clinicId,
+      $or: [{ code: { $in: ['1.1.02.03', '2.1.01.03'] } }, { name: /anticipo/i }],
+    }).lean();
+    // El anticipo de impuesto a la renta NO es un anticipo a terceros: no va aquí.
+    const cuentas = accs.filter((a) => !/impuesto|renta/i.test(a.name || ''));
+    if (!cuentas.length) return res.json({ rows: [], totals: { clientes: 0, proveedores: 0 }, accounts: [] });
+
+    const ids = cuentas.map((a) => a._id);
+    const porId = new Map(cuentas.map((a) => [String(a._id), a]));
+
+    const match = { clinic: req.clinicId, status: 'CONTABILIZADO', 'lines.account': { $in: ids } };
+    if (startDate || endDate) {
+      match.date = {};
+      if (startDate) match.date.$gte = startOfDay(startDate);
+      if (endDate) match.date.$lte = endOfDay(endDate);
+    }
+    const entries = await JournalEntry.find(match).sort({ date: -1, number: -1 }).lean();
+
+    // Personas de los documentos origen (una consulta por modelo).
+    const refs = { BankTransaction: [], Payment: [], PurchaseInvoice: [], Sale: [] };
+    for (const e of entries) if (refs[e.sourceModel]) refs[e.sourceModel].push(e.sourceRef);
+    const [banks, pagos, compras, ventas] = await Promise.all([
+      refs.BankTransaction.length ? require('../models/BankTransaction').find({ _id: { $in: refs.BankTransaction } }).select('partyName description reference').lean() : [],
+      refs.Payment.length ? Payment.find({ _id: { $in: refs.Payment } }).select('partyName number type').lean() : [],
+      refs.PurchaseInvoice.length ? PurchaseInvoice.find({ _id: { $in: refs.PurchaseInvoice } }).select('supplierName numeroFactura').lean() : [],
+      refs.Sale.length ? Sale.find({ _id: { $in: refs.Sale } }).select('clientName saleNumber').lean() : [],
+    ]);
+    const persona = new Map();
+    banks.forEach((b) => persona.set(String(b._id), { nombre: b.partyName || '', doc: b.reference || '' }));
+    pagos.forEach((p) => persona.set(String(p._id), { nombre: p.partyName || '', doc: p.number || '' }));
+    compras.forEach((p) => persona.set(String(p._id), { nombre: p.supplierName || '', doc: p.numeroFactura || '' }));
+    ventas.forEach((v) => persona.set(String(v._id), { nombre: v.clientName || '', doc: v.saleNumber || '' }));
+
+    const rows = [];
+    for (const e of entries) {
+      for (const l of e.lines || []) {
+        const acc = porId.get(String(l.account));
+        if (!acc) continue;
+        const p = persona.get(String(e.sourceRef)) || {};
+        // Cliente = cuenta de PASIVO (nos anticiparon); proveedor = ACTIVO (anticipamos).
+        const esCliente = acc.nature === 'CREDITO' || String(acc.code || '').startsWith('2.');
+        const monto = esCliente ? (l.credit || 0) - (l.debit || 0) : (l.debit || 0) - (l.credit || 0);
+        if (!monto) continue;
+        rows.push({
+          date: e.date,
+          tipo: esCliente ? 'CLIENTE' : 'PROVEEDOR',
+          persona: p.nombre || l.description || e.description || '(sin identificar)',
+          documento: p.doc || e.number,
+          asiento: e.number,
+          concepto: l.description || e.description || '',
+          cuenta: { code: acc.code, name: acc.name },
+          monto: +monto.toFixed(2),
+          sourceModel: e.sourceModel || null,
+          sourceRef: e.sourceRef || null,
+          entryId: e._id,
+        });
+      }
+    }
+    const totals = rows.reduce(
+      (acc, r) => ({ ...acc, [r.tipo === 'CLIENTE' ? 'clientes' : 'proveedores']: acc[r.tipo === 'CLIENTE' ? 'clientes' : 'proveedores'] + r.monto }),
+      { clientes: 0, proveedores: 0 }
+    );
+    res.json({
+      rows,
+      totals: { clientes: +totals.clientes.toFixed(2), proveedores: +totals.proveedores.toFixed(2) },
+      accounts: cuentas.map((a) => ({ code: a.code, name: a.name })),
+    });
+  } catch (e) { res.status(500).json({ message: e.message }); }
 };
 
 exports.inventoryReport = async (req, res) => {
@@ -2269,38 +2441,71 @@ exports.indicatorsExcel = XL.excelHandler(async (req, res) => {
 /** GASTOS NO DEDUCIBLES en Excel. */
 exports.nonDeductibleExcel = XL.excelHandler(async (req, res) => {
   const d = await XL.captureJson(exports.nonDeductibleExpenses, req);
-  const rows = (d.rows || []).map((r) => ({ code: r.account?.code || '', name: r.account?.name || '', amount: r.amount }));
   const wb = XL.newWorkbook();
+  // Hoja 1: el detalle (es lo que sirve para justificar el gasto ante el SRI).
   XL.addSheet(wb, {
-    title: 'Gastos no deducibles',
+    title: 'Detalle',
     meta: [['Reporte', 'Gastos no deducibles'], ['Período', XL.periodLabel(req.query)]],
+    columns: [
+      { header: 'Fecha', key: 'fecha', width: 12 },
+      { header: 'Asiento', key: 'asiento', width: 16 },
+      { header: 'Cuenta', key: 'cuenta', width: 44 },
+      { header: 'Concepto', key: 'concepto', width: 40 },
+      { header: 'Proveedor', key: 'proveedor', width: 28 },
+      { header: 'Documento', key: 'documento', width: 20 },
+      { header: 'Monto', key: 'monto', width: 16, money: true },
+    ],
+    rows: (d.rows || []).map((r) => ({
+      fecha: r.date ? new Date(r.date).toLocaleDateString('es-EC') : '',
+      asiento: r.asiento,
+      cuenta: `${r.cuenta?.code || ''} ${r.cuenta?.name || ''}`.trim(),
+      concepto: r.concepto, proveedor: r.proveedor, documento: r.documento, monto: r.monto,
+    })),
+    totals: { monto: d.total },
+    notes: ['Cuentas 6.3.x — gastos que NO son deducibles del impuesto a la renta.'],
+  });
+  XL.addSheet(wb, {
+    title: 'Por cuenta',
     columns: [
       { header: 'Código', key: 'code', width: 16 },
       { header: 'Cuenta', key: 'name', width: 50 },
+      { header: 'Movimientos', key: 'count', width: 14 },
       { header: 'Monto', key: 'amount', width: 18, money: true },
     ],
-    rows,
+    rows: d.byAccount || [],
     totals: { amount: d.total },
-    notes: ['Cuentas 6.3.x — gastos que NO son deducibles del impuesto a la renta.'],
   });
   await XL.sendWorkbook(res, wb, `gastos_no_deducibles_${Date.now()}.xlsx`);
 });
 
-/** CONTROL DE ANTICIPOS en Excel. */
+/** CONTROL DE ANTICIPOS en Excel: uno por uno, con persona y documento. */
 exports.advancesExcel = XL.excelHandler(async (req, res) => {
-  const rows = await XL.captureJson(exports.advancesControl, req);
+  const d = await XL.captureJson(exports.advancesControl, req);
   const wb = XL.newWorkbook();
   XL.addSheet(wb, {
     title: 'Anticipos',
-    meta: [['Reporte', 'Control de anticipos']],
-    columns: [
-      { header: 'Código', key: 'code', width: 16 },
-      { header: 'Cuenta', key: 'name', width: 44 },
-      { header: 'Débito', key: 'debit', width: 16, money: true },
-      { header: 'Crédito', key: 'credit', width: 16, money: true },
-      { header: 'Saldo', key: 'saldo', width: 16, money: true },
+    meta: [
+      ['Reporte', 'Control de anticipos'],
+      ['Período', XL.periodLabel(req.query)],
+      ['Anticipos de clientes', d.totals?.clientes || 0],
+      ['Anticipos a proveedores', d.totals?.proveedores || 0],
     ],
-    rows: Array.isArray(rows) ? rows : [],
+    columns: [
+      { header: 'Fecha', key: 'fecha', width: 12 },
+      { header: 'Tipo', key: 'tipo', width: 12 },
+      { header: 'Persona', key: 'persona', width: 32 },
+      { header: 'Documento', key: 'documento', width: 20 },
+      { header: 'Concepto', key: 'concepto', width: 36 },
+      { header: 'Cuenta', key: 'cuenta', width: 34 },
+      { header: 'Monto', key: 'monto', width: 16, money: true },
+    ],
+    rows: (d.rows || []).map((r) => ({
+      fecha: r.date ? new Date(r.date).toLocaleDateString('es-EC') : '',
+      tipo: r.tipo === 'CLIENTE' ? 'De cliente' : 'A proveedor',
+      persona: r.persona, documento: r.documento, concepto: r.concepto,
+      cuenta: `${r.cuenta?.code || ''} ${r.cuenta?.name || ''}`.trim(),
+      monto: r.monto,
+    })),
   });
   await XL.sendWorkbook(res, wb, `anticipos_${Date.now()}.xlsx`);
 });
@@ -2645,7 +2850,8 @@ const SALES_SUBREPORTS = {
 
 exports.salesSubreportExcel = XL.excelHandler(async (req, res) => {
   const key = String(req.params.report || '');
-  // El costo de venta es un resumen de 3 cifras, no una tabla: tiene su propio formato.
+  // Costo de venta: el resumen de tres cifras y, en otra hoja, el detalle de lo
+  // vendido (producto, cantidad, precio de venta, costo y factura asociada).
   if (key === 'cost') {
     const d = await XL.captureJson(exports.costOfSales, req);
     const wb = XL.newWorkbook();
@@ -2657,6 +2863,33 @@ exports.salesSubreportExcel = XL.excelHandler(async (req, res) => {
         rows: [['Ventas', d.totalSales], ['Costo de venta', d.totalCost]],
         total: ['Utilidad bruta', d.grossProfit],
       }],
+    });
+    XL.addSheet(wb, {
+      title: 'Detalle',
+      columns: [
+        { header: 'Fecha', key: 'fecha', width: 12 },
+        { header: 'Venta', key: 'venta', width: 14 },
+        { header: 'Factura', key: 'factura', width: 18 },
+        { header: 'Cliente', key: 'cliente', width: 28 },
+        { header: 'Código', key: 'codigo', width: 14 },
+        { header: 'Producto / servicio', key: 'producto', width: 34 },
+        { header: 'Cantidad', key: 'cantidad', width: 10, number: true },
+        { header: 'Precio de venta', key: 'precioVenta', width: 15, money: true },
+        { header: 'Ingreso', key: 'ingreso', width: 14, money: true },
+        { header: 'Costo unitario', key: 'costoUnitario', width: 15, money: true },
+        { header: 'Costo', key: 'costo', width: 14, money: true },
+        { header: 'Utilidad', key: 'utilidad', width: 14, money: true },
+      ],
+      rows: (d.rows || []).map((r) => ({
+        ...r,
+        fecha: r.fecha ? new Date(r.fecha).toLocaleDateString('es-EC') : '',
+      })),
+      totals: {
+        cantidad: +(d.rows || []).reduce((s, r) => s + (r.cantidad || 0), 0).toFixed(2),
+        ingreso: +(d.rows || []).reduce((s, r) => s + (r.ingreso || 0), 0).toFixed(2),
+        costo: d.totalCost,
+        utilidad: +(d.rows || []).reduce((s, r) => s + (r.utilidad || 0), 0).toFixed(2),
+      },
     });
     return XL.sendWorkbook(res, wb, `costo_venta_${Date.now()}.xlsx`);
   }

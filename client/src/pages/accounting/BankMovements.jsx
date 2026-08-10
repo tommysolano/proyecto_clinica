@@ -34,17 +34,37 @@ const TIPO_LABEL = {
 const EMPTY_MOV = { bankAccount: '', date: today(), type: 'DEPOSITO', amount: 0, counterpartAccount: '', counterAccountCode: '', description: '', reference: '', voucherNumber: '', voucherUrl: '', partyName: '', costCenter: '' };
 const EMPTY_FILTER = { bankAccount: '', type: '', startDate: '', endDate: '', q: '', costCenter: '' };
 
-/** Motivo por el que un movimiento no se puede corregir/anular desde esta pantalla (o null). */
+/**
+ * Documentos origen que se pueden anular DESDE AQUÍ, con el efecto completo en el
+ * resto del sistema. Al anular el documento, su propio endpoint reversa el asiento,
+ * anula este movimiento, devuelve el saldo al banco, libera el cheque y repone la
+ * cuenta por cobrar / por pagar. Es la única forma correcta de "eliminar" un
+ * movimiento espejo: borrarlo suelto dejaría el documento origen descuadrado.
+ */
+const ANULABLE_EN_ORIGEN = {
+  Payment: { url: (id) => `/payments/${id}/void`, label: 'el cobro/pago' },
+};
+
+/** Motivo por el que un movimiento MANUAL no se puede corregir/anular (o null). */
 const bloqueo = (m) => {
   if (m.voided) return 'Ya está anulado.';
   if (m.reconciled) return 'Está conciliado: reabre la conciliación para poder corregirlo.';
-  if (m.sourceModel) return `Lo generó ${sourceLabel(m).toLowerCase()}: corrígelo en su documento de origen.`;
   return null;
+};
+
+/** Qué hace el botón "Anular" según de dónde venga el movimiento. */
+const modoAnulacion = (m) => {
+  if (bloqueo(m)) return { tipo: 'bloqueado', motivo: bloqueo(m) };
+  if (!m.sourceModel) return { tipo: 'manual' };
+  const origen = ANULABLE_EN_ORIGEN[m.sourceModel];
+  if (origen) return { tipo: 'origen', origen };
+  return { tipo: 'ir-al-origen' };
 };
 
 export default function BankMovements() {
   const navigate = useNavigate();
   const [items, setItems] = useState([]);
+  const [typeCounts, setTypeCounts] = useState({});
   const [meta, setMeta] = useState({ total: 0, pages: 1, currentPage: 1 });
   const [page, setPage] = useState(1);
   const [filter, setFilter] = useState(EMPTY_FILTER);
@@ -64,6 +84,7 @@ export default function BankMovements() {
       Object.entries(filter).forEach(([k, v]) => { if (v) params[k] = v; });
       const r = await api.get('/banks/transactions', { params });
       setItems(r.data?.items || []);
+      setTypeCounts(r.data?.typeCounts || {});
       setMeta({ total: r.data?.total || 0, pages: r.data?.pages || 1, currentPage: r.data?.currentPage || 1 });
     } catch (e) { toast.error(e.response?.data?.message || 'Error al cargar los movimientos'); }
     finally { setLoading(false); }
@@ -87,6 +108,12 @@ export default function BankMovements() {
   const openEdit = (m) => {
     const motivo = bloqueo(m);
     if (motivo) return toast.error(motivo);
+    // Los movimientos espejo se corrigen en su documento: editar la fila suelta
+    // descuadraría el asiento que comparten. El botón lleva ahí directamente.
+    if (m.sourceModel) {
+      toast(`Este movimiento lo generó ${sourceLabel(m).toLowerCase()}: se corrige ahí.`, { icon: '↗️' });
+      return irAlOrigen(m);
+    }
     setEditing(m);
     setForm({
       bankAccount: m.bankAccount?._id || m.bankAccount || '',
@@ -127,9 +154,36 @@ export default function BankMovements() {
     finally { setBusy(false); }
   };
 
+  /**
+   * Anula el movimiento. Si nació de otro documento no se borra la fila suelta:
+   * se anula el DOCUMENTO ORIGEN con su propio endpoint, que es el que reversa el
+   * asiento, devuelve el saldo al banco, libera el cheque y repone la cartera.
+   * Así la acción sí "afecta a las otras páginas y cuentas", como debe ser.
+   */
   const anular = async (m) => {
-    const motivo = bloqueo(m);
-    if (motivo) return toast.error(motivo);
+    const modo = modoAnulacion(m);
+    if (modo.tipo === 'bloqueado') return toast.error(modo.motivo);
+    if (modo.tipo === 'ir-al-origen') {
+      toast(`Este movimiento lo generó ${sourceLabel(m).toLowerCase()}: anúlalo desde ahí.`, { icon: 'ℹ️' });
+      return irAlOrigen(m);
+    }
+    if (modo.tipo === 'origen') {
+      const ok = window.confirm(
+        `Este movimiento es el reflejo de ${modo.origen.label}.\n\n` +
+        'Al continuar se anula el documento completo: se reversa su asiento, se devuelve el saldo ' +
+        'al banco, se libera el cheque (si lo hubo) y se repone la cuenta por cobrar / por pagar.\n\n' +
+        '¿Continuar?'
+      );
+      if (!ok) return;
+      const razon = prompt('Motivo de la anulación (opcional):', '');
+      if (razon === null) return;
+      try {
+        await api.post(modo.origen.url(m.sourceRef), { reason: razon });
+        toast.success('Documento anulado: se reversó el asiento y se repusieron los saldos');
+        load();
+      } catch (e) { toast.error(e.response?.data?.message || 'No se pudo anular el documento origen'); }
+      return;
+    }
     const razon = prompt('Motivo de la anulación (opcional):', '');
     if (razon === null) return;
     try {
@@ -178,9 +232,12 @@ export default function BankMovements() {
             <option value="">Todas</option>{accounts.map((a) => <option key={a._id} value={a._id}>{a.name}</option>)}
           </select>
         </label>
+        {/* Cada tipo lleva al lado CUÁNTOS movimientos hay con el resto de filtros
+            puestos: si sale (0), no es que el filtro falle, es que no existe ninguno. */}
         <label className="text-xs text-slate-500">Tipo
           <select value={filter.type} onChange={(e) => setFiltro({ type: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm">
-            <option value="">Todos</option>{TIPOS.map((t) => <option key={t} value={t}>{TIPO_LABEL[t]}</option>)}
+            <option value="">Todos ({Object.values(typeCounts).reduce((s, n) => s + n, 0)})</option>
+            {TIPOS.map((t) => <option key={t} value={t}>{TIPO_LABEL[t]} ({typeCounts[t] || 0})</option>)}
           </select>
         </label>
         <label className="text-xs text-slate-500">Desde
@@ -215,7 +272,12 @@ export default function BankMovements() {
           <tbody>
             {items.map((m) => {
               const motivo = bloqueo(m);
+              const modo = modoAnulacion(m);
               const deLote = !!m.sourceModel;
+              const tituloEditar = motivo || (deLote ? `Corregir en ${sourceLabel(m).toLowerCase()}` : 'Corregir');
+              const tituloAnular = motivo
+                || (modo.tipo === 'origen' ? `Anular ${modo.origen.label} (reversa el asiento y repone saldos)` : null)
+                || (deLote ? `Anular desde ${sourceLabel(m).toLowerCase()}` : 'Anular');
               return (
                 <tr key={m._id} className={`border-t hover:bg-slate-50 ${m.voided ? 'text-slate-400 line-through' : ''}`}>
                   <td className="px-3 py-2 whitespace-nowrap">{fmtDate(m.date)}</td>
@@ -248,13 +310,13 @@ export default function BankMovements() {
                       <button
                         onClick={() => openEdit(m)}
                         disabled={!!motivo}
-                        title={motivo || 'Corregir'}
+                        title={tituloEditar}
                         className="text-sky-600 disabled:text-slate-300 disabled:cursor-not-allowed"
                       ><HiOutlinePencilSquare className="w-5 h-5" /></button>
                       <button
                         onClick={() => anular(m)}
                         disabled={!!motivo}
-                        title={motivo || 'Anular'}
+                        title={tituloAnular}
                         className="text-rose-500 disabled:text-slate-300 disabled:cursor-not-allowed"
                       ><HiOutlineTrash className="w-5 h-5" /></button>
                     </div>
@@ -262,7 +324,18 @@ export default function BankMovements() {
                 </tr>
               );
             })}
-            {!items.length && !loading && <tr><td colSpan={11} className="px-3 py-8 text-center text-slate-400">No hay movimientos con esos filtros</td></tr>}
+            {!items.length && !loading && (
+              <tr><td colSpan={11} className="px-3 py-8 text-center text-slate-400">
+                {filter.type
+                  ? <>No hay movimientos de tipo <b>{TIPO_LABEL[filter.type]}</b> con estos filtros. El selector muestra entre paréntesis cuántos hay de cada tipo.</>
+                  : 'No hay movimientos con esos filtros'}
+                {Object.values(filter).some(Boolean) && (
+                  <button onClick={() => { setPage(1); setFilter(EMPTY_FILTER); }} className="ml-2 text-emerald-700 underline bg-transparent border-none cursor-pointer">
+                    Quitar filtros
+                  </button>
+                )}
+              </td></tr>
+            )}
             {loading && <tr><td colSpan={11} className="px-3 py-8 text-center text-slate-400">Cargando…</td></tr>}
           </tbody>
           {!!items.length && (

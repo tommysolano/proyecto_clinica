@@ -71,11 +71,18 @@ function agingFromDocs(docs, asOf) {
   const byParty = new Map();
   const totals = { current: 0, d30: 0, d60: 0, d90: 0, d90plus: 0, total: 0 };
   for (const d of docs) {
+    // Sin contraparte identificada (consumidor final) cada documento es su PROPIA
+    // fila: no son un cliente que debe varias veces, son personas distintas que
+    // nunca se identificaron. Se agrupa por documento y se etiqueta con su número
+    // para poder distinguirlas; con cédula, se agrupa por persona como siempre.
+    const anonimo = !d.party?.ref;
     const ref = String(d.party?.ref || d._id);
     if (!byParty.has(ref)) {
+      const base = d.party?.name || '—';
       byParty.set(ref, {
         partyRef: d.party?.ref || null,
-        partyName: d.party?.name || '—',
+        partyName: anonimo && d.number ? `${base} · ${d.number}` : base,
+        anonimo,
         current: 0, d30: 0, d60: 0, d90: 0, d90plus: 0, total: 0,
       });
     }

@@ -478,6 +478,17 @@ exports.listMovements = async (req, res) => {
   const lim = Math.min(parseInt(limit, 10) || 50, 200);
   const pag = Math.max(parseInt(page, 10) || 1, 1);
   const total = await BankTransaction.countDocuments(filter);
+  // Cuántos movimientos hay de cada tipo CON EL RESTO DE FILTROS PUESTOS (pero
+  // ignorando el propio filtro de tipo). El selector los muestra al lado de cada
+  // opción: así se ve de una que "Transferencia recibida" no trae nada porque no
+  // hay ninguna registrada, no porque el filtro esté roto.
+  const filterSinTipo = { ...filter };
+  delete filterSinTipo.type;
+  const conteos = await BankTransaction.aggregate([
+    { $match: filterSinTipo },
+    { $group: { _id: '$type', n: { $sum: 1 } } },
+  ]);
+  const typeCounts = Object.fromEntries(conteos.map((c) => [c._id, c.n]));
   const items = await BankTransaction.find(filter)
     .populate('bankAccount', 'name bank accountNumber')
     .populate('createdBy', 'name')
@@ -487,7 +498,7 @@ exports.listMovements = async (req, res) => {
     .skip((pag - 1) * lim).limit(lim)
     .lean();
   await resolverPersonas(items);
-  res.json({ items, total, pages: Math.ceil(total / lim), currentPage: pag });
+  res.json({ items, total, pages: Math.ceil(total / lim), currentPage: pag, typeCounts });
 };
 
 /**

@@ -1,7 +1,9 @@
 import { useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlineChartBar } from 'react-icons/hi2';
+import { sourceDeepLink, sourceLabel } from './sourceDocs';
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { fmt, fmtDate, startOfMonth, today } from './_utils';
 import ExcelButton from '../../components/ExcelButton';
@@ -33,6 +35,7 @@ const TABS = [
 const AGING_LABELS = { POR_VENCER: 'Por vencer', VENCIDO_30: '1-30', VENCIDO_60: '31-60', VENCIDO_90: '61-90', VENCIDO_120: '91-120', VENCIDO_MAS_120: '> 120' };
 
 export default function ManagementReports() {
+  const navigate = useNavigate();
   const [tab, setTab] = useState('GENERAL');
   const [granularity, setGranularity] = useState('month');
   const [startDate, setStart] = useState(startOfMonth());
@@ -48,6 +51,19 @@ export default function ManagementReports() {
       const r = await api.get(current.url, { params });
       setData(r.data);
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+  };
+
+  /**
+   * Abre el documento detrás de una fila del reporte: la factura de venta o de
+   * compra, el cobro/pago, el movimiento bancario… Cada página sabe recibir
+   * `?doc=<id>` y abrirlo (deep link), así que desde el reporte se llega al
+   * comprobante en un clic.
+   */
+  const abrirDocumento = (row) => {
+    const url = sourceDeepLink(row);
+    if (url) return navigate(url);
+    if (row?.sourceModel) return toast(`${sourceLabel(row)} — se consulta desde su propia pantalla`, { icon: 'ℹ️' });
+    toast('Esta fila no tiene un documento asociado que abrir.', { icon: 'ℹ️' });
   };
 
   const renderTable = () => {
@@ -172,13 +188,100 @@ export default function ManagementReports() {
     if (tab === 'VENDEDOR' || tab === 'CAJERO') return (
       <Table head={['Usuario', 'N° ventas', 'Total']} rows={arr.map((r) => [r._id?.name || 'Sin asignar', r.count, `$${fmt(r.total)}`])} />
     );
-    if (tab === 'COSTO') return (
-      <div className="grid grid-cols-3 gap-3">
-        <Stat title="Ventas" value={`$${fmt(data.totalSales)}`} />
-        <Stat title="Costo" value={`$${fmt(data.totalCost)}`} color="text-rose-600" />
-        <Stat title="Utilidad bruta" value={`$${fmt(data.grossProfit)}`} color="text-emerald-700" />
-      </div>
-    );
+    // COSTO DE VENTA: los totales y, debajo, QUÉ se vendió. Al pulsar una fila se
+    // abre su factura de venta; si la venta aún no está facturada, la venta.
+    if (tab === 'COSTO') {
+      const costRows = Array.isArray(data.rows) ? data.rows : [];
+      return (
+        <div className="space-y-4">
+          <div className="grid grid-cols-3 gap-3">
+            <Stat title="Ventas" value={`$${fmt(data.totalSales)}`} />
+            <Stat title="Costo" value={`$${fmt(data.totalCost)}`} color="text-rose-600" />
+            <Stat title="Utilidad bruta" value={`$${fmt(data.grossProfit)}`} color="text-emerald-700" />
+          </div>
+          <ReportBlock title="Detalle de lo vendido (pulsa una fila para abrir su factura)">
+            <Table
+              head={['Fecha', 'Producto / servicio', 'Cliente', 'Cant.', 'P. venta', 'Ingreso', 'Costo', 'Utilidad', 'Factura']}
+              align={['left', 'left', 'left', 'right', 'right', 'right', 'right', 'right', 'left']}
+              rows={costRows.map((r) => [
+                fmtDate(r.fecha), r.producto, r.cliente, r.cantidad,
+                `$${fmt(r.precioVenta)}`, `$${fmt(r.ingreso)}`, `$${fmt(r.costo)}`, `$${fmt(r.utilidad)}`,
+                r.factura || <span className="text-slate-400">{r.venta} (sin facturar)</span>,
+              ])}
+              onRowClick={(i) => abrirDocumento(
+                costRows[i].invoiceId
+                  ? { sourceModel: 'Invoice', sourceRef: costRows[i].invoiceId }
+                  : { sourceModel: 'Sale', sourceRef: costRows[i].saleId }
+              )}
+              empty="No hubo ventas en el rango elegido."
+            />
+          </ReportBlock>
+        </div>
+      );
+    }
+
+    // ANTICIPOS: uno por uno (a quién, con qué documento, cuándo y cuánto).
+    if (tab === 'ANT') {
+      const antRows = Array.isArray(data.rows) ? data.rows : [];
+      return (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            <Stat title="Anticipos DE clientes" value={`$${fmt(data.totals?.clientes)}`} color="text-amber-600" />
+            <Stat title="Anticipos A proveedores" value={`$${fmt(data.totals?.proveedores)}`} />
+            <Stat title="Movimientos" value={antRows.length} />
+          </div>
+          <ReportBlock title="Detalle de anticipos (pulsa una fila para abrir su documento)">
+            <Table
+              head={['Fecha', 'Tipo', 'Persona', 'Documento', 'Concepto', 'Cuenta', 'Monto']}
+              align={['left', 'left', 'left', 'left', 'left', 'left', 'right']}
+              rows={antRows.map((r) => [
+                fmtDate(r.date),
+                <span key="t" className={`px-2 py-0.5 rounded-full text-[11px] ${r.tipo === 'CLIENTE' ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'}`}>
+                  {r.tipo === 'CLIENTE' ? 'Cliente' : 'Proveedor'}
+                </span>,
+                r.persona, r.documento, r.concepto,
+                `${r.cuenta?.code || ''} ${r.cuenta?.name || ''}`.trim(),
+                `$${fmt(r.monto)}`,
+              ])}
+              onRowClick={(i) => abrirDocumento(antRows[i])}
+              empty="No hay anticipos registrados en el rango elegido."
+            />
+          </ReportBlock>
+        </div>
+      );
+    }
+
+    // GASTOS NO DEDUCIBLES: detalle por movimiento + resumen por cuenta.
+    if (tab === 'NODED') {
+      const ndRows = Array.isArray(data.rows) ? data.rows : [];
+      return (
+        <div className="space-y-4">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+            <Stat title="Total no deducible" value={`$${fmt(data.total)}`} color="text-rose-600" />
+            <Stat title="Movimientos" value={ndRows.length} />
+            <Stat title="Cuentas afectadas" value={(data.byAccount || []).length} />
+          </div>
+          <ReportBlock title="Detalle (pulsa una fila para abrir su documento)">
+            <Table
+              head={['Fecha', 'Cuenta', 'Concepto', 'Proveedor', 'Documento', 'Monto']}
+              align={['left', 'left', 'left', 'left', 'left', 'right']}
+              rows={ndRows.map((r) => [
+                fmtDate(r.date), `${r.cuenta?.code || ''} ${r.cuenta?.name || ''}`.trim(),
+                r.concepto, r.proveedor || '—', r.documento || r.asiento, `$${fmt(r.monto)}`,
+              ])}
+              onRowClick={(i) => abrirDocumento(ndRows[i])}
+              empty="No hay gastos no deducibles registrados en el rango elegido."
+            />
+          </ReportBlock>
+          <ReportBlock title="Resumen por cuenta">
+            <Table
+              head={['Cuenta', 'Movimientos', 'Total']}
+              rows={(data.byAccount || []).map((a) => [`${a.code} ${a.name}`, a.count, `$${fmt(a.amount)}`])}
+            />
+          </ReportBlock>
+        </div>
+      );
+    }
     if (tab === 'COSTO_CAT') return (
       <Table head={['Categoría', 'Cantidad', 'Ingresos', 'Costo', 'Utilidad', 'Margen']} rows={rows.map((r) => [r.category, r.qty, `$${fmt(r.revenue)}`, `$${fmt(r.cost)}`, `$${fmt(r.grossProfit)}`, `${r.margin}%`])} />
     );
@@ -234,7 +337,13 @@ export default function ManagementReports() {
         <Table head={['Código', 'Producto', 'Stock', 'Costo', 'Valor costo']} rows={rows.map((r) => [r.code, r.name, r.stock, `$${fmt(r.purchasePrice)}`, `$${fmt(r.valueAtCost)}`])} />
       </div>
     );
-    return <pre className="text-xs overflow-auto">{JSON.stringify(data, null, 2)}</pre>;
+    // Nunca se le muestra JSON crudo al usuario: si una pestaña llega aquí es que
+    // le falta su vista, y eso se dice con palabras.
+    return (
+      <p className="text-sm text-slate-500 py-6 text-center">
+        Este reporte todavía no tiene vista en pantalla. Descárgalo en Excel con el botón de arriba.
+      </p>
+    );
   };
 
   return (
@@ -264,13 +373,31 @@ export default function ManagementReports() {
   );
 }
 
-function Table({ head, rows }) {
+/**
+ * Tabla del reporte. Con `onRowClick` la fila se vuelve pulsable: se usa para
+ * abrir el documento asociado (la factura de venta o de compra, el cobro/pago…).
+ * `align` permite alinear a la izquierda las columnas de texto de los reportes
+ * de detalle, donde no todo es un número.
+ */
+function Table({ head, rows, onRowClick, align = [], empty = 'Sin datos' }) {
+  const cellClass = (j) => {
+    const a = align[j] || (j === 0 ? 'left' : 'right');
+    return a === 'left' ? 'text-left' : 'text-right font-mono';
+  };
   return (
     <table className="tbl">
-      <thead className="bg-emerald-50 text-xs uppercase"><tr>{head.map((h, i) => <th key={i} className={`px-3 py-2 ${i === 0 ? 'text-left' : 'text-right'}`}>{h}</th>)}</tr></thead>
+      <thead className="bg-emerald-50 text-xs uppercase"><tr>{head.map((h, i) => <th key={i} className={`px-3 py-2 ${(align[i] || (i === 0 ? 'left' : 'right')) === 'left' ? 'text-left' : 'text-right'}`}>{h}</th>)}</tr></thead>
       <tbody>
-        {rows.map((r, i) => <tr key={i} className="border-t">{r.map((c, j) => <td key={j} className={`px-3 py-2 ${j === 0 ? 'text-left' : 'text-right font-mono'}`}>{c}</td>)}</tr>)}
-        {rows.length === 0 && <tr><td colSpan={head.length} className="px-3 py-6 text-center text-slate-400">Sin datos</td></tr>}
+        {rows.map((r, i) => (
+          <tr
+            key={i}
+            onClick={onRowClick ? () => onRowClick(i) : undefined}
+            className={`border-t ${onRowClick ? 'cursor-pointer hover:bg-emerald-50/60' : ''}`}
+          >
+            {r.map((c, j) => <td key={j} className={`px-3 py-2 ${cellClass(j)}`}>{c}</td>)}
+          </tr>
+        ))}
+        {rows.length === 0 && <tr><td colSpan={head.length} className="px-3 py-6 text-center text-slate-400">{empty}</td></tr>}
       </tbody>
     </table>
   );

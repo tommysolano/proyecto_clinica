@@ -8,7 +8,9 @@ router.use(auth, requireClinic);
 router.get('/payment-options', requireRole('admin', 'contabilidad', 'cajero', 'enfermero'), c.paymentOptions);
 
 // Cuentas
-router.get('/accounts', requireRole('admin', 'contabilidad'), c.listAccounts);
+// El cajero las LEE (no las administra): las necesita para depositar en el banco
+// el efectivo de la caja al cerrarla.
+router.get('/accounts', requireRole('admin', 'contabilidad', 'cajero'), c.listAccounts);
 router.post('/accounts', requireRole('admin', 'contabilidad'), c.createAccount);
 router.put('/accounts/:id', requireRole('admin', 'contabilidad'), c.updateAccount);
 router.delete('/accounts/:id', requireRole('admin'), c.deleteAccount);
