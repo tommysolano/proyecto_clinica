@@ -460,7 +460,9 @@ function FichaTab({ patientId }) {
 // G, examen físico H). `value` es un array [{ key, marked, detail }]; solo se
 // emiten las casillas marcadas o con detalle. `markLabel` describe qué significa
 // marcar (p.ej. "presente" o "patología").
-function MspChecklist({ catalog, value = [], onChange, cols = 'md:grid-cols-3 lg:grid-cols-5' }) {
+// `showDetail={false}` deja solo las casillas (sin recuadro por casilla): en el
+// seguimiento lo describido va en un único campo de hallazgos al pie de la sección.
+function MspChecklist({ catalog, value = [], onChange, cols = 'md:grid-cols-3 lg:grid-cols-5', showDetail = true }) {
   const byKey = Object.fromEntries((value || []).map((c) => [c.key, c]));
   const emit = (nextByKey) => {
     const arr = catalog
@@ -497,7 +499,7 @@ function MspChecklist({ catalog, value = [], onChange, cols = 'md:grid-cols-3 lg
               />
               <span>{cat.label}</span>
             </label>
-            {marked && (
+            {showDetail && marked && (
               <input
                 type="text"
                 value={cur?.detail || ''}
@@ -856,12 +858,11 @@ function SeguimientosTab({ patientId, appointmentId }) {
     tipoConsulta: '',        // B: primera | subsecuente
     descripcion: '',
     enfermedadActual: '',    // E
-    estudioSintomas: '',
-    observaciones: '',
     planTratamiento: '',     // J
     recetaItems: [],       // solo insumos/medicamentos
     derivacionItems: [],   // servicios/programas
     revisionSistemas: [],  // G
+    revisionSistemasHallazgos: '', // G: descripción de lo marcado
     examenFisico: { regional: [], sistemico: [], hallazgos: '' }, // H
     diagnosticos: [],      // I
     opticaRx: emptyOpticaRx(),
@@ -1084,7 +1085,6 @@ function SeguimientosTab({ patientId, appointmentId }) {
       };
       const payload = {
         ...form,
-        recomendaciones: form.estudioSintomas, // legacy alias
         vitalSigns,
       };
       // Los datos ginecológicos solo se envían desde una consulta de ginecología.
@@ -1244,21 +1244,10 @@ function SeguimientosTab({ patientId, appointmentId }) {
           />
         </Field>
 
-        <Field label="Estudio o síntomas" className="md:col-span-3">
-          <textarea
-            rows={2}
-            value={form.estudioSintomas}
-            onChange={(e) => setForm((f) => ({ ...f, estudioSintomas: e.target.value }))}
-            className="input resize-none"
-          />
-        </Field>
-
-        {/* Signos vitales */}
+        {/* F. Signos vitales (colapsable) */}
         <div className="md:col-span-3">
-          <label className="text-sm font-medium text-slate-700 block mb-2">
-            Signos vitales
-          </label>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-2 bg-white rounded-lg border border-slate-200 p-3">
+          <Collapsible title="Signos vitales" hint="constantes vitales y antropometría">
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
             <Field label="Hora">
               <input
                 type="time"
@@ -1417,17 +1406,29 @@ function SeguimientosTab({ patientId, appointmentId }) {
                 title="Calculado con peso y talla"
               />
             </Field>
-          </div>
+            </div>
+          </Collapsible>
         </div>
 
         {/* G. Revisión actual de órganos y sistemas (colapsable) */}
         <div className="md:col-span-3">
           <Collapsible title="Revisión de órganos y sistemas" hint="marque los que presenten patología">
-            <MspChecklist
-              catalog={REVISION_SISTEMAS}
-              value={form.revisionSistemas}
-              onChange={(v) => setForm((f) => ({ ...f, revisionSistemas: v }))}
-            />
+            <div className="space-y-4">
+              <MspChecklist
+                catalog={REVISION_SISTEMAS}
+                value={form.revisionSistemas}
+                onChange={(v) => setForm((f) => ({ ...f, revisionSistemas: v }))}
+                showDetail={false}
+              />
+              <Field label="Hallazgos de la revisión de órganos y sistemas">
+                <textarea
+                  rows={2}
+                  value={form.revisionSistemasHallazgos}
+                  onChange={(e) => setForm((f) => ({ ...f, revisionSistemasHallazgos: e.target.value }))}
+                  className="input resize-none"
+                />
+              </Field>
+            </div>
           </Collapsible>
         </div>
 
@@ -1441,6 +1442,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                   catalog={EXAMEN_REGIONAL}
                   value={form.examenFisico.regional}
                   onChange={(v) => setForm((f) => ({ ...f, examenFisico: { ...f.examenFisico, regional: v } }))}
+                  showDetail={false}
                 />
               </div>
               <div>
@@ -1449,6 +1451,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                   catalog={EXAMEN_SISTEMICO}
                   value={form.examenFisico.sistemico}
                   onChange={(v) => setForm((f) => ({ ...f, examenFisico: { ...f.examenFisico, sistemico: v } }))}
+                  showDetail={false}
                 />
               </div>
               <Field label="Hallazgos del examen físico">
@@ -1508,14 +1511,6 @@ function SeguimientosTab({ patientId, appointmentId }) {
           />
         </Field>
 
-        <Field label="Observaciones" className="md:col-span-3">
-          <textarea
-            rows={2}
-            value={form.observaciones}
-            onChange={(e) => setForm((f) => ({ ...f, observaciones: e.target.value }))}
-            className="input resize-none"
-          />
-        </Field>
         {isOptica && <OpticaRxTable value={form.opticaRx} onChange={(rx) => setForm((f) => ({ ...f, opticaRx: rx }))} />}
         {isGineco && <GinecologiaSection value={form.ginecologia} onChange={(g) => setForm((f) => ({ ...f, ginecologia: g }))} />}
 
@@ -1692,9 +1687,20 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         <b>Enfermedad actual:</b> {fu.enfermedadActual}
                       </div>
                     )}
+                    {/* Legacy: seguimientos antiguos que aún tienen el campo. */}
                     {fu.estudioSintomas && (
                       <div className="mt-1 text-xs text-slate-600">
                         <b>Estudio/síntomas:</b> {fu.estudioSintomas}
+                      </div>
+                    )}
+                    {fu.revisionSistemasHallazgos && (
+                      <div className="mt-1 text-xs text-slate-600">
+                        <b>Revisión de órganos y sistemas:</b> {fu.revisionSistemasHallazgos}
+                      </div>
+                    )}
+                    {fu.examenFisico?.hallazgos && (
+                      <div className="mt-1 text-xs text-slate-600">
+                        <b>Examen físico:</b> {fu.examenFisico.hallazgos}
                       </div>
                     )}
                     {Array.isArray(fu.diagnosticos) && fu.diagnosticos.length > 0 && (
@@ -1766,6 +1772,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         <b>Plan de tratamiento:</b> {fu.planTratamiento}
                       </div>
                     )}
+                    {/* Legacy: seguimientos antiguos que aún tienen el campo. */}
                     {fu.observaciones && (
                       <div className="mt-2 text-xs text-slate-600 italic">
                         <b>Observaciones:</b> {fu.observaciones}

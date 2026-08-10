@@ -92,8 +92,10 @@ const followUpSchema = new mongoose.Schema(
       capillaryHemoglobin: { type: Number, default: null },// hemoglobina capilar g/dL
       glucose: { type: Number, default: null },            // glucosa capilar mg/dL
     },
-    // G. Revisión actual de órganos y sistemas (10 casillas MSP).
+    // G. Revisión actual de órganos y sistemas (10 casillas MSP) + hallazgos
+    // descritos (un solo campo al pie, igual que el examen físico).
     revisionSistemas: { type: [mspCheckSchema], default: [] },
+    revisionSistemasHallazgos: { type: String, trim: true, default: '' },
     // H. Examen físico: regional (15) + sistémico (10) + hallazgos descritos.
     examenFisico: {
       regional: { type: [mspCheckSchema], default: [] },

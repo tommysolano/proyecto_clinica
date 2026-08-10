@@ -160,6 +160,7 @@ exports.addFollowUp = async (req, res) => {
       tipoConsulta,      // B: 'primera' | 'subsecuente'
       enfermedadActual,  // E: enfermedad o problema actual
       revisionSistemas,  // G: [{ key, marked, detail }]
+      revisionSistemasHallazgos, // G: hallazgos descritos de la revisión
       examenFisico,      // H: { regional:[...], sistemico:[...], hallazgos }
       diagnosticos,      // I: [{ descripcion, cie, cieDescripcion, presuntivo, definitivo }]
       planTratamiento,   // J: texto del plan
@@ -374,6 +375,7 @@ exports.addFollowUp = async (req, res) => {
             tipoConsulta: ['primera', 'subsecuente'].includes(tipoConsulta) ? tipoConsulta : '',
             enfermedadActual: String(enfermedadActual || '').trim(),
             revisionSistemas: sanitizeChecks(revisionSistemas),
+            revisionSistemasHallazgos: String(revisionSistemasHallazgos || '').trim(),
             examenFisico: sanitizeExamen(examenFisico),
             diagnosticos: sanitizeDiagnosticos(diagnosticos),
             planTratamiento: String(planTratamiento || '').trim(),
@@ -884,6 +886,7 @@ exports.printMspForm = async (req, res) => {
   <!-- G. REVISIÓN ACTUAL DE ÓRGANOS Y SISTEMAS -->
   <div class="bar">G. REVISIÓN ACTUAL DE ÓRGANOS Y SISTEMAS <span class="note">Marcar cuando presente patología y describa</span></div>
   ${renderChecks(REVISION_SISTEMAS, fu.revisionSistemas)}
+  ${fu.revisionSistemasHallazgos ? `<div class="det"><b>Hallazgos:</b> ${esc(fu.revisionSistemasHallazgos)}</div>` : ''}
 
   <!-- PÁGINA 2 -->
   <div class="page2"></div>
