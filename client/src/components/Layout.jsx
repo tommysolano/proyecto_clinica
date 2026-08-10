@@ -20,6 +20,7 @@ import {
   HiOutlineCalculator,
   HiOutlineMegaphone,
   HiOutlineDocumentChartBar,
+  HiOutlineDocumentText,
   HiOutlineCog6Tooth,
   HiOutlineUserCircle,
   HiOutlineArrowRightOnRectangle,
@@ -33,7 +34,15 @@ import {
 // Menú unificado por grupos. Cada ítem declara qué roles pueden verlo
 // (superOnly = solo isSuperAdmin). Un grupo se muestra si el rol ve al menos
 // uno de sus ítems. El super-admin ve todo.
+const ALL_ROLES = ['admin', 'cajero', 'contabilidad', 'doctor', 'ginecologia', 'optica', 'call_center', 'marketing', 'enfermero'];
+
 const MENU_GROUPS = [
+  {
+    key: 'herramientas', label: 'Herramientas', icon: HiOutlineDocumentText, items: [
+      // El escáner de documentos está disponible para TODOS los roles.
+      { path: '/scanner', label: 'Escáner de documentos', roles: ALL_ROLES },
+    ],
+  },
   {
     key: 'personas', label: 'Personas', icon: HiOutlineUsers, items: [
       { path: '/patients', label: 'Clientes', roles: ['admin', 'cajero', 'call_center', 'marketing', 'enfermero'] },
@@ -183,8 +192,6 @@ const MENU_GROUPS = [
     ],
   },
 ];
-
-const ALL_ROLES = ['admin', 'cajero', 'contabilidad', 'doctor', 'ginecologia', 'optica', 'call_center', 'marketing', 'enfermero'];
 
 const isPathActive = (pathname, path) =>
   pathname === path || (path !== '/' && pathname.startsWith(path));

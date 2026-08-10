@@ -62,6 +62,7 @@ const RecycleBin = lazy(() => import('./pages/RecycleBin'));
 const Attribution = lazy(() => import('./pages/Attribution'));
 const Reputation = lazy(() => import('./pages/Reputation'));
 const Tasks = lazy(() => import('./pages/Tasks'));
+const Scanner = lazy(() => import('./pages/Scanner'));
 const PublicBooking = lazy(() => import('./pages/PublicBooking'));
 const BookingConfig = lazy(() => import('./pages/BookingConfig'));
 const CallCenterConfig = lazy(() => import('./pages/CallCenterConfig'));
@@ -415,6 +416,8 @@ function AppRoutes() {
                     </RoleRoute>
                   }
                 />
+                {/* Escáner de documentos: sin RoleRoute, es para todos los usuarios. */}
+                <Route path="/scanner" element={<Scanner />} />
                 <Route
                   path="/booking-config"
                   element={
