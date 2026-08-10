@@ -388,6 +388,7 @@ export default function Chats() {
   const [opportunityModal, setOpportunityModal] = useState(false);
   const [appointmentModal, setAppointmentModal] = useState(false);
   const [quotationModal, setQuotationModal] = useState(false);
+  const [transferModal, setTransferModal] = useState(false);
   // Panel de info del contacto como cajón lateral cuando la columna derecha
   // no cabe (pantallas pequeñas / sidebar del sistema abierto).
   const [infoOpen, setInfoOpen] = useState(false);
@@ -404,7 +405,8 @@ export default function Chats() {
 
   const isSupervisor = role === 'marketing';
   const isAdmin = role === 'admin' || user?.isSuperAdmin;
-  // Auto-asignar (round-robin) SOLO para admin/supervisor; el call center no lo ve.
+  // Transferir el chat lo puede hacer CUALQUIER usuario de la bandeja; el reparto
+  // automático (round-robin) dentro del transferidor sigue siendo de admin/supervisor.
   const canAutoAssign = isSupervisor || isAdmin;
 
   // Solo la respuesta de la última búsqueda actualiza la lista: descarta
@@ -737,6 +739,30 @@ export default function Chats() {
       loadUnreadCounts();
     },
     [isAdmin, isSupervisor, user?.id, user?._id, view, scope, filter, debouncedSearch]
+  );
+
+  // Me transfirieron un chat: aviso para que el asesor sepa que le llegó algo
+  // (la lista ya se actualiza sola con 'chat:assignment').
+  useSocketEvent(
+    'chat:assigned',
+    (payload) => {
+      if (!payload?.transferredBy) return;
+      toast.success(
+        `${payload.transferredBy} te pasó el chat${payload.contactName ? ` de ${payload.contactName}` : ''}`,
+        { icon: '📥' }
+      );
+    },
+    []
+  );
+
+  // Se llevaron un chat que yo tenía asignado.
+  useSocketEvent(
+    'chat:transferred-away',
+    (payload) => {
+      if (!payload?.to) return;
+      toast(`${payload.by || 'Un compañero'} transfirió un chat tuyo a ${payload.to}`, { icon: '↪️' });
+    },
+    []
   );
 
   // Otro agente tocó la oportunidad del chat que tengo abierto: se relee el
@@ -1433,15 +1459,18 @@ export default function Chats() {
     return conv;
   };
 
-  // Reparte la conversación al agente con menos chats abiertos (round-robin).
-  // Solo lo usan admin/supervisor (el call center no ve el botón).
-  const autoAssignChat = async (conv) => {
+  // Pasa la conversación a otro compañero. Sin `userId` (opción "automático",
+  // solo para admin/supervisor) la reparte al agente con menos chats abiertos.
+  const transferChat = async (conv, userId) => {
     try {
-      const r = await api.post(`/chats/${conv._id}/auto-assign`, {});
+      const r = userId
+        ? await api.post(`/chats/${conv._id}/assign`, { userId })
+        : await api.post(`/chats/${conv._id}/auto-assign`, {});
       applyConversationUpdate(r.data);
-      toast.success(`Asignado a ${r.data.assignedToName || 'un agente'}`);
+      toast.success(`Chat transferido a ${r.data.assignedToName || 'otro usuario'}`);
+      setTransferModal(false);
     } catch (err) {
-      toast.error(err.response?.data?.message || 'No se pudo auto-asignar');
+      toast.error(err.response?.data?.message || 'No se pudo transferir el chat');
     }
   };
 
@@ -1577,7 +1606,7 @@ export default function Chats() {
                   conv={activeConv}
                   onToggleFeatured={() => toggleFeatured(activeConv)}
                   onTake={() => takeChat(activeConv)}
-                  onAutoAssign={canAutoAssign ? () => autoAssignChat(activeConv) : null}
+                  onTransfer={() => setTransferModal(true)}
                   onOpenOpportunity={() => setOpportunityModal(true)}
                   onCreateAppointment={() => setAppointmentModal(true)}
                   onCreateQuotation={() => setQuotationModal(true)}
@@ -2352,6 +2381,15 @@ export default function Chats() {
           }}
         />
       )}
+      {transferModal && activeConv && (
+        <TransferChatModal
+          conv={activeConv}
+          meId={user?.id || user?._id}
+          canAutoAssign={canAutoAssign}
+          onClose={() => setTransferModal(false)}
+          onTransfer={(userId) => transferChat(activeConv, userId)}
+        />
+      )}
       {quotationModal && activeConv && (
         <QuotationFromChatModal
           conv={activeConv}
@@ -2828,7 +2866,7 @@ function HeaderActionsMenu({ actions }) {
   );
 }
 
-function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpportunity, onCreateAppointment, onCreateQuotation, onToggleRead, onEnableCalling, isAdmin, meId, calling, onCall, onBack, onToggleInfo, onToggleSearch, searchActive }) {
+function ChatHeader({ conv, onToggleFeatured, onTake, onTransfer, onOpenOpportunity, onCreateAppointment, onCreateQuotation, onToggleRead, onEnableCalling, isAdmin, meId, calling, onCall, onBack, onToggleInfo, onToggleSearch, searchActive }) {
   const canTake = !conv.assignedTo || String(conv.assignedTo._id || conv.assignedTo) !== String(meId);
   // "Esperando respuesta" cuando el último mensaje es entrante (del paciente).
   const waitingReply = conv.lastMessageDirection === 'in';
@@ -2837,11 +2875,11 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onAutoAssign, onOpenOpport
   const canEnableCalls = isAdmin && calling && calling.enabled === false && calling.canEnable;
 
   // Acciones secundarias: en línea en pantallas anchas, en el menú "⋯" cuando no
-  // caben. El "Auto-asignar" (round-robin) solo llega para admin/supervisor
-  // (`onAutoAssign` es null para el call center).
+  // caben. "Transferir chat" lo ve cualquier usuario de la bandeja: abre el
+  // selector para pasarle la conversación a otro compañero.
   const actions = [
     canTake && { key: 'take', label: 'Tomar', icon: HiOutlineUserPlus, onClick: onTake },
-    onAutoAssign && { key: 'auto', label: 'Auto-asignar', icon: HiOutlineUsers, onClick: onAutoAssign },
+    { key: 'transfer', label: 'Transferir chat', icon: HiOutlineUsers, iconClass: 'text-sky-600', onClick: onTransfer },
     {
       key: 'opp',
       label: conv.opportunity?.isOpportunity ? 'Editar / añadir oportunidad' : 'Crear oportunidad',
@@ -5312,6 +5350,117 @@ function ModalShell({ title, onClose, children, size = 'md' }) {
       </div>
     </div>,
     document.body
+  );
+}
+
+/**
+ * Transferir chat: pasa la conversación a otro compañero de la bandeja.
+ * Sustituye al antiguo botón "Auto-asignar" — el reparto automático sigue
+ * disponible aquí dentro, pero solo para admin/supervisor.
+ */
+function TransferChatModal({ conv, meId, canAutoAssign, onClose, onTransfer }) {
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [q, setQ] = useState('');
+  const [sending, setSending] = useState('');
+
+  useEffect(() => {
+    api
+      .get('/chats/assignable-users')
+      .then((r) => setUsers(r.data || []))
+      .catch(() => toast.error('No se pudo cargar la lista de usuarios'))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const currentId = String(conv.assignedTo?._id || conv.assignedTo || '');
+  const norm = (s) => (s || '').normalize('NFD').replace(/\p{Diacritic}/gu, '').toLowerCase();
+  const shown = users.filter((u) => !q.trim() || norm(u.name).includes(norm(q)));
+
+  const send = async (userId) => {
+    setSending(userId || 'auto');
+    await onTransfer(userId);
+    setSending('');
+  };
+
+  return (
+    <ModalShell title="Transferir chat" onClose={onClose} size="sm">
+      <div className="space-y-3">
+        <p className="text-sm text-slate-600">
+          Elige a quién le pasas la conversación de <b>{conv.contactName || conv.phone}</b>.
+          {conv.assignedToName && <> Ahora la tiene <b>{conv.assignedToName}</b>.</>}
+        </p>
+
+        <div className="relative">
+          <HiOutlineMagnifyingGlass className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
+          <input
+            autoFocus
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="Buscar compañero..."
+            className="w-full pl-9 pr-3 py-2 border border-slate-200 rounded-lg bg-slate-50/60 outline-none text-sm"
+          />
+        </div>
+
+        {canAutoAssign && (
+          <button
+            type="button"
+            disabled={!!sending}
+            onClick={() => send(null)}
+            className="w-full flex items-center gap-2 px-3 py-2.5 rounded-lg border border-emerald-200 bg-emerald-50 hover:bg-emerald-100 cursor-pointer text-left disabled:opacity-50"
+          >
+            <HiOutlineBolt className="w-5 h-5 text-emerald-600 shrink-0" />
+            <span className="flex-1 min-w-0">
+              <span className="block text-sm font-medium text-emerald-800">Automático</span>
+              <span className="block text-[11px] text-emerald-700/80">
+                Al asesor en turno con menos chats abiertos
+              </span>
+            </span>
+            {sending === 'auto' && <span className="text-xs text-emerald-700">Enviando…</span>}
+          </button>
+        )}
+
+        <div className="max-h-72 overflow-y-auto -mx-1 px-1 space-y-1">
+          {loading ? (
+            <p className="text-xs text-slate-400 text-center py-6">Cargando usuarios…</p>
+          ) : shown.length === 0 ? (
+            <p className="text-xs text-slate-400 text-center py-6">Sin resultados</p>
+          ) : (
+            shown.map((u) => {
+              const isCurrent = String(u._id) === currentId;
+              const isMe = String(u._id) === String(meId);
+              return (
+                <button
+                  key={u._id}
+                  type="button"
+                  disabled={isCurrent || !!sending}
+                  onClick={() => send(u._id)}
+                  className={`w-full flex items-center gap-2 px-3 py-2 rounded-lg border text-left cursor-pointer disabled:cursor-default ${
+                    isCurrent ? 'border-slate-200 bg-slate-100 opacity-70' : 'border-slate-200 bg-white hover:bg-emerald-50'
+                  }`}
+                >
+                  <span className="w-8 h-8 rounded-full bg-slate-200 text-slate-600 flex items-center justify-center text-xs font-bold shrink-0">
+                    {(u.name || '?').slice(0, 2).toUpperCase()}
+                  </span>
+                  <span className="flex-1 min-w-0">
+                    <span className="block text-sm text-slate-800 truncate">
+                      {u.name}
+                      {isMe && <span className="text-slate-400 font-normal"> (yo)</span>}
+                    </span>
+                    <span className="block text-[11px] text-slate-400">
+                      {isCurrent ? 'Ya tiene este chat' : u.isAgent ? (u.inShift ? 'En turno' : 'Fuera de turno') : 'Supervisión'}
+                    </span>
+                  </span>
+                  {!isCurrent && u.isAgent && (
+                    <span className={`w-2 h-2 rounded-full shrink-0 ${u.inShift ? 'bg-emerald-500' : 'bg-slate-300'}`} />
+                  )}
+                  {sending === String(u._id) && <span className="text-xs text-emerald-700">Enviando…</span>}
+                </button>
+              );
+            })
+          )}
+        </div>
+      </div>
+    </ModalShell>
   );
 }
 

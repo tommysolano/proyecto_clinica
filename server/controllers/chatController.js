@@ -544,26 +544,61 @@ exports.updateConversation = async (req, res) => {
   }
 };
 
+// Roles que trabajan la bandeja: son los que pueden RECIBIR un chat transferido.
+const INBOX_ROLES = ['call_center', 'admin', 'marketing'];
+
+/**
+ * Usuarios a los que se puede pasar un chat (para el selector de "Transferir").
+ * Incluye a los asesores y también a supervisores/admins que atienden la bandeja.
+ * `inShift` indica si el asesor está dentro de su horario configurado, para que
+ * quien transfiere no le deje el chat a alguien que ya salió de turno.
+ */
+exports.listAssignableUsers = async (req, res) => {
+  try {
+    const users = await User.find({
+      active: true,
+      'clinics.role': { $in: INBOX_ROLES },
+    }).select('name email clinics callCenterSchedule').lean();
+    const now = new Date();
+    const list = users.map((u) => {
+      const roles = [...new Set((u.clinics || []).map((c) => c.role).filter(Boolean))];
+      return {
+        _id: u._id,
+        name: u.name,
+        email: u.email,
+        roles,
+        isAgent: roles.includes('call_center'),
+        // Sin horario configurado se asume disponible (comportamiento histórico).
+        inShift: isWorkingAt(u.callCenterSchedule, now),
+      };
+    });
+    list.sort((a, b) => Number(b.inShift) - Number(a.inShift) || a.name.localeCompare(b.name));
+    res.json(list);
+  } catch (err) {
+    res.status(500).json({ message: 'Error al listar usuarios', error: err.message });
+  }
+};
+
 exports.assignConversation = async (req, res) => {
   try {
     const conv = await Conversation.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!conv) return res.status(404).json({ message: 'Conversación no encontrada' });
-    // Solo admin/supervisor pueden re-asignar a otros. Call center solo puede tomarla
-    // (asignársela a sí mismo) si está libre.
+    // La bandeja es compartida: cualquier usuario con acceso al chat puede
+    // tomarlo o PASÁRSELO a otro compañero (transferencia). El candado real es
+    // `requireConversationAccess`, que ya bloqueó los chats reservados por un
+    // workflow a otro asesor antes de llegar hasta aquí.
     const target = req.body.userId || req.user._id;
     const isSelfTake = String(target) === String(req.user._id);
-    if (!isSelfTake && req.role !== 'admin' && req.role !== 'marketing' && !req.user.isSuperAdmin) {
-      return res.status(403).json({ message: 'Solo supervisor/admin pueden reasignar' });
-    }
     if (!isSelfTake) {
       const user = await User.findOne({
-        _id: target, active: true, 'clinics.role': 'call_center',
+        _id: target, active: true, 'clinics.role': { $in: INBOX_ROLES },
       }).select('name');
-      if (!user) return res.status(404).json({ message: 'Agente no encontrado' });
+      if (!user) return res.status(404).json({ message: 'El usuario no existe o no atiende chats' });
       conv.assignedToName = user.name;
     } else {
       conv.assignedToName = req.user.name;
     }
+    const previousAssignee = conv.assignedTo ? String(conv.assignedTo) : null;
     conv.assignedTo = target;
     conv.assignedAt = new Date();
     // Una asignacion hecha desde la bandeja pertenece al sistema compartido
@@ -579,7 +614,20 @@ exports.assignConversation = async (req, res) => {
       assignedToName: conv.assignedToName,
       restrictedTo: null,
     });
-    emitToUser(conv.assignedTo, 'chat:assigned', { conversationId: conv._id });
+    emitToUser(conv.assignedTo, 'chat:assigned', {
+      conversationId: conv._id,
+      // Transferencia: el que recibe ve de quién le llegó el chat.
+      transferredBy: isSelfTake ? null : req.user.name,
+      contactName: conv.contactName || conv.phone || '',
+    });
+    // Al que lo tenía se le avisa que ya no es suyo (si no fue él quien lo pasó).
+    if (previousAssignee && previousAssignee !== String(conv.assignedTo) && previousAssignee !== String(req.user._id)) {
+      emitToUser(previousAssignee, 'chat:transferred-away', {
+        conversationId: conv._id,
+        to: conv.assignedToName,
+        by: req.user.name,
+      });
+    }
     res.json(conv);
   } catch (err) {
     res.status(500).json({ message: 'Error al asignar conversación', error: err.message });
