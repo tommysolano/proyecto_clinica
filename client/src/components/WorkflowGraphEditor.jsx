@@ -484,12 +484,14 @@ function autoLayout(nodes, edges) {
   // Cada nodo disparador es la raíz de un flujo independiente: se colocan en
   // columnas contiguas (cada flujo a la derecha del anterior).
   nodes.filter((n) => n.type === 'trigger').forEach((t) => place(t.id, 0));
-  // Nodos sueltos (sin conexión a ningún flujo): al final.
+  // Nodos sueltos (sin conexión a ningún flujo): al final. Las NOTAS no entran
+  // aquí: son anotaciones del usuario y se quedan donde él las puso.
   nodes.forEach((n) => {
+    if (n.type === 'note') return;
     if (!pos[n.id]) { pos[n.id] = { x: nextLeaf * GAP_X, y: 0 }; nextLeaf += 1; }
   });
 
-  return nodes.map((n) => ({ ...n, position: pos[n.id] || n.position || { x: 0, y: 0 } }));
+  return nodes.map((n) => (n.type === 'note' ? n : { ...n, position: pos[n.id] || n.position || { x: 0, y: 0 } }));
 }
 
 function summarize(n, ctx = {}) {
@@ -860,19 +862,64 @@ function SplitNode({ data, selected }) {
   );
 }
 
-const nodeTypes = { trigger: TriggerNode, action: ActionNode, message: MessageNode, branch: BranchNode, split: SplitNode };
+/**
+ * NOTA del lienzo: un cuadro de texto suelto para anotar el diagrama ("aquí falta
+ * revisar el copy", "esta rama es para la campaña de mayo"…). No es un paso: no se
+ * conecta a nada, el motor nunca lo ejecuta y no cuenta como acción al guardar.
+ */
+function NoteNode({ data, selected }) {
+  return (
+    <div
+      className={`group relative rounded-lg border shadow-sm px-2.5 py-2 min-w-[180px] max-w-[300px] ${
+        selected ? 'border-amber-400 ring-2 ring-amber-200' : 'border-amber-200'
+      }`}
+      style={{ background: '#fef9c3' }}
+    >
+      <div className="nodrag nopan absolute -top-3 right-1 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity bg-white border border-slate-200 rounded-lg shadow-sm px-0.5 py-0.5 z-10">
+        <button type="button" title="Eliminar nota" onClick={(e) => { e.stopPropagation(); data.onDelete(); }} className="p-1 text-slate-400 hover:text-rose-600 bg-transparent border-none cursor-pointer">
+          <HiOutlineTrash className="w-3.5 h-3.5" />
+        </button>
+      </div>
+      <textarea
+        value={data.text || ''}
+        onChange={(e) => data.onChangeText(e.target.value)}
+        onClick={(e) => e.stopPropagation()}
+        placeholder="Escribe una nota…"
+        rows={Math.min(8, Math.max(2, String(data.text || '').split('\n').length))}
+        className="nodrag w-full bg-transparent border-none outline-none resize-none text-[11px] text-amber-900 placeholder-amber-700/40 leading-snug"
+      />
+    </div>
+  );
+}
+
+const nodeTypes = { trigger: TriggerNode, action: ActionNode, message: MessageNode, branch: BranchNode, split: SplitNode, note: NoteNode };
 
 // ─────────── Arista con "+" para insertar y "×" para desconectar ───────────
 function PlusEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targetPosition, data, label, selected }) {
   const [edgePath, labelX, labelY] = getBezierPath({ sourceX, sourceY, sourcePosition, targetX, targetY, targetPosition });
+  // Mientras se arrastra un paso encima, ESTA es la conexión donde va a caer:
+  // se resalta para que el usuario vea dónde quedará antes de soltar.
+  const esDestino = !!data?.isDropTarget;
   return (
     <>
-      <BaseEdge id={id} path={edgePath} style={{ stroke: selected ? '#10b981' : '#cbd5e1', strokeWidth: 2 }} interactionWidth={24} />
+      <BaseEdge
+        id={id}
+        path={edgePath}
+        style={esDestino
+          ? { stroke: '#f59e0b', strokeWidth: 4, strokeDasharray: '8 4' }
+          : { stroke: selected ? '#10b981' : '#cbd5e1', strokeWidth: 2 }}
+        interactionWidth={24}
+      />
       <EdgeLabelRenderer>
         <div
           style={{ position: 'absolute', transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`, pointerEvents: 'all' }}
           className="nodrag nopan flex items-center gap-1"
         >
+          {esDestino && (
+            <span className="text-[10px] font-bold px-1.5 py-0.5 rounded-full bg-amber-500 text-white shadow-sm whitespace-nowrap">
+              Soltar aquí
+            </span>
+          )}
           {label && <span className={`text-[9px] font-bold px-1 rounded max-w-[90px] truncate ${data.labelCls || (label === 'Sí' ? 'text-emerald-600' : 'text-rose-600')}`} title={label}>{label}</span>}
           <AddButton onClick={() => data.onInsert(id)} />
           {data.clipboardCount > 0 && <PasteButton count={data.clipboardCount} onClick={() => data.onPasteInsert(id)} />}
@@ -894,7 +941,9 @@ function PlusEdge({ id, sourceX, sourceY, targetX, targetY, sourcePosition, targ
 const edgeTypes = { plus: PlusEdge };
 
 function toFlowNode(n, ctx = {}) {
-  const rfType = n.type === 'trigger'
+  const rfType = n.type === 'note'
+    ? 'note'
+    : n.type === 'trigger'
     ? 'trigger'
     : isButtonMessage(n.type, n.data)
       ? 'message'
@@ -1055,6 +1104,16 @@ export default function WorkflowGraphEditor({
   const pendingSelectRef = useRef(null);
   // Posición del nodo al empezar a arrastrar, para no reordenar por un roce mínimo.
   const dragStartRef = useRef(null);
+  /**
+   * ARRASTRE EN CASCADA. Al mover un paso se llevan consigo todos los que cuelgan de
+   * él: mover una rama entera era, si no, ir nodo por nodo. Aquí se guardan los
+   * descendientes y su posición ORIGINAL para aplicarles el mismo desplazamiento.
+   */
+  const dragSubtreeRef = useRef(null);
+  // Conexión sobre la que se soltaría el paso ahora mismo (previsualización).
+  const [dropEdgeId, setDropEdgeId] = useState(null);
+  // Paso pendiente de confirmar borrado: se pregunta si va solo él o toda la rama.
+  const [deleteAsk, setDeleteAsk] = useState(null);
 
   // Asegura que siempre exista al menos un nodo disparador (un flujo).
   const modelNodes = useMemo(() => {
@@ -1079,6 +1138,19 @@ export default function WorkflowGraphEditor({
       const fn = toFlowNode(n, { clinics });
       const used = outHandles[n.id] || new Set();
       const isTrig = n.type === 'trigger';
+      // Las notas son anotaciones sueltas: no se conectan, no se copian y solo
+      // tienen su propio texto y su botón de borrar.
+      if (n.type === 'note') {
+        return {
+          ...fn,
+          draggable: true,
+          data: {
+            ...fn.data,
+            onChangeText: (text) => setNoteText(n.id, text),
+            onDelete: () => deleteNote(n.id),
+          },
+        };
+      }
       return {
         ...fn,
         data: {
@@ -1097,7 +1169,8 @@ export default function WorkflowGraphEditor({
           onCopy: isTrig ? undefined : () => copyNodes([n.id]),
           onCopyBranch: isTrig ? undefined : () => copyBranch(n.id),
           onDuplicate: isTrig ? undefined : () => duplicateNode(n.id),
-          onDelete: isTrig ? undefined : () => deleteNode(n.id),
+          // Borrar pregunta QUÉ borrar: solo este paso (recablea) o toda la rama.
+          onDelete: isTrig ? undefined : () => setDeleteAsk(n.id),
           // Pegar lo copiado directo bajo este nodo (icono junto al "+").
           _clipboardCount: clipboardCount,
           onPasteAppend: (handle) => pasteAt({ mode: 'append', sourceId: n.id, sourceHandle: handle }),
@@ -1134,12 +1207,44 @@ export default function WorkflowGraphEditor({
   // Selección del lienzo (Ctrl/⌘+clic o Shift+arrastre). Los disparadores no se
   // copian ni se borran en bloque: se filtran aquí.
   const onSelectionChange = useCallback(({ nodes: sel }) => {
-    setSelectedIds((sel || []).filter((n) => n.type !== 'trigger').map((n) => n.id));
+    setSelectedIds((sel || []).filter((n) => !['trigger', 'note'].includes(n.type)).map((n) => n.id));
   }, []);
 
   const onNodeDragStart = useCallback((_evt, node) => {
     dragStartRef.current = { id: node.id, ...node.position };
-  }, []);
+    // Con varios pasos seleccionados manda react-flow (ya los mueve todos) y con
+    // una nota no hay nada que arrastrar detrás.
+    if (selectedIds.length > 1 || node.type === 'note') { dragSubtreeRef.current = null; return; }
+    const hijos = new Set(descendantIdsInclusive(edges, node.id));
+    hijos.delete(node.id);
+    dragSubtreeRef.current = hijos.size
+      ? {
+        origen: { ...node.position },
+        base: new Map(rfNodes.filter((n) => hijos.has(n.id)).map((n) => [n.id, { ...n.position }])),
+      }
+      : null;
+  }, [edges, rfNodes, selectedIds]);
+
+  /**
+   * Durante el arrastre: se desplazan los descendientes lo mismo que el padre y se
+   * marca la conexión sobre la que caería el paso, para que el usuario vea DÓNDE va
+   * a quedar antes de soltar.
+   */
+  const onNodeDrag = useCallback((_evt, node) => {
+    const sub = dragSubtreeRef.current;
+    if (sub) {
+      const dx = (node.position?.x || 0) - sub.origen.x;
+      const dy = (node.position?.y || 0) - sub.origen.y;
+      setRfNodes((ns) => ns.map((n) => {
+        const base = sub.base.get(n.id);
+        return base ? { ...n, position: { x: base.x + dx, y: base.y + dy } } : n;
+      }));
+    }
+    // La previsualización solo tiene sentido para lo que de verdad se puede reordenar.
+    const model = modelNodes.find((n) => n.id === node.id);
+    const reordenable = model && model.type !== 'trigger' && model.type !== 'note' && selectedIds.length <= 1;
+    setDropEdgeId(reordenable ? (findDropEdge(node, rfNodes, edges)?.id || null) : null);
+  }, [setRfNodes, modelNodes, rfNodes, edges, selectedIds]);
 
   // Guarda en el modelo las posiciones que react-flow tiene ahora mismo (también
   // las de TODOS los nodos movidos a la vez en una selección múltiple).
@@ -1152,6 +1257,9 @@ export default function WorkflowGraphEditor({
   // Al soltar: si el paso se dejó ENCIMA de una conexión, se REORDENA (se inserta
   // ahí y se re-cablea). Si se soltó en vacío, solo se guarda su nueva posición.
   const onNodeDragStop = useCallback((_evt, node) => {
+    setDropEdgeId(null);
+    const sub = dragSubtreeRef.current;
+    dragSubtreeRef.current = null;
     // Con varios pasos seleccionados se están MOVIENDO todos: reordenar por la
     // línea más cercana no tiene sentido (movería solo uno y rompería el bloque).
     if (selectedIds.length > 1) { dragStartRef.current = null; persistPositions(); return; }
@@ -1162,12 +1270,29 @@ export default function WorkflowGraphEditor({
       : 0;
     const draggedModel = modelNodes.find((n) => n.id === node.id);
     // Reordenar solo si se movió de verdad (evita reordenar por un clic-arrastre mínimo).
-    if (draggedModel && draggedModel.type !== 'trigger' && moved > 30) {
+    if (draggedModel && draggedModel.type !== 'trigger' && draggedModel.type !== 'note' && moved > 30) {
       const target = findDropEdge(node, rfNodes, edges);
       if (target) {
         const newEdges = spliceNodeIntoEdge(node.id, target, modelNodes, edges);
         if (newEdges) {
-          onChange?.({ nodes: autoLayout(modelNodes, newEdges), edges: newEdges });
+          /**
+           * Se RE-CABLEA sin reorganizar todo el diagrama. Antes esto llamaba a
+           * `autoLayout`, así que mover un paso a otro flujo saltaba TODOS los nodos
+           * a una cuadrícula nueva y se perdía la distribución que el usuario había
+           * armado a mano. Ahora cada paso se queda donde está: solo cambia el
+           * cableado, y el paso movido conserva el sitio donde se soltó.
+           *
+           * Los descendientes que vinieron arrastrados vuelven a su posición: en el
+           * grafo NO se movieron con él (el puente los dejó colgando de su antiguo
+           * padre), así que dejarlos desplazados mentiría sobre lo que pasó.
+           */
+          const posById = new Map(rfNodes.map((n) => [n.id, n.position]));
+          const next = modelNodes.map((n) => {
+            const original = sub?.base.get(n.id);
+            if (original) return { ...n, position: original };
+            return posById.has(n.id) ? { ...n, position: posById.get(n.id) } : n;
+          });
+          onChange?.({ nodes: next, edges: newEdges });
           toast.success('Paso reordenado');
           return;
         }
@@ -1210,6 +1335,8 @@ export default function WorkflowGraphEditor({
         onPasteInsert: (edgeId) => pasteAt({ mode: 'insert', edgeId }),
         // La salida "no" (si no) se pinta en rojo; el resto de ramas en verde.
         labelCls: e.sourceHandle === 'no' ? 'text-rose-600' : 'text-emerald-600',
+        // Previsualización: aquí caería el paso que se está arrastrando.
+        isDropTarget: e.id === dropEdgeId,
       },
       label:
         splitRouteName[`${e.source}:${e.sourceHandle}`]
@@ -1220,7 +1347,7 @@ export default function WorkflowGraphEditor({
     // grafo a partir de los nodos de ESTE render. Sin esta dependencia, insertar
     // un paso sobre una línea después de editar otro nodo revertía esa edición.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [edges, modelNodes, deleteEdge, clipboardCount, splitRouteName]
+    [edges, modelNodes, deleteEdge, clipboardCount, splitRouteName, dropEdgeId]
   );
 
   // ── Conexión manual con el mouse (arrastrar desde un punto a otro nodo) ──
@@ -1533,14 +1660,50 @@ export default function WorkflowGraphEditor({
     }
     onChange?.({ nodes: modelNodes.filter((n) => n.id !== id), edges: nextEdges });
     setSelectedId(null);
+    setDeleteAsk(null);
   };
+
+  /**
+   * Borra el paso Y TODO lo que cuelga de él (la rama entera). Es la otra mitad de
+   * "eliminar": a veces se quiere quitar un paso y que la cadena siga (deleteNode) y
+   * a veces se quiere tirar la rama completa, que antes había que borrar uno a uno.
+   * Los disparadores nunca se van por aquí: se quitan con "Eliminar este flujo".
+   */
+  const deleteBranch = (id) => {
+    const objetivo = modelNodes.find((n) => n.id === id);
+    if (!objetivo || objetivo.type === 'trigger') return;
+    const fuera = descendantIdsInclusive(edges, id);
+    // Las notas son anotaciones sueltas: nunca se arrastran en un borrado de rama.
+    modelNodes.forEach((n) => { if (n.type === 'note') fuera.delete(n.id); });
+    onChange?.({
+      nodes: modelNodes.filter((n) => !fuera.has(n.id)),
+      edges: edges.filter((e) => !fuera.has(e.source) && !fuera.has(e.target)),
+    });
+    setSelectedId(null);
+    setDeleteAsk(null);
+    toast.success(fuera.size === 1 ? 'Paso eliminado' : `Rama eliminada (${fuera.size} pasos)`);
+  };
+
+  // ── Notas del lienzo (cuadros de texto sueltos, no son pasos) ──
+  const addNote = () => {
+    const id = `note-${Date.now()}`;
+    // Debajo del contenido existente, para que no tape ningún paso.
+    const maxY = Math.max(0, ...modelNodes.map((n) => n.position?.y || 0));
+    const minX = Math.min(0, ...modelNodes.map((n) => n.position?.x || 0));
+    const nueva = { id, type: 'note', position: { x: minX - GAP_X, y: maxY }, data: { text: '' } };
+    onChange?.({ nodes: [...modelNodes, nueva], edges });
+  };
+  const setNoteText = (id, text) =>
+    onChange?.({ nodes: modelNodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, text } } : n)), edges });
+  const deleteNote = (id) => onChange?.({ nodes: modelNodes.filter((n) => n.id !== id), edges });
 
   // Copia uno o VARIOS pasos (con las conexiones que haya ENTRE ellos) al
   // portapapeles. No modifica el flujo. Los disparadores nunca se copian.
   // Ids de pasos REALES (existen y no son disparadores) de una selección.
   const stepIds = (ids) => {
     const byId = new Map(modelNodes.map((n) => [n.id, n]));
-    return new Set(ids.filter((id) => byId.get(id) && byId.get(id).type !== 'trigger'));
+    // Ni disparadores ni notas: no son pasos del flujo.
+    return new Set(ids.filter((id) => byId.get(id) && !['trigger', 'note'].includes(byId.get(id).type)));
   };
 
   const copyNodes = (ids, label) => {
@@ -1703,6 +1866,7 @@ export default function WorkflowGraphEditor({
           edgeTypes={edgeTypes}
           onNodesChange={onNodesChange}
           onNodeDragStart={onNodeDragStart}
+          onNodeDrag={onNodeDrag}
           onNodeDragStop={onNodeDragStop}
           onSelectionDragStop={persistPositions}
           onSelectionChange={onSelectionChange}
@@ -1760,6 +1924,14 @@ export default function WorkflowGraphEditor({
           </button>
           <button
             type="button"
+            onClick={addNote}
+            className="px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-slate-600 shadow-sm hover:border-amber-400 cursor-pointer flex items-center gap-1"
+            title="Añade un cuadro de texto para anotar el diagrama (no es un paso: no se envía nada)"
+          >
+            <HiOutlinePlus className="w-3.5 h-3.5" /> Nota
+          </button>
+          <button
+            type="button"
             onClick={selectAllNodes}
             className="px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-slate-600 shadow-sm hover:border-emerald-400 cursor-pointer flex items-center gap-1"
             title="Selecciona todos los pasos (Ctrl+A) para copiar el flujo entero"
@@ -1767,7 +1939,7 @@ export default function WorkflowGraphEditor({
             <HiOutlineSquares2X2 className="w-3.5 h-3.5" /> Seleccionar todo
           </button>
           <span className="hidden xl:inline-flex items-center px-3 py-1.5 bg-white/80 border border-slate-200 rounded-lg text-[11px] text-slate-400 shadow-sm select-none">
-            Shift + arrastrar (o Ctrl + clic) selecciona varios pasos · Ctrl+C copia, Ctrl+V pega, Ctrl+D duplica · el icono 🗂️ del paso copia la rama entera
+            Al mover un paso se mueve con sus siguientes · Shift + arrastrar (o Ctrl + clic) selecciona varios · Ctrl+C copia, Ctrl+V pega, Ctrl+D duplica
           </span>
         </div>
 
@@ -1790,6 +1962,49 @@ export default function WorkflowGraphEditor({
             </button>
           </div>
         )}
+
+        {/* Eliminar: SOLO el paso (la cadena se recompone) o el paso y todo lo que
+            sigue. Antes solo existía lo primero y borrar una rama era ir uno a uno. */}
+        {deleteAsk && (() => {
+          const enRama = descendantIdsInclusive(edges, deleteAsk).size;
+          const nodo = modelNodes.find((n) => n.id === deleteAsk);
+          return (
+            <div className="absolute inset-0 z-30 flex items-center justify-center bg-slate-900/20" onClick={() => setDeleteAsk(null)}>
+              <div className="bg-white rounded-2xl shadow-xl border border-slate-200 p-4 w-[340px]" onClick={(e) => e.stopPropagation()}>
+                <p className="text-sm font-semibold text-slate-800">Eliminar «{STEP_DEFS[nodo?.type] || 'paso'}»</p>
+                <p className="text-xs text-slate-500 mt-1">¿Qué quieres quitar del diagrama?</p>
+                <div className="mt-3 grid gap-2">
+                  <button
+                    type="button"
+                    onClick={() => deleteNode(deleteAsk)}
+                    className="text-left px-3 py-2.5 rounded-xl border border-slate-200 hover:border-emerald-400 hover:bg-emerald-50/50 bg-white cursor-pointer"
+                  >
+                    <span className="block text-sm font-medium text-slate-700">Solo este paso</span>
+                    <span className="block text-[11px] text-slate-500">Lo que venía detrás se engancha al paso anterior.</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => deleteBranch(deleteAsk)}
+                    disabled={enRama <= 1}
+                    className="text-left px-3 py-2.5 rounded-xl border border-slate-200 hover:border-rose-400 hover:bg-rose-50/50 bg-white cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  >
+                    <span className="block text-sm font-medium text-rose-700">Este paso y los siguientes</span>
+                    <span className="block text-[11px] text-slate-500">
+                      {enRama <= 1 ? 'No hay nada después de este paso.' : `Se eliminan ${enRama} pasos: esta rama entera.`}
+                    </span>
+                  </button>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setDeleteAsk(null)}
+                  className="mt-3 w-full px-3 py-2 rounded-xl border border-slate-200 bg-white text-sm text-slate-600 cursor-pointer"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </div>
+          );
+        })()}
 
         {/* Drawer de configuración del disparador */}
         {selTrig && (
@@ -1814,7 +2029,7 @@ export default function WorkflowGraphEditor({
           <Drawer
             title={STEP_DEFS[selectedNode.type]}
             onClose={() => setSelectedId(null)}
-            onDelete={() => deleteNode(selectedNode.id)}
+            onDelete={() => setDeleteAsk(selectedNode.id)}
           >
             <NodeConfig
               // key por nodo: al saltar de un paso a otro el formulario se

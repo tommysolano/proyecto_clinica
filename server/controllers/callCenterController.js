@@ -112,12 +112,14 @@ exports.getCommissions = async (req, res) => {
       // Buscar la primera regla que aplique (evita doble conteo de la misma cita).
       const rule = callCenterRules.find((r) => {
         if (r.targetType === 'user') {
-          if (String(r.user) !== agentId) return false;
+          // Una regla puede nombrar a VARIAS personas (ver CommissionRule.ruleUsers).
+          if (!CommissionRule.ruleUsers(r).includes(agentId)) return false;
         } else if (r.role !== 'call_center') {
           return false;
         }
         if (r.serviceAmounts?.length && !r.serviceAmounts.some((sa) => svcIds.includes(String(sa.service)))) return false;
-        if (r.service && !svcIds.includes(String(r.service))) return false;
+        const permitidos = CommissionRule.ruleServices(r);
+        if (permitidos.length && !permitidos.some((id) => svcIds.includes(id))) return false;
         if (r.patientScope === 'new' && !appt.isFirstVisit) return false;
         if (!inSchedule(r, appt)) return false;
         return true;

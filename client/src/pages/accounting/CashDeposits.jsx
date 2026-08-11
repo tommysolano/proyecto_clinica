@@ -6,6 +6,7 @@ import Field from '../../components/Field';
 import { HiOutlinePlus, HiOutlineBanknotes, HiOutlineEye, HiOutlineXMark, HiOutlineMagnifyingGlass } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 import useDocDeepLink from '../../hooks/useDocDeepLink';
+import SourceDocLink from '../../components/SourceDocLink';
 import { newIdempotencyKey, withIdempotencyKey, intentKey } from '../../utils/idempotency';
 
 /**
@@ -307,7 +308,12 @@ export default function CashDeposits() {
                 <tbody>
                   {(detail.items || []).map((i, idx) => (
                     <tr key={idx} className="border-t">
-                      <td className="px-2 py-1 font-mono">{i.number} <span className="text-slate-400">{i.docModel === 'Sale' ? 'venta' : 'cobro'}</span></td>
+                      {/* Cada documento del depósito lleva a su venta o cobro:
+                          es la única forma de cuadrar la papeleta contra el origen. */}
+                      <td className="px-2 py-1 font-mono">
+                        <SourceDocLink model={i.docModel} id={i.docRef} number={i.number} />
+                        <span className="text-slate-400 ml-1">{i.docModel === 'Sale' ? 'venta' : 'cobro'}</span>
+                      </td>
                       <td className="px-2 py-1">{fmtDate(i.docDate)}</td>
                       <td className="px-2 py-1">{i.party || '—'}</td>
                       <td className="px-2 py-1 text-right font-mono">${fmt(i.amount)}</td>

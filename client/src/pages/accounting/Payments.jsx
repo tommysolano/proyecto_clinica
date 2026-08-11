@@ -10,6 +10,7 @@ import NumericInput from '../../components/NumericInput';
 import SearchableSelect from '../../components/SearchableSelect';
 import ExcelButton from '../../components/ExcelButton';
 import useDocDeepLink from '../../hooks/useDocDeepLink';
+import SourceDocLink from '../../components/SourceDocLink';
 import { newIdempotencyKey, withIdempotencyKey, intentKey } from '../../utils/idempotency';
 
 /** Cliente sin identificar: la venta se emite a Consumidor Final y su CxC no tiene paciente. */
@@ -422,7 +423,15 @@ export default function Payments() {
                   <tbody>
                     {detail.applications.map((a, i) => (
                       <tr key={i} className="border-t">
-                        <td className="px-2 py-1">{a.docModel === 'PurchaseInvoice' ? 'Factura de compra' : a.docModel === 'Invoice' ? 'Factura de venta' : a.docModel} · {String(a.docRef).slice(-6)}</td>
+                        {/* El documento aplicado se abre desde aquí: antes solo se veía
+                            su tipo y los últimos 6 caracteres del id, que no dicen nada. */}
+                        <td className="px-2 py-1">
+                          <SourceDocLink
+                            model={a.docModel}
+                            id={a.docRef}
+                            label={`${a.docModel === 'PurchaseInvoice' ? 'Factura de compra' : a.docModel === 'Invoice' ? 'Factura de venta' : a.docModel} · ${String(a.docRef).slice(-6)}`}
+                          />
+                        </td>
                         <td className="px-2 py-1 text-right font-mono">${fmt(a.amount)}</td>
                       </tr>
                     ))}

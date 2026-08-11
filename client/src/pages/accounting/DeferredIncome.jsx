@@ -5,6 +5,7 @@ import Modal from '../../components/Modal';
 import { fmt, fmtDate } from './_utils';
 import { HiOutlineCheckCircle } from 'react-icons/hi2';
 import NumericInput from '../../components/NumericInput';
+import SourceDocLink from '../../components/SourceDocLink';
 
 const STATUS_CLS = {
   ABIERTO: 'bg-slate-100 text-slate-600',
@@ -77,7 +78,16 @@ export default function DeferredIncome() {
             {(data.items || []).map((d) => (
               <tr key={d._id} className="border-t border-slate-100 hover:bg-slate-50">
                 <td className="px-3 py-2">{fmtDate(d.issueDate)}</td>
-                <td className="px-3 py-2">{d.productName}</td>
+                <td className="px-3 py-2">
+                  {d.productName}
+                  {/* Enlace a la venta que originó el diferido: sin él, el saldo es
+                      un número sin respaldo a la vista. */}
+                  {d.sourceRef && (
+                    <div className="text-[11px]">
+                      <SourceDocLink row={d} label="Ver documento de origen" />
+                    </div>
+                  )}
+                </td>
                 <td className="px-3 py-2">{d.patient ? `${d.patient.firstName || ''} ${d.patient.lastName || ''}`.trim() : d.partyName || '—'}</td>
                 <td className="px-3 py-2 text-right">${fmt(d.total)}</td>
                 <td className="px-3 py-2 text-right text-emerald-700">${fmt(d.recognized)}</td>

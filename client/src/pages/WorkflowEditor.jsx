@@ -144,7 +144,9 @@ export default function WorkflowEditor() {
   const save = async (close = true) => {
     if (!wf.name.trim()) return toast.error('Ponle un nombre al workflow');
     const syncedNodes = syncTemplateNodes(wf.nodes || [], templates);
-    const actionNodes = syncedNodes.filter((n) => n.type !== 'trigger');
+    // Las notas del lienzo son anotaciones del usuario: se guardan con el diagrama
+    // pero no son pasos (no se validan ni cuentan como acción).
+    const actionNodes = syncedNodes.filter((n) => n.type !== 'trigger' && n.type !== 'note');
     if (actionNodes.length === 0) return toast.error('Agrega al menos un paso al diagrama');
     if (actionNodes.some((n) => n.type === 'assign_agent' && n.data?.assignMode === 'user' && !n.data?.assignUser)) {
       return toast.error('Selecciona el asesor específico en cada paso “Asignar agente”');

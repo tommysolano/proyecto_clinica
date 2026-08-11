@@ -29,6 +29,17 @@ const TRIGGERS = {
   call_center_commission: 'Cuando su call center ligado gana comisión',
 };
 
+// Qué significa cada condición, en una línea (se lee junto a su casilla).
+const TRIGGER_HINTS = {
+  appointment_performed: 'Se gana al atender (doctor/enfermero) la cita que se completa.',
+  appointment_created: 'El call center gana cuando una cita que agendó es asistida/completada. Una vez por cita.',
+  sale: 'Se gana al registrar la venta del producto/servicio.',
+  recommendation: 'Se atribuye a quien figure como "recomendado por" en la venta.',
+  referral: 'El doctor que derivó al paciente gana cuando la cita derivada se completa.',
+  admin_service: 'El administrador gana por cada servicio atendido. Usa "varios servicios" para distinto monto por servicio.',
+  call_center_commission: 'El marketing gana en función de la comisión que devengue el call center al que está ligado.',
+};
+
 // Triggers sugeridos según el rol seleccionado (el modal se adapta al rol).
 const TRIGGERS_BY_ROLE = {
   admin: ['admin_service'],
@@ -64,9 +75,11 @@ function downloadCsv(rows, filename) {
 }
 
 const EMPTY = {
-  name: '', active: true, targetType: 'role', user: '', role: 'doctor',
-  trigger: 'appointment_performed',
-  service: '', patientScope: 'all', scheduleEnabled: false, daysOfWeek: [],
+  name: '', active: true, targetType: 'role', users: [], role: 'doctor',
+  // Varias CONDICIONES (eventos) en la misma regla.
+  triggers: ['appointment_performed'],
+  // Varios productos/servicios con el mismo monto (vacío = cualquiera).
+  services: [], patientScope: 'all', scheduleEnabled: false, daysOfWeek: [],
   startTime: '', endTime: '',
   amountType: 'fixed', amount: '', percent: '',
   multiService: false, serviceAmounts: [],
@@ -77,12 +90,58 @@ const EMPTY = {
 // Fila vacía del editor multi-servicio.
 const EMPTY_SVC = { service: '', amountType: 'fixed', amount: '', percent: '' };
 
+// Lectores de los campos que admiten varios valores (espejo de CommissionRule.rule*).
+const ruleTriggersOf = (r) => ((r.triggers || []).length ? r.triggers : [r.trigger || 'appointment_performed']);
+const ruleListOf = (plural, singular) => ((plural || []).length ? plural : [singular].filter(Boolean));
+
+// "Ana", "Ana y Luis", "Ana +3" — para no reventar la columna con seis nombres.
+const ruleTargetLabel = (r) => {
+  const nombres = ruleListOf(r.users, r.user).map((u) => u?.name || 'Usuario');
+  if (!nombres.length) return 'Usuario';
+  if (nombres.length === 1) return nombres[0];
+  if (nombres.length === 2) return `${nombres[0]} y ${nombres[1]}`;
+  return `${nombres[0]} +${nombres.length - 1}`;
+};
+
+const ruleServicesLabel = (r) => {
+  const svcs = ruleListOf(r.services, r.service);
+  if (!svcs.length) return 'Cualquier servicio';
+  if (svcs.length === 1) return svcs[0]?.name || 'Servicio';
+  return `${svcs.length} servicios`;
+};
+
 // Etiqueta del monto de una regla para la tabla.
 const ruleAmountLabel = (r) => {
   if ((r.serviceAmounts || []).length) return `${r.serviceAmounts.length} servicios`;
   if (r.amountType === 'percent') return Number(r.percent) > 0 ? `${Number(r.percent)}%` : 'Por conteo';
   return Number(r.amount) > 0 ? `$${Number(r.amount).toFixed(2)}` : 'Por conteo';
 };
+
+/**
+ * Lista de valores elegidos (personas, productos…) con su botón de quitar. Cuando está
+ * vacía dice qué significa estarlo, que es la duda real del usuario ("¿no elegir ninguno
+ * aplica a todos o a ninguno?").
+ */
+function Chips({ items, onRemove, empty }) {
+  if (!items.length) return <span className="block mt-1 text-xs text-slate-400">{empty}</span>;
+  return (
+    <div className="flex flex-wrap gap-1 mt-1.5">
+      {items.map((it) => (
+        <span key={it.id} className="inline-flex items-center gap-1 pl-2 pr-1 py-0.5 rounded-full bg-emerald-50 border border-emerald-200 text-xs text-emerald-800">
+          {it.label}
+          <button
+            type="button"
+            onClick={() => onRemove(it.id)}
+            title="Quitar"
+            className="w-4 h-4 flex items-center justify-center rounded-full text-emerald-700 hover:bg-emerald-200 bg-transparent border-none cursor-pointer leading-none"
+          >
+            ×
+          </button>
+        </span>
+      ))}
+    </div>
+  );
+}
 
 // Selector $ Fijo / % Porcentaje.
 function ModeToggle({ value, onChange }) {
@@ -158,14 +217,23 @@ export default function CommissionRules() {
   };
   useEffect(() => { if (tab === 'report') loadReport(); /* eslint-disable-next-line */ }, [tab]);
 
+  // Lectura de una regla guardada: puede venir en la forma vieja (un valor) o en la
+  // nueva (varios). El formulario siempre trabaja con listas.
+  const idsDe = (plural, singular) => {
+    const lista = (plural || []).map((x) => String(x?._id || x)).filter(Boolean);
+    if (lista.length) return lista;
+    const uno = singular?._id || singular;
+    return uno ? [String(uno)] : [];
+  };
+
   const openNew = () => { setEditing(null); setForm(EMPTY); setModal(true); };
   const openEdit = (r) => {
     setEditing(r._id);
     setForm({
       name: r.name, active: r.active, targetType: r.targetType,
-      user: r.user?._id || r.user || '', role: r.role || 'doctor',
-      trigger: r.trigger || 'appointment_performed',
-      service: r.service?._id || r.service || '', patientScope: r.patientScope,
+      users: idsDe(r.users, r.user), role: r.role || 'doctor',
+      triggers: (r.triggers || []).length ? r.triggers : [r.trigger || 'appointment_performed'],
+      services: idsDe(r.services, r.service), patientScope: r.patientScope,
       scheduleEnabled: r.scheduleEnabled, daysOfWeek: r.daysOfWeek || [],
       startTime: r.startTime || '', endTime: r.endTime || '',
       amountType: r.amountType || 'fixed',
@@ -184,15 +252,17 @@ export default function CommissionRules() {
     setModal(true);
   };
 
-  // ¿La regla aplica al call center? (por rol o por el usuario elegido).
+  // ¿La regla aplica al call center? (por rol o por alguna de las personas elegidas).
   // Para el call center NO se filtra por producto/servicio.
-  const selectedUser = users.find((u) => u._id === form.user);
-  const userIsCallCenter = (selectedUser?.clinics || []).some((c) => c.role === 'call_center');
+  const userIsCallCenter = form.users.some((id) => {
+    const u = users.find((x) => x._id === id);
+    return (u?.clinics || []).some((c) => c.role === 'call_center');
+  });
   const isCallCenter = form.targetType === 'role' ? form.role === 'call_center' : userIsCallCenter;
   // Marketing ligado a un call center (gana sobre la comisión del agente).
-  const isMarketingLink = form.trigger === 'call_center_commission';
-  // Triggers que comisionan por SERVICIO (admiten varios servicios con montos distintos).
-  const canMultiService = ['appointment_performed', 'admin_service', 'sale', 'recommendation'].includes(form.trigger);
+  const isMarketingLink = form.triggers.includes('call_center_commission');
+  // Condiciones que comisionan por SERVICIO (admiten varios servicios con montos distintos).
+  const canMultiService = form.triggers.some((t) => ['appointment_performed', 'admin_service', 'sale', 'recommendation'].includes(t));
   const usingMulti = canMultiService && form.multiService;
   // Mostrar el selector de un servicio único.
   const showSingleService = !isCallCenter && !isMarketingLink && !usingMulti;
@@ -207,6 +277,8 @@ export default function CommissionRules() {
   const submit = async (e) => {
     e.preventDefault();
     if (!form.name) { toast.error('El nombre es obligatorio'); return; }
+    if (!form.triggers.length) { toast.error('Elige al menos una condición'); return; }
+    if (form.targetType === 'user' && !form.users.length) { toast.error('Elige al menos una persona'); return; }
     if (isMarketingLink && !form.linkedCallCenter) { toast.error('Selecciona el call center al que está ligado'); return; }
     if (usingMulti && form.serviceAmounts.filter((s) => s.service).length === 0) {
       toast.error('Agrega al menos un servicio con su monto'); return;
@@ -229,10 +301,13 @@ export default function CommissionRules() {
         amount: parseFloat(form.amount) || 0,
         percent: parseFloat(form.percent) || 0,
         serviceAmounts,
-        user: form.targetType === 'user' ? form.user : null,
+        // El servidor sincroniza los campos singulares (user/trigger/service) con el
+        // primer elemento de cada lista: ver `normalizeRuleBody`.
+        users: form.targetType === 'user' ? form.users : [],
         role: form.targetType === 'role' ? form.role : '',
-        // En reglas multi-servicio el servicio único se ignora.
-        service: isCallCenter || isMarketingLink || usingMulti ? null : (form.service || null),
+        triggers: form.triggers,
+        // En reglas multi-servicio (monto por servicio) la lista blanca se ignora.
+        services: isCallCenter || isMarketingLink || usingMulti ? [] : form.services,
         linkedCallCenter: isMarketingLink ? (form.linkedCallCenter || null) : null,
         account: form.account || null,
       };
@@ -341,15 +416,18 @@ export default function CommissionRules() {
                 <tr key={r._id} className="border-t border-slate-100">
                   <td className="px-3 py-2 font-medium">{r.name}</td>
                   <td className="px-3 py-2">
-                    <div>{r.targetType === 'user' ? (r.user?.name || 'Usuario') : `Rol: ${r.role}`}</div>
-                    <div className="text-[11px] text-slate-400">{TRIGGERS[r.trigger] || TRIGGERS.appointment_performed}</div>
+                    <div>{r.targetType === 'user' ? ruleTargetLabel(r) : `Rol: ${r.role}`}</div>
+                    {/* Todas las condiciones de la regla, no solo la primera. */}
+                    <div className="text-[11px] text-slate-400">
+                      {(ruleTriggersOf(r)).map((t) => TRIGGERS[t] || t).join(' · ')}
+                    </div>
                   </td>
                   <td className="px-3 py-2">{
                     (r.serviceAmounts || []).length
                       ? `${r.serviceAmounts.length} servicios`
-                      : r.trigger === 'call_center_commission'
+                      : ruleTriggersOf(r).includes('call_center_commission')
                       ? `Call center: ${r.linkedCallCenter?.name || '—'}`
-                      : r.service?.name || 'Cualquier servicio'
+                      : ruleServicesLabel(r)
                   }</td>
                   <td className="px-3 py-2">{r.patientScope === 'new' ? 'Solo nuevos' : 'Todos'}</td>
                   <td className="px-3 py-2 text-right">{ruleAmountLabel(r) === 'Por conteo'
@@ -503,42 +581,60 @@ export default function CommissionRules() {
                 </select>
               </label>
             ) : (
-              <label className="block text-sm">Usuario
-                <select value={form.user} onChange={(e) => setForm({ ...form, user: e.target.value })} className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
-                  <option value="">— Seleccionar —</option>
-                  {users.map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
+              /* VARIAS personas: la misma condición suele valer para más de un empleado
+                 y antes había que duplicar la regla una vez por persona. */
+              <div className="block text-sm">Personas
+                <select
+                  value=""
+                  onChange={(e) => {
+                    const id = e.target.value;
+                    if (id && !form.users.includes(id)) setForm({ ...form, users: [...form.users, id] });
+                  }}
+                  className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
+                >
+                  <option value="">— Agregar persona —</option>
+                  {users.filter((u) => !form.users.includes(u._id)).map((u) => <option key={u._id} value={u._id}>{u.name}</option>)}
                 </select>
-              </label>
+                <Chips
+                  items={form.users.map((id) => ({ id, label: users.find((u) => u._id === id)?.name || 'Usuario' }))}
+                  onRemove={(id) => setForm({ ...form, users: form.users.filter((x) => x !== id) })}
+                  empty="Sin personas: elige al menos una."
+                />
+              </div>
             )}
           </div>
 
-          {/* Evento que devenga la comisión — se adapta al rol elegido */}
-          <label className="block text-sm">¿Cuándo se gana la comisión?
-            <select
-              value={form.trigger}
-              onChange={(e) => setForm({ ...form, trigger: e.target.value })}
-              className="block w-full mt-1 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
-            >
-              {(form.targetType === 'role' ? triggersForRole(form.role) : ALL_TRIGGERS).map((t) => (
-                <option key={t} value={t}>{TRIGGERS[t]}</option>
-              ))}
-            </select>
-            <span className="block mt-1 text-xs text-slate-400">
-              {form.trigger === 'appointment_created'
-                ? 'El call center gana cuando una cita que agendó es asistida/completada. Se cuenta una vez por cita.'
-                : form.trigger === 'recommendation'
-                ? 'Se atribuye a quien figure como "recomendado por" en la venta.'
-                : form.trigger === 'sale'
-                ? 'Se gana al registrar la venta del producto/servicio.'
-                : form.trigger === 'referral'
-                ? 'El doctor que derivó al paciente gana cuando la cita derivada se completa.'
-                : form.trigger === 'admin_service'
-                ? 'El administrador gana por cada servicio atendido. Usa "varios servicios" para distinto monto por servicio.'
-                : form.trigger === 'call_center_commission'
-                ? 'El marketing gana en función de la comisión que devengue el call center al que está ligado.'
-                : 'Se gana al atender (doctor/enfermero) la cita que se completa.'}
-            </span>
-          </label>
+          {/* CONDICIONES que devengan la comisión — se adaptan al rol y admiten varias:
+              una misma regla puede pagar, por ejemplo, por atender la cita Y por
+              recomendar el producto, sin tener que duplicarla. */}
+          <div className="block text-sm">
+            ¿Cuándo se gana la comisión? <span className="text-slate-400 font-normal">(puedes marcar varias)</span>
+            <div className="mt-1 border border-slate-200 rounded-xl divide-y divide-slate-100 overflow-hidden">
+              {(form.targetType === 'role' ? triggersForRole(form.role) : ALL_TRIGGERS).map((t) => {
+                const on = form.triggers.includes(t);
+                return (
+                  <label key={t} className={`flex items-start gap-2 px-3 py-2 cursor-pointer ${on ? 'bg-emerald-50/60' : 'bg-white hover:bg-slate-50'}`}>
+                    <input
+                      type="checkbox"
+                      checked={on}
+                      onChange={(e) => setForm({
+                        ...form,
+                        triggers: e.target.checked
+                          ? [...form.triggers, t]
+                          : form.triggers.filter((x) => x !== t),
+                      })}
+                      className="w-4 h-4 accent-emerald-600 mt-0.5 shrink-0"
+                    />
+                    <span>
+                      <span className="block">{TRIGGERS[t]}</span>
+                      <span className="block text-xs text-slate-400">{TRIGGER_HINTS[t]}</span>
+                    </span>
+                  </label>
+                );
+              })}
+            </div>
+            {!form.triggers.length && <span className="block mt-1 text-xs text-rose-600">Marca al menos una condición.</span>}
+          </div>
           {/* Marketing ligado a un call center */}
           {isMarketingLink && (
             <label className="block text-sm">Call center al que está ligado
@@ -553,13 +649,21 @@ export default function CommissionRules() {
           <div className="grid grid-cols-2 gap-3">
             {/* Call center y marketing-ligado no se filtran por producto. */}
             {showSingleService && (
-              <div className="block text-sm">Producto / Servicio / Ítem
+              /* VARIOS productos/servicios con el mismo monto. Vacío = cualquiera. */
+              <div className="block text-sm">Productos / Servicios / Ítems
                 <ProductAutocomplete
-                  products={services}
-                  value={form.service}
-                  onSelect={(p) => setForm({ ...form, service: p?._id || '' })}
-                  placeholder="Cualquiera — escribe para buscar"
+                  products={services.filter((p) => !form.services.includes(p._id))}
+                  value=""
+                  onSelect={(p) => {
+                    if (p?._id && !form.services.includes(p._id)) setForm({ ...form, services: [...form.services, p._id] });
+                  }}
+                  placeholder="Cualquiera — escribe para agregar"
                   className="mt-1"
+                />
+                <Chips
+                  items={form.services.map((id) => ({ id, label: services.find((p) => p._id === id)?.name || 'Producto' }))}
+                  onRemove={(id) => setForm({ ...form, services: form.services.filter((x) => x !== id) })}
+                  empty="Sin filtro: aplica a cualquier producto o servicio."
                 />
               </div>
             )}

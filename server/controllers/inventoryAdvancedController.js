@@ -512,102 +512,81 @@ exports.kardexExcel = async (req, res) => {
 };
 
 /**
- * Traslado de stock entre bodegas. body: { product, fromWarehouse, toWarehouse, quantity, reason }
+ * Traslado de stock entre bodegas — de UNO o VARIOS productos en un mismo documento.
+ *
+ * body: { fromWarehouse, toWarehouse, date, reason, costCenter,
+ *         items: [{ product, quantity }] }
+ * Se acepta también la forma antigua de un solo producto ({ product, quantity }).
+ *
  * Mueve realmente las capas de inventario (kardex): consume FIFO de la bodega de
  * origen y recrea capas equivalentes (mismo costo, lote y vencimiento) en la de
  * destino, de modo que el valor del inventario y la trazabilidad se conservan.
- * El stock global del producto no cambia (solo se reubica). Atómico en transacción.
+ * El stock global del producto no cambia (solo se reubica).
+ *
+ * TODO EL TRASLADO ES UNA SOLA OPERACIÓN: las líneas comparten `transferGroup` y se
+ * graban dentro de la misma transacción. Si una sola línea no tiene stock suficiente,
+ * NO se mueve nada (no puede quedar medio traslado hecho).
  *
  * Impacto contable: si ambas bodegas tienen cuenta contable asignada y son
- * DISTINTAS, genera el asiento de reclasificación (débito inventario destino,
- * crédito inventario origen, al costo trasladado). Si comparten cuenta (o no
+ * DISTINTAS, genera UN asiento de reclasificación por el costo total trasladado
+ * (débito inventario destino, crédito inventario origen). Si comparten cuenta (o no
  * tienen), el traslado es solo movimiento de kardex, sin asiento financiero.
  */
 exports.transferStock = async (req, res) => {
   const idemKey = readIdempotencyKey(req);
   try {
-    const { product, fromWarehouse, toWarehouse, quantity, reason } = req.body;
-    if (!product || !fromWarehouse || !toWarehouse || !quantity) return res.status(400).json({ message: 'product, fromWarehouse, toWarehouse y quantity requeridos' });
+    const { fromWarehouse, toWarehouse, reason } = req.body;
+    // Forma nueva (varias líneas) y forma antigua (un producto suelto) conviven: la
+    // pantalla vieja y las integraciones que ya llamaban a este endpoint siguen igual.
+    const crudas = Array.isArray(req.body.items) && req.body.items.length
+      ? req.body.items
+      : [{ product: req.body.product, quantity: req.body.quantity }];
+
+    if (!fromWarehouse || !toWarehouse) return res.status(400).json({ message: 'Indica la bodega de origen y la de destino' });
     if (String(fromWarehouse) === String(toWarehouse)) return res.status(400).json({ message: 'Las bodegas deben ser distintas' });
-    const qty = kardex.round4(quantity);
-    if (qty <= 0) return res.status(400).json({ message: 'Cantidad inválida' });
+
+    const lineas = [];
+    const vistos = new Set();
+    for (const it of crudas) {
+      if (!it?.product) return res.status(400).json({ message: 'Cada línea necesita un producto' });
+      const qty = kardex.round4(it.quantity);
+      if (!(qty > 0)) return res.status(400).json({ message: 'La cantidad de cada producto debe ser mayor que cero' });
+      const key = String(it.product);
+      // Repetir el producto partiría el mismo stock en dos líneas y confundiría el
+      // control de existencias: se pide sumarlo en una sola.
+      if (vistos.has(key)) return res.status(400).json({ message: 'Hay un producto repetido en el traslado: júntalo en una sola línea' });
+      vistos.add(key);
+      lineas.push({ product: key, quantity: qty });
+    }
+
     // Fecha FUNCIONAL del traslado (la del documento), no la de grabación.
     const fecha = kardexService.parseLocalDate(req.body.date) || new Date();
 
     // Reintento: la misma clave devuelve el traslado ya hecho en vez de moverlo dos veces.
     if (idemKey) {
-      const previo = await InventoryMovement.findOne({
-        clinic: req.clinicId, type: 'traslado', reference: `IDEM:${idemKey}`,
+      const previo = await InventoryMovement.find({
+        clinic: req.clinicId, type: 'traslado', reference: `IDEM:${idemKey}`, toWarehouse: { $ne: null },
       }).populate('warehouse toWarehouse', 'code name').populate('product', 'code name');
-      if (previo) return res.json({ ...previo.toObject(), idempotentReplay: true });
+      if (previo.length) {
+        return res.json({
+          ...previo[0].toObject(),   // compatibilidad con quien leía el movimiento suelto
+          idempotentReplay: true,
+          transferGroup: previo[0].transferGroup,
+          lines: previo.length,
+          totalCost: kardex.round2(previo.reduce((s, m) => s + Number(m.totalCost || 0), 0)),
+          movements: previo.map((m) => m.toObject()),
+        });
+      }
     }
 
     let entryCreated = false;
-    const movId = await runInTransaction(async (session) => {
-      const prod = await Product.findOne({ _id: product, clinic: req.clinicId }).session(session);
-      if (!prod) throw Object.assign(new Error('Producto no encontrado'), { status: 404 });
-
-      // Capas vivas en la bodega de origen, en orden FIFO.
-      const layers = await InventoryLayer.find({
-        clinic: req.clinicId, product, warehouse: fromWarehouse, qtyRemaining: { $gt: 0 },
-      }).sort({ date: 1, createdAt: 1 }).session(session);
-
-      const { plan, totalCost, shortfall } = kardex.planConsumption(layers, qty);
-      if (shortfall > 0.00001) throw Object.assign(new Error('Stock insuficiente en la bodega de origen'), { status: 400 });
-
-      const byId = new Map(layers.map((l) => [String(l._id), l]));
-      for (const p of plan) {
-        const layer = byId.get(String(p.layerId));
-        if (!layer) continue;
-        // Descuenta de la capa de origen.
-        layer.qtyRemaining = kardex.round4(layer.qtyRemaining - p.qty);
-        if (layer.qtyRemaining <= 0.00001) { layer.qtyRemaining = 0; layer.exhausted = true; }
-        await layer.save({ session });
-        // Recrea una capa equivalente en la bodega de destino, preservando costo,
-        // lote, vencimiento y fecha (para mantener el orden/edad FIFO).
-        await kardex.receiveStock({
-          clinicId: req.clinicId, product, warehouse: toWarehouse,
-          lot: layer.lot || '', expiryDate: layer.expiryDate || null,
-          quantity: p.qty, unitCost: layer.unitCost, date: layer.date,
-          sourceModel: 'Transfer', sourceRef: layer._id, userId: req.user._id,
-        }, session);
-      }
-
-      const cost = kardex.round2(totalCost);
+    const resultado = await runInTransaction(async (session) => {
       const [fromWh, toWh] = await Promise.all([
         Warehouse.findOne({ _id: fromWarehouse, clinic: req.clinicId }).session(session),
         Warehouse.findOne({ _id: toWarehouse, clinic: req.clinicId }).session(session),
       ]);
       if (!fromWh || !toWh) throw Object.assign(new Error('Bodega no encontrada en esta clínica'), { status: 404 });
 
-      // Saldos por bodega DESPUÉS del traslado (de las capas, que son la fuente real: nunca de
-      // `Product.stock`, que es global y no dice nada de una bodega).
-      const [saldoOrigen, saldoDestino] = await Promise.all([
-        kardex.currentStock({ clinicId: req.clinicId, product, warehouse: fromWarehouse }, session),
-        kardex.currentStock({ clinicId: req.clinicId, product, warehouse: toWarehouse }, session),
-      ]);
-
-      // DOS patas con el mismo `transferGroup`: la salida de la bodega origen y la entrada en la
-      // destino. Antes había un solo movimiento al que el kardex daba signo 0, así que el
-      // traslado no aparecía NI en el origen NI en el destino. El costo es el de las capas
-      // trasladadas: un traslado no puede generar utilidad ni usar el precio de venta.
-      const transferGroup = new mongoose.Types.ObjectId();
-      const comun = {
-        clinic: req.clinicId,
-        product,
-        type: 'traslado',
-        quantity: qty,
-        unitCost: qty > 0 ? kardex.round4(cost / qty) : 0,
-        totalCost: cost,
-        transferGroup,
-        movementDate: fecha,
-        dateSource: 'DOCUMENTO',
-        reason: reason || 'Traslado entre bodegas',
-        // La clave de idempotencia se guarda en la referencia: un reintento la reconoce.
-        reference: idemKey ? `IDEM:${idemKey}` : `TR-${String(transferGroup).slice(-6)}`,
-        sourceModel: 'InventoryMovement',
-        createdBy: req.user._id,
-      };
       // Centro de costo: el de la bodega es una PROPUESTA. Si el usuario eligió otro (la UI le
       // avisa de la diferencia), se registra el que REALMENTE usó, que es lo que manda.
       const ccElegido = req.body.costCenter
@@ -619,57 +598,142 @@ exports.transferStock = async (req, res) => {
       const ccSalida = ccElegido?._id || fromWh.costCenter || null;
       const ccEntrada = ccElegido?._id || toWh.costCenter || null;
 
-      const [salida] = await InventoryMovement.create([{
-        ...comun,
-        warehouse: fromWarehouse,
-        toWarehouse,
-        balanceAfter: saldoOrigen.qty,
-        costCenter: ccSalida,
-      }], { session });
-      const [entrada] = await InventoryMovement.create([{
-        ...comun,
-        warehouse: toWarehouse,          // la pata de ENTRADA vive en la bodega destino
-        toWarehouse: null,
-        balanceAfter: saldoDestino.qty,
-        costCenter: ccEntrada,
-        sourceRef: salida._id,           // vínculo salida ↔ entrada
-      }], { session });
-      await InventoryMovement.updateOne({ _id: salida._id }, { $set: { sourceRef: entrada._id } }, { session });
+      const transferGroup = new mongoose.Types.ObjectId();
+      const referencia = idemKey ? `IDEM:${idemKey}` : `TR-${String(transferGroup).slice(-6)}`;
+      const salidas = [];
+      let costoTotal = 0;
 
-      // Asiento de reclasificación entre cuentas de inventario cuando las bodegas están
-      // parametrizadas con cuentas DISTINTAS. Nunca toca Caja ni Banco: es inventariable.
-      if (cost > 0) {
-        const fromAcc = fromWh?.chartAccount ? String(fromWh.chartAccount) : null;
-        const toAcc = toWh?.chartAccount ? String(toWh.chartAccount) : null;
-        if (fromAcc && toAcc && fromAcc !== toAcc) {
-          const entry = await createEntry({
-            clinicId: req.clinicId,
-            date: fecha,
-            description: `Traslado de ${prod.name} (${qty}) de ${fromWh.name} a ${toWh.name}`,
-            source: 'TRASLADO',
-            sourceModel: 'InventoryMovement',
-            sourceRef: salida._id,
-            sourceAction: `TRANSFER:${transferGroup}`,   // idempotente por traslado
-            lines: [
-              { account: toWh.chartAccount, debit: cost, credit: 0, description: `Entrada a bodega ${toWh.name}`, costCenter: ccEntrada },
-              { account: fromWh.chartAccount, debit: 0, credit: cost, description: `Salida de bodega ${fromWh.name}`, costCenter: ccSalida },
-            ],
-            userId: req.user._id,
-            session,
-          });
-          entryCreated = true;
-          await InventoryMovement.updateMany(
-            { _id: { $in: [salida._id, entrada._id] } },
-            { $set: { journalEntry: entry._id } },
-            { session }
+      for (const linea of lineas) {
+        const { product, quantity: qty } = linea;
+        const prod = await Product.findOne({ _id: product, clinic: req.clinicId }).session(session);
+        if (!prod) throw Object.assign(new Error('Producto no encontrado'), { status: 404 });
+
+        // Capas vivas en la bodega de origen, en orden FIFO.
+        const layers = await InventoryLayer.find({
+          clinic: req.clinicId, product, warehouse: fromWarehouse, qtyRemaining: { $gt: 0 },
+        }).sort({ date: 1, createdAt: 1 }).session(session);
+
+        const { plan, totalCost, shortfall } = kardex.planConsumption(layers, qty);
+        if (shortfall > 0.00001) {
+          throw Object.assign(
+            new Error(`Stock insuficiente de "${prod.name}" en ${fromWh.name}: faltan ${kardex.round4(shortfall)}`),
+            { status: 400 }
           );
         }
+
+        const byId = new Map(layers.map((l) => [String(l._id), l]));
+        for (const p of plan) {
+          const layer = byId.get(String(p.layerId));
+          if (!layer) continue;
+          // Descuenta de la capa de origen.
+          layer.qtyRemaining = kardex.round4(layer.qtyRemaining - p.qty);
+          if (layer.qtyRemaining <= 0.00001) { layer.qtyRemaining = 0; layer.exhausted = true; }
+          await layer.save({ session });
+          // Recrea una capa equivalente en la bodega de destino, preservando costo,
+          // lote, vencimiento y fecha (para mantener el orden/edad FIFO).
+          await kardex.receiveStock({
+            clinicId: req.clinicId, product, warehouse: toWarehouse,
+            lot: layer.lot || '', expiryDate: layer.expiryDate || null,
+            quantity: p.qty, unitCost: layer.unitCost, date: layer.date,
+            sourceModel: 'Transfer', sourceRef: layer._id, userId: req.user._id,
+          }, session);
+        }
+
+        const cost = kardex.round2(totalCost);
+        costoTotal += cost;
+
+        // Saldos por bodega DESPUÉS del traslado (de las capas, que son la fuente real: nunca de
+        // `Product.stock`, que es global y no dice nada de una bodega).
+        const [saldoOrigen, saldoDestino] = await Promise.all([
+          kardex.currentStock({ clinicId: req.clinicId, product, warehouse: fromWarehouse }, session),
+          kardex.currentStock({ clinicId: req.clinicId, product, warehouse: toWarehouse }, session),
+        ]);
+
+        // DOS patas con el mismo `transferGroup`: la salida de la bodega origen y la entrada en la
+        // destino. Antes había un solo movimiento al que el kardex daba signo 0, así que el
+        // traslado no aparecía NI en el origen NI en el destino. El costo es el de las capas
+        // trasladadas: un traslado no puede generar utilidad ni usar el precio de venta.
+        const comun = {
+          clinic: req.clinicId,
+          product,
+          type: 'traslado',
+          quantity: qty,
+          unitCost: qty > 0 ? kardex.round4(cost / qty) : 0,
+          totalCost: cost,
+          transferGroup,
+          movementDate: fecha,
+          dateSource: 'DOCUMENTO',
+          reason: reason || 'Traslado entre bodegas',
+          // La clave de idempotencia se guarda en la referencia: un reintento la reconoce.
+          reference: referencia,
+          sourceModel: 'InventoryMovement',
+          createdBy: req.user._id,
+        };
+
+        const [salida] = await InventoryMovement.create([{
+          ...comun,
+          warehouse: fromWarehouse,
+          toWarehouse,
+          balanceAfter: saldoOrigen.qty,
+          costCenter: ccSalida,
+        }], { session });
+        const [entrada] = await InventoryMovement.create([{
+          ...comun,
+          warehouse: toWarehouse,          // la pata de ENTRADA vive en la bodega destino
+          toWarehouse: null,
+          balanceAfter: saldoDestino.qty,
+          costCenter: ccEntrada,
+          sourceRef: salida._id,           // vínculo salida ↔ entrada
+        }], { session });
+        await InventoryMovement.updateOne({ _id: salida._id }, { $set: { sourceRef: entrada._id } }, { session });
+        salidas.push(salida._id);
       }
-      return salida._id;
+
+      // UN solo asiento por traslado (no uno por línea): es un único documento.
+      const fromAcc = fromWh?.chartAccount ? String(fromWh.chartAccount) : null;
+      const toAcc = toWh?.chartAccount ? String(toWh.chartAccount) : null;
+      if (costoTotal > 0 && fromAcc && toAcc && fromAcc !== toAcc) {
+        const detalle = lineas.length === 1 ? '1 producto' : `${lineas.length} productos`;
+        const entry = await createEntry({
+          clinicId: req.clinicId,
+          date: fecha,
+          description: `Traslado de ${detalle} de ${fromWh.name} a ${toWh.name}`,
+          source: 'TRASLADO',
+          sourceModel: 'InventoryMovement',
+          sourceRef: salidas[0],
+          sourceAction: `TRANSFER:${transferGroup}`,   // idempotente por traslado
+          lines: [
+            { account: toWh.chartAccount, debit: costoTotal, credit: 0, description: `Entrada a bodega ${toWh.name}`, costCenter: ccEntrada },
+            { account: fromWh.chartAccount, debit: 0, credit: costoTotal, description: `Salida de bodega ${fromWh.name}`, costCenter: ccSalida },
+          ],
+          userId: req.user._id,
+          session,
+        });
+        entryCreated = true;
+        await InventoryMovement.updateMany(
+          { clinic: req.clinicId, transferGroup },
+          { $set: { journalEntry: entry._id } },
+          { session }
+        );
+      }
+      return { transferGroup, salidas, costoTotal: kardex.round2(costoTotal) };
     });
 
-    const mov = await InventoryMovement.findById(movId).populate('warehouse toWarehouse', 'code name').populate('product', 'code name');
-    res.status(201).json({ ...mov.toObject(), journalEntryCreated: entryCreated });
+    const movs = await InventoryMovement.find({ _id: { $in: resultado.salidas } })
+      .populate('warehouse toWarehouse', 'code name')
+      .populate('product', 'code name');
+    res.status(201).json({
+      // Compatibilidad: quien esperaba el movimiento suelto lo sigue recibiendo… (va
+      // primero para que los campos del traslado completo manden sobre los de la línea,
+      // p.ej. `totalCost`, que en el movimiento es solo el de ESA línea).
+      ...(movs[0]?.toObject() || {}),
+      // …y encima, el traslado completo.
+      transferGroup: resultado.transferGroup,
+      lines: movs.length,
+      totalCost: resultado.costoTotal,
+      movements: movs.map((m) => m.toObject()),
+      journalEntryCreated: entryCreated,
+    });
   } catch (e) { res.status(e.status || 400).json({ message: e.message }); }
 };
 
@@ -718,21 +782,90 @@ exports.warehouseStock = async (req, res) => {
 };
 
 /**
- * Historial de traslados (más recientes primero). Un traslado son DOS movimientos (salida y
- * entrada); aquí se lista UNA fila por traslado: la pata de SALIDA, que es la que lleva
- * `toWarehouse` y por tanto sabe de dónde a dónde fue.
+ * Historial de traslados entre bodegas (más recientes primero).
+ *
+ * Un traslado son DOS movimientos por producto (salida y entrada); aquí solo se leen las
+ * patas de SALIDA, que son las que llevan `toWarehouse` y por tanto saben de dónde a dónde
+ * fue cada cosa. Además se AGRUPAN por `transferGroup`, porque un traslado puede llevar
+ * varios productos en el mismo documento y el usuario lo piensa como uno solo.
+ *
+ * Filtros opcionales: `from`/`to` (fechas), `warehouse` (aparece como origen o destino),
+ * `product` y `q` (texto libre sobre producto, bodegas, motivo o referencia).
+ *
+ * Sigue devolviendo un ARRAY; cada fila es un traslado con sus `items[]`.
  */
 exports.listTransfers = async (req, res) => {
   try {
-    const items = await InventoryMovement.find({
-      clinic: req.clinicId, type: 'traslado', toWarehouse: { $ne: null },
-    })
-      .populate('product', 'code name')
+    const filtro = { clinic: req.clinicId, type: 'traslado', toWarehouse: { $ne: null } };
+    // La fecha que vale es la FUNCIONAL del documento; las filas viejas no la tienen y
+    // caen en `createdAt` (misma regla que usa el kardex).
+    const desde = kardexService.parseLocalDate(req.query.from);
+    const hasta = kardexService.parseLocalDate(req.query.to);
+    if (desde || hasta) {
+      const rango = {};
+      if (desde) rango.$gte = desde;
+      if (hasta) rango.$lte = new Date(new Date(hasta).setHours(23, 59, 59, 999));
+      filtro.$or = [{ movementDate: rango }, { movementDate: null, createdAt: rango }];
+    }
+    if (req.query.warehouse) {
+      const w = req.query.warehouse;
+      const porBodega = [{ warehouse: w }, { toWarehouse: w }];
+      // Se combina con el rango sin pisarlo (dos `$or` en el mismo objeto se anulan).
+      if (filtro.$or) { filtro.$and = [{ $or: filtro.$or }, { $or: porBodega }]; delete filtro.$or; }
+      else filtro.$or = porBodega;
+    }
+    if (req.query.product) filtro.product = req.query.product;
+
+    const limite = Math.min(Number(req.query.limit) || 300, 1000);
+    const items = await InventoryMovement.find(filtro)
+      .populate('product', 'code name unit')
       .populate('warehouse toWarehouse', 'code name')
       .populate('createdBy', 'name')
-      .sort({ createdAt: -1 })
-      .limit(100);
-    res.json(items);
+      .sort({ movementDate: -1, createdAt: -1 })
+      .limit(limite)
+      .lean();
+
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const coincide = (m) => !q || [
+      m.product?.name, m.product?.code, m.warehouse?.name, m.toWarehouse?.name, m.reason, m.reference,
+    ].some((v) => String(v || '').toLowerCase().includes(q));
+
+    // Agrupación por documento. Los traslados anteriores a los multi-producto no tienen
+    // `transferGroup` compartido, así que cada uno queda como su propio documento.
+    const porGrupo = new Map();
+    for (const m of items) {
+      if (!coincide(m)) continue;
+      const key = String(m.transferGroup || m._id);
+      if (!porGrupo.has(key)) {
+        porGrupo.set(key, {
+          _id: key,
+          transferGroup: m.transferGroup || null,
+          date: m.movementDate || m.createdAt,
+          createdAt: m.createdAt,
+          reference: m.reference || '',
+          reason: m.reason || '',
+          fromWarehouse: m.warehouse || null,
+          toWarehouse: m.toWarehouse || null,
+          createdBy: m.createdBy || null,
+          journalEntry: m.journalEntry || null,
+          items: [],
+          totalQty: 0,
+          totalCost: 0,
+        });
+      }
+      const g = porGrupo.get(key);
+      g.items.push({
+        movementId: m._id,
+        product: m.product || null,
+        quantity: m.quantity,
+        unitCost: m.unitCost,
+        totalCost: m.totalCost,
+        balanceAfter: m.balanceAfter,
+      });
+      g.totalQty = kardex.round4(g.totalQty + Number(m.quantity || 0));
+      g.totalCost = kardex.round2(g.totalCost + Number(m.totalCost || 0));
+    }
+    res.json([...porGrupo.values()]);
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
 

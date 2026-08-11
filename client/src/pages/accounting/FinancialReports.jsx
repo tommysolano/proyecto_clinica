@@ -13,10 +13,27 @@ import {
 } from 'react-icons/hi2';
 import { fmt, fmtDate, startOfMonth, today, downloadBlob } from './_utils';
 import ExcelButton from '../../components/ExcelButton';
+import SourceDocLink from '../../components/SourceDocLink';
 
 const REPORT_TABS = [
   ['PYG', 'Estado Resultados'],
   ['BG', 'Balance General'],
+];
+
+// Cómo se abre el reporte en columnas. "Sede" agrega las clínicas a las que el
+// usuario tiene acceso; el resto se queda en la sede activa.
+const BREAKDOWNS = [
+  { key: 'none', label: 'Total del período' },
+  { key: 'month', label: 'Por mes' },
+  { key: 'costCenter', label: 'Por centro de costo' },
+  { key: 'clinic', label: 'Por sede' },
+];
+
+const PERIODOS = [
+  ['mes', 'Mes actual'],
+  ['trimestre', 'Trimestre'],
+  ['semestre', 'Semestre'],
+  ['anio', 'Año'],
 ];
 
 const DETAIL_TABS = [
@@ -49,22 +66,65 @@ export default function FinancialReports() {
   const [tab, setTab] = useState('PYG');
   const [startDate, setStart] = useState(startOfMonth());
   const [endDate, setEnd] = useState(today());
+  /**
+   * DESGLOSE EN COLUMNAS: total, por mes, por centro de costo o por sede. Es lo que
+   * convierte el reporte de una cifra por cuenta en la hoja que usa el contador
+   * (ENERO…JUNIO + Total, o CC CENTRAL / CC EXTENSIÓN / CC LABORATORIO).
+   */
+  const [breakdown, setBreakdown] = useState('none');
   const [data, setData] = useState(null);
   const [accountDetail, setAccountDetail] = useState(null);
   const [detailLoading, setDetailLoading] = useState(false);
   const [detailTab, setDetailTab] = useState('RESUMEN');
 
+  // Desgloses que admite cada reporte: el Balance es una FOTO a una fecha, así que
+  // por mes no tiene sentido (daría una cifra que no significa nada).
+  const opcionesDesglose = tab === 'BG'
+    ? BREAKDOWNS.filter((b) => b.key !== 'month')
+    : BREAKDOWNS;
+  const desgloseEfectivo = opcionesDesglose.some((b) => b.key === breakdown) ? breakdown : 'none';
+
+  const queryParams = () => (tab === 'BG'
+    ? { date: endDate, startDate, endDate, breakdown: desgloseEfectivo }
+    : { startDate, endDate, breakdown: desgloseEfectivo });
+
   const load = async () => {
     try {
-      let url = '/accounting-reports/income-statement';
-      let params = { startDate, endDate };
-      if (tab === 'BG') {
-        url = '/accounting-reports/balance-sheet';
-        params = { date: endDate, startDate, endDate };
-      }
-      const r = await api.get(url, { params });
+      const url = tab === 'BG'
+        ? '/accounting-reports/balance-sheet'
+        : '/accounting-reports/income-statement';
+      const r = await api.get(url, { params: queryParams() });
       setData(r.data);
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
+  };
+
+  /** Rango de un mes concreto (el filtro que pidió el usuario, además del desde/hasta). */
+  const elegirMes = (ym) => {
+    if (!ym) return;
+    const [y, m] = ym.split('-').map(Number);
+    const ini = new Date(y, m - 1, 1);
+    const fin = new Date(y, m, 0);
+    const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    setStart(iso(ini));
+    setEnd(iso(fin));
+    setData(null);
+  };
+
+  /** Atajos de período: lo normal es mirar el mes, el semestre o el año completos. */
+  const elegirPeriodo = (tipo) => {
+    const hoy = new Date();
+    const y = hoy.getFullYear();
+    const iso = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const rangos = {
+      mes: [new Date(y, hoy.getMonth(), 1), new Date(y, hoy.getMonth() + 1, 0)],
+      trimestre: [new Date(y, Math.floor(hoy.getMonth() / 3) * 3, 1), new Date(y, Math.floor(hoy.getMonth() / 3) * 3 + 3, 0)],
+      semestre: [new Date(y, hoy.getMonth() < 6 ? 0 : 6, 1), new Date(y, hoy.getMonth() < 6 ? 6 : 12, 0)],
+      anio: [new Date(y, 0, 1), new Date(y, 12, 0)],
+    };
+    const [ini, fin] = rangos[tipo] || rangos.mes;
+    setStart(iso(ini));
+    setEnd(iso(fin));
+    setData(null);
   };
 
   const downloadSupercias = async () => {
@@ -120,14 +180,35 @@ export default function FinancialReports() {
         </button>
       </div>
       <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 items-end flex-wrap">
+        {/* Mes suelto: el filtro más usado. Deja el rango en ese mes completo. */}
+        <div>
+          <label className="text-xs text-slate-500 block">Mes</label>
+          <input
+            type="month"
+            value={startDate.slice(0, 7)}
+            onChange={(e) => elegirMes(e.target.value)}
+            className="border border-slate-200 rounded-xl px-3.5 py-2.5"
+          />
+        </div>
         <div><label className="text-xs text-slate-500 block">Desde</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
         <div><label className="text-xs text-slate-500 block">Hasta</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
+        <div>
+          <label className="text-xs text-slate-500 block">Ver</label>
+          <select
+            value={desgloseEfectivo}
+            onChange={(e) => { setBreakdown(e.target.value); setData(null); }}
+            className="border border-slate-200 rounded-xl px-3.5 py-2.5 bg-white"
+          >
+            {opcionesDesglose.map((b) => <option key={b.key} value={b.key}>{b.label}</option>)}
+          </select>
+        </div>
         <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Generar</button>
-        {/* Excel del estado financiero: mismo endpoint y mismos filtros que la pantalla.
-            El Balance General se corta a una FECHA; el Estado de Resultados va por rango. */}
+        {/* Excel del estado financiero: mismo endpoint y MISMOS filtros que la pantalla
+            (incluido el desglose en columnas). El Balance General se corta a una FECHA;
+            el Estado de Resultados va por rango. */}
         <ExcelButton
           url={tab === 'BG' ? '/accounting-reports/balance-sheet.xlsx' : '/accounting-reports/income-statement.xlsx'}
-          params={tab === 'BG' ? { date: endDate } : { startDate, endDate }}
+          params={queryParams()}
           filename={tab === 'BG' ? `balance_general_${endDate}.xlsx` : `estado_resultados_${startDate}_${endDate}.xlsx`}
         />
         {(tab === 'BG' || tab === 'PYG') && (
@@ -139,6 +220,18 @@ export default function FinancialReports() {
             Descargar TXT (Supercias)
           </button>
         )}
+        <div className="flex gap-1 items-center basis-full pt-1">
+          <span className="text-[11px] text-slate-400 mr-1">Período rápido:</span>
+          {PERIODOS.map(([k, l]) => (
+            <button
+              key={k}
+              onClick={() => elegirPeriodo(k)}
+              className="px-2.5 py-1 rounded-lg border border-slate-200 bg-white text-xs text-slate-600 hover:border-emerald-400 cursor-pointer"
+            >
+              {l}
+            </button>
+          ))}
+        </div>
       </div>
       {data && (
         <div className="bg-white rounded-xl p-4 shadow-sm overflow-hidden">
@@ -160,27 +253,43 @@ export default function FinancialReports() {
 }
 
 // Aplana el árbol jerárquico en filas con sangría y subtotales (estilo Contífico).
-function renderTree(nodes, depth, onAccountClick) {
+// Con desglose, cada fila lleva además su importe en cada columna (mes/centro/sede).
+function renderTree(nodes, depth, onAccountClick, columns = []) {
   const rows = [];
   for (const n of (nodes || [])) {
     const isGroup = !n.allowsMovement || (n.children && n.children.length > 0);
     rows.push(
       <tr key={n.code} className={`border-t border-slate-100 ${isGroup ? 'bg-slate-50/60' : 'hover:bg-slate-50'}`}>
-        <td className="px-3 py-1.5 font-mono text-xs text-slate-500" style={{ paddingLeft: `${depth * 18 + 12}px` }}>{n.code}</td>
+        <td className="px-3 py-1.5 font-mono text-xs text-slate-500 whitespace-nowrap" style={{ paddingLeft: `${depth * 18 + 12}px` }}>{n.code}</td>
         <td className={`px-3 py-1.5 ${isGroup ? 'font-semibold text-slate-700' : ''}`}>
           {n.allowsMovement
             ? <AccountButton account={n} onAccountClick={onAccountClick}>{n.name}</AccountButton>
             : <span>{n.name}</span>}
         </td>
-        <td className={`px-3 py-1.5 text-right font-mono ${isGroup ? 'font-semibold' : ''}`}>${fmt(n.total)}</td>
+        {columns.map((c) => {
+          const v = n.values?.[c.key] || 0;
+          return (
+            <td key={c.key} className={`px-3 py-1.5 text-right font-mono whitespace-nowrap ${isGroup ? 'font-semibold' : ''}`}>
+              {/* El importe también abre el mayor de la cuenta: de ahí se llega a la
+                  factura. Sin cifra no hay nada que investigar, así que se pinta un guion. */}
+              {Math.abs(v) > 0.004
+                ? (n.allowsMovement
+                  ? <button type="button" onClick={() => onAccountClick?.(n)} className="hover:underline text-slate-700 bg-transparent border-none cursor-pointer font-mono" title="Ver el mayor de esta cuenta">${fmt(v)}</button>
+                  : <span>${fmt(v)}</span>)
+                : <span className="text-slate-300">—</span>}
+            </td>
+          );
+        })}
+        <td className={`px-3 py-1.5 text-right font-mono whitespace-nowrap ${isGroup ? 'font-semibold' : ''}`}>${fmt(n.total)}</td>
       </tr>
     );
-    if (n.children && n.children.length) rows.push(...renderTree(n.children, depth + 1, onAccountClick));
+    if (n.children && n.children.length) rows.push(...renderTree(n.children, depth + 1, onAccountClick, columns));
   }
   return rows;
 }
 
-function TreeSection({ title, nodes = [], total: totalValue = 0, totalClass = '', onAccountClick, extraRows = [] }) {
+function TreeSection({ title, nodes = [], total: totalValue = 0, totalClass = '', onAccountClick, extraRows = [], columns = [], totalsByColumn = null }) {
+  const colSpan = 2 + columns.length;
   return (
     <section className="space-y-1">
       <h3 className="font-semibold text-emerald-700 border-b pb-1">{title}</h3>
@@ -189,17 +298,26 @@ function TreeSection({ title, nodes = [], total: totalValue = 0, totalClass = ''
           <thead className="bg-emerald-50 text-xs uppercase text-slate-600"><tr>
             <th className="px-3 py-2 text-left w-32">Código</th>
             <th className="px-3 py-2 text-left">Cuenta</th>
-            <th className="px-3 py-2 text-right w-40">Saldo</th>
+            {columns.map((c) => <th key={c.key} className="px-3 py-2 text-right whitespace-nowrap">{c.label}</th>)}
+            <th className="px-3 py-2 text-right w-40">{columns.length ? 'Total' : 'Saldo'}</th>
           </tr></thead>
           <tbody>
-            {renderTree(nodes, 0, onAccountClick)}
+            {renderTree(nodes, 0, onAccountClick, columns)}
             {extraRows.map((r) => (
-              <tr key={r.label} className="border-t border-slate-100 bg-slate-50"><td colSpan={2} className="px-3 py-1.5 text-right font-semibold">{r.label}</td><td className="px-3 py-1.5 text-right font-mono font-semibold">${fmt(r.amount)}</td></tr>
+              <tr key={r.label} className="border-t border-slate-100 bg-slate-50">
+                <td colSpan={colSpan} className="px-3 py-1.5 text-right font-semibold">{r.label}</td>
+                <td className="px-3 py-1.5 text-right font-mono font-semibold">${fmt(r.amount)}</td>
+              </tr>
             ))}
-            {!nodes.length && !extraRows.length && <tr><td colSpan={3} className="px-3 py-6 text-center text-slate-400 text-xs">Sin cuentas con saldo en el rango.</td></tr>}
+            {!nodes.length && !extraRows.length && <tr><td colSpan={colSpan + 1} className="px-3 py-6 text-center text-slate-400 text-xs">Sin cuentas con saldo en el rango.</td></tr>}
           </tbody>
           <tfoot className="bg-slate-100 font-bold"><tr>
             <td colSpan={2} className="px-3 py-2 text-right">Total {title}</td>
+            {columns.map((c) => (
+              <td key={c.key} className={`px-3 py-2 text-right font-mono whitespace-nowrap ${totalClass}`}>
+                ${fmt(totalsByColumn?.[c.key] || 0)}
+              </td>
+            ))}
             <td className={`px-3 py-2 text-right font-mono ${totalClass}`}>${fmt(totalValue)}</td>
           </tr></tfoot>
         </table>
@@ -233,13 +351,23 @@ function IncomeStatement({ data, onAccountClick }) {
   }
   const irPct = Math.round((Number(data.incomeTaxRate) || 0.25) * 100);
   const ptPct = Math.round((Number(data.profitSharingRate) || 0.15) * 100);
+  const columns = data.columns || [];
+  const porColumna = data.porColumna || {};
+  const totalesCol = (campo) => Object.fromEntries(columns.map((c) => [c.key, porColumna[c.key]?.[campo] || 0]));
   return (
     <div className="space-y-3">
-      <TreeSection title="Ingresos" nodes={tree.filter((n) => n.type === 'INGRESO')} total={data.totalIngresos} totalClass="text-emerald-700" onAccountClick={onAccountClick} />
-      <TreeSection title="Costo de ventas" nodes={tree.filter((n) => n.type === 'COSTO')} total={data.totalCostos} totalClass="text-rose-600" onAccountClick={onAccountClick} />
-      <TotalBand label="Utilidad bruta" value={data.utilidadBruta} />
-      <TreeSection title="Gastos operativos" nodes={tree.filter((n) => n.type === 'GASTO')} total={data.totalGastos} totalClass="text-rose-600" onAccountClick={onAccountClick} />
-      <TotalBand label="Utilidad operacional" value={data.utilidadOperacional} />
+      <TreeSection title="Ingresos" nodes={tree.filter((n) => n.type === 'INGRESO')} total={data.totalIngresos} totalClass="text-emerald-700" onAccountClick={onAccountClick} columns={columns} totalsByColumn={totalesCol('totalIngresos')} />
+      <TreeSection title="Costo de ventas" nodes={tree.filter((n) => n.type === 'COSTO')} total={data.totalCostos} totalClass="text-rose-600" onAccountClick={onAccountClick} columns={columns} totalsByColumn={totalesCol('totalCostos')} />
+      <TotalBand label="Utilidad bruta" value={data.utilidadBruta} columns={columns} valuesByColumn={totalesCol('utilidadBruta')} />
+      <TreeSection title="Gastos operativos" nodes={tree.filter((n) => n.type === 'GASTO')} total={data.totalGastos} totalClass="text-rose-600" onAccountClick={onAccountClick} columns={columns} totalsByColumn={totalesCol('totalGastos')} />
+      <TotalBand
+        label="Utilidad operacional"
+        value={data.utilidadOperacional}
+        columns={columns}
+        valuesByColumn={totalesCol('utilidadOperacional')}
+        percentByColumn={totalesCol('margen')}
+        percent={data.margen}
+      />
       <div className="rounded-lg border border-slate-100 divide-y divide-slate-100">
         <WaterfallRow label="Utilidad antes de participación e impuestos" value={data.utilidadAntesParticipacion} />
         <WaterfallRow label={`(−) ${ptPct}% participación trabajadores (estimado)`} value={-(data.participacionTrabajadores || 0)} sub />
@@ -271,11 +399,12 @@ function BalanceSheet({ data, onAccountClick }) {
       </div>
     );
   }
+  const columns = data.columns || [];
   return (
     <div className="space-y-3">
-      <TreeSection title="Activos" nodes={t.activos || []} total={totalActivos} totalClass="text-emerald-700" onAccountClick={onAccountClick} />
-      <TreeSection title="Pasivos" nodes={t.pasivos || []} total={totalPasivos} totalClass="text-rose-600" onAccountClick={onAccountClick} />
-      <TreeSection title="Patrimonio" nodes={t.patrimonio || []} total={totalPatrimonio} totalClass="text-blue-700" onAccountClick={onAccountClick}
+      <TreeSection title="Activos" nodes={t.activos || []} total={totalActivos} totalClass="text-emerald-700" onAccountClick={onAccountClick} columns={columns} />
+      <TreeSection title="Pasivos" nodes={t.pasivos || []} total={totalPasivos} totalClass="text-rose-600" onAccountClick={onAccountClick} columns={columns} />
+      <TreeSection title="Patrimonio" nodes={t.patrimonio || []} total={totalPatrimonio} totalClass="text-blue-700" onAccountClick={onAccountClick} columns={columns}
         extraRows={money(utilidad) ? [{ label: 'Resultado del ejercicio', amount: utilidad }] : []} />
       <TotalBand label="Total Pasivo + Patrimonio" value={totalPasivoPatrimonio} prominent />
       {Math.abs(descuadre) > 0.01 && (
@@ -430,6 +559,7 @@ function LedgerDetail({ rows = [], opening }) {
             <th className="px-3 py-2 text-left">Fecha</th>
             <th className="px-3 py-2 text-left">Asiento</th>
             <th className="px-3 py-2 text-left">Origen</th>
+            <th className="px-3 py-2 text-left">Documento</th>
             <th className="px-3 py-2 text-left">Descripcion</th>
             <th className="px-3 py-2 text-right">Debito</th>
             <th className="px-3 py-2 text-right">Credito</th>
@@ -438,7 +568,7 @@ function LedgerDetail({ rows = [], opening }) {
         </thead>
         <tbody>
           <tr className="bg-slate-50">
-            <td colSpan={6} className="px-3 py-2 text-right font-semibold">Saldo inicial</td>
+            <td colSpan={7} className="px-3 py-2 text-right font-semibold">Saldo inicial</td>
             <td className="px-3 py-2 text-right font-mono font-semibold">{fmt(opening)}</td>
           </tr>
           {rows.map((row, index) => (
@@ -446,6 +576,9 @@ function LedgerDetail({ rows = [], opening }) {
               <td className="px-3 py-2 text-xs">{fmtDate(row.date)}</td>
               <td className="px-3 py-2 font-mono text-xs">{row.number}</td>
               <td className="px-3 py-2 text-xs">{source(row.source)}</td>
+              {/* Del mayor a la FACTURA: es el último salto del recorrido que pidió el
+                  usuario (cifra del reporte → mayor → documento). */}
+              <td className="px-3 py-2 text-xs"><SourceDocLink row={row} /></td>
               <td className="px-3 py-2 text-xs">{row.description}</td>
               <td className="px-3 py-2 text-right font-mono text-emerald-700">{money(row.debit) ? fmt(row.debit) : ''}</td>
               <td className="px-3 py-2 text-right font-mono text-rose-600">{money(row.credit) ? fmt(row.credit) : ''}</td>
@@ -453,7 +586,7 @@ function LedgerDetail({ rows = [], opening }) {
             </tr>
           ))}
           {!rows.length && (
-            <tr><td colSpan={7} className="px-3 py-6 text-center text-slate-400 text-xs">Sin movimientos en el rango seleccionado.</td></tr>
+            <tr><td colSpan={8} className="px-3 py-6 text-center text-slate-400 text-xs">Sin movimientos en el rango seleccionado.</td></tr>
           )}
         </tbody>
       </table>
@@ -615,11 +748,44 @@ function Info({ label, value }) {
   return <div className="bg-slate-50 rounded-lg p-3"><p className="text-xs text-slate-500">{label}</p><p className="text-sm font-semibold text-slate-800">{value || '-'}</p></div>;
 }
 
-function TotalBand({ label, value, prominent = false }) {
+/**
+ * Franja de subtotal. Con desglose se convierte en una FILA con la misma rejilla de
+ * columnas que las tablas de arriba (y, si se le pasa, el % debajo de cada columna:
+ * es la línea de margen que el contador lee junto a la utilidad).
+ */
+function TotalBand({ label, value, prominent = false, columns = [], valuesByColumn = null, percentByColumn = null, percent = null }) {
+  if (!columns.length) {
+    return (
+      <div className={`flex justify-between px-3 ${prominent ? 'py-3 text-lg bg-emerald-50' : 'py-2 bg-slate-50'} font-bold rounded-lg`}>
+        <span>{label}</span>
+        <span className="font-mono">${fmt(value)}</span>
+      </div>
+    );
+  }
   return (
-    <div className={`flex justify-between px-3 ${prominent ? 'py-3 text-lg bg-emerald-50' : 'py-2 bg-slate-50'} font-bold rounded-lg`}>
-      <span>{label}</span>
-      <span className="font-mono">${fmt(value)}</span>
+    <div className={`overflow-x-auto rounded-lg ${prominent ? 'bg-emerald-50' : 'bg-slate-50'}`}>
+      <table className="tbl min-w-[560px]">
+        <tbody>
+          <tr className={`font-bold ${prominent ? 'text-lg' : ''}`}>
+            <td className="px-3 py-2 w-32" />
+            <td className="px-3 py-2">{label}</td>
+            {columns.map((c) => (
+              <td key={c.key} className="px-3 py-2 text-right font-mono whitespace-nowrap">${fmt(valuesByColumn?.[c.key] || 0)}</td>
+            ))}
+            <td className="px-3 py-2 text-right font-mono w-40">${fmt(value)}</td>
+          </tr>
+          {percentByColumn && (
+            <tr className="text-xs text-slate-500">
+              <td className="px-3 pb-2 w-32" />
+              <td className="px-3 pb-2">% sobre ventas</td>
+              {columns.map((c) => (
+                <td key={c.key} className="px-3 pb-2 text-right font-mono whitespace-nowrap">{fmt(percentByColumn[c.key] || 0)}%</td>
+              ))}
+              <td className="px-3 pb-2 text-right font-mono w-40">{fmt(percent || 0)}%</td>
+            </tr>
+          )}
+        </tbody>
+      </table>
     </div>
   );
 }

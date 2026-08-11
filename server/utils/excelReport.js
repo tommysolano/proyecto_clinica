@@ -56,9 +56,21 @@ function captureJson(handler, req) {
   });
 }
 
-/** Fecha en formato ecuatoriano para celdas de texto. */
+/**
+ * Fecha en formato ecuatoriano para celdas de texto.
+ *
+ * Una fecha SUELTA ("2026-01-01", la que mandan los filtros de pantalla) no lleva hora:
+ * `new Date()` la lee como medianoche UTC y en Ecuador (UTC−5) retrocede al día anterior,
+ * así que la cabecera de los reportes decía "31/12/2025" para un reporte de enero de 2026.
+ * Se formatea tal cual, sin pasar por la zona horaria.
+ */
 const xlsDate = (d) => {
   if (!d) return '';
+  const soloFecha = typeof d === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(d.trim());
+  if (soloFecha) {
+    const [y, m, dd] = d.trim().split('-');
+    return `${Number(dd)}/${Number(m)}/${y}`;
+  }
   const dt = d instanceof Date ? d : new Date(d);
   if (Number.isNaN(dt.getTime())) return String(d);
   return dt.toLocaleDateString('es-EC', { timeZone: 'America/Guayaquil' });

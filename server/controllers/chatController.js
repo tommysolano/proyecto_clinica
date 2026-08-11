@@ -547,9 +547,16 @@ exports.updateConversation = async (req, res) => {
 // Roles que trabajan la bandeja: son los que pueden RECIBIR un chat transferido.
 const INBOX_ROLES = ['call_center', 'admin', 'marketing'];
 
+const ROLE_LABELS_INBOX = { call_center: 'Call center', marketing: 'Marketing', admin: 'Administrador' };
+
 /**
  * Usuarios a los que se puede pasar un chat (para el selector de "Transferir").
- * Incluye a los asesores y también a supervisores/admins que atienden la bandeja.
+ *
+ * Solo aparece quien REALMENTE puede abrir esta bandeja: los tres roles de
+ * `INBOX_ROLES` **en esta misma sede** (más el super-admin, que entra a todas).
+ * Un cajero, un doctor o un admin de otra sucursal no salen en la lista: si se
+ * les pasara el chat, no podrían verlo.
+ *
  * `inShift` indica si el asesor está dentro de su horario configurado, para que
  * quien transfiere no le deje el chat a alguien que ya salió de turno.
  */
@@ -557,17 +564,25 @@ exports.listAssignableUsers = async (req, res) => {
   try {
     const users = await User.find({
       active: true,
-      'clinics.role': { $in: INBOX_ROLES },
-    }).select('name email clinics callCenterSchedule').lean();
+      $or: [
+        { clinics: { $elemMatch: { clinic: req.clinicId, role: { $in: INBOX_ROLES } } } },
+        { isSuperAdmin: true },
+      ],
+    }).select('name email clinics callCenterSchedule isSuperAdmin').lean();
     const now = new Date();
     const list = users.map((u) => {
-      const roles = [...new Set((u.clinics || []).map((c) => c.role).filter(Boolean))];
+      // El rol que cuenta es el de ESTA sede (alguien puede ser admin aquí y
+      // cajero en otra). El super-admin sin asignación explícita se trata como admin.
+      const here = (u.clinics || []).find((c) => String(c.clinic) === String(req.clinicId));
+      const role = here?.role || (u.isSuperAdmin ? 'admin' : null);
       return {
         _id: u._id,
         name: u.name,
         email: u.email,
-        roles,
-        isAgent: roles.includes('call_center'),
+        role,
+        roleLabel: ROLE_LABELS_INBOX[role] || 'Sin rol',
+        roles: role ? [role] : [],
+        isAgent: role === 'call_center',
         // Sin horario configurado se asume disponible (comportamiento histórico).
         inShift: isWorkingAt(u.callCenterSchedule, now),
       };
@@ -590,10 +605,16 @@ exports.assignConversation = async (req, res) => {
     const target = req.body.userId || req.user._id;
     const isSelfTake = String(target) === String(req.user._id);
     if (!isSelfTake) {
+      // Mismo criterio que el selector: el destinatario debe poder abrir ESTA bandeja.
       const user = await User.findOne({
-        _id: target, active: true, 'clinics.role': { $in: INBOX_ROLES },
+        _id: target,
+        active: true,
+        $or: [
+          { clinics: { $elemMatch: { clinic: req.clinicId, role: { $in: INBOX_ROLES } } } },
+          { isSuperAdmin: true },
+        ],
       }).select('name');
-      if (!user) return res.status(404).json({ message: 'El usuario no existe o no atiende chats' });
+      if (!user) return res.status(404).json({ message: 'El usuario no existe o no atiende los chats de esta sede' });
       conv.assignedToName = user.name;
     } else {
       conv.assignedToName = req.user.name;

@@ -163,6 +163,53 @@ function calcTotals(invoice) {
 }
 
 /**
+ * ¿Se puede CORREGIR esta compra?
+ *
+ * Una compra es un documento de TERCEROS: si llegó con el proveedor equivocado, una
+ * cantidad mal digitada o una cuenta que no era, hay que poder arreglarla — editar
+ * reversa el asiento, deshace el inventario y vuelve a contabilizar todo con los
+ * datos nuevos. Antes solo se dejaba editar en estado REGISTRADA, así que en cuanto
+ * se pagaba (PAGADA) el botón desaparecía y no había forma de corregir nada.
+ *
+ * El único candado real es el COMPROBANTE DE RETENCIÓN: una vez emitido es un
+ * documento fiscal con su propia secuencia y autorización, ya declarado al SRI y
+ * entregado al proveedor. Cambiar la compra que lo sustenta dejaría el comprobante
+ * mintiendo. Para esos casos primero se anula el comprobante de retención.
+ */
+function assertEditable(inv) {
+  if (inv.status === 'ANULADA') {
+    throw Object.assign(new Error('Una compra anulada no se puede editar'), { status: 400 });
+  }
+  if (inv.status === 'POR_AUTORIZAR') {
+    throw Object.assign(
+      new Error('Esta compra todavía no está contabilizada: corrígela desde «Contabilizar»'),
+      { status: 400 }
+    );
+  }
+  if (inv.retentionVoucher || String(inv.retentionNumber || '').trim()) {
+    const num = String(inv.retentionNumber || '').trim();
+    throw Object.assign(
+      new Error(
+        `Esta compra ya tiene emitido su comprobante de retención${num ? ` Nº ${num}` : ''}. ` +
+        'Anula primero el comprobante de retención para poder modificarla.'
+      ),
+      { status: 400, code: 'RETENTION_ISSUED' }
+    );
+  }
+}
+
+/**
+ * Reparte el neto a pagar entre lo ya abonado y el saldo, y deja el estado coherente.
+ * `calcTotals` no sabe de pagos: siempre deja el saldo completo.
+ */
+function aplicarAbonado(inv, abonado) {
+  const neto = +(Number(inv.total || 0) - Number(inv.retentionTotal || 0)).toFixed(2);
+  inv.balance = +Math.max(0, neto - Number(abonado || 0)).toFixed(2);
+  inv.paid = inv.balance <= 0.005;
+  if (inv.status !== 'ANULADA') inv.status = inv.paid && abonado > 0 ? 'PAGADA' : 'REGISTRADA';
+}
+
+/**
  * CENTRO DE COSTO de cada línea contra su BODEGA (regla única: `services/costCenterPolicy`).
  *
  * La compra es POR LÍNEA: cada línea tiene su bodega y su centro, y la cabecera solo aporta el
@@ -810,7 +857,18 @@ exports.update = async (req, res) => {
       const invoiceId = await runInTransaction(async (session) => {
         const inv = await PurchaseInvoice.findOne({ _id: req.params.id, clinic: req.clinicId }).session(session);
         if (!inv) throw Object.assign(new Error('No encontrada'), { status: 404 });
-        if (inv.status !== 'REGISTRADA') throw Object.assign(new Error('No editable en su estado'), { status: 400 });
+        assertEditable(inv);
+        /**
+         * Lo YA ABONADO a esta compra. La edición recalcula los totales desde cero
+         * (`calcTotals` deja `balance = total − retención`), y sin esto una factura
+         * PAGADA volvía a aparecer con todo su saldo pendiente: los pagos seguían en
+         * el banco pero la compra se mostraba sin abonar. El dato vive en la CxP del
+         * subledger (`applied`), que es la que los pagos van aplicando.
+         */
+        const cxpPrevia = await Payable.findOne({
+          clinic: req.clinicId, sourceModel: 'PurchaseInvoice', sourceRef: inv._id,
+        }).session(session);
+        const abonado = Math.max(0, Number(cxpPrevia?.applied || 0));
         // Edición SIEMPRE estricta (regla de la contadora): ya no hay "ruta tolerante" para
         // documentos legacy. Editar una compra vieja también exige la categoría contable; si el
         // producto no la tiene, se bloquea con un mensaje que guía a configurarla (en vez de caer
@@ -860,6 +918,7 @@ exports.update = async (req, res) => {
           clinicId: req.clinicId, req, entity: 'purchase-invoices', entityId: inv._id, session,
         });
         await applyLineRetentions(inv, { clinicId: req.clinicId, session, forceHeaderFromLines: wasStrict });
+        aplicarAbonado(inv, abonado);
         await inv.save({ session });
         await postPurchaseJournal(inv, req, session, `UPDATE:${Date.now()}`);
         await postInventoryEntries(inv, req, session);

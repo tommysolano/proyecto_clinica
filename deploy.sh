@@ -41,6 +41,30 @@ if ! ( cd "$APP_DIR/server" && node scripts/wipeSalesOnce.js --commit ); then
   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/wipeSalesOnce.js --commit'"
 fi
 
+# ─────────────────────────────────────────────────────────────────────────────────────
+# DESACTIVADA A PROPOSITO — dejar la CONTABILIDAD EN CERO para rehacer las pruebas.
+#
+# El script existe y esta probado, pero NO debe correr todavia. Mientras estas dos
+# lineas sigan comentadas, ningun despliegue lo ejecuta.
+#
+# PARA ACTIVARLO (cuando el usuario lo pida): quitar el '# ' del if / echo / fi de abajo
+# y hacer push. Se ejecutara UNA sola vez (marca `borrar-contabilidad-2026-08-10` en la
+# coleccion `onetimetasks`); los push siguientes ya no haran nada aunque quede activo.
+#
+# Borra ventas, compras, cobros/pagos, caja, bancos, inventario, activos, comisiones,
+# nomina, asientos, declaraciones SRI y presupuestos. NO toca el CRM/marketing, ni
+# pacientes/citas/fichas, ni los catalogos, ni el certificado digital, ni los
+# secuenciales del SRI. Ver la cabecera de server/scripts/wipeAccountingOnce.js.
+#
+# Para ver que borraria sin borrar nada:
+#   sudo -iu clinica bash -lc 'cd /var/www/clinica/server && node scripts/wipeAccountingOnce.js'
+#
+# if ! ( cd "$APP_DIR/server" && node scripts/wipeAccountingOnce.js --commit ); then
+#   echo "ADVERTENCIA: el borrado contable fallo. Revisa el log y reintenta a mano:"
+#   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/wipeAccountingOnce.js --commit'"
+# fi
+# ─────────────────────────────────────────────────────────────────────────────────────
+
 # Vigente: reencolar las inscripciones que quedaron programadas para dispararse en pleno
 # horario de silencio (ago-2026, al invertir el significado de las ventanas horarias).
 if ! ( cd "$APP_DIR/server" && node scripts/rescheduleQuietWindowsOnce.js --commit ); then

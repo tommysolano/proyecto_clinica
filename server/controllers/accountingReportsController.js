@@ -159,27 +159,123 @@ function relatedReportsForAccount(account) {
 }
 
 // ---------- Helpers ----------
-async function getAccountBalances(clinicId, { startDate, endDate } = {}) {
-  const match = { clinic: asObjectId(clinicId), status: 'CONTABILIZADO' };
+
+/** Zona horaria del negocio: el mes contable de un asiento es el mes en Ecuador. */
+const TZ_EC = 'America/Guayaquil';
+/** Columna a la que van las líneas SIN centro de costo (el usuario quiere verlas, no perderlas). */
+const SIN_CENTRO = '__sin_centro__';
+const MESES = ['ENERO', 'FEBRERO', 'MARZO', 'ABRIL', 'MAYO', 'JUNIO', 'JULIO', 'AGOSTO', 'SEPTIEMBRE', 'OCTUBRE', 'NOVIEMBRE', 'DICIEMBRE'];
+
+/**
+ * DESGLOSE en columnas del estado financiero: por MES, por CENTRO DE COSTO o por SEDE.
+ * Devuelve la expresión de agrupación para el pipeline y, aparte, las columnas que se
+ * van a mostrar (con su etiqueta), en el orden en que deben salir.
+ *
+ * `none` (por defecto) es el comportamiento de siempre: una sola columna con el total.
+ */
+function breakdownExpr(mode) {
+  if (mode === 'month') return { $dateToString: { format: '%Y-%m', date: '$date', timezone: TZ_EC } };
+  if (mode === 'costCenter') return { $ifNull: [{ $toString: '$lines.costCenter' }, SIN_CENTRO] };
+  if (mode === 'clinic') return { $toString: '$clinic' };
+  return null;
+}
+
+/** Meses (clave YYYY-MM) que cubre el rango, en orden. */
+function monthColumns(startDate, endDate) {
+  const ini = startOfDay(startDate) || new Date();
+  const fin = endOfDay(endDate) || new Date();
+  const cols = [];
+  const cur = new Date(ini.getFullYear(), ini.getMonth(), 1);
+  const tope = new Date(fin.getFullYear(), fin.getMonth(), 1);
+  const variosAnios = ini.getFullYear() !== fin.getFullYear();
+  while (cur <= tope && cols.length < 120) {
+    const key = `${cur.getFullYear()}-${String(cur.getMonth() + 1).padStart(2, '0')}`;
+    cols.push({ key, label: variosAnios ? `${MESES[cur.getMonth()]} ${cur.getFullYear()}` : MESES[cur.getMonth()] });
+    cur.setMonth(cur.getMonth() + 1);
+  }
+  return cols;
+}
+
+/**
+ * Columnas del desglose. Para centros de costo y sedes se leen los catálogos para
+ * poner NOMBRES (no ids), y se añade siempre "Sin centro de costos" cuando hay
+ * movimiento sin centro: el usuario pidió expresamente verlo, no que desapareciera.
+ */
+async function resolveBreakdownColumns(mode, { clinicIds, startDate, endDate, usados }) {
+  if (mode === 'month') return monthColumns(startDate, endDate);
+  if (mode === 'costCenter') {
+    const CostCenter = require('../models/CostCenter');
+    const ccs = await CostCenter.find({ clinic: { $in: clinicIds } }).select('code name').sort({ code: 1 }).lean();
+    const cols = ccs
+      .filter((c) => usados.has(String(c._id)))
+      .map((c) => ({ key: String(c._id), label: `${c.code} ${c.name}`.trim() }));
+    if (usados.has(SIN_CENTRO)) cols.push({ key: SIN_CENTRO, label: 'Sin centro de costos' });
+    return cols;
+  }
+  if (mode === 'clinic') {
+    const Clinic = require('../models/Clinic');
+    const cls = await Clinic.find({ _id: { $in: clinicIds } }).select('name').lean();
+    return cls
+      .filter((c) => usados.has(String(c._id)))
+      .map((c) => ({ key: String(c._id), label: c.name }));
+  }
+  return [];
+}
+
+/**
+ * Sedes que puede leer el usuario. Solo se usa en el desglose "por sede": el resto de
+ * los reportes siguen siendo de la sede activa.
+ */
+async function readableClinicIds(req) {
+  const Clinic = require('../models/Clinic');
+  if (req.user?.isSuperAdmin) return (await Clinic.find({ active: true }).select('_id').lean()).map((c) => c._id);
+  const ids = (req.user?.clinics || []).map((c) => c.clinic).filter(Boolean);
+  return ids.length ? ids : [asObjectId(req.clinicId)];
+}
+
+/**
+ * Saldos por cuenta en el período. Con `mode` distinto de `none` devuelve además
+ * `byColumn` (importe por mes / centro de costo / sede) para el reporte en columnas.
+ */
+async function getAccountBalances(clinicId, { startDate, endDate, mode = 'none', clinicIds } = {}) {
+  const ids = clinicIds?.length ? clinicIds.map(asObjectId) : [asObjectId(clinicId)];
+  const match = { clinic: { $in: ids }, status: 'CONTABILIZADO' };
   if (startDate || endDate) {
     match.date = {};
     if (startDate) match.date.$gte = startOfDay(startDate);
     if (endDate) match.date.$lte = endOfDay(endDate);
   }
+  const bucket = breakdownExpr(mode);
   const agg = await JournalEntry.aggregate([
     { $match: match },
     { $unwind: '$lines' },
-    { $group: { _id: '$lines.account', debit: { $sum: '$lines.debit' }, credit: { $sum: '$lines.credit' } } },
+    {
+      $group: {
+        _id: bucket ? { account: '$lines.account', bucket } : '$lines.account',
+        debit: { $sum: '$lines.debit' },
+        credit: { $sum: '$lines.credit' },
+      },
+    },
   ]);
+  // El plan de cuentas es el de la sede activa (el resto de sedes comparten códigos).
   const accounts = await ChartOfAccount.find({ clinic: clinicId }).lean();
-  const map = new Map(accounts.map((a) => [String(a._id), { ...a, debit: 0, credit: 0, balance: 0 }]));
+  const map = new Map(accounts.map((a) => [String(a._id), { ...a, debit: 0, credit: 0, balance: 0, byColumn: {} }]));
+  const usados = new Set();
   for (const r of agg) {
-    const a = map.get(String(r._id));
+    const accountId = bucket ? r._id?.account : r._id;
+    const a = map.get(String(accountId));
     if (!a) continue;
-    a.debit = r.debit; a.credit = r.credit;
-    a.balance = accountBalanceFromNature(a, r.debit, r.credit);
+    a.debit += r.debit; a.credit += r.credit;
+    a.balance = accountBalanceFromNature(a, a.debit, a.credit);
+    if (bucket) {
+      const key = String(r._id?.bucket ?? SIN_CENTRO);
+      usados.add(key);
+      a.byColumn[key] = round2((a.byColumn[key] || 0) + accountBalanceFromNature(a, r.debit, r.credit));
+    }
   }
-  return Array.from(map.values());
+  const list = Array.from(map.values());
+  list.usados = usados;   // qué columnas tienen movimiento (para no pintar columnas vacías)
+  return list;
 }
 
 /**
@@ -195,6 +291,9 @@ function buildAccountTree(balances, types) {
     level: a.level, allowsMovement: a.allowsMovement,
     debit: a.debit || 0, credit: a.credit || 0,
     own: a.allowsMovement ? (a.balance || 0) : 0, total: 0, children: [],
+    // Importe propio por columna del desglose (mes / centro de costo / sede).
+    ownByColumn: a.allowsMovement ? (a.byColumn || {}) : {},
+    values: {},
   }));
   nodes.sort((a, b) => String(a.code).localeCompare(String(b.code)));
   for (const n of nodes) byCode.set(n.code, n);
@@ -206,7 +305,13 @@ function buildAccountTree(balances, types) {
   }
   const rollup = (n) => {
     let t = n.own;
-    for (const c of n.children) t += rollup(c);
+    // Las columnas se suman igual que el total: cada grupo muestra la suma de sus hijas.
+    const acc = { ...n.ownByColumn };
+    for (const c of n.children) {
+      t += rollup(c);
+      for (const [k, v] of Object.entries(c.values || {})) acc[k] = round2((acc[k] || 0) + v);
+    }
+    n.values = acc;
     n.total = +t.toFixed(2);
     return n.total;
   };
@@ -229,7 +334,20 @@ exports.incomeStatement = async (req, res) => {
     const profitSharingRate = req.query.profitSharingRate !== undefined ? Number(req.query.profitSharingRate) : 0.15;
     const incomeTaxRate = req.query.incomeTaxRate !== undefined ? Number(req.query.incomeTaxRate) : 0.25;
 
-    const balances = await getAccountBalances(req.clinicId, { startDate, endDate });
+    /**
+     * DESGLOSE EN COLUMNAS. `none` (por defecto) = el reporte de siempre, una sola
+     * cifra por cuenta. `month` saca una columna por mes del rango; `costCenter`, una
+     * por centro de costo (más "Sin centro de costos"); `clinic`, una por sede.
+     */
+    const mode = ['month', 'costCenter', 'clinic'].includes(req.query.breakdown) ? req.query.breakdown : 'none';
+    // Solo el desglose por sede sale de la sede activa: el resto se queda en ella.
+    const clinicIds = mode === 'clinic' ? await readableClinicIds(req) : null;
+
+    const balances = await getAccountBalances(req.clinicId, { startDate, endDate, mode, clinicIds });
+    const columns = mode === 'none'
+      ? []
+      : await resolveBreakdownColumns(mode, { clinicIds: clinicIds || [asObjectId(req.clinicId)], startDate, endDate, usados: balances.usados });
+
     const ingresos = balances.filter((a) => a.type === 'INGRESO' && a.allowsMovement);
     const costos = balances.filter((a) => a.type === 'COSTO' && a.allowsMovement);
     const gastos = balances.filter((a) => a.type === 'GASTO' && a.allowsMovement);
@@ -239,6 +357,28 @@ exports.incomeStatement = async (req, res) => {
     const utilidadBruta = round2(totalIngresos - totalCostos);
     const utilidadOperacional = round2(utilidadBruta - totalGastos);
 
+    // Los mismos totales, pero columna a columna: es lo que permite leer el reporte
+    // como en la hoja del contador (una fila de utilidad y su % debajo, por mes o
+    // por centro de costo).
+    const sumaCol = (lista, key) => round2(lista.reduce((s, a) => s + (a.byColumn?.[key] || 0), 0));
+    const porColumna = {};
+    for (const c of columns) {
+      const ing = sumaCol(ingresos, c.key);
+      const cos = sumaCol(costos, c.key);
+      const gas = sumaCol(gastos, c.key);
+      const bruta = round2(ing - cos);
+      const operacional = round2(bruta - gas);
+      porColumna[c.key] = {
+        totalIngresos: ing,
+        totalCostos: cos,
+        totalGastos: gas,
+        utilidadBruta: bruta,
+        utilidadOperacional: operacional,
+        // Margen sobre las ventas de ESA columna (lo que el contador escribe debajo).
+        margen: ing ? round2((operacional / ing) * 100) : 0,
+      };
+    }
+
     // Cascada tributaria (estimada) según normativa ecuatoriana.
     const utilidadAntesParticipacion = utilidadOperacional;
     const participacionTrabajadores = round2(Math.max(0, utilidadAntesParticipacion) * profitSharingRate);
@@ -247,12 +387,17 @@ exports.incomeStatement = async (req, res) => {
     const utilidadNeta = round2(utilidadAntesImpuesto - impuestoRenta);
 
     res.json({
+      // Desglose en columnas (vacío = reporte de una sola cifra, como siempre).
+      breakdown: mode,
+      columns,
+      porColumna,
       // Árbol jerárquico (cuentas agrupadoras con subtotales) para presentación.
       tree: buildAccountTree(balances, ['INGRESO', 'COSTO', 'GASTO']),
       // Listas planas (compatibilidad).
       ingresos, costos, gastos,
       totalIngresos, totalCostos, totalGastos,
       utilidadBruta, utilidadOperacional,
+      margen: totalIngresos ? round2((utilidadOperacional / totalIngresos) * 100) : 0,
       // Cascada tributaria estimada.
       profitSharingRate, incomeTaxRate,
       utilidadAntesParticipacion, participacionTrabajadores, utilidadAntesImpuesto, impuestoRenta,
@@ -266,7 +411,17 @@ exports.incomeStatement = async (req, res) => {
 exports.balanceSheet = async (req, res) => {
   try {
     const { date } = req.query;
-    const balances = await getAccountBalances(req.clinicId, { endDate: date });
+    /**
+     * El balance admite desglose por CENTRO DE COSTO y por SEDE. Por MES no: un balance
+     * es una foto a una fecha, no un acumulado del período, y una columna por mes daría
+     * una cifra que no significa nada.
+     */
+    const mode = ['costCenter', 'clinic'].includes(req.query.breakdown) ? req.query.breakdown : 'none';
+    const clinicIds = mode === 'clinic' ? await readableClinicIds(req) : null;
+    const balances = await getAccountBalances(req.clinicId, { endDate: date, mode, clinicIds });
+    const columns = mode === 'none'
+      ? []
+      : await resolveBreakdownColumns(mode, { clinicIds: clinicIds || [asObjectId(req.clinicId)], endDate: date, usados: balances.usados });
     const activos = balances.filter((a) => a.type === 'ACTIVO' && a.allowsMovement);
     const pasivos = balances.filter((a) => a.type === 'PASIVO' && a.allowsMovement);
     const patrimonio = balances.filter((a) => a.type === 'PATRIMONIO' && a.allowsMovement);
@@ -277,6 +432,8 @@ exports.balanceSheet = async (req, res) => {
     const utilidad = round2(ingresos.reduce((s, a) => s + a.balance, 0) - gastos.reduce((s, a) => s + a.balance, 0));
     const totalPatrimonio = round2(patrimonio.reduce((s, a) => s + a.balance, 0) + utilidad);
     res.json({
+      breakdown: mode,
+      columns,
       tree: {
         activos: buildAccountTree(balances, ['ACTIVO']),
         pasivos: buildAccountTree(balances, ['PASIVO']),
@@ -2261,15 +2418,19 @@ exports.atsExcel = XL.excelHandler(async (req, res) => {
 // pantalla no puedan discrepar nunca: hay una sola consulta y una sola aritmética.
 
 /** Aplana el árbol de cuentas de los estados financieros a filas con nivel de sangría. */
-function flattenAccountTree(nodes, level = 0, out = []) {
+function flattenAccountTree(nodes, level = 0, out = [], columns = []) {
   for (const n of nodes || []) {
-    out.push({
+    const fila = {
       code: n.code || '',
       name: `${'    '.repeat(level)}${n.name || ''}`,
       balance: n.balance ?? n.total ?? 0,
       level,
-    });
-    if (n.children?.length) flattenAccountTree(n.children, level + 1, out);
+    };
+    // Desglose en columnas (mes / centro de costo / sede): el Excel sale igual que la
+    // pantalla, que es lo que se pidió — no una versión recortada.
+    for (const c of columns) fila[`col_${c.key}`] = n.values?.[c.key] || 0;
+    out.push(fila);
+    if (n.children?.length) flattenAccountTree(n.children, level + 1, out, columns);
   }
   return out;
 }
@@ -2280,19 +2441,63 @@ const ACCOUNT_TREE_COLUMNS = [
   { header: 'Saldo', key: 'balance', width: 18, money: true },
 ];
 
+/** Columnas del Excel cuando el reporte viene desglosado: una por mes/centro/sede + Total. */
+const accountTreeColumnsWith = (columns = []) => (
+  columns.length
+    ? [
+      { header: 'Código', key: 'code', width: 16 },
+      { header: 'Cuenta', key: 'name', width: 52 },
+      ...columns.map((c) => ({ header: c.label, key: `col_${c.key}`, width: 16, money: true })),
+      { header: 'Total', key: 'balance', width: 18, money: true },
+    ]
+    : ACCOUNT_TREE_COLUMNS
+);
+
+const BREAKDOWN_LABELS = { month: 'Mes', costCenter: 'Centro de costo', clinic: 'Sede' };
+
 /** ESTADO DE RESULTADOS en Excel (jerárquico + cascada tributaria). */
 exports.incomeStatementExcel = XL.excelHandler(async (req, res) => {
   const d = await XL.captureJson(exports.incomeStatement, req);
   const wb = XL.newWorkbook();
   const meta = [['Reporte', 'Estado de Resultados'], ['Período', XL.periodLabel(req.query)]];
 
+  const columns = d.columns || [];
+  if (columns.length) meta.push(['Desglose', BREAKDOWN_LABELS[d.breakdown] || d.breakdown]);
+
   XL.addSheet(wb, {
     title: 'Estado de Resultados',
     meta,
-    columns: ACCOUNT_TREE_COLUMNS,
-    rows: flattenAccountTree(d.tree),
+    columns: accountTreeColumnsWith(columns),
+    rows: flattenAccountTree(d.tree, 0, [], columns),
     notes: ['Cuentas jerárquicas: los grupos muestran el subtotal de sus cuentas hijas.'],
   });
+
+  // Hoja con la lectura por columna: ventas, costos, gastos, utilidad y margen de
+  // cada mes / centro de costo / sede, que es como se revisa el reporte.
+  if (columns.length) {
+    XL.addSheet(wb, {
+      title: 'Por columna',
+      meta,
+      columns: [
+        { header: BREAKDOWN_LABELS[d.breakdown] || 'Columna', key: 'label', width: 30 },
+        { header: 'Ingresos', key: 'totalIngresos', width: 16, money: true },
+        { header: 'Costos', key: 'totalCostos', width: 16, money: true },
+        { header: 'Utilidad bruta', key: 'utilidadBruta', width: 16, money: true },
+        { header: 'Gastos', key: 'totalGastos', width: 16, money: true },
+        { header: 'Utilidad operacional', key: 'utilidadOperacional', width: 20, money: true },
+        { header: 'Margen %', key: 'margen', width: 12 },
+      ],
+      rows: columns.map((c) => ({ label: c.label, ...(d.porColumna?.[c.key] || {}) })),
+      totals: {
+        totalIngresos: d.totalIngresos,
+        totalCostos: d.totalCostos,
+        utilidadBruta: d.utilidadBruta,
+        totalGastos: d.totalGastos,
+        utilidadOperacional: d.utilidadOperacional,
+      },
+      totalsLabel: 'TOTAL',
+    });
+  }
 
   XL.addKeyValueSheet(wb, {
     title: 'Resumen',
@@ -2331,6 +2536,9 @@ exports.balanceSheetExcel = XL.excelHandler(async (req, res) => {
   const wb = XL.newWorkbook();
   const meta = [['Reporte', 'Balance General'], ['Corte', req.query.date ? XL.xlsDate(req.query.date) : 'A la fecha']];
 
+  const columnsBg = d.columns || [];
+  if (columnsBg.length) meta.push(['Desglose', BREAKDOWN_LABELS[d.breakdown] || d.breakdown]);
+
   for (const [title, nodes, total] of [
     ['Activos', d.tree?.activos, d.totalActivos],
     ['Pasivos', d.tree?.pasivos, d.totalPasivos],
@@ -2339,8 +2547,8 @@ exports.balanceSheetExcel = XL.excelHandler(async (req, res) => {
     XL.addSheet(wb, {
       title,
       meta,
-      columns: ACCOUNT_TREE_COLUMNS,
-      rows: flattenAccountTree(nodes),
+      columns: accountTreeColumnsWith(columnsBg),
+      rows: flattenAccountTree(nodes, 0, [], columnsBg),
       totals: { balance: total },
       totalsLabel: `TOTAL ${title.toUpperCase()}`,
     });

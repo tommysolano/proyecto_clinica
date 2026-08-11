@@ -373,6 +373,9 @@ export default function Chats() {
   // Mensaje al que se está respondiendo (cita estilo WhatsApp).
   const [replyDraft, setReplyDraft] = useState(null);
   const composerRef = useRef(null);
+  // Zona del compositor que incluye los menús flotantes (automatizaciones /
+  // plantillas / guardados) y el botón que los abre: un clic FUERA los cierra.
+  const composerMenusRef = useRef(null);
   // Compositor COMPACTO por defecto (una línea) para ver más mensajes; se EXPANDE
   // (más alto) al enfocarlo o cuando ya hay texto/adjunto, para escribir cómodo
   // mensajes largos — igual que en Daplox.
@@ -974,8 +977,14 @@ export default function Chats() {
     !!templateDraft.name || attachmentDraft?.type === 'audio';
   // Mientras hay texto y foco, manda un latido cada 2,5 s. Al borrar, enviar,
   // cambiar de chat o desenfocar se apaga inmediatamente.
+  //
+  // Elegir una automatización, una plantilla o un mensaje guardado TAMBIÉN cuenta
+  // como estar escribiendo: el asesor ya está preparando la respuesta aunque el
+  // cuadro de texto siga vacío, y sin esto dos personas contestan el mismo chat.
+  const isPickingReply = !!pickerTab || slashOpen;
   const isActivelyTyping = !!(
-    realtimeConnected && realtimeSocket && activeId && composerFocused && draft.trim() && !composerDisabled
+    realtimeConnected && realtimeSocket && activeId &&
+    (isPickingReply || (composerFocused && draft.trim() && !composerDisabled))
   );
   useEffect(() => {
     if (!realtimeSocket || !activeId) return undefined;
@@ -992,6 +1001,30 @@ export default function Chats() {
       emit(false);
     };
   }, [realtimeSocket, realtimeConnected, activeId, isActivelyTyping]);
+  // Un clic fuera del compositor cierra los menús flotantes y apaga el botón "+"
+  // (antes se quedaban abiertos tapando la conversación hasta volver a pulsarlo).
+  // Se escucha en captura para adelantarse a los onMouseDown de las opciones.
+  useEffect(() => {
+    if (!pickerTab && !slashOpen) return undefined;
+    const onDown = (e) => {
+      if (composerMenusRef.current?.contains(e.target)) return;
+      setPickerTab(null);
+      setSlashOpen(false);
+    };
+    const onEsc = (e) => {
+      if (e.key !== 'Escape') return;
+      setPickerTab(null);
+      setSlashOpen(false);
+    };
+    document.addEventListener('mousedown', onDown);
+    document.addEventListener('touchstart', onDown);
+    document.addEventListener('keydown', onEsc);
+    return () => {
+      document.removeEventListener('mousedown', onDown);
+      document.removeEventListener('touchstart', onDown);
+      document.removeEventListener('keydown', onEsc);
+    };
+  }, [pickerTab, slashOpen]);
   // El cuadro se expande al enfocarlo o cuando ya hay algo escrito/adjunto (así no
   // se colapsa a media escritura ni al hacer clic en un botón de acción).
   const composerExpanded =
@@ -1884,7 +1917,7 @@ export default function Chats() {
                       disabled={composerDisabled}
                     />
                   )}
-                  <div className="relative">
+                  <div className="relative" ref={composerMenusRef}>
                     {slashOpen && (
                       <div className="absolute bottom-full left-0 mb-1 w-72 max-w-[92vw] max-h-64 overflow-y-auto bg-white border border-slate-200 rounded-lg shadow-lg z-30">
                         {savedReplies
@@ -5389,6 +5422,9 @@ function TransferChatModal({ conv, meId, canAutoAssign, onClose, onTransfer }) {
           Elige a quién le pasas la conversación de <b>{conv.contactName || conv.phone}</b>.
           {conv.assignedToName && <> Ahora la tiene <b>{conv.assignedToName}</b>.</>}
         </p>
+        <p className="text-[11px] text-slate-400 -mt-1">
+          Solo aparecen quienes atienden la bandeja de esta sede: call center, marketing y administradores.
+        </p>
 
         <div className="relative">
           <HiOutlineMagnifyingGlass className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-400" />
@@ -5447,7 +5483,11 @@ function TransferChatModal({ conv, meId, canAutoAssign, onClose, onTransfer }) {
                       {isMe && <span className="text-slate-400 font-normal"> (yo)</span>}
                     </span>
                     <span className="block text-[11px] text-slate-400">
-                      {isCurrent ? 'Ya tiene este chat' : u.isAgent ? (u.inShift ? 'En turno' : 'Fuera de turno') : 'Supervisión'}
+                      {isCurrent
+                        ? 'Ya tiene este chat'
+                        : u.isAgent
+                          ? `${u.roleLabel || 'Call center'} · ${u.inShift ? 'En turno' : 'Fuera de turno'}`
+                          : u.roleLabel || 'Supervisión'}
                     </span>
                   </span>
                   {!isCurrent && u.isAgent && (

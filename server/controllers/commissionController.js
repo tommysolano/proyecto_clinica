@@ -2,6 +2,9 @@ const CommissionRule = require('../models/CommissionRule');
 const Appointment = require('../models/Appointment');
 const User = require('../models/User');
 const CommissionPosting = require('../models/CommissionPosting');
+// Registra el esquema para poder `populate('referral')` en las citas aunque el proceso no
+// haya cargado el módulo de derivaciones por otra vía (p. ej. en pruebas aisladas).
+require('../models/Referral');
 const { createEntry, reverseEntry } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const ExcelJS = require('exceljs');
@@ -9,11 +12,49 @@ const ExcelJS = require('exceljs');
 const ROLE_LABELS = { admin: 'Administrador', doctor: 'Médico', ginecologia: 'Ginecología', nurse: 'Enfermero/a', call_center: 'Call center', marketing: 'Marketing', contabilidad: 'Contabilidad' };
 
 // ─────────── CRUD de reglas ───────────
+
+/**
+ * Deja coherentes los campos que admiten VARIOS valores con su versión singular.
+ *
+ * Una regla puede nombrar varias personas (`users`), varias condiciones (`triggers`) y
+ * varios servicios (`services`). El campo singular se conserva porque lo leen las reglas
+ * antiguas, los listados y los reportes; aquí se sincroniza con el PRIMER elemento para
+ * que nunca digan cosas distintas (una regla con `users: [A, B]` y `user: C` sería una
+ * trampa esperando a que alguien lea el campo equivocado).
+ */
+const normalizeRuleBody = (body = {}) => {
+  const out = { ...body };
+  const lista = (v) => (Array.isArray(v) ? v.filter(Boolean).map(String) : []);
+  const unicos = (arr) => [...new Set(arr)];
+
+  if (out.targetType === 'role') {
+    out.users = [];
+    out.user = null;
+  } else if ('users' in out || 'user' in out) {
+    const users = unicos(lista(out.users).length ? lista(out.users) : lista([out.user]));
+    out.users = users;
+    out.user = users[0] || null;
+  }
+
+  if ('triggers' in out || 'trigger' in out) {
+    const triggers = unicos(lista(out.triggers).length ? lista(out.triggers) : lista([out.trigger]));
+    out.triggers = triggers;
+    out.trigger = triggers[0] || 'appointment_performed';
+  }
+
+  if ('services' in out || 'service' in out) {
+    const services = unicos(lista(out.services).length ? lista(out.services) : lista([out.service]));
+    out.services = services;
+    out.service = services[0] || null;
+  }
+  return out;
+};
+
 exports.listRules = async (req, res) => {
   try {
     const rules = await CommissionRule.find({ clinic: req.clinicId })
-      .populate('user', 'name')
-      .populate('service', 'name')
+      .populate('user users', 'name')
+      .populate('service services', 'name')
       .populate('linkedCallCenter', 'name')
       .sort({ createdAt: -1 });
     res.json(rules);
@@ -25,7 +66,7 @@ exports.listRules = async (req, res) => {
 exports.createRule = async (req, res) => {
   try {
     const rule = await CommissionRule.create({
-      ...req.body,
+      ...normalizeRuleBody(req.body),
       clinic: req.clinicId,
       createdBy: req.user._id,
     });
@@ -39,7 +80,7 @@ exports.updateRule = async (req, res) => {
   try {
     const rule = await CommissionRule.findOneAndUpdate(
       { _id: req.params.id, clinic: req.clinicId },
-      req.body,
+      normalizeRuleBody(req.body),
       { new: true, runValidators: true }
     );
     if (!rule) return res.status(404).json({ message: 'Regla no encontrada' });
@@ -61,6 +102,12 @@ exports.deleteRule = async (req, res) => {
 
 // ─────────── Cálculo de comisiones devengadas ───────────
 const num = (v) => Number(v) || 0;
+
+// Una regla puede tener VARIAS condiciones, VARIAS personas y VARIOS servicios. Los
+// lectores viven en el modelo para que exista una sola interpretación del dato.
+const { ruleTriggers, ruleUsers, ruleServices } = CommissionRule;
+/** ¿La regla se devenga por este evento? */
+const hasTrigger = (rule, trigger) => ruleTriggers(rule).includes(trigger);
 
 const inSchedule = (rule, appt) => {
   if (!rule.scheduleEnabled) return true;
@@ -138,14 +185,20 @@ async function computeCommissions(clinicId, startDate, endDate) {
     return f ? f.role : null;
   };
 
-  // Coincidencia de target (usuario o rol) entre una regla y un performer.
+  // Coincidencia de target (personas o rol) entre una regla y un performer.
   const matchTarget = (rule, performer, performerRole) => {
     if (!performer) return false;
-    if (rule.targetType === 'user') return String(rule.user) === String(performer._id);
+    if (rule.targetType === 'user') return ruleUsers(rule).includes(String(performer._id));
     if (rule.role === performerRole) return true;
     // 'ginecologia' es un doctor especializado: hereda las reglas por rol 'doctor'.
     if (rule.role === 'doctor' && performerRole === 'ginecologia') return true;
     return false;
+  };
+
+  /** ¿Este producto entra en la lista de servicios de la regla? (lista vacía = cualquiera). */
+  const matchService = (rule, productId) => {
+    const svcs = ruleServices(rule);
+    return !svcs.length || svcs.includes(String(productId));
   };
 
   // ¿La cita incluye un servicio que la regla exige? (filtro a nivel de cita).
@@ -154,7 +207,8 @@ async function computeCommissions(clinicId, startDate, endDate) {
     if (rule.serviceAmounts?.length) {
       return svcs.some((s) => rule.serviceAmounts.some((sa) => String(sa.service) === String(s.product)));
     }
-    if (rule.service) return svcs.some((s) => String(s.product) === String(rule.service));
+    const permitidos = ruleServices(rule);
+    if (permitidos.length) return svcs.some((s) => permitidos.includes(String(s.product)));
     return true;
   };
 
@@ -180,15 +234,15 @@ async function computeCommissions(clinicId, startDate, endDate) {
           cfg = amountConfigFor(rule, svc.product);
           if (!cfg) continue;
         } else {
-          if (rule.service && String(rule.service) !== String(svc.product)) continue;
+          if (!matchService(rule, svc.product)) continue;
           cfg = { amountType: rule.amountType || 'fixed', amount: num(rule.amount), percent: num(rule.percent) };
         }
 
-        if (rule.trigger === 'admin_service') {
+        if (hasTrigger(rule, 'admin_service')) {
           if (!isCompleted) continue;
           const targets =
             rule.targetType === 'user'
-              ? [clinicUsersById.get(String(rule.user))].filter(Boolean)
+              ? ruleUsers(rule).map((id) => clinicUsersById.get(id)).filter(Boolean)
               : adminUsers;
           for (const adm of targets) {
             detail.push({
@@ -198,7 +252,10 @@ async function computeCommissions(clinicId, startDate, endDate) {
               service: svc.name || '—', patient: patientName, source: 'servicio atendido', apptId: String(appt._id),
             });
           }
-        } else if (!rule.trigger || rule.trigger === 'appointment_performed') {
+        }
+        // `if` aparte, no `else if`: una regla puede llevar VARIAS condiciones y pagar
+        // por las dos (p. ej. al admin por servicio atendido y al doctor que lo atiende).
+        if (hasTrigger(rule, 'appointment_performed')) {
           if (!isCompleted) continue;
           for (const performer of performers) {
             const performerRole = roleFor(performer);
@@ -217,7 +274,7 @@ async function computeCommissions(clinicId, startDate, endDate) {
     // ── Comisión del CALL CENTER: una vez por cita (no por servicio) ──
     if (isAttended) {
       for (const rule of rules) {
-        if (rule.trigger !== 'appointment_created') continue;
+        if (!hasTrigger(rule, 'appointment_created')) continue;
         if (rule.patientScope === 'new' && !appt.isFirstVisit) continue;
         if (!inSchedule(rule, appt)) continue;
         const creatorRole = roleFor(creator);
@@ -241,7 +298,7 @@ async function computeCommissions(clinicId, startDate, endDate) {
       const fromDoc = appt.referral.fromDoctor;
       const fromRole = roleFor(fromDoc);
       for (const rule of rules) {
-        if (rule.trigger !== 'referral') continue;
+        if (!hasTrigger(rule, 'referral')) continue;
         if (rule.patientScope === 'new' && !appt.isFirstVisit) continue;
         if (!inSchedule(rule, appt)) continue;
         if (!matchTarget(rule, fromDoc, fromRole)) continue;
@@ -275,32 +332,37 @@ async function computeCommissions(clinicId, startDate, endDate) {
       : sale.clientName || '—';
     for (const it of sale.items || []) {
       for (const rule of rules) {
-        if (rule.trigger !== 'sale' && rule.trigger !== 'recommendation') continue;
+        // Una regla puede pagar por vender Y por recomendar: se evalúan las dos.
+        const porVenta = hasTrigger(rule, 'sale');
+        const porRecomendacion = hasTrigger(rule, 'recommendation');
+        if (!porVenta && !porRecomendacion) continue;
         // Filtro de servicio + config de monto.
         let cfg;
         if (rule.serviceAmounts?.length) {
           cfg = amountConfigFor(rule, it.product);
           if (!cfg) continue;
         } else {
-          if (rule.service && String(rule.service) !== String(it.product)) continue;
+          if (!matchService(rule, it.product)) continue;
           cfg = { amountType: rule.amountType || 'fixed', amount: num(rule.amount), percent: num(rule.percent) };
         }
         const qty = num(it.quantity) || 1;
         // Precio que paga el paciente por la línea (incluye impuestos y cantidad).
         const linePaid = num(it.lineTotal) || num(it.subtotal);
-        let performer = null;
-        let source = '';
-        if (rule.trigger === 'sale') { performer = sale.createdBy; source = 'venta'; }
-        else { performer = sale.recommendedBy; source = 'recomendación'; }
-        const performerRole = roleFor(performer);
-        if (!matchTarget(rule, performer, performerRole)) continue;
-        detail.push({
-          userId: String(performer._id), userName: performer.name, userRole: performerRole,
-          ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
-          amount: calcAmount(cfg, linePaid, qty),
-          date: sale.createdAt, service: it.productName || '—',
-          patient: patientName, source, invoiceNumber: sale.saleNumber || '',
-        });
+        const candidatos = [
+          porVenta && { performer: sale.createdBy, source: 'venta' },
+          porRecomendacion && { performer: sale.recommendedBy, source: 'recomendación' },
+        ].filter(Boolean);
+        for (const { performer, source } of candidatos) {
+          const performerRole = roleFor(performer);
+          if (!matchTarget(rule, performer, performerRole)) continue;
+          detail.push({
+            userId: String(performer._id), userName: performer.name, userRole: performerRole,
+            ruleName: rule.name, ruleId: String(rule._id), ruleAccount: rule.account || null,
+            amount: calcAmount(cfg, linePaid, qty),
+            date: sale.createdAt, service: it.productName || '—',
+            patient: patientName, source, invoiceNumber: sale.saleNumber || '',
+          });
+        }
       }
     }
   }
@@ -310,7 +372,7 @@ async function computeCommissions(clinicId, startDate, endDate) {
   // 'cita agendada'). El marketing gana % sobre lo que devengó su agente, o un
   // monto fijo por cada comisión generada por ese agente.
   for (const rule of rules) {
-    if (rule.trigger !== 'call_center_commission' || !rule.linkedCallCenter) continue;
+    if (!hasTrigger(rule, 'call_center_commission') || !rule.linkedCallCenter) continue;
     const agentId = String(rule.linkedCallCenter);
     const agentDetails = detail.filter((d) => d.userId === agentId && d.source === 'cita agendada');
     if (!agentDetails.length) continue;
@@ -324,7 +386,7 @@ async function computeCommissions(clinicId, startDate, endDate) {
     const agentName = clinicUsersById.get(agentId)?.name || 'Call center';
     const targets =
       rule.targetType === 'user'
-        ? [clinicUsersById.get(String(rule.user))].filter(Boolean)
+        ? ruleUsers(rule).map((id) => clinicUsersById.get(id)).filter(Boolean)
         : marketingUsers;
     for (const t of targets) {
       detail.push({

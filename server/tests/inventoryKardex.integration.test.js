@@ -448,8 +448,13 @@ test('C6) el historial de traslados muestra UNA fila por traslado, no las dos pa
   assert.equal(await InventoryMovement.countDocuments({ clinic: clinicId, type: 'traslado' }), 2, 'dos patas');
   const lista = ok(await run(ctrl.listTransfers, H.mockReq(clinicId, userId, {}, { query: {} })));
   assert.equal(lista.length, 1, 'pero UN traslado en el historial');
-  assert.equal(String(lista[0].warehouse._id), String(A._id));
+  // Cada fila es el DOCUMENTO de traslado (puede llevar varios productos), con las dos
+  // bodegas en la cabecera y el detalle por producto en `items`.
+  assert.equal(String(lista[0].fromWarehouse._id), String(A._id));
   assert.equal(String(lista[0].toWarehouse._id), String(B._id));
+  assert.equal(lista[0].items.length, 1);
+  assert.equal(String(lista[0].items[0].product._id), String(prod._id));
+  assert.equal(lista[0].totalQty, 4);
 });
 
 // ══════════════════════ TAXONOMÍA DE CATEGORÍAS ══════════════════════

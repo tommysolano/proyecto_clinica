@@ -10,10 +10,12 @@ import NumericInput from '../components/NumericInput';
 import SearchableSelect from '../components/SearchableSelect';
 import ProductSelect from '../components/ProductSelect';
 import ProductFormModal from '../components/ProductFormModal';
+import TransferStockModal from '../components/TransferStockModal';
 import {
   HiOutlinePlus, HiOutlinePencil, HiOutlineTrash,
   HiOutlineMagnifyingGlass, HiOutlineArrowDown, HiOutlineArrowUp,
   HiOutlineExclamationTriangle, HiOutlineCube, HiOutlineArrowDownTray,
+  HiOutlineArrowsRightLeft,
 } from 'react-icons/hi2';
 import { fmtDateTime } from '../utils/date';
 import { PRODUCT_TYPES, PRODUCT_CATEGORIES } from '../constants/productCategories';
@@ -27,8 +29,13 @@ export default function Inventory() {
   const canWrite = hasRole('admin', 'contabilidad');
   const [products, setProducts] = useState([]);
   const [movements, setMovements] = useState([]);
+  const [transfers, setTransfers] = useState([]);
   const [clinicsList, setClinicsList] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
+  const [costCenters, setCostCenters] = useState([]);
+  // Filtros del historial de traslados (el usuario pregunta "qué se movió y cuándo").
+  const [trFilters, setTrFilters] = useState({ from: '', to: '', warehouse: '', q: '' });
+  const [transferModal, setTransferModal] = useState(false);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const debouncedSearch = useDebounce(search, 300);
@@ -95,14 +102,35 @@ export default function Inventory() {
     try {
       const res = await api.get('/inventory');
       setMovements(res.data);
-    } catch {}
+    } catch {
+      toast.error('No se pudieron cargar los movimientos');
+    }
+  };
+
+  /** Historial de traslados: el servidor ya devuelve UNA fila por documento con sus productos. */
+  const fetchTransfers = async () => {
+    try {
+      const res = await api.get('/inventory-advanced/transfers', {
+        params: {
+          from: trFilters.from || undefined,
+          to: trFilters.to || undefined,
+          warehouse: trFilters.warehouse || undefined,
+          q: trFilters.q || undefined,
+        },
+      });
+      setTransfers(res.data || []);
+    } catch {
+      toast.error('No se pudieron cargar los traslados');
+    }
   };
 
   useEffect(() => { fetchProducts(); }, [debouncedSearch, categoryFilter, categoriaFilter, showLowStock]);
   useEffect(() => { if (tab === 'movements') fetchMovements(); }, [tab]);
+  useEffect(() => { if (tab === 'transfers') fetchTransfers(); }, [tab, trFilters]); // eslint-disable-line react-hooks/exhaustive-deps
   useEffect(() => {
     api.get('/clinics').then((r) => setClinicsList(r.data || [])).catch(() => {});
     api.get('/inventory-advanced/warehouses').then((r) => setWarehouses(r.data || [])).catch(() => {});
+    api.get('/cost-centers', { params: { active: true } }).then((r) => setCostCenters(r.data || [])).catch(() => {});
   }, []);
 
   // Product CRUD
@@ -175,8 +203,13 @@ export default function Inventory() {
               Carga masiva
             </button>
             <button onClick={() => openNewMovement()} className="btn-secondary">
-              <HiOutlineArrowDown className="w-4 h-4" /> Movimiento
+              <HiOutlineArrowDown className="w-4 h-4" /> Entrada / salida
             </button>
+            {warehouses.length >= 2 && (
+              <button onClick={() => setTransferModal(true)} className="btn-secondary">
+                <HiOutlineArrowsRightLeft className="w-4 h-4" /> Traslado entre bodegas
+              </button>
+            )}
             <button onClick={openNewProduct} className="btn-primary">
               <HiOutlinePlus className="w-5 h-5" /> Nuevo Producto
             </button>
@@ -201,6 +234,14 @@ export default function Inventory() {
           }`}
         >
           Movimientos
+        </button>
+        <button
+          onClick={() => setTab('transfers')}
+          className={`px-5 py-2.5 rounded-lg text-sm font-medium cursor-pointer border-none transition-colors ${
+            tab === 'transfers' ? 'bg-white text-emerald-700 shadow-sm' : 'text-slate-500 hover:text-emerald-700 bg-transparent'
+          }`}
+        >
+          Traslados entre bodegas
         </button>
       </div>
 
@@ -343,7 +384,9 @@ export default function Inventory() {
                 ) : (
                   movements.map((m) => (
                     <tr key={m._id} className="border-b border-emerald-50 hover:bg-emerald-50/30 transition-colors">
-                      <td className="px-6 py-3 text-sm text-slate-600">{fmtDateTime(m.createdAt)}</td>
+                      {/* La fecha que vale es la FUNCIONAL del movimiento (la del documento);
+                          los registros viejos no la tienen y caen en la de grabación. */}
+                      <td className="px-6 py-3 text-sm text-slate-600">{fmtDateTime(m.movementDate || m.createdAt)}</td>
                       <td className="px-6 py-3 text-sm font-medium text-slate-800">{m.product?.name}</td>
                       <td className="px-6 py-3">
                         <span className={`px-2 py-1 rounded-full text-xs font-medium ${
@@ -366,6 +409,79 @@ export default function Inventory() {
                 )}
               </tbody>
             </table>
+          </div>
+        </div>
+      )}
+
+      {/* Traslados entre bodegas: qué se movió, de dónde a dónde y cuándo */}
+      {tab === 'transfers' && (
+        <div className="space-y-4">
+          <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-4">
+            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Desde</label>
+                <input type="date" value={trFilters.from} onChange={(e) => setTrFilters({ ...trFilters, from: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm bg-slate-50/50" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Hasta</label>
+                <input type="date" value={trFilters.to} onChange={(e) => setTrFilters({ ...trFilters, to: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm bg-slate-50/50" />
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Bodega (origen o destino)</label>
+                <select value={trFilters.warehouse} onChange={(e) => setTrFilters({ ...trFilters, warehouse: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm bg-slate-50/50">
+                  <option value="">Todas</option>
+                  {warehouses.map((w) => <option key={w._id} value={w._id}>{w.name}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-slate-600 mb-1">Buscar</label>
+                <input placeholder="Producto, bodega o motivo…" value={trFilters.q} onChange={(e) => setTrFilters({ ...trFilters, q: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm bg-slate-50/50" />
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="tbl">
+                <thead>
+                  <tr className="bg-emerald-50/50 border-b border-emerald-100">
+                    <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Fecha</th>
+                    <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Origen → Destino</th>
+                    <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Productos</th>
+                    <th className="text-right px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider">Unidades</th>
+                    <th className="text-left px-6 py-3.5 text-xs font-semibold text-emerald-700 uppercase tracking-wider hidden md:table-cell">Usuario</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {transfers.length === 0 ? (
+                    <tr><td colSpan="5"><EmptyState icon={HiOutlineArrowsRightLeft} title="Sin traslados" hint="Usa «Traslado entre bodegas» para mover uno o varios productos de una bodega a otra." /></td></tr>
+                  ) : (
+                    transfers.map((t) => (
+                      <tr key={t._id} className="border-b border-emerald-50 hover:bg-emerald-50/30 transition-colors align-top">
+                        <td className="px-6 py-3 text-sm text-slate-600 whitespace-nowrap">
+                          {new Date(t.date).toLocaleDateString('es-EC', { timeZone: 'America/Guayaquil' })}
+                          <div className="text-[10px] text-slate-400">{t.reference}</div>
+                        </td>
+                        <td className="px-6 py-3 text-sm text-slate-700 whitespace-nowrap">
+                          {t.fromWarehouse?.name || '—'} <span className="text-slate-400">→</span> {t.toWarehouse?.name || '—'}
+                        </td>
+                        <td className="px-6 py-3 text-sm text-slate-700">
+                          {t.items.map((it) => (
+                            <div key={String(it.movementId)} className="flex gap-2">
+                              <span>{it.product?.name || '—'}</span>
+                              <span className="text-slate-400 font-mono">×{it.quantity}</span>
+                            </div>
+                          ))}
+                          {t.reason && <div className="text-[11px] text-slate-400 italic mt-0.5">{t.reason}</div>}
+                        </td>
+                        <td className="px-6 py-3 text-sm text-right font-medium whitespace-nowrap">{t.totalQty}</td>
+                        <td className="px-6 py-3 text-sm text-slate-600 hidden md:table-cell whitespace-nowrap">{t.createdBy?.name || '—'}</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
         </div>
       )}
@@ -394,6 +510,16 @@ export default function Inventory() {
           </div>
         </div>
       </Modal>
+
+      {/* Traslado entre bodegas (uno o varios productos en el mismo documento) */}
+      <TransferStockModal
+        isOpen={transferModal}
+        onClose={() => setTransferModal(false)}
+        onDone={() => { fetchProducts(); if (tab === 'transfers') fetchTransfers(); if (tab === 'movements') fetchMovements(); }}
+        warehouses={warehouses}
+        products={products}
+        costCenters={costCenters}
+      />
 
       {/* Product Modal (formulario completo reutilizable) */}
       <ProductFormModal

@@ -7,6 +7,7 @@ import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import SearchableSelect from '../../components/SearchableSelect';
 import AccountSelect from '../../components/AccountSelect';
+import SourceDocLink from '../../components/SourceDocLink';
 import { newIdempotencyKey, withIdempotencyKey } from '../../utils/idempotency';
 
 // Las retenciones se derivan de las bases digitadas en las transacciones: una fila RENTA (si hay
@@ -426,7 +427,11 @@ export default function CardSettlements() {
                     {pickerResults.map((s) => (
                       <tr key={s._id} className={`border-t ${picked[s._id] ? 'bg-emerald-50/60' : ''}`}>
                         <td className="px-2 py-1.5 text-center"><input type="checkbox" checked={!!picked[s._id]} onChange={(e) => setPicked({ ...picked, [s._id]: e.target.checked })} /></td>
-                        <td className="px-2 py-1.5 font-mono">{s.saleNumber}</td>
+                        {/* El número de venta abre la venta: al liquidar tarjetas hay
+                            que poder comprobar el voucher contra el documento real. */}
+                        <td className="px-2 py-1.5 font-mono">
+                          <SourceDocLink model="Sale" id={s._id} number={s.saleNumber} />
+                        </td>
                         <td className="px-2 py-1.5">{fmtDate(s.createdAt)}</td>
                         <td className="px-2 py-1.5">{s.clientName}</td>
                         <td className="px-2 py-1.5">{s.creditCard?.name || '—'}</td>

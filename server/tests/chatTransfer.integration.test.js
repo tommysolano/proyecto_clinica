@@ -136,6 +136,38 @@ test('la lista de destinatarios trae asesores y supervisores, y marca quién est
   assert.equal(byName.Bruno.inShift, false);
   assert.equal(byName.Sofia.isAgent, false, 'la supervisora no es asesora de call center');
   assert.equal(byName.Ana.isAgent, true);
+  assert.equal(byName.Sofia.roleLabel, 'Marketing');
   // Los que están en turno salen primero.
   assert.notEqual(names[names.length - 1], 'Ana');
+});
+
+test('no salen los usuarios de OTRA sede (no pueden abrir esta bandeja)', async () => {
+  const aqui = new H.mongoose.Types.ObjectId();
+  const otraSede = new H.mongoose.Types.ObjectId();
+  await makeUser(aqui, 'Ana');
+  await makeUser(otraSede, 'AdminDeOtraSede', 'admin');
+  await makeUser(otraSede, 'AsesorDeOtraSede', 'call_center');
+  // El super-admin entra a todas las sedes: sí debe poder recibir el chat.
+  await makeUser(otraSede, 'Dueno', 'admin', { isSuperAdmin: true });
+
+  const r = await H.runController(
+    chat.listAssignableUsers,
+    H.mockReq(aqui, new H.mongoose.Types.ObjectId(), {}, { role: 'call_center' })
+  );
+
+  assert.equal(r.statusCode, 200);
+  assert.deepEqual(new Set(r.payload.map((u) => u.name)), new Set(['Ana', 'Dueno']));
+});
+
+test('transferir a alguien de otra sede se rechaza', async () => {
+  const aqui = new H.mongoose.Types.ObjectId();
+  const otraSede = new H.mongoose.Types.ObjectId();
+  const ana = await makeUser(aqui, 'Ana');
+  const ajeno = await makeUser(otraSede, 'Ajeno', 'admin');
+  const conv = await Conversation.create({ clinic: aqui, phone: '593999000666' });
+
+  const r = await transfer(aqui, ana._id, 'call_center', conv._id, String(ajeno._id));
+
+  assert.equal(r.statusCode, 404);
+  assert.equal((await Conversation.findById(conv._id)).assignedTo, null);
 });

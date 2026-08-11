@@ -97,6 +97,12 @@ const DOC_TYPE_LABEL = {
   NOTA_DEBITO_REC: 'Nota de débito', NOTA_CREDITO_REC: 'Nota de crédito',
 };
 
+// Estados en los que una compra ya contabilizada admite corrección. Que esté PAGADA
+// no la vuelve intocable: los abonos se conservan y el saldo se recalcula. Lo que sí
+// la congela es haber emitido el comprobante de retención (documento fiscal del SRI).
+const CORREGIBLES = ['REGISTRADA', 'PAGADA'];
+const retencionEmitida = (p) => !!p?.retentionVoucher || !!String(p?.retentionNumber || '').trim();
+
 // Vencimiento = fecha de emisión + días de crédito (YYYY-MM-DD).
 const addDays = (dateStr, days) => {
   if (!dateStr || !(+days > 0)) return '';
@@ -709,7 +715,7 @@ export default function PurchaseInvoices() {
       const loadedTypes = [...new Set((d.items || []).filter(rawHasData).map(rawType))];
       setActiveSections(loadedTypes.length ? loadedTypes : ['GASTO']);
       setRowMenuUid(null);
-      setShowAdvanced(!!(d.autorizacion || d.paymentMethodSri || d.claveAcceso));
+      setShowAdvanced(!!(d.paymentMethodSri || d.claveAcceso));
       setShow(true);
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
@@ -995,7 +1001,21 @@ export default function PurchaseInvoices() {
                       <button onClick={() => openPay(p)} className="px-2.5 py-1 rounded-lg bg-sky-600 text-white text-xs font-medium hover:bg-sky-700 whitespace-nowrap">{st.abonado > 0 ? 'Abonar' : 'Pagar'}</button>
                     )}
                     <RowMenu items={[
-                      { key: 'edit', label: 'Editar', icon: HiOutlinePencilSquare, hidden: p.status !== 'REGISTRADA', onClick: () => openEdit(p) },
+                      {
+                        key: 'edit',
+                        label: 'Editar',
+                        icon: HiOutlinePencilSquare,
+                        // Se puede corregir una compra mientras no tenga su comprobante de
+                        // retención emitido (ese ya es un documento fiscal declarado al SRI).
+                        // Antes solo se dejaba en REGISTRADA y al pagarla ya no había forma
+                        // de arreglar un proveedor o una cantidad mal digitados.
+                        hidden: !CORREGIBLES.includes(p.status),
+                        disabled: retencionEmitida(p),
+                        onClick: () => openEdit(p),
+                        hint: retencionEmitida(p)
+                          ? 'No se puede: ya tiene emitido su comprobante de retención. Anúlalo primero.'
+                          : 'Reversa el asiento y vuelve a contabilizar con los datos nuevos',
+                      },
                       { key: 'abonos', label: 'Ver abonos', icon: HiOutlineListBullet, hidden: !((p.status === 'REGISTRADA' || p.status === 'PAGADA') && st.abonado > 0), onClick: () => openAbonos(p) },
                       { key: 'asiento', label: 'Ver asiento contable', icon: HiOutlineBookOpen, hidden: !((p.status === 'REGISTRADA' || p.status === 'PAGADA') && p.journalEntry), onClick: () => setJournalInv(p) },
                       { key: 'ret', label: 'Emitir retención', icon: HiOutlineReceiptPercent, hidden: !(!anulada && p.retentionTotal > 0 && !p.retentionVoucher), onClick: () => emitRetention(p) },
@@ -1091,15 +1111,35 @@ export default function PurchaseInvoices() {
               <Field label="Centro de costo (factura)" className="col-span-2 md:col-span-2">
                 <SearchableSelect options={costCenters} value={form.costCenter} onChange={setInvoiceCostCenter} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="— sin centro —" searchPlaceholder="Buscar centro…" allowClear />
               </Field>
-              <Field label="Observación (factura)" className="col-span-2 md:col-span-6"><input placeholder="Descripción general de la factura (opcional)" value={form.notes || ''} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+              {/* El n° de autorización se digita SIEMPRE (antes vivía escondido tras
+                  «datos adicionales» y en la práctica nadie lo llenaba). En comprobantes
+                  electrónicos es la clave de acceso de 49 dígitos; al importar el XML
+                  llega solo. */}
+              <Field
+                label="N° de autorización SRI"
+                className="col-span-2 md:col-span-3"
+                hint="En factura electrónica es la clave de acceso (49 dígitos)."
+              >
+                <input
+                  placeholder="Clave de acceso / autorización"
+                  value={form.autorizacion || ''}
+                  onChange={(e) => setForm({ ...form, autorizacion: e.target.value.replace(/\s+/g, '') })}
+                  className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm font-mono"
+                />
+                {!!form.autorizacion && ![10, 37, 49].includes(form.autorizacion.length) && (
+                  <p className="text-[11px] text-amber-700 mt-1">
+                    Tiene {form.autorizacion.length} caracteres; lo habitual son 49 (electrónica) o 10 (preimpresa).
+                  </p>
+                )}
+              </Field>
+              <Field label="Observación (factura)" className="col-span-2 md:col-span-3"><input placeholder="Descripción general de la factura (opcional)" value={form.notes || ''} onChange={(e) => setForm({ ...form, notes: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
             </div>
             {/* Campos SRI menos usados: ocultos por defecto para no saturar la pantalla. */}
             <button type="button" onClick={() => setShowAdvanced((v) => !v)} className="mt-3 text-xs font-medium text-emerald-700 hover:underline flex items-center gap-1">
-              {showAdvanced ? '− Ocultar datos adicionales' : '+ Datos adicionales (autorización SRI, forma de pago)'}
+              {showAdvanced ? '− Ocultar datos adicionales' : '+ Datos adicionales (forma de pago SRI)'}
             </button>
             {showAdvanced && (
               <div className="grid grid-cols-2 md:grid-cols-4 gap-x-3 gap-y-2.5 mt-2 pt-3 border-t border-slate-100">
-                <Field label="N° de autorización SRI" className="col-span-2"><input placeholder="Opcional" value={form.autorizacion} onChange={(e) => setForm({ ...form, autorizacion: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
                 <Field label="Forma de pago (SRI)" className="col-span-2"><input placeholder="Opcional" value={form.paymentMethodSri || ''} onChange={(e) => setForm({ ...form, paymentMethodSri: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
               </div>
             )}

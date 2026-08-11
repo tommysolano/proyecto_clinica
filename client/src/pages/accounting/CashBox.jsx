@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import { HiOutlineCurrencyDollar, HiOutlineArrowsRightLeft } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
+import SourceDocLink from '../../components/SourceDocLink';
 
 /**
  * Caja — Cash on hand y depósitos a banco.
@@ -186,7 +187,11 @@ export default function CashBox() {
                   />
                 </td>
                 <td className="px-3 py-2 text-slate-600 whitespace-nowrap">{fmtDate(s.docDate)}</td>
-                <td className="px-3 py-2 text-slate-700 font-mono">{s.number || '—'}</td>
+                {/* El número lleva AL documento (venta o cobro): desde la caja se
+                    necesita comprobar de dónde salió cada billete. */}
+                <td className="px-3 py-2 font-mono">
+                  <SourceDocLink model={s.docModel} id={s.docRef} number={s.number || '—'} />
+                </td>
                 <td className="px-3 py-2 text-slate-800">{s.party || '—'}</td>
                 <td className="px-3 py-2 text-slate-600">{s.docModel === 'Sale' ? 'Venta' : 'Cobro'}{s.mixta ? ' (mixta)' : ''}</td>
                 <td className="px-3 py-2 text-right text-slate-800 font-medium">{fmt(s.amount)}</td>

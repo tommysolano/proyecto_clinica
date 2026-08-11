@@ -3,6 +3,7 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import Modal from '../../components/Modal';
 import { fmt, fmtDate } from './_utils';
+import SourceDocLink from '../../components/SourceDocLink';
 import { HiOutlineDocumentText, HiOutlineArrowDownTray } from 'react-icons/hi2';
 
 const STATUS_CLS = {
@@ -158,7 +159,12 @@ export default function Receivables() {
                 <tr key={d._id} className="border-t border-slate-100 hover:bg-slate-50 cursor-pointer" onClick={() => openStatement(d.party?.ref, d.party?.name)}>
                   <td className="px-3 py-2">{fmtDate(d.issueDate)}</td>
                   <td className="px-3 py-2">{d.docType}</td>
-                  <td className="px-3 py-2 font-mono text-xs">{d.number}</td>
+                  {/* El número abre el documento que generó el saldo (venta, factura
+                      o compra): la cartera es la primera pantalla donde se pregunta
+                      "¿y esto de dónde salió?". */}
+                  <td className="px-3 py-2 font-mono text-xs">
+                    <SourceDocLink row={d} number={d.number || '—'} />
+                  </td>
                   <td className="px-3 py-2">{d.party?.name}</td>
                   <td className="px-3 py-2 text-right">${fmt(d.total)}</td>
                   <td className="px-3 py-2 text-right">${fmt(d.applied)}</td>
