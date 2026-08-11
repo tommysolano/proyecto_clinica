@@ -785,11 +785,48 @@ function homography(dst, src) {
   return [m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], 1];
 }
 
+/** Dibuja un origen en un canvas nuevo del tamaño pedido, con buen filtrado. */
+function paintScaled(source, w, h) {
+  const c = document.createElement('canvas');
+  c.width = w;
+  c.height = h;
+  const x = c.getContext('2d');
+  x.imageSmoothingEnabled = true;
+  x.imageSmoothingQuality = 'high';
+  x.drawImage(source, 0, 0, w, h);
+  return c;
+}
+
+/**
+ * Reduce el origen ANTES de muestrearlo, de dos en dos.
+ *
+ * Sin esto, sacar una página de 3000 px de una foto de 12 MP significa leer un
+ * píxel de cada tres y tirar los otros dos: los trazos finos caen ENTRE muestra y
+ * muestra, así que el texto chico sale dentado o directamente desaparece. Bajando
+ * a la mitad cada vez, cada paso promedia bloques de 2×2 con el filtrado nativo
+ * del navegador y no se pierde nada por el camino.
+ */
+function downscaleSource(source, sw, sh, tw, th) {
+  let cur = source, cw = sw, ch = sh;
+  while (cw > tw * 2 && ch > th * 2) {
+    cw = Math.max(tw, Math.round(cw / 2));
+    ch = Math.max(th, Math.round(ch / 2));
+    cur = paintScaled(cur, cw, ch);
+  }
+  return cw === tw && ch === th ? cur : paintScaled(cur, tw, th);
+}
+
+/**
+ * Lado mayor de la página que se genera. A4 a 3000 px son ~255 ppp: por debajo
+ * de eso un OCR empieza a fallar con la letra chica y con los números.
+ */
+export const PAGE_MAX_SIDE = 3000;
+
 /**
  * Recorta el cuadrilátero de `source` y lo endereza en un canvas nuevo.
  * `quad` en coordenadas relativas (0..1). `maxSide` limita el tamaño de salida.
  */
-export function warpDocument(source, sourceW, sourceH, quad, maxSide = 1700) {
+export function warpDocument(source, sourceW, sourceH, quad, maxSide = PAGE_MAX_SIDE) {
   const src = quad.map((p) => ({ x: p.x * sourceW, y: p.y * sourceH }));
   const [tl, tr, br, bl] = src;
 
@@ -807,13 +844,25 @@ export function warpDocument(source, sourceW, sourceH, quad, maxSide = 1700) {
   );
   if (!H) return null;
 
+  // Si la hoja se está achicando (foto de muchos megapíxeles, o cámara lejos),
+  // se prefiltra el origen hasta la escala a la que se va a muestrear.
+  const shrink = Math.sqrt(quadArea(src) / (dw * dh));
+  let sw = sourceW, sh = sourceH, sample = source;
+  if (shrink > 1.25) {
+    sw = Math.max(8, Math.round(sourceW / shrink));
+    sh = Math.max(8, Math.round(sourceH / shrink));
+    sample = downscaleSource(source, sourceW, sourceH, sw, sh);
+  }
+  const kx = (sw - 1) / (sourceW - 1);
+  const ky = (sh - 1) / (sourceH - 1);
+
   // Origen completo en memoria para poder muestrear píxel a píxel.
   const srcCanvas = document.createElement('canvas');
-  srcCanvas.width = sourceW;
-  srcCanvas.height = sourceH;
+  srcCanvas.width = sw;
+  srcCanvas.height = sh;
   const sctx = srcCanvas.getContext('2d', { willReadFrequently: true });
-  sctx.drawImage(source, 0, 0, sourceW, sourceH);
-  const sdata = sctx.getImageData(0, 0, sourceW, sourceH).data;
+  sctx.drawImage(sample, 0, 0, sw, sh);
+  const sdata = sctx.getImageData(0, 0, sw, sh).data;
 
   const out = document.createElement('canvas');
   out.width = dw;
@@ -826,23 +875,23 @@ export function warpDocument(source, sourceW, sourceH, quad, maxSide = 1700) {
   for (let y = 0; y < dh; y++) {
     for (let x = 0; x < dw; x++) {
       const den = g * x + hh * y + 1;
-      const u = (a * x + bb * y + c) / den;
-      const v = (d * x + e * y + f) / den;
+      const u = ((a * x + bb * y + c) / den) * kx;
+      const v = ((d * x + e * y + f) / den) * ky;
       const oi = (y * dw + x) * 4;
-      if (u < 0 || v < 0 || u > sourceW - 1 || v > sourceH - 1) {
+      if (u < 0 || v < 0 || u > sw - 1 || v > sh - 1) {
         o[oi] = o[oi + 1] = o[oi + 2] = 255;
         o[oi + 3] = 255;
         continue;
       }
       // Bilineal: sin esto los bordes de las letras quedan dentados.
       const x0 = u | 0, y0 = v | 0;
-      const x1 = Math.min(x0 + 1, sourceW - 1);
-      const y1 = Math.min(y0 + 1, sourceH - 1);
+      const x1 = Math.min(x0 + 1, sw - 1);
+      const y1 = Math.min(y0 + 1, sh - 1);
       const fx = u - x0, fy = v - y0;
-      const i00 = (y0 * sourceW + x0) * 4;
-      const i10 = (y0 * sourceW + x1) * 4;
-      const i01 = (y1 * sourceW + x0) * 4;
-      const i11 = (y1 * sourceW + x1) * 4;
+      const i00 = (y0 * sw + x0) * 4;
+      const i10 = (y0 * sw + x1) * 4;
+      const i01 = (y1 * sw + x0) * 4;
+      const i11 = (y1 * sw + x1) * 4;
       for (let ch = 0; ch < 3; ch++) {
         const top = sdata[i00 + ch] * (1 - fx) + sdata[i10 + ch] * fx;
         const bot = sdata[i01 + ch] * (1 - fx) + sdata[i11 + ch] * fx;
@@ -886,42 +935,8 @@ function morphGrid(src, gw, gh, sign) {
 const dilateGrid = (src, gw, gh) => morphGrid(src, gw, gh, 1);
 const erodeGrid = (src, gw, gh) => morphGrid(src, gw, gh, -1);
 
-/**
- * Estima la LUZ DEL PAPEL: qué tan iluminado está el fondo en cada zona de la
- * hoja. Es lo que después permite quitar sombras y dejar el papel blanco parejo.
- *
- * De cada celda se toma un valor ALTO (el percentil 85), no el promedio, porque
- * dentro de una celda el papel es lo más claro que hay: así el texto no arrastra
- * la estimación hacia abajo. Y luego cada celda se queda con el máximo de sus
- * vecinas: sin eso, una mancha de color más grande que la ventana —un sello, un
- * membrete, un resaltador— pasa a ser su propio "papel" y sale BLANCA. Era el
- * caso: el sello rojo desaparecía de la página.
- */
-function paperLight(gray, w, h) {
-  const cell = Math.max(8, Math.ceil(Math.max(w, h) / LIGHT_CELLS));
-  const gw = Math.ceil(w / cell);
-  const gh = Math.ceil(h / cell);
-  const raw = new Float32Array(gw * gh);
-  const hist = new Int32Array(256);
-
-  for (let cy = 0; cy < gh; cy++) {
-    for (let cx = 0; cx < gw; cx++) {
-      hist.fill(0);
-      const y1 = Math.min(h, (cy + 1) * cell);
-      const x1 = Math.min(w, (cx + 1) * cell);
-      let n = 0;
-      for (let y = cy * cell; y < y1; y++) {
-        for (let x = cx * cell; x < x1; x++) { hist[gray[y * w + x]]++; n++; }
-      }
-      let acc = 0, v = 255;
-      for (let t = 255; t >= 0; t--) {
-        acc += hist[t];
-        if (acc >= n * 0.15) { v = t; break; }
-      }
-      raw[cy * gw + cx] = v;
-    }
-  }
-
+/** Deja la rejilla en bruto lista para usarse (ver `paperLights`). */
+function settleGrid(raw, gw, gh, cell) {
   // Cierre morfológico (primero el máximo del vecindario, después el mínimo).
   // El máximo solo tapa el hueco que dejó la mancha, y el mínimo deshace el
   // ensanchamiento: sin ese segundo paso la luz queda sobreestimada allí donde
@@ -948,83 +963,294 @@ function paperLight(gray, w, h) {
   return { grid: smooth, gw, gh, cell };
 }
 
-/** Luz del papel en un píxel: bilineal entre los centros de las 4 celdas vecinas. */
-function lightAt(light, x, y) {
-  const { grid, gw, gh, cell } = light;
-  const fx = x / cell - 0.5;
-  const fy = y / cell - 0.5;
-  const x0 = Math.max(0, Math.min(gw - 1, Math.floor(fx)));
-  const y0 = Math.max(0, Math.min(gh - 1, Math.floor(fy)));
-  const x1 = Math.min(gw - 1, x0 + 1);
-  const y1 = Math.min(gh - 1, y0 + 1);
-  const tx = Math.max(0, Math.min(1, fx - x0));
-  const ty = Math.max(0, Math.min(1, fy - y0));
-  const top = grid[y0 * gw + x0] * (1 - tx) + grid[y0 * gw + x1] * tx;
-  const bot = grid[y1 * gw + x0] * (1 - tx) + grid[y1 * gw + x1] * tx;
-  return top * (1 - ty) + bot * ty;
-}
-
 /**
- * Limpia la página escaneada. Todos los modos menos 'color' empiezan igual:
- * dividen cada píxel por la luz de su entorno, así se van las sombras del pulso
- * y del brillo desigual y el papel queda blanco parejo. Lo que cambia es qué se
- * hace después con el color:
+ * Estima la LUZ DEL PAPEL de los tres canales: qué tan iluminado está el fondo
+ * en cada zona de la hoja. Es lo que después permite quitar sombras y dejar el
+ * papel blanco parejo.
  *
- *   'documento'  — LO CONSERVA (por defecto): sellos, firmas azules, membretes y
- *                  resaltadores salen con su color, sobre papel blanco. Es lo
- *                  que hace el modo por defecto de cualquier escáner de móvil;
- *                  antes esto devolvía la hoja en gris, que no es lo esperable.
- *   'gris'       — escala de grises, también con el fondo emparejado
- *   'bn'         — binarizado duro (texto puro, archivo muy liviano)
- *   'color'      — la foto tal cual, sin tocar (sombras incluidas)
+ * De cada celda se toma un valor ALTO (el percentil 85), no el promedio, porque
+ * dentro de una celda el papel es lo más claro que hay: así el texto no arrastra
+ * la estimación hacia abajo. Y luego cada celda se queda con el máximo de sus
+ * vecinas: sin eso, una mancha de color más grande que la ventana —un sello, un
+ * membrete, un resaltador— pasa a ser su propio "papel" y sale BLANCA. Era el
+ * caso: el sello rojo desaparecía de la página.
+ *
+ * Los tres canales salen de UNA sola pasada: recorrer una foto de 6 MP tres
+ * veces, una por canal, costaba un cuarto de segundo de más por página.
  */
-export function applyFilter(canvas, mode = 'documento') {
-  if (mode === 'color') return canvas;
-  const w = canvas.width;
-  const h = canvas.height;
-  const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  const img = ctx.getImageData(0, 0, w, h);
-  const d = img.data;
-  const gray = toGray(d, w, h);
+function paperLights(data, w, h) {
+  const cell = Math.max(8, Math.ceil(Math.max(w, h) / LIGHT_CELLS));
+  const gw = Math.ceil(w / cell);
+  const gh = Math.ceil(h / cell);
+  const raw = [new Float32Array(gw * gh), new Float32Array(gw * gh), new Float32Array(gw * gh)];
+  const hist = [new Int32Array(256), new Int32Array(256), new Int32Array(256)];
 
-  const light = paperLight(gray, w, h);
-
-  for (let y = 0; y < h; y++) {
-    for (let x = 0; x < w; x++) {
-      const i = y * w + x;
-      const local = Math.max(1, lightAt(light, x, y));
-      // Normalizado por la luz local: el papel queda en 255 aunque tenga sombra.
-      let v = (gray[i] / local) * 255;
-      if (mode === 'bn') {
-        // Umbral al 82% del fondo, no al 95%: exigir casi el blanco exacto hace
-        // que se vuelva negro todo lo que sea papel pero no blanco puro —una
-        // franja con la luz mal estimada, un resaltador, una hoja amarillenta—
-        // y con ello se pierde el texto que hubiera encima.
-        v = v > 209 ? 255 : 0;
-      } else {
-        // Curva suave: aclara el papel y oscurece el trazo sin quemar los grises.
-        v = v < 235 ? Math.max(0, (v - 40) * 1.35) : 255;
-        v = Math.min(255, v);
+  for (let cy = 0; cy < gh; cy++) {
+    for (let cx = 0; cx < gw; cx++) {
+      hist[0].fill(0); hist[1].fill(0); hist[2].fill(0);
+      const y1 = Math.min(h, (cy + 1) * cell);
+      const x1 = Math.min(w, (cx + 1) * cell);
+      let n = 0;
+      for (let y = cy * cell; y < y1; y++) {
+        const row = y * w * 4;
+        for (let x = cx * cell; x < x1; x++) {
+          const p = row + x * 4;
+          hist[0][data[p]]++;
+          hist[1][data[p + 1]]++;
+          hist[2][data[p + 2]]++;
+          n++;
+        }
       }
-      const p = i * 4;
-      if (mode === 'documento') {
-        // Se aplica a los tres canales la MISMA ganancia que llevó el brillo de
-        // `gray[i]` hasta `v`. Al escalar en bloque, la proporción entre R, G y B
-        // no cambia: el tono se respeta y solo se aclara u oscurece.
-        const gain = v / Math.max(1, gray[i]);
-        d[p] *= gain;
-        d[p + 1] *= gain;
-        d[p + 2] *= gain;
-      } else {
-        d[p] = d[p + 1] = d[p + 2] = v;
+      for (let c = 0; c < 3; c++) {
+        let acc = 0, v = 255;
+        for (let t = 255; t >= 0; t--) {
+          acc += hist[c][t];
+          if (acc >= n * 0.15) { v = t; break; }
+        }
+        raw[c][cy * gw + cx] = v;
       }
     }
   }
+  return raw.map((r) => settleGrid(r, gw, gh, cell));
+}
+
+/**
+ * Luz del papel de TODA una fila (bilineal), volcada en `out`, para los tres
+ * canales a la vez. Comparten rejilla, así que los índices y los pesos de la
+ * interpolación se calculan UNA vez: repetirlos por canal costaba más que las
+ * propias lecturas.
+ */
+function lightRows(lights, y, out) {
+  const { gw, gh, cell } = lights[0];
+  const fy = y / cell - 0.5;
+  const y0 = clamp(Math.floor(fy), 0, gh - 1);
+  const y1 = Math.min(gh - 1, y0 + 1);
+  const ty = clamp(fy - y0, 0, 1);
+  const ry0 = y0 * gw, ry1 = y1 * gw;
+  for (let x = 0; x < out[0].length; x++) {
+    const fx = x / cell - 0.5;
+    const x0 = clamp(Math.floor(fx), 0, gw - 1);
+    const x1 = Math.min(gw - 1, x0 + 1);
+    const tx = clamp(fx - x0, 0, 1);
+    for (let c = 0; c < 3; c++) {
+      const g = lights[c].grid;
+      const top = g[ry0 + x0] * (1 - tx) + g[ry0 + x1] * tx;
+      const bot = g[ry1 + x0] * (1 - tx) + g[ry1 + x1] * tx;
+      out[c][x] = Math.max(1, top * (1 - ty) + bot * ty);
+    }
+  }
+}
+
+/** Ajustes del tono. Ver `enhanceImageData`. */
+const TONE = {
+  paperLo: 0.80,     // ventana donde se busca el pico del papel (fracción de su luz)
+  paperHi: 1.25,
+  shoulder: 0.30,    // el papel termina donde el pico cae a esta fracción
+  whiteMin: 0.86,    // …con topes, por si la página no tiene papel a la vista
+  whiteMax: 0.995,
+  blackPct: 0.004,   // el 0,4% más oscuro de la página ya es tinta
+  blackMin: 0.06,
+  blackMax: 0.45,
+  gamma: 1.15,       // >1 oscurece los medios: el trazo gana cuerpo
+  bnThreshold: 184,  // corte de blanco y negro, ya sobre el tono corregido
+  sharpen: 0.55,     // fuerza de la máscara de enfoque
+};
+
+/** Curva del tono precalculada: `Math.pow` por píxel y canal cuesta segundos. */
+const TONE_CURVE = (() => {
+  const lut = new Uint8ClampedArray(1025);
+  for (let i = 0; i <= 1024; i++) lut[i] = 255 * Math.pow(i / 1024, TONE.gamma);
+  return lut;
+})();
+
+/**
+ * Dónde deja de ser papel. El papel es un PICO del histograma alrededor de 1
+ * (por construcción: ahí es donde se estimó su luz) y lo que interesa es el pie
+ * de ese pico, no su centro: por debajo de ahí ya hay contenido.
+ */
+function paperWhite(hist) {
+  const lo = Math.round(TONE.paperLo * 200);
+  const hi = Math.min(255, Math.round(TONE.paperHi * 200));
+  let peak = lo, peakN = -1;
+  for (let b = lo; b <= hi; b++) if (hist[b] > peakN) { peakN = hist[b]; peak = b; }
+  if (peakN <= 0) return TONE.whiteMax;
+  const floor = peakN * TONE.shoulder;
+  let b = peak;
+  while (b > lo && hist[b] >= floor) b--;
+  // Un poco de margen: el pie medido es donde el papel ya casi no aporta píxeles.
+  return clamp((b + 1) / 200 - 0.01, TONE.whiteMin, TONE.whiteMax);
+}
+
+/** Dónde empieza a ser tinta: el percentil `blackPct` de la página. */
+function inkBlack(hist, total) {
+  const target = total * TONE.blackPct;
+  let acc = 0;
+  for (let b = 0; b < 256; b++) {
+    acc += hist[b];
+    if (acc >= target) return clamp(b / 200, TONE.blackMin, TONE.blackMax);
+  }
+  return TONE.blackMin;
+}
+
+/** Suavizado 3×3 separable en 8 bits (el de `blur3` da Float32: 4× la memoria). */
+function blur3u8(src, w, h) {
+  const tmp = new Uint8ClampedArray(w * h);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      const i = row + x;
+      const l = x > 0 ? src[i - 1] : src[i];
+      const r = x < w - 1 ? src[i + 1] : src[i];
+      tmp[i] = (l + 2 * src[i] + r) * 0.25;
+    }
+  }
+  const out = new Uint8ClampedArray(w * h);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      const i = row + x;
+      const u = y > 0 ? tmp[i - w] : tmp[i];
+      const d = y < h - 1 ? tmp[i + w] : tmp[i];
+      out[i] = (u + 2 * tmp[i] + d) * 0.25;
+    }
+  }
+  return out;
+}
+
+/**
+ * Máscara de enfoque sobre el BRILLO: devuelve el filo que se pierde al reducir
+ * la foto y al comprimirla en JPEG, que es justo lo que necesita un OCR para no
+ * confundir un 8 con un 6. Va sobre la luminancia y no canal a canal para no
+ * inventar colores en el borde de las letras.
+ */
+function unsharpLuma(d, w, h, amount) {
+  const y = new Uint8ClampedArray(w * h);
+  for (let i = 0, p = 0; i < y.length; i++, p += 4) {
+    y[i] = (d[p] * 299 + d[p + 1] * 587 + d[p + 2] * 114) / 1000;
+  }
+  const soft = blur3u8(y, w, h);
+  for (let i = 0, p = 0; i < y.length; i++, p += 4) {
+    const k = amount * (y[i] - soft[i]);
+    if (k > -1 && k < 1) continue;
+    // `d` es Uint8ClampedArray: recorta a 0-255 él solo.
+    d[p] += k;
+    d[p + 1] += k;
+    d[p + 2] += k;
+  }
+}
+
+/**
+ * Limpia la página escaneada. Trabaja sobre un ImageData y lo modifica en sitio
+ * (`applyFilter` es la envoltura que lo saca del canvas y lo devuelve).
+ *
+ * El punto de partida es el mismo en los tres modos que tocan la imagen: se
+ * divide CADA CANAL por la luz del papel de su zona (`paperLight`). Eso hace dos
+ * cosas a la vez: se van las sombras del pulso y de la lámpara, y el papel queda
+ * blanco NEUTRO (se corrige de paso el tinte cálido de la luz de interior).
+ *
+ * Que sea canal a canal —y no sobre el brillo, como antes— es lo que salva el
+ * contenido que se distingue del papel por su COLOR pero apenas por su BRILLO:
+ * los recuadros celestes de un formulario preimpreso, un sello pálido, una firma
+ * azul clarita. Midiendo solo el brillo, todo eso caía dentro del papel.
+ *
+ * Después viene el tono, con los dos extremos sacados de la propia página:
+ *   · BLANCO — el pie del pico del papel (`paperWhite`). Así el papel queda
+ *     parejo, con su grano incluido, sin comerse lo que está apenas por debajo.
+ *     Antes el corte era fijo: TODO lo que pasara del 90% del papel se iba a
+ *     blanco puro, y con ello desaparecían los renglones y los recuadros tenues.
+ *   · NEGRO  — el 0,4% más oscuro (`inkBlack`). La tinta sale negra de verdad y
+ *     una hoja escrita a lápiz no se queda toda gris.
+ * Entre medias, gamma 1,15: oscurece los medios, o sea que el trazo gana cuerpo.
+ *
+ * Modos: 'documento' conserva el color; 'gris' pasa a escala de grises; 'bn'
+ * binariza (texto puro, archivo liviano); 'color' devuelve la foto sin tocar.
+ */
+export function enhanceImageData(img, mode = 'documento') {
+  const { data: d, width: w, height: h } = img;
+  if (mode === 'color' || w < 2 || h < 2) return img;
+
+  const light = paperLights(d, w, h);
+  const lr = [new Float32Array(w), new Float32Array(w), new Float32Array(w)];
+
+  // ── Los dos extremos del tono, medidos sobre una muestra de la página ──────
+  // Con una de cada `step` filas y columnas sobra para un percentil, y en una
+  // foto de muchos megapíxeles ahorra la mayor parte del trabajo.
+  const hist = new Int32Array(256);
+  const step = Math.max(1, Math.round(Math.max(w, h) / 700));
+  let seen = 0;
+  for (let y = 0; y < h; y += step) {
+    lightRows(light, y, lr);
+    for (let x = 0; x < w; x += step) {
+      const p = (y * w + x) * 4;
+      const n = (299 * (d[p] / lr[0][x]) + 587 * (d[p + 1] / lr[1][x]) + 114 * (d[p + 2] / lr[2][x])) / 1000;
+      hist[clamp(Math.round(n * 200), 0, 255)]++;
+      seen++;
+    }
+  }
+  const white = paperWhite(hist);
+  const black = inkBlack(hist, seen);
+
+  // El punto blanco se abre donde hay menos luz. El grano de la cámara son unos
+  // pocos NIVELES, no un porcentaje, así que al dividir por la luz local ese
+  // mismo grano pesa mucho más en la zona con sombra: con un punto blanco único
+  // para toda la hoja, el lado sombreado sale gris sucio. Se mide en la parte
+  // mejor iluminada (que es de donde sale `white`) y se ensancha en proporción.
+  const margin = 1 - white;
+  let refLight = 1;
+  for (let i = 0; i < light[0].grid.length; i++) {
+    const v = (299 * light[0].grid[i] + 587 * light[1].grid[i] + 114 * light[2].grid[i]) / 1000;
+    if (v > refLight) refLight = v;
+  }
+
+  // ── Tono ──────────────────────────────────────────────────────────────────
+  for (let y = 0; y < h; y++) {
+    lightRows(light, y, lr);
+    for (let x = 0; x < w; x++) {
+      const local = (299 * lr[0][x] + 587 * lr[1][x] + 114 * lr[2][x]) / 1000;
+      const span = clamp(1 - margin * (refLight / local), TONE.whiteMin, TONE.whiteMax) - black;
+      // La curva va en línea (y no como función): serían millones de llamadas.
+      const k = 1024 / span;
+      const p = (y * w + x) * 4;
+      const tr = (d[p] / lr[0][x] - black) * k;
+      const tg = (d[p + 1] / lr[1][x] - black) * k;
+      const tb = (d[p + 2] / lr[2][x] - black) * k;
+      let r = tr <= 0 ? 0 : tr >= 1024 ? 255 : TONE_CURVE[tr | 0];
+      let g = tg <= 0 ? 0 : tg >= 1024 ? 255 : TONE_CURVE[tg | 0];
+      let b = tb <= 0 ? 0 : tb >= 1024 ? 255 : TONE_CURVE[tb | 0];
+      if (mode !== 'documento') {
+        const v = (r * 299 + g * 587 + b * 114) / 1000;
+        r = g = b = mode === 'bn' ? (v >= TONE.bnThreshold ? 255 : 0) : v;
+      }
+      d[p] = r;
+      d[p + 1] = g;
+      d[p + 2] = b;
+      d[p + 3] = 255;
+    }
+  }
+
+  // En blanco y negro no: la máscara de enfoque solo dejaría halos grises.
+  if (mode !== 'bn') unsharpLuma(d, w, h, TONE.sharpen);
+  return img;
+}
+
+/** Limpia la página de un canvas (envoltura de `enhanceImageData`). */
+export function applyFilter(canvas, mode = 'documento') {
+  if (mode === 'color') return canvas;
+  const ctx = canvas.getContext('2d', { willReadFrequently: true });
+  const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  enhanceImageData(img, mode);
   ctx.putImageData(img, 0, 0);
   return canvas;
 }
 
 // ─── Ayudas ──────────────────────────────────────────────────────────────────
+
+/**
+ * Calidad JPEG de las páginas. El servidor mete el JPEG en el PDF tal cual (no
+ * recomprime), así que lo que se elija aquí es lo que queda para siempre: a 0,85
+ * la letra chica se empasta y el OCR empieza a equivocarse.
+ */
+export const PAGE_QUALITY = 0.92;
 
 /** Las 4 esquinas del cuadro completo (cuando no se detecta hoja). */
 export const FULL_QUAD = [
@@ -1032,7 +1258,7 @@ export const FULL_QUAD = [
 ];
 
 /** Canvas → Blob JPEG (lo que se sube al servidor como página). */
-export function canvasToJpeg(canvas, quality = 0.85) {
+export function canvasToJpeg(canvas, quality = PAGE_QUALITY) {
   return new Promise((resolve, reject) => {
     canvas.toBlob(
       (blob) => (blob ? resolve(blob) : reject(new Error('No se pudo convertir la imagen'))),

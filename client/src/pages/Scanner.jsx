@@ -15,6 +15,7 @@ import {
   thumbnailUrl,
   loadImage,
   FULL_QUAD,
+  PAGE_QUALITY,
 } from '../utils/docScan';
 import {
   HiOutlineDocumentText,
@@ -42,6 +43,15 @@ const FILTERS = [
   { key: 'gris', label: 'Grises', hint: 'Escala de grises, con el fondo parejo' },
   { key: 'color', label: 'Color', hint: 'La foto tal cual, con sus sombras' },
 ];
+
+/**
+ * Lado mayor con el que se guarda la foto ORIGINAL de cada página, la que se
+ * vuelve a recortar al usar «Reencuadrar». A 1600 px un reencuadre devolvía una
+ * página bastante peor que la primera; el original tiene que llegar holgado.
+ */
+const ORIGINAL_MAX = 2400;
+/** Calidad JPEG de ese original (solo se usa para volver a recortar). */
+const ORIGINAL_QUALITY = 0.88;
 
 const fmtSize = (b) => (b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.round((b || 0) / 1024)} KB`);
 const fmtDate = (d) =>
@@ -113,7 +123,7 @@ export default function Scanner() {
 function ScanStudio({ pages, setPages, onSaved }) {
   const [cameraOpen, setCameraOpen] = useState(false);
   const [filter, setFilter] = useState('documento');
-  const [busy, setBusy] = useState(false);
+  const [busy, setBusy] = useState(null); // { done, total } mientras se procesan fotos
   const [cropping, setCropping] = useState(null); // { pageId, src, w, h, quad }
   const [name, setName] = useState('');
   const [saving, setSaving] = useState(false);
@@ -139,22 +149,25 @@ function ScanStudio({ pages, setPages, onSaved }) {
     const warped = warpDocument(source, sw, sh, useQuad);
     if (!warped) throw new Error('No se pudo recortar la imagen');
     applyFilter(warped, mode);
-    const blob = await canvasToJpeg(warped, 0.85);
+    const blob = await canvasToJpeg(warped, PAGE_QUALITY);
 
     // El original se guarda reducido para poder reencuadrar después sin
-    // quedarnos con fotos de 5 MP en memoria por cada página.
+    // quedarnos con fotos de 12 MP en memoria por cada página.
     const orig = document.createElement('canvas');
-    const k = Math.min(1, 1600 / Math.max(sw, sh));
+    const k = Math.min(1, ORIGINAL_MAX / Math.max(sw, sh));
     orig.width = Math.round(sw * k);
     orig.height = Math.round(sh * k);
-    orig.getContext('2d').drawImage(source, 0, 0, orig.width, orig.height);
+    const octx = orig.getContext('2d');
+    octx.imageSmoothingEnabled = true;
+    octx.imageSmoothingQuality = 'high';
+    octx.drawImage(source, 0, 0, orig.width, orig.height);
 
     return {
       id: `p${++pageSeq}`,
       blob,
       preview: URL.createObjectURL(blob),
       thumb: thumbnailUrl(warped),
-      original: orig.toDataURL('image/jpeg', 0.8),
+      original: orig.toDataURL('image/jpeg', ORIGINAL_QUALITY),
       originalW: orig.width,
       originalH: orig.height,
       quad: useQuad,
@@ -164,10 +177,15 @@ function ScanStudio({ pages, setPages, onSaved }) {
   }, []);
 
   const addFromFiles = async (files) => {
-    setBusy(true);
+    setBusy({ done: 0, total: files.length });
     let sinBorde = 0;
     try {
-      for (const file of files) {
+      for (const [i, file] of files.entries()) {
+        setBusy({ done: i, total: files.length });
+        // Recortar y limpiar una foto a tamaño de escáner ocupa el hilo un par de
+        // segundos: sin este respiro el contador no llega a pintarse y una carga
+        // de veinte fotos parece colgada.
+        await new Promise((r) => setTimeout(r, 0));
         const img = await loadImage(file);
         const q = detectDocument(img, img.naturalWidth, img.naturalHeight, 420);
         if (!q) sinBorde++;
@@ -182,7 +200,7 @@ function ScanStudio({ pages, setPages, onSaved }) {
     } catch (e) {
       toast.error(e.message || 'No se pudieron leer las imágenes');
     } finally {
-      setBusy(false);
+      setBusy(null);
     }
   };
 
@@ -211,7 +229,7 @@ function ScanStudio({ pages, setPages, onSaved }) {
       const warped = warpDocument(img, page.originalW, page.originalH, newQuad);
       if (!warped) throw new Error('El recorte no es válido');
       applyFilter(warped, page.filter);
-      const blob = await canvasToJpeg(warped, 0.85);
+      const blob = await canvasToJpeg(warped, PAGE_QUALITY);
       if (page.preview) URL.revokeObjectURL(page.preview);
       setPages((prev) =>
         prev.map((p) =>
@@ -264,8 +282,13 @@ function ScanStudio({ pages, setPages, onSaved }) {
             <button onClick={() => setCameraOpen(true)} className="btn-primary justify-center">
               <HiOutlineCamera className="w-5 h-5" /> Abrir cámara
             </button>
-            <button onClick={() => fileInputRef.current?.click()} disabled={busy} className="btn-secondary justify-center">
-              {busy ? <Spinner /> : <HiOutlinePhoto className="w-4 h-4" />} Subir fotos
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              disabled={!!busy}
+              className="btn-secondary justify-center whitespace-nowrap"
+            >
+              {busy ? <Spinner /> : <HiOutlinePhoto className="w-4 h-4" />}
+              {busy && busy.total > 1 ? `Procesando ${busy.done + 1} de ${busy.total}…` : 'Subir fotos'}
             </button>
           </div>
         </div>
@@ -439,9 +462,52 @@ const JUMP = 0.12;
 /** Cuadros que se mantiene el último marco cuando la detección se pierde. */
 const HOLD = 4;
 
+/** El fotograma del vídeo tal cual, a la resolución de la vista previa. */
+function videoFrame(video) {
+  const c = document.createElement('canvas');
+  c.width = video.videoWidth;
+  c.height = video.videoHeight;
+  c.getContext('2d').drawImage(video, 0, 0);
+  return c;
+}
+
+/**
+ * Toma la foto con TODO el detalle que dé el equipo.
+ *
+ * El fotograma del vídeo va a la resolución de la vista previa: 1080p en el
+ * mejor de los casos, o sea ~2 MP para una hoja A4 completa —unos 120 ppp— y con
+ * eso la letra chica no se lee, ni a ojo ni con un OCR. `ImageCapture.takePhoto`
+ * dispara la cámara de verdad y devuelve la foto del sensor entero (12 MP y
+ * más). No está en todos los navegadores (Safari no lo trae) y en algunos
+ * equipos falla o se queda colgado, así que se le pone un límite de tiempo y se
+ * compara con el fotograma: se usa la que traiga más píxeles.
+ */
+async function grabStill(video, track) {
+  if (!track || typeof window.ImageCapture !== 'function') return videoFrame(video);
+  const frameArea = video.videoWidth * video.videoHeight;
+  try {
+    const blob = await Promise.race([
+      new window.ImageCapture(track).takePhoto(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('takePhoto tardó demasiado')), 4000)),
+    ]);
+    const img = await loadImage(blob);
+    // Un 20% más de píxeles no compensa: hay equipos donde `takePhoto` devuelve
+    // lo mismo que el vídeo pero recomprimido, y ahí es peor el remedio.
+    if (img.naturalWidth * img.naturalHeight <= frameArea * 1.2) return videoFrame(video);
+    const c = document.createElement('canvas');
+    c.width = img.naturalWidth;
+    c.height = img.naturalHeight;
+    c.getContext('2d').drawImage(img, 0, 0);
+    return c;
+  } catch {
+    return videoFrame(video);
+  }
+}
+
 function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onClose }) {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
+  const trackRef = useRef(null);
   const liveRef = useRef(null);   // último marco suavizado
   const lostRef = useRef(0);      // cuadros seguidos sin detectar nada
   const busyRef = useRef(false);
@@ -468,11 +534,19 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
           throw new Error('Este navegador no permite usar la cámara. Cierra y usa «Subir fotos».');
         }
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } },
+          video: {
+            facingMode: { ideal: 'environment' },
+            // Se pide lo más grande que dé el equipo: cada píxel de más sobre la
+            // hoja es texto que después se puede leer. Al ser `ideal`, si la
+            // cámara no llega, el navegador baja solo al modo más cercano.
+            width: { ideal: 3840 },
+            height: { ideal: 2160 },
+          },
           audio: false,
         });
         if (cancelled) { stream.getTracks().forEach((t) => t.stop()); return; }
         streamRef.current = stream;
+        trackRef.current = stream.getVideoTracks()[0] || null;
         const v = videoRef.current;
         if (v) {
           v.srcObject = stream;
@@ -495,6 +569,7 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
       cancelled = true;
       streamRef.current?.getTracks().forEach((t) => t.stop());
       streamRef.current = null;
+      trackRef.current = null;
     };
   }, []);
 
@@ -554,14 +629,16 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
     setWorking(true);
     busyRef.current = true;
     try {
-      const frame = document.createElement('canvas');
-      frame.width = v.videoWidth;
-      frame.height = v.videoHeight;
-      frame.getContext('2d').drawImage(v, 0, 0);
+      const frame = await grabStill(v, trackRef.current);
       // Se vuelve a detectar sobre la foto quieta y con más detalle: sale mejor
-      // que en vivo, donde hay que ir a la carrera.
-      const q = detectDocument(frame, frame.width, frame.height, 384) || liveRef.current;
-      const blob = await canvasToJpeg(frame, 0.92);
+      // que en vivo, donde hay que ir a la carrera. El marco de la vista previa
+      // solo sirve de respaldo si la foto tiene la misma forma que el vídeo:
+      // `takePhoto` puede devolver otro encuadre y ahí no calzaría.
+      const sameShape =
+        Math.abs(frame.width / frame.height - v.videoWidth / v.videoHeight) < 0.02;
+      const q = detectDocument(frame, frame.width, frame.height, 384)
+        || (sameShape ? liveRef.current : null);
+      const blob = await canvasToJpeg(frame, PAGE_QUALITY);
       setPending({
         canvas: frame,
         w: frame.width,
@@ -625,7 +702,7 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
       const warped = warpDocument(img, shot.originalW, shot.originalH, newQuad);
       if (!warped) throw new Error('El recorte no es válido');
       applyFilter(warped, shot.filter);
-      const blob = await canvasToJpeg(warped, 0.85);
+      const blob = await canvasToJpeg(warped, PAGE_QUALITY);
       URL.revokeObjectURL(shot.preview);
       setShot({ ...shot, blob, preview: URL.createObjectURL(blob), thumb: thumbnailUrl(warped), quad: newQuad, detected: true });
     } catch (e) {
