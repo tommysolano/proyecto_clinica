@@ -857,27 +857,126 @@ export function warpDocument(source, sourceW, sourceH, quad, maxSide = 1700) {
 
 // ─── Filtros ─────────────────────────────────────────────────────────────────
 
-/** Suma acumulada 2D: permite promediar cualquier ventana en tiempo constante. */
-function integralImage(gray, w, h) {
-  const sum = new Float64Array((w + 1) * (h + 1));
-  for (let y = 0; y < h; y++) {
-    let rowSum = 0;
-    for (let x = 0; x < w; x++) {
-      rowSum += gray[y * w + x];
-      sum[(y + 1) * (w + 1) + (x + 1)] = sum[y * (w + 1) + (x + 1)] + rowSum;
+/** Rejilla con la que se estima la luz del papel (celdas por el lado mayor). */
+const LIGHT_CELLS = 16;
+/** Celdas alrededor que se miran para tapar una mancha grande (ver abajo). */
+const LIGHT_REACH = 2;
+
+/** Máximo (o mínimo, con `sign` = -1) del vecindario de cada celda. */
+function morphGrid(src, gw, gh, sign) {
+  const out = new Float32Array(gw * gh);
+  for (let cy = 0; cy < gh; cy++) {
+    for (let cx = 0; cx < gw; cx++) {
+      let best = -Infinity;
+      for (let dy = -LIGHT_REACH; dy <= LIGHT_REACH; dy++) {
+        const yy = cy + dy;
+        if (yy < 0 || yy >= gh) continue;
+        for (let dx = -LIGHT_REACH; dx <= LIGHT_REACH; dx++) {
+          const xx = cx + dx;
+          if (xx < 0 || xx >= gw) continue;
+          const v = sign * src[yy * gw + xx];
+          if (v > best) best = v;
+        }
+      }
+      out[cy * gw + cx] = sign * best;
     }
   }
-  return sum;
+  return out;
+}
+const dilateGrid = (src, gw, gh) => morphGrid(src, gw, gh, 1);
+const erodeGrid = (src, gw, gh) => morphGrid(src, gw, gh, -1);
+
+/**
+ * Estima la LUZ DEL PAPEL: qué tan iluminado está el fondo en cada zona de la
+ * hoja. Es lo que después permite quitar sombras y dejar el papel blanco parejo.
+ *
+ * De cada celda se toma un valor ALTO (el percentil 85), no el promedio, porque
+ * dentro de una celda el papel es lo más claro que hay: así el texto no arrastra
+ * la estimación hacia abajo. Y luego cada celda se queda con el máximo de sus
+ * vecinas: sin eso, una mancha de color más grande que la ventana —un sello, un
+ * membrete, un resaltador— pasa a ser su propio "papel" y sale BLANCA. Era el
+ * caso: el sello rojo desaparecía de la página.
+ */
+function paperLight(gray, w, h) {
+  const cell = Math.max(8, Math.ceil(Math.max(w, h) / LIGHT_CELLS));
+  const gw = Math.ceil(w / cell);
+  const gh = Math.ceil(h / cell);
+  const raw = new Float32Array(gw * gh);
+  const hist = new Int32Array(256);
+
+  for (let cy = 0; cy < gh; cy++) {
+    for (let cx = 0; cx < gw; cx++) {
+      hist.fill(0);
+      const y1 = Math.min(h, (cy + 1) * cell);
+      const x1 = Math.min(w, (cx + 1) * cell);
+      let n = 0;
+      for (let y = cy * cell; y < y1; y++) {
+        for (let x = cx * cell; x < x1; x++) { hist[gray[y * w + x]]++; n++; }
+      }
+      let acc = 0, v = 255;
+      for (let t = 255; t >= 0; t--) {
+        acc += hist[t];
+        if (acc >= n * 0.15) { v = t; break; }
+      }
+      raw[cy * gw + cx] = v;
+    }
+  }
+
+  // Cierre morfológico (primero el máximo del vecindario, después el mínimo).
+  // El máximo solo tapa el hueco que dejó la mancha, y el mínimo deshace el
+  // ensanchamiento: sin ese segundo paso la luz queda sobreestimada allí donde
+  // la iluminación cae en degradado, y ese borde de la hoja sale negro.
+  const grid = erodeGrid(dilateGrid(raw, gw, gh), gw, gh);
+
+  // Suavizado 3×3: si no, se notan los escalones entre celdas en el fondo.
+  const smooth = new Float32Array(gw * gh);
+  for (let cy = 0; cy < gh; cy++) {
+    for (let cx = 0; cx < gw; cx++) {
+      let s = 0, n = 0;
+      for (let dy = -1; dy <= 1; dy++) {
+        const yy = cy + dy;
+        if (yy < 0 || yy >= gh) continue;
+        for (let dx = -1; dx <= 1; dx++) {
+          const xx = cx + dx;
+          if (xx < 0 || xx >= gw) continue;
+          s += grid[yy * gw + xx]; n++;
+        }
+      }
+      smooth[cy * gw + cx] = s / n;
+    }
+  }
+  return { grid: smooth, gw, gh, cell };
+}
+
+/** Luz del papel en un píxel: bilineal entre los centros de las 4 celdas vecinas. */
+function lightAt(light, x, y) {
+  const { grid, gw, gh, cell } = light;
+  const fx = x / cell - 0.5;
+  const fy = y / cell - 0.5;
+  const x0 = Math.max(0, Math.min(gw - 1, Math.floor(fx)));
+  const y0 = Math.max(0, Math.min(gh - 1, Math.floor(fy)));
+  const x1 = Math.min(gw - 1, x0 + 1);
+  const y1 = Math.min(gh - 1, y0 + 1);
+  const tx = Math.max(0, Math.min(1, fx - x0));
+  const ty = Math.max(0, Math.min(1, fy - y0));
+  const top = grid[y0 * gw + x0] * (1 - tx) + grid[y0 * gw + x1] * tx;
+  const bot = grid[y1 * gw + x0] * (1 - tx) + grid[y1 * gw + x1] * tx;
+  return top * (1 - ty) + bot * ty;
 }
 
 /**
- * Limpia la página escaneada. Modos:
- *   'color'      — la deja tal cual (fotos, sellos, membretes a color)
- *   'gris'       — escala de grises
- *   'documento'  — fondo blanco parejo y texto negro: divide cada píxel por la
- *                  luz de su entorno, así se van las sombras del pulso y del
- *                  brillo desigual. Es el modo por defecto.
+ * Limpia la página escaneada. Todos los modos menos 'color' empiezan igual:
+ * dividen cada píxel por la luz de su entorno, así se van las sombras del pulso
+ * y del brillo desigual y el papel queda blanco parejo. Lo que cambia es qué se
+ * hace después con el color:
+ *
+ *   'documento'  — LO CONSERVA (por defecto): sellos, firmas azules, membretes y
+ *                  resaltadores salen con su color, sobre papel blanco. Es lo
+ *                  que hace el modo por defecto de cualquier escáner de móvil;
+ *                  antes esto devolvía la hoja en gris, que no es lo esperable.
+ *   'gris'       — escala de grises, también con el fondo emparejado
  *   'bn'         — binarizado duro (texto puro, archivo muy liviano)
+ *   'color'      — la foto tal cual, sin tocar (sombras incluidas)
  */
 export function applyFilter(canvas, mode = 'documento') {
   if (mode === 'color') return canvas;
@@ -888,43 +987,37 @@ export function applyFilter(canvas, mode = 'documento') {
   const d = img.data;
   const gray = toGray(d, w, h);
 
-  if (mode === 'gris') {
-    for (let i = 0, p = 0; i < gray.length; i++, p += 4) {
-      d[p] = d[p + 1] = d[p + 2] = gray[i];
-    }
-    ctx.putImageData(img, 0, 0);
-    return canvas;
-  }
-
-  // Luz local con una ventana grande (~1/8 del lado): estima la iluminación.
-  const radius = Math.max(8, Math.round(Math.min(w, h) / 16));
-  const sum = integralImage(gray, w, h);
-  const meanAt = (x, y) => {
-    const x0 = Math.max(0, x - radius), y0 = Math.max(0, y - radius);
-    const x1 = Math.min(w - 1, x + radius), y1 = Math.min(h - 1, y + radius);
-    const area = (x1 - x0 + 1) * (y1 - y0 + 1);
-    const s = sum[(y1 + 1) * (w + 1) + (x1 + 1)]
-      - sum[y0 * (w + 1) + (x1 + 1)]
-      - sum[(y1 + 1) * (w + 1) + x0]
-      + sum[y0 * (w + 1) + x0];
-    return s / area;
-  };
+  const light = paperLight(gray, w, h);
 
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const i = y * w + x;
-      const local = Math.max(1, meanAt(x, y));
+      const local = Math.max(1, lightAt(light, x, y));
       // Normalizado por la luz local: el papel queda en 255 aunque tenga sombra.
       let v = (gray[i] / local) * 255;
       if (mode === 'bn') {
-        v = v > 242 ? 255 : 0;
+        // Umbral al 82% del fondo, no al 95%: exigir casi el blanco exacto hace
+        // que se vuelva negro todo lo que sea papel pero no blanco puro —una
+        // franja con la luz mal estimada, un resaltador, una hoja amarillenta—
+        // y con ello se pierde el texto que hubiera encima.
+        v = v > 209 ? 255 : 0;
       } else {
         // Curva suave: aclara el papel y oscurece el trazo sin quemar los grises.
         v = v < 235 ? Math.max(0, (v - 40) * 1.35) : 255;
         v = Math.min(255, v);
       }
       const p = i * 4;
-      d[p] = d[p + 1] = d[p + 2] = v;
+      if (mode === 'documento') {
+        // Se aplica a los tres canales la MISMA ganancia que llevó el brillo de
+        // `gray[i]` hasta `v`. Al escalar en bloque, la proporción entre R, G y B
+        // no cambia: el tono se respeta y solo se aclara u oscurece.
+        const gain = v / Math.max(1, gray[i]);
+        d[p] *= gain;
+        d[p + 1] *= gain;
+        d[p + 2] *= gain;
+      } else {
+        d[p] = d[p + 1] = d[p + 2] = v;
+      }
     }
   }
   ctx.putImageData(img, 0, 0);

@@ -37,10 +37,10 @@ import {
 } from 'react-icons/hi2';
 
 const FILTERS = [
-  { key: 'documento', label: 'Documento', hint: 'Fondo blanco parejo, sin sombras' },
+  { key: 'documento', label: 'Documento', hint: 'En color, con el fondo blanco parejo y sin sombras' },
   { key: 'bn', label: 'B / N', hint: 'Solo texto, archivo liviano' },
-  { key: 'gris', label: 'Grises', hint: 'Escala de grises' },
-  { key: 'color', label: 'Color', hint: 'Tal como se ve' },
+  { key: 'gris', label: 'Grises', hint: 'Escala de grises, con el fondo parejo' },
+  { key: 'color', label: 'Color', hint: 'La foto tal cual, con sus sombras' },
 ];
 
 const fmtSize = (b) => (b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.round((b || 0) / 1024)} KB`);
