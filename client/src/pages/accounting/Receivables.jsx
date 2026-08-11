@@ -5,6 +5,7 @@ import Modal from '../../components/Modal';
 import { fmt, fmtDate } from './_utils';
 import SourceDocLink from '../../components/SourceDocLink';
 import { HiOutlineDocumentText, HiOutlineArrowDownTray } from 'react-icons/hi2';
+import DateInput from '../../components/DateInput';
 
 const STATUS_CLS = {
   ABIERTO: 'bg-slate-100 text-slate-600',
@@ -93,7 +94,7 @@ export default function Receivables() {
       <div className="flex flex-wrap items-end gap-2">
         <label className="text-xs text-slate-500 flex flex-col gap-1">
           Fecha de corte
-          <input type="date" value={asOf} onChange={(e) => setAsOf(e.target.value)}
+          <DateInput value={asOf} onChange={(e) => setAsOf(e.target.value)}
             className="px-3 py-2 border border-slate-200 rounded-lg text-sm" />
         </label>
         <label className="text-xs text-slate-500 flex flex-col gap-1 flex-1 min-w-[180px]">

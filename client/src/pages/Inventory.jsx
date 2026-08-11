@@ -19,6 +19,7 @@ import {
 } from 'react-icons/hi2';
 import { fmtDateTime } from '../utils/date';
 import { PRODUCT_TYPES, PRODUCT_CATEGORIES } from '../constants/productCategories';
+import DateInput from '../components/DateInput';
 
 // Tipos de producto (en la UI: "Tipo").
 const types = PRODUCT_TYPES;
@@ -420,11 +421,11 @@ export default function Inventory() {
             <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-1">Desde</label>
-                <input type="date" value={trFilters.from} onChange={(e) => setTrFilters({ ...trFilters, from: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm bg-slate-50/50" />
+                <DateInput value={trFilters.from} onChange={(e) => setTrFilters({ ...trFilters, from: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm bg-slate-50/50" />
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-1">Hasta</label>
-                <input type="date" value={trFilters.to} onChange={(e) => setTrFilters({ ...trFilters, to: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm bg-slate-50/50" />
+                <DateInput value={trFilters.to} onChange={(e) => setTrFilters({ ...trFilters, to: e.target.value })} className="w-full px-3 py-2 border border-slate-200 rounded-xl text-sm bg-slate-50/50" />
               </div>
               <div>
                 <label className="block text-xs font-medium text-slate-600 mb-1">Bodega (origen o destino)</label>

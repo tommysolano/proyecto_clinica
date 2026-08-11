@@ -10,6 +10,7 @@ import {
   HiOutlinePencilSquare,
   HiOutlineNoSymbol,
 } from 'react-icons/hi2';
+import DateInput from '../components/DateInput';
 
 const WEEKDAYS = [
   { v: 1, l: 'Lun' },
@@ -296,8 +297,7 @@ export default function AccessBlocks() {
           ) : (
             <label className="block">
               <span className="text-xs font-medium text-slate-600">Fecha</span>
-              <input
-                type="date"
+              <DateInput
                 value={form.date}
                 onChange={(e) => setForm({ ...form, date: e.target.value })}
                 className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"

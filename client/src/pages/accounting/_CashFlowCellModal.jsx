@@ -10,6 +10,7 @@ import Modal from '../../components/Modal';
 import { fmt, fmtDate } from './_utils';
 import { SOURCE_ROUTES } from './sourceDocs';
 import ManualSettleModal from './_ManualSettleModal';
+import DateInput from '../../components/DateInput';
 
 /**
  * Detalle de una celda del flujo: los documentos que la componen y las acciones sobre ellos.
@@ -294,7 +295,7 @@ export default function CashFlowCellModal({ cell, range, categories, canManage =
                 </div>
                 <label className="block">
                   <span className="text-xs text-slate-500">Nueva fecha de pago/cobro</span>
-                  <input type="date" value={form.newDate || ''} onChange={(e) => setForm({ ...form, newDate: e.target.value })}
+                  <DateInput value={form.newDate || ''} onChange={(e) => setForm({ ...form, newDate: e.target.value })}
                     className="w-full border border-slate-200 rounded-xl px-3 py-2" />
                 </label>
                 <label className="block">

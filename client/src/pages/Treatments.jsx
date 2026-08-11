@@ -15,6 +15,7 @@ import {
 import { useAuth } from '../context/AuthContext';
 import { useSocketEvent } from '../context/SocketContext';
 import { fmtDate } from '../utils/date';
+import DateInput from '../components/DateInput';
 
 const STATUSES = [
   { value: 'activo', label: 'Activo', color: 'bg-emerald-100 text-emerald-800' },
@@ -479,8 +480,7 @@ export default function Treatments() {
           <div className="grid sm:grid-cols-2 gap-3">
             <label className="block">
               <span className="text-xs font-medium text-slate-600">Inicio</span>
-              <input
-                type="date"
+              <DateInput
                 value={form.startDate}
                 onChange={(e) => setForm({ ...form, startDate: e.target.value })}
                 className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"
@@ -488,8 +488,7 @@ export default function Treatments() {
             </label>
             <label className="block">
               <span className="text-xs font-medium text-slate-600">Fecha objetivo</span>
-              <input
-                type="date"
+              <DateInput
                 value={form.targetEndDate}
                 onChange={(e) => setForm({ ...form, targetEndDate: e.target.value })}
                 className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm"

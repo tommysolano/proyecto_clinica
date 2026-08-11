@@ -8,6 +8,7 @@ import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, Tool
 import { fmt, startOfMonth, endOfMonth } from './_utils';
 import { downloadFile } from '../../utils/download';
 import SalesDetailReport from './_SalesDetailReport';
+import DateInput from '../../components/DateInput';
 
 const COLORS = ['#10b981', '#0ea5e9', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
 const METHOD_LABELS = { efectivo: 'Efectivo', tarjeta: 'Tarjeta', transferencia: 'Transferencia' };
@@ -21,11 +22,11 @@ function Cabecera({ vista, setVista, rango, setRango }) {
       </h1>
       <div className="flex items-end gap-2">
         <label className="text-xs text-slate-500">Desde
-          <input type="date" value={rango.startDate} onChange={(e) => setRango({ ...rango, startDate: e.target.value })}
+          <DateInput value={rango.startDate} onChange={(e) => setRango({ ...rango, startDate: e.target.value })}
             className="block border border-slate-200 rounded-lg px-2 py-1.5" />
         </label>
         <label className="text-xs text-slate-500">Hasta
-          <input type="date" value={rango.endDate} onChange={(e) => setRango({ ...rango, endDate: e.target.value })}
+          <DateInput value={rango.endDate} onChange={(e) => setRango({ ...rango, endDate: e.target.value })}
             className="block border border-slate-200 rounded-lg px-2 py-1.5" />
         </label>
         <button onClick={() => setVista(vista === 'detalle' ? 'resumen' : 'detalle')}
@@ -174,10 +175,10 @@ export default function SalesReports() {
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4 space-y-3">
         <div className="flex flex-wrap items-end gap-3">
           <label className="text-xs text-slate-500">Desde
-            <input type="date" value={filters.startDate} onChange={(e) => setFilters({ ...filters, startDate: e.target.value })} className="mt-1 block border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+            <DateInput value={filters.startDate} onChange={(e) => setFilters({ ...filters, startDate: e.target.value })} className="mt-1 block border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
           </label>
           <label className="text-xs text-slate-500">Hasta
-            <input type="date" value={filters.endDate} onChange={(e) => setFilters({ ...filters, endDate: e.target.value })} className="mt-1 block border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+            <DateInput value={filters.endDate} onChange={(e) => setFilters({ ...filters, endDate: e.target.value })} className="mt-1 block border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
           </label>
           <button onClick={run} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm">{loading ? 'Cargando...' : 'Generar'}</button>
         </div>

@@ -14,6 +14,7 @@ import JournalEntryViewModal from '../../components/JournalEntryViewModal';
 import { fmt, fmtDate, today, downloadBlob } from './_utils';
 import { newIdempotencyKey, withIdempotencyKey } from '../../utils/idempotency';
 import useDocDeepLink from '../../hooks/useDocDeepLink';
+import DateInput from '../../components/DateInput';
 
 const MONTHS = ['', 'Enero', 'Febrero', 'Marzo', 'Abril', 'Mayo', 'Junio', 'Julio', 'Agosto', 'Septiembre', 'Octubre', 'Noviembre', 'Diciembre'];
 
@@ -761,13 +762,13 @@ export default function SriDeclarations() {
               El banco <b>no</b> se afecta: eso ocurre al pagar.
             </p>
             <Field label="Fecha contable" hint="Devengo del impuesto. Por defecto, el último día del período declarado.">
-              <input type="date" value={finalizeModal.accountingDate} onChange={(e) => setFinalizeModal({ ...finalizeModal, accountingDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+              <DateInput value={finalizeModal.accountingDate} onChange={(e) => setFinalizeModal({ ...finalizeModal, accountingDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
             </Field>
             <Field label="Fecha de vencimiento" hint="Fecha legal de pago según el 9º dígito del RUC. Sin ella, la obligación se proyecta a la fecha de emisión.">
-              <input type="date" value={finalizeModal.dueDate} onChange={(e) => setFinalizeModal({ ...finalizeModal, dueDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+              <DateInput value={finalizeModal.dueDate} onChange={(e) => setFinalizeModal({ ...finalizeModal, dueDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
             </Field>
             <Field label="Fecha planificada de pago" hint="Cuándo se planea pagar (alimenta el flujo de caja).">
-              <input type="date" value={finalizeModal.plannedPaymentDate} onChange={(e) => setFinalizeModal({ ...finalizeModal, plannedPaymentDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+              <DateInput value={finalizeModal.plannedPaymentDate} onChange={(e) => setFinalizeModal({ ...finalizeModal, plannedPaymentDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
             </Field>
             <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
               Una vez finalizada, la declaración es <b>inmutable</b>: para corregirla habrá que crear una sustitutiva.
@@ -794,7 +795,7 @@ export default function SriDeclarations() {
               </select>
             </Field>
             <Field label="Fecha de pago">
-              <input type="date" value={payModal.date} onChange={(e) => setPayField({ date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+              <DateInput value={payModal.date} onChange={(e) => setPayField({ date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
             </Field>
             <Field label="Monto" hint="Vacío = paga el saldo pendiente completo. Se admite pago parcial.">
               <NumericInput step="0.01" min="0" value={payModal.amount} onChange={(e) => setPayField({ amount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />

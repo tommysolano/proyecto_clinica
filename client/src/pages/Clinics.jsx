@@ -8,6 +8,7 @@ import EmailStatus from '../components/EmailStatus';
 import useEmailValidation from '../hooks/useEmailValidation';
 import { useAuth } from '../context/AuthContext';
 import { HiOutlineBuildingOffice2, HiOutlinePlus, HiOutlinePencil, HiOutlineTrash } from 'react-icons/hi2';
+import DateInput from '../components/DateInput';
 
 const empty = {
   name: '',
@@ -163,15 +164,13 @@ export default function Clinics() {
         <div className="flex flex-wrap items-center justify-between gap-3 px-5 py-4 border-b border-emerald-50">
           <h2 className="text-base font-semibold text-slate-800">Consolidado por sucursal</h2>
           <div className="flex items-center gap-2 text-sm">
-            <input
-              type="date"
+            <DateInput
               value={range.startDate}
               onChange={(e) => setRange((r) => ({ ...r, startDate: e.target.value }))}
               className="px-3 py-1.5 border border-slate-200 rounded-lg text-sm bg-slate-50/50"
             />
             <span className="text-slate-400">—</span>
-            <input
-              type="date"
+            <DateInput
               value={range.endDate}
               onChange={(e) => setRange((r) => ({ ...r, endDate: e.target.value }))}
               className="px-3 py-1.5 border border-slate-200 rounded-lg text-sm bg-slate-50/50"

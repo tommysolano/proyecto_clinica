@@ -4,7 +4,7 @@ import api from '../api/axios';
 import { downloadFile } from '../utils/download';
 import toast from 'react-hot-toast';
 import { useAuth } from '../context/AuthContext';
-import { fmtDate } from '../utils/date';
+import { fmtDate, nowEcHHMM } from '../utils/date';
 import TagEditor from '../components/TagEditor';
 import NumericInput from '../components/NumericInput';
 import SearchableSelect from '../components/SearchableSelect';
@@ -31,6 +31,7 @@ import {
   HiOutlinePencilSquare,
   HiOutlineChevronDown,
 } from 'react-icons/hi2';
+import DateInput from '../components/DateInput';
 
 const TABS = [
   { id: 'datos', label: 'Datos', icon: HiOutlineUser },
@@ -348,8 +349,7 @@ function FichaTab({ patientId }) {
     <div className="space-y-6">
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <Field label="Fecha">
-          <input
-            type="date"
+          <DateInput
             value={record.fecha ? record.fecha.substring(0, 10) : ''}
             onChange={(e) => update('fecha', e.target.value)}
             className="input"
@@ -924,7 +924,8 @@ function SeguimientosTab({ patientId, appointmentId }) {
     opticaRx: emptyOpticaRx(),
     ginecologia: emptyGineco(),
     vitalSigns: {
-      hora: '',
+      // La hora de la toma la pone el sistema (hora de Ecuador); no se digita.
+      hora: nowEcHHMM(),
       temperature: '',
       bloodPressure: '',
       heartRate: '',
@@ -939,6 +940,18 @@ function SeguimientosTab({ patientId, appointmentId }) {
   });
   const [form, setForm] = useState(emptyForm());
   const [saving, setSaving] = useState(false);
+  // La hora de la toma de signos vitales la lleva el sistema: se mantiene al
+  // minuto mientras el seguimiento está abierto y se vuelve a sellar al guardar,
+  // así lo que ve el doctor es exactamente lo que queda registrado.
+  useEffect(() => {
+    const id = setInterval(() => {
+      const hora = nowEcHHMM();
+      setForm((f) =>
+        f.vitalSigns.hora === hora ? f : { ...f, vitalSigns: { ...f.vitalSigns, hora } },
+      );
+    }, 30000);
+    return () => clearInterval(id);
+  }, []);
   const [uploadingFuId, setUploadingFuId] = useState(null);
   // PDFs seleccionados ANTES de guardar el seguimiento. Se subirán automáticamente
   // tras crear el seguimiento.
@@ -1127,7 +1140,8 @@ function SeguimientosTab({ patientId, appointmentId }) {
     try {
       const vs = form.vitalSigns || {};
       const vitalSigns = {
-        hora: vs.hora || '',
+        // Sello del sistema: la hora real en que se guarda la toma (hora de Ecuador).
+        hora: nowEcHHMM(),
         temperature: vs.temperature === '' ? null : Number(vs.temperature),
         bloodPressure: vs.bloodPressure || '',
         heartRate: vs.heartRate === '' ? null : Number(vs.heartRate),
@@ -1249,8 +1263,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
         className="bg-slate-50 rounded-xl p-4 grid grid-cols-1 gap-3 md:grid-cols-3"
       >
         <Field label="Fecha">
-          <input
-            type="date"
+          <DateInput
             value={form.fecha}
             onChange={(e) => setForm((f) => ({ ...f, fecha: e.target.value }))}
             className="input"
@@ -1304,17 +1317,14 @@ function SeguimientosTab({ patientId, appointmentId }) {
         <div className="md:col-span-3">
           <Collapsible title="Signos vitales" hint="constantes vitales y antropometría">
             <div className="grid grid-cols-2 md:grid-cols-4 gap-2">
-            <Field label="Hora">
+            <Field label="Hora (automática)">
               <input
                 type="time"
                 value={form.vitalSigns.hora}
-                onChange={(e) =>
-                  setForm((f) => ({
-                    ...f,
-                    vitalSigns: { ...f.vitalSigns, hora: e.target.value },
-                  }))
-                }
-                className="input text-sm"
+                readOnly
+                tabIndex={-1}
+                title="La registra el sistema al guardar el seguimiento"
+                className="input text-sm bg-gray-100 text-gray-600 cursor-default"
               />
             </Field>
             <Field label="T. Arterial">
@@ -2067,8 +2077,7 @@ function GinecologiaSection({ value, onChange }) {
         {/* FUM + Embarazo actual */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           <Field label="FUM (última menstruación)">
-            <input
-              type="date"
+            <DateInput
               value={g.fum || ''}
               onChange={(e) => onChange({ ...g, fum: e.target.value })}
               className="input"

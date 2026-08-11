@@ -9,6 +9,7 @@ import { fmt, fmtDate, startOfMonth, today } from './_utils';
 import ExcelButton from '../../components/ExcelButton';
 import JournalEntryViewModal from '../../components/JournalEntryViewModal';
 import SalesDrilldownModal from './_SalesDrilldownModal';
+import DateInput from '../../components/DateInput';
 
 const CHART_COLORS = ['#10b981', '#0ea5e9', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
 const METHOD_LABELS = { efectivo: 'Efectivo', tarjeta: 'Tarjeta', transferencia: 'Transferencia' };
@@ -406,8 +407,8 @@ export default function ManagementReports() {
         {TABS.map((t) => <button key={t.key} onClick={() => { setTab(t.key); setData(null); }} className={`px-3 py-2 rounded-lg text-xs ${tab === t.key ? 'bg-emerald-600 text-white' : 'bg-white border'}`}>{t.label}</button>)}
       </div>
       <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 items-end flex-wrap">
-        <div><label className="text-xs text-slate-500 block">Desde</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
-        <div><label className="text-xs text-slate-500 block">Hasta</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
+        <div><label className="text-xs text-slate-500 block">Desde</label><DateInput value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
+        <div><label className="text-xs text-slate-500 block">Hasta</label><DateInput value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
         {tab === 'PERIODO' && (
           <div><label className="text-xs text-slate-500 block">Agrupar</label>
             <select value={granularity} onChange={(e) => setGranularity(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5"><option value="day">Diario</option><option value="week">Semanal</option><option value="month">Mensual</option><option value="quarter">Trimestral</option><option value="year">Anual</option></select>

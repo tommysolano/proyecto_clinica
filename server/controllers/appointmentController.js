@@ -28,6 +28,27 @@ function appointmentEventPayload(appt) {
   };
 }
 
+// Hora actual 'HH:mm' en hora de Ecuador (para sellar la toma de signos vitales).
+const nowHHMM = () =>
+  new Intl.DateTimeFormat('en-GB', {
+    timeZone: 'America/Guayaquil',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })
+    .format(new Date())
+    .replace(/^24:/, '00:');
+
+/**
+ * Un doctor que YA atendió al paciente no se puede reemplazar: la consulta quedó
+ * a su nombre y la comisión ya está congelada en la venta (Sale.doctor), así que
+ * cambiarlo después mentiría sobre quién atendió. Antes de eso —agendada,
+ * confirmada, paciente en sala, consulta en curso— la reasignación es libre.
+ */
+const consultationDone = (apt) => apt.status === 'completada' || !!apt.consultationEndedAt;
+const DOCTOR_LOCKED_MESSAGE =
+  'La consulta ya fue atendida: no se puede reasignar el doctor. Si hubo un error, corrige el registro con un administrador.';
+
 const POPULATE_PATIENT = 'firstName lastName cedula phone whatsapp email birthDate age gender';
 const POPULATE_DOCTOR = 'name specialty';
 const POPULATE_CREATOR = 'name email';
@@ -481,6 +502,20 @@ exports.updateAppointment = async (req, res) => {
     delete update.createdBy;
     delete update.createdByRole;
 
+    // Reasignación de doctor: libre hasta que la consulta se atiende. Se compara
+    // contra el doctor actual para no bloquear una edición que reenvía el mismo.
+    const previousDoctorId = existing.doctor ? String(existing.doctor) : '';
+    const doctorChanged =
+      update.doctor !== undefined && String(update.doctor || '') !== previousDoctorId;
+    if (doctorChanged && previousDoctorId && consultationDone(existing)) {
+      return res.status(400).json({ message: DOCTOR_LOCKED_MESSAGE });
+    }
+    if (doctorChanged) {
+      // Misma auditoría que assign-doctor: quién reasignó y cuándo.
+      update.doctorAssignedAt = new Date();
+      update.doctorAssignedBy = req.user._id;
+    }
+
     if (update.date !== undefined) {
       const localDate = parseLocalDate(update.date);
       if (!localDate || Number.isNaN(localDate.getTime())) {
@@ -607,6 +642,12 @@ exports.updateAppointment = async (req, res) => {
     if (!appointment) return res.status(404).json({ message: 'Cita no encontrada' });
     emitToClinic(clinicScope, 'appointment:updated', appointment);
     if (appointment.doctor?._id) emitToUser(appointment.doctor._id, 'appointment:updated', appointment);
+    // Reasignación: el doctor entrante recibe la cita como asignada y el saliente
+    // se entera de que ya no es suya (antes ninguno de los dos se enteraba).
+    if (doctorChanged) {
+      if (appointment.doctor?._id) emitToUser(appointment.doctor._id, 'appointment:assigned', appointment);
+      if (previousDoctorId) emitToUser(previousDoctorId, 'appointment:updated', appointment);
+    }
     // Eventos de dominio para workflows: reagendamiento y confirmación.
     if (dateChanged || startChanged || endChanged) {
       emitDomainEvent(DOMAIN_EVENTS.APPOINTMENT_RESCHEDULED, appointmentEventPayload(appointment));
@@ -1033,12 +1074,18 @@ exports.markAttended = async (req, res) => {
     const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
     const wasAttended = apt.status === 'asistida';
-    apt.status = 'asistida';
     if (req.body.doctorId) {
+      // Misma regla que assign-doctor: no se cambia el doctor de una consulta
+      // ya atendida (aquí se llega al re-marcar asistencia).
+      const previousDoctorId = apt.doctor ? String(apt.doctor) : '';
+      if (previousDoctorId && previousDoctorId !== String(req.body.doctorId) && consultationDone(apt)) {
+        return res.status(400).json({ message: DOCTOR_LOCKED_MESSAGE });
+      }
       apt.doctor = req.body.doctorId;
       apt.doctorAssignedAt = new Date();
       apt.doctorAssignedBy = req.user._id;
     }
+    apt.status = 'asistida';
     await apt.save();
     if (apt.referral) {
       try {
@@ -1074,6 +1121,11 @@ exports.assignDoctor = async (req, res) => {
     if (!doctorId) return res.status(400).json({ message: 'doctorId requerido' });
     const apt = await Appointment.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!apt) return res.status(404).json({ message: 'Cita no encontrada' });
+    const previousDoctorId = apt.doctor ? String(apt.doctor) : '';
+    // Reasignar (no asignar por primera vez) solo mientras no se haya atendido.
+    if (previousDoctorId && previousDoctorId !== String(doctorId) && consultationDone(apt)) {
+      return res.status(400).json({ message: DOCTOR_LOCKED_MESSAGE });
+    }
     apt.doctor = doctorId;
     apt.doctorAssignedAt = new Date();
     apt.doctorAssignedBy = req.user._id;
@@ -1084,6 +1136,10 @@ exports.assignDoctor = async (req, res) => {
       .populate('services.product', 'name code salePrice category');
     emitToClinic(req.clinicId, 'appointment:updated', populated);
     emitToUser(doctorId, 'appointment:assigned', populated);
+    // El doctor saliente también debe enterarse de que la cita ya no es suya.
+    if (previousDoctorId && previousDoctorId !== String(doctorId)) {
+      emitToUser(previousDoctorId, 'appointment:updated', populated);
+    }
     res.json(populated);
   } catch (error) {
     res.status(500).json({ message: 'Error al asignar doctor', error: error.message });
@@ -1236,6 +1292,8 @@ exports.nurseComplete = async (req, res) => {
         motivoConsulta: `Aplicación de enfermería: ${serviceNames}`,
         observaciones: req.body.note || `Servicio aplicado por enfermería.`,
         vitalSigns: {
+          // La hora de la toma la sella el sistema, no se digita.
+          hora: nowHHMM(),
           temperature: vs.temperature ?? null,
           bloodPressure: vs.bloodPressure || '',
           heartRate: vs.heartRate ?? null,

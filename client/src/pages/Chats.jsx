@@ -63,6 +63,8 @@ import ChatComposerToolbar from '../components/ChatComposerToolbar';
 import { renderWhatsappText } from '../utils/whatsappText';
 import { downloadFromUrl, triggerBlobDownload } from '../utils/download';
 import { ENROLL_STATUS, STEP_LABELS } from '../utils/workflowLabels';
+import DateInput from '../components/DateInput';
+import DateTimeInput from '../components/DateTimeInput';
 
 // Etiquetas de los disparadores (para mostrar los flujos en el menú de
 // automatizaciones del compositor).
@@ -4638,9 +4640,8 @@ function TasksSection({ conv, agents = [], meId }) {
       <div className="grid grid-cols-2 gap-1 mb-1">
         <div>
           <label className="sr-only" htmlFor={`task-due-${conv._id}`}>Fecha de vencimiento</label>
-          <input
+          <DateTimeInput
             id={`task-due-${conv._id}`}
-            type="datetime-local"
             value={dueAt}
             onChange={(e) => setDueAt(e.target.value)}
             className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
@@ -5102,16 +5103,14 @@ function SupervisorBoard({ stats, reload, agents = [], range, onRangeChange }) {
           ))}
         </div>
         <div className="flex items-center gap-1.5 ml-auto">
-          <input
-            type="date"
+          <DateInput
             value={range?.from || ''}
             max={range?.to || undefined}
             onChange={(e) => onRangeChange({ ...range, from: e.target.value })}
             className="border border-slate-200 rounded-lg px-2 py-1 text-xs"
           />
           <span className="text-xs text-slate-400">a</span>
-          <input
-            type="date"
+          <DateInput
             value={range?.to || ''}
             min={range?.from || undefined}
             onChange={(e) => onRangeChange({ ...range, to: e.target.value })}
@@ -5325,8 +5324,7 @@ function RescheduleApptModal({ appt, onClose, onSaved }) {
         <div className="grid grid-cols-2 gap-2">
           <div>
             <label className="text-xs font-medium text-slate-600">Nueva fecha</label>
-            <input
-              type="date"
+            <DateInput
               value={date}
               min={today}
               onChange={(e) => setDate(e.target.value)}
@@ -5609,7 +5607,7 @@ function AppointmentFromChatModal({ conv, services, onClose, onCreated }) {
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="text-xs font-medium text-slate-600">Fecha</label>
-                  <input type="date" value={it.date} min={today} onChange={(e) => updateItem(idx, { date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
+                  <DateInput value={it.date} min={today} onChange={(e) => updateItem(idx, { date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
                 </div>
                 <div>
                   <label className="text-xs font-medium text-slate-600">Hora</label>
@@ -5863,7 +5861,7 @@ function QuotationFromChatModal({ conv, services, onClose, onCreated }) {
         <div className="grid grid-cols-2 gap-2">
           <div>
             <label className="text-xs font-medium text-slate-600">Válida hasta</label>
-            <input type="date" value={validUntil} min={today} onChange={(e) => setValidUntil(e.target.value)} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
+            <DateInput value={validUntil} min={today} onChange={(e) => setValidUntil(e.target.value)} className="w-full border border-slate-200 rounded-xl px-2 py-1.5 mt-1 bg-white" />
           </div>
         </div>
         <div>

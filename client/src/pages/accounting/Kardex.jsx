@@ -7,6 +7,7 @@ import ProductSelect from '../../components/ProductSelect';
 import InventoryMovementDetailModal from '../../components/InventoryMovementDetailModal';
 import { fmt, fmtDate } from './_utils';
 import { sourceLabel } from './sourceDocs';
+import DateInput from '../../components/DateInput';
 
 /**
  * KARDEX VALORIZADO. Todo lo que se ve aquí lo calcula `services/kardexService` en el backend:
@@ -147,11 +148,11 @@ export default function Kardex() {
           </select>
         </Field>
         <Field label="Desde">
-          <input type="date" value={filters.from} onChange={(e) => setFilters({ ...filters, from: e.target.value })}
+          <DateInput value={filters.from} onChange={(e) => setFilters({ ...filters, from: e.target.value })}
             className="w-full px-3 py-2 border border-slate-200 rounded-lg" />
         </Field>
         <Field label="Hasta">
-          <input type="date" value={filters.to} onChange={(e) => setFilters({ ...filters, to: e.target.value })}
+          <DateInput value={filters.to} onChange={(e) => setFilters({ ...filters, to: e.target.value })}
             className="w-full px-3 py-2 border border-slate-200 rounded-lg" />
         </Field>
         <button onClick={load} disabled={loading}

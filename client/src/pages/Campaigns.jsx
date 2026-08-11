@@ -10,6 +10,7 @@ import {
   HiOutlineClock,
 } from 'react-icons/hi2';
 import Modal from '../components/Modal';
+import DateTimeInput from '../components/DateTimeInput';
 
 const STATUS_BADGE = {
   draft: { label: 'Borrador', cls: 'bg-slate-100 text-slate-600' },
@@ -290,7 +291,7 @@ export default function Campaigns() {
                 <button type="button" onClick={() => setCreating({ ...creating, when: 'later' })} className={`px-3 py-1.5 rounded-lg border cursor-pointer ${creating.when === 'later' ? 'bg-emerald-600 text-white border-emerald-600' : 'bg-white text-slate-600 border-slate-200'}`}>Programar</button>
               </div>
               {creating.when === 'later' && (
-                <input type="datetime-local" value={creating.scheduledFor} onChange={(e) => setCreating({ ...creating, scheduledFor: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                <DateTimeInput value={creating.scheduledFor} onChange={(e) => setCreating({ ...creating, scheduledFor: e.target.value })} className="border border-slate-200 rounded-lg px-3 py-2 text-sm" />
               )}
 
               {/* Tope de destinatarios + goteo (drip) */}

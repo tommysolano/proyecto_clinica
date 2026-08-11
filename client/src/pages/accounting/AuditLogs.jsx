@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { HiOutlineShieldCheck } from 'react-icons/hi2';
 import Field from '../../components/Field';
 import { fmtDate } from './_utils';
+import DateInput from '../../components/DateInput';
 
 export default function AuditLogs() {
   const [list, setList] = useState([]);
@@ -24,8 +25,8 @@ export default function AuditLogs() {
           <option value="">Todas</option>
           <option>CREATE</option><option>UPDATE</option><option>DELETE</option><option>POST</option><option>REVERSE</option><option>CLOSE</option><option>OPEN</option><option>LIQUIDATE</option>
         </select></Field>
-        <Field label="Desde"><input type="date" value={filters.startDate} onChange={(e) => setFilters({ ...filters, startDate: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-        <Field label="Hasta"><input type="date" value={filters.endDate} onChange={(e) => setFilters({ ...filters, endDate: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+        <Field label="Desde"><DateInput value={filters.startDate} onChange={(e) => setFilters({ ...filters, startDate: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+        <Field label="Hasta"><DateInput value={filters.endDate} onChange={(e) => setFilters({ ...filters, endDate: e.target.value })} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
         <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 h-[42px]">Filtrar</button>
       </div>
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 overflow-hidden">

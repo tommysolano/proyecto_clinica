@@ -4,6 +4,7 @@ import { HiOutlinePlus, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineBolt, Hi
 import api from '../../api/axios';
 import Modal from '../Modal';
 import { contactName } from '../../utils/phone';
+import DateInput from '../DateInput';
 
 const SOURCE_LABEL = {
   import: 'Importado',
@@ -267,8 +268,7 @@ function GroupModal({ group, onClose, onSaved }) {
             <div className="grid grid-cols-2 gap-2">
               <div>
                 <label className="text-[11px] text-slate-500 block mb-1">Creados desde</label>
-                <input
-                  type="date"
+                <DateInput
                   value={(form.filters.createdFrom || '').slice(0, 10)}
                   onChange={(e) => setFilter('createdFrom', e.target.value || null)}
                   className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs"
@@ -276,8 +276,7 @@ function GroupModal({ group, onClose, onSaved }) {
               </div>
               <div>
                 <label className="text-[11px] text-slate-500 block mb-1">…hasta</label>
-                <input
-                  type="date"
+                <DateInput
                   value={(form.filters.createdTo || '').slice(0, 10)}
                   onChange={(e) => setFilter('createdTo', e.target.value || null)}
                   className="w-full border border-slate-200 rounded-lg px-2 py-1.5 text-xs"

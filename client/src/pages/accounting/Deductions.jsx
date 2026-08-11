@@ -8,6 +8,7 @@ import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import AccountSelect from '../../components/AccountSelect';
 import ProductSelect from '../../components/ProductSelect';
+import DateInput from '../../components/DateInput';
 
 const DED_TYPES = [
   ['CONSUMO', 'Consumo de productos/servicios'],
@@ -143,7 +144,7 @@ export default function Deductions() {
         <form onSubmit={submitCi} className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-4 space-y-3">
           <p className="text-sm text-slate-500">Salida de inventario para uso interno de la clínica (no es venta). Carga el costo a la cuenta de gasto seleccionada.</p>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-            <Field label="Fecha" required><input type="date" required value={ciForm.date} onChange={(e) => setCiForm({ ...ciForm, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Fecha" required><DateInput required value={ciForm.date} onChange={(e) => setCiForm({ ...ciForm, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Cuenta de gasto">
               <AccountSelect accounts={accounts} value={ciForm.account} onChange={(v) => setCiForm({ ...ciForm, account: v })} filter={(a) => a.code?.startsWith('6.') || a.code?.startsWith('5.')} emptyOption="Consumo interno (por defecto)" />
             </Field>
@@ -199,7 +200,7 @@ export default function Deductions() {
             </Field>
             <Field label="Monto ($)" required><NumericInput step="0.01" min="0" required value={form.amount} onChange={(e) => setForm({ ...form, amount: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-right" /></Field>
           </div>
-          <Field label="Fecha" required><input type="date" required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+          <Field label="Fecha" required><DateInput required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           <Field label="Cuenta contraparte (opcional)">
             <AccountSelect accounts={accounts} value={form.counterpartAccount} onChange={(v) => setForm({ ...form, counterpartAccount: v })} emptyOption="Automática según el tipo" />
           </Field>

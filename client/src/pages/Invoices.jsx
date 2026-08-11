@@ -17,6 +17,7 @@ import {
   HiOutlineSignal,
   HiOutlineSignalSlash,
 } from 'react-icons/hi2';
+import DateInput from '../components/DateInput';
 
 const ESTADO_STYLES = {
   AUTORIZADO: 'bg-emerald-100 text-emerald-700',
@@ -254,14 +255,12 @@ export default function Invoices() {
 
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-4">
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
-          <input
-            type="date"
+          <DateInput
             value={filter.startDate}
             onChange={(e) => setFilter({ ...filter, startDate: e.target.value })}
             className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50"
           />
-          <input
-            type="date"
+          <DateInput
             value={filter.endDate}
             onChange={(e) => setFilter({ ...filter, endDate: e.target.value })}
             className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50"

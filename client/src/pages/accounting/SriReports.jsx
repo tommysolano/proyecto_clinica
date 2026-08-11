@@ -5,6 +5,7 @@ import toast from 'react-hot-toast';
 import { HiOutlineDocumentArrowDown, HiOutlineInformationCircle } from 'react-icons/hi2';
 import { fmt, fmtDate, downloadBlob } from './_utils';
 import NumericInput from '../../components/NumericInput';
+import DateInput from '../../components/DateInput';
 
 // Nota explicativa: en los reportes SRI las ventas provienen SOLO de facturas electrónicas
 // AUTORIZADAS. Si hay ventas registradas sin autorizar, se avisa para que no parezca un bug.
@@ -174,8 +175,8 @@ export default function SriReports() {
         )}
         {!isRdep && periodType === 'CUSTOM' && (
           <>
-            <div><label className="text-xs text-slate-500 block">Desde</label><input type="date" value={startDate} onChange={(e) => setStartDate(e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5" /></div>
-            <div><label className="text-xs text-slate-500 block">Hasta</label><input type="date" value={endDate} onChange={(e) => setEndDate(e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5" /></div>
+            <div><label className="text-xs text-slate-500 block">Desde</label><DateInput value={startDate} onChange={(e) => setStartDate(e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5" /></div>
+            <div><label className="text-xs text-slate-500 block">Hasta</label><DateInput value={endDate} onChange={(e) => setEndDate(e.target.value)} className="border border-slate-200 rounded-xl px-3 py-2.5" /></div>
           </>
         )}
 

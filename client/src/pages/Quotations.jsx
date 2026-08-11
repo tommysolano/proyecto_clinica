@@ -22,6 +22,7 @@ import {
   HiOutlineTrash,
   HiOutlineEye,
 } from 'react-icons/hi2';
+import DateInput from '../components/DateInput';
 
 const EMPTY_ITEM = { product: '', productName: '', quantity: 1, unitPrice: 0, discount: 0 };
 const EMPTY = {
@@ -337,7 +338,7 @@ export default function Quotations() {
               </label>
               <label className="block">
                 <span className="text-xs font-medium text-slate-600">Válida hasta</span>
-                <input type="date" value={form.validUntil} onChange={(e) => setForm({ ...form, validUntil: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50" />
+                <DateInput value={form.validUntil} onChange={(e) => setForm({ ...form, validUntil: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-slate-50/50" />
               </label>
               <label className="block">
                 <span className="text-xs font-medium text-slate-600">Cliente *</span>

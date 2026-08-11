@@ -28,6 +28,7 @@ import {
   Legend,
   CartesianGrid,
 } from 'recharts';
+import DateInput from '../components/DateInput';
 
 const SOURCE_LABELS = {
   anuncio: 'Anuncio',
@@ -397,14 +398,12 @@ export default function Marketing() {
             </select>
             {evolutionRange === 'custom' && (
               <>
-                <input
-                  type="date"
+                <DateInput
                   value={evolutionCustom.startDate}
                   onChange={(e) => setEvolutionCustom((p) => ({ ...p, startDate: e.target.value }))}
                   className="border border-slate-200 rounded-xl px-2 py-1"
                 />
-                <input
-                  type="date"
+                <DateInput
                   value={evolutionCustom.endDate}
                   onChange={(e) => setEvolutionCustom((p) => ({ ...p, endDate: e.target.value }))}
                   className="border border-slate-200 rounded-xl px-2 py-1"

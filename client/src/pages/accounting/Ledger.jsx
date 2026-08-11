@@ -8,6 +8,7 @@ import AccountSelect from '../../components/AccountSelect';
 import ExcelButton from '../../components/ExcelButton';
 import Modal from '../../components/Modal';
 import { SOURCE_ROUTES, sourceLabel, sourceActionLabel, sourceDeepLink } from './sourceDocs';
+import DateInput from '../../components/DateInput';
 
 export default function Ledger() {
   const navigate = useNavigate();
@@ -72,8 +73,8 @@ export default function Ledger() {
             allowClear
           />
         </div>
-        <div><label className="text-xs text-slate-500">Desde</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
-        <div><label className="text-xs text-slate-500">Hasta</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
+        <div><label className="text-xs text-slate-500">Desde</label><DateInput value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
+        <div><label className="text-xs text-slate-500">Hasta</label><DateInput value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
         <button onClick={load} disabled={loading} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 disabled:opacity-60">{loading ? 'Consultando…' : 'Consultar'}</button>
         {/* El Excel sale del MISMO endpoint que la pantalla, con los mismos filtros. */}
         <ExcelButton

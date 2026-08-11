@@ -18,6 +18,7 @@ import {
   HiOutlineInformationCircle,
 } from 'react-icons/hi2';
 import { fmtDateTime, todayEc } from '../utils/date';
+import DateInput from '../components/DateInput';
 
 /**
  * Gasto de WhatsApp: lo que META NOS HA COBRADO por los mensajes de plantilla,
@@ -173,8 +174,7 @@ export default function WhatsappSpend() {
         <span className="w-px h-6 bg-slate-200 mx-1" />
         <label className="text-xs text-slate-500 flex items-center gap-1.5">
           Desde
-          <input
-            type="date"
+          <DateInput
             value={range.from}
             max={range.to}
             onChange={(e) => e.target.value && setRange((r) => ({ ...r, from: e.target.value }))}
@@ -183,8 +183,7 @@ export default function WhatsappSpend() {
         </label>
         <label className="text-xs text-slate-500 flex items-center gap-1.5">
           Hasta
-          <input
-            type="date"
+          <DateInput
             value={range.to}
             min={range.from}
             max={todayEc()}

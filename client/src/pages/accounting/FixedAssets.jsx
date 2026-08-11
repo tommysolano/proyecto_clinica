@@ -9,6 +9,7 @@ import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import SearchableSelect from '../../components/SearchableSelect';
 import useDocDeepLink from '../../hooks/useDocDeepLink';
+import DateInput from '../../components/DateInput';
 
 const EMPTY = {
   code: '', name: '', description: '', category: '', assetType: '',
@@ -214,8 +215,8 @@ export default function FixedAssets() {
                 {purchases.map((p) => <option key={p._id} value={p._id}>{p.serie || p.secuencial} — {fmtDate(p.fechaEmision)} — ${fmt(p.total)}</option>)}
               </select>
             </Field>
-            <Field label="Fecha de adquisición" required><input type="date" required value={form.acquisitionDate} onChange={(e) => setForm({ ...form, acquisitionDate: e.target.value })} className={inputCls} /></Field>
-            <Field label="Inicio de depreciación" required><input type="date" required value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} className={inputCls} /></Field>
+            <Field label="Fecha de adquisición" required><DateInput required value={form.acquisitionDate} onChange={(e) => setForm({ ...form, acquisitionDate: e.target.value })} className={inputCls} /></Field>
+            <Field label="Inicio de depreciación" required><DateInput required value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} className={inputCls} /></Field>
             <Field label="Costo de adquisición"><NumericInput step="0.01" value={form.acquisitionCost} onChange={(e) => setForm({ ...form, acquisitionCost: +e.target.value })} className={inputCls} /></Field>
             <Field label="Serial"><input placeholder="Nº de serie" value={form.serial} onChange={(e) => setForm({ ...form, serial: e.target.value })} className={inputCls} /></Field>
           </div>

@@ -9,6 +9,7 @@ import SearchableSelect from '../../components/SearchableSelect';
 import AccountSelect from '../../components/AccountSelect';
 import SourceDocLink from '../../components/SourceDocLink';
 import { newIdempotencyKey, withIdempotencyKey } from '../../utils/idempotency';
+import DateInput from '../../components/DateInput';
 
 // Las retenciones se derivan de las bases digitadas en las transacciones: una fila RENTA (si hay
 // base ret IR) y/o una fila IVA (si hay base ret IVA). El código SRI se escoge del catálogo de
@@ -350,7 +351,7 @@ export default function CardSettlements() {
           {/* Cabecera */}
           <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
             <label className="text-xs text-slate-500">Fecha de emisión
-              <input type="date" required value={form.issueDate} onChange={(e) => setForm({ ...form, issueDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+              <DateInput required value={form.issueDate} onChange={(e) => setForm({ ...form, issueDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
             </label>
             <label className="text-xs text-slate-500">Tipo de documento
               <select value={form.docType} onChange={(e) => setForm({ ...form, docType: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm">
@@ -393,10 +394,10 @@ export default function CardSettlements() {
                 <input value={picker.lote} onChange={(e) => setPicker({ ...picker, lote: e.target.value })} placeholder="Ej. 0457" title="Los ceros a la izquierda no importan: 457 y 0457 encuentran lo mismo" className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
               </label>
               <label className="text-xs text-slate-500">Desde (opcional)
-                <input type="date" value={picker.from} onChange={(e) => setPicker({ ...picker, from: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                <DateInput value={picker.from} onChange={(e) => setPicker({ ...picker, from: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
               </label>
               <label className="text-xs text-slate-500">Hasta (opcional)
-                <input type="date" value={picker.to} onChange={(e) => setPicker({ ...picker, to: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                <DateInput value={picker.to} onChange={(e) => setPicker({ ...picker, to: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
               </label>
               <label className="text-xs text-slate-500 flex items-center gap-1.5 pb-2">
                 <input type="checkbox" checked={picker.includeSettled} onChange={(e) => setPicker({ ...picker, includeSettled: e.target.checked })} className="rounded" />
@@ -489,7 +490,7 @@ export default function CardSettlements() {
                     const basesMal = basesFila > 0 && basesFila > round(+t.deposit || 0) + 0.01;
                     return (
                       <tr key={i}>
-                        <td className="px-0.5 py-0.5"><input type="date" value={t.date} onChange={(e) => setTxn(i, { date: e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-32" /></td>
+                        <td className="px-0.5 py-0.5"><DateInput value={t.date} onChange={(e) => setTxn(i, { date: e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-32" /></td>
                         <td className="px-0.5 py-0.5"><input value={t.recap} onChange={(e) => setTxn(i, { recap: e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-20" /></td>
                         <td className="px-0.5 py-0.5 min-w-[160px]"><AccountSelect accounts={accounts} value={t.account || ''} onChange={(v) => setTxn(i, { account: v })} placeholder="—" allowClear size="sm" /></td>
                         <td className="px-0.5 py-0.5"><select value={t.costCenter || ''} onChange={(e) => setTxn(i, { costCenter: e.target.value })} className="border border-slate-200 rounded px-1 py-1 w-36"><option value="">—</option>{costCenters.map((c) => <option key={c._id} value={c._id}>{c.name}</option>)}</select></td>
@@ -543,7 +544,7 @@ export default function CardSettlements() {
                   return (
                     <div key={r.type} className="grid grid-cols-2 md:grid-cols-12 gap-1.5 mb-2 md:mb-1 items-center border-b md:border-0 pb-2 md:pb-0">
                       <span className="md:col-span-2 text-xs font-semibold text-slate-700">{RET_LABEL[r.type]}</span>
-                      <input type="date" value={r.issueDate || ''} onChange={(e) => setRetMetaField(r.type, { issueDate: e.target.value })} className="md:col-span-2 border border-slate-200 rounded px-1 py-1 text-xs" title="Fecha emisión" />
+                      <DateInput value={r.issueDate || ''} onChange={(e) => setRetMetaField(r.type, { issueDate: e.target.value })} className="md:col-span-2 border border-slate-200 rounded px-1 py-1 text-xs" title="Fecha emisión" />
                       <input placeholder="N° retención" value={r.retentionNumber} onChange={(e) => setRetMetaField(r.type, { retentionNumber: e.target.value })} className="md:col-span-2 border border-slate-200 rounded px-1 py-1 text-xs" />
                       <input placeholder="Autorización" value={r.authorization} onChange={(e) => setRetMetaField(r.type, { authorization: e.target.value })} className="md:col-span-2 border border-slate-200 rounded px-1 py-1 text-xs" />
                       <div className={`md:col-span-2 ${faltaCodigo ? 'rounded ring-1 ring-rose-300' : ''}`}>
@@ -606,7 +607,7 @@ export default function CardSettlements() {
               </div>
             </div>
             <label className="text-xs text-slate-500 block">Fecha de acreditación en el banco
-              <input type="date" value={accreditDate} onChange={(e) => setAccreditDate(e.target.value)} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+              <DateInput value={accreditDate} onChange={(e) => setAccreditDate(e.target.value)} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
               <span className="block mt-1 text-[11px] text-slate-400">Es la fecha con la que el movimiento entra al banco y a la conciliación.</span>
             </label>
             {!accreditItem.bankAccount && <p className="text-xs text-rose-600">Esta liquidación no tiene banco: edítala y selecciona el banco de acreditación.</p>}

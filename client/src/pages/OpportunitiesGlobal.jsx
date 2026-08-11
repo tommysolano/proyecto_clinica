@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { HiOutlineFunnel, HiOutlineMegaphone, HiOutlineMagnifyingGlass } from 'react-icons/hi2';
 import ProductAutocomplete from '../components/ProductAutocomplete';
 import { phoneMatches } from '../utils/phone';
+import DateInput from '../components/DateInput';
 
 const STAGE_COLORS = {
   nuevo: 'bg-slate-100 text-slate-700',
@@ -225,11 +226,11 @@ export default function OpportunitiesGlobal() {
         <div className="p-3 flex flex-wrap gap-3 items-end">
           <HiOutlineFunnel className="w-5 h-5 text-slate-500" />
           <label className="text-sm">Desde
-            <input type="date" value={filter.from} onChange={(e) => setFilter({ ...filter, from: e.target.value })}
+            <DateInput value={filter.from} onChange={(e) => setFilter({ ...filter, from: e.target.value })}
               className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
           </label>
           <label className="text-sm">Hasta
-            <input type="date" value={filter.to} onChange={(e) => setFilter({ ...filter, to: e.target.value })}
+            <DateInput value={filter.to} onChange={(e) => setFilter({ ...filter, to: e.target.value })}
               className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
           </label>
           <label className="text-sm flex-1 min-w-[180px]">Paciente

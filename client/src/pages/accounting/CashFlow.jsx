@@ -14,6 +14,7 @@ import { newIdempotencyKey, withIdempotencyKey } from '../../utils/idempotency';
 import CashFlowMatrix from './_CashFlowMatrix';
 import CashFlowCellModal from './_CashFlowCellModal';
 import ManualSettleModal from './_ManualSettleModal';
+import DateInput from '../../components/DateInput';
 
 /** Estado de una partida manual: nunca solo por color (también lleva su texto). */
 const ESTADO_PARTIDA = {
@@ -228,12 +229,12 @@ export default function CashFlow() {
       <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 items-end flex-wrap">
         <div>
           <label className="text-xs text-slate-500 block">Desde</label>
-          <input type="date" value={from} onChange={(e) => setFrom(e.target.value)}
+          <DateInput value={from} onChange={(e) => setFrom(e.target.value)}
             className="border border-slate-200 rounded-xl px-3 py-2" />
         </div>
         <div>
           <label className="text-xs text-slate-500 block">Hasta</label>
-          <input type="date" value={to} onChange={(e) => setTo(e.target.value)}
+          <DateInput value={to} onChange={(e) => setTo(e.target.value)}
             className="border border-slate-200 rounded-xl px-3 py-2" />
         </div>
         {tab === 'proyeccion' && (
@@ -736,7 +737,7 @@ function ManualItemModal({ item, categories, onClose, onSaved }) {
           </label>
           <label className="block">
             <span className="text-xs text-slate-500">Fecha planificada</span>
-            <input type="date" value={f.plannedDate} onChange={(e) => set({ plannedDate: e.target.value })}
+            <DateInput value={f.plannedDate} onChange={(e) => set({ plannedDate: e.target.value })}
               className="w-full border border-slate-200 rounded-xl px-3 py-2" />
           </label>
         </div>

@@ -6,6 +6,7 @@ import Field from '../../components/Field';
 import NumericInput from '../../components/NumericInput';
 import AccountSelect from '../../components/AccountSelect';
 import { HiOutlinePlus, HiOutlinePencilSquare, HiOutlineSparkles, HiOutlineExclamationTriangle } from 'react-icons/hi2';
+import DateInput from '../../components/DateInput';
 
 const APPLIES = ['BIENES', 'SERVICIOS', 'TRANSPORTE', 'HONORARIOS', 'ARRENDAMIENTO', 'OTRO'];
 const BASE_TYPES = [
@@ -164,8 +165,8 @@ export default function RetentionRules() {
             {!form.payableAccount && <p className="text-[11px] text-amber-600 mt-1">Sin cuenta: se usará la cuenta de retención por pagar estándar según el tipo (IVA/Renta).</p>}
           </Field>
           <div className="grid grid-cols-2 gap-3">
-            <Field label="Vigente desde"><input type="date" value={form.validFrom} onChange={(e) => setForm({ ...form, validFrom: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
-            <Field label="Vigente hasta"><input type="date" value={form.validTo} onChange={(e) => setForm({ ...form, validTo: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Vigente desde"><DateInput value={form.validFrom} onChange={(e) => setForm({ ...form, validFrom: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Vigente hasta"><DateInput value={form.validTo} onChange={(e) => setForm({ ...form, validTo: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
           </div>
           <label className="flex items-center gap-2 text-sm text-slate-600"><input type="checkbox" checked={form.active} onChange={(e) => setForm({ ...form, active: e.target.checked })} /> Activa</label>
           <div className="flex justify-end gap-2"><button type="button" onClick={() => setShow(false)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button><button className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20">Guardar</button></div>

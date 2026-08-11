@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import Modal from '../components/Modal';
 import { HiOutlineChartBar, HiOutlineUserGroup } from 'react-icons/hi2';
 import { fmtDate } from '../utils/date';
+import DateInput from '../components/DateInput';
 
 export default function Reports() {
   const today = new Date().toISOString().slice(0, 10);
@@ -57,8 +58,8 @@ export default function Reports() {
       </h1>
 
       <div className="bg-white rounded-xl border border-slate-200 p-3 flex flex-wrap gap-3 items-end">
-        <label className="text-sm">Desde<input type="date" value={start} onChange={(e) => setStart(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
-        <label className="text-sm">Hasta<input type="date" value={end} onChange={(e) => setEnd(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
+        <label className="text-sm">Desde<DateInput value={start} onChange={(e) => setStart(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
+        <label className="text-sm">Hasta<DateInput value={end} onChange={(e) => setEnd(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
         <label className="text-sm">Doctor
           <select value={doctorFilter} onChange={(e) => setDoctorFilter(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm min-w-[200px]">
             <option value="">Todos los doctores</option>

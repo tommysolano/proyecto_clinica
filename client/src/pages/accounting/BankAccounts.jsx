@@ -8,6 +8,7 @@ import { HiOutlinePlus, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineBanknote
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import AccountSelect from '../../components/AccountSelect';
+import DateInput from '../../components/DateInput';
 
 const EMPTY = { name: '', bank: '', accountNumber: '', accountType: 'CORRIENTE', currency: 'USD', city: '', chartAccount: '', initialBalance: 0, nextCheckNumber: 1, active: true };
 
@@ -129,10 +130,10 @@ export default function BankAccounts() {
             <h2 className="font-semibold">Libro del banco · {selected.name}</h2>
             <div className="flex flex-wrap items-end gap-2">
               <label className="text-xs text-slate-500 flex flex-col">Desde
-                <input type="date" value={ledgerFilter.startDate} onChange={(e) => { const f = { ...ledgerFilter, startDate: e.target.value }; setLedgerFilter(f); loadLedger(selected._id, f); }} className="border border-slate-200 rounded-lg px-2 py-1 text-sm" />
+                <DateInput value={ledgerFilter.startDate} onChange={(e) => { const f = { ...ledgerFilter, startDate: e.target.value }; setLedgerFilter(f); loadLedger(selected._id, f); }} className="border border-slate-200 rounded-lg px-2 py-1 text-sm" />
               </label>
               <label className="text-xs text-slate-500 flex flex-col">Corte (hasta)
-                <input type="date" value={ledgerFilter.cutDate} onChange={(e) => { const f = { ...ledgerFilter, cutDate: e.target.value }; setLedgerFilter(f); loadLedger(selected._id, f); }} className="border border-slate-200 rounded-lg px-2 py-1 text-sm" />
+                <DateInput value={ledgerFilter.cutDate} onChange={(e) => { const f = { ...ledgerFilter, cutDate: e.target.value }; setLedgerFilter(f); loadLedger(selected._id, f); }} className="border border-slate-200 rounded-lg px-2 py-1 text-sm" />
               </label>
               <button onClick={() => { setMovForm({ bankAccount: selected._id, date: today(), type: 'DEPOSITO', amount: 0, counterpartAccount: '', description: '', reference: '', voucherNumber: '', voucherUrl: '' }); setShowMov(true); }} className="px-3 py-1.5 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm">+ Movimiento</button>
             </div>
@@ -213,7 +214,7 @@ export default function BankAccounts() {
                 <option>TRANSFERENCIA_OUT</option><option>TRANSFERENCIA_IN</option>
               </select>
             </Field>
-            <Field label="Fecha" required><input type="date" required value={movForm.date} onChange={(e) => setMovForm({ ...movForm, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Fecha" required><DateInput required value={movForm.date} onChange={(e) => setMovForm({ ...movForm, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Monto" required><NumericInput step="0.01" required value={movForm.amount} onChange={(e) => setMovForm({ ...movForm, amount: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="N° Comprobante" required={['DEPOSITO', 'TRANSFERENCIA_IN', 'TRANSFERENCIA_OUT', 'CHEQUE_EMITIDO'].includes(movForm.type)}>
               <input

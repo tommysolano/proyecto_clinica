@@ -7,6 +7,7 @@ import { HiOutlinePlus, HiOutlineCreditCard, HiOutlineCheckCircle, HiOutlineEye,
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import { newIdempotencyKey, withIdempotencyKey } from '../../utils/idempotency';
+import DateInput from '../../components/DateInput';
 
 const EMPTY = { closeDate: today(), cardType: 'CREDITO', acquirer: '', commissionRate: 5, retentionRate: 0, ivaCommissionRate: 15, bankAccount: '', vouchers: [] };
 // Sin fechas por defecto: si se busca por lote, un rango preestablecido escondería los cobros
@@ -168,7 +169,7 @@ export default function CreditCardBatches() {
       <Modal isOpen={show} onClose={() => setShow(false)} title="Nuevo lote de tarjetas" size="full">
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Field label="Fecha de cierre" required><input type="date" required value={form.closeDate} onChange={(e) => setForm({ ...form, closeDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Fecha de cierre" required><DateInput required value={form.closeDate} onChange={(e) => setForm({ ...form, closeDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Tipo de tarjeta"><select value={form.cardType} onChange={(e) => setForm({ ...form, cardType: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>CREDITO</option><option>DEBITO</option></select></Field>
             <Field label="Adquirente" required className="col-span-2"><input required placeholder="Datafast / Medianet" value={form.acquirer} onChange={(e) => setForm({ ...form, acquirer: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="% comisión"><NumericInput step="0.01" value={form.commissionRate} onChange={(e) => setForm({ ...form, commissionRate: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
@@ -189,10 +190,10 @@ export default function CreditCardBatches() {
                 <input value={picker.lote} onChange={(e) => setPicker({ ...picker, lote: e.target.value })} placeholder="Ej. 0457" title="Los ceros a la izquierda no importan" className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
               </label>
               <label className="text-xs text-slate-500">Desde (opcional)
-                <input type="date" value={picker.from} onChange={(e) => setPicker({ ...picker, from: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                <DateInput value={picker.from} onChange={(e) => setPicker({ ...picker, from: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
               </label>
               <label className="text-xs text-slate-500">Hasta (opcional)
-                <input type="date" value={picker.to} onChange={(e) => setPicker({ ...picker, to: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
+                <DateInput value={picker.to} onChange={(e) => setPicker({ ...picker, to: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
               </label>
               <button type="button" onClick={searchSales} disabled={searching} className="px-3 py-2 bg-emerald-600 text-white rounded-xl text-sm flex items-center justify-center gap-1.5 disabled:opacity-50">
                 <HiOutlineMagnifyingGlass /> {searching ? 'Buscando…' : 'Buscar'}

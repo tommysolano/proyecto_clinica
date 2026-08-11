@@ -13,6 +13,7 @@ import NumericInput from '../../components/NumericInput';
 import JournalEntryViewModal from '../../components/JournalEntryViewModal';
 import { newIdempotencyKey, withIdempotencyKey } from '../../utils/idempotency';
 import useDocDeepLink from '../../hooks/useDocDeepLink';
+import DateInput from '../../components/DateInput';
 
 /** Último día del mes (fecha contable por defecto del cierre). */
 const lastDayOfMonth = (year, month) => new Date(year, month, 0).toISOString().slice(0, 10);
@@ -596,10 +597,10 @@ export default function Payroll() {
               Se generará el asiento de gastos, provisiones y pasivos, y se abrirá la <b>obligación por el neto</b> (${fmt(selected?.totalNeto)}) para el flujo de caja. El rol ya no podrá editarse.
             </p>
             <Field label="Fecha contable" required hint="Devengo del gasto. Por defecto, el último día del período.">
-              <input type="date" value={closeModal.accountingDate} onChange={(e) => setCloseModal({ ...closeModal, accountingDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+              <DateInput value={closeModal.accountingDate} onChange={(e) => setCloseModal({ ...closeModal, accountingDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
             </Field>
             <Field label="Fecha programada de pago" hint="Cuándo se pagará el neto. Es el vencimiento de la obligación: si cae fin de semana, la fecha legal no se mueve; el flujo de caja proyecta el siguiente día hábil.">
-              <input type="date" value={closeModal.scheduledPaymentDate} onChange={(e) => setCloseModal({ ...closeModal, scheduledPaymentDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+              <DateInput value={closeModal.scheduledPaymentDate} onChange={(e) => setCloseModal({ ...closeModal, scheduledPaymentDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
             </Field>
             <div className="flex justify-end gap-2">
               <button onClick={() => setCloseModal(null)} className="px-4 py-2 bg-slate-200 rounded-xl">Cancelar</button>
@@ -620,7 +621,7 @@ export default function Payroll() {
                 {banks.map((b) => <option key={b._id} value={b._id}>{b.name} · {b.bank} {b.accountNumber}</option>)}
               </select>
             </Field>
-            <Field label="Fecha de pago"><input type="date" value={payModal.date} onChange={(e) => setPayField({ date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Fecha de pago"><DateInput value={payModal.date} onChange={(e) => setPayField({ date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Monto" hint="Vacío = paga todo el saldo pendiente. Se admite pago parcial: el rol sigue CERRADO hasta liquidar el total.">
               <NumericInput step="0.01" min="0" value={payModal.amount} onChange={(e) => setPayField({ amount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
             </Field>

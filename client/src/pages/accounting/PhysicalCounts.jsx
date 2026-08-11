@@ -10,6 +10,7 @@ import {
 } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
+import DateInput from '../../components/DateInput';
 
 /**
  * TOMA FÍSICA de UNA bodega.
@@ -313,7 +314,7 @@ export default function PhysicalCounts() {
               </select>
             </Field>
             <Field label="Fecha">
-              <input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })}
+              <DateInput value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })}
                 className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
             </Field>
             <Field label="Responsable">

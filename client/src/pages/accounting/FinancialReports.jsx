@@ -14,6 +14,7 @@ import {
 import { fmt, fmtDate, startOfMonth, today, downloadBlob } from './_utils';
 import ExcelButton from '../../components/ExcelButton';
 import SourceDocLink from '../../components/SourceDocLink';
+import DateInput from '../../components/DateInput';
 
 const REPORT_TABS = [
   ['PYG', 'Estado Resultados'],
@@ -190,8 +191,8 @@ export default function FinancialReports() {
             className="border border-slate-200 rounded-xl px-3.5 py-2.5"
           />
         </div>
-        <div><label className="text-xs text-slate-500 block">Desde</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
-        <div><label className="text-xs text-slate-500 block">Hasta</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
+        <div><label className="text-xs text-slate-500 block">Desde</label><DateInput value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
+        <div><label className="text-xs text-slate-500 block">Hasta</label><DateInput value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
         <div>
           <label className="text-xs text-slate-500 block">Ver</label>
           <select

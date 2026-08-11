@@ -6,6 +6,7 @@ import { HiOutlinePlus, HiOutlineTrash, HiOutlinePencil, HiOutlineTrophy, HiOutl
 import NumericInput from '../components/NumericInput';
 import ProductAutocomplete from '../components/ProductAutocomplete';
 import AccountSelect from '../components/AccountSelect';
+import DateInput from '../components/DateInput';
 
 const ROLES = [
   { value: 'admin', label: 'Administrador' },
@@ -448,8 +449,8 @@ export default function CommissionRules() {
       {tab === 'report' && (
         <div className="space-y-3">
           <div className="bg-white rounded-xl border border-slate-200 p-3 flex flex-wrap gap-3 items-end">
-            <label className="text-sm">Desde<input type="date" value={start} onChange={(e) => setStart(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
-            <label className="text-sm">Hasta<input type="date" value={end} onChange={(e) => setEnd(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
+            <label className="text-sm">Desde<DateInput value={start} onChange={(e) => setStart(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
+            <label className="text-sm">Hasta<DateInput value={end} onChange={(e) => setEnd(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" /></label>
             <label className="text-sm">Filtrar por
               <select
                 value={filterMode}

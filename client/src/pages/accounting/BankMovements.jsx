@@ -11,6 +11,7 @@ import { HiOutlinePlus, HiOutlineArrowsRightLeft, HiOutlinePencilSquare, HiOutli
 import { fmt, fmtDate, today } from './_utils';
 import JournalEntryViewModal from '../../components/JournalEntryViewModal';
 import { sourceLabel, sourceDeepLink, sourceActionLabel } from './sourceDocs';
+import DateInput from '../../components/DateInput';
 
 /**
  * MOVIMIENTOS BANCARIOS · todo lo que entra y sale de los bancos, venga de donde venga.
@@ -251,10 +252,10 @@ export default function BankMovements() {
           </select>
         </label>
         <label className="text-xs text-slate-500">Desde
-          <input type="date" value={filter.startDate} onChange={(e) => setFiltro({ startDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
+          <DateInput value={filter.startDate} onChange={(e) => setFiltro({ startDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
         </label>
         <label className="text-xs text-slate-500">Hasta
-          <input type="date" value={filter.endDate} onChange={(e) => setFiltro({ endDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
+          <DateInput value={filter.endDate} onChange={(e) => setFiltro({ endDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm" />
         </label>
         <label className="text-xs text-slate-500">Centro de costo
           <select value={filter.costCenter} onChange={(e) => setFiltro({ costCenter: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3 py-2 text-sm">
@@ -381,7 +382,7 @@ export default function BankMovements() {
               </select>
             </Field>
             <Field label="Fecha" required>
-              <input type="date" required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+              <DateInput required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
             </Field>
             <Field label="Tipo" required>
               <select required value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} disabled={!!editing} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 disabled:bg-slate-100">

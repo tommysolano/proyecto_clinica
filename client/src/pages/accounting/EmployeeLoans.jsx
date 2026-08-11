@@ -8,6 +8,7 @@ import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
 import SearchableSelect from '../../components/SearchableSelect';
 import JournalEntryViewModal from '../../components/JournalEntryViewModal';
+import DateInput from '../../components/DateInput';
 
 /**
  * PRÉSTAMOS Y DESCUENTOS AL EMPLEADO.
@@ -201,7 +202,7 @@ export default function EmployeeLoans() {
               </select>
             </Field>
             <Field label="Fecha" required>
-              <input type="date" required value={form.grantDate} onChange={(e) => setForm({ ...form, grantDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+              <DateInput required value={form.grantDate} onChange={(e) => setForm({ ...form, grantDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
             </Field>
             <Field label="Monto" required>
               <NumericInput step="0.01" required value={form.principal} onChange={(e) => setForm({ ...form, principal: +e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-right" />

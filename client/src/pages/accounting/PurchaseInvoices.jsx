@@ -15,6 +15,7 @@ import { useAuth } from '../../context/AuthContext';
 import useDocDeepLink from '../../hooks/useDocDeepLink';
 import { newIdempotencyKey, withIdempotencyKey, intentKey } from '../../utils/idempotency';
 import { vatRateOptions } from '../../constants/vatRates';
+import DateInput from '../../components/DateInput';
 
 const PAGE_SIZE = 100;
 // Cuentas elegibles como destino de una línea de compra: gasto, costo, inventario o activo.
@@ -1097,8 +1098,7 @@ export default function PurchaseInvoices() {
                   (una compra se registra cuando llega la factura). El límite real es el
                   período fiscal, que valida el backend. */}
               <Field label="Fecha de emisión" required className="col-span-1 md:col-span-2" hint="La que consta en la factura del proveedor (puede ser de días o meses anteriores).">
-                <input
-                  type="date" required
+                <DateInput required
                   value={form.fechaEmision}
                   onChange={(e) => setForm((f) => ({ ...f, fechaEmision: e.target.value, fechaVencimiento: f.creditDays ? addDays(e.target.value, f.creditDays) : f.fechaVencimiento }))}
                   className={`w-full border rounded-xl px-3 py-2.5 text-sm ${emisionFutura ? 'border-amber-300 bg-amber-50' : 'border-slate-200'}`}
@@ -1107,7 +1107,7 @@ export default function PurchaseInvoices() {
                 {emisionFutura && <p className="text-[11px] text-amber-700 mt-1">La fecha es posterior a hoy. Verifica que sea la del comprobante.</p>}
               </Field>
               <Field label="Días de crédito"><NumericInput value={form.creditDays} onChange={(e) => setForm((f) => ({ ...f, creditDays: +e.target.value, fechaVencimiento: +e.target.value > 0 ? addDays(f.fechaEmision, +e.target.value) : '' }))} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-right" /></Field>
-              <Field label="Vencimiento"><input type="date" value={form.fechaVencimiento || ''} onChange={(e) => setForm({ ...form, fechaVencimiento: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
+              <Field label="Vencimiento"><DateInput value={form.fechaVencimiento || ''} onChange={(e) => setForm({ ...form, fechaVencimiento: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" /></Field>
               <Field label="Centro de costo (factura)" className="col-span-2 md:col-span-2">
                 <SearchableSelect options={costCenters} value={form.costCenter} onChange={setInvoiceCostCenter} getLabel={(c) => `${c.code} - ${c.name}`} getSearchText={(c) => `${c.code} ${c.name}`} placeholder="— sin centro —" searchPlaceholder="Buscar centro…" allowClear />
               </Field>
@@ -1679,7 +1679,7 @@ export default function PurchaseInvoices() {
               <Field label="Método">
                 <select value={payForm.method} onChange={(e) => setPayForm({ ...payForm, method: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option value="TRANSFERENCIA">Transferencia</option><option value="CHEQUE">Cheque</option><option value="EFECTIVO">Efectivo</option></select>
               </Field>
-              <Field label="Fecha"><input type="date" value={payForm.date} onChange={(e) => setPayForm({ ...payForm, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+              <Field label="Fecha"><DateInput value={payForm.date} onChange={(e) => setPayForm({ ...payForm, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
               {payForm.method !== 'EFECTIVO' && (
                 <Field label="Cuenta bancaria" required className="col-span-2"><SearchableSelect options={banks} value={payForm.bankAccount} onChange={(v) => setPayForm({ ...payForm, bankAccount: v })} getLabel={(b) => `${b.name} — ${b.bank}`} placeholder="Seleccione…" searchPlaceholder="Buscar banco…" /></Field>
               )}

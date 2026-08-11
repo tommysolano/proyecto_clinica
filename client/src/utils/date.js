@@ -19,6 +19,33 @@ export function fmtDate(value) {
   return `${dd}/${mo}/${yyyy}`;
 }
 
+/**
+ * 'dd/mm/aaaa' -> ISO 'YYYY-MM-DD'. Devuelve null si no es una fecha real
+ * (31/02, mes 13, año incompleto). Es la inversa de fmtDate y la usa el
+ * componente DateInput para leer lo que se escribe a mano.
+ */
+export function parseDdMmYyyy(text) {
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec(String(text || '').trim());
+  if (!m) return null;
+  const [, dd, mm, yyyy] = m;
+  const d = Number(dd);
+  const mo = Number(mm);
+  const y = Number(yyyy);
+  if (mo < 1 || mo > 12 || d < 1 || y < 1900) return null;
+  // Rechaza 31/02: si el día se desborda, Date lo mueve al mes siguiente.
+  const probe = new Date(y, mo - 1, d);
+  if (probe.getDate() !== d || probe.getMonth() !== mo - 1) return null;
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+/** Va metiendo las barras mientras se escribe una fecha: 2512 -> 25/12. */
+export function maskDdMmYyyy(raw) {
+  const digits = String(raw || '').replace(/\D/g, '').slice(0, 8);
+  if (digits.length > 4) return `${digits.slice(0, 2)}/${digits.slice(2, 4)}/${digits.slice(4)}`;
+  if (digits.length > 2) return `${digits.slice(0, 2)}/${digits.slice(2)}`;
+  return digits;
+}
+
 // Zona horaria de Ecuador: los horarios se muestran SIEMPRE en hora de Ecuador,
 // sin importar la zona del navegador del usuario.
 const EC_TZ = 'America/Guayaquil';

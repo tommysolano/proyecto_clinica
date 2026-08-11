@@ -6,6 +6,7 @@ import Field from '../../components/Field';
 import NumericInput from '../../components/NumericInput';
 import { HiOutlinePlus, HiOutlineScale, HiOutlineCheck, HiOutlineArrowDownTray, HiOutlineCheckCircle, HiOutlineTrash } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
+import DateInput from '../../components/DateInput';
 
 const EMPTY = { bankAccount: '', cutDate: today(), statementBalance: '', description: '' };
 
@@ -183,7 +184,7 @@ export default function Reconciliations() {
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-x-6 gap-y-2 text-sm">
                 <div className="flex justify-between items-center"><span className="text-slate-500">Fecha de Corte:</span>
                   {isDraft ? (
-                    <input type="date" value={String(selected.cutDate || selected.periodEnd || '').slice(0, 10)} onChange={(e) => changeCutDate(e.target.value)} disabled={busy}
+                    <DateInput value={String(selected.cutDate || selected.periodEnd || '').slice(0, 10)} onChange={(e) => changeCutDate(e.target.value)} disabled={busy}
                       className="w-36 border border-slate-200 rounded px-2 py-1 text-sm text-right disabled:bg-slate-50" />
                   ) : <b>{fmtDate(selected.cutDate || selected.periodEnd)}</b>}
                 </div>
@@ -299,7 +300,7 @@ export default function Reconciliations() {
           </Field>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Fecha de corte" required>
-              <input type="date" required value={form.cutDate} onChange={(e) => setForm({ ...form, cutDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+              <DateInput required value={form.cutDate} onChange={(e) => setForm({ ...form, cutDate: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
             </Field>
             <Field label="Saldo bancario (extracto)">
               <NumericInput allowNegative value={form.statementBalance} onChange={(e) => setForm({ ...form, statementBalance: e.target.value })} placeholder="0.00" className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-right" />

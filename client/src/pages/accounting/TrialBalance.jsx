@@ -4,6 +4,7 @@ import toast from 'react-hot-toast';
 import { HiOutlineScale } from 'react-icons/hi2';
 import { fmt, startOfMonth, today } from './_utils';
 import ExcelButton from '../../components/ExcelButton';
+import DateInput from '../../components/DateInput';
 
 export default function TrialBalance() {
   const [startDate, setStart] = useState(startOfMonth());
@@ -23,8 +24,8 @@ export default function TrialBalance() {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold text-slate-800 tracking-tight flex items-center gap-2"><HiOutlineScale className="text-emerald-600" /> Balance de Comprobación</h1>
       <div className="bg-white p-3 rounded-xl shadow-sm flex gap-2 items-end">
-        <div><label className="text-xs text-slate-500">Desde</label><input type="date" value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
-        <div><label className="text-xs text-slate-500">Hasta</label><input type="date" value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
+        <div><label className="text-xs text-slate-500">Desde</label><DateInput value={startDate} onChange={(e) => setStart(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
+        <div><label className="text-xs text-slate-500">Hasta</label><DateInput value={endDate} onChange={(e) => setEnd(e.target.value)} className="border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
         <button type="button" onClick={load} className="px-4 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg cursor-pointer">Consultar</button>
         <ExcelButton
           url="/journal-entries/trial-balance.xlsx"

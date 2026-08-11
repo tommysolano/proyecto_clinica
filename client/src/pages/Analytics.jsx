@@ -17,6 +17,7 @@ import {
   Cell,
 } from 'recharts';
 import { HiOutlinePresentationChartLine } from 'react-icons/hi2';
+import DateInput from '../components/DateInput';
 
 const COLORS = ['#10b981', '#0ea5e9', '#f59e0b', '#a78bfa', '#ef4444', '#6366f1', '#14b8a6'];
 
@@ -114,10 +115,10 @@ export default function Analytics() {
         </h1>
         <div className="flex items-end gap-2">
           <label className="text-sm">Desde
-            <input type="date" value={start} onChange={(e) => setStart(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
+            <DateInput value={start} onChange={(e) => setStart(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
           </label>
           <label className="text-sm">Hasta
-            <input type="date" value={end} onChange={(e) => setEnd(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
+            <DateInput value={end} onChange={(e) => setEnd(e.target.value)} className="block mt-1 border border-slate-200 rounded-xl px-2 py-1.5 text-sm" />
           </label>
           <button onClick={load} className="px-4 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 text-sm border-none cursor-pointer hover:bg-emerald-700">
             {loading ? 'Cargando...' : 'Actualizar'}

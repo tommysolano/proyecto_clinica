@@ -11,6 +11,7 @@ import Field from '../../components/Field';
 import NumericInput from '../../components/NumericInput';
 import { fmt } from './_utils';
 import { downloadFile } from '../../utils/download';
+import DateInput from '../../components/DateInput';
 
 /**
  * ANEXOS DEL SRI: RDEP (anual, acompaña al Formulario 103) y Anexo de Accionistas (APS).
@@ -464,10 +465,10 @@ function ApsTab({ year }) {
                 <NumericInput allowDecimal={false} value={modal.numeroAcciones} onChange={(e) => setModal({ ...modal, numeroAcciones: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm text-right" />
               </Field>
               <Field label="Titular desde">
-                <input type="date" value={modal.fechaDesde} onChange={(e) => setModal({ ...modal, fechaDesde: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" />
+                <DateInput value={modal.fechaDesde} onChange={(e) => setModal({ ...modal, fechaDesde: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" />
               </Field>
               <Field label="Titular hasta" hint="Con fecha, deja de contar en el anexo desde ese corte.">
-                <input type="date" value={modal.fechaHasta} onChange={(e) => setModal({ ...modal, fechaHasta: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" />
+                <DateInput value={modal.fechaHasta} onChange={(e) => setModal({ ...modal, fechaHasta: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3 py-2.5 text-sm" />
               </Field>
             </div>
             <label className="flex items-center gap-2 text-sm text-slate-600">

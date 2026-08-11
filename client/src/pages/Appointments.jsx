@@ -23,6 +23,7 @@ import {
   HiOutlineMagnifyingGlass,
   HiOutlineUserPlus,
 } from 'react-icons/hi2';
+import DateInput from '../components/DateInput';
 
 // 6 estados soportados por el backend.
 const statusColors = {
@@ -307,6 +308,15 @@ export default function Appointments() {
     if (isDoctor && String(apt.doctor?._id || apt.doctor) === String(user?.id)) return true;
     return String(apt.createdBy?._id || apt.createdBy) === String(user?.id);
   };
+
+  // Cita que se está editando: hace falta su estado real (no solo el del
+  // formulario) para saber si el doctor todavía se puede reasignar.
+  const editingAppointment = editing ? appointments.find((a) => a._id === editing) : null;
+  // Una vez atendida, el doctor queda fijo: la consulta y su comisión ya son
+  // suyas. El backend aplica la misma regla; esto solo evita el intento.
+  const doctorLocked =
+    !!editingAppointment?.doctor &&
+    (editingAppointment.status === 'completada' || !!editingAppointment.consultationEndedAt);
 
   const openNew = () => {
     setEditing(null);
@@ -667,8 +677,7 @@ export default function Appointments() {
               >
                 ‹ Día anterior
               </button>
-              <input
-                type="date"
+              <DateInput
                 value={listDay}
                 onChange={(e) => setListDay(e.target.value)}
                 className="px-4 py-2 border border-slate-200 rounded-xl text-sm bg-slate-50/50"
@@ -1182,7 +1191,8 @@ export default function Appointments() {
                   name="doctor"
                   value={form.doctor}
                   onChange={handleChange}
-                  className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50"
+                  disabled={doctorLocked}
+                  className="w-full px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500 bg-slate-50/50 disabled:bg-slate-100 disabled:text-slate-500 disabled:cursor-not-allowed"
                 >
                   <option value="">Sin asignar</option>
                   {doctors.map((d) => (
@@ -1192,7 +1202,9 @@ export default function Appointments() {
                   ))}
                 </select>
                 <p className="text-[11px] text-slate-400 mt-1">
-                  La comisión por el servicio se asigna al doctor seleccionado.
+                  {doctorLocked
+                    ? 'La consulta ya fue atendida: el doctor no se puede cambiar.'
+                    : 'La comisión por el servicio se asigna al doctor seleccionado.'}
                 </p>
               </div>
             )}
@@ -1219,9 +1231,8 @@ export default function Appointments() {
               <label className="block text-sm font-medium text-slate-700 mb-1.5">
                 Fecha *
               </label>
-              <input
+              <DateInput
                 name="date"
-                type="date"
                 value={form.date}
                 min={todayEc()}
                 onChange={handleChange}
@@ -1341,8 +1352,7 @@ export default function Appointments() {
                     </button>
                   </div>
                   <div className="grid grid-cols-2 gap-2">
-                    <input
-                      type="date"
+                    <DateInput
                       value={it.date}
                       min={todayEc()}
                       onChange={(e) => setForm((f) => ({

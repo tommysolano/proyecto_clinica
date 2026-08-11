@@ -25,6 +25,7 @@ import {
   HiOutlineCloudArrowUp,
 } from 'react-icons/hi2';
 import BulkUploadModal from '../components/BulkUploadModal';
+import DateInput from '../components/DateInput';
 
 const emptyForm = {
   cedula: '',
@@ -514,9 +515,8 @@ export default function Patients() {
               />
             </Field>
             <Field label="Fecha de nacimiento">
-              <input
+              <DateInput
                 name="birthDate"
-                type="date"
                 value={form.birthDate}
                 onChange={handleChange}
                 className="input"
@@ -597,8 +597,7 @@ export default function Patients() {
                   )}
                   <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
                     <Field label="Fecha" required>
-                      <input
-                        type="date"
+                      <DateInput
                         value={aptForm.date}
                         min={todayEc()}
                         onChange={(e) => setAptForm({ ...aptForm, date: e.target.value })}

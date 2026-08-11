@@ -6,6 +6,7 @@ import Field from './Field';
 import NumericInput from './NumericInput';
 import ProductSelect from './ProductSelect';
 import { HiOutlinePlus, HiOutlineTrash, HiOutlineArrowsRightLeft } from 'react-icons/hi2';
+import DateInput from './DateInput';
 
 const fmt = (n) => Number(n || 0).toLocaleString('es-EC', { minimumFractionDigits: 0, maximumFractionDigits: 4 });
 const hoy = () => new Date().toLocaleDateString('en-CA', { timeZone: 'America/Guayaquil' });
@@ -220,7 +221,7 @@ export default function TransferStockModal({
 
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Field label="Fecha del traslado" hint="La fecha real del movimiento, no la de grabación.">
-            <input type="date" value={date} onChange={(e) => setDate(e.target.value)} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+            <DateInput value={date} onChange={(e) => setDate(e.target.value)} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
           </Field>
           <Field label="Centro de costo">
             <select value={costCenter} onChange={(e) => setCostCenter(e.target.value)} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">

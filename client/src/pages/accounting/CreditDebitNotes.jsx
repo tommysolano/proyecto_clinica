@@ -7,6 +7,7 @@ import JournalEntryViewModal from '../../components/JournalEntryViewModal';
 import { HiOutlinePlus, HiOutlineDocumentMinus, HiOutlineXMark, HiOutlineDocumentText } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 import NumericInput from '../../components/NumericInput';
+import DateInput from '../../components/DateInput';
 
 const EMPTY = { kind: 'NC', direction: 'RECIBIDA', date: today(), serie: '', serieAfecta: '', motivo: '', items: [{ description: '', quantity: 1, unitPrice: 0, ivaRate: 15 }] };
 
@@ -87,7 +88,7 @@ export default function CreditDebitNotes() {
           <div className="grid grid-cols-4 gap-3">
             <Field label="Tipo"><select value={form.kind} onChange={(e) => setForm({ ...form, kind: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>NC</option><option>ND</option></select></Field>
             <Field label="Sentido"><select value={form.direction} onChange={(e) => setForm({ ...form, direction: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5"><option>EMITIDA</option><option>RECIBIDA</option></select></Field>
-            <Field label="Fecha"><input type="date" value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Fecha"><DateInput value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Serie"><input placeholder="001-001-000…" value={form.serie} onChange={(e) => setForm({ ...form, serie: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Serie que afecta" className="col-span-2"><input placeholder="Documento original" value={form.serieAfecta} onChange={(e) => setForm({ ...form, serieAfecta: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Motivo" className="col-span-2"><input placeholder="Razón de la nota" value={form.motivo} onChange={(e) => setForm({ ...form, motivo: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>

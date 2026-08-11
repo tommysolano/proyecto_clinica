@@ -8,6 +8,7 @@ import { fmt, fmtDate, today } from './_utils';
 import useDocDeepLink from '../../hooks/useDocDeepLink';
 import SourceDocLink from '../../components/SourceDocLink';
 import { newIdempotencyKey, withIdempotencyKey, intentKey } from '../../utils/idempotency';
+import DateInput from '../../components/DateInput';
 
 /**
  * DEPÓSITOS DE EFECTIVO — el efectivo del mostrador que se lleva al banco.
@@ -151,10 +152,10 @@ export default function CashDeposits() {
 
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-3 flex flex-wrap gap-2 items-end">
         <label className="text-xs text-slate-500">Desde
-          <input type="date" value={filtros.startDate} onChange={(e) => setFiltros({ ...filtros, startDate: e.target.value })} className="mt-1 block border border-slate-200 rounded-xl px-3 py-2 text-sm" />
+          <DateInput value={filtros.startDate} onChange={(e) => setFiltros({ ...filtros, startDate: e.target.value })} className="mt-1 block border border-slate-200 rounded-xl px-3 py-2 text-sm" />
         </label>
         <label className="text-xs text-slate-500">Hasta
-          <input type="date" value={filtros.endDate} onChange={(e) => setFiltros({ ...filtros, endDate: e.target.value })} className="mt-1 block border border-slate-200 rounded-xl px-3 py-2 text-sm" />
+          <DateInput value={filtros.endDate} onChange={(e) => setFiltros({ ...filtros, endDate: e.target.value })} className="mt-1 block border border-slate-200 rounded-xl px-3 py-2 text-sm" />
         </label>
         <label className="text-xs text-slate-500 flex-1 min-w-[220px]">Buscar
           <div className="relative mt-1">
@@ -216,7 +217,7 @@ export default function CashDeposits() {
           <div className="grid grid-cols-1 sm:grid-cols-4 gap-3">
             <Field label="Fecha de corte" required>
               {/* Hasta qué día se recoge el efectivo que se lleva al banco. */}
-              <input type="date" required value={form.date} onChange={(e) => cambiarCorte(e.target.value)} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
+              <DateInput required value={form.date} onChange={(e) => cambiarCorte(e.target.value)} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" />
             </Field>
             <Field label="Banco" required className="sm:col-span-2">
               <select required value={form.bankAccount} onChange={(e) => setForm({ ...form, bankAccount: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">

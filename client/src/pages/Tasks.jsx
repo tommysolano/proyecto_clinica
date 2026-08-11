@@ -3,6 +3,7 @@ import api from '../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlinePlus, HiOutlineCheckCircle, HiOutlineTrash, HiOutlineClipboardDocumentList } from 'react-icons/hi2';
 import Modal from '../components/Modal';
+import DateTimeInput from '../components/DateTimeInput';
 
 const blank = () => ({ title: '', notes: '', dueAt: '', assignedTo: '' });
 
@@ -122,7 +123,7 @@ export default function Tasks() {
               </label>
               <label className="text-sm">
                 <span className="text-slate-600">Vence</span>
-                <input type="datetime-local" value={creating.dueAt} onChange={(e) => setCreating({ ...creating, dueAt: e.target.value })} className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
+                <DateTimeInput value={creating.dueAt} onChange={(e) => setCreating({ ...creating, dueAt: e.target.value })} className="w-full mt-1 border border-slate-200 rounded-lg px-3 py-2 text-sm" />
               </label>
               {agents.length > 0 && (
                 <label className="text-sm">

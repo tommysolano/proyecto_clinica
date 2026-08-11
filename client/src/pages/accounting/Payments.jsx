@@ -12,6 +12,7 @@ import ExcelButton from '../../components/ExcelButton';
 import useDocDeepLink from '../../hooks/useDocDeepLink';
 import SourceDocLink from '../../components/SourceDocLink';
 import { newIdempotencyKey, withIdempotencyKey, intentKey } from '../../utils/idempotency';
+import DateInput from '../../components/DateInput';
 
 /** Cliente sin identificar: la venta se emite a Consumidor Final y su CxC no tiene paciente. */
 const CONSUMIDOR_FINAL = { _id: '__CF__', nombre: 'Consumidor Final', cedula: '9999999999999' };
@@ -300,10 +301,10 @@ export default function Payments() {
       {/* Filtros: rango de fechas y persona. El Excel baja EXACTAMENTE lo filtrado. */}
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 p-3 flex flex-wrap gap-2 items-end">
         <label className="text-xs text-slate-500">Desde
-          <input type="date" value={filtros.startDate} onChange={(e) => setFiltros({ ...filtros, startDate: e.target.value })} className="mt-1 block border border-slate-200 rounded-xl px-3 py-2 text-sm" />
+          <DateInput value={filtros.startDate} onChange={(e) => setFiltros({ ...filtros, startDate: e.target.value })} className="mt-1 block border border-slate-200 rounded-xl px-3 py-2 text-sm" />
         </label>
         <label className="text-xs text-slate-500">Hasta
-          <input type="date" value={filtros.endDate} onChange={(e) => setFiltros({ ...filtros, endDate: e.target.value })} className="mt-1 block border border-slate-200 rounded-xl px-3 py-2 text-sm" />
+          <DateInput value={filtros.endDate} onChange={(e) => setFiltros({ ...filtros, endDate: e.target.value })} className="mt-1 block border border-slate-200 rounded-xl px-3 py-2 text-sm" />
         </label>
         <label className="text-xs text-slate-500 flex-1 min-w-[220px]">{type === 'PAGO' ? 'Proveedor' : 'Cliente'} / número / referencia
           <div className="relative mt-1">
@@ -447,7 +448,7 @@ export default function Payments() {
       <Modal isOpen={show} onClose={() => setShow(false)} title={`Nuevo ${form.type === 'PAGO' ? 'pago' : 'cobro'}`} size="xl">
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-3 gap-3">
-            <Field label="Fecha" required><input type="date" required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Fecha" required><DateInput required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             {form.type === 'PAGO' ? (
               <Field label="Proveedor" required className="col-span-2">
                 <SearchableSelect
@@ -596,7 +597,7 @@ export default function Payments() {
       <Modal isOpen={showBulk} onClose={() => setShowBulk(false)} title="Pago masivo a proveedores" size="xl">
         <form onSubmit={submitBulk} className="space-y-3">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <Field label="Fecha" required><input type="date" required value={bulkForm.date} onChange={(e) => setBulkForm({ ...bulkForm, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
+            <Field label="Fecha" required><DateInput required value={bulkForm.date} onChange={(e) => setBulkForm({ ...bulkForm, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></Field>
             <Field label="Método">
               <select value={bulkForm.method} onChange={(e) => setBulkForm({ ...bulkForm, method: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5">
                 <option>EFECTIVO</option><option>TRANSFERENCIA</option><option>CHEQUE</option><option>DEPOSITO</option>

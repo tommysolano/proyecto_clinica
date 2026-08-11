@@ -3,6 +3,7 @@ import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import { fmt, startOfMonth, endOfMonth } from './_utils';
 import ExcelButton from '../../components/ExcelButton';
+import DateInput from '../../components/DateInput';
 
 export default function Profitability() {
   const [rows, setRows] = useState([]);
@@ -21,8 +22,8 @@ export default function Profitability() {
     <div className="space-y-4">
       <h1 className="text-2xl font-bold text-slate-800 tracking-tight">Rentabilidad por Médico</h1>
       <div className="flex gap-2 items-end">
-        <div><label className="text-xs text-slate-500">Desde</label><input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="block border border-slate-200 rounded-xl px-3 py-2" /></div>
-        <div><label className="text-xs text-slate-500">Hasta</label><input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="block border border-slate-200 rounded-xl px-3 py-2" /></div>
+        <div><label className="text-xs text-slate-500">Desde</label><DateInput value={from} onChange={(e) => setFrom(e.target.value)} className="block border border-slate-200 rounded-xl px-3 py-2" /></div>
+        <div><label className="text-xs text-slate-500">Hasta</label><DateInput value={to} onChange={(e) => setTo(e.target.value)} className="block border border-slate-200 rounded-xl px-3 py-2" /></div>
         <ExcelButton
           url="/accounting-reports/profitability/by-doctor.xlsx"
           params={{ from, to }}

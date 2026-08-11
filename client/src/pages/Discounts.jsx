@@ -7,6 +7,7 @@ import { HiOutlinePlus, HiOutlineTag, HiOutlineTrash, HiOutlinePencilSquare } fr
 import PageHeader, { EmptyState } from '../components/PageHeader';
 import { fmtDate } from '../utils/date';
 import NumericInput from '../components/NumericInput';
+import DateInput from '../components/DateInput';
 
 const DAYS = [['Dom', 0], ['Lun', 1], ['Mar', 2], ['Mié', 3], ['Jue', 4], ['Vie', 5], ['Sáb', 6]];
 const AUDIENCES = [['todos', 'Todos'], ['nuevos', 'Pacientes nuevos'], ['recurrentes', 'Pacientes recurrentes'], ['cumpleanos', 'Cumpleañeros']];
@@ -222,11 +223,11 @@ export default function Discounts() {
           <div className="grid grid-cols-2 gap-3">
             <label className="block">
               <span className="text-xs font-medium text-slate-600">Inicio</span>
-              <input type="date" value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+              <DateInput value={form.startDate} onChange={(e) => setForm({ ...form, startDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
             </label>
             <label className="block">
               <span className="text-xs font-medium text-slate-600">Fin</span>
-              <input type="date" value={form.endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
+              <DateInput value={form.endDate} onChange={(e) => setForm({ ...form, endDate: e.target.value })} className="mt-1 w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm" />
             </label>
           </div>
           {/* Parametrizaciones */}

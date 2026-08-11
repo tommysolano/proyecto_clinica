@@ -9,6 +9,7 @@ import NumericInput from '../../components/NumericInput';
 import AccountSelect from '../../components/AccountSelect';
 import ExcelButton from '../../components/ExcelButton';
 import useDocDeepLink from '../../hooks/useDocDeepLink';
+import DateInput from '../../components/DateInput';
 
 const EMPTY = { date: today(), description: '', source: 'MANUAL', lines: [{ account: '', debit: 0, credit: 0, description: '' }, { account: '', debit: 0, credit: 0, description: '' }] };
 
@@ -80,8 +81,8 @@ export default function JournalEntries() {
       </div>
 
       <div className="bg-white rounded-xl p-3 shadow-sm border border-emerald-100 flex flex-wrap gap-2 items-end">
-        <div><label className="text-xs">Desde</label><input type="date" value={filters.startDate} onChange={(e) => setFilters({ ...filters, startDate: e.target.value })} className="block px-3 py-2 border border-slate-200 rounded-lg" /></div>
-        <div><label className="text-xs">Hasta</label><input type="date" value={filters.endDate} onChange={(e) => setFilters({ ...filters, endDate: e.target.value })} className="block px-3 py-2 border border-slate-200 rounded-lg" /></div>
+        <div><label className="text-xs">Desde</label><DateInput value={filters.startDate} onChange={(e) => setFilters({ ...filters, startDate: e.target.value })} className="block px-3 py-2 border border-slate-200 rounded-lg" /></div>
+        <div><label className="text-xs">Hasta</label><DateInput value={filters.endDate} onChange={(e) => setFilters({ ...filters, endDate: e.target.value })} className="block px-3 py-2 border border-slate-200 rounded-lg" /></div>
         <div><label className="text-xs">Estado</label>
           <select value={filters.status} onChange={(e) => setFilters({ ...filters, status: e.target.value })} className="block px-3 py-2 border border-slate-200 rounded-lg">
             <option value="">Todos</option><option>BORRADOR</option><option>CONTABILIZADO</option><option>ANULADO</option>
@@ -134,7 +135,7 @@ export default function JournalEntries() {
       <Modal isOpen={show} onClose={() => setShow(false)} title="Nuevo asiento manual" size="xl">
         <form onSubmit={submit} className="space-y-3">
           <div className="grid grid-cols-3 gap-3">
-            <div><label className="text-xs">Fecha</label><input type="date" required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
+            <div><label className="text-xs">Fecha</label><DateInput required value={form.date} onChange={(e) => setForm({ ...form, date: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
             <div className="col-span-2"><label className="text-xs">Descripción</label><input required value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5" /></div>
           </div>
           <div className="overflow-x-auto">

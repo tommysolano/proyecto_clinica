@@ -5,6 +5,7 @@ import Modal from '../../components/Modal';
 import { HiOutlineCurrencyDollar, HiOutlineArrowsRightLeft } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
 import SourceDocLink from '../../components/SourceDocLink';
+import DateInput from '../../components/DateInput';
 
 /**
  * Caja — Cash on hand y depósitos a banco.
@@ -259,8 +260,7 @@ export default function CashBox() {
 
           <div>
             <label className="block text-sm font-medium text-slate-700 mb-1">Fecha</label>
-            <input
-              type="date"
+            <DateInput
               value={form.date}
               onChange={(e) => setForm((f) => ({ ...f, date: e.target.value }))}
               className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm"

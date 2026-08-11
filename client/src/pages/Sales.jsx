@@ -29,6 +29,7 @@ import {
 } from 'react-icons/hi2';
 import JournalEntryViewModal from '../components/JournalEntryViewModal';
 import { newIdempotencyKey, withIdempotencyKey, intentKey } from '../utils/idempotency';
+import DateInput from '../components/DateInput';
 
 const paymentMethods = {
   efectivo: 'Efectivo',
@@ -779,14 +780,12 @@ export default function Sales() {
 
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-4">
         <div className="flex flex-col sm:flex-row gap-3 flex-wrap">
-          <input
-            type="date"
+          <DateInput
             value={filter.startDate}
             onChange={(e) => setFilter({ ...filter, startDate: e.target.value })}
             className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50"
           />
-          <input
-            type="date"
+          <DateInput
             value={filter.endDate}
             onChange={(e) => setFilter({ ...filter, endDate: e.target.value })}
             className="px-4 py-2.5 border border-slate-200 rounded-xl text-sm outline-none bg-slate-50/50"
@@ -1554,7 +1553,7 @@ export default function Sales() {
                   {form.creditTerm === 'CUSTOM' && (
                     <div>
                       <label className="lbl">Vence (fecha exacta)</label>
-                      <input type="date" value={form.dueDate || ''} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="input" />
+                      <DateInput value={form.dueDate || ''} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="input" />
                     </div>
                   )}
                 </>
@@ -1658,7 +1657,7 @@ export default function Sales() {
                       {form.creditTerm === 'CUSTOM' ? (
                         <div className="w-48">
                           <label className="lbl">Vence</label>
-                          <input type="date" value={form.dueDate || ''} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="input" />
+                          <DateInput value={form.dueDate || ''} onChange={(e) => setForm({ ...form, dueDate: e.target.value })} className="input" />
                         </div>
                       ) : (
                         <p className="text-[11px] text-slate-500 pb-2">Vence el {vencimientoDesdePlazo(form.creditTerm ?? 30)}</p>
@@ -1897,7 +1896,7 @@ export default function Sales() {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="lbl">Fecha</label>
-                <input type="date" required value={collectForm.date} onChange={(e) => setCollectForm({ ...collectForm, date: e.target.value })} className="input" />
+                <DateInput required value={collectForm.date} onChange={(e) => setCollectForm({ ...collectForm, date: e.target.value })} className="input" />
               </div>
               <div>
                 <label className="lbl">Monto a cobrar</label>

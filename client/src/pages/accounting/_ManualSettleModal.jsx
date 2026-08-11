@@ -8,6 +8,7 @@ import Modal from '../../components/Modal';
 import AccountSelect from '../../components/AccountSelect';
 import { fmt, fmtDate, today } from './_utils';
 import { newIdempotencyKey, withIdempotencyKey } from '../../utils/idempotency';
+import DateInput from '../../components/DateInput';
 
 /**
  * LIQUIDAR una partida manual: convertir una PREVISIÓN en un movimiento real.
@@ -207,7 +208,7 @@ export default function ManualSettleModal({ item, onClose, onSettled }) {
             <div className="grid grid-cols-2 gap-3">
               <label className="block">
                 <span className="text-xs text-slate-500">Fecha real del movimiento</span>
-                <input type="date" value={f.date} onChange={(e) => set({ date: e.target.value })}
+                <DateInput value={f.date} onChange={(e) => set({ date: e.target.value })}
                   className="w-full border border-slate-200 rounded-xl px-3 py-2" />
               </label>
               <label className="block">
@@ -288,12 +289,12 @@ export default function ManualSettleModal({ item, onClose, onSettled }) {
             <div className="flex gap-2 items-end flex-wrap">
               <label className="block">
                 <span className="text-xs text-slate-500">Desde</span>
-                <input type="date" value={busqueda.from} onChange={(e) => setBusqueda({ ...busqueda, from: e.target.value })}
+                <DateInput value={busqueda.from} onChange={(e) => setBusqueda({ ...busqueda, from: e.target.value })}
                   className="border border-slate-200 rounded-xl px-3 py-2" />
               </label>
               <label className="block">
                 <span className="text-xs text-slate-500">Hasta</span>
-                <input type="date" value={busqueda.to} onChange={(e) => setBusqueda({ ...busqueda, to: e.target.value })}
+                <DateInput value={busqueda.to} onChange={(e) => setBusqueda({ ...busqueda, to: e.target.value })}
                   className="border border-slate-200 rounded-xl px-3 py-2" />
               </label>
               <label className="block flex-1 min-w-[160px]">
