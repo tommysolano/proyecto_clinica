@@ -33,6 +33,7 @@ import {
   HiOutlineArrowPath,
   HiOutlineChevronUp,
   HiOutlineChevronDown,
+  HiOutlineViewfinderCircle,
 } from 'react-icons/hi2';
 
 const FILTERS = [
@@ -164,11 +165,19 @@ function ScanStudio({ pages, setPages, onSaved }) {
 
   const addFromFiles = async (files) => {
     setBusy(true);
+    let sinBorde = 0;
     try {
       for (const file of files) {
         const img = await loadImage(file);
-        const q = detectDocument(img, img.naturalWidth, img.naturalHeight, 320);
+        const q = detectDocument(img, img.naturalWidth, img.naturalHeight, 420);
+        if (!q) sinBorde++;
         addPage(await buildPage(img, img.naturalWidth, img.naturalHeight, q, filter));
+      }
+      if (sinBorde) {
+        toast(
+          `${sinBorde} foto${sinBorde === 1 ? '' : 's'} sin bordes claros: se guardó completa. Usa «Reencuadrar».`,
+          { icon: '✋', duration: 5000 }
+        );
       }
     } catch (e) {
       toast.error(e.message || 'No se pudieron leer las imágenes');
@@ -246,8 +255,9 @@ function ScanStudio({ pages, setPages, onSaved }) {
           <div className="flex-1 min-w-0">
             <h2 className="font-semibold text-slate-800">Escanear una hoja</h2>
             <p className="text-sm text-slate-500 mt-0.5">
-              La cámara se abre a pantalla completa, reconoce los bordes de la hoja y recorta sola:
-              la mesa y todo lo de alrededor quedan fuera.
+              La cámara se abre a pantalla completa y reconoce los bordes de la hoja. Después de
+              disparar te muestra el recorte para que lo confirmes o lo corrijas: la mesa y todo lo
+              de alrededor quedan fuera.
             </p>
           </div>
           <div className="flex flex-col sm:flex-row gap-2 sm:shrink-0">
@@ -359,11 +369,12 @@ function ScanStudio({ pages, setPages, onSaved }) {
       )}
 
       {cropping && (
-        <CropModal
+        <CropEditor
           src={cropping.src}
           width={cropping.w}
           height={cropping.h}
           initialQuad={cropping.quad}
+          title="Ajusta el recorte"
           onCancel={() => setCropping(null)}
           onConfirm={applyCrop}
         />
@@ -421,18 +432,28 @@ function useContentBox(ref, naturalW, naturalH) {
   return box;
 }
 
+/** Cuánto pesa la detección nueva frente a la anterior al suavizar el marco. */
+const SMOOTH = 0.45;
+/** Salto (en fracción del cuadro) a partir del cual se deja de suavizar. */
+const JUMP = 0.12;
+/** Cuadros que se mantiene el último marco cuando la detección se pierde. */
+const HOLD = 4;
+
 function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onClose }) {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
-  const detectRef = useRef(null);
+  const liveRef = useRef(null);   // último marco suavizado
+  const lostRef = useRef(0);      // cuadros seguidos sin detectar nada
   const busyRef = useRef(false);
 
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
   const [quad, setQuad] = useState(null);
+  const [steady, setSteady] = useState(false);
   const [dims, setDims] = useState({ w: 0, h: 0 });
   const [working, setWorking] = useState(false);
-  const [shot, setShot] = useState(null);   // foto tomada, a la espera de revisión
+  const [pending, setPending] = useState(null); // foto recién tomada, a confirmar el recorte
+  const [shot, setShot] = useState(null);       // página ya recortada, a la espera de revisión
   const [cropping, setCropping] = useState(false);
   const [added, setAdded] = useState(pageCount);
 
@@ -484,23 +505,47 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
     return () => { document.body.style.overflow = prev; };
   }, []);
 
+  // Único sitio donde se libera la foto a medio confirmar: se ejecuta tanto al
+  // dejar de necesitarla como al cerrar la cámara con una a medias.
+  useEffect(() => () => { if (pending?.url) URL.revokeObjectURL(pending.url); }, [pending]);
+
   // ── Detección en vivo (pausada mientras se revisa la foto) ────────────────
   useEffect(() => {
-    if (!ready || shot) return undefined;
+    if (!ready || pending || shot) return undefined;
     const id = setInterval(() => {
       const v = videoRef.current;
       if (!v || !v.videoWidth || busyRef.current) return;
       if (v.videoWidth !== dims.w || v.videoHeight !== dims.h) setDims({ w: v.videoWidth, h: v.videoHeight });
+      let q = null;
       try {
-        const q = detectDocument(v, v.videoWidth, v.videoHeight);
-        detectRef.current = q;
-        setQuad(q);
+        q = detectDocument(v, v.videoWidth, v.videoHeight);
       } catch {
-        detectRef.current = null;
+        q = null;
       }
-    }, 220);
+      if (q) {
+        // El marco se promedia con el del cuadro anterior: crudo tiembla y marea.
+        // Salvo cuando el salto es grande, que ahí es que apuntaron a otra cosa.
+        const prev = liveRef.current;
+        const jump = prev ? Math.max(...q.map((p, i) => Math.hypot(p.x - prev[i].x, p.y - prev[i].y))) : 1;
+        const next = prev && jump < JUMP
+          ? q.map((p, i) => ({
+            x: prev[i].x + (p.x - prev[i].x) * SMOOTH,
+            y: prev[i].y + (p.y - prev[i].y) * SMOOTH,
+          }))
+          : q;
+        liveRef.current = next;
+        lostRef.current = 0;
+        setQuad(next);
+        setSteady(jump < 0.02);
+      } else if (++lostRef.current > HOLD) {
+        // Un parpadeo suelto no borra el marco; perderlo de verdad, sí.
+        liveRef.current = null;
+        setQuad(null);
+        setSteady(false);
+      }
+    }, 200);
     return () => clearInterval(id);
-  }, [ready, shot, dims.w, dims.h]);
+  }, [ready, pending, shot, dims.w, dims.h]);
 
   // ── Disparar ──────────────────────────────────────────────────────────────
   const capture = async () => {
@@ -513,13 +558,40 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
       frame.width = v.videoWidth;
       frame.height = v.videoHeight;
       frame.getContext('2d').drawImage(v, 0, 0);
-      // Se vuelve a detectar sobre la foto quieta (más fino que en vivo).
-      const q = detectDocument(frame, frame.width, frame.height, 320) || detectRef.current;
-      setShot(await buildPage(frame, frame.width, frame.height, q, filter));
+      // Se vuelve a detectar sobre la foto quieta y con más detalle: sale mejor
+      // que en vivo, donde hay que ir a la carrera.
+      const q = detectDocument(frame, frame.width, frame.height, 384) || liveRef.current;
+      const blob = await canvasToJpeg(frame, 0.92);
+      setPending({
+        canvas: frame,
+        w: frame.width,
+        h: frame.height,
+        url: URL.createObjectURL(blob),
+        quad: q || FULL_QUAD,
+        detected: !!q,
+      });
     } catch (e) {
       toast.error(e.message || 'No se pudo capturar');
     } finally {
       busyRef.current = false;
+      setWorking(false);
+    }
+  };
+
+  const discardPending = () => setPending(null);
+
+  /** El usuario dio el visto bueno al recorte: recién ahí se genera la página. */
+  const confirmPending = async (newQuad) => {
+    const src = pending;
+    // El editor se cierra primero: recortar y limpiar tarda, y el usuario tiene
+    // que ver el «Procesando la foto…» en vez de una pantalla congelada.
+    setPending(null);
+    setWorking(true);
+    try {
+      setShot(await buildPage(src.canvas, src.w, src.h, newQuad, filter));
+    } catch (e) {
+      toast.error(e.message || 'No se pudo procesar la foto');
+    } finally {
       setWorking(false);
     }
   };
@@ -571,7 +643,7 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
       {/* ── Barra superior ─────────────────────────────────────────────── */}
       <div className="shrink-0 flex items-center justify-between gap-3 px-3 py-2.5 bg-black/80 text-white">
         <button
-          onClick={() => { discardShot(); onClose(); }}
+          onClick={() => { discardShot(); discardPending(); onClose(); }}
           className="w-10 h-10 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 text-white border-none cursor-pointer"
           aria-label="Cerrar"
         >
@@ -594,38 +666,35 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
           style={{ objectFit: 'contain' }}
         />
 
-        {/* Marco verde: se coloca EXACTAMENTE sobre el área del fotograma. */}
+        {/* Marco de la hoja, calcado del de iLovePDF: la hoja se aclara y se
+            perfila en blanco, sin lavar de color el resto de la escena. Va
+            colocado EXACTAMENTE sobre el área del fotograma. */}
         {!shot && quad && box && (
           <svg
-            viewBox="0 0 100 100"
-            preserveAspectRatio="none"
+            viewBox={`0 0 ${box.width} ${box.height}`}
             className="absolute pointer-events-none"
             style={{ left: box.left, top: box.top, width: box.width, height: box.height }}
           >
+            {/* Trazo oscuro debajo: sin él el marco desaparece sobre papel blanco. */}
             <polygon
-              points={quad.map((p) => `${p.x * 100},${p.y * 100}`).join(' ')}
-              fill="rgba(16,185,129,0.16)"
-              stroke="#10b981"
-              strokeWidth="2"
-              vectorEffect="non-scaling-stroke"
+              points={quad.map((p) => `${p.x * box.width},${p.y * box.height}`).join(' ')}
+              fill="rgba(255,255,255,0.30)"
+              stroke="rgba(2,6,23,0.35)"
+              strokeWidth="6"
+              strokeLinejoin="round"
+            />
+            <polygon
+              points={quad.map((p) => `${p.x * box.width},${p.y * box.height}`).join(' ')}
+              fill="none"
+              stroke="#ffffff"
+              strokeWidth="3"
+              strokeLinejoin="round"
             />
           </svg>
         )}
 
         {shot && (
           <img src={shot.preview} alt="Foto tomada" className="absolute inset-0 w-full h-full" style={{ objectFit: 'contain' }} />
-        )}
-
-        {!shot && ready && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 text-[11px] px-3 py-1.5 rounded-full bg-black/60 text-white whitespace-nowrap">
-            {quad ? '✓ Hoja detectada — se recortará sola' : 'Buscando la hoja…'}
-          </div>
-        )}
-
-        {shot && !shot.detected && (
-          <div className="absolute top-3 left-1/2 -translate-x-1/2 text-[11px] px-3 py-1.5 rounded-full bg-amber-500 text-white max-w-[90%] text-center">
-            No se distinguió la hoja: se guardó la foto completa. Usa «Recortar».
-          </div>
         )}
 
         {(!ready || working) && (
@@ -659,7 +728,7 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
             onClick={() => setCropping(true)}
             className="w-full py-2 text-xs text-white/80 bg-white/10 rounded-lg border-none cursor-pointer flex items-center justify-center gap-1.5"
           >
-            <HiOutlineArrowsPointingOut className="w-4 h-4" /> Recortar a mano
+            <HiOutlineArrowsPointingOut className="w-4 h-4" /> Ajustar el recorte
           </button>
         </div>
       ) : (
@@ -678,13 +747,24 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
               </button>
             ))}
           </div>
+          <p className="text-center text-[11px] leading-tight text-white/70 px-4">
+            {!ready
+              ? 'Encendiendo la cámara…'
+              : quad
+                ? steady
+                  ? 'Hoja detectada. Ya puedes disparar.'
+                  : 'Hoja detectada. Mantén el pulso firme.'
+                : 'Apunta a la hoja entera, sobre una superficie que contraste.'}
+          </p>
           <div className="flex items-center justify-center gap-8">
             <span className="w-12" />
             <button
               onClick={capture}
               disabled={!ready || working}
               aria-label="Capturar"
-              className="rounded-full bg-white border-4 border-white/40 disabled:opacity-40 cursor-pointer flex items-center justify-center shrink-0"
+              className={`rounded-full bg-white border-4 disabled:opacity-40 cursor-pointer flex items-center justify-center shrink-0 ${
+                quad ? 'border-emerald-400' : 'border-white/40'
+              }`}
               style={{ width: 72, height: 72 }}
             >
               <span className="block w-14 h-14 rounded-full bg-white ring-2 ring-slate-300" />
@@ -699,12 +779,27 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
         </div>
       )}
 
+      {/* Paso de confirmación: tras disparar se muestra el borde propuesto para
+          que el usuario lo acepte o lo corrija ANTES de generar la página. */}
+      {pending && (
+        <CropEditor
+          src={pending.url}
+          width={pending.w}
+          height={pending.h}
+          initialQuad={pending.quad}
+          title={pending.detected ? 'Confirma el borde de la hoja' : 'No se distinguió la hoja: ajústala'}
+          onCancel={discardPending}
+          onConfirm={confirmPending}
+        />
+      )}
+
       {cropping && shot && (
-        <CropModal
+        <CropEditor
           src={shot.original}
           width={shot.originalW}
           height={shot.originalH}
           initialQuad={shot.quad}
+          title="Ajusta el recorte"
           onCancel={() => setCropping(false)}
           onConfirm={recrop}
         />
@@ -733,80 +828,209 @@ function OverlayBtn({ onClick, icon, label, primary, danger }) {
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
-//  Reencuadre manual: 4 esquinas arrastrables sobre la foto original
+//  Editor de recorte: 4 esquinas arrastrables sobre la foto original
+//
+//  Va a pantalla completa (portal propio, no components/Modal) porque es un
+//  editor SOBRE la foto: necesita todo el alto disponible y convive encima de la
+//  cámara, que también ocupa la pantalla entera.
 // ═════════════════════════════════════════════════════════════════════════════
 
-function CropModal({ src, width, height, initialQuad, onCancel, onConfirm }) {
-  const boxRef = useRef(null);
+const LOUPE = 104;  // diámetro de la lupa, en px
+const ZOOM = 2.6;   // aumento de la lupa
+
+const CORNERS = ['Superior izquierda', 'Superior derecha', 'Inferior derecha', 'Inferior izquierda'];
+const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
+
+function CropEditor({ src, width, height, initialQuad, title = 'Ajusta el recorte', onCancel, onConfirm }) {
+  const wrapRef = useRef(null);
+  const imgRef = useRef(null);
   const [quad, setQuad] = useState(initialQuad || FULL_QUAD);
   const [dragging, setDragging] = useState(null);
+  const [detecting, setDetecting] = useState(false);
+  const box = useContentBox(wrapRef, width, height);
+
+  // El fondo no debe desplazarse mientras el editor ocupa la pantalla.
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = prev; };
+  }, []);
 
   useEffect(() => {
-    if (dragging === null) return undefined;
+    if (dragging === null || !box) return undefined;
     const move = (e) => {
-      const rect = boxRef.current?.getBoundingClientRect();
+      const rect = wrapRef.current?.getBoundingClientRect();
       if (!rect) return;
       const p = {
-        x: Math.min(1, Math.max(0, (e.clientX - rect.left) / rect.width)),
-        y: Math.min(1, Math.max(0, (e.clientY - rect.top) / rect.height)),
+        x: Math.min(1, Math.max(0, (e.clientX - rect.left - box.left) / box.width)),
+        y: Math.min(1, Math.max(0, (e.clientY - rect.top - box.top) / box.height)),
       };
       setQuad((q) => q.map((c, i) => (i === dragging ? p : c)));
     };
     const up = () => setDragging(null);
     window.addEventListener('pointermove', move);
     window.addEventListener('pointerup', up);
+    window.addEventListener('pointercancel', up);
     return () => {
       window.removeEventListener('pointermove', move);
       window.removeEventListener('pointerup', up);
+      window.removeEventListener('pointercancel', up);
     };
-  }, [dragging]);
+  }, [dragging, box]);
 
-  const labels = ['Sup. izq.', 'Sup. der.', 'Inf. der.', 'Inf. izq.'];
+  /** Vuelve a buscar los bordes sobre la foto quieta y a máximo detalle. */
+  const autoDetect = () => {
+    const img = imgRef.current;
+    if (!img || detecting) return;
+    setDetecting(true);
+    // Un respiro para que se pinte el «Detectando…» antes de ocupar el hilo.
+    setTimeout(() => {
+      try {
+        const q = detectDocument(img, width, height, 420);
+        if (q) setQuad(q);
+        else toast('No se distinguen los bordes: ajústalos a mano', { icon: '✋' });
+      } catch {
+        toast.error('No se pudo detectar el borde');
+      } finally {
+        setDetecting(false);
+      }
+    }, 30);
+  };
 
-  return (
-    <Modal isOpen onClose={onCancel} title="Ajustar el recorte" size="lg">
-      <div className="space-y-3">
-        <p className="text-sm text-slate-600">
-          Arrastra las cuatro esquinas hasta que el marco calce con la hoja. Lo de afuera se descarta.
-        </p>
-        {/* La imagen va sin recortes de alto: su caja tiene que coincidir con la
-            foto para que las esquinas arrastrables caigan donde el usuario ve. */}
-        <div ref={boxRef} className="relative select-none touch-none bg-slate-900 rounded-xl overflow-hidden">
-          <img src={src} alt="Original" className="w-full h-auto block" />
-          <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full">
-            <polygon
-              points={quad.map((p) => `${p.x * 100},${p.y * 100}`).join(' ')}
-              fill="rgba(16,185,129,0.2)"
-              stroke="#10b981"
-              strokeWidth="2"
-              vectorEffect="non-scaling-stroke"
-            />
-          </svg>
-          {quad.map((p, i) => (
-            <button
-              key={i}
-              type="button"
-              title={labels[i]}
-              onPointerDown={(e) => { e.preventDefault(); setDragging(i); }}
-              className="absolute w-8 h-8 -ml-4 -mt-4 rounded-full bg-white border-2 border-emerald-500 shadow cursor-grab touch-none"
-              style={{ left: `${p.x * 100}%`, top: `${p.y * 100}%` }}
-            />
-          ))}
-        </div>
-        <div className="flex flex-col sm:flex-row sm:justify-between gap-2">
-          <button type="button" onClick={() => setQuad(FULL_QUAD)} className="btn-secondary justify-center">
-            <HiOutlineArrowPath className="w-4 h-4" /> Usar la foto completa
-          </button>
-          <div className="flex gap-2">
-            <button type="button" onClick={onCancel} className="btn-secondary flex-1 justify-center">Cancelar</button>
-            <button type="button" onClick={() => onConfirm(quad)} className="btn-primary flex-1 justify-center">
-              <HiOutlineCheck className="w-4 h-4" /> Aplicar
-            </button>
-          </div>
-        </div>
-        <p className="text-[11px] text-slate-400">Original: {width}×{height} px</p>
+  const pts = box ? quad.map((p) => ({ x: p.x * box.width, y: p.y * box.height })) : null;
+  const poly = pts ? pts.map((p) => `${p.x},${p.y}`).join(' ') : '';
+  // Rejilla interior siguiendo el cuadrilátero: ayuda a ver si la hoja está recta.
+  const grid = pts
+    ? [1, 2].flatMap((k) => [
+      [lerp(pts[0], pts[3], k / 3), lerp(pts[1], pts[2], k / 3)],
+      [lerp(pts[0], pts[1], k / 3), lerp(pts[3], pts[2], k / 3)],
+    ])
+    : [];
+  const held = dragging !== null ? quad[dragging] : null;
+
+  return createPortal(
+    <div className="fixed inset-0 z-[9500] bg-slate-950 flex flex-col" style={{ height: '100dvh' }}>
+      <div className="shrink-0 flex items-center justify-between gap-3 px-3 py-2.5 text-white">
+        <button
+          onClick={onCancel}
+          aria-label="Cancelar"
+          className="w-10 h-10 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 text-white border-none cursor-pointer"
+        >
+          <HiOutlineXMark className="w-6 h-6" />
+        </button>
+        <p className="text-sm font-medium truncate">{title}</p>
+        <span className="w-10 shrink-0" />
       </div>
-    </Modal>
+
+      <div ref={wrapRef} className="relative flex-1 min-h-0 select-none touch-none overflow-hidden">
+        <img
+          ref={imgRef}
+          src={src}
+          alt="Foto tomada"
+          className="absolute inset-0 w-full h-full"
+          style={{ objectFit: 'contain' }}
+        />
+
+        {box && (
+          <svg
+            viewBox={`0 0 ${box.width} ${box.height}`}
+            className="absolute pointer-events-none"
+            style={{ left: box.left, top: box.top, width: box.width, height: box.height }}
+          >
+            {/* Se oscurece lo que queda FUERA del marco: es lo que se descarta. */}
+            <path
+              d={`M0 0H${box.width}V${box.height}H0Z M${poly.replace(/ /g, 'L')}Z`}
+              fill="rgba(2,6,23,0.55)"
+              fillRule="evenodd"
+            />
+            {grid.map(([a, b], i) => (
+              <line
+                key={i}
+                x1={a.x} y1={a.y} x2={b.x} y2={b.y}
+                stroke="rgba(52,211,153,0.7)"
+                strokeWidth="1"
+                strokeDasharray="5 5"
+              />
+            ))}
+            <polygon points={poly} fill="none" stroke="#34d399" strokeWidth="2.5" strokeLinejoin="round" />
+          </svg>
+        )}
+
+        {box && quad.map((p, i) => (
+          <button
+            key={i}
+            type="button"
+            aria-label={`Esquina ${CORNERS[i].toLowerCase()}`}
+            title={CORNERS[i]}
+            onPointerDown={(e) => { e.preventDefault(); setDragging(i); }}
+            className={`absolute w-9 h-9 -ml-[18px] -mt-[18px] rounded-full border-2 border-emerald-400 touch-none cursor-grab p-0 ${
+              dragging === i ? 'bg-emerald-400/60' : 'bg-white/85'
+            }`}
+            style={{ left: box.left + p.x * box.width, top: box.top + p.y * box.height }}
+          />
+        ))}
+
+        {/* Lupa: el dedo tapa justo la esquina que se está colocando. */}
+        {box && held && (
+          <div
+            className="absolute rounded-full border-2 border-white/80 shadow-lg overflow-hidden pointer-events-none bg-slate-900"
+            style={{
+              top: 12,
+              left: held.x > 0.5 ? 12 : undefined,
+              right: held.x > 0.5 ? undefined : 12,
+              width: LOUPE,
+              height: LOUPE,
+              backgroundImage: `url(${src})`,
+              backgroundRepeat: 'no-repeat',
+              backgroundSize: `${box.width * ZOOM}px ${box.height * ZOOM}px`,
+              backgroundPosition: `${LOUPE / 2 - held.x * box.width * ZOOM}px ${LOUPE / 2 - held.y * box.height * ZOOM}px`,
+            }}
+          >
+            <span className="absolute left-1/2 top-1/2 w-6 h-px -ml-3 bg-emerald-400" />
+            <span className="absolute left-1/2 top-1/2 h-6 w-px -mt-3 bg-emerald-400" />
+          </div>
+        )}
+      </div>
+
+      <div className="shrink-0 bg-black/90 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        <p className="text-center text-[11px] text-white/60 mb-2.5">
+          Arrastra las esquinas hasta que el marco calce con la hoja.
+        </p>
+        <div className="flex items-center justify-between gap-3">
+          <ToolBtn icon={HiOutlineArrowsPointingOut} label="Borde completo" onClick={() => setQuad(FULL_QUAD)} />
+          <ToolBtn
+            icon={detecting ? HiOutlineArrowPath : HiOutlineViewfinderCircle}
+            label={detecting ? 'Detectando…' : 'Detectar borde'}
+            onClick={autoDetect}
+            disabled={detecting}
+          />
+          <button
+            type="button"
+            onClick={() => onConfirm(quad)}
+            aria-label="Aplicar recorte"
+            className="w-14 h-14 shrink-0 rounded-full bg-emerald-500 text-white border-none cursor-pointer flex items-center justify-center shadow-lg"
+          >
+            <HiOutlineCheck className="w-7 h-7" />
+          </button>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+}
+
+function ToolBtn({ icon, label, onClick, disabled }) {
+  const Icon = icon;
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className="flex-1 min-w-0 bg-transparent border-none text-white/85 disabled:opacity-40 cursor-pointer flex flex-col items-center gap-1 py-1"
+    >
+      <Icon className="w-6 h-6" />
+      <span className="text-[11px] leading-tight text-center truncate w-full">{label}</span>
+    </button>
   );
 }
 

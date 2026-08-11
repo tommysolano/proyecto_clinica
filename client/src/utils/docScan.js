@@ -6,19 +6,77 @@
  *   2. `warpDocument`    — la recorta y le corrige la perspectiva (queda recta).
  *   3. `applyFilter`     — la limpia (blanco y negro / gris / color realzado).
  *
- * Cómo se detecta la hoja (a propósito sin detección de bordes ni Hough, que en
- * JS puro son lentos y frágiles con poca luz):
- *   · se reduce el cuadro a ~220px de ancho y se pasa a gris,
- *   · se separa "papel" de "fondo" con el umbral de Otsu (el papel es lo claro),
- *   · se toma la mancha clara más grande (componente conexa),
- *   · sus 4 esquinas son los extremos de x+y y x−y, que dan un cuadrilátero
- *     correcto aunque la hoja esté girada o en diagonal,
- *   · se descarta si es muy chica, muy grande o si la mancha no llena bien el
- *     cuadrilátero (eso significa que no era una hoja).
- * Cuando no encuentra nada devuelve null y la página deja recortar a mano.
+ * Cómo se detecta la hoja
+ * ───────────────────────
+ * Buscar "la mancha clara más grande" no sirve: en la mesa de una oficina el
+ * papel y el escritorio suelen tener el mismo brillo, así que la mancha se come
+ * la mesa entera. Lo que SÍ separa una hoja de lo que tiene debajo es su BORDE
+ * (el filo, la sombra que proyecta), y eso es lo que se busca aquí:
+ *
+ *   · se reduce el cuadro a ~256 px de ancho, se pasa a gris y se suaviza,
+ *   · Sobel da la fuerza y la dirección del borde en cada píxel,
+ *   · una transformada de Hough guiada por esa dirección saca las rectas largas
+ *     de la escena (cada píxel solo vota por ángulos parecidos al suyo, así que
+ *     es barata y los picos salen limpios),
+ *   · se arman cuadriláteros con dos pares de rectas casi paralelas y
+ *     perpendiculares entre sí,
+ *   · como red de seguridad (papel arrugado, foto borrosa, bordes rotos) se
+ *     añaden candidatos por regiones claras: se prueban varios umbrales, se
+ *     toma la mancha más grande y se le calcula el cuadrilátero de área máxima
+ *     sobre su envolvente convexa,
+ *   · TODOS los candidatos se puntúan igual: cuánto borde real hay debajo de
+ *     cada uno de los 4 lados. Un lado inventado no tiene borde y hunde la nota,
+ *     que es lo que evita recortar una sombra o el filo de la mesa,
+ *   · el ganador se afina ajustando cada lado por mínimos cuadrados a los
+ *     píxeles de borde que tiene cerca, y de ahí salen las 4 esquinas.
+ *
+ * Cuando nada convence devuelve null y la página abre el recorte manual.
  */
 
-// ─── Detección ───────────────────────────────────────────────────────────────
+// ─── Parámetros de la detección ──────────────────────────────────────────────
+// Todo lo ajustable está aquí junto: es lo único que hay que retocar si algún
+// día la detección se pasa de estricta (o de confiada) con otras cámaras.
+const D = {
+  work: 256,          // ancho al que se reduce el cuadro para analizarlo
+  minArea: 0.10,      // la hoja ocupa al menos esto del cuadro
+  maxArea: 0.985,     // …y no el cuadro entero (ahí no habría nada que recortar)
+  minSide: 0.10,      // lado mínimo, respecto al lado corto del cuadro
+  minOpposite: 0.35,  // relación mínima entre lados opuestos (perspectiva sana)
+  cornerCos: 0.766,   // |cos| máximo en una esquina → ángulos entre 40° y 140°
+  // Qué se considera "un borde nítido" (0-255). Se saca de la propia imagen con
+  // Otsu, pero acotado: el suelo evita tomar el grano de la cámara por un filo,
+  // y el techo evita lo contrario — que el texto de la hoja, que contrasta
+  // muchísimo más que su borde, deje al borde de papel pareciendo insignificante.
+  edgeFloor: 10,
+  edgeCeil: 18,
+  band: 3,            // px a cada lado en los que se busca el borde de un lado
+  samples: 24,        // muestras por lado al puntuar
+  hit: 0.35,          // desde aquí una muestra cuenta como borde de verdad
+  coverage: 0.78,     // borde mínimo a lo largo de CADA lado. Es la regla que
+                      // impide quedarse con un pedazo del documento: un lado
+                      // que solo existe a ratos no es el filo de una hoja.
+  accept: 0.42,       // nota mínima para dar la hoja por buena
+  good: 0.72,         // por encima de esto ya no hace falta seguir buscando
+  outside: 0.08,      // cuánto puede salirse una esquina del cuadro
+  refine: 6,          // cuántos candidatos se afinan (los mejores)
+};
+
+const HOUGH = {
+  thetaBins: 90,      // 2° por casilla
+  rhoStep: 2,         // px por casilla
+  spread: 2,          // casillas de ángulo a cada lado del gradiente del píxel
+  maxPoints: 6000,    // píxeles de borde que se votan como mucho
+  maxLines: 20,       // rectas que se conservan
+  minPeak: 0.15,      // pico mínimo, respecto al más votado
+  perAngle: 6,        // pares de rectas paralelas que se guardan por orientación
+  maxPairs: 40,       // …y tope total de pares que se combinan entre sí
+};
+
+const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+const ratio = (a, b) => (Math.max(a, b) ? Math.min(a, b) / Math.max(a, b) : 0);
+const clamp = (v, lo, hi) => (v < lo ? lo : v > hi ? hi : v);
+
+// ─── Piezas de imagen ────────────────────────────────────────────────────────
 
 /** Gris (luminancia) de un ImageData → Uint8ClampedArray de w*h. */
 function toGray(data, w, h) {
@@ -29,11 +87,11 @@ function toGray(data, w, h) {
   return g;
 }
 
-/** Umbral de Otsu: el valor de gris que mejor separa claro de oscuro. */
-function otsuThreshold(gray) {
+/** Umbral de Otsu: el valor (0-255) que mejor separa claro de oscuro. */
+function otsuThreshold(values) {
   const hist = new Int32Array(256);
-  for (let i = 0; i < gray.length; i++) hist[gray[i]]++;
-  const total = gray.length;
+  for (let i = 0; i < values.length; i++) hist[values[i]]++;
+  const total = values.length;
   let sum = 0;
   for (let t = 0; t < 256; t++) sum += t * hist[t];
   let sumB = 0, wB = 0, best = 0, threshold = 127;
@@ -51,40 +109,71 @@ function otsuThreshold(gray) {
   return threshold;
 }
 
-/**
- * Componente conexa (4-vecinos) más grande de la máscara. Devuelve los índices
- * de sus píxeles. Pila explícita: recursión se desborda con imágenes grandes.
- */
-function largestBlob(mask, w, h) {
-  const labels = new Int32Array(w * h).fill(-1);
-  const stack = new Int32Array(w * h);
-  let best = null;
-  let bestSize = 0;
-  let label = 0;
-
-  for (let start = 0; start < mask.length; start++) {
-    if (!mask[start] || labels[start] !== -1) continue;
-    let sp = 0;
-    stack[sp++] = start;
-    labels[start] = label;
-    const pixels = [];
-    while (sp > 0) {
-      const p = stack[--sp];
-      pixels.push(p);
-      const x = p % w;
-      const y = (p / w) | 0;
-      if (x > 0 && mask[p - 1] && labels[p - 1] === -1) { labels[p - 1] = label; stack[sp++] = p - 1; }
-      if (x < w - 1 && mask[p + 1] && labels[p + 1] === -1) { labels[p + 1] = label; stack[sp++] = p + 1; }
-      if (y > 0 && mask[p - w] && labels[p - w] === -1) { labels[p - w] = label; stack[sp++] = p - w; }
-      if (y < h - 1 && mask[p + w] && labels[p + w] === -1) { labels[p + w] = label; stack[sp++] = p + w; }
-    }
-    if (pixels.length > bestSize) { bestSize = pixels.length; best = pixels; }
-    label++;
+/** Valor por debajo del cual queda la fracción `p` de la imagen. */
+function percentile(values, p) {
+  const hist = new Int32Array(256);
+  for (let i = 0; i < values.length; i++) hist[values[i]]++;
+  const target = p * values.length;
+  let acc = 0;
+  for (let t = 0; t < 256; t++) {
+    acc += hist[t];
+    if (acc >= target) return t;
   }
-  return best;
+  return 255;
 }
 
-/** Área de un cuadrilátero por la fórmula del zapatero. */
+/** Suavizado 3×3 separable: sin esto el grano de la cámara ensucia el Sobel. */
+function blur3(gray, w, h) {
+  const tmp = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      const i = row + x;
+      const l = x > 0 ? gray[i - 1] : gray[i];
+      const r = x < w - 1 ? gray[i + 1] : gray[i];
+      tmp[i] = (l + 2 * gray[i] + r) * 0.25;
+    }
+  }
+  const out = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    for (let x = 0; x < w; x++) {
+      const i = row + x;
+      const u = y > 0 ? tmp[i - w] : tmp[i];
+      const d = y < h - 1 ? tmp[i + w] : tmp[i];
+      out[i] = (u + 2 * tmp[i] + d) * 0.25;
+    }
+  }
+  return out;
+}
+
+/**
+ * Sobel: derivadas en x e y (dirección del borde) y su fuerza ya escalada a
+ * 0-255 (`edge`), que es lo que se compara contra umbrales.
+ */
+function sobel(src, w, h) {
+  const gx = new Float32Array(w * h);
+  const gy = new Float32Array(w * h);
+  const edge = new Uint8ClampedArray(w * h);
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const a = src[i - w - 1], b = src[i - w], c = src[i - w + 1];
+      const d = src[i - 1], f = src[i + 1];
+      const g = src[i + w - 1], k = src[i + w], l = src[i + w + 1];
+      const sx = (c + 2 * f + l) - (a + 2 * d + g);
+      const sy = (g + 2 * k + l) - (a + 2 * b + c);
+      gx[i] = sx;
+      gy[i] = sy;
+      edge[i] = Math.hypot(sx, sy) / 4; // el máximo teórico es ~1020
+    }
+  }
+  return { gx, gy, edge };
+}
+
+// ─── Geometría ───────────────────────────────────────────────────────────────
+
+/** Área de un polígono por la fórmula del zapatero. */
 function quadArea(q) {
   let a = 0;
   for (let i = 0; i < q.length; i++) {
@@ -95,7 +184,506 @@ function quadArea(q) {
   return Math.abs(a) / 2;
 }
 
-const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+/** Ordena 4 puntos sueltos como [sup.izq, sup.der, inf.der, inf.izq]. */
+function orderQuad(pts) {
+  const cx = (pts[0].x + pts[1].x + pts[2].x + pts[3].x) / 4;
+  const cy = (pts[0].y + pts[1].y + pts[2].y + pts[3].y) / 4;
+  // Ordenados por ángulo alrededor del centro quedan en sentido horario (la y
+  // crece hacia abajo); solo falta empezar por la esquina superior izquierda.
+  const ring = [...pts].sort((a, b) => Math.atan2(a.y - cy, a.x - cx) - Math.atan2(b.y - cy, b.x - cx));
+  let start = 0, best = Infinity;
+  ring.forEach((p, i) => { if (p.x + p.y < best) { best = p.x + p.y; start = i; } });
+  return [ring[start], ring[(start + 1) % 4], ring[(start + 2) % 4], ring[(start + 3) % 4]];
+}
+
+/** Un cuadrilátero cruzado o cóncavo no es una hoja. */
+function isConvex(q) {
+  let sign = 0;
+  for (let i = 0; i < 4; i++) {
+    const a = q[i], b = q[(i + 1) % 4], c = q[(i + 2) % 4];
+    const cross = (b.x - a.x) * (c.y - b.y) - (b.y - a.y) * (c.x - b.x);
+    if (Math.abs(cross) < 1e-6) continue;
+    const s = cross > 0 ? 1 : -1;
+    if (!sign) sign = s;
+    else if (s !== sign) return false;
+  }
+  return sign !== 0;
+}
+
+/** Envolvente convexa (cadena monótona de Andrew). */
+function convexHull(pts) {
+  if (pts.length < 4) return pts;
+  const p = [...pts].sort((a, b) => a.x - b.x || a.y - b.y);
+  const cross = (o, a, b) => (a.x - o.x) * (b.y - o.y) - (a.y - o.y) * (b.x - o.x);
+  const lower = [];
+  for (const q of p) {
+    while (lower.length >= 2 && cross(lower[lower.length - 2], lower[lower.length - 1], q) <= 0) lower.pop();
+    lower.push(q);
+  }
+  const upper = [];
+  for (let i = p.length - 1; i >= 0; i--) {
+    const q = p[i];
+    while (upper.length >= 2 && cross(upper[upper.length - 2], upper[upper.length - 1], q) <= 0) upper.pop();
+    upper.push(q);
+  }
+  lower.pop();
+  upper.pop();
+  return lower.concat(upper);
+}
+
+/** Recorta la envolvente a `max` vértices: el ajuste de abajo es cúbico. */
+function decimateHull(hull, max = 44) {
+  if (hull.length <= max) return hull;
+  const out = [];
+  const step = hull.length / max;
+  for (let i = 0; i < max; i++) out.push(hull[Math.floor(i * step)]);
+  return out;
+}
+
+/**
+ * Cuadrilátero de área máxima inscrito en un polígono convexo: para cada par de
+ * vértices tomados como diagonal, el mejor vértice a cada lado.
+ */
+function maxAreaQuad(hull) {
+  const n = hull.length;
+  if (n < 4) return null;
+  if (n === 4) return [...hull];
+  const tri = (a, b, c) => Math.abs((b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x)) / 2;
+  let best = null, bestArea = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = i + 2; j < n; j++) {
+      if (i === 0 && j === n - 1) continue;
+      let p = -1, pa = 0;
+      for (let k = i + 1; k < j; k++) {
+        const a = tri(hull[i], hull[k], hull[j]);
+        if (a > pa) { pa = a; p = k; }
+      }
+      let q = -1, qa = 0;
+      for (let k = j + 1; k < i + n; k++) {
+        const a = tri(hull[j], hull[k % n], hull[i]);
+        if (a > qa) { qa = a; q = k % n; }
+      }
+      if (p < 0 || q < 0) continue;
+      if (pa + qa > bestArea) { bestArea = pa + qa; best = [hull[i], hull[p], hull[j], hull[q]]; }
+    }
+  }
+  return best;
+}
+
+/** Corte de dos rectas dadas como normal unitaria + distancia (nx·x + ny·y = c). */
+function intersect(l1, l2) {
+  const det = l1.nx * l2.ny - l1.ny * l2.nx;
+  if (Math.abs(det) < 1e-9) return null;
+  return {
+    x: (l1.c * l2.ny - l2.c * l1.ny) / det,
+    y: (l1.nx * l2.c - l2.nx * l1.c) / det,
+  };
+}
+
+// ─── Puntuación: ¿hay borde real debajo de los 4 lados? ──────────────────────
+
+/**
+ * Recorre un lado buscando, en una banda de ±`D.band` px, el píxel con el borde
+ * más fuerte y mejor orientado (perpendicular al lado). Devuelve la fuerza media
+ * y qué fracción del lado tiene borde de verdad.
+ */
+function sideSupport(a, b, ctx) {
+  const { w, h, gx, gy, edge, edgeRef } = ctx;
+  const len = dist(a, b);
+  if (len < 2) return { mean: 0, coverage: 0 };
+  const nx = -(b.y - a.y) / len;
+  const ny = (b.x - a.x) / len;
+  let sum = 0, hits = 0;
+  for (let s = 0; s < D.samples; s++) {
+    const t = (s + 0.5) / D.samples;
+    const px = a.x + (b.x - a.x) * t;
+    const py = a.y + (b.y - a.y) * t;
+    let best = 0;
+    for (let d = -D.band; d <= D.band; d++) {
+      const x = Math.round(px + nx * d);
+      const y = Math.round(py + ny * d);
+      if (x < 1 || y < 1 || x >= w - 1 || y >= h - 1) continue;
+      const i = y * w + x;
+      const m = edge[i];
+      if (!m) continue;
+      const g = Math.hypot(gx[i], gy[i]) || 1;
+      const align = Math.abs((gx[i] * nx + gy[i] * ny) / g);
+      const v = Math.min(1, m / edgeRef) * align;
+      if (v > best) best = v;
+    }
+    sum += best;
+    if (best >= D.hit) hits++;
+  }
+  return { mean: sum / D.samples, coverage: hits / D.samples };
+}
+
+/** Gris medio de una banda paralela al lado, `off` px hacia dentro (o fuera). */
+function bandMean(a, b, off, ctx) {
+  const { w, h, gray } = ctx;
+  const len = dist(a, b);
+  if (len < 2) return 0;
+  const nx = -(b.y - a.y) / len;
+  const ny = (b.x - a.x) / len;
+  let sum = 0, n = 0;
+  for (let s = 0; s < D.samples; s++) {
+    const t = (s + 0.5) / D.samples;
+    const x = Math.round(a.x + (b.x - a.x) * t + nx * off);
+    const y = Math.round(a.y + (b.y - a.y) * t + ny * off);
+    if (x < 0 || y < 0 || x >= w || y >= h) continue;
+    sum += gray[y * w + x];
+    n++;
+  }
+  return n ? sum / n : 0;
+}
+
+/**
+ * Valida y puntúa un candidato. Devuelve null si ni siquiera parece una hoja.
+ *   `score` — cuánto borde real lo sostiene (es lo que decide si se acepta)
+ *   `rank`  — el mismo score más un empujón por tamaño y por "esto es papel"
+ *             (más claro por dentro que por fuera), solo para elegir entre varios.
+ */
+function scoreQuad(quad, ctx) {
+  const { w, h } = ctx;
+  if (!isConvex(quad)) return null;
+
+  const areaRatio = quadArea(quad) / (w * h);
+  if (areaRatio < D.minArea || areaRatio > D.maxArea) return null;
+
+  const sides = [0, 1, 2, 3].map((i) => dist(quad[i], quad[(i + 1) % 4]));
+  if (Math.min(...sides) < Math.min(w, h) * D.minSide) return null;
+  if (ratio(sides[0], sides[2]) < D.minOpposite || ratio(sides[1], sides[3]) < D.minOpposite) return null;
+
+  for (let i = 0; i < 4; i++) {
+    const prev = quad[(i + 3) % 4], cur = quad[i], next = quad[(i + 1) % 4];
+    const ax = prev.x - cur.x, ay = prev.y - cur.y;
+    const bx = next.x - cur.x, by = next.y - cur.y;
+    const cos = (ax * bx + ay * by) / (Math.hypot(ax, ay) * Math.hypot(bx, by) || 1);
+    if (Math.abs(cos) > D.cornerCos) return null;
+  }
+
+  let mean = 0, worst = 1, worstCov = 1, inner = 0, outer = 0;
+  for (let i = 0; i < 4; i++) {
+    const a = quad[i], b = quad[(i + 1) % 4];
+    const s = sideSupport(a, b, ctx);
+    mean += s.mean / 4;
+    if (s.mean < worst) worst = s.mean;
+    if (s.coverage < worstCov) worstCov = s.coverage;
+    inner += bandMean(a, b, D.band + 2, ctx) / 4;
+    outer += bandMean(a, b, -(D.band + 2), ctx) / 4;
+  }
+  // Un lado que solo tiene borde a ratos es un lado inventado: no es una hoja.
+  if (worstCov < D.coverage) return null;
+
+  // Pesa más el lado peor que el promedio: los 4 lados tienen que existir.
+  const score = 0.35 * mean + 0.45 * worst + 0.2 * worstCov;
+  // Entre dos candidatos igual de sostenidos gana el más grande y el que parece
+  // papel (más claro por dentro que por fuera): así se prefiere el borde de la
+  // hoja antes que un recuadro interior formado por los renglones del texto.
+  const paper = clamp((inner - outer) / 50, -1, 1);
+  return { quad, score, areaRatio, rank: score + 0.18 * areaRatio + 0.1 * paper };
+}
+
+/**
+ * Afina el cuadrilátero: ajusta cada lado por mínimos cuadrados (PCA) a los
+ * píxeles de borde que tiene al lado y vuelve a cortar las rectas. Sin esto las
+ * esquinas quedan a merced de la resolución de Hough o del umbral de la mancha.
+ */
+function refineQuad(quad, ctx) {
+  const { w, h, gx, gy, edge, edgeRef } = ctx;
+  const lines = [];
+  for (let i = 0; i < 4; i++) {
+    const a = quad[i], b = quad[(i + 1) % 4];
+    const len = dist(a, b);
+    if (len < 8) return null;
+    const nx = -(b.y - a.y) / len;
+    const ny = (b.x - a.x) / len;
+    let n = 0, sx = 0, sy = 0, sxx = 0, sxy = 0, syy = 0;
+    const steps = Math.max(24, Math.round(len));
+    for (let s = 0; s <= steps; s++) {
+      const t = s / steps;
+      const px = a.x + (b.x - a.x) * t;
+      const py = a.y + (b.y - a.y) * t;
+      let bestV = 0, bx = 0, by = 0;
+      for (let d = -D.band; d <= D.band; d++) {
+        const x = Math.round(px + nx * d);
+        const y = Math.round(py + ny * d);
+        if (x < 1 || y < 1 || x >= w - 1 || y >= h - 1) continue;
+        const i2 = y * w + x;
+        const m = edge[i2];
+        if (!m) continue;
+        const g = Math.hypot(gx[i2], gy[i2]) || 1;
+        const v = m * Math.abs((gx[i2] * nx + gy[i2] * ny) / g);
+        if (v > bestV) { bestV = v; bx = x; by = y; }
+      }
+      if (bestV < edgeRef * 0.4) continue;
+      n++; sx += bx; sy += by; sxx += bx * bx; sxy += bx * by; syy += by * by;
+    }
+    if (n < 10) return null;
+    const mx = sx / n, my = sy / n;
+    const cxx = sxx / n - mx * mx;
+    const cxy = sxy / n - mx * my;
+    const cyy = syy / n - my * my;
+    // Dirección principal de la nube de puntos = dirección del lado.
+    const theta = 0.5 * Math.atan2(2 * cxy, cxx - cyy);
+    const dx = Math.cos(theta), dy = Math.sin(theta);
+    const lnx = -dy, lny = dx;
+    lines.push({ nx: lnx, ny: lny, c: lnx * mx + lny * my });
+  }
+  // El vértice i es el cruce del lado que llega (i-1) con el que sale (i).
+  const out = [];
+  for (let i = 0; i < 4; i++) {
+    const p = intersect(lines[(i + 3) % 4], lines[i]);
+    if (!p) return null;
+    out.push(p);
+  }
+  return out;
+}
+
+/** Descarta el candidato si se sale del cuadro; si roza, lo mete dentro. */
+function fitToFrame(quad, ctx) {
+  const { w, h } = ctx;
+  const mx = w * D.outside, my = h * D.outside;
+  const out = [];
+  for (const p of quad) {
+    if (!p || !Number.isFinite(p.x) || !Number.isFinite(p.y)) return null;
+    if (p.x < -mx || p.x > w - 1 + mx || p.y < -my || p.y > h - 1 + my) return null;
+    out.push({ x: clamp(p.x, 0, w - 1), y: clamp(p.y, 0, h - 1) });
+  }
+  return out;
+}
+
+// ─── Candidatos por rectas (Hough guiado por el gradiente) ───────────────────
+
+function houghCandidates(ctx) {
+  const { w, h, gx, gy, edge, edgeRef } = ctx;
+  const minLen = Math.min(w, h) * D.minSide;
+  // Umbral generoso a propósito: el filo del papel suele ser mucho más suave que
+  // el texto o los objetos de la mesa, y si no vota aquí no se encuentra nunca.
+  // Lo que separa un borde de verdad del ruido es que se repita en línea recta,
+  // y de eso ya se encarga el propio Hough (y después la cobertura por lado).
+  const th = Math.max(7, edgeRef * 0.5);
+
+  let count = 0;
+  for (let i = 0; i < edge.length; i++) if (edge[i] >= th) count++;
+  if (count < 40) return [];
+  const stride = Math.max(1, Math.ceil(count / HOUGH.maxPoints));
+
+  const nTheta = HOUGH.thetaBins;
+  const step = Math.PI / nTheta;
+  const cos = new Float32Array(nTheta);
+  const sin = new Float32Array(nTheta);
+  for (let t = 0; t < nTheta; t++) { cos[t] = Math.cos(t * step); sin[t] = Math.sin(t * step); }
+
+  const diag = Math.hypot(w, h);
+  const nRho = Math.ceil((2 * diag) / HOUGH.rhoStep) + 1;
+  const acc = new Float32Array(nTheta * nRho);
+
+  let seen = 0;
+  for (let y = 1; y < h - 1; y++) {
+    for (let x = 1; x < w - 1; x++) {
+      const i = y * w + x;
+      const m = edge[i];
+      if (m < th) continue;
+      if (seen++ % stride) continue;
+      // Cada píxel solo vota por los ángulos cercanos al de SU gradiente (5 de
+      // 90 casillas, no las 90): sale ~18 veces más barato que un Hough clásico
+      // y además los picos quedan mucho más definidos.
+      let a = Math.atan2(gy[i], gx[i]);
+      if (a < 0) a += Math.PI;
+      if (a >= Math.PI) a -= Math.PI;
+      const base = Math.round(a / step);
+      // El voto se satura en cuanto el borde es nítido. Es clave: si votara con
+      // el contraste crudo, los renglones de texto (que contrastan muchísimo más
+      // que el filo del papel) se quedarían con todos los picos y la hoja no
+      // aparecería nunca. Así lo que decide un pico es LO LARGA que es la recta.
+      const weight = Math.min(1, m / edgeRef);
+      for (let k = -HOUGH.spread; k <= HOUGH.spread; k++) {
+        const t = (base + k + nTheta) % nTheta;
+        const rho = x * cos[t] + y * sin[t];
+        const r = Math.round((rho + diag) / HOUGH.rhoStep);
+        if (r < 0 || r >= nRho) continue;
+        acc[t * nRho + r] += weight;
+      }
+    }
+  }
+
+  // Picos: máximos locales en (ángulo, distancia).
+  let peak = 0;
+  for (let i = 0; i < acc.length; i++) if (acc[i] > peak) peak = acc[i];
+  if (peak <= 0) return [];
+  const floor = peak * HOUGH.minPeak;
+  const found = [];
+  for (let t = 0; t < nTheta; t++) {
+    for (let r = 1; r < nRho - 1; r++) {
+      const v = acc[t * nRho + r];
+      if (v < floor) continue;
+      let isMax = true;
+      for (let dt = -1; dt <= 1 && isMax; dt++) {
+        const tt = (t + dt + nTheta) % nTheta;
+        for (let dr = -3; dr <= 3; dr++) {
+          if (!dt && !dr) continue;
+          const rr = r + dr;
+          if (rr < 0 || rr >= nRho) continue;
+          if (acc[tt * nRho + rr] > v) { isMax = false; break; }
+        }
+      }
+      if (isMax) found.push({ t, r, v });
+    }
+  }
+  found.sort((a, b) => b.v - a.v);
+
+  const lines = [];
+  for (const p of found) {
+    if (lines.length >= HOUGH.maxLines) break;
+    // Nada de dos rectas prácticamente iguales.
+    if (lines.some((l) => Math.abs(l.t - p.t) <= 2 && Math.abs(l.r - p.r) <= 4)) continue;
+    lines.push({
+      t: p.t,
+      r: p.r,
+      votes: p.v,
+      nx: cos[p.t],
+      ny: sin[p.t],
+      c: p.r * HOUGH.rhoStep - diag,
+    });
+  }
+  if (lines.length < 4) return [];
+
+  // Pares de rectas casi paralelas y suficientemente separadas: los dos lados
+  // opuestos de la hoja.
+  const pairs = [];
+  for (let i = 0; i < lines.length; i++) {
+    for (let j = i + 1; j < lines.length; j++) {
+      const dot = lines[i].nx * lines[j].nx + lines[i].ny * lines[j].ny;
+      if (Math.abs(dot) < 0.92) continue;
+      const cj = dot >= 0 ? lines[j].c : -lines[j].c;
+      const sep = Math.abs(lines[i].c - cj);
+      if (sep < minLen) continue;
+      pairs.push({ a: lines[i], b: lines[j], nx: lines[i].nx, ny: lines[i].ny, sep, votes: lines[i].votes + lines[j].votes });
+    }
+  }
+  if (!pairs.length) return [];
+
+  // Un par vale por lo votado que está y por lo SEPARADO que está. Lo segundo
+  // es lo que hace ganar a los dos filos de la hoja frente a dos renglones de
+  // texto: los lados de una hoja son los extremos de su familia de paralelas.
+  let maxVotes = 0, maxSep = 0;
+  for (const p of pairs) {
+    if (p.votes > maxVotes) maxVotes = p.votes;
+    if (p.sep > maxSep) maxSep = p.sep;
+  }
+  for (const p of pairs) p.rank = p.votes / (maxVotes || 1) + p.sep / (maxSep || 1);
+  // Se conservan los mejores pares POR ORIENTACIÓN. Cortando la lista por votos
+  // a secas, en una hoja con renglones los pares horizontales (muchos y muy
+  // marcados) se quedan con todos los puestos y no sobra ni un par vertical con
+  // el que armar el cuadrilátero: la hoja no se encuentra por falta de sitio.
+  pairs.sort((p, q) => q.rank - p.rank);
+  const byAngle = new Map();
+  const top = [];
+  for (const p of pairs) {
+    if (top.length >= HOUGH.maxPairs) break;
+    const bucket = Math.floor((Math.atan2(p.ny, p.nx) * 180) / Math.PI / 15) % 12;
+    const used = byAngle.get(bucket) || 0;
+    if (used >= HOUGH.perAngle) continue;
+    byAngle.set(bucket, used + 1);
+    top.push(p);
+  }
+
+  const out = [];
+  for (let i = 0; i < top.length; i++) {
+    for (let j = i + 1; j < top.length; j++) {
+      const dot = top[i].nx * top[j].nx + top[i].ny * top[j].ny;
+      if (Math.abs(dot) > 0.7) continue; // los dos pares deben cruzarse de frente
+      const c1 = intersect(top[i].a, top[j].a);
+      const c2 = intersect(top[i].a, top[j].b);
+      const c3 = intersect(top[i].b, top[j].b);
+      const c4 = intersect(top[i].b, top[j].a);
+      if (!c1 || !c2 || !c3 || !c4) continue;
+      out.push(orderQuad([c1, c2, c3, c4]));
+    }
+  }
+  return out;
+}
+
+// ─── Candidatos por regiones claras (red de seguridad) ───────────────────────
+
+/** Etiqueta las manchas de la máscara (4-vecinos, pila explícita). */
+function labelRegions(mask, w, h) {
+  const labels = new Int32Array(w * h).fill(-1);
+  const stack = new Int32Array(w * h);
+  const sizes = [];
+  for (let start = 0; start < mask.length; start++) {
+    if (!mask[start] || labels[start] !== -1) continue;
+    const label = sizes.length;
+    let sp = 0, size = 0;
+    stack[sp++] = start;
+    labels[start] = label;
+    while (sp > 0) {
+      const p = stack[--sp];
+      size++;
+      const x = p % w;
+      const y = (p / w) | 0;
+      if (x > 0 && mask[p - 1] && labels[p - 1] === -1) { labels[p - 1] = label; stack[sp++] = p - 1; }
+      if (x < w - 1 && mask[p + 1] && labels[p + 1] === -1) { labels[p + 1] = label; stack[sp++] = p + 1; }
+      if (y > 0 && mask[p - w] && labels[p - w] === -1) { labels[p - w] = label; stack[sp++] = p - w; }
+      if (y < h - 1 && mask[p + w] && labels[p + w] === -1) { labels[p + w] = label; stack[sp++] = p + w; }
+    }
+    sizes.push(size);
+  }
+  return { labels, sizes };
+}
+
+/**
+ * Envolvente convexa de una mancha. Basta con el píxel más a la izquierda y el
+ * más a la derecha de cada fila: cualquier otro cae entre esos dos, así que no
+ * puede ser vértice de la envolvente.
+ */
+function regionHull(labels, target, w, h) {
+  const pts = [];
+  for (let y = 0; y < h; y++) {
+    const row = y * w;
+    let lo = -1, hi = -1;
+    for (let x = 0; x < w; x++) {
+      if (labels[row + x] !== target) continue;
+      if (lo < 0) lo = x;
+      hi = x;
+    }
+    if (lo < 0) continue;
+    pts.push({ x: lo, y });
+    if (hi !== lo) pts.push({ x: hi, y });
+  }
+  return convexHull(pts);
+}
+
+function regionCandidates(ctx) {
+  const { gray, w, h } = ctx;
+  const out = [];
+  const tried = new Set();
+  // Varios umbrales: con papel y mesa parecidos, el que separa no es el de Otsu.
+  for (const th of [otsuThreshold(gray), percentile(gray, 0.55), percentile(gray, 0.72)]) {
+    if (th < 16 || th > 244 || tried.has(th)) continue;
+    tried.add(th);
+    const mask = new Uint8Array(w * h);
+    let bright = 0;
+    for (let i = 0; i < gray.length; i++) if (gray[i] > th) { mask[i] = 1; bright++; }
+    const brightRatio = bright / (w * h);
+    if (brightRatio < D.minArea * 0.7 || brightRatio > 0.97) continue;
+
+    const { labels, sizes } = labelRegions(mask, w, h);
+    let target = -1, size = 0;
+    for (let i = 0; i < sizes.length; i++) if (sizes[i] > size) { size = sizes[i]; target = i; }
+    if (target < 0 || size < w * h * D.minArea * 0.7) continue;
+
+    const quad = maxAreaQuad(decimateHull(regionHull(labels, target, w, h)));
+    if (!quad) continue;
+    // La mancha tiene que LLENAR su cuadrilátero; si no, no era rectangular.
+    const area = quadArea(quad);
+    if (!area || size / area < 0.7) continue;
+    out.push(orderQuad(quad));
+  }
+  return out;
+}
+
+// ─── Detección ───────────────────────────────────────────────────────────────
 
 /**
  * Busca la hoja en un ImageData ya reducido.
@@ -104,59 +692,37 @@ const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
 export function detectDocumentInImageData(imageData) {
   const { data, width: w, height: h } = imageData;
   if (w < 40 || h < 40) return null;
+
   const gray = toGray(data, w, h);
-  const th = otsuThreshold(gray);
+  const { gx, gy, edge } = sobel(blur3(gray, w, h), w, h);
+  const ctx = { w, h, gray, gx, gy, edge, edgeRef: clamp(otsuThreshold(edge), D.edgeFloor, D.edgeCeil) };
 
-  // El papel es la clase clara. Si casi todo el cuadro es "claro" no hay hoja
-  // que recortar (foto contra una pared blanca, por ejemplo).
-  const mask = new Uint8Array(w * h);
-  let bright = 0;
-  for (let i = 0; i < gray.length; i++) {
-    if (gray[i] > th) { mask[i] = 1; bright++; }
+  let best = pickBest(houghCandidates(ctx), ctx);
+  if (!best || best.score < D.good) {
+    const alt = pickBest(regionCandidates(ctx), ctx);
+    if (alt && (!best || alt.rank > best.rank)) best = alt;
   }
-  const brightRatio = bright / (w * h);
-  if (brightRatio < 0.05 || brightRatio > 0.97) return null;
+  return best && best.score >= D.accept ? best.quad : null;
+}
 
-  const blob = largestBlob(mask, w, h);
-  if (!blob || blob.length < w * h * 0.08) return null;
-
-  // Esquinas: extremos de (x+y) y (x−y). Robusto con la hoja girada.
-  let minSum = Infinity, maxSum = -Infinity, minDiff = Infinity, maxDiff = -Infinity;
-  let tl = null, br = null, bl = null, tr = null;
-  let minX = w, maxX = 0, minY = h, maxY = 0;
-  for (const p of blob) {
-    const x = p % w;
-    const y = (p / w) | 0;
-    const s = x + y;
-    const d = x - y;
-    if (s < minSum) { minSum = s; tl = { x, y }; }
-    if (s > maxSum) { maxSum = s; br = { x, y }; }
-    if (d < minDiff) { minDiff = d; bl = { x, y }; }
-    if (d > maxDiff) { maxDiff = d; tr = { x, y }; }
-    if (x < minX) minX = x;
-    if (x > maxX) maxX = x;
-    if (y < minY) minY = y;
-    if (y > maxY) maxY = y;
+/** Puntúa todos los candidatos y afina los mejores. */
+function pickBest(candidates, ctx) {
+  const scored = [];
+  for (const q of candidates) {
+    const fit = fitToFrame(q, ctx);
+    const s = fit && scoreQuad(fit, ctx);
+    if (s) scored.push(s);
   }
-  const quad = [tl, tr, br, bl];
-  if (quad.some((p) => !p)) return null;
-
-  const area = quadArea(quad);
-  const frame = w * h;
-  // Ni una mancha diminuta ni el cuadro entero (ahí no habría nada que recortar).
-  if (area < frame * 0.12 || area > frame * 0.985) return null;
-  // La mancha debe LLENAR el cuadrilátero: si no, no era una hoja rectangular.
-  if (blob.length / area < 0.75) return null;
-  // Lados mínimos: descarta cuadriláteros degenerados (casi una línea).
-  const top = dist(tl, tr), right = dist(tr, br), bottom = dist(br, bl), left = dist(bl, tl);
-  if (Math.min(top, right, bottom, left) < Math.min(w, h) * 0.12) return null;
-  // Los lados opuestos de una hoja se parecen, incluso fotografiada en ángulo:
-  // la perspectiva los acorta, pero no 3 veces. Esto descarta manchas claras con
-  // forma de L o de banda diagonal, que sí llenaban su cuadrilátero.
-  const ratio = (a, b) => Math.min(a, b) / Math.max(a, b);
-  if (ratio(top, bottom) < 0.4 || ratio(left, right) < 0.4) return null;
-
-  return quad;
+  if (!scored.length) return null;
+  scored.sort((a, b) => b.rank - a.rank);
+  let best = scored[0];
+  for (const s of scored.slice(0, D.refine)) {
+    const refined = refineQuad(s.quad, ctx);
+    const fit = refined && fitToFrame(refined, ctx);
+    const s2 = fit && scoreQuad(fit, ctx);
+    if (s2 && s2.rank > best.rank) best = s2;
+  }
+  return best;
 }
 
 /**
@@ -164,7 +730,7 @@ export function detectDocumentInImageData(imageData) {
  * Devuelve las esquinas en coordenadas RELATIVAS (0..1) para poder pintarlas
  * sobre el vídeo y reutilizarlas luego sobre la foto a resolución completa.
  */
-export function detectDocument(source, sourceW, sourceH, work = 220) {
+export function detectDocument(source, sourceW, sourceH, work = D.work) {
   if (!sourceW || !sourceH) return null;
   const scale = work / sourceW;
   const w = Math.max(40, Math.round(sourceW * scale));
@@ -174,7 +740,7 @@ export function detectDocument(source, sourceW, sourceH, work = 220) {
   ctx.drawImage(source, 0, 0, w, h);
   const quad = detectDocumentInImageData(ctx.getImageData(0, 0, w, h));
   if (!quad) return null;
-  return quad.map((p) => ({ x: p.x / w, y: p.y / h }));
+  return quad.map((p) => ({ x: p.x / (w - 1), y: p.y / (h - 1) }));
 }
 
 // Un único canvas de trabajo reutilizado: crear uno por cuadro dispara el GC.
