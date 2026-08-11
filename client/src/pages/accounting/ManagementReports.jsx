@@ -3,10 +3,12 @@ import { useNavigate } from 'react-router-dom';
 import api from '../../api/axios';
 import toast from 'react-hot-toast';
 import { HiOutlineChartBar } from 'react-icons/hi2';
-import { sourceDeepLink, sourceLabel } from './sourceDocs';
+import { sourceDeepLink } from './sourceDocs';
 import { BarChart, Bar, LineChart, Line, PieChart, Pie, Cell, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, Legend } from 'recharts';
 import { fmt, fmtDate, startOfMonth, today } from './_utils';
 import ExcelButton from '../../components/ExcelButton';
+import JournalEntryViewModal from '../../components/JournalEntryViewModal';
+import SalesDrilldownModal from './_SalesDrilldownModal';
 
 const CHART_COLORS = ['#10b981', '#0ea5e9', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#14b8a6', '#f97316'];
 const METHOD_LABELS = { efectivo: 'Efectivo', tarjeta: 'Tarjeta', transferencia: 'Transferencia' };
@@ -41,6 +43,10 @@ export default function ManagementReports() {
   const [startDate, setStart] = useState(startOfMonth());
   const [endDate, setEnd] = useState(today());
   const [data, setData] = useState(null);
+  // Asiento abierto EN ESTA pantalla (para los orígenes que no tienen página propia).
+  const [asiento, setAsiento] = useState(null);
+  // Fila de un reporte de ventas abierta en detalle (qué ventas la componen).
+  const [drill, setDrill] = useState(null);
 
   const current = TABS.find((t) => t.key === tab);
 
@@ -58,13 +64,25 @@ export default function ManagementReports() {
    * compra, el cobro/pago, el movimiento bancario… Cada página sabe recibir
    * `?doc=<id>` y abrirlo (deep link), así que desde el reporte se llega al
    * comprobante en un clic.
+   *
+   * Cuando el origen NO tiene pantalla propia que lo abra (movimiento bancario,
+   * conciliación, cierre de caja, comisiones…) el reporte ya no despacha al usuario
+   * con un "consúltalo en su pantalla": abre AQUÍ MISMO el asiento contable, que es
+   * la información que venía a ver, y desde el visor puede saltar al origen si lo hay.
    */
   const abrirDocumento = (row) => {
     const url = sourceDeepLink(row);
     if (url) return navigate(url);
-    if (row?.sourceModel) return toast(`${sourceLabel(row)} — se consulta desde su propia pantalla`, { icon: 'ℹ️' });
+    if (row?.entryId) return setAsiento({ entryId: String(row.entryId) });
+    if (row?.sourceModel && row?.sourceRef) {
+      return setAsiento({ source: { model: row.sourceModel, ref: String(row.sourceRef) } });
+    }
     toast('Esta fila no tiene un documento asociado que abrir.', { icon: 'ℹ️' });
   };
+
+  /** Abre el detalle de una fila de los reportes de ventas (qué ventas la componen). */
+  const abrirDetalle = (dimension, keyValue, label, name) =>
+    setDrill({ dimension, keyValue: keyValue == null ? '' : String(keyValue), label, name });
 
   const renderTable = () => {
     if (!data) return null;
@@ -179,14 +197,42 @@ export default function ManagementReports() {
         </div>
       );
     }
+    // Los reportes agrupados son pulsables: cada fila abre las ventas que la componen,
+    // con su factura y su asiento (antes eran un total sin forma de comprobarlo).
     if (tab === 'PERIODO') return (
-      <Table head={['Período', 'N° ventas', 'Subtotal', 'IVA', 'Total']} rows={arr.map((r) => [r._id, r.count, `$${fmt(r.subtotal)}`, `$${fmt(r.tax)}`, `$${fmt(r.total)}`])} />
+      <ReportBlock title="Ventas por período (pulsa una fila para ver las ventas que la componen)">
+        <Table
+          head={['Período', 'N° ventas', 'Subtotal', 'IVA', 'Total']}
+          rows={arr.map((r) => [r._id, r.count, `$${fmt(r.subtotal)}`, `$${fmt(r.tax)}`, `$${fmt(r.total)}`])}
+          onRowClick={(i) => abrirDetalle('period', arr[i]._id, arr[i]._id)}
+          empty="No hubo ventas en el rango elegido."
+        />
+      </ReportBlock>
     );
     if (tab === 'PRODUCTO') return (
-      <Table head={['Producto', 'Cantidad', 'Total']} rows={arr.map((r) => [r._id?.name || '—', r.qty, `$${fmt(r.subtotal)}`])} />
+      <ReportBlock title="Ventas por producto (pulsa una fila para ver las ventas que la componen)">
+        <Table
+          head={['Código', 'Producto', 'Cantidad', 'Total']}
+          align={['left', 'left', 'right', 'right']}
+          rows={arr.map((r) => [r.code || '—', r._id?.name || '—', r.qty, `$${fmt(r.subtotal)}`])}
+          onRowClick={(i) => abrirDetalle('product', arr[i]._id?.product, arr[i]._id?.name || 'Sin producto', arr[i]._id?.name)}
+          empty="No hubo ventas en el rango elegido."
+        />
+      </ReportBlock>
     );
     if (tab === 'VENDEDOR' || tab === 'CAJERO') return (
-      <Table head={['Usuario', 'N° ventas', 'Total']} rows={arr.map((r) => [r._id?.name || 'Sin asignar', r.count, `$${fmt(r.total)}`])} />
+      <ReportBlock title={`Ventas por ${tab === 'VENDEDOR' ? 'vendedor' : 'cajero'} (pulsa una fila para ver sus ventas)`}>
+        <Table
+          head={['Usuario', 'N° ventas', 'Total']}
+          rows={arr.map((r) => [r._id?.name || 'Sin asignar', r.count, `$${fmt(r.total)}`])}
+          onRowClick={(i) => abrirDetalle(
+            tab === 'VENDEDOR' ? 'seller' : 'cashier',
+            arr[i]._id?._id,
+            arr[i]._id?.name || 'Sin asignar',
+          )}
+          empty="No hubo ventas en el rango elegido."
+        />
+      </ReportBlock>
     );
     // COSTO DE VENTA: los totales y, debajo, QUÉ se vendió. Al pulsar una fila se
     // abre su factura de venta; si la venta aún no está facturada, la venta.
@@ -283,7 +329,14 @@ export default function ManagementReports() {
       );
     }
     if (tab === 'COSTO_CAT') return (
-      <Table head={['Categoría', 'Cantidad', 'Ingresos', 'Costo', 'Utilidad', 'Margen']} rows={rows.map((r) => [r.category, r.qty, `$${fmt(r.revenue)}`, `$${fmt(r.cost)}`, `$${fmt(r.grossProfit)}`, `${r.margin}%`])} />
+      <ReportBlock title="Costo por categoría (pulsa una fila para ver lo vendido de esa categoría)">
+        <Table
+          head={['Categoría', 'Cantidad', 'Ingresos', 'Costo', 'Utilidad', 'Margen']}
+          rows={rows.map((r) => [r.category, r.qty, `$${fmt(r.revenue)}`, `$${fmt(r.cost)}`, `$${fmt(r.grossProfit)}`, `${r.margin}%`])}
+          onRowClick={(i) => abrirDetalle('category', rows[i].category, rows[i].category)}
+          empty="No hubo ventas en el rango elegido."
+        />
+      </ReportBlock>
     );
     if (tab === 'AR' || tab === 'AP') return (
       <div className="space-y-3">
@@ -369,6 +422,29 @@ export default function ManagementReports() {
         />
       </div>
       {data && <div className="bg-white rounded-xl p-4 shadow-sm overflow-auto">{renderTable()}</div>}
+
+      {/* Origen sin pantalla propia: el asiento se ve aquí mismo. */}
+      <JournalEntryViewModal
+        isOpen={!!asiento}
+        onClose={() => setAsiento(null)}
+        entryId={asiento?.entryId}
+        source={asiento?.source}
+        title="Asiento del movimiento"
+      />
+
+      {/* Detalle de una fila de los reportes de ventas. */}
+      {drill && (
+        <SalesDrilldownModal
+          open
+          onClose={() => setDrill(null)}
+          dimension={drill.dimension}
+          keyValue={drill.keyValue}
+          name={drill.name}
+          label={drill.label}
+          rango={{ startDate, endDate }}
+          granularity={granularity}
+        />
+      )}
     </div>
   );
 }

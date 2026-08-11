@@ -9,6 +9,7 @@ import SearchableSelect from '../../components/SearchableSelect';
 import ExcelButton from '../../components/ExcelButton';
 import { HiOutlinePlus, HiOutlineArrowsRightLeft, HiOutlinePencilSquare, HiOutlineTrash, HiOutlineArrowTopRightOnSquare, HiOutlineMagnifyingGlass } from 'react-icons/hi2';
 import { fmt, fmtDate, today } from './_utils';
+import JournalEntryViewModal from '../../components/JournalEntryViewModal';
 import { sourceLabel, sourceDeepLink, sourceActionLabel } from './sourceDocs';
 
 /**
@@ -76,6 +77,8 @@ export default function BankMovements() {
   const [editing, setEditing] = useState(null); // movimiento que se está corrigiendo
   const [form, setForm] = useState(EMPTY_MOV);
   const [busy, setBusy] = useState(false);
+  // Asiento que se está mirando sin salir de la pantalla ({ model, ref } del documento).
+  const [asiento, setAsiento] = useState(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -193,10 +196,17 @@ export default function BankMovements() {
     } catch (e) { toast.error(e.response?.data?.message || 'Error'); }
   };
 
+  /**
+   * Va al documento origen. Si ese origen no tiene pantalla que sepa abrirlo (conciliación,
+   * cierre de caja, comisiones…), NO se despide al usuario con un "consúltalo en su
+   * pantalla": se le abre aquí mismo el asiento, que es lo que venía a mirar.
+   */
   const irAlOrigen = (m) => {
     const url = sourceDeepLink(m);
     if (url) return navigate(url);
-    toast(`${sourceLabel(m)} — se consulta desde su propia pantalla`, { icon: 'ℹ️' });
+    setAsiento(m.sourceModel && m.sourceRef
+      ? { model: m.sourceModel, ref: String(m.sourceRef) }
+      : { model: 'BankTransaction', ref: String(m._id) });
   };
 
   // Solo cuentas de detalle: las agrupadoras no reciben movimientos.
@@ -303,7 +313,7 @@ export default function BankMovements() {
                   <td className="px-3 py-2">
                     <div className="flex items-center justify-end gap-1.5">
                       {deLote && (
-                        <button onClick={() => irAlOrigen(m)} className="text-slate-500 hover:text-slate-700" title={sourceActionLabel(m) || `Origen: ${sourceLabel(m)}`}>
+                        <button onClick={() => irAlOrigen(m)} className="text-slate-500 hover:text-slate-700" title={sourceActionLabel(m) || `Ver el asiento — origen: ${sourceLabel(m)}`}>
                           <HiOutlineArrowTopRightOnSquare className="w-5 h-5" />
                         </button>
                       )}
@@ -424,6 +434,15 @@ export default function BankMovements() {
           </div>
         </form>
       </Modal>
+
+      {/* Orígenes sin pantalla propia: su asiento se ve aquí mismo. */}
+      <JournalEntryViewModal
+        isOpen={!!asiento}
+        onClose={() => setAsiento(null)}
+        source={asiento}
+        title="Asiento del movimiento"
+        emptyHint="Este movimiento no generó asiento propio (puede compartirlo con el documento que lo originó)."
+      />
     </div>
   );
 }

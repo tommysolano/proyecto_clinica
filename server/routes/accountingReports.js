@@ -38,6 +38,10 @@ router.get('/sales/by-period', c.salesByPeriod);
 router.get('/sales/weekly', c.salesWeekly);
 router.get('/sales/cost', c.costOfSales);
 router.get('/sales/cost-by-category', c.costOfSalesByCategory);
+// Detalle (drill-down) de UNA fila de los reportes de ventas: qué ventas la componen,
+// con su factura. Va ANTES del comodín `/sales/:report.xlsx`, que si no se queda el .xlsx.
+router.get('/sales/drilldown', c.salesDrilldown);
+router.get('/sales/drilldown.xlsx', c.salesDrilldownExcel);
 // Excel de los sub-reportes de ventas (by-period, by-product, by-seller, by-cashier,
 // cost, cost-by-category). Un solo endpoint: solo cambian las columnas.
 router.get('/sales/:report.xlsx', c.salesSubreportExcel);

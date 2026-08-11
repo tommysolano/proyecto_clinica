@@ -9,6 +9,10 @@ const InventoryMovement = require('../models/InventoryMovement');
 const Receivable = require('../models/Receivable');
 const Payable = require('../models/Payable');
 const AccountBalance = require('../models/AccountBalance');
+// Los reportes de ventas pueblan `createdBy`/`cashier`: sin registrar el modelo aquí,
+// mongoose revienta con "Schema hasn't been registered for model User" en cuanto este
+// controlador es el primero en cargarse (scripts, jobs, un test suelto).
+require('../models/User');
 const { recomputeBalances } = require('../utils/accounting');
 const { startOfDay, endOfDay } = require('../utils/dates');
 const {
@@ -32,6 +36,15 @@ const mongoose = require('mongoose');
 const oid = (v) => (v instanceof mongoose.Types.ObjectId ? v : new mongoose.Types.ObjectId(String(v)));
 const XL = require('../utils/excelReport');
 const { buildAts, atsXml, atsFileName } = require('../utils/sriForms/ats');
+
+/**
+ * Número visible de una factura de venta ("001-001-000000123").
+ *
+ * `Invoice.numero` NO existe: el número es el virtual `numeroFactura`, y los virtuales se
+ * PIERDEN al leer con `.lean()` (que es como leen los reportes). Por eso la columna
+ * "Factura" del costo de venta salía vacía. Se compone aquí, una sola vez.
+ */
+const numeroFactura = (inv) => (inv?.estab ? `${inv.estab}-${inv.ptoEmi}-${inv.secuencial}` : '');
 
 /**
  * Ventas fiscalmente en el período: facturas AUTORIZADAS cuya fecha FISCAL
@@ -766,7 +779,10 @@ exports.salesByProduct = async (req, res) => {
   }
   const rows = await Sale.aggregate([
     { $match: match }, { $unwind: '$items' },
+    // El código va como `$first` y NO dentro del _id: metido en la clave partiría en dos
+    // filas el mismo producto si alguna venta antigua guardó otro código.
     { $group: { _id: { product: '$items.product', name: '$items.productName' },
+                code: { $first: '$items.productCode' },
                 qty: { $sum: '$items.quantity' }, subtotal: { $sum: '$items.subtotal' } } },
     { $sort: { subtotal: -1 } },
   ]);
@@ -843,12 +859,17 @@ exports.salesBySeller = async (req, res) => {
 exports.costOfSalesByCategory = async (req, res) => {
   try {
     const match = { clinic: oid(req.clinicId), status: 'completada', ...dateMatch(req) };
-    const sales = await Sale.find(match).populate('items.product', 'purchasePrice category');
+    const sales = await Sale.find(match).populate('items.product', 'purchasePrice averageCost category');
     const byCat = {};
     for (const s of sales) {
       for (const it of s.items) {
         const cat = it.product?.category || it.category || 'otro';
-        const cost = (it.product?.purchasePrice || 0) * it.quantity;
+        // MISMO costo unitario que «Costo de venta»: el promedio del kardex, que es el costo
+        // real de las compras. Antes aquí solo se miraba `purchasePrice` (un precio digitado
+        // que ya no se captura), así que los dos reportes daban costos distintos para las
+        // mismas ventas y el detalle de una fila no podía cuadrar con su total.
+        const unitCost = Number(it.product?.averageCost) || Number(it.product?.purchasePrice) || 0;
+        const cost = unitCost * it.quantity;
         if (!byCat[cat]) byCat[cat] = { category: cat, revenue: 0, cost: 0, qty: 0 };
         byCat[cat].revenue += it.subtotal || 0;
         byCat[cat].cost += cost;
@@ -885,7 +906,7 @@ exports.costOfSales = async (req, res) => {
 
     // Factura de cada venta: es lo que el usuario quiere poder abrir desde el reporte.
     const facturas = await Invoice.find({ clinic: req.clinicId, sale: { $in: sales.map((s) => s._id) } })
-      .select('sale numero estado')
+      .select('sale estab ptoEmi secuencial estado')
       .lean();
     const facturaPorVenta = new Map(facturas.map((f) => [String(f.sale), f]));
 
@@ -903,7 +924,7 @@ exports.costOfSales = async (req, res) => {
           fecha: s.createdAt,
           cliente: s.clientName || 'CONSUMIDOR FINAL',
           invoiceId: inv?._id || null,
-          factura: inv?.numero || '',
+          factura: numeroFactura(inv),
           producto: it.productName,
           codigo: it.productCode || it.product?.code || '',
           cantidad: it.quantity || 0,
@@ -921,6 +942,151 @@ exports.costOfSales = async (req, res) => {
       totalCost: +cost.toFixed(2),
       grossProfit: +(totalSales - cost).toFixed(2),
       rows,
+    });
+  } catch (e) { res.status(500).json({ message: e.message }); }
+};
+
+/**
+ * DETALLE (drill-down) DE UNA FILA DE LOS REPORTES DE VENTAS.
+ *
+ * Los sub-reportes de ventas son totales agrupados ("producto X: $1.240"). La pregunta
+ * que viene después es SIEMPRE la misma —"¿de qué ventas salió eso?"— y hasta ahora
+ * había que salir a Ventas a buscarlas a mano. Aquí se devuelven las ventas (o las
+ * líneas) que componen UNA fila, cada una con su venta y su factura, para que desde la
+ * pantalla se abra el documento y, desde el documento, su asiento.
+ *
+ * `dimension` dice qué reporte se está abriendo y `key` qué fila:
+ *   period   → el período tal como lo agrupó el reporte (se reutiliza la MISMA expresión
+ *              de agrupación, así el detalle no puede discrepar del total por el huso)
+ *   product  → id del producto (fila por LÍNEA; `name` afina cuando el reporte separó
+ *              dos filas con el mismo producto y distinto nombre histórico)
+ *   category → categoría del producto (fila por LÍNEA)
+ *   seller   → Sale.createdBy  ('' = sin asignar)
+ *   cashier  → Sale.cashier    ('' = sin asignar)
+ */
+const DRILL_DIMENSIONS = ['period', 'product', 'category', 'seller', 'cashier'];
+const DRILL_TITLES = {
+  period: 'Ventas por período',
+  product: 'Ventas por producto',
+  category: 'Costo por categoría',
+  seller: 'Ventas por vendedor',
+  cashier: 'Ventas por cajero',
+};
+
+exports.salesDrilldown = async (req, res) => {
+  try {
+    const dimension = String(req.query.dimension || '');
+    if (!DRILL_DIMENSIONS.includes(dimension)) {
+      return res.status(400).json({ message: 'Esta fila no tiene detalle de ventas.' });
+    }
+    const key = req.query.key == null ? '' : String(req.query.key);
+    const match = { clinic: oid(req.clinicId), status: 'completada', ...dateMatch(req) };
+
+    // Vendedor / cajero: el reporte agrupa por ese campo, así que se filtra en el match.
+    if (dimension === 'seller') match.createdBy = key ? asObjectId(key) : null;
+    if (dimension === 'cashier') match.cashier = key ? asObjectId(key) : null;
+
+    if (dimension === 'period') {
+      const granularity = req.query.granularity || 'month';
+      const groupId = granularity === 'quarter'
+        ? { $concat: [{ $dateToString: { format: '%Y', date: '$createdAt' } }, '-T', { $toString: { $ceil: { $divide: [{ $month: '$createdAt' }, 3] } } }] }
+        : { $dateToString: { format: periodFormat(granularity), date: '$createdAt' } };
+      const ids = await Sale.aggregate([
+        { $match: match },
+        { $addFields: { __periodo: groupId } },
+        { $match: { __periodo: key } },
+        { $project: { _id: 1 } },
+      ]);
+      match._id = { $in: ids.map((r) => r._id) };
+    }
+
+    const sales = await Sale.find(match)
+      .populate('items.product', 'code category averageCost purchasePrice')
+      .populate('createdBy', 'name')
+      .populate('cashier', 'name')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    // La factura de cada venta: es el documento que el contador quiere abrir.
+    const facturas = await Invoice.find({ clinic: req.clinicId, sale: { $in: sales.map((s) => s._id) } })
+      .select('sale estab ptoEmi secuencial estado').lean();
+    const facturaPorVenta = new Map(facturas.map((f) => [String(f.sale), f]));
+
+    // Producto y categoría se detallan a nivel de LÍNEA: la fila del reporte suma
+    // líneas, no ventas completas (una venta trae varios productos).
+    const porLinea = dimension === 'product' || dimension === 'category';
+    const nombreFiltro = dimension === 'product' ? String(req.query.name || '') : '';
+    const categoriaDe = (it) => it.product?.category || it.category || 'otro';
+
+    const rows = [];
+    for (const s of sales) {
+      const inv = facturaPorVenta.get(String(s._id));
+      const base = {
+        saleId: s._id,
+        venta: s.saleNumber,
+        fecha: s.createdAt,
+        cliente: s.clientName || 'CONSUMIDOR FINAL',
+        identificacion: s.clientCedula || '',
+        vendedor: s.createdBy?.name || 'Sin asignar',
+        cajero: s.cashier?.name || 'Sin asignar',
+        invoiceId: inv?._id || null,
+        factura: numeroFactura(inv),
+        estadoSri: inv?.estado || '',
+        estado: s.status,
+      };
+      if (!porLinea) {
+        rows.push({
+          ...base,
+          cantidad: (s.items || []).reduce((n, it) => n + (it.quantity || 0), 0),
+          subtotal: +(s.subtotal || 0).toFixed(2),
+          iva: +(s.taxAmount || 0).toFixed(2),
+          descuento: +(s.discountTotal || 0).toFixed(2),
+          total: +(s.total || 0).toFixed(2),
+        });
+        continue;
+      }
+      for (const it of s.items || []) {
+        const coincide = dimension === 'product'
+          ? String(it.product?._id || it.product || '') === key && (!nombreFiltro || it.productName === nombreFiltro)
+          : categoriaDe(it) === key;
+        if (!coincide) continue;
+        const costoUnitario = Number(it.product?.averageCost) || Number(it.product?.purchasePrice) || 0;
+        const costo = +(costoUnitario * (it.quantity || 0)).toFixed(2);
+        const subtotal = +(it.subtotal || 0).toFixed(2);
+        const iva = +(it.taxAmount || 0).toFixed(2);
+        rows.push({
+          ...base,
+          producto: it.productName,
+          codigo: it.productCode || it.product?.code || '',
+          cantidad: it.quantity || 0,
+          precioUnitario: +(it.unitPrice || 0).toFixed(2),
+          descuento: +(it.discount || 0).toFixed(2),
+          subtotal,
+          iva,
+          total: +(it.lineTotal || subtotal + iva).toFixed(2),
+          costo,
+          utilidad: +(subtotal - costo).toFixed(2),
+        });
+      }
+    }
+
+    const suma = (k) => +rows.reduce((s, r) => s + (Number(r[k]) || 0), 0).toFixed(2);
+    res.json({
+      dimension,
+      key,
+      level: porLinea ? 'line' : 'sale',
+      label: req.query.label || key || 'Sin asignar',
+      rows,
+      totals: {
+        ventas: new Set(rows.map((r) => String(r.saleId))).size,
+        lineas: rows.length,
+        cantidad: suma('cantidad'),
+        subtotal: suma('subtotal'),
+        iva: suma('iva'),
+        descuento: suma('descuento'),
+        total: suma('total'),
+        ...(porLinea ? { costo: suma('costo'), utilidad: suma('utilidad') } : {}),
+      },
     });
   } catch (e) { res.status(500).json({ message: e.message }); }
 };
@@ -3014,7 +3180,7 @@ const SALES_SUBREPORTS = {
   'by-product': {
     handler: () => exports.salesByProduct,
     title: 'Ventas por producto',
-    map: (r) => ({ name: r._id?.name || '—', code: r._id?.code || '', qty: r.qty, subtotal: r.subtotal }),
+    map: (r) => ({ name: r._id?.name || '—', code: r.code || '', qty: r.qty, subtotal: r.subtotal }),
     columns: [
       { header: 'Código', key: 'code', width: 16 },
       { header: 'Producto', key: 'name', width: 44 },
@@ -3126,4 +3292,49 @@ exports.salesSubreportExcel = XL.excelHandler(async (req, res) => {
     totals,
   });
   await XL.sendWorkbook(res, wb, `${key.replace(/-/g, '_')}_${Date.now()}.xlsx`);
+});
+
+/**
+ * DETALLE de una fila de los reportes de ventas en Excel: las MISMAS filas que abre la
+ * pantalla (mismo controlador), para que el contador se lleve el respaldo del total.
+ */
+exports.salesDrilldownExcel = XL.excelHandler(async (req, res) => {
+  const d = await XL.captureJson(exports.salesDrilldown, req);
+  const porLinea = d.level === 'line';
+  const wb = XL.newWorkbook();
+  XL.addSheet(wb, {
+    title: 'Detalle',
+    meta: [
+      ['Reporte', `Detalle — ${DRILL_TITLES[d.dimension] || d.dimension}`],
+      ['Fila', d.label],
+      ['Período', XL.periodLabel(req.query)],
+      ['Ventas', d.totals?.ventas || 0],
+    ],
+    columns: [
+      { header: 'Fecha', key: 'fecha', width: 12, date: true },
+      { header: 'Venta', key: 'venta', width: 14 },
+      { header: 'Factura', key: 'factura', width: 18 },
+      { header: 'Cliente', key: 'cliente', width: 30 },
+      { header: 'Identificación', key: 'identificacion', width: 16 },
+      ...(porLinea ? [
+        { header: 'Código', key: 'codigo', width: 14 },
+        { header: 'Producto / servicio', key: 'producto', width: 34 },
+      ] : []),
+      { header: 'Cantidad', key: 'cantidad', width: 10, number: true },
+      { header: 'Descuento', key: 'descuento', width: 13, money: true },
+      { header: 'Subtotal', key: 'subtotal', width: 14, money: true },
+      { header: 'IVA', key: 'iva', width: 12, money: true },
+      { header: 'Total', key: 'total', width: 14, money: true },
+      ...(porLinea ? [
+        { header: 'Costo', key: 'costo', width: 13, money: true },
+        { header: 'Utilidad', key: 'utilidad', width: 13, money: true },
+      ] : []),
+      { header: 'Vendedor', key: 'vendedor', width: 24 },
+      { header: 'Cajero', key: 'cajero', width: 24 },
+      { header: 'Estado SRI', key: 'estadoSri', width: 14 },
+    ],
+    rows: d.rows || [],
+    totals: d.totals || {},
+  });
+  await XL.sendWorkbook(res, wb, `detalle_ventas_${Date.now()}.xlsx`);
 });

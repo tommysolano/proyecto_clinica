@@ -4,6 +4,7 @@ const Sale = require('../models/Sale');
 const ServiceCategory = require('../models/ServiceCategory');
 const SalesReportPreset = require('../models/SalesReportPreset');
 const salesReport = require('../services/salesReportService');
+const { addSalesSheet, findSalesForSheet } = require('../services/salesWorkbook');
 
 const oid = (v) => new mongoose.Types.ObjectId(v);
 const fail = (res, e) => res.status(e.status || 400).json({ message: e.message });
@@ -262,6 +263,36 @@ exports.exportReportExcel = async (req, res) => {
 
     res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
     res.setHeader('Content-Disposition', 'attachment; filename="reporte-ventas.xlsx"');
+    await wb.xlsx.write(res);
+    res.end();
+  } catch (e) { fail(res, e); }
+};
+
+/* ============================== EXCEL CONTABLE (formato de la pantalla de Ventas) ============================== */
+
+/**
+ * El MISMO Excel que se descarga desde la pantalla de Ventas: una fila por venta con el
+ * desglose por forma de pago, la factura y el estado del SRI.
+ *
+ * Por qué existe: el reporte conciliable de cuatro hojas es útil para auditar, pero la
+ * contadora trabaja con la planilla de Ventas y no le servía otro formato. En vez de
+ * copiar columnas (que se desincronizan al primer cambio), las dos pantallas arman la
+ * hoja con `services/salesWorkbook`. Aquí, además, se respetan los filtros de producto y
+ * categoría del reporte: la planilla sale acotada a lo que se está mirando.
+ */
+exports.exportSalesSheetExcel = async (req, res) => {
+  try {
+    const range = dateRange(req);
+    const productIds = await resolveProductIds(req);
+    const sales = await findSalesForSheet(req.clinicId, {
+      range,
+      status: req.query.status,
+      productIds: productIds.map(oid),
+    });
+    const wb = new ExcelJS.Workbook();
+    addSalesSheet(wb, sales);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', 'attachment; filename="ventas.xlsx"');
     await wb.xlsx.write(res);
     res.end();
   } catch (e) { fail(res, e); }

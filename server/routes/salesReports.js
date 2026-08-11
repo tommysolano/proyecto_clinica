@@ -25,6 +25,9 @@ router.get('/summary', c.summary);
 router.get('/report', c.report);
 // La exportación es una acción sensible (se lleva la información fuera): admin/contabilidad.
 router.get('/report.xlsx', requireRole('admin', 'contabilidad'), c.exportReportExcel);
+// El MISMO Excel de la pantalla de Ventas (el formato con el que trabaja el contador),
+// pero acotado a los filtros del reporte.
+router.get('/ventas.xlsx', requireRole('admin', 'contabilidad'), c.exportSalesSheetExcel);
 router.get('/excel', requireRole('admin', 'contabilidad'), c.exportExcel);
 
 module.exports = router;

@@ -93,6 +93,21 @@ export default function SalesReports() {
     } catch (e) { toast.error(e.message || 'Error al exportar'); }
   };
 
+  /**
+   * Excel de VENTAS en el formato con el que trabaja la contadora: exactamente el mismo
+   * archivo que se baja desde la pantalla de Ventas (una fila por venta, con el desglose
+   * por forma de pago, la factura y el estado del SRI), pero acotado a los filtros de
+   * este reporte. Lo arma el mismo servicio del servidor, así que no pueden divergir.
+   */
+  const downloadVentasExcel = async () => {
+    try {
+      await downloadFile('/sales-reports/ventas.xlsx', {
+        params: params(),
+        filename: `ventas_${filters.startDate}_${filters.endDate}.xlsx`,
+      });
+    } catch (e) { toast.error(e.message || 'Error al exportar'); }
+  };
+
   const toggleProduct = (id) => setFilters((f) => ({ ...f, products: f.products.includes(id) ? f.products.filter((x) => x !== id) : [...f.products, id] }));
   const toggleCategory = (id) => setFilters((f) => ({ ...f, categories: f.categories.includes(id) ? f.categories.filter((x) => x !== id) : [...f.categories, id] }));
 
@@ -146,7 +161,12 @@ export default function SalesReports() {
             Detalle conciliable
           </button>
           <button onClick={openNewCat} className="px-3 py-2 bg-slate-700 text-white rounded-lg flex items-center gap-2 text-sm"><HiOutlineTag /> Categorías</button>
-          <button onClick={downloadExcel} className="px-3 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 text-sm"><HiOutlineArrowDownTray /> Excel detallado</button>
+          {/* El formato del contador (idéntico al de la pantalla de Ventas) va primero:
+              es el que se usa a diario. El conciliable de 4 hojas queda al lado. */}
+          <button onClick={downloadVentasExcel} title="Una fila por venta con el desglose por forma de pago, la factura y el estado del SRI (el mismo archivo de la pantalla de Ventas)"
+            className="px-3 py-2 bg-emerald-600 text-white rounded-xl shadow-sm shadow-emerald-600/20 flex items-center gap-2 text-sm"><HiOutlineArrowDownTray /> Excel de ventas</button>
+          <button onClick={downloadExcel} title="Reporte conciliable: documentos, líneas, pagos y resumen (4 hojas)"
+            className="px-3 py-2 bg-white border border-emerald-200 text-emerald-700 rounded-xl flex items-center gap-2 text-sm"><HiOutlineArrowDownTray /> Conciliable (4 hojas)</button>
         </div>
       </div>
 
