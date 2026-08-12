@@ -24,6 +24,7 @@ import {
   HiOutlineUserPlus,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
+import { doctorOptionLabel } from '../utils/roles';
 
 // 6 estados soportados por el backend.
 const statusColors = {
@@ -1197,7 +1198,7 @@ export default function Appointments() {
                   <option value="">Sin asignar</option>
                   {doctors.map((d) => (
                     <option key={d._id} value={d._id}>
-                      Dr. {d.name} - {d.specialty}
+                      {doctorOptionLabel(d)}
                     </option>
                   ))}
                 </select>

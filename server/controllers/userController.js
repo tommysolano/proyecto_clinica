@@ -194,6 +194,12 @@ exports.getMySignature = async (req, res) => {
  * Lista doctores de la clínica activa. Incluye 'optica' y 'ginecologia', que
  * son doctores especializados y también asignables a citas (misma expansión
  * doctor → optica/ginecologia que hace requireRole en middleware/auth.js).
+ *
+ * Cada doctor sale con `roleInClinic`: el rol que tiene EN ESTA sucursal, que
+ * es lo que define su tipo (general / óptica / ginecología / lo que se cree a
+ * futuro). La misma persona puede ser doctor en una sede y óptica en otra, así
+ * que el tipo se resuelve aquí, contra req.clinicId, y no adivinándolo en el
+ * cliente. La etiqueta visible la pone el frontend (utils/roles.js).
  */
 exports.getDoctors = async (req, res) => {
   try {
@@ -202,8 +208,14 @@ exports.getDoctors = async (req, res) => {
       clinics: { $elemMatch: { clinic: req.clinicId, role: { $in: ['doctor', 'optica', 'ginecologia'] } } },
     })
       .select('-password')
-      .sort({ name: 1 });
-    res.json(doctors);
+      .sort({ name: 1 })
+      .lean();
+    const withRole = doctors.map((d) => ({
+      ...d,
+      roleInClinic:
+        (d.clinics || []).find((c) => String(c.clinic) === String(req.clinicId))?.role || null,
+    }));
+    res.json(withRole);
   } catch (error) {
     res.status(500).json({ message: 'Error al obtener doctores', error: error.message });
   }

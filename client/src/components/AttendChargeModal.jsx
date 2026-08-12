@@ -7,6 +7,7 @@ import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import EmailStatus from './EmailStatus';
 import useEmailValidation from '../hooks/useEmailValidation';
 import ConsumidorFinalAlert from './ConsumidorFinalAlert';
+import { doctorOptionLabel, doctorTypeLabel } from '../utils/roles';
 import {
   HiOutlineCheckCircle,
   HiOutlineBanknotes,
@@ -41,6 +42,12 @@ export default function AttendChargeModal({ appointment, doctors = [], onClose, 
   const [step, setStep] = useState('asistir'); // asistir | cobro | doctor
   const [busy, setBusy] = useState(false);
   const [doctorId, setDoctorId] = useState(apt?.doctor?._id || '');
+  // Tipo (general / óptica / …) del doctor elegido, para confirmarlo debajo del
+  // selector: al derivar importa a QUÉ tipo de consulta se está mandando.
+  const selectedDoctorType = useMemo(
+    () => doctorTypeLabel(doctors.find((d) => String(d._id) === String(doctorId))),
+    [doctors, doctorId]
+  );
 
   const [payOptions, setPayOptions] = useState({ accounts: [], cards: [] });
   const [staff, setStaff] = useState([]);
@@ -362,9 +369,14 @@ export default function AttendChargeModal({ appointment, doctors = [], onClose, 
                 <label className="block text-sm font-medium text-slate-700">Asignar doctor disponible *
                   <select value={doctorId} onChange={(e) => setDoctorId(e.target.value)} className="block w-full mt-1.5 px-4 py-2.5 border border-slate-200 rounded-xl text-sm bg-slate-50/50">
                     <option value="">Seleccionar doctor</option>
-                    {doctors.map((d) => <option key={d._id} value={d._id}>Dr. {d.name}{d.specialty ? ` — ${d.specialty}` : ''}</option>)}
+                    {doctors.map((d) => <option key={d._id} value={d._id}>{doctorOptionLabel(d)}</option>)}
                   </select>
                 </label>
+                {selectedDoctorType && (
+                  <p className="text-xs text-slate-500">
+                    Tipo de doctor: <span className="font-medium text-slate-700">{selectedDoctorType}</span>
+                  </p>
+                )}
                 <div className="flex justify-end gap-2">
                   <button onClick={assignDoctor} disabled={busy || !doctorId} className="px-4 py-2 rounded-xl text-sm bg-emerald-600 text-white hover:bg-emerald-700 disabled:opacity-50 border-none cursor-pointer flex items-center gap-2">
                     <HiOutlineUserPlus className="w-4 h-4" /> Asignar doctor
