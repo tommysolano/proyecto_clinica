@@ -337,6 +337,17 @@ const workflowSchema = new mongoose.Schema(
     // esperan a la próxima apertura). El nodo 'window' hace lo mismo pero en un
     // punto concreto del diagrama.
     sendWindow: { type: sendWindowSchema, default: () => ({}) },
+    // DETENERSE CUANDO EL CONTACTO YA AGENDÓ (o compró). Una automatización de
+    // promoción existe para conseguir la cita: si el contacto la agenda a mitad
+    // del flujo, los mensajes que quedan ("¿te gustaría agendar?") le llegan
+    // igual y quedan fuera de lugar — lo reportó la clínica en ago-2026. Con
+    // esto, cuando la oportunidad del chat entra en 'agendado' o 'ganado' se
+    // cancelan sus inscripciones VIVAS en este flujo.
+    // Desactívalo en los flujos dirigidos justamente a quien YA agendó (el
+    // recordatorio de cita 24 h, la preparación previa a la consulta…).
+    // Solo actúa sobre el CAMBIO de etapa: quien ya estaba agendado antes de
+    // entrar al flujo no se ve afectado (ese flujo se hizo para él).
+    stopOnBooking: { type: Boolean, default: true },
     stats: {
       enrolled: { type: Number, default: 0 },
       completed: { type: Number, default: 0 },

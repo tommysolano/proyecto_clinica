@@ -179,6 +179,31 @@ function pushLog(enrollment, entry) {
   if (e.ok === false && e.info) enrollment.lastError = e.info;
 }
 
+/**
+ * ¿Esta inscripción YA ejecutó algún paso? Su registro es la evidencia: se
+ * escribe en cada paso (envíos, condiciones, esperas). Sirve para distinguir las
+ * DOS cosas que significa `currentNodeId: null` — "aún no ha empezado" (recién
+ * creada) y "la rama se acabó" (una salida sin conectar) — que es justo lo que
+ * confundía el motor y le hacía reenviar el flujo desde el disparador.
+ */
+function hasRunSteps(enrollment) {
+  return (enrollment.log || []).length > 0 || Number(enrollment.stepIndex || 0) > 0;
+}
+
+/**
+ * Cierra una inscripción porque su rama no tiene continuación (un botón sin
+ * conectar, una salida "otra respuesta / tiempo" sin conectar). Termina en 'done'
+ * y deja escrito el porqué; NUNCA reinicia el flujo.
+ */
+async function finishDeadEnd(enrollment, workflowId, { nodeId = null, info }) {
+  pushLog(enrollment, { nodeId, type: 'end', info });
+  enrollment.currentNodeId = null;
+  enrollment.waitingForReply = false;
+  enrollment.status = 'done';
+  await enrollment.save();
+  if (workflowId) await Workflow.updateOne({ _id: workflowId }, { $inc: { 'stats.completed': 1 } });
+}
+
 // Fecha legible (hora Ecuador) para el registro de ejecución.
 const fmtLogDate = (d) =>
   d.toLocaleString('es-EC', { timeZone: 'America/Guayaquil', day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' });
@@ -1226,6 +1251,25 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
   const convRef = { current: conversation };
   let currentId = enrollment.currentNodeId;
   if (!currentId) {
+    // `currentNodeId: null` significa DOS cosas: "aún no ha empezado" (inscripción
+    // recién creada) y "la rama se acabó" (la salida por la que tocaba seguir no
+    // lleva a ningún paso). Darlo SIEMPRE por lo primero reiniciaba el flujo desde
+    // el disparador y REENVIABA el mensaje.
+    //
+    // CASO REAL (ago-2026, flujo "24 horas"): la plantilla llevaba un botón "Si
+    // asistiré" y su salida "otra respuesta / tiempo" estaba sin conectar, así que
+    // la inscripción quedaba esperando con currentNodeId = null. Cada mensaje que
+    // escribía el paciente ("Ok, gracias") la despertaba, no casaba con el botón,
+    // volvía a resolver null… y le devolvía OTRA copia del recordatorio —cobrada
+    // por Meta— un segundo después. 76 contactos recibieron 122 plantillas (61% de
+    // más) y el vencimiento de los botones lo repetía cada 24 h sin fin.
+    // Si la inscripción YA recorrió pasos, null solo puede ser "se acabó".
+    if (hasRunSteps(enrollment)) {
+      await finishDeadEnd(enrollment, workflow._id, {
+        info: 'La rama terminó: la salida por la que había que continuar no lleva a ningún paso. El flujo NO se reinicia desde el disparador (eso reenviaba el mensaje).',
+      });
+      return;
+    }
     const start = findStartNode(workflow);
     if (!start) { enrollment.status = 'done'; await enrollment.save(); return; }
     currentId = start.type === 'trigger' ? nextNodeId(workflow, start.id) : start.id;
@@ -2414,6 +2458,9 @@ async function resumeOnReply({ clinicId, patientId, phone, text, interactiveRepl
     const ctx = enrollment.context || {};
     const pending = ctx.pendingWorkflowButtons;
     let clickedButton = null;
+    // La respuesta llegó pero el flujo no tiene a dónde ir: se CIERRA aquí (ver más
+    // abajo). Solo se decide cuando el workflow existe de verdad.
+    let deadEnd = false;
     if (pending?.buttons?.length) {
       const incomingId = String(interactiveReply?.id || '');
       // Un payload Cloud identifica también la inscripción. No debe despertar
@@ -2428,6 +2475,7 @@ async function resumeOnReply({ clinicId, patientId, phone, text, interactiveRepl
       enrollment.currentNodeId = workflow
         ? nextNodeIdExact(workflow, pending.nodeId, clickedButton?.id || 'default')
         : null;
+      deadEnd = !!workflow && !enrollment.currentNodeId;
       ctx.lastButtonId = clickedButton?.id || '';
       ctx.lastButtonText = clickedButton?.text || String(text || '').slice(0, 200);
       ctx.lastButtonOutcome = clickedButton ? 'reply' : 'other_reply';
@@ -2439,6 +2487,20 @@ async function resumeOnReply({ clinicId, patientId, phone, text, interactiveRepl
       lastReplyText: String(text || '').slice(0, 200),
     };
     enrollment.markModified('context');
+    // Sin paso al que seguir, el flujo TERMINA. Antes se reactivaba con
+    // currentNodeId a null y el motor lo tomaba por "aún no ha empezado": cada
+    // mensaje que escribía el contacto le devolvía otra copia del mensaje.
+    if (deadEnd) {
+      // eslint-disable-next-line no-await-in-loop
+      await finishDeadEnd(enrollment, enrollment.workflow, {
+        nodeId: pending.nodeId,
+        info: clickedButton
+          ? `Botón «${clickedButton.text}» sin ningún paso conectado: fin del flujo.`
+          : 'La respuesta no coincide con ningún botón y la salida "otra respuesta / tiempo" no lleva a ningún paso: fin del flujo (no se reenvía el mensaje).',
+      });
+      resumed += 1;
+      continue;
+    }
     enrollment.waitingForReply = false;
     enrollment.status = 'active';
     enrollment.nextRunAt = new Date();
@@ -2550,6 +2612,77 @@ async function syncEnrollmentsForAppointment(payload = {}) {
   }
 }
 
+// Etapas en las que el contacto YA hizo lo que la promoción perseguía: seguir
+// ofreciéndole agendar es hablarle de algo que ya resolvió.
+const BOOKED_STAGES = new Set(['agendado', 'ganado']);
+// Margen para no matar lo que ESTE MISMO hecho acaba de arrancar. Agendar dispara
+// a la vez el evento de la cita (que inscribe los flujos "cuando agenda una cita
+// → mándale la preparación") y el cambio de etapa a 'agendado'. Los handlers del
+// bus no se esperan unos a otros, así que sin este margen la parada podía cancelar
+// la inscripción recién creada por su propio evento. Una promoción en curso lleva
+// horas o días viva: un minuto la distingue de sobra.
+const JUST_ENROLLED_MS = 60 * 1000;
+
+/**
+ * El contacto AGENDÓ (o compró) a mitad de una automatización: se detienen sus
+ * flujos vivos para que no le sigan llegando los "¿te gustaría agendar?" que
+ * quedaban por delante. Lo reportó la clínica en ago-2026: una promoción con
+ * esperas de 15 h seguía su curso aunque el paciente ya tuviera la cita.
+ *
+ * SOLO reacciona al CAMBIO de etapa, nunca al estado: quien ya estaba agendado
+ * ANTES de entrar al flujo no se toca — es justo el caso del recordatorio de
+ * cita 24 h, que se manda precisamente a quien tiene cita. Y un flujo puede
+ * excluirse con `stopOnBooking: false`.
+ *
+ * Tampoco toca lo que acaba de nacer de este mismo hecho (ver JUST_ENROLLED_MS):
+ * agendar inscribe flujos de "cita agendada" en el mismo instante y no tendría
+ * ningún sentido cancelarlos con el evento gemelo.
+ */
+async function cancelEnrollmentsOnBooking(payload = {}) {
+  const stage = String(payload.stage || '').trim();
+  if (!BOOKED_STAGES.has(stage)) return { cancelled: 0 };
+  const phone = payload.phone ? messaging.normalizePhone(payload.phone) : '';
+  const identity = [
+    payload.conversationId ? { conversation: payload.conversationId } : null,
+    payload.patientId ? { patient: payload.patientId } : null,
+    phone ? { 'context.phone': phone } : null,
+  ].filter(Boolean);
+  if (!identity.length) return { cancelled: 0 };
+
+  const enrollments = await WorkflowEnrollment.find({
+    status: { $in: ['active', 'waiting'] },
+    createdAt: { $lt: new Date(Date.now() - JUST_ENROLLED_MS) },
+    $or: identity,
+  });
+  if (!enrollments.length) return { cancelled: 0 };
+
+  // Flujos que piden expresamente seguir enviando aunque el contacto agende.
+  const excluidos = new Set(
+    (await Workflow.find({ _id: { $in: enrollments.map((e) => e.workflow) }, stopOnBooking: false })
+      .select('_id')
+      .lean()
+    ).map((w) => String(w._id))
+  );
+
+  let cancelled = 0;
+  for (const enrollment of enrollments) {
+    if (excluidos.has(String(enrollment.workflow))) continue;
+    // La inscripción que nació de ESTA etapa (flujo "cuando agenda → …") se queda.
+    if (String(enrollment.context?.stage || '') === stage) continue;
+    enrollment.status = 'cancelled';
+    enrollment.waitingForReply = false;
+    pushLog(enrollment, {
+      nodeId: enrollment.currentNodeId,
+      type: 'stop',
+      info: `El contacto pasó a «${stage}»: la automatización se detiene para no seguir ofreciéndole algo que ya tiene. (Se desactiva por flujo con "seguir enviando aunque agende".)`,
+    });
+    // eslint-disable-next-line no-await-in-loop
+    await enrollment.save();
+    cancelled += 1;
+  }
+  return { cancelled };
+}
+
 /**
  * Cita CANCELADA: una inscripción pausada en "esperar hasta la cita" enviaría el
  * recordatorio de una cita que ya no existe. Se anula y queda constancia en el log.
@@ -2608,6 +2741,10 @@ function subscribeDomainEvents() {
   // Cambio de etapa de oportunidad (chat/Kanban): inscribe los flujos con trigger
   // 'opportunity_stage'. No pasa por enrollForEvent (necesita la conversación, no
   // el paciente) sino por su propio enrolador basado en el chat.
+  // Antes de inscribir: se DETIENEN las promociones en curso del contacto que
+  // acaba de agendar (los handlers del bus no se esperan entre sí, así que lo que
+  // de verdad protege a la inscripción nueva es el margen de cancelEnrollmentsOnBooking).
+  onDomainEvent(DOMAIN_EVENTS.OPPORTUNITY_STAGE_CHANGED, (payload) => cancelEnrollmentsOnBooking(payload));
   onDomainEvent(DOMAIN_EVENTS.OPPORTUNITY_STAGE_CHANGED, (payload) => enrollForOpportunityStage(payload));
 }
 
@@ -2646,5 +2783,6 @@ module.exports = {
   resumeOnButtonClick,
   syncEnrollmentsForAppointment,
   cancelWaitingEnrollmentsForAppointment,
+  cancelEnrollmentsOnBooking,
   subscribeDomainEvents,
 };

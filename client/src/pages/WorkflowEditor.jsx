@@ -22,6 +22,10 @@ const blank = () => ({
   nodes: [],
   edges: [],
   sendWindow: blankWindow(),
+  // Por defecto una automatización se detiene cuando el contacto ya agendó: es lo
+  // que la promoción perseguía. Se desmarca en los flujos hechos PARA quien ya
+  // tiene cita (recordatorio 24 h, preparación previa…).
+  stopOnBooking: true,
 });
 
 export default function WorkflowEditor() {
@@ -130,6 +134,9 @@ export default function WorkflowEditor() {
             nodes: graph.nodes,
             edges: graph.edges,
             sendWindow: { ...blankWindow(), ...(data.sendWindow || {}) },
+            // Los flujos guardados antes de que existiera el ajuste no traen el
+            // campo: se detienen al agendar, como los nuevos.
+            stopOnBooking: data.stopOnBooking !== false,
           });
         }
       } catch (e) {
@@ -233,7 +240,7 @@ export default function WorkflowEditor() {
         <datalist id="wf-folders">{folderNames.map((f) => <option key={f} value={f} />)}</datalist>
         <button
           onClick={() => setWindowOpen(true)}
-          title="Horario en el que esta automatización NO debe enviar mensajes"
+          title="Ajustes: horario de silencio y parada cuando el contacto agenda"
           className={`px-3 py-1.5 rounded-lg text-sm shrink-0 cursor-pointer flex items-center gap-1.5 border ${
             wf.sendWindow?.mode === 'specific'
               ? 'bg-emerald-50 border-emerald-300 text-emerald-700'
@@ -273,10 +280,11 @@ export default function WorkflowEditor() {
         />
       </main>
 
-      {/* Horario de SILENCIO de TODO el workflow */}
-      <Modal isOpen={windowOpen} onClose={() => setWindowOpen(false)} title="Horario de silencio" size="md">
+      {/* Ajustes de TODO el workflow: silencio + parada al agendar */}
+      <Modal isOpen={windowOpen} onClose={() => setWindowOpen(false)} title="Ajustes de la automatización" size="md">
         <div className="grid gap-4">
-          <p className="text-sm text-slate-500">
+          <p className="text-sm font-semibold text-slate-700">Horario de silencio</p>
+          <p className="text-sm text-slate-500 -mt-2">
             Define las horas en las que esta automatización <b>no debe molestar</b> (WhatsApp, plantillas,
             email, reseñas). Los pasos que no envían nada —etiquetas, tareas, oportunidades— se ejecutan
             siempre.
@@ -318,6 +326,32 @@ export default function WorkflowEditor() {
               </p>
             </div>
           )}
+
+          {/* Parada automática cuando el contacto ya agendó */}
+          <div className="border-t border-slate-100 pt-4 grid gap-2">
+            <p className="text-sm font-semibold text-slate-700">Cuando el contacto agenda</p>
+            <label className="flex gap-2.5 items-start cursor-pointer select-none">
+              <input
+                type="checkbox"
+                className="mt-1"
+                checked={wf.stopOnBooking !== false}
+                onChange={(e) => setWf({ ...wf, stopOnBooking: e.target.checked })}
+              />
+              <span>
+                <span className="block text-sm text-slate-700">Detener el flujo si agenda una cita o compra</span>
+                <span className="block text-[11px] text-slate-500">
+                  Deja de enviarle los mensajes que quedaban en cuanto su oportunidad pasa a
+                  <b> Agendado</b> o <b>Ganado</b>: nadie que ya tiene su cita debería seguir recibiendo
+                  “¿te gustaría agendar?”. Solo afecta a quien agenda <b>durante</b> el flujo.
+                </span>
+                <span className="block text-[11px] text-amber-600 mt-1">
+                  Desmárcalo en los flujos dirigidos a quien YA agendó (recordatorio de cita, preparación
+                  previa): si no, se detendrían solos.
+                </span>
+              </span>
+            </label>
+          </div>
+
           <div className="flex justify-end">
             <button
               onClick={() => setWindowOpen(false)}
