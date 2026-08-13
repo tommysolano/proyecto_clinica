@@ -85,6 +85,9 @@ router.delete('/gallery/:id', requireRole(...CALL_CENTER_ROLES), ctrl.deleteGall
 
 // Vista global de oportunidades
 router.get('/opportunities/all', requireRole(...CALL_CENTER_ROLES), ctrl.listAllOpportunities);
+// Analíticas del embudo (todo agregado en la base). Mismos roles que la página
+// /analytics: el call center no la ve.
+router.get('/opportunities/analytics', requireRole('admin', 'marketing'), ctrl.opportunityAnalytics);
 router.post('/opportunities/bulk-whatsapp', requireRole(...CALL_CENTER_ROLES), ctrl.bulkWhatsappOpportunities);
 
 // Números (globales) conectados, para el selector "responder desde" del chat.

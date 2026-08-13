@@ -124,6 +124,30 @@ function ensureArray(conv) {
 }
 
 /**
+ * Mueve UNA oportunidad de etapa. Es el único sitio que escribe `stage`, y por
+ * eso también el único que puede sellar CUÁNDO se movió.
+ *
+ * `stageChangedAt` existe porque la analítica preguntaba «¿cuántas se agendaron
+ * el martes?» y no había con qué responder: la oportunidad solo guardaba su fecha
+ * de creación, así que un chat de enero que se agendó en agosto salía contado en
+ * enero. Se sella SOLO cuando la etapa cambia de verdad (guardar el modal sin
+ * tocar la etapa no puede mover la oportunidad de día).
+ *
+ * Devuelve true si la etapa cambió.
+ */
+function setStage(opp, stage, { when = null } = {}) {
+  const target = String(stage || '').trim();
+  if (!opp || !target) return false;
+  const prev = String(opp.stage || '');
+  opp.isOpportunity = true;
+  opp.stage = target;
+  if (target === 'ganado' && !opp.convertedAt) opp.convertedAt = when || new Date();
+  if (prev === target && opp.stageChangedAt) return false;
+  opp.stageChangedAt = when || new Date();
+  return prev !== target;
+}
+
+/**
  * ESCRITOR ÚNICO de la etapa de un chat. Mueve la oportunidad relevante (o la
  * crea si el chat no tenía ninguna) y deja el espejo al día. NO guarda el
  * documento ni emite eventos: de eso se encarga quien llama, que es quien sabe
@@ -143,20 +167,27 @@ function applyStage(conv, stage, { appointment = null, notes = '', name = '', cr
   if (!list.length) {
     if (!create) return { changed: false, created: false, prevStage: null, opportunity: null };
     created = true;
+    const now = new Date();
     conv.opportunities = [
       ...list,
-      { isOpportunity: true, stage: target, createdAt: new Date(), ...(name ? { name } : {}), ...(notes ? { notes } : {}) },
+      {
+        isOpportunity: true,
+        stage: target,
+        createdAt: now,
+        stageChangedAt: now,
+        ...(name ? { name } : {}),
+        ...(notes ? { notes } : {}),
+      },
     ];
     opp = conv.opportunities[conv.opportunities.length - 1];
+    if (target === 'ganado') opp.convertedAt = now;
   } else {
     opp = list[list.length - 1];
     prevStage = String(opp.stage || '') || null;
-    opp.isOpportunity = true;
-    opp.stage = target;
+    setStage(opp, target);
     if (notes && !opp.notes) opp.notes = notes;
   }
   if (appointment) opp.appointment = appointment;
-  if (target === 'ganado' && !opp.convertedAt) opp.convertedAt = new Date();
   conv.markModified?.('opportunities');
   syncPrimaryOpportunity(conv);
   // `created` va aparte de `prevStage`: una oportunidad existente SIN etapa también
@@ -313,6 +344,7 @@ module.exports = {
   opportunitiesOf,
   primaryOpportunity,
   relevantOpportunity,
+  setStage,
   stageCandidates,
   stageFilter,
   syncPrimaryOpportunity,

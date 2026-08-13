@@ -587,8 +587,7 @@ async function applyOpportunity(conversation, data = {}, { clinicId, patient, ct
   if (reuse) {
     const primary = list[list.length - 1];
     changedOpportunity = primary;
-    primary.isOpportunity = true;
-    primary.stage = stage;
+    opportunities.setStage(primary, stage);
     primary.name = name;
     if (ids.length) {
       primary.interestedIn = interestedIn;
@@ -598,8 +597,8 @@ async function applyOpportunity(conversation, data = {}, { clinicId, patient, ct
     else if (ids.length) primary.valueMode = 'auto';
     if (tags.length) primary.tags = [...new Set([...(primary.tags || []), ...tags])];
     if (notes) primary.notes = notes;
-    if (stage === 'ganado' && !primary.convertedAt) primary.convertedAt = new Date();
   } else {
+    const now = new Date();
     conversation.opportunities = [
       ...list,
       {
@@ -611,8 +610,9 @@ async function applyOpportunity(conversation, data = {}, { clinicId, patient, ct
         expectedValue,
         tags,
         notes,
-        createdAt: new Date(),
-        ...(stage === 'ganado' ? { convertedAt: new Date() } : {}),
+        createdAt: now,
+        stageChangedAt: now,
+        ...(stage === 'ganado' ? { convertedAt: now } : {}),
       },
     ];
     changedOpportunity = conversation.opportunities[conversation.opportunities.length - 1];

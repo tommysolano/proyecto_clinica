@@ -45,6 +45,12 @@ const opportunitySchema = new mongoose.Schema(
     tags: { type: [String], default: [] },
     appointment: { type: mongoose.Schema.Types.ObjectId, ref: 'Appointment', default: null },
     convertedAt: { type: Date },
+    // CUÁNDO entró en la etapa actual. Sin esto, la analítica no podía decir en qué
+    // día se agendó o se ganó una oportunidad: solo existía la fecha de creación,
+    // así que "agendadas por día" acababa pintándose en el día de alta. Lo escribe
+    // `utils/opportunities.setStage` (el único sitio que mueve etapas). En las
+    // oportunidades anteriores a ago-2026 no existe: los informes caen a `createdAt`.
+    stageChangedAt: { type: Date },
     lostReason: { type: String, trim: true },
     // De qué ANUNCIO nació esta oportunidad (click-to-WhatsApp). Permite tener
     // una oportunidad por anuncio dentro del mismo chat.

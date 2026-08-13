@@ -823,7 +823,7 @@ exports.setOpportunity = async (req, res) => {
     const op = conv.opportunities[conv.opportunities.length - 1];
     const prevStage = op.isOpportunity ? op.stage : null;
     op.isOpportunity = true;
-    if (req.body.stage) op.stage = req.body.stage;
+    if (req.body.stage) opportunities.setStage(op, req.body.stage);
     if (Array.isArray(req.body.interestedIn)) {
       op.interestedIn = req.body.interestedIn.map((s) => ({
         product: s.product || s._id,
@@ -834,7 +834,6 @@ exports.setOpportunity = async (req, res) => {
     if (req.body.notes !== undefined) op.notes = req.body.notes;
     if (req.body.appointment) op.appointment = req.body.appointment;
     if (req.body.lostReason !== undefined) op.lostReason = req.body.lostReason;
-    if (req.body.stage === 'ganado' && !op.convertedAt) op.convertedAt = new Date();
     if (!op.createdAt) op.createdAt = new Date();
     conv.markModified('opportunities');
     opportunities.syncPrimaryOpportunity(conv);
@@ -1031,11 +1030,10 @@ exports.updateOpportunityAt = async (req, res) => {
     if (req.body.name !== undefined) {
       current.name = String(req.body.name).trim() || defaultOpportunityName(await withPatientName(conv), current);
     }
-    if (req.body.stage) current.stage = req.body.stage;
+    if (req.body.stage) opportunities.setStage(current, req.body.stage);
     if (req.body.notes !== undefined) current.notes = req.body.notes;
     if (req.body.lostReason !== undefined) current.lostReason = req.body.lostReason;
     if (Array.isArray(req.body.tags)) current.tags = req.body.tags.filter(Boolean);
-    if (req.body.stage === 'ganado' && !current.convertedAt) current.convertedAt = new Date();
     conv.opportunities[idx] = current;
     conv.markModified('opportunities');
     syncPrimaryOpportunity(conv);
@@ -2062,6 +2060,186 @@ exports.listAllOpportunities = async (req, res) => {
     res.json(rows);
   } catch (err) {
     res.status(500).json({ message: 'Error', error: err.message });
+  }
+};
+
+// =================== Analíticas del embudo ===================
+
+const TZ_EC = 'America/Guayaquil';
+
+/** Clave de día LOCAL (Ecuador) para las series temporales. */
+const dayKey = (field) => ({ $dateToString: { format: '%Y-%m-%d', date: field, timezone: TZ_EC } });
+
+/** Días 'YYYY-MM-DD' entre dos fechas, ambas incluidas (para rellenar los huecos). */
+function daysBetween(from, to) {
+  const out = [];
+  const a = new Date(`${from}T00:00:00Z`);
+  const b = new Date(`${to}T00:00:00Z`);
+  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime()) || b < a) return out;
+  for (let t = a.getTime(); t <= b.getTime() && out.length < 400; t += 86400000) {
+    out.push(new Date(t).toISOString().slice(0, 10));
+  }
+  return out;
+}
+
+/**
+ * GET /chats/opportunities/analytics — TODO lo que pinta la página de Analíticas.
+ *
+ * Se cuenta AQUÍ, en la base, y no en el navegador. La página anterior se armaba
+ * con `GET /chats` (tope de 300 conversaciones) y `GET /chats/opportunities/all`
+ * (tope de 500), así que los indicadores no eran del rango: eran "lo que cupo en
+ * la última página". De ahí el «Chats: 300» clavado y un total de oportunidades
+ * que no cuadraba con la página de Oportunidades.
+ *
+ * Reglas del conteo:
+ *  - UNA FILA POR OPORTUNIDAD, aplanando con la misma expresión que el resto del
+ *    sistema (`opportunities.AGG_FLATTEN`): el array manda y el espejo legacy solo
+ *    cuenta si el chat nunca tuvo array. Así el embudo cuadra con Oportunidades.
+ *  - El rango filtra por la fecha de CREACIÓN de la oportunidad (si le falta, la
+ *    del chat: antes las que no la tenían se colaban en cualquier rango).
+ *  - "Agendadas/ganadas por día" van por `stageChangedAt` — el día en que ENTRARON
+ *    en la etapa—, con la fecha de creación como respaldo para las oportunidades
+ *    anteriores a que ese campo existiera.
+ */
+exports.opportunityAnalytics = async (req, res) => {
+  try {
+    const clinicOid = new mongoose.Types.ObjectId(req.clinicId);
+    const range = statsDateRange(req.query);
+    const base = { clinic: clinicOid };
+
+    const [agg] = await Conversation.aggregate([
+      { $match: { ...base, ...opportunities.hasOpportunityFilter() } },
+      { $addFields: { _opps: opportunities.AGG_FLATTEN } },
+      { $unwind: '$_opps' },
+      {
+        $addFields: {
+          _created: { $ifNull: ['$_opps.createdAt', '$createdAt'] },
+          _stage: { $ifNull: ['$_opps.stage', 'nuevo'] },
+          _value: { $ifNull: ['$_opps.expectedValue', 0] },
+        },
+      },
+      { $addFields: { _stageAt: { $ifNull: ['$_opps.stageChangedAt', '$_created'] } } },
+      ...(range ? [{ $match: { _created: range } }] : []),
+      {
+        $facet: {
+          porEtapa: [{ $group: { _id: '$_stage', count: { $sum: 1 }, value: { $sum: '$_value' } } }],
+          creadasPorDia: [{ $group: { _id: dayKey('$_created'), count: { $sum: 1 } } }],
+          etapaPorDia: [
+            { $match: { _stage: { $in: ['agendado', 'ganado'] } } },
+            { $group: { _id: { day: dayKey('$_stageAt'), stage: '$_stage' }, count: { $sum: 1 } } },
+          ],
+          porCanal: [{ $group: { _id: { $ifNull: ['$channel', 'whatsapp'] }, count: { $sum: 1 } } }],
+          porAgente: [
+            {
+              $group: {
+                _id: { $ifNull: ['$assignedToName', ''] },
+                total: { $sum: 1 },
+                agendadas: { $sum: { $cond: [{ $eq: ['$_stage', 'agendado'] }, 1, 0] } },
+                ganadas: { $sum: { $cond: [{ $eq: ['$_stage', 'ganado'] }, 1, 0] } },
+                valorGanado: { $sum: { $cond: [{ $eq: ['$_stage', 'ganado'] }, '$_value', 0] } },
+              },
+            },
+            { $sort: { total: -1 } },
+            { $limit: 12 },
+          ],
+          // Servicios: solo se cuentan oportunidades, NO se suma el valor — una
+          // oportunidad con tres servicios repartiría su importe tres veces.
+          servicios: [
+            { $unwind: '$_opps.interestedIn' },
+            { $group: { _id: { $ifNull: ['$_opps.interestedIn.name', 'Sin nombre'] }, count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+            { $limit: 10 },
+          ],
+          motivosPerdida: [
+            { $match: { _stage: 'perdido' } },
+            { $group: { _id: { $ifNull: ['$_opps.lostReason', ''] }, count: { $sum: 1 } } },
+            { $sort: { count: -1 } },
+            { $limit: 8 },
+          ],
+        },
+      },
+    ]);
+
+    // Chats ENTRADOS en el rango (no "los últimos 300"): misma serie diaria.
+    const chatsPorDia = await Conversation.aggregate([
+      { $match: { ...base, ...(range ? { createdAt: range } : {}) } },
+      { $group: { _id: dayKey('$createdAt'), count: { $sum: 1 } } },
+    ]);
+
+    const facets = agg || {};
+    const etapaMap = Object.fromEntries((facets.porEtapa || []).map((r) => [r._id, r]));
+    const embudo = opportunities.STAGES.map((stage) => ({
+      stage,
+      label: opportunities.stageLabel(stage),
+      count: etapaMap[stage]?.count || 0,
+      value: Math.round((etapaMap[stage]?.value || 0) * 100) / 100,
+    }));
+    const de = (stage) => embudo.find((e) => e.stage === stage) || { count: 0, value: 0 };
+    const total = embudo.reduce((a, e) => a + e.count, 0);
+
+    // Eje de días: el rango pedido (con sus huecos a cero, para que la línea no
+    // "salte" días sin actividad). Sin rango, los días que existan en los datos.
+    const creadasMap = Object.fromEntries((facets.creadasPorDia || []).map((r) => [r._id, r.count]));
+    const chatsMap = Object.fromEntries(chatsPorDia.map((r) => [r._id, r.count]));
+    const etapaDiaMap = {};
+    for (const r of facets.etapaPorDia || []) {
+      etapaDiaMap[r._id.day] = { ...(etapaDiaMap[r._id.day] || {}), [r._id.stage]: r.count };
+    }
+    const dias = (req.query.from && req.query.to)
+      ? daysBetween(req.query.from, req.query.to)
+      : [...new Set([...Object.keys(creadasMap), ...Object.keys(chatsMap), ...Object.keys(etapaDiaMap)])].sort();
+
+    const serie = dias.map((d) => ({
+      date: d,
+      chats: chatsMap[d] || 0,
+      creadas: creadasMap[d] || 0,
+      agendadas: etapaDiaMap[d]?.agendado || 0,
+      ganadas: etapaDiaMap[d]?.ganado || 0,
+    }));
+
+    const chats = chatsPorDia.reduce((a, r) => a + r.count, 0);
+    const agendadas = de('agendado').count;
+    const ganadas = de('ganado').count;
+    const perdidas = de('perdido').count;
+    const valorTotal = embudo.reduce((a, e) => a + e.value, 0);
+
+    res.json({
+      range: { from: req.query.from || '', to: req.query.to || '' },
+      totals: {
+        chats,
+        oportunidades: total,
+        agendadas,
+        ganadas,
+        perdidas,
+        enCurso: total - agendadas - ganadas - perdidas,
+        valorTotal: Math.round(valorTotal * 100) / 100,
+        valorGanado: de('ganado').value,
+        valorAgendado: de('agendado').value,
+        // "Agendamiento" incluye las ganadas: una oportunidad que ya se cerró pasó
+        // por agendarse, y dejarla fuera hacía bajar la tasa al cerrar ventas.
+        tasaAgendamiento: total ? (agendadas + ganadas) / total : 0,
+        tasaCierre: total ? ganadas / total : 0,
+      },
+      embudo,
+      serie,
+      porCanal: (facets.porCanal || [])
+        .map((r) => ({ canal: r._id || 'whatsapp', count: r.count }))
+        .sort((a, b) => b.count - a.count),
+      porAgente: (facets.porAgente || []).map((r) => ({
+        agente: r._id || 'Sin asignar',
+        total: r.total,
+        agendadas: r.agendadas,
+        ganadas: r.ganadas,
+        valorGanado: Math.round((r.valorGanado || 0) * 100) / 100,
+      })),
+      servicios: (facets.servicios || []).map((r) => ({ servicio: r._id, count: r.count })),
+      motivosPerdida: (facets.motivosPerdida || []).map((r) => ({
+        motivo: r._id || 'Sin motivo',
+        count: r.count,
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al calcular analíticas', error: err.message });
   }
 };
 
