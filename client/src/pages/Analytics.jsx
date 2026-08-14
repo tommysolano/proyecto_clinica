@@ -48,6 +48,14 @@ const STAGE_COLOR = {
   perdido: '#d03b3b',
 };
 const STAGE_KEYS = ['nuevo', 'contactado', 'interesado', 'agendado', 'ganado', 'perdido'];
+const STAGE_LABEL = {
+  nuevo: 'Nuevo',
+  contactado: 'Contactado',
+  interesado: 'Interesado',
+  agendado: 'Agendado',
+  ganado: 'Ganado',
+  perdido: 'Perdido',
+};
 // "Creadas" / "Total" no es una etapa: color propio, fuera de la escala.
 const C_TOTAL = '#eb6834';
 const C_CHATS = '#2a78d6';
@@ -70,11 +78,25 @@ const EMPTY = {
     chats: 0, oportunidades: 0, agendadas: 0, ganadas: 0, perdidas: 0, enCurso: 0,
     valorTotal: 0, valorGanado: 0, valorAgendado: 0, tasaAgendamiento: 0, tasaCierre: 0,
   },
-  embudo: [], serie: [], porOportunidad: [], porCanal: [], porAgente: [], servicios: [], motivosPerdida: [],
+  embudo: [], serie: [], porOportunidad: [], porAnuncio: [], porCanal: [], porAgente: [], servicios: [], motivosPerdida: [],
 };
 
-/** Etiqueta del eje: los nombres de campaña son largos y empujarían la gráfica. */
-const corta = (s, n = 30) => (String(s || '').length > n ? `${String(s).slice(0, n - 1)}…` : String(s || ''));
+/**
+ * Etiqueta del eje: los titulares de anuncio son largos y empujarían la gráfica.
+ * Si el texto acaba en un desempate (" · …1234", el final del id de un anuncio con
+ * titular repetido), se recorta por DELANTE: cortar por el final se llevaba justo
+ * lo único que distinguía las dos filas.
+ */
+const corta = (s, n = 30) => {
+  const txt = String(s || '');
+  const cola = txt.match(/ · …\S+$/);
+  if (cola) {
+    const cabeza = txt.slice(0, txt.length - cola[0].length);
+    const hueco = Math.max(8, n - cola[0].length);
+    return (cabeza.length > hueco ? `${cabeza.slice(0, hueco - 1)}…` : cabeza) + cola[0];
+  }
+  return txt.length > n ? `${txt.slice(0, n - 1)}…` : txt;
+};
 
 /**
  * Etiqueta de eje de UNA sola línea. Recharts parte los textos largos en varias
@@ -142,6 +164,12 @@ export default function Analytics() {
     () => (data.porCanal || []).map((c) => ({ ...c, label: CANALES[c.canal] || c.canal })),
     [data.porCanal]
   );
+  // Solo se pintan las etapas que TIENEN datos en el rango: con las seis siempre,
+  // cada oportunidad arrastraba tres barras vacías y la gráfica no cabía.
+  const etapasVisibles = useMemo(
+    () => STAGE_KEYS.filter((s) => (data.porOportunidad || []).some((o) => o[s] > 0)),
+    [data.porOportunidad]
+  );
   const conServicios = (data.servicios || []).length > 0;
   const conMotivos = (data.motivosPerdida || []).some((m) => m.count > 0);
   const conAgentes = (data.porAgente || []).length > 0;
@@ -194,9 +222,24 @@ export default function Analytics() {
             color={C_TOTAL}
           />
           <Tile label="Agendadas" value={nf.format(t.agendadas)} hint={`${pct(t.tasaAgendamiento)} llegó a agendarse`} color={STAGE_COLOR.agendado} />
-          <Tile label="Ganadas" value={nf.format(t.ganadas)} hint={`${pct(t.tasaCierre)} de cierre`} color={STAGE_COLOR.ganado} />
-          <Tile label="Valor ganado" value={moneyShort(t.valorGanado)} hint={`de ${moneyShort(t.valorTotal)} en juego`} color={STAGE_COLOR.ganado} />
-          <Tile label="Chats nuevos" value={nf.format(t.chats)} hint="conversaciones que entraron" color={C_CHATS} />
+          <Tile label="Ganadas" value={nf.format(t.ganadas)} hint={`${pct(t.tasaCierre)} de cierre · ${moneyShort(t.valorGanado)}`} color={STAGE_COLOR.ganado} />
+          {/* El valor "en juego" son las AGENDADAS, no todo el embudo: una
+              oportunidad recién nacida de un anuncio no es dinero en camino, y
+              sumándolas el importe salía inflado (hoy: $5.854 de "nuevo" contra
+              $465 de agendado). Lo que de verdad está en juego es lo que ya tiene
+              cita. El desglose completo sigue en "Valor esperado por etapa". */}
+          <Tile
+            label="Valor esperado"
+            value={moneyShort(t.valorAgendado)}
+            hint={`de las ${nf.format(t.agendadas)} agendadas`}
+            color={STAGE_COLOR.agendado}
+          />
+          <Tile
+            label="Chats nuevos"
+            value={nf.format(t.chats)}
+            hint={t.chatsDesdeAnuncios ? `${nf.format(t.chatsDesdeAnuncios)} desde anuncios` : 'conversaciones que entraron'}
+            color={C_CHATS}
+          />
         </div>
 
         <ChartCard
@@ -234,7 +277,7 @@ export default function Analytics() {
 
         <ChartCard
           title="Qué oportunidades son"
-          subtitle="Cada oportunidad por su nombre; las que nacen de un anuncio se agrupan por su campaña. Cada barra se parte por la etapa en la que están."
+          subtitle="Cada oportunidad por su nombre, con una barra por etapa. Las que nacen solas de un anuncio no llevan nombre: esas se ven en «Chats por anuncio»."
           columns={[
             { key: 'nombre', label: 'Oportunidad' },
             { key: 'total', label: 'Total', num: true },
@@ -248,10 +291,19 @@ export default function Analytics() {
           ]}
           rows={data.porOportunidad}
           empty={!data.porOportunidad.length}
-          legend={data.embudo.map((e) => ({ label: e.label, color: STAGE_COLOR[e.stage] }))}
+          legend={etapasVisibles.map((s) => ({ label: STAGE_LABEL[s], color: STAGE_COLOR[s] }))}
         >
-          <ResponsiveContainer width="100%" height={data.porOportunidad.length * 40 + 32}>
-            <BarChart data={data.porOportunidad} layout="vertical" margin={{ top: 8, right: 64, bottom: 8, left: 8 }}>
+          <ResponsiveContainer
+            width="100%"
+            height={data.porOportunidad.length * Math.max(44, etapasVisibles.length * 14 + 14) + 32}
+          >
+            <BarChart
+              data={data.porOportunidad}
+              layout="vertical"
+              margin={{ top: 8, right: 64, bottom: 8, left: 8 }}
+              barGap={2}
+              barCategoryGap="22%"
+            >
               <CartesianGrid horizontal={false} stroke={INK.grid} />
               <XAxis type="number" hide domain={[0, 'dataMax']} />
               <YAxis
@@ -263,22 +315,27 @@ export default function Analytics() {
                 tick={<TickNombre max={28} />}
               />
               <Tooltip cursor={{ fill: '#f8fafc' }} content={<TipOportunidad />} />
-              {/* Barra apilada por etapa. El borde blanco de 2px es la separación
-                  entre tramos: sin él, dos etapas contiguas se leen como una sola. */}
-              {STAGE_KEYS.map((stage, i) => (
+              {/* Una BARRA POR ETAPA, no una barra partida: apiladas, un "agendado"
+                  de 2 sobre un "nuevo" de 30 era una raya que no se podía comparar
+                  con la de al lado. Separadas, cada etapa se lee contra su propia
+                  línea de cero. */}
+              {etapasVisibles.map((stage) => (
                 <Bar
                   key={stage}
                   dataKey={stage}
-                  stackId="etapas"
+                  name={STAGE_LABEL[stage]}
                   fill={STAGE_COLOR[stage]}
-                  stroke="#fff"
-                  strokeWidth={2}
-                  barSize={22}
+                  barSize={11}
+                  radius={[0, 4, 4, 0]}
                   isAnimationActive={false}
                 >
-                  {i === STAGE_KEYS.length - 1 && (
-                    <LabelList dataKey="total" position="right" fill={INK.text} fontSize={12} />
-                  )}
+                  <LabelList
+                    dataKey={stage}
+                    position="right"
+                    fill={INK.text}
+                    fontSize={11}
+                    formatter={(v) => (v > 0 ? nf.format(v) : '')}
+                  />
                 </Bar>
               ))}
             </BarChart>
@@ -361,6 +418,41 @@ export default function Analytics() {
               <YAxis allowDecimals={false} width={40} tickLine={false} axisLine={false} tick={{ fill: INK.muted, fontSize: 12 }} />
               <Tooltip cursor={{ fill: '#f8fafc' }} content={<TipSerie />} />
               <Bar dataKey="chats" name="Chats" fill={C_CHATS} radius={[4, 4, 0, 0]} maxBarSize={28} isAnimationActive={false} />
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        {/* De qué ANUNCIO viene cada chat. El dato no está en la conversación: lo
+            trae el mensaje entrante (`referral`), que es lo mismo que ya hace que
+            en el chat salga "desde anuncio". La etiqueta es el TITULAR del anuncio
+            —lo único legible que manda Meta—, no el nombre de la campaña. */}
+        <ChartCard
+          title="Chats por anuncio"
+          subtitle="Conversaciones distintas que escribieron desde cada anuncio (click-to-WhatsApp). Se cuenta el chat, no cada mensaje."
+          columns={[
+            { key: 'titular', label: 'Titular del anuncio' },
+            { key: 'chats', label: 'Chats', num: true },
+            { key: 'adId', label: 'ID del anuncio' },
+          ]}
+          rows={data.porAnuncio}
+          empty={!data.porAnuncio.length}
+        >
+          <ResponsiveContainer width="100%" height={data.porAnuncio.length * 44 + 32}>
+            <BarChart data={data.porAnuncio} layout="vertical" margin={{ top: 8, right: 64, bottom: 8, left: 8 }}>
+              <CartesianGrid horizontal={false} stroke={INK.grid} />
+              <XAxis type="number" hide domain={[0, 'dataMax']} />
+              <YAxis
+                type="category"
+                dataKey="titular"
+                width={230}
+                tickLine={false}
+                axisLine={false}
+                tick={<TickNombre max={32} />}
+              />
+              <Tooltip cursor={{ fill: '#f8fafc' }} content={<TipAnuncio />} />
+              <Bar dataKey="chats" name="Chats" fill={C_CHATS} barSize={20} radius={[0, 4, 4, 0]} isAnimationActive={false}>
+                <LabelList dataKey="chats" position="right" fill={INK.text} fontSize={12} />
+              </Bar>
             </BarChart>
           </ResponsiveContainer>
         </ChartCard>
@@ -632,11 +724,22 @@ function TipOportunidad({ active, payload }) {
     <TipBox title={d.nombre}>
       <p className="text-slate-600">Total: <span className="font-semibold text-slate-800">{nf.format(d.total)}</span></p>
       {conValor.map((s) => (
-        <TipFila key={s} color={STAGE_COLOR[s]} label={s.charAt(0).toUpperCase() + s.slice(1)} value={nf.format(d[s])} />
+        <TipFila key={s} color={STAGE_COLOR[s]} label={STAGE_LABEL[s]} value={nf.format(d[s])} />
       ))}
       <p className="text-slate-500 mt-0.5">
         {money(d.value)} esperados{d.desdeAnuncio ? ` · ${nf.format(d.desdeAnuncio)} desde anuncios` : ''}
       </p>
+    </TipBox>
+  );
+}
+
+function TipAnuncio({ active, payload }) {
+  if (!active || !payload?.length) return null;
+  const d = payload[0].payload;
+  return (
+    <TipBox title={d.titular}>
+      <TipFila color={C_CHATS} label="Chats" value={nf.format(d.chats)} />
+      <p className="text-slate-500 mt-0.5">anuncio {d.adId}</p>
     </TipBox>
   );
 }

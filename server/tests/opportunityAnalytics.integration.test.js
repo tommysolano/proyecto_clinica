@@ -166,17 +166,19 @@ test('tasas, canal, agente y servicios salen de la etapa de la oportunidad', asy
   assert.deepEqual(payload.motivosPerdida, [{ motivo: 'Precio', count: 1 }]);
 });
 
-test('clasifica por oportunidad: por su nombre, o por la campaña si nació de un anuncio', async () => {
+test('clasifica por oportunidad SOLO por su nombre: el titular del anuncio no se cuela', async () => {
   const clinic = await Clinic.create({ name: 'Principal' });
   await Conversation.create({
     clinic: clinic._id, phone: '593900000011',
     opportunities: [
       { isOpportunity: true, name: 'Probiotic 1', stage: 'nuevo', createdAt: hace(3), expectedValue: 39 },
       { isOpportunity: true, name: 'Probiotic 1', stage: 'agendado', createdAt: hace(2), expectedValue: 39 },
-      // Sin nombre, pero SÍ se sabe de qué va: entró por un anuncio.
+      // Nacida sola de un anuncio: sin nombre. `attribution.campaign` NO es una
+      // campaña, es el TITULAR del anuncio (referral.headline), así que no puede
+      // acabar en el informe como si fuera una oportunidad que alguien creó.
       {
         isOpportunity: true, name: '', stage: 'nuevo', createdAt: hace(2),
-        attribution: { adId: '120249', campaign: 'Chequeo Integral' },
+        attribution: { adId: '120249', campaign: 'Revisa Tu Próstata A Tiempo' },
       },
     ],
   });
@@ -196,10 +198,44 @@ test('clasifica por oportunidad: por su nombre, o por la campaña si nació de u
     [probiotic.total, probiotic.nuevo, probiotic.agendado, probiotic.ganado, probiotic.value],
     [3, 1, 1, 1, 117]
   );
-  const anuncio = payload.porOportunidad.find((o) => o.nombre === 'Chequeo Integral');
-  assert.equal(anuncio.total, 1);
-  assert.equal(anuncio.desdeAnuncio, 1);
-  assert.equal(payload.porOportunidad.some((o) => o.nombre === 'Sin nombre'), false);
+  assert.equal(
+    payload.porOportunidad.some((o) => o.nombre === 'Revisa Tu Próstata A Tiempo'),
+    false,
+    'el titular de un anuncio nunca es el nombre de una oportunidad'
+  );
+  const sinNombre = payload.porOportunidad.find((o) => o.nombre === 'Sin nombre');
+  assert.equal(sinNombre.total, 1);
+  assert.equal(sinNombre.desdeAnuncio, 1);
+});
+
+test('chats por anuncio: se cuentan los chats NUEVOS del rango, por el anuncio del chat', async () => {
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const desde = (adId, campaign, createdAt) => ({
+    clinic: clinic._id, createdAt, attribution: { adId, campaign, ctwaClid: '' },
+  });
+  await Conversation.insertMany([
+    { ...desde('ad-1', 'Revisa Tu Próstata A Tiempo', hace(2)), phone: '593900000021' },
+    { ...desde('ad-1', 'Revisa Tu Próstata A Tiempo', hace(1)), phone: '593900000022' },
+    { ...desde('ad-2', 'Eliminar mi uñero', hace(1)), phone: '593900000023' },
+    // Mismo titular que ad-2 pero OTRO anuncio: dos filas idénticas no valen.
+    { ...desde('ad-3', 'Eliminar mi uñero', hace(1)), phone: '593900000024' },
+    // Sin anuncio: cuenta como chat nuevo pero no en el desglose.
+    { clinic: clinic._id, phone: '593900000025', createdAt: hace(1) },
+    // De un anuncio pero FUERA del rango.
+    { ...desde('ad-1', 'Revisa Tu Próstata A Tiempo', hace(200)), phone: '593900000026' },
+  ]);
+
+  const { payload } = await pedir(clinic._id, rango);
+  assert.equal(payload.totals.chats, 5);
+  assert.equal(payload.totals.chatsDesdeAnuncios, 4, 'los de anuncios son un subconjunto de los nuevos');
+
+  const porAnuncio = payload.porAnuncio;
+  assert.equal(porAnuncio.length, 3);
+  assert.equal(porAnuncio[0].adId, 'ad-1');
+  assert.equal(porAnuncio[0].chats, 2);
+  // El titular repetido se desempata con el final del id del anuncio.
+  const repes = porAnuncio.filter((a) => a.adId !== 'ad-1').map((a) => a.titular);
+  assert.deepEqual(repes.sort(), ['Eliminar mi uñero · …ad-2', 'Eliminar mi uñero · …ad-3']);
 });
 
 test('la clínica ajena no entra en las cuentas', async () => {

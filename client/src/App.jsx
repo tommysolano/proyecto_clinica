@@ -1,5 +1,5 @@
 import { lazy, Suspense } from 'react';
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom';
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { Toaster } from 'react-hot-toast';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { SocketProvider } from './context/SocketContext';
@@ -7,6 +7,8 @@ import PrivateRoute from './components/PrivateRoute';
 import RoleRoute from './components/RoleRoute';
 import Layout from './components/Layout';
 import Spinner from './components/Spinner';
+import ErrorBoundary from './components/ErrorBoundary';
+import { cargarPagina } from './utils/lazyPage';
 // Login va EAGER a propósito: es la primera pantalla y hacerla perezosa añadiría
 // una petición extra en cadena justo antes de poder escribir el usuario.
 import Login from './pages/Login';
@@ -27,103 +29,119 @@ import Login from './pages/Login';
 //
 //  REQUISITO: cada página debe tener `export default`. Si alguna pasa a export
 //  nombrado, aquí hay que hacer `.then(m => ({ default: m.Nombre }))`.
-const DashboardAdmin = lazy(() => import('./pages/dashboards/DashboardAdmin'));
-const DashboardCajero = lazy(() => import('./pages/dashboards/DashboardCajero'));
-const DashboardDoctor = lazy(() => import('./pages/dashboards/DashboardDoctor'));
-const DashboardOptica = lazy(() => import('./pages/dashboards/DashboardOptica'));
-const DashboardCallCenter = lazy(() => import('./pages/dashboards/DashboardCallCenter'));
-const DashboardMarketing = lazy(() => import('./pages/dashboards/DashboardMarketing'));
-const DashboardEnfermero = lazy(() => import('./pages/dashboards/DashboardEnfermero'));
-const Patients = lazy(() => import('./pages/Patients'));
-const PatientDetail = lazy(() => import('./pages/PatientDetail'));
-const Appointments = lazy(() => import('./pages/Appointments'));
-const Inventory = lazy(() => import('./pages/Inventory'));
-const Sales = lazy(() => import('./pages/Sales'));
-const Invoices = lazy(() => import('./pages/Invoices'));
-const InvoicingConfig = lazy(() => import('./pages/InvoicingConfig'));
-const Users = lazy(() => import('./pages/Users'));
-const Clinics = lazy(() => import('./pages/Clinics'));
-const Treatments = lazy(() => import('./pages/Treatments'));
-const Referrals = lazy(() => import('./pages/Referrals'));
-const Quotations = lazy(() => import('./pages/Quotations'));
-const Marketing = lazy(() => import('./pages/Marketing'));
-const Chats = lazy(() => import('./pages/Chats'));
-const OpportunitiesGlobal = lazy(() => import('./pages/OpportunitiesGlobal'));
-const Analytics = lazy(() => import('./pages/Analytics'));
-const MessageTemplates = lazy(() => import('./pages/MessageTemplates'));
-const WhatsappSpend = lazy(() => import('./pages/WhatsappSpend'));
-const SavedReplies = lazy(() => import('./pages/SavedReplies'));
-const Contacts = lazy(() => import('./pages/Contacts'));
-const Segments = lazy(() => import('./pages/Segments'));
-const Campaigns = lazy(() => import('./pages/Campaigns'));
-const Workflows = lazy(() => import('./pages/Workflows'));
-const WorkflowEditor = lazy(() => import('./pages/WorkflowEditor'));
-const RecycleBin = lazy(() => import('./pages/RecycleBin'));
-const Attribution = lazy(() => import('./pages/Attribution'));
-const Reputation = lazy(() => import('./pages/Reputation'));
-const Tasks = lazy(() => import('./pages/Tasks'));
-const Scanner = lazy(() => import('./pages/Scanner'));
-const PublicBooking = lazy(() => import('./pages/PublicBooking'));
-const BookingConfig = lazy(() => import('./pages/BookingConfig'));
-const CallCenterConfig = lazy(() => import('./pages/CallCenterConfig'));
-const CommissionRules = lazy(() => import('./pages/CommissionRules'));
-const Settings = lazy(() => import('./pages/Settings'));
-const Reports = lazy(() => import('./pages/Reports'));
-const Discounts = lazy(() => import('./pages/Discounts'));
-const Rooms = lazy(() => import('./pages/Rooms'));
-const Blocks = lazy(() => import('./pages/Blocks'));
-const AccessBlocks = lazy(() => import('./pages/AccessBlocks'));
-const ChartOfAccounts = lazy(() => import('./pages/accounting/ChartOfAccounts'));
-const DataImport = lazy(() => import('./pages/accounting/DataImport'));
-const CostCenters = lazy(() => import('./pages/accounting/CostCenters'));
-const FiscalPeriods = lazy(() => import('./pages/accounting/FiscalPeriods'));
-const JournalEntries = lazy(() => import('./pages/accounting/JournalEntries'));
-const Ledger = lazy(() => import('./pages/accounting/Ledger'));
-const TrialBalance = lazy(() => import('./pages/accounting/TrialBalance'));
-const BankAccounts = lazy(() => import('./pages/accounting/BankAccounts'));
-const BankMovements = lazy(() => import('./pages/accounting/BankMovements'));
-const CashDeposits = lazy(() => import('./pages/accounting/CashDeposits'));
-const CashBox = lazy(() => import('./pages/accounting/CashBox'));
-const Reconciliations = lazy(() => import('./pages/accounting/Reconciliations'));
-const Suppliers = lazy(() => import('./pages/accounting/Suppliers'));
-const Payments = lazy(() => import('./pages/accounting/Payments'));
-const PurchaseInvoices = lazy(() => import('./pages/accounting/PurchaseInvoices'));
-const RetentionRules = lazy(() => import('./pages/accounting/RetentionRules'));
-const CreditDebitNotes = lazy(() => import('./pages/accounting/CreditDebitNotes'));
-const Warehouses = lazy(() => import('./pages/accounting/Warehouses'));
-const InventoryCategories = lazy(() => import('./pages/accounting/InventoryCategories'));
-const ConsolidatedInventory = lazy(() => import('./pages/accounting/ConsolidatedInventory'));
-const PhysicalCounts = lazy(() => import('./pages/accounting/PhysicalCounts'));
-const FixedAssets = lazy(() => import('./pages/accounting/FixedAssets'));
-const FinancialReports = lazy(() => import('./pages/accounting/FinancialReports'));
-const ManagementReports = lazy(() => import('./pages/accounting/ManagementReports'));
-const SriReports = lazy(() => import('./pages/accounting/SriReports'));
-const SriDeclarations = lazy(() => import('./pages/accounting/SriDeclarations'));
-const SriAnnexes = lazy(() => import('./pages/accounting/SriAnnexes'));
-const Employees = lazy(() => import('./pages/accounting/Employees'));
-const EmployeeLoans = lazy(() => import('./pages/accounting/EmployeeLoans'));
-const Deductions = lazy(() => import('./pages/accounting/Deductions'));
-const Payroll = lazy(() => import('./pages/accounting/Payroll'));
-const CreditCardBatches = lazy(() => import('./pages/accounting/CreditCardBatches'));
-const AuditLogs = lazy(() => import('./pages/accounting/AuditLogs'));
-const AccountingDashboard = lazy(() => import('./pages/accounting/AccountingDashboard'));
-const Kardex = lazy(() => import('./pages/accounting/Kardex'));
-const CashFlow = lazy(() => import('./pages/accounting/CashFlow'));
-const PayrollConfig = lazy(() => import('./pages/accounting/PayrollConfig'));
-const Decimos = lazy(() => import('./pages/accounting/Decimos'));
-const Checks = lazy(() => import('./pages/accounting/Checks'));
-const CreditCards = lazy(() => import('./pages/accounting/CreditCards'));
-const CardSettlements = lazy(() => import('./pages/accounting/CardSettlements'));
-const SalesReports = lazy(() => import('./pages/accounting/SalesReports'));
-const CashClosing = lazy(() => import('./pages/accounting/CashClosing'));
-const AccountMapping = lazy(() => import('./pages/accounting/AccountMapping'));
-const PeriodBalances = lazy(() => import('./pages/accounting/PeriodBalances'));
-const Budgets = lazy(() => import('./pages/accounting/Budgets'));
-const Receivables = lazy(() => import('./pages/accounting/Receivables'));
-const DeferredIncome = lazy(() => import('./pages/accounting/DeferredIncome'));
-const RetentionVouchers = lazy(() => import('./pages/accounting/RetentionVouchers'));
-const AccountingHealth = lazy(() => import('./pages/accounting/AccountingHealth'));
-const Profitability = lazy(() => import('./pages/accounting/Profitability'));
+//
+//  ─────────────────────────────────────────────────────────────────────────────
+//  PANTALLA EN BLANCO AL NAVEGAR (o al darle a "atrás") — por qué pasaba.
+//
+//  Cada despliegue genera los ficheros con un hash nuevo (`Analytics-BNSmvEiw.js`)
+//  y borra los de la versión anterior. Una pestaña abierta desde antes del
+//  despliegue sigue teniendo en memoria los nombres VIEJOS: al entrar en una
+//  pantalla que aún no había visitado, el `import()` pide un fichero que ya no
+//  existe (404), la promesa se rompe y —sin nadie que recoja ese error— React
+//  desmonta el árbol entero. Resultado: pantalla en blanco y ahí se queda, hasta
+//  recargar a mano. Justo lo que reportó el usuario.
+//
+//  `pagina()` recoge ese fallo y recarga UNA vez para coger la versión nueva (la
+//  lógica y su porqué, en utils/lazyPage.js). Si aun así falla, lo pinta la
+//  barrera de error en vez de dejar el hueco en blanco.
+const pagina = (importar) => lazy(() => cargarPagina(importar));
+const DashboardAdmin = pagina(() => import('./pages/dashboards/DashboardAdmin'));
+const DashboardCajero = pagina(() => import('./pages/dashboards/DashboardCajero'));
+const DashboardDoctor = pagina(() => import('./pages/dashboards/DashboardDoctor'));
+const DashboardOptica = pagina(() => import('./pages/dashboards/DashboardOptica'));
+const DashboardCallCenter = pagina(() => import('./pages/dashboards/DashboardCallCenter'));
+const DashboardMarketing = pagina(() => import('./pages/dashboards/DashboardMarketing'));
+const DashboardEnfermero = pagina(() => import('./pages/dashboards/DashboardEnfermero'));
+const Patients = pagina(() => import('./pages/Patients'));
+const PatientDetail = pagina(() => import('./pages/PatientDetail'));
+const Appointments = pagina(() => import('./pages/Appointments'));
+const Inventory = pagina(() => import('./pages/Inventory'));
+const Sales = pagina(() => import('./pages/Sales'));
+const Invoices = pagina(() => import('./pages/Invoices'));
+const InvoicingConfig = pagina(() => import('./pages/InvoicingConfig'));
+const Users = pagina(() => import('./pages/Users'));
+const Clinics = pagina(() => import('./pages/Clinics'));
+const Treatments = pagina(() => import('./pages/Treatments'));
+const Referrals = pagina(() => import('./pages/Referrals'));
+const Quotations = pagina(() => import('./pages/Quotations'));
+const Marketing = pagina(() => import('./pages/Marketing'));
+const Chats = pagina(() => import('./pages/Chats'));
+const OpportunitiesGlobal = pagina(() => import('./pages/OpportunitiesGlobal'));
+const Analytics = pagina(() => import('./pages/Analytics'));
+const MessageTemplates = pagina(() => import('./pages/MessageTemplates'));
+const WhatsappSpend = pagina(() => import('./pages/WhatsappSpend'));
+const SavedReplies = pagina(() => import('./pages/SavedReplies'));
+const Contacts = pagina(() => import('./pages/Contacts'));
+const Segments = pagina(() => import('./pages/Segments'));
+const Campaigns = pagina(() => import('./pages/Campaigns'));
+const Workflows = pagina(() => import('./pages/Workflows'));
+const WorkflowEditor = pagina(() => import('./pages/WorkflowEditor'));
+const RecycleBin = pagina(() => import('./pages/RecycleBin'));
+const Attribution = pagina(() => import('./pages/Attribution'));
+const Reputation = pagina(() => import('./pages/Reputation'));
+const Tasks = pagina(() => import('./pages/Tasks'));
+const Scanner = pagina(() => import('./pages/Scanner'));
+const PublicBooking = pagina(() => import('./pages/PublicBooking'));
+const BookingConfig = pagina(() => import('./pages/BookingConfig'));
+const CallCenterConfig = pagina(() => import('./pages/CallCenterConfig'));
+const CommissionRules = pagina(() => import('./pages/CommissionRules'));
+const Settings = pagina(() => import('./pages/Settings'));
+const Reports = pagina(() => import('./pages/Reports'));
+const Discounts = pagina(() => import('./pages/Discounts'));
+const Rooms = pagina(() => import('./pages/Rooms'));
+const Blocks = pagina(() => import('./pages/Blocks'));
+const AccessBlocks = pagina(() => import('./pages/AccessBlocks'));
+const ChartOfAccounts = pagina(() => import('./pages/accounting/ChartOfAccounts'));
+const DataImport = pagina(() => import('./pages/accounting/DataImport'));
+const CostCenters = pagina(() => import('./pages/accounting/CostCenters'));
+const FiscalPeriods = pagina(() => import('./pages/accounting/FiscalPeriods'));
+const JournalEntries = pagina(() => import('./pages/accounting/JournalEntries'));
+const Ledger = pagina(() => import('./pages/accounting/Ledger'));
+const TrialBalance = pagina(() => import('./pages/accounting/TrialBalance'));
+const BankAccounts = pagina(() => import('./pages/accounting/BankAccounts'));
+const BankMovements = pagina(() => import('./pages/accounting/BankMovements'));
+const CashDeposits = pagina(() => import('./pages/accounting/CashDeposits'));
+const CashBox = pagina(() => import('./pages/accounting/CashBox'));
+const Reconciliations = pagina(() => import('./pages/accounting/Reconciliations'));
+const Suppliers = pagina(() => import('./pages/accounting/Suppliers'));
+const Payments = pagina(() => import('./pages/accounting/Payments'));
+const PurchaseInvoices = pagina(() => import('./pages/accounting/PurchaseInvoices'));
+const RetentionRules = pagina(() => import('./pages/accounting/RetentionRules'));
+const CreditDebitNotes = pagina(() => import('./pages/accounting/CreditDebitNotes'));
+const Warehouses = pagina(() => import('./pages/accounting/Warehouses'));
+const InventoryCategories = pagina(() => import('./pages/accounting/InventoryCategories'));
+const ConsolidatedInventory = pagina(() => import('./pages/accounting/ConsolidatedInventory'));
+const PhysicalCounts = pagina(() => import('./pages/accounting/PhysicalCounts'));
+const FixedAssets = pagina(() => import('./pages/accounting/FixedAssets'));
+const FinancialReports = pagina(() => import('./pages/accounting/FinancialReports'));
+const ManagementReports = pagina(() => import('./pages/accounting/ManagementReports'));
+const SriReports = pagina(() => import('./pages/accounting/SriReports'));
+const SriDeclarations = pagina(() => import('./pages/accounting/SriDeclarations'));
+const SriAnnexes = pagina(() => import('./pages/accounting/SriAnnexes'));
+const Employees = pagina(() => import('./pages/accounting/Employees'));
+const EmployeeLoans = pagina(() => import('./pages/accounting/EmployeeLoans'));
+const Deductions = pagina(() => import('./pages/accounting/Deductions'));
+const Payroll = pagina(() => import('./pages/accounting/Payroll'));
+const CreditCardBatches = pagina(() => import('./pages/accounting/CreditCardBatches'));
+const AuditLogs = pagina(() => import('./pages/accounting/AuditLogs'));
+const AccountingDashboard = pagina(() => import('./pages/accounting/AccountingDashboard'));
+const Kardex = pagina(() => import('./pages/accounting/Kardex'));
+const CashFlow = pagina(() => import('./pages/accounting/CashFlow'));
+const PayrollConfig = pagina(() => import('./pages/accounting/PayrollConfig'));
+const Decimos = pagina(() => import('./pages/accounting/Decimos'));
+const Checks = pagina(() => import('./pages/accounting/Checks'));
+const CreditCards = pagina(() => import('./pages/accounting/CreditCards'));
+const CardSettlements = pagina(() => import('./pages/accounting/CardSettlements'));
+const SalesReports = pagina(() => import('./pages/accounting/SalesReports'));
+const CashClosing = pagina(() => import('./pages/accounting/CashClosing'));
+const AccountMapping = pagina(() => import('./pages/accounting/AccountMapping'));
+const PeriodBalances = pagina(() => import('./pages/accounting/PeriodBalances'));
+const Budgets = pagina(() => import('./pages/accounting/Budgets'));
+const Receivables = pagina(() => import('./pages/accounting/Receivables'));
+const DeferredIncome = pagina(() => import('./pages/accounting/DeferredIncome'));
+const RetentionVouchers = pagina(() => import('./pages/accounting/RetentionVouchers'));
+const AccountingHealth = pagina(() => import('./pages/accounting/AccountingHealth'));
+const Profitability = pagina(() => import('./pages/accounting/Profitability'));
 
 function SuperAdminRoute({ children }) {
   const { user, loading } = useAuth();
@@ -165,6 +183,16 @@ function PageFallback() {
   );
 }
 
+/**
+ * Barrera del área de contenido. Se rearma al cambiar de ruta: si no, una pantalla
+ * que falló dejaba el hueco con el error para siempre, aunque el usuario se fuera
+ * a otra parte del menú.
+ */
+function ContentBoundary({ children }) {
+  const { pathname } = useLocation();
+  return <ErrorBoundary resetKey={pathname}>{children}</ErrorBoundary>;
+}
+
 function AppRoutes() {
   return (
     <Suspense fallback={<PageFallback />}>
@@ -178,7 +206,11 @@ function AppRoutes() {
               <Layout>
                 {/* Suspense propio DENTRO del Layout: al navegar entre páginas se
                     recarga solo el contenido y el menú lateral se queda fijo, en
-                    vez de desmontarse y volver a montarse en cada salto. */}
+                    vez de desmontarse y volver a montarse en cada salto.
+                    La barrera va POR FUERA del Suspense (es donde React entrega el
+                    error de un import roto) y DENTRO del Layout, para que un fallo
+                    de una pantalla no se lleve por delante el menú. */}
+                <ContentBoundary>
                 <Suspense fallback={<PageFallback />}>
               <Routes>
                 <Route path="/" element={<RoleDashboard />} />
@@ -573,6 +605,7 @@ function AppRoutes() {
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Routes>
                 </Suspense>
+                </ContentBoundary>
               </Layout>
             </PrivateRoute>
           }

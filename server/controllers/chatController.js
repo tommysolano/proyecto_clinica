@@ -2071,27 +2071,19 @@ const TZ_EC = 'America/Guayaquil';
 const dayKey = (field) => ({ $dateToString: { format: '%Y-%m-%d', date: field, timezone: TZ_EC } });
 
 /**
- * CÓMO SE LLAMA UNA OPORTUNIDAD EN LOS INFORMES.
+ * CÓMO SE LLAMA UNA OPORTUNIDAD EN LOS INFORMES: por SU nombre y nada más.
  *
- * Casi la mitad de las oportunidades nacen solas de un anuncio de click-to-WhatsApp
- * y llegan SIN nombre (el nombre lo pone el agente después, si lo pone). Agrupadas
- * por `name` acababan todas en un montón de "Sin nombre" que no dice nada, cuando
- * en realidad sí se sabe de qué son: de la campaña del anuncio por el que entraron.
- * Por eso el nombre del informe es, en este orden: el suyo → la campaña → "Sin nombre".
+ * Ojo con `attribution.campaign`: NO es el nombre de una campaña publicitaria, es
+ * el TITULAR del anuncio tal cual lo manda Meta (`referral.headline`) — cosas como
+ * "Revisa Tu Próstata A Tiempo". Usarlo para rellenar el nombre de las que no lo
+ * tienen mezclaba dos cosas distintas y el informe enseñaba "oportunidades" que
+ * nadie había creado. Las que vienen de un anuncio se cuentan en su propia
+ * gráfica, "Chats por anuncio"; aquí, sin nombre es "Sin nombre".
  */
 const OPP_LABEL = {
   $let: {
-    vars: {
-      n: { $trim: { input: { $ifNull: ['$_opps.name', ''] } } },
-      c: { $trim: { input: { $ifNull: ['$_opps.attribution.campaign', ''] } } },
-    },
-    in: {
-      $cond: [
-        { $gt: [{ $strLenCP: '$$n' }, 0] },
-        '$$n',
-        { $cond: [{ $gt: [{ $strLenCP: '$$c' }, 0] }, '$$c', 'Sin nombre'] },
-      ],
-    },
+    vars: { n: { $trim: { input: { $ifNull: ['$_opps.name', ''] } } } },
+    in: { $cond: [{ $gt: [{ $strLenCP: '$$n' }, 0] }, '$$n', 'Sin nombre'] },
   },
 };
 
@@ -2221,6 +2213,43 @@ exports.opportunityAnalytics = async (req, res) => {
       { $group: { _id: dayKey('$createdAt'), count: { $sum: 1 } } },
     ]);
 
+    /**
+     * CHATS POR ANUNCIO.
+     *
+     * Se cuenta sobre las MISMAS conversaciones que "Chats nuevos" (creadas en el
+     * rango) y por el anuncio que quedó grabado en el chat la primera vez que
+     * escribió: `Conversation.attribution.adId`. Así este desglose es un
+     * SUBCONJUNTO de los chats nuevos y las dos cifras encajan (medido el
+     * 13-ago-2026: 223 de 249 chats nuevos venían de un anuncio).
+     *
+     * Contarlo desde los mensajes daba un número MAYOR que el de chats nuevos
+     * —260 contra 249— porque incluye chats viejos que vuelven a escribir desde
+     * un anuncio nuevo: cierto, pero se lee como un error.
+     *
+     * OJO con la etiqueta: `attribution.campaign` NO es una campaña, es el TITULAR
+     * del anuncio (`referral.headline`; ver chatController:3638). Meta no manda el
+     * nombre de la campaña en el webhook, así que el titular es lo único legible
+     * que tenemos. Dos anuncios distintos pueden compartir titular: se agrupa por
+     * el id y solo se desempata en la etiqueta.
+     */
+    const anunciosAgg = await Conversation.aggregate([
+      {
+        $match: {
+          ...base,
+          ...(range ? { createdAt: range } : {}),
+          'attribution.adId': { $nin: ['', null] },
+        },
+      },
+      {
+        $group: {
+          _id: '$attribution.adId',
+          titular: { $last: '$attribution.campaign' },
+          chats: { $sum: 1 },
+        },
+      },
+      { $sort: { chats: -1 } },
+    ]);
+
     const facets = agg || {};
     const etapaMap = Object.fromEntries((facets.porEtapa || []).map((r) => [r._id, r]));
     const embudo = opportunities.STAGES.map((stage) => ({
@@ -2253,6 +2282,11 @@ exports.opportunityAnalytics = async (req, res) => {
     }));
 
     const chats = chatsPorDia.reduce((a, r) => a + r.count, 0);
+    // El total cuenta TODOS los anuncios; la gráfica solo enseña los 15 primeros.
+    const chatsDesdeAnuncios = anunciosAgg.reduce((a, r) => a + r.chats, 0);
+    const topAnuncios = anunciosAgg.slice(0, 15);
+    const tituloDe = (r) => String(r.titular || '').trim() || `Anuncio ${r._id}`;
+    const repetidos = topAnuncios.reduce((m, r) => ({ ...m, [tituloDe(r)]: (m[tituloDe(r)] || 0) + 1 }), {});
     const agendadas = de('agendado').count;
     const ganadas = de('ganado').count;
     const perdidas = de('perdido').count;
@@ -2262,6 +2296,9 @@ exports.opportunityAnalytics = async (req, res) => {
       range: { from: req.query.from || '', to: req.query.to || '' },
       totals: {
         chats,
+        // Suma de los 15 anuncios que más chats traen (el tope del listado): sirve
+        // de referencia junto a "chats nuevos", no como total exacto de anuncios.
+        chatsDesdeAnuncios,
         oportunidades: total,
         chatsConOportunidad: facets.chatsConOportunidad?.[0]?.n || 0,
         agendadas,
@@ -2287,6 +2324,15 @@ exports.opportunityAnalytics = async (req, res) => {
         agendadas: r.agendadas,
         ganadas: r.ganadas,
         valorGanado: Math.round((r.valorGanado || 0) * 100) / 100,
+      })),
+      porAnuncio: topAnuncios.map((r) => ({
+        adId: r._id,
+        // Dos anuncios con el mismo titular salían como dos filas idénticas: al
+        // repetido se le pega el final del id para poder distinguirlos.
+        titular: repetidos[tituloDe(r)] > 1
+          ? `${tituloDe(r)} · …${String(r._id).slice(-4)}`
+          : tituloDe(r),
+        chats: r.chats,
       })),
       porOportunidad: (facets.porOportunidad || []).map((r) => ({
         nombre: r._id,
