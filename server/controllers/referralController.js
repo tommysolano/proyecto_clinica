@@ -1,4 +1,5 @@
 const Referral = require('../models/Referral');
+const { isDoctorRole } = require('../constants/roles');
 
 const POPULATE = [
   { path: 'patient', select: 'firstName lastName cedula' },
@@ -20,8 +21,8 @@ exports.list = async (req, res) => {
       query.date = { $gte: new Date(startDate), $lte: new Date(endDate + 'T23:59:59.999') };
     }
 
-    // Si el rol es doctor, solo ve las que él emitió o recibió
-    if (req.role === 'doctor' || req.role === 'optica') {
+    // Si el rol es doctor (o una de sus especialidades), solo ve las que él emitió o recibió
+    if (isDoctorRole(req.role)) {
       query.$or = [{ fromDoctor: req.user._id }, { toDoctor: req.user._id }];
     }
 
@@ -51,7 +52,7 @@ exports.create = async (req, res) => {
     const referral = await Referral.create({
       ...req.body,
       clinic: req.clinicId,
-      fromDoctor: req.body.fromDoctor || (req.role === 'doctor' || req.role === 'optica' ? req.user._id : undefined),
+      fromDoctor: req.body.fromDoctor || (isDoctorRole(req.role) ? req.user._id : undefined),
     });
     const populated = await Referral.findById(referral._id).populate(POPULATE);
     res.status(201).json(populated);

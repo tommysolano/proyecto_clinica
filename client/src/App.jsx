@@ -159,8 +159,13 @@ function RoleDashboard() {
   if (!user?.isSuperAdmin && role === 'contabilidad') return <AccountingDashboard />;
   switch (role) {
     case 'cajero': return <DashboardCajero />;
-    case 'doctor': return <DashboardDoctor />;
-    case 'ginecologia': return <DashboardDoctor />;
+    // Las especialidades usan el dashboard del doctor (WelcomeDashboard toma la
+    // etiqueta del rol, así que cada una se saluda por su nombre).
+    case 'doctor':
+    case 'ginecologia':
+    case 'podologia':
+    case 'odontologia':
+    case 'cosmetologia': return <DashboardDoctor />;
     case 'optica': return <DashboardOptica />;
     case 'call_center': return <DashboardCallCenter />;
     case 'marketing': return <DashboardMarketing />;

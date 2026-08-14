@@ -160,6 +160,13 @@ const conversationSchema = new mongoose.Schema(
     // guardar este actor evita atribuir la métrica al último reasignado.
     firstResponseBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     lastAgentReplyAt: { type: Date, default: null },
+    // QUIÉN respondió por última vez. Es distinto de `assignedTo`: un chat puede
+    // estar asignado a una asesora y haberlo contestado otra, y en la bandeja lo
+    // que se quiere ver es quién lo atendió de verdad la última vez.
+    // Solo se escribe cuando el envío lleva `sentBy` (una persona): los envíos
+    // automáticos y de workflow no cuentan como "atendido".
+    lastAgentReplyBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    lastAgentReplyName: { type: String, trim: true, default: '' },
     // Oportunidad principal (compatibilidad). El array `opportunities` permite tener varias por chat.
     opportunity: { type: opportunitySchema, default: () => ({}) },
     opportunities: { type: [opportunitySchema], default: [] },

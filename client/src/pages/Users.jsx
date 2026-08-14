@@ -8,6 +8,7 @@ import useSriLookup, { fillField } from '../hooks/useSriLookup';
 import EmailStatus from '../components/EmailStatus';
 import useEmailValidation from '../hooks/useEmailValidation';
 import { useAuth } from '../context/AuthContext';
+import { roleSatisfies } from '../utils/roles';
 import {
   HiOutlineUserPlus,
   HiOutlinePencilSquare,
@@ -21,6 +22,9 @@ const ROLES = [
   { value: 'contabilidad', label: 'Contabilidad' },
   { value: 'doctor', label: 'Doctor' },
   { value: 'ginecologia', label: 'Ginecología' },
+  { value: 'podologia', label: 'Podología' },
+  { value: 'odontologia', label: 'Odontología' },
+  { value: 'cosmetologia', label: 'Cosmetología' },
   { value: 'optica', label: 'Óptica' },
   { value: 'call_center', label: 'Call Center' },
   { value: 'marketing', label: 'Marketing' },
@@ -304,7 +308,7 @@ export default function Users() {
                 className="input"
               />
             </Field>
-            {(form.role === 'doctor' || form.role === 'ginecologia') && (
+            {roleSatisfies(form.role, ['doctor']) && (
               <Field label="Especialidad">
                 <input
                   type="text"

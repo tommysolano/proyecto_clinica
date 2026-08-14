@@ -8,6 +8,28 @@ const {
   EXAMEN_REGIONAL,
   EXAMEN_SISTEMICO,
 } = require('../constants/mspCatalogs');
+const {
+  PODOLOGIA_HALLAZGOS_KEYS,
+  PODOLOGIA_PULSO_OPCIONES,
+  PODOLOGIA_SENSIBILIDAD_OPCIONES,
+  PODOLOGIA_REFLEJOS_OPCIONES,
+  ODONTOGRAMA_PIEZAS,
+  ODONTOGRAMA_ESTADOS_KEYS,
+  COSMETOLOGIA_FOTOTIPOS,
+  COSMETOLOGIA_GLOGAU,
+  COSMETOLOGIA_ROSACEA,
+  COSMETOLOGIA_BIOTIPOS_KEYS,
+  COSMETOLOGIA_ARRUGAS_KEYS,
+  COSMETOLOGIA_ACNE_KEYS,
+  COSMETOLOGIA_LESIONES_KEYS,
+  COSMETOLOGIA_HIPERPIGMENTACION,
+  COSMETOLOGIA_DESHIDRATACION,
+  COSMETOLOGIA_CABELLO,
+  COSMETOLOGIA_CUERO_CABELLUDO,
+  COSMETOLOGIA_FIBRA_CAPILAR_KEYS,
+  COSMETOLOGIA_AFECCIONES_CUERO_KEYS,
+} = require('../constants/specialtyCatalogs');
+const { specialtyFollowUpHtml } = require('../utils/specialtyFollowUpPrint');
 const { describeCie10 } = require('../utils/cie10Catalog');
 const { emitToClinic } = require('../realtime');
 const path = require('path');
@@ -158,6 +180,9 @@ exports.addFollowUp = async (req, res) => {
       vitalSigns,        // signos vitales (opcional)
       opticaRx,          // datos ópticos (rol optica): { od:{...}, oi:{...} }
       ginecologia,       // datos ginecológicos (rol ginecologia)
+      podologia,         // datos podológicos (rol podologia)
+      odontologia,       // odontograma FDI (rol odontologia)
+      cosmetologia,      // fichas estética facial/capilar (rol cosmetologia)
       // --- Campos del formulario MSP HCU-form.002 ---
       tipoConsulta,      // B: 'primera' | 'subsecuente'
       enfermedadActual,  // E: enfermedad o problema actual
@@ -235,6 +260,153 @@ exports.addFollowUp = async (req, res) => {
           signosVitalesScore: String(cp.signosVitalesScore || '').trim(),
           bebePosicion: String(cp.bebePosicion || '').trim(),
           actividadCardiaca: String(cp.actividadCardiaca || '').trim(),
+        },
+      };
+    };
+
+    // --- Saneadores de las fichas por especialidad ---
+    // Regla común: el catálogo manda. Solo se guardan claves que existan en
+    // server/constants/specialtyCatalogs.js y opciones dentro de su lista; lo que
+    // no cuadra se descarta en silencio en vez de romper la validación de mongoose.
+    const txt = (v) => String(v ?? '').trim();
+    const pick = (v, options) => (options.includes(v) ? v : '');
+    const checksIn = (arr, allowedKeys) =>
+      sanitizeChecks(arr).filter((c) => allowedKeys.includes(c.key));
+
+    const sanitizePodologia = (p) => {
+      if (!p || typeof p !== 'object') return undefined;
+      const hg = p.hallazgosGenerales || {};
+      const vn = p.vascularNeurologica || {};
+      const ev = p.evaluacion || {};
+      return {
+        hallazgosGenerales: {
+          piel: txt(hg.piel),
+          unas: txt(hg.unas),
+          hidratacion: txt(hg.hidratacion),
+          temperatura: txt(hg.temperatura),
+          coloracion: txt(hg.coloracion),
+          edema: typeof hg.edema === 'boolean' ? hg.edema : null,
+          otros: txt(hg.otros),
+        },
+        vascularNeurologica: {
+          pulsoPedio: pick(vn.pulsoPedio, PODOLOGIA_PULSO_OPCIONES),
+          pulsoTibialPosterior: pick(vn.pulsoTibialPosterior, PODOLOGIA_PULSO_OPCIONES),
+          llenadoCapilar: txt(vn.llenadoCapilar),
+          sensibilidadMonofilamento: pick(vn.sensibilidadMonofilamento, PODOLOGIA_SENSIBILIDAD_OPCIONES),
+          reflejos: pick(vn.reflejos, PODOLOGIA_REFLEJOS_OPCIONES),
+        },
+        evaluacion: {
+          piel: txt(ev.piel),
+          unas: txt(ev.unas),
+          pulsos: txt(ev.pulsos),
+          sensibilidad: txt(ev.sensibilidad),
+          calzado: txt(ev.calzado),
+          marcha: txt(ev.marcha),
+        },
+        hallazgos: checksIn(p.hallazgos, PODOLOGIA_HALLAZGOS_KEYS),
+        hallazgosDetalle: txt(p.hallazgosDetalle),
+      };
+    };
+
+    const sanitizeOdontologia = (o) => {
+      if (!o || typeof o !== 'object') return undefined;
+      const dientes = (Array.isArray(o.odontograma) ? o.odontograma : [])
+        .filter((d) => d && ODONTOGRAMA_PIEZAS.includes(String(d.diente)))
+        .map((d) => {
+          const caras = d.caras || {};
+          return {
+            diente: String(d.diente),
+            estado: ODONTOGRAMA_ESTADOS_KEYS.includes(d.estado) ? d.estado : '',
+            caras: {
+              vestibular: !!caras.vestibular,
+              lingual: !!caras.lingual,
+              mesial: !!caras.mesial,
+              distal: !!caras.distal,
+              oclusal: !!caras.oclusal,
+            },
+            nota: txt(d.nota),
+          };
+        })
+        // Una pieza sin estado, sin caras y sin nota no aporta nada: no se guarda.
+        .filter((d) => d.estado || d.nota || Object.values(d.caras).some(Boolean));
+      // Una misma pieza no puede ir dos veces: gana la última marca recibida.
+      const porDiente = new Map(dientes.map((d) => [d.diente, d]));
+      return {
+        odontograma: ODONTOGRAMA_PIEZAS.filter((p) => porDiente.has(p)).map((p) => porDiente.get(p)),
+        observaciones: txt(o.observaciones),
+      };
+    };
+
+    const sanitizeCosmetologia = (c) => {
+      if (!c || typeof c !== 'object') return undefined;
+      const de = c.datosEsteticos || {};
+      const ev = c.evaluacion || {};
+      const hi = c.higiene || {};
+      const ca = c.cabello || {};
+      const tr = ca.tratamientos || {};
+      const cc = c.cueroCabelludo || {};
+      const pr = c.procedimiento || {};
+      const hiperKeys = COSMETOLOGIA_HIPERPIGMENTACION.map((z) => z.key);
+      const optionsOf = (catalog, key) => catalog.find((f) => f.key === key)?.options || [];
+      return {
+        datosEsteticos: {
+          tratamientosEsteticos: txt(de.tratamientosEsteticos),
+          autotratamientos: txt(de.autotratamientos),
+          cosmeticosUsoActual: txt(de.cosmeticosUsoActual),
+        },
+        evaluacion: {
+          fototipo: pick(ev.fototipo, COSMETOLOGIA_FOTOTIPOS),
+          glogau: pick(ev.glogau, COSMETOLOGIA_GLOGAU),
+          rosacea: pick(ev.rosacea, COSMETOLOGIA_ROSACEA),
+          biotipo: checksIn(ev.biotipo, COSMETOLOGIA_BIOTIPOS_KEYS),
+          arrugas: checksIn(ev.arrugas, COSMETOLOGIA_ARRUGAS_KEYS),
+          acne: checksIn(ev.acne, COSMETOLOGIA_ACNE_KEYS),
+          lesionesElementales: checksIn(ev.lesionesElementales, COSMETOLOGIA_LESIONES_KEYS),
+          hiperpigmentaciones: (Array.isArray(ev.hiperpigmentaciones) ? ev.hiperpigmentaciones : [])
+            .filter((z) => z && hiperKeys.includes(z.key))
+            .map((z) => ({
+              key: String(z.key),
+              marked: !!z.marked,
+              derecho: !!z.derecho,
+              izquierdo: !!z.izquierdo,
+            }))
+            .filter((z) => z.marked || z.derecho || z.izquierdo),
+          deshidratacionFacial: pick(ev.deshidratacionFacial, COSMETOLOGIA_DESHIDRATACION),
+          bioestimulacion: txt(ev.bioestimulacion),
+          nutricionDermica: txt(ev.nutricionDermica),
+          observaciones: txt(ev.observaciones),
+        },
+        higiene: {
+          frecuenciaLavado: txt(hi.frecuenciaLavado),
+          shampoo: txt(hi.shampoo),
+          acondicionador: txt(hi.acondicionador),
+          otros: txt(hi.otros),
+        },
+        cabello: {
+          longitud: pick(ca.longitud, optionsOf(COSMETOLOGIA_CABELLO, 'longitud')),
+          forma: pick(ca.forma, optionsOf(COSMETOLOGIA_CABELLO, 'forma')),
+          calibre: pick(ca.calibre, optionsOf(COSMETOLOGIA_CABELLO, 'calibre')),
+          densidad: pick(ca.densidad, optionsOf(COSMETOLOGIA_CABELLO, 'densidad')),
+          elasticidad: pick(ca.elasticidad, optionsOf(COSMETOLOGIA_CABELLO, 'elasticidad')),
+          color: pick(ca.color, optionsOf(COSMETOLOGIA_CABELLO, 'color')),
+          tratamientos: {
+            alisados: !!tr.alisados,
+            planchas: !!tr.planchas,
+            secadores: !!tr.secadores,
+          },
+        },
+        cueroCabelludo: {
+          tipo: pick(cc.tipo, optionsOf(COSMETOLOGIA_CUERO_CABELLUDO, 'tipo')),
+          glandulaSebacea: pick(cc.glandulaSebacea, optionsOf(COSMETOLOGIA_CUERO_CABELLUDO, 'glandulaSebacea')),
+          sensibilidad: pick(cc.sensibilidad, optionsOf(COSMETOLOGIA_CUERO_CABELLUDO, 'sensibilidad')),
+          movilidad: pick(cc.movilidad, optionsOf(COSMETOLOGIA_CUERO_CABELLUDO, 'movilidad')),
+        },
+        fibraCapilar: checksIn(c.fibraCapilar, COSMETOLOGIA_FIBRA_CAPILAR_KEYS),
+        afeccionesCuero: checksIn(c.afeccionesCuero, COSMETOLOGIA_AFECCIONES_CUERO_KEYS),
+        procedimiento: {
+          procedimiento: txt(pr.procedimiento),
+          productos: txt(pr.productos),
+          apoyoDomiciliario: txt(pr.apoyoDomiciliario),
         },
       };
     };
@@ -389,6 +561,9 @@ exports.addFollowUp = async (req, res) => {
             autoTreatmentCreated: autoTreatmentId && !treatment ? autoTreatmentId : undefined,
             opticaRx: opticaRx && typeof opticaRx === 'object' ? opticaRx : undefined,
             ginecologia: sanitizeGineco(ginecologia),
+            podologia: sanitizePodologia(podologia),
+            odontologia: sanitizeOdontologia(odontologia),
+            cosmetologia: sanitizeCosmetologia(cosmetologia),
             valor: valor || 0,
             metodoPago: metodoPago || 'efectivo',
             createdBy: req.user._id,
@@ -693,6 +868,7 @@ exports.printFollowUp = async (req, res) => {
 
   ${vitalsHtml}
   ${opticaHtml}
+  ${specialtyFollowUpHtml(fu)}
 
   <div class="sign">
     ${doctorSignature ? `<img src="${doctorSignature}" alt="Firma" style="max-height:60px;display:block;margin:0 auto 4px;" />` : ''}

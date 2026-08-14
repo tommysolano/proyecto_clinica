@@ -54,6 +54,25 @@ const diagnosticoSchema = new mongoose.Schema(
   { _id: false }
 );
 
+// Pieza del odontograma (rol 'odontologia'). `diente` es el número FDI ('11',
+// '18', '51'…, ver ODONTOGRAMA_PIEZAS) y `estado` una clave de ODONTOGRAMA_ESTADOS.
+// Solo se guardan las piezas marcadas, no las 52 del esquema.
+const odontogramaDienteSchema = new mongoose.Schema(
+  {
+    diente: { type: String, required: true },
+    estado: { type: String, trim: true, default: '' },
+    caras: {
+      vestibular: { type: Boolean, default: false },
+      lingual: { type: Boolean, default: false },
+      mesial: { type: Boolean, default: false },
+      distal: { type: Boolean, default: false },
+      oclusal: { type: Boolean, default: false },
+    },
+    nota: { type: String, trim: true, default: '' },
+  },
+  { _id: false }
+);
+
 const followUpSchema = new mongoose.Schema(
   {
     fecha: { type: Date, required: true, default: Date.now },
@@ -176,6 +195,132 @@ const followUpSchema = new mongoose.Schema(
         signosVitalesScore: { type: String, trim: true, default: '' },
         bebePosicion: { type: String, trim: true, default: '' },
         actividadCardiaca: { type: String, trim: true, default: '' },
+      },
+    },
+    // Datos podológicos (rol 'podologia'). Hoja «Historia clínica podológica».
+    podologia: {
+      // Hallazgos generales: descripciones libres del pie.
+      hallazgosGenerales: {
+        piel: { type: String, trim: true, default: '' },
+        unas: { type: String, trim: true, default: '' },
+        hidratacion: { type: String, trim: true, default: '' },
+        temperatura: { type: String, trim: true, default: '' },
+        coloracion: { type: String, trim: true, default: '' },
+        // Edema: true = sí, false = no, null = no consignado.
+        edema: { type: Boolean, default: null },
+        otros: { type: String, trim: true, default: '' },
+      },
+      // Evaluación vascular y neurológica.
+      vascularNeurologica: {
+        pulsoPedio: { type: String, enum: ['presente', 'ausente', ''], default: '' },
+        pulsoTibialPosterior: { type: String, enum: ['presente', 'ausente', ''], default: '' },
+        llenadoCapilar: { type: String, trim: true, default: '' },  // segundos
+        sensibilidadMonofilamento: {
+          type: String,
+          enum: ['normal', 'disminuida', 'ausente', ''],
+          default: '',
+        },
+        reflejos: { type: String, enum: ['presentes', 'ausentes', ''], default: '' },
+      },
+      // Evaluación podológica: tabla evaluación / observaciones.
+      evaluacion: {
+        piel: { type: String, trim: true, default: '' },
+        unas: { type: String, trim: true, default: '' },
+        pulsos: { type: String, trim: true, default: '' },
+        sensibilidad: { type: String, trim: true, default: '' },
+        calzado: { type: String, trim: true, default: '' },
+        marcha: { type: String, trim: true, default: '' },
+      },
+      // Hallazgos podológicos: casillas (ver PODOLOGIA_HALLAZGOS) + descripción al pie.
+      hallazgos: { type: [mspCheckSchema], default: [] },
+      hallazgosDetalle: { type: String, trim: true, default: '' },
+    },
+    // Datos odontológicos (rol 'odontologia'). Odontograma en notación FDI: solo
+    // se guardan las piezas con contenido, no las 52 del esquema.
+    odontologia: {
+      odontograma: {
+        type: [odontogramaDienteSchema],
+        default: [],
+      },
+      observaciones: { type: String, trim: true, default: '' },
+    },
+    // Datos cosmetológicos (rol 'cosmetologia'). Fichas estética facial y capilar.
+    cosmetologia: {
+      // Datos estéticos.
+      datosEsteticos: {
+        tratamientosEsteticos: { type: String, trim: true, default: '' },
+        autotratamientos: { type: String, trim: true, default: '' },
+        cosmeticosUsoActual: { type: String, trim: true, default: '' },
+      },
+      // Evaluación (facial).
+      evaluacion: {
+        fototipo: { type: String, trim: true, default: '' },   // I…VI (Fitzpatrick)
+        glogau: { type: String, trim: true, default: '' },     // I…IV
+        rosacea: { type: String, trim: true, default: '' },    // estadio I…IV
+        biotipo: { type: [mspCheckSchema], default: [] },
+        arrugas: { type: [mspCheckSchema], default: [] },
+        acne: { type: [mspCheckSchema], default: [] },
+        lesionesElementales: { type: [mspCheckSchema], default: [] },
+        // Hiperpigmentaciones por zona; los tercios además marcan lado D / I.
+        hiperpigmentaciones: {
+          type: [
+            {
+              key: { type: String, required: true },
+              marked: { type: Boolean, default: false },
+              derecho: { type: Boolean, default: false },
+              izquierdo: { type: Boolean, default: false },
+              _id: false,
+            },
+          ],
+          default: [],
+        },
+        deshidratacionFacial: {
+          type: String,
+          enum: ['leve', 'moderada', 'avanzada', ''],
+          default: '',
+        },
+        bioestimulacion: { type: String, trim: true, default: '' },
+        nutricionDermica: { type: String, trim: true, default: '' },
+        observaciones: { type: String, trim: true, default: '' },
+      },
+      // Datos de higiene (capilar).
+      higiene: {
+        frecuenciaLavado: { type: String, trim: true, default: '' },
+        shampoo: { type: String, trim: true, default: '' },
+        acondicionador: { type: String, trim: true, default: '' },
+        otros: { type: String, trim: true, default: '' },
+      },
+      // Características del cabello (opciones cerradas, ver COSMETOLOGIA_CABELLO).
+      cabello: {
+        longitud: { type: String, trim: true, default: '' },
+        forma: { type: String, trim: true, default: '' },
+        calibre: { type: String, trim: true, default: '' },
+        densidad: { type: String, trim: true, default: '' },
+        elasticidad: { type: String, trim: true, default: '' },
+        color: { type: String, trim: true, default: '' },
+        tratamientos: {
+          alisados: { type: Boolean, default: false },
+          planchas: { type: Boolean, default: false },
+          secadores: { type: Boolean, default: false },
+        },
+      },
+      // Características del cuero cabelludo.
+      cueroCabelludo: {
+        tipo: { type: String, trim: true, default: '' },
+        glandulaSebacea: { type: String, trim: true, default: '' },
+        sensibilidad: { type: String, trim: true, default: '' },
+        movilidad: { type: String, trim: true, default: '' },
+      },
+      // Alteración de la fibra capilar y afecciones del cuero cabelludo. Van con
+      // detalle por casilla porque la hoja deja una línea al lado de cada una
+      // (en 'alopecia' ese detalle es el TIPO).
+      fibraCapilar: { type: [mspCheckSchema], default: [] },
+      afeccionesCuero: { type: [mspCheckSchema], default: [] },
+      // Procedimiento y productos utilizados.
+      procedimiento: {
+        procedimiento: { type: String, trim: true, default: '' },
+        productos: { type: String, trim: true, default: '' },
+        apoyoDomiciliario: { type: String, trim: true, default: '' },
       },
     },
     // Mantenemos compat con tratamientos referenciados (auto-creados a partir de la receta).

@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
-import { roleSatisfies } from '../utils/roles';
+import { roleSatisfies, ROLE_LABELS } from '../utils/roles';
 import NotificationBell from './NotificationBell';
 import shiluvLogo from '../Shiluv-logo-4.png';
 import {
@@ -34,7 +34,7 @@ import {
 // Menú unificado por grupos. Cada ítem declara qué roles pueden verlo
 // (superOnly = solo isSuperAdmin). Un grupo se muestra si el rol ve al menos
 // uno de sus ítems. El super-admin ve todo.
-const ALL_ROLES = ['admin', 'cajero', 'contabilidad', 'doctor', 'ginecologia', 'optica', 'call_center', 'marketing', 'enfermero'];
+const ALL_ROLES = ['admin', 'cajero', 'contabilidad', 'doctor', 'ginecologia', 'podologia', 'odontologia', 'cosmetologia', 'optica', 'call_center', 'marketing', 'enfermero'];
 
 const MENU_GROUPS = [
   {
@@ -475,7 +475,7 @@ export default function Layout({ children }) {
             <div className="flex-1 min-w-0">
               <p className="text-sm font-semibold text-white truncate">{user?.name}</p>
               <p className="text-[11px] text-emerald-300/80 capitalize">
-                {user?.isSuperAdmin ? 'Super Admin' : (role === 'call_center' ? 'Call Center' : role === 'optica' ? 'Óptica' : role === 'ginecologia' ? 'Ginecología' : role || '')}
+                {user?.isSuperAdmin ? 'Super Admin' : (ROLE_LABELS[role] || role || '')}
               </p>
             </div>
           </div>

@@ -1,7 +1,6 @@
 const bcrypt = require('bcryptjs');
 const User = require('../models/User');
-
-const VALID_ROLES = ['admin', 'cajero', 'contabilidad', 'doctor', 'ginecologia', 'optica', 'call_center', 'marketing', 'enfermero'];
+const { VALID_ROLES, DOCTOR_LIKE_ROLES } = require('../constants/roles');
 
 const sanitizeClinics = (clinics, fallbackClinicId) => {
   if (!Array.isArray(clinics)) return [];
@@ -191,9 +190,10 @@ exports.getMySignature = async (req, res) => {
 };
 
 /**
- * Lista doctores de la clínica activa. Incluye 'optica' y 'ginecologia', que
- * son doctores especializados y también asignables a citas (misma expansión
- * doctor → optica/ginecologia que hace requireRole en middleware/auth.js).
+ * Lista doctores de la clínica activa. Incluye las especialidades ('optica',
+ * 'ginecologia', 'podologia', 'odontologia', 'cosmetologia'), que son doctores
+ * especializados y también asignables a citas (misma expansión que hace
+ * requireRole en middleware/auth.js; la lista vive en constants/roles.js).
  *
  * Cada doctor sale con `roleInClinic`: el rol que tiene EN ESTA sucursal, que
  * es lo que define su tipo (general / óptica / ginecología / lo que se cree a
@@ -205,7 +205,7 @@ exports.getDoctors = async (req, res) => {
   try {
     const doctors = await User.find({
       active: true,
-      clinics: { $elemMatch: { clinic: req.clinicId, role: { $in: ['doctor', 'optica', 'ginecologia'] } } },
+      clinics: { $elemMatch: { clinic: req.clinicId, role: { $in: DOCTOR_LIKE_ROLES } } },
     })
       .select('-password')
       .sort({ name: 1 })

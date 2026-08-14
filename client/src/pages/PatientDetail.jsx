@@ -17,6 +17,34 @@ import {
   calcIMC,
 } from '../constants/mspCatalogs';
 import {
+  PODOLOGIA_HALLAZGOS,
+  PODOLOGIA_EVALUACION,
+  PODOLOGIA_HALLAZGOS_GENERALES,
+  PODOLOGIA_PULSO_OPCIONES,
+  PODOLOGIA_SENSIBILIDAD_OPCIONES,
+  PODOLOGIA_REFLEJOS_OPCIONES,
+  ODONTOGRAMA_FILAS,
+  ODONTOGRAMA_PIEZAS,
+  ODONTOGRAMA_ESTADOS,
+  ODONTOGRAMA_ESTADO_CLASES,
+  ODONTOGRAMA_CARAS,
+  COSMETOLOGIA_FOTOTIPOS,
+  COSMETOLOGIA_GLOGAU,
+  COSMETOLOGIA_BIOTIPOS,
+  COSMETOLOGIA_ARRUGAS,
+  COSMETOLOGIA_ACNE,
+  COSMETOLOGIA_ROSACEA,
+  COSMETOLOGIA_LESIONES,
+  COSMETOLOGIA_HIPERPIGMENTACION,
+  COSMETOLOGIA_DESHIDRATACION,
+  COSMETOLOGIA_CABELLO,
+  COSMETOLOGIA_CABELLO_TRATAMIENTOS,
+  COSMETOLOGIA_CUERO_CABELLUDO,
+  COSMETOLOGIA_FIBRA_CAPILAR,
+  COSMETOLOGIA_AFECCIONES_CUERO,
+  optionLabel,
+} from '../constants/specialtyCatalogs';
+import {
   HiOutlineArrowLeft,
   HiOutlineUser,
   HiOutlineClipboardDocumentList,
@@ -876,7 +904,12 @@ function ItemsTable({
 function SeguimientosTab({ patientId, appointmentId }) {
   const { hasRole, user } = useAuth();
   const isOptica = hasRole('optica');
+  // Cada especialidad ve SOLO su sección. `hasRole` expande hacia 'doctor', no
+  // entre especialidades, así que un podólogo no ve la ficha de ginecología.
   const isGineco = hasRole('ginecologia');
+  const isPodo = hasRole('podologia');
+  const isOdonto = hasRole('odontologia');
+  const isCosme = hasRole('cosmetologia');
   const isAdmin = hasRole('admin') || user?.isSuperAdmin;
   // Una vez guardado, solo administradores pueden eliminar/editar seguimientos.
   const canDelete = isAdmin;
@@ -909,6 +942,39 @@ function SeguimientosTab({ patientId, appointmentId }) {
     },
     controlPrenatal: { signosVitalesScore: '', bebePosicion: '', actividadCardiaca: '' },
   });
+  const emptyPodologia = () => ({
+    hallazgosGenerales: {
+      piel: '', unas: '', hidratacion: '', temperatura: '', coloracion: '',
+      edema: null, // null = sin dato, true = sí, false = no
+      otros: '',
+    },
+    vascularNeurologica: {
+      pulsoPedio: '', pulsoTibialPosterior: '', llenadoCapilar: '',
+      sensibilidadMonofilamento: '', reflejos: '',
+    },
+    evaluacion: { piel: '', unas: '', pulsos: '', sensibilidad: '', calzado: '', marcha: '' },
+    hallazgos: [],
+    hallazgosDetalle: '',
+  });
+  const emptyOdontologia = () => ({ odontograma: [], observaciones: '' });
+  const emptyCosmetologia = () => ({
+    datosEsteticos: { tratamientosEsteticos: '', autotratamientos: '', cosmeticosUsoActual: '' },
+    evaluacion: {
+      fototipo: '', glogau: '', rosacea: '',
+      biotipo: [], arrugas: [], acne: [], lesionesElementales: [],
+      hiperpigmentaciones: [],
+      deshidratacionFacial: '', bioestimulacion: '', nutricionDermica: '', observaciones: '',
+    },
+    higiene: { frecuenciaLavado: '', shampoo: '', acondicionador: '', otros: '' },
+    cabello: {
+      longitud: '', forma: '', calibre: '', densidad: '', elasticidad: '', color: '',
+      tratamientos: { alisados: false, planchas: false, secadores: false },
+    },
+    cueroCabelludo: { tipo: '', glandulaSebacea: '', sensibilidad: '', movilidad: '' },
+    fibraCapilar: [],
+    afeccionesCuero: [],
+    procedimiento: { procedimiento: '', productos: '', apoyoDomiciliario: '' },
+  });
   const emptyForm = () => ({
     fecha: new Date().toISOString().substring(0, 10),
     tipoConsulta: '',        // B: primera | subsecuente
@@ -923,6 +989,9 @@ function SeguimientosTab({ patientId, appointmentId }) {
     diagnosticos: [],      // I
     opticaRx: emptyOpticaRx(),
     ginecologia: emptyGineco(),
+    podologia: emptyPodologia(),
+    odontologia: emptyOdontologia(),
+    cosmetologia: emptyCosmetologia(),
     vitalSigns: {
       // La hora de la toma la pone el sistema (hora de Ecuador); no se digita.
       hora: nowEcHHMM(),
@@ -1157,8 +1226,12 @@ function SeguimientosTab({ patientId, appointmentId }) {
         ...form,
         vitalSigns,
       };
-      // Los datos ginecológicos solo se envían desde una consulta de ginecología.
+      // La ficha de cada especialidad solo se envía desde su propia consulta:
+      // así un seguimiento de medicina general no arrastra secciones vacías.
       if (!isGineco) delete payload.ginecologia;
+      if (!isPodo) delete payload.podologia;
+      if (!isOdonto) delete payload.odontologia;
+      if (!isCosme) delete payload.cosmetologia;
       if (appointmentId) payload.appointmentId = appointmentId;
       const res = await api.post(`/clinical-records/${patientId}/follow-ups`, payload);
       // Subir PDFs pendientes (seleccionados ANTES de guardar) al seguimiento recién creado.
@@ -1579,6 +1652,9 @@ function SeguimientosTab({ patientId, appointmentId }) {
 
         {isOptica && <OpticaRxTable value={form.opticaRx} onChange={(rx) => setForm((f) => ({ ...f, opticaRx: rx }))} />}
         {isGineco && <GinecologiaSection value={form.ginecologia} onChange={(g) => setForm((f) => ({ ...f, ginecologia: g }))} />}
+        {isPodo && <PodologiaSection value={form.podologia} onChange={(p) => setForm((f) => ({ ...f, podologia: p }))} />}
+        {isOdonto && <OdontologiaSection value={form.odontologia} onChange={(o) => setForm((f) => ({ ...f, odontologia: o }))} />}
+        {isCosme && <CosmetologiaSection value={form.cosmetologia} onChange={(c) => setForm((f) => ({ ...f, cosmetologia: c }))} />}
 
         {/* Archivos (PDF o imágenes) antes de guardar el seguimiento */}
         <div className="md:col-span-3">
@@ -1721,6 +1797,9 @@ function SeguimientosTab({ patientId, appointmentId }) {
                 (Object.values(fu.opticaRx.od || {}).some((v) => String(v).trim()) ||
                   Object.values(fu.opticaRx.oi || {}).some((v) => String(v).trim()));
               const hasGinecoData = ginecoHasData(fu.ginecologia);
+              const hasPodoData = podologiaHasData(fu.podologia);
+              const hasOdontoData = odontologiaHasData(fu.odontologia);
+              const hasCosmeData = cosmetologiaHasData(fu.cosmetologia);
               const vs = fu.vitalSigns || {};
               const hasVitals = ['hora', 'temperature', 'bloodPressure', 'heartRate', 'respiratoryRate', 'oxygenSaturation', 'weight', 'height', 'abdominalPerimeter', 'capillaryHemoglobin', 'glucose']
                 .some((k) => vs[k] != null && vs[k] !== '');
@@ -1908,6 +1987,9 @@ function SeguimientosTab({ patientId, appointmentId }) {
                     </div>
                     {hasOpticaData && <OpticaRxSummary rx={fu.opticaRx} />}
                     {hasGinecoData && <GinecologiaSummary g={fu.ginecologia} />}
+                    {hasPodoData && <PodologiaSummary p={fu.podologia} />}
+                    {hasOdontoData && <OdontologiaSummary o={fu.odontologia} />}
+                    {hasCosmeData && <CosmetologiaSummary c={fu.cosmetologia} />}
                   </td>
                   <td className="px-4 py-2.5 text-right">
                     <div className="flex items-center justify-end gap-1">
@@ -2226,6 +2308,682 @@ function GinecologiaSummary({ g }) {
       {cp.bebePosicion && <span>Posición: {cp.bebePosicion}</span>}
       {cp.actividadCardiaca && <span>Act. cardíaca: {cp.actividadCardiaca}</span>}
     </div>
+  );
+}
+
+// ═══════════ Fichas por especialidad (podología / odontología / cosmetología) ═══════════
+//
+// Las tres siguen el mismo molde que ginecología: una sección que solo se le
+// pinta a su rol en el formulario de seguimiento, y un resumen en el historial.
+// Lo que se ve dentro son secciones plegables (`Collapsible`), igual que los
+// signos vitales, para que el seguimiento no se vuelva un formulario kilométrico.
+
+// Clases COMPLETAS por tono: Tailwind solo conserva las que encuentra literales,
+// así que nada de `bg-${tone}-600`.
+const CHIP_TONES = {
+  sky: 'bg-sky-600 text-white border-sky-600',
+  cyan: 'bg-cyan-600 text-white border-cyan-600',
+  fuchsia: 'bg-fuchsia-600 text-white border-fuchsia-600',
+};
+
+// Chip de selección (toggle) de las fichas por especialidad.
+function SChip({ active, onClick, tone = 'sky', children }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer border ${
+        active ? CHIP_TONES[tone] : 'bg-white text-slate-600 border-slate-200'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
+// Selección única entre opciones cerradas (volver a pulsar la opción la quita).
+function OptionChips({ options, value, onChange, tone = 'sky' }) {
+  return (
+    <div className="flex flex-wrap gap-2">
+      {options.map((op) => (
+        <SChip key={op} tone={tone} active={value === op} onClick={() => onChange(value === op ? '' : op)}>
+          {optionLabel(op)}
+        </SChip>
+      ))}
+    </div>
+  );
+}
+
+// Caja de resumen en el historial (mismo formato que OpticaRxSummary/GinecologiaSummary).
+const SUMMARY_TONES = {
+  sky: { box: 'bg-sky-50 border-sky-100', label: 'text-sky-600' },
+  cyan: { box: 'bg-cyan-50 border-cyan-100', label: 'text-cyan-600' },
+  fuchsia: { box: 'bg-fuchsia-50 border-fuchsia-100', label: 'text-fuchsia-600' },
+};
+
+function SpecialtySummary({ title, tone, children }) {
+  const t = SUMMARY_TONES[tone] || SUMMARY_TONES.sky;
+  return (
+    <div className={`mt-2 text-[11px] text-slate-600 border rounded p-2 flex flex-wrap gap-x-3 gap-y-0.5 ${t.box}`}>
+      <span className={`font-semibold uppercase w-full ${t.label}`}>{title}</span>
+      {children}
+    </div>
+  );
+}
+
+/**
+ * ¿Hay algo escrito en este objeto (a cualquier profundidad)?
+ *
+ * `false` cuenta como vacío A PROPÓSITO: las casillas nacen apagadas y mongoose
+ * las materializa en cada guardado, así que tomarlas por contenido pintaría la
+ * caja del resumen en TODOS los seguimientos. Los campos de tres estados
+ * (sí / no / sin dato) no caben en esta regla y se comprueban aparte.
+ */
+function hasContent(v) {
+  if (v == null || v === '' || v === false) return false;
+  if (Array.isArray(v)) return v.some(hasContent);
+  if (typeof v === 'object') return Object.values(v).some(hasContent);
+  return true;
+}
+
+// ──────────────── Podología (rol podologia) ────────────────
+
+function podologiaHasData(p) {
+  // `edema` es de tres estados: dejar constancia de que NO hay edema es un
+  // hallazgo clínico (pie diabético), y `hasContent` descarta `false`. Si fuera
+  // lo único registrado, el resumen no se pintaría y el dato se perdería de
+  // vista. Mismo criterio que `embarazoActual` en ginecología.
+  return hasContent(p) || p?.hallazgosGenerales?.edema != null;
+}
+
+function PodologiaSection({ value, onChange }) {
+  const p = value || {};
+  const hg = p.hallazgosGenerales || {};
+  const vn = p.vascularNeurologica || {};
+  const ev = p.evaluacion || {};
+  const setHg = (k, v) => onChange({ ...p, hallazgosGenerales: { ...hg, [k]: v } });
+  const setVn = (k, v) => onChange({ ...p, vascularNeurologica: { ...vn, [k]: v } });
+  const setEv = (k, v) => onChange({ ...p, evaluacion: { ...ev, [k]: v } });
+
+  return (
+    <div className="md:col-span-3 space-y-3">
+      <label className="text-sm font-medium text-slate-700 block">Ficha podológica</label>
+
+      <Collapsible title="Hallazgos generales" hint="piel, uñas, hidratación, temperatura…">
+        <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+          {PODOLOGIA_HALLAZGOS_GENERALES.map((f) => (
+            <Field key={f.key} label={f.label}>
+              <input
+                type="text"
+                value={hg[f.key] || ''}
+                onChange={(e) => setHg(f.key, e.target.value)}
+                className="input"
+              />
+            </Field>
+          ))}
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Edema</label>
+            <div className="flex gap-2">
+              <SChip active={hg.edema === true} onClick={() => setHg('edema', hg.edema === true ? null : true)}>Sí</SChip>
+              <SChip active={hg.edema === false} onClick={() => setHg('edema', hg.edema === false ? null : false)}>No</SChip>
+            </div>
+          </div>
+        </div>
+      </Collapsible>
+
+      <Collapsible title="Evaluación vascular y neurológica" hint="pulsos, llenado capilar, sensibilidad, reflejos">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Pulso pedio</label>
+            <OptionChips options={PODOLOGIA_PULSO_OPCIONES} value={vn.pulsoPedio} onChange={(v) => setVn('pulsoPedio', v)} />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Pulso tibial posterior</label>
+            <OptionChips options={PODOLOGIA_PULSO_OPCIONES} value={vn.pulsoTibialPosterior} onChange={(v) => setVn('pulsoTibialPosterior', v)} />
+          </div>
+          <Field label="Llenado capilar (segundos)">
+            <input
+              type="text"
+              value={vn.llenadoCapilar || ''}
+              onChange={(e) => setVn('llenadoCapilar', e.target.value)}
+              placeholder="ej. 2 seg"
+              className="input"
+            />
+          </Field>
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Sensibilidad (monofilamento)</label>
+            <OptionChips options={PODOLOGIA_SENSIBILIDAD_OPCIONES} value={vn.sensibilidadMonofilamento} onChange={(v) => setVn('sensibilidadMonofilamento', v)} />
+          </div>
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Reflejos</label>
+            <OptionChips options={PODOLOGIA_REFLEJOS_OPCIONES} value={vn.reflejos} onChange={(v) => setVn('reflejos', v)} />
+          </div>
+        </div>
+      </Collapsible>
+
+      <Collapsible title="Evaluación podológica" hint="piel, uñas, pulsos, sensibilidad, calzado, marcha">
+        <div className="space-y-2">
+          {PODOLOGIA_EVALUACION.map((row) => (
+            <div key={row.key} className="grid grid-cols-1 md:grid-cols-4 gap-2 md:items-center">
+              <span className="text-xs font-semibold text-slate-600">{row.label}</span>
+              <input
+                type="text"
+                value={ev[row.key] || ''}
+                onChange={(e) => setEv(row.key, e.target.value)}
+                placeholder="Observaciones"
+                className="input md:col-span-3"
+              />
+            </div>
+          ))}
+        </div>
+      </Collapsible>
+
+      <Collapsible title="Hallazgos podológicos" hint="marque los que presente">
+        <div className="space-y-4">
+          <MspChecklist
+            catalog={PODOLOGIA_HALLAZGOS}
+            value={p.hallazgos}
+            onChange={(v) => onChange({ ...p, hallazgos: v })}
+            showDetail={false}
+          />
+          <Field label="Descripción de los hallazgos">
+            <textarea
+              rows={2}
+              value={p.hallazgosDetalle || ''}
+              onChange={(e) => onChange({ ...p, hallazgosDetalle: e.target.value })}
+              placeholder="Zona, lado (pie derecho / izquierdo), características…"
+              className="input resize-none"
+            />
+          </Field>
+        </div>
+      </Collapsible>
+    </div>
+  );
+}
+
+function PodologiaSummary({ p }) {
+  if (!p) return null;
+  const hg = p.hallazgosGenerales || {};
+  const vn = p.vascularNeurologica || {};
+  const ev = p.evaluacion || {};
+  const hallazgos = markedItems(PODOLOGIA_HALLAZGOS, p.hallazgos);
+  return (
+    <SpecialtySummary title="Podología" tone="sky">
+      {PODOLOGIA_HALLAZGOS_GENERALES.filter((f) => hg[f.key]).map((f) => (
+        <span key={f.key}>{f.label}: {hg[f.key]}</span>
+      ))}
+      {hg.edema != null && <span>Edema: {hg.edema ? 'Sí' : 'No'}</span>}
+      {vn.pulsoPedio && <span>Pulso pedio: {optionLabel(vn.pulsoPedio)}</span>}
+      {vn.pulsoTibialPosterior && <span>Pulso tibial post.: {optionLabel(vn.pulsoTibialPosterior)}</span>}
+      {vn.llenadoCapilar && <span>Llenado capilar: {vn.llenadoCapilar}</span>}
+      {vn.sensibilidadMonofilamento && <span>Sensibilidad: {optionLabel(vn.sensibilidadMonofilamento)}</span>}
+      {vn.reflejos && <span>Reflejos: {optionLabel(vn.reflejos)}</span>}
+      {PODOLOGIA_EVALUACION.filter((r) => ev[r.key]).map((r) => (
+        <span key={r.key}>{r.label}: {ev[r.key]}</span>
+      ))}
+      {hallazgos.length > 0 && <span className="w-full">Hallazgos: {hallazgos.map((h) => h.label).join(', ')}</span>}
+      {p.hallazgosDetalle && <span className="w-full whitespace-pre-wrap">{p.hallazgosDetalle}</span>}
+    </SpecialtySummary>
+  );
+}
+
+// ──────────────── Odontología (rol odontologia) ────────────────
+
+const dienteMarcado = (d) =>
+  Boolean(d && (d.estado || String(d.nota || '').trim() || Object.values(d.caras || {}).some(Boolean)));
+
+function odontologiaHasData(o) {
+  return Boolean((o?.odontograma || []).some(dienteMarcado) || String(o?.observaciones || '').trim());
+}
+
+const estadoLabel = (key) => ODONTOGRAMA_ESTADOS.find((e) => e.key === key)?.label || '';
+
+function OdontologiaSection({ value, onChange }) {
+  const o = value || {};
+  const dientes = Array.isArray(o.odontograma) ? o.odontograma : [];
+  const [sel, setSel] = useState('');
+  const byDiente = Object.fromEntries(dientes.map((d) => [d.diente, d]));
+
+  // Escribe una pieza. Si queda sin estado, sin caras y sin nota se BORRA de la
+  // lista: el seguimiento solo guarda las piezas que el odontólogo marcó.
+  const setDiente = (num, patch) => {
+    const cur = byDiente[num] || { diente: num, estado: '', caras: {}, nota: '' };
+    const next = { ...cur, ...patch, caras: { ...(cur.caras || {}), ...(patch.caras || {}) } };
+    const resto = dientes.filter((d) => d.diente !== num);
+    const lista = dienteMarcado(next) ? [...resto, next] : resto;
+    // Se guardan en el orden del esquema, no en el orden en que se hizo clic.
+    lista.sort((a, b) => ODONTOGRAMA_PIEZAS.indexOf(a.diente) - ODONTOGRAMA_PIEZAS.indexOf(b.diente));
+    onChange({ ...o, odontograma: lista });
+  };
+
+  const seleccion = sel ? byDiente[sel] || { diente: sel, estado: '', caras: {}, nota: '' } : null;
+
+  // Es una función, no un componente: definirlo aquí dentro como componente haría
+  // que React remontara las 52 piezas en cada tecleo del resto del formulario.
+  const renderDiente = (num) => {
+    const d = byDiente[num];
+    const marcado = dienteMarcado(d);
+    const clases = d?.estado ? ODONTOGRAMA_ESTADO_CLASES[d.estado] : 'bg-white border-slate-300 text-slate-600';
+    return (
+      <button
+        key={num}
+        type="button"
+        onClick={() => setSel(sel === num ? '' : num)}
+        title={marcado ? `${num} — ${estadoLabel(d.estado) || 'marcado'}` : `Pieza ${num}`}
+        className={`w-9 shrink-0 rounded-md border py-1.5 text-[11px] font-semibold cursor-pointer transition-all ${clases} ${
+          sel === num ? 'ring-2 ring-cyan-500 ring-offset-1' : ''
+        }`}
+      >
+        {num}
+        <span className={`block w-1 h-1 rounded-full mx-auto mt-0.5 ${marcado ? 'bg-current' : 'bg-transparent'}`} />
+      </button>
+    );
+  };
+
+  return (
+    <div className="md:col-span-3 space-y-3">
+      <label className="text-sm font-medium text-slate-700 block">Ficha odontológica</label>
+
+      <Collapsible title="Odontograma" hint="notación FDI — toque una pieza para marcarla">
+        <div className="space-y-4">
+          <div className="overflow-x-auto">
+            <div className="min-w-[560px] space-y-2">
+              {ODONTOGRAMA_FILAS.map((fila) => (
+                <div key={fila.key} className="flex items-center gap-2">
+                  <span className="w-32 shrink-0 text-[10px] uppercase font-semibold text-slate-400">{fila.label}</span>
+                  <div className="flex-1 flex justify-end gap-1">
+                    {fila.derecha.map(renderDiente)}
+                  </div>
+                  <div className="w-px self-stretch bg-slate-300" />
+                  <div className="flex-1 flex justify-start gap-1">
+                    {fila.izquierda.map(renderDiente)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Leyenda de colores */}
+          <div className="flex flex-wrap gap-1.5">
+            {ODONTOGRAMA_ESTADOS.map((e) => (
+              <span
+                key={e.key}
+                className={`text-[10px] px-1.5 py-0.5 rounded border ${ODONTOGRAMA_ESTADO_CLASES[e.key]}`}
+              >
+                {e.label}
+              </span>
+            ))}
+          </div>
+
+          {seleccion ? (
+            <div className="rounded-lg border border-cyan-200 bg-cyan-50 p-3 space-y-3">
+              <div className="flex items-center justify-between">
+                <p className="text-sm font-semibold text-cyan-800">Pieza {seleccion.diente}</p>
+                <button
+                  type="button"
+                  onClick={() =>
+                    setDiente(sel, {
+                      estado: '',
+                      nota: '',
+                      caras: { vestibular: false, lingual: false, mesial: false, distal: false, oclusal: false },
+                    })
+                  }
+                  className="text-xs text-slate-500 hover:text-red-600 bg-transparent border-none cursor-pointer p-0"
+                >
+                  Limpiar pieza
+                </button>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">Estado</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {ODONTOGRAMA_ESTADOS.map((e) => (
+                    <button
+                      key={e.key}
+                      type="button"
+                      onClick={() => setDiente(sel, { estado: seleccion.estado === e.key ? '' : e.key })}
+                      className={`px-2.5 py-1 rounded-md border text-[11px] font-medium cursor-pointer ${
+                        seleccion.estado === e.key
+                          ? `${ODONTOGRAMA_ESTADO_CLASES[e.key]} ring-1 ring-slate-400`
+                          : 'bg-white border-slate-200 text-slate-600'
+                      }`}
+                    >
+                      {e.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div>
+                <label className="block text-xs font-semibold text-slate-600 mb-1">Caras afectadas</label>
+                <div className="flex flex-wrap gap-1.5">
+                  {ODONTOGRAMA_CARAS.map((c) => (
+                    <SChip
+                      key={c.key}
+                      tone="cyan"
+                      active={!!seleccion.caras?.[c.key]}
+                      onClick={() => setDiente(sel, { caras: { [c.key]: !seleccion.caras?.[c.key] } })}
+                    >
+                      {c.label}
+                    </SChip>
+                  ))}
+                </div>
+              </div>
+              <Field label="Nota de la pieza">
+                <input
+                  type="text"
+                  value={seleccion.nota || ''}
+                  onChange={(e) => setDiente(sel, { nota: e.target.value })}
+                  className="input"
+                />
+              </Field>
+            </div>
+          ) : (
+            <p className="text-xs text-slate-400">Toque una pieza del esquema para registrar su estado.</p>
+          )}
+
+          <Field label="Observaciones del odontograma">
+            <textarea
+              rows={2}
+              value={o.observaciones || ''}
+              onChange={(e) => onChange({ ...o, observaciones: e.target.value })}
+              className="input resize-none"
+            />
+          </Field>
+        </div>
+      </Collapsible>
+    </div>
+  );
+}
+
+function OdontologiaSummary({ o }) {
+  if (!o) return null;
+  const dientes = (o.odontograma || []).filter(dienteMarcado);
+  return (
+    <SpecialtySummary title="Odontología" tone="cyan">
+      {dientes.map((d) => {
+        const caras = ODONTOGRAMA_CARAS.filter((c) => d.caras?.[c.key]).map((c) => c.label);
+        return (
+          <span key={d.diente} className="bg-white/70 border border-cyan-200 rounded px-1.5 py-0.5">
+            <b>{d.diente}</b>
+            {d.estado && ` ${estadoLabel(d.estado)}`}
+            {caras.length > 0 && ` (${caras.join(', ')})`}
+            {d.nota && ` — ${d.nota}`}
+          </span>
+        );
+      })}
+      {o.observaciones && <span className="w-full whitespace-pre-wrap">{o.observaciones}</span>}
+    </SpecialtySummary>
+  );
+}
+
+// ──────────────── Cosmetología (rol cosmetologia) ────────────────
+
+function cosmetologiaHasData(c) {
+  return hasContent(c);
+}
+
+function CosmetologiaSection({ value, onChange }) {
+  const c = value || {};
+  const de = c.datosEsteticos || {};
+  const ev = c.evaluacion || {};
+  const hi = c.higiene || {};
+  const ca = c.cabello || {};
+  const tr = ca.tratamientos || {};
+  const cc = c.cueroCabelludo || {};
+  const pr = c.procedimiento || {};
+  const setDe = (k, v) => onChange({ ...c, datosEsteticos: { ...de, [k]: v } });
+  const setEv = (k, v) => onChange({ ...c, evaluacion: { ...ev, [k]: v } });
+  const setHi = (k, v) => onChange({ ...c, higiene: { ...hi, [k]: v } });
+  const setCa = (k, v) => onChange({ ...c, cabello: { ...ca, [k]: v } });
+  const setTr = (k, v) => onChange({ ...c, cabello: { ...ca, tratamientos: { ...tr, [k]: v } } });
+  const setCc = (k, v) => onChange({ ...c, cueroCabelludo: { ...cc, [k]: v } });
+  const setPr = (k, v) => onChange({ ...c, procedimiento: { ...pr, [k]: v } });
+
+  // Hiperpigmentaciones: una zona con marca y, en los tercios, lado D / I.
+  const hiper = Array.isArray(ev.hiperpigmentaciones) ? ev.hiperpigmentaciones : [];
+  const hiperBy = Object.fromEntries(hiper.map((z) => [z.key, z]));
+  const setHiper = (key, patch) => {
+    const cur = hiperBy[key] || { key, marked: false, derecho: false, izquierdo: false };
+    const next = { ...cur, ...patch };
+    const resto = hiper.filter((z) => z.key !== key);
+    const lista = next.marked || next.derecho || next.izquierdo ? [...resto, next] : resto;
+    const orden = COSMETOLOGIA_HIPERPIGMENTACION.map((z) => z.key);
+    lista.sort((a, b) => orden.indexOf(a.key) - orden.indexOf(b.key));
+    setEv('hiperpigmentaciones', lista);
+  };
+
+  return (
+    <div className="md:col-span-3 space-y-3">
+      <label className="text-sm font-medium text-slate-700 block">Ficha cosmetológica</label>
+
+      <Collapsible title="Datos estéticos" hint="tratamientos y cosméticos que ya usa">
+        <div className="space-y-2">
+          <Field label="Tratamientos estéticos">
+            <textarea rows={2} value={de.tratamientosEsteticos || ''} onChange={(e) => setDe('tratamientosEsteticos', e.target.value)} className="input resize-none" />
+          </Field>
+          <Field label="Autotratamientos estéticos">
+            <textarea rows={2} value={de.autotratamientos || ''} onChange={(e) => setDe('autotratamientos', e.target.value)} className="input resize-none" />
+          </Field>
+          <Field label="Cosméticos de uso actual">
+            <textarea rows={2} value={de.cosmeticosUsoActual || ''} onChange={(e) => setDe('cosmeticosUsoActual', e.target.value)} className="input resize-none" />
+          </Field>
+        </div>
+      </Collapsible>
+
+      <Collapsible title="Evaluación" hint="fototipo, biotipo, arrugas, acné, lesiones">
+        <div className="space-y-4">
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Fototipo de piel</label>
+              <OptionChips options={COSMETOLOGIA_FOTOTIPOS} value={ev.fototipo} onChange={(v) => setEv('fototipo', v)} tone="fuchsia" />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Escala de Glogau</label>
+              <OptionChips options={COSMETOLOGIA_GLOGAU} value={ev.glogau} onChange={(v) => setEv('glogau', v)} tone="fuchsia" />
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Rosácea (estadio)</label>
+              <OptionChips options={COSMETOLOGIA_ROSACEA} value={ev.rosacea} onChange={(v) => setEv('rosacea', v)} tone="fuchsia" />
+            </div>
+          </div>
+
+          <div>
+            <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Biotipo</p>
+            <MspChecklist catalog={COSMETOLOGIA_BIOTIPOS} value={ev.biotipo} onChange={(v) => setEv('biotipo', v)} showDetail={false} />
+          </div>
+          <div>
+            <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Arrugas</p>
+            <MspChecklist catalog={COSMETOLOGIA_ARRUGAS} value={ev.arrugas} onChange={(v) => setEv('arrugas', v)} showDetail={false} />
+          </div>
+          <div>
+            <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Acné</p>
+            <MspChecklist catalog={COSMETOLOGIA_ACNE} value={ev.acne} onChange={(v) => setEv('acne', v)} showDetail={false} />
+          </div>
+          <div>
+            <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Lesiones elementales</p>
+            <MspChecklist catalog={COSMETOLOGIA_LESIONES} value={ev.lesionesElementales} onChange={(v) => setEv('lesionesElementales', v)} showDetail={false} />
+          </div>
+
+          <div>
+            <p className="text-xs font-semibold text-slate-500 uppercase mb-2">Hiperpigmentaciones</p>
+            <div className="space-y-2">
+              {COSMETOLOGIA_HIPERPIGMENTACION.map((z) => {
+                const cur = hiperBy[z.key] || {};
+                return (
+                  <div key={z.key} className="flex flex-wrap items-center gap-2">
+                    <SChip tone="fuchsia" active={!!cur.marked} onClick={() => setHiper(z.key, { marked: !cur.marked })}>
+                      {z.label}
+                    </SChip>
+                    {z.lados && (
+                      <>
+                        <SChip tone="fuchsia" active={!!cur.derecho} onClick={() => setHiper(z.key, { derecho: !cur.derecho })}>D</SChip>
+                        <SChip tone="fuchsia" active={!!cur.izquierdo} onClick={() => setHiper(z.key, { izquierdo: !cur.izquierdo })}>I</SChip>
+                      </>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Deshidratación dérmica facial</label>
+            <OptionChips options={COSMETOLOGIA_DESHIDRATACION} value={ev.deshidratacionFacial} onChange={(v) => setEv('deshidratacionFacial', v)} tone="fuchsia" />
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <Field label="Bioestimulación dérmica facial">
+              <input type="text" value={ev.bioestimulacion || ''} onChange={(e) => setEv('bioestimulacion', e.target.value)} className="input" />
+            </Field>
+            <Field label="Nutrición dérmica facial">
+              <input type="text" value={ev.nutricionDermica || ''} onChange={(e) => setEv('nutricionDermica', e.target.value)} className="input" />
+            </Field>
+          </div>
+          <Field label="Evaluación">
+            <textarea rows={3} value={ev.observaciones || ''} onChange={(e) => setEv('observaciones', e.target.value)} className="input resize-none" />
+          </Field>
+        </div>
+      </Collapsible>
+
+      <Collapsible title="Datos de higiene" hint="lavado capilar y productos">
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-2">
+          <Field label="Frecuencia de lavado capilar">
+            <input type="text" value={hi.frecuenciaLavado || ''} onChange={(e) => setHi('frecuenciaLavado', e.target.value)} className="input" />
+          </Field>
+          <Field label="Shampoo">
+            <input type="text" value={hi.shampoo || ''} onChange={(e) => setHi('shampoo', e.target.value)} className="input" />
+          </Field>
+          <Field label="Acondicionador">
+            <input type="text" value={hi.acondicionador || ''} onChange={(e) => setHi('acondicionador', e.target.value)} className="input" />
+          </Field>
+          <Field label="Otros">
+            <input type="text" value={hi.otros || ''} onChange={(e) => setHi('otros', e.target.value)} className="input" />
+          </Field>
+        </div>
+      </Collapsible>
+
+      <Collapsible title="Características del cabello" hint="longitud, forma, calibre, densidad…">
+        <div className="space-y-3">
+          {COSMETOLOGIA_CABELLO.map((f) => (
+            <div key={f.key}>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">{f.label}</label>
+              <OptionChips options={f.options} value={ca[f.key]} onChange={(v) => setCa(f.key, v)} tone="fuchsia" />
+            </div>
+          ))}
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Tratamientos estéticos</label>
+            <div className="flex flex-wrap gap-2">
+              {COSMETOLOGIA_CABELLO_TRATAMIENTOS.map((t) => (
+                <SChip key={t.key} tone="fuchsia" active={!!tr[t.key]} onClick={() => setTr(t.key, !tr[t.key])}>
+                  {t.label}
+                </SChip>
+              ))}
+            </div>
+          </div>
+        </div>
+      </Collapsible>
+
+      <Collapsible title="Características del cuero cabelludo" hint="tipo, glándula sebácea, sensibilidad, movilidad">
+        <div className="space-y-3">
+          {COSMETOLOGIA_CUERO_CABELLUDO.map((f) => (
+            <div key={f.key}>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">{f.label}</label>
+              <OptionChips options={f.options} value={cc[f.key]} onChange={(v) => setCc(f.key, v)} tone="fuchsia" />
+            </div>
+          ))}
+        </div>
+      </Collapsible>
+
+      <Collapsible title="Alteración de la fibra capilar" hint="marque y describa lo que encuentre">
+        <MspChecklist
+          catalog={COSMETOLOGIA_FIBRA_CAPILAR}
+          value={c.fibraCapilar}
+          onChange={(v) => onChange({ ...c, fibraCapilar: v })}
+        />
+      </Collapsible>
+
+      <Collapsible title="Afecciones del cuero cabelludo" hint="en alopecia, describa el tipo">
+        <MspChecklist
+          catalog={COSMETOLOGIA_AFECCIONES_CUERO}
+          value={c.afeccionesCuero}
+          onChange={(v) => onChange({ ...c, afeccionesCuero: v })}
+        />
+      </Collapsible>
+
+      <Collapsible title="Procedimiento y productos utilizados" hint="lo realizado en la sesión">
+        <div className="space-y-2">
+          <Field label="Procedimiento estético">
+            <textarea rows={3} value={pr.procedimiento || ''} onChange={(e) => setPr('procedimiento', e.target.value)} className="input resize-none" />
+          </Field>
+          <Field label="Productos con que se trabajó">
+            <textarea rows={2} value={pr.productos || ''} onChange={(e) => setPr('productos', e.target.value)} className="input resize-none" />
+          </Field>
+          <Field label="Apoyo domiciliario">
+            <textarea rows={2} value={pr.apoyoDomiciliario || ''} onChange={(e) => setPr('apoyoDomiciliario', e.target.value)} className="input resize-none" />
+          </Field>
+        </div>
+      </Collapsible>
+    </div>
+  );
+}
+
+function CosmetologiaSummary({ c }) {
+  if (!c) return null;
+  const de = c.datosEsteticos || {};
+  const ev = c.evaluacion || {};
+  const hi = c.higiene || {};
+  const ca = c.cabello || {};
+  const tr = ca.tratamientos || {};
+  const cc = c.cueroCabelludo || {};
+  const pr = c.procedimiento || {};
+  const chips = (catalog, value) => markedItems(catalog, value).map((i) => i.label);
+  const biotipo = chips(COSMETOLOGIA_BIOTIPOS, ev.biotipo);
+  const arrugas = chips(COSMETOLOGIA_ARRUGAS, ev.arrugas);
+  const acne = chips(COSMETOLOGIA_ACNE, ev.acne);
+  const lesiones = chips(COSMETOLOGIA_LESIONES, ev.lesionesElementales);
+  const hiper = (ev.hiperpigmentaciones || []).map((z) => {
+    const zona = COSMETOLOGIA_HIPERPIGMENTACION.find((x) => x.key === z.key)?.label || z.key;
+    const lados = [z.derecho && 'D', z.izquierdo && 'I'].filter(Boolean).join('/');
+    return lados ? `${zona} (${lados})` : zona;
+  });
+  const tratamientos = COSMETOLOGIA_CABELLO_TRATAMIENTOS.filter((t) => tr[t.key]).map((t) => t.label);
+  // Estas dos llevan detalle por casilla: se muestra «Alopecia: androgénica».
+  const conDetalle = (catalog, value) =>
+    markedItems(catalog, value).map((i) => (i.detail ? `${i.label}: ${i.detail}` : i.label));
+  const fibra = conDetalle(COSMETOLOGIA_FIBRA_CAPILAR, c.fibraCapilar);
+  const afecciones = conDetalle(COSMETOLOGIA_AFECCIONES_CUERO, c.afeccionesCuero);
+  return (
+    <SpecialtySummary title="Cosmetología" tone="fuchsia">
+      {de.tratamientosEsteticos && <span>Tratamientos: {de.tratamientosEsteticos}</span>}
+      {de.autotratamientos && <span>Autotratamientos: {de.autotratamientos}</span>}
+      {de.cosmeticosUsoActual && <span>Cosméticos: {de.cosmeticosUsoActual}</span>}
+      {ev.fototipo && <span>Fototipo: {ev.fototipo}</span>}
+      {ev.glogau && <span>Glogau: {ev.glogau}</span>}
+      {ev.rosacea && <span>Rosácea: estadio {ev.rosacea}</span>}
+      {biotipo.length > 0 && <span>Biotipo: {biotipo.join(', ')}</span>}
+      {arrugas.length > 0 && <span>Arrugas: {arrugas.join(', ')}</span>}
+      {acne.length > 0 && <span>Acné: {acne.join(', ')}</span>}
+      {lesiones.length > 0 && <span className="w-full">Lesiones: {lesiones.join(', ')}</span>}
+      {hiper.length > 0 && <span className="w-full">Hiperpigmentaciones: {hiper.join(', ')}</span>}
+      {ev.deshidratacionFacial && <span>Deshidratación: {optionLabel(ev.deshidratacionFacial)}</span>}
+      {ev.bioestimulacion && <span>Bioestimulación: {ev.bioestimulacion}</span>}
+      {ev.nutricionDermica && <span>Nutrición dérmica: {ev.nutricionDermica}</span>}
+      {ev.observaciones && <span className="w-full whitespace-pre-wrap">Evaluación: {ev.observaciones}</span>}
+      {hi.frecuenciaLavado && <span>Lavado capilar: {hi.frecuenciaLavado}</span>}
+      {hi.shampoo && <span>Shampoo: {hi.shampoo}</span>}
+      {hi.acondicionador && <span>Acondicionador: {hi.acondicionador}</span>}
+      {hi.otros && <span>Otros (higiene): {hi.otros}</span>}
+      {COSMETOLOGIA_CABELLO.filter((f) => ca[f.key]).map((f) => (
+        <span key={f.key}>{f.label}: {optionLabel(ca[f.key])}</span>
+      ))}
+      {tratamientos.length > 0 && <span>Tratamientos capilares: {tratamientos.join(', ')}</span>}
+      {COSMETOLOGIA_CUERO_CABELLUDO.filter((f) => cc[f.key]).map((f) => (
+        <span key={f.key}>Cuero cabelludo — {f.label}: {optionLabel(cc[f.key])}</span>
+      ))}
+      {fibra.length > 0 && <span className="w-full">Fibra capilar: {fibra.join(', ')}</span>}
+      {afecciones.length > 0 && <span className="w-full">Afecciones del cuero cabelludo: {afecciones.join(', ')}</span>}
+      {pr.procedimiento && <span className="w-full whitespace-pre-wrap">Procedimiento: {pr.procedimiento}</span>}
+      {pr.productos && <span className="w-full whitespace-pre-wrap">Productos: {pr.productos}</span>}
+      {pr.apoyoDomiciliario && <span className="w-full whitespace-pre-wrap">Apoyo domiciliario: {pr.apoyoDomiciliario}</span>}
+    </SpecialtySummary>
   );
 }
 

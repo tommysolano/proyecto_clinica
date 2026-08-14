@@ -9,7 +9,10 @@ const { createEntry, reverseEntry } = require('../utils/accounting');
 const { getAccount } = require('../utils/accountMap');
 const ExcelJS = require('exceljs');
 
-const ROLE_LABELS = { admin: 'Administrador', doctor: 'Médico', ginecologia: 'Ginecología', nurse: 'Enfermero/a', call_center: 'Call center', marketing: 'Marketing', contabilidad: 'Contabilidad' };
+const ROLE_LABELS = { admin: 'Administrador', doctor: 'Médico', optica: 'Óptica', ginecologia: 'Ginecología', podologia: 'Podología', odontologia: 'Odontología', cosmetologia: 'Cosmetología', nurse: 'Enfermero/a', call_center: 'Call center', marketing: 'Marketing', contabilidad: 'Contabilidad' };
+
+// Especialidades que heredan una regla escrita para el rol 'doctor' (ver matchTarget).
+const DOCTOR_RULE_HEIRS = ['ginecologia', 'podologia', 'odontologia', 'cosmetologia'];
 
 // ─────────── CRUD de reglas ───────────
 
@@ -190,8 +193,10 @@ async function computeCommissions(clinicId, startDate, endDate) {
     if (!performer) return false;
     if (rule.targetType === 'user') return ruleUsers(rule).includes(String(performer._id));
     if (rule.role === performerRole) return true;
-    // 'ginecologia' es un doctor especializado: hereda las reglas por rol 'doctor'.
-    if (rule.role === 'doctor' && performerRole === 'ginecologia') return true;
+    // Las especialidades médicas heredan las reglas por rol 'doctor'.
+    // 'optica' queda FUERA a propósito: siempre tuvo sus propias reglas y
+    // meterla aquí cambiaría lo que ya se está pagando hoy.
+    if (rule.role === 'doctor' && DOCTOR_RULE_HEIRS.includes(performerRole)) return true;
     return false;
   };
 

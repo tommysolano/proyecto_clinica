@@ -1,6 +1,7 @@
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
 const { isAccessBlocked, blockMessage } = require('../utils/accessControl');
+const { DOCTOR_ROLE, DOCTOR_SPECIALTY_ROLES } = require('../constants/roles');
 
 /**
  * Verifica el JWT y carga el usuario.
@@ -62,10 +63,11 @@ const requireClinic = (req, res, next) => {
  */
 const requireRole = (...roles) => (req, res, next) => {
   if (req.user?.isSuperAdmin) return next();
-  // 'optica' y 'ginecologia' son funcionalmente doctores: cualquier ruta que
-  // permita 'doctor' también acepta 'optica' y 'ginecologia'.
-  const expanded = roles.includes('doctor')
-    ? Array.from(new Set([...roles, 'optica', 'ginecologia']))
+  // Las especialidades ('optica', 'ginecologia', 'podologia', 'odontologia',
+  // 'cosmetologia') son funcionalmente doctores: cualquier ruta que permita
+  // 'doctor' también las acepta. La lista vive en constants/roles.js.
+  const expanded = roles.includes(DOCTOR_ROLE)
+    ? Array.from(new Set([...roles, ...DOCTOR_SPECIALTY_ROLES]))
     : roles;
   if (!req.role || !expanded.includes(req.role)) {
     return res.status(403).json({ message: 'No tienes permisos para esta acción' });

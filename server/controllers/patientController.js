@@ -1,16 +1,19 @@
 const Patient = require('../models/Patient');
 const Appointment = require('../models/Appointment');
 const { emitToClinic } = require('../realtime');
+const { isDoctorRole } = require('../constants/roles');
 
 // NOTA: los DATOS de los pacientes se comparten entre todas las clínicas
 // (cédula única global). El campo `clinic` queda como referencia de la clínica
 // donde se registró inicialmente, pero las consultas no filtran por clínica.
 
-// Campos sensibles que el rol "doctor" no debe ver ni editar.
+// Campos sensibles que el rol "doctor" no debe ver ni editar. La regla vale para
+// TODOS los roles de doctor (incluidas las especialidades): el dato de contacto
+// es cosa de recepción/marketing, no de quien atiende.
 const SENSITIVE_FIELDS_FOR_DOCTOR = ['cedula', 'address', 'phone', 'whatsapp', 'email'];
 
 const sanitizeForRole = (patient, role) => {
-  if (!patient || (role !== 'doctor' && role !== 'optica')) return patient;
+  if (!patient || !isDoctorRole(role)) return patient;
   const obj = patient.toObject ? patient.toObject() : { ...patient };
   SENSITIVE_FIELDS_FOR_DOCTOR.forEach((f) => {
     obj[f] = undefined;
@@ -246,7 +249,7 @@ exports.updatePatient = async (req, res) => {
   try {
     const update = cleanPatientBody(req.body);
     // El doctor NO puede editar cédula, dirección, teléfono, whatsapp ni email.
-    if (req.role === 'doctor' || req.role === 'optica') {
+    if (isDoctorRole(req.role)) {
       SENSITIVE_FIELDS_FOR_DOCTOR.forEach((f) => delete update[f]);
     }
     // Etiquetas previas: para disparar 'tag_added' solo por las realmente nuevas.

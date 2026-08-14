@@ -24,7 +24,7 @@ import {
   HiOutlineUserPlus,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
-import { doctorOptionLabel } from '../utils/roles';
+import { doctorOptionLabel, roleSatisfies, ROLE_LABELS } from '../utils/roles';
 
 // 6 estados soportados por el backend.
 const statusColors = {
@@ -72,17 +72,7 @@ const emptyForm = {
   extraAppointments: [],
 };
 
-const roleLabels = {
-  admin: 'Administrador',
-  cajero: 'Cajero',
-  doctor: 'Doctor',
-  ginecologia: 'Ginecología',
-  optica: 'Óptica',
-  contabilidad: 'Contabilidad',
-  call_center: 'Call Center',
-  marketing: 'Marketing',
-  enfermero: 'Enfermero/a',
-};
+const roleLabels = ROLE_LABELS;
 
 // Formatea una fecha ISO usando los componentes de fecha (sin convertir a UTC).
 const formatLocalDate = (iso) => {
@@ -124,7 +114,8 @@ export default function Appointments() {
   const { user, role, hasRole, activeClinic, clinics } = useAuth();
   const canWrite = hasRole('admin', 'cajero', 'call_center');
   const isAdmin = hasRole('admin') || user?.isSuperAdmin;
-  const isDoctor = role === 'doctor' || role === 'optica' || role === 'ginecologia';
+  // 'optica' no se expande desde 'doctor' en el cliente, por eso va aparte.
+  const isDoctor = roleSatisfies(role, ['doctor']) || role === 'optica';
   const isNurse = role === 'enfermero';
   const isCallCenter = role === 'call_center';
   const isReception = hasRole('admin', 'cajero', 'enfermero');
@@ -159,11 +150,7 @@ export default function Appointments() {
     timeTo: '',
     patientQuery: '',
   });
-  const [view, setView] = useState(
-    role === 'doctor' || role === 'optica' || role === 'ginecologia'
-      ? 'list'
-      : 'calendar'
-  ); // 'calendar' | 'list'
+  const [view, setView] = useState(isDoctor ? 'list' : 'calendar'); // 'calendar' | 'list'
   // Mes visible en la vista calendario
   const [calMonth, setCalMonth] = useState(() => {
     const d = new Date();

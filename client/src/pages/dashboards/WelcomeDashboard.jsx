@@ -1,16 +1,5 @@
 import { useAuth } from '../../context/AuthContext';
-
-const ROLE_LABELS = {
-  admin: 'Administrador',
-  cajero: 'Cajero',
-  doctor: 'Doctor',
-  ginecologia: 'Ginecología',
-  optica: 'Óptica',
-  call_center: 'Call Center',
-  marketing: 'Marketing',
-  enfermero: 'Enfermería',
-  contabilidad: 'Contabilidad',
-};
+import { ROLE_LABELS } from '../../utils/roles';
 
 /**
  * Dashboard de bienvenida (placeholder por rol). Cada rol tiene su propio

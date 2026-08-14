@@ -217,6 +217,10 @@ exports.listConversations = async (req, res) => {
         '_id clinic channel phone contactName patient assignedTo assignedToName workflowRestrictedTo workflowRestrictionActive ' +
           'status isFeatured featuredNote blocked window24hExpiresAt lastInboundAt ' +
           'lastInboundAccount lastMessageAt lastMessagePreview lastMessageDirection unreadCount tags ' +
+          // Quién atendió por última vez: es lo que la fila y la cabecera muestran
+          // ahora en vez del asignado. Solo el nombre (String corto), no el ref:
+          // 300 chats por petición y un populate más costaría otra consulta.
+          'lastAgentReplyName lastAgentReplyAt ' +
           'whatsappAccount createdAt opportunity.isOpportunity opportunity.stage'
       )
       .populate('assignedTo', 'name email')
@@ -2386,6 +2390,8 @@ exports.bulkWhatsappOpportunities = async (req, res) => {
         body: String(body).trim(),
         sentBy: req.user._id,
         sentByName: req.user.name,
+        // Difusión: no debe pisar "quién atendió por última vez" en cada chat.
+        broadcast: true,
       });
       if (result.skipped) skipped++;
       else if (result.ok) sent++;
@@ -3237,6 +3243,12 @@ async function ingestExternalOutbound({ clinicId, account, externalUserId, phone
   // Responder desde el teléfono también cuenta como responder: se limpia el
   // pendiente de "no leído" (coherente con la regla del sistema).
   conv.unreadCount = 0;
+  // ...y como atender el chat. No hay usuario del CRM detrás (lo escribió alguien
+  // desde el móvil), así que se rotula por lo que es: si dejáramos el valor
+  // anterior, la bandeja diría que respondió una asesora que no fue.
+  conv.lastAgentReplyAt = msg.createdAt;
+  conv.lastAgentReplyBy = null;
+  conv.lastAgentReplyName = 'WhatsApp (teléfono)';
   if (account && !conv.whatsappAccount) conv.whatsappAccount = account._id;
   await Message.updateMany(
     { conversation: conv._id, direction: 'in', isRead: false },

@@ -6,6 +6,7 @@ const PurchaseInvoice = require('../models/PurchaseInvoice');
 const BankAccount = require('../models/BankAccount');
 const BankTransaction = require('../models/BankTransaction');
 const mongoose = require('mongoose');
+const { isDoctorRole } = require('../constants/roles');
 
 exports.getDashboard = async (req, res) => {
   try {
@@ -21,7 +22,7 @@ exports.getDashboard = async (req, res) => {
     const mongoose = require('mongoose');
     const clinicObjId = new mongoose.Types.ObjectId(clinicId);
 
-    const isClinician = req.role === 'doctor' || req.role === 'optica' || req.role === 'ginecologia';
+    const isClinician = isDoctorRole(req.role);
     const appointmentQuery = { clinic: clinicId, date: { $gte: today, $lt: tomorrow } };
     if (isClinician) {
       appointmentQuery.doctor = req.user._id;

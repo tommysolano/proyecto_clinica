@@ -857,6 +857,11 @@ async function send({
   buttons = [],
   sentBy,
   sentByName,
+  // `true` = difusión (el mismo texto a muchos chats a la vez). Cuenta como envío
+  // de una persona para todo lo demás, pero NO como "atender el chat": si no, un
+  // supervisor mandando una difusión quedaría como la última asesora que
+  // respondió en cientos de conversaciones a la vez.
+  broadcast = false,
   isAutoReply = false,
   ignoreOptOut = false,
   source,
@@ -1125,6 +1130,13 @@ async function send({
     if (account && !conv.whatsappAccount) conv.whatsappAccount = account._id;
     if (sentBy) {
       conv.lastAgentReplyAt = new Date();
+      // Quién atendió por última vez (lo que muestra la bandeja). El nombre se
+      // guarda en el propio chat porque la lista va proyectada y sin populate.
+      // Una difusión no cuenta: mandar el mismo texto a 300 chats no es atender.
+      if (!broadcast) {
+        conv.lastAgentReplyBy = sentBy;
+        if (sentByName) conv.lastAgentReplyName = sentByName;
+      }
       if (!conv.firstResponseAt) {
         conv.firstResponseAt = conv.lastAgentReplyAt;
         conv.firstResponseBy = sentBy;

@@ -2840,8 +2840,13 @@ const ConversationRow = memo(function ConversationRow({ conv, active, onSelect, 
                 Opt-out
               </span>
             )}
-            {conv.assignedToName && (
-              <span className="text-[10px] text-slate-400">→ {conv.assignedToName}</span>
+            {/* Quién atendió POR ÚLTIMA VEZ, no a quién está asignado: el
+                asignado se queda pegado al primero que tocó el chat, y lo que
+                se quiere ver de un vistazo es quién contestó de verdad. */}
+            {conv.lastAgentReplyName && (
+              <span className="text-[10px] text-slate-400" title="Última asesora que respondió">
+                ↩ {conv.lastAgentReplyName}
+              </span>
             )}
           </div>
         </div>
@@ -2975,8 +2980,10 @@ function ChatHeader({ conv, onToggleFeatured, onTake, onTransfer, onOpenOpportun
           {conv.patient && (
             <span className="ml-2 text-emerald-700">· Paciente vinculado</span>
           )}
-          {conv.assignedToName && (
-            <span className="ml-2">· Agente: {conv.assignedToName}</span>
+          {conv.lastAgentReplyName && (
+            <span className="ml-2" title="Última asesora que respondió este chat">
+              · Últ. respuesta: {conv.lastAgentReplyName}
+            </span>
           )}
         </div>
       </div>

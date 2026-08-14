@@ -34,7 +34,7 @@ const CAPS = {
 };
 
 /** Roles que funcionalmente son doctores (misma expansión que `requireRole`). */
-const DOCTOR_LIKE = ['doctor', 'optica', 'ginecologia'];
+const { DOCTOR_LIKE_ROLES: DOCTOR_LIKE } = require('../constants/roles');
 
 /** ¿El rol tiene la capacidad? El super-admin siempre. */
 function can(role, cap, { isSuperAdmin = false } = {}) {

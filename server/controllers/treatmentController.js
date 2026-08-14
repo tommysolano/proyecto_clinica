@@ -2,6 +2,7 @@ const Treatment = require('../models/Treatment');
 const Product = require('../models/Product');
 const { emitToClinic } = require('../realtime');
 const { applyAbandonment } = require('../utils/treatmentAbandonment');
+const { isDoctorRole } = require('../constants/roles');
 
 const POPULATE = [
   { path: 'patient', select: 'firstName lastName cedula phone email' },
@@ -89,7 +90,7 @@ exports.create = async (req, res) => {
         completed: 0,
       })),
       createdBy: req.user._id,
-      prescribedBy: req.body.prescribedBy || (req.role === 'doctor' || req.role === 'optica' ? req.user._id : undefined),
+      prescribedBy: req.body.prescribedBy || (isDoctorRole(req.role) ? req.user._id : undefined),
     });
     const populated = await Treatment.findById(treatment._id).populate(POPULATE);
     emitToClinic(req.clinicId, 'treatment:created', { id: treatment._id });

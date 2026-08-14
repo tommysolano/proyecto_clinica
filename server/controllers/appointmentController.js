@@ -11,6 +11,7 @@ const {
   PAST_DATE_MESSAGE,
   PAST_TIME_MESSAGE,
 } = require('../utils/appointmentDate');
+const { isDoctorRole } = require('../constants/roles');
 
 // Construye el payload de evento de dominio para una cita (para workflows).
 // appointmentDate lleva la hora REAL de la cita (date = día calendario +
@@ -142,7 +143,7 @@ exports.getAppointments = async (req, res) => {
       query.startTime = { $lte: toTime };
     }
 
-    if (req.role === 'doctor' || req.role === 'optica' || req.role === 'ginecologia') {
+    if (isDoctorRole(req.role)) {
       query.doctor = req.user._id;
     }
     // El call center puede ver TODAS las citas agendadas (no solo las suyas).
@@ -478,7 +479,7 @@ exports.updateAppointment = async (req, res) => {
     const isAdmin = req.user.isSuperAdmin || req.role === 'admin';
     const isCreator = String(existing.createdBy || '') === String(req.user._id);
     const isAssignedDoctor =
-      (req.role === 'doctor' || req.role === 'optica' || req.role === 'ginecologia') && String(existing.doctor || '') === String(req.user._id);
+      (isDoctorRole(req.role)) && String(existing.doctor || '') === String(req.user._id);
     // Recepción (cajero/call_center) puede reagendar/editar cualquier cita.
     // La comisión NO cambia: queda con el creador original (createdBy se preserva).
     const isFrontDesk = ['cajero', 'call_center'].includes(req.role);
@@ -716,7 +717,7 @@ exports.startConsultation = async (req, res) => {
 
     const isAdmin = req.user.isSuperAdmin || req.role === 'admin';
     const isAssignedDoctor =
-      (req.role === 'doctor' || req.role === 'optica' || req.role === 'ginecologia') && String(appointment.doctor) === String(req.user._id);
+      (isDoctorRole(req.role)) && String(appointment.doctor) === String(req.user._id);
     if (!isAdmin && !isAssignedDoctor) {
       return res.status(403).json({
         message: 'Solo el doctor asignado puede iniciar la consulta.',
@@ -745,7 +746,7 @@ exports.endConsultation = async (req, res) => {
 
     const isAdmin = req.user.isSuperAdmin || req.role === 'admin';
     const isAssignedDoctor =
-      (req.role === 'doctor' || req.role === 'optica' || req.role === 'ginecologia') && String(appointment.doctor) === String(req.user._id);
+      (isDoctorRole(req.role)) && String(appointment.doctor) === String(req.user._id);
     if (!isAdmin && !isAssignedDoctor) {
       return res.status(403).json({
         message: 'Solo el doctor asignado puede finalizar la consulta.',
@@ -831,7 +832,7 @@ exports.getTodayAppointments = async (req, res) => {
       date: { $gte: today, $lt: tomorrow },
     };
 
-    if (req.role === 'doctor' || req.role === 'optica' || req.role === 'ginecologia') {
+    if (isDoctorRole(req.role)) {
       query.doctor = req.user._id;
     }
     // El call center puede ver TODAS las citas del día.

@@ -1,15 +1,38 @@
 // Expansión central de roles del frontend.
 //
-// 'ginecologia' es un doctor especializado: cualquier permiso/vista concedido al
-// rol 'doctor' también aplica a 'ginecologia'. Esto replica en el cliente la
-// expansión que el backend hace en requireRole (doctor → optica/ginecologia),
-// para no tener que enumerar 'ginecologia' junto a 'doctor' en cada control.
+// Las ESPECIALIDADES son doctores especializados: cualquier permiso/vista
+// concedido al rol 'doctor' también les aplica. Esto replica en el cliente la
+// expansión que el backend hace en requireRole (ver server/constants/roles.js),
+// para no tener que enumerar cada especialidad junto a 'doctor' en cada control.
+//
+// 'optica' NO está en esta lista a propósito: en el cliente siempre se enumeró
+// a mano (Layout.jsx, App.jsx) porque tiene vistas propias, y meterla aquí le
+// cambiaría lo que ve hoy.
+export const DOCTOR_SPECIALTY_ROLES = ['ginecologia', 'podologia', 'odontologia', 'cosmetologia'];
+
 export function roleSatisfies(userRole, allowedRoles) {
   if (!userRole || !Array.isArray(allowedRoles)) return false;
   if (allowedRoles.includes(userRole)) return true;
-  if (userRole === 'ginecologia' && allowedRoles.includes('doctor')) return true;
+  if (DOCTOR_SPECIALTY_ROLES.includes(userRole) && allowedRoles.includes('doctor')) return true;
   return false;
 }
+
+// Etiqueta legible de cada rol. Fuente única para el sidebar, la agenda y los
+// dashboards, que antes repetían el mismo mapa cada uno por su lado.
+export const ROLE_LABELS = {
+  admin: 'Administrador',
+  cajero: 'Cajero',
+  contabilidad: 'Contabilidad',
+  doctor: 'Doctor',
+  optica: 'Óptica',
+  ginecologia: 'Ginecología',
+  podologia: 'Podología',
+  odontologia: 'Odontología',
+  cosmetologia: 'Cosmetología',
+  call_center: 'Call Center',
+  marketing: 'Marketing',
+  enfermero: 'Enfermero/a',
+};
 
 // ─────────────── Tipo de doctor ───────────────
 //
@@ -21,6 +44,9 @@ export const DOCTOR_TYPE_LABELS = {
   doctor: 'General',
   optica: 'Óptica',
   ginecologia: 'Ginecología',
+  podologia: 'Podología',
+  odontologia: 'Odontología',
+  cosmetologia: 'Cosmetología',
 };
 
 // Rol nuevo que todavía no esté en el mapa de arriba: 'medicina_interna' se ve
