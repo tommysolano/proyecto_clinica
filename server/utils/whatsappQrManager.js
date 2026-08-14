@@ -975,6 +975,88 @@ function extractQrReferral(msg) {
   return { adId, sourceUrl, headline, body, sourceType, ctwaClid, campaign: headline || body };
 }
 
+/* ══════════════════════════════════════════════════════════════════════════════
+ * DIAGNÓSTICO TEMPORAL (ago-2026) — ¿manda WhatsApp Web el `ctwa_clid`?
+ *
+ * LA PREGUNTA. La Conversions API de Meta atribuye una conversión al anuncio con
+ * el `ctwa_clid` (el id del CLIC, no del anuncio). Por Cloud API llega en el 99%
+ * de los mensajes desde anuncio; por QR, en 5.959 mensajes reales, NUNCA ha
+ * llegado. `extractQrReferral` ya lo busca en siete sitios y con dos grafías, y
+ * `whatsapp-web.js` 1.34.7 no menciona `ctwa` en todo su código — pero eso no
+ * demuestra que el dato no venga bajo otro nombre en el mensaje crudo.
+ *
+ * QUÉ HACE. Cuando llega un mensaje desde anuncio SIN clid, recorre el mensaje
+ * entero y anota: (a) los objetos que parecen contexto de anuncio, con su lista de
+ * claves, y (b) cualquier clave que suene a clic, con su ruta, tipo y LONGITUD.
+ * Nunca escribe el valor de nada: ni el cuerpo del mensaje, ni el teléfono, ni el
+ * propio clid si apareciera. Con eso basta para saber si está y dónde.
+ *
+ * Queda en el log y en la colección `qrctwadiag` (para poder consultarlo sin
+ * entrar al servidor). Se apaga solo a los QR_CTWA_DIAG_MAX mensajes.
+ *
+ * ►► BORRAR ESTE BLOQUE Y SU LLAMADA cuando la pregunta esté contestada. ◄◄
+ * ══════════════════════════════════════════════════════════════════════════════ */
+const CLAVE_CLIC = /ctwa|clid|click/i;
+let diagRestantes = Number(process.env.QR_CTWA_DIAG_MAX || 8);
+
+/** Recorre el mensaje crudo y devuelve { contextos, rutas } — solo nombres. */
+function rastrearSenalesDeAnuncio(raiz) {
+  const contextos = [];
+  const rutas = [];
+  const vistos = new WeakSet();
+  const anda = (obj, ruta, prof) => {
+    if (!obj || typeof obj !== 'object' || prof > 6 || vistos.has(obj)) return;
+    if (contextos.length >= 6 && rutas.length >= 30) return;
+    vistos.add(obj);
+    if (!Array.isArray(obj) && looksLikeAdCtx(obj) && contextos.length < 6) {
+      contextos.push(`${ruta || '(raíz)'} {${Object.keys(obj).join(',')}}`);
+    }
+    for (const [k, v] of Object.entries(obj)) {
+      const sub = ruta ? `${ruta}.${k}` : k;
+      if (CLAVE_CLIC.test(k) && rutas.length < 30) {
+        const tipo = v === null ? 'null' : Array.isArray(v) ? `array(${v.length})` : typeof v;
+        const largo = typeof v === 'string' ? ` ${v.length} car.` : '';
+        rutas.push(`${sub} [${tipo}${largo}${v ? '' : ' VACÍO'}]`);
+      }
+      if (v && typeof v === 'object') anda(v, sub, prof + 1);
+    }
+  };
+  anda(raiz, '', 0);
+  return { contextos, rutas };
+}
+
+function diagnosticarCtwaQr(msg, referral) {
+  try {
+    if (process.env.QR_CTWA_DIAG === '0' || diagRestantes <= 0) return;
+    if (!referral || referral.ctwaClid) return; // solo interesa cuando FALTA
+    const d = msg?._data;
+    if (!d || typeof d !== 'object') return;
+    diagRestantes -= 1;
+
+    const { contextos, rutas } = rastrearSenalesDeAnuncio(d);
+    const informe = {
+      at: new Date(),
+      adId: referral.adId || '',
+      clavesRaiz: Object.keys(d),
+      contextos,
+      rutasConClic: rutas,
+      libreria: 'whatsapp-web.js 1.34.7',
+    };
+    console.log(
+      '[qr-ctwa-diag] anuncio SIN ctwa_clid (ad=%s)\n  raíz: %s\n  contextos: %s\n  claves de clic: %s',
+      informe.adId || '(vacío)',
+      informe.clavesRaiz.join(','),
+      contextos.join(' | ') || '(ninguno)',
+      rutas.join(' | ') || '(NINGUNA — el dato no viaja)'
+    );
+    // También a la base: así se puede consultar el resultado sin entrar al VPS.
+    const mongoose = require('mongoose');
+    mongoose.connection.collection('qrctwadiag').insertOne(informe).catch(() => {});
+  } catch {
+    /* un diagnóstico no puede tumbar la ingesta de un mensaje */
+  }
+}
+
 // Caché lid→teléfono real (el mapeo es estable, se guarda por proceso).
 const lidPhoneCache = new Map();
 
@@ -1207,6 +1289,8 @@ async function ingestIncomingQrMessage(msg, client, accountId) {
   if (referral) {
     console.log('[ctwa_ad][qr] mensaje desde anuncio — source_id=%s url=%s de %s',
       referral.adId || '(vacío)', referral.sourceUrl || '(sin url)', from);
+    // TEMPORAL: ¿viene el ctwa_clid bajo otro nombre? (ver diagnosticarCtwaQr)
+    diagnosticarCtwaQr(msg, referral);
   } else if (msg._data && typeof msg._data === 'object') {
     // Sin mapear: si hay SEÑALES de anuncio (clave sospechosa arriba o dentro de
     // contextInfo) deja las claves reales en el log para ajustar el mapeo con
@@ -3164,6 +3248,7 @@ module.exports = {
     findRecentlySent, readRecentMessages, watchOutgoing, confirmAfterFailure, isSessionGlitch,
     pendingSends, rememberPending, takePending, restorePendingSends, sendFingerprint, sameText,
     downloadAndDecryptWaMedia, phoneFromMsgData,
+    extractQrReferral, rastrearSenalesDeAnuncio, // TEMPORAL: diagnóstico del ctwa_clid
     probeIngest, verifyIngest, recoverMissedInbound, ingestIncomingQrMessage,
     ingestRepairAt, ingestGaps,
     INGEST_LAG_MS, MAX_INGEST_GAPS, INGEST_REPAIR_COOLDOWN_MS, INGEST_GRACE_MS, CONTENT_TYPES,
