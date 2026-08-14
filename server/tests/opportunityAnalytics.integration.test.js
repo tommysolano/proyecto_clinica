@@ -166,6 +166,42 @@ test('tasas, canal, agente y servicios salen de la etapa de la oportunidad', asy
   assert.deepEqual(payload.motivosPerdida, [{ motivo: 'Precio', count: 1 }]);
 });
 
+test('clasifica por oportunidad: por su nombre, o por la campaña si nació de un anuncio', async () => {
+  const clinic = await Clinic.create({ name: 'Principal' });
+  await Conversation.create({
+    clinic: clinic._id, phone: '593900000011',
+    opportunities: [
+      { isOpportunity: true, name: 'Probiotic 1', stage: 'nuevo', createdAt: hace(3), expectedValue: 39 },
+      { isOpportunity: true, name: 'Probiotic 1', stage: 'agendado', createdAt: hace(2), expectedValue: 39 },
+      // Sin nombre, pero SÍ se sabe de qué va: entró por un anuncio.
+      {
+        isOpportunity: true, name: '', stage: 'nuevo', createdAt: hace(2),
+        attribution: { adId: '120249', campaign: 'Chequeo Integral' },
+      },
+    ],
+  });
+  await Conversation.create({
+    clinic: clinic._id, phone: '593900000012',
+    opportunities: [{ isOpportunity: true, name: 'Probiotic 1', stage: 'ganado', createdAt: hace(1), expectedValue: 39 }],
+  });
+
+  const { payload } = await pedir(clinic._id, rango);
+  // Cuatro oportunidades repartidas en DOS chats: es la respuesta a "¿por qué hay
+  // más oportunidades que chats?".
+  assert.equal(payload.totals.oportunidades, 4);
+  assert.equal(payload.totals.chatsConOportunidad, 2);
+
+  const probiotic = payload.porOportunidad.find((o) => o.nombre === 'Probiotic 1');
+  assert.deepEqual(
+    [probiotic.total, probiotic.nuevo, probiotic.agendado, probiotic.ganado, probiotic.value],
+    [3, 1, 1, 1, 117]
+  );
+  const anuncio = payload.porOportunidad.find((o) => o.nombre === 'Chequeo Integral');
+  assert.equal(anuncio.total, 1);
+  assert.equal(anuncio.desdeAnuncio, 1);
+  assert.equal(payload.porOportunidad.some((o) => o.nombre === 'Sin nombre'), false);
+});
+
 test('la clínica ajena no entra en las cuentas', async () => {
   const clinic = await Clinic.create({ name: 'Principal' });
   const otra = await Clinic.create({ name: 'Otra' });

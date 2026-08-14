@@ -561,6 +561,42 @@ function normalizeMessageButtons(buttons = []) {
     }));
 }
 
+/**
+ * LOS BOTONES DE UNA PLANTILLA.
+ *
+ * Los botones de un nodo de workflow llegan en `buttons`, pero los de una
+ * PLANTILLA no los manda nadie: viven en la plantilla aprobada y los pinta
+ * WhatsApp en el móvil del paciente. Resultado: en el chat del sistema el agente
+ * veía el texto pelado ("¿Asistirás mañana?") mientras el paciente tenía delante
+ * un botón "Si asistiré" — y cuando lo pulsaba, en el hilo aparecía una respuesta
+ * suelta sin nada a lo que referirse. Medido en producción el 13-ago-2026: de
+ * 1.824 plantillas enviadas en 15 días, CERO llevaban botones guardados, aunque
+ * las cuatro más usadas sí los tienen definidos.
+ *
+ * Se leen de nuestra copia de la plantilla (la misma que ya se usa para renderizar
+ * el texto), así que no cuesta una llamada a Meta.
+ */
+async function templateButtons(templateInfo) {
+  if (!templateInfo?.name) return [];
+  try {
+    const MessageTemplate = require('../models/MessageTemplate');
+    const tpl = await MessageTemplate.findOne({ channel: 'whatsapp', name: templateInfo.name })
+      .select('buttons')
+      .lean();
+    return (tpl?.buttons || [])
+      .filter((b) => ['quick_reply', 'url', 'phone'].includes(b?.type) && String(b?.text || '').trim())
+      .slice(0, 10) // Meta admite hasta 10 en una plantilla (3 es el tope de los interactivos sueltos)
+      .map((b, i) => ({
+        id: `tpl_${i + 1}`,
+        type: b.type,
+        text: String(b.text).trim().slice(0, 25),
+        url: String(b.url || '').trim(),
+      }));
+  } catch {
+    return []; // el mensaje se envía igual: esto es solo cómo se ve en el chat
+  }
+}
+
 // Fallback universal para canales que no admiten los tres tipos de botón. Los
 // CTA quedan como enlaces tocables y las respuestas rápidas como opciones cuyo
 // texto reconoce `resumeOnReply`.
@@ -1016,6 +1052,10 @@ async function send({
   // La cabecera multimedia de la plantilla se guarda en el mensaje para que la
   // burbuja del chat muestre la plantilla TAL CUAL la recibe el paciente.
   const tplMedia = templateInfo?.headerMedia || null;
+  // Los botones que SE VEN son los de la plantilla cuando hay plantilla (es lo que
+  // Meta pinta en el móvil); los del nodo solo llevan el enrutado del clic.
+  const tplBotones = await templateButtons(templateInfo);
+  const botonesDelMensaje = tplBotones.length ? tplBotones : messageButtons;
   let msg;
   try {
     msg = await Message.create({
@@ -1027,7 +1067,7 @@ async function send({
       mediaType: mediaType || tplMedia?.type || null,
       mediaName: mediaName || '',
       mediaSize: Number(mediaSize) || 0,
-      buttons: messageButtons.map(({ id, type, text, url }) => ({ id, type, text, url })),
+      buttons: botonesDelMensaje.map(({ id, type, text, url }) => ({ id, type, text, url })),
       templateName: templateInfo?.name || '',
       // Por qué número SALIÓ. Sin esto, "¿por qué Meta dice que la ventana está
       // cerrada?" no se podía contestar mirando la base: los 44.720 salientes que

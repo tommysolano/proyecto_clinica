@@ -47,6 +47,7 @@ const STAGE_COLOR = {
   ganado: '#1baf7a',
   perdido: '#d03b3b',
 };
+const STAGE_KEYS = ['nuevo', 'contactado', 'interesado', 'agendado', 'ganado', 'perdido'];
 // "Creadas" / "Total" no es una etapa: color propio, fuera de la escala.
 const C_TOTAL = '#eb6834';
 const C_CHATS = '#2a78d6';
@@ -69,8 +70,25 @@ const EMPTY = {
     chats: 0, oportunidades: 0, agendadas: 0, ganadas: 0, perdidas: 0, enCurso: 0,
     valorTotal: 0, valorGanado: 0, valorAgendado: 0, tasaAgendamiento: 0, tasaCierre: 0,
   },
-  embudo: [], serie: [], porCanal: [], porAgente: [], servicios: [], motivosPerdida: [],
+  embudo: [], serie: [], porOportunidad: [], porCanal: [], porAgente: [], servicios: [], motivosPerdida: [],
 };
+
+/** Etiqueta del eje: los nombres de campaña son largos y empujarían la gráfica. */
+const corta = (s, n = 30) => (String(s || '').length > n ? `${String(s).slice(0, n - 1)}…` : String(s || ''));
+
+/**
+ * Etiqueta de eje de UNA sola línea. Recharts parte los textos largos en varias
+ * líneas y, para que no se solapen, recorta las etiquetas VECINAS: con un nombre
+ * de campaña largo arriba, "Detox 1" o "Prostata 2" salían como "Deto…" y "Pr…".
+ * Con un tick propio el corte lo decidimos nosotros y solo afecta al que sobra.
+ */
+function TickNombre({ x, y, payload, max = 28 }) {
+  return (
+    <text x={x} y={y} dy={4} textAnchor="end" fill={INK.text} fontSize={12}>
+      {corta(payload?.value, max)}
+    </text>
+  );
+}
 
 export default function Analytics() {
   const [start, setStart] = useState(daysAgo(30));
@@ -140,6 +158,7 @@ export default function Analytics() {
         {/* Una sola fila de filtros arriba: manda sobre TODAS las gráficas. */}
         <div className="flex items-end gap-2 flex-wrap">
           <div className="flex gap-1 mr-1">
+            <Preset onClick={() => preset(hoy, hoy)} active={start === hoy && end === hoy}>Hoy</Preset>
             <Preset onClick={() => preset(daysAgo(6), hoy)} active={start === daysAgo(6) && end === hoy}>7 días</Preset>
             <Preset onClick={() => preset(daysAgo(29), hoy)} active={start === daysAgo(29) && end === hoy}>30 días</Preset>
             <Preset onClick={() => preset(daysAgo(89), hoy)} active={start === daysAgo(89) && end === hoy}>90 días</Preset>
@@ -163,7 +182,17 @@ export default function Analytics() {
       {/* Al recargar se atenúa lo ya pintado en vez de vaciarlo: sin parpadeo ni salto de la página. */}
       <div className={`space-y-4 transition-opacity ${loading ? 'opacity-60' : 'opacity-100'}`}>
         <div className="grid grid-cols-2 lg:grid-cols-5 gap-3">
-          <Tile label="Oportunidades" value={nf.format(totalOpp)} hint="creadas en el rango" color={C_TOTAL} />
+          {/* El chat y la oportunidad NO son lo mismo: un chat puede tener varias
+              (cada anuncio en el que hace clic la persona crea la suya) y una
+              oportunidad de hoy puede caer en un chat de hace meses. Por eso la
+              tarjeta dice en cuántos chats están: si no, "452 oportunidades con 226
+              chats nuevos" parece un error y no lo es. */}
+          <Tile
+            label="Oportunidades"
+            value={nf.format(totalOpp)}
+            hint={t.chatsConOportunidad ? `en ${nf.format(t.chatsConOportunidad)} chats` : 'creadas en el rango'}
+            color={C_TOTAL}
+          />
           <Tile label="Agendadas" value={nf.format(t.agendadas)} hint={`${pct(t.tasaAgendamiento)} llegó a agendarse`} color={STAGE_COLOR.agendado} />
           <Tile label="Ganadas" value={nf.format(t.ganadas)} hint={`${pct(t.tasaCierre)} de cierre`} color={STAGE_COLOR.ganado} />
           <Tile label="Valor ganado" value={moneyShort(t.valorGanado)} hint={`de ${moneyShort(t.valorTotal)} en juego`} color={STAGE_COLOR.ganado} />
@@ -199,6 +228,59 @@ export default function Analytics() {
                 {embudoRows.map((e) => <Cell key={e.stage} fill={STAGE_COLOR[e.stage] || C_CHATS} />)}
                 <LabelList dataKey="etiqueta" position="right" fill={INK.text} fontSize={12} />
               </Bar>
+            </BarChart>
+          </ResponsiveContainer>
+        </ChartCard>
+
+        <ChartCard
+          title="Qué oportunidades son"
+          subtitle="Cada oportunidad por su nombre; las que nacen de un anuncio se agrupan por su campaña. Cada barra se parte por la etapa en la que están."
+          columns={[
+            { key: 'nombre', label: 'Oportunidad' },
+            { key: 'total', label: 'Total', num: true },
+            { key: 'nuevo', label: 'Nuevo', num: true },
+            { key: 'contactado', label: 'Contactado', num: true },
+            { key: 'interesado', label: 'Interesado', num: true },
+            { key: 'agendado', label: 'Agendado', num: true },
+            { key: 'ganado', label: 'Ganado', num: true },
+            { key: 'perdido', label: 'Perdido', num: true },
+            { key: 'value', label: 'Valor esperado', num: true, fmt: money },
+          ]}
+          rows={data.porOportunidad}
+          empty={!data.porOportunidad.length}
+          legend={data.embudo.map((e) => ({ label: e.label, color: STAGE_COLOR[e.stage] }))}
+        >
+          <ResponsiveContainer width="100%" height={data.porOportunidad.length * 40 + 32}>
+            <BarChart data={data.porOportunidad} layout="vertical" margin={{ top: 8, right: 64, bottom: 8, left: 8 }}>
+              <CartesianGrid horizontal={false} stroke={INK.grid} />
+              <XAxis type="number" hide domain={[0, 'dataMax']} />
+              <YAxis
+                type="category"
+                dataKey="nombre"
+                width={210}
+                tickLine={false}
+                axisLine={false}
+                tick={<TickNombre max={28} />}
+              />
+              <Tooltip cursor={{ fill: '#f8fafc' }} content={<TipOportunidad />} />
+              {/* Barra apilada por etapa. El borde blanco de 2px es la separación
+                  entre tramos: sin él, dos etapas contiguas se leen como una sola. */}
+              {STAGE_KEYS.map((stage, i) => (
+                <Bar
+                  key={stage}
+                  dataKey={stage}
+                  stackId="etapas"
+                  fill={STAGE_COLOR[stage]}
+                  stroke="#fff"
+                  strokeWidth={2}
+                  barSize={22}
+                  isAnimationActive={false}
+                >
+                  {i === STAGE_KEYS.length - 1 && (
+                    <LabelList dataKey="total" position="right" fill={INK.text} fontSize={12} />
+                  )}
+                </Bar>
+              ))}
             </BarChart>
           </ResponsiveContainer>
         </ChartCard>
@@ -538,6 +620,23 @@ function TipValor({ active, payload }) {
     <TipBox title={d.label}>
       <TipFila color={STAGE_COLOR[d.stage]} label="Valor esperado" value={money(d.value)} />
       <p className="text-slate-500 mt-0.5">{nf.format(d.count)} oportunidades</p>
+    </TipBox>
+  );
+}
+
+function TipOportunidad({ active, payload }) {
+  if (!active || !payload?.length) return null;
+  const d = payload[0].payload;
+  const conValor = STAGE_KEYS.filter((s) => d[s] > 0);
+  return (
+    <TipBox title={d.nombre}>
+      <p className="text-slate-600">Total: <span className="font-semibold text-slate-800">{nf.format(d.total)}</span></p>
+      {conValor.map((s) => (
+        <TipFila key={s} color={STAGE_COLOR[s]} label={s.charAt(0).toUpperCase() + s.slice(1)} value={nf.format(d[s])} />
+      ))}
+      <p className="text-slate-500 mt-0.5">
+        {money(d.value)} esperados{d.desdeAnuncio ? ` · ${nf.format(d.desdeAnuncio)} desde anuncios` : ''}
+      </p>
     </TipBox>
   );
 }

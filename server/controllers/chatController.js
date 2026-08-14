@@ -2070,6 +2070,34 @@ const TZ_EC = 'America/Guayaquil';
 /** Clave de día LOCAL (Ecuador) para las series temporales. */
 const dayKey = (field) => ({ $dateToString: { format: '%Y-%m-%d', date: field, timezone: TZ_EC } });
 
+/**
+ * CÓMO SE LLAMA UNA OPORTUNIDAD EN LOS INFORMES.
+ *
+ * Casi la mitad de las oportunidades nacen solas de un anuncio de click-to-WhatsApp
+ * y llegan SIN nombre (el nombre lo pone el agente después, si lo pone). Agrupadas
+ * por `name` acababan todas en un montón de "Sin nombre" que no dice nada, cuando
+ * en realidad sí se sabe de qué son: de la campaña del anuncio por el que entraron.
+ * Por eso el nombre del informe es, en este orden: el suyo → la campaña → "Sin nombre".
+ */
+const OPP_LABEL = {
+  $let: {
+    vars: {
+      n: { $trim: { input: { $ifNull: ['$_opps.name', ''] } } },
+      c: { $trim: { input: { $ifNull: ['$_opps.attribution.campaign', ''] } } },
+    },
+    in: {
+      $cond: [
+        { $gt: [{ $strLenCP: '$$n' }, 0] },
+        '$$n',
+        { $cond: [{ $gt: [{ $strLenCP: '$$c' }, 0] }, '$$c', 'Sin nombre'] },
+      ],
+    },
+  },
+};
+
+/** Contador de una etapa dentro de un $group. */
+const cuentaEtapa = (stage) => ({ $sum: { $cond: [{ $eq: ['$_stage', stage] }, 1, 0] } });
+
 /** Días 'YYYY-MM-DD' entre dos fechas, ambas incluidas (para rellenar los huecos). */
 function daysBetween(from, to) {
   const out = [];
@@ -2123,6 +2151,33 @@ exports.opportunityAnalytics = async (req, res) => {
       {
         $facet: {
           porEtapa: [{ $group: { _id: '$_stage', count: { $sum: 1 }, value: { $sum: '$_value' } } }],
+          // En cuántos CHATS distintos están esas oportunidades. Es la respuesta a
+          // «¿por qué hay más oportunidades que chats nuevos?»: un mismo chat puede
+          // tener varias (cada anuncio en el que hace clic la persona crea la suya)
+          // y una oportunidad de hoy puede estar en un chat de hace un mes.
+          chatsConOportunidad: [{ $group: { _id: '$_id' } }, { $count: 'n' }],
+          // Clasificación POR OPORTUNIDAD: qué son esas oportunidades y cómo va
+          // cada una por el embudo.
+          porOportunidad: [
+            {
+              $group: {
+                _id: OPP_LABEL,
+                total: { $sum: 1 },
+                value: { $sum: '$_value' },
+                desdeAnuncio: {
+                  $sum: { $cond: [{ $gt: [{ $strLenCP: { $ifNull: ['$_opps.attribution.adId', ''] } }, 0] }, 1, 0] },
+                },
+                nuevo: cuentaEtapa('nuevo'),
+                contactado: cuentaEtapa('contactado'),
+                interesado: cuentaEtapa('interesado'),
+                agendado: cuentaEtapa('agendado'),
+                ganado: cuentaEtapa('ganado'),
+                perdido: cuentaEtapa('perdido'),
+              },
+            },
+            { $sort: { total: -1 } },
+            { $limit: 15 },
+          ],
           creadasPorDia: [{ $group: { _id: dayKey('$_created'), count: { $sum: 1 } } }],
           etapaPorDia: [
             { $match: { _stage: { $in: ['agendado', 'ganado'] } } },
@@ -2208,6 +2263,7 @@ exports.opportunityAnalytics = async (req, res) => {
       totals: {
         chats,
         oportunidades: total,
+        chatsConOportunidad: facets.chatsConOportunidad?.[0]?.n || 0,
         agendadas,
         ganadas,
         perdidas,
@@ -2231,6 +2287,18 @@ exports.opportunityAnalytics = async (req, res) => {
         agendadas: r.agendadas,
         ganadas: r.ganadas,
         valorGanado: Math.round((r.valorGanado || 0) * 100) / 100,
+      })),
+      porOportunidad: (facets.porOportunidad || []).map((r) => ({
+        nombre: r._id,
+        total: r.total,
+        value: Math.round((r.value || 0) * 100) / 100,
+        desdeAnuncio: r.desdeAnuncio,
+        nuevo: r.nuevo,
+        contactado: r.contactado,
+        interesado: r.interesado,
+        agendado: r.agendado,
+        ganado: r.ganado,
+        perdido: r.perdido,
       })),
       servicios: (facets.servicios || []).map((r) => ({ servicio: r._id, count: r.count })),
       motivosPerdida: (facets.motivosPerdida || []).map((r) => ({
