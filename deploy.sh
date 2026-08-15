@@ -66,18 +66,12 @@ fi
 # ─────────────────────────────────────────────────────────────────────────────────────
 
 # ─────────────────────────────────────────────────────────────────────────────────────
-# DESACTIVADA A PROPOSITO — ARRANQUE DESDE CERO: pacientes + terceros + contabilidad.
+# ⚠️  ACTIVA — ARRANQUE DESDE CERO: pacientes + terceros + contabilidad.
 #
-# El script existe y esta probado (server/tests/wipePatientsSuppliersOnce.integration.test.js),
-# pero NO debe correr todavia. Mientras estas lineas sigan comentadas, ningun
-# despliegue lo ejecuta. El push NO borra nada por si solo.
-#
-# PARA ACTIVARLO: quitar el '# ' del if / echo / fi de abajo y hacer push. Se ejecuta
-# UNA sola vez (marca `borrar-pacientes-terceros-contabilidad-2026-08-15` en la
-# coleccion `onetimetasks`); los push siguientes ya no hacen nada aunque quede activo.
-#
-# ANTES DE ACTIVARLO, MIRA LO QUE BORRARIA (no escribe nada):
-#   sudo -iu clinica bash -lc 'cd /var/www/clinica/server && node scripts/wipePatientsSuppliersOnce.js'
+# ESTE DESPLIEGUE BORRA DATOS DE PRODUCCION. Activada a peticion expresa del usuario
+# (15-ago-2026) tras confirmar el alcance. Corre UNA sola vez: la marca
+# `borrar-pacientes-terceros-contabilidad-2026-08-15` queda en la coleccion
+# `onetimetasks` y los push siguientes ya no hacen nada aunque esta linea siga viva.
 #
 # BORRA: pacientes con su historia clinica, citas, tratamientos y derivaciones; el
 # padron de terceros completo (clientes de mostrador, proveedores, empleados y
@@ -94,10 +88,14 @@ fi
 # ambiente de PRUEBAS: en produccion el SRI rechazara las facturas por numero repetido.
 # Ver la cabecera de server/scripts/wipePatientsSuppliersOnce.js.
 #
-# if ! ( cd "$APP_DIR/server" && node scripts/wipePatientsSuppliersOnce.js --commit ); then
-#   echo "ADVERTENCIA: el arranque desde cero fallo. Revisa el log y reintenta a mano:"
-#   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/wipePatientsSuppliersOnce.js --commit'"
-# fi
+# PARA DESACTIVARLA ANTES DE QUE CORRA: volver a comentar el if / echo / fi de abajo.
+# Para ver que borraria sin borrar nada:
+#   sudo -iu clinica bash -lc 'cd /var/www/clinica/server && node scripts/wipePatientsSuppliersOnce.js'
+#
+if ! ( cd "$APP_DIR/server" && node scripts/wipePatientsSuppliersOnce.js --commit ); then
+  echo "ADVERTENCIA: el arranque desde cero fallo. Revisa el log y reintenta a mano:"
+  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/wipePatientsSuppliersOnce.js --commit'"
+fi
 # ─────────────────────────────────────────────────────────────────────────────────────
 
 # Vigente: reencolar las inscripciones que quedaron programadas para dispararse en pleno
