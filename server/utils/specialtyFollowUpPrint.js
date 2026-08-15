@@ -118,13 +118,17 @@ function odontologiaHtml(o) {
   const suma = (obj, cols) => cols.reduce((s, c) => s + (Number.parseInt(obj?.[c.key], 10) || 0), 0);
   const cpoTotal = suma(o.cpo, INDICE_CPO);
   const ceoTotal = suma(o.ceo, INDICE_CEO);
+  // Se imprime si hay algo capturado, no si la suma es > 0: un CPO todo en ceros
+  // es un hallazgo válido (paciente sin caries) y debe salir en la hoja.
+  const hayCpo = INDICE_CPO.some((c) => String(o.cpo?.[c.key] ?? '') !== '');
+  const hayCeo = INDICE_CEO.some((c) => String(o.ceo?.[c.key] ?? '') !== '');
   const indicadores = inline([
     ['Enfermedad periodontal', labelOf(ENFERMEDAD_PERIODONTAL, o.enfermedadPeriodontal) || ''],
     ['Maloclusión', labelOf(MALOCLUSION, o.maloclusion) || ''],
     ['Fluorosis', labelOf(FLUOROSIS, o.fluorosis) || ''],
   ]);
   const observaciones = String(o.observaciones || '').trim();
-  if (!piezas.length && !higiene.length && !indicadores && !cpoTotal && !ceoTotal && !observaciones) return '';
+  if (!piezas.length && !higiene.length && !indicadores && !hayCpo && !hayCeo && !observaciones) return '';
 
   const filas = piezas
     .map((d) => {
@@ -158,8 +162,8 @@ function odontologiaHtml(o) {
     : '';
 
   const indices = [
-    cpoTotal ? `<b>CPO:</b> ${INDICE_CPO.map((c) => `${c.label} ${esc(o.cpo?.[c.key] || 0)}`).join(' · ')} — Total ${cpoTotal}` : '',
-    ceoTotal ? `<b>ceo:</b> ${INDICE_CEO.map((c) => `${c.label} ${esc(o.ceo?.[c.key] || 0)}`).join(' · ')} — Total ${ceoTotal}` : '',
+    hayCpo ? `<b>CPO:</b> ${INDICE_CPO.map((c) => `${c.label} ${esc(o.cpo?.[c.key] || 0)}`).join(' · ')} — Total ${cpoTotal}` : '',
+    hayCeo ? `<b>ceo:</b> ${INDICE_CEO.map((c) => `${c.label} ${esc(o.ceo?.[c.key] || 0)}`).join(' · ')} — Total ${ceoTotal}` : '',
   ]
     .filter(Boolean)
     .join('<br/>');

@@ -325,7 +325,14 @@ exports.addFollowUp = async (req, res) => {
      * un odontograma guardado antes del rediseño se sigue leyendo igual.
      */
     const caraEstado = (v, estadoPieza) => {
-      if (v === true || v === 'true') return ODONTOGRAMA_ESTADOS_CARA_KEYS.includes(estadoPieza) ? estadoPieza : 'caries';
+      if (v === true || v === 'true') {
+        // Una cara marcada en el formato viejo solo puede heredar el estado de su
+        // pieza si ese estado es de cara. Si no lo es (extracción indicada,
+        // ausente, corona…), NO se inventa nada: esto es una historia clínica y
+        // rellenarla con "caries" sería escribir un diagnóstico que nadie puso.
+        // La cara queda sin estado; el símbolo de la pieza se conserva aparte.
+        return ODONTOGRAMA_ESTADOS_CARA_KEYS.includes(estadoPieza) ? estadoPieza : '';
+      }
       if (v === false || v === 'false') return '';
       return ODONTOGRAMA_ESTADOS_CARA_KEYS.includes(v) ? v : '';
     };
@@ -374,10 +381,14 @@ exports.addFollowUp = async (req, res) => {
         .filter((f) => f && (f.pieza || f.placa || f.calculo || f.gingivitis));
       const porFila = new Map(higiene.map((f) => [f.fila, f]));
 
-      // Los índices CPO/ceo son conteos de piezas: enteros de 0 a 52.
+      // Los índices CPO/ceo son conteos de piezas: enteros de 0 a 52. Se valida
+      // con expresión regular y no con parseInt, que aceptaba '3.9' como 3 y
+      // '5abc' como 5: un conteo mal tecleado se guardaba distinto y en silencio.
       const conteo = (v) => {
-        const n = Number.parseInt(String(v ?? '').trim(), 10);
-        return Number.isFinite(n) && n >= 0 && n <= ODONTOGRAMA_PIEZAS.length ? String(n) : '';
+        const s = String(v ?? '').trim();
+        if (!/^\d{1,2}$/.test(s)) return '';
+        const n = Number(s);
+        return n <= ODONTOGRAMA_PIEZAS.length ? String(n) : '';
       };
       const cpo = o.cpo || {};
       const ceo = o.ceo || {};

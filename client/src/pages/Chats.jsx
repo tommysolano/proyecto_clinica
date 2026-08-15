@@ -3909,11 +3909,14 @@ function ContactNameRow({ conv, onUpdated }) {
   const [guardando, setGuardando] = useState(false);
 
   // Al cambiar de chat el componente se reutiliza: hay que resincronizar o se
-  // quedaría mostrando el nombre del chat anterior.
+  // quedaría mostrando el nombre del chat anterior. Se sincroniza SOLO por el id
+  // del chat: enganchar esto al propio nombre hacía que cualquier recarga de la
+  // bandeja (llega un mensaje, otro agente renombra) cerrara el editor y se
+  // llevara por delante lo que el usuario estaba escribiendo.
   useEffect(() => {
     setNombre(conv.contactName || '');
     setEditando(false);
-  }, [conv._id, conv.contactName]);
+  }, [conv._id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const guardar = async () => {
     const limpio = nombre.trim();
@@ -3978,7 +3981,9 @@ function ContactNameRow({ conv, onUpdated }) {
         )}
       </div>
       <button
-        onClick={() => setEditando(true)}
+        // Se toma el valor vigente al abrir el editor, no el que quedó guardado
+        // en el estado: entre medias pudo renombrarlo otro agente.
+        onClick={() => { setNombre(conv.contactName || ''); setEditando(true); }}
         title="Editar nombre"
         aria-label="Editar nombre"
         className="shrink-0 p-1.5 rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 bg-transparent border-none cursor-pointer"

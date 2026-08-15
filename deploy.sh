@@ -65,6 +65,41 @@ fi
 # fi
 # ─────────────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────────────
+# DESACTIVADA A PROPOSITO — ARRANQUE DESDE CERO: pacientes + terceros + contabilidad.
+#
+# El script existe y esta probado (server/tests/wipePatientsSuppliersOnce.integration.test.js),
+# pero NO debe correr todavia. Mientras estas lineas sigan comentadas, ningun
+# despliegue lo ejecuta. El push NO borra nada por si solo.
+#
+# PARA ACTIVARLO: quitar el '# ' del if / echo / fi de abajo y hacer push. Se ejecuta
+# UNA sola vez (marca `borrar-pacientes-terceros-contabilidad-2026-08-15` en la
+# coleccion `onetimetasks`); los push siguientes ya no hacen nada aunque quede activo.
+#
+# ANTES DE ACTIVARLO, MIRA LO QUE BORRARIA (no escribe nada):
+#   sudo -iu clinica bash -lc 'cd /var/www/clinica/server && node scripts/wipePatientsSuppliersOnce.js'
+#
+# BORRA: pacientes con su historia clinica, citas, tratamientos y derivaciones; el
+# padron de terceros completo (clientes de mostrador, proveedores, empleados y
+# vendedores de /accounting/suppliers); todo el movimiento contable; los catalogos
+# contables (plan de cuentas, categorias, productos, bodegas, bancos, tarjetas,
+# retenciones, nomina); y reinicia los secuenciales del SRI a 1.
+#
+# NO TOCA: el escaner (/scanner) ni sus PDF en server/storage/scans — el script no
+# escribe en disco en absoluto —, ni Marketing/CRM (solo les quita el enlace al
+# paciente borrado), ni usuarios, sucursales, empleados o el certificado digital.
+#
+# OJO, DOS CONSECUENCIAS: (1) sin plan de cuentas ni categorias no se puede facturar
+# hasta reconfigurarlo; (2) reiniciar los secuenciales del SRI solo es seguro en
+# ambiente de PRUEBAS: en produccion el SRI rechazara las facturas por numero repetido.
+# Ver la cabecera de server/scripts/wipePatientsSuppliersOnce.js.
+#
+# if ! ( cd "$APP_DIR/server" && node scripts/wipePatientsSuppliersOnce.js --commit ); then
+#   echo "ADVERTENCIA: el arranque desde cero fallo. Revisa el log y reintenta a mano:"
+#   echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/wipePatientsSuppliersOnce.js --commit'"
+# fi
+# ─────────────────────────────────────────────────────────────────────────────────────
+
 # Vigente: reencolar las inscripciones que quedaron programadas para dispararse en pleno
 # horario de silencio (ago-2026, al invertir el significado de las ventanas horarias).
 if ! ( cd "$APP_DIR/server" && node scripts/rescheduleQuietWindowsOnce.js --commit ); then

@@ -210,6 +210,35 @@ test('E5b) cada cara guarda SU estado: caries en una y obturado en otra del mism
   assert.equal(d.movilidad, '', 'el grado solo admite 1, 2 ó 3');
 });
 
+test('E5d) una cara del formato viejo NUNCA inventa un diagnóstico', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await seedPaciente(clinicId, userId);
+
+  // Formato antiguo: caras booleanas. El estado de la pieza NO es de cara, así que
+  // la cara no puede heredarlo. Antes se rellenaba con 'caries': eso escribía en la
+  // historia clínica un diagnóstico que el odontólogo nunca puso.
+  const payload = ok(await postFollowUp(clinicId, userId, patient._id, 'odontologia', baseBody({
+    odontologia: {
+      odontograma: [
+        { diente: '38', estado: 'extraccionIndicada', caras: { vestibular: true } },
+        { diente: '33', estado: 'ausente', caras: { mesial: true } },
+        { diente: '37', estado: '', caras: { oclusal: true } },
+        // Este sí puede heredar: 'obturado' es un estado de cara.
+        { diente: '16', estado: 'obturado', caras: { distal: true } },
+      ],
+    },
+  })));
+
+  const byD = Object.fromEntries(payload.followUps.at(-1).odontologia.odontograma.map((d) => [d.diente, d]));
+  assert.equal(byD['38'].caras.vestibular, '', 'un diente por extraer no tiene caries inventada');
+  assert.equal(byD['38'].estado, 'extraccionIndicada', 'el símbolo de la pieza sí se conserva');
+  assert.equal(byD['33'].caras.mesial, '', 'un diente AUSENTE no puede tener caries');
+  // La 37 venía sin estado de pieza: no hay nada que heredar, la cara queda vacía
+  // y la pieza entera deja de tener contenido, así que ni siquiera se guarda.
+  assert.equal(byD['37'], undefined, 'una pieza que se queda sin nada no se guarda');
+  assert.equal(byD['16'].caras.distal, 'obturado', 'lo que sí es estado de cara se hereda');
+});
+
 test('E5c) indicadores de salud bucal e índices CPO-ceo', async () => {
   const { clinicId, userId } = await H.seedClinic();
   const patient = await seedPaciente(clinicId, userId);
@@ -241,6 +270,25 @@ test('E5c) indicadores de salud bucal e índices CPO-ceo', async () => {
   assert.equal(o.fluorosis, '', 'fuera de catálogo se descarta');
   assert.deepEqual({ ...o.cpo.toObject?.() || o.cpo }, { c: '3', p: '1', o: '4' });
   assert.equal(o.ceo.o, '', 'un conteo imposible de piezas no se guarda');
+  assert.equal(o.ceo.e, '0', 'un cero SÍ es un dato: paciente sin piezas en ese índice');
+});
+
+test('E5e) un conteo mal tecleado no se guarda a medias', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await seedPaciente(clinicId, userId);
+
+  const payload = ok(await postFollowUp(clinicId, userId, patient._id, 'odontologia', baseBody({
+    // '3.9' se guardaba como 3 y '5abc' como 5: el conteo quedaba distinto del que
+    // se digitó, sin ningún aviso.
+    odontologia: { cpo: { c: '3.9', p: '5abc', o: ' 4 ' }, ceo: { c: '-2', e: '', o: '07' } },
+  })));
+
+  const o = payload.followUps.at(-1).odontologia;
+  assert.equal(o.cpo.c, '', 'un decimal no es un conteo de piezas');
+  assert.equal(o.cpo.p, '', 'ni un número con letras pegadas');
+  assert.equal(o.cpo.o, '4', 'los espacios sí se toleran');
+  assert.equal(o.ceo.c, '', 'no hay conteos negativos');
+  assert.equal(o.ceo.o, '7', 'se normaliza sin el cero de delante');
 });
 
 // ═════════════════ Ficha cosmetológica ═════════════════

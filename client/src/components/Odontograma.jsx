@@ -78,6 +78,38 @@ function sectores(hemi) {
   ];
 }
 
+/**
+ * Centro de cada cara, para clavar ahí su símbolo. El sector periférico es un
+ * trapecio estrecho: su centro útil está a media altura del margen.
+ */
+function centroCara(cara, hemi) {
+  const a = L * 0.28;
+  const m = a / 2;
+  const mesialIzquierda = hemi === 'izquierda';
+  switch (cara) {
+    case 'vestibular': return [L / 2, m];
+    case 'lingual': return [L / 2, L - m];
+    case 'mesial': return mesialIzquierda ? [m, L / 2] : [L - m, L / 2];
+    case 'distal': return mesialIzquierda ? [L - m, L / 2] : [m, L / 2];
+    default: return [L / 2, L / 2];
+  }
+}
+
+/**
+ * Símbolo de una CARA. Sin esto, el color por sí solo no basta: la hoja usa el
+ * mismo rojo para caries y para «sellante necesario», y el mismo azul para
+ * obturado y «sellante realizado». Lo que los distingue es la figura — círculo
+ * para caries/obturado, cuadro para los sellantes—, así que el relleno va tenue y
+ * la figura encima a color pleno.
+ */
+function SimboloCara({ simbolo, color, cx, cy, r = 3.2 }) {
+  const props = { stroke: color, strokeWidth: 1.6, fill: 'none' };
+  if (simbolo === 'cuadro') {
+    return <rect x={cx - r} y={cy - r} width={r * 2} height={r * 2} {...props} />;
+  }
+  return <circle cx={cx} cy={cy} r={r} {...props} />;
+}
+
 /** Símbolo que se dibuja ENCIMA del diente cuando el estado es de pieza entera. */
 function SimboloPieza({ simbolo, color }) {
   const props = { stroke: color, strokeWidth: 2.4, fill: 'none', strokeLinecap: 'round' };
@@ -140,18 +172,32 @@ function Diente({ num, hemi, dato, herramienta, onPintar, onSeleccionar, selecci
         <g clipPath={redondo ? `url(#odc-${num})` : undefined}>
           {sectores(hemi).map((s) => {
             const estadoCara = caras[s.key] || '';
+            const ficha = estadoCara ? estadoOdonto(estadoCara) : null;
+            const [cx, cy] = centroCara(s.key, hemi);
+            const label = ODONTOGRAMA_CARAS.find((c) => c.key === s.key).label;
             return (
-              <path
-                key={s.key}
-                d={s.d}
-                fill={estadoCara ? colorEstado(estadoCara) : '#ffffff'}
-                fillOpacity={estadoCara ? 0.85 : 1}
-                stroke={BORDE}
-                strokeWidth="0.8"
-                onClick={() => onPintar(num, s.key)}
-              >
-                <title>{`${num} · ${ODONTOGRAMA_CARAS.find((c) => c.key === s.key).label}`}</title>
-              </path>
+              <g key={s.key} onClick={() => onPintar(num, s.key)}>
+                <path
+                  d={s.d}
+                  // Relleno tenue: el color dice si es patología (rojo) o
+                  // tratamiento (azul); la figura de encima dice cuál de los dos.
+                  fill={estadoCara ? colorEstado(estadoCara) : '#ffffff'}
+                  fillOpacity={estadoCara ? 0.22 : 1}
+                  stroke={BORDE}
+                  strokeWidth="0.8"
+                >
+                  <title>{`${num} · ${label}${ficha ? ` · ${ficha.label}` : ''}`}</title>
+                </path>
+                {ficha && (
+                  <SimboloCara
+                    simbolo={ficha.simbolo}
+                    color={colorEstado(estadoCara)}
+                    cx={cx}
+                    cy={cy}
+                    r={s.key === 'oclusal' ? 4 : 3.2}
+                  />
+                )}
+              </g>
             );
           })}
         </g>
@@ -524,7 +570,11 @@ function Simbologia() {
             <svg viewBox={`-1 -1 ${L + 2} ${L + 2}`} className="w-4 h-4 shrink-0">
               <rect x="0" y="0" width={L} height={L} fill="#fff" stroke={BORDE} strokeWidth="1" />
               {e.ambito === 'cara' ? (
-                <rect x="0" y="0" width={L} height={L} fill={colorEstado(e.key)} fillOpacity="0.85" />
+                // Igual que en el esquema: fondo tenue + la figura que la distingue.
+                <>
+                  <rect x="0" y="0" width={L} height={L} fill={colorEstado(e.key)} fillOpacity="0.22" />
+                  <SimboloCara simbolo={e.simbolo} color={colorEstado(e.key)} cx={L / 2} cy={L / 2} r={L * 0.3} />
+                </>
               ) : (
                 <SimboloPieza simbolo={e.simbolo} color={colorEstado(e.key)} />
               )}

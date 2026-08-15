@@ -2597,6 +2597,11 @@ function OdontologiaSummary({ o }) {
   const higiene = (o.higieneOral || []).filter((f) => f.pieza || f.placa || f.calculo || f.gingivitis);
   const cpoTotal = suma(o.cpo, INDICE_CPO);
   const ceoTotal = suma(o.ceo, INDICE_CEO);
+  // Se muestra si hay algo CAPTURADO, no si la suma es mayor que cero: un CPO
+  // todo en ceros es un hallazgo válido (paciente sin caries) y ocultarlo haría
+  // parecer que el odontólogo no llenó el índice.
+  const hayCpo = INDICE_CPO.some((c) => String(o.cpo?.[c.key] ?? '') !== '');
+  const hayCeo = INDICE_CEO.some((c) => String(o.ceo?.[c.key] ?? '') !== '');
 
   return (
     <SpecialtySummary title="Odontología" tone="cyan">
@@ -2636,12 +2641,12 @@ function OdontologiaSummary({ o }) {
       )}
       {o.maloclusion && <span>Maloclusión: {opcionLabel(MALOCLUSION, o.maloclusion)}</span>}
       {o.fluorosis && <span>Fluorosis: {opcionLabel(FLUOROSIS, o.fluorosis)}</span>}
-      {cpoTotal > 0 && (
+      {hayCpo && (
         <span>
           CPO: {INDICE_CPO.map((c) => `${c.label} ${o.cpo?.[c.key] || 0}`).join(' · ')} — Total {cpoTotal}
         </span>
       )}
-      {ceoTotal > 0 && (
+      {hayCeo && (
         <span>
           ceo: {INDICE_CEO.map((c) => `${c.label} ${o.ceo?.[c.key] || 0}`).join(' · ')} — Total {ceoTotal}
         </span>
