@@ -87,29 +87,112 @@ const ODONTOGRAMA_FILAS = [
 // Todas las piezas válidas (la única lista contra la que se valida al guardar).
 const ODONTOGRAMA_PIEZAS = ODONTOGRAMA_FILAS.flatMap((f) => [...f.derecha, ...f.izquierda]);
 
-// Estado de la pieza. `tone` lo usa el cliente para colorear el diente.
+/**
+ * Simbología del odontograma (sección 9 de la hoja del MSP).
+ *
+ * La hoja manda pintar en DOS colores y ese color es información clínica, no
+ * decoración: `azul` = tratamiento ya realizado, `rojo` = patología actual. De
+ * ahí sale el color; no se pide aparte.
+ *
+ * `ambito` dice sobre qué se aplica:
+ *   'cara'  → se pinta un sector del diente (caries, obturado, sellante).
+ *   'pieza' → es un símbolo sobre el diente entero (extracción, pérdida, corona…).
+ *
+ * `legacy: true` son las claves de la primera versión: siguen siendo válidas al
+ * guardar para no romper lo ya registrado, pero no se ofrecen en el selector
+ * porque la hoja del MSP distingue mejor (p. ej. 'protesis' → fija/removible/total).
+ */
 const ODONTOGRAMA_ESTADOS = [
-  { key: 'sano', label: 'Sano', tone: 'emerald' },
-  { key: 'caries', label: 'Caries', tone: 'red' },
-  { key: 'obturado', label: 'Obturado / restaurado', tone: 'blue' },
-  { key: 'endodoncia', label: 'Endodoncia', tone: 'violet' },
-  { key: 'corona', label: 'Corona', tone: 'amber' },
-  { key: 'protesis', label: 'Prótesis', tone: 'amber' },
-  { key: 'implante', label: 'Implante', tone: 'cyan' },
-  { key: 'sellante', label: 'Sellante', tone: 'teal' },
-  { key: 'fracturado', label: 'Fracturado', tone: 'orange' },
-  { key: 'extraccionIndicada', label: 'Extracción indicada', tone: 'rose' },
-  { key: 'ausente', label: 'Ausente', tone: 'slate' },
-  { key: 'enErupcion', label: 'En erupción', tone: 'lime' },
+  { key: 'sano', label: 'Sano', tone: 'emerald', color: 'neutro', ambito: 'pieza', simbolo: 'ninguno' },
+  { key: 'caries', label: 'Caries', tone: 'red', color: 'rojo', ambito: 'cara', simbolo: 'circulo' },
+  { key: 'obturado', label: 'Obturado / restaurado', tone: 'blue', color: 'azul', ambito: 'cara', simbolo: 'circulo' },
+  { key: 'sellanteNecesario', label: 'Sellante necesario', tone: 'red', color: 'rojo', ambito: 'cara', simbolo: 'cuadro' },
+  { key: 'sellanteRealizado', label: 'Sellante realizado', tone: 'blue', color: 'azul', ambito: 'cara', simbolo: 'cuadro' },
+  { key: 'extraccionIndicada', label: 'Extracción indicada', tone: 'rose', color: 'rojo', ambito: 'pieza', simbolo: 'equis' },
+  { key: 'perdidaCaries', label: 'Pérdida por caries', tone: 'blue', color: 'azul', ambito: 'pieza', simbolo: 'equis' },
+  { key: 'perdidaOtra', label: 'Pérdida (otra causa)', tone: 'slate', color: 'rojo', ambito: 'pieza', simbolo: 'barra' },
+  { key: 'endodoncia', label: 'Endodoncia', tone: 'violet', color: 'rojo', ambito: 'pieza', simbolo: 'triangulo' },
+  { key: 'corona', label: 'Corona', tone: 'amber', color: 'azul', ambito: 'pieza', simbolo: 'punto' },
+  { key: 'protesisFija', label: 'Prótesis fija', tone: 'amber', color: 'rojo', ambito: 'pieza', simbolo: 'cajaGuiones' },
+  { key: 'protesisRemovible', label: 'Prótesis removible', tone: 'amber', color: 'rojo', ambito: 'pieza', simbolo: 'guiones' },
+  { key: 'protesisTotal', label: 'Prótesis total', tone: 'amber', color: 'rojo', ambito: 'pieza', simbolo: 'doblebarra' },
+  // Claves de la primera versión: válidas al guardar, fuera del selector.
+  { key: 'protesis', label: 'Prótesis', tone: 'amber', color: 'rojo', ambito: 'pieza', simbolo: 'guiones', legacy: true },
+  { key: 'sellante', label: 'Sellante', tone: 'teal', color: 'azul', ambito: 'cara', simbolo: 'cuadro', legacy: true },
+  { key: 'implante', label: 'Implante', tone: 'cyan', color: 'azul', ambito: 'pieza', simbolo: 'punto', legacy: true },
+  { key: 'fracturado', label: 'Fracturado', tone: 'orange', color: 'rojo', ambito: 'pieza', simbolo: 'barra', legacy: true },
+  { key: 'ausente', label: 'Ausente', tone: 'slate', color: 'rojo', ambito: 'pieza', simbolo: 'equis', legacy: true },
+  { key: 'enErupcion', label: 'En erupción', tone: 'lime', color: 'neutro', ambito: 'pieza', simbolo: 'ninguno', legacy: true },
 ];
 
-// Caras de la pieza dental.
+// Caras de la pieza dental. El orden es el del dibujo: las 4 periféricas y el
+// centro (`oclusal`), que es el sector central del esquema.
 const ODONTOGRAMA_CARAS = [
   { key: 'vestibular', label: 'Vestibular' },
   { key: 'lingual', label: 'Lingual / palatina' },
   { key: 'mesial', label: 'Mesial' },
   { key: 'distal', label: 'Distal' },
   { key: 'oclusal', label: 'Oclusal / incisal' },
+];
+
+// Recesión y movilidad: la hoja las marca con "X" y admite grado 1, 2 ó 3.
+const ODONTOGRAMA_GRADOS = ['1', '2', '3'];
+
+/**
+ * Sección 7 · Higiene oral simplificada (IHOS).
+ *
+ * Son seis sextantes y en cada uno se examina UNA pieza: la de referencia, su
+ * alterna si falta, o la temporal en niños. Por eso la hoja imprime tres números
+ * por fila y solo se llena la que se evaluó.
+ */
+const HIGIENE_ORAL_FILAS = [
+  { key: 'sup_der', label: 'Superior derecho', piezas: ['16', '17', '55'] },
+  { key: 'sup_ant', label: 'Superior anterior', piezas: ['11', '21', '51'] },
+  { key: 'sup_izq', label: 'Superior izquierdo', piezas: ['26', '27', '65'] },
+  { key: 'inf_izq', label: 'Inferior izquierdo', piezas: ['36', '37', '75'] },
+  { key: 'inf_ant', label: 'Inferior anterior', piezas: ['31', '41', '71'] },
+  { key: 'inf_der', label: 'Inferior derecho', piezas: ['46', '47', '85'] },
+];
+
+// Escalas de la hoja: placa y cálculo 0-3, gingivitis 0-1.
+const HIGIENE_ORAL_INDICES = [
+  { key: 'placa', label: 'Placa', valores: ['0', '1', '2', '3'] },
+  { key: 'calculo', label: 'Cálculo', valores: ['0', '1', '2', '3'] },
+  { key: 'gingivitis', label: 'Gingivitis', valores: ['0', '1'] },
+];
+
+const ENFERMEDAD_PERIODONTAL = [
+  { key: 'leve', label: 'Leve' },
+  { key: 'moderada', label: 'Moderada' },
+  { key: 'severa', label: 'Severa' },
+];
+
+const MALOCLUSION = [
+  { key: 'angleI', label: 'Angle I' },
+  { key: 'angleII', label: 'Angle II' },
+  { key: 'angleIII', label: 'Angle III' },
+];
+
+const FLUOROSIS = [
+  { key: 'leve', label: 'Leve' },
+  { key: 'moderada', label: 'Moderada' },
+  { key: 'severa', label: 'Severa' },
+];
+
+/**
+ * Sección 8 · Índices CPO / ceo. Mayúsculas = dentición permanente, minúsculas =
+ * temporal. El TOTAL no se digita: es la suma de las tres columnas.
+ */
+const INDICE_CPO = [
+  { key: 'c', label: 'C' },
+  { key: 'p', label: 'P' },
+  { key: 'o', label: 'O' },
+];
+
+const INDICE_CEO = [
+  { key: 'c', label: 'c' },
+  { key: 'e', label: 'e' },
+  { key: 'o', label: 'o' },
 ];
 
 // ─────────────────────── Cosmetología ────────────────────────
@@ -259,6 +342,13 @@ const COSMETOLOGIA_FIBRA_CAPILAR_KEYS = COSMETOLOGIA_FIBRA_CAPILAR.map((c) => c.
 const COSMETOLOGIA_AFECCIONES_CUERO_KEYS = COSMETOLOGIA_AFECCIONES_CUERO.map((c) => c.key);
 const ODONTOGRAMA_ESTADOS_KEYS = ODONTOGRAMA_ESTADOS.map((c) => c.key);
 const ODONTOGRAMA_CARAS_KEYS = ODONTOGRAMA_CARAS.map((c) => c.key);
+// Solo los estados que se pintan sobre una CARA; el resto son símbolos de pieza
+// entera y guardarlos en una cara no significaría nada.
+const ODONTOGRAMA_ESTADOS_CARA_KEYS = ODONTOGRAMA_ESTADOS.filter((e) => e.ambito === 'cara').map((e) => e.key);
+const HIGIENE_ORAL_FILAS_KEYS = HIGIENE_ORAL_FILAS.map((f) => f.key);
+const ENFERMEDAD_PERIODONTAL_KEYS = ENFERMEDAD_PERIODONTAL.map((c) => c.key);
+const MALOCLUSION_KEYS = MALOCLUSION.map((c) => c.key);
+const FLUOROSIS_KEYS = FLUOROSIS.map((c) => c.key);
 
 module.exports = {
   PODOLOGIA_HALLAZGOS,
@@ -274,6 +364,19 @@ module.exports = {
   ODONTOGRAMA_ESTADOS_KEYS,
   ODONTOGRAMA_CARAS,
   ODONTOGRAMA_CARAS_KEYS,
+  ODONTOGRAMA_ESTADOS_CARA_KEYS,
+  ODONTOGRAMA_GRADOS,
+  HIGIENE_ORAL_FILAS,
+  HIGIENE_ORAL_FILAS_KEYS,
+  HIGIENE_ORAL_INDICES,
+  ENFERMEDAD_PERIODONTAL,
+  ENFERMEDAD_PERIODONTAL_KEYS,
+  MALOCLUSION,
+  MALOCLUSION_KEYS,
+  FLUOROSIS,
+  FLUOROSIS_KEYS,
+  INDICE_CPO,
+  INDICE_CEO,
   COSMETOLOGIA_FOTOTIPOS,
   COSMETOLOGIA_GLOGAU,
   COSMETOLOGIA_BIOTIPOS,

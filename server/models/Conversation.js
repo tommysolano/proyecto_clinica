@@ -75,6 +75,10 @@ const conversationSchema = new mongoose.Schema(
     // Identificación del contacto
     phone: { type: String, required: true, trim: true, index: true },
     contactName: { type: String, trim: true },
+    // Sello de "esto lo escribió una persona". El nombre que llega de WhatsApp es
+    // el del PERFIL del contacto ("Yo…!!!", emojis, apodos), casi nunca el real;
+    // cuando alguien lo corrige a mano, ninguna vía automática puede pisarlo.
+    contactNameEditedAt: { type: Date, default: null },
     patient: { type: mongoose.Schema.Types.ObjectId, ref: 'Patient', default: null },
     channel: {
       type: String,

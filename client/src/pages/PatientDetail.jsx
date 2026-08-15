@@ -9,6 +9,7 @@ import TagEditor from '../components/TagEditor';
 import NumericInput from '../components/NumericInput';
 import SearchableSelect from '../components/SearchableSelect';
 import Cie10Select from '../components/Cie10Select';
+import Odontograma from '../components/Odontograma';
 import {
   ANTECEDENTES_CATEGORIAS,
   REVISION_SISTEMAS,
@@ -23,11 +24,15 @@ import {
   PODOLOGIA_PULSO_OPCIONES,
   PODOLOGIA_SENSIBILIDAD_OPCIONES,
   PODOLOGIA_REFLEJOS_OPCIONES,
-  ODONTOGRAMA_FILAS,
-  ODONTOGRAMA_PIEZAS,
   ODONTOGRAMA_ESTADOS,
-  ODONTOGRAMA_ESTADO_CLASES,
   ODONTOGRAMA_CARAS,
+  HIGIENE_ORAL_FILAS,
+  HIGIENE_ORAL_INDICES,
+  ENFERMEDAD_PERIODONTAL,
+  MALOCLUSION,
+  FLUOROSIS,
+  INDICE_CPO,
+  INDICE_CEO,
   COSMETOLOGIA_FOTOTIPOS,
   COSMETOLOGIA_GLOGAU,
   COSMETOLOGIA_BIOTIPOS,
@@ -956,7 +961,16 @@ function SeguimientosTab({ patientId, appointmentId }) {
     hallazgos: [],
     hallazgosDetalle: '',
   });
-  const emptyOdontologia = () => ({ odontograma: [], observaciones: '' });
+  const emptyOdontologia = () => ({
+    odontograma: [],
+    higieneOral: [],
+    enfermedadPeriodontal: '',
+    maloclusion: '',
+    fluorosis: '',
+    cpo: { c: '', p: '', o: '' },
+    ceo: { c: '', e: '', o: '' },
+    observaciones: '',
+  });
   const emptyCosmetologia = () => ({
     datosEsteticos: { tratamientosEsteticos: '', autotratamientos: '', cosmeticosUsoActual: '' },
     evaluacion: {
@@ -2530,156 +2544,37 @@ function PodologiaSummary({ p }) {
 // ──────────────── Odontología (rol odontologia) ────────────────
 
 const dienteMarcado = (d) =>
-  Boolean(d && (d.estado || String(d.nota || '').trim() || Object.values(d.caras || {}).some(Boolean)));
+  Boolean(
+    d &&
+      (d.estado ||
+        String(d.nota || '').trim() ||
+        d.recesion ||
+        d.movilidad ||
+        Object.values(d.caras || {}).some(Boolean))
+  );
 
 function odontologiaHasData(o) {
-  return Boolean((o?.odontograma || []).some(dienteMarcado) || String(o?.observaciones || '').trim());
+  return Boolean(
+    (o?.odontograma || []).some(dienteMarcado) ||
+      (o?.higieneOral || []).length > 0 ||
+      o?.enfermedadPeriodontal ||
+      o?.maloclusion ||
+      o?.fluorosis ||
+      Object.values(o?.cpo || {}).some(Boolean) ||
+      Object.values(o?.ceo || {}).some(Boolean) ||
+      String(o?.observaciones || '').trim()
+  );
 }
 
 const estadoLabel = (key) => ODONTOGRAMA_ESTADOS.find((e) => e.key === key)?.label || '';
 
 function OdontologiaSection({ value, onChange }) {
   const o = value || {};
-  const dientes = Array.isArray(o.odontograma) ? o.odontograma : [];
-  const [sel, setSel] = useState('');
-  const byDiente = Object.fromEntries(dientes.map((d) => [d.diente, d]));
-
-  // Escribe una pieza. Si queda sin estado, sin caras y sin nota se BORRA de la
-  // lista: el seguimiento solo guarda las piezas que el odontólogo marcó.
-  const setDiente = (num, patch) => {
-    const cur = byDiente[num] || { diente: num, estado: '', caras: {}, nota: '' };
-    const next = { ...cur, ...patch, caras: { ...(cur.caras || {}), ...(patch.caras || {}) } };
-    const resto = dientes.filter((d) => d.diente !== num);
-    const lista = dienteMarcado(next) ? [...resto, next] : resto;
-    // Se guardan en el orden del esquema, no en el orden en que se hizo clic.
-    lista.sort((a, b) => ODONTOGRAMA_PIEZAS.indexOf(a.diente) - ODONTOGRAMA_PIEZAS.indexOf(b.diente));
-    onChange({ ...o, odontograma: lista });
-  };
-
-  const seleccion = sel ? byDiente[sel] || { diente: sel, estado: '', caras: {}, nota: '' } : null;
-
-  // Es una función, no un componente: definirlo aquí dentro como componente haría
-  // que React remontara las 52 piezas en cada tecleo del resto del formulario.
-  const renderDiente = (num) => {
-    const d = byDiente[num];
-    const marcado = dienteMarcado(d);
-    const clases = d?.estado ? ODONTOGRAMA_ESTADO_CLASES[d.estado] : 'bg-white border-slate-300 text-slate-600';
-    return (
-      <button
-        key={num}
-        type="button"
-        onClick={() => setSel(sel === num ? '' : num)}
-        title={marcado ? `${num} — ${estadoLabel(d.estado) || 'marcado'}` : `Pieza ${num}`}
-        className={`w-9 shrink-0 rounded-md border py-1.5 text-[11px] font-semibold cursor-pointer transition-all ${clases} ${
-          sel === num ? 'ring-2 ring-cyan-500 ring-offset-1' : ''
-        }`}
-      >
-        {num}
-        <span className={`block w-1 h-1 rounded-full mx-auto mt-0.5 ${marcado ? 'bg-current' : 'bg-transparent'}`} />
-      </button>
-    );
-  };
-
   return (
-    <div className="md:col-span-3 space-y-3">
-      <label className="text-sm font-medium text-slate-700 block">Ficha odontológica</label>
-
-      <Collapsible title="Odontograma" hint="notación FDI — toque una pieza para marcarla">
-        <div className="space-y-4">
-          <div className="overflow-x-auto">
-            <div className="min-w-[560px] space-y-2">
-              {ODONTOGRAMA_FILAS.map((fila) => (
-                <div key={fila.key} className="flex items-center gap-2">
-                  <span className="w-32 shrink-0 text-[10px] uppercase font-semibold text-slate-400">{fila.label}</span>
-                  <div className="flex-1 flex justify-end gap-1">
-                    {fila.derecha.map(renderDiente)}
-                  </div>
-                  <div className="w-px self-stretch bg-slate-300" />
-                  <div className="flex-1 flex justify-start gap-1">
-                    {fila.izquierda.map(renderDiente)}
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Leyenda de colores */}
-          <div className="flex flex-wrap gap-1.5">
-            {ODONTOGRAMA_ESTADOS.map((e) => (
-              <span
-                key={e.key}
-                className={`text-[10px] px-1.5 py-0.5 rounded border ${ODONTOGRAMA_ESTADO_CLASES[e.key]}`}
-              >
-                {e.label}
-              </span>
-            ))}
-          </div>
-
-          {seleccion ? (
-            <div className="rounded-lg border border-cyan-200 bg-cyan-50 p-3 space-y-3">
-              <div className="flex items-center justify-between">
-                <p className="text-sm font-semibold text-cyan-800">Pieza {seleccion.diente}</p>
-                <button
-                  type="button"
-                  onClick={() =>
-                    setDiente(sel, {
-                      estado: '',
-                      nota: '',
-                      caras: { vestibular: false, lingual: false, mesial: false, distal: false, oclusal: false },
-                    })
-                  }
-                  className="text-xs text-slate-500 hover:text-red-600 bg-transparent border-none cursor-pointer p-0"
-                >
-                  Limpiar pieza
-                </button>
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">Estado</label>
-                <div className="flex flex-wrap gap-1.5">
-                  {ODONTOGRAMA_ESTADOS.map((e) => (
-                    <button
-                      key={e.key}
-                      type="button"
-                      onClick={() => setDiente(sel, { estado: seleccion.estado === e.key ? '' : e.key })}
-                      className={`px-2.5 py-1 rounded-md border text-[11px] font-medium cursor-pointer ${
-                        seleccion.estado === e.key
-                          ? `${ODONTOGRAMA_ESTADO_CLASES[e.key]} ring-1 ring-slate-400`
-                          : 'bg-white border-slate-200 text-slate-600'
-                      }`}
-                    >
-                      {e.label}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div>
-                <label className="block text-xs font-semibold text-slate-600 mb-1">Caras afectadas</label>
-                <div className="flex flex-wrap gap-1.5">
-                  {ODONTOGRAMA_CARAS.map((c) => (
-                    <SChip
-                      key={c.key}
-                      tone="cyan"
-                      active={!!seleccion.caras?.[c.key]}
-                      onClick={() => setDiente(sel, { caras: { [c.key]: !seleccion.caras?.[c.key] } })}
-                    >
-                      {c.label}
-                    </SChip>
-                  ))}
-                </div>
-              </div>
-              <Field label="Nota de la pieza">
-                <input
-                  type="text"
-                  value={seleccion.nota || ''}
-                  onChange={(e) => setDiente(sel, { nota: e.target.value })}
-                  className="input"
-                />
-              </Field>
-            </div>
-          ) : (
-            <p className="text-xs text-slate-400">Toque una pieza del esquema para registrar su estado.</p>
-          )}
-
+    <div className="space-y-3">
+      <Collapsible title="Odontograma" hint="esquema, indicadores y índices (MSP)">
+        <div className="space-y-3">
+          <Odontograma value={o} onChange={onChange} />
           <Field label="Observaciones del odontograma">
             <textarea
               rows={2}
@@ -2697,19 +2592,60 @@ function OdontologiaSection({ value, onChange }) {
 function OdontologiaSummary({ o }) {
   if (!o) return null;
   const dientes = (o.odontograma || []).filter(dienteMarcado);
+  const opcionLabel = (catalog, key) => catalog.find((c) => c.key === key)?.label || '';
+  const suma = (obj, cols) => cols.reduce((s, c) => s + (Number.parseInt(obj?.[c.key], 10) || 0), 0);
+  const higiene = (o.higieneOral || []).filter((f) => f.pieza || f.placa || f.calculo || f.gingivitis);
+  const cpoTotal = suma(o.cpo, INDICE_CPO);
+  const ceoTotal = suma(o.ceo, INDICE_CEO);
+
   return (
     <SpecialtySummary title="Odontología" tone="cyan">
       {dientes.map((d) => {
-        const caras = ODONTOGRAMA_CARAS.filter((c) => d.caras?.[c.key]).map((c) => c.label);
+        // Cada cara lleva SU estado: se dice cuál, no solo que estaba marcada.
+        const caras = ODONTOGRAMA_CARAS.filter((c) => d.caras?.[c.key]).map(
+          (c) => `${c.label}: ${estadoLabel(d.caras[c.key])}`
+        );
+        const grados = [
+          d.recesion && `recesión ${d.recesion}`,
+          d.movilidad && `movilidad ${d.movilidad}`,
+        ].filter(Boolean);
         return (
           <span key={d.diente} className="bg-white/70 border border-cyan-200 rounded px-1.5 py-0.5">
             <b>{d.diente}</b>
             {d.estado && ` ${estadoLabel(d.estado)}`}
             {caras.length > 0 && ` (${caras.join(', ')})`}
+            {grados.length > 0 && ` [${grados.join(', ')}]`}
             {d.nota && ` — ${d.nota}`}
           </span>
         );
       })}
+      {higiene.length > 0 && (
+        <span className="w-full">
+          Higiene oral:{' '}
+          {higiene
+            .map((f) => {
+              const fila = HIGIENE_ORAL_FILAS.find((x) => x.key === f.fila);
+              const vals = HIGIENE_ORAL_INDICES.filter((i) => f[i.key]).map((i) => `${i.label} ${f[i.key]}`);
+              return `${f.pieza || fila?.label || f.fila}${vals.length ? ` (${vals.join(', ')})` : ''}`;
+            })
+            .join(' · ')}
+        </span>
+      )}
+      {o.enfermedadPeriodontal && (
+        <span>Enf. periodontal: {opcionLabel(ENFERMEDAD_PERIODONTAL, o.enfermedadPeriodontal)}</span>
+      )}
+      {o.maloclusion && <span>Maloclusión: {opcionLabel(MALOCLUSION, o.maloclusion)}</span>}
+      {o.fluorosis && <span>Fluorosis: {opcionLabel(FLUOROSIS, o.fluorosis)}</span>}
+      {cpoTotal > 0 && (
+        <span>
+          CPO: {INDICE_CPO.map((c) => `${c.label} ${o.cpo?.[c.key] || 0}`).join(' · ')} — Total {cpoTotal}
+        </span>
+      )}
+      {ceoTotal > 0 && (
+        <span>
+          ceo: {INDICE_CEO.map((c) => `${c.label} ${o.ceo?.[c.key] || 0}`).join(' · ')} — Total {ceoTotal}
+        </span>
+      )}
       {o.observaciones && <span className="w-full whitespace-pre-wrap">{o.observaciones}</span>}
     </SpecialtySummary>
   );

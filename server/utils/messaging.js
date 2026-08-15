@@ -460,6 +460,26 @@ async function findConversationForPerson(clinicId, phone, channel) {
   })[0];
 }
 
+/**
+ * Pone `nombre` en la conversación SOLO si ahí no hay nada que respetar.
+ *
+ * El nombre que manda WhatsApp es el del perfil del contacto —"Yo…!!!", emojis,
+ * apodos—, así que la clínica necesita poder guardar el real. Puede llegar por
+ * tres vías: escrito a mano en el panel, el del contacto importado o el de un
+ * envío masivo. La regla es una sola: **lo escrito a mano gana siempre**
+ * (`contactNameEditedAt`), y lo automático solo rellena huecos.
+ *
+ * Devuelve true si tocó el documento (para que el llamador decida si guardar).
+ */
+function applyContactName(conv, nombre) {
+  const limpio = String(nombre || '').trim();
+  if (!conv || !limpio) return false;
+  if (conv.contactNameEditedAt) return false;
+  if (String(conv.contactName || '').trim()) return false;
+  conv.contactName = limpio;
+  return true;
+}
+
 async function resolveConversation({ clinicId, conversation, channel, to, contactName, patient }) {
   if (conversation?._id && typeof conversation.save === 'function') return conversation;
   const conversationId = conversation?._id || conversation;
@@ -474,10 +494,16 @@ async function resolveConversation({ clinicId, conversation, channel, to, contac
   let conv = await findConversationForPerson(clinicId, phone, null);
   if (conv) {
     const patientId = patient?._id || patient;
+    let dirty = false;
     if (patientId && !conv.patient) {
       conv.patient = patientId;
-      await conv.save();
+      dirty = true;
     }
+    // Mismo criterio que con el paciente: rellenar un hueco, nunca pisar. Un chat
+    // que nació de WhatsApp sin nombre (Messenger/Instagram, o un perfil vacío) se
+    // queda con el del contacto importado la primera vez que le escribimos.
+    if (applyContactName(conv, contactName)) dirty = true;
+    if (dirty) await conv.save();
     return conv;
   }
 
@@ -1428,6 +1454,7 @@ async function updateMessageStatus({
 
 module.exports = {
   WHATSAPP_WINDOW_MS,
+  applyContactName,
   buildKnownVariableResolver,
   findConversationForPerson,
   buildTemplateComponents,

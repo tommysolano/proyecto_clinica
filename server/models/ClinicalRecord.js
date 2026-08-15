@@ -54,21 +54,46 @@ const diagnosticoSchema = new mongoose.Schema(
   { _id: false }
 );
 
-// Pieza del odontograma (rol 'odontologia'). `diente` es el número FDI ('11',
-// '18', '51'…, ver ODONTOGRAMA_PIEZAS) y `estado` una clave de ODONTOGRAMA_ESTADOS.
-// Solo se guardan las piezas marcadas, no las 52 del esquema.
+/**
+ * Pieza del odontograma (rol 'odontologia'). `diente` es el número FDI ('11',
+ * '18', '51'…, ver ODONTOGRAMA_PIEZAS). Solo se guardan las piezas marcadas, no
+ * las 52 del esquema.
+ *
+ * `estado` es el símbolo que afecta a la PIEZA ENTERA (extracción indicada,
+ * pérdida, endodoncia, corona, prótesis…). Cada cara lleva ADEMÁS su propio
+ * estado, porque la hoja del MSP permite caries en una cara y obturado en otra
+ * del mismo diente; antes las caras eran booleanas y eso no cabía.
+ *
+ * `recesion` y `movilidad` son el grado 1-3 que la hoja marca con "X" encima
+ * (arco superior) o debajo (arco inferior) de cada pieza permanente.
+ */
 const odontogramaDienteSchema = new mongoose.Schema(
   {
     diente: { type: String, required: true },
     estado: { type: String, trim: true, default: '' },
     caras: {
-      vestibular: { type: Boolean, default: false },
-      lingual: { type: Boolean, default: false },
-      mesial: { type: Boolean, default: false },
-      distal: { type: Boolean, default: false },
-      oclusal: { type: Boolean, default: false },
+      vestibular: { type: String, trim: true, default: '' },
+      lingual: { type: String, trim: true, default: '' },
+      mesial: { type: String, trim: true, default: '' },
+      distal: { type: String, trim: true, default: '' },
+      oclusal: { type: String, trim: true, default: '' },
     },
+    recesion: { type: String, trim: true, default: '' },
+    movilidad: { type: String, trim: true, default: '' },
     nota: { type: String, trim: true, default: '' },
+  },
+  { _id: false }
+);
+
+// Sección 7 · una fila de la higiene oral simplificada: qué pieza se examinó en
+// ese sextante y sus tres índices.
+const higieneOralFilaSchema = new mongoose.Schema(
+  {
+    fila: { type: String, required: true },
+    pieza: { type: String, trim: true, default: '' },
+    placa: { type: String, trim: true, default: '' },
+    calculo: { type: String, trim: true, default: '' },
+    gingivitis: { type: String, trim: true, default: '' },
   },
   { _id: false }
 );
@@ -241,6 +266,24 @@ const followUpSchema = new mongoose.Schema(
       odontograma: {
         type: [odontogramaDienteSchema],
         default: [],
+      },
+      // Sección 7 · Indicadores de salud bucal.
+      higieneOral: { type: [higieneOralFilaSchema], default: [] },
+      enfermedadPeriodontal: { type: String, trim: true, default: '' },
+      maloclusion: { type: String, trim: true, default: '' },
+      fluorosis: { type: String, trim: true, default: '' },
+      // Sección 8 · Índices CPO (permanentes) y ceo (temporales). Los TOTAL no se
+      // guardan: son la suma y se calculan al mostrar, para que no puedan quedar
+      // descuadrados respecto a sus sumandos.
+      cpo: {
+        c: { type: String, trim: true, default: '' },
+        p: { type: String, trim: true, default: '' },
+        o: { type: String, trim: true, default: '' },
+      },
+      ceo: {
+        c: { type: String, trim: true, default: '' },
+        e: { type: String, trim: true, default: '' },
+        o: { type: String, trim: true, default: '' },
       },
       observaciones: { type: String, trim: true, default: '' },
     },

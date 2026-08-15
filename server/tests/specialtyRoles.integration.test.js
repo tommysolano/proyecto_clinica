@@ -169,10 +169,78 @@ test('E5) el odontograma guarda solo las piezas marcadas y en orden del esquema'
   const o = payload.followUps.at(-1).odontologia;
   assert.deepEqual(o.odontograma.map((d) => d.diente), ['11', '36'], 'ordenadas por el esquema FDI');
   assert.equal(o.odontograma[0].estado, 'obturado');
-  assert.equal(o.odontograma[1].caras.oclusal, true);
+  // Formato ANTIGUO (`caras` booleanas): un `true` hereda el estado de la pieza,
+  // así lo ya registrado se sigue leyendo tras pasar las caras a estado propio.
+  assert.equal(o.odontograma[1].caras.oclusal, 'caries');
   assert.equal(o.odontograma[1].nota, 'profunda');
   assert.equal(o.observaciones, 'Revisar en 6 meses');
   assert.ok(!ODONTOGRAMA_PIEZAS.includes('99'), 'la 99 no existe en FDI');
+});
+
+test('E5b) cada cara guarda SU estado: caries en una y obturado en otra del mismo diente', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await seedPaciente(clinicId, userId);
+
+  const payload = ok(await postFollowUp(clinicId, userId, patient._id, 'odontologia', baseBody({
+    odontologia: {
+      odontograma: [
+        {
+          diente: '46',
+          estado: 'endodoncia',
+          caras: {
+            oclusal: 'caries',
+            mesial: 'obturado',
+            distal: 'extraccionIndicada', // símbolo de PIEZA: no vale para una cara
+            vestibular: 'no_existe',
+          },
+          recesion: '2',
+          movilidad: '9',                 // fuera de 1-3
+        },
+      ],
+    },
+  })));
+
+  const d = payload.followUps.at(-1).odontologia.odontograma[0];
+  assert.equal(d.caras.oclusal, 'caries');
+  assert.equal(d.caras.mesial, 'obturado', 'dos caras distintas, dos estados distintos');
+  assert.equal(d.caras.distal, '', 'un símbolo de pieza entera no se pinta en una cara');
+  assert.equal(d.caras.vestibular, '');
+  assert.equal(d.estado, 'endodoncia', 'el símbolo de la pieza sí se guarda');
+  assert.equal(d.recesion, '2');
+  assert.equal(d.movilidad, '', 'el grado solo admite 1, 2 ó 3');
+});
+
+test('E5c) indicadores de salud bucal e índices CPO-ceo', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await seedPaciente(clinicId, userId);
+
+  const payload = ok(await postFollowUp(clinicId, userId, patient._id, 'odontologia', baseBody({
+    odontologia: {
+      higieneOral: [
+        { fila: 'sup_ant', pieza: '11', placa: '2', calculo: '1', gingivitis: '1' },
+        { fila: 'sup_der', pieza: '99', placa: '7', calculo: '3', gingivitis: '0' }, // pieza y placa inválidas
+        { fila: 'fila_inventada', pieza: '16', placa: '1' },                          // sextante inexistente
+        { fila: 'inf_der' },                                                          // vacía: no aporta
+      ],
+      enfermedadPeriodontal: 'moderada',
+      maloclusion: 'angleII',
+      fluorosis: 'inventada',
+      cpo: { c: '3', p: '1', o: '4' },
+      ceo: { c: '2', e: '0', o: '99999' },
+    },
+  })));
+
+  const o = payload.followUps.at(-1).odontologia;
+  assert.deepEqual(o.higieneOral.map((f) => f.fila), ['sup_der', 'sup_ant'], 'en el orden de la hoja');
+  const supDer = o.higieneOral.find((f) => f.fila === 'sup_der');
+  assert.equal(supDer.pieza, '', 'la 99 no es una de las tres piezas de ese sextante');
+  assert.equal(supDer.placa, '', 'la placa solo llega a 3');
+  assert.equal(supDer.calculo, '3');
+  assert.equal(o.enfermedadPeriodontal, 'moderada');
+  assert.equal(o.maloclusion, 'angleII');
+  assert.equal(o.fluorosis, '', 'fuera de catálogo se descarta');
+  assert.deepEqual({ ...o.cpo.toObject?.() || o.cpo }, { c: '3', p: '1', o: '4' });
+  assert.equal(o.ceo.o, '', 'un conteo imposible de piezas no se guarda');
 });
 
 // ═════════════════ Ficha cosmetológica ═════════════════

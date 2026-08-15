@@ -28,6 +28,14 @@ const {
   COSMETOLOGIA_CUERO_CABELLUDO,
   COSMETOLOGIA_FIBRA_CAPILAR_KEYS,
   COSMETOLOGIA_AFECCIONES_CUERO_KEYS,
+  ODONTOGRAMA_ESTADOS_CARA_KEYS,
+  ODONTOGRAMA_GRADOS,
+  HIGIENE_ORAL_FILAS,
+  HIGIENE_ORAL_FILAS_KEYS,
+  HIGIENE_ORAL_INDICES,
+  ENFERMEDAD_PERIODONTAL_KEYS,
+  MALOCLUSION_KEYS,
+  FLUOROSIS_KEYS,
 } = require('../constants/specialtyCatalogs');
 const { specialtyFollowUpHtml } = require('../utils/specialtyFollowUpPrint');
 const { describeCie10 } = require('../utils/cie10Catalog');
@@ -308,31 +316,80 @@ exports.addFollowUp = async (req, res) => {
       };
     };
 
+    /**
+     * Estado de UNA cara. Solo valen los estados de ámbito 'cara' (pintar
+     * "extracción indicada" en la cara mesial no significaría nada).
+     *
+     * Acepta además el formato ANTIGUO, en el que las caras eran booleanas y el
+     * estado vivía solo en la pieza: un `true` heredaba el estado del diente. Así
+     * un odontograma guardado antes del rediseño se sigue leyendo igual.
+     */
+    const caraEstado = (v, estadoPieza) => {
+      if (v === true || v === 'true') return ODONTOGRAMA_ESTADOS_CARA_KEYS.includes(estadoPieza) ? estadoPieza : 'caries';
+      if (v === false || v === 'false') return '';
+      return ODONTOGRAMA_ESTADOS_CARA_KEYS.includes(v) ? v : '';
+    };
+
     const sanitizeOdontologia = (o) => {
       if (!o || typeof o !== 'object') return undefined;
       const dientes = (Array.isArray(o.odontograma) ? o.odontograma : [])
         .filter((d) => d && ODONTOGRAMA_PIEZAS.includes(String(d.diente)))
         .map((d) => {
           const caras = d.caras || {};
+          const estado = ODONTOGRAMA_ESTADOS_KEYS.includes(d.estado) ? d.estado : '';
           return {
             diente: String(d.diente),
-            estado: ODONTOGRAMA_ESTADOS_KEYS.includes(d.estado) ? d.estado : '',
+            estado,
             caras: {
-              vestibular: !!caras.vestibular,
-              lingual: !!caras.lingual,
-              mesial: !!caras.mesial,
-              distal: !!caras.distal,
-              oclusal: !!caras.oclusal,
+              vestibular: caraEstado(caras.vestibular, estado),
+              lingual: caraEstado(caras.lingual, estado),
+              mesial: caraEstado(caras.mesial, estado),
+              distal: caraEstado(caras.distal, estado),
+              oclusal: caraEstado(caras.oclusal, estado),
             },
+            recesion: pick(d.recesion, ODONTOGRAMA_GRADOS),
+            movilidad: pick(d.movilidad, ODONTOGRAMA_GRADOS),
             nota: txt(d.nota),
           };
         })
-        // Una pieza sin estado, sin caras y sin nota no aporta nada: no se guarda.
-        .filter((d) => d.estado || d.nota || Object.values(d.caras).some(Boolean));
+        // Una pieza sin nada marcado no aporta nada: no se guarda.
+        .filter((d) => d.estado || d.nota || d.recesion || d.movilidad || Object.values(d.caras).some(Boolean));
       // Una misma pieza no puede ir dos veces: gana la última marca recibida.
       const porDiente = new Map(dientes.map((d) => [d.diente, d]));
+
+      // Sección 7: una fila por sextante, y la pieza tiene que ser una de las tres
+      // que la hoja ofrece para ese sextante.
+      const higiene = (Array.isArray(o.higieneOral) ? o.higieneOral : [])
+        .map((f) => {
+          const def = HIGIENE_ORAL_FILAS.find((x) => x.key === String(f?.fila));
+          if (!def) return null;
+          return {
+            fila: def.key,
+            pieza: pick(f.pieza, def.piezas),
+            placa: pick(f.placa, HIGIENE_ORAL_INDICES[0].valores),
+            calculo: pick(f.calculo, HIGIENE_ORAL_INDICES[1].valores),
+            gingivitis: pick(f.gingivitis, HIGIENE_ORAL_INDICES[2].valores),
+          };
+        })
+        .filter((f) => f && (f.pieza || f.placa || f.calculo || f.gingivitis));
+      const porFila = new Map(higiene.map((f) => [f.fila, f]));
+
+      // Los índices CPO/ceo son conteos de piezas: enteros de 0 a 52.
+      const conteo = (v) => {
+        const n = Number.parseInt(String(v ?? '').trim(), 10);
+        return Number.isFinite(n) && n >= 0 && n <= ODONTOGRAMA_PIEZAS.length ? String(n) : '';
+      };
+      const cpo = o.cpo || {};
+      const ceo = o.ceo || {};
+
       return {
         odontograma: ODONTOGRAMA_PIEZAS.filter((p) => porDiente.has(p)).map((p) => porDiente.get(p)),
+        higieneOral: HIGIENE_ORAL_FILAS_KEYS.filter((k) => porFila.has(k)).map((k) => porFila.get(k)),
+        enfermedadPeriodontal: pick(o.enfermedadPeriodontal, ENFERMEDAD_PERIODONTAL_KEYS),
+        maloclusion: pick(o.maloclusion, MALOCLUSION_KEYS),
+        fluorosis: pick(o.fluorosis, FLUOROSIS_KEYS),
+        cpo: { c: conteo(cpo.c), p: conteo(cpo.p), o: conteo(cpo.o) },
+        ceo: { c: conteo(ceo.c), e: conteo(ceo.e), o: conteo(ceo.o) },
         observaciones: txt(o.observaciones),
       };
     };

@@ -3869,12 +3869,13 @@ function CopyRow({ icon: Icon, label, value, empty }) {
  * `findEmailInConversation`). Si el contacto ya es paciente y tiene correo en su
  * ficha, ese vale como respaldo.
  */
-function ContactDataBlock({ conv }) {
+function ContactDataBlock({ conv, onUpdated }) {
   const hidden = isHiddenNumber(conv);
   const email = conv.detectedEmail || conv.patient?.email || '';
 
   return (
     <div className="border border-slate-200 rounded-xl p-2.5 space-y-2 bg-slate-50/50">
+      <ContactNameRow conv={conv} onUpdated={onUpdated} />
       <CopyRow
         icon={HiOutlinePhone}
         label="Número de contacto"
@@ -3887,6 +3888,103 @@ function ContactDataBlock({ conv }) {
         value={email}
         empty="Aún no lo ha escrito en el chat"
       />
+    </div>
+  );
+}
+
+/**
+ * Nombre del contacto, editable.
+ *
+ * POR QUÉ EXISTE: lo que se ve arriba del chat es el nombre del PERFIL de
+ * WhatsApp —"Yo…!!!", emojis, apodos—, que casi nunca es el nombre de la persona.
+ * Los contactos sí nos dan su nombre, así que hace falta poder guardarlo: se
+ * escribe aquí y pasa al momento a la lista, al avatar y a la cabecera.
+ *
+ * Lo escrito aquí queda sellado (`contactNameEditedAt`) y ninguna vía automática
+ * —el contacto importado, un envío masivo— vuelve a tocarlo.
+ */
+function ContactNameRow({ conv, onUpdated }) {
+  const [nombre, setNombre] = useState(conv.contactName || '');
+  const [editando, setEditando] = useState(false);
+  const [guardando, setGuardando] = useState(false);
+
+  // Al cambiar de chat el componente se reutiliza: hay que resincronizar o se
+  // quedaría mostrando el nombre del chat anterior.
+  useEffect(() => {
+    setNombre(conv.contactName || '');
+    setEditando(false);
+  }, [conv._id, conv.contactName]);
+
+  const guardar = async () => {
+    const limpio = nombre.trim();
+    if (limpio === (conv.contactName || '').trim()) {
+      setEditando(false);
+      return;
+    }
+    setGuardando(true);
+    try {
+      const r = await api.put(`/chats/${conv._id}`, { contactName: limpio });
+      onUpdated?.(r.data);
+      setEditando(false);
+      toast.success(limpio ? 'Nombre actualizado' : 'Nombre borrado');
+    } catch (err) {
+      toast.error(err.response?.data?.message || 'No se pudo guardar el nombre');
+      setNombre(conv.contactName || '');
+    } finally {
+      setGuardando(false);
+    }
+  };
+
+  if (editando) {
+    return (
+      <div className="flex items-center gap-2 min-w-0">
+        <HiOutlineUserCircle className="w-4 h-4 text-slate-400 shrink-0" />
+        <div className="min-w-0 flex-1">
+          <div className="text-[10px] text-slate-400 leading-tight">Nombre</div>
+          <input
+            autoFocus
+            value={nombre}
+            onChange={(e) => setNombre(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') guardar();
+              if (e.key === 'Escape') { setNombre(conv.contactName || ''); setEditando(false); }
+            }}
+            placeholder="Nombre de la persona"
+            className="w-full text-xs text-slate-700 border border-slate-300 rounded px-1.5 py-1 outline-none focus:border-emerald-500"
+          />
+        </div>
+        <button
+          onClick={guardar}
+          disabled={guardando}
+          title="Guardar nombre"
+          aria-label="Guardar nombre"
+          className="shrink-0 p-1.5 rounded-lg text-emerald-600 hover:bg-emerald-50 bg-transparent border-none cursor-pointer disabled:opacity-50"
+        >
+          <HiOutlineCheck className="w-4 h-4" />
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex items-center gap-2 min-w-0">
+      <HiOutlineUserCircle className="w-4 h-4 text-slate-400 shrink-0" />
+      <div className="min-w-0 flex-1">
+        <div className="text-[10px] text-slate-400 leading-tight">Nombre</div>
+        {conv.contactName ? (
+          <div className="text-xs text-slate-700 truncate" title={conv.contactName}>{conv.contactName}</div>
+        ) : (
+          <div className="text-xs text-slate-400 italic">Sin nombre — escríbelo aquí</div>
+        )}
+      </div>
+      <button
+        onClick={() => setEditando(true)}
+        title="Editar nombre"
+        aria-label="Editar nombre"
+        className="shrink-0 p-1.5 rounded-lg text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 bg-transparent border-none cursor-pointer"
+      >
+        <HiOutlinePencilSquare className="w-4 h-4" />
+      </button>
     </div>
   );
 }
@@ -4107,7 +4205,7 @@ function SidePanel({ conv, agents = [], meId, onUpdated, onEditOpportunity, onSc
       {/* Datos para copiar de un clic: el agente los pega en el sistema, en un
           correo o en una llamada sin tener que buscarlos por el chat. El correo
           sale de lo que el propio contacto escribió en la conversación. */}
-      <ContactDataBlock conv={conv} />
+      <ContactDataBlock conv={conv} onUpdated={onUpdated} />
 
       {/* Qué le está enviando el sistema solo a este contacto (seguimiento). */}
       <ChatAutomationsSection conv={conv} version={automationsVersion} />

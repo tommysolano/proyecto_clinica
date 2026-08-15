@@ -525,6 +525,9 @@ exports.updateConversation = async (req, res) => {
     allowed.forEach((k) => {
       if (req.body[k] !== undefined) conv[k] = req.body[k];
     });
+    // Renombrar a mano deja sello: a partir de aquí ninguna vía automática (el
+    // nombre del contacto importado, el de un envío masivo) puede sobrescribirlo.
+    if (req.body.contactName !== undefined) conv.contactNameEditedAt = new Date();
     await conv.save();
     // Etiquetar desde el chat también dispara los workflows de 'tag_added'
     // (antes solo el etiquetado masivo de pacientes emitía el evento).
@@ -542,6 +545,9 @@ exports.updateConversation = async (req, res) => {
       }
     }
     await populateConversation(conv);
+    // Los demás asesores tienen la bandeja abierta: sin esto, un chat renombrado
+    // seguía saliendo con el apodo de WhatsApp en sus pantallas hasta recargar.
+    emitToCallCenter('chat:updated', { id: conv._id });
     res.json(conv);
   } catch (err) {
     res.status(500).json({ message: 'Error al actualizar conversación', error: err.message });

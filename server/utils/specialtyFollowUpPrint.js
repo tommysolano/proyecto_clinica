@@ -14,6 +14,13 @@ const {
   PODOLOGIA_HALLAZGOS_GENERALES,
   ODONTOGRAMA_ESTADOS,
   ODONTOGRAMA_CARAS,
+  HIGIENE_ORAL_FILAS,
+  HIGIENE_ORAL_INDICES,
+  ENFERMEDAD_PERIODONTAL,
+  MALOCLUSION,
+  FLUOROSIS,
+  INDICE_CPO,
+  INDICE_CEO,
   COSMETOLOGIA_BIOTIPOS,
   COSMETOLOGIA_ARRUGAS,
   COSMETOLOGIA_ACNE,
@@ -99,23 +106,65 @@ function podologiaHtml(p) {
 function odontologiaHtml(o) {
   if (!o) return '';
   const piezas = (o.odontograma || []).filter(
-    (d) => d && (d.estado || String(d.nota || '').trim() || Object.values(d.caras || {}).some(Boolean)),
+    (d) =>
+      d &&
+      (d.estado ||
+        String(d.nota || '').trim() ||
+        d.recesion ||
+        d.movilidad ||
+        Object.values(d.caras || {}).some(Boolean)),
   );
+  const higiene = (o.higieneOral || []).filter((f) => f && (f.pieza || f.placa || f.calculo || f.gingivitis));
+  const suma = (obj, cols) => cols.reduce((s, c) => s + (Number.parseInt(obj?.[c.key], 10) || 0), 0);
+  const cpoTotal = suma(o.cpo, INDICE_CPO);
+  const ceoTotal = suma(o.ceo, INDICE_CEO);
+  const indicadores = inline([
+    ['Enfermedad periodontal', labelOf(ENFERMEDAD_PERIODONTAL, o.enfermedadPeriodontal) || ''],
+    ['Maloclusión', labelOf(MALOCLUSION, o.maloclusion) || ''],
+    ['Fluorosis', labelOf(FLUOROSIS, o.fluorosis) || ''],
+  ]);
   const observaciones = String(o.observaciones || '').trim();
-  if (!piezas.length && !observaciones) return '';
+  if (!piezas.length && !higiene.length && !indicadores && !cpoTotal && !ceoTotal && !observaciones) return '';
 
   const filas = piezas
     .map((d) => {
-      const caras = ODONTOGRAMA_CARAS.filter((c) => d.caras?.[c.key]).map((c) => c.label).join(', ');
-      return `<tr>${td(`<b>${esc(d.diente)}</b>`)}${td(esc(labelOf(ODONTOGRAMA_ESTADOS, d.estado) || '—'))}${td(esc(caras || '—'))}${td(esc(d.nota || '—'))}</tr>`;
+      // Cada cara con SU estado: «Oclusal: Caries, Mesial: Obturado».
+      const caras = ODONTOGRAMA_CARAS.filter((c) => d.caras?.[c.key])
+        .map((c) => `${c.label}: ${labelOf(ODONTOGRAMA_ESTADOS, d.caras[c.key])}`)
+        .join(', ');
+      const grados = [d.recesion && `Recesión ${d.recesion}`, d.movilidad && `Movilidad ${d.movilidad}`]
+        .filter(Boolean)
+        .join(', ');
+      return `<tr>${td(`<b>${esc(d.diente)}</b>`)}${td(esc(labelOf(ODONTOGRAMA_ESTADOS, d.estado) || '—'))}${td(esc(caras || '—'))}${td(esc(grados || '—'))}${td(esc(d.nota || '—'))}</tr>`;
     })
     .join('');
 
   const tabla = filas
-    ? `<table><thead><tr><th>Pieza</th><th>Estado</th><th>Caras</th><th>Nota</th></tr></thead><tbody>${filas}</tbody></table>`
+    ? `<div class="label" style="margin-top:8px">Odontograma (FDI)</div><table><thead><tr><th>Pieza</th><th>Estado</th><th>Caras</th><th>Recesión / movilidad</th><th>Nota</th></tr></thead><tbody>${filas}</tbody></table>`
     : '';
 
-  return `<div class="label" style="margin-top:8px">Odontograma (FDI)</div>${tabla}${
+  const filasHigiene = higiene
+    .map((f) => {
+      const def = HIGIENE_ORAL_FILAS.find((x) => x.key === f.fila);
+      return `<tr>${td(esc(def?.label || f.fila))}${td(esc(f.pieza || '—'))}${td(esc(f.placa || '—'))}${td(esc(f.calculo || '—'))}${td(esc(f.gingivitis || '—'))}</tr>`;
+    })
+    .join('');
+  // Los totales de la hoja son la suma de la columna, no un dato que se digite.
+  const totales = HIGIENE_ORAL_INDICES.map((i) =>
+    higiene.reduce((s, f) => s + (Number.parseInt(f[i.key], 10) || 0), 0),
+  );
+  const tablaHigiene = filasHigiene
+    ? `<div class="label" style="margin-top:8px">Indicadores de salud bucal</div><table><thead><tr><th>Sextante</th><th>Pieza</th><th>Placa</th><th>Cálculo</th><th>Gingivitis</th></tr></thead><tbody>${filasHigiene}<tr>${td('<b>Totales</b>')}${td('')}${totales.map((t) => td(`<b>${t}</b>`)).join('')}</tr></tbody></table>`
+    : '';
+
+  const indices = [
+    cpoTotal ? `<b>CPO:</b> ${INDICE_CPO.map((c) => `${c.label} ${esc(o.cpo?.[c.key] || 0)}`).join(' · ')} — Total ${cpoTotal}` : '',
+    ceoTotal ? `<b>ceo:</b> ${INDICE_CEO.map((c) => `${c.label} ${esc(o.ceo?.[c.key] || 0)}`).join(' · ')} — Total ${ceoTotal}` : '',
+  ]
+    .filter(Boolean)
+    .join('<br/>');
+
+  return `${tabla}${tablaHigiene}${box('Evaluación', indicadores)}${box('Índices CPO-ceo', indices)}${
     observaciones ? box('Observaciones del odontograma', `<div style="white-space:pre-wrap">${esc(observaciones)}</div>`) : ''
   }`;
 }

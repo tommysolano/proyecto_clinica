@@ -42,15 +42,21 @@ function withinSchedule(camp, now = new Date()) {
  * número al que el contacto acaba de escribir. Ver findConversationForPerson.
  */
 async function conversationFor(clinicId, contact) {
+  const nombre = contact.displayName || `${contact.firstName || ''} ${contact.lastName || ''}`.trim();
   let conv = await messaging.findConversationForPerson(clinicId, contact.phone, 'whatsapp');
   if (!conv) {
     conv = await Conversation.create({
       clinic: clinicId,
       phone: contact.phone,
       channel: 'whatsapp',
-      contactName: contact.displayName || `${contact.firstName || ''} ${contact.lastName || ''}`.trim(),
+      contactName: nombre,
       patient: contact.patient || null,
     });
+  } else if (messaging.applyContactName(conv, nombre)) {
+    // El chat ya existía sin nombre (el contacto nos escribió antes de importarlo,
+    // o su perfil de WhatsApp no dice nada): la campaña sabe cómo se llama, así que
+    // se lo pone. Nunca pisa un nombre escrito a mano.
+    await conv.save();
   }
   return conv;
 }
