@@ -49,6 +49,26 @@ const patientSchema = new mongoose.Schema(
     antecedentesFamiliares: { type: String, trim: true, default: '' },
     antecedentesPatologicos: { type: String, trim: true, default: '' },
     tags: { type: [String], default: [], index: true },
+    /**
+     * Pacientes creados leyendo una ficha FÍSICA escaneada (/scanner).
+     *
+     * Es letra manuscrita, así que algunos campos se leen con dudas. En vez de
+     * dejarlos fuera, el paciente se crea igual y aquí queda constancia de QUÉ hay
+     * que revisar y contra QUÉ documento: la pantalla de revisión los lista con su
+     * PDF al lado para corregirlos a mano.
+     *
+     * `revisadoAt` se sella al corregir; a partir de ahí el paciente sale de la lista.
+     */
+    scanImport: {
+      scan: { type: mongoose.Schema.Types.ObjectId, ref: 'ScannedDocument', default: null },
+      importadoAt: { type: Date, default: null },
+      // Nombres de campo ('cedula', 'celular'…) que quedaron dudosos o vacíos.
+      dudas: { type: [String], default: [] },
+      // Lo que la IA leyó literalmente en los campos dudosos, para comparar con el PDF.
+      crudo: { type: mongoose.Schema.Types.Mixed, default: null },
+      revisadoAt: { type: Date, default: null },
+      revisadoBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    },
     marketing: {
       whatsappOptIn: { type: Boolean, default: true },
       emailOptIn: { type: Boolean, default: true },

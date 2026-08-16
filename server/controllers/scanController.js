@@ -25,6 +25,7 @@ const ScannedDocument = require('../models/ScannedDocument');
 // Se requiere para que `populate('createdBy')` encuentre el modelo registrado.
 require('../models/User');
 const { createZip } = require('../utils/zip');
+const { nameKeyOf, sanitizeName, defaultName } = require('../utils/scanNames');
 
 const SCANS_DIR = path.join(__dirname, '..', 'storage', 'scans');
 try { fs.mkdirSync(SCANS_DIR, { recursive: true }); } catch (_) {}
@@ -44,28 +45,8 @@ exports.uploadMiddleware = multer({
 }).array('pages', MAX_PAGES);
 
 // ─── Nombres ─────────────────────────────────────────────────────────────────
-
-const DIACRITICS = new RegExp('[\\u0300-\\u036f]', 'g');
-
-/** Clave de comparación: sin tildes, sin mayúsculas, sin espacios de más. */
-const nameKeyOf = (s) => String(s || '')
-  .normalize('NFD').replace(DIACRITICS, '')
-  .toLowerCase().trim().replace(/\s+/g, ' ');
-
-/** Quita lo que no puede ir en un nombre de archivo y recorta el largo. */
-const sanitizeName = (s) => String(s || '')
-  .replace(/\.pdf$/i, '')
-  .replace(/[\\/:*?"<>|]/g, '-')
-  .replace(/\s+/g, ' ')
-  .trim()
-  .slice(0, 120);
-
-/** Nombre por defecto: "Escaneo 10-08-2026". */
-function defaultName(date = new Date()) {
-  const dd = String(date.getDate()).padStart(2, '0');
-  const mm = String(date.getMonth() + 1).padStart(2, '0');
-  return `Escaneo ${dd}-${mm}-${date.getFullYear()}`;
-}
+// Viven en utils/scanNames.js porque el importador de fichas escaneadas también
+// los necesita para emparejar los PDF del ZIP con su ficha en la base.
 
 /**
  * Devuelve un nombre libre en la clínica. Si "Receta" ya existe prueba

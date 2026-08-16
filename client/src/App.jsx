@@ -54,6 +54,7 @@ const DashboardMarketing = pagina(() => import('./pages/dashboards/DashboardMark
 const DashboardEnfermero = pagina(() => import('./pages/dashboards/DashboardEnfermero'));
 const Patients = pagina(() => import('./pages/Patients'));
 const PatientDetail = pagina(() => import('./pages/PatientDetail'));
+const ScanReview = pagina(() => import('./pages/ScanReview'));
 const Appointments = pagina(() => import('./pages/Appointments'));
 const Inventory = pagina(() => import('./pages/Inventory'));
 const Sales = pagina(() => import('./pages/Sales'));
@@ -225,6 +226,15 @@ function AppRoutes() {
                   element={
                     <RoleRoute roles={['admin', 'cajero', 'call_center', 'marketing', 'enfermero']}>
                       <Patients />
+                    </RoleRoute>
+                  }
+                />
+                {/* Va antes de '/patients/:id' para que no se lea como un id. */}
+                <Route
+                  path="/patients/scan-review"
+                  element={
+                    <RoleRoute roles={['admin', 'cajero', 'call_center']}>
+                      <ScanReview />
                     </RoleRoute>
                   }
                 />

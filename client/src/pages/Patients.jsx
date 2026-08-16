@@ -23,6 +23,7 @@ import {
   HiOutlineUsers,
   HiOutlineArrowDownTray,
   HiOutlineCloudArrowUp,
+  HiOutlineDocumentMagnifyingGlass,
 } from 'react-icons/hi2';
 import BulkUploadModal from '../components/BulkUploadModal';
 import DateInput from '../components/DateInput';
@@ -292,6 +293,8 @@ export default function Patients() {
           </div>
         )}
       </div>
+
+      <FichasPorRevisar canWrite={canWrite} />
 
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-4">
         <div className="flex gap-3 items-center flex-wrap">
@@ -866,5 +869,43 @@ function ReferralPicker({ value, onSelect, onClear }) {
         )}
       </div>
     </Field>
+  );
+}
+
+/**
+ * Aviso de las fichas físicas escaneadas que se importaron con datos dudosos.
+ *
+ * Solo aparece cuando queda alguna pendiente: terminada la tanda, la página
+ * vuelve a verse como siempre en lugar de arrastrar un cartel muerto.
+ */
+function FichasPorRevisar({ canWrite }) {
+  const [pendientes, setPendientes] = useState(0);
+
+  useEffect(() => {
+    if (!canWrite) return;
+    api.get('/patients/scan-review/count')
+      .then(({ data }) => setPendientes(data.pendientes || 0))
+      .catch(() => {});
+  }, [canWrite]);
+
+  if (!canWrite || !pendientes) return null;
+
+  return (
+    <Link
+      to="/patients/scan-review"
+      className="flex items-center gap-3 bg-amber-50 border border-amber-200 rounded-2xl p-4 no-underline hover:bg-amber-100/70"
+    >
+      <div className="w-10 h-10 rounded-xl bg-amber-100 text-amber-700 flex items-center justify-center shrink-0">
+        <HiOutlineDocumentMagnifyingGlass className="w-5 h-5" />
+      </div>
+      <div className="min-w-0">
+        <p className="text-sm font-semibold text-amber-900">
+          {pendientes} ficha{pendientes === 1 ? '' : 's'} escaneada{pendientes === 1 ? '' : 's'} por revisar
+        </p>
+        <p className="text-xs text-amber-700">
+          Se registraron desde el papel y algunos datos quedaron con dudas. Revísalos contra el documento.
+        </p>
+      </div>
+    </Link>
   );
 }

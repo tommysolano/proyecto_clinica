@@ -10,6 +10,7 @@ const {
   bulkTag,
 } = require('../controllers/patientController');
 const patientImport = require('../controllers/patientImportController');
+const scanReview = require('../controllers/scanReviewController');
 const { auth, requireClinic, requireRole } = require('../middleware/auth');
 
 router.use(auth, requireClinic);
@@ -21,6 +22,12 @@ router.post('/bulk-tag', requireRole('admin', 'marketing'), bulkTag);
 // Va antes de '/:id' para que "import-template" no se lea como un id.
 router.get('/import-template', requireRole('admin'), patientImport.downloadTemplate);
 router.post('/import', requireRole('admin'), patientImport.uploadMiddleware, patientImport.importPatients);
+
+// Revisión de las fichas físicas escaneadas que se importaron con datos dudosos.
+// Va antes de '/:id' para que "scan-review" no se lea como un id de paciente.
+router.get('/scan-review', requireRole('admin', 'cajero', 'call_center'), scanReview.listScanImports);
+router.get('/scan-review/count', requireRole('admin', 'cajero', 'call_center'), scanReview.countPendingScanImports);
+router.patch('/:id/scan-review', requireRole('admin', 'cajero', 'call_center'), scanReview.saveScanReview);
 
 // Buscador de referidores (pacientes + personal) — usado al crear un paciente.
 router.get('/referral-options', requireRole('admin', 'cajero', 'call_center', 'marketing'), searchReferralCandidates);
