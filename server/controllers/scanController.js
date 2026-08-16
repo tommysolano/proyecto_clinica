@@ -183,12 +183,53 @@ exports.downloadScan = async (req, res) => {
   }
 };
 
+/**
+ * Tope del ZIP. Se arma ENTERO en memoria (utils/zip.js), así que sin un límite
+ * una descarga masiva puede tumbar el backend por falta de RAM antes de empezar a
+ * responder. Además el formato ZIP clásico no pasa de 4 GB por campo.
+ */
+const MAX_ZIP_BYTES = 300 * 1024 * 1024;
+
+/**
+ * Descarga varios escaneos en un ZIP.
+ *
+ *   { ids: [...] }            los seleccionados
+ *   { all: true, search }     TODOS los de la sucursal (respetando el buscador),
+ *                             no solo los de la página que se está viendo
+ */
 exports.downloadZip = async (req, res) => {
   try {
+    const todos = req.body.all === true || req.body.all === 'true';
     const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
-    if (!ids.length) return res.status(400).json({ message: 'Selecciona al menos un documento' });
-    const docs = await ScannedDocument.find({ _id: { $in: ids }, clinic: req.clinicId }).sort({ createdAt: -1 });
-    if (!docs.length) return res.status(404).json({ message: 'No se encontraron los documentos seleccionados' });
+
+    let filtro;
+    if (todos) {
+      filtro = { clinic: req.clinicId };
+      // Mismo filtro que el listado: lo que el usuario ve buscado es lo que baja.
+      const search = String(req.body.search || '').trim();
+      if (search) filtro.nameKey = { $regex: nameKeyOf(search).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') };
+      if (req.body.mine === true || req.body.mine === 'true') filtro.createdBy = req.user._id;
+    } else {
+      if (!ids.length) return res.status(400).json({ message: 'Selecciona al menos un documento' });
+      filtro = { _id: { $in: ids }, clinic: req.clinicId };
+    }
+
+    const docs = await ScannedDocument.find(filtro).sort({ createdAt: -1 });
+    if (!docs.length) {
+      return res.status(404).json({
+        message: todos ? 'No hay documentos escaneados para descargar' : 'No se encontraron los documentos seleccionados',
+      });
+    }
+
+    // Se comprueba con el tamaño registrado ANTES de leer nada del disco: si no
+    // cabe, hay que decirlo sin haber cargado cientos de MB en memoria.
+    const pesoTotal = docs.reduce((s, d) => s + (d.size || 0), 0);
+    if (pesoTotal > MAX_ZIP_BYTES) {
+      return res.status(413).json({
+        message: `Son ${(pesoTotal / 1048576).toFixed(0)} MB y el máximo por ZIP es ${MAX_ZIP_BYTES / 1048576} MB. `
+          + 'Filtra con el buscador o selecciona menos documentos.',
+      });
+    }
 
     const files = [];
     const used = new Set();
@@ -204,7 +245,7 @@ exports.downloadZip = async (req, res) => {
         // Un archivo perdido no debe tumbar la descarga del resto.
       }
     }
-    if (!files.length) return res.status(404).json({ message: 'Ninguno de los archivos seleccionados está disponible' });
+    if (!files.length) return res.status(404).json({ message: 'Ninguno de los archivos solicitados está disponible' });
 
     const zip = createZip(files);
     res.setHeader('Content-Type', 'application/zip');

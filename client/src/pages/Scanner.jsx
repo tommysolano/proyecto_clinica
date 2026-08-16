@@ -1115,6 +1115,9 @@ function ToolBtn({ icon, label, onClick, disabled }) {
 //  LISTA de PDFs generados
 // ═════════════════════════════════════════════════════════════════════════════
 
+/** Documentos por página. El servidor admite hasta 100. */
+const POR_PAGINA = 50;
+
 function DocumentList({ currentUserId }) {
   const { hasRole } = useAuth();
   const [docs, setDocs] = useState([]);
@@ -1123,6 +1126,8 @@ function DocumentList({ currentUserId }) {
   const debounced = useDebounce(search, 300);
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
+  // Cuántos hay en TOTAL (no en esta página): es lo que se ofrece descargar entero.
+  const [total, setTotal] = useState(0);
   const [selected, setSelected] = useState([]);
   const [renaming, setRenaming] = useState(null);
   const [preview, setPreview] = useState(null);
@@ -1130,9 +1135,10 @@ function DocumentList({ currentUserId }) {
 
   const fetchDocs = useCallback(async () => {
     try {
-      const r = await api.get('/scans', { params: { search: debounced, page, limit: 20 } });
+      const r = await api.get('/scans', { params: { search: debounced, page, limit: POR_PAGINA } });
       setDocs(r.data.documents || []);
       setTotalPages(r.data.pages || 1);
+      setTotal(r.data.total || 0);
     } catch {
       toast.error('No se pudieron cargar los documentos');
     } finally {
@@ -1168,6 +1174,30 @@ function DocumentList({ currentUserId }) {
         filename: `escaneos_${new Date().toISOString().slice(0, 10)}.zip`,
       });
       toast.success(`${selected.length} documentos descargados`);
+    } catch (e) {
+      toast.error(e.message || 'No se pudo preparar el ZIP');
+    } finally {
+      setWorking(false);
+    }
+  };
+
+  /**
+   * Descarga TODOS los documentos, no solo los de la página.
+   *
+   * El servidor resuelve la lista: mandar los ids desde aquí obligaría a recorrer
+   * antes todas las páginas, y bastaría con que alguien escaneara algo entremedias
+   * para bajar una tanda incompleta sin que se note.
+   */
+  const downloadAll = async () => {
+    if (!total) return;
+    setWorking(true);
+    try {
+      await downloadFile('/scans/download-zip', {
+        method: 'post',
+        data: { all: true, search: debounced },
+        filename: `escaneos_${new Date().toISOString().slice(0, 10)}.zip`,
+      });
+      toast.success(`${total} documentos descargados`);
     } catch (e) {
       toast.error(e.message || 'No se pudo preparar el ZIP');
     } finally {
@@ -1241,6 +1271,17 @@ function DocumentList({ currentUserId }) {
           >
             {working ? <Spinner /> : <HiOutlineArrowDownTray className="w-4 h-4" />}
             Descargar {selected.length ? `(${selected.length})` : 'seleccionados'}
+          </button>
+          <button
+            onClick={downloadAll}
+            disabled={!total || working}
+            className="btn-secondary justify-center disabled:opacity-40 whitespace-nowrap"
+            title={debounced
+              ? 'Descarga todos los documentos que coinciden con la búsqueda'
+              : 'Descarga todos los documentos escaneados de la sucursal'}
+          >
+            <HiOutlineArrowDownTray className="w-4 h-4" />
+            {debounced ? `Descargar los ${total} encontrados` : `Descargar todos (${total})`}
           </button>
         </div>
       </div>

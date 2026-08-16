@@ -217,3 +217,56 @@ test('Escáner — el buscador ignora tildes y mayúsculas', async () => {
   assert.equal(r.payload.total, 1);
   assert.equal(r.payload.documents[0].name, 'Exámenes de laboratorio');
 });
+
+test('Escáner — "descargar todos" baja TODO, no solo lo que cabe en una página', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  // Más documentos de los que muestra una página del listado.
+  for (let i = 1; i <= 55; i++) {
+    await H.runController(scans.createScan, uploadReq(clinicId, userId, { name: `Ficha ${i}` }));
+  }
+
+  // El listado, en efecto, solo entrega la primera página.
+  const listado = await H.runController(
+    scans.listScans,
+    { ...H.mockReq(clinicId, userId), query: { page: 1, limit: 50 } }
+  );
+  assert.equal(listado.payload.documents.length, 50);
+  assert.equal(listado.payload.total, 55);
+
+  const zipRes = binaryRes();
+  await scans.downloadZip(H.mockReq(clinicId, userId, { all: true }), zipRes.res);
+
+  assert.equal(zipRes.state.headers['Content-Type'], 'application/zip');
+  const asText = zipRes.state.payload.toString('latin1');
+  // La 55 solo está si el servidor resolvió la lista entera, no la página vista.
+  assert.ok(asText.includes('Ficha 55.pdf'), 'debe incluir la última, fuera de la primera página');
+  assert.ok(asText.includes('Ficha 1.pdf'));
+  const entradas = asText.split('Ficha ').length - 1;
+  assert.ok(entradas >= 55, `esperaba las 55 fichas, encontré ${entradas} referencias`);
+});
+
+test('Escáner — "descargar todos" respeta el buscador y no cruza sucursales', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const otra = await H.seedClinic();
+  await H.runController(scans.createScan, uploadReq(clinicId, userId, { name: 'Ficha Ana' }));
+  await H.runController(scans.createScan, uploadReq(clinicId, userId, { name: 'Receta Luis' }));
+  await H.runController(scans.createScan, uploadReq(otra.clinicId, otra.userId, { name: 'Ficha Ajena' }));
+
+  const zipRes = binaryRes();
+  // Sin tilde ni mayúsculas: el filtro es el mismo que el del listado.
+  await scans.downloadZip(H.mockReq(clinicId, userId, { all: true, search: 'ficha' }), zipRes.res);
+
+  const asText = zipRes.state.payload.toString('latin1');
+  assert.ok(asText.includes('Ficha Ana.pdf'));
+  assert.ok(!asText.includes('Receta Luis.pdf'), 'lo que no casa con la búsqueda no se descarga');
+  assert.ok(!asText.includes('Ficha Ajena.pdf'), 'jamás documentos de otra sucursal');
+});
+
+test('Escáner — "descargar todos" sin documentos avisa en vez de mandar un ZIP vacío', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+
+  const r = await H.runController(scans.downloadZip, H.mockReq(clinicId, userId, { all: true }));
+
+  assert.equal(r.statusCode, 404);
+  assert.match(r.payload.message, /No hay documentos/);
+});
