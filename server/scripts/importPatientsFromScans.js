@@ -251,6 +251,73 @@ async function importarFichas({
   return { creados, omitidos, errores };
 }
 
+// ─── Ejecución de una sola vez (para el despliegue) ─────────────────────────
+
+/**
+ * Clave de la tanda. La importación ya se salta los escaneos que tienen paciente,
+ * pero eso NO basta: si alguien borra un paciente importado, el siguiente
+ * despliegue lo resucitaría sin que nadie lo pidiera. La marca corta eso en seco —
+ * la tanda entra una vez y no vuelve a mirarse.
+ *
+ * Para una tanda NUEVA de fichas: cambiar la clave junto con el JSON.
+ */
+const TASK_KEY = 'importar-fichas-escaneadas-2026-08-16';
+const STALE_RUNNING_MS = 30 * 60 * 1000;
+
+async function runOnce({ key = TASK_KEY, ruta, force = false, dirs, log = console.log } = {}) {
+  const OneTimeTask = require('../models/OneTimeTask');
+  const os = require('os');
+
+  const previa = await OneTimeTask.findById(key).lean();
+  if (previa && !force) {
+    if (previa.status === 'DONE') {
+      log(`⏭️  Tarea "${key}" ya ejecutada el ${previa.finishedAt?.toISOString?.() || '—'}: no se hace nada.`);
+      return { skipped: true, status: 'DONE' };
+    }
+    if (previa.status === 'RUNNING' && Date.now() - new Date(previa.startedAt).getTime() < STALE_RUNNING_MS) {
+      log(`⏭️  Tarea "${key}" en ejecución por ${previa.host} (pid ${previa.pid}): no se hace nada.`);
+      return { skipped: true, status: 'RUNNING' };
+    }
+    log(`↻  Intento anterior de "${key}" quedó en ${previa.status}: se reintenta.`);
+  }
+
+  const marca = {
+    status: 'RUNNING', host: os.hostname(), pid: process.pid, startedAt: new Date(),
+    finishedAt: null, error: '', result: null,
+  };
+  if (previa) {
+    await OneTimeTask.updateOne({ _id: key }, { $set: marca, $inc: { attempts: 1 } });
+  } else {
+    try {
+      await OneTimeTask.create({ _id: key, ...marca, attempts: 1 });
+    } catch (e) {
+      if (e.code === 11000) { // otro proceso la reclamó en este mismo instante
+        log(`⏭️  Otro proceso reclamó "${key}" primero: no se hace nada.`);
+        return { skipped: true, status: 'RUNNING' };
+      }
+      throw e;
+    }
+  }
+
+  try {
+    const fichas = leerDatos(ruta);
+    const r = await importarFichas({ fichas, commit: true, log, ...(dirs ? { dirs } : {}) });
+    informe(r, true);
+    const result = {
+      creados: r.creados.length,
+      conDudas: r.creados.filter((c) => c.dudas.length).length,
+      omitidos: r.omitidos.length,
+      errores: r.errores.length,
+    };
+    await OneTimeTask.updateOne({ _id: key }, { $set: { status: 'DONE', finishedAt: new Date(), result } });
+    log(`🔒  Marca "${key}" = DONE: no volverá a ejecutarse en los próximos despliegues.`);
+    return { skipped: false, status: 'DONE', result };
+  } catch (e) {
+    await OneTimeTask.updateOne({ _id: key }, { $set: { status: 'FAILED', finishedAt: new Date(), error: e.message } });
+    throw e;
+  }
+}
+
 // ─── Línea de comandos ───────────────────────────────────────────────────────
 
 function leerDatos(ruta) {
@@ -288,21 +355,30 @@ function informe({ creados, omitidos, errores }, commit) {
 async function main() {
   const args = process.argv.slice(2);
   const commit = args.includes('--commit');
+  const once = args.includes('--once');
+  const force = args.includes('--force');
   const ruta = (args.find((a) => a.startsWith('--datos=')) || '').split('=')[1];
   const clinic = (args.find((a) => a.startsWith('--clinic=')) || '').split('=')[1] || null;
+  const key = (args.find((a) => a.startsWith('--key=')) || '').split('=')[1] || TASK_KEY;
 
   if (!ruta) {
     console.error('Falta --datos=<ruta al JSON>. Ver docs/IMPORTAR_FICHAS_ESCANEADAS.md');
     process.exit(1);
   }
 
-  const fichas = leerDatos(ruta);
   console.log('\n=== IMPORTAR PACIENTES DESDE FICHAS ESCANEADAS ===');
-  console.log(`Fichas en el archivo: ${fichas.length}`);
+  if (once) console.log(`Clave de la tarea: ${key}`);
   console.log(commit ? 'MODO: COMMIT (crea de verdad).' : 'MODO: DRY-RUN (no escribe nada). Usa --commit para aplicar.');
 
   await connect();
   try {
+    // `--once` es lo que usa el despliegue: entra una sola vez aunque el push se repita.
+    if (once && commit) {
+      await runOnce({ key, ruta, force });
+      return;
+    }
+    const fichas = leerDatos(ruta);
+    console.log(`Fichas en el archivo: ${fichas.length}`);
     const r = await importarFichas({ fichas, commit, clinic, log: (m) => console.log(m) });
     informe(r, commit);
   } finally {
@@ -310,7 +386,7 @@ async function main() {
   }
 }
 
-module.exports = { importarFichas, indiceEscaneos, resolverEscaneo, claveDocumento, NOTA_SEGUIMIENTO };
+module.exports = { importarFichas, indiceEscaneos, resolverEscaneo, claveDocumento, runOnce, TASK_KEY, NOTA_SEGUIMIENTO };
 
 if (require.main === module) {
   main().catch((e) => { console.error('ERROR:', e.message); process.exit(1); });

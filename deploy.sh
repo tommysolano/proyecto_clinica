@@ -98,6 +98,34 @@ if ! ( cd "$APP_DIR/server" && node scripts/wipePatientsSuppliersOnce.js --commi
 fi
 # ─────────────────────────────────────────────────────────────────────────────────────
 
+# ─────────────────────────────────────────────────────────────────────────────────────
+# Vigente: dar de alta a los 113 pacientes de las FICHAS FÍSICAS escaneadas (ago-2026).
+#
+# Los PDF de /scanner se transcribieron a data/fichas-escaneadas.json (114 fichas; una
+# es un escaneo repetido y se omite sola por cédula duplicada). Este paso crea el
+# paciente, su ficha clínica con la fecha ESCRITA en el papel, y un seguimiento con el
+# PDF adjunto para que el doctor vea el original.
+#
+# NO TOCA el escáner: el PDF se COPIA a storage/followups y el original sigue en
+# storage/scans. NO dispara automatizaciones (crea con el modelo, no por el controlador),
+# así que nadie recibe un mensaje de bienvenida por esto.
+#
+# `--once` pone la marca `importar-fichas-escaneadas-2026-08-16` en `onetimetasks`: entra
+# UNA sola vez. Sin ella, borrar a mano un paciente importado haría que el siguiente
+# despliegue lo resucitara.
+#
+# Los 65 con algún dato dudoso salen en Pacientes → "Fichas por revisar" (/patients/scan-review),
+# con el PDF al lado para corregirlos. Ver docs/IMPORTAR_FICHAS_ESCANEADAS.md.
+#
+# Para ver qué haría sin crear nada:
+#   sudo -iu clinica bash -lc 'cd /var/www/clinica/server && node scripts/importPatientsFromScans.js --datos=../data/fichas-escaneadas.json'
+#
+if ! ( cd "$APP_DIR/server" && node scripts/importPatientsFromScans.js --datos=../data/fichas-escaneadas.json --once --commit ); then
+  echo "ADVERTENCIA: la importacion de fichas escaneadas fallo. Revisa el log y reintenta a mano:"
+  echo "   sudo -iu clinica bash -lc 'cd $APP_DIR/server && node scripts/importPatientsFromScans.js --datos=../data/fichas-escaneadas.json --once --commit'"
+fi
+# ─────────────────────────────────────────────────────────────────────────────────────
+
 # Vigente: reencolar las inscripciones que quedaron programadas para dispararse en pleno
 # horario de silencio (ago-2026, al invertir el significado de las ventanas horarias).
 if ! ( cd "$APP_DIR/server" && node scripts/rescheduleQuietWindowsOnce.js --commit ); then

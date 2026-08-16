@@ -316,3 +316,35 @@ test('I14) el dry-run informa lo que haría sin escribir nada, ni en la base ni 
     'tampoco copió ningún PDF'
   );
 });
+
+// ───────────────── Marca de una sola vez (despliegue) ─────────────────
+
+test('I15) con la marca puesta, un segundo despliegue NO resucita a un paciente borrado', async () => {
+  const os = require('os');
+  const { runOnce } = require('../scripts/importPatientsFromScans');
+  const OneTimeTask = require('../models/OneTimeTask');
+
+  const { clinicId, userId } = await H.seedClinic();
+  await seedEscaneo(clinicId, userId);
+
+  // El JSON que leería el despliegue.
+  const datos = path.join(raiz, 'fichas.json');
+  await fsp.writeFile(datos, JSON.stringify({ fichas: [fichaBuena()] }));
+
+  // La idempotencia por escaneo ya evita duplicar, pero NO cubre este caso: si el
+  // paciente se borra a mano, sin marca el siguiente push lo volvería a crear.
+  const primera = await runOnce({ key: 'test-fichas', ruta: datos, dirs, log: () => {} });
+  assert.equal(primera.status, 'DONE');
+  assert.equal(primera.result.creados, 1);
+
+  await Patient.deleteMany({});
+  assert.equal(await Patient.countDocuments({}), 0);
+
+  const segunda = await runOnce({ key: 'test-fichas', ruta: datos, dirs, log: () => {} });
+  assert.equal(segunda.skipped, true, 'la marca la detiene');
+  assert.equal(await Patient.countDocuments({}), 0, 'el paciente borrado sigue borrado');
+
+  const marca = await OneTimeTask.findById('test-fichas').lean();
+  assert.equal(marca.status, 'DONE');
+  assert.equal(marca.host, os.hostname(), 'consta dónde corrió');
+});

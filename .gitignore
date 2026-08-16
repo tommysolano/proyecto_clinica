@@ -4,3 +4,7 @@ server/storage/
 # Sesiones locales de whatsapp-web.js (perfiles de Chrome)
 .wwebjs_auth/
 .wwebjs_cache/
+
+# ZIP de escaneos descargados de /scanner. Son fichas de PACIENTES: si entran al
+# historial de git ya no se sacan, y el repositorio no es sitio para datos clínicos.
+escaneos_*.zip
