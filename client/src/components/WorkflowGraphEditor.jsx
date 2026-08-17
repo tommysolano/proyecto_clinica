@@ -50,6 +50,8 @@ import {
   HiOutlineSun,
   HiOutlineRectangleGroup,
   HiOutlineSquares2X2,
+  HiOutlinePencil,
+  HiOutlinePencilSquare,
 } from 'react-icons/hi2';
 import WorkflowWindowPicker from './WorkflowWindowPicker';
 import { describeWindow } from '../utils/windowSchedule';
@@ -882,31 +884,191 @@ function SplitNode({ data, selected }) {
 }
 
 /**
- * NOTA del lienzo: un cuadro de texto suelto para anotar el diagrama ("aquí falta
- * revisar el copy", "esta rama es para la campaña de mayo"…). No es un paso: no se
- * conecta a nada, el motor nunca lo ejecuta y no cuenta como acción al guardar.
+ * TEXTO del lienzo: un rótulo suelto para anotar el diagrama ("aquí falta revisar
+ * el copy", "esta rama es para la campaña de mayo"…). No es un paso: no se conecta
+ * a nada, el motor nunca lo ejecuta y no cuenta como acción al guardar.
+ *
+ * Se coloca COMO EN PAINT: se pulsa "Texto" en la barra del lienzo y luego se hace
+ * clic en el punto exacto donde debe aparecer (antes caía en un sitio arbitrario).
+ * No lleva fondo ni recuadro: solo el texto, con el formato que elija el usuario
+ * (negrita, cursiva, subrayado, color y tamaño) en la barrita que sale al tocarlo.
+ *
+ * Un clic selecciona (y se puede arrastrar); doble clic —o el lápiz de la barra—
+ * entra a escribir.
  */
+const NOTE_COLORS = ['#0f172a', '#64748b', '#dc2626', '#ea580c', '#ca8a04', '#16a34a', '#0284c7', '#7c3aed'];
+const NOTE_SIZES = [12, 14, 16, 20, 24, 32, 44];
+const NOTE_PLACEHOLDER = 'Escribe…';
+
+// Estilo del texto, IDÉNTICO en el textarea y en el div espejo que lo mide: si
+// difieren aunque sea en un píxel, el cuadro salta al empezar a escribir.
+function noteTextStyle(data) {
+  return {
+    fontFamily: 'inherit',
+    fontSize: Number(data.fontSize) || 14,
+    color: data.color || '#0f172a',
+    fontWeight: data.bold ? 700 : 400,
+    fontStyle: data.italic ? 'italic' : 'normal',
+    textDecoration: data.underline ? 'underline' : 'none',
+    textAlign: data.align || 'left',
+    lineHeight: 1.35,
+    letterSpacing: 'normal',
+    padding: '2px 4px',
+    margin: 0,
+    border: 'none',
+    background: 'transparent',
+    boxSizing: 'border-box',
+    whiteSpace: 'pre-wrap',
+    wordBreak: 'break-word',
+  };
+}
+
+// Botón de la barra de formato. `onMouseDown` con preventDefault para que el
+// textarea NO pierda el foco al pulsarlo (si no, se cierra la edición a cada clic).
+function NoteToolBtn({ on, title, onClick, children }) {
+  return (
+    <button
+      type="button"
+      title={title}
+      onMouseDown={(e) => e.preventDefault()}
+      onClick={(e) => { e.stopPropagation(); onClick(); }}
+      className={`w-6 h-6 flex items-center justify-center rounded border-none cursor-pointer text-xs leading-none ${
+        on ? 'bg-emerald-100 text-emerald-700' : 'bg-transparent text-slate-500 hover:bg-slate-100'
+      }`}
+    >
+      {children}
+    </button>
+  );
+}
+
 function NoteNode({ data, selected }) {
+  const wrapRef = useRef(null);
+  const areaRef = useRef(null);
+  const [editando, setEditando] = useState(false);
+  const texto = data.text || '';
+  const st = noteTextStyle(data);
+  const set = (patch) => data.onStyle(patch);
+
+  // Recién colocado en el lienzo: entra directo a escribir.
+  useEffect(() => {
+    if (!data._autoFocus) return;
+    setEditando(true);
+    data.onFocused?.();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data._autoFocus]);
+
+  useEffect(() => {
+    if (!editando) return;
+    const el = areaRef.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(el.value.length, el.value.length);
+  }, [editando]);
+
+  const cerrarEdicion = () => {
+    setEditando(false);
+    // Sin fondo, un cuadro vacío es invisible: se descarta, como en Paint.
+    if (!texto.trim()) data.onDelete();
+  };
+
   return (
     <div
-      className={`group relative rounded-lg border shadow-sm px-2.5 py-2 min-w-[180px] max-w-[300px] ${
-        selected ? 'border-amber-400 ring-2 ring-amber-200' : 'border-amber-200'
-      }`}
-      style={{ background: '#fef9c3' }}
+      ref={wrapRef}
+      // `nopan`: sin esto, el doble clic para editar lo captura el lienzo y hace zoom.
+      className="nopan relative inline-block"
+      style={{
+        minWidth: 44,
+        maxWidth: 520,
+        outline: selected || editando ? '1px dashed #94a3b8' : 'none',
+        outlineOffset: 4,
+      }}
+      onDoubleClick={(e) => { e.stopPropagation(); setEditando(true); }}
     >
-      <div className="nodrag nopan absolute -top-3 right-1 flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity bg-white border border-slate-200 rounded-lg shadow-sm px-0.5 py-0.5 z-10">
-        <button type="button" title="Eliminar nota" onClick={(e) => { e.stopPropagation(); data.onDelete(); }} className="p-1 text-slate-400 hover:text-rose-600 bg-transparent border-none cursor-pointer">
-          <HiOutlineTrash className="w-3.5 h-3.5" />
-        </button>
+      {(selected || editando) && (
+        <div className="nodrag nopan absolute -top-9 left-0 flex items-center gap-0.5 bg-white border border-slate-200 rounded-lg shadow-md px-1 py-0.5 z-20 whitespace-nowrap">
+          <NoteToolBtn title="Escribir" onClick={() => setEditando(true)} on={editando}>
+            <HiOutlinePencil className="w-3.5 h-3.5" />
+          </NoteToolBtn>
+          <span className="w-px h-4 bg-slate-200 mx-0.5" />
+          <NoteToolBtn title="Negrita" on={!!data.bold} onClick={() => set({ bold: !data.bold })}>
+            <span className="font-bold">B</span>
+          </NoteToolBtn>
+          <NoteToolBtn title="Cursiva" on={!!data.italic} onClick={() => set({ italic: !data.italic })}>
+            <span className="italic font-serif">I</span>
+          </NoteToolBtn>
+          <NoteToolBtn title="Subrayado" on={!!data.underline} onClick={() => set({ underline: !data.underline })}>
+            <span className="underline">U</span>
+          </NoteToolBtn>
+          <span className="w-px h-4 bg-slate-200 mx-0.5" />
+          <select
+            title="Tamaño del texto"
+            value={Number(data.fontSize) || 14}
+            onClick={(e) => e.stopPropagation()}
+            onChange={(e) => set({ fontSize: Number(e.target.value) })}
+            className="h-6 text-[11px] text-slate-600 bg-transparent border border-slate-200 rounded px-1 cursor-pointer"
+          >
+            {NOTE_SIZES.map((s) => <option key={s} value={s}>{s}</option>)}
+          </select>
+          <span className="w-px h-4 bg-slate-200 mx-0.5" />
+          {[['left', 'Izquierda', 'flex-start'], ['center', 'Centrado', 'center'], ['right', 'Derecha', 'flex-end']].map(([a, t, pos]) => (
+            <NoteToolBtn key={a} title={t} on={(data.align || 'left') === a} onClick={() => set({ align: a })}>
+              <span style={{ display: 'flex', flexDirection: 'column', gap: 2, width: 12, alignItems: pos }}>
+                <i style={{ height: 1.5, width: 12, background: 'currentColor' }} />
+                <i style={{ height: 1.5, width: 8, background: 'currentColor' }} />
+                <i style={{ height: 1.5, width: 12, background: 'currentColor' }} />
+              </span>
+            </NoteToolBtn>
+          ))}
+          <span className="w-px h-4 bg-slate-200 mx-0.5" />
+          {NOTE_COLORS.map((c) => (
+            <button
+              key={c}
+              type="button"
+              title="Color del texto"
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={(e) => { e.stopPropagation(); set({ color: c }); }}
+              className={`w-4 h-4 rounded-full border-none cursor-pointer ${
+                (data.color || '#0f172a') === c ? 'ring-2 ring-offset-1 ring-slate-400' : ''
+              }`}
+              style={{ background: c, boxShadow: 'inset 0 0 0 1px rgba(15,23,42,.15)' }}
+            />
+          ))}
+          <span className="w-px h-4 bg-slate-200 mx-0.5" />
+          <NoteToolBtn title="Eliminar texto" onClick={() => data.onDelete()}>
+            <HiOutlineTrash className="w-3.5 h-3.5 text-slate-400 hover:text-rose-600" />
+          </NoteToolBtn>
+        </div>
+      )}
+
+      {/* Espejo invisible: es quien da el ALTO y el ANCHO al cuadro, así crece solo
+          con lo escrito (y con el tamaño de letra) sin barras de desplazamiento. */}
+      <div aria-hidden style={{ ...st, visibility: 'hidden', minHeight: st.fontSize * 1.35 }}>
+        {/* El espacio de ancho cero conserva la última línea si el texto acaba en salto. */}
+        {texto || NOTE_PLACEHOLDER}{'​'}
       </div>
-      <textarea
-        value={data.text || ''}
-        onChange={(e) => data.onChangeText(e.target.value)}
-        onClick={(e) => e.stopPropagation()}
-        placeholder="Escribe una nota…"
-        rows={Math.min(8, Math.max(2, String(data.text || '').split('\n').length))}
-        className="nodrag w-full bg-transparent border-none outline-none resize-none text-[11px] text-amber-900 placeholder-amber-700/40 leading-snug"
-      />
+
+      {editando ? (
+        <textarea
+          ref={areaRef}
+          className="nodrag nowheel"
+          value={texto}
+          onChange={(e) => data.onChangeText(e.target.value)}
+          onClick={(e) => e.stopPropagation()}
+          onBlur={(e) => { if (!wrapRef.current?.contains(e.relatedTarget)) cerrarEdicion(); }}
+          onKeyDown={(e) => { if (e.key === 'Escape') { e.stopPropagation(); areaRef.current?.blur(); } }}
+          placeholder={NOTE_PLACEHOLDER}
+          // `userSelect`: los nodos de react-flow van con user-select:none y sin
+          // esto no se podría seleccionar con el ratón lo que uno mismo escribe.
+          style={{ ...st, position: 'absolute', inset: 0, resize: 'none', overflow: 'hidden', outline: 'none', cursor: 'text', userSelect: 'text', WebkitUserSelect: 'text' }}
+        />
+      ) : (
+        <div
+          style={{ ...st, position: 'absolute', inset: 0, cursor: 'move', opacity: texto ? 1 : 0.35 }}
+          title="Doble clic para escribir"
+        >
+          {texto || NOTE_PLACEHOLDER}
+        </div>
+      )}
     </div>
   );
 }
@@ -1170,6 +1332,14 @@ export default function WorkflowGraphEditor({
   const [dropEdgeId, setDropEdgeId] = useState(null);
   // Paso pendiente de confirmar borrado: se pregunta si va solo él o toda la rama.
   const [deleteAsk, setDeleteAsk] = useState(null);
+  // Herramienta "Texto" armada (estilo Paint): el siguiente clic en el lienzo
+  // coloca ahí el cuadro de texto. `focusNoteId` es el recién puesto, que entra
+  // solo en modo escritura.
+  const [colocandoTexto, setColocandoTexto] = useState(false);
+  const [focusNoteId, setFocusNoteId] = useState(null);
+  // Instancia de react-flow: hace falta para pasar de coordenadas de pantalla
+  // (dónde hizo clic) a coordenadas del lienzo (dónde va el nodo).
+  const rfInstance = useRef(null);
 
   // Asegura que siempre exista al menos un nodo disparador (un flujo).
   const modelNodes = useMemo(() => {
@@ -1194,15 +1364,18 @@ export default function WorkflowGraphEditor({
       const fn = toFlowNode(n, { clinics });
       const used = outHandles[n.id] || new Set();
       const isTrig = n.type === 'trigger';
-      // Las notas son anotaciones sueltas: no se conectan, no se copian y solo
-      // tienen su propio texto y su botón de borrar.
+      // Los textos son anotaciones sueltas: no se conectan, no se copian y solo
+      // manejan su contenido, su formato y su borrado.
       if (n.type === 'note') {
         return {
           ...fn,
           draggable: true,
           data: {
             ...fn.data,
+            _autoFocus: focusNoteId === n.id,
+            onFocused: () => setFocusNoteId(null),
             onChangeText: (text) => setNoteText(n.id, text),
+            onStyle: (patch) => setNoteData(n.id, patch),
             onDelete: () => deleteNote(n.id),
           },
         };
@@ -1234,7 +1407,7 @@ export default function WorkflowGraphEditor({
       };
     }),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [modelNodes, outHandles, triggerNodeCount, clipboardCount, clinics]
+    [modelNodes, outHandles, triggerNodeCount, clipboardCount, clinics, focusNoteId]
   );
 
   // Estado interno de react-flow para que arrastrar sea FLUIDO (sin parpadeo):
@@ -1740,17 +1913,34 @@ export default function WorkflowGraphEditor({
     toast.success(fuera.size === 1 ? 'Paso eliminado' : `Rama eliminada (${fuera.size} pasos)`);
   };
 
-  // ── Notas del lienzo (cuadros de texto sueltos, no son pasos) ──
-  const addNote = () => {
+  // ── Textos del lienzo (rótulos sueltos, no son pasos) ──
+  /**
+   * Coloca el cuadro de texto DONDE SE HIZO CLIC (como en Paint): se arma la
+   * herramienta con el botón "Texto" y el siguiente clic en el lienzo decide el
+   * sitio. Antes aparecía en una esquina calculada y había que ir a buscarlo.
+   */
+  const addNoteAt = (evt) => {
+    const inst = rfInstance.current;
+    const pos = inst?.screenToFlowPosition
+      ? inst.screenToFlowPosition({ x: evt.clientX, y: evt.clientY })
+      : inst?.project?.({ x: evt.clientX, y: evt.clientY }) || { x: 0, y: 0 };
     const id = `note-${Date.now()}`;
-    // Debajo del contenido existente, para que no tape ningún paso.
-    const maxY = Math.max(0, ...modelNodes.map((n) => n.position?.y || 0));
-    const minX = Math.min(0, ...modelNodes.map((n) => n.position?.x || 0));
-    const nueva = { id, type: 'note', position: { x: minX - GAP_X, y: maxY }, data: { text: '' } };
+    const nueva = {
+      id,
+      type: 'note',
+      position: { x: Math.round(pos.x), y: Math.round(pos.y) },
+      data: { text: '', fontSize: 14, color: '#0f172a' },
+    };
     onChange?.({ nodes: [...modelNodes, nueva], edges });
+    setColocandoTexto(false);
+    setFocusNoteId(id);
   };
   const setNoteText = (id, text) =>
     onChange?.({ nodes: modelNodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, text } } : n)), edges });
+  // Formato del texto (negrita, color, tamaño, alineación…): vive en `data`, que
+  // es Mixed en el modelo, así que se guarda con el resto del workflow.
+  const setNoteData = (id, patch) =>
+    onChange?.({ nodes: modelNodes.map((n) => (n.id === id ? { ...n, data: { ...n.data, ...patch } } : n)), edges });
   const deleteNote = (id) => onChange?.({ nodes: modelNodes.filter((n) => n.id !== id), edges });
 
   // Copia uno o VARIOS pasos (con las conexiones que haya ENTRE ellos) al
@@ -1942,16 +2132,25 @@ export default function WorkflowGraphEditor({
     return () => window.removeEventListener('keydown', onKey);
   }, []);
 
+  // Esc desarma la herramienta "Texto" (como cualquier editor de dibujo).
+  useEffect(() => {
+    if (!colocandoTexto) return;
+    const onKey = (e) => { if (e.key === 'Escape') setColocandoTexto(false); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [colocandoTexto]);
+
   const tidy = () => onChange?.({ nodes: autoLayout(modelNodes, edges), edges });
 
-  const selectedNode = modelNodes.find((n) => n.id === selectedId && n.type !== 'trigger');
+  // Los textos del lienzo no abren panel: se editan encima del propio nodo.
+  const selectedNode = modelNodes.find((n) => n.id === selectedId && n.type !== 'trigger' && n.type !== 'note');
   const selTrigNode = selectedTrigger ? modelNodes.find((n) => n.id === selectedTrigger.nodeId) : null;
   const selTrig = selTrigNode?.data?.triggers?.[selectedTrigger?.idx] ?? null;
   const selTrigCount = selTrigNode?.data?.triggers?.length || 0;
 
   return (
     <ReactFlowProvider>
-      <div className="relative w-full h-full">
+      <div className={`relative w-full h-full ${colocandoTexto ? 'wf-colocando-texto' : ''}`}>
         <ReactFlow
           nodes={rfNodes}
           edges={flowEdges}
@@ -1967,13 +2166,23 @@ export default function WorkflowGraphEditor({
           isValidConnection={isValidConnection}
           connectionRadius={38}
           nodeDragThreshold={6}
+          onInit={(inst) => { rfInstance.current = inst; }}
           onNodeClick={(evt, n) => {
+            // Herramienta "Texto" armada: el clic coloca el rótulo aunque caiga
+            // encima de un paso (en el lienzo se pincha donde se quiere escribir).
+            if (colocandoTexto) { addNoteAt(evt); return; }
             // Ctrl/⌘/Shift + clic = seleccionar varios: no abrir la configuración.
             if (evt.ctrlKey || evt.metaKey || evt.shiftKey) return;
             if (n.type === 'trigger') { setSelectedTrigger({ nodeId: n.id, idx: 0 }); setSelectedId(null); }
+            // Un texto no tiene panel de configuración: se edita en el propio lienzo.
+            else if (n.type === 'note') { setSelectedId(null); setSelectedTrigger(null); }
             else { setSelectedId(n.id); setSelectedTrigger(null); }
           }}
-          onPaneClick={() => { setSelectedId(null); setSelectedTrigger(null); }}
+          onPaneClick={(evt) => {
+            if (colocandoTexto) { addNoteAt(evt); return; }
+            setSelectedId(null);
+            setSelectedTrigger(null);
+          }}
           nodesDraggable
           nodesConnectable
           elementsSelectable
@@ -2017,11 +2226,15 @@ export default function WorkflowGraphEditor({
           </button>
           <button
             type="button"
-            onClick={addNote}
-            className="px-3 py-1.5 bg-white border border-slate-200 rounded-lg text-xs text-slate-600 shadow-sm hover:border-amber-400 cursor-pointer flex items-center gap-1"
-            title="Añade un cuadro de texto para anotar el diagrama (no es un paso: no se envía nada)"
+            onClick={() => setColocandoTexto((v) => !v)}
+            className={`px-3 py-1.5 border rounded-lg text-xs shadow-sm cursor-pointer flex items-center gap-1 ${
+              colocandoTexto
+                ? 'bg-slate-800 border-slate-800 text-white'
+                : 'bg-white border-slate-200 text-slate-600 hover:border-slate-400'
+            }`}
+            title="Escribe en el lienzo: pulsa aquí y luego haz clic donde quieras el texto (no es un paso: no se envía nada)"
           >
-            <HiOutlinePlus className="w-3.5 h-3.5" /> Nota
+            <HiOutlinePencilSquare className="w-3.5 h-3.5" /> Texto
           </button>
           <button
             type="button"
@@ -2035,6 +2248,13 @@ export default function WorkflowGraphEditor({
             Al mover un paso se mueve con sus siguientes · Shift + arrastrar (o Ctrl + clic) selecciona varios · Ctrl+C copia, Ctrl+V pega, Ctrl+D duplica
           </span>
         </div>
+
+        {/* Herramienta "Texto" armada: se dice dónde hay que hacer clic */}
+        {colocandoTexto && (
+          <div className="absolute top-14 left-3 z-20 px-3 py-1.5 bg-slate-800 text-white rounded-lg text-[11px] shadow-lg select-none pointer-events-none">
+            Haz clic en el lienzo donde quieres escribir · Esc para cancelar
+          </div>
+        )}
 
         {/* Barra de la selección múltiple: copiar / duplicar / eliminar en bloque */}
         {selectedIds.length > 1 && (

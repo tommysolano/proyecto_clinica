@@ -226,6 +226,12 @@ thead th { letter-spacing: 0.02em; }
   .skeleton { animation: none; }
 }
 
+/* Herramienta "Texto" del editor de automatizaciones: mientras está armada, el
+   lienzo pide dónde hacer clic. Va aquí (y no como utilidad de Tailwind) porque
+   el CSS de reactflow no está en ninguna capa y le ganaría a la utilidad. */
+.wf-colocando-texto .react-flow__pane,
+.wf-colocando-texto .react-flow__node { cursor: crosshair; }
+
 /* Placeholder para el editor de texto enriquecido (contentEditable no lo trae) */
 .rich-editor:empty:before {
   content: attr(data-placeholder);
