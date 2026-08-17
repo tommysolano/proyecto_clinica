@@ -548,8 +548,15 @@ function SavedReplyModal({ reply, folders, defaultFolder = '', onClose, onSaved 
                   onClick={() => fileRef.current?.click()}
                   className="w-full text-xs py-2 rounded-lg border border-dashed border-emerald-300 text-emerald-700 bg-emerald-50/40 hover:bg-emerald-100 cursor-pointer disabled:opacity-50"
                 >
-                  {uploading ? 'Subiendo…' : '↥ Añadir adjunto (imagen máx 6MB, video máx 32MB)'}
+                  {/* Un video puede tardar: si no viene en el formato que
+                      WhatsApp entrega (H.264), el servidor lo convierte al
+                      subirlo. Vale la pena avisar para que nadie crea que se
+                      colgó. */}
+                  {uploading ? 'Subiendo y preparando el archivo…' : '↥ Añadir adjunto (imagen máx 6MB, video máx 32MB)'}
                 </button>
+                <p className="text-[10px] text-slate-400 mt-1">
+                  Los videos se convierten solos al formato que WhatsApp acepta (H.264); si es grande, la subida tarda un poco.
+                </p>
                 <div className="flex gap-2">
                   <input
                     value={urlInput}

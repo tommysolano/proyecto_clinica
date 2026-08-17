@@ -1260,6 +1260,19 @@ exports.uploadSavedReplyMedia = async (req, res) => {
       if (!conv.ok) return res.status(400).json({ message: conv.error });
       dataUrl = conv.dataUrl;
       mimeType = conv.mimeType;
+    } else if (kind === 'video') {
+      // El video se normaliza AQUÍ, al subirlo una vez, y no en cada envío: un
+      // MP4 con pista H.265/HEVC (lo que graba cualquier iPhone reciente) lo
+      // acepta Meta al subirlo y lo rechaza DESPUÉS al entregarlo, con el error
+      // 131053, así que el fallo aparecía en el chat sin que nadie pudiera
+      // explicarlo. Ver utils/videoTranscode. Si ya es H.264+AAC no se toca.
+      const conv = await require('../utils/videoTranscode').toWhatsappVideo(dataUrl);
+      if (!conv.ok) return res.status(400).json({ message: conv.error });
+      dataUrl = conv.dataUrl;
+      mimeType = conv.mimeType;
+      if (conv.transcoded) {
+        console.log('[video] adjunto convertido a H.264 al subirlo (%s)', conv.reason);
+      }
     } else {
       // Cabecera SIEMPRE limpia (`data:<mime>;base64,…`). El navegador puede meter
       // parámetros en el tipo (codecs, charset) y eso rompe a quien luego lee el
@@ -2988,7 +3001,11 @@ const META_ERROR_TEXTS = {
   131048: 'Se han enviado demasiados mensajes a este contacto en poco tiempo (límite de frecuencia de Meta).',
   131042: 'Problema de facturación en la cuenta de WhatsApp Business: revisa el método de pago en Business Manager.',
   131031: 'La cuenta de WhatsApp Business está bloqueada o restringida por Meta.',
-  131053: 'WhatsApp no pudo procesar el archivo adjunto (formato o tamaño no admitidos).',
+  // Casi siempre es el CÓDEC, no el tamaño: WhatsApp solo entrega video H.264 +
+  // AAC, y un MP4 con pista H.265/HEVC (lo que graba un iPhone) lo acepta al
+  // subirlo y lo rechaza aquí, al entregarlo. Decir solo "formato o tamaño"
+  // mandaba a todo el mundo a mirar los megas, que casi nunca son el problema.
+  131053: 'WhatsApp no pudo procesar el archivo. Si es un video, casi siempre es porque está en H.265/HEVC (lo graban los iPhone) y WhatsApp solo entrega H.264: vuelve a subirlo al mensaje guardado y se convertirá solo.',
   130472: 'El contacto está en un experimento de Meta y no recibe mensajes de marketing.',
   132000: 'El número de variables enviadas no coincide con el de la plantilla.',
   132001: 'La plantilla no existe o no está aprobada en ese idioma.',

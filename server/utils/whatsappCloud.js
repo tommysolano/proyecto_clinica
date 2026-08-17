@@ -238,6 +238,20 @@ async function sendMedia(creds, to, url, caption, type = 'image', contextMessage
     byteMime = parsed.mimeType;
   }
 
+  // Red de seguridad para los videos guardados ANTES de que las subidas se
+  // normalizaran (ver utils/videoTranscode): Meta acepta un MP4 con pista HEVC
+  // —devuelve media id y 200— y solo lo rechaza al entregarlo, por webhook, con
+  // el 131053. Es preferible un error claro AHORA, que dice qué hacer, a un
+  // mensaje que se pinta enviado y se vuelve rojo un rato después.
+  if (buffer && kind === 'video' && require('./videoTranscode').looksLikeHevc(buffer)) {
+    console.warn('[wa-cloud sendMedia] video HEVC/H.265 bloqueado antes de enviar (bytes=%d)', buffer.length);
+    return {
+      ok: false,
+      errorCode: 'video_codec_no_soportado',
+      error: 'El video está en H.265/HEVC y WhatsApp solo entrega H.264. Vuelve a subirlo al mensaje guardado: al subirlo ahora se convierte solo.',
+    };
+  }
+
   let media;
   if (buffer) {
     const up = await uploadMedia(creds, { buffer, mimeType: byteMime });

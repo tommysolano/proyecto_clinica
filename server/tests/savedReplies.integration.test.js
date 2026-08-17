@@ -16,6 +16,29 @@ const ChatGalleryImage = require('../models/ChatGalleryImage');
 const PNG_B64 = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==';
 const PNG_DATA_URL = `data:image/png;base64,${PNG_B64}`;
 
+/**
+ * Un MP4 H.264 de verdad, generado con el ffmpeg del proyecto. Devuelve el data
+ * URL, o null si este entorno no tiene ffmpeg (entonces el caso se salta).
+ */
+function realMp4() {
+  const { spawnSync } = require('child_process');
+  const fs = require('fs');
+  const os = require('os');
+  const path = require('path');
+  const { resolveFfmpegPath } = require('../utils/audioTranscode');
+  const ffmpeg = resolveFfmpegPath();
+  if (!ffmpeg) return null;
+  const out = path.join(os.tmpdir(), `sr_${Date.now()}.mp4`);
+  const r = spawnSync(ffmpeg, [
+    '-y', '-f', 'lavfi', '-i', 'testsrc=size=160x120:rate=10:duration=1',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-an', out,
+  ]);
+  if (r.status !== 0 || !fs.existsSync(out)) return null;
+  const b64 = fs.readFileSync(out).toString('base64');
+  fs.promises.unlink(out).catch(() => {});
+  return `data:video/mp4;base64,${b64}`;
+}
+
 test.before(async () => { await H.startDb(); });
 test.after(async () => { await H.stopDb(); });
 test.beforeEach(async () => { await H.resetDb(); });
@@ -76,9 +99,21 @@ test('upload: acepta imagen, video y DOCUMENTOS; rechaza tamaños excesivos', as
   assert.match(img.payload.url, /\/api\/public\/media\/[a-f0-9]{24}$/);
   assert.ok(await ChatGalleryImage.findById(img.payload.id), 'persiste en Mongo');
 
-  const vid = await H.runController(chat.uploadSavedReplyMedia, H.mockReq(clinicId, userId, { name: 'clip.mp4', dataUrl: 'data:video/mp4;base64,AAAA' }));
-  assert.equal(vid.statusCode, 201, JSON.stringify(vid.payload));
-  assert.equal(vid.payload.type, 'video');
+  // El video se sube DE VERDAD: desde que se normaliza al subirlo (WhatsApp
+  // solo entrega H.264, ver utils/videoTranscode), unos bytes cualquiera con
+  // cabecera de video ya no valen — y no deben valer, porque Meta los aceptaría
+  // y luego marcaría el mensaje fallido con un 131053.
+  const clip = realMp4();
+  if (clip) {
+    const vid = await H.runController(chat.uploadSavedReplyMedia, H.mockReq(clinicId, userId, { name: 'clip.mp4', dataUrl: clip }));
+    assert.equal(vid.statusCode, 201, JSON.stringify(vid.payload));
+    assert.equal(vid.payload.type, 'video');
+
+    // Y un "video" que no se puede leer se rechaza al subirlo, con un motivo.
+    const roto = await H.runController(chat.uploadSavedReplyMedia, H.mockReq(clinicId, userId, { name: 'roto.mp4', dataUrl: 'data:video/mp4;base64,AAAA' }));
+    assert.equal(roto.statusCode, 400, JSON.stringify(roto.payload));
+    assert.match(roto.payload.message, /no se pudo leer/i);
+  }
 
   // PDF / Word / Excel → se aceptan como DOCUMENTO (antes se rechazaban).
   const pdf = await H.runController(chat.uploadSavedReplyMedia, H.mockReq(clinicId, userId, { name: 'contrato.pdf', dataUrl: 'data:application/pdf;base64,JVBERi0=' }));
