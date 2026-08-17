@@ -54,6 +54,7 @@ import { useAuth } from '../context/AuthContext';
 import { useSocketEvent, useSocket } from '../context/SocketContext';
 import SameSlotPanel from '../components/SameSlotPanel';
 import TagEditor from '../components/TagEditor';
+import WhatsappButtons from '../components/WhatsappButtons';
 import { fmtDate, fmtDateTime, todayEc, nowEcHHMM } from '../utils/date';
 import { imageFromClipboard, imageFileToDataUrl, pastedImageName, readFileAsDataUrl } from '../utils/chatMedia';
 import useVoiceRecorder, { formatDuration } from '../hooks/useVoiceRecorder';
@@ -3690,7 +3691,7 @@ const MessageBubble = memo(function MessageBubble({ msg, onReply, onJumpTo, high
       {isOut && <ReplyButton onClick={() => onReply?.(msg)} />}
       <div
         id={`msg-${msg._id}`}
-        className={`max-w-[85%] @3xl:max-w-[70%] rounded-lg px-3 py-2 text-sm shadow-sm transition-shadow ${
+        className={`max-w-[85%] @3xl:max-w-[70%] overflow-hidden rounded-lg px-3 py-2 text-sm shadow-sm transition-shadow ${
           unconfirmed
             ? 'bg-amber-500 text-white ring-2 ring-amber-300'
             : failed
@@ -3757,21 +3758,6 @@ const MessageBubble = memo(function MessageBubble({ msg, onReply, onJumpTo, high
           </div>
         )}
         <div className="whitespace-pre-wrap break-words">{bodyContent}</div>
-        {Array.isArray(msg.buttons) && msg.buttons.length > 0 && (
-          <div className="mt-1.5 grid gap-1">
-            {msg.buttons.map((button, index) => (
-              <div
-                key={button.id || index}
-                className={`rounded-md border px-2 py-1 text-center text-[11px] font-semibold ${
-                  isOut ? 'border-white/35 bg-white/15 text-white' : 'border-sky-200 bg-sky-50 text-sky-700'
-                }`}
-              >
-                {button.type === 'url' ? '🔗 ' : button.type === 'phone' ? '📞 ' : '↩️ '}
-                {button.text || 'Botón'}
-              </div>
-            ))}
-          </div>
-        )}
         {failed && (
           <div className="mt-1.5 rounded-md bg-white/20 px-2 py-1.5 text-[11px] leading-snug">
             <div className="flex items-center gap-1 font-bold">
@@ -3808,6 +3794,11 @@ const MessageBubble = memo(function MessageBubble({ msg, onReply, onJumpTo, high
           {isOut && <span>·</span>}
           {isOut && <DeliveryBadge msg={msg} />}
         </div>
+        {/* Botones AL FINAL, como en WhatsApp: hoja blanca pegada al fondo de la
+            burbuja (el mismo componente que pinta la previsualización, para que
+            lo que se ve al crear el mensaje sea lo que se ve en el chat).
+            `-mx-3 -mb-2` compensa el padding px-3 py-2 de la burbuja. */}
+        <WhatsappButtons buttons={msg.buttons} attached bleed="-mx-3 -mb-2" />
       </div>
       {!isOut && <ReplyButton onClick={() => onReply?.(msg)} />}
     </div>

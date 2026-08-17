@@ -4,6 +4,7 @@ import api from '../api/axios';
 import NumericInput from './NumericInput';
 import WhatsappTextArea, { MESSAGE_VARIABLES } from './WhatsappTextArea';
 import TemplateWhatsappPreview from './WhatsappPreview';
+import WhatsappButtons from './WhatsappButtons';
 import { syncTemplateNodeData, syncTemplateNodes } from '../utils/workflowTemplateButtons';
 import ReactFlow, {
   Background,
@@ -243,7 +244,10 @@ const FIELDS = [
   { value: 'opportunityName', label: 'Nombre de la oportunidad' },
   { value: 'opportunityTag', label: 'Etiqueta de la oportunidad' },
   { value: 'opportunityValue', label: 'Valor esperado de la oportunidad' },
-  { value: 'tag', label: 'Etiqueta del paciente' },
+  // Mira las etiquetas de la ficha del paciente Y las del contacto del CRM (las
+  // que trae el Excel de un envío masivo): es la opción que sirve para todo.
+  { value: 'tag', label: 'Etiqueta del paciente o contacto' },
+  { value: 'contactTag', label: 'Etiqueta del contacto (Excel importado)' },
   { value: 'chatTag', label: 'Etiqueta del chat' },
   { value: 'source', label: 'Fuente del paciente' },
   { value: 'lastReply', label: 'Última respuesta del paciente' },
@@ -263,7 +267,7 @@ const OP_LABELS = {
 };
 // Campos que guardan una LISTA (etiquetas) y campos NUMÉRICOS: cambian los
 // operadores disponibles y el editor del valor.
-const LIST_FIELDS = ['tag', 'chatTag', 'opportunityTag'];
+const LIST_FIELDS = ['tag', 'contactTag', 'chatTag', 'opportunityTag'];
 const NUMBER_FIELDS = ['opportunityValue'];
 
 const opsFor = (field) => {
@@ -290,7 +294,12 @@ const SOURCES = [
   { value: 'organico', label: 'Orgánico' },
 ];
 // De qué lista de etiquetas EN USO se alimenta cada campo (GET /workflows/tags).
-const TAG_FIELD_SOURCE = { tag: 'patient', chatTag: 'chat', opportunityTag: 'opportunity' };
+const TAG_FIELD_SOURCE = {
+  tag: 'patient', // incluye las del contacto: el motor mira ambas listas
+  contactTag: 'contact',
+  chatTag: 'chat',
+  opportunityTag: 'opportunity',
+};
 
 // ─────────── Condiciones (varias por rama, varias ramas por nodo) ───────────
 const newCondId = () => `c${Date.now().toString(36)}${Math.floor(Math.random() * 1e4).toString(36)}`;
@@ -2422,16 +2431,11 @@ function MessageBubblePreview({ body = '', mediaUrl = '', mediaType = '', button
         )}
         <p className="text-[10px] text-slate-500 text-right px-2 pb-1">10:30 ✓✓</p>
       </div>
-      {buttons.length > 0 && (
-        <div className="ml-auto max-w-[85%] mt-1 grid gap-0.5">
-          {buttons.map((button) => (
-            <div key={button.id} className="bg-white rounded-lg shadow-sm text-[12px] text-sky-600 font-semibold py-1.5 text-center">
-              {button.type === 'url' ? '🔗 ' : button.type === 'phone' ? '📞 ' : '↩️ '}
-              {button.text || 'Botón'}
-            </div>
-          ))}
-        </div>
-      )}
+      {/* Mismo componente que la burbuja del chat: lo que se ve aquí es
+          exactamente lo que verá el contacto. */}
+      <div className="ml-auto max-w-[85%] mt-1">
+        <WhatsappButtons buttons={buttons} />
+      </div>
       <p className="text-[10px] text-slate-500 mt-1.5">
         Las variables se muestran con datos de ejemplo; al enviarse llevan los del paciente y su cita.
       </p>

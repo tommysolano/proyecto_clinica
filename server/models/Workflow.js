@@ -20,7 +20,8 @@ const mongoose = require('mongoose');
 // el flujo; 'chatTag' = etiquetas del chat; 'opportunityTag'/'opportunityValue' =
 // etiquetas y valor esperado de la oportunidad principal del chat.
 const CONDITION_FIELDS = [
-  'tag',
+  'tag', // etiquetas de la ficha del paciente Y del contacto del CRM (Excel)
+  'contactTag', // solo las del contacto del CRM
   'chatTag',
   'stage',
   'opportunityName',

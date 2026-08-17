@@ -557,6 +557,11 @@ async function runImport(batchId) {
     // por teléfono, la sucursal resuelta para inscribir al terminar.
     const seen = new Map(); // phone → { clinic }
 
+    // Valores de la columna "sucursal" que no son ninguna sede dada de alta: se
+    // guardan como etiqueta y se avisa al final, para que el usuario sepa con qué
+    // nombre exacto ramificar en la automatización.
+    const unresolvedClinicNames = new Set();
+
     await iterateRows(batch.filePath, batch.fileName, async (row, rowNo) => {
       batch.processedRows++;
       const mapped = mapRow(row, batch.mapping);
@@ -576,9 +581,22 @@ async function runImport(batchId) {
       }
       // Resolver la sucursal de la fila (nombre → sede real). Sin coincidencia, se
       // deja sin `clinic` y buildOps usa la sucursal por defecto del asistente.
+      //
+      // Y si NO casa con ninguna sede, el valor se guarda como ETIQUETA en vez de
+      // tirarse. Columnas como "AGENCIA" se auto-proponen como sucursal (la regla
+      // de contactRowMapper incluye "agencia"), pero sus valores suelen ser
+      // categorías del propio cliente —PRINCIPAL, EXTENSION— que no son sedes
+      // dadas de alta. Antes ese dato desaparecía en silencio y la condición del
+      // workflow que ramificaba por él no se cumplía nunca; ahora queda como
+      // etiqueta del contacto, que es justo lo que las condiciones saben leer.
       if (mapped.contact.clinicName) {
         const resolved = resolveClinic(mapped.contact.clinicName);
-        if (resolved) mapped.contact.clinic = resolved;
+        if (resolved) {
+          mapped.contact.clinic = resolved;
+        } else {
+          mapped.contact.tags = [...(mapped.contact.tags || []), mapped.contact.clinicName];
+          unresolvedClinicNames.add(mapped.contact.clinicName);
+        }
         delete mapped.contact.clinicName;
       }
       // Defensa: si un mapeo legacy trae "sendTime", NO es un campo del contacto —
@@ -627,6 +645,18 @@ async function runImport(batchId) {
         batch.errorMessage = `Contactos importados, pero la inscripción en workflows falló: ${e.message}`;
         await batch.save().catch(() => {});
       }
+    }
+
+    // Se avisa AQUÍ (no antes) porque enrollInWorkflows reescribe enrollWarning
+    // con sus propios avisos y borraría este.
+    if (unresolvedClinicNames.size) {
+      const nombres = [...unresolvedClinicNames].slice(0, 8).join(', ');
+      batch.enrollWarning = [
+        batch.enrollWarning || '',
+        `La columna de sucursal traía valores que no son ninguna sede dada de alta (${nombres}). Se guardaron como ETIQUETA del contacto: para enviar un mensaje u otro según ese valor, usa en la automatización una condición «Etiqueta del paciente o contacto» con ese mismo texto.`,
+      ].filter(Boolean).join(' ');
+      await batch.save().catch(() => {});
+      progress();
     }
   } catch (e) {
     batch.status = 'failed';

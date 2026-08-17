@@ -346,12 +346,16 @@ exports.listTags = async (req, res) => {
       Conversation.distinct('opportunity.tags', byClinic),
     ]);
     res.json({
+      // `patient` mezcla ficha y contacto a propósito: la condición "Etiqueta del
+      // paciente o contacto" evalúa las dos listas, así que el desplegable debe
+      // ofrecer las dos. `contact` va aparte para la condición específica.
       patient: clean(patientTags, contactTags),
+      contact: clean(contactTags),
       chat: clean(chatTags),
       opportunity: clean(oppTags, oppTagsLegacy),
     });
   } catch (err) {
-    res.status(500).json({ message: 'Error al listar etiquetas', error: err.message, patient: [], chat: [], opportunity: [] });
+    res.status(500).json({ message: 'Error al listar etiquetas', error: err.message, patient: [], contact: [], chat: [], opportunity: [] });
   }
 };
 

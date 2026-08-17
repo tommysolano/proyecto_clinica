@@ -54,6 +54,88 @@ test('evaluateCondition checks tags', () => {
   assert.equal(evaluateCondition({ field: 'tag', op: 'exists' }, { patient: { tags: [] } }), false);
 });
 
+// ─────────── Etiquetas del CONTACTO (envío masivo desde Excel) ───────────
+// Una inscripción nacida de una importación NO tiene ficha de paciente: sus
+// etiquetas (la columna del Excel) viven en Contact.tags. Antes la condición
+// solo miraba patient.tags y la rama no se cumplía jamás.
+test('evaluateCondition lee las etiquetas del CONTACTO, no solo las del paciente', () => {
+  const contact = { tags: ['PRINCIPAL'] };
+  // Caso real: envío masivo, sin paciente.
+  assert.equal(evaluateCondition({ field: 'tag', op: 'eq', value: 'PRINCIPAL' }, { patient: null, contact }), true);
+  assert.equal(evaluateCondition({ field: 'tag', op: 'eq', value: 'EXTENSION' }, { patient: null, contact }), false);
+  // Campo específico del contacto.
+  assert.equal(evaluateCondition({ field: 'contactTag', op: 'eq', value: 'PRINCIPAL' }, { contact }), true);
+  assert.equal(evaluateCondition({ field: 'contactTag', op: 'eq', value: 'PRINCIPAL' }, { patient: { tags: ['PRINCIPAL'] } }), false);
+  // 'tag' es la UNIÓN de ambas listas: sigue valiendo para pacientes de siempre.
+  assert.equal(evaluateCondition({ field: 'tag', op: 'eq', value: 'vip' }, { patient: { tags: ['vip'] }, contact }), true);
+  assert.equal(evaluateCondition({ field: 'tag', op: 'exists' }, { patient: null, contact: { tags: [] } }), false);
+});
+
+test('las etiquetas se comparan sin distinguir mayúsculas, acentos ni espacios', () => {
+  const patient = { tags: ['  PRINCIPAL '] };
+  for (const value of ['principal', 'PRINCIPAL', 'Principal', ' principal ']) {
+    assert.equal(evaluateCondition({ field: 'tag', op: 'eq', value }, { patient }), true, value);
+  }
+  // Acentos a un lado y no al otro.
+  assert.equal(
+    evaluateCondition({ field: 'tag', op: 'eq', value: 'extension' }, { patient: { tags: ['EXTENSIÓN'] } }),
+    true
+  );
+  // 'es alguno de' y los negativos usan la misma comparación.
+  assert.equal(
+    evaluateCondition({ field: 'tag', op: 'in', values: ['extension', 'principal'] }, { patient }),
+    true
+  );
+  assert.equal(evaluateCondition({ field: 'tag', op: 'neq', value: 'principal' }, { patient }), false);
+  assert.equal(evaluateCondition({ field: 'tag', op: 'nin', values: ['extension'] }, { patient }), true);
+});
+
+// CONTRATO de la tolerancia a erratas. Es deliberadamente ESTRECHA: estas
+// etiquetas son valores literales de una columna de Excel, y las familias
+// numeradas o con sufijo de una letra son lo normal. Una comparación borrosa
+// generosa mandaría el envío masivo entero por la rama equivocada — un fallo
+// peor y más silencioso que el que se venía a arreglar.
+test('las etiquetas toleran UNA errata en medio de una palabra larga', () => {
+  const mismo = (a, b) => evaluateCondition({ field: 'tag', op: 'eq', value: b }, { contact: { tags: [a] } });
+  // Errata de teclado en medio: sí.
+  assert.equal(mismo('EXTENSION', 'EXTENCION'), true);
+  assert.equal(mismo('EXTENSION', 'extencion'), true);
+  assert.equal(mismo('principal', 'prinicpal'), true);
+  // Falta o sobra una letra en medio.
+  assert.equal(mismo('bioresonancia', 'bioresonncia'), true);
+});
+
+test('la tolerancia NUNCA funde dos etiquetas que el usuario quiso distintas', () => {
+  const mismo = (a, b) => evaluateCondition({ field: 'tag', op: 'eq', value: b }, { contact: { tags: [a] } });
+  // Familias numeradas: el caso exacto de una columna de Excel por agencia.
+  assert.equal(mismo('AGENCIA 1', 'AGENCIA 2'), false);
+  assert.equal(mismo('PRINCIPAL', 'PRINCIPAL 2'), false);
+  assert.equal(mismo('sede-1', 'sede-2'), false);
+  assert.equal(mismo('turno1', 'turno2'), false);
+  // Sufijo distinto al final: no es una errata, es otra etiqueta.
+  assert.equal(mismo('plan a', 'plan b'), false);
+  assert.equal(mismo('cliente', 'clientes'), false);
+  assert.equal(mismo('extension', 'extensionn'), false);
+  // Opuestos semánticos (dos ediciones).
+  assert.equal(mismo('activo', 'inactivo'), false);
+  // Palabras cortas: exactitud.
+  assert.equal(mismo('vip', 'vil'), false);
+  assert.equal(mismo('quito', 'quinto'), false);
+  // Y lo evidente.
+  assert.equal(mismo('EXTENSION', 'PRINCIPAL'), false);
+  // Una etiqueta vacía nunca casa (evita que un valor en blanco lo cumpla todo).
+  assert.equal(evaluateCondition({ field: 'tag', op: 'eq', value: '' }, { contact: { tags: ['X'] } }), false);
+});
+
+test('la comparación de etiquetas es simétrica', () => {
+  const pares = [['EXTENSION', 'EXTENCION'], ['AGENCIA 1', 'AGENCIA 2'], ['activo', 'inactivo'], ['cliente', 'clientes']];
+  for (const [a, b] of pares) {
+    const ab = evaluateCondition({ field: 'tag', op: 'eq', value: b }, { contact: { tags: [a] } });
+    const ba = evaluateCondition({ field: 'tag', op: 'eq', value: a }, { contact: { tags: [b] } });
+    assert.equal(ab, ba, `${a} / ${b}`);
+  }
+});
+
 test('evaluateCondition checks opportunity stage and source', () => {
   // El espejo legacy solo cuenta como oportunidad si dice serlo: `isOpportunity`
   // en false es justo lo que escribe "quitar oportunidad" (misma regla que el

@@ -44,7 +44,7 @@ export default function WorkflowEditor() {
   const [metaAdsNotice, setMetaAdsNotice] = useState('');
   // Etiquetas EN USO (paciente / chat / oportunidad) para los desplegables del
   // nodo Condición: escribirlas a mano se presta a erratas que nunca casan.
-  const [tagOptions, setTagOptions] = useState({ patient: [], chat: [], opportunity: [] });
+  const [tagOptions, setTagOptions] = useState({ patient: [], contact: [], chat: [], opportunity: [] });
   const [folderNames, setFolderNames] = useState([]);
   const [saving, setSaving] = useState(false);
   const [windowOpen, setWindowOpen] = useState(false);
@@ -69,11 +69,12 @@ export default function WorkflowEditor() {
           api.get('/clinics').catch(() => ({ data: [] })),
           api.get('/workflows/meta/custom-audiences').catch((e) => ({ data: { ok: false, error: e?.response?.data?.error || 'error', audiences: [] } })),
           api.get('/workflows/meta/ads').catch((e) => ({ data: { ok: false, error: e?.response?.data?.error || 'error', ads: [] } })),
-          api.get('/workflows/tags').catch(() => ({ data: { patient: [], chat: [], opportunity: [] } })),
+          api.get('/workflows/tags').catch(() => ({ data: { patient: [], contact: [], chat: [], opportunity: [] } })),
         ]);
         if (!active) return;
         setTagOptions({
           patient: tags.data?.patient || [],
+          contact: tags.data?.contact || [],
           chat: tags.data?.chat || [],
           opportunity: tags.data?.opportunity || [],
         });

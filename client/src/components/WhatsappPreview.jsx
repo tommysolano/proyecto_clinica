@@ -1,4 +1,5 @@
-import { HiOutlinePhoto, HiOutlineDocumentText, HiOutlineArrowTopRightOnSquare, HiOutlinePhone, HiOutlineArrowUturnLeft } from 'react-icons/hi2';
+import { HiOutlinePhoto, HiOutlineDocumentText } from 'react-icons/hi2';
+import WhatsappButtons from './WhatsappButtons';
 
 /**
  * Previsualización tipo burbuja de WhatsApp de una plantilla.
@@ -60,22 +61,11 @@ export default function WhatsappPreview({ template = {}, sampleVars }) {
         <div className="text-[10px] text-slate-400 text-right mt-0.5">{hh} ✓✓</div>
       </div>
 
-      {/* Botones */}
-      {buttons && buttons.length > 0 && (
-        <div className="max-w-[85%] mt-1 space-y-0.5">
-          {buttons.map((b, i) => (
-            <div
-              key={i}
-              className="bg-white rounded-lg shadow-sm text-[13px] text-sky-600 font-medium py-2 text-center flex items-center justify-center gap-1.5"
-            >
-              {b.type === 'url' && <HiOutlineArrowTopRightOnSquare className="w-4 h-4" />}
-              {b.type === 'phone' && <HiOutlinePhone className="w-4 h-4" />}
-              {b.type === 'quick_reply' && <HiOutlineArrowUturnLeft className="w-4 h-4" />}
-              {b.text || 'Botón'}
-            </div>
-          ))}
-        </div>
-      )}
+      {/* Botones: mismo componente que pinta la burbuja del chat, para que la
+          previsualización y el mensaje real sean idénticos. */}
+      <div className="max-w-[85%] mt-1">
+        <WhatsappButtons buttons={buttons} />
+      </div>
     </div>
   );
 }

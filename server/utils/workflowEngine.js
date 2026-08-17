@@ -432,6 +432,51 @@ function personalize(text, patient) {
  * con la cita del contexto del flujo). Una variable desconocida o sin dato se
  * elimina, para que al paciente nunca le llegue un "{{x}}" literal.
  */
+/**
+ * Contacto del CRM de esta inscripción. Se usa para DOS cosas: resolver las
+ * variables de plantilla que salen de las columnas del Excel ({{servicio}},
+ * {{hora}}…) y evaluar las condiciones por ETIQUETA (`Contact.tags`, donde
+ * aterriza la columna que el usuario mapeó a "Etiquetas" en la importación).
+ *
+ * Se busca por `contactId` (lo guarda la importación masiva) y, si no lo hay,
+ * por TELÉFONO: así una inscripción nacida de un chat o de una cita también ve
+ * las etiquetas del contacto, no solo las de la ficha de paciente.
+ */
+async function loadEnrollmentContact(ctx = {}, clinicId = null) {
+  const Contact = require('../models/Contact');
+  const select = 'firstName lastName displayName customFields tags';
+  if (ctx.contactId) {
+    const byId = await Contact.findById(ctx.contactId).select(select).lean().catch(() => null);
+    if (byId) return byId;
+  }
+  if (!ctx.phone) return null;
+  // El teléfono del contexto viene en el formato de QUIEN creó la inscripción:
+  // la importación lo guarda en E.164 sin '+', pero una inscripción nacida de
+  // una CITA arrastra `Patient.phone`, que es local ("0991234567"). Sin
+  // normalizar, esas nunca encontraban al contacto.
+  const { normalizePhone } = require('./phoneNormalize');
+  const norm = normalizePhone(ctx.phone);
+  const phone = norm?.ok ? norm.phone : String(ctx.phone).trim();
+  if (!phone) return null;
+
+  // Por índice: `{ clinic, phone }` es único (ver models/Contact.js). Buscar solo
+  // por teléfono recorrería la colección entera en cada inscripción.
+  if (clinicId) {
+    const own = await Contact.findOne({ clinic: clinicId, phone }).select(select).lean().catch(() => null);
+    if (own) return own;
+  }
+  // Sin sede (o sin ficha en ella): el mismo número puede tener FICHA GEMELA en
+  // otra sucursal. Se coge la más reciente, la misma regla de desempate que usa
+  // la importación masiva para no mandar dos mensajes al mismo número.
+  return Contact.find({ phone })
+    .select(select)
+    .sort({ updatedAt: -1 })
+    .limit(1)
+    .lean()
+    .then((r) => r[0] || null)
+    .catch(() => null);
+}
+
 async function renderText(text, patient, ctx = {}) {
   const raw = String(text || '');
   if (!raw.includes('{{')) return raw;
@@ -443,14 +488,7 @@ async function renderText(text, patient, ctx = {}) {
   //
   // Se carga aunque HAYA paciente: la ficha clínica no tiene las columnas del
   // Excel, y un contacto que además es paciente perdía los datos de su campaña.
-  let contact = null;
-  if (ctx.contactId) {
-    contact = await require('../models/Contact')
-      .findById(ctx.contactId)
-      .select('firstName lastName displayName customFields')
-      .lean()
-      .catch(() => null);
-  }
+  const contact = await loadEnrollmentContact(ctx);
   const resolve = await messaging.buildKnownVariableResolver(patient, ctx.appointmentId || null, contact);
   return raw.replace(/\{\{\s*([^}\s]+)\s*\}\}/g, (_, key) => resolve(key) || '').replace(/[ \t]{2,}/g, ' ');
 }
@@ -688,16 +726,98 @@ function matchScalarAny(values, cond) {
   return negative ? list.every((v) => matchScalar(v, cond)) : list.some((v) => matchScalar(v, cond));
 }
 
-// Compara una LISTA del contexto (etiquetas del paciente / del chat / de la oportunidad).
+/**
+ * Normaliza una etiqueta para compararla: sin acentos, sin mayúsculas, sin
+ * espacios de sobra. Las etiquetas se escriben a mano en cinco sitios distintos
+ * (chat, ficha del paciente, contactos, importación de Excel y el nodo "añadir
+ * etiqueta"), así que "PRINCIPAL", "Principal" y "principal " son la MISMA
+ * etiqueta para cualquiera menos para `Array.includes`. Antes se comparaba el
+ * string crudo y la condición no se cumplía nunca.
+ */
+function normTag(s) {
+  return String(s ?? '')
+    .normalize('NFD')
+    .replace(/\p{Diacritic}/gu, '')
+    .trim()
+    .toLowerCase()
+    .replace(/\s+/g, ' ');
+}
+
+// Dígitos de una etiqueta, en orden. Dos etiquetas con dígitos DISTINTOS nunca
+// son la misma por mucho que se parezcan: "AGENCIA 1" y "AGENCIA 2" son las dos
+// familias que el usuario quiere separar, no una errata de la otra.
+const digitsOf = (s) => (s.match(/\d/g) || []).join('');
+
+/**
+ * ¿Son la misma etiqueta aunque una esté MAL ESCRITA?
+ *
+ * La tolerancia es DELIBERADAMENTE estrecha: estas etiquetas son los valores
+ * literales de una columna de Excel, donde las familias numeradas o con un
+ * sufijo de una letra ("AGENCIA 1"/"AGENCIA 2", "plan a"/"plan b") son lo
+ * normal. Una comparación borrosa generosa las funde y el envío masivo sale
+ * entero por la rama equivocada — un fallo peor y MÁS SILENCIOSO que el que se
+ * venía a arreglar. Así que solo se perdona la errata típica de teclado, la que
+ * cae EN MEDIO de una palabra larga:
+ *
+ *   - una sola edición (un carácter cambiado, sobrante o que falta),
+ *   - en etiquetas de 6 caracteres o más,
+ *   - con los MISMOS dígitos a ambos lados,
+ *   - y nunca al FINAL: ahí es donde viven las variantes reales
+ *     ("cliente"/"clientes", "plan a"/"plan b", "sede-1"/"sede-2").
+ *
+ * Casos que SÍ se perdonan: "extension"/"extencion", "principal"/"prinicpal".
+ * Casos que NO: "activo"/"inactivo", "quito"/"quinto", "vip"/"vil", y todos los
+ * anteriores. Ver los tests de workflowEngine.test.js, que fijan este contrato.
+ */
+function sameTag(a, b) {
+  if (a === b) return true;
+  if (Math.min(a.length, b.length) < 6) return false;
+  if (Math.abs(a.length - b.length) > 1) return false;
+  if (digitsOf(a) !== digitsOf(b)) return false;
+
+  // Primera posición en la que difieren.
+  let i = 0;
+  while (i < a.length && i < b.length && a[i] === b[i]) i++;
+  const short = a.length <= b.length ? a : b;
+  const long = a.length <= b.length ? b : a;
+  // La diferencia está al final: es un sufijo distinto, no una errata.
+  if (i >= short.length - 1) return false;
+
+  if (a.length === b.length) {
+    // Sustitución: el resto tras el carácter cambiado debe ser idéntico.
+    if (a.slice(i + 1) === b.slice(i + 1)) return true;
+    // Transposición de dos letras contiguas ("principal"/"prinicpal"), la errata
+    // de tecleo más habitual. Tampoco vale al final, por lo mismo de siempre.
+    return (
+      i + 1 < a.length - 1
+      && a[i] === b[i + 1]
+      && a[i + 1] === b[i]
+      && a.slice(i + 2) === b.slice(i + 2)
+    );
+  }
+  // Inserción/borrado: el resto de la corta debe seguir a la larga.
+  return short.slice(i) === long.slice(i + 1);
+}
+
+/**
+ * Compara una LISTA del contexto (etiquetas del paciente/contacto, del chat o de
+ * la oportunidad). La comparación es TOLERANTE a mayúsculas, acentos, espacios y
+ * erratas (ver normTag/sameTag): el usuario escribe la etiqueta en el Excel y
+ * otra vez en la condición del workflow, y exigir que ambas coincidan carácter a
+ * carácter hacía que la rama no se cumpliera jamás.
+ */
 function matchList(list, cond) {
-  const arr = (Array.isArray(list) ? list : []).map((x) => String(x));
-  const v = String(cond.value ?? '');
+  const arr = (Array.isArray(list) ? list : []).map(normTag).filter(Boolean);
+  const has = (needle) => {
+    const v = normTag(needle);
+    return !!v && arr.some((t) => sameTag(t, v));
+  };
   switch (cond.op) {
     case 'exists': return arr.length > 0;
-    case 'neq': return !arr.includes(v);
-    case 'in': return conditionValues(cond).some((x) => arr.includes(x));
-    case 'nin': return !conditionValues(cond).some((x) => arr.includes(x));
-    default: return arr.includes(v); // eq / contains
+    case 'neq': return !has(cond.value);
+    case 'in': return conditionValues(cond).some(has);
+    case 'nin': return !conditionValues(cond).some(has);
+    default: return has(cond.value); // eq / contains
   }
 }
 
@@ -718,7 +838,7 @@ function matchNumber(actual, cond) {
  * Evalúa UNA condición suelta ({ field, op, value }) contra el paciente, la
  * conversación y el contexto de la inscripción. PURO y testeable.
  */
-function evaluateSingleCondition(cond = {}, { patient, conversation, context } = {}) {
+function evaluateSingleCondition(cond = {}, { patient, conversation, context, contact } = {}) {
   // La oportunidad "de la que va" el flujo: si la inscripción nació de un cambio
   // de etapa, la que está EN ESA etapa; si no, la principal. Antes era siempre la
   // última del array, así que en un chat con varias oportunidades las condiciones
@@ -729,7 +849,19 @@ function evaluateSingleCondition(cond = {}, { patient, conversation, context } =
       // Sucursal donde ocurrió el evento que inscribió el flujo (cita/venta).
       return matchScalar(String(context?.eventClinicId || ''), cond);
     case 'tag':
-      return matchList(patient?.tags, cond);
+      // Etiquetas de la PERSONA, venga de donde venga: la ficha clínica
+      // (Patient.tags) y/o el contacto del CRM (Contact.tags), que es donde
+      // aterrizan las columnas del Excel de un envío masivo.
+      //
+      // Antes solo se miraba `patient.tags`. Un contacto importado no tiene
+      // ficha de paciente (la inscripción se crea con `patient: null`, ver
+      // contactImportRunner), así que la lista estaba SIEMPRE vacía y la rama
+      // no se cumplía nunca — aunque el desplegable del editor sí ofreciera la
+      // etiqueta, porque `GET /workflows/tags` ya mezclaba ambas listas.
+      return matchList([...(patient?.tags || []), ...(contact?.tags || [])], cond);
+    case 'contactTag':
+      // Solo las del contacto del CRM (para distinguirlas de las de la ficha).
+      return matchList(contact?.tags, cond);
     case 'chatTag':
       return matchList(conversation?.tags, cond);
     case 'opportunityTag':
@@ -1247,7 +1379,7 @@ async function prepareWorkflowButtons({ enrollment, nodeId, buttons, patient, ct
  * `enrollment.currentNodeId` (o desde el nodo inicial). Las condiciones bifurcan
  * por las aristas 'yes'/'no'. Persiste el estado en cada espera.
  */
-async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ctx, conversation }) {
+async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ctx, conversation, contact }) {
   const convRef = { current: conversation };
   let currentId = enrollment.currentNodeId;
   if (!currentId) {
@@ -1376,7 +1508,7 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
       // Se evalúan las ramas EN ORDEN (if / else-if): la primera que se cumple
       // manda. Si ninguna se cumple, sale por 'no' ("si no"). Cada rama puede
       // llevar VARIAS condiciones combinadas con Y (todas) u O (cualquiera).
-      const hit = matchBranch(data, { patient, conversation: convRef.current, context: ctx });
+      const hit = matchBranch(data, { patient, conversation: convRef.current, context: ctx, contact });
       pushLog(enrollment, { nodeId: currentId, type, info: hit ? `Rama ${hit.name}` : 'Rama No (si no)' });
       currentId = nextNodeId(workflow, currentId, hit ? hit.id : 'no');
     } else if (type === 'split') {
@@ -1404,7 +1536,7 @@ async function executeGraphEnrollment(enrollment, workflow, patient, { phone, ct
       }
       currentId = route ? nextNodeId(workflow, currentId, route.id) : null;
     } else if (type === 'goal') {
-      if (evaluateCondition(data, { patient, conversation: convRef.current, context: ctx })) {
+      if (evaluateCondition(data, { patient, conversation: convRef.current, context: ctx, contact })) {
         pushLog(enrollment, { nodeId: currentId, type, info: 'Objetivo cumplido: fin del flujo' });
         break;
       }
@@ -1521,6 +1653,9 @@ async function executeEnrollment(enrollment) {
     : null;
   const ctx = enrollment.context || {};
   const phone = ctx.phone || patient?.whatsapp || patient?.phone || '';
+  // Contacto del CRM: es quien aporta las ETIQUETAS de las condiciones cuando la
+  // inscripción viene de un envío masivo (ahí no hay ficha de paciente).
+  const contact = await loadEnrollmentContact({ ...ctx, phone }, enrollment.clinic);
   // Si el flujo nació de un chat (mensaje/etiqueta/cambio de etapa), la inscripción
   // YA sabe de qué conversación exacta vino (enrollForChatMessage/enrollForOpportunityStage
   // guardan `enrollment.conversation`) — y por tanto de qué CANAL (whatsapp/messenger/
@@ -1558,7 +1693,7 @@ async function executeEnrollment(enrollment) {
 
   // Workflows de grafo (nodes/edges): recorrido por aristas con ramificaciones.
   if ((workflow.nodes || []).length > 0) {
-    return executeGraphEnrollment(enrollment, workflow, patient, { phone, ctx, conversation });
+    return executeGraphEnrollment(enrollment, workflow, patient, { phone, ctx, conversation, contact });
   }
 
   let i = enrollment.stepIndex;
@@ -1888,7 +2023,7 @@ async function executeEnrollment(enrollment) {
       }
       i++;
     } else if (step.type === 'condition') {
-      const pass = evaluateCondition(step, { patient, conversation, context: ctx });
+      const pass = evaluateCondition(step, { patient, conversation, context: ctx, contact });
       pushLog(enrollment, { stepIndex: i, type: step.type, info: pass ? 'Rama Sí' : 'Rama No' });
       if (pass) {
         i++;
@@ -1898,7 +2033,7 @@ async function executeEnrollment(enrollment) {
         break; // termina
       }
     } else if (step.type === 'goal') {
-      if (evaluateCondition(step, { patient, conversation, context: ctx })) break; // objetivo cumplido → fin
+      if (evaluateCondition(step, { patient, conversation, context: ctx, contact })) break; // objetivo cumplido → fin
       i++;
     } else if (step.type === 'add_tag' && step.tag) {
       // Sin `&& patient`: los contactos del CRM no tienen paciente, pero la
