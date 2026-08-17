@@ -50,6 +50,11 @@ export default function Workflows() {
   const [enrollView, setEnrollView] = useState(null); // workflow cuyas inscripciones se ven
   const [activityView, setActivityView] = useState(null); // workflow cuya actividad de disparador se ve
   const [bulkOpen, setBulkOpen] = useState(false);
+  // Arranca en `true`: mientras no llegue la respuesta NO se puede afirmar que no
+  // haya automatizaciones. Sin esto la página abría diciendo "Aún no hay
+  // automatizaciones" y solo después aparecían todas — se leía como un sistema
+  // lento (o peor: como datos perdidos).
+  const [loading, setLoading] = useState(true);
 
   const load = async () => {
     try {
@@ -63,6 +68,8 @@ export default function Workflows() {
       setPresets(ps.data);
     } catch (e) {
       toast.error(e.response?.data?.message || 'Error al cargar workflows');
+    } finally {
+      setLoading(false);
     }
   };
   useEffect(() => { load(); }, []);
@@ -265,7 +272,11 @@ export default function Workflows() {
           </button>
         )}
         renderItems={({ rows, emptyText, folders: allFolders }) =>
-          rows.length === 0 ? (
+          loading ? (
+            <div className="text-center py-16 text-slate-400 border border-dashed border-slate-200 rounded-xl">
+              Cargando automatizaciones…
+            </div>
+          ) : rows.length === 0 ? (
             <div className="text-center py-16 text-slate-400 border border-dashed border-slate-200 rounded-xl">
               {list.length === 0 ? 'Aún no hay automatizaciones.' : emptyText}
             </div>

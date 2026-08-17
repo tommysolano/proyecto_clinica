@@ -36,9 +36,16 @@ const HHMM_RE = /^\d{1,2}:\d{2}$/;
 function flowSendHourOf(wf) {
   if (!wf) return '';
   const triggerNodes = (wf.nodes || []).filter((n) => n.type === 'trigger');
-  const triggers = triggerNodes.length
-    ? triggerNodes.flatMap((n) => n.data?.triggers || [])
-    : [wf.trigger, ...(wf.triggers || [])].filter(Boolean);
+  // Se MEZCLAN las dos fuentes en vez de elegir una. Antes, si el flujo traía
+  // nodos disparadores se usaban SOLO ellos; bastaba que llegaran sin `data`
+  // (p. ej. desde un listado proyectado) para perder la hora de envío y mandar
+  // el goteo de inmediato. Ahora la ausencia de `data` simplemente no aporta
+  // nada y sigue valiendo la configuración a nivel workflow.
+  const triggers = [
+    ...triggerNodes.flatMap((n) => n.data?.triggers || []),
+    wf.trigger,
+    ...(wf.triggers || []),
+  ].filter(Boolean);
   for (const t of triggers) {
     if (t?.type === 'contact_import' && HHMM_RE.test(t.sendHour || '')) return t.sendHour;
   }

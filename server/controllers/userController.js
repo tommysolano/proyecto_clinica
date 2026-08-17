@@ -128,6 +128,9 @@ exports.updateUser = async (req, res) => {
       .populate('clinics.clinic', 'name')
       .select('-password');
     if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+    // El middleware `auth` cachea el usuario: sin esto, un cambio de rol o de
+    // clínica tardaría hasta el TTL en aplicarse.
+    require('../utils/userCache').invalidate(req.params.id);
     res.json(user);
   } catch (error) {
     res.status(500).json({ message: 'Error al actualizar usuario', error: error.message });
@@ -142,6 +145,8 @@ exports.deleteUser = async (req, res) => {
       { new: true }
     ).select('-password');
     if (!user) return res.status(404).json({ message: 'Usuario no encontrado' });
+    // Desactivar debe cortar el acceso YA, no cuando expire la caché de `auth`.
+    require('../utils/userCache').invalidate(req.params.id);
     res.json({ message: 'Usuario desactivado' });
   } catch (error) {
     res.status(500).json({ message: 'Error al eliminar usuario' });

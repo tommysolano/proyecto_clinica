@@ -31,6 +31,10 @@ export default function Inventory() {
   const [products, setProducts] = useState([]);
   const [movements, setMovements] = useState([]);
   const [transfers, setTransfers] = useState([]);
+  // Carga propia de cada pestaña: el `loading` de arriba es solo el de productos.
+  // Sin esto, Movimientos y Traslados afirman "No hay…" mientras aún consultan.
+  const [movLoading, setMovLoading] = useState(true);
+  const [trLoading, setTrLoading] = useState(true);
   const [clinicsList, setClinicsList] = useState([]);
   const [warehouses, setWarehouses] = useState([]);
   const [costCenters, setCostCenters] = useState([]);
@@ -100,16 +104,20 @@ export default function Inventory() {
   };
 
   const fetchMovements = async () => {
+    setMovLoading(true);
     try {
       const res = await api.get('/inventory');
       setMovements(res.data);
     } catch {
       toast.error('No se pudieron cargar los movimientos');
+    } finally {
+      setMovLoading(false);
     }
   };
 
   /** Historial de traslados: el servidor ya devuelve UNA fila por documento con sus productos. */
   const fetchTransfers = async () => {
+    setTrLoading(true);
     try {
       const res = await api.get('/inventory-advanced/transfers', {
         params: {
@@ -122,6 +130,8 @@ export default function Inventory() {
       setTransfers(res.data || []);
     } catch {
       toast.error('No se pudieron cargar los traslados');
+    } finally {
+      setTrLoading(false);
     }
   };
 
@@ -380,7 +390,9 @@ export default function Inventory() {
                 </tr>
               </thead>
               <tbody>
-                {movements.length === 0 ? (
+                {movLoading ? (
+                  <tr><td colSpan="6" className="text-center py-10 text-slate-400 text-sm">Cargando movimientos…</td></tr>
+                ) : movements.length === 0 ? (
                   <tr><td colSpan="6"><EmptyState icon={HiOutlineArrowDown} title="No hay movimientos" hint="Los movimientos de inventario aparecerán aquí." /></td></tr>
                 ) : (
                   movements.map((m) => (
@@ -454,7 +466,9 @@ export default function Inventory() {
                   </tr>
                 </thead>
                 <tbody>
-                  {transfers.length === 0 ? (
+                  {trLoading ? (
+                    <tr><td colSpan="5" className="text-center py-10 text-slate-400 text-sm">Cargando traslados…</td></tr>
+                  ) : transfers.length === 0 ? (
                     <tr><td colSpan="5"><EmptyState icon={HiOutlineArrowsRightLeft} title="Sin traslados" hint="Usa «Traslado entre bodegas» para mover uno o varios productos de una bodega a otra." /></td></tr>
                   ) : (
                     transfers.map((t) => (

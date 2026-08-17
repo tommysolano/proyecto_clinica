@@ -85,6 +85,7 @@ exports.updateAgentSchedule = async (req, res) => {
       { new: true, runValidators: true }
     ).select('name email callCenterSchedule');
     if (!user) return res.status(404).json({ message: 'Asesor call center no encontrado' });
+    require('../utils/userCache').invalidate(req.params.id);
     // Aplicar el cambio a su cola exclusiva en esta misma respuesta. Sin esto,
     // al editar el horario los chats podian tardar hasta el siguiente barrido en
     // aparecer/desaparecer.

@@ -12,8 +12,12 @@ export default function Tasks() {
   const [agents, setAgents] = useState([]);
   const [creating, setCreating] = useState(null);
   const [filter, setFilter] = useState('open');
+  // Mientras carga no se puede afirmar que no haya tareas (ver Workflows.jsx).
+  // También cubre el cambio de filtro, que vuelve a consultar al servidor.
+  const [loading, setLoading] = useState(true);
 
   const load = async () => {
+    setLoading(true);
     try {
       const [tasks, ag] = await Promise.all([
         api.get(`/agent-tasks?status=${filter}`),
@@ -23,6 +27,8 @@ export default function Tasks() {
       setAgents(ag.data || []);
     } catch (e) {
       toast.error(e.response?.data?.message || 'Error al cargar tareas');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -89,7 +95,8 @@ export default function Tasks() {
       </div>
 
       <div className="grid gap-2">
-        {list.length === 0 && <div className="text-center py-16 text-slate-400 border border-dashed border-slate-200 rounded-xl">Sin tareas.</div>}
+        {loading && <div className="text-center py-16 text-slate-400 border border-dashed border-slate-200 rounded-xl">Cargando tareas…</div>}
+        {!loading && list.length === 0 && <div className="text-center py-16 text-slate-400 border border-dashed border-slate-200 rounded-xl">Sin tareas.</div>}
         {list.map((t) => (
           <div key={t._id} className={`border rounded-xl p-3 bg-white flex items-center gap-3 ${overdue(t) ? 'border-red-200' : 'border-slate-200'}`}>
             <button onClick={() => complete(t)} className="bg-transparent border-none cursor-pointer p-0">

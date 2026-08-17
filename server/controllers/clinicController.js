@@ -206,6 +206,9 @@ exports.createClinic = async (req, res) => {
     await User.findByIdAndUpdate(req.user._id, {
       $push: { clinics: { clinic: clinic._id, role: 'admin' } },
     });
+    // `clinics` sí se lee desde `req.user` (getRoleForClinic): si no se invalida,
+    // el creador no podría entrar a su clínica recién creada hasta el TTL.
+    require('../utils/userCache').invalidate(req.user._id);
 
     res.status(201).json(clinic);
   } catch (error) {

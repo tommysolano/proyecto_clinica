@@ -1,5 +1,5 @@
 const jwt = require('jsonwebtoken');
-const User = require('../models/User');
+const { getAuthUser } = require('../utils/userCache');
 const { isAccessBlocked, blockMessage } = require('../utils/accessControl');
 const { DOCTOR_ROLE, DOCTOR_SPECIALTY_ROLES } = require('../constants/roles');
 
@@ -15,7 +15,10 @@ const auth = async (req, res, next) => {
     }
 
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id).select('-password');
+    // Cacheado unos segundos: este middleware corre en CADA petición y esta
+    // búsqueda era 118 ms de peaje fijo contra Atlas, más la firma digital en
+    // base64 que nadie lee desde aquí. Ver utils/userCache.js.
+    const user = await getAuthUser(decoded.id);
     if (!user || !user.active) {
       return res.status(401).json({ message: 'No autorizado' });
     }

@@ -97,11 +97,29 @@ exports.createFolder = wfFolders.create;
 exports.deleteFolder = wfFolders.remove; // DELETE /folders?path=...&mode=empty|move|purge
 exports.renameFolder = wfFolders.rename; // PUT /folders { path, name }
 
+// Campos que las PANTALLAS que listan automatizaciones necesitan. El grafo
+// completo (`nodes[]` con sus mensajes/parámetros/posiciones y `edges[]`) puede
+// pesar decenas de KB por automatización y no se usa para listar. Por eso de
+// `nodes` se piden solo dos cosas y `edges` no viaja en absoluto.
+// El editor (`GET /workflows/:id`) sigue trayendo el documento entero.
+//
+// ⚠️ `nodes.data.triggers` NO es opcional aunque la tarjeta no lo pinte: el
+// asistente de importación de contactos (client/src/components/contacts/
+// ImportWizard.jsx, `flowSendHourOf`) lee de aquí la "Hora de envío" del
+// disparador para programar el goteo. Al quitarlo, ese asistente creía que el
+// flujo no tenía hora y mandaba el envío masivo DE INMEDIATO en vez de a las
+// 08:00 — y encima escondía la opción de corregirlo. Es barato (solo la
+// configuración de los disparadores, no los mensajes).
+const LIST_FIELDS = 'name active folder trigger triggers stats steps.type nodes.type nodes.data.triggers updatedAt';
+
 exports.list = async (req, res) => {
   try {
     const filter = { clinic: req.clinicId };
     if (req.query.folder) filter.folder = req.query.folder;
-    const list = await Workflow.find(filter).sort({ updatedAt: -1 });
+    const list = await Workflow.find(filter)
+      .select(LIST_FIELDS)
+      .sort({ updatedAt: -1 })
+      .lean();
     res.json(list);
   } catch (err) {
     res.status(500).json({ message: 'Error al listar workflows', error: err.message });

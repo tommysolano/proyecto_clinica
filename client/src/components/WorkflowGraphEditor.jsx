@@ -420,11 +420,21 @@ function readStoredClipboard() {
   }
 }
 
+// Devuelve si se pudo PERSISTIR. Cuando falla (cuota llena, modo privado, storage
+// bloqueado) el portapapeles en memoria sigue sirviendo dentro de esta pestaña,
+// pero NO se podrá pegar en otra: hay que decírselo al usuario en vez de fallar
+// en silencio.
 function writeStoredClipboard(cb) {
   try {
     localStorage.setItem(CLIPBOARD_KEY, JSON.stringify(cb));
+    return true;
   } catch {
-    /* el portapapeles en memoria sigue funcionando */
+    // Si no se pudo guardar la copia NUEVA, la ANTERIOR sigue ahí y sería una
+    // mentira: otra pestaña la adoptaría y pegaría lo copiado hace rato. Mejor
+    // dejarlo vacío —el usuario ve que no hay nada que pegar— que pegar algo
+    // que él no copió.
+    try { localStorage.removeItem(CLIPBOARD_KEY); } catch { /* nada que hacer */ }
+    return false;
   }
 }
 
@@ -1106,6 +1116,43 @@ export default function WorkflowGraphEditor({
   const [clipboard, setClipboard] = useState(() => readStoredClipboard());
   const clipboardRef = useRef(null);
   if (clipboardRef.current === null && clipboard) clipboardRef.current = clipboard;
+
+  /**
+   * PEGAR EN OTRA AUTOMATIZACIÓN QUE YA ESTABA ABIERTA.
+   *
+   * Leer localStorage AL MONTAR no basta. Si la otra automatización está abierta
+   * en OTRA PESTAÑA, esa pestaña se montó ANTES de la copia: su estado se quedó
+   * con el portapapeles de entonces (normalmente vacío) y nunca se enteraba de la
+   * copia nueva. Ese era exactamente el fallo: copiar y pegar funcionaba dentro
+   * del mismo lienzo (portapapeles en memoria) pero no en otro.
+   *
+   * `storage` es el evento que el navegador manda a las DEMÁS pestañas del mismo
+   * origen cuando una escribe. El repaso al recuperar el foco es la red de
+   * seguridad para las pestañas que el navegador suspendió (Chrome descarta
+   * pestañas en segundo plano) y que por eso se perdieron el evento.
+   *
+   * Se actualiza el REF además del estado: `pasteAt` lee el contenido del ref, así
+   * que sin esto aparecería el botón de pegar pero no pegaría nada.
+   */
+  useEffect(() => {
+    const sync = () => {
+      const stored = readStoredClipboard();
+      if (!stored) return;
+      // `stamp` evita pisar una copia local MÁS NUEVA: si el guardado en
+      // localStorage falló (cuota), aquí solo existe en memoria y debe ganar.
+      const actual = clipboardRef.current;
+      if (actual && (stored.stamp || 0) <= (actual.stamp || 0)) return;
+      clipboardRef.current = stored;
+      setClipboard(stored);
+    };
+    const onStorage = (e) => { if (e.key === CLIPBOARD_KEY) sync(); };
+    window.addEventListener('storage', onStorage);
+    window.addEventListener('focus', sync);
+    return () => {
+      window.removeEventListener('storage', onStorage);
+      window.removeEventListener('focus', sync);
+    };
+  }, []);
   // Selección múltiple del lienzo (Ctrl/⌘+clic, o Shift+arrastre para encuadrar).
   const [selectedIds, setSelectedIds] = useState([]);
   // Nodos a dejar seleccionados en cuanto el modelo vuelva de `onChange` (lo que
@@ -1721,6 +1768,10 @@ export default function WorkflowGraphEditor({
     // Copia PROFUNDA del estado actual: si luego se edita el original (o la copia
     // pegada), lo copiado no cambia… y lo que se pega es siempre esto.
     const payload = {
+      // Marca de tiempo de la copia: permite a las OTRAS pestañas saber si lo que
+      // hay guardado es más nuevo que lo suyo antes de adoptarlo (ver el efecto
+      // de sincronización del portapapeles).
+      stamp: Date.now(),
       nodes: modelNodes
         .filter((n) => set.has(n.id))
         .map((n) => ({ id: n.id, type: n.type, position: { ...(n.position || { x: 0, y: 0 }) }, data: JSON.parse(JSON.stringify(n.data || {})) })),
@@ -1732,11 +1783,16 @@ export default function WorkflowGraphEditor({
     };
     clipboardRef.current = payload;
     setClipboard(payload);
-    writeStoredClipboard(payload);
+    const persisted = writeStoredClipboard(payload);
     const n = payload.nodes.length;
-    toast.success(
-      `${label || (n === 1 ? 'Paso copiado' : `${n} pasos copiados`)}. Pega con el icono 📋 junto a cualquier “+” (o Ctrl+V).`
-    );
+    const titulo = label || (n === 1 ? 'Paso copiado' : `${n} pasos copiados`);
+    if (persisted) {
+      toast.success(`${titulo}. Pega con el icono 📋 junto a cualquier “+” (o Ctrl+V), aquí o en otra automatización.`);
+    } else {
+      // Sin persistencia el portapapeles no cruza a otra pestaña/automatización.
+      // Decirlo es mejor que dejar que el usuario descubra que "pegar no funciona".
+      toast(`${titulo}, pero solo para ESTA pestaña (no se pudo guardar el portapapeles del navegador).`, { icon: '⚠️' });
+    }
   };
 
   // Copia un paso Y TODO lo que cuelga de él (la rama entera, con sus ramas
@@ -1845,11 +1901,39 @@ export default function WorkflowGraphEditor({
       if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
       const el = e.target;
       const tag = (el?.tagName || '').toLowerCase();
-      // Dentro de un campo del panel de configuración manda el navegador.
-      if (el?.isContentEditable || tag === 'input' || tag === 'textarea' || tag === 'select') return;
-      const s = shortcutsRef.current;
       const key = e.key.toLowerCase();
-      if (key === 'c' && s.selectedIds.length) { e.preventDefault(); s.copyNodes(s.selectedIds); }
+      const enCampo = el?.isContentEditable || tag === 'input' || tag === 'textarea' || tag === 'select';
+
+      /**
+       * COPIAR TEXTO SIEMPRE MANDA; COPIAR EL PASO ES EL RESTO.
+       *
+       * Antes se abandonaba el atajo en cuanto el foco estaba en un campo del
+       * panel de configuración. Resultado real: el usuario tocaba un paso (queda
+       * con su anillo de seleccionado y se abre el panel), escribía en el mensaje,
+       * pulsaba Ctrl+C… y NO pasaba nada. Ni copia, ni aviso. El paso seguía
+       * visiblemente seleccionado —el panel está fuera del lienzo, así que clicar
+       * en él no deselecciona— y el cartel del lienzo prometía "Ctrl+C copia".
+       * Se leía como que copiar estaba roto.
+       *
+       * Regla: si hay TEXTO seleccionado, el Ctrl+C es del navegador (copiar ese
+       * texto es justo lo que se espera). Si no hay texto seleccionado, no había
+       * nada que copiar de todos modos, así que copiamos el paso.
+       */
+      const seleccionEnCampo = (tag === 'input' || tag === 'textarea')
+        && el.selectionStart !== el.selectionEnd;
+      const haySeleccionDeTexto = seleccionEnCampo || !(window.getSelection()?.isCollapsed ?? true);
+      if (key === 'c' && haySeleccionDeTexto) return;
+      // El resto de atajos (pegar texto, seleccionar todo el texto…) siguen siendo
+      // del navegador mientras se escribe.
+      if (enCampo && key !== 'c') return;
+
+      const s = shortcutsRef.current;
+      if (key === 'c') {
+        e.preventDefault();
+        // Nunca en silencio: si no hay paso seleccionado se dice qué hacer.
+        if (s.selectedIds.length) s.copyNodes(s.selectedIds);
+        else toast('Primero haz clic en el paso que quieres copiar.');
+      }
       else if (key === 'v') { e.preventDefault(); s.pasteAt({ mode: 'loose' }); }
       else if (key === 'd' && s.selectedIds.length) { e.preventDefault(); s.duplicateNodes(s.selectedIds); }
       else if (key === 'a') { e.preventDefault(); s.selectAllNodes(); }

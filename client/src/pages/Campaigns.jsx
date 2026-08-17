@@ -44,6 +44,9 @@ export default function Campaigns() {
   const [creating, setCreating] = useState(null);
   const [segPreview, setSegPreview] = useState(null);
   const [saving, setSaving] = useState(false);
+  // Solo la PRIMERA carga: el refresco periódico cada 8 s no debe volver a tapar
+  // la lista con "Cargando…" (ver Workflows.jsx).
+  const [loading, setLoading] = useState(true);
 
   const load = async () => {
     try {
@@ -59,6 +62,8 @@ export default function Campaigns() {
       setEmailTemplates(etpls.data || []);
     } catch (e) {
       toast.error(e.response?.data?.message || 'Error al cargar campañas');
+    } finally {
+      setLoading(false);
     }
   };
 
@@ -151,7 +156,12 @@ export default function Campaigns() {
       </div>
 
       <div className="grid gap-3">
-        {list.length === 0 && (
+        {loading && (
+          <div className="text-center py-16 text-slate-400 border border-dashed border-slate-200 rounded-xl">
+            Cargando campañas…
+          </div>
+        )}
+        {!loading && list.length === 0 && (
           <div className="text-center py-16 text-slate-400 border border-dashed border-slate-200 rounded-xl">
             Aún no has creado campañas.
           </div>

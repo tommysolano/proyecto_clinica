@@ -179,6 +179,8 @@ export default function CommissionRules() {
   const [editing, setEditing] = useState(null);
   const [form, setForm] = useState(EMPTY);
   const [saving, setSaving] = useState(false);
+  // Mientras carga no se puede afirmar "Sin reglas de comisión" (ver Workflows.jsx).
+  const [loading, setLoading] = useState(true);
 
   // Reporte
   const today = new Date().toISOString().slice(0, 10);
@@ -207,6 +209,8 @@ export default function CommissionRules() {
       api.get('/chart-of-accounts', { params: { active: true } }).then((a) => setAccounts(a.data || [])).catch(() => {});
     } catch (err) {
       toast.error(err.response?.data?.message || 'Error al cargar');
+    } finally {
+      setLoading(false);
     }
   };
   useEffect(() => { load(); }, []);
@@ -418,7 +422,8 @@ export default function CommissionRules() {
               </tr>
             </thead>
             <tbody>
-              {rules.length === 0 && <tr><td colSpan={7} className="text-center py-6 text-slate-400">Sin reglas de comisión</td></tr>}
+              {loading && <tr><td colSpan={7} className="text-center py-6 text-slate-400">Cargando reglas…</td></tr>}
+              {!loading && rules.length === 0 && <tr><td colSpan={7} className="text-center py-6 text-slate-400">Sin reglas de comisión</td></tr>}
               {rules.map((r) => (
                 <tr key={r._id} className="border-t border-slate-100">
                   <td className="px-3 py-2 font-medium">{r.name}</td>
