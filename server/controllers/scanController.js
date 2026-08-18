@@ -5,12 +5,17 @@
  * en perspectiva y manda las páginas ya limpias como JPEG. Aquí se arman en un
  * PDF (una página A4 por imagen), se guarda en disco y se registra la ficha.
  *
- *   POST   /api/scans                 crear (multipart: pages[] + name)
+ * Se puede pedir UN SOLO PDF con todas las imágenes (lo de siempre) o UN PDF
+ * POR IMAGEN — `mode=split` —, que es lo que hace falta cuando se sube una
+ * tanda de fotos sueltas (cédulas, recetas…) y cada una es un documento aparte.
+ *
+ *   POST   /api/scans                 crear (multipart: pages[] + name + mode)
  *   GET    /api/scans                 listar los de la clínica
  *   GET    /api/scans/:id/download    descargar / ver uno
  *   POST   /api/scans/download-zip    descargar varios en un ZIP
  *   PATCH  /api/scans/:id             renombrar
  *   DELETE /api/scans/:id             eliminar (autor o admin)
+ *   POST   /api/scans/delete-many     eliminar varios (autor o admin)
  *
  * Disponible para TODOS los roles: cualquiera de la clínica escanea y ve lo
  * escaneado por el resto (cada documento muestra quién lo hizo).
@@ -48,25 +53,37 @@ exports.uploadMiddleware = multer({
 // Viven en utils/scanNames.js porque el importador de fichas escaneadas también
 // los necesita para emparejar los PDF del ZIP con su ficha en la base.
 
-/**
- * Devuelve un nombre libre en la clínica. Si "Receta" ya existe prueba
- * "Receta (2)", "Receta (3)"… hasta encontrar uno. `ignoreId` sirve al renombrar
- * (para no chocar consigo mismo).
- */
-async function uniqueName(clinicId, base, ignoreId = null) {
-  const clean = sanitizeName(base) || defaultName();
+/** Nombres ya ocupados en la clínica. `ignoreId` sirve al renombrar. */
+async function takenNameKeys(clinicId, ignoreId = null) {
   const filter = { clinic: clinicId };
   if (ignoreId) filter._id = { $ne: ignoreId };
-  const taken = new Set(
+  return new Set(
     (await ScannedDocument.find(filter).select('nameKey').lean()).map((d) => d.nameKey)
   );
-  if (!taken.has(nameKeyOf(clean))) return clean;
+}
+
+/**
+ * Elige un nombre libre contra `taken` y lo APARTA (lo agrega al conjunto). Si
+ * "Receta" ya existe prueba "Receta (2)", "Receta (3)"… hasta encontrar uno.
+ *
+ * Lo aparta para que una tanda de PDF —uno por imagen— reparta nombres
+ * distintos entre sí con una sola consulta a la base, en vez de una por PDF.
+ */
+function allocateName(taken, base) {
+  const clean = sanitizeName(base) || defaultName();
+  const apartar = (n) => { taken.add(nameKeyOf(n)); return n; };
+  if (!taken.has(nameKeyOf(clean))) return apartar(clean);
   for (let i = 2; i < 1000; i++) {
     const candidate = `${clean} (${i})`;
-    if (!taken.has(nameKeyOf(candidate))) return candidate;
+    if (!taken.has(nameKeyOf(candidate))) return apartar(candidate);
   }
   // Salida de emergencia: sufijo aleatorio (no debería llegar aquí nunca).
-  return `${clean} (${crypto.randomBytes(3).toString('hex')})`;
+  return apartar(`${clean} (${crypto.randomBytes(3).toString('hex')})`);
+}
+
+/** Devuelve un nombre libre en la clínica (una consulta + reparto). */
+async function uniqueName(clinicId, base, ignoreId = null) {
+  return allocateName(await takenNameKeys(clinicId, ignoreId), base);
 }
 
 // ─── PDF ─────────────────────────────────────────────────────────────────────
@@ -102,31 +119,89 @@ function buildPdf(images, title) {
 
 // ─── Endpoints ───────────────────────────────────────────────────────────────
 
+/** Guarda un PDF en disco y registra su ficha. */
+async function storePdf({ clinicId, userId, name, pdf, pages }) {
+  const dir = clinicDir(clinicId);
+  await fsp.mkdir(dir, { recursive: true });
+  const filename = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}.pdf`;
+  await fsp.writeFile(path.join(dir, filename), pdf);
+
+  const doc = await ScannedDocument.create({
+    clinic: clinicId,
+    name,
+    nameKey: nameKeyOf(name),
+    filename,
+    size: pdf.length,
+    pages,
+    createdBy: userId,
+  });
+  return doc.populate('createdBy', 'name');
+}
+
+/** ¿Piden un PDF por imagen? Acepta `mode=split` o `split=true`. */
+const wantsSplit = (body = {}) =>
+  ['split', 'separado', 'true', '1'].includes(
+    String(body.mode !== undefined ? body.mode : body.split || '').toLowerCase()
+  );
+
+/**
+ * Nombre propio de cada imagen subida (`pageNames`, en el mismo orden que
+ * `pages[]`), sin la extensión: es con lo que se bautiza cada PDF cuando el
+ * usuario no escribió ningún nombre.
+ */
+function parsePageNames(raw) {
+  let arr = raw;
+  if (typeof raw === 'string') {
+    try { arr = JSON.parse(raw); } catch { arr = []; }
+  }
+  if (!Array.isArray(arr)) return [];
+  return arr.map((n) => String(n || '').replace(/\.(jpe?g|png|webp|heic|heif|gif|bmp|tiff?|pdf)$/i, ''));
+}
+
 exports.createScan = async (req, res) => {
   try {
     const files = req.files || [];
     if (!files.length) {
       return res.status(400).json({ message: 'Envía al menos una página escaneada' });
     }
-    const name = await uniqueName(req.clinicId, req.body.name || defaultName());
-    const pdf = await buildPdf(files, name);
+    const base = sanitizeName(req.body.name);
 
-    const dir = clinicDir(req.clinicId);
-    await fsp.mkdir(dir, { recursive: true });
-    const filename = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}.pdf`;
-    await fsp.writeFile(path.join(dir, filename), pdf);
+    // ── Lo de siempre: todas las imágenes dentro de un mismo PDF ─────────────
+    if (!wantsSplit(req.body)) {
+      const name = await uniqueName(req.clinicId, base || defaultName());
+      const pdf = await buildPdf(files, name);
+      const doc = await storePdf({
+        clinicId: req.clinicId, userId: req.user._id, name, pdf, pages: files.length,
+      });
+      return res.status(201).json(doc);
+    }
 
-    const doc = await ScannedDocument.create({
-      clinic: req.clinicId,
-      name,
-      nameKey: nameKeyOf(name),
-      filename,
-      size: pdf.length,
-      pages: files.length,
-      createdBy: req.user._id,
-    });
-    const populated = await doc.populate('createdBy', 'name');
-    res.status(201).json(populated);
+    // ── Un PDF por imagen ───────────────────────────────────────────────────
+    // El nombre sale, por orden: del que escribió el usuario ("Receta 1",
+    // "Receta 2"…), del nombre del archivo que subió, o del de por defecto.
+    const taken = await takenNameKeys(req.clinicId);
+    const propios = parsePageNames(req.body.pageNames);
+    const documents = [];
+    const errores = [];
+    for (const [i, file] of files.entries()) {
+      const sugerido = base
+        ? `${base} ${i + 1}`
+        : sanitizeName(propios[i]) || `${defaultName()} ${i + 1}`;
+      const name = allocateName(taken, sugerido);
+      try {
+        const pdf = await buildPdf([file], name);
+        documents.push(await storePdf({
+          clinicId: req.clinicId, userId: req.user._id, name, pdf, pages: 1,
+        }));
+      } catch (e) {
+        // Una imagen rota no debe tirar abajo el resto de la tanda.
+        errores.push(`Imagen ${i + 1}: ${e.message}`);
+      }
+    }
+    if (!documents.length) {
+      return res.status(400).json({ message: `No se pudo generar ningún PDF. ${errores[0] || ''}`.trim() });
+    }
+    return res.status(201).json({ documents, count: documents.length, errors: errores });
   } catch (error) {
     res.status(400).json({ message: `No se pudo generar el PDF: ${error.message}` });
   }
@@ -272,22 +347,76 @@ exports.renameScan = async (req, res) => {
   }
 };
 
+/**
+ * Cada quien borra lo suyo; el admin (y el super-admin) borra cualquiera.
+ *
+ * Vive aquí y no dentro de cada endpoint porque el cliente decide con la MISMA
+ * regla si pinta el botón de eliminar: si se cambia en un solo lado, el usuario
+ * ve un botón que el servidor le rechaza (o al revés, no ve uno que sí podría).
+ */
+const puedeBorrar = (doc, req) =>
+  req.role === 'admin'
+  || !!req.user.isSuperAdmin
+  || String(doc.createdBy) === String(req.user._id);
+
+/** Borra el PDF del disco y su ficha. */
+async function dropScan(doc) {
+  await fsp.unlink(path.join(clinicDir(doc.clinic), doc.filename)).catch(() => {});
+  await doc.deleteOne();
+}
+
 exports.deleteScan = async (req, res) => {
   try {
     const doc = await ScannedDocument.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!doc) return res.status(404).json({ message: 'Documento no encontrado' });
-    // Cada quien borra lo suyo; el admin puede borrar cualquiera.
-    const isOwner = String(doc.createdBy) === String(req.user._id);
-    if (!isOwner && req.role !== 'admin' && !req.user.isSuperAdmin) {
+    if (!puedeBorrar(doc, req)) {
       return res.status(403).json({ message: 'Solo quien lo escaneó (o un administrador) puede eliminarlo' });
     }
-    await fsp.unlink(path.join(clinicDir(doc.clinic), doc.filename)).catch(() => {});
-    await doc.deleteOne();
+    await dropScan(doc);
     res.json({ message: 'Documento eliminado' });
   } catch (error) {
     res.status(500).json({ message: 'Error al eliminar el documento', error: error.message });
   }
 };
 
+/**
+ * Elimina varios de una vez (limpiar una tanda que se subió mal).
+ *
+ * Los que el usuario no puede borrar NO tumban la operación: se borran los que
+ * sí y los otros vuelven en `skipped` para poder decírselo por su nombre.
+ */
+exports.deleteManyScans = async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body.ids) ? req.body.ids : [];
+    if (!ids.length) return res.status(400).json({ message: 'Selecciona al menos un documento' });
+
+    const docs = await ScannedDocument.find({ _id: { $in: ids }, clinic: req.clinicId });
+    if (!docs.length) {
+      return res.status(404).json({ message: 'No se encontraron los documentos seleccionados' });
+    }
+
+    let deleted = 0;
+    const skipped = [];
+    for (const doc of docs) {
+      if (!puedeBorrar(doc, req)) { skipped.push(doc.name); continue; }
+      await dropScan(doc);
+      deleted++;
+    }
+    if (!deleted) {
+      return res.status(403).json({ message: 'Solo quien los escaneó (o un administrador) puede eliminarlos' });
+    }
+    res.json({
+      message: `${deleted} documento${deleted === 1 ? '' : 's'} eliminado${deleted === 1 ? '' : 's'}`,
+      deleted,
+      skipped,
+    });
+  } catch (error) {
+    res.status(500).json({ message: 'Error al eliminar los documentos', error: error.message });
+  }
+};
+
 // Exportados para los tests.
-exports._internals = { uniqueName, nameKeyOf, sanitizeName, defaultName, SCANS_DIR };
+exports._internals = {
+  uniqueName, allocateName, takenNameKeys, parsePageNames, wantsSplit, puedeBorrar,
+  nameKeyOf, sanitizeName, defaultName, SCANS_DIR,
+};

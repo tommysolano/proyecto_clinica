@@ -9,6 +9,7 @@ router.use(auth, requireClinic);
 router.get('/', c.listScans);
 router.post('/', c.uploadMiddleware, c.createScan);
 router.post('/download-zip', c.downloadZip);
+router.post('/delete-many', c.deleteManyScans);
 router.get('/:id/download', c.downloadScan);
 router.patch('/:id', c.renameScan);
 router.delete('/:id', c.deleteScan);

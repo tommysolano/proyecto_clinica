@@ -126,6 +126,8 @@ function ScanStudio({ pages, setPages, onSaved }) {
   const [busy, setBusy] = useState(null); // { done, total } mientras se procesan fotos
   const [cropping, setCropping] = useState(null); // { pageId, src, w, h, quad }
   const [name, setName] = useState('');
+  // false = todas las imágenes en un mismo PDF; true = un PDF por imagen.
+  const [separado, setSeparado] = useState(false);
   const [saving, setSaving] = useState(false);
   const fileInputRef = useRef(null);
   const nameInputRef = useRef(null);
@@ -144,7 +146,7 @@ function ScanStudio({ pages, setPages, onSaved }) {
   }, []);
 
   /** Recorta + limpia una imagen y la deja lista como página. */
-  const buildPage = useCallback(async (source, sw, sh, detectedQuad, mode) => {
+  const buildPage = useCallback(async (source, sw, sh, detectedQuad, mode, sourceName) => {
     const useQuad = detectedQuad || FULL_QUAD;
     const warped = warpDocument(source, sw, sh, useQuad);
     if (!warped) throw new Error('No se pudo recortar la imagen');
@@ -173,6 +175,9 @@ function ScanStudio({ pages, setPages, onSaved }) {
       quad: useQuad,
       filter: mode,
       detected: !!detectedQuad,
+      // Nombre del archivo del que salió (solo al subir fotos): con «un PDF por
+      // imagen» y sin nombre escrito, cada PDF se llama como su imagen.
+      sourceName: sourceName || '',
     };
   }, []);
 
@@ -189,7 +194,7 @@ function ScanStudio({ pages, setPages, onSaved }) {
         const img = await loadImage(file);
         const q = detectDocument(img, img.naturalWidth, img.naturalHeight, 420);
         if (!q) sinBorde++;
-        addPage(await buildPage(img, img.naturalWidth, img.naturalHeight, q, filter));
+        addPage(await buildPage(img, img.naturalWidth, img.naturalHeight, q, filter, file.name));
       }
       if (sinBorde) {
         toast(
@@ -250,10 +255,25 @@ function ScanStudio({ pages, setPages, onSaved }) {
     setSaving(true);
     try {
       const fd = new FormData();
-      fd.append('name', name.trim() || defaultName());
+      // Separado el nombre puede ir vacío: entonces cada PDF se bautiza con el
+      // nombre de su propia imagen (y las fotos de la cámara, con la fecha).
+      fd.append('name', separado ? name.trim() : name.trim() || defaultName());
+      if (separado) {
+        fd.append('mode', 'split');
+        fd.append('pageNames', JSON.stringify(pages.map((p) => p.sourceName || '')));
+      }
       pages.forEach((p, i) => fd.append('pages', p.blob, `pagina-${i + 1}.jpg`));
       const r = await api.post('/scans', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
-      toast.success(`PDF creado: ${r.data.name}`);
+      const creados = r.data?.documents;
+      if (creados) {
+        toast.success(`${creados.length} PDF creados, uno por imagen`);
+        // Si alguna imagen falló se crearon las demás: hay que decirlo.
+        if (r.data.errors?.length) {
+          toast.error(`${r.data.errors.length} no se pudo generar. ${r.data.errors[0]}`, { duration: 7000 });
+        }
+      } else {
+        toast.success(`PDF creado: ${r.data.name}`);
+      }
       pages.forEach((p) => p.preview && URL.revokeObjectURL(p.preview));
       setPages([]);
       setName('');
@@ -310,7 +330,9 @@ function ScanStudio({ pages, setPages, onSaved }) {
         {/* ── Páginas ────────────────────────────────────────────────────── */}
         <div className="lg:col-span-2 bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-4 sm:p-5">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="font-semibold text-slate-800 text-sm">Páginas del PDF ({pages.length})</h2>
+            <h2 className="font-semibold text-slate-800 text-sm">
+              {separado ? `Imágenes (${pages.length})` : `Páginas del PDF (${pages.length})`}
+            </h2>
             {pages.length > 0 && (
               <button
                 onClick={() => { pages.forEach((p) => p.preview && URL.revokeObjectURL(p.preview)); setPages([]); }}
@@ -360,22 +382,63 @@ function ScanStudio({ pages, setPages, onSaved }) {
         {/* ── Guardar ────────────────────────────────────────────────────── */}
         <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-4 sm:p-5 space-y-3 lg:sticky lg:top-4 lg:self-start">
           <div>
-            <label className="block text-sm font-medium text-slate-700 mb-1.5">Nombre del archivo</label>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">¿Cómo se guarda?</label>
+            <div className="flex gap-1 bg-slate-100 rounded-xl p-1">
+              {[
+                { sep: false, l: 'Un solo PDF' },
+                { sep: true, l: 'Un PDF por imagen' },
+              ].map((o) => (
+                <button
+                  key={String(o.sep)}
+                  type="button"
+                  onClick={() => setSeparado(o.sep)}
+                  className={`flex-1 px-2 py-2 rounded-lg text-xs font-medium cursor-pointer border-none ${
+                    separado === o.sep ? 'bg-white text-emerald-700 shadow-sm' : 'bg-transparent text-slate-600'
+                  }`}
+                >
+                  {o.l}
+                </button>
+              ))}
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1">
+              {separado
+                ? 'Cada imagen se guarda como un documento aparte.'
+                : 'Todas las imágenes quedan como páginas de un mismo documento.'}
+            </p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium text-slate-700 mb-1.5">
+              {separado ? 'Nombre base (opcional)' : 'Nombre del archivo'}
+            </label>
             <input
               ref={nameInputRef}
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder={defaultName()}
+              placeholder={separado ? 'El de cada imagen' : defaultName()}
               className="w-full px-3 py-2.5 border border-slate-200 rounded-xl bg-slate-50/50 outline-none text-sm"
             />
             <p className="text-[11px] text-slate-400 mt-1">
-              Si lo dejas vacío se usa «{defaultName()}». Si el nombre ya existe, el sistema le
-              agrega (2), (3)… para que no se repita.
+              {separado ? (
+                <>
+                  Con un nombre se guardan como «{name.trim() || 'Receta'} 1», «{name.trim() || 'Receta'} 2»…
+                  Si lo dejas vacío, cada PDF toma el nombre del archivo de su imagen (las fotos de
+                  la cámara usan «{defaultName()} 1», «{defaultName()} 2»…).
+                </>
+              ) : (
+                <>
+                  Si lo dejas vacío se usa «{defaultName()}». Si el nombre ya existe, el sistema le
+                  agrega (2), (3)… para que no se repita.
+                </>
+              )}
             </p>
           </div>
           <button onClick={savePdf} disabled={saving || !pages.length} className="btn-primary w-full justify-center">
             {saving ? <Spinner /> : <HiOutlineDocumentText className="w-5 h-5" />}
-            {saving ? 'Generando…' : `Generar PDF (${pages.length})`}
+            {saving
+              ? 'Generando…'
+              : separado
+                ? `Generar ${pages.length} PDF`
+                : `Generar PDF (${pages.length})`}
           </button>
         </div>
       </div>
@@ -1119,7 +1182,7 @@ function ToolBtn({ icon, label, onClick, disabled }) {
 const POR_PAGINA = 50;
 
 function DocumentList({ currentUserId }) {
-  const { hasRole } = useAuth();
+  const { hasRole, user } = useAuth();
   const [docs, setDocs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
@@ -1226,6 +1289,34 @@ function DocumentList({ currentUserId }) {
     }
   };
 
+  /**
+   * Elimina los seleccionados de una vez. Se mandan TODOS los ids marcados (la
+   * selección sobrevive al cambio de página) y el servidor descarta los que este
+   * usuario no puede borrar, avisando cuáles fueron.
+   */
+  const removeSelected = async () => {
+    if (!selected.length) return;
+    const n = selected.length;
+    if (!window.confirm(`¿Eliminar ${n} documento${n === 1 ? '' : 's'}? Esta acción no se puede deshacer.`)) return;
+    setWorking(true);
+    try {
+      const r = await api.post('/scans/delete-many', { ids: selected });
+      toast.success(r.data.message || 'Documentos eliminados');
+      if (r.data.skipped?.length) {
+        toast.error(
+          `${r.data.skipped.length} no se eliminaron: los escaneó otra persona y no eres administrador.`,
+          { duration: 7000 }
+        );
+      }
+      setSelected([]);
+      fetchDocs();
+    } catch (e) {
+      toast.error(e.response?.data?.message || 'No se pudieron eliminar');
+    } finally {
+      setWorking(false);
+    }
+  };
+
   const saveRename = async (newName) => {
     try {
       const r = await api.patch(`/scans/${renaming._id}`, { name: newName });
@@ -1237,16 +1328,32 @@ function DocumentList({ currentUserId }) {
     }
   };
 
-  const canDelete = (doc) => hasRole('admin') || String(doc.createdBy?._id || doc.createdBy) === String(currentUserId);
+  /**
+   * Misma regla que el servidor (puedeBorrar en scanController): el admin y el
+   * super-admin borran cualquiera; el resto, solo lo que escanearon.
+   *
+   * El super-admin faltaba aquí: con un rol de sucursal distinto de 'admin' no
+   * veía el botón, aunque el servidor sí le dejaba borrar.
+   */
+  const canDelete = (doc) =>
+    hasRole('admin')
+    || !!user?.isSuperAdmin
+    || String(doc.createdBy?._id || doc.createdBy) === String(currentUserId);
 
   const Actions = ({ d }) => (
     <>
       <IconBtn title="Ver" onClick={() => openPreview(d)}><HiOutlineEye className="w-4 h-4" /></IconBtn>
       <IconBtn title="Descargar" onClick={() => downloadOne(d)}><HiOutlineArrowDownTray className="w-4 h-4" /></IconBtn>
       <IconBtn title="Renombrar" onClick={() => setRenaming(d)}><HiOutlinePencil className="w-4 h-4" /></IconBtn>
-      {canDelete(d) && (
-        <IconBtn title="Eliminar" onClick={() => remove(d)} danger><HiOutlineTrash className="w-4 h-4" /></IconBtn>
-      )}
+      {/* Apagado en vez de escondido: si no se puede borrar, que se vea por qué. */}
+      <IconBtn
+        title={canDelete(d) ? 'Eliminar' : 'Solo quien lo escaneó (o un administrador) puede eliminarlo'}
+        onClick={() => remove(d)}
+        disabled={!canDelete(d)}
+        danger
+      >
+        <HiOutlineTrash className="w-4 h-4" />
+      </IconBtn>
     </>
   );
 
@@ -1282,6 +1389,15 @@ function DocumentList({ currentUserId }) {
           >
             <HiOutlineArrowDownTray className="w-4 h-4" />
             {debounced ? `Descargar los ${total} encontrados` : `Descargar todos (${total})`}
+          </button>
+          <button
+            onClick={removeSelected}
+            disabled={!selected.length || working}
+            className="btn-danger justify-center disabled:opacity-40 whitespace-nowrap"
+            title="Elimina los documentos seleccionados"
+          >
+            <HiOutlineTrash className="w-4 h-4" />
+            Eliminar {selected.length ? `(${selected.length})` : 'seleccionados'}
           </button>
         </div>
       </div>
