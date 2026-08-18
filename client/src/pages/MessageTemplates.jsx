@@ -419,6 +419,15 @@ export default function MessageTemplates() {
             <div className="grid grid-cols-1 lg:grid-cols-[1fr_300px] gap-5">
               {/* Columna formulario */}
               <div className="grid gap-3 content-start">
+              {editing.metaTemplateId && (
+                <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                  <b className="font-semibold">Esta plantilla ya está registrada en Meta.</b> Quien pinta el
+                  cuerpo y los botones en el teléfono del paciente es la versión aprobada allá, no esta. Si
+                  cambias cuerpo, cabecera, pie o botones, al guardar el cambio <b className="font-semibold">se
+                  le envía a Meta</b> y la plantilla vuelve a revisión: hasta que la apruebe se sigue enviando
+                  la versión anterior.
+                </div>
+              )}
               <label className="text-sm">
                 <span className="text-slate-600">Nombre (sin espacios, minúsculas)</span>
                 <input
@@ -439,7 +448,13 @@ export default function MessageTemplates() {
                 </label>
                 <label className="text-sm">
                   <span className="text-slate-600">Idioma</span>
-                  <input value={editing.language} onChange={(e) => setEditing({ ...editing, language: e.target.value })} className="w-full mt-1 border border-slate-200 rounded-lg px-2 py-2 text-sm" />
+                  <input
+                    value={editing.language}
+                    onChange={(e) => setEditing({ ...editing, language: e.target.value })}
+                    disabled={!!editing.metaTemplateId}
+                    title={editing.metaTemplateId ? 'Meta no admite cambiar el idioma de una plantilla registrada' : undefined}
+                    className="w-full mt-1 border border-slate-200 rounded-lg px-2 py-2 text-sm disabled:bg-slate-50"
+                  />
                 </label>
                 <label className="text-sm">
                   <span className="text-slate-600">Categoría</span>

@@ -1085,6 +1085,12 @@ async function send({
   const tplMedia = templateInfo?.headerMedia || null;
   // Los botones que SE VEN son los de la plantilla cuando hay plantilla (es lo que
   // Meta pinta en el móvil); los del nodo solo llevan el enrutado del clic.
+  //
+  // Y son también los que se le pasan al proveedor: por Cloud API con plantilla
+  // los pinta Meta y estos se ignoran, pero por un número QR (o por Messenger/
+  // Instagram) la plantilla viaja como TEXTO y sin ellos el botón desaparecía sin
+  // dejar rastro — mientras el chat sí lo mostraba. El agente veía un botón que
+  // el paciente nunca recibió.
   const tplBotones = await templateButtons(templateInfo);
   const botonesDelMensaje = tplBotones.length ? tplBotones : messageButtons;
   let msg;
@@ -1225,7 +1231,7 @@ async function send({
       account,
       mediaUrl,
       mediaType,
-      buttons: messageButtons,
+      buttons: botonesDelMensaje,
       // Cita en WhatsApp: por Cloud API se usa el wamid; por QR, si no tenemos el
       // wamid guardado, se pasa el TEXTO del mensaje citado para localizarlo en
       // vivo dentro del chat y citarlo igual.

@@ -50,6 +50,19 @@ const numeroApi = () => WhatsappAccount.create({
   phoneNumberId: '111', accessToken: 'tok',
 });
 
+const numeroQr = () => WhatsappAccount.create({
+  label: 'QR', connectionType: 'qr', enabled: true, isDefault: true, status: 'connected',
+});
+
+const plantillaConBotones = (clinicId) => MessageTemplate.create({
+  clinic: clinicId, channel: 'whatsapp', name: '24h_flujo', status: 'approved',
+  body: '¿Asistirás mañana a tu cita?',
+  buttons: [
+    { type: 'quick_reply', text: 'Si asistire' },
+    { type: 'url', text: 'Ver ubicación', url: 'https://maps.example/clinica' },
+  ],
+});
+
 test('la plantilla con botones los deja guardados en el mensaje del chat', async () => {
   const { clinicId } = await H.seedClinic();
   const gw = fakeGateway();
@@ -81,6 +94,55 @@ test('la plantilla con botones los deja guardados en el mensaje del chat', async
       [['quick_reply', 'Si asistire', ''], ['url', 'Ver ubicación', 'https://maps.example/clinica']],
       'la burbuja del chat enseña los mismos botones que recibe el paciente'
     );
+  } finally {
+    gw.restore();
+  }
+});
+
+test('por un número QR los botones de la plantilla VIAJAN en el texto', async () => {
+  // Un número QR no admite plantillas: se manda el texto. Antes los botones se
+  // perdían enteros (el nodo no manda ninguno y solo se miraban los del nodo),
+  // así que el chat enseñaba un botón que el paciente nunca recibió.
+  const { clinicId } = await H.seedClinic();
+  const gw = fakeGateway();
+  try {
+    await numeroQr();
+    await plantillaConBotones(clinicId);
+    const conv = await Conversation.create({ clinic: clinicId, channel: 'whatsapp', phone: '593999111222' });
+
+    const r = await messaging.send({
+      clinicId,
+      channel: 'whatsapp',
+      conversation: conv,
+      to: '593999111222',
+      template: { name: '24h_flujo', language: 'es' },
+    });
+    assert.equal(r.ok, true, r.reason || r.errorMessage);
+
+    const envio = gw.sent.find((s) => s.tipo === 'texto');
+    assert.ok(envio, 'por QR sale como texto, no como plantilla');
+    assert.match(envio.body, /¿Asistirás mañana a tu cita\?/);
+    assert.match(envio.body, /Ver ubicación: https:\/\/maps\.example\/clinica/, 'el botón de enlace debe llegar como enlace');
+    assert.match(envio.body, /Responde: Si asistire/, 'la respuesta rápida debe llegar como opción');
+  } finally {
+    gw.restore();
+  }
+});
+
+test('por Cloud API la plantilla sigue yendo como plantilla (los botones los pinta Meta)', async () => {
+  const { clinicId } = await H.seedClinic();
+  const gw = fakeGateway();
+  try {
+    await numeroApi();
+    await plantillaConBotones(clinicId);
+    const conv = await Conversation.create({ clinic: clinicId, channel: 'whatsapp', phone: '593999111222' });
+
+    await messaging.send({
+      clinicId, channel: 'whatsapp', conversation: conv, to: '593999111222',
+      template: { name: '24h_flujo', language: 'es' },
+    });
+
+    assert.deepEqual(gw.sent.map((s) => s.tipo), ['plantilla']);
   } finally {
     gw.restore();
   }

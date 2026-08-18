@@ -114,6 +114,27 @@ exports.create = async (req, res) => {
   }
 };
 
+/**
+ * Lo que gobierna Meta: cambiarlo en una plantilla YA registrada obliga a
+ * mandarle la edición, o el sistema enseñaría un contenido que el paciente no
+ * recibe (el caso real: un botón agregado aquí que nunca llegó a Meta).
+ */
+const META_CONTENT_FIELDS = ['body', 'headerType', 'headerText', 'headerMediaUrl', 'footer', 'buttons'];
+
+/** Los botones sin el ruido de mongoose, para poder compararlos de verdad. */
+const botonesPlanos = (bs) => (Array.isArray(bs) ? bs : []).map((b) => ({
+  type: String(b?.type || 'quick_reply'),
+  text: String(b?.text || '').trim(),
+  url: String(b?.url || '').trim(),
+}));
+
+const mismoValor = (campo, a, b) => (campo === 'buttons'
+  ? JSON.stringify(botonesPlanos(a)) === JSON.stringify(botonesPlanos(b))
+  : String(a ?? '') === String(b ?? ''));
+
+const cambiaContenidoDeMeta = (existing, update) =>
+  META_CONTENT_FIELDS.some((f) => f in update && !mismoValor(f, update[f], existing[f]));
+
 exports.update = async (req, res) => {
   try {
     const existing = await MessageTemplate.findOne({ _id: req.params.id, clinic: req.clinicId });
@@ -123,6 +144,9 @@ exports.update = async (req, res) => {
     delete update._id;
     delete update.status; // el estado lo gobierna la sincronización con Meta
     delete update.metaTemplateId;
+    // Meta no admite cambiar el idioma de una plantilla registrada (es parte de
+    // su identidad, igual que el nombre).
+    if (existing.metaTemplateId) delete update.language;
     // La categoría también la gobierna Meta. Si la plantilla YA está registrada en
     // Meta (metaTemplateId), NO permitimos cambiarla localmente: hacerlo mostraría
     // una categoría distinta de la real de Meta (divergencia silenciosa que afecta
@@ -130,6 +154,30 @@ exports.update = async (req, res) => {
     // actualizan. En borradores aún no registrados sí es la categoría solicitada.
     if (existing.metaTemplateId) delete update.category;
     if (update.body) update.variables = req.body.variables?.length ? req.body.variables : extractVariables(update.body);
+
+    // ── El contenido de una plantilla registrada se cambia EN META ──
+    // Guardarlo solo aquí es lo que producía la divergencia silenciosa: editor y
+    // chat con el botón nuevo, paciente con la plantilla vieja.
+    if (existing.channel === 'whatsapp' && existing.metaTemplateId && cambiaContenidoDeMeta(existing, update)) {
+      if (existing.status === 'pending') {
+        return res.status(400).json({
+          message: 'Meta está revisando esta plantilla: espera a que la apruebe o la rechace para poder cambiar su contenido.',
+        });
+      }
+      const edit = await editTemplateAtMeta(existing.metaTemplateId, { ...existing.toObject(), ...update });
+      if (!edit.ok) {
+        if (edit.reason === 'not_configured') return res.status(400).json({ message: edit.error });
+        return res.status(502).json({
+          message: `Meta rechazó el cambio: ${edit.error}. La plantilla queda como estaba.`,
+          detail: edit.data?.error,
+        });
+      }
+      // Aceptado: Meta la vuelve a revisar antes de que salga con el contenido nuevo.
+      update.status = 'pending';
+      update.rejectionReason = '';
+      update.syncedAt = new Date();
+    }
+
     const tpl = await MessageTemplate.findOneAndUpdate(
       { _id: req.params.id, clinic: req.clinicId },
       update,
@@ -287,6 +335,12 @@ async function applyMetaTemplate(clinicId, mt, createdBy) {
       if (b.type === 'PHONE_NUMBER') return { type: 'phone', text: b.text || '', url: b.phone_number || '' };
       return { type: 'quick_reply', text: b.text || '' };
     });
+  } else {
+    // Meta manda los componentes COMPLETOS: si no viene BUTTONS, la plantilla
+    // aprobada no tiene botones. Dejar los locales dejaba un botón fantasma
+    // —visible en el editor y en la burbuja del chat— que el paciente jamás
+    // recibía, porque quien los pinta es la plantilla aprobada, no la nuestra.
+    patch.buttons = [];
   }
 
   if (!existing) {
@@ -681,13 +735,16 @@ async function uploadHeaderMediaHandle(accessToken, tpl) {
  * Registra (POST) la plantilla en el WABA del número Cloud API por defecto.
  * Devuelve { ok, data } o { ok:false, reason, error }.
  */
-async function submitTemplateToMeta(tpl) {
+/**
+ * Credenciales del número Cloud API por defecto y, si la plantilla lleva
+ * cabecera multimedia, el handle que Meta exige para registrarla.
+ */
+async function metaCredsFor(tpl) {
   const gateway = require('../utils/whatsappGateway');
   const account = await gateway.getDefaultCloudAccount();
   const missing = describeMissingCloudAccount(account);
   if (missing) return { ok: false, reason: 'not_configured', error: missing };
   const accessToken = require('../utils/secretCrypto').decryptSecret(account.accessToken);
-  // Cabecera multimedia: subir el archivo a Meta y registrar con su handle.
   let headerHandle = '';
   if (['image', 'document', 'video'].includes(tpl.headerType) && tpl.headerMediaUrl) {
     const up = await uploadHeaderMediaHandle(accessToken, tpl);
@@ -696,13 +753,11 @@ async function submitTemplateToMeta(tpl) {
     }
     headerHandle = up.handle;
   }
-  const url = `https://graph.facebook.com/${API_VERSION}/${account.businessAccountId}/message_templates`;
-  const payload = {
-    name: tpl.name,
-    language: tpl.language || 'es',
-    category: tpl.category || 'MARKETING',
-    components: buildMetaComponents(tpl, headerHandle),
-  };
+  return { ok: true, account, accessToken, headerHandle };
+}
+
+/** POST a Meta devolviendo siempre {ok, error} en vez de lanzar. */
+async function postToMeta(url, accessToken, payload) {
   try {
     const r = await fetch(url, {
       method: 'POST',
@@ -722,6 +777,42 @@ async function submitTemplateToMeta(tpl) {
   } catch (err) {
     return { ok: false, reason: 'network', error: err.message };
   }
+}
+
+/**
+ * Manda a Meta el CAMBIO de una plantilla ya registrada (POST al id de la
+ * plantilla, no a la lista).
+ *
+ * Sin esto, cambiar el cuerpo o los botones de una plantilla aprobada solo se
+ * guardaba en nuestra base: el editor y el chat enseñaban el botón nuevo y el
+ * paciente seguía recibiendo la versión vieja de Meta, sin que nada avisara.
+ *
+ * Meta solo deja editar las aprobadas, rechazadas o pausadas —nunca mientras las
+ * revisa— y no admite cambiar el nombre ni el idioma. Tras el cambio la plantilla
+ * vuelve a revisión.
+ */
+async function editTemplateAtMeta(templateId, tpl) {
+  const prep = await metaCredsFor(tpl);
+  if (!prep.ok) return prep;
+  return postToMeta(
+    `https://graph.facebook.com/${API_VERSION}/${templateId}`,
+    prep.accessToken,
+    { components: buildMetaComponents(tpl, prep.headerHandle) }
+  );
+}
+
+async function submitTemplateToMeta(tpl) {
+  const prep = await metaCredsFor(tpl);
+  if (!prep.ok) return prep;
+  const { account, accessToken, headerHandle } = prep;
+  const url = `https://graph.facebook.com/${API_VERSION}/${account.businessAccountId}/message_templates`;
+  const payload = {
+    name: tpl.name,
+    language: tpl.language || 'es',
+    category: tpl.category || 'MARKETING',
+    components: buildMetaComponents(tpl, headerHandle),
+  };
+  return postToMeta(url, accessToken, payload);
 }
 
 /**
@@ -777,4 +868,6 @@ exports.raiseTemplateAlert = raiseTemplateAlert;
 exports.syncAllClinicsTemplates = syncAllClinicsTemplates;
 exports.handleTemplateWebhook = handleTemplateWebhook;
 exports.submitTemplateToMeta = submitTemplateToMeta;
+exports.editTemplateAtMeta = editTemplateAtMeta;
+exports._internals = { META_CONTENT_FIELDS, cambiaContenidoDeMeta, botonesPlanos };
 exports.buildMetaComponents = buildMetaComponents;
