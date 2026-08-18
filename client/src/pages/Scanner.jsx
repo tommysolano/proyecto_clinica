@@ -16,6 +16,7 @@ import {
   loadImage,
   FULL_QUAD,
   PAGE_QUALITY,
+  PAGE_MAX_SIDE,
 } from '../utils/docScan';
 import {
   HiOutlineDocumentText,
@@ -52,6 +53,37 @@ const FILTERS = [
 const ORIGINAL_MAX = 2400;
 /** Calidad JPEG de ese original (solo se usa para volver a recortar). */
 const ORIGINAL_QUALITY = 0.88;
+
+/**
+ * SUBIR fotos ≠ ESCANEAR con la cámara.
+ *
+ * Lo que se sube entra al PDF TAL CUAL: no se le busca el borde, no se recorta y
+ * no se le pasa ningún filtro. Solo se vuelve a codificar cuando el formato no
+ * sirve para el PDF (el servidor solo admite JPG y PNG) o cuando el archivo pesa
+ * tanto que reventaría el envío; y aun así se respeta la imagen entera.
+ *
+ * De paso, no tocarla es lo que permite subir tandas grandes: el camino de
+ * escaneo abre tres canvas por foto y guardaba el original en base64 dentro del
+ * estado, así que con diez fotos de teléfono el navegador se quedaba sin memoria
+ * a mitad de la tanda.
+ */
+const SUBIDA_OK_TYPES = ['image/jpeg', 'image/png'];
+const SUBIDA_MAX_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Tope de cada ENVÍO al servidor: nginx corta el cuerpo en 50 MB y multer no
+ * admite más de 40 archivos por petición. Veinte fotos de teléfono sin comprimir
+ * se pasan de largo, así que las páginas se mandan por tandas.
+ */
+const MAX_ENVIO_BYTES = 24 * 1024 * 1024;
+const MAX_POR_ENVIO = 40;
+
+/** Suelta las URL temporales de una página (miniatura, vista previa, original). */
+const freePage = (p) => {
+  for (const url of [p?.preview, p?.thumb, p?.original]) {
+    if (typeof url === 'string' && url.startsWith('blob:')) URL.revokeObjectURL(url);
+  }
+};
 
 const fmtSize = (b) => (b > 1048576 ? `${(b / 1048576).toFixed(1)} MB` : `${Math.round((b || 0) / 1024)} KB`);
 const fmtDate = (d) =>
@@ -181,38 +213,91 @@ function ScanStudio({ pages, setPages, onSaved }) {
     };
   }, []);
 
+  /** Convierte un archivo subido en página SIN escanearlo: la imagen tal cual. */
+  const buildUploadedPage = useCallback(async (file) => {
+    let blob = file;
+    if (!SUBIDA_OK_TYPES.includes(file.type) || file.size > SUBIDA_MAX_BYTES) {
+      // WEBP/HEIC/GIF no entran en un PDF, y un archivo enorme no cabe en el
+      // envío: se recodifica a JPEG entera (sin recortar ni filtrar nada).
+      const img = await loadImage(file);
+      const c = document.createElement('canvas');
+      const k = Math.min(1, PAGE_MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
+      c.width = Math.max(1, Math.round(img.naturalWidth * k));
+      c.height = Math.max(1, Math.round(img.naturalHeight * k));
+      const ctx = c.getContext('2d');
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(img, 0, 0, c.width, c.height);
+      blob = await canvasToJpeg(c, PAGE_QUALITY);
+    }
+    // Miniatura de 320 px: se decodifica una vez y se suelta. Pintar la foto
+    // original en la rejilla obligaría al navegador a sostener veinte mapas de
+    // bits de 12 MP a la vez. Si falla, se muestra la propia imagen y ya.
+    let thumb = null;
+    let w = 0;
+    let h = 0;
+    try {
+      const img = await loadImage(blob);
+      w = img.naturalWidth;
+      h = img.naturalHeight;
+      const t = document.createElement('canvas');
+      const k = Math.min(1, 320 / Math.max(w, h));
+      t.width = Math.max(1, Math.round(w * k));
+      t.height = Math.max(1, Math.round(h * k));
+      t.getContext('2d').drawImage(img, 0, 0, t.width, t.height);
+      thumb = t.toDataURL('image/jpeg', 0.7);
+    } catch { /* sin miniatura: abajo se usa la imagen tal cual */ }
+
+    return {
+      id: `p${++pageSeq}`,
+      blob,
+      // URL distintas del mismo blob: reencuadrar revoca la vista previa y no
+      // puede llevarse por delante la copia que sirve de original.
+      preview: URL.createObjectURL(blob),
+      thumb: thumb || URL.createObjectURL(blob),
+      original: URL.createObjectURL(blob),
+      // Si la miniatura falló, el tamaño se mide al abrir «Reencuadrar».
+      originalW: w,
+      originalH: h,
+      quad: FULL_QUAD,
+      filter: 'color', // 'color' = sin retoque, la foto como está
+      detected: false,
+      sinEscanear: true,
+      sourceName: file.name,
+    };
+  }, []);
+
   const addFromFiles = async (files) => {
     setBusy({ done: 0, total: files.length });
-    let sinBorde = 0;
-    try {
-      for (const [i, file] of files.entries()) {
-        setBusy({ done: i, total: files.length });
-        // Recortar y limpiar una foto a tamaño de escáner ocupa el hilo un par de
-        // segundos: sin este respiro el contador no llega a pintarse y una carga
-        // de veinte fotos parece colgada.
-        await new Promise((r) => setTimeout(r, 0));
-        const img = await loadImage(file);
-        const q = detectDocument(img, img.naturalWidth, img.naturalHeight, 420);
-        if (!q) sinBorde++;
-        addPage(await buildPage(img, img.naturalWidth, img.naturalHeight, q, filter, file.name));
+    const fallidas = [];
+    for (const [i, file] of files.entries()) {
+      setBusy({ done: i, total: files.length });
+      // Respiro para que el contador se pinte entre foto y foto.
+      await new Promise((r) => setTimeout(r, 0));
+      try {
+        addPage(await buildUploadedPage(file));
+      } catch {
+        // Una imagen que el navegador no sabe abrir (un HEIC en el escritorio, un
+        // archivo a medio copiar) NO puede llevarse por delante a las demás.
+        // Antes el bucle entero vivía dentro de un try: la primera que fallaba
+        // cortaba la tanda y de quince fotos entraban una o dos.
+        fallidas.push(file.name);
       }
-      if (sinBorde) {
-        toast(
-          `${sinBorde} foto${sinBorde === 1 ? '' : 's'} sin bordes claros: se guardó completa. Usa «Reencuadrar».`,
-          { icon: '✋', duration: 5000 }
-        );
-      }
-    } catch (e) {
-      toast.error(e.message || 'No se pudieron leer las imágenes');
-    } finally {
-      setBusy(null);
+    }
+    setBusy(null);
+    if (fallidas.length) {
+      const muestra = fallidas.slice(0, 3).join(', ');
+      toast.error(
+        `No se pudieron leer ${fallidas.length} de ${files.length}: ${muestra}${fallidas.length > 3 ? '…' : ''}`,
+        { duration: 8000 }
+      );
     }
   };
 
   const removePage = (id) =>
     setPages((p) => {
       const victim = p.find((x) => x.id === id);
-      if (victim?.preview) URL.revokeObjectURL(victim.preview);
+      if (victim) freePage(victim);
       return p.filter((x) => x.id !== id);
     });
 
@@ -226,12 +311,31 @@ function ScanStudio({ pages, setPages, onSaved }) {
       return next;
     });
 
+  /**
+   * Abre el reencuadre. Las fotos subidas no traen medidas (no se decodifican al
+   * subirlas), así que se miden aquí, una sola vez y solo si hace falta.
+   */
+  const openCrop = async (p) => {
+    try {
+      let { originalW: w, originalH: h } = p;
+      if (!w || !h) {
+        const img = await loadImage(p.original);
+        w = img.naturalWidth;
+        h = img.naturalHeight;
+        setPages((prev) => prev.map((x) => (x.id === p.id ? { ...x, originalW: w, originalH: h } : x)));
+      }
+      setCropping({ pageId: p.id, src: p.original, w, h, quad: p.quad });
+    } catch {
+      toast.error('No se pudo abrir la imagen para reencuadrar');
+    }
+  };
+
   const applyCrop = async (newQuad) => {
     const page = pages.find((p) => p.id === cropping.pageId);
     if (!page) return setCropping(null);
     try {
       const img = await loadImage(page.original);
-      const warped = warpDocument(img, page.originalW, page.originalH, newQuad);
+      const warped = warpDocument(img, cropping.w, cropping.h, newQuad);
       if (!warped) throw new Error('El recorte no es válido');
       applyFilter(warped, page.filter);
       const blob = await canvasToJpeg(warped, PAGE_QUALITY);
@@ -239,7 +343,7 @@ function ScanStudio({ pages, setPages, onSaved }) {
       setPages((prev) =>
         prev.map((p) =>
           p.id === page.id
-            ? { ...p, blob, preview: URL.createObjectURL(blob), thumb: thumbnailUrl(warped), quad: newQuad, detected: true }
+            ? { ...p, blob, preview: URL.createObjectURL(blob), thumb: thumbnailUrl(warped), quad: newQuad, detected: true, sinEscanear: false }
             : p
         )
       );
@@ -250,38 +354,137 @@ function ScanStudio({ pages, setPages, onSaved }) {
     }
   };
 
+  /**
+   * Reparte las páginas en envíos que quepan en una petición (ver MAX_ENVIO_*).
+   * Respeta el orden, así que las N primeras páginas son siempre las de los
+   * primeros envíos: eso es lo que permite saber qué quedó subido si algo falla.
+   */
+  const envíosDe = (lista) => {
+    const out = [];
+    let actual = [];
+    let peso = 0;
+    for (const p of lista) {
+      const s = p.blob.size || 0;
+      if (actual.length && (peso + s > MAX_ENVIO_BYTES || actual.length >= MAX_POR_ENVIO)) {
+        out.push(actual);
+        actual = [];
+        peso = 0;
+      }
+      actual.push(p);
+      peso += s;
+    }
+    if (actual.length) out.push(actual);
+    return out;
+  };
+
+  // ── Cuánto llevas y cuánto cabe ───────────────────────────────────────────
+  // Se recalcula en cada render (es una suma sobre unas decenas de páginas) para
+  // que el contador vaya subiendo mientras se procesan las fotos, no al final.
+  const pesoTotal = pages.reduce((t, p) => t + (p.blob?.size || 0), 0);
+  const tandas = envíosDe(pages).length;
+  // Un PDF único tiene que ir en UNA petición: si necesita más de una tanda, ya
+  // no cabe. En «un PDF por imagen» no hay tope, solo se manda en varias.
+  const pasaDeUnaTanda = tandas > 1;
+
+  /**
+   * Avisa UNA vez al cruzar el tope de un solo PDF, mientras se están agregando
+   * las fotos. El cartel de abajo lo repite fijo; esto es para que se note en el
+   * momento, aunque la lista esté fuera de la pantalla.
+   */
+  const avisadoTope = useRef(false);
+  useEffect(() => {
+    if (separado || !pasaDeUnaTanda) {
+      avisadoTope.current = false;
+      return;
+    }
+    if (avisadoTope.current) return;
+    avisadoTope.current = true;
+    toast(
+      `Llegaste al máximo de un solo PDF: ${MAX_POR_ENVIO} imágenes o ${fmtSize(MAX_ENVIO_BYTES)}. `
+      + 'Cambia a «Un PDF por imagen» y se mandan por tandas.',
+      { icon: '⚠️', duration: 8000 }
+    );
+  }, [separado, pasaDeUnaTanda]);
+
+  const postPáginas = async (grupo, campos) => {
+    const fd = new FormData();
+    for (const [k, v] of Object.entries(campos)) fd.append(k, v);
+    grupo.forEach((p, i) => fd.append('pages', p.blob, `pagina-${i + 1}.jpg`));
+    const r = await api.post('/scans', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
+    return r.data;
+  };
+
   const savePdf = async () => {
-    if (!pages.length) return toast.error('Escanea al menos una página');
-    setSaving(true);
+    if (!pages.length) return toast.error('Sube o escanea al menos una imagen');
+    const envíos = envíosDe(pages);
+
+    // Un PDF único no se puede repartir entre varias peticiones: si no cabe hay
+    // que decirlo ANTES, no mandar 60 MB para que el servidor los rechace.
+    if (!separado && pasaDeUnaTanda) {
+      return toast.error(
+        `Son ${pages.length} imágenes (${fmtSize(pesoTotal)}) y no caben en un solo envío. `
+        + 'Cambia a «Un PDF por imagen» o quita algunas.',
+        { duration: 9000 }
+      );
+    }
+
+    setSaving({ done: 0, total: pages.length });
     try {
-      const fd = new FormData();
-      // Separado el nombre puede ir vacío: entonces cada PDF se bautiza con el
-      // nombre de su propia imagen (y las fotos de la cámara, con la fecha).
-      fd.append('name', separado ? name.trim() : name.trim() || defaultName());
-      if (separado) {
-        fd.append('mode', 'split');
-        fd.append('pageNames', JSON.stringify(pages.map((p) => p.sourceName || '')));
-      }
-      pages.forEach((p, i) => fd.append('pages', p.blob, `pagina-${i + 1}.jpg`));
-      const r = await api.post('/scans', fd, { headers: { 'Content-Type': 'multipart/form-data' } });
-      const creados = r.data?.documents;
-      if (creados) {
-        toast.success(`${creados.length} PDF creados, uno por imagen`);
-        // Si alguna imagen falló se crearon las demás: hay que decirlo.
-        if (r.data.errors?.length) {
-          toast.error(`${r.data.errors.length} no se pudo generar. ${r.data.errors[0]}`, { duration: 7000 });
-        }
+      if (!separado) {
+        const data = await postPáginas(pages, {
+          name: name.trim() || defaultName(),
+        });
+        toast.success(`PDF creado: ${data.name}`);
       } else {
-        toast.success(`PDF creado: ${r.data.name}`);
+        // Cada envío es independiente: si el 4º falla, los tres primeros ya
+        // crearon sus PDF y solo hay que reintentar lo que quedó.
+        let creados = 0;
+        let subidas = 0;
+        const errores = [];
+        let fallo = null;
+        for (const grupo of envíos) {
+          try {
+            const data = await postPáginas(grupo, {
+              name: name.trim(),
+              mode: 'split',
+              startIndex: subidas,
+              pageNames: JSON.stringify(grupo.map((p) => p.sourceName || '')),
+            });
+            creados += data.documents?.length || 0;
+            if (data.errors?.length) errores.push(...data.errors);
+            subidas += grupo.length;
+            setSaving({ done: subidas, total: pages.length });
+          } catch (e) {
+            fallo = e;
+            break;
+          }
+        }
+        if (creados) toast.success(`${creados} PDF creados, uno por imagen`);
+        if (errores.length) {
+          toast.error(`${errores.length} no se pudo generar. ${errores[0]}`, { duration: 7000 });
+        }
+        if (fallo) {
+          toast.error(
+            `${fallo.response?.data?.message || 'Se cortó el envío'}. Quedan ${pages.length - subidas} imágenes sin subir: vuelve a darle a «Generar».`,
+            { duration: 9000 }
+          );
+          // Se quitan solo las que SÍ se subieron, para que el reintento no las
+          // duplique y el usuario no tenga que volver a elegir los archivos.
+          setPages((prev) => {
+            prev.slice(0, subidas).forEach(freePage);
+            return prev.slice(subidas);
+          });
+          return;
+        }
       }
-      pages.forEach((p) => p.preview && URL.revokeObjectURL(p.preview));
+      pages.forEach(freePage);
       setPages([]);
       setName('');
       onSaved?.();
     } catch (e) {
       toast.error(e.response?.data?.message || 'No se pudo crear el PDF');
     } finally {
-      setSaving(false);
+      setSaving(null);
     }
   };
 
@@ -296,6 +499,11 @@ function ScanStudio({ pages, setPages, onSaved }) {
               La cámara se abre a pantalla completa y reconoce los bordes de la hoja. Después de
               disparar te muestra el recorte para que lo confirmes o lo corrijas: la mesa y todo lo
               de alrededor quedan fuera.
+            </p>
+            <p className="text-sm text-slate-500 mt-1.5">
+              <b className="font-medium text-slate-600">Subir fotos</b> es otra cosa: las imágenes
+              entran al PDF <b className="font-medium text-slate-600">tal cual</b>, sin recorte ni
+              filtro. Si alguna necesita ajuste, usa «Reencuadrar» en su miniatura.
             </p>
           </div>
           <div className="flex flex-col sm:flex-row gap-2 sm:shrink-0">
@@ -330,18 +538,35 @@ function ScanStudio({ pages, setPages, onSaved }) {
         {/* ── Páginas ────────────────────────────────────────────────────── */}
         <div className="lg:col-span-2 bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-4 sm:p-5">
           <div className="flex items-center justify-between mb-3">
-            <h2 className="font-semibold text-slate-800 text-sm">
-              {separado ? `Imágenes (${pages.length})` : `Páginas del PDF (${pages.length})`}
-            </h2>
+            <div className="min-w-0">
+              <h2 className="font-semibold text-slate-800 text-sm">
+                {separado ? `Imágenes (${pages.length})` : `Páginas del PDF (${pages.length})`}
+              </h2>
+              {pages.length > 0 && (
+                <p className={`text-[11px] mt-0.5 ${!separado && pasaDeUnaTanda ? 'text-rose-600 font-medium' : 'text-slate-400'}`}>
+                  {separado
+                    ? `${fmtSize(pesoTotal)} · se envía${tandas === 1 ? '' : 'n'} en ${tandas} tanda${tandas === 1 ? '' : 's'} de hasta ${MAX_POR_ENVIO}`
+                    : `${pages.length} de ${MAX_POR_ENVIO} imágenes · ${fmtSize(pesoTotal)} de ${fmtSize(MAX_ENVIO_BYTES)}`}
+                </p>
+              )}
+            </div>
             {pages.length > 0 && (
               <button
-                onClick={() => { pages.forEach((p) => p.preview && URL.revokeObjectURL(p.preview)); setPages([]); }}
+                onClick={() => { pages.forEach(freePage); setPages([]); }}
                 className="text-xs text-rose-600 bg-transparent border-none cursor-pointer p-0"
               >
                 Vaciar
               </button>
             )}
           </div>
+
+          {!separado && pasaDeUnaTanda && (
+            <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <b className="font-semibold">Ya no caben en un solo PDF.</b> El máximo por envío es de{' '}
+              {MAX_POR_ENVIO} imágenes o {fmtSize(MAX_ENVIO_BYTES)}. Cambia a «Un PDF por imagen» —se
+              manda solo, por tandas— o quita algunas de la lista.
+            </div>
+          )}
 
           {pages.length === 0 ? (
             <div className="empty-state">
@@ -354,13 +579,22 @@ function ScanStudio({ pages, setPages, onSaved }) {
               {pages.map((p, i) => (
                 <div key={p.id} className="rounded-xl border border-slate-200 bg-slate-50 overflow-hidden">
                   <div className="relative bg-white">
-                    <img src={p.thumb} alt={`Página ${i + 1}`} className="w-full block" />
+                    <img src={p.thumb} alt={`Página ${i + 1}`} loading="lazy" decoding="async" className="w-full block" />
                     <span className="absolute top-1.5 left-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-900/70 text-white">
                       {i + 1}
                     </span>
+                    {/* Para distinguir de un vistazo lo subido (sin tocar) de lo escaneado. */}
+                    {p.sinEscanear && (
+                      <span
+                        title="Se subió tal cual: sin recorte ni filtro"
+                        className="absolute top-1.5 right-1.5 text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-white/85 text-slate-600 border border-slate-200"
+                      >
+                        tal cual
+                      </span>
+                    )}
                   </div>
                   <div className="p-1.5 flex flex-wrap gap-1 justify-center">
-                    <IconBtn title="Reencuadrar" onClick={() => setCropping({ pageId: p.id, src: p.original, w: p.originalW, h: p.originalH, quad: p.quad })}>
+                    <IconBtn title="Reencuadrar" onClick={() => openCrop(p)}>
                       <HiOutlineArrowsPointingOut className="w-3.5 h-3.5" />
                     </IconBtn>
                     <IconBtn title="Mover antes" onClick={() => movePage(p.id, -1)} disabled={i === 0}>
@@ -432,10 +666,19 @@ function ScanStudio({ pages, setPages, onSaved }) {
               )}
             </p>
           </div>
-          <button onClick={savePdf} disabled={saving || !pages.length} className="btn-primary w-full justify-center">
+          <button
+            onClick={savePdf}
+            disabled={saving || !pages.length || (!separado && pasaDeUnaTanda)}
+            title={!separado && pasaDeUnaTanda
+              ? `Son demasiadas para un solo PDF (máximo ${MAX_POR_ENVIO} o ${fmtSize(MAX_ENVIO_BYTES)})`
+              : undefined}
+            className="btn-primary w-full justify-center"
+          >
             {saving ? <Spinner /> : <HiOutlineDocumentText className="w-5 h-5" />}
             {saving
-              ? 'Generando…'
+              ? (saving.total > saving.done && saving.done > 0
+                  ? `Generando ${saving.done} de ${saving.total}…`
+                  : 'Generando…')
               : separado
                 ? `Generar ${pages.length} PDF`
                 : `Generar PDF (${pages.length})`}

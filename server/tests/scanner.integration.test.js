@@ -157,6 +157,25 @@ test('Escáner separado — los nombres repetidos dentro de la MISMA tanda no ch
   assert.equal(await ScannedDocument.countDocuments({ clinic: clinicId }), 4);
 });
 
+test('Escáner separado — una tanda partida en varios envíos sigue la numeración', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+
+  // El cliente parte las tandas grandes en varias peticiones: la segunda avisa
+  // cuántas imágenes van ya para que los nombres no vuelvan a empezar en 1.
+  const a = await H.runController(
+    scans.createScan,
+    uploadReq(clinicId, userId, { pages: 2, name: 'Ficha', mode: 'split' })
+  );
+  const b = await H.runController(
+    scans.createScan,
+    uploadReq(clinicId, userId, { pages: 2, name: 'Ficha', mode: 'split', startIndex: 2 })
+  );
+
+  assert.deepEqual(a.payload.documents.map((d) => d.name), ['Ficha 1', 'Ficha 2']);
+  assert.deepEqual(b.payload.documents.map((d) => d.name), ['Ficha 3', 'Ficha 4']);
+  assert.equal(await ScannedDocument.countDocuments({ clinic: clinicId }), 4);
+});
+
 test('Escáner separado — sin el modo se sigue armando un solo PDF (lo de siempre)', async () => {
   const { clinicId, userId } = await H.seedClinic();
 
@@ -180,6 +199,13 @@ test('Escáner separado — una imagen rota no tumba al resto de la tanda', asyn
   assert.deepEqual(r.payload.documents.map((d) => d.name), ['Tanda 1', 'Tanda 3']);
   assert.equal(r.payload.errors.length, 1);
   assert.match(r.payload.errors[0], /Imagen 2/);
+
+  // Con desplazamiento, el aviso nombra la imagen por su número real en la tanda.
+  const req2 = uploadReq(clinicId, userId, { pages: 2, name: 'Otra', mode: 'split', startIndex: 10 });
+  req2.files[0] = { buffer: Buffer.from('rota'), mimetype: 'image/png', originalname: 'rota.png' };
+  const r2 = await H.runController(scans.createScan, req2);
+  assert.match(r2.payload.errors[0], /Imagen 11/);
+  assert.deepEqual(r2.payload.documents.map((d) => d.name), ['Otra 12']);
 });
 
 test('Escáner — el nombre no se repite: el sistema agrega (2), (3)…', async () => {

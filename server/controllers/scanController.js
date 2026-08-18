@@ -10,6 +10,7 @@
  * tanda de fotos sueltas (cédulas, recetas…) y cada una es un documento aparte.
  *
  *   POST   /api/scans                 crear (multipart: pages[] + name + mode)
+ *                                     (tandas grandes: varios envíos con startIndex)
  *   GET    /api/scans                 listar los de la clínica
  *   GET    /api/scans/:id/download    descargar / ver uno
  *   POST   /api/scans/download-zip    descargar varios en un ZIP
@@ -181,12 +182,17 @@ exports.createScan = async (req, res) => {
     // "Receta 2"…), del nombre del archivo que subió, o del de por defecto.
     const taken = await takenNameKeys(req.clinicId);
     const propios = parsePageNames(req.body.pageNames);
+    // Una tanda grande no cabe en una sola petición (nginx y multer la cortan),
+    // así que el cliente la manda por partes: `startIndex` es cuántas imágenes
+    // van ya, para que la numeración siga en 21, 22… y no vuelva a empezar en 1.
+    const desde = Math.max(0, parseInt(req.body.startIndex, 10) || 0);
     const documents = [];
     const errores = [];
     for (const [i, file] of files.entries()) {
+      const n = desde + i + 1;
       const sugerido = base
-        ? `${base} ${i + 1}`
-        : sanitizeName(propios[i]) || `${defaultName()} ${i + 1}`;
+        ? `${base} ${n}`
+        : sanitizeName(propios[i]) || `${defaultName()} ${n}`;
       const name = allocateName(taken, sugerido);
       try {
         const pdf = await buildPdf([file], name);
@@ -195,7 +201,7 @@ exports.createScan = async (req, res) => {
         }));
       } catch (e) {
         // Una imagen rota no debe tirar abajo el resto de la tanda.
-        errores.push(`Imagen ${i + 1}: ${e.message}`);
+        errores.push(`Imagen ${n}: ${e.message}`);
       }
     }
     if (!documents.length) {
