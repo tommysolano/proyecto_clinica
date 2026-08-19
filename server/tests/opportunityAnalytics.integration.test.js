@@ -276,3 +276,101 @@ test('mover la etapa sella la fecha del movimiento (y guardar sin tocarla no la 
   const otraVez = await Conversation.findById(conv._id);
   assert.equal(Number(otraVez.opportunities[0].stageChangedAt), Number(sellada));
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Detalle de una barra: QUIÉNES son, para poder abrir su chat
+// ─────────────────────────────────────────────────────────────────────────────
+const detalle = (clinicId, query) => H.runController(
+  chat.opportunityAnalyticsDetail,
+  H.mockReq(clinicId, new mongoose.Types.ObjectId(), {}, { role: 'admin', query })
+);
+
+/** Dos chats perdidos por el mismo motivo, uno por otro, y una oportunidad viva. */
+async function seedDetalle() {
+  const clinic = await Clinic.create({ name: 'Principal' });
+  await Conversation.create({
+    clinic: clinic._id, phone: '593900000101', contactName: 'Ana Pérez', assignedToName: 'Lucía',
+    opportunities: [{ isOpportunity: true, name: 'Detox', stage: 'perdido', lostReason: 'otra provincia', createdAt: hace(3) }],
+  });
+  await Conversation.create({
+    clinic: clinic._id, phone: '593900000102', contactName: 'Beto Ruiz',
+    opportunities: [{ isOpportunity: true, name: 'Detox', stage: 'perdido', lostReason: 'otra provincia', createdAt: hace(2) }],
+  });
+  await Conversation.create({
+    clinic: clinic._id, phone: '593900000103', contactName: 'Caro Mora',
+    opportunities: [{ isOpportunity: true, name: 'Detox', stage: 'perdido', lostReason: 'precio', createdAt: hace(2) }],
+  });
+  await Conversation.create({
+    clinic: clinic._id, phone: '593900000104', contactName: 'Dani Salas',
+    opportunities: [{ isOpportunity: true, name: 'Detox', stage: 'nuevo', createdAt: hace(1) }],
+  });
+  return clinic;
+}
+
+test('detalle por motivo de pérdida: las mismas personas que cuenta la barra, con su chat', async () => {
+  const clinic = await seedDetalle();
+
+  const grafica = await pedir(clinic._id, rango);
+  const barra = grafica.payload.motivosPerdida.find((m) => m.motivo === 'otra provincia');
+  assert.equal(barra.count, 2);
+
+  const { payload } = await detalle(clinic._id, { ...rango, by: 'motivo', value: 'otra provincia' });
+  // La cifra del detalle TIENE que ser la de la barra: si no, el informe deja de
+  // ser creíble.
+  assert.equal(payload.total, barra.count);
+  assert.deepEqual(payload.items.map((i) => i.contactName).sort(), ['Ana Pérez', 'Beto Ruiz']);
+  // Con el id de la conversación y el teléfono es con lo que se abre el chat.
+  assert.ok(payload.items.every((i) => i.conversationId && i.phone));
+  assert.ok(payload.items.every((i) => i.stage === 'perdido'));
+  assert.equal(payload.items.find((i) => i.contactName === 'Ana Pérez').assignedToName, 'Lucía');
+});
+
+test('detalle por oportunidad: todas sus etapas, o solo la etapa pinchada', async () => {
+  const clinic = await seedDetalle();
+
+  const todas = await detalle(clinic._id, { ...rango, by: 'oportunidad', value: 'Detox' });
+  assert.equal(todas.payload.total, 4);
+
+  const soloNuevas = await detalle(clinic._id, { ...rango, by: 'oportunidad', value: 'Detox', stage: 'nuevo' });
+  assert.deepEqual(soloNuevas.payload.items.map((i) => i.contactName), ['Dani Salas']);
+
+  const perdidas = await detalle(clinic._id, { ...rango, by: 'oportunidad', value: 'Detox', stage: 'perdido' });
+  assert.equal(perdidas.payload.total, 3);
+});
+
+test('detalle: el rango y la sucursal mandan igual que en la gráfica', async () => {
+  const clinic = await seedDetalle();
+  const otra = await Clinic.create({ name: 'Sucursal 2' });
+  await Conversation.create({
+    clinic: otra._id, phone: '593900000105', contactName: 'De otra sede',
+    opportunities: [{ isOpportunity: true, name: 'Detox', stage: 'perdido', lostReason: 'otra provincia', createdAt: hace(2) }],
+  });
+  // Fuera del rango: no debe salir.
+  await Conversation.create({
+    clinic: clinic._id, phone: '593900000106', contactName: 'Vieja',
+    opportunities: [{ isOpportunity: true, name: 'Detox', stage: 'perdido', lostReason: 'otra provincia', createdAt: hace(200) }],
+  });
+
+  const { payload } = await detalle(clinic._id, { ...rango, by: 'motivo', value: 'otra provincia' });
+  assert.deepEqual(payload.items.map((i) => i.contactName).sort(), ['Ana Pérez', 'Beto Ruiz']);
+});
+
+test('detalle: «Sin motivo» y «Sin nombre» son las etiquetas de lo que viene vacío', async () => {
+  const clinic = await Clinic.create({ name: 'Principal' });
+  await Conversation.create({
+    clinic: clinic._id, phone: '593900000107', contactName: 'Sin razón',
+    opportunities: [{ isOpportunity: true, name: '', stage: 'perdido', createdAt: hace(2) }],
+  });
+
+  const porMotivo = await detalle(clinic._id, { ...rango, by: 'motivo', value: 'Sin motivo' });
+  assert.deepEqual(porMotivo.payload.items.map((i) => i.contactName), ['Sin razón']);
+
+  const porNombre = await detalle(clinic._id, { ...rango, by: 'oportunidad', value: 'Sin nombre' });
+  assert.deepEqual(porNombre.payload.items.map((i) => i.contactName), ['Sin razón']);
+});
+
+test('detalle: sin decir qué barra es, no se devuelve nada', async () => {
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const { statusCode } = await detalle(clinic._id, { ...rango, by: 'loQueSea', value: 'x' });
+  assert.equal(statusCode, 400);
+});

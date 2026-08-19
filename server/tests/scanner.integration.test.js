@@ -208,6 +208,85 @@ test('Escáner separado — una imagen rota no tumba al resto de la tanda', asyn
   assert.deepEqual(r2.payload.documents.map((d) => d.name), ['Otra 12']);
 });
 
+// ─────────────────────────────────────────────────────────────────────────────
+//  Un PDF único que llega en varias tandas (sin tope de imágenes)
+// ─────────────────────────────────────────────────────────────────────────────
+test('Escáner — un PDF único puede pasar del tope de una petición: llega por tandas', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const sessionId = 'tanda-de-prueba-1';
+
+  // Dos envíos intermedios: apartan las páginas y NO crean ninguna ficha.
+  const a = await H.runController(
+    scans.createScan,
+    uploadReq(clinicId, userId, { pages: 3, name: 'Historia larga', sessionId, startIndex: 0, finish: 'false' })
+  );
+  assert.equal(a.statusCode, 202, JSON.stringify(a.payload));
+  assert.equal(a.payload.staged, true);
+  assert.equal(a.payload.pages, 3);
+  assert.equal(await ScannedDocument.countDocuments({ clinic: clinicId }), 0, 'todavía no hay documento');
+
+  const b = await H.runController(
+    scans.createScan,
+    uploadReq(clinicId, userId, { pages: 3, name: 'Historia larga', sessionId, startIndex: 3, finish: 'false' })
+  );
+  assert.equal(b.payload.pages, 6);
+
+  // El último envío junta TODO en un solo PDF.
+  const c = await H.runController(
+    scans.createScan,
+    uploadReq(clinicId, userId, { pages: 2, name: 'Historia larga', sessionId, startIndex: 6, finish: 'true' })
+  );
+  assert.equal(c.statusCode, 201, JSON.stringify(c.payload));
+  assert.equal(c.payload.name, 'Historia larga');
+  assert.equal(c.payload.pages, 8, 'las 8 páginas de las tres tandas van en el mismo PDF');
+
+  assert.equal(await ScannedDocument.countDocuments({ clinic: clinicId }), 1, 'un solo documento, no uno por tanda');
+  const doc = await ScannedDocument.findById(c.payload._id);
+  const bytes = await fsp.readFile(path.join(SCANS_DIR, String(clinicId), doc.filename));
+  assert.equal(bytes.slice(0, 5).toString('ascii'), '%PDF-');
+  assert.equal((bytes.toString('latin1').match(/\/Type\s*\/Page[^s]/g) || []).length, 8);
+
+  // El apartado temporal se limpia: no se queda ocupando disco.
+  assert.equal(fs.existsSync(scans._internals.stagingDir(clinicId, sessionId)), false);
+});
+
+test('Escáner — las tandas de un PDF único respetan el orden aunque lleguen al revés', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const sessionId = 'tanda-desordenada';
+
+  // La segunda tanda llega ANTES que la primera (dos peticiones en paralelo).
+  await H.runController(
+    scans.createScan,
+    uploadReq(clinicId, userId, { pages: 2, name: 'Orden', sessionId, startIndex: 2, finish: 'false' })
+  );
+  const r = await H.runController(
+    scans.createScan,
+    uploadReq(clinicId, userId, { pages: 2, name: 'Orden', sessionId, startIndex: 0, finish: 'true' })
+  );
+
+  assert.equal(r.payload.pages, 4);
+  // El orden lo fija `startIndex`, no el orden de llegada.
+  const rutas = await scans._internals.stagedPaths(clinicId, sessionId);
+  assert.deepEqual(rutas, [], 'el apartado quedó vacío tras armar el PDF');
+});
+
+test('Escáner — un sessionId con truco no saca los archivos de su carpeta', async () => {
+  const { validSessionId } = scans._internals;
+  assert.equal(validSessionId('../../etc'), '');
+  assert.equal(validSessionId('con/barra'), '');
+  assert.equal(validSessionId('corto'), '');
+  assert.equal(validSessionId('sesion-valida-123'), 'sesion-valida-123');
+});
+
+test('Escáner — sin sessionId un PDF único sigue armándose de una sola vez', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+
+  const r = await H.runController(scans.createScan, uploadReq(clinicId, userId, { pages: 2, name: 'De una' }));
+
+  assert.equal(r.statusCode, 201);
+  assert.equal(r.payload.pages, 2);
+});
+
 test('Escáner — el nombre no se repite: el sistema agrega (2), (3)…', async () => {
   const { clinicId, userId } = await H.seedClinic();
 
@@ -471,4 +550,193 @@ test('Escáner — "descargar todos" sin documentos avisa en vez de mandar un ZI
 
   assert.equal(r.statusCode, 404);
   assert.match(r.payload.message, /No hay documentos/);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  «Un PDF por imagen» sin tope: una tanda GRANDE repartida en varios envíos
+// ─────────────────────────────────────────────────────────────────────────────
+/**
+ * El cliente parte las tandas en envíos de MAX_POR_ENVIO (40) imágenes. Aquí se
+ * reproduce eso con 100 fotos: 40 + 40 + 20. Lo que se comprueba es que NO se
+ * pierde ni una por el camino, que la numeración sigue entre envíos y que cada
+ * PDF acaba en su propio archivo. Este es el caso que el usuario ve como
+ * «subo 100 fotos y quiero 100 PDF».
+ */
+test('Escáner separado — 100 imágenes en tandas de 40 crean 100 PDF, sin tope', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const TOTAL = 100;
+  const POR_ENVIO = scans._internals.MAX_POR_ENVIO;
+  assert.equal(POR_ENVIO, 40, 'si cambia el tamaño de la tanda, este test debe seguirlo');
+
+  let subidas = 0;
+  let creados = 0;
+  const nombres = [];
+  while (subidas < TOTAL) {
+    const cuantas = Math.min(POR_ENVIO, TOTAL - subidas);
+    const req = uploadReq(clinicId, userId, {
+      pages: cuantas,
+      name: 'Cédula',
+      mode: 'split',
+      startIndex: subidas,
+    });
+    // eslint-disable-next-line no-await-in-loop
+    const r = await H.runController(scans.createScan, req);
+    assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+    assert.equal(r.payload.errors.length, 0, `envío desde ${subidas}: ${r.payload.errors[0] || ''}`);
+    creados += r.payload.count;
+    nombres.push(...r.payload.documents.map((d) => d.name));
+    subidas += cuantas;
+  }
+
+  assert.equal(creados, TOTAL, 'ninguna imagen se queda por el camino');
+  assert.equal(await ScannedDocument.countDocuments({ clinic: clinicId }), TOTAL);
+  // La numeración es continua entre envíos: 1..100, sin repetir ni saltar.
+  assert.deepEqual(nombres, Array.from({ length: TOTAL }, (_, i) => `Cédula ${i + 1}`));
+  // Cada uno es un archivo distinto y de una sola página.
+  const docs = await ScannedDocument.find({ clinic: clinicId }).lean();
+  assert.equal(new Set(docs.map((d) => d.filename)).size, TOTAL, 'cada PDF es un archivo aparte');
+  assert.ok(docs.every((d) => d.pages === 1 && d.size > 0));
+  assert.ok(fs.existsSync(path.join(SCANS_DIR, String(clinicId), docs[0].filename)));
+});
+
+test('Escáner separado — sin nombre escrito, 100 fotos de cámara no chocan entre tandas', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const TOTAL = 100;
+
+  // Sin `name` y sin `pageNames`: todos los PDF salen del nombre por defecto
+  // ("Escaneo dd-mm-aaaa N"). Es el caso que más presiona al repartidor de
+  // nombres, porque la base parte de un único nombre repetido.
+  let subidas = 0;
+  const nombres = [];
+  while (subidas < TOTAL) {
+    const cuantas = Math.min(40, TOTAL - subidas);
+    // eslint-disable-next-line no-await-in-loop
+    const r = await H.runController(
+      scans.createScan,
+      uploadReq(clinicId, userId, { pages: cuantas, mode: 'split', startIndex: subidas })
+    );
+    nombres.push(...r.payload.documents.map((d) => d.name));
+    subidas += cuantas;
+  }
+
+  assert.equal(nombres.length, TOTAL);
+  // Ni un nombre repetido: el índice único {clinic, nameKey} habría reventado.
+  assert.equal(new Set(nombres.map((n) => n.toLowerCase())).size, TOTAL);
+  assert.equal(await ScannedDocument.countDocuments({ clinic: clinicId }), TOTAL);
+});
+
+test('Escáner separado — 100 imágenes con el MISMO nombre de archivo se numeran (2)…(101)', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const TOTAL = 100;
+
+  // El peor caso del repartidor de nombres: 100 fotos que se llaman igual. Antes
+  // de dar por bueno "no hay tope" hay que comprobar que el bucle de sufijos
+  // (2), (3)… aguanta una tanda entera y no acaba en el sufijo de emergencia.
+  let subidas = 0;
+  const nombres = [];
+  while (subidas < TOTAL) {
+    const cuantas = Math.min(40, TOTAL - subidas);
+    // eslint-disable-next-line no-await-in-loop
+    const r = await H.runController(
+      scans.createScan,
+      uploadReq(clinicId, userId, {
+        pages: cuantas,
+        mode: 'split',
+        startIndex: subidas,
+        pageNames: JSON.stringify(Array.from({ length: cuantas }, () => 'cedula.jpg')),
+      })
+    );
+    nombres.push(...r.payload.documents.map((d) => d.name));
+    subidas += cuantas;
+  }
+
+  assert.equal(new Set(nombres.map((n) => n.toLowerCase())).size, TOTAL, 'ningún nombre repetido');
+  assert.equal(nombres[0], 'cedula');
+  assert.equal(nombres[1], 'cedula (2)');
+  assert.equal(nombres[TOTAL - 1], `cedula (${TOTAL})`);
+  assert.equal(await ScannedDocument.countDocuments({ clinic: clinicId }), TOTAL);
+});
+
+test('Escáner separado — pasados los mil escaneos del mismo nombre, se sigue numerando', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const { allocateName, nameKeyOf } = scans._internals;
+
+  // Una clínica que lleva 1.200 "cedula" guardados. El repartidor de nombres
+  // probaba sufijos solo hasta (999) y a partir de ahí bautizaba con un sufijo
+  // aleatorio —"cedula (51b51e)"—, que además podía chocar contra el índice
+  // único y hacer perder esa imagen de la tanda.
+  const taken = new Set([nameKeyOf('cedula')]);
+  for (let i = 2; i <= 1200; i++) taken.add(nameKeyOf(`cedula (${i})`));
+
+  const siguientes = [allocateName(taken, 'cedula'), allocateName(taken, 'cedula')];
+  assert.deepEqual(siguientes, ['cedula (1201)', 'cedula (1202)']);
+  assert.ok(
+    !siguientes.some((n) => /\([0-9a-f]{6}\)$/.test(n)),
+    'ninguno debe caer en el sufijo aleatorio de emergencia'
+  );
+
+  // Y el nombre repartido es de verdad único contra la base (el índice
+  // {clinic, nameKey} no puede reventar).
+  const r = await H.runController(scans.createScan, uploadReq(clinicId, userId, { name: 'cedula (1201)' }));
+  assert.equal(r.statusCode, 201);
+  assert.equal(r.payload.name, 'cedula (1201)');
+});
+
+test('Escáner separado — la respuesta dice QUÉ imagen falló, para poder reintentarla', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+
+  // Tanda de 4 con la 2ª rota, empezando en la imagen 41 (segunda tanda real).
+  const req = uploadReq(clinicId, userId, {
+    pages: 4,
+    mode: 'split',
+    startIndex: 40,
+    pageNames: JSON.stringify(['uno.jpg', 'rota.jpg', 'tres.jpg', 'cuatro.jpg']),
+  });
+  req.files[1] = { buffer: Buffer.from('esto no es una imagen'), mimetype: 'image/png', originalname: 'rota.jpg' };
+
+  const r = await H.runController(scans.createScan, req);
+
+  assert.equal(r.statusCode, 201, JSON.stringify(r.payload));
+  assert.equal(r.payload.count, 3);
+  // `failed` es lo que permite al cliente dejar esa imagen en la rejilla: sin el
+  // índice, se borraban todas y el usuario perdía el archivo sin saber cuál era.
+  assert.equal(r.payload.failed.length, 1);
+  assert.equal(r.payload.failed[0].index, 1, 'la posición DENTRO de este envío');
+  assert.equal(r.payload.failed[0].number, 42, 'su número dentro de la tanda entera');
+  assert.equal(r.payload.failed[0].file, 'rota');
+  assert.ok(r.payload.failed[0].message);
+  // El texto de siempre se mantiene por compatibilidad.
+  assert.match(r.payload.errors[0], /Imagen 42/);
+});
+
+test('Escáner separado — sin fallos, `failed` viene vacío', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const r = await H.runController(
+    scans.createScan,
+    uploadReq(clinicId, userId, { pages: 3, name: 'Todo bien', mode: 'split' })
+  );
+  assert.deepEqual(r.payload.failed, []);
+  assert.deepEqual(r.payload.errors, []);
+});
+
+test('Escáner separado — dos envíos SIMULTÁNEOS no pierden PDFs por chocar de nombre', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+
+  // Sin nombre escrito, los dos envíos reparten los mismos "Escaneo dd-mm-aaaa N"
+  // (allocateName solo aparta en memoria del proceso). Antes, el segundo chocaba
+  // contra el índice único {clinic, nameKey} y esa imagen se perdía con un
+  // E11000 crudo; ahora se vuelve a pedir nombre y se reintenta solo el registro.
+  const [a, b] = await Promise.all([
+    H.runController(scans.createScan, uploadReq(clinicId, userId, { pages: 5, mode: 'split' })),
+    H.runController(scans.createScan, uploadReq(clinicId, userId, { pages: 5, mode: 'split' })),
+  ]);
+
+  assert.equal(a.statusCode, 201, JSON.stringify(a.payload));
+  assert.equal(b.statusCode, 201, JSON.stringify(b.payload));
+  assert.deepEqual(a.payload.failed, [], JSON.stringify(a.payload.errors));
+  assert.deepEqual(b.payload.failed, [], JSON.stringify(b.payload.errors));
+  assert.equal(a.payload.count + b.payload.count, 10, 'las 10 imágenes tienen su PDF');
+  assert.equal(await ScannedDocument.countDocuments({ clinic: clinicId }), 10);
+  const nombres = (await ScannedDocument.find({ clinic: clinicId }).lean()).map((d) => d.nameKey);
+  assert.equal(new Set(nombres).size, 10, 'ningún nombre repetido');
 });

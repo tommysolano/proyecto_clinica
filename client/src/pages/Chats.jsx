@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useCallback, memo, Fragment } from 'react';
 import { createPortal } from 'react-dom';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import NumericInput from '../components/NumericInput';
 import useDebounce from '../hooks/useDebounce';
@@ -317,6 +317,8 @@ export default function Chats() {
   //    'all' = bandeja compartida salvo reservas exclusivas de workflow ajenas.
   //  - `filter` (barra superior, solo bandeja): 'all' | 'unread' | 'featured'.
   const [view, setView] = useState('inbox');
+  // Parámetros de la URL: sirven para entrar directo a un chat (?phone=…).
+  const [urlParams, setUrlParams] = useSearchParams();
   const [scope, setScope] = useState(() => localStorage.getItem('chats.scope') || 'all');
   const [filter, setFilter] = useState('all');
   const [newChatOpen, setNewChatOpen] = useState(false);
@@ -1477,23 +1479,80 @@ export default function Chats() {
     }
   };
 
-  // Nuevo chat: abre (o crea) la conversación con un número y la deja lista para
-  // escribir. Como no hay ventana de 24h abierta con un contacto nuevo, el
-  // compositor solo permitirá enviar una plantilla aprobada (igual que Daplox).
-  const createNewChat = async ({ phone, contactName }) => {
-    const { data: conv } = await api.post('/chats', { phone, contactName });
-    setNewChatOpen(false);
-    // Nos aseguramos de que el chat recién creado sea visible: bandeja global,
-    // filtro "Todos" (el contacto viene sin no-leídos ni destacado).
+  /**
+   * Deja abierto el chat de un número: si ya existe se abre y si no se crea.
+   * El servidor responde 200 con el que ya había y 201 con el nuevo, así que
+   * aquí se sabe cuál de las dos cosas pasó sin consultar antes.
+   */
+  /** Deja una conversación abierta y a la vista, venga de donde venga. */
+  const mostrarChat = (conv) => {
+    // Bandeja global y filtro "Todos": un chat recién abierto no tiene
+    // no-leídos ni está destacado, así que en otra vista no aparecería.
     setView('inbox');
     setScope('all');
     localStorage.setItem('chats.scope', 'all');
     setFilter('all');
     setConversations((prev) => [conv, ...prev.filter((c) => String(c._id) !== String(conv._id))]);
+    // Respaldo por si la recarga de la lista todavía no lo trae (se llega desde
+    // otra pantalla, con la lista sin cargar): el panel se pinta igual.
+    setOpenConvSnap(conv);
     setActiveId(conv._id);
+  };
+
+  const abrirChatDe = async ({ phone, contactName }) => {
+    const r = await api.post('/chats', { phone, contactName });
+    mostrarChat(r.data);
+    return { conv: r.data, creado: r.status === 201 };
+  };
+
+  // Nuevo chat: abre (o crea) la conversación con un número y la deja lista para
+  // escribir. Como no hay ventana de 24h abierta con un contacto nuevo, el
+  // compositor solo permitirá enviar una plantilla aprobada (igual que Daplox).
+  const createNewChat = async ({ phone, contactName }) => {
+    const { conv } = await abrirChatDe({ phone, contactName });
+    setNewChatOpen(false);
     toast.success('Chat listo. Para el primer mensaje envía una plantilla aprobada (botón +).');
     return conv;
   };
+
+  /**
+   * Enlace directo a un chat, para llegar desde otra pantalla en otra pestaña:
+   *
+   *   /chats?chat=<id>                  una conversación que YA existe
+   *   /chats?phone=593…&name=Ana Pérez  por número: si no hay chat, se crea
+   *
+   * Por `chat` lo abren las Analíticas (el detalle de una barra ya sabe de qué
+   * conversación es, y así vale para cualquier canal, no solo WhatsApp). Por
+   * `phone` lo abre el detalle de una importación de contactos, donde puede que
+   * todavía no exista chat: la conversación se identifica por el número (ver
+   * [ventana 24h por número]), así que el mismo teléfono es el mismo chat.
+   */
+  const deepLinkRef = useRef('');
+  useEffect(() => {
+    const chatId = (urlParams.get('chat') || '').trim();
+    const phone = (urlParams.get('phone') || '').trim();
+    const clave = chatId || phone;
+    if (!clave || deepLinkRef.current === clave) return;
+    deepLinkRef.current = clave;
+    const contactName = (urlParams.get('name') || '').trim();
+    // La URL se limpia enseguida: recargar la pestaña no debe volver a abrir
+    // nada y el teléfono no tiene por qué quedarse en la barra de direcciones.
+    const resto = new URLSearchParams(urlParams);
+    ['chat', 'phone', 'name'].forEach((k) => resto.delete(k));
+    setUrlParams(resto, { replace: true });
+
+    const abrir = chatId
+      ? api.get(`/chats/${chatId}`).then(({ data }) => { mostrarChat(data); return { creado: false }; })
+      : abrirChatDe({ phone, contactName });
+    abrir
+      .then(({ creado }) => {
+        if (creado) {
+          toast.success('Chat listo. Para el primer mensaje envía una plantilla aprobada (botón +).');
+        }
+      })
+      .catch((err) => toast.error(err.response?.data?.message || 'No se pudo abrir el chat de ese contacto'));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [urlParams]);
 
   // Pasa la conversación a otro compañero. Sin `userId` (opción "automático",
   // solo para admin/supervisor) la reparte al agente con menos chats abiertos.

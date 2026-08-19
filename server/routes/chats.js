@@ -88,6 +88,8 @@ router.get('/opportunities/all', requireRole(...CALL_CENTER_ROLES), ctrl.listAll
 // Analíticas del embudo (todo agregado en la base). Mismos roles que la página
 // /analytics: el call center no la ve.
 router.get('/opportunities/analytics', requireRole('admin', 'marketing'), ctrl.opportunityAnalytics);
+// Quiénes hay detrás de una barra de la gráfica (para abrir su chat desde ahí).
+router.get('/opportunities/analytics/detail', requireRole('admin', 'marketing'), ctrl.opportunityAnalyticsDetail);
 router.post('/opportunities/bulk-whatsapp', requireRole(...CALL_CENTER_ROLES), ctrl.bulkWhatsappOpportunities);
 
 // Números (globales) conectados, para el selector "responder desde" del chat.

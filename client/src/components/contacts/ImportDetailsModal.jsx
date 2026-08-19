@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import {
+  HiOutlineArrowTopRightOnSquare,
   HiOutlineChevronLeft,
   HiOutlineChevronRight,
   HiOutlineExclamationTriangle,
@@ -27,6 +28,34 @@ function nameOf(item) {
 function phoneOf(item) {
   const phone = item.phone || item.value || '';
   return /^\+?\d{8,15}$/.test(String(phone).replace(/\s/g, '')) ? formatPhone(phone) : phone;
+}
+
+/**
+ * Teléfono con el que se puede abrir el chat de esta fila, o '' si no hay.
+ *
+ * La normalización de verdad la hace el servidor al abrir la conversación
+ * (utils/phoneNormalize.js); aquí solo se descarta lo que claramente no es un
+ * número, porque una fila fallida trae el valor tal cual venía en el Excel.
+ */
+function chatPhoneOf(item) {
+  const raw = String(item.phone || item.value || '').replace(/[\s()-]/g, '');
+  return /^\+?\d{8,15}$/.test(raw) ? raw : '';
+}
+
+/**
+ * Abre el chat del contacto en una pestaña nueva. Va por teléfono: la
+ * conversación se identifica por el número, así que si ya existe se abre esa
+ * misma y si no, /chats la crea al llegar (ver el enlace directo en Chats.jsx).
+ */
+function openChatTab(item) {
+  const phone = chatPhoneOf(item);
+  if (!phone) return;
+  const params = new URLSearchParams({ phone });
+  const name = nameOf(item);
+  // El nombre solo sirve para bautizar un chat que aún no existe; si lo único
+  // que hay es el propio número, no aporta nada.
+  if (name && name !== 'Sin nombre' && name.replace(/[\s()-]/g, '') !== phone) params.set('name', name);
+  window.open(`/chats?${params.toString()}`, '_blank', 'noopener');
 }
 
 export default function ImportDetailsModal({ batch, initialOutcome = '', onClose }) {
@@ -114,6 +143,10 @@ export default function ImportDetailsModal({ batch, initialOutcome = '', onClose
           />
         </label>
 
+        <p className="-mt-2 text-[11px] text-slate-400">
+          Haz clic en un contacto para abrir su chat en una pestaña nueva.
+        </p>
+
         {data?.message && (
           <div className={`flex items-start gap-2 rounded-xl border px-3 py-2 text-xs ${data.detailAvailable ? 'bg-sky-50 border-sky-200 text-sky-700' : 'bg-amber-50 border-amber-200 text-amber-800'}`}>
             <HiOutlineExclamationTriangle className="w-4 h-4 shrink-0 mt-px" />
@@ -149,11 +182,22 @@ export default function ImportDetailsModal({ batch, initialOutcome = '', onClose
                 <tbody className="divide-y divide-slate-100">
                   {data.items.map((item, index) => {
                     const meta = OUTCOMES[item.outcome] || OUTCOMES.failed;
+                    // Una fila sin teléfono utilizable (un fallo de formato, una
+                    // fila solo con correo) no lleva a ningún chat: se deja tal cual.
+                    const abrible = !!chatPhoneOf(item);
                     return (
-                      <tr key={item._id || `${item.row}-${index}`} className="align-top hover:bg-slate-50/60">
+                      <tr
+                        key={item._id || `${item.row}-${index}`}
+                        onClick={abrible ? () => openChatTab(item) : undefined}
+                        title={abrible ? 'Abrir el chat de este contacto en una pestaña nueva' : undefined}
+                        className={`align-top ${abrible ? 'cursor-pointer hover:bg-emerald-50/60' : 'hover:bg-slate-50/60'}`}
+                      >
                         <td className="px-3 py-3 text-slate-400">{item.row || '—'}</td>
                         <td className="px-3 py-3">
-                          <div className="font-semibold text-slate-700 break-words">{nameOf(item)}</div>
+                          <div className={`font-semibold break-words flex items-center gap-1.5 ${abrible ? 'text-emerald-700' : 'text-slate-700'}`}>
+                            <span>{nameOf(item)}</span>
+                            {abrible && <HiOutlineArrowTopRightOnSquare className="w-3.5 h-3.5 shrink-0 text-emerald-500" />}
+                          </div>
                         </td>
                         <td className="px-3 py-3 text-slate-600">
                           <div>{phoneOf(item) || '—'}</div>

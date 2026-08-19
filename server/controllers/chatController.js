@@ -2380,6 +2380,86 @@ exports.opportunityAnalytics = async (req, res) => {
   }
 };
 
+/**
+ * GET /chats/opportunities/analytics/detail — QUIÉNES hay detrás de una barra.
+ *
+ * La página de Analíticas solo enseñaba cifras: se veía que 12 oportunidades se
+ * perdieron por "otra provincia", pero no de quién eran ni cómo llegar a su
+ * chat. Esto devuelve esas personas, con el id de su conversación para poder
+ * abrirla en otra pestaña.
+ *
+ * Se cuenta EXACTAMENTE igual que la gráfica (mismo aplanado, mismo rango, misma
+ * etiqueta): si aquí salieran 11 filas para una barra de 12, el informe dejaría
+ * de ser creíble. Por eso el filtro se aplica sobre los mismos campos calculados.
+ *
+ *   by=motivo        value = el motivo de pérdida ('' o 'Sin motivo' = sin motivo)
+ *   by=oportunidad   value = el nombre de la oportunidad ('Sin nombre' = sin nombre)
+ *                    stage = opcional, para una etapa concreta de esa oportunidad
+ */
+exports.opportunityAnalyticsDetail = async (req, res) => {
+  try {
+    const clinicOid = new mongoose.Types.ObjectId(req.clinicId);
+    const range = statsDateRange(req.query);
+    const by = String(req.query.by || '');
+    const value = String(req.query.value ?? '');
+    const stage = String(req.query.stage || '');
+    if (!['motivo', 'oportunidad'].includes(by)) {
+      return res.status(400).json({ message: 'Falta indicar qué barra se está abriendo' });
+    }
+
+    const filtro = {};
+    if (by === 'motivo') {
+      filtro._stage = 'perdido';
+      // "Sin motivo" es la etiqueta que pinta la gráfica cuando el campo está vacío.
+      filtro._motivo = value === 'Sin motivo' ? '' : value;
+    } else {
+      filtro._label = value;
+      if (stage) filtro._stage = stage;
+    }
+
+    const rows = await Conversation.aggregate([
+      { $match: { clinic: clinicOid, ...opportunities.hasOpportunityFilter() } },
+      { $addFields: { _opps: opportunities.AGG_FLATTEN } },
+      { $unwind: '$_opps' },
+      {
+        $addFields: {
+          _created: { $ifNull: ['$_opps.createdAt', '$createdAt'] },
+          _stage: { $ifNull: ['$_opps.stage', 'nuevo'] },
+          _value: { $ifNull: ['$_opps.expectedValue', 0] },
+          _label: OPP_LABEL,
+          // Sin $trim a propósito: la gráfica agrupa por el valor tal cual, y
+          // limpiarlo aquí dejaría barras cuyo detalle sale vacío.
+          _motivo: { $ifNull: ['$_opps.lostReason', ''] },
+        },
+      },
+      ...(range ? [{ $match: { _created: range } }] : []),
+      { $match: filtro },
+      { $sort: { _created: -1 } },
+      { $limit: 500 },
+      {
+        $project: {
+          _id: 0,
+          conversationId: '$_id',
+          phone: 1,
+          contactName: 1,
+          channel: { $ifNull: ['$channel', 'whatsapp'] },
+          assignedToName: { $ifNull: ['$assignedToName', ''] },
+          stage: '$_stage',
+          nombre: '$_label',
+          motivo: '$_motivo',
+          valor: '$_value',
+          creada: '$_created',
+          lastMessageAt: 1,
+        },
+      },
+    ]);
+
+    res.json({ items: rows, total: rows.length, truncated: rows.length >= 500 });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al abrir el detalle', error: err.message });
+  }
+};
+
 exports.bulkWhatsappOpportunities = async (req, res) => {
   try {
     const { conversationIds, body } = req.body;

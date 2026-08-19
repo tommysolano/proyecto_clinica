@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, useLayoutEffect } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { createPortal } from 'react-dom';
 import toast from 'react-hot-toast';
 import api from '../api/axios';
@@ -8,23 +8,18 @@ import useDebounce from '../hooks/useDebounce';
 import { downloadFile } from '../utils/download';
 import { useAuth } from '../context/AuthContext';
 import {
-  detectDocument,
-  warpDocument,
-  applyFilter,
   canvasToJpeg,
   thumbnailUrl,
   loadImage,
-  FULL_QUAD,
+  fitToPage,
   PAGE_QUALITY,
-  PAGE_MAX_SIDE,
-} from '../utils/docScan';
+} from '../utils/photoPage';
 import {
   HiOutlineDocumentText,
   HiOutlineCamera,
   HiOutlinePhoto,
   HiOutlineTrash,
   HiOutlineArrowDownTray,
-  HiOutlineArrowsPointingOut,
   HiOutlineEye,
   HiOutlinePencil,
   HiOutlineMagnifyingGlass,
@@ -32,40 +27,15 @@ import {
   HiOutlineCheck,
   HiOutlineXMark,
   HiOutlinePlus,
-  HiOutlineArrowPath,
   HiOutlineChevronUp,
   HiOutlineChevronDown,
-  HiOutlineViewfinderCircle,
 } from 'react-icons/hi2';
 
-const FILTERS = [
-  { key: 'documento', label: 'Documento', hint: 'En color, con el fondo blanco parejo y sin sombras' },
-  { key: 'bn', label: 'B / N', hint: 'Solo texto, archivo liviano' },
-  { key: 'gris', label: 'Grises', hint: 'Escala de grises, con el fondo parejo' },
-  { key: 'color', label: 'Color', hint: 'La foto tal cual, con sus sombras' },
-];
-
 /**
- * Lado mayor con el que se guarda la foto ORIGINAL de cada página, la que se
- * vuelve a recortar al usar «Reencuadrar». A 1600 px un reencuadre devolvía una
- * página bastante peor que la primera; el original tiene que llegar holgado.
- */
-const ORIGINAL_MAX = 2400;
-/** Calidad JPEG de ese original (solo se usa para volver a recortar). */
-const ORIGINAL_QUALITY = 0.88;
-
-/**
- * SUBIR fotos ≠ ESCANEAR con la cámara.
- *
- * Lo que se sube entra al PDF TAL CUAL: no se le busca el borde, no se recorta y
- * no se le pasa ningún filtro. Solo se vuelve a codificar cuando el formato no
- * sirve para el PDF (el servidor solo admite JPG y PNG) o cuando el archivo pesa
- * tanto que reventaría el envío; y aun así se respeta la imagen entera.
- *
- * De paso, no tocarla es lo que permite subir tandas grandes: el camino de
- * escaneo abre tres canvas por foto y guardaba el original en base64 dentro del
- * estado, así que con diez fotos de teléfono el navegador se quedaba sin memoria
- * a mitad de la tanda.
+ * Una foto subida entra al PDF TAL CUAL. Solo se vuelve a codificar cuando el
+ * formato no sirve para el PDF (el servidor solo admite JPG y PNG) o cuando el
+ * archivo pesa tanto que reventaría el envío; y aun así se respeta la imagen
+ * entera, sin recortar nada.
  */
 const SUBIDA_OK_TYPES = ['image/jpeg', 'image/png'];
 const SUBIDA_MAX_BYTES = 8 * 1024 * 1024;
@@ -74,13 +44,26 @@ const SUBIDA_MAX_BYTES = 8 * 1024 * 1024;
  * Tope de cada ENVÍO al servidor: nginx corta el cuerpo en 50 MB y multer no
  * admite más de 40 archivos por petición. Veinte fotos de teléfono sin comprimir
  * se pasan de largo, así que las páginas se mandan por tandas.
+ *
+ * NO es un tope de imágenes: un documento puede tener las páginas que haga falta.
+ * Con «un PDF por imagen» cada tanda crea sus PDF, y en un PDF único las tandas
+ * se apartan en el servidor bajo un mismo `sessionId` y la última las junta.
  */
 const MAX_ENVIO_BYTES = 24 * 1024 * 1024;
 const MAX_POR_ENVIO = 40;
 
-/** Suelta las URL temporales de una página (miniatura, vista previa, original). */
+/**
+ * Identificador de la tanda para el servidor. Uno NUEVO por cada intento de
+ * guardar: si un envío se cortó a la mitad, reintentar con el mismo id
+ * duplicaría las páginas que sí habían llegado.
+ */
+const nuevaSesion = () =>
+  (globalThis.crypto?.randomUUID?.() || `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 12)}`)
+    .replace(/-/g, '');
+
+/** Suelta las URL temporales de una página (vista previa y miniatura). */
 const freePage = (p) => {
-  for (const url of [p?.preview, p?.thumb, p?.original]) {
+  for (const url of [p?.preview, p?.thumb]) {
     if (typeof url === 'string' && url.startsWith('blob:')) URL.revokeObjectURL(url);
   }
 };
@@ -113,7 +96,7 @@ export default function Scanner() {
           </div>
           <div className="min-w-0">
             <h1 className="page-title">Escáner de documentos</h1>
-            <p className="page-subtitle">Toma fotos de una hoja y conviértelas en un PDF</p>
+            <p className="page-subtitle">Toma fotos de un documento y conviértelas en un PDF</p>
           </div>
         </div>
         <div className="flex w-full sm:w-auto gap-1 bg-slate-100 rounded-xl p-1">
@@ -150,13 +133,15 @@ export default function Scanner() {
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  ESTUDIO: lanza la cámara a pantalla completa y administra las páginas
+//
+//  Aquí NO hay software de escaneo: ni detección del borde de la hoja, ni
+//  corrección de perspectiva, ni filtros. Las fotos —de la cámara o subidas—
+//  entran al PDF tal cual (ver utils/photoPage.js).
 // ═════════════════════════════════════════════════════════════════════════════
 
 function ScanStudio({ pages, setPages, onSaved }) {
   const [cameraOpen, setCameraOpen] = useState(false);
-  const [filter, setFilter] = useState('documento');
   const [busy, setBusy] = useState(null); // { done, total } mientras se procesan fotos
-  const [cropping, setCropping] = useState(null); // { pageId, src, w, h, quad }
   const [name, setName] = useState('');
   // false = todas las imágenes en un mismo PDF; true = un PDF por imagen.
   const [separado, setSeparado] = useState(false);
@@ -177,73 +162,46 @@ function ScanStudio({ pages, setPages, onSaved }) {
     }
   }, []);
 
-  /** Recorta + limpia una imagen y la deja lista como página. */
-  const buildPage = useCallback(async (source, sw, sh, detectedQuad, mode, sourceName) => {
-    const useQuad = detectedQuad || FULL_QUAD;
-    const warped = warpDocument(source, sw, sh, useQuad);
-    if (!warped) throw new Error('No se pudo recortar la imagen');
-    applyFilter(warped, mode);
-    const blob = await canvasToJpeg(warped, PAGE_QUALITY);
-
-    // El original se guarda reducido para poder reencuadrar después sin
-    // quedarnos con fotos de 12 MP en memoria por cada página.
-    const orig = document.createElement('canvas');
-    const k = Math.min(1, ORIGINAL_MAX / Math.max(sw, sh));
-    orig.width = Math.round(sw * k);
-    orig.height = Math.round(sh * k);
-    const octx = orig.getContext('2d');
-    octx.imageSmoothingEnabled = true;
-    octx.imageSmoothingQuality = 'high';
-    octx.drawImage(source, 0, 0, orig.width, orig.height);
-
+  /**
+   * Convierte la foto de la cámara en página: la imagen TAL CUAL.
+   *
+   * No se le busca el borde de la hoja, no se corrige la perspectiva y no se le
+   * pasa ningún filtro; lo único que se hace es bajarla al tamaño de página para
+   * que un documento de muchas hojas no pese de más.
+   */
+  const buildPage = useCallback(async (source) => {
+    const canvas = fitToPage(source);
+    const blob = await canvasToJpeg(canvas, PAGE_QUALITY);
     return {
       id: `p${++pageSeq}`,
       blob,
       preview: URL.createObjectURL(blob),
-      thumb: thumbnailUrl(warped),
-      original: orig.toDataURL('image/jpeg', ORIGINAL_QUALITY),
-      originalW: orig.width,
-      originalH: orig.height,
-      quad: useQuad,
-      filter: mode,
-      detected: !!detectedQuad,
+      thumb: thumbnailUrl(canvas),
       // Nombre del archivo del que salió (solo al subir fotos): con «un PDF por
       // imagen» y sin nombre escrito, cada PDF se llama como su imagen.
-      sourceName: sourceName || '',
+      sourceName: '',
     };
   }, []);
 
-  /** Convierte un archivo subido en página SIN escanearlo: la imagen tal cual. */
+  /** Convierte un archivo subido en página: la imagen tal cual. */
   const buildUploadedPage = useCallback(async (file) => {
     let blob = file;
     if (!SUBIDA_OK_TYPES.includes(file.type) || file.size > SUBIDA_MAX_BYTES) {
       // WEBP/HEIC/GIF no entran en un PDF, y un archivo enorme no cabe en el
       // envío: se recodifica a JPEG entera (sin recortar ni filtrar nada).
       const img = await loadImage(file);
-      const c = document.createElement('canvas');
-      const k = Math.min(1, PAGE_MAX_SIDE / Math.max(img.naturalWidth, img.naturalHeight));
-      c.width = Math.max(1, Math.round(img.naturalWidth * k));
-      c.height = Math.max(1, Math.round(img.naturalHeight * k));
-      const ctx = c.getContext('2d');
-      ctx.imageSmoothingEnabled = true;
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(img, 0, 0, c.width, c.height);
-      blob = await canvasToJpeg(c, PAGE_QUALITY);
+      blob = await canvasToJpeg(fitToPage(img), PAGE_QUALITY);
     }
     // Miniatura de 320 px: se decodifica una vez y se suelta. Pintar la foto
     // original en la rejilla obligaría al navegador a sostener veinte mapas de
     // bits de 12 MP a la vez. Si falla, se muestra la propia imagen y ya.
     let thumb = null;
-    let w = 0;
-    let h = 0;
     try {
       const img = await loadImage(blob);
-      w = img.naturalWidth;
-      h = img.naturalHeight;
       const t = document.createElement('canvas');
-      const k = Math.min(1, 320 / Math.max(w, h));
-      t.width = Math.max(1, Math.round(w * k));
-      t.height = Math.max(1, Math.round(h * k));
+      const k = Math.min(1, 320 / Math.max(img.naturalWidth, img.naturalHeight));
+      t.width = Math.max(1, Math.round(img.naturalWidth * k));
+      t.height = Math.max(1, Math.round(img.naturalHeight * k));
       t.getContext('2d').drawImage(img, 0, 0, t.width, t.height);
       thumb = t.toDataURL('image/jpeg', 0.7);
     } catch { /* sin miniatura: abajo se usa la imagen tal cual */ }
@@ -251,18 +209,8 @@ function ScanStudio({ pages, setPages, onSaved }) {
     return {
       id: `p${++pageSeq}`,
       blob,
-      // URL distintas del mismo blob: reencuadrar revoca la vista previa y no
-      // puede llevarse por delante la copia que sirve de original.
       preview: URL.createObjectURL(blob),
       thumb: thumb || URL.createObjectURL(blob),
-      original: URL.createObjectURL(blob),
-      // Si la miniatura falló, el tamaño se mide al abrir «Reencuadrar».
-      originalW: w,
-      originalH: h,
-      quad: FULL_QUAD,
-      filter: 'color', // 'color' = sin retoque, la foto como está
-      detected: false,
-      sinEscanear: true,
       sourceName: file.name,
     };
   }, []);
@@ -312,49 +260,6 @@ function ScanStudio({ pages, setPages, onSaved }) {
     });
 
   /**
-   * Abre el reencuadre. Las fotos subidas no traen medidas (no se decodifican al
-   * subirlas), así que se miden aquí, una sola vez y solo si hace falta.
-   */
-  const openCrop = async (p) => {
-    try {
-      let { originalW: w, originalH: h } = p;
-      if (!w || !h) {
-        const img = await loadImage(p.original);
-        w = img.naturalWidth;
-        h = img.naturalHeight;
-        setPages((prev) => prev.map((x) => (x.id === p.id ? { ...x, originalW: w, originalH: h } : x)));
-      }
-      setCropping({ pageId: p.id, src: p.original, w, h, quad: p.quad });
-    } catch {
-      toast.error('No se pudo abrir la imagen para reencuadrar');
-    }
-  };
-
-  const applyCrop = async (newQuad) => {
-    const page = pages.find((p) => p.id === cropping.pageId);
-    if (!page) return setCropping(null);
-    try {
-      const img = await loadImage(page.original);
-      const warped = warpDocument(img, cropping.w, cropping.h, newQuad);
-      if (!warped) throw new Error('El recorte no es válido');
-      applyFilter(warped, page.filter);
-      const blob = await canvasToJpeg(warped, PAGE_QUALITY);
-      if (page.preview) URL.revokeObjectURL(page.preview);
-      setPages((prev) =>
-        prev.map((p) =>
-          p.id === page.id
-            ? { ...p, blob, preview: URL.createObjectURL(blob), thumb: thumbnailUrl(warped), quad: newQuad, detected: true, sinEscanear: false }
-            : p
-        )
-      );
-    } catch (e) {
-      toast.error(e.message || 'No se pudo reencuadrar');
-    } finally {
-      setCropping(null);
-    }
-  };
-
-  /**
    * Reparte las páginas en envíos que quepan en una petición (ver MAX_ENVIO_*).
    * Respeta el orden, así que las N primeras páginas son siempre las de los
    * primeros envíos: eso es lo que permite saber qué quedó subido si algo falla.
@@ -377,34 +282,11 @@ function ScanStudio({ pages, setPages, onSaved }) {
     return out;
   };
 
-  // ── Cuánto llevas y cuánto cabe ───────────────────────────────────────────
+  // ── Cuánto llevas ─────────────────────────────────────────────────────────
   // Se recalcula en cada render (es una suma sobre unas decenas de páginas) para
   // que el contador vaya subiendo mientras se procesan las fotos, no al final.
   const pesoTotal = pages.reduce((t, p) => t + (p.blob?.size || 0), 0);
   const tandas = envíosDe(pages).length;
-  // Un PDF único tiene que ir en UNA petición: si necesita más de una tanda, ya
-  // no cabe. En «un PDF por imagen» no hay tope, solo se manda en varias.
-  const pasaDeUnaTanda = tandas > 1;
-
-  /**
-   * Avisa UNA vez al cruzar el tope de un solo PDF, mientras se están agregando
-   * las fotos. El cartel de abajo lo repite fijo; esto es para que se note en el
-   * momento, aunque la lista esté fuera de la pantalla.
-   */
-  const avisadoTope = useRef(false);
-  useEffect(() => {
-    if (separado || !pasaDeUnaTanda) {
-      avisadoTope.current = false;
-      return;
-    }
-    if (avisadoTope.current) return;
-    avisadoTope.current = true;
-    toast(
-      `Llegaste al máximo de un solo PDF: ${MAX_POR_ENVIO} imágenes o ${fmtSize(MAX_ENVIO_BYTES)}. `
-      + 'Cambia a «Un PDF por imagen» y se mandan por tandas.',
-      { icon: '⚠️', duration: 8000 }
-    );
-  }, [separado, pasaDeUnaTanda]);
 
   const postPáginas = async (grupo, campos) => {
     const fd = new FormData();
@@ -415,26 +297,57 @@ function ScanStudio({ pages, setPages, onSaved }) {
   };
 
   const savePdf = async () => {
+    // Con una tanda grande, «Subir fotos» tarda: si se genera a media carga solo
+    // viajan las que hubiera y el resto se perdía al vaciar la rejilla.
+    if (busy) return toast.error('Espera a que terminen de procesarse las fotos');
     if (!pages.length) return toast.error('Sube o escanea al menos una imagen');
     const envíos = envíosDe(pages);
 
-    // Un PDF único no se puede repartir entre varias peticiones: si no cabe hay
-    // que decirlo ANTES, no mandar 60 MB para que el servidor los rechace.
-    if (!separado && pasaDeUnaTanda) {
-      return toast.error(
-        `Son ${pages.length} imágenes (${fmtSize(pesoTotal)}) y no caben en un solo envío. `
-        + 'Cambia a «Un PDF por imagen» o quita algunas.',
-        { duration: 9000 }
-      );
-    }
+    /**
+     * Las páginas se quitan de la rejilla por ID, nunca por posición.
+     *
+     * Una tanda de 500 fotos son decenas de peticiones y varios minutos: en ese
+     * rato el usuario puede borrar, mover o agregar miniaturas. Recortando por
+     * índice (`prev.slice(subidas)`) se descartaban imágenes que NO se habían
+     * subido y se conservaban las que sí, que se volvían a subir duplicadas.
+     */
+    const subidasIds = new Set();
+    const fallidasIds = new Set();
+    /** Saca de la rejilla lo que ya está en el servidor y deja intacto el resto. */
+    const soltarSubidas = () => setPages((prev) => {
+      prev.filter((p) => subidasIds.has(p.id)).forEach(freePage);
+      return prev.filter((p) => !subidasIds.has(p.id));
+    });
 
     setSaving({ done: 0, total: pages.length });
     try {
       if (!separado) {
-        const data = await postPáginas(pages, {
-          name: name.trim() || defaultName(),
-        });
-        toast.success(`PDF creado: ${data.name}`);
+        // Un PDF único no cabe en una sola petición cuando son muchas páginas:
+        // se mandan por tandas bajo un mismo `sessionId` y el último envío
+        // (`finish`) es el que arma el documento en el servidor.
+        if (envíos.length === 1) {
+          const data = await postPáginas(pages, { name: name.trim() || defaultName() });
+          toast.success(`PDF creado: ${data.name}`);
+        } else {
+          const sessionId = nuevaSesion();
+          let subidas = 0;
+          let creado = null;
+          for (const [i, grupo] of envíos.entries()) {
+            const último = i === envíos.length - 1;
+            const data = await postPáginas(grupo, {
+              name: name.trim() || defaultName(),
+              sessionId,
+              startIndex: subidas,
+              finish: último ? 'true' : 'false',
+            });
+            subidas += grupo.length;
+            setSaving({ done: subidas, total: pages.length });
+            if (último) creado = data;
+          }
+          toast.success(`PDF creado: ${creado?.name || name.trim() || defaultName()} (${pages.length} páginas)`);
+        }
+        // El documento existe: todas estas páginas ya están en el servidor.
+        pages.forEach((p) => subidasIds.add(p.id));
       } else {
         // Cada envío es independiente: si el 4º falla, los tres primeros ya
         // crearon sus PDF y solo hay que reintentar lo que quedó.
@@ -452,6 +365,14 @@ function ScanStudio({ pages, setPages, onSaved }) {
             });
             creados += data.documents?.length || 0;
             if (data.errors?.length) errores.push(...data.errors);
+            // El servidor dice QUÉ imágenes no pudo convertir (`failed[].index`,
+            // relativo a este envío): esas se quedan en la rejilla para poder
+            // reintentarlas. El resto del grupo ya tiene su PDF.
+            for (const f of data.failed || []) {
+              const p = grupo[f.index];
+              if (p) fallidasIds.add(p.id);
+            }
+            grupo.forEach((p) => { if (!fallidasIds.has(p.id)) subidasIds.add(p.id); });
             subidas += grupo.length;
             setSaving({ done: subidas, total: pages.length });
           } catch (e) {
@@ -460,9 +381,6 @@ function ScanStudio({ pages, setPages, onSaved }) {
           }
         }
         if (creados) toast.success(`${creados} PDF creados, uno por imagen`);
-        if (errores.length) {
-          toast.error(`${errores.length} no se pudo generar. ${errores[0]}`, { duration: 7000 });
-        }
         if (fallo) {
           toast.error(
             `${fallo.response?.data?.message || 'Se cortó el envío'}. Quedan ${pages.length - subidas} imágenes sin subir: vuelve a darle a «Generar».`,
@@ -470,19 +388,40 @@ function ScanStudio({ pages, setPages, onSaved }) {
           );
           // Se quitan solo las que SÍ se subieron, para que el reintento no las
           // duplique y el usuario no tenga que volver a elegir los archivos.
-          setPages((prev) => {
-            prev.slice(0, subidas).forEach(freePage);
-            return prev.slice(subidas);
-          });
+          soltarSubidas();
           return;
         }
+        if (fallidasIds.size) {
+          // Fallo PARCIAL: se creó casi todo, pero unas cuantas imágenes no. Se
+          // dejan a la vista (con su nombre) en vez de borrarlas en silencio.
+          const rotas = pages.filter((p) => fallidasIds.has(p.id));
+          const muestra = rotas.map((p) => p.sourceName).filter(Boolean).slice(0, 3).join(', ');
+          soltarSubidas();
+          toast.error(
+            `${rotas.length} ${rotas.length === 1 ? 'imagen' : 'imágenes'} no se pudieron convertir`
+            + `${muestra ? ` (${muestra}${rotas.length > 3 ? '…' : ''})` : ''}`
+            + ` y siguen en la lista. ${errores[0] || ''}`.trim(),
+            { duration: 10000 }
+          );
+          return;
+        }
+        if (errores.length) {
+          // Servidor antiguo, sin `failed`: no se puede señalar cuál fue.
+          toast.error(`${errores.length} no se pudo generar. ${errores[0]}`, { duration: 7000 });
+        }
       }
-      pages.forEach(freePage);
-      setPages([]);
+      // Solo se suelta lo que de verdad llegó al servidor: si el usuario agregó
+      // fotos durante la subida, siguen en la rejilla en vez de evaporarse.
+      soltarSubidas();
       setName('');
       onSaved?.();
     } catch (e) {
-      toast.error(e.response?.data?.message || 'No se pudo crear el PDF');
+      // Nada se guardó a medias: un PDF único solo existe cuando llega el último
+      // envío. Las imágenes siguen en la lista, así que reintentar es un clic.
+      toast.error(
+        `${e.response?.data?.message || 'No se pudo crear el PDF'}. Las imágenes siguen aquí: vuelve a darle a «Generar».`,
+        { duration: 8000 }
+      );
     } finally {
       setSaving(null);
     }
@@ -494,25 +433,28 @@ function ScanStudio({ pages, setPages, onSaved }) {
       <div className="bg-white rounded-2xl shadow-md shadow-slate-200/60 border border-emerald-100 p-4 sm:p-5">
         <div className="flex flex-col sm:flex-row sm:items-center gap-4">
           <div className="flex-1 min-w-0">
-            <h2 className="font-semibold text-slate-800">Escanear una hoja</h2>
+            <h2 className="font-semibold text-slate-800">Tomar fotos</h2>
             <p className="text-sm text-slate-500 mt-0.5">
-              La cámara se abre a pantalla completa y reconoce los bordes de la hoja. Después de
-              disparar te muestra el recorte para que lo confirmes o lo corrijas: la mesa y todo lo
-              de alrededor quedan fuera.
+              La cámara se abre a pantalla completa. Tras disparar te muestra la foto para que la
+              uses o la repitas, y puedes seguir tomando todas las que necesites: cada una es una
+              página.
             </p>
             <p className="text-sm text-slate-500 mt-1.5">
-              <b className="font-medium text-slate-600">Subir fotos</b> es otra cosa: las imágenes
-              entran al PDF <b className="font-medium text-slate-600">tal cual</b>, sin recorte ni
-              filtro. Si alguna necesita ajuste, usa «Reencuadrar» en su miniatura.
+              Las fotos entran al PDF <b className="font-medium text-slate-600">tal cual</b>: encuadra
+              bien al tomarlas, porque el sistema no recorta ni retoca nada.
             </p>
           </div>
           <div className="flex flex-col sm:flex-row gap-2 sm:shrink-0">
-            <button onClick={() => setCameraOpen(true)} className="btn-primary justify-center">
+            <button
+              onClick={() => setCameraOpen(true)}
+              disabled={!!saving}
+              className="btn-primary justify-center"
+            >
               <HiOutlineCamera className="w-5 h-5" /> Abrir cámara
             </button>
             <button
               onClick={() => fileInputRef.current?.click()}
-              disabled={!!busy}
+              disabled={!!busy || !!saving}
               className="btn-secondary justify-center whitespace-nowrap"
             >
               {busy ? <Spinner /> : <HiOutlinePhoto className="w-4 h-4" />}
@@ -543,36 +485,28 @@ function ScanStudio({ pages, setPages, onSaved }) {
                 {separado ? `Imágenes (${pages.length})` : `Páginas del PDF (${pages.length})`}
               </h2>
               {pages.length > 0 && (
-                <p className={`text-[11px] mt-0.5 ${!separado && pasaDeUnaTanda ? 'text-rose-600 font-medium' : 'text-slate-400'}`}>
-                  {separado
-                    ? `${fmtSize(pesoTotal)} · se envía${tandas === 1 ? '' : 'n'} en ${tandas} tanda${tandas === 1 ? '' : 's'} de hasta ${MAX_POR_ENVIO}`
-                    : `${pages.length} de ${MAX_POR_ENVIO} imágenes · ${fmtSize(pesoTotal)} de ${fmtSize(MAX_ENVIO_BYTES)}`}
+                <p className="text-[11px] mt-0.5 text-slate-400">
+                  {fmtSize(pesoTotal)}
+                  {tandas > 1 && ` · se envía en ${tandas} tandas de hasta ${MAX_POR_ENVIO}`}
                 </p>
               )}
             </div>
             {pages.length > 0 && (
               <button
                 onClick={() => { pages.forEach(freePage); setPages([]); }}
-                className="text-xs text-rose-600 bg-transparent border-none cursor-pointer p-0"
+                disabled={!!saving}
+                className="text-xs text-rose-600 bg-transparent border-none cursor-pointer p-0 disabled:opacity-40 disabled:cursor-default"
               >
                 Vaciar
               </button>
             )}
           </div>
 
-          {!separado && pasaDeUnaTanda && (
-            <div className="mb-3 rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
-              <b className="font-semibold">Ya no caben en un solo PDF.</b> El máximo por envío es de{' '}
-              {MAX_POR_ENVIO} imágenes o {fmtSize(MAX_ENVIO_BYTES)}. Cambia a «Un PDF por imagen» —se
-              manda solo, por tandas— o quita algunas de la lista.
-            </div>
-          )}
-
           {pages.length === 0 ? (
             <div className="empty-state">
               <HiOutlineCamera className="w-10 h-10 text-slate-300" />
               <p className="font-medium text-slate-500">Todavía no hay páginas</p>
-              <p className="text-xs text-slate-400">Abre la cámara y toma la primera foto.</p>
+              <p className="text-xs text-slate-400">Abre la cámara y toma la primera foto, o sube fotos que ya tengas.</p>
             </div>
           ) : (
             <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-4 gap-3">
@@ -583,20 +517,8 @@ function ScanStudio({ pages, setPages, onSaved }) {
                     <span className="absolute top-1.5 left-1.5 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-900/70 text-white">
                       {i + 1}
                     </span>
-                    {/* Para distinguir de un vistazo lo subido (sin tocar) de lo escaneado. */}
-                    {p.sinEscanear && (
-                      <span
-                        title="Se subió tal cual: sin recorte ni filtro"
-                        className="absolute top-1.5 right-1.5 text-[9px] font-semibold px-1.5 py-0.5 rounded-full bg-white/85 text-slate-600 border border-slate-200"
-                      >
-                        tal cual
-                      </span>
-                    )}
                   </div>
                   <div className="p-1.5 flex flex-wrap gap-1 justify-center">
-                    <IconBtn title="Reencuadrar" onClick={() => openCrop(p)}>
-                      <HiOutlineArrowsPointingOut className="w-3.5 h-3.5" />
-                    </IconBtn>
                     <IconBtn title="Mover antes" onClick={() => movePage(p.id, -1)} disabled={i === 0}>
                       <HiOutlineChevronUp className="w-3.5 h-3.5" />
                     </IconBtn>
@@ -668,15 +590,12 @@ function ScanStudio({ pages, setPages, onSaved }) {
           </div>
           <button
             onClick={savePdf}
-            disabled={saving || !pages.length || (!separado && pasaDeUnaTanda)}
-            title={!separado && pasaDeUnaTanda
-              ? `Son demasiadas para un solo PDF (máximo ${MAX_POR_ENVIO} o ${fmtSize(MAX_ENVIO_BYTES)})`
-              : undefined}
+            disabled={saving || !pages.length}
             className="btn-primary w-full justify-center"
           >
             {saving ? <Spinner /> : <HiOutlineDocumentText className="w-5 h-5" />}
             {saving
-              ? (saving.total > saving.done && saving.done > 0
+              ? (saving.total > 1
                   ? `Generando ${saving.done} de ${saving.total}…`
                   : 'Generando…')
               : separado
@@ -688,8 +607,6 @@ function ScanStudio({ pages, setPages, onSaved }) {
 
       {cameraOpen && (
         <CameraOverlay
-          filter={filter}
-          setFilter={setFilter}
           pageCount={pages.length}
           buildPage={buildPage}
           onAddPage={addPage}
@@ -697,17 +614,6 @@ function ScanStudio({ pages, setPages, onSaved }) {
         />
       )}
 
-      {cropping && (
-        <CropEditor
-          src={cropping.src}
-          width={cropping.w}
-          height={cropping.h}
-          initialQuad={cropping.quad}
-          title="Ajusta el recorte"
-          onCancel={() => setCropping(null)}
-          onConfirm={applyCrop}
-        />
-      )}
     </div>
   );
 }
@@ -730,43 +636,10 @@ function IconBtn({ children, title, onClick, disabled, danger }) {
 
 // ═════════════════════════════════════════════════════════════════════════════
 //  CÁMARA A PANTALLA COMPLETA (vista en vivo → revisión de la foto)
+//
+//  Es una cámara y nada más: no busca el borde de la hoja, no corrige la
+//  perspectiva y no aplica filtros. Disparas, ves la foto, la usas o la repites.
 // ═════════════════════════════════════════════════════════════════════════════
-
-/**
- * Calcula el rectángulo REAL que ocupa el contenido dentro de un elemento con
- * `object-fit: contain` (el vídeo/imagen queda centrado con franjas negras).
- * Sin esto, el marco verde —que se dibuja en coordenadas relativas— aparecería
- * desplazado en cuanto la pantalla no tiene la misma proporción que la cámara.
- */
-function useContentBox(ref, naturalW, naturalH) {
-  const [box, setBox] = useState(null);
-  useLayoutEffect(() => {
-    const el = ref.current;
-    if (!el || !naturalW || !naturalH) return undefined;
-    const measure = () => {
-      const w = el.clientWidth;
-      const h = el.clientHeight;
-      if (!w || !h) return;
-      const scale = Math.min(w / naturalW, h / naturalH);
-      const cw = naturalW * scale;
-      const ch = naturalH * scale;
-      setBox({ left: (w - cw) / 2, top: (h - ch) / 2, width: cw, height: ch });
-    };
-    measure();
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    window.addEventListener('orientationchange', measure);
-    return () => { ro.disconnect(); window.removeEventListener('orientationchange', measure); };
-  }, [ref, naturalW, naturalH]);
-  return box;
-}
-
-/** Cuánto pesa la detección nueva frente a la anterior al suavizar el marco. */
-const SMOOTH = 0.45;
-/** Salto (en fracción del cuadro) a partir del cual se deja de suavizar. */
-const JUMP = 0.12;
-/** Cuadros que se mantiene el último marco cuando la detección se pierde. */
-const HOLD = 4;
 
 /** El fotograma del vídeo tal cual, a la resolución de la vista previa. */
 function videoFrame(video) {
@@ -810,26 +683,18 @@ async function grabStill(video, track) {
   }
 }
 
-function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onClose }) {
+function CameraOverlay({ pageCount, buildPage, onAddPage, onClose }) {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const trackRef = useRef(null);
-  const liveRef = useRef(null);   // último marco suavizado
-  const lostRef = useRef(0);      // cuadros seguidos sin detectar nada
   const busyRef = useRef(false);
 
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
-  const [quad, setQuad] = useState(null);
-  const [steady, setSteady] = useState(false);
   const [dims, setDims] = useState({ w: 0, h: 0 });
   const [working, setWorking] = useState(false);
-  const [pending, setPending] = useState(null); // foto recién tomada, a confirmar el recorte
-  const [shot, setShot] = useState(null);       // página ya recortada, a la espera de revisión
-  const [cropping, setCropping] = useState(false);
+  const [shot, setShot] = useState(null); // foto tomada, a la espera de «usar» o «repetir»
   const [added, setAdded] = useState(pageCount);
-
-  const box = useContentBox(videoRef, dims.w, dims.h);
 
   // ── Encendido / apagado ───────────────────────────────────────────────────
   useEffect(() => {
@@ -842,8 +707,8 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: { ideal: 'environment' },
-            // Se pide lo más grande que dé el equipo: cada píxel de más sobre la
-            // hoja es texto que después se puede leer. Al ser `ideal`, si la
+            // Se pide lo más grande que dé el equipo: cada píxel de más sobre el
+            // documento es texto que después se puede leer. Al ser `ideal`, si la
             // cámara no llega, el navegador baja solo al modo más cercano.
             width: { ideal: 3840 },
             height: { ideal: 2160 },
@@ -886,49 +751,10 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
     return () => { document.body.style.overflow = prev; };
   }, []);
 
-  // Único sitio donde se libera la foto a medio confirmar: se ejecuta tanto al
-  // dejar de necesitarla como al cerrar la cámara con una a medias.
-  useEffect(() => () => { if (pending?.url) URL.revokeObjectURL(pending.url); }, [pending]);
-
-  // ── Detección en vivo (pausada mientras se revisa la foto) ────────────────
-  useEffect(() => {
-    if (!ready || pending || shot) return undefined;
-    const id = setInterval(() => {
-      const v = videoRef.current;
-      if (!v || !v.videoWidth || busyRef.current) return;
-      if (v.videoWidth !== dims.w || v.videoHeight !== dims.h) setDims({ w: v.videoWidth, h: v.videoHeight });
-      let q = null;
-      try {
-        q = detectDocument(v, v.videoWidth, v.videoHeight);
-      } catch {
-        q = null;
-      }
-      if (q) {
-        // El marco se promedia con el del cuadro anterior: crudo tiembla y marea.
-        // Salvo cuando el salto es grande, que ahí es que apuntaron a otra cosa.
-        const prev = liveRef.current;
-        const jump = prev ? Math.max(...q.map((p, i) => Math.hypot(p.x - prev[i].x, p.y - prev[i].y))) : 1;
-        const next = prev && jump < JUMP
-          ? q.map((p, i) => ({
-            x: prev[i].x + (p.x - prev[i].x) * SMOOTH,
-            y: prev[i].y + (p.y - prev[i].y) * SMOOTH,
-          }))
-          : q;
-        liveRef.current = next;
-        lostRef.current = 0;
-        setQuad(next);
-        setSteady(jump < 0.02);
-      } else if (++lostRef.current > HOLD) {
-        // Un parpadeo suelto no borra el marco; perderlo de verdad, sí.
-        liveRef.current = null;
-        setQuad(null);
-        setSteady(false);
-      }
-    }, 200);
-    return () => clearInterval(id);
-  }, [ready, pending, shot, dims.w, dims.h]);
-
-  // ── Disparar ──────────────────────────────────────────────────────────────
+  /**
+   * Dispara. La foto se convierte en página directamente: entra tal cual, sin
+   * buscarle el borde al documento, sin corregir perspectiva y sin filtros.
+   */
   const capture = async () => {
     const v = videoRef.current;
     if (!v || !v.videoWidth) return;
@@ -936,52 +762,21 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
     busyRef.current = true;
     try {
       const frame = await grabStill(v, trackRef.current);
-      // Se vuelve a detectar sobre la foto quieta y con más detalle: sale mejor
-      // que en vivo, donde hay que ir a la carrera. El marco de la vista previa
-      // solo sirve de respaldo si la foto tiene la misma forma que el vídeo:
-      // `takePhoto` puede devolver otro encuadre y ahí no calzaría.
-      const sameShape =
-        Math.abs(frame.width / frame.height - v.videoWidth / v.videoHeight) < 0.02;
-      const q = detectDocument(frame, frame.width, frame.height, 384)
-        || (sameShape ? liveRef.current : null);
-      const blob = await canvasToJpeg(frame, PAGE_QUALITY);
-      setPending({
-        canvas: frame,
-        w: frame.width,
-        h: frame.height,
-        url: URL.createObjectURL(blob),
-        quad: q || FULL_QUAD,
-        detected: !!q,
-      });
+      if (v.videoWidth !== dims.w || v.videoHeight !== dims.h) {
+        setDims({ w: v.videoWidth, h: v.videoHeight });
+      }
+      setShot(await buildPage(frame));
     } catch (e) {
-      toast.error(e.message || 'No se pudo capturar');
+      toast.error(e.message || 'No se pudo tomar la foto');
     } finally {
       busyRef.current = false;
       setWorking(false);
     }
   };
 
-  const discardPending = () => setPending(null);
-
-  /** El usuario dio el visto bueno al recorte: recién ahí se genera la página. */
-  const confirmPending = async (newQuad) => {
-    const src = pending;
-    // El editor se cierra primero: recortar y limpiar tarda, y el usuario tiene
-    // que ver el «Procesando la foto…» en vez de una pantalla congelada.
-    setPending(null);
-    setWorking(true);
-    try {
-      setShot(await buildPage(src.canvas, src.w, src.h, newQuad, filter));
-    } catch (e) {
-      toast.error(e.message || 'No se pudo procesar la foto');
-    } finally {
-      setWorking(false);
-    }
-  };
-
   /** Descarta la foto en revisión (sin guardarla como página). */
   const discardShot = () => {
-    if (shot?.preview) URL.revokeObjectURL(shot.preview);
+    if (shot) freePage(shot);
     setShot(null);
   };
 
@@ -991,31 +786,12 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
     setShot(null);
   };
 
-  // "Crear PDF": guarda la última página, cierra la cámara y lleva al usuario al
+  // "Crear PDF": guarda la última foto, cierra la cámara y lleva al usuario al
   // cuadro del nombre (el PDF se genera con el botón de ahí, ya con nombre).
   const finish = () => {
     onAddPage(shot);
     setShot(null);
     onClose({ goToSave: true });
-  };
-
-  // Reencuadre desde la revisión: recalcula la foto con las esquinas nuevas.
-  const recrop = async (newQuad) => {
-    setCropping(false);
-    setWorking(true);
-    try {
-      const img = await loadImage(shot.original);
-      const warped = warpDocument(img, shot.originalW, shot.originalH, newQuad);
-      if (!warped) throw new Error('El recorte no es válido');
-      applyFilter(warped, shot.filter);
-      const blob = await canvasToJpeg(warped, PAGE_QUALITY);
-      URL.revokeObjectURL(shot.preview);
-      setShot({ ...shot, blob, preview: URL.createObjectURL(blob), thumb: thumbnailUrl(warped), quad: newQuad, detected: true });
-    } catch (e) {
-      toast.error(e.message || 'No se pudo reencuadrar');
-    } finally {
-      setWorking(false);
-    }
   };
 
   return createPortal(
@@ -1026,14 +802,18 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
       {/* ── Barra superior ─────────────────────────────────────────────── */}
       <div className="shrink-0 flex items-center justify-between gap-3 px-3 py-2.5 bg-black/80 text-white">
         <button
-          onClick={() => { discardShot(); discardPending(); onClose(); }}
+          onClick={() => { discardShot(); onClose(); }}
           className="w-10 h-10 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 text-white border-none cursor-pointer"
           aria-label="Cerrar"
         >
           <HiOutlineXMark className="w-6 h-6" />
         </button>
         <p className="text-sm font-medium truncate">
-          {shot ? '¿Se ve bien?' : added > 0 ? `${added} página${added === 1 ? '' : 's'} lista${added === 1 ? '' : 's'}` : 'Apunta a la hoja'}
+          {shot
+            ? '¿Se ve bien?'
+            : added > 0
+              ? `${added} foto${added === 1 ? '' : 's'} lista${added === 1 ? '' : 's'}`
+              : 'Encuadra el documento'}
         </p>
         <span className="w-10 shrink-0" />
       </div>
@@ -1048,33 +828,6 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
           className={`absolute inset-0 w-full h-full ${shot ? 'invisible' : ''}`}
           style={{ objectFit: 'contain' }}
         />
-
-        {/* Marco de la hoja, calcado del de iLovePDF: la hoja se aclara y se
-            perfila en blanco, sin lavar de color el resto de la escena. Va
-            colocado EXACTAMENTE sobre el área del fotograma. */}
-        {!shot && quad && box && (
-          <svg
-            viewBox={`0 0 ${box.width} ${box.height}`}
-            className="absolute pointer-events-none"
-            style={{ left: box.left, top: box.top, width: box.width, height: box.height }}
-          >
-            {/* Trazo oscuro debajo: sin él el marco desaparece sobre papel blanco. */}
-            <polygon
-              points={quad.map((p) => `${p.x * box.width},${p.y * box.height}`).join(' ')}
-              fill="rgba(255,255,255,0.30)"
-              stroke="rgba(2,6,23,0.35)"
-              strokeWidth="6"
-              strokeLinejoin="round"
-            />
-            <polygon
-              points={quad.map((p) => `${p.x * box.width},${p.y * box.height}`).join(' ')}
-              fill="none"
-              stroke="#ffffff"
-              strokeWidth="3"
-              strokeLinejoin="round"
-            />
-          </svg>
-        )}
 
         {shot && (
           <img src={shot.preview} alt="Foto tomada" className="absolute inset-0 w-full h-full" style={{ objectFit: 'contain' }} />
@@ -1091,7 +844,7 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
             ) : (
               <>
                 <Spinner />
-                <p className="text-sm">{working ? 'Procesando la foto…' : 'Encendiendo la cámara…'}</p>
+                <p className="text-sm">{working ? 'Guardando la foto…' : 'Encendiendo la cámara…'}</p>
               </>
             )}
           </div>
@@ -1100,44 +853,20 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
 
       {/* ── Barra inferior ─────────────────────────────────────────────── */}
       {shot ? (
-        <div className="shrink-0 bg-black/90 px-3 py-3 space-y-2 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+        <div className="shrink-0 bg-black/90 px-3 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            <OverlayBtn onClick={() => { discardShot(); }} icon={HiOutlineArrowUturnLeft} label="Volver a tomar" />
+            <OverlayBtn onClick={discardShot} icon={HiOutlineArrowUturnLeft} label="Volver a tomar" />
             <OverlayBtn onClick={() => { discardShot(); onClose(); }} icon={HiOutlineTrash} label="Eliminar" danger />
             <OverlayBtn onClick={keepShot} icon={HiOutlinePlus} label="Añadir página" />
             <OverlayBtn onClick={finish} icon={HiOutlineCheck} label="Crear PDF" primary />
           </div>
-          <button
-            onClick={() => setCropping(true)}
-            className="w-full py-2 text-xs text-white/80 bg-white/10 rounded-lg border-none cursor-pointer flex items-center justify-center gap-1.5"
-          >
-            <HiOutlineArrowsPointingOut className="w-4 h-4" /> Ajustar el recorte
-          </button>
         </div>
       ) : (
         <div className="shrink-0 bg-black/90 px-3 py-3 space-y-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-          <div className="flex gap-1.5 overflow-x-auto pb-0.5">
-            {FILTERS.map((f) => (
-              <button
-                key={f.key}
-                onClick={() => setFilter(f.key)}
-                title={f.hint}
-                className={`px-3 py-1.5 rounded-full text-xs font-medium cursor-pointer border whitespace-nowrap ${
-                  filter === f.key ? 'bg-emerald-500 text-white border-emerald-500' : 'bg-white/10 text-white/80 border-white/20'
-                }`}
-              >
-                {f.label}
-              </button>
-            ))}
-          </div>
           <p className="text-center text-[11px] leading-tight text-white/70 px-4">
-            {!ready
-              ? 'Encendiendo la cámara…'
-              : quad
-                ? steady
-                  ? 'Hoja detectada. Ya puedes disparar.'
-                  : 'Hoja detectada. Mantén el pulso firme.'
-                : 'Apunta a la hoja entera, sobre una superficie que contraste.'}
+            {ready
+              ? 'La foto entra al PDF tal cual: encuadra el documento y busca buena luz.'
+              : 'Encendiendo la cámara…'}
           </p>
           <div className="flex items-center justify-center gap-8">
             <span className="w-12" />
@@ -1145,9 +874,7 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
               onClick={capture}
               disabled={!ready || working}
               aria-label="Capturar"
-              className={`rounded-full bg-white border-4 disabled:opacity-40 cursor-pointer flex items-center justify-center shrink-0 ${
-                quad ? 'border-emerald-400' : 'border-white/40'
-              }`}
+              className="rounded-full bg-white border-4 border-white/40 disabled:opacity-40 cursor-pointer flex items-center justify-center shrink-0"
               style={{ width: 72, height: 72 }}
             >
               <span className="block w-14 h-14 rounded-full bg-white ring-2 ring-slate-300" />
@@ -1160,32 +887,6 @@ function CameraOverlay({ filter, setFilter, pageCount, buildPage, onAddPage, onC
             </button>
           </div>
         </div>
-      )}
-
-      {/* Paso de confirmación: tras disparar se muestra el borde propuesto para
-          que el usuario lo acepte o lo corrija ANTES de generar la página. */}
-      {pending && (
-        <CropEditor
-          src={pending.url}
-          width={pending.w}
-          height={pending.h}
-          initialQuad={pending.quad}
-          title={pending.detected ? 'Confirma el borde de la hoja' : 'No se distinguió la hoja: ajústala'}
-          onCancel={discardPending}
-          onConfirm={confirmPending}
-        />
-      )}
-
-      {cropping && shot && (
-        <CropEditor
-          src={shot.original}
-          width={shot.originalW}
-          height={shot.originalH}
-          initialQuad={shot.quad}
-          title="Ajusta el recorte"
-          onCancel={() => setCropping(false)}
-          onConfirm={recrop}
-        />
       )}
     </div>,
     document.body
@@ -1206,213 +907,6 @@ function OverlayBtn({ onClick, icon, label, primary, danger }) {
     >
       <Icon className="w-5 h-5" />
       <span className="leading-tight text-center">{label}</span>
-    </button>
-  );
-}
-
-// ═════════════════════════════════════════════════════════════════════════════
-//  Editor de recorte: 4 esquinas arrastrables sobre la foto original
-//
-//  Va a pantalla completa (portal propio, no components/Modal) porque es un
-//  editor SOBRE la foto: necesita todo el alto disponible y convive encima de la
-//  cámara, que también ocupa la pantalla entera.
-// ═════════════════════════════════════════════════════════════════════════════
-
-const LOUPE = 104;  // diámetro de la lupa, en px
-const ZOOM = 2.6;   // aumento de la lupa
-
-const CORNERS = ['Superior izquierda', 'Superior derecha', 'Inferior derecha', 'Inferior izquierda'];
-const lerp = (a, b, t) => ({ x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t });
-
-function CropEditor({ src, width, height, initialQuad, title = 'Ajusta el recorte', onCancel, onConfirm }) {
-  const wrapRef = useRef(null);
-  const imgRef = useRef(null);
-  const [quad, setQuad] = useState(initialQuad || FULL_QUAD);
-  const [dragging, setDragging] = useState(null);
-  const [detecting, setDetecting] = useState(false);
-  const box = useContentBox(wrapRef, width, height);
-
-  // El fondo no debe desplazarse mientras el editor ocupa la pantalla.
-  useEffect(() => {
-    const prev = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
-    return () => { document.body.style.overflow = prev; };
-  }, []);
-
-  useEffect(() => {
-    if (dragging === null || !box) return undefined;
-    const move = (e) => {
-      const rect = wrapRef.current?.getBoundingClientRect();
-      if (!rect) return;
-      const p = {
-        x: Math.min(1, Math.max(0, (e.clientX - rect.left - box.left) / box.width)),
-        y: Math.min(1, Math.max(0, (e.clientY - rect.top - box.top) / box.height)),
-      };
-      setQuad((q) => q.map((c, i) => (i === dragging ? p : c)));
-    };
-    const up = () => setDragging(null);
-    window.addEventListener('pointermove', move);
-    window.addEventListener('pointerup', up);
-    window.addEventListener('pointercancel', up);
-    return () => {
-      window.removeEventListener('pointermove', move);
-      window.removeEventListener('pointerup', up);
-      window.removeEventListener('pointercancel', up);
-    };
-  }, [dragging, box]);
-
-  /** Vuelve a buscar los bordes sobre la foto quieta y a máximo detalle. */
-  const autoDetect = () => {
-    const img = imgRef.current;
-    if (!img || detecting) return;
-    setDetecting(true);
-    // Un respiro para que se pinte el «Detectando…» antes de ocupar el hilo.
-    setTimeout(() => {
-      try {
-        const q = detectDocument(img, width, height, 420);
-        if (q) setQuad(q);
-        else toast('No se distinguen los bordes: ajústalos a mano', { icon: '✋' });
-      } catch {
-        toast.error('No se pudo detectar el borde');
-      } finally {
-        setDetecting(false);
-      }
-    }, 30);
-  };
-
-  const pts = box ? quad.map((p) => ({ x: p.x * box.width, y: p.y * box.height })) : null;
-  const poly = pts ? pts.map((p) => `${p.x},${p.y}`).join(' ') : '';
-  // Rejilla interior siguiendo el cuadrilátero: ayuda a ver si la hoja está recta.
-  const grid = pts
-    ? [1, 2].flatMap((k) => [
-      [lerp(pts[0], pts[3], k / 3), lerp(pts[1], pts[2], k / 3)],
-      [lerp(pts[0], pts[1], k / 3), lerp(pts[3], pts[2], k / 3)],
-    ])
-    : [];
-  const held = dragging !== null ? quad[dragging] : null;
-
-  return createPortal(
-    <div className="fixed inset-0 z-[9500] bg-slate-950 flex flex-col" style={{ height: '100dvh' }}>
-      <div className="shrink-0 flex items-center justify-between gap-3 px-3 py-2.5 text-white">
-        <button
-          onClick={onCancel}
-          aria-label="Cancelar"
-          className="w-10 h-10 rounded-full flex items-center justify-center bg-white/10 hover:bg-white/20 text-white border-none cursor-pointer"
-        >
-          <HiOutlineXMark className="w-6 h-6" />
-        </button>
-        <p className="text-sm font-medium truncate">{title}</p>
-        <span className="w-10 shrink-0" />
-      </div>
-
-      <div ref={wrapRef} className="relative flex-1 min-h-0 select-none touch-none overflow-hidden">
-        <img
-          ref={imgRef}
-          src={src}
-          alt="Foto tomada"
-          className="absolute inset-0 w-full h-full"
-          style={{ objectFit: 'contain' }}
-        />
-
-        {box && (
-          <svg
-            viewBox={`0 0 ${box.width} ${box.height}`}
-            className="absolute pointer-events-none"
-            style={{ left: box.left, top: box.top, width: box.width, height: box.height }}
-          >
-            {/* Se oscurece lo que queda FUERA del marco: es lo que se descarta. */}
-            <path
-              d={`M0 0H${box.width}V${box.height}H0Z M${poly.replace(/ /g, 'L')}Z`}
-              fill="rgba(2,6,23,0.55)"
-              fillRule="evenodd"
-            />
-            {grid.map(([a, b], i) => (
-              <line
-                key={i}
-                x1={a.x} y1={a.y} x2={b.x} y2={b.y}
-                stroke="rgba(52,211,153,0.7)"
-                strokeWidth="1"
-                strokeDasharray="5 5"
-              />
-            ))}
-            <polygon points={poly} fill="none" stroke="#34d399" strokeWidth="2.5" strokeLinejoin="round" />
-          </svg>
-        )}
-
-        {box && quad.map((p, i) => (
-          <button
-            key={i}
-            type="button"
-            aria-label={`Esquina ${CORNERS[i].toLowerCase()}`}
-            title={CORNERS[i]}
-            onPointerDown={(e) => { e.preventDefault(); setDragging(i); }}
-            className={`absolute w-9 h-9 -ml-[18px] -mt-[18px] rounded-full border-2 border-emerald-400 touch-none cursor-grab p-0 ${
-              dragging === i ? 'bg-emerald-400/60' : 'bg-white/85'
-            }`}
-            style={{ left: box.left + p.x * box.width, top: box.top + p.y * box.height }}
-          />
-        ))}
-
-        {/* Lupa: el dedo tapa justo la esquina que se está colocando. */}
-        {box && held && (
-          <div
-            className="absolute rounded-full border-2 border-white/80 shadow-lg overflow-hidden pointer-events-none bg-slate-900"
-            style={{
-              top: 12,
-              left: held.x > 0.5 ? 12 : undefined,
-              right: held.x > 0.5 ? undefined : 12,
-              width: LOUPE,
-              height: LOUPE,
-              backgroundImage: `url(${src})`,
-              backgroundRepeat: 'no-repeat',
-              backgroundSize: `${box.width * ZOOM}px ${box.height * ZOOM}px`,
-              backgroundPosition: `${LOUPE / 2 - held.x * box.width * ZOOM}px ${LOUPE / 2 - held.y * box.height * ZOOM}px`,
-            }}
-          >
-            <span className="absolute left-1/2 top-1/2 w-6 h-px -ml-3 bg-emerald-400" />
-            <span className="absolute left-1/2 top-1/2 h-6 w-px -mt-3 bg-emerald-400" />
-          </div>
-        )}
-      </div>
-
-      <div className="shrink-0 bg-black/90 px-4 py-3 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
-        <p className="text-center text-[11px] text-white/60 mb-2.5">
-          Arrastra las esquinas hasta que el marco calce con la hoja.
-        </p>
-        <div className="flex items-center justify-between gap-3">
-          <ToolBtn icon={HiOutlineArrowsPointingOut} label="Borde completo" onClick={() => setQuad(FULL_QUAD)} />
-          <ToolBtn
-            icon={detecting ? HiOutlineArrowPath : HiOutlineViewfinderCircle}
-            label={detecting ? 'Detectando…' : 'Detectar borde'}
-            onClick={autoDetect}
-            disabled={detecting}
-          />
-          <button
-            type="button"
-            onClick={() => onConfirm(quad)}
-            aria-label="Aplicar recorte"
-            className="w-14 h-14 shrink-0 rounded-full bg-emerald-500 text-white border-none cursor-pointer flex items-center justify-center shadow-lg"
-          >
-            <HiOutlineCheck className="w-7 h-7" />
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body
-  );
-}
-
-function ToolBtn({ icon, label, onClick, disabled }) {
-  const Icon = icon;
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      disabled={disabled}
-      className="flex-1 min-w-0 bg-transparent border-none text-white/85 disabled:opacity-40 cursor-pointer flex flex-col items-center gap-1 py-1"
-    >
-      <Icon className="w-6 h-6" />
-      <span className="text-[11px] leading-tight text-center truncate w-full">{label}</span>
     </button>
   );
 }

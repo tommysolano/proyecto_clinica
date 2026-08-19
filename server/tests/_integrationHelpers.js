@@ -174,14 +174,24 @@ function mockReq(clinicId, userId, body = {}, extra = {}) {
 
 /** Simula res capturando status + payload. Devuelve { res, result(). } */
 function mockRes() {
+  const { Writable } = require('stream');
   const state = { statusCode: 200, payload: undefined, done: false, headers: {} };
-  const res = {
-    status(code) { state.statusCode = code; return res; },
-    json(payload) { state.payload = payload; state.done = true; return res; },
-    send(payload) { state.payload = payload; state.done = true; return res; },
-    // Endpoints que devuelven archivos (XML/TXT/Excel) fijan headers; no-op que registra.
-    setHeader(name, value) { state.headers[name] = value; return res; },
-  };
+  const chunks = [];
+  // Writable de verdad: así un controller puede mandar el archivo POR FLUJO
+  // (`pipeline(fs.createReadStream(f), res)`, como la descarga de un escaneo)
+  // igual que contra express, y lo escrito termina en `state.payload`.
+  const res = new Writable({
+    write(chunk, _enc, cb) { chunks.push(Buffer.from(chunk)); cb(); },
+  });
+  res.on('finish', () => {
+    if (chunks.length) state.payload = Buffer.concat(chunks);
+    state.done = true;
+  });
+  res.status = (code) => { state.statusCode = code; return res; };
+  res.json = (payload) => { state.payload = payload; state.done = true; return res; };
+  res.send = (payload) => { state.payload = payload; state.done = true; return res; };
+  // Endpoints que devuelven archivos (XML/TXT/Excel) fijan headers; no-op que registra.
+  res.setHeader = (name, value) => { state.headers[name] = value; return res; };
   return { res, state };
 }
 

@@ -14,8 +14,15 @@ import {
   Cell,
   LabelList,
 } from 'recharts';
-import { HiOutlinePresentationChartLine, HiOutlineTableCells, HiOutlineChartBar } from 'react-icons/hi2';
+import {
+  HiOutlinePresentationChartLine,
+  HiOutlineTableCells,
+  HiOutlineChartBar,
+  HiOutlineArrowTopRightOnSquare,
+} from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
+import Modal from '../components/Modal';
+import { formatPhone } from '../utils/phone';
 
 /**
  * ANALÍTICAS DEL EMBUDO.
@@ -104,12 +111,42 @@ const corta = (s, n = 30) => {
  * de campaña largo arriba, "Detox 1" o "Prostata 2" salían como "Deto…" y "Pr…".
  * Con un tick propio el corte lo decidimos nosotros y solo afecta al que sobra.
  */
-function TickNombre({ x, y, payload, max = 28 }) {
+function TickNombre({ x, y, payload, max = 28, onPick }) {
   return (
-    <text x={x} y={y} dy={4} textAnchor="end" fill={INK.text} fontSize={12}>
+    <text
+      x={x}
+      y={y}
+      dy={4}
+      textAnchor="end"
+      fill={INK.text}
+      fontSize={12}
+      // Pinchar el nombre abre la fila ENTERA (todas sus etapas); pinchar una
+      // barra abre solo esa etapa.
+      style={onPick ? { cursor: 'pointer' } : undefined}
+      onClick={onPick ? () => onPick(payload?.value) : undefined}
+    >
       {corta(payload?.value, max)}
     </text>
   );
+}
+
+/**
+ * La fila de datos que hay debajo de una barra clicada. Recharts entrega en el
+ * onClick de <Bar> la forma dibujada, con la fila original dentro de `payload`;
+ * en algunas versiones la manda aplanada. Se aceptan las dos.
+ */
+const filaDe = (e) => e?.payload || e || null;
+
+/**
+ * Abre el chat de una persona en una pestaña nueva (ver el enlace en Chats.jsx).
+ *
+ * Va por ID de conversación, no por teléfono: el chat ya existe (por eso está en
+ * el informe) y así funciona igual con Messenger o Instagram, donde el "phone"
+ * no es un número al que se pueda escribir.
+ */
+function abrirChatEnPestaña(item) {
+  if (!item?.conversationId) return;
+  window.open(`/chats?chat=${encodeURIComponent(item.conversationId)}`, '_blank', 'noopener');
 }
 
 export default function Analytics() {
@@ -117,6 +154,10 @@ export default function Analytics() {
   const [end, setEnd] = useState(isoLocal(new Date()));
   const [data, setData] = useState(EMPTY);
   const [loading, setLoading] = useState(false);
+  // Barra abierta: { by, value, stage, titulo, subtitulo }. Las cifras solas no
+  // dejaban llegar a la persona; al pinchar una barra se ve QUIÉNES son y se
+  // entra a su chat.
+  const [drill, setDrill] = useState(null);
 
   const load = async (from = start, to = end) => {
     setLoading(true);
@@ -277,7 +318,13 @@ export default function Analytics() {
 
         <ChartCard
           title="Qué oportunidades son"
-          subtitle="Cada oportunidad por su nombre, con una barra por etapa. Las que nacen solas de un anuncio no llevan nombre: esas se ven en «Chats por anuncio»."
+          subtitle="Cada oportunidad por su nombre, con una barra por etapa. Pincha una barra para ver de quién es y entrar a su chat. Las que nacen solas de un anuncio no llevan nombre: esas se ven en «Chats por anuncio»."
+          onRowClick={(r) => setDrill({
+            by: 'oportunidad',
+            value: r.nombre,
+            titulo: r.nombre,
+            subtitulo: 'Todas las etapas',
+          })}
           columns={[
             { key: 'nombre', label: 'Oportunidad' },
             { key: 'total', label: 'Total', num: true },
@@ -312,7 +359,17 @@ export default function Analytics() {
                 width={210}
                 tickLine={false}
                 axisLine={false}
-                tick={<TickNombre max={28} />}
+                tick={(
+                  <TickNombre
+                    max={28}
+                    onPick={(nombre) => nombre && setDrill({
+                      by: 'oportunidad',
+                      value: nombre,
+                      titulo: nombre,
+                      subtitulo: 'Todas las etapas',
+                    })}
+                  />
+                )}
               />
               <Tooltip cursor={{ fill: '#f8fafc' }} content={<TipOportunidad />} />
               {/* Una BARRA POR ETAPA, no una barra partida: apiladas, un "agendado"
@@ -328,6 +385,18 @@ export default function Analytics() {
                   barSize={11}
                   radius={[0, 4, 4, 0]}
                   isAnimationActive={false}
+                  cursor="pointer"
+                  onClick={(e) => {
+                    const fila = filaDe(e);
+                    if (!fila?.nombre || !fila[stage]) return;
+                    setDrill({
+                      by: 'oportunidad',
+                      value: fila.nombre,
+                      stage,
+                      titulo: fila.nombre,
+                      subtitulo: `En etapa «${STAGE_LABEL[stage]}»`,
+                    });
+                  }}
                 >
                   <LabelList
                     dataKey={stage}
@@ -541,10 +610,15 @@ export default function Analytics() {
         {conMotivos && (
           <ChartCard
             title="Motivos de pérdida"
-            subtitle="Por qué se perdieron las oportunidades marcadas como perdidas."
+            subtitle="Por qué se perdieron las oportunidades marcadas como perdidas. Pincha una barra para ver quiénes son y entrar a su chat."
             columns={[{ key: 'motivo', label: 'Motivo' }, { key: 'count', label: 'Oportunidades', num: true }]}
             rows={data.motivosPerdida}
             empty={false}
+            onRowClick={(r) => setDrill({
+              by: 'motivo',
+              value: r.motivo,
+              titulo: `Perdidas por «${r.motivo}»`,
+            })}
           >
             <ResponsiveContainer width="100%" height={data.motivosPerdida.length * 44 + 24}>
               <BarChart data={data.motivosPerdida} layout="vertical" margin={{ top: 8, right: 56, bottom: 8, left: 8 }}>
@@ -552,7 +626,20 @@ export default function Analytics() {
                 <XAxis type="number" hide domain={[0, 'dataMax']} />
                 <YAxis type="category" dataKey="motivo" width={190} tickLine={false} axisLine={false} tick={{ fill: INK.text, fontSize: 12 }} />
                 <Tooltip cursor={{ fill: '#f8fafc' }} content={<TipSerie />} />
-                <Bar dataKey="count" name="Oportunidades" fill={STAGE_COLOR.perdido} barSize={20} radius={[0, 4, 4, 0]} isAnimationActive={false}>
+                <Bar
+                  dataKey="count"
+                  name="Oportunidades"
+                  fill={STAGE_COLOR.perdido}
+                  barSize={20}
+                  radius={[0, 4, 4, 0]}
+                  isAnimationActive={false}
+                  cursor="pointer"
+                  onClick={(e) => {
+                    const fila = filaDe(e);
+                    if (!fila?.motivo) return;
+                    setDrill({ by: 'motivo', value: fila.motivo, titulo: `Perdidas por «${fila.motivo}»` });
+                  }}
+                >
                   <LabelList dataKey="count" position="right" fill={INK.text} fontSize={12} />
                 </Bar>
               </BarChart>
@@ -560,7 +647,128 @@ export default function Analytics() {
           </ChartCard>
         )}
       </div>
+
+      {/* La `key` fuerza a montarlo de nuevo al cambiar de barra: así el detalle
+          arranca siempre limpio en vez de enseñar un instante el de la anterior. */}
+      {drill && (
+        <DetalleBarra
+          key={`${drill.by}|${drill.value}|${drill.stage || ''}`}
+          drill={drill}
+          from={start}
+          to={end}
+          onClose={() => setDrill(null)}
+        />
+      )}
     </div>
+  );
+}
+
+/**
+ * QUIÉNES hay detrás de una barra, con su chat a un clic.
+ *
+ * El rango que se manda es el MISMO que el de la página, no el que se ve en los
+ * cuadros de fecha: si alguien cambia las fechas sin darle a Actualizar, la
+ * gráfica sigue siendo la del rango cargado y el detalle tiene que cuadrar con
+ * ella. Por eso `from`/`to` llegan desde arriba junto con la barra abierta.
+ */
+function DetalleBarra({ drill, from, to, onClose }) {
+  const [items, setItems] = useState(null);
+  const [error, setError] = useState('');
+  const [truncated, setTruncated] = useState(false);
+
+  useEffect(() => {
+    let vivo = true;
+    api
+      .get('/chats/opportunities/analytics/detail', {
+        params: { from, to, by: drill.by, value: drill.value, stage: drill.stage || undefined },
+      })
+      .then((r) => {
+        if (!vivo) return;
+        setItems(r.data?.items || []);
+        setTruncated(!!r.data?.truncated);
+      })
+      .catch((err) => {
+        if (vivo) setError(err.response?.data?.message || 'No se pudo cargar el detalle');
+      });
+    return () => { vivo = false; };
+  }, [drill.by, drill.value, drill.stage, from, to]);
+
+  return (
+    <Modal isOpen onClose={onClose} title={drill.titulo} size="2xl">
+      <div className="grid gap-3 min-w-0">
+        <p className="text-xs text-slate-500">
+          {drill.subtitulo ? `${drill.subtitulo} · ` : ''}
+          {ddmm(from)} al {ddmm(to)}
+          {items ? ` · ${nf.format(items.length)} oportunidad${items.length === 1 ? '' : 'es'}` : ''}
+        </p>
+        <p className="text-[11px] text-slate-400 -mt-1">
+          Haz clic en una persona para abrir su chat en una pestaña nueva.
+        </p>
+
+        {truncated && (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+            Se muestran las 500 más recientes. Acota el rango de fechas para verlas todas.
+          </div>
+        )}
+
+        {error ? (
+          <p className="py-10 text-center text-sm text-rose-600">{error}</p>
+        ) : !items ? (
+          <p className="py-10 text-center text-sm text-slate-400">Cargando…</p>
+        ) : !items.length ? (
+          <p className="py-10 text-center text-sm text-slate-400">No hay oportunidades en esta barra.</p>
+        ) : (
+          <div className="border border-slate-200 rounded-xl overflow-hidden">
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[680px] text-left text-xs">
+                <thead className="bg-slate-50 text-[10px] uppercase tracking-wide text-slate-500 sticky top-0">
+                  <tr>
+                    <th className="px-3 py-2.5">Contacto</th>
+                    <th className="px-3 py-2.5">Teléfono</th>
+                    <th className="px-3 py-2.5 w-28">Etapa</th>
+                    <th className="px-3 py-2.5">{drill.by === 'motivo' ? 'Oportunidad' : 'Motivo'}</th>
+                    <th className="px-3 py-2.5">Asignado a</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {items.map((it, i) => {
+                    const abrible = !!it.conversationId;
+                    return (
+                      <tr
+                        key={`${it.conversationId}-${i}`}
+                        onClick={abrible ? () => abrirChatEnPestaña(it) : undefined}
+                        title={abrible ? 'Abrir el chat en una pestaña nueva' : undefined}
+                        className={abrible ? 'cursor-pointer hover:bg-emerald-50/60' : ''}
+                      >
+                        <td className="px-3 py-2.5">
+                          <div className={`font-semibold flex items-center gap-1.5 ${abrible ? 'text-emerald-700' : 'text-slate-700'}`}>
+                            <span className="break-words">{it.contactName || 'Sin nombre'}</span>
+                            {abrible && <HiOutlineArrowTopRightOnSquare className="w-3.5 h-3.5 shrink-0 text-emerald-500" />}
+                          </div>
+                        </td>
+                        <td className="px-3 py-2.5 text-slate-600">{formatPhone(it.phone) || '—'}</td>
+                        <td className="px-3 py-2.5">
+                          <span
+                            className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold text-white"
+                            style={{ background: STAGE_COLOR[it.stage] || C_CHATS }}
+                          >
+                            {STAGE_LABEL[it.stage] || it.stage}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2.5 text-slate-500 break-words">
+                          {(drill.by === 'motivo' ? it.nombre : it.motivo) || '—'}
+                        </td>
+                        <td className="px-3 py-2.5 text-slate-500">{it.assignedToName || 'Sin asignar'}</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
+      </div>
+    </Modal>
   );
 }
 
@@ -605,7 +813,7 @@ function Tile({ label, value, hint, color }) {
  * las barras salían apretadas) y trae su equivalente en tabla: el valor exacto
  * nunca depende de acertar con el ratón encima de una barra.
  */
-function ChartCard({ title, subtitle, children, columns, rows, empty, legend }) {
+function ChartCard({ title, subtitle, children, columns, rows, empty, legend, onRowClick }) {
   const [tabla, setTabla] = useState(false);
   return (
     <div className="bg-white border border-slate-200 rounded-2xl p-4">
@@ -639,7 +847,7 @@ function ChartCard({ title, subtitle, children, columns, rows, empty, legend }) 
       {empty ? (
         <p className="text-sm text-slate-400 py-10 text-center">Sin datos en este rango</p>
       ) : tabla ? (
-        <TablaDatos columns={columns} rows={rows} />
+        <TablaDatos columns={columns} rows={rows} onRowClick={onRowClick} />
       ) : (
         children
       )}
@@ -647,7 +855,7 @@ function ChartCard({ title, subtitle, children, columns, rows, empty, legend }) 
   );
 }
 
-function TablaDatos({ columns = [], rows = [] }) {
+function TablaDatos({ columns = [], rows = [], onRowClick }) {
   return (
     <div className="overflow-x-auto max-h-96 overflow-y-auto">
       <table className="w-full text-sm">
@@ -660,7 +868,12 @@ function TablaDatos({ columns = [], rows = [] }) {
         </thead>
         <tbody>
           {rows.map((r, i) => (
-            <tr key={i} className="border-b border-slate-100 last:border-0">
+            <tr
+              key={i}
+              onClick={onRowClick ? () => onRowClick(r) : undefined}
+              title={onRowClick ? 'Ver quiénes son' : undefined}
+              className={`border-b border-slate-100 last:border-0 ${onRowClick ? 'cursor-pointer hover:bg-emerald-50/60' : ''}`}
+            >
               {columns.map((c) => (
                 <td key={c.key} className={`py-1.5 px-2 text-slate-700 ${c.num ? 'text-right tabular-nums' : ''}`}>
                   {c.fmt ? c.fmt(r[c.key]) : (r[c.key] ?? '—')}

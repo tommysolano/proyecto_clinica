@@ -9,8 +9,15 @@
  * POR IMAGEN — `mode=split` —, que es lo que hace falta cuando se sube una
  * tanda de fotos sueltas (cédulas, recetas…) y cada una es un documento aparte.
  *
+ * NO hay tope de imágenes por documento. Una petición sí tiene tope (nginx corta
+ * el cuerpo y multer no admite más de MAX_POR_ENVIO archivos), así que las tandas
+ * grandes llegan en varios envíos: en `mode=split` cada envío crea sus PDF y en
+ * un PDF único las páginas se van dejando en un apartado temporal (`sessionId`)
+ * hasta que el último envío (`finish=true`) las junta en un solo archivo.
+ *
  *   POST   /api/scans                 crear (multipart: pages[] + name + mode)
- *                                     (tandas grandes: varios envíos con startIndex)
+ *                                     (tandas grandes: varios envíos con startIndex,
+ *                                      o sessionId + finish para un PDF único)
  *   GET    /api/scans                 listar los de la clínica
  *   GET    /api/scans/:id/download    descargar / ver uno
  *   POST   /api/scans/download-zip    descargar varios en un ZIP
@@ -24,6 +31,7 @@
 const path = require('path');
 const fs = require('fs');
 const fsp = require('fs/promises');
+const { pipeline } = require('stream/promises');
 const crypto = require('crypto');
 const multer = require('multer');
 const PDFDocument = require('pdfkit');
@@ -38,17 +46,82 @@ try { fs.mkdirSync(SCANS_DIR, { recursive: true }); } catch (_) {}
 
 const clinicDir = (clinicId) => path.join(SCANS_DIR, String(clinicId || 'default'));
 
-const MAX_PAGES = 40;
+/**
+ * Tope de una PETICIÓN, no del documento: nginx corta el cuerpo y multer no
+ * admite más archivos de golpe. Un PDF puede tener las páginas que haga falta;
+ * el cliente las manda por tandas de este tamaño (ver el apartado temporal).
+ */
+const MAX_POR_ENVIO = 40;
 const OK_IMAGE_TYPES = ['image/jpeg', 'image/png'];
 
 exports.uploadMiddleware = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 12 * 1024 * 1024, files: MAX_PAGES },
+  limits: { fileSize: 12 * 1024 * 1024, files: MAX_POR_ENVIO },
   fileFilter: (req, file, cb) => {
     if (OK_IMAGE_TYPES.includes(file.mimetype)) cb(null, true);
     else cb(new Error('Las páginas deben ser imágenes JPG o PNG'));
   },
-}).array('pages', MAX_PAGES);
+}).array('pages', MAX_POR_ENVIO);
+
+// ─── Apartado temporal de un PDF que llega en varias tandas ──────────────────
+/**
+ * Un PDF único con 300 páginas no cabe en una sola petición, pero tampoco se
+ * puede ir armando: pdfkit escribe el archivo de una vez. Así que cada envío
+ * deja sus imágenes aquí, numeradas por su posición real, y el último las junta.
+ *
+ * Vive dentro de storage/scans para que comparta disco con los PDF ya
+ * guardados; `_tmp` nunca choca con una carpeta de clínica (son ObjectId).
+ */
+const STAGING_DIR = path.join(SCANS_DIR, '_tmp');
+/** Un apartado abandonado (se cerró la pestaña a media tanda) se borra solo. */
+const STAGING_TTL_MS = 6 * 60 * 60 * 1000;
+const SWEEP_EVERY_MS = 30 * 60 * 1000;
+
+/** Id de sesión que manda el cliente: solo se acepta si es inofensivo (no es una ruta). */
+const validSessionId = (raw) => (/^[A-Za-z0-9_-]{6,64}$/.test(String(raw || '')) ? String(raw) : '');
+
+const stagingDir = (clinicId, sessionId) =>
+  path.join(STAGING_DIR, String(clinicId || 'default'), sessionId);
+
+/** Borra los apartados que quedaron a medias. Se llama de vez en cuando, sin esperar. */
+let lastSweep = 0;
+async function sweepStaging() {
+  if (Date.now() - lastSweep < SWEEP_EVERY_MS) return;
+  lastSweep = Date.now();
+  try {
+    for (const clinic of await fsp.readdir(STAGING_DIR)) {
+      const dir = path.join(STAGING_DIR, clinic);
+      for (const session of await fsp.readdir(dir).catch(() => [])) {
+        const target = path.join(dir, session);
+        const stat = await fsp.stat(target).catch(() => null);
+        if (stat && Date.now() - stat.mtimeMs > STAGING_TTL_MS) {
+          await fsp.rm(target, { recursive: true, force: true }).catch(() => {});
+        }
+      }
+    }
+  } catch (_) { /* no hay nada apartado todavía */ }
+}
+
+/**
+ * Deja las imágenes de este envío en el apartado y devuelve cuántas hay ya.
+ * El nombre es la POSICIÓN de la página (000012.img), así que el orden se
+ * recupera ordenando por nombre aunque las tandas lleguen desordenadas.
+ */
+async function stagePages(clinicId, sessionId, files, startIndex) {
+  const dir = stagingDir(clinicId, sessionId);
+  await fsp.mkdir(dir, { recursive: true });
+  for (const [i, file] of files.entries()) {
+    await fsp.writeFile(path.join(dir, `${String(startIndex + i).padStart(6, '0')}.img`), file.buffer);
+  }
+  return (await fsp.readdir(dir)).length;
+}
+
+/** Las rutas de todo lo apartado, en el orden en que van dentro del PDF. */
+async function stagedPaths(clinicId, sessionId) {
+  const dir = stagingDir(clinicId, sessionId);
+  const names = (await fsp.readdir(dir).catch(() => [])).filter((n) => n.endsWith('.img')).sort();
+  return names.map((n) => path.join(dir, n));
+}
 
 // ─── Nombres ─────────────────────────────────────────────────────────────────
 // Viven en utils/scanNames.js porque el importador de fichas escaneadas también
@@ -58,8 +131,10 @@ exports.uploadMiddleware = multer({
 async function takenNameKeys(clinicId, ignoreId = null) {
   const filter = { clinic: clinicId };
   if (ignoreId) filter._id = { $ne: ignoreId };
+  // Sin `_id` la consulta se resuelve solo con el índice, sin ir a buscar los
+  // documentos: se lee una vez por envío y una clínica tiene miles de escaneos.
   return new Set(
-    (await ScannedDocument.find(filter).select('nameKey').lean()).map((d) => d.nameKey)
+    (await ScannedDocument.find(filter).select('nameKey -_id').lean()).map((d) => d.nameKey)
   );
 }
 
@@ -74,11 +149,21 @@ function allocateName(taken, base) {
   const clean = sanitizeName(base) || defaultName();
   const apartar = (n) => { taken.add(nameKeyOf(n)); return n; };
   if (!taken.has(nameKeyOf(clean))) return apartar(clean);
-  for (let i = 2; i < 1000; i++) {
+  /**
+   * El tope de intentos sale de cuántos nombres hay ocupados, no de un número
+   * fijo: como cada candidato es distinto, con `taken.size + 2` está garantizado
+   * encontrar uno libre. Estaba clavado en 999 y era el ÚLTIMO tope escondido
+   * del escáner: una clínica con mil escaneos del mismo nombre ("cedula")
+   * empezaba a bautizar los siguientes con un sufijo aleatorio —"cedula
+   * (51b51e)"— y, con muy mala suerte, dos iguales chocaban contra el índice
+   * único y esa imagen se perdía.
+   */
+  const tope = taken.size + 2;
+  for (let i = 2; i <= tope; i++) {
     const candidate = `${clean} (${i})`;
     if (!taken.has(nameKeyOf(candidate))) return apartar(candidate);
   }
-  // Salida de emergencia: sufijo aleatorio (no debería llegar aquí nunca).
+  // Salida de emergencia: inalcanzable con el tope de arriba, se queda de red.
   return apartar(`${clean} (${crypto.randomBytes(3).toString('hex')})`);
 }
 
@@ -90,22 +175,31 @@ async function uniqueName(clinicId, base, ignoreId = null) {
 // ─── PDF ─────────────────────────────────────────────────────────────────────
 
 /**
- * Arma el PDF: una página A4 por imagen, centrada y escalada sin deformar.
- * A4 en vez del tamaño exacto de la foto para que salga bien al imprimir.
+ * Arma el PDF EN DISCO: una página A4 por imagen, centrada y escalada sin
+ * deformar. A4 en vez del tamaño exacto de la foto para que salga bien al
+ * imprimir.
+ *
+ * Se escribe con un flujo, y cada imagen puede ser una ruta del apartado en vez
+ * de un buffer: un documento de 300 páginas pesa cientos de MB y tener a la vez
+ * el PDF entero y todas sus fotos en memoria era justo lo que impedía quitar el
+ * tope de imágenes. Pasando rutas, pdfkit lee una, la incrusta y la suelta.
  */
-function buildPdf(images, title) {
+function buildPdfTo(destPath, images, title) {
   return new Promise((resolve, reject) => {
     const doc = new PDFDocument({ size: 'A4', margin: 0, autoFirstPage: false, info: { Title: title } });
-    const chunks = [];
-    doc.on('data', (c) => chunks.push(c));
-    doc.on('end', () => resolve(Buffer.concat(chunks)));
-    doc.on('error', reject);
+    const out = fs.createWriteStream(destPath);
     const A4 = { w: 595.28, h: 841.89 };
     const MARGIN = 18;
+    let fallo = null;
+    out.on('error', reject);
+    out.on('finish', () => (fallo ? reject(fallo) : resolve()));
+    doc.on('error', reject);
+    doc.pipe(out);
     try {
       for (const img of images) {
         doc.addPage({ size: 'A4', margin: 0 });
-        doc.image(img.buffer, MARGIN, MARGIN, {
+        // Ruta en disco (tanda apartada) o buffer del propio envío.
+        doc.image(typeof img === 'string' ? img : img.buffer, MARGIN, MARGIN, {
           fit: [A4.w - MARGIN * 2, A4.h - MARGIN * 2],
           align: 'center',
           valign: 'center',
@@ -113,30 +207,61 @@ function buildPdf(images, title) {
       }
       doc.end();
     } catch (e) {
-      reject(new Error(`No se pudo procesar una de las páginas: ${e.message}`));
+      fallo = new Error(`No se pudo procesar una de las páginas: ${e.message}`);
+      // Se corta el flujo: el archivo a medias no debe quedarse abierto (quien
+      // llama lo borra). No se llama a doc.end(), que volvería a fallar.
+      out.destroy();
+      reject(fallo);
     }
   });
 }
 
 // ─── Endpoints ───────────────────────────────────────────────────────────────
 
-/** Guarda un PDF en disco y registra su ficha. */
-async function storePdf({ clinicId, userId, name, pdf, pages }) {
+/**
+ * Arma el PDF de `images` en disco y registra su ficha.
+ *
+ * `images` son rutas del apartado o buffers del propio envío (ver buildPdfTo).
+ * Si algo falla después de escribir el archivo, se borra: una ficha sin archivo
+ * se nota enseguida, pero un archivo sin ficha se queda ocupando disco para siempre.
+ *
+ * El nombre se reparte en memoria (allocateName), así que DOS peticiones a la vez
+ * de la misma sucursal pueden elegir el mismo y chocar contra el índice único
+ * {clinic, nameKey}. Al quitar el tope de imágenes eso pasó de raro a probable:
+ * una tanda de 500 son decenas de peticiones y minutos de ventana. Ante un E11000
+ * se vuelve a pedir nombre y se reintenta SOLO el registro, sin rehacer el PDF.
+ */
+async function storePdf({ clinicId, userId, name, images, renombrar = null }) {
   const dir = clinicDir(clinicId);
   await fsp.mkdir(dir, { recursive: true });
   const filename = `${Date.now()}-${crypto.randomBytes(6).toString('hex')}.pdf`;
-  await fsp.writeFile(path.join(dir, filename), pdf);
-
-  const doc = await ScannedDocument.create({
-    clinic: clinicId,
-    name,
-    nameKey: nameKeyOf(name),
-    filename,
-    size: pdf.length,
-    pages,
-    createdBy: userId,
-  });
-  return doc.populate('createdBy', 'name');
+  const full = path.join(dir, filename);
+  try {
+    await buildPdfTo(full, images, name);
+    const { size } = await fsp.stat(full);
+    let intento = name;
+    for (let n = 0; ; n++) {
+      try {
+        const doc = await ScannedDocument.create({
+          clinic: clinicId,
+          name: intento,
+          nameKey: nameKeyOf(intento),
+          filename,
+          size,
+          pages: images.length,
+          createdBy: userId,
+        });
+        return doc.populate('createdBy', 'name');
+      } catch (e) {
+        // Solo el choque de nombre se reintenta; cualquier otro error sube tal cual.
+        if (e?.code !== 11000 || !renombrar || n >= 5) throw e;
+        intento = await renombrar(intento);
+      }
+    }
+  } catch (e) {
+    await fsp.unlink(full).catch(() => {});
+    throw e;
+  }
 }
 
 /** ¿Piden un PDF por imagen? Acepta `mode=split` o `split=true`. */
@@ -159,6 +284,9 @@ function parsePageNames(raw) {
   return arr.map((n) => String(n || '').replace(/\.(jpe?g|png|webp|heic|heif|gif|bmp|tiff?|pdf)$/i, ''));
 }
 
+/** ¿Es el último envío de una tanda? (`finish=true`) */
+const isFinish = (body = {}) => ['true', '1', 'yes'].includes(String(body.finish || '').toLowerCase());
+
 exports.createScan = async (req, res) => {
   try {
     const files = req.files || [];
@@ -166,15 +294,37 @@ exports.createScan = async (req, res) => {
       return res.status(400).json({ message: 'Envía al menos una página escaneada' });
     }
     const base = sanitizeName(req.body.name);
+    sweepStaging(); // sin await: limpiar apartados viejos no debe demorar el envío
 
     // ── Lo de siempre: todas las imágenes dentro de un mismo PDF ─────────────
     if (!wantsSplit(req.body)) {
-      const name = await uniqueName(req.clinicId, base || defaultName());
-      const pdf = await buildPdf(files, name);
-      const doc = await storePdf({
-        clinicId: req.clinicId, userId: req.user._id, name, pdf, pages: files.length,
-      });
-      return res.status(201).json(doc);
+      const sessionId = validSessionId(req.body.sessionId);
+
+      // Sin sesión es un envío único (lo habitual: unas cuantas páginas).
+      if (!sessionId) {
+        const name = await uniqueName(req.clinicId, base || defaultName());
+        const doc = await storePdf({ clinicId: req.clinicId, userId: req.user._id, name, images: files });
+        return res.status(201).json(doc);
+      }
+
+      // Con sesión, el documento llega en varias tandas: se van apartando en
+      // disco por su posición y solo el último envío arma el PDF.
+      const desde = Math.max(0, parseInt(req.body.startIndex, 10) || 0);
+      const apartadas = await stagePages(req.clinicId, sessionId, files, desde);
+      if (!isFinish(req.body)) {
+        return res.status(202).json({ staged: true, pages: apartadas, sessionId });
+      }
+      const rutas = await stagedPaths(req.clinicId, sessionId);
+      try {
+        if (!rutas.length) return res.status(400).json({ message: 'No quedó ninguna página del envío' });
+        const name = await uniqueName(req.clinicId, base || defaultName());
+        const doc = await storePdf({ clinicId: req.clinicId, userId: req.user._id, name, images: rutas });
+        return res.status(201).json(doc);
+      } finally {
+        // El apartado se borra pase lo que pase: si el PDF falló, el cliente
+        // todavía tiene las imágenes y reintenta con una sesión nueva.
+        await fsp.rm(stagingDir(req.clinicId, sessionId), { recursive: true, force: true }).catch(() => {});
+      }
     }
 
     // ── Un PDF por imagen ───────────────────────────────────────────────────
@@ -188,6 +338,15 @@ exports.createScan = async (req, res) => {
     const desde = Math.max(0, parseInt(req.body.startIndex, 10) || 0);
     const documents = [];
     const errores = [];
+    /**
+     * Las que NO se pudieron convertir, con su POSICIÓN dentro de este envío.
+     *
+     * El texto de `errores` no basta: el cliente necesita saber qué imagen fue
+     * para dejarla en la rejilla y que el usuario la reintente. Antes se daban
+     * por subidas todas y se borraban de la pantalla; con tandas de 500 fotos
+     * eso es perder archivos que el usuario ya no sabe ni cuáles eran.
+     */
+    const fallidas = [];
     for (const [i, file] of files.entries()) {
       const n = desde + i + 1;
       const sugerido = base
@@ -195,19 +354,32 @@ exports.createScan = async (req, res) => {
         : sanitizeName(propios[i]) || `${defaultName()} ${n}`;
       const name = allocateName(taken, sugerido);
       try {
-        const pdf = await buildPdf([file], name);
         documents.push(await storePdf({
-          clinicId: req.clinicId, userId: req.user._id, name, pdf, pages: 1,
+          clinicId: req.clinicId,
+          userId: req.user._id,
+          name,
+          images: [file],
+          // Si otro envío simultáneo se quedó con el nombre, se pide el siguiente
+          // libre releyendo la base, en vez de perder esta imagen por un E11000.
+          renombrar: async () => allocateName(await takenNameKeys(req.clinicId), sugerido),
         }));
       } catch (e) {
         // Una imagen rota no debe tirar abajo el resto de la tanda.
         errores.push(`Imagen ${n}: ${e.message}`);
+        fallidas.push({
+          index: i,                                   // posición DENTRO de este envío
+          number: n,                                  // su número dentro de la tanda entera
+          file: propios[i] || file.originalname || '', // para poder nombrarla al usuario
+          message: e.message,
+        });
       }
     }
     if (!documents.length) {
       return res.status(400).json({ message: `No se pudo generar ningún PDF. ${errores[0] || ''}`.trim() });
     }
-    return res.status(201).json({ documents, count: documents.length, errors: errores });
+    // `errors` se mantiene (texto suelto) por compatibilidad; `failed` es el que
+    // permite al cliente conservar en pantalla justo las imágenes que fallaron.
+    return res.status(201).json({ documents, count: documents.length, errors: errores, failed: fallidas });
   } catch (error) {
     res.status(400).json({ message: `No se pudo generar el PDF: ${error.message}` });
   }
@@ -253,13 +425,22 @@ exports.downloadScan = async (req, res) => {
   try {
     const doc = await ScannedDocument.findOne({ _id: req.params.id, clinic: req.clinicId });
     if (!doc) return res.status(404).json({ message: 'Documento no encontrado' });
-    const buffer = await readPdf(doc);
+    const file = path.join(clinicDir(doc.clinic), doc.filename);
+    const stat = await fsp.stat(file).catch(() => null);
+    if (!stat) {
+      return res.status(404).json({ message: `El archivo de "${doc.name}" ya no está en el servidor` });
+    }
     // `inline` para verlo en el visor del navegador; si no, se descarga.
     const disposition = req.query.inline === '1' ? 'inline' : 'attachment';
     res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Length', stat.size);
     res.setHeader('Content-Disposition', `${disposition}; filename="${sanitizeName(doc.name)}.pdf"`);
-    res.send(buffer);
+    // Se manda por flujo, no de una pieza: sin tope de páginas un documento
+    // puede pesar cientos de MB y cargarlo entero en memoria tumbaría el backend.
+    await pipeline(fs.createReadStream(file), res);
   } catch (error) {
+    // Si la descarga ya empezó (se cortó a mitad) no hay respuesta que dar.
+    if (res.headersSent) return;
     res.status(error.status || 500).json({ message: error.message });
   }
 };
@@ -423,6 +604,7 @@ exports.deleteManyScans = async (req, res) => {
 
 // Exportados para los tests.
 exports._internals = {
-  uniqueName, allocateName, takenNameKeys, parsePageNames, wantsSplit, puedeBorrar,
-  nameKeyOf, sanitizeName, defaultName, SCANS_DIR,
+  uniqueName, allocateName, takenNameKeys, parsePageNames, wantsSplit, isFinish, puedeBorrar,
+  validSessionId, stagingDir, stagePages, stagedPaths,
+  nameKeyOf, sanitizeName, defaultName, SCANS_DIR, STAGING_DIR, MAX_POR_ENVIO,
 };
