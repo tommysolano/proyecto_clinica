@@ -151,6 +151,9 @@ const followUpSchema = new mongoose.Schema(
     // J. Plan de tratamiento (diagnóstico, terapéutico y educacional). La receta
     // e insumos siguen en recetaItems; esto es el plan narrado del MSP.
     planTratamiento: { type: String, trim: true, default: '' },
+    // Evolución del paciente respecto de las consultas anteriores. Va debajo
+    // del plan y aplica a TODAS las especialidades, no solo a la consulta MSP.
+    evolucion: { type: String, trim: true, default: '' },
     // Archivos PDF subidos por el doctor (ecografías, bioresonancias, etc.)
     attachments: [
       {
@@ -195,6 +198,9 @@ const followUpSchema = new mongoose.Schema(
       },
       // Embarazo actual: true = sí, false = no, null = no consignado.
       embarazoActual: { type: Boolean, default: null },
+      // Peso ANTES del embarazo (kg). Con la talla da el IMC pregestacional,
+      // que es el que fija cuánto peso debería subir en todo el embarazo.
+      pesoPreconcepcional: { type: Number, default: null, min: 0 },
       // Métodos anticonceptivos en uso.
       metodosAnticonceptivos: {
         hormonal: { type: Boolean, default: false },

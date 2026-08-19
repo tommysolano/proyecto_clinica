@@ -1,4 +1,4 @@
-import { useEffect, useState, Fragment, useRef } from 'react';
+import { useEffect, useState, Fragment, useRef, lazy, Suspense } from 'react';
 import { useParams, useSearchParams, Link } from 'react-router-dom';
 import api from '../api/axios';
 import { downloadFile } from '../utils/download';
@@ -24,7 +24,7 @@ import {
   PODOLOGIA_PULSO_OPCIONES,
   PODOLOGIA_SENSIBILIDAD_OPCIONES,
   PODOLOGIA_REFLEJOS_OPCIONES,
-  ODONTOGRAMA_ESTADOS,
+  labelOdonto,
   ODONTOGRAMA_CARAS,
   HIGIENE_ORAL_FILAS,
   HIGIENE_ORAL_INDICES,
@@ -65,6 +65,12 @@ import {
   HiOutlineChevronDown,
 } from 'react-icons/hi2';
 import DateInput from '../components/DateInput';
+import { cargarPagina } from '../utils/lazyPage';
+import { edadGestacional, fechaProbableParto } from '../constants/gestacion';
+
+// La curva arrastra recharts (~90 kB comprimidos). Se baja al abrirla, no al
+// entrar en la ficha de un paciente que quizá ni es de ginecología.
+const CurvaPesoGestacional = lazy(() => cargarPagina(() => import('../components/CurvaPesoGestacional')));
 
 const TABS = [
   { id: 'datos', label: 'Datos', icon: HiOutlineUser },
@@ -940,6 +946,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
     fum: '',
     gpac: { gestas: '', partos: '', abortos: '', cesareas: '' },
     embarazoActual: null, // null = sin dato, true = sí, false = no
+    pesoPreconcepcional: '', // peso antes del embarazo (kg)
     metodosAnticonceptivos: { hormonal: false, barrera: false, diu: false, otro: false, otroDetalle: '' },
     pap: {
       tipo: '', // 'previo' | 'primera_vez'
@@ -995,6 +1002,7 @@ function SeguimientosTab({ patientId, appointmentId }) {
     descripcion: '',
     enfermedadActual: '',    // E
     planTratamiento: '',     // J
+    evolucion: '',           // evolución respecto de controles anteriores
     recetaItems: [],       // solo insumos/medicamentos
     derivacionItems: [],   // servicios/programas
     revisionSistemas: [],  // G
@@ -1628,6 +1636,21 @@ function SeguimientosTab({ patientId, appointmentId }) {
           />
         </div>
 
+        {/* Ficha de la especialidad: va pegada al diagnóstico, antes de recetar. */}
+        {isOptica && <OpticaRxTable value={form.opticaRx} onChange={(rx) => setForm((f) => ({ ...f, opticaRx: rx }))} />}
+        {isGineco && (
+          <GinecologiaSection
+            value={form.ginecologia}
+            onChange={(g) => setForm((f) => ({ ...f, ginecologia: g }))}
+            vitalSigns={form.vitalSigns}
+            fecha={form.fecha}
+            followUps={followUps}
+          />
+        )}
+        {isPodo && <PodologiaSection value={form.podologia} onChange={(p) => setForm((f) => ({ ...f, podologia: p }))} />}
+        {isOdonto && <OdontologiaSection value={form.odontologia} onChange={(o) => setForm((f) => ({ ...f, odontologia: o }))} />}
+        {isCosme && <CosmetologiaSection value={form.cosmetologia} onChange={(c) => setForm((f) => ({ ...f, cosmetologia: c }))} />}
+
         <ItemsTable
           variant="receta"
           items={form.recetaItems}
@@ -1664,11 +1687,16 @@ function SeguimientosTab({ patientId, appointmentId }) {
           />
         </Field>
 
-        {isOptica && <OpticaRxTable value={form.opticaRx} onChange={(rx) => setForm((f) => ({ ...f, opticaRx: rx }))} />}
-        {isGineco && <GinecologiaSection value={form.ginecologia} onChange={(g) => setForm((f) => ({ ...f, ginecologia: g }))} />}
-        {isPodo && <PodologiaSection value={form.podologia} onChange={(p) => setForm((f) => ({ ...f, podologia: p }))} />}
-        {isOdonto && <OdontologiaSection value={form.odontologia} onChange={(o) => setForm((f) => ({ ...f, odontologia: o }))} />}
-        {isCosme && <CosmetologiaSection value={form.cosmetologia} onChange={(c) => setForm((f) => ({ ...f, cosmetologia: c }))} />}
+        <Field label="Evolución" className="md:col-span-3">
+          <textarea
+            rows={2}
+            value={form.evolucion}
+            onChange={(e) => setForm((f) => ({ ...f, evolucion: e.target.value }))}
+            placeholder="Cómo evoluciona el paciente respecto de los controles anteriores"
+            className="input resize-none"
+          />
+        </Field>
+
 
         {/* Archivos (PDF o imágenes) antes de guardar el seguimiento */}
         <div className="md:col-span-3">
@@ -1845,6 +1873,11 @@ function SeguimientosTab({ patientId, appointmentId }) {
                       <span className="inline-block mb-1 ml-1 text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-slate-100 text-slate-600 capitalize">{fu.tipoConsulta}</span>
                     )}
                     <div className="font-medium">{fu.descripcion || fu.motivoConsulta}</div>
+                    {hasOpticaData && <OpticaRxSummary rx={fu.opticaRx} />}
+                    {hasGinecoData && <GinecologiaSummary g={fu.ginecologia} fecha={fu.fecha} />}
+                    {hasPodoData && <PodologiaSummary p={fu.podologia} />}
+                    {hasOdontoData && <OdontologiaSummary o={fu.odontologia} />}
+                    {hasCosmeData && <CosmetologiaSummary c={fu.cosmetologia} />}
                     {fu.enfermedadActual && (
                       <div className="mt-1 text-xs text-slate-600 whitespace-pre-wrap">
                         <b>Enfermedad actual:</b> {fu.enfermedadActual}
@@ -1947,6 +1980,11 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         <b>Plan de tratamiento:</b> {fu.planTratamiento}
                       </div>
                     )}
+                    {fu.evolucion && (
+                      <div className="mt-2 text-xs text-slate-600 whitespace-pre-wrap">
+                        <b>Evolución:</b> {fu.evolucion}
+                      </div>
+                    )}
                     {/* Legacy: seguimientos antiguos que aún tienen el campo. */}
                     {fu.observaciones && (
                       <div className="mt-2 text-xs text-slate-600 italic">
@@ -1999,11 +2037,6 @@ function SeguimientosTab({ patientId, appointmentId }) {
                         </label>
                       )}
                     </div>
-                    {hasOpticaData && <OpticaRxSummary rx={fu.opticaRx} />}
-                    {hasGinecoData && <GinecologiaSummary g={fu.ginecologia} />}
-                    {hasPodoData && <PodologiaSummary p={fu.podologia} />}
-                    {hasOdontoData && <OdontologiaSummary o={fu.odontologia} />}
-                    {hasCosmeData && <CosmetologiaSummary c={fu.cosmetologia} />}
                   </td>
                   <td className="px-4 py-2.5 text-right">
                     <div className="flex items-center justify-end gap-1">
@@ -2129,6 +2162,7 @@ function ginecoHasData(g) {
   return Boolean(
     g.fum ||
     g.embarazoActual != null ||
+    (g.pesoPreconcepcional != null && g.pesoPreconcepcional !== '') ||
     g.pap?.tipo ||
     ['gestas', 'partos', 'abortos', 'cesareas'].some((k) => gpac[k] != null && gpac[k] !== '') ||
     ['hormonal', 'barrera', 'diu', 'otro'].some((k) => met[k]) ||
@@ -2154,7 +2188,7 @@ function GChip({ active, onClick, children }) {
   );
 }
 
-function GinecologiaSection({ value, onChange }) {
+function GinecologiaSection({ value, onChange, vitalSigns, fecha, followUps = [] }) {
   const g = value || {};
   const gpac = g.gpac || {};
   const met = g.metodosAnticonceptivos || {};
@@ -2166,136 +2200,232 @@ function GinecologiaSection({ value, onChange }) {
   const setToma = (k, v) => onChange({ ...g, pap: { ...pap, toma: { ...toma, [k]: v } } });
   const setCp = (k, v) => onChange({ ...g, controlPrenatal: { ...cp, [k]: v } });
 
+  const [verCurva, setVerCurva] = useState(false);
+
+  // Las semanas se cuentan hasta la FECHA DEL CONTROL, no hasta hoy: así un
+  // seguimiento con fecha atrasada sigue mostrando la edad que tocaba ese día.
+  const embarazada = g.embarazoActual === true;
+  const eg = embarazada && g.fum ? edadGestacional(g.fum, fecha) : null;
+  const fpp = embarazada && g.fum ? fechaProbableParto(g.fum) : '';
+  const talla = vitalSigns?.height;
+  const peso = vitalSigns?.weight;
+  const faltaParaCurva = !g.fum
+    ? 'Registre la FUM para ubicar el control en la curva'
+    : !(Number(peso) > 0)
+      ? 'Registre el peso en signos vitales'
+      : !(Number(talla) > 0)
+        ? 'Registre la talla en signos vitales'
+        : '';
+
   return (
     <div className="md:col-span-3">
-      <label className="text-sm font-medium text-slate-700 block mb-2">Ginecología / Obstetricia</label>
-      <div className="bg-white rounded-lg border border-rose-200 p-3 space-y-4">
-        {/* FUM + Embarazo actual */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-          <Field label="FUM (última menstruación)">
-            <DateInput
-              value={g.fum || ''}
-              onChange={(e) => onChange({ ...g, fum: e.target.value })}
-              className="input"
-            />
-          </Field>
-          <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1">Embarazo actual</label>
-            <div className="flex gap-2">
-              <GChip active={g.embarazoActual === true} onClick={() => onChange({ ...g, embarazoActual: g.embarazoActual === true ? null : true })}>Sí</GChip>
-              <GChip active={g.embarazoActual === false} onClick={() => onChange({ ...g, embarazoActual: g.embarazoActual === false ? null : false })}>No</GChip>
+      <Collapsible
+        title="Ginecología / Obstetricia"
+        hint={eg && !eg.problema ? `embarazo de ${eg.texto}` : 'FUM, antecedentes, PAP y control prenatal'}
+      >
+        <div className="space-y-4">
+          {/* FUM + Embarazo actual */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <Field label="FUM (última menstruación)">
+              <DateInput
+                value={g.fum || ''}
+                onChange={(e) => onChange({ ...g, fum: e.target.value })}
+                className="input"
+              />
+            </Field>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Embarazo actual</label>
+              <div className="flex gap-2">
+                <GChip active={g.embarazoActual === true} onClick={() => onChange({ ...g, embarazoActual: g.embarazoActual === true ? null : true })}>Sí</GChip>
+                <GChip active={g.embarazoActual === false} onClick={() => onChange({ ...g, embarazoActual: g.embarazoActual === false ? null : false })}>No</GChip>
+              </div>
             </div>
           </div>
-        </div>
 
-        {/* G P A C */}
-        <div>
-          <label className="block text-xs font-semibold text-slate-600 mb-1">Antecedentes obstétricos (G · P · A · C)</label>
-          <div className="grid grid-cols-4 gap-2">
-            {[
-              { k: 'gestas', l: 'Gestas' },
-              { k: 'partos', l: 'Partos' },
-              { k: 'abortos', l: 'Abortos' },
-              { k: 'cesareas', l: 'Cesáreas' },
-            ].map((it) => (
-              <Field key={it.k} label={it.l}>
-                <input
-                  type="number"
-                  min="0"
-                  value={gpac[it.k] ?? ''}
-                  onChange={(e) => setGpac(it.k, e.target.value)}
-                  className="input"
-                />
-              </Field>
-            ))}
-          </div>
-        </div>
+          {/* Embarazo en curso: edad gestacional, peso previo y curva de peso */}
+          {embarazada && (
+            <div className="rounded-lg border border-rose-200 bg-rose-50 p-3 space-y-3">
+              {!g.fum && (
+                <p className="text-xs text-slate-600">
+                  Ingrese la FUM para calcular las semanas de embarazo.
+                </p>
+              )}
+              {eg?.problema === 'futura' && (
+                <p className="text-xs text-amber-700">
+                  La FUM es posterior a la fecha de este control: revise el dato.
+                </p>
+              )}
+              {eg?.problema === 'lejana' && (
+                <p className="text-xs text-amber-700">
+                  Han pasado más de 45 semanas desde la FUM ({eg.texto}): probablemente quedó de un embarazo anterior.
+                </p>
+              )}
+              {eg && !eg.problema && (
+                <div className="flex flex-wrap items-baseline gap-x-4 gap-y-1">
+                  <span className="text-sm font-semibold text-rose-700">
+                    {eg.texto} de gestación
+                  </span>
+                  <span className="text-xs text-slate-600">{eg.dias} días</span>
+                  {fpp && <span className="text-xs text-slate-600">Fecha probable de parto: {fmtDate(fpp)}</span>}
+                </div>
+              )}
 
-        {/* Métodos anticonceptivos */}
-        <div>
-          <label className="block text-xs font-semibold text-slate-600 mb-1">Métodos anticonceptivos</label>
-          <div className="flex flex-wrap gap-2">
-            {GINECO_METODOS.map((m) => (
-              <GChip key={m.key} active={!!met[m.key]} onClick={() => setMet(m.key, !met[m.key])}>{m.label}</GChip>
-            ))}
-          </div>
-          {met.otro && (
-            <input
-              type="text"
-              value={met.otroDetalle || ''}
-              onChange={(e) => setMet('otroDetalle', e.target.value)}
-              placeholder="¿Cuál otro método?"
-              className="input mt-2"
-            />
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-3 items-end">
+                <Field label="Peso preconcepcional (kg)">
+                  <NumericInput
+                    step="0.1"
+                    min={0}
+                    value={g.pesoPreconcepcional ?? ''}
+                    onChange={(e) => onChange({ ...g, pesoPreconcepcional: e.target.value })}
+                    placeholder="Peso antes del embarazo"
+                    className="input"
+                  />
+                </Field>
+                <div>
+                  <button
+                    type="button"
+                    onClick={() => setVerCurva(true)}
+                    disabled={!!faltaParaCurva}
+                    title={faltaParaCurva || 'Curva de IMC por semanas de gestación'}
+                    className={`w-full px-3 py-2 rounded-lg text-xs font-semibold border ${
+                      faltaParaCurva
+                        ? 'bg-slate-100 text-slate-400 border-slate-200 cursor-not-allowed'
+                        : 'bg-rose-600 text-white border-rose-600 cursor-pointer hover:bg-rose-700'
+                    }`}
+                  >
+                    Ver curva de aumento de peso
+                  </button>
+                  {faltaParaCurva && <p className="text-[11px] text-slate-500 mt-1">{faltaParaCurva}.</p>}
+                </div>
+              </div>
+            </div>
           )}
-        </div>
 
-        {/* PAP */}
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+          {/* G P A C */}
           <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1">PAP (Papanicolaou)</label>
-            <div className="flex gap-2">
-              <GChip active={pap.tipo === 'previo'} onClick={() => onChange({ ...g, pap: { ...pap, tipo: pap.tipo === 'previo' ? '' : 'previo' } })}>PAP previo</GChip>
-              <GChip active={pap.tipo === 'primera_vez'} onClick={() => onChange({ ...g, pap: { ...pap, tipo: pap.tipo === 'primera_vez' ? '' : 'primera_vez' } })}>1.ª vez</GChip>
-            </div>
-          </div>
-          <div>
-            <label className="block text-xs font-semibold text-slate-600 mb-1">Toma de PAP</label>
-            <div className="flex flex-wrap gap-2">
-              {GINECO_TOMA.map((t) => (
-                <GChip key={t.key} active={!!toma[t.key]} onClick={() => setToma(t.key, !toma[t.key])}>{t.label}</GChip>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Antecedentes obstétricos (G · P · A · C)</label>
+            <div className="grid grid-cols-4 gap-2">
+              {[
+                { k: 'gestas', l: 'Gestas' },
+                { k: 'partos', l: 'Partos' },
+                { k: 'abortos', l: 'Abortos' },
+                { k: 'cesareas', l: 'Cesáreas' },
+              ].map((it) => (
+                <Field key={it.k} label={it.l}>
+                  <input
+                    type="number"
+                    min="0"
+                    value={gpac[it.k] ?? ''}
+                    onChange={(e) => setGpac(it.k, e.target.value)}
+                    className="input"
+                  />
+                </Field>
               ))}
             </div>
-            {toma.otros && (
+          </div>
+
+          {/* Métodos anticonceptivos */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Métodos anticonceptivos</label>
+            <div className="flex flex-wrap gap-2">
+              {GINECO_METODOS.map((m) => (
+                <GChip key={m.key} active={!!met[m.key]} onClick={() => setMet(m.key, !met[m.key])}>{m.label}</GChip>
+              ))}
+            </div>
+            {met.otro && (
               <input
                 type="text"
-                value={toma.otrosDetalle || ''}
-                onChange={(e) => setToma('otrosDetalle', e.target.value)}
-                placeholder="Especifique otros"
+                value={met.otroDetalle || ''}
+                onChange={(e) => setMet('otroDetalle', e.target.value)}
+                placeholder="¿Cuál otro método?"
                 className="input mt-2"
               />
             )}
           </div>
-        </div>
 
-        {/* Control prenatal */}
-        <div>
-          <label className="block text-xs font-semibold text-slate-600 mb-1">Control prenatal</label>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
-            <Field label="Signos vitales / score">
-              <input
-                type="text"
-                value={cp.signosVitalesScore || ''}
-                onChange={(e) => setCp('signosVitalesScore', e.target.value)}
-                className="input"
-              />
-            </Field>
-            <Field label="Bebé — posición">
-              <input
-                type="text"
-                value={cp.bebePosicion || ''}
-                onChange={(e) => setCp('bebePosicion', e.target.value)}
-                placeholder="Cefálico, podálico…"
-                className="input"
-              />
-            </Field>
-            <Field label="Actividad cardíaca">
-              <input
-                type="text"
-                value={cp.actividadCardiaca || ''}
-                onChange={(e) => setCp('actividadCardiaca', e.target.value)}
-                placeholder="FCF (lpm)"
-                className="input"
-              />
-            </Field>
+          {/* PAP */}
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">PAP (Papanicolaou)</label>
+              <div className="flex gap-2">
+                <GChip active={pap.tipo === 'previo'} onClick={() => onChange({ ...g, pap: { ...pap, tipo: pap.tipo === 'previo' ? '' : 'previo' } })}>PAP previo</GChip>
+                <GChip active={pap.tipo === 'primera_vez'} onClick={() => onChange({ ...g, pap: { ...pap, tipo: pap.tipo === 'primera_vez' ? '' : 'primera_vez' } })}>1.ª vez</GChip>
+              </div>
+            </div>
+            <div>
+              <label className="block text-xs font-semibold text-slate-600 mb-1">Toma de PAP</label>
+              <div className="flex flex-wrap gap-2">
+                {GINECO_TOMA.map((t) => (
+                  <GChip key={t.key} active={!!toma[t.key]} onClick={() => setToma(t.key, !toma[t.key])}>{t.label}</GChip>
+                ))}
+              </div>
+              {toma.otros && (
+                <input
+                  type="text"
+                  value={toma.otrosDetalle || ''}
+                  onChange={(e) => setToma('otrosDetalle', e.target.value)}
+                  placeholder="Especifique otros"
+                  className="input mt-2"
+                />
+              )}
+            </div>
+          </div>
+
+          {/* Control prenatal */}
+          <div>
+            <label className="block text-xs font-semibold text-slate-600 mb-1">Control prenatal</label>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-2">
+              <Field label="Signos vitales / score">
+                <input
+                  type="text"
+                  value={cp.signosVitalesScore || ''}
+                  onChange={(e) => setCp('signosVitalesScore', e.target.value)}
+                  className="input"
+                />
+              </Field>
+              <Field label="Bebé — posición">
+                <input
+                  type="text"
+                  value={cp.bebePosicion || ''}
+                  onChange={(e) => setCp('bebePosicion', e.target.value)}
+                  placeholder="Cefálico, podálico…"
+                  className="input"
+                />
+              </Field>
+              <Field label="Actividad cardíaca">
+                <input
+                  type="text"
+                  value={cp.actividadCardiaca || ''}
+                  onChange={(e) => setCp('actividadCardiaca', e.target.value)}
+                  placeholder="FCF (lpm)"
+                  className="input"
+                />
+              </Field>
+            </div>
           </div>
         </div>
-      </div>
+      </Collapsible>
+
+      {/* Fuera del Collapsible: plegar la ficha no debe cerrar la gráfica. */}
+      {verCurva && (
+        <Suspense fallback={null}>
+          <CurvaPesoGestacional
+            isOpen
+            onClose={() => setVerCurva(false)}
+            fum={g.fum}
+            pesoPreconcepcional={g.pesoPreconcepcional}
+            talla={talla}
+            pesoActual={peso}
+            fechaActual={fecha}
+            followUps={followUps}
+          />
+        </Suspense>
+      )}
     </div>
   );
 }
 
-function GinecologiaSummary({ g }) {
+function GinecologiaSummary({ g, fecha }) {
   if (!g) return null;
   const gpac = g.gpac || {};
   const met = g.metodosAnticonceptivos || {};
@@ -2309,12 +2439,18 @@ function GinecologiaSummary({ g }) {
     .join(' / ');
   const hasGpac = ['gestas', 'partos', 'abortos', 'cesareas'].some((k) => gpac[k] != null && gpac[k] !== '');
   const papTipo = pap.tipo === 'previo' ? 'PAP previo' : pap.tipo === 'primera_vez' ? 'PAP 1.ª vez' : '';
+  // Las semanas que tenía el día del control, no las de hoy.
+  const eg = g.embarazoActual === true && g.fum ? edadGestacional(g.fum, fecha) : null;
   return (
     <div className="mt-2 text-[11px] text-slate-600 bg-rose-50 border border-rose-100 rounded p-2 flex flex-wrap gap-x-3 gap-y-0.5">
       <span className="font-semibold text-rose-600 uppercase w-full">Ginecología</span>
       {g.fum && <span>FUM: {fmtDate(g.fum)}</span>}
       {hasGpac && <span>G/P/A/C: {gpacStr}</span>}
       {g.embarazoActual != null && <span>Embarazo actual: {g.embarazoActual ? 'Sí' : 'No'}</span>}
+      {eg && !eg.problema && <span className="font-semibold text-rose-700">{eg.texto} de gestación</span>}
+      {g.pesoPreconcepcional != null && g.pesoPreconcepcional !== '' && (
+        <span>Peso preconcepcional: {g.pesoPreconcepcional}kg</span>
+      )}
       {metodos.length > 0 && <span>Anticoncepción: {metodos.join(', ')}</span>}
       {papTipo && <span>{papTipo}</span>}
       {tomas.length > 0 && <span>Toma PAP: {tomas.join(', ')}</span>}
@@ -2566,12 +2702,18 @@ function odontologiaHasData(o) {
   );
 }
 
-const estadoLabel = (key) => ODONTOGRAMA_ESTADOS.find((e) => e.key === key)?.label || '';
+// La marca guardada puede traer el color elegido ('caries:azul'), así que la
+// etiqueta la arma el catálogo: un find por clave devolvería vacío.
+const estadoLabel = (valor) => labelOdonto(valor);
 
 function OdontologiaSection({ value, onChange }) {
   const o = value || {};
   return (
-    <div className="space-y-3">
+    // `md:col-span-3` como el resto de fichas de especialidad (óptica, gineco,
+    // podología, cosmetología): el formulario del seguimiento es una rejilla de
+    // tres columnas y sin esto el odontograma se quedaba metido en una sola,
+    // con el esquema dental apretado en un tercio del ancho.
+    <div className="md:col-span-3 space-y-3">
       <Collapsible title="Odontograma" hint="esquema, indicadores y índices (MSP)">
         <div className="space-y-3">
           <Odontograma value={o} onChange={onChange} />

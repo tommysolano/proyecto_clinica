@@ -12,7 +12,7 @@ const {
   PODOLOGIA_HALLAZGOS,
   PODOLOGIA_EVALUACION,
   PODOLOGIA_HALLAZGOS_GENERALES,
-  ODONTOGRAMA_ESTADOS,
+  labelOdonto,
   ODONTOGRAMA_CARAS,
   HIGIENE_ORAL_FILAS,
   HIGIENE_ORAL_INDICES,
@@ -134,12 +134,12 @@ function odontologiaHtml(o) {
     .map((d) => {
       // Cada cara con SU estado: «Oclusal: Caries, Mesial: Obturado».
       const caras = ODONTOGRAMA_CARAS.filter((c) => d.caras?.[c.key])
-        .map((c) => `${c.label}: ${labelOf(ODONTOGRAMA_ESTADOS, d.caras[c.key])}`)
+        .map((c) => `${c.label}: ${labelOdonto(d.caras[c.key])}`)
         .join(', ');
       const grados = [d.recesion && `Recesión ${d.recesion}`, d.movilidad && `Movilidad ${d.movilidad}`]
         .filter(Boolean)
         .join(', ');
-      return `<tr>${td(`<b>${esc(d.diente)}</b>`)}${td(esc(labelOf(ODONTOGRAMA_ESTADOS, d.estado) || '—'))}${td(esc(caras || '—'))}${td(esc(grados || '—'))}${td(esc(d.nota || '—'))}</tr>`;
+      return `<tr>${td(`<b>${esc(d.diente)}</b>`)}${td(esc(labelOdonto(d.estado) || '—'))}${td(esc(caras || '—'))}${td(esc(grados || '—'))}${td(esc(d.nota || '—'))}</tr>`;
     })
     .join('');
 

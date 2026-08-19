@@ -2,8 +2,9 @@
  * Escáner de documentos: armado del PDF, nombres únicos, listado, descarga
  * individual y en ZIP, renombrado y borrado.
  *
- * Las páginas llegan como JPEG desde el navegador (ya recortadas); aquí se
- * generan JPEG mínimos de verdad con pdfkit para que el PDF sea real.
+ * Las páginas llegan como JPEG desde el navegador (la foto tal cual, sin
+ * recortar); aquí se generan JPEG mínimos de verdad con pdfkit para que el PDF
+ * sea real.
  */
 const test = require('node:test');
 const assert = require('node:assert/strict');

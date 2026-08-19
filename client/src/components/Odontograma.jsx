@@ -6,10 +6,15 @@
  * dibujo es el dato — cada diente se divide en sus cinco caras y se pinta cara por
  * cara, en AZUL lo ya tratado y en ROJO la patología actual.
  *
- * Cómo se usa: se elige un símbolo de la paleta y se pincha encima del diente. Si
- * el símbolo es de cara (caries, obturado, sellante) pinta el sector pinchado; si
- * es de pieza entera (extracción, pérdida, endodoncia, corona, prótesis) marca el
- * diente completo. Volver a pinchar con el mismo símbolo lo borra.
+ * Cómo se usa: se elige un COLOR y un símbolo de la paleta y se pincha encima del
+ * diente. Si el símbolo es de cara (caries, obturado, sellante) pinta el sector
+ * pinchado; si es de pieza entera (extracción, ausencia, endodoncia, corona,
+ * prótesis) marca el diente completo. Volver a pinchar con la misma marca —mismo
+ * símbolo y mismo color— la borra; con otro color, la repinta.
+ *
+ * El color ya no va clavado en el símbolo: cualquiera se puede anotar en azul o
+ * en rojo, porque la misma figura significa una cosa por hacer y otra ya hecha.
+ * Cómo se guarda («clave» o «clave:color») está en specialtyCatalogs.js.
  *
  * Vive fuera de PatientDetail.jsx porque es un bloque grande y autocontenido; se
  * consume igual que el resto de secciones de especialidad, con `{ value, onChange }`.
@@ -20,6 +25,8 @@ import {
   ODONTOGRAMA_CARAS,
   ODONTOGRAMA_ESTADOS,
   ODONTOGRAMA_ESTADOS_VIGENTES,
+  ODONTOGRAMA_COLORES,
+  ODONTOGRAMA_COLOR_OPCIONES,
   ODONTOGRAMA_GRADOS,
   HIGIENE_ORAL_FILAS,
   HIGIENE_ORAL_INDICES,
@@ -29,7 +36,10 @@ import {
   INDICE_CPO,
   INDICE_CEO,
   colorEstado,
+  colorPorDefecto,
   estadoOdonto,
+  marcaValor,
+  labelOdonto,
 } from '../constants/specialtyCatalogs';
 
 // Lado del icono de una pieza, en unidades del SVG.
@@ -186,7 +196,7 @@ function Diente({ num, hemi, dato, herramienta, onPintar, onSeleccionar, selecci
                   stroke={BORDE}
                   strokeWidth="0.8"
                 >
-                  <title>{`${num} · ${label}${ficha ? ` · ${ficha.label}` : ''}`}</title>
+                  <title>{`${num} · ${label}${ficha ? ` · ${labelOdonto(estadoCara)}` : ''}`}</title>
                 </path>
                 {ficha && (
                   <SimboloCara
@@ -203,7 +213,9 @@ function Diente({ num, hemi, dato, herramienta, onPintar, onSeleccionar, selecci
         </g>
         {redondo && <circle cx={L / 2} cy={L / 2} r={L / 2} fill="none" stroke={BORDE} strokeWidth="1" />}
         {info && info.ambito === 'pieza' && info.simbolo !== 'ninguno' && (
-          <SimboloPieza simbolo={info.simbolo} color={colorEstado(info.key)} />
+          // El color sale de la marca GUARDADA, no de la clave del catálogo: es
+          // lo que eligió el odontólogo para esta pieza en concreto.
+          <SimboloPieza simbolo={info.simbolo} color={colorEstado(dato?.estado)} />
         )}
       </svg>
       <span className="text-[9px] leading-none text-slate-500 tabular-nums">{num}</span>
@@ -239,6 +251,19 @@ export default function Odontograma({ value, onChange }) {
   const dientes = Array.isArray(o.odontograma) ? o.odontograma : [];
   const byDiente = Object.fromEntries(dientes.map((d) => [d.diente, d]));
   const [herramienta, setHerramienta] = useState('caries');
+  /**
+   * Con qué tinta se pinta. Antes iba clavada en cada símbolo (caries siempre
+   * rojo, obturado siempre azul); ahora se elige, porque la misma figura
+   * significa una cosa por hacer y otra ya hecha.
+   *
+   * Al cambiar de símbolo se vuelve a su color de convenio, así que quien no
+   * toque el selector sigue rellenando la hoja como toda la vida.
+   */
+  const [color, setColor] = useState(() => colorPorDefecto('caries'));
+  const elegirHerramienta = (key) => {
+    setHerramienta(key);
+    setColor(colorPorDefecto(key));
+  };
   const [sel, setSel] = useState('');
 
   const set = (patch) => onChange({ ...o, ...patch });
@@ -251,16 +276,24 @@ export default function Odontograma({ value, onChange }) {
     set({ odontograma: dienteMarcado(next) ? [...resto, next] : resto });
   };
 
-  /** Aplica la herramienta activa. Repetir el mismo símbolo lo borra. */
+  /**
+   * Aplica la herramienta activa con el color elegido.
+   *
+   * Repetir EXACTAMENTE la misma marca (mismo símbolo y mismo color) la borra,
+   * como antes. Si coincide el símbolo pero no el color, se repinta en vez de
+   * borrarse: cambiar una caries de rojo a azul —de pendiente a tratada— es
+   * justamente lo que el odontólogo hace en la consulta siguiente, y obligarle a
+   * borrar y volver a marcar sería un paso de más.
+   */
   const pintar = (num, cara) => {
     const info = estadoOdonto(herramienta);
     if (!info) return;
+    const marca = marcaValor(herramienta, color);
     const actual = byDiente[num];
     if (info.ambito === 'pieza') {
-      setDiente(num, { estado: actual?.estado === herramienta ? '' : herramienta });
+      setDiente(num, { estado: actual?.estado === marca ? '' : marca });
     } else {
-      const puesto = actual?.caras?.[cara] === herramienta;
-      setDiente(num, { caras: { [cara]: puesto ? '' : herramienta } });
+      setDiente(num, { caras: { [cara]: actual?.caras?.[cara] === marca ? '' : marca } });
     }
     setSel(num);
   };
@@ -272,22 +305,49 @@ export default function Odontograma({ value, onChange }) {
       {/* ── Paleta ── */}
       <div className="border border-slate-200 rounded-lg p-2">
         <div className="text-[11px] text-slate-500 mb-1.5">
-          Elige un símbolo y pincha sobre el diente. <b>Azul</b> = tratamiento realizado ·{' '}
-          <b>Rojo</b> = patología actual. Clic derecho en la pieza para anotarla.
+          Elige el color y el símbolo, y pincha sobre el diente. Clic derecho en la pieza para
+          anotarla.
         </div>
+
+        {/* Color de la marca: cualquier símbolo se puede pintar en las dos tintas. */}
+        <div className="flex flex-wrap items-center gap-1.5 mb-2">
+          <span className="text-[11px] text-slate-500">Color:</span>
+          {ODONTOGRAMA_COLOR_OPCIONES.map((c) => (
+            <button
+              key={c.key}
+              type="button"
+              onClick={() => setColor(c.key)}
+              title={`${c.label} = ${c.significado}`}
+              className={`text-[11px] px-2 py-1 rounded border cursor-pointer flex items-center gap-1.5 ${
+                color === c.key ? 'border-slate-800 bg-slate-100 font-semibold' : 'border-slate-300 bg-white'
+              }`}
+            >
+              <span
+                className="inline-block w-2.5 h-2.5 rounded-full shrink-0"
+                style={{ background: ODONTOGRAMA_COLORES[c.key] }}
+              />
+              {c.label}
+              <span className="text-slate-400 font-normal">· {c.significado}</span>
+            </button>
+          ))}
+        </div>
+
         <div className="flex flex-wrap gap-1">
           {ODONTOGRAMA_ESTADOS_VIGENTES.map((e) => (
             <button
               key={e.key}
               type="button"
-              onClick={() => setHerramienta(e.key)}
+              onClick={() => elegirHerramienta(e.key)}
               className={`text-[11px] px-2 py-1 rounded border cursor-pointer flex items-center gap-1.5 ${
                 herramienta === e.key ? 'border-slate-800 bg-slate-100 font-semibold' : 'border-slate-300 bg-white'
               }`}
             >
+              {/* El punto lleva el color con el que se va a pintar AHORA, no el
+                  del convenio: si no, el selector de color diría una cosa y la
+                  paleta otra. */}
               <span
                 className="inline-block w-2.5 h-2.5 rounded-full shrink-0"
-                style={{ background: colorEstado(e.key) }}
+                style={{ background: ODONTOGRAMA_COLORES[herramienta === e.key ? color : colorPorDefecto(e.key)] }}
               />
               {e.label}
             </button>
@@ -564,6 +624,20 @@ function Simbologia() {
   return (
     <div>
       <div className="text-xs font-semibold text-slate-700 mb-1">9 · Simbología</div>
+      {/* Cada símbolo se dibuja con su color de convenio, pero cualquiera de
+          ellos puede anotarse en las dos tintas: el color lo elige quien marca. */}
+      <div className="text-[11px] text-slate-500 mb-1.5 flex flex-wrap items-center gap-x-3 gap-y-0.5">
+        {ODONTOGRAMA_COLOR_OPCIONES.map((c) => (
+          <span key={c.key} className="flex items-center gap-1.5">
+            <span
+              className="inline-block w-2.5 h-2.5 rounded-full shrink-0"
+              style={{ background: ODONTOGRAMA_COLORES[c.key] }}
+            />
+            {c.label} = {c.significado}
+          </span>
+        ))}
+        <span className="text-slate-400">· cualquier símbolo admite los dos colores</span>
+      </div>
       <div className="grid grid-cols-2 sm:grid-cols-3 gap-x-3 gap-y-1">
         {ODONTOGRAMA_ESTADOS.filter((e) => !e.legacy && e.key !== 'sano').map((e) => (
           <div key={e.key} className="flex items-center gap-1.5 text-[11px] text-slate-600">

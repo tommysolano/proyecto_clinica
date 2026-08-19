@@ -97,8 +97,12 @@ export const ODONTOGRAMA_ESTADOS = [
   { key: 'sellanteNecesario', label: 'Sellante necesario', tone: 'red', color: 'rojo', ambito: 'cara', simbolo: 'cuadro' },
   { key: 'sellanteRealizado', label: 'Sellante realizado', tone: 'blue', color: 'azul', ambito: 'cara', simbolo: 'cuadro' },
   { key: 'extraccionIndicada', label: 'Extracción indicada', tone: 'rose', color: 'rojo', ambito: 'pieza', simbolo: 'equis' },
-  { key: 'perdidaCaries', label: 'Pérdida por caries', tone: 'blue', color: 'azul', ambito: 'pieza', simbolo: 'equis' },
-  { key: 'perdidaOtra', label: 'Pérdida (otra causa)', tone: 'slate', color: 'rojo', ambito: 'pieza', simbolo: 'barra' },
+  // Antes eran dos opciones, «Pérdida por caries» y «Pérdida (otra causa)». El
+  // odontólogo pidió una sola: al marcar la pieza lo que importa es que NO está,
+  // y la causa, si hace falta, va en la nota de la pieza. Se reaprovecha la clave
+  // 'ausente' —que ya existía— en vez de inventar una tercera sinónima, así que
+  // lo guardado hace tiempo con esa clave se sigue viendo con la etiqueta nueva.
+  { key: 'ausente', label: 'Ausencia', tone: 'slate', color: 'rojo', ambito: 'pieza', simbolo: 'equis' },
   { key: 'endodoncia', label: 'Endodoncia', tone: 'violet', color: 'rojo', ambito: 'pieza', simbolo: 'triangulo' },
   { key: 'corona', label: 'Corona', tone: 'amber', color: 'azul', ambito: 'pieza', simbolo: 'punto' },
   { key: 'protesisFija', label: 'Prótesis fija', tone: 'amber', color: 'rojo', ambito: 'pieza', simbolo: 'cajaGuiones' },
@@ -108,7 +112,11 @@ export const ODONTOGRAMA_ESTADOS = [
   { key: 'sellante', label: 'Sellante', tone: 'teal', color: 'azul', ambito: 'cara', simbolo: 'cuadro', legacy: true },
   { key: 'implante', label: 'Implante', tone: 'cyan', color: 'azul', ambito: 'pieza', simbolo: 'punto', legacy: true },
   { key: 'fracturado', label: 'Fracturado', tone: 'orange', color: 'rojo', ambito: 'pieza', simbolo: 'barra', legacy: true },
-  { key: 'ausente', label: 'Ausente', tone: 'slate', color: 'rojo', ambito: 'pieza', simbolo: 'equis', legacy: true },
+  // Las dos pérdidas que sustituyó «Ausencia»: fuera del selector, pero se
+  // siguen leyendo con su etiqueta original para no reescribir la historia de
+  // una ficha ya firmada.
+  { key: 'perdidaCaries', label: 'Pérdida por caries', tone: 'blue', color: 'azul', ambito: 'pieza', simbolo: 'equis', legacy: true },
+  { key: 'perdidaOtra', label: 'Pérdida (otra causa)', tone: 'slate', color: 'rojo', ambito: 'pieza', simbolo: 'barra', legacy: true },
   { key: 'enErupcion', label: 'En erupción', tone: 'lime', color: 'neutro', ambito: 'pieza', simbolo: 'ninguno', legacy: true },
 ];
 
@@ -125,14 +133,64 @@ export const ODONTOGRAMA_COLORES = {
   neutro: '#64748b',
 };
 
-/** Color con el que se dibuja un estado ('' → el neutro del contorno). */
-export const colorEstado = (key) => {
-  const e = ODONTOGRAMA_ESTADOS.find((x) => x.key === key);
-  return ODONTOGRAMA_COLORES[e?.color] || ODONTOGRAMA_COLORES.neutro;
+/** Los dos colores que el odontólogo puede elegir, y qué significa cada uno. */
+export const ODONTOGRAMA_COLOR_OPCIONES = [
+  { key: 'azul', label: 'Azul', significado: 'tratamiento realizado', corto: 'realizado' },
+  { key: 'rojo', label: 'Rojo', significado: 'patología actual', corto: 'patología' },
+];
+
+/**
+ * UNA MARCA DEL ODONTOGRAMA SE GUARDA COMO «clave» o «clave:color».
+ *
+ * El color era fijo por estado (caries siempre rojo, obturado siempre azul),
+ * pero el odontólogo necesita las dos tintas en CUALQUIER símbolo: la misma
+ * figura significa una cosa si está por hacer y otra si ya se hizo. Así que el
+ * color pasó de deducirse a elegirse, y hay que guardarlo junto a la marca.
+ *
+ * Se guarda como sufijo dentro del mismo String ('caries:azul') a propósito: el
+ * esquema ya guarda `estado` y `caras.*` como texto libre, así que no hace falta
+ * migrar nada y lo anotado antes —sin sufijo— se sigue leyendo con el color que
+ * tenía por convenio. Ver server/models/ClinicalRecord.js.
+ */
+export const marcaOdonto = (valor) => {
+  const [key, color] = String(valor || '').split(':');
+  const ficha = ODONTOGRAMA_ESTADOS.find((x) => x.key === key) || null;
+  const explicito = ODONTOGRAMA_COLOR_OPCIONES.some((c) => c.key === color) ? color : '';
+  return { key, ficha, explicito, color: explicito || ficha?.color || 'neutro' };
 };
 
+/** Cómo se guarda una marca: el estado y, si se eligió, su color. */
+export const marcaValor = (key, color) => (key && color ? `${key}:${color}` : key || '');
+
+/** Color con el que se dibuja una marca ('' → el neutro del contorno). */
+export const colorEstado = (valor) =>
+  ODONTOGRAMA_COLORES[marcaOdonto(valor).color] || ODONTOGRAMA_COLORES.neutro;
+
 /** Ficha del estado (para saber su ámbito y su símbolo al dibujar). */
-export const estadoOdonto = (key) => ODONTOGRAMA_ESTADOS.find((x) => x.key === key) || null;
+export const estadoOdonto = (valor) => marcaOdonto(valor).ficha;
+
+/**
+ * Color con el que se empieza a pintar al elegir un símbolo: el del convenio de
+ * la hoja (caries rojo, obturado azul). Se puede cambiar, pero por defecto el
+ * odontograma sigue saliendo como siempre.
+ */
+export const colorPorDefecto = (key) => {
+  const c = ODONTOGRAMA_ESTADOS.find((x) => x.key === key)?.color;
+  return c === 'rojo' || c === 'azul' ? c : 'azul';
+};
+
+/**
+ * Etiqueta de una marca para leerla en texto (resumen e impresión): el nombre
+ * del símbolo y, entre paréntesis, lo que dice su color. Sin esto, una marca
+ * guardada como 'caries:azul' se imprimiría con la clave cruda.
+ */
+export const labelOdonto = (valor) => {
+  const { key, ficha, color } = marcaOdonto(valor);
+  if (!key) return '';
+  const nombre = ficha?.label || key;
+  const c = ODONTOGRAMA_COLOR_OPCIONES.find((x) => x.key === color);
+  return c ? `${nombre} (${c.corto})` : nombre;
+};
 
 // Clases Tailwind por estado. Se escriben COMPLETAS (no `bg-${tone}-100`) porque
 // Tailwind solo conserva las clases que encuentra literales en el código.
@@ -288,7 +346,11 @@ export const COSMETOLOGIA_DESHIDRATACION = ['leve', 'moderada', 'avanzada'];
 
 export const COSMETOLOGIA_CABELLO = [
   { key: 'longitud', label: 'Longitud', options: ['largo', 'medio', 'corto'] },
-  { key: 'forma', label: 'Forma', options: ['lisotrico', 'cinotrico', 'ulotrico'] },
+  // Los nombres técnicos (lisótrico/cinótrico/ulótrico) se cambiaron por los de
+  // uso diario a pedido de las cosmetólogas. Las claves viejas ya no se ofrecen,
+  // pero siguen teniendo etiqueta en COSMETOLOGIA_OPTION_LABELS para que una
+  // ficha anterior se lea igual que siempre.
+  { key: 'forma', label: 'Forma', options: ['lacio', 'ondulado', 'rizado'] },
   { key: 'calibre', label: 'Calibre', options: ['grueso', 'mediano', 'fino'] },
   { key: 'densidad', label: 'Densidad', options: ['abundante', 'media', 'escasa'] },
   { key: 'elasticidad', label: 'Elasticidad', options: ['normal', 'media', 'reducida'] },
@@ -341,6 +403,8 @@ export const COSMETOLOGIA_AFECCIONES_CUERO = [
 // Etiquetas legibles de las opciones cerradas (para la UI y los resúmenes).
 export const COSMETOLOGIA_OPTION_LABELS = {
   largo: 'Largo', medio: 'Medio', corto: 'Corto',
+  lacio: 'Lacio', ondulado: 'Ondulado', rizado: 'Rizado',
+  // Formas del cabello de fichas antiguas (ya no se ofrecen al elegir).
   lisotrico: 'Lisótrico', cinotrico: 'Cinótrico', ulotrico: 'Ulótrico',
   grueso: 'Grueso', mediano: 'Mediano', fino: 'Fino',
   abundante: 'Abundante', media: 'Media', escasa: 'Escasa',

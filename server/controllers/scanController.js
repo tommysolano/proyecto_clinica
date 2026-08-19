@@ -1,9 +1,12 @@
 /**
- * Escáner de documentos (/scanner) — estilo iLovePDF / CamScanner.
+ * Escáner de documentos (/scanner).
  *
- * El navegador hace la parte visual: detecta la hoja con la cámara, la recorta
- * en perspectiva y manda las páginas ya limpias como JPEG. Aquí se arman en un
- * PDF (una página A4 por imagen), se guarda en disco y se registra la ficha.
+ * El navegador solo toma la foto (o coge la que sube el usuario) y la manda TAL
+ * CUAL como JPEG: no busca el borde del documento, no corrige la perspectiva y
+ * no aplica filtros (ver client/src/utils/photoPage.js). Aquí se arman en un PDF
+ * (una página A4 por imagen), se guarda en disco y se registra la ficha. Ojo:
+ * como son fotos sin recortar, la imagen trae lo que rodea al documento; el
+ * servidor no lo corrige.
  *
  * Se puede pedir UN SOLO PDF con todas las imágenes (lo de siempre) o UN PDF
  * POR IMAGEN — `mode=split` —, que es lo que hace falta cuando se sube una

@@ -316,7 +316,7 @@ test('E6) el seguimiento de cosmetología guarda sus seis secciones', async () =
       },
       higiene: { frecuenciaLavado: 'interdiario', shampoo: 'neutro', acondicionador: 'sin siliconas', otros: '—' },
       cabello: {
-        longitud: 'medio', forma: 'cinotrico', calibre: 'fino', densidad: 'media',
+        longitud: 'medio', forma: 'ondulado', calibre: 'fino', densidad: 'media',
         elasticidad: 'reducida', color: 'coloracion',
         tratamientos: { alisados: true, planchas: false, secadores: true },
       },
@@ -335,7 +335,7 @@ test('E6) el seguimiento de cosmetología guarda sus seis secciones', async () =
   assert.deepEqual(c.evaluacion.hiperpigmentaciones.map((z) => z.key), ['tercioMedio']);
   assert.equal(c.evaluacion.hiperpigmentaciones[0].derecho, true);
   assert.equal(c.higiene.frecuenciaLavado, 'interdiario');
-  assert.equal(c.cabello.forma, 'cinotrico');
+  assert.equal(c.cabello.forma, 'ondulado');
   assert.equal(c.cabello.tratamientos.alisados, true);
   assert.equal(c.cabello.tratamientos.planchas, false);
   assert.equal(c.cueroCabelludo.glandulaSebacea, 'hiperfuncionante');
@@ -453,7 +453,7 @@ test('E10) el PDF imprime cada ficha con sus datos y escapa el texto del usuario
   const cosme = ok(await postFollowUp(clinicId, userId, patient._id, 'cosmetologia', baseBody({
     cosmetologia: {
       evaluacion: { fototipo: 'III', hiperpigmentaciones: [{ key: 'tercioMedio', marked: true, derecho: true }] },
-      cabello: { forma: 'cinotrico' },
+      cabello: { forma: 'ondulado' },
       afeccionesCuero: [{ key: 'alopecia', marked: true, detail: 'androgénica' }],
       procedimiento: { procedimiento: 'Limpieza profunda' },
     },
@@ -462,7 +462,201 @@ test('E10) el PDF imprime cada ficha con sus datos y escapa el texto del usuario
   assert.match(htmlCosme, /Ficha cosmetológica/);
   assert.match(htmlCosme, /Fototipo:<\/b> III/);
   assert.match(htmlCosme, /Tercio medio \(D\)/);
-  assert.match(htmlCosme, /Forma:<\/b> Cinótrico/, 'la opción se imprime con su etiqueta legible');
+  assert.match(htmlCosme, /Forma:<\/b> Ondulado/, 'la opción se imprime con su etiqueta legible');
   assert.match(htmlCosme, /Alopecia \(indique tipo\): androgénica/);
   assert.match(htmlCosme, /Limpieza profunda/);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+//  Color elegible por marca y unificación de las dos pérdidas en «Ausencia»
+// ─────────────────────────────────────────────────────────────────────────────
+test('E5f) el color que elige el odontólogo se guarda junto a la marca', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await seedPaciente(clinicId, userId);
+
+  // El color dejó de deducirse del símbolo: la misma figura va en rojo si está
+  // por hacer y en azul si ya se hizo, así que viaja pegado a la marca
+  // ('caries:azul'). El saneador valida la CLAVE y conserva el color; antes
+  // comparaba el texto entero contra la lista blanca y lo tiraba en silencio.
+  const payload = ok(await postFollowUp(clinicId, userId, patient._id, 'odontologia', baseBody({
+    odontologia: {
+      odontograma: [
+        { diente: '11', estado: 'corona:rojo', caras: {} },
+        { diente: '36', estado: '', caras: { oclusal: 'caries:azul', mesial: 'obturado:rojo' } },
+      ],
+    },
+  })));
+
+  const byD = Object.fromEntries(payload.followUps.at(-1).odontologia.odontograma.map((d) => [d.diente, d]));
+  assert.equal(byD['11'].estado, 'corona:rojo', 'el color de la pieza no se pierde');
+  assert.equal(byD['36'].caras.oclusal, 'caries:azul', 'caries anotada como ya tratada');
+  assert.equal(byD['36'].caras.mesial, 'obturado:rojo', 'obturado anotado como patología');
+});
+
+test('E5g) una marca sin color se guarda tal cual, sin inventarle sufijo', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await seedPaciente(clinicId, userId);
+
+  // Lo anotado antes de que el color fuera elegible no lleva sufijo y NO se le
+  // pone uno al volver a guardar: se lee con el color de convenio y punto.
+  const payload = ok(await postFollowUp(clinicId, userId, patient._id, 'odontologia', baseBody({
+    odontologia: { odontograma: [{ diente: '11', estado: 'corona', caras: { oclusal: 'caries' } }] },
+  })));
+
+  const d = payload.followUps.at(-1).odontologia.odontograma[0];
+  assert.equal(d.estado, 'corona');
+  assert.equal(d.caras.oclusal, 'caries');
+});
+
+test('E5h) un color inventado se descarta pero la marca se conserva', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await seedPaciente(clinicId, userId);
+
+  const payload = ok(await postFollowUp(clinicId, userId, patient._id, 'odontologia', baseBody({
+    odontologia: {
+      odontograma: [
+        { diente: '11', estado: 'corona:verde', caras: {} },       // color fuera de los dos
+        { diente: '12', estado: 'inventado:azul', caras: {} },     // clave fuera del catálogo
+      ],
+    },
+  })));
+
+  const byD = Object.fromEntries(payload.followUps.at(-1).odontologia.odontograma.map((d) => [d.diente, d]));
+  assert.equal(byD['11'].estado, 'corona', 'se cae al color de convenio, sin perder la marca');
+  assert.equal(byD['12'], undefined, 'una clave inventada no entra, con color o sin él');
+});
+
+test('E5i) «Ausencia» sustituye a las dos pérdidas, y las viejas se siguen leyendo', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await seedPaciente(clinicId, userId);
+
+  // El odontólogo pidió UNA sola opción: 'ausente' (etiqueta «Ausencia»). Las
+  // dos pérdidas quedan como legacy — fuera del selector — pero SIGUEN siendo
+  // válidas al guardar, para que una ficha antigua no pierda lo anotado.
+  const payload = ok(await postFollowUp(clinicId, userId, patient._id, 'odontologia', baseBody({
+    odontologia: {
+      odontograma: [
+        { diente: '11', estado: 'ausente:rojo', caras: {} },
+        { diente: '12', estado: 'perdidaCaries', caras: {} },
+        { diente: '13', estado: 'perdidaOtra', caras: {} },
+      ],
+    },
+  })));
+
+  const byD = Object.fromEntries(payload.followUps.at(-1).odontologia.odontograma.map((d) => [d.diente, d]));
+  assert.equal(byD['11'].estado, 'ausente:rojo');
+  assert.equal(byD['12'].estado, 'perdidaCaries', 'lo ya registrado no se borra');
+  assert.equal(byD['13'].estado, 'perdidaOtra');
+
+  const { ODONTOGRAMA_ESTADOS, labelOdonto } = require('../constants/specialtyCatalogs');
+  const vigentes = ODONTOGRAMA_ESTADOS.filter((e) => !e.legacy);
+  assert.equal(vigentes.filter((e) => e.key === 'ausente').length, 1, '«Ausencia» se ofrece');
+  assert.equal(vigentes.find((e) => e.key === 'ausente').label, 'Ausencia');
+  assert.equal(vigentes.some((e) => e.key === 'perdidaCaries' || e.key === 'perdidaOtra'), false,
+    'las dos pérdidas ya no se ofrecen');
+  // Y en la hoja impresa cada marca dice lo que significa su color.
+  assert.equal(labelOdonto('caries:azul'), 'Caries (realizado)');
+  assert.equal(labelOdonto('caries'), 'Caries (patología)');
+  assert.equal(labelOdonto('ausente:rojo'), 'Ausencia (patología)');
+});
+
+test('E5j) una marca de PIEZA no se puede pintar en una cara, ni con color', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await seedPaciente(clinicId, userId);
+
+  // 'ausente' es de pieza entera: en una cara no significa nada y se descarta,
+  // igual que antes de que el color fuera elegible.
+  const payload = ok(await postFollowUp(clinicId, userId, patient._id, 'odontologia', baseBody({
+    odontologia: {
+      odontograma: [{ diente: '11', estado: '', caras: { oclusal: 'ausente:azul', mesial: 'caries:azul' } }],
+    },
+  })));
+
+  const d = payload.followUps.at(-1).odontologia.odontograma[0];
+  assert.equal(d.caras.oclusal, '', 'una marca de pieza no entra en una cara');
+  assert.equal(d.caras.mesial, 'caries:azul');
+});
+
+// ═════════════════ Ficha ginecológica / obstétrica ═════════════════
+
+test('E11) ginecología guarda FUM, embarazo y peso preconcepcional', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await seedPaciente(clinicId, userId);
+
+  const payload = ok(await postFollowUp(clinicId, userId, patient._id, 'ginecologia', baseBody({
+    vitalSigns: { weight: 62.5, height: 160 },
+    ginecologia: {
+      fum: '2026-07-01',
+      embarazoActual: true,
+      pesoPreconcepcional: '58.4',   // llega como texto desde el input
+      gpac: { gestas: 2, partos: 1, abortos: 0, cesareas: 1 },
+    },
+  })));
+
+  const g = payload.followUps.at(-1).ginecologia;
+  assert.equal(g.embarazoActual, true);
+  assert.equal(g.pesoPreconcepcional, 58.4, 'el texto del input se guarda como número');
+  assert.equal(new Date(g.fum).toISOString().slice(0, 10), '2026-07-01');
+  assert.equal(g.gpac.gestas, 2);
+});
+
+test('E12) un peso preconcepcional en blanco o mal escrito queda en null, no en 0', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await seedPaciente(clinicId, userId);
+
+  // 0 kg o NaN darían un IMC absurdo en la curva; tienen que quedar SIN dato.
+  for (const valor of ['', null, 'sesenta', undefined, -12]) {
+    const payload = ok(await postFollowUp(clinicId, userId, patient._id, 'ginecologia', baseBody({
+      ginecologia: { fum: '2026-07-01', embarazoActual: true, pesoPreconcepcional: valor },
+    })));
+    const g = payload.followUps.at(-1).ginecologia;
+    assert.equal(g.pesoPreconcepcional, null, `«${valor}» no debería guardarse`);
+  }
+});
+
+test('E13) la evolución se guarda en cualquier especialidad, no solo en gineco', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await seedPaciente(clinicId, userId);
+
+  for (const rol of ['doctor', 'ginecologia', 'odontologia', 'podologia', 'cosmetologia']) {
+    const payload = ok(await postFollowUp(clinicId, userId, patient._id, rol, baseBody({
+      planTratamiento: 'Reposo',
+      evolucion: `  Mejora la movilidad (${rol})  `,
+    })));
+    const fu = payload.followUps.at(-1);
+    assert.equal(fu.evolucion, `Mejora la movilidad (${rol})`, 'se guarda recortada');
+    assert.equal(fu.planTratamiento, 'Reposo', 'y sin pisar el plan de tratamiento');
+  }
+});
+
+test('E14) un seguimiento sin evolución la deja vacía, no undefined', async () => {
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await seedPaciente(clinicId, userId);
+
+  const payload = ok(await postFollowUp(clinicId, userId, patient._id, 'doctor', baseBody()));
+  assert.equal(payload.followUps.at(-1).evolucion, '');
+});
+
+test('E15) la forma del cabello usa lacio/ondulado/rizado y lo viejo se sigue leyendo', async () => {
+  const {
+    COSMETOLOGIA_CABELLO,
+    COSMETOLOGIA_OPTION_LABELS,
+  } = require('../constants/specialtyCatalogs');
+  const formas = COSMETOLOGIA_CABELLO.find((c) => c.key === 'forma').options;
+  assert.deepEqual(formas, ['lacio', 'ondulado', 'rizado']);
+
+  // Las claves técnicas ya no se ofrecen…
+  const { clinicId, userId } = await H.seedClinic();
+  const patient = await seedPaciente(clinicId, userId);
+  const payload = ok(await postFollowUp(clinicId, userId, patient._id, 'cosmetologia', baseBody({
+    cosmetologia: { cabello: { forma: 'cinotrico' } },
+  })));
+  assert.equal(payload.followUps.at(-1).cosmetologia.cabello.forma, '',
+    'una opción retirada del catálogo no entra en una ficha nueva');
+
+  // …pero una ficha vieja que ya la tiene guardada se sigue leyendo con nombre.
+  assert.equal(COSMETOLOGIA_OPTION_LABELS.cinotrico, 'Cinótrico');
+  assert.equal(COSMETOLOGIA_OPTION_LABELS.lisotrico, 'Lisótrico');
+  assert.equal(COSMETOLOGIA_OPTION_LABELS.ulotrico, 'Ulótrico');
+  assert.equal(COSMETOLOGIA_OPTION_LABELS.ondulado, 'Ondulado');
 });

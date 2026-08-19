@@ -30,6 +30,7 @@ const {
   COSMETOLOGIA_AFECCIONES_CUERO_KEYS,
   ODONTOGRAMA_ESTADOS_CARA_KEYS,
   ODONTOGRAMA_GRADOS,
+  marcaValida,
   HIGIENE_ORAL_FILAS,
   HIGIENE_ORAL_FILAS_KEYS,
   HIGIENE_ORAL_INDICES,
@@ -199,6 +200,7 @@ exports.addFollowUp = async (req, res) => {
       examenFisico,      // H: { regional:[...], sistemico:[...], hallazgos }
       diagnosticos,      // I: [{ descripcion, cie, cieDescripcion, presuntivo, definitivo }]
       planTratamiento,   // J: texto del plan
+      evolucion,         // evolución respecto de consultas anteriores
     } = req.body;
 
     // --- Saneadores de las secciones MSP (solo se guardan claves con contenido) ---
@@ -239,6 +241,9 @@ exports.addFollowUp = async (req, res) => {
       const toma = pap.toma || {};
       const cp = g.controlPrenatal || {};
       const gpac = g.gpac || {};
+      // El esquema exige min:0; un negativo por API tumbaría TODO el seguimiento
+      // con un error de validación, así que aquí se descarta y punto.
+      const pesoPre = numOrNull(g.pesoPreconcepcional);
       return {
         fum: g.fum ? new Date(g.fum) : null,
         gpac: {
@@ -248,6 +253,7 @@ exports.addFollowUp = async (req, res) => {
           cesareas: numOrNull(gpac.cesareas),
         },
         embarazoActual: typeof g.embarazoActual === 'boolean' ? g.embarazoActual : null,
+        pesoPreconcepcional: pesoPre != null && pesoPre >= 0 ? pesoPre : null,
         metodosAnticonceptivos: {
           hormonal: !!met.hormonal,
           barrera: !!met.barrera,
@@ -334,7 +340,11 @@ exports.addFollowUp = async (req, res) => {
         return ODONTOGRAMA_ESTADOS_CARA_KEYS.includes(estadoPieza) ? estadoPieza : '';
       }
       if (v === false || v === 'false') return '';
-      return ODONTOGRAMA_ESTADOS_CARA_KEYS.includes(v) ? v : '';
+      // `marcaValida` y no un `includes` a secas: la marca puede traer pegado el
+      // color que eligió el odontólogo ('caries:azul'), y ese texto no figura en
+      // la lista blanca de claves. Sin esto el servidor tiraba la marca EN
+      // SILENCIO y el odontólogo creía que la había guardado.
+      return marcaValida(v, ODONTOGRAMA_ESTADOS_CARA_KEYS);
     };
 
     const sanitizeOdontologia = (o) => {
@@ -343,7 +353,7 @@ exports.addFollowUp = async (req, res) => {
         .filter((d) => d && ODONTOGRAMA_PIEZAS.includes(String(d.diente)))
         .map((d) => {
           const caras = d.caras || {};
-          const estado = ODONTOGRAMA_ESTADOS_KEYS.includes(d.estado) ? d.estado : '';
+          const estado = marcaValida(d.estado, ODONTOGRAMA_ESTADOS_KEYS);
           return {
             diente: String(d.diente),
             estado,
@@ -625,6 +635,7 @@ exports.addFollowUp = async (req, res) => {
             examenFisico: sanitizeExamen(examenFisico),
             diagnosticos: sanitizeDiagnosticos(diagnosticos),
             planTratamiento: String(planTratamiento || '').trim(),
+            evolucion: String(evolucion || '').trim(),
             treatment: autoTreatmentId,
             autoTreatmentCreated: autoTreatmentId && !treatment ? autoTreatmentId : undefined,
             opticaRx: opticaRx && typeof opticaRx === 'object' ? opticaRx : undefined,
@@ -1156,6 +1167,7 @@ exports.printMspForm = async (req, res) => {
   <!-- J. PLAN DE TRATAMIENTO -->
   <div class="bar">J. PLAN DE TRATAMIENTO <span class="note">Diagnóstico, terapéutico y educacional</span></div>
   <div class="box">${val(fu.planTratamiento)}</div>
+  ${fu.evolucion ? `<div class="bar">EVOLUCIÓN <span class="note">Cómo evoluciona respecto de controles anteriores</span></div><div class="box">${esc(fu.evolucion)}</div>` : ''}
   ${recetaHtml}
   ${derivHtml}
 

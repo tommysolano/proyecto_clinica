@@ -87,6 +87,19 @@ export default function Scanner() {
   // estudio se desmonta (para apagar la cámara) y si no, se perderían.
   const [pages, setPages] = useState([]);
 
+  /**
+   * Al SALIR de la pantalla se sueltan las páginas que quedaron sin generar.
+   *
+   * Sin esto, irse por el menú con la tanda a medias dejaba vivo el blob de
+   * cada foto hasta recargar el navegador. Con el tope de imágenes puesto era
+   * medio incómodo; sin tope son 300 fotos y varios cientos de MB colgados,
+   * que en un teléfono es la pestaña muerta. Se lee de un ref para que el
+   * efecto se monte UNA vez y aun así vea la lista final.
+   */
+  const pagesRef = useRef(pages);
+  useEffect(() => { pagesRef.current = pages; }, [pages]);
+  useEffect(() => () => pagesRef.current.forEach(freePage), []);
+
   return (
     <div className="space-y-5 sm:space-y-6">
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 sm:gap-4">
@@ -519,13 +532,16 @@ function ScanStudio({ pages, setPages, onSaved }) {
                     </span>
                   </div>
                   <div className="p-1.5 flex flex-wrap gap-1 justify-center">
-                    <IconBtn title="Mover antes" onClick={() => movePage(p.id, -1)} disabled={i === 0}>
+                    {/* Bloqueados mientras se sube: quitar una página cuya tanda ya
+                        va en vuelo no la saca del PDF (el envío se calculó al empezar),
+                        así que solo dejaría al usuario creyendo que la quitó. */}
+                    <IconBtn title="Mover antes" onClick={() => movePage(p.id, -1)} disabled={!!saving || i === 0}>
                       <HiOutlineChevronUp className="w-3.5 h-3.5" />
                     </IconBtn>
-                    <IconBtn title="Mover después" onClick={() => movePage(p.id, 1)} disabled={i === pages.length - 1}>
+                    <IconBtn title="Mover después" onClick={() => movePage(p.id, 1)} disabled={!!saving || i === pages.length - 1}>
                       <HiOutlineChevronDown className="w-3.5 h-3.5" />
                     </IconBtn>
-                    <IconBtn title="Eliminar" onClick={() => removePage(p.id)} danger>
+                    <IconBtn title="Eliminar" onClick={() => removePage(p.id)} disabled={!!saving} danger>
                       <HiOutlineTrash className="w-3.5 h-3.5" />
                     </IconBtn>
                   </div>
@@ -687,13 +703,24 @@ function CameraOverlay({ pageCount, buildPage, onAddPage, onClose }) {
   const videoRef = useRef(null);
   const streamRef = useRef(null);
   const trackRef = useRef(null);
-  const busyRef = useRef(false);
 
   const [ready, setReady] = useState(false);
   const [error, setError] = useState('');
-  const [dims, setDims] = useState({ w: 0, h: 0 });
   const [working, setWorking] = useState(false);
   const [shot, setShot] = useState(null); // foto tomada, a la espera de «usar» o «repetir»
+  /**
+   * Espejo de `shot` para poder soltarlo si el overlay se desmonta con una
+   * foto sin confirmar (el botón atrás del móvil sobre una pantalla completa).
+   *
+   * Tiene que ser un ref y NO un efecto con dependencia en `shot`: al pulsar
+   * «Añadir página» la foto pasa a la rejilla y `shot` vuelve a null, así que
+   * ese efecto la liberaría justo cuando acaba de empezar a usarse. Aquí se
+   * pone a null a mano y en el acto, en cuanto la foto cambia de dueño.
+   */
+  const shotRef = useRef(null);
+  /** Único sitio que toca la foto en revisión: deja estado y ref a la par. */
+  const ponerShot = (s) => { shotRef.current = s; setShot(s); };
+  useEffect(() => () => { if (shotRef.current) freePage(shotRef.current); }, []);
   const [added, setAdded] = useState(pageCount);
 
   // ── Encendido / apagado ───────────────────────────────────────────────────
@@ -722,7 +749,6 @@ function CameraOverlay({ pageCount, buildPage, onAddPage, onClose }) {
         if (v) {
           v.srcObject = stream;
           await v.play().catch(() => {});
-          setDims({ w: v.videoWidth, h: v.videoHeight });
         }
         setReady(true);
       } catch (e) {
@@ -759,17 +785,11 @@ function CameraOverlay({ pageCount, buildPage, onAddPage, onClose }) {
     const v = videoRef.current;
     if (!v || !v.videoWidth) return;
     setWorking(true);
-    busyRef.current = true;
     try {
-      const frame = await grabStill(v, trackRef.current);
-      if (v.videoWidth !== dims.w || v.videoHeight !== dims.h) {
-        setDims({ w: v.videoWidth, h: v.videoHeight });
-      }
-      setShot(await buildPage(frame));
+      ponerShot(await buildPage(await grabStill(v, trackRef.current)));
     } catch (e) {
       toast.error(e.message || 'No se pudo tomar la foto');
     } finally {
-      busyRef.current = false;
       setWorking(false);
     }
   };
@@ -777,20 +797,20 @@ function CameraOverlay({ pageCount, buildPage, onAddPage, onClose }) {
   /** Descarta la foto en revisión (sin guardarla como página). */
   const discardShot = () => {
     if (shot) freePage(shot);
-    setShot(null);
+    ponerShot(null);
   };
 
   const keepShot = () => {
     onAddPage(shot);
     setAdded((n) => n + 1);
-    setShot(null);
+    ponerShot(null);
   };
 
   // "Crear PDF": guarda la última foto, cierra la cámara y lleva al usuario al
   // cuadro del nombre (el PDF se genera con el botón de ahí, ya con nombre).
   const finish = () => {
     onAddPage(shot);
-    setShot(null);
+    ponerShot(null);
     onClose({ goToSave: true });
   };
 
@@ -824,7 +844,6 @@ function CameraOverlay({ pageCount, buildPage, onAddPage, onClose }) {
           ref={videoRef}
           playsInline
           muted
-          onLoadedMetadata={(e) => setDims({ w: e.currentTarget.videoWidth, h: e.currentTarget.videoHeight })}
           className={`absolute inset-0 w-full h-full ${shot ? 'invisible' : ''}`}
           style={{ objectFit: 'contain' }}
         />
