@@ -579,6 +579,42 @@ async function applyOpportunityStage(conversation, stage, automationName = '') {
 }
 
 /**
+ * EL HUECO QUE DEJA UN ANUNCIO.
+ *
+ * Cuando un mensaje llega desde un anuncio (click-to-WhatsApp), el ingest crea
+ * sola una oportunidad EN BLANCO con la atribución de ese anuncio y nada más:
+ * sin nombre, sin servicios y sin valor (ver chatController, "cada ANUNCIO es una
+ * oportunidad distinta"). Es un hueco a la espera de que alguien diga qué es.
+ *
+ * Un segundo después, la automatización de ESE MISMO anuncio llegaba y añadía
+ * OTRA oportunidad con su nombre ("Prostata 1"), así que cada chat de anuncio
+ * contaba por dos: el 21-ago-2026 había 9.447 huecos sin nombre de 16.394
+ * oportunidades (el 58%), la gráfica "Qué oportunidades son" enseñaba «Sin
+ * nombre» como la barra más alta —mientras el chat mostraba la oportunidad CON su
+ * nombre— y el total de oportunidades creadas salía inflado. Además el nombre y
+ * el anuncio quedaban en oportunidades distintas, así que no se podía saber qué
+ * anuncio trajo qué.
+ *
+ * Ahora la automatización que nace del anuncio RELLENA su hueco en vez de crear
+ * otra. Solo se rellena el hueco de ESE anuncio (`ctx.adId`, que viene de la
+ * inscripción) y solo si sigue intacto: en cuanto alguien lo trabaja —le pone
+ * nombre, servicios, valor, lo mueve de etapa o le agenda una cita— deja de ser
+ * un hueco y la automatización crea la suya aparte.
+ */
+function adPlaceholderFor(list, adId) {
+  const wanted = String(adId || '').trim();
+  if (!wanted) return null;
+  return (list || []).find((o) => (
+    String(o?.attribution?.adId || '') === wanted
+    && !String(o?.name || '').trim()
+    && !(o?.interestedIn || []).length
+    && !Number(o?.expectedValue)
+    && String(o?.stage || 'nuevo') === 'nuevo'
+    && !o?.appointment
+  )) || null;
+}
+
+/**
  * Crea (o actualiza) la oportunidad de un chat CON TODOS SUS DATOS: nombre,
  * etapa, servicios de interés del inventario, valor (automático desde esos
  * servicios o manual), etiquetas y notas. Lo usa el paso `create_opportunity`.
@@ -587,6 +623,9 @@ async function applyOpportunityStage(conversation, stage, automationName = '') {
  *  - 'update' (defecto) → si el chat ya tiene oportunidad, actualiza la principal
  *    (solo los campos configurados); si no tiene, la crea.
  *  - 'new' → añade SIEMPRE una oportunidad más (p.ej. un interés distinto).
+ *
+ * EXCEPCIÓN a 'new': el hueco del anuncio del que viene el flujo se rellena, no
+ * se duplica (ver `adPlaceholderFor`).
  *
  * Como `applyOpportunityStage`, NO emite el evento de dominio del disparador
  * 'opportunity_stage' (evita cascadas workflow → workflow).
@@ -619,22 +658,26 @@ async function applyOpportunity(conversation, data = {}, { clinicId, patient, ct
   // al array: si no, "actualizar la existente" creaba una segunda y la del espejo
   // desaparecía al recalcularlo.
   const list = opportunities.ensureArray(conversation);
-  const reuse = data.ifExists !== 'new' && list.length > 0;
-  const prevStage = reuse ? String(list[list.length - 1]?.stage || '') : null;
+  // El hueco en blanco que dejó el anuncio del que viene esta inscripción: se
+  // rellena aunque el paso esté en 'new' (si no, cada chat de anuncio contaba dos
+  // oportunidades, una sin nombre y otra con él). Ver `adPlaceholderFor`.
+  const placeholder = adPlaceholderFor(list, ctx?.adId);
+  const target = placeholder || (data.ifExists !== 'new' && list.length ? list[list.length - 1] : null);
+  const reuse = !!target;
+  const prevStage = reuse ? String(target.stage || '') : null;
   let changedOpportunity;
   if (reuse) {
-    const primary = list[list.length - 1];
-    changedOpportunity = primary;
-    opportunities.setStage(primary, stage);
-    primary.name = name;
+    changedOpportunity = target;
+    opportunities.setStage(target, stage);
+    target.name = name;
     if (ids.length) {
-      primary.interestedIn = interestedIn;
-      if (valueMode === 'auto') primary.expectedValue = autoValue;
+      target.interestedIn = interestedIn;
+      if (valueMode === 'auto') target.expectedValue = autoValue;
     }
-    if (valueMode === 'manual') { primary.valueMode = 'manual'; primary.expectedValue = expectedValue; }
-    else if (ids.length) primary.valueMode = 'auto';
-    if (tags.length) primary.tags = [...new Set([...(primary.tags || []), ...tags])];
-    if (notes) primary.notes = notes;
+    if (valueMode === 'manual') { target.valueMode = 'manual'; target.expectedValue = expectedValue; }
+    else if (ids.length) target.valueMode = 'auto';
+    if (tags.length) target.tags = [...new Set([...(target.tags || []), ...tags])];
+    if (notes) target.notes = notes;
   } else {
     const now = new Date();
     conversation.opportunities = [
@@ -662,7 +705,10 @@ async function applyOpportunity(conversation, data = {}, { clinicId, patient, ct
   const actor = opportunities.systemActor(
     automationName ? `automatización "${automationName}"` : 'automatización'
   );
-  if (!reuse) {
+  // Rellenar el hueco del anuncio se anuncia como ALTA, no como cambio de etapa:
+  // para el equipo la oportunidad nace ahí (antes del nombre no era nada) y el
+  // chip «Oportunidad creada: …» del hilo tiene que seguir apareciendo igual.
+  if (!reuse || placeholder) {
     await opportunities.announceOpportunity(conversation, {
       type: 'created', opportunity: changedOpportunity, actor,
     });
@@ -2359,7 +2405,18 @@ async function enrollForChatMessage({ clinicId, conversation, patient, phone, te
           startNodeId: flow.startNodeId,
           status: 'active',
           nextRunAt: new Date(),
-          context: { phone: destPhone, conversationId: String(conversation._id) },
+          // `adId`: de qué anuncio vino el mensaje que inscribió. El paso "Crear
+          // oportunidad" lo necesita para RELLENAR el hueco en blanco que ese
+          // mismo anuncio dejó en el chat en vez de crear una segunda
+          // oportunidad (ver `adPlaceholderFor`). Va en el contexto y no se
+          // recalcula al ejecutar: entre la inscripción y el paso puede haber
+          // esperas de horas, y para entonces el chat ya no sabe por qué anuncio
+          // entró ESTE mensaje.
+          context: {
+            phone: destPhone,
+            conversationId: String(conversation._id),
+            ...(msgAdId ? { adId: msgAdId } : {}),
+          },
         });
       } catch (e) {
         if (e.code === 11000) continue;

@@ -135,10 +135,10 @@ const opportunityWorkflow = (clinicId, data) => Workflow.create({
   edges: [{ id: 'e0', source: 'trigger', target: 'op', sourceHandle: 'default' }],
 });
 
-const runNode = async (wf, clinicId, patientId, conversationId) => {
+const runNode = async (wf, clinicId, patientId, conversationId, context = {}) => {
   const enr = await WorkflowEnrollment.create({
     clinic: clinicId, workflow: wf._id, patient: patientId, conversation: conversationId,
-    currentNodeId: 'op', startNodeId: 'trigger', status: 'active', context: {},
+    currentNodeId: 'op', startNodeId: 'trigger', status: 'active', context,
   });
   await engine.executeEnrollment(await WorkflowEnrollment.findById(enr._id));
   return WorkflowEnrollment.findById(enr._id);
@@ -199,6 +199,68 @@ test('"Crear oportunidad" con valor manual, y actualiza la existente o crea otra
   assert.equal(fresh.opportunities.length, 2);
   assert.equal(fresh.opportunities[1].name, 'Segunda');
   assert.equal(fresh.opportunity.name, 'Segunda', 'la principal pasa a ser la última');
+});
+
+// ─────────── El hueco que deja un anuncio ───────────
+//
+// Un mensaje desde un anuncio deja una oportunidad EN BLANCO (solo la atribución)
+// y la automatización de ESE anuncio venía detrás creando otra con el nombre: el
+// chat contaba DOS oportunidades y la gráfica enseñaba «Sin nombre» como la barra
+// más alta. Ahora la automatización rellena su propio hueco.
+
+/** Añade al chat el hueco que crea la ingesta cuando el mensaje viene de un anuncio. */
+const conHuecoDeAnuncio = (convId, adId, campaign = 'Revisa Tu Próstata A Tiempo') =>
+  Conversation.updateOne({ _id: convId }, {
+    $set: {
+      opportunities: [{
+        isOpportunity: true, stage: 'nuevo', notes: `Desde anuncio: ${campaign}`,
+        attribution: { adId, campaign, ctwaClid: 'clid1' }, createdAt: new Date(),
+      }],
+      opportunity: { isOpportunity: true, stage: 'nuevo', attribution: { adId, campaign, ctwaClid: 'clid1' } },
+    },
+  });
+
+test('anuncio: la automatización RELLENA el hueco en vez de crear una segunda', async () => {
+  const { clinic, patient, conv } = await seed();
+  await conHuecoDeAnuncio(conv._id, 'ad_777');
+  const wf = await opportunityWorkflow(clinic._id, {
+    opportunityName: 'Prostata 1', stage: 'nuevo', opportunityValueMode: 'manual', opportunityValue: 29,
+    ifExists: 'new', // aunque el paso diga "crear otra": el hueco del anuncio se rellena
+  });
+
+  await runNode(wf, clinic._id, patient._id, conv._id, { adId: 'ad_777' });
+
+  const fresh = await Conversation.findById(conv._id).lean();
+  assert.equal(fresh.opportunities.length, 1, 'una sola oportunidad, no dos');
+  assert.equal(fresh.opportunities[0].name, 'Prostata 1');
+  assert.equal(fresh.opportunities[0].expectedValue, 29);
+  // La atribución sobrevive: ahora se sabe QUÉ anuncio trajo ESTA oportunidad.
+  assert.equal(fresh.opportunities[0].attribution.adId, 'ad_777');
+  assert.equal(fresh.opportunity.name, 'Prostata 1');
+});
+
+test('anuncio: solo se rellena el hueco de ESE anuncio, y solo si nadie lo trabajó', async () => {
+  const { clinic, patient, conv } = await seed();
+  await conHuecoDeAnuncio(conv._id, 'ad_AAA');
+  const wf = await opportunityWorkflow(clinic._id, {
+    opportunityName: 'Eco 360 1', stage: 'nuevo', ifExists: 'new',
+  });
+
+  // Otro anuncio → el hueco de ad_AAA no es suyo: crea la suya aparte.
+  await runNode(wf, clinic._id, patient._id, conv._id, { adId: 'ad_BBB' });
+  let fresh = await Conversation.findById(conv._id).lean();
+  assert.equal(fresh.opportunities.length, 2);
+  assert.equal(fresh.opportunities[0].name, '', 'el hueco del otro anuncio sigue intacto');
+  assert.equal(fresh.opportunities[1].name, 'Eco 360 1');
+
+  // Y si el hueco ya lo movió un agente, deja de ser un hueco: no se pisa.
+  await Conversation.updateOne({ _id: conv._id }, { $set: { 'opportunities.0.stage': 'agendado' } });
+  const wf2 = await opportunityWorkflow(clinic._id, { opportunityName: 'Otra', stage: 'nuevo', ifExists: 'new' });
+  await runNode(wf2, clinic._id, patient._id, conv._id, { adId: 'ad_AAA' });
+  fresh = await Conversation.findById(conv._id).lean();
+  assert.equal(fresh.opportunities.length, 3);
+  assert.equal(fresh.opportunities[0].stage, 'agendado');
+  assert.equal(fresh.opportunities[0].name, '');
 });
 
 test('"Crear oportunidad" sin chat asociado: no revienta y deja el motivo en el registro', async () => {

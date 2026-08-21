@@ -1,14 +1,22 @@
 import { useState } from 'react';
-import { HiOutlineTag, HiXMark, HiOutlinePlus } from 'react-icons/hi2';
+import { HiOutlineTag, HiXMark } from 'react-icons/hi2';
+import SuggestInput from './SuggestInput';
 
 /**
- * Editor de etiquetas reutilizable (chips + input para añadir).
+ * Editor de etiquetas reutilizable (chips + buscador para añadir).
  * Controlado: recibe `value` (array de strings) y notifica `onChange(nextArray)`.
+ *
+ * POR QUÉ UN BUSCADOR Y NO UN CAMPO A SECAS. Antes había que escribir la
+ * etiqueta entera de memoria cada vez (las sugerencias iban en un `<datalist>`,
+ * que casi ningún navegador enseña al pinchar). Escrita a mano, "promo" y
+ * "Promo" son dos etiquetas distintas: los filtros y los segmentos se parten sin
+ * que nadie se entere. Ahora al pinchar salen las que ya existen —lo más usado
+ * primero— y solo se escribe cuando de verdad es una nueva.
  *
  * Props:
  *  - value: string[]            — etiquetas actuales
  *  - onChange: (next) => void   — se llama con el array nuevo
- *  - suggestions?: string[]     — etiquetas sugeridas (autocompletar)
+ *  - suggestions?: string[] | [{ name, count }] — las que ya existen
  *  - placeholder?: string
  *  - size?: 'sm' | 'md'
  *  - readOnly?: boolean
@@ -17,7 +25,7 @@ export default function TagEditor({
   value = [],
   onChange,
   suggestions = [],
-  placeholder = 'Añadir etiqueta…',
+  placeholder = 'Buscar o crear etiqueta…',
   size = 'sm',
   readOnly = false,
 }) {
@@ -26,29 +34,19 @@ export default function TagEditor({
 
   const add = (raw) => {
     const t = String(raw || '').trim();
-    if (!t) return;
-    if (tags.some((x) => x.toLowerCase() === t.toLowerCase())) {
-      setInput('');
-      return;
-    }
-    onChange?.([...tags, t]);
     setInput('');
+    if (!t) return;
+    if (tags.some((x) => x.toLowerCase() === t.toLowerCase())) return;
+    onChange?.([...tags, t]);
   };
 
   const remove = (t) => onChange?.(tags.filter((x) => x !== t));
 
-  const onKeyDown = (e) => {
-    if (e.key === 'Enter' || e.key === ',') {
-      e.preventDefault();
-      add(input);
-    } else if (e.key === 'Backspace' && !input && tags.length) {
-      remove(tags[tags.length - 1]);
-    }
-  };
-
   const chipCls = size === 'md' ? 'text-xs px-2 py-1' : 'text-[11px] px-1.5 py-0.5';
-  const listId = `tag-suggestions-${Math.random().toString(36).slice(2, 8)}`;
-  const freeSuggestions = suggestions.filter((s) => !tags.includes(s));
+  // Las ya puestas no se ofrecen otra vez (acepta ['vip'] y [{name,count}]).
+  const libres = (suggestions || [])
+    .map((s) => (typeof s === 'string' ? { name: s, count: 0 } : s))
+    .filter((s) => s?.name && !tags.some((t) => t.toLowerCase() === String(s.name).toLowerCase()));
 
   return (
     <div className="flex flex-wrap items-center gap-1">
@@ -75,33 +73,24 @@ export default function TagEditor({
         </span>
       ))}
       {!readOnly && (
-        <span className="inline-flex items-center gap-0.5">
-          <input
+        <span className="inline-flex min-w-[11rem] flex-1">
+          <SuggestInput
             value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={onKeyDown}
-            onBlur={() => add(input)}
-            list={freeSuggestions.length ? listId : undefined}
+            onChange={setInput}
+            onSelect={add}
+            options={libres}
             placeholder={placeholder}
-            className="border border-slate-200 rounded-full px-2 py-0.5 text-[11px] w-28 focus:w-36 transition-all outline-none focus:border-emerald-400"
+            emptyHint="Todavía no hay etiquetas. Escribe la primera y pulsa Enter."
+            // La coma también cierra la etiqueta (se pegan varias de una lista), y
+            // Retroceso con el campo vacío quita la última: dos atajos que ya
+            // tenía este editor y que la gente usa.
+            onKeyDownExtra={(e) => {
+              if (e.key === ',') { e.preventDefault(); add(input); }
+              else if (e.key === 'Backspace' && !input && tags.length) remove(tags[tags.length - 1]);
+            }}
+            onBlur={() => add(input)}
+            className="w-full border border-slate-200 rounded-full pl-3 pr-7 py-1 text-[11px] outline-none focus:border-emerald-400 bg-white"
           />
-          {freeSuggestions.length > 0 && (
-            <datalist id={listId}>
-              {freeSuggestions.map((s) => (
-                <option key={s} value={s} />
-              ))}
-            </datalist>
-          )}
-          {input.trim() && (
-            <button
-              type="button"
-              onClick={() => add(input)}
-              className="bg-transparent border-none cursor-pointer p-0 text-emerald-600 flex items-center"
-              title="Añadir"
-            >
-              <HiOutlinePlus className="w-3.5 h-3.5" />
-            </button>
-          )}
         </span>
       )}
     </div>

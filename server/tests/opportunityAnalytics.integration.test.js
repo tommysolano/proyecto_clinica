@@ -374,3 +374,114 @@ test('detalle: sin decir qué barra es, no se devuelve nada', async () => {
   const { statusCode } = await detalle(clinic._id, { ...rango, by: 'loQueSea', value: 'x' });
   assert.equal(statusCode, 400);
 });
+
+/**
+ * «Tengo muchos más anuncios de los que aparecen».
+ *
+ * La respuesta recortaba el listado a los 15 anuncios con más chats. El
+ * 21-ago-2026 habían escrito desde 41 anuncios distintos y la página enseñaba
+ * 15: no era un filtro, era un recorte silencioso. Ahora vienen todos (con un
+ * tope de 200 como freno) y la página decide cuántos dibuja de un vistazo.
+ */
+test('chats por anuncio: vienen TODOS los anuncios, no solo los 15 primeros', async () => {
+  const clinic = await Clinic.create({ name: 'Principal' });
+  // 30 anuncios distintos, con un chat cada uno.
+  await Conversation.insertMany(
+    Array.from({ length: 30 }, (_, i) => ({
+      clinic: clinic._id,
+      phone: `59390001${String(i).padStart(4, '0')}`,
+      createdAt: hace(2),
+      attribution: { adId: `ad-${i}`, campaign: `Anuncio ${i}`, ctwaClid: '' },
+    }))
+  );
+
+  const { payload } = await pedir(clinic._id, rango);
+  assert.equal(payload.porAnuncio.length, 30, 'los 30, no 15');
+  assert.equal(payload.totals.anuncios, 30);
+  assert.equal(payload.totals.chatsDesdeAnuncios, 30);
+});
+
+/**
+ * QUIÉNES escribieron desde un anuncio. Se cuenta como la gráfica —chats creados
+ * en el rango con ESE anuncio—, no con el aplanado de oportunidades: un chat con
+ * dos oportunidades saldría dos veces y el detalle no cuadraría con la barra.
+ */
+test('detalle por anuncio: los chats de ese anuncio, uno por fila, con su chat a un clic', async () => {
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const desde = (adId) => ({ adId, campaign: 'Revisa Tu Próstata A Tiempo', ctwaClid: '' });
+  await Conversation.create({
+    clinic: clinic._id, phone: '593900000201', contactName: 'Ana', assignedToName: 'Lucía',
+    createdAt: hace(2), attribution: desde('ad-1'),
+    // DOS oportunidades en el mismo chat: aun así es UNA fila (es un chat).
+    opportunities: [
+      { isOpportunity: true, name: 'Prostata 1', stage: 'nuevo', createdAt: hace(2) },
+      { isOpportunity: true, name: 'Prostata 2', stage: 'agendado', expectedValue: 29, createdAt: hace(2) },
+    ],
+  });
+  // Del mismo anuncio pero SIN oportunidad todavía: el chat entró igual.
+  await Conversation.create({
+    clinic: clinic._id, phone: '593900000202', contactName: 'Beto', createdAt: hace(1), attribution: desde('ad-1'),
+  });
+  // Otro anuncio, y uno fuera del rango: ninguno debe salir.
+  await Conversation.create({
+    clinic: clinic._id, phone: '593900000203', contactName: 'Caro', createdAt: hace(1), attribution: desde('ad-2'),
+  });
+  await Conversation.create({
+    clinic: clinic._id, phone: '593900000204', contactName: 'Viejo', createdAt: hace(200), attribution: desde('ad-1'),
+  });
+
+  const { statusCode, payload } = await detalle(clinic._id, { ...rango, by: 'anuncio', value: 'ad-1' });
+  assert.equal(statusCode, 200);
+  assert.equal(payload.unidad, 'chats', 'son chats, no oportunidades');
+  assert.deepEqual(payload.items.map((i) => i.contactName).sort(), ['Ana', 'Beto']);
+
+  const ana = payload.items.find((i) => i.contactName === 'Ana');
+  assert.ok(ana.conversationId, 'hace falta para abrir el chat en otra pestaña');
+  // La etapa que se enseña es la de la oportunidad principal (la última).
+  assert.equal(ana.stage, 'agendado');
+  assert.equal(ana.nombre, 'Prostata 2');
+  assert.equal(ana.assignedToName, 'Lucía');
+
+  // Un chat sin oportunidad no tiene etapa: la tabla lo pinta como "Sin oportunidad".
+  const beto = payload.items.find((i) => i.contactName === 'Beto');
+  assert.equal(beto.stage, '');
+});
+
+// ─────────── Catálogo de nombres y etiquetas ───────────
+
+const catalogo = (clinicId) => H.runController(
+  chat.opportunityCatalog,
+  H.mockReq(clinicId, new mongoose.Types.ObjectId(), {}, { role: 'admin', query: {} })
+);
+
+test('catálogo: nombres y etiquetas que ya existen, lo más usado primero', async () => {
+  const clinic = await Clinic.create({ name: 'Principal' });
+  const otra = await Clinic.create({ name: 'Sucursal 2' });
+  await Conversation.create({
+    clinic: clinic._id, phone: '593900000301', tags: ['vip'],
+    opportunities: [
+      { isOpportunity: true, name: 'Prostata 1', stage: 'nuevo', tags: ['promo', 'meta'], createdAt: hace(3) },
+      { isOpportunity: true, name: 'Prostata 1', stage: 'agendado', tags: ['promo'], createdAt: hace(2) },
+    ],
+  });
+  await Conversation.create({
+    clinic: clinic._id, phone: '593900000302',
+    opportunities: [
+      { isOpportunity: true, name: 'Detox', stage: 'nuevo', tags: ['promo'], createdAt: hace(2) },
+      // Sin nombre (la que deja un anuncio): no es una opción que ofrecer.
+      { isOpportunity: true, name: '', stage: 'nuevo', createdAt: hace(1) },
+    ],
+  });
+  // De otra sucursal: no se mezcla.
+  await Conversation.create({
+    clinic: otra._id, phone: '593900000303',
+    opportunities: [{ isOpportunity: true, name: 'De otra sede', stage: 'nuevo', tags: ['ajena'], createdAt: hace(1) }],
+  });
+
+  const { statusCode, payload } = await catalogo(clinic._id);
+  assert.equal(statusCode, 200);
+  assert.deepEqual(payload.names, [{ name: 'Prostata 1', count: 2 }, { name: 'Detox', count: 1 }]);
+  assert.deepEqual(payload.tags, [{ name: 'promo', count: 3 }, { name: 'meta', count: 1 }]);
+  assert.deepEqual(payload.chatTags, ['vip']);
+  assert.equal(payload.names.some((n) => n.name === 'De otra sede'), false);
+});

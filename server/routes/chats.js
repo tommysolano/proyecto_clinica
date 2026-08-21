@@ -85,6 +85,9 @@ router.delete('/gallery/:id', requireRole(...CALL_CENTER_ROLES), ctrl.deleteGall
 
 // Vista global de oportunidades
 router.get('/opportunities/all', requireRole(...CALL_CENTER_ROLES), ctrl.listAllOpportunities);
+// Nombres y etiquetas que YA existen, para los buscadores del modal de
+// oportunidades (escribirlos a mano partía el embudo por una tilde).
+router.get('/opportunities/catalog', requireRole(...CALL_CENTER_ROLES), ctrl.opportunityCatalog);
 // Analíticas del embudo (todo agregado en la base). Mismos roles que la página
 // /analytics: el call center no la ve.
 router.get('/opportunities/analytics', requireRole('admin', 'marketing'), ctrl.opportunityAnalytics);

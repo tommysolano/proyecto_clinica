@@ -2086,6 +2086,59 @@ exports.listAllOpportunities = async (req, res) => {
   }
 };
 
+/**
+ * GET /chats/opportunities/catalog — QUÉ NOMBRES Y QUÉ ETIQUETAS YA EXISTEN.
+ *
+ * El modal de oportunidades pedía las dos cosas a ciegas: un campo de texto en
+ * blanco. Escrito a mano, "Prostata 1", "prostata 1" y "Próstata 1" son tres
+ * filas distintas en el embudo y en la gráfica "Qué oportunidades son", así que
+ * las métricas se rompían por una tilde. Ofreciendo lo que ya existe, quien
+ * atiende ELIGE lo de siempre y solo escribe cuando de verdad es algo nuevo.
+ *
+ * Ordenado por USO, no alfabéticamente: lo que más se usa es lo que casi siempre
+ * se busca, y así el nombre canónico sale el primero de la lista.
+ */
+exports.opportunityCatalog = async (req, res) => {
+  try {
+    const clinicOid = new mongoose.Types.ObjectId(req.clinicId);
+    const [agg] = await Conversation.aggregate([
+      { $match: { clinic: clinicOid, ...opportunities.hasOpportunityFilter() } },
+      { $addFields: { _opps: opportunities.AGG_FLATTEN } },
+      { $unwind: '$_opps' },
+      {
+        $facet: {
+          nombres: [
+            { $addFields: { _n: { $trim: { input: { $ifNull: ['$_opps.name', ''] } } } } },
+            { $match: { _n: { $ne: '' } } },
+            { $group: { _id: '$_n', count: { $sum: 1 } } },
+            { $sort: { count: -1, _id: 1 } },
+            { $limit: 300 },
+          ],
+          etiquetas: [
+            { $unwind: '$_opps.tags' },
+            { $addFields: { _t: { $trim: { input: { $ifNull: ['$_opps.tags', ''] } } } } },
+            { $match: { _t: { $ne: '' } } },
+            { $group: { _id: '$_t', count: { $sum: 1 } } },
+            { $sort: { count: -1, _id: 1 } },
+            { $limit: 300 },
+          ],
+        },
+      },
+    ]);
+    // Etiquetas del CHAT: son otro vocabulario (el chat no es la oportunidad),
+    // por eso van en su propia lista y no mezcladas con las de arriba.
+    const chatTags = await Conversation.distinct('tags', { clinic: clinicOid });
+    res.json({
+      names: (agg?.nombres || []).map((r) => ({ name: r._id, count: r.count })),
+      tags: (agg?.etiquetas || []).map((r) => ({ name: r._id, count: r.count })),
+      chatTags: [...new Set(chatTags.map((t) => String(t || '').trim()).filter(Boolean))]
+        .sort((a, b) => a.localeCompare(b, 'es')),
+    });
+  } catch (err) {
+    res.status(500).json({ message: 'Error al listar el catálogo', error: err.message, names: [], tags: [], chatTags: [] });
+  }
+};
+
 // =================== Analíticas del embudo ===================
 
 const TZ_EC = 'America/Guayaquil';
@@ -2305,9 +2358,15 @@ exports.opportunityAnalytics = async (req, res) => {
     }));
 
     const chats = chatsPorDia.reduce((a, r) => a + r.count, 0);
-    // El total cuenta TODOS los anuncios; la gráfica solo enseña los 15 primeros.
     const chatsDesdeAnuncios = anunciosAgg.reduce((a, r) => a + r.chats, 0);
-    const topAnuncios = anunciosAgg.slice(0, 15);
+    /**
+     * ANTES se devolvían solo los 15 anuncios que más chats traían y el usuario
+     * decía —con razón— "tengo muchos más anuncios de los que aparecen": el
+     * 21-ago-2026 escribieron desde 41 anuncios distintos y la página enseñaba
+     * 15. El tope de 200 es un freno contra un rango enorme, no un recorte del
+     * informe; la página dibuja los primeros y da el resto en su tabla.
+     */
+    const topAnuncios = anunciosAgg.slice(0, 200);
     const tituloDe = (r) => String(r.titular || '').trim() || `Anuncio ${r._id}`;
     const repetidos = topAnuncios.reduce((m, r) => ({ ...m, [tituloDe(r)]: (m[tituloDe(r)] || 0) + 1 }), {});
     const agendadas = de('agendado').count;
@@ -2319,9 +2378,12 @@ exports.opportunityAnalytics = async (req, res) => {
       range: { from: req.query.from || '', to: req.query.to || '' },
       totals: {
         chats,
-        // Suma de los 15 anuncios que más chats traen (el tope del listado): sirve
-        // de referencia junto a "chats nuevos", no como total exacto de anuncios.
+        // Chats del rango que entraron desde CUALQUIER anuncio (todos, no solo
+        // los que caben en el listado). Es un subconjunto de `chats`.
         chatsDesdeAnuncios,
+        // Cuántos anuncios distintos trajeron chats: la página avisa cuando
+        // dibuja menos de los que hay.
+        anuncios: anunciosAgg.length,
         oportunidades: total,
         chatsConOportunidad: facets.chatsConOportunidad?.[0]?.n || 0,
         agendadas,
@@ -2395,6 +2457,11 @@ exports.opportunityAnalytics = async (req, res) => {
  *   by=motivo        value = el motivo de pérdida ('' o 'Sin motivo' = sin motivo)
  *   by=oportunidad   value = el nombre de la oportunidad ('Sin nombre' = sin nombre)
  *                    stage = opcional, para una etapa concreta de esa oportunidad
+ *   by=anuncio       value = el ID del anuncio (source_id de Meta)
+ *
+ * `unidad` dice si lo que se devuelve son oportunidades o chats: "Chats por
+ * anuncio" cuenta CONVERSACIONES, y llamarlas oportunidades en el modal haría
+ * dudar de una cifra que sí es correcta.
  */
 exports.opportunityAnalyticsDetail = async (req, res) => {
   try {
@@ -2403,8 +2470,56 @@ exports.opportunityAnalyticsDetail = async (req, res) => {
     const by = String(req.query.by || '');
     const value = String(req.query.value ?? '');
     const stage = String(req.query.stage || '');
-    if (!['motivo', 'oportunidad'].includes(by)) {
+    if (!['motivo', 'oportunidad', 'anuncio'].includes(by)) {
       return res.status(400).json({ message: 'Falta indicar qué barra se está abriendo' });
+    }
+
+    /**
+     * ANUNCIO: se sale por otro camino a propósito. La gráfica "Chats por
+     * anuncio" agrupa CONVERSACIONES creadas en el rango por el anuncio que
+     * quedó grabado en el chat (`attribution.adId`), no oportunidades; si el
+     * detalle se calculara con el aplanado de oportunidades, un chat con dos
+     * oportunidades saldría dos veces y las cifras no cuadrarían con la barra.
+     */
+    if (by === 'anuncio') {
+      if (!value) return res.status(400).json({ message: 'Falta el anuncio' });
+      const chats = await Conversation.aggregate([
+        {
+          $match: {
+            clinic: clinicOid,
+            'attribution.adId': value,
+            ...(range ? { createdAt: range } : {}),
+          },
+        },
+        { $sort: { createdAt: -1 } },
+        { $limit: 500 },
+        // La oportunidad "principal" del chat (la última), solo para enseñar en
+        // qué punto del embudo está. Puede no existir: el chat entró por el
+        // anuncio igual.
+        { $addFields: { _op: { $arrayElemAt: [opportunities.AGG_FLATTEN, -1] } } },
+        {
+          $project: {
+            _id: 0,
+            conversationId: '$_id',
+            phone: 1,
+            contactName: 1,
+            channel: { $ifNull: ['$channel', 'whatsapp'] },
+            assignedToName: { $ifNull: ['$assignedToName', ''] },
+            stage: { $ifNull: ['$_op.stage', ''] },
+            nombre: { $trim: { input: { $ifNull: ['$_op.name', ''] } } },
+            motivo: { $ifNull: ['$_op.lostReason', ''] },
+            valor: { $ifNull: ['$_op.expectedValue', 0] },
+            creada: '$createdAt',
+            lastMessageAt: 1,
+          },
+        },
+      ]);
+      return res.json({
+        items: chats,
+        total: chats.length,
+        truncated: chats.length >= 500,
+        unidad: 'chats',
+      });
     }
 
     const filtro = {};
@@ -2454,7 +2569,7 @@ exports.opportunityAnalyticsDetail = async (req, res) => {
       },
     ]);
 
-    res.json({ items: rows, total: rows.length, truncated: rows.length >= 500 });
+    res.json({ items: rows, total: rows.length, truncated: rows.length >= 500, unidad: 'oportunidades' });
   } catch (err) {
     res.status(500).json({ message: 'Error al abrir el detalle', error: err.message });
   }

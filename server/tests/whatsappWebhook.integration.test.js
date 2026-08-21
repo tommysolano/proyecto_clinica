@@ -257,3 +257,49 @@ test('el webhook con Lead configurado reporta a Meta al crear la conversación',
   assert.equal(ev.user_data.ctwa_clid, 'CLID-lead');
   assert.ok(ev.event_id.startsWith('lead_'), 'event_id determinístico por conversación');
 });
+
+/**
+ * DE PUNTA A PUNTA: un mensaje desde un anuncio deja UNA oportunidad, no dos.
+ *
+ * La ingesta crea sola una oportunidad EN BLANCO con la atribución del anuncio, y
+ * justo detrás la automatización de ESE anuncio creaba OTRA con el nombre: cada
+ * chat de anuncio contaba por dos y la gráfica "Qué oportunidades son" enseñaba
+ * «Sin nombre» como la barra más alta mientras el chat mostraba la oportunidad
+ * con su nombre. La prueba va por el webhook real para cubrir también el paso de
+ * la inscripción: el `adId` tiene que viajar en el contexto hasta el paso.
+ */
+test('anuncio: el chat queda con UNA oportunidad, con nombre y con la atribución', async () => {
+  const { clinicId } = await seedWhatsapp();
+  const Workflow = require('../models/Workflow');
+  await Workflow.create({
+    clinic: clinicId,
+    name: 'Prostata meta',
+    active: true,
+    triggers: [{ type: 'ctwa_ad', audience: 'all', adFilter: 'ad_prost' }],
+    nodes: [
+      { id: 'trigger', type: 'trigger', position: { x: 0, y: 0 }, data: { triggers: [{ type: 'ctwa_ad', adFilter: 'ad_prost' }] } },
+      {
+        id: 'op',
+        type: 'create_opportunity',
+        position: { x: 0, y: 130 },
+        data: { opportunityName: 'Prostata 1', stage: 'nuevo', opportunityValueMode: 'manual', opportunityValue: 29, ifExists: 'new' },
+      },
+    ],
+    edges: [{ id: 'e0', source: 'trigger', target: 'op', sourceHandle: 'default' }],
+  });
+
+  await postWebhook(messagePayload({
+    from: '593991398683',
+    id: 'wamid.ad1',
+    type: 'text',
+    text: { body: 'Hola, vi el anuncio' },
+    referral: { source_id: 'ad_prost', headline: 'Revisa Tu Próstata A Tiempo', ctwa_clid: 'CLID-p' },
+  }));
+
+  const conv = await Conversation.findOne({ clinic: clinicId, phone: '593991398683' }).lean();
+  assert.equal(conv.opportunities.length, 1, 'una sola oportunidad: el anuncio y el nombre son la misma');
+  assert.equal(conv.opportunities[0].name, 'Prostata 1');
+  assert.equal(conv.opportunities[0].expectedValue, 29);
+  assert.equal(conv.opportunities[0].attribution.adId, 'ad_prost');
+  assert.equal(conv.opportunity.name, 'Prostata 1');
+});

@@ -54,6 +54,7 @@ import { useAuth } from '../context/AuthContext';
 import { useSocketEvent, useSocket } from '../context/SocketContext';
 import SameSlotPanel from '../components/SameSlotPanel';
 import TagEditor from '../components/TagEditor';
+import SuggestInput from '../components/SuggestInput';
 import WhatsappButtons from '../components/WhatsappButtons';
 import { fmtDate, fmtDateTime, todayEc, nowEcHHMM } from '../utils/date';
 import { imageFromClipboard, imageFileToDataUrl, pastedImageName, readFileAsDataUrl } from '../utils/chatMedia';
@@ -4536,6 +4537,17 @@ function ReplyNumberSelector({ conv, onUpdated }) {
 function ConvTagsSection({ conv, onUpdated }) {
   const [tags, setTags] = useState(conv.tags || []);
   const [saving, setSaving] = useState(false);
+  // Las etiquetas de chat que YA existen, para el buscador: escritas de memoria,
+  // "promo" y "Promo" acaban siendo dos etiquetas distintas y los filtros y los
+  // segmentos se parten sin que nadie se entere.
+  const [sugerencias, setSugerencias] = useState([]);
+  useEffect(() => {
+    let vivo = true;
+    api.get('/chats/opportunities/catalog')
+      .then((r) => { if (vivo) setSugerencias(r.data?.chatTags || []); })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, []);
 
   // Sincroniza al cambiar de conversación.
   useEffect(() => {
@@ -4561,7 +4573,7 @@ function ConvTagsSection({ conv, onUpdated }) {
       <div className="text-xs font-semibold text-slate-500 mb-1 flex items-center gap-1">
         <HiOutlineTag className="w-3.5 h-3.5" /> Etiquetas {saving && <span className="text-[10px] text-slate-400">guardando…</span>}
       </div>
-      <TagEditor value={tags} onChange={save} />
+      <TagEditor value={tags} onChange={save} suggestions={sugerencias} />
     </div>
   );
 }
@@ -4967,6 +4979,26 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
   const [items, setItems] = useState(initial.length > 0 ? initial : [blankOpportunity()]);
   const [saving, setSaving] = useState(false);
 
+  /**
+   * LO QUE YA EXISTE: nombres de oportunidad y etiquetas en uso.
+   *
+   * Escritos a mano, "Prostata 1", "prostata 1" y "Próstata 1" son tres filas
+   * distintas en el embudo y en la gráfica "Qué oportunidades son": las métricas
+   * se partían por una tilde. Ofreciendo lo que ya se usa (lo más usado primero),
+   * quien atiende ELIGE lo de siempre y solo escribe cuando es algo nuevo.
+   *
+   * Si la petición falla, los campos siguen siendo de texto libre: el catálogo
+   * ayuda, no bloquea.
+   */
+  const [catalogo, setCatalogo] = useState({ names: [], tags: [] });
+  useEffect(() => {
+    let vivo = true;
+    api.get('/chats/opportunities/catalog')
+      .then((r) => { if (vivo) setCatalogo({ names: r.data?.names || [], tags: r.data?.tags || [] }); })
+      .catch(() => {});
+    return () => { vivo = false; };
+  }, []);
+
   // Calcular valor esperado desde inventario (precio del producto).
   const valueOf = (interested) =>
     interested
@@ -5077,13 +5109,18 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
             </div>
             <div>
               <label className="text-xs font-semibold text-slate-600 block mb-1">Nombre de la oportunidad</label>
-              <input
+              <SuggestInput
                 value={it.name}
-                onChange={(e) => setItems((prev) => prev.map((x, i) => i === idx ? { ...x, name: e.target.value } : x))}
-                placeholder="Ej. Botox — primera sesión"
-                className="w-full border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm bg-white"
+                onChange={(v) => setItems((prev) => prev.map((x, i) => i === idx ? { ...x, name: v } : x))}
+                onSelect={(v) => setItems((prev) => prev.map((x, i) => i === idx ? { ...x, name: v } : x))}
+                options={catalogo.names}
+                placeholder="Busca una ya creada o escribe una nueva"
+                emptyHint="Todavía no hay ninguna oportunidad con nombre. Escribe la primera."
+                className="w-full border border-slate-200 rounded-xl pl-3.5 pr-8 py-2.5 text-sm bg-white outline-none focus:border-emerald-400"
               />
-              <p className="text-[11px] text-slate-400 mt-1">Si lo dejas vacío se nombra sola con los servicios y el contacto.</p>
+              <p className="text-[11px] text-slate-400 mt-1">
+                Elige una de la lista para que cuente junto a las demás en el embudo. Si lo dejas vacío se nombra sola con los servicios y el contacto.
+              </p>
             </div>
             <div>
               <label className="text-xs font-semibold text-slate-600 block mb-1">Etapa</label>
@@ -5152,6 +5189,7 @@ function OpportunityModal({ conv, services, onClose, onSaved }) {
               <TagEditor
                 value={it.tags || []}
                 onChange={(next) => setItems((prev) => prev.map((x, i) => i === idx ? { ...x, tags: next } : x))}
+                suggestions={catalogo.tags}
               />
             </div>
             <div>

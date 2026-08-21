@@ -80,9 +80,13 @@ const daysAgo = (n) => isoLocal(new Date(Date.now() - n * 86400000));
 
 const CANALES = { whatsapp: 'WhatsApp', messenger: 'Messenger', instagram: 'Instagram', tiktok: 'TikTok', sms: 'SMS', web: 'Web' };
 
+// Cuántos anuncios se dibujan de entrada en "Chats por anuncio" (el resto, a un
+// clic). No es un tope del informe: el servidor los manda todos.
+const TOPE_ANUNCIOS = 15;
+
 const EMPTY = {
   totals: {
-    chats: 0, oportunidades: 0, agendadas: 0, ganadas: 0, perdidas: 0, enCurso: 0,
+    chats: 0, oportunidades: 0, agendadas: 0, ganadas: 0, perdidas: 0, enCurso: 0, anuncios: 0,
     valorTotal: 0, valorGanado: 0, valorAgendado: 0, tasaAgendamiento: 0, tasaCierre: 0,
   },
   embudo: [], serie: [], porOportunidad: [], porAnuncio: [], porCanal: [], porAgente: [], servicios: [], motivosPerdida: [],
@@ -158,6 +162,9 @@ export default function Analytics() {
   // dejaban llegar a la persona; al pinchar una barra se ve QUIÉNES son y se
   // entra a su chat.
   const [drill, setDrill] = useState(null);
+  // "Chats por anuncio" dibuja los primeros y deja el resto a un clic: son
+  // decenas de anuncios y de golpe la gráfica mide varias pantallas.
+  const [todosAnuncios, setTodosAnuncios] = useState(false);
 
   const load = async (from = start, to = end) => {
     setLoading(true);
@@ -213,6 +220,18 @@ export default function Analytics() {
   );
   const conServicios = (data.servicios || []).length > 0;
   const conMotivos = (data.motivosPerdida || []).some((m) => m.count > 0);
+
+  const anunciosGrafica = todosAnuncios ? (data.porAnuncio || []) : (data.porAnuncio || []).slice(0, TOPE_ANUNCIOS);
+  /** Quiénes escribieron desde este anuncio (se agrupa por ID, no por titular). */
+  const abrirAnuncio = (fila) => {
+    if (!fila?.adId) return;
+    setDrill({
+      by: 'anuncio',
+      value: fila.adId,
+      titulo: fila.titular || `Anuncio ${fila.adId}`,
+      subtitulo: `Anuncio ${fila.adId}`,
+    });
+  };
   const conAgentes = (data.porAgente || []).length > 0;
 
   return (
@@ -497,7 +516,7 @@ export default function Analytics() {
             —lo único legible que manda Meta—, no el nombre de la campaña. */}
         <ChartCard
           title="Chats por anuncio"
-          subtitle="Conversaciones distintas que escribieron desde cada anuncio (click-to-WhatsApp). Se cuenta el chat, no cada mensaje."
+          subtitle="Conversaciones distintas que escribieron desde cada anuncio (click-to-WhatsApp). Se cuenta el chat, no cada mensaje. Pincha un anuncio para ver quiénes escribieron y entrar a su chat."
           columns={[
             { key: 'titular', label: 'Titular del anuncio' },
             { key: 'chats', label: 'Chats', num: true },
@@ -505,25 +524,59 @@ export default function Analytics() {
           ]}
           rows={data.porAnuncio}
           empty={!data.porAnuncio.length}
+          onRowClick={(r) => abrirAnuncio(r)}
         >
-          <ResponsiveContainer width="100%" height={data.porAnuncio.length * 44 + 32}>
-            <BarChart data={data.porAnuncio} layout="vertical" margin={{ top: 8, right: 64, bottom: 8, left: 8 }}>
-              <CartesianGrid horizontal={false} stroke={INK.grid} />
-              <XAxis type="number" hide domain={[0, 'dataMax']} />
-              <YAxis
-                type="category"
-                dataKey="titular"
-                width={230}
-                tickLine={false}
-                axisLine={false}
-                tick={<TickNombre max={32} />}
-              />
-              <Tooltip cursor={{ fill: '#f8fafc' }} content={<TipAnuncio />} />
-              <Bar dataKey="chats" name="Chats" fill={C_CHATS} barSize={20} radius={[0, 4, 4, 0]} isAnimationActive={false}>
-                <LabelList dataKey="chats" position="right" fill={INK.text} fontSize={12} />
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
+          {/* Se dibujan los primeros y el resto se pide con el botón: el usuario
+              decía —con razón— "tengo muchos más anuncios de los que aparecen"
+              (41 anuncios el 21-ago-2026 y la página enseñaba 15). Ahora vienen
+              todos; lo único que se decide aquí es cuántos caben de un vistazo. */}
+          <>
+            <ResponsiveContainer width="100%" height={anunciosGrafica.length * 44 + 32}>
+              <BarChart data={anunciosGrafica} layout="vertical" margin={{ top: 8, right: 64, bottom: 8, left: 8 }}>
+                <CartesianGrid horizontal={false} stroke={INK.grid} />
+                <XAxis type="number" hide domain={[0, 'dataMax']} />
+                <YAxis
+                  type="category"
+                  dataKey="titular"
+                  width={230}
+                  tickLine={false}
+                  axisLine={false}
+                  tick={<TickNombre max={32} onPick={(titular) => abrirAnuncio(data.porAnuncio.find((a) => a.titular === titular))} />}
+                />
+                <Tooltip cursor={{ fill: '#f8fafc' }} content={<TipAnuncio />} />
+                <Bar
+                  dataKey="chats"
+                  name="Chats"
+                  fill={C_CHATS}
+                  barSize={20}
+                  radius={[0, 4, 4, 0]}
+                  isAnimationActive={false}
+                  cursor="pointer"
+                  onClick={(e) => abrirAnuncio(filaDe(e))}
+                >
+                  <LabelList dataKey="chats" position="right" fill={INK.text} fontSize={12} />
+                </Bar>
+              </BarChart>
+            </ResponsiveContainer>
+            {data.porAnuncio.length > TOPE_ANUNCIOS && (
+              <button
+                onClick={() => setTodosAnuncios((v) => !v)}
+                className="mt-1 mx-auto block px-3 py-1.5 rounded-xl border border-slate-200 bg-white text-slate-600 text-xs cursor-pointer hover:bg-slate-50"
+              >
+                {todosAnuncios
+                  ? `Ver solo los ${TOPE_ANUNCIOS} con más chats`
+                  : `Ver los ${nf.format(data.porAnuncio.length)} anuncios`}
+              </button>
+            )}
+            {/* Si el rango trae más de los que caben en la respuesta, se DICE.
+                Un recorte callado se lee como "estos son todos los anuncios". */}
+            {t.anuncios > data.porAnuncio.length && (
+              <p className="mt-1 text-center text-[11px] text-slate-400">
+                En este rango hay {nf.format(t.anuncios)} anuncios; se listan los {nf.format(data.porAnuncio.length)} con
+                más chats. Acota las fechas para verlos todos.
+              </p>
+            )}
+          </>
         </ChartCard>
 
         {conAgentes && (
@@ -675,6 +728,9 @@ function DetalleBarra({ drill, from, to, onClose }) {
   const [items, setItems] = useState(null);
   const [error, setError] = useState('');
   const [truncated, setTruncated] = useState(false);
+  // "Chats por anuncio" cuenta CONVERSACIONES; las otras dos, oportunidades.
+  // Llamarlas por su nombre evita que una cifra correcta parezca un error.
+  const [unidad, setUnidad] = useState('oportunidades');
 
   useEffect(() => {
     let vivo = true;
@@ -686,6 +742,7 @@ function DetalleBarra({ drill, from, to, onClose }) {
         if (!vivo) return;
         setItems(r.data?.items || []);
         setTruncated(!!r.data?.truncated);
+        setUnidad(r.data?.unidad || 'oportunidades');
       })
       .catch((err) => {
         if (vivo) setError(err.response?.data?.message || 'No se pudo cargar el detalle');
@@ -699,7 +756,11 @@ function DetalleBarra({ drill, from, to, onClose }) {
         <p className="text-xs text-slate-500">
           {drill.subtitulo ? `${drill.subtitulo} · ` : ''}
           {ddmm(from)} al {ddmm(to)}
-          {items ? ` · ${nf.format(items.length)} oportunidad${items.length === 1 ? '' : 'es'}` : ''}
+          {items
+            ? ` · ${nf.format(items.length)} ${unidad === 'chats'
+              ? `chat${items.length === 1 ? '' : 's'}`
+              : `oportunidad${items.length === 1 ? '' : 'es'}`}`
+            : ''}
         </p>
         <p className="text-[11px] text-slate-400 -mt-1">
           Haz clic en una persona para abrir su chat en una pestaña nueva.
@@ -716,7 +777,9 @@ function DetalleBarra({ drill, from, to, onClose }) {
         ) : !items ? (
           <p className="py-10 text-center text-sm text-slate-400">Cargando…</p>
         ) : !items.length ? (
-          <p className="py-10 text-center text-sm text-slate-400">No hay oportunidades en esta barra.</p>
+          <p className="py-10 text-center text-sm text-slate-400">
+            No hay {unidad === 'chats' ? 'chats' : 'oportunidades'} en esta barra.
+          </p>
         ) : (
           <div className="border border-slate-200 rounded-xl overflow-hidden">
             <div className="overflow-x-auto">
@@ -726,7 +789,7 @@ function DetalleBarra({ drill, from, to, onClose }) {
                     <th className="px-3 py-2.5">Contacto</th>
                     <th className="px-3 py-2.5">Teléfono</th>
                     <th className="px-3 py-2.5 w-28">Etapa</th>
-                    <th className="px-3 py-2.5">{drill.by === 'motivo' ? 'Oportunidad' : 'Motivo'}</th>
+                    <th className="px-3 py-2.5">{drill.by === 'oportunidad' ? 'Motivo' : 'Oportunidad'}</th>
                     <th className="px-3 py-2.5">Asignado a</th>
                   </tr>
                 </thead>
@@ -748,15 +811,21 @@ function DetalleBarra({ drill, from, to, onClose }) {
                         </td>
                         <td className="px-3 py-2.5 text-slate-600">{formatPhone(it.phone) || '—'}</td>
                         <td className="px-3 py-2.5">
-                          <span
-                            className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold text-white"
-                            style={{ background: STAGE_COLOR[it.stage] || C_CHATS }}
-                          >
-                            {STAGE_LABEL[it.stage] || it.stage}
-                          </span>
+                          {/* Un chat que vino de un anuncio puede no tener
+                              oportunidad todavía: ahí no hay etapa que pintar. */}
+                          {it.stage ? (
+                            <span
+                              className="inline-flex rounded-full px-2 py-0.5 text-[10px] font-semibold text-white"
+                              style={{ background: STAGE_COLOR[it.stage] || C_CHATS }}
+                            >
+                              {STAGE_LABEL[it.stage] || it.stage}
+                            </span>
+                          ) : (
+                            <span className="text-slate-400">Sin oportunidad</span>
+                          )}
                         </td>
                         <td className="px-3 py-2.5 text-slate-500 break-words">
-                          {(drill.by === 'motivo' ? it.nombre : it.motivo) || '—'}
+                          {(drill.by === 'oportunidad' ? it.motivo : it.nombre) || '—'}
                         </td>
                         <td className="px-3 py-2.5 text-slate-500">{it.assignedToName || 'Sin asignar'}</td>
                       </tr>
